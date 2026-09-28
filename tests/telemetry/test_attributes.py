@@ -488,15 +488,6 @@ def test_all_attribute_names_when_called_does_return_nonempty_frozenset():
         pytest.param("gymrat.iteration.seq", id="iteration-seq"),
         pytest.param("gymrat.iteration.outcome", id="iteration-outcome"),
         pytest.param("gymrat.iteration.delta_pct", id="iteration-delta_pct"),
-        pytest.param("gymrat.baseline.label", id="record_derived_scalar_fields-baseline_label"),
-        pytest.param("gymrat.hook.stage", id="record_derived_scalar_fields-hook_stage"),
-        pytest.param("gymrat.hook.exit_code", id="record_derived_scalar_fields-hook_exit_code"),
-        pytest.param("gymrat.hook.duration_ms", id="record_derived_scalar_fields-hook_duration_ms"),
-        pytest.param(
-            "gymrat.hook.stdout_bytes", id="record_derived_scalar_fields-hook_stdout_bytes"
-        ),
-        pytest.param("gymrat.hook.timed_out", id="record_derived_scalar_fields-hook_timed_out"),
-        pytest.param("gymrat.keep.status", id="record_derived_scalar_fields-keep_status"),
         pytest.param("gymrat.stop.message", id="record_derived_scalar_fields-stop_message"),
         pytest.param("gymrat.finalize.branch", id="record_derived_scalar_fields-finalize_branch"),
         pytest.param("gymrat.finalize.commit", id="record_derived_scalar_fields-finalize_commit"),
@@ -511,6 +502,46 @@ def test_all_attribute_names_when_called_does_include_constant(name: str):
     result = all_attribute_names()
 
     assert name in result
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected"),
+    [
+        pytest.param(
+            "gymrat.baseline.",
+            {"gymrat.baseline.label", "gymrat.baseline.duration_ms"},
+            id="baseline-samples-excluded",
+        ),
+        pytest.param(
+            "gymrat.keep.",
+            {
+                "gymrat.keep.status",
+                "gymrat.keep.commit",
+                "gymrat.keep.message",
+                "gymrat.keep.reason",
+            },
+            id="keep-optional-reason-included",
+        ),
+        pytest.param(
+            "gymrat.hook.",
+            {
+                "gymrat.hook.stage",
+                "gymrat.hook.exit_code",
+                "gymrat.hook.duration_ms",
+                "gymrat.hook.stdout_bytes",
+                "gymrat.hook.stderr_bytes",
+                "gymrat.hook.timed_out",
+            },
+            id="hook-int-fields-included",
+        ),
+    ],
+)
+def test_all_attribute_names_when_record_fields_mixed_does_derive_scalar_names_only(
+    prefix: str, expected: set[str]
+):
+    result = all_attribute_names()
+
+    assert {name for name in result if name.startswith(prefix)} == expected
 
 
 def test_all_attribute_names_when_called_does_produce_valid_attribute_names():

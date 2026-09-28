@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, tzinfo
+from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 
@@ -100,8 +100,7 @@ def _is_iterate_tool(tool: TrackedTool | InFlight) -> bool:
 
 
 def _format_wall_clock(epoch_ms: int, tz: tzinfo | None) -> str:
-    dt = datetime.fromtimestamp(epoch_ms / 1000, tz=UTC)
-    return dt.astimezone(tz).strftime("%H:%M:%S")
+    return datetime.fromtimestamp(epoch_ms / MS_PER_SECOND, tz).strftime("%H:%M:%S")
 
 
 def _build_time_bar(elapsed_ms: int, max_minutes: float) -> RenderableType:
@@ -113,8 +112,7 @@ def _build_time_bar(elapsed_ms: int, max_minutes: float) -> RenderableType:
         auto_refresh=False,
         expand=True,
     )
-    task = progress.add_task("time", total=max_ms, completed=min(elapsed_ms, max_ms))
-    progress.update(task)
+    progress.add_task("time", total=max_ms, completed=min(elapsed_ms, max_ms))
     return progress
 
 
@@ -192,25 +190,20 @@ def build_best_text(session_result: ReadSessionResult | None) -> Text | None:
 # ---------------------------------------------------------------------------
 
 
-def _style_unless_no_color(style: str, *, no_color: bool) -> str:
-    return "" if no_color else style
-
-
 def _build_waiting_text(
-    waiting: Waiting, now: int, tz: tzinfo | None, *, no_color: bool, idle_warn_ms: int
+    waiting: Waiting, now: int, tz: tzinfo | None, *, idle_warn_ms: int
 ) -> Text:
     ago = now - waiting.since
     if ago < idle_warn_ms:
-        style = _style_unless_no_color(STYLE_PENDING, no_color=no_color)
-        return Text(f"  waiting  {format_duration(ago)}", style=style)
-    style = _style_unless_no_color(STYLE_ALERT, no_color=no_color)
+        return Text(f"  waiting  {format_duration(ago)}", style=STYLE_PENDING)
+    idle = f"no output for {format_duration(ago)}"
     if waiting.tool_name is None:
-        return Text(f"no output for {format_duration(ago)}", style=style)
+        return Text(idle, style=STYLE_ALERT)
     clock_ms = waiting.tool_ended_at if waiting.tool_ended_at is not None else waiting.since
     clock = _format_wall_clock(clock_ms, tz)
     mark = f" {GLYPH_ERROR}" if waiting.result == "error" else ""
     label = f"(last tool: {waiting.tool_name}{mark} at {clock})"
-    return Text(f"no output for {format_duration(ago)} {label}", style=style)
+    return Text(f"{idle} {label}", style=STYLE_ALERT)
 
 
 def _pending_label(liveness: Responding | Composing | Exiting) -> str:
@@ -221,13 +214,12 @@ def _pending_label(liveness: Responding | Composing | Exiting) -> str:
     return "responding"
 
 
-def _build_liveness_text(  # noqa: PLR0913 -- ctx fields threaded to leaf renderers
+def _build_liveness_text(
     liveness: Liveness,
     now: int,
     tz: tzinfo | None,
     *,
     tool_col: int,
-    no_color: bool,
     idle_warn_ms: int,
 ) -> Text | None:
     match liveness:
@@ -246,16 +238,9 @@ def _build_liveness_text(  # noqa: PLR0913 -- ctx fields threaded to leaf render
             return text
         case Responding(since=since) | Composing(since=since) | Exiting(since=since):
             elapsed = format_duration(now - since)
-            style = _style_unless_no_color(STYLE_PENDING, no_color=no_color)
-            return Text(f"  {_pending_label(liveness)}  {elapsed}", style=style)
+            return Text(f"  {_pending_label(liveness)}  {elapsed}", style=STYLE_PENDING)
         case Waiting():
-            return _build_waiting_text(
-                liveness,
-                now,
-                tz,
-                no_color=no_color,
-                idle_warn_ms=idle_warn_ms,
-            )
+            return _build_waiting_text(liveness, now, tz, idle_warn_ms=idle_warn_ms)
         case Capped(cap_type=cap_type, action=action):
             return Text(f"{action} ({cap_type})", style=STYLE_ALERT)
         case _:  # pragma: no cover - exhaustive over the liveness union
@@ -367,7 +352,6 @@ def _build_liveness_table(  # noqa: PLR0913 -- view knobs threaded to leaf rende
     tz: tzinfo | None,
     *,
     tool_col: int,
-    no_color: bool,
     idle_warn_ms: int,
     read_progress: Callable[[str], ProgressSnapshot | None],
 ) -> Table:
@@ -378,7 +362,6 @@ def _build_liveness_table(  # noqa: PLR0913 -- view knobs threaded to leaf rende
         now,
         tz,
         tool_col=tool_col,
-        no_color=no_color,
         idle_warn_ms=idle_warn_ms,
     )
     if liveness_text is not None:
@@ -428,12 +411,11 @@ def log_path_text(log_path: str) -> Text:
     return Text(display, style=f"link {uri}")
 
 
-def build_frame(  # noqa: PLR0913 -- view knobs the shell owns, passed explicitly
+def build_frame(
     state: ReporterState,
     now: int,
     *,
     tz: tzinfo | None,
-    no_color: bool,
     idle_warn_ms: int,
     read_progress: Callable[[str], ProgressSnapshot | None],
 ) -> RenderableType:
@@ -444,8 +426,6 @@ def build_frame(  # noqa: PLR0913 -- view knobs the shell owns, passed explicitl
         now: Current wall-clock time in milliseconds, used for every elapsed
             duration in the frame.
         tz: Timezone for wall-clock timestamps; ``None`` uses the local zone.
-        no_color: Whether to drop the styles that carry no information without
-            color.
         idle_warn_ms: Milliseconds of inactivity before the waiting line
             escalates to alert styling.
         read_progress: Reader for the iterate progress sidecar, keyed by project
@@ -466,7 +446,6 @@ def build_frame(  # noqa: PLR0913 -- view knobs the shell owns, passed explicitl
             now,
             tz,
             tool_col=tool_col,
-            no_color=no_color,
             idle_warn_ms=idle_warn_ms,
             read_progress=read_progress,
         )

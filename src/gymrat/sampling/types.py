@@ -114,6 +114,24 @@ class RunOptions:
     on_progress: ProgressCallback | None = None
     warn: WarnSink | None = None
 
+    def sampling(self) -> SamplingOptions:
+        """The sampling settings this run hands the collector.
+
+        The collector's clock is left at its default.
+
+        Returns:
+            The bench and prepare commands, round count, timeout, and hooks of
+            this run.
+        """
+        return SamplingOptions(
+            bench=self.bench,
+            prepare=self.prepare,
+            samples=self.samples,
+            timeout_seconds=self.timeout_seconds,
+            on_progress=self.on_progress,
+            warn=self.warn,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class MetricStats:

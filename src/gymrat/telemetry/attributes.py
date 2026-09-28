@@ -9,11 +9,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from gymrat.session.records.models import (
+    SESSION_LOG_MODELS,
     CommandRecord,
     IterationRecord,
     SessionLogRecord,
     SessionRecord,
     _SequencedEnvelope,
+    wire_type,
 )
 from gymrat.telemetry.ids import parse_traceparent
 
@@ -115,12 +117,6 @@ def _record_attr_name(record_type: str, field_name: str) -> str:
     return f"gymrat.{record_type}.{field_name}"
 
 
-def _literal_value(annotation: object) -> str:
-    """Extract the single string value from a ``Literal['...']`` annotation."""
-    args = typing.get_args(annotation)
-    return args[0]
-
-
 def _is_scalar_or_literal(annotation: object) -> bool:
     """True when ``annotation`` is a bare scalar type or a ``Literal[...]``."""
     return annotation in _SCALAR_TYPES or typing.get_origin(annotation) is typing.Literal
@@ -137,13 +133,11 @@ def _is_scalar_type(annotation: object) -> bool:
 
 def _is_scalar_or_none(annotation: object) -> bool:
     """True when ``annotation`` is a scalar type, NoneType, a Literal, or Annotated wrapping one."""
-    if _is_scalar_or_literal(annotation) or annotation is type(None):
-        return True
-    origin = typing.get_origin(annotation)
-    if origin is typing.Annotated:
+    if typing.get_origin(annotation) is typing.Annotated:
         inner = typing.get_args(annotation)
-        return _is_scalar_or_literal(inner[0]) or inner[0] is type(None) if inner else False
-    return False
+        if inner:
+            annotation = inner[0]
+    return _is_scalar_or_literal(annotation) or annotation is type(None)
 
 
 @functools.cache
@@ -160,19 +154,14 @@ def all_attribute_names() -> frozenset[str]:
         A frozenset of dotted attribute name strings.
     """
     record_derived: set[str] = set()
-    for record_cls in typing.get_args(SessionLogRecord.__value__):
+    for record_cls in SESSION_LOG_MODELS:
         if record_cls in (SessionRecord, IterationRecord, CommandRecord):
             continue
-        record_type = _literal_value(record_cls.model_fields["type"].annotation)
+        record_type = wire_type(record_cls)
         for field_name, field_info in record_cls.model_fields.items():
             if field_name in _SKIPPED_FIELD_NAMES:
                 continue
-            raw_annotation = field_info.annotation
-            origin = typing.get_origin(raw_annotation)
-            if origin is typing.Annotated:
-                inner_args = typing.get_args(raw_annotation)
-                raw_annotation = inner_args[0] if inner_args else raw_annotation
-            if _is_scalar_type(raw_annotation):
+            if _is_scalar_type(field_info.annotation):
                 record_derived.add(_record_attr_name(record_type, field_name))
 
     return (

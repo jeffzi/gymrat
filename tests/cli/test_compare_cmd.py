@@ -13,23 +13,27 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import fields
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from gymrat.compare import CompareOptions
 
 import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
 from gymrat.cli.compare_cmd import _serialize_fail_on
-from gymrat.config import CliFlags, ResolvedConfig
+from gymrat.config import CliFlags, KindEntry, MetricEntry, ResolvedConfig
 from gymrat.report.types import (
     ComparisonResult,
     FailOnCondition,
     GeomeanFailOn,
     RegressedFailOn,
 )
+from gymrat.sampling import RunOptions
 from gymrat.session import append_record, session_jsonl_path
 from tests.cli._budget import install_budget, install_tight_budget
 from tests.cli._session import last_command_record
@@ -47,12 +51,14 @@ def _resolved(bench: str = "sh bench.sh") -> ResolvedConfig:
     """A resolved config the fake ``compare`` never actually benches against."""
     return ResolvedConfig(
         bench=bench,
-        prepare=None,
+        prepare="npm ci",
         adapter="metric-lines",
         samples=5,
         timeout_seconds=30,
         unstable_noise_pct=2.0,
         primary="time",
+        metrics={"decode/time": MetricEntry(direction="higher")},
+        kinds={"memory": KindEntry(gating=False)},
     )
 
 
@@ -146,6 +152,46 @@ def test_compare_when_flags_given_does_feed_them_to_resolve_config(
     assert flags.samples == 7
     assert flags.timeout == 42
     assert flags.config == "gymrat.json"
+
+
+# ---------------------------------------------------------------------------
+# run options → CompareOptions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("_in_non_repo")
+def test_compare_when_run_options_built_does_forward_every_field_to_compare_options(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: list[CompareOptions] = []
+
+    async def spy_compare(options: CompareOptions) -> ComparisonResult:
+        captured.append(options)
+        return create_comparison_result()
+
+    _stub_resolve(monkeypatch)
+    monkeypatch.setattr("gymrat.compare.compare", spy_compare)
+
+    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    assert len(captured) == 1
+    resolved = _resolved()
+    run = captured[0].run
+    callback_fields = {"on_progress", "warn"}
+    value_fields = {field.name for field in fields(RunOptions)} - callback_fields
+    forwarded = {name: getattr(run, name) for name in value_fields}
+    expected = {
+        "bench": resolved.bench,
+        "prepare": resolved.prepare,
+        "adapter": resolved.adapter,
+        "samples": resolved.samples,
+        "timeout_seconds": resolved.timeout_seconds,
+        "config_metrics": resolved.metrics,
+        "config_kinds": resolved.kinds,
+    }
+    assert forwarded == expected
+    assert all(getattr(run, name) is not None for name in callback_fields)
 
 
 # ---------------------------------------------------------------------------

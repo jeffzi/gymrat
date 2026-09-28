@@ -88,6 +88,7 @@ __all__ = [
     "make_supervision_result",
     "model_phase_event",
     "render_colored",
+    "render_colorless",
     "render_frame",
     "seed_session_with_baseline",
     "seed_session_with_iteration",
@@ -728,18 +729,34 @@ def make_plain_reporter(
     return PlainCapture(kit, writes)
 
 
-def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
-    """Render ``renderable`` through a sealed console with standard color."""
+def _render_sealed(
+    renderable: RenderableType,
+    *,
+    width: int,
+    no_color: bool,
+    color_system: Literal["standard"] | None,
+) -> str:
+    """Render *renderable* through a sealed terminal console with the given color settings."""
     buf = StringIO()
     console = Console(
         file=buf,
         width=width,
         force_terminal=True,
-        no_color=False,
-        color_system="standard",
+        no_color=no_color,
+        color_system=color_system,
         legacy_windows=False,
         _environ={},
         theme=CLI_THEME,
     )
     console.print(renderable)
     return buf.getvalue()
+
+
+def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
+    """Render ``renderable`` through a sealed console with standard color."""
+    return _render_sealed(renderable, width=width, no_color=False, color_system="standard")
+
+
+def render_colorless(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
+    """Render ``renderable`` through a sealed terminal console with colour off, as ``--no-color`` does."""
+    return _render_sealed(renderable, width=width, no_color=True, color_system=None)

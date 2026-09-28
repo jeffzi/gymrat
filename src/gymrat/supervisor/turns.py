@@ -14,6 +14,7 @@ Evaluation order is fixed — the first matching rule wins:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import islice
 from typing import TYPE_CHECKING
 
 from gymrat.eta import format_duration
@@ -21,6 +22,8 @@ from gymrat.loop.iterate.run import stop_condition
 from gymrat.session.records.models import CommandRecord, DiscardRecord, HookRecord, KeepRecord
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from gymrat.config import BenchlessConfig
     from gymrat.session import SessionLogRecord
     from gymrat.session.store import SessionState
@@ -144,6 +147,10 @@ def detect_end_condition(
     return None, next_cursor
 
 
+def _outcome_records(records: list[SessionLogRecord]) -> Iterator[SessionLogRecord]:
+    return (r for r in records if not isinstance(r, CommandRecord))
+
+
 def outcome_record_count(records: list[SessionLogRecord]) -> int:
     """Count records that are not command records.
 
@@ -157,7 +164,7 @@ def outcome_record_count(records: list[SessionLogRecord]) -> int:
     Returns:
         The number of non-command records.
     """
-    return sum(1 for r in records if not isinstance(r, CommandRecord))
+    return sum(1 for _ in _outcome_records(records))
 
 
 def _consecutive_discard_count(
@@ -170,9 +177,8 @@ def _consecutive_discard_count(
     between discards do not break the streak. A committed keep resets it. A
     keep that is not committed neither counts nor resets the streak.
 
-    ``initial_outcome_count`` is the number of non-command records at launch.
-    The slice skips that many outcome records regardless of interleaved command
-    records.
+    The slice skips the first ``initial_outcome_count`` outcome records
+    regardless of interleaved command records.
 
     Args:
         records: The session log records to scan.
@@ -181,15 +187,7 @@ def _consecutive_discard_count(
     Returns:
         The number of consecutive trailing discards.
     """
-    skipped = 0
-    post_launch: list[SessionLogRecord] = []
-    for r in records:
-        if isinstance(r, CommandRecord):
-            continue
-        if skipped < initial_outcome_count:
-            skipped += 1
-        else:
-            post_launch.append(r)
+    post_launch = islice(_outcome_records(records), initial_outcome_count, None)
     settlements = [r for r in post_launch if isinstance(r, KeepRecord | DiscardRecord)]
     count = 0
     for record in reversed(settlements):

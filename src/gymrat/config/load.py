@@ -15,22 +15,25 @@ from gymrat.errors import GymratError
 def _read_source(path: Path) -> tuple[str | None, str | None]:
     """Read the config file, reporting a read failure as a problem rather than raising.
 
+    Decoding as ``utf-8-sig`` drops the byte-order mark Windows editors prepend,
+    which TOML parsing would otherwise reject.
+
     Args:
         path: Path to the config file to read.
 
     Returns:
-        A ``(text, problem)`` pair: the BOM-stripped file content and ``None`` on success,
+        A ``(text, problem)`` pair: the file content and ``None`` on success,
         ``(None, None)`` when the file is absent, or ``(None, message)`` on
         read failure.
     """
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return None, None
     except (OSError, ValueError) as exc:
         reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
         return None, f"Cannot read config file at {path}: {reason}"
-    return text.removeprefix("﻿"), None
+    return text, None
 
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,11 @@
-"""Fixed-width cell text builders and Rich markup helpers for table columns."""
+"""Fixed-width cell text builders and the styled rich ``Text`` cells of table columns."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from rich.markup import escape
+from rich.text import Text
 
 from gymrat.report.display import VERDICT_GLOSSES, display_class, get_glyph
 from gymrat.report.format import (
@@ -23,7 +23,7 @@ from gymrat.report.geomean_label import (
     geomean_value_style,
 )
 from gymrat.report.sections import section_label
-from gymrat.report.style import GROUP_LABEL_STYLE, markup
+from gymrat.report.style import AGGREGATE_LABEL_STYLE, GROUP_LABEL_STYLE, VARIANT_NAME_STYLE
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -43,14 +43,24 @@ VALUE_COLUMN_MIN = 12
 VERDICT_COLUMN_MIN = 12
 
 
-def header_metric_cell(title: str | None) -> str:
+def header_metric_cell(title: str | None) -> Text:
     """The metric-column cell for a section header row."""
-    return markup(title, "bold") if title is not None else escape(METRIC_COLUMN_HEADER)
+    return _field(title, "bold") if title is not None else Text(METRIC_COLUMN_HEADER)
 
 
-def group_metric_cell(label: str) -> str:
+def group_metric_cell(label: str) -> Text:
     """The metric-column cell for a group separator row."""
-    return markup(label, GROUP_LABEL_STYLE)
+    return _field(label, GROUP_LABEL_STYLE)
+
+
+def aggregate_label_cell(label: str) -> Text:
+    """The metric-column cell for an aggregate row's scope label."""
+    return _field(label, AGGREGATE_LABEL_STYLE)
+
+
+def variant_name_cell(name: str) -> Text:
+    """A variant's name, styled as a column header."""
+    return _field(name, VARIANT_NAME_STYLE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,15 +171,6 @@ def _empty_band_cell(width: int) -> str:
     return " " * (len(PLUS_MINUS) + width)
 
 
-def join_verdict_cell(parts: VerdictParts, widths: VerdictWidths) -> str:
-    """A verdict cell, each field padded to the width its column settled on."""
-    delta = parts.word if parts.word != "" else parts.delta.rjust(widths.delta)
-    band = band_field(parts.band, widths.band)
-    band_cell = _empty_band_cell(widths.band) if band == "" and widths.band > 0 else band
-    fields = [parts.glyph, delta, band_cell, parts.pairs]
-    return CELL_GUTTER.join(field for field in fields if field != "").rstrip()
-
-
 def indented_section_label(short_name: str, group: str | None) -> str:
     """A metric's name cell inside a section: its short name, indented under its group."""
     label = section_label(short_name, group)
@@ -179,45 +180,24 @@ def indented_section_label(short_name: str, group: str | None) -> str:
 _PROVENANCE_SEPARATOR = "·"
 
 
-@dataclass(frozen=True, slots=True)
-class StyledSpan:
-    """A run of an already-built cell, and the style it wears."""
-
-    text: str
-    style: str
-
-
-@dataclass(frozen=True, slots=True)
-class AggregateColumnCell:
-    """One candidate column's aggregate cell: its text, and the spans that style it.
-
-    Attributes:
-        text: The cell's plain text, which the column is sized on.
-        spans: The runs of that text carrying a style, in the order they appear.
-    """
-
-    text: str
-    spans: tuple[StyledSpan, ...]
-
-
-def style_verdict_cell(
+def verdict_cell(
     parts: VerdictParts,
     widths: VerdictWidths,
     *,
     glyph_style: str | None,
     delta_style: str | None,
     band_style: str | None,
-) -> str:
-    """A verdict cell rendered to markup, each field wrapped in the style it carries.
+) -> Text:
+    """A verdict cell, each field padded to its column's width and styled on its own.
 
-    Reproduces :func:`join_verdict_cell`'s layout —
-    same visible text, so a column sized on the plain join renders it flush —
-    wrapping the glyph, the delta (or the word standing in for it) and the band
-    in the styles the caller passes.
+    The fields — glyph, delta (or the word standing in for it), band and pair
+    count — are joined by the cell gutter, a field with no text is dropped, and
+    trailing space is trimmed. Only a field's text carries its style, never the
+    padding around it, and the cell's plain text is what its column is sized on.
 
     Args:
         parts: The verdict's fields.
-        widths: The column widths the fields pad to.
+        widths: The column widths the delta and band pad to.
         glyph_style: The style the glyph wears, or ``None`` to leave it plain.
         delta_style: The style the delta or word wears, or ``None`` to leave it
             plain.
@@ -225,58 +205,34 @@ def style_verdict_cell(
             plain.
 
     Returns:
-        The cell as rich markup.
+        The styled cell.
     """
-    glyph = _wrap(parts.glyph, glyph_style)
     if parts.word != "":
-        delta = _wrap(parts.word, delta_style)
-        plain_delta = parts.word
-    elif parts.delta != "":
-        pad = " " * max(0, widths.delta - len(parts.delta))
-        delta = f"{pad}{_wrap(parts.delta, delta_style)}"
-        plain_delta = parts.delta
+        delta = _field(parts.word, delta_style)
     else:
-        delta = " " * widths.delta if widths.delta > 0 else ""
-        plain_delta = delta
+        pad = " " * max(0, widths.delta - len(parts.delta))
+        delta = Text(pad).append(parts.delta, delta_style)
     band = band_field(parts.band, widths.band)
-    styled_band = _wrap(band, band_style)
-    band_cell = _empty_band_cell(widths.band) if band == "" and widths.band > 0 else styled_band
-    fields = [glyph, delta, band_cell, escape(parts.pairs)]
-    plain_fields = [parts.glyph, plain_delta, band, parts.pairs]
-    return _join_styled(fields, plain_fields)
+    band_cell = (
+        Text(_empty_band_cell(widths.band))
+        if band == "" and widths.band > 0
+        else _field(band, band_style)
+    )
+    fields = [_field(parts.glyph, glyph_style), delta, band_cell, Text(parts.pairs)]
+    cell = Text(CELL_GUTTER).join(field for field in fields if field.plain != "")
+    cell.rstrip()
+    return cell
 
 
-def _wrap(text: str, style: str | None) -> str:
-    """``text`` wrapped in ``style`` as markup, or escaped plain when ``style`` is ``None``."""
-    if text == "":
-        return ""
-    return escape(text) if style is None else markup(text, style)
-
-
-def _join_styled(fields: Sequence[str], plain_fields: Sequence[str]) -> str:
-    """Join styled fields by the cell gutter, dropping the ones whose plain text is empty.
-
-    The join mirrors :func:`join_verdict_cell`: a field
-    is kept only when its plain text is non-empty, and the trailing gutter is
-    trimmed. Trimming works on the markup because the gutter is plain spaces at
-    the end.
-
-    Args:
-        fields: The styled (markup) fields, in cell order.
-        plain_fields: The corresponding plain-text fields, used to decide
-            which are empty.
-
-    Returns:
-        The non-empty fields joined by the cell gutter, trailing space trimmed.
-    """
-    kept = [styled for styled, plain in zip(fields, plain_fields, strict=True) if plain != ""]
-    return CELL_GUTTER.join(kept).rstrip()
+def _field(text: str, style: str | None) -> Text:
+    """``text`` as a styled span, or plain when ``style`` is ``None``."""
+    return Text().append(text, style)
 
 
 def geomean_column_cell(
     geomean: GeomeanResult,
     outcomes: Sequence[DisplayClass | None],
-) -> AggregateColumnCell:
+) -> Text:
     """The geomean of one candidate column: the aggregate, then how many metrics back it.
 
     The multi-candidate table names the scope once in its label column and states
@@ -289,24 +245,19 @@ def geomean_column_cell(
             the figure's color when every one is quiet.
 
     Returns:
-        The cell's text, and the spans styling it: the delta by
+        The styled cell: the delta by
         :func:`~gymrat.report.geomean_label.geomean_value_style`, the provenance
         dimmed. An empty geomean shows the ``no stable metrics`` stand-in rather
         than the ``0.0%`` it computes to.
     """
     parts = geomean_parts(geomean)
     if parts is None:
-        return AggregateColumnCell(
-            text=NO_GEOMEAN_CELL,
-            spans=(
-                StyledSpan(text=NO_GEOMEAN_FIGURE, style="bold"),
-                StyledSpan(text=NO_STABLE_METRICS, style="dim"),
-            ),
-        )
-    return AggregateColumnCell(
-        text=f"{parts.delta} {_PROVENANCE_SEPARATOR} {parts.provenance}",
-        spans=(
-            StyledSpan(text=parts.delta, style=geomean_value_style(geomean, outcomes)),
-            StyledSpan(text=parts.provenance, style="dim"),
-        ),
+        cell = Text(NO_GEOMEAN_CELL)
+        cell.stylize("bold", 0, len(NO_GEOMEAN_FIGURE))
+        cell.stylize("dim", len(NO_GEOMEAN_CELL) - len(NO_STABLE_METRICS))
+        return cell
+    return Text.assemble(
+        (parts.delta, geomean_value_style(geomean, outcomes)),
+        f" {_PROVENANCE_SEPARATOR} ",
+        (parts.provenance, "dim"),
     )

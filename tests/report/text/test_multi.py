@@ -47,6 +47,7 @@ from tests.report._inputs import (
     strip_ansi,
     styles_at,
     table_region,
+    table_rows,
     time_kind,
     two_kind_metrics,
     two_kind_result,
@@ -74,6 +75,11 @@ def _value_part_of(cell: str, glyph: str) -> str:
     return re.sub(r"(?:\x1b\[\d+m)*$", "", cell[:index])
 
 
+def _stripped_cells(line: str) -> list[str]:
+    """The cells of `line`, stripped of their padding."""
+    return [cell.strip() for cell in cells_of(line)]
+
+
 # ---------------------------------------------------------------------------
 # candidate columns
 # ---------------------------------------------------------------------------
@@ -82,7 +88,7 @@ def _value_part_of(cell: str, glyph: str) -> str:
 def test_render_report_when_many_candidates_does_head_one_column_per_candidate():
     header_line = line_starting_with(render_report(multi_candidate_result()), "metric")
 
-    assert [cell.strip() for cell in cells_of(header_line)] == [
+    assert _stripped_cells(header_line) == [
         "metric",
         "main",
         "candidate-a",
@@ -94,7 +100,7 @@ def test_render_report_when_many_candidates_does_head_one_column_per_candidate()
 def test_render_report_when_many_candidates_does_pair_each_figure_with_its_own_verdict():
     row = line_starting_with(render_report(multi_candidate_result()), "decode/time")
 
-    assert [cell.strip() for cell in cells_of(row)] == [
+    assert _stripped_cells(row) == [
         "decode/time",
         "100ns ± 1%",
         "90ns ± 1%  ✓  -10.0%",
@@ -106,7 +112,7 @@ def test_render_report_when_many_candidates_does_pair_each_figure_with_its_own_v
 def test_render_report_when_many_candidates_does_carry_one_geomean_per_column():
     row = line_starting_with(render_report(multi_candidate_result()), "geomean")
 
-    assert [cell.strip() for cell in cells_of(row)] == [
+    assert _stripped_cells(row) == [
         "geomean",
         "",
         "-10.0% · 1 stable metric",
@@ -137,6 +143,39 @@ def test_render_report_when_many_candidates_does_size_the_last_column_to_fit_its
     assert rules
     for rule in rules:
         assert len(rule) >= len(geomean_line)
+
+
+def _bracketed_result() -> ComparisonResult:
+    """Two candidates whose labels, like the metric names, read as markup tags."""
+    return create_comparison_result(
+        candidates=[
+            create_candidate(label="[bold]fast"),
+            create_candidate(label="[dim]slow"),
+        ],
+        metrics={
+            "[italic]decode/time": n_way_metric([
+                NWayCandidate(verdict="improved", delta=-10, median=90),
+                NWayCandidate(verdict="regressed", delta=4, median=104),
+            ]),
+        },
+    )
+
+
+def test_render_report_when_names_carry_brackets_does_print_them_literally():
+    report = strip_ansi(render_report(_bracketed_result()))
+
+    assert _stripped_cells(line_starting_with(report, "metric")) == [
+        "metric",
+        "main",
+        "[bold]fast",
+        "[dim]slow",
+    ]
+    assert _stripped_cells(line_starting_with(report, "[italic]decode/time")) == [
+        "[italic]decode/time",
+        "100ns ± 1%",
+        "90ns ± 1%  ✓  -10.0%",
+        "104ns ± 1%  ✗  +4.0%",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +487,7 @@ def test_render_report_when_many_kinds_and_candidates_does_carry_one_figure_per_
     report = render_report(grouped_comparison())
 
     def cells_at(label: str) -> list[str]:
-        return [cell.strip() for cell in cells_of(line_starting_with(report, label))]
+        return _stripped_cells(line_starting_with(report, label))
 
     assert cells_at("geomean · entity") == [
         "geomean · entity",
@@ -463,6 +502,69 @@ def test_render_report_when_many_kinds_and_candidates_does_carry_one_figure_per_
         "+4.0% · 1 stable metric",
     ]
     assert table_region(report)[-1] == "geomean · memory"
+
+
+def _sectioned_bracketed_result() -> ComparisonResult:
+    """Two kinds, one grouped, whose baseline, kinds, group and short names read as markup tags."""
+    return create_comparison_result(
+        baseline_label="[dim]main",
+        metrics={
+            "[bold]entity/spawn#other": n_way_kind_metric(
+                kind="[underline]time",
+                short_name="[bold]entity.spawn",
+                candidates=[
+                    NWayCandidate(verdict="improved", delta=-10, median=90),
+                    NWayCandidate(verdict="regressed", delta=4, median=104),
+                ],
+            ),
+            "encode#other": n_way_kind_metric(
+                kind="[strike]memory",
+                short_name="[italic]encode",
+                candidates=[
+                    NWayCandidate(verdict="improved", delta=-7, median=93),
+                    NWayCandidate(verdict="improved", delta=-2, median=98),
+                ],
+            ),
+        },
+        candidates=[
+            create_candidate(
+                label=label,
+                kinds=[
+                    KindAggregate(
+                        kind="[underline]time",
+                        geomean=(time_geomean := geomean_of(time_delta, 1)),
+                        groups=(GroupAggregate(group="[bold]entity", geomean=time_geomean),),
+                        gated_geomean=time_geomean,
+                    ),
+                    KindAggregate(
+                        kind="[strike]memory",
+                        geomean=(memory_geomean := geomean_of(memory_delta, 1)),
+                        groups=(),
+                        gated_geomean=memory_geomean,
+                    ),
+                ],
+            )
+            for label, time_delta, memory_delta in (
+                ("candidate-a", -10, -7),
+                ("candidate-b", 4, -2),
+            )
+        ],
+    )
+
+
+def test_render_report_when_sectioned_names_carry_brackets_does_print_them_literally():
+    report = render_report(_sectioned_bracketed_result())
+
+    assert [_stripped_cells(row)[:2] for row in table_rows(report)] == [
+        ["[underline]time", "[dim]main"],
+        ["[bold]entity", ""],
+        ["spawn", "100ns ± 1%"],
+        ["geomean · [bold]entity", ""],
+        ["geomean · [underline]time", ""],
+        ["[strike]memory", "[dim]main"],
+        ["[italic]encode", "100ns ± 1%"],
+        ["geomean · [strike]memory", ""],
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -735,6 +837,56 @@ def test_render_report_when_many_candidates_single_kind_grouped_does_show_group_
     assert "spawn" in region
     assert "entity/alive_check#time" not in region
     assert "entity/spawn#time" not in region
+
+
+def _flat_grouped_bracketed_result() -> ComparisonResult:
+    """Two candidates, single kind, whose one group reads as a markup tag."""
+    return create_comparison_result(
+        metrics={
+            "[bold]entity/spawn#other": n_way_kind_metric(
+                kind="other",
+                short_name="[bold]entity.spawn",
+                candidates=[
+                    NWayCandidate(verdict="improved", delta=-10, median=90),
+                    NWayCandidate(verdict="regressed", delta=4, median=104),
+                ],
+            ),
+            "[bold]entity/alive#other": n_way_kind_metric(
+                kind="other",
+                short_name="[bold]entity.alive",
+                candidates=[
+                    NWayCandidate(verdict="no-signal", delta=0.3, median=100),
+                    NWayCandidate(verdict="improved", delta=-5, median=95),
+                ],
+            ),
+        },
+        candidates=[
+            create_candidate(
+                label=label,
+                kinds=[
+                    KindAggregate(
+                        kind="other",
+                        geomean=(geomean := geomean_of(delta, 1)),
+                        groups=(GroupAggregate(group="[bold]entity", geomean=geomean),),
+                        gated_geomean=geomean,
+                    )
+                ],
+            )
+            for label, delta in (("candidate-a", -10), ("candidate-b", 4))
+        ],
+    )
+
+
+def test_render_report_when_flat_grouped_many_candidates_does_print_group_brackets_literally():
+    report = render_report(_flat_grouped_bracketed_result())
+
+    assert [_stripped_cells(row)[0] for row in table_rows(report)] == [
+        "metric",
+        "[bold]entity · other",
+        "spawn",
+        "alive",
+        "geomean",
+    ]
 
 
 def test_render_report_when_sectioned_and_many_candidates_does_prefix_the_kind_per_subsection():

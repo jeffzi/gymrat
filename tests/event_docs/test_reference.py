@@ -8,12 +8,16 @@ and a closing Readers section.
 """
 
 import re
+from typing import get_args
 
 import pytest
+from pydantic import BaseModel
 
 from gymrat.event_docs.asyncapi import READERS, SESSION_LOG_ADDRESS, SUPERVISOR_LOG_ADDRESS
 from gymrat.event_docs.json_schema import render_json_schemas
+from gymrat.session import SessionLogRecord
 from gymrat.session.paths import SESSION_LOG_NAME, supervisor_log_name
+from gymrat.supervisor import SessionEvent
 
 
 def _render() -> str:
@@ -102,32 +106,13 @@ def test_render_reference_when_called_does_have_session_and_supervisor_log_secti
 # ---------------------------------------------------------------------------
 
 
-_SESSION_WIRE_ORDER = [
-    "session",
-    "baseline",
-    "iteration",
-    "keep",
-    "discard",
-    "hook",
-    "finalize",
-    "stop",
-    "command",
-]
+def _wire_types(members: tuple[type[BaseModel], ...]) -> list[str]:
+    return [get_args(model.model_fields["type"].annotation)[0] for model in members]
 
-_SUPERVISOR_WIRE_ORDER = [
-    "thinking_update",
-    "tool_start",
-    "tool_progress",
-    "tool_end",
-    "text_delta",
-    "usage_update",
-    "cap",
-    "model_phase",
-    "launch",
-    "turn_end",
-    "follow_up",
-    "compaction",
-]
+
+_SESSION_WIRE_ORDER = _wire_types(get_args(SessionLogRecord.__value__))
+
+_SUPERVISOR_WIRE_ORDER = _wire_types(get_args(SessionEvent))
 
 
 @pytest.mark.parametrize(

@@ -7,14 +7,15 @@ termination — never from a result message alone.
 
 import asyncio
 from collections.abc import Sequence
-from types import SimpleNamespace
 from typing import override
 
+import pytest
+from claude_agent_sdk import MessageOrigin, TextBlock
+
 from gymrat.supervisor import create_claude_driver
-from gymrat.supervisor.driver import Driver, SessionOutcome, SessionPrompt
+from gymrat.supervisor.driver import DriverSession, SessionOutcome
 from gymrat.supervisor.events import (
     SessionEvent,
-    SessionObserver,
     TurnEndEvent,
     UsageUpdateEvent,
 )
@@ -22,10 +23,13 @@ from tests.supervisor._fixtures import (
     FactoryProbe,
     FakeClient,
     FiniteClient,
+    assistant,
     collecting_observer,
+    events_of,
     make_prompt,
     noop_observer,
     result_message,
+    run_outcome,
 )
 
 _TEST_TIMEOUT_S = 5.0
@@ -62,35 +66,34 @@ class QueryRaisingClient(FakeClient):
 # ---------------------------------------------------------------------------
 
 
-async def run_session(
-    driver: Driver,
-    observer: SessionObserver,
-    prompt: SessionPrompt | None = None,
-    abort: asyncio.Event | None = None,
-    *,
-    max_wait: float = 30.0,
-) -> SessionOutcome:
-    """Start a session and await its settled outcome."""
-    session = driver.start(prompt or make_prompt(), observer, abort)
-    return await asyncio.wait_for(session.outcome, max_wait)
-
-
-async def run_outcome(
-    client: FakeClient, observer: SessionObserver | None = None
-) -> SessionOutcome:
-    """Drive ``client`` through a session and return its settled outcome."""
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-    return await run_session(driver, observer or noop_observer())
-
-
-def events_of[T: SessionEvent](events: Sequence[SessionEvent], event_type: type[T]) -> list[T]:
-    return [e for e in events if isinstance(e, event_type)]
-
-
 async def _drain(n: int = 4) -> None:
     """Let the event loop process n pending callbacks."""
     for _ in range(n):
         await asyncio.sleep(0)
+
+
+async def _outcome(session: DriverSession) -> SessionOutcome:
+    """Await the session's outcome within the test timeout."""
+    return await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+
+
+async def _settle(session: DriverSession) -> SessionOutcome:
+    """End the session and await its settled outcome."""
+    await session.end()
+    return await _outcome(session)
+
+
+async def _run_turns(messages: Sequence[object], drain: int = 4) -> list[SessionEvent]:
+    """Run a session over scripted messages to settlement and return its events."""
+    client = FakeClient(messages)
+    probe = collecting_observer()
+    driver = create_claude_driver(client_factory=FactoryProbe(client))
+
+    session = driver.start(make_prompt(), probe.observer)
+    await _drain(drain)
+    await _settle(session)
+
+    return probe.events
 
 
 # ---------------------------------------------------------------------------
@@ -100,94 +103,55 @@ async def _drain(n: int = 4) -> None:
 
 async def test_turn_when_result_message_received_does_emit_turn_end_event():
     result = result_message(total_cost_usd=0.05)
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    events = await _run_turns([result])
 
-    session = driver.start(make_prompt(), probe.observer)
-
-    await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
+    turn_ends = events_of(events, TurnEndEvent)
     assert len(turn_ends) == 1
 
 
 async def test_turn_when_result_has_top_level_text_does_carry_text_on_turn_end():
     messages = [
-        SimpleNamespace(content=[SimpleNamespace(text="first answer")]),
+        assistant(TextBlock(text="first answer")),
         result_message(total_cost_usd=0.01),
     ]
-    client = FakeClient(messages)
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    events = await _run_turns(messages, drain=5)
 
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain(5)
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
+    turn_ends = events_of(events, TurnEndEvent)
     assert len(turn_ends) == 1
     assert turn_ends[0].text == "first answer"
 
 
 async def test_turn_when_result_has_no_text_does_carry_empty_string():
     result = result_message(total_cost_usd=0.01)
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    events = await _run_turns([result])
 
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
+    turn_ends = events_of(events, TurnEndEvent)
     assert len(turn_ends) == 1
     assert turn_ends[0].text == ""
 
 
 async def test_turn_when_second_turn_does_reset_text_accumulator():
     messages = [
-        SimpleNamespace(content=[SimpleNamespace(text="turn one text")]),
+        assistant(TextBlock(text="turn one text")),
         result_message(total_cost_usd=0.01),
-        SimpleNamespace(content=[SimpleNamespace(text="turn two text")]),
+        assistant(TextBlock(text="turn two text")),
         result_message(total_cost_usd=0.02),
     ]
-    client = FakeClient(messages)
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    events = await _run_turns(messages, drain=7)
 
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain(7)
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
+    turn_ends = events_of(events, TurnEndEvent)
     assert len(turn_ends) == 2
     assert turn_ends[0].text == "turn one text"
     assert turn_ends[1].text == "turn two text"
 
 
 async def test_turn_when_subagent_text_present_does_ignore_subagent_text_in_turn_end():
-    top_level_msg = SimpleNamespace(content=[SimpleNamespace(text="top level")])
-    subagent_msg = SimpleNamespace(
-        content=[SimpleNamespace(text="subagent output")],
-        parent_tool_use_id="tu_sub",
-    )
+    top_level_msg = assistant(TextBlock(text="top level"))
+    subagent_msg = assistant(TextBlock(text="subagent output"), parent_tool_use_id="tu_sub")
     messages = [top_level_msg, subagent_msg, result_message(total_cost_usd=0.01)]
-    client = FakeClient(messages)
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    events = await _run_turns(messages, drain=6)
 
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain(6)
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
+    turn_ends = events_of(events, TurnEndEvent)
     assert len(turn_ends) == 1
     assert turn_ends[0].text == "top level"
 
@@ -197,84 +161,21 @@ async def test_turn_when_subagent_text_present_does_ignore_subagent_text_in_turn
 # ---------------------------------------------------------------------------
 
 
-async def test_turn_when_origin_absent_does_report_agent():
-    result = result_message(total_cost_usd=0.01)
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+@pytest.mark.parametrize(
+    ("origin", "expected"),
+    [
+        pytest.param(None, "agent", id="origin-absent"),
+        pytest.param({"kind": "human"}, "agent", id="origin-human"),
+        pytest.param({"kind": "task-notification"}, "injected", id="origin-task-notification"),
+    ],
+)
+async def test_turn_when_result_carries_origin_does_report_turn_origin(
+    origin: MessageOrigin | None, expected: str
+):
+    events = await _run_turns([result_message(total_cost_usd=0.01, origin=origin)])
 
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
-    assert len(turn_ends) == 1
-    assert turn_ends[0].origin == "agent"
-
-
-async def test_turn_when_origin_none_does_report_agent():
-    result = result_message(total_cost_usd=0.01)
-    result.origin = None
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
-    assert turn_ends[0].origin == "agent"
-
-
-async def test_turn_when_origin_kind_human_does_report_agent():
-    result = result_message(total_cost_usd=0.01)
-    result.origin = SimpleNamespace(kind="human")
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
-    assert turn_ends[0].origin == "agent"
-
-
-async def test_turn_when_origin_kind_task_notification_does_report_injected():
-    result = result_message(total_cost_usd=0.01)
-    result.origin = SimpleNamespace(kind="task-notification")
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
-    assert turn_ends[0].origin == "injected"
-
-
-async def test_turn_when_origin_kind_via_mapping_does_detect_correctly():
-    result = result_message(total_cost_usd=0.01)
-    result.origin = {"kind": "human"}
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
-    assert turn_ends[0].origin == "agent"
+    turn_ends = events_of(events, TurnEndEvent)
+    assert [turn_end.origin for turn_end in turn_ends] == [expected]
 
 
 # ---------------------------------------------------------------------------
@@ -284,16 +185,9 @@ async def test_turn_when_origin_kind_via_mapping_does_detect_correctly():
 
 async def test_turn_when_result_has_cost_does_emit_unsettled_usage_update():
     result = result_message(total_cost_usd=0.10)
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    events = await _run_turns([result])
 
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    usage_updates = events_of(probe.events, UsageUpdateEvent)
+    usage_updates = events_of(events, UsageUpdateEvent)
     unsettled = [u for u in usage_updates if not u.settled]
     assert len(unsettled) >= 1
     assert unsettled[0].cost_usd == 0.10
@@ -301,16 +195,9 @@ async def test_turn_when_result_has_cost_does_emit_unsettled_usage_update():
 
 async def test_turn_when_result_has_cost_does_carry_cost_on_turn_end():
     result = result_message(total_cost_usd=0.10)
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    events = await _run_turns([result])
 
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
+    turn_ends = events_of(events, TurnEndEvent)
     assert turn_ends[0].cost_usd == 0.10
 
 
@@ -319,22 +206,15 @@ async def test_turn_when_two_results_with_rising_cost_does_emit_two_unsettled_up
         result_message(total_cost_usd=0.05),
         result_message(total_cost_usd=0.15),
     ]
-    client = FakeClient(messages)
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    events = await _run_turns(messages, drain=5)
 
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain(5)
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    usage_updates = events_of(probe.events, UsageUpdateEvent)
+    usage_updates = events_of(events, UsageUpdateEvent)
     unsettled = [u for u in usage_updates if not u.settled]
     assert len(unsettled) == 2
     assert unsettled[0].cost_usd == 0.05
     assert unsettled[1].cost_usd == 0.15
 
-    turn_ends = events_of(probe.events, TurnEndEvent)
+    turn_ends = events_of(events, TurnEndEvent)
     assert len(turn_ends) == 2
     assert turn_ends[0].cost_usd == 0.05
     assert turn_ends[1].cost_usd == 0.15
@@ -372,16 +252,9 @@ async def test_turn_when_budget_exhausted_does_emit_turn_end_with_flag():
         total_cost_usd=1.50,
         result="Budget exceeded",
     )
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    events = await _run_turns([result])
 
-    session = driver.start(make_prompt(), probe.observer)
-    await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    turn_ends = events_of(probe.events, TurnEndEvent)
+    turn_ends = events_of(events, TurnEndEvent)
     assert len(turn_ends) == 1
     assert turn_ends[0].budget_exhausted is True
     assert turn_ends[0].cost_usd == 1.50
@@ -399,8 +272,7 @@ async def test_turn_when_budget_exhausted_does_not_settle_error():
 
     session = driver.start(make_prompt(), probe.observer)
     await _drain()
-    await session.end()
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await _settle(session)
 
     assert outcome.reason == "completed"
 
@@ -422,8 +294,7 @@ async def test_send_when_called_does_forward_text_to_client_query():
     await session.send("follow up message")
     await asyncio.sleep(0)
 
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await _settle(session)
 
     assert len(client.query_prompts) == 2
     assert client.query_prompts[0] == "initial"
@@ -443,7 +314,7 @@ async def test_send_when_query_raises_does_settle_error():
     await _drain()
 
     await session.send("this will fail")
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await _outcome(session)
 
     assert outcome.reason == "error"
     assert outcome.message == "connection lost"
@@ -457,7 +328,7 @@ async def test_send_when_session_settled_does_noop():
     # We can't easily call send on the settled session through run_session,
     # so let's use the session handle directly.
     session = driver.start(make_prompt(), noop_observer())
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await _outcome(session)
     await session.send("should be ignored")
     assert outcome.reason == "error"
 
@@ -475,8 +346,7 @@ async def test_end_when_called_does_settle_completed():
 
     session = driver.start(make_prompt(), probe.observer)
     await _drain()
-    await session.end()
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await _settle(session)
 
     assert outcome.reason == "completed"
     assert outcome.cost_usd == 0.20
@@ -490,8 +360,7 @@ async def test_end_when_called_does_emit_settled_usage_update():
 
     session = driver.start(make_prompt(), probe.observer)
     await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await _settle(session)
 
     usage_updates = events_of(probe.events, UsageUpdateEvent)
     settled = [u for u in usage_updates if u.settled]
@@ -506,8 +375,7 @@ async def test_end_when_called_does_disconnect_client():
 
     session = driver.start(make_prompt(), noop_observer())
     await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await _settle(session)
 
     assert client.disconnect_count >= 1
 
@@ -519,8 +387,7 @@ async def test_end_when_called_after_interrupt_does_preserve_interrupted():
 
     session = driver.start(make_prompt(), probe.observer)
     await session.interrupt()
-    await session.end()
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await _settle(session)
 
     assert outcome.reason == "interrupted"
 
@@ -536,7 +403,7 @@ async def test_end_when_called_on_settled_session_does_noop():
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
     session = driver.start(make_prompt(), probe.observer)
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await _outcome(session)
     assert outcome.reason == "error"
 
     await session.end()
@@ -562,7 +429,7 @@ async def test_stream_end_when_after_turn_end_does_settle_completed():
 
 
 async def test_stream_end_when_no_turn_end_does_settle_error():
-    client = FiniteClient([SimpleNamespace(content=[SimpleNamespace(text="hello")])])
+    client = FiniteClient([assistant(TextBlock(text="hello"))])
 
     outcome = await run_outcome(client)
 
@@ -582,7 +449,7 @@ async def test_interrupt_when_called_does_settle_interrupted():
 
     session = driver.start(make_prompt(), noop_observer())
     await session.interrupt()
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await _outcome(session)
 
     assert outcome.reason == "interrupted"
 
@@ -593,8 +460,7 @@ async def test_interrupt_when_called_before_end_does_win():
 
     session = driver.start(make_prompt(), noop_observer())
     await session.interrupt()
-    await session.end()
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await _settle(session)
 
     assert outcome.reason == "interrupted"
 
@@ -611,8 +477,7 @@ async def test_options_when_max_budget_usd_set_does_include_max_budget_usd():
 
     session = driver.start(make_prompt(max_budget_usd=5.0), noop_observer())
     await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await _settle(session)
 
     assert client.options is not None
     assert client.options["max_budget_usd"] == 5.0
@@ -625,8 +490,7 @@ async def test_options_when_max_budget_usd_absent_does_omit_key():
 
     session = driver.start(make_prompt(), noop_observer())
     await _drain()
-    await session.end()
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await _settle(session)
 
     assert client.options is not None
     assert "max_budget_usd" not in client.options

@@ -14,7 +14,6 @@ markup here and resolved the same way, so color is decided once per block throug
 
 from __future__ import annotations
 
-import re
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -329,7 +328,7 @@ def _render_method_footer(result: ComparisonResult, *, verbose: bool, command: s
 
 
 def _to_single_line(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
+    return " ".join(text.split())
 
 
 def format_cleanup_failures(

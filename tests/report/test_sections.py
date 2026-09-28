@@ -8,9 +8,22 @@ name (the dict key), not from the ``short_name`` field.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from gymrat.model import ResolvedMetricMeta
-from gymrat.report.sections import GroupBlock, plan_sections
+import pytest
+
+from gymrat.model import GeomeanResult, ResolvedMetricMeta
+from gymrat.report.sections import (
+    NO_AGGREGATE,
+    GroupBlock,
+    group_geomean_of,
+    kind_geomean_of,
+    plan_sections,
+)
+from tests.report._inputs import create_candidate, memory_kind, time_kind
+
+if TYPE_CHECKING:
+    from gymrat.report.sections import SectionLayout
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,30 +58,15 @@ def _metric(*, kind: str = "time", short_name: str = "x") -> _FakeMetric:
     )
 
 
+def _group_blocks(layout: SectionLayout[_Row]) -> list[GroupBlock[_Row]]:
+    """The ``GroupBlock``s in the layout's first section."""
+    section = layout.sections[0]
+    return [block for block in section.blocks if isinstance(block, GroupBlock)]
+
+
 # ---------------------------------------------------------------------------
 # plan_sections — contract-derived groups from metric name
 # ---------------------------------------------------------------------------
-
-
-def test_plan_sections_when_multi_segment_name_does_group_by_metric_name_path():
-    # infer_group derives the group from the metric name key, not short_name:
-    # "entity/alive_check#time" → group "entity"; short_name "alive_check"
-    # would yield None.
-    layout = plan_sections(
-        {
-            "entity/alive_check#time": _metric(short_name="alive_check"),
-            "entity/spawn#time": _metric(short_name="spawn"),
-            "render/frame#time": _metric(short_name="frame"),
-        },
-        _measure,
-    )
-
-    section = layout.sections[0]
-    groups = [block for block in section.blocks if isinstance(block, GroupBlock)]
-    group_names = [g.group for g in groups]
-    assert group_names == ["entity", "render"]
-    assert len(groups[0].metrics) == 2
-    assert len(groups[1].metrics) == 1
 
 
 def test_plan_sections_when_deeper_path_does_use_full_prefix_as_group():
@@ -80,8 +78,7 @@ def test_plan_sections_when_deeper_path_does_use_full_prefix_as_group():
         _measure,
     )
 
-    section = layout.sections[0]
-    groups = [block for block in section.blocks if isinstance(block, GroupBlock)]
+    groups = _group_blocks(layout)
     assert [g.group for g in groups] == ["node/access"]
     assert len(groups[0].metrics) == 2
 
@@ -95,8 +92,7 @@ def test_plan_sections_when_single_segment_name_does_produce_no_group():
         _measure,
     )
 
-    section = layout.sections[0]
-    groups = [block for block in section.blocks if isinstance(block, GroupBlock)]
+    groups = _group_blocks(layout)
     assert groups == []
 
 
@@ -114,3 +110,83 @@ def test_plan_sections_when_measure_callback_does_receive_contract_derived_group
     rows_by_name = {row.name: row for row in layout.ordered}
     assert rows_by_name["entity/alive_check#time"].group == "entity"
     assert rows_by_name["fib#time"].group is None
+
+
+def test_plan_sections_when_group_members_interleave_does_gather_them_in_the_first_block():
+    # infer_group derives the group from the metric name key, not short_name:
+    # "entity/spawn#time" → group "entity".
+    layout = plan_sections(
+        {
+            "entity/spawn#time": _metric(),
+            "render/frame#time": _metric(),
+            "entity/remove#time": _metric(),
+        },
+        _measure,
+    )
+
+    (section,) = layout.sections
+    assert section.blocks == [
+        GroupBlock(
+            group="entity",
+            metrics=[
+                _Row(name="entity/spawn#time", group="entity"),
+                _Row(name="entity/remove#time", group="entity"),
+            ],
+        ),
+        GroupBlock(group="render", metrics=[_Row(name="render/frame#time", group="render")]),
+    ]
+
+
+def test_plan_sections_when_group_spans_kinds_does_open_one_block_per_section():
+    layout = plan_sections(
+        {
+            "entity/spawn#time": _metric(kind="time"),
+            "entity/spawn#memory": _metric(kind="memory"),
+        },
+        _measure,
+    )
+
+    assert [section.blocks for section in layout.sections] == [
+        [GroupBlock(group="entity", metrics=[_Row(name="entity/spawn#time", group="entity")])],
+        [GroupBlock(group="entity", metrics=[_Row(name="entity/spawn#memory", group="entity")])],
+    ]
+
+
+# ---------------------------------------------------------------------------
+# kind_geomean_of / group_geomean_of — reading a candidate's aggregate back out
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        pytest.param("memory", memory_kind().geomean, id="reported-kind"),
+        pytest.param("cpu", NO_AGGREGATE, id="unreported-kind"),
+    ],
+)
+def test_kind_geomean_of_when_looking_up_a_kind_does_return_its_geomean_or_no_aggregate(
+    kind: str, expected: GeomeanResult
+):
+    candidate = create_candidate(kinds=[time_kind(), memory_kind()])
+
+    geomean = kind_geomean_of(candidate, kind)
+
+    assert geomean == expected
+
+
+@pytest.mark.parametrize(
+    ("kind", "group", "expected"),
+    [
+        pytest.param("time", "entity", time_kind().groups[0].geomean, id="reported-group"),
+        pytest.param("time", "render", NO_AGGREGATE, id="unreported-group"),
+        pytest.param("cpu", "entity", NO_AGGREGATE, id="unreported-kind"),
+    ],
+)
+def test_group_geomean_of_when_looking_up_a_group_does_return_its_geomean_or_no_aggregate(
+    kind: str, group: str, expected: GeomeanResult
+):
+    candidate = create_candidate(kinds=[time_kind(), memory_kind()])
+
+    geomean = group_geomean_of(candidate, kind, group)
+
+    assert geomean == expected

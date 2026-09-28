@@ -26,6 +26,7 @@ import contextlib
 import json
 import warnings
 from collections.abc import Sequence
+from dataclasses import asdict
 from typing import Any, cast, get_args
 
 from gymrat.exec import READ_CHUNK, SpawnError, release_contained, spawn_contained
@@ -59,19 +60,7 @@ save — and it keeps teardown from wedging forever on such a child.
 
 def _start_command(prompt: SessionPrompt) -> dict[str, object]:
     """Build the ``start`` command, omitting prompt optionals that are ``None``."""
-    wire: dict[str, object] = {"kickoff": prompt.kickoff, "cwd": prompt.cwd}
-    if prompt.system_prompt_append is not None:
-        wire["system_prompt_append"] = prompt.system_prompt_append
-    if prompt.model is not None:
-        wire["model"] = prompt.model
-    if prompt.effort is not None:
-        wire["effort"] = prompt.effort
-    if prompt.command_timeout_ms is not None:
-        wire["command_timeout_ms"] = prompt.command_timeout_ms
-    if prompt.max_budget_usd is not None:
-        wire["max_budget_usd"] = prompt.max_budget_usd
-    if prompt.traceparent is not None:
-        wire["traceparent"] = prompt.traceparent
+    wire = {key: value for key, value in asdict(prompt).items() if value is not None}
     return {"type": "start", "prompt": wire}
 
 

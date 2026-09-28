@@ -242,9 +242,10 @@ def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], Non
 
     Returns:
         A ``(deadline_ms, release)`` pair: the absolute deadline and a callback
-        that removes the budget file and uninstalls the termination hook. The
-        callback is idempotent, so the run's own teardown and the unwind of a
-        session whose setup failed can both call it without clearing twice.
+        that removes the budget file and uninstalls the termination hook,
+        uninstalling even when the removal raises. The callback is idempotent,
+        so the run's own teardown and the unwind of a session whose setup
+        failed can both call it without clearing twice.
     """
     started_at_ms = now_ms()
     deadline_ms = started_at_ms + minutes_to_ms(max_minutes)
@@ -263,8 +264,10 @@ def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], Non
         if released:
             return
         released = True
-        clear_budget(root)
-        uninstall()
+        try:
+            clear_budget(root)
+        finally:
+            uninstall()
 
     return deadline_ms, release
 

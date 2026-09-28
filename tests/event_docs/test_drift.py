@@ -19,7 +19,11 @@ import json
 import subprocess
 import sys
 import typing
+from collections.abc import Callable
 from pathlib import Path
+
+import pytest
+import yaml
 
 from gymrat.config import BenchlessConfig
 from gymrat.event_docs.asyncapi import READERS
@@ -34,6 +38,7 @@ from gymrat.session import (
 )
 from gymrat.supervisor.events import SessionEvent
 from gymrat.supervisor.turns import outcome_record_count
+from tests.event_docs._extended_unions import PROBE_WIRE_TYPE, ProbeModel
 from tests.session.records._fixtures import (
     AT,
     command_record,
@@ -49,11 +54,16 @@ from tests.session.records._fixtures import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
+_SESSION_LOG_SCHEMA = "schemas/session-log.schema.json"
+_SUPERVISOR_LOG_SCHEMA = "schemas/supervisor-log.schema.json"
+_ASYNCAPI_DOC = "schemas/asyncapi.yaml"
+_REFERENCE_DOC = "docs/event-reference.md"
+
 _EXPECTED_KEYS = frozenset({
-    "schemas/session-log.schema.json",
-    "schemas/supervisor-log.schema.json",
-    "schemas/asyncapi.yaml",
-    "docs/event-reference.md",
+    _SESSION_LOG_SCHEMA,
+    _SUPERVISOR_LOG_SCHEMA,
+    _ASYNCAPI_DOC,
+    _REFERENCE_DOC,
 })
 
 
@@ -87,8 +97,8 @@ def test_render_all_when_called_does_return_valid_json_for_schema_artifacts():
     result = render_all()
 
     for key in (
-        "schemas/session-log.schema.json",
-        "schemas/supervisor-log.schema.json",
+        _SESSION_LOG_SCHEMA,
+        _SUPERVISOR_LOG_SCHEMA,
     ):
         parsed = json.loads(result[key])
         assert isinstance(parsed, dict), f"{key}: parsed JSON is not a dict"
@@ -99,7 +109,7 @@ def test_render_all_when_called_does_return_yaml_with_asyncapi_marker():
 
     result = render_all()
 
-    assert "asyncapi:" in result["schemas/asyncapi.yaml"]
+    assert "asyncapi:" in result[_ASYNCAPI_DOC]
 
 
 def test_render_all_when_called_does_return_markdown_starting_with_html_comment():
@@ -107,7 +117,7 @@ def test_render_all_when_called_does_return_markdown_starting_with_html_comment(
 
     result = render_all()
 
-    assert result["docs/event-reference.md"].startswith("<!--")
+    assert result[_REFERENCE_DOC].startswith("<!--")
 
 
 # ---------------------------------------------------------------------------
@@ -149,18 +159,23 @@ def test_write_all_when_given_str_root_does_accept_it(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_main_module_when_run_does_exit_zero_with_four_output_lines():
+def test_main_module_when_run_does_exit_zero_with_four_output_lines(
+    create_scratch_repo: Callable[[], str],
+):
+    root = Path(create_scratch_repo())
+
     result = subprocess.run(
         [sys.executable, "-m", "gymrat.event_docs"],
         capture_output=True,
         text=True,
-        cwd=str(_REPO_ROOT),
+        cwd=root,
         check=False,
     )
 
     assert result.returncode == 0, f"stderr: {result.stderr}"
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
-    assert len(lines) == len(_EXPECTED_KEYS)
+    written = [Path(line).resolve() for line in result.stdout.splitlines()]
+    assert sorted(written) == sorted((root / rel).resolve() for rel in _EXPECTED_KEYS)
+    assert all(path.is_file() for path in written)
 
 
 def test_main_module_when_run_outside_repo_does_exit_nonzero_and_write_nothing(tmp_path: Path):
@@ -213,6 +228,70 @@ def test_drift_when_artifact_is_modified_does_detect_mismatch(tmp_path: Path):
 
     tampered = artifact.read_text(encoding="utf-8")
     assert tampered != rendered[first_key]
+
+
+# ---------------------------------------------------------------------------
+# union-driven docs — a model added to a union is documented with no generator edit
+# ---------------------------------------------------------------------------
+
+
+def _render_all_with_extended_union(channel: str) -> dict[str, str]:
+    # S603: the interpreter and module are fixed; the channel comes from a parametrize list.
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "tests.event_docs._extended_unions", channel],
+        capture_output=True,
+        text=True,
+        cwd=str(_REPO_ROOT),
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
+def _log_section(reference: str, heading: str) -> str:
+    start = reference.index(f"\n{heading}\n")
+    end = reference.find("\n## ", start + 1)
+    return reference[start:end] if end != -1 else reference[start:]
+
+
+@pytest.mark.parametrize(
+    ("channel", "schema_path", "heading"),
+    [
+        pytest.param("session-log", _SESSION_LOG_SCHEMA, "## Session Log", id="session-log"),
+        pytest.param(
+            "supervisor-log",
+            _SUPERVISOR_LOG_SCHEMA,
+            "## Supervisor Log",
+            id="supervisor-log",
+        ),
+    ],
+)
+def test_render_all_when_union_gains_model_does_document_it_in_every_generated_doc(
+    channel: str,
+    schema_path: str,
+    heading: str,
+):
+    artifacts = _render_all_with_extended_union(channel)
+
+    defs = json.loads(artifacts[schema_path])["$defs"]
+    summary = defs[ProbeModel.__name__]["description"].split("\n")[0]
+    asyncapi = yaml.safe_load(artifacts[_ASYNCAPI_DOC])
+    channels = asyncapi["channels"]
+    channels_listing_probe = [
+        name for name in channels if PROBE_WIRE_TYPE in channels[name]["messages"]
+    ]
+    assert channels_listing_probe == [channel]
+    last_message = list(channels[channel]["messages"].items())[-1]
+    assert last_message == (
+        PROBE_WIRE_TYPE,
+        {"$ref": f"#/components/messages/{PROBE_WIRE_TYPE}"},
+    )
+    assert asyncapi["components"]["messages"][PROBE_WIRE_TYPE]["summary"] == summary
+    reference = artifacts[_REFERENCE_DOC]
+    probe_heading = f"\n### `{PROBE_WIRE_TYPE}`\n"
+    assert reference.count(probe_heading) == 1
+    log_section = _log_section(reference, heading)
+    last_subsection = log_section.rsplit("\n### ", 1)[1]
+    assert last_subsection.startswith(f"`{PROBE_WIRE_TYPE}`\n")
 
 
 # ---------------------------------------------------------------------------

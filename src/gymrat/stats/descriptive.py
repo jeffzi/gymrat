@@ -5,16 +5,16 @@ formatting, and reads no configuration.  Beyond the standard library (``math``
 and ``statistics``), only :data:`~gymrat.model.metrics.Direction` is imported as a
 lightweight type alias.
 
-``compute_median`` and ``compute_half_range`` treat empty input as a programming
-error — callers are expected to have samples — and raise a plain
-:class:`ValueError` rather than a domain error.  ``combine_geomean`` accepts
-empty input and returns all-zero fields.
+``compute_half_range`` treats empty input as a programming error — callers are
+expected to have samples — and raises a plain :class:`ValueError` rather than a
+domain error.  ``combine_geomean`` accepts empty input and returns all-zero
+fields.
 """
 
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from statistics import fmean, median
+from statistics import geometric_mean
 from typing import Literal
 
 from gymrat.model.metrics import Direction
@@ -57,25 +57,6 @@ class GeomeanCombination:
     value: float
     n: int
     band: float
-
-
-def compute_median(values: Sequence[float]) -> float:
-    """Return the median of ``values`` without mutating the input.
-
-    Args:
-        values: The samples to summarize. Must be non-empty.
-
-    Returns:
-        The middle element for odd-length input, or the mean of the two middle
-        elements for even-length input.
-
-    Raises:
-        ValueError: If ``values`` is empty.
-    """
-    if not values:
-        msg = "compute_median requires at least one sample; got an empty sequence"
-        raise ValueError(msg)
-    return median(values)
 
 
 def compute_half_range(values: Sequence[float]) -> float:
@@ -171,7 +152,6 @@ def combine_geomean(entries: Sequence[tuple[float, float]]) -> GeomeanCombinatio
     n = len(entries)
     if n == 0:
         return GeomeanCombination(value=0.0, n=0, band=0.0)
-    mean_log = fmean(math.log(rho) for rho, _ in entries)
-    value = (math.exp(mean_log) - 1.0) * 100.0
-    band = math.sqrt(sum(noise_pct**2 for _, noise_pct in entries)) / n
+    value = (geometric_mean(rho for rho, _ in entries) - 1.0) * 100.0
+    band = math.hypot(*(noise_pct for _, noise_pct in entries)) / n
     return GeomeanCombination(value=value, n=n, band=band)

@@ -23,6 +23,7 @@ from gymrat.progress_events import (
 from gymrat.report.text import format_cleanup_failures
 from gymrat.sampling import (
     MetricStats,
+    RunOptions,
     SamplingOptions,
     TargetContext,
     collect_samples,
@@ -584,11 +585,22 @@ def test_compute_metric_stats_when_single_value_does_return_median_without_sprea
     assert stats.spread is None
 
 
-def test_compute_metric_stats_when_multiple_values_does_return_median_and_percent_spread():
-    stats = compute_metric_stats([10.0, 20.0, 30.0])
+@pytest.mark.parametrize(
+    ("values", "expected_median", "expected_spread"),
+    [
+        pytest.param([10.0, 20.0, 30.0], 20.0, 50.0, id="odd-length-sorted"),
+        pytest.param([30.0, 10.0, 40.0, 20.0], 25.0, 60.0, id="even-length-unsorted"),
+    ],
+)
+def test_compute_metric_stats_when_multiple_values_does_return_median_and_percent_spread(
+    values: list[float],
+    expected_median: float,
+    expected_spread: float,
+):
+    stats = compute_metric_stats(values)
 
-    assert stats.median == 20.0
-    assert stats.spread == 50.0
+    assert stats.median == expected_median
+    assert stats.spread == pytest.approx(expected_spread)
 
 
 def test_compute_metric_stats_when_median_zero_does_omit_spread():
@@ -628,6 +640,38 @@ def test_paired_or_own_values_when_paired_empty_does_fall_back_to_own_values():
     samples = [{"x": 1.0}, {"x": 3.0}]
 
     assert paired_or_own_values([], samples, "x") == [1.0, 3.0]
+
+
+# ---------------------------------------------------------------------------
+# RunOptions.sampling
+# ---------------------------------------------------------------------------
+
+
+def test_run_options_sampling_when_called_does_carry_the_run_settings_and_default_clock():
+    events: list[ProgressEvent] = []
+    warnings: list[str] = []
+    run = RunOptions(
+        bench="run",
+        prepare="prep",
+        adapter="metric-lines",
+        samples=7,
+        timeout_seconds=2.5,
+        config_metrics=None,
+        config_kinds=None,
+        on_progress=events.append,
+        warn=warnings.append,
+    )
+
+    options = run.sampling()
+
+    assert options == SamplingOptions(
+        bench="run",
+        prepare="prep",
+        samples=7,
+        timeout_seconds=2.5,
+        on_progress=run.on_progress,
+        warn=run.warn,
+    )
 
 
 # ---------------------------------------------------------------------------

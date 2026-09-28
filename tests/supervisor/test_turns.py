@@ -11,13 +11,11 @@ from typing import TYPE_CHECKING, Literal
 
 import pytest
 
-from gymrat.config import BenchlessConfig, StopConfig
+from gymrat.config import StopConfig
 from gymrat.eta import format_duration
-from gymrat.supervisor.events import TurnEndEvent
 
 if TYPE_CHECKING:
     from gymrat.session import SessionLogRecord
-    from gymrat.session.store import SessionState
 from gymrat.supervisor.turns import (
     CONSECUTIVE_DISCARD_LIMIT,
     FOLLOW_UP_CEILING,
@@ -28,112 +26,22 @@ from gymrat.supervisor.turns import (
     GuardState,
     Reply,
     WaitForLock,
-    classify,
     detect_end_condition,
-    outcome_record_count,
 )
 from tests.cli.supervise._fixtures import session_state
 from tests.session.records._fixtures import (
-    blocked_keep,
     command_record,
-    committed_keep,
-    discard_record,
     finalize_record,
     hook_record,
     iteration_record,
     stop_record,
 )
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
-
-def _benchless_config(**overrides: object) -> BenchlessConfig:
-    """A minimal ``BenchlessConfig`` for classifier tests."""
-    defaults: dict[str, object] = {
-        "adapter": "mitata",
-        "samples": 1,
-        "timeout_seconds": 60,
-        "unstable_noise_pct": 5.0,
-        "primary": "geomean",
-        "runbook": None,
-        "stop": None,
-    }
-    defaults.update(overrides)
-    return BenchlessConfig(**defaults)  # type: ignore[arg-type]
-
-
-def _turn_end(
-    *,
-    cost_usd: float = 0.01,
-    budget_exhausted: bool = False,
-    text: str = "done",
-    origin: Literal["agent", "injected"] = "agent",
-    at: int = 5_000_000_000_000,
-) -> TurnEndEvent:
-    return TurnEndEvent(
-        at=at,
-        text=text,
-        cost_usd=cost_usd,
-        origin=origin,
-        budget_exhausted=budget_exhausted,
-    )
-
-
-def _guards(
-    *,
-    initial_record_count: int = 0,
-    replies_sent: int = 0,
-    no_progress_count: int = 0,
-    last_record_count: int | None = None,
-) -> GuardState:
-    gs = GuardState(initial_record_count=initial_record_count)
-    gs.replies_sent = replies_sent
-    gs.no_progress_count = no_progress_count
-    if last_record_count is not None:
-        gs.last_record_count = last_record_count
-    return gs
-
-
-def _classify(
-    *,
-    config: BenchlessConfig,
-    state: SessionState,
-    records: list[SessionLogRecord],
-    guards: GuardState,
-    turn: TurnEndEvent,
-    **overrides: object,
-) -> Decision:
-    """Delegates to ``classify`` with defaults for the boilerplate keyword args."""
-    defaults: dict[str, object] = {
-        "lock_held": False,
-        "max_usd": None,
-        "deadline_ms": 999_999_999.0,
-        "max_minutes": 60,
-        "now_ms": 0.0,
-    }
-    defaults.update(overrides)
-    return classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=turn,
-        **defaults,  # type: ignore[arg-type]
-    )
-
-
-def _classify_discards(records: list[SessionLogRecord]) -> Decision:
-    """Runs classify with the discard-streak defaults, varying only ``records``."""
-    return _classify(
-        config=_benchless_config(),
-        state=session_state(),
-        records=records,
-        guards=_guards(),
-        turn=_turn_end(),
-    )
-
+from tests.supervisor._fixtures import default_benchless_config
+from tests.supervisor._turn_inputs import (
+    classify_with_defaults,
+    guard_state,
+    turn_end,
+)
 
 # ---------------------------------------------------------------------------
 # behavior 2: constants
@@ -191,16 +99,16 @@ def test_wait_for_lock_when_constructed_does_be_a_decision():
 
 
 def test_classify_when_stop_condition_met_via_benchless_config_does_end_finished():
-    config = _benchless_config(stop=StopConfig(max_iterations=2))
+    config = default_benchless_config(stop=StopConfig(max_iterations=2))
     state = session_state(iteration_count=2)
-    guards = _guards()
+    guards = guard_state()
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(),
+        turn=turn_end(),
     )
 
     assert isinstance(result, End)
@@ -215,16 +123,16 @@ def test_classify_when_stop_condition_met_via_benchless_config_does_end_finished
 
 
 def test_classify_when_state_finalized_does_end_finished():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state(finalized=finalize_record())
-    guards = _guards()
+    guards = guard_state()
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(),
+        turn=turn_end(),
     )
 
     assert isinstance(result, End)
@@ -232,16 +140,16 @@ def test_classify_when_state_finalized_does_end_finished():
 
 
 def test_classify_when_ends_on_stop_does_end_finished():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state(ends_on_stop=True)
-    guards = _guards()
+    guards = guard_state()
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(),
+        turn=turn_end(),
     )
 
     assert isinstance(result, End)
@@ -252,16 +160,16 @@ def test_classify_when_ends_on_stop_does_end_finished():
 
 
 def test_classify_when_budget_exhausted_does_end_spend_cap():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state()
-    guards = _guards()
+    guards = guard_state()
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(budget_exhausted=True),
+        turn=turn_end(budget_exhausted=True),
     )
 
     assert isinstance(result, End)
@@ -269,16 +177,16 @@ def test_classify_when_budget_exhausted_does_end_spend_cap():
 
 
 def test_classify_when_cost_exceeds_max_usd_does_end_spend_cap():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state()
-    guards = _guards()
+    guards = guard_state()
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(cost_usd=5.0),
+        turn=turn_end(cost_usd=5.0),
         max_usd=4.0,
     )
 
@@ -287,16 +195,16 @@ def test_classify_when_cost_exceeds_max_usd_does_end_spend_cap():
 
 
 def test_classify_when_budget_exhausted_but_ends_on_stop_does_end_finished():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state(ends_on_stop=True)
-    guards = _guards()
+    guards = guard_state()
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[stop_record()],
         guards=guards,
-        turn=_turn_end(budget_exhausted=True),
+        turn=turn_end(budget_exhausted=True),
     )
 
     assert isinstance(result, End)
@@ -307,16 +215,16 @@ def test_classify_when_budget_exhausted_but_ends_on_stop_does_end_finished():
 
 
 def test_classify_when_lock_held_does_return_wait_for_lock():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state()
-    guards = _guards()
+    guards = guard_state()
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(),
+        turn=turn_end(),
         lock_held=True,
     )
 
@@ -324,19 +232,19 @@ def test_classify_when_lock_held_does_return_wait_for_lock():
 
 
 def test_classify_when_lock_held_does_not_mutate_guard_counters():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state()
-    guards = _guards(replies_sent=5, no_progress_count=1, last_record_count=3)
+    guards = guard_state(replies_sent=5, no_progress_count=1, last_record_count=3)
     original_replies = guards.replies_sent
     original_no_progress = guards.no_progress_count
     original_last_count = guards.last_record_count
 
-    _classify(
+    classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(),
+        turn=turn_end(),
         lock_held=True,
     )
 
@@ -349,278 +257,36 @@ def test_classify_when_lock_held_does_not_mutate_guard_counters():
 
 
 def test_classify_when_replies_equal_follow_up_ceiling_does_end_follow_up_ceiling():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state()
-    guards = _guards(replies_sent=FOLLOW_UP_CEILING)
+    guards = guard_state(replies_sent=FOLLOW_UP_CEILING)
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(),
+        turn=turn_end(),
     )
 
     assert isinstance(result, End)
     assert result.reason == "follow-up-ceiling"
 
 
-def test_classify_when_no_progress_reaches_limit_does_end_no_progress():
-    config = _benchless_config()
-    state = session_state()
-    # One below the limit; classify will increment to reach it.
-    guards = _guards(
-        replies_sent=1,
-        no_progress_count=NO_PROGRESS_LIMIT - 1,
-        last_record_count=0,
-    )
-
-    result = _classify(
-        config=config,
-        state=state,
-        records=[],
-        guards=guards,
-        turn=_turn_end(),
-    )
-
-    assert isinstance(result, End)
-    assert result.reason == "no-progress"
-
-
-def test_classify_when_consecutive_discards_reach_limit_does_end_consecutive_discards():
-    records: list[SessionLogRecord] = [
-        discard_record(seq=i) for i in range(1, CONSECUTIVE_DISCARD_LIMIT + 1)
-    ]
-
-    result = _classify_discards(records)
-
-    assert isinstance(result, End)
-    assert result.reason == "consecutive-discards"
-
-
-def test_classify_when_committed_keep_between_discards_does_reset_streak():
-    records: list[SessionLogRecord] = [
-        discard_record(seq=1),
-        discard_record(seq=2),
-        discard_record(seq=3),
-        discard_record(seq=4),
-        committed_keep(seq=5),
-        discard_record(seq=6),
-        discard_record(seq=7),
-    ]
-
-    result = _classify_discards(records)
-
-    assert isinstance(result, Reply)
-
-
-def test_classify_when_iteration_and_hook_records_between_discards_does_not_break_streak():
-    records: list[SessionLogRecord] = [
-        discard_record(seq=1),
-        iteration_record(seq=2),
-        hook_record(seq=2),
-        discard_record(seq=2),
-        discard_record(seq=3),
-        iteration_record(seq=4),
-        discard_record(seq=4),
-        discard_record(seq=5),
-    ]
-
-    result = _classify_discards(records)
-
-    assert isinstance(result, End)
-    assert result.reason == "consecutive-discards"
-
-
-def test_classify_when_blocked_keep_between_discards_does_not_reset_streak():
-    records: list[SessionLogRecord] = [
-        discard_record(seq=1),
-        discard_record(seq=2),
-        blocked_keep(seq=3),
-        discard_record(seq=4),
-        discard_record(seq=5),
-        discard_record(seq=6),
-    ]
-
-    result = _classify_discards(records)
-
-    assert isinstance(result, End)
-    assert result.reason == "consecutive-discards"
-
-
-# 4.v: otherwise -> Reply
+# 4.v: otherwise -> Reply, including the empty-records case (behavior 6)
 
 
 def test_classify_when_no_condition_triggered_does_reply():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state()
-    guards = _guards()
+    guards = guard_state()
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(),
-    )
-
-    assert isinstance(result, Reply)
-
-
-# ---------------------------------------------------------------------------
-# behavior 5: no-progress accounting
-# ---------------------------------------------------------------------------
-
-
-def test_classify_when_no_new_records_since_last_reply_does_increment_no_progress():
-    config = _benchless_config()
-    state = session_state()
-    guards = _guards(replies_sent=1, no_progress_count=0, last_record_count=0)
-
-    _classify(
-        config=config,
-        state=state,
-        records=[],
-        guards=guards,
-        turn=_turn_end(),
-    )
-
-    assert guards.no_progress_count == 1
-
-
-def test_classify_when_new_records_appended_does_reset_no_progress():
-    config = _benchless_config()
-    state = session_state()
-    guards = _guards(replies_sent=1, no_progress_count=2, last_record_count=0)
-    records: list[SessionLogRecord] = [iteration_record()]
-
-    _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-    )
-
-    assert guards.no_progress_count == 0
-
-
-def test_classify_when_record_count_grows_does_move_baseline():
-    config = _benchless_config()
-    state = session_state()
-    guards = _guards(last_record_count=0)
-    records: list[SessionLogRecord] = [iteration_record(), iteration_record(seq=2)]
-
-    _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-    )
-
-    assert guards.last_record_count == 2
-
-
-def test_classify_when_first_turn_plus_three_stale_replies_does_end_no_progress_on_fourth():
-    config = _benchless_config()
-    state = session_state()
-    guards = _guards()
-    records: list[SessionLogRecord] = []
-
-    result1 = _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-    )
-    assert isinstance(result1, Reply)
-
-    result2 = _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-        now_ms=1000.0,
-    )
-    assert isinstance(result2, Reply)
-
-    result3 = _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-        now_ms=2000.0,
-    )
-    assert isinstance(result3, Reply)
-
-    result4 = _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-        now_ms=3000.0,
-    )
-    assert isinstance(result4, End)
-    assert result4.reason == "no-progress"
-
-
-def test_classify_when_record_appended_mid_sequence_does_reset_no_progress_counter():
-    config = _benchless_config()
-    state = session_state()
-    guards = _guards()
-    records: list[SessionLogRecord] = []
-
-    _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-    )
-
-    _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-        now_ms=1000.0,
-    )
-    assert guards.no_progress_count == 1
-
-    records.append(iteration_record())
-    _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-        now_ms=2000.0,
-    )
-    assert guards.no_progress_count == 0
-
-
-# ---------------------------------------------------------------------------
-# behavior 6: empty records -> classifier replies
-# ---------------------------------------------------------------------------
-
-
-def test_classify_when_no_session_record_in_log_does_reply():
-    config = _benchless_config()
-    state = session_state()
-    guards = _guards()
-
-    result = _classify(
-        config=config,
-        state=state,
-        records=[],
-        guards=guards,
-        turn=_turn_end(),
+        turn=turn_end(),
     )
 
     assert isinstance(result, Reply)
@@ -632,19 +298,19 @@ def test_classify_when_no_session_record_in_log_does_reply():
 
 
 def test_classify_when_replying_does_include_runbook_instruction_and_time_left():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state()
-    guards = _guards()
+    guards = guard_state()
     deadline_ms = 600_000.0
     now_ms = 0.0
     max_minutes = 10.0
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(),
+        turn=turn_end(),
         deadline_ms=deadline_ms,
         max_minutes=max_minutes,
     )
@@ -661,19 +327,19 @@ def test_classify_when_replying_does_include_runbook_instruction_and_time_left()
 
 
 def test_classify_when_replying_with_after_wait_does_append_wait_finished_line():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state()
-    guards = _guards()
+    guards = guard_state()
     deadline_ms = 600_000.0
     now_ms = 0.0
     max_minutes = 10.0
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(),
+        turn=turn_end(),
         deadline_ms=deadline_ms,
         max_minutes=max_minutes,
         after_wait=True,
@@ -692,16 +358,16 @@ def test_classify_when_replying_with_after_wait_does_append_wait_finished_line()
 
 
 def test_classify_when_time_past_deadline_does_clamp_remaining_at_zero():
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state()
-    guards = _guards()
+    guards = guard_state()
 
-    result = _classify(
+    result = classify_with_defaults(
         config=config,
         state=state,
         records=[],
         guards=guards,
-        turn=_turn_end(),
+        turn=turn_end(),
         deadline_ms=1000.0,
         max_minutes=10.0,
         now_ms=5000.0,
@@ -728,7 +394,7 @@ def test_classify_when_time_past_deadline_does_clamp_remaining_at_zero():
 def test_classify_when_turn_text_and_origin_vary_does_produce_same_decision_type(
     text: str, origin: Literal["agent", "injected"]
 ):
-    config = _benchless_config()
+    config = default_benchless_config()
     state = session_state()
 
     results = []
@@ -737,175 +403,17 @@ def test_classify_when_turn_text_and_origin_vary_does_produce_same_decision_type
         (text, origin),
     ]
     for t, o in pairs:
-        guards = _guards()
-        result = _classify(
+        guards = guard_state()
+        result = classify_with_defaults(
             config=config,
             state=state,
             records=[],
             guards=guards,
-            turn=_turn_end(text=t, origin=o),
+            turn=turn_end(text=t, origin=o),
         )
         results.append(result)
 
     assert type(results[0]) is type(results[1])
-
-
-# ---------------------------------------------------------------------------
-# behavior 9: no-progress guard counts outcome records only
-# ---------------------------------------------------------------------------
-
-
-def test_outcome_record_count_when_no_command_records_does_count_all():
-    records: list[SessionLogRecord] = [
-        iteration_record(),
-        discard_record(seq=1),
-        hook_record(),
-    ]
-
-    assert outcome_record_count(records) == 3
-
-
-def test_outcome_record_count_when_only_command_records_does_return_zero():
-    records: list[SessionLogRecord] = [
-        command_record(),
-        command_record(seq=4),
-    ]
-
-    assert outcome_record_count(records) == 0
-
-
-def test_outcome_record_count_when_mixed_records_does_exclude_command_records():
-    records: list[SessionLogRecord] = [
-        iteration_record(),
-        command_record(),
-        discard_record(seq=1),
-        command_record(seq=4),
-        stop_record(),
-    ]
-
-    assert outcome_record_count(records) == 3
-
-
-def test_classify_when_only_command_records_appended_does_increment_no_progress():
-    config = _benchless_config()
-    state = session_state()
-    guards = _guards(replies_sent=1, no_progress_count=0, last_record_count=0)
-    records: list[SessionLogRecord] = [command_record()]
-
-    _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-    )
-
-    assert guards.no_progress_count == 1
-
-
-def test_classify_when_non_command_record_with_commands_does_reset_no_progress():
-    config = _benchless_config()
-    state = session_state()
-    guards = _guards(replies_sent=1, no_progress_count=2, last_record_count=0)
-    records: list[SessionLogRecord] = [command_record(), iteration_record(), command_record(seq=4)]
-
-    _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-    )
-
-    assert guards.no_progress_count == 0
-
-
-def test_classify_when_command_only_turns_reach_limit_does_end_no_progress():
-    config = _benchless_config()
-    state = session_state()
-    guards = _guards()
-    records: list[SessionLogRecord] = []
-
-    result1 = _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-    )
-    assert isinstance(result1, Reply)
-
-    records.append(command_record())
-    result2 = _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-        now_ms=1000.0,
-    )
-    assert isinstance(result2, Reply)
-
-    records.append(command_record(seq=4))
-    result3 = _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-        now_ms=2000.0,
-    )
-    assert isinstance(result3, Reply)
-
-    records.append(command_record(seq=5))
-    result4 = _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-        now_ms=3000.0,
-    )
-    assert isinstance(result4, End)
-    assert result4.reason == "no-progress"
-
-
-def test_classify_when_baseline_moves_with_outcome_count_does_track_non_command_records():
-    config = _benchless_config()
-    state = session_state()
-    guards = _guards(last_record_count=0)
-    records: list[SessionLogRecord] = [
-        iteration_record(),
-        command_record(),
-        iteration_record(seq=2),
-    ]
-
-    _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-    )
-
-    assert guards.last_record_count == 2
-
-
-def test_classify_when_command_records_interleaved_with_discards_does_not_break_streak():
-    records: list[SessionLogRecord] = [
-        discard_record(seq=1),
-        command_record(),
-        discard_record(seq=2),
-        discard_record(seq=3),
-        command_record(seq=4),
-        discard_record(seq=4),
-        discard_record(seq=5),
-    ]
-
-    result = _classify_discards(records)
-
-    assert isinstance(result, End)
-    assert result.reason == "consecutive-discards"
 
 
 # ---------------------------------------------------------------------------
@@ -919,7 +427,7 @@ def test_classify_when_command_records_interleaved_with_discards_does_not_break_
 def test_detect_end_condition_when_stop_condition_met_does_report_stop_condition(
     cursor: int | None,
 ):
-    config = _benchless_config(stop=StopConfig(max_iterations=2))
+    config = default_benchless_config(stop=StopConfig(max_iterations=2))
     state = session_state(iteration_count=2)
     records: list[SessionLogRecord] = [iteration_record(seq=1), iteration_record(seq=2)]
 
@@ -932,7 +440,7 @@ def test_detect_end_condition_when_stop_condition_met_does_report_stop_condition
 
 
 def test_detect_end_condition_when_state_is_met_but_records_are_not_does_use_state():
-    config = _benchless_config(stop=StopConfig(max_iterations=2))
+    config = default_benchless_config(stop=StopConfig(max_iterations=2))
     state = session_state(iteration_count=2)
 
     result = detect_end_condition(config, [], state, cursor=0, check_stop=True)
@@ -944,7 +452,7 @@ def test_detect_end_condition_when_state_is_met_but_records_are_not_does_use_sta
 
 
 def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_nothing():
-    config = _benchless_config(stop=StopConfig(max_iterations=2))
+    config = default_benchless_config(stop=StopConfig(max_iterations=2))
     state = session_state(iteration_count=2)
     records: list[SessionLogRecord] = [iteration_record(seq=1), iteration_record(seq=2)]
 
@@ -988,7 +496,7 @@ def test_detect_end_condition_when_hook_failed_after_cursor_does_report_hook_fai
     records: list[SessionLogRecord], reason: str
 ):
     result = detect_end_condition(
-        _benchless_config(), records, session_state(), cursor=0, check_stop=True
+        default_benchless_config(), records, session_state(), cursor=0, check_stop=True
     )
 
     assert result == (EndCondition(ended_by="hook-failure", reason=reason), len(records))
@@ -1018,14 +526,14 @@ def test_detect_end_condition_when_no_failure_in_scan_and_no_stop_does_report_no
     records: list[SessionLogRecord], cursor: int | None
 ):
     result = detect_end_condition(
-        _benchless_config(), records, session_state(), cursor=cursor, check_stop=True
+        default_benchless_config(), records, session_state(), cursor=cursor, check_stop=True
     )
 
     assert result == (None, len(records))
 
 
 def test_detect_end_condition_when_hook_failed_and_stop_met_does_report_hook_failure():
-    config = _benchless_config(stop=StopConfig(max_iterations=1))
+    config = default_benchless_config(stop=StopConfig(max_iterations=1))
     state = session_state(iteration_count=1)
     records: list[SessionLogRecord] = [
         iteration_record(seq=1),

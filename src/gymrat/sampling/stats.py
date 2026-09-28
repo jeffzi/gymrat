@@ -1,6 +1,7 @@
 """Stats helpers and metric-meta resolution from collected samples."""
 
 import math
+import statistics
 from collections.abc import Sequence
 
 from gymrat.adapters.types import Adapter
@@ -9,7 +10,7 @@ from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.model import ResolvedMetricMeta
 from gymrat.sampling.types import _MIN_SPREAD_SAMPLES, MetricStats
-from gymrat.stats.descriptive import compute_half_range, compute_median
+from gymrat.stats.descriptive import compute_half_range
 
 
 def compute_metric_stats(values: Sequence[float]) -> MetricStats:
@@ -26,7 +27,7 @@ def compute_metric_stats(values: Sequence[float]) -> MetricStats:
     if not values:
         return MetricStats(median=None, spread=None)
 
-    median = compute_median(values)
+    median = statistics.median(values)
     if len(values) < _MIN_SPREAD_SAMPLES or median == 0:
         return MetricStats(median=median, spread=None)
 

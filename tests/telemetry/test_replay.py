@@ -664,35 +664,60 @@ def test_replay_session_when_session_line_unparseable_does_log_warning_with_line
     _span_by_name(spans, "gymrat.command.measure")
 
 
-def test_replay_session_when_command_uses_model_construct_fallback_does_log_warning_with_name(
-    log_paths: tuple[str, str],
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    session_log, sup_log = log_paths
-    header = session_record(at=_T0)
-
-    wire_cmd = {
+def _wire_command_with_unknown_field(**overrides: object) -> dict[str, object]:
+    """A command wire dict carrying an unrecognized field, forcing the model_construct fallback."""
+    wire_cmd: dict[str, object] = {
         "type": "command",
         "at": _T2,
         "name": "measure",
-        "args": dict[str, object](),
+        "args": {},
         "exit_code": 0,
         "duration_ms": 500,
-        "seq": None,
         "unknown_future_field": "triggers-extra-forbid",
     }
+    wire_cmd.update(overrides)
+    return wire_cmd
 
+
+@pytest.mark.parametrize(
+    ("optional_fields", "expected"),
+    [
+        pytest.param({}, (None, None, 0), id="absent-default-to-none"),
+        pytest.param(
+            {
+                "reason": "budget-exceeded",
+                "seq": 3,
+                "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            },
+            ("budget-exceeded", 3, 1),
+            id="present-kept",
+        ),
+    ],
+)
+def test_replay_session_when_command_has_unknown_field_does_keep_optional_fields(
+    log_paths: tuple[str, str],
+    caplog: pytest.LogCaptureFixture,
+    optional_fields: dict[str, object],
+    expected: tuple[str | None, int | None, int],
+):
+    session_log, sup_log = log_paths
+    header = session_record(at=_T0)
+    wire_cmd = _wire_command_with_unknown_field(**optional_fields)
     with Path(session_log).open("w", encoding="utf-8") as fh:
         fh.write(json.dumps(record_to_wire(header)) + "\n")
         fh.write(json.dumps(wire_cmd) + "\n")
     _write_standard_run(sup_log)
 
-    with (
-        memory_tracing(SESSION_ID),
-        caplog.at_level(logging.WARNING, logger=_REPLAY_LOGGER),
-    ):
-        replay_session(session_log, [sup_log])
+    with caplog.at_level(logging.WARNING, logger=_REPLAY_LOGGER):
+        spans = _replay(session_log, sup_log)
 
+    cmd_span = _span_by_name(spans, "gymrat.command.measure")
+    observed = (
+        cmd_span.attributes.get("gymrat.command.reason"),
+        cmd_span.attributes.get("gymrat.iteration.seq"),
+        len(cmd_span.links),
+    )
+    assert observed == expected
     _assert_warning_mentions(caplog.records, "measure", "'measure'")
 
 

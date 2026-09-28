@@ -143,10 +143,14 @@ def plan_sections[Row, Metric: SectionedMetric](
 
 def _open_group[Row](section: SectionPlan[Row], group: str) -> GroupBlock[Row] | None:
     """The section's already-opened block for ``group``, or ``None`` when none is open."""
-    for block in section.blocks:
-        if isinstance(block, GroupBlock) and block.group == group:
-            return block
-    return None
+    return next(
+        (
+            block
+            for block in section.blocks
+            if isinstance(block, GroupBlock) and block.group == group
+        ),
+        None,
+    )
 
 
 def spans_many_kinds(metrics: Mapping[str, SectionedMetric]) -> bool:
@@ -199,10 +203,7 @@ NO_AGGREGATE: GeomeanResult = GeomeanResult(value=math.nan, n=0, band=0, exclude
 
 def _kind_aggregate_of(candidate: CandidateComparison, kind: str) -> KindAggregate | None:
     """The aggregate a candidate reported for one kind, or ``None`` when it reported none."""
-    for aggregate in candidate.kinds:
-        if aggregate.kind == kind:
-            return aggregate
-    return None
+    return next((aggregate for aggregate in candidate.kinds if aggregate.kind == kind), None)
 
 
 def kind_geomean_of(candidate: CandidateComparison, kind: str) -> GeomeanResult:
@@ -212,14 +213,21 @@ def kind_geomean_of(candidate: CandidateComparison, kind: str) -> GeomeanResult:
 
 
 def group_geomean_of(candidate: CandidateComparison, kind: str, group: str) -> GeomeanResult:
-    """The geomean over one group of ``kind``'s metrics."""
+    """The geomean over one group of ``kind``'s metrics.
+
+    Args:
+        candidate: The candidate whose geomean to read.
+        kind: The metric kind the group belongs to.
+        group: The group whose geomean to read.
+
+    Returns:
+        The group's geomean, or :data:`NO_AGGREGATE` when the candidate
+        reported no aggregate for that kind or group.
+    """
     aggregate = _kind_aggregate_of(candidate, kind)
     if aggregate is None:
         return NO_AGGREGATE
-    for entry in aggregate.groups:
-        if entry.group == group:
-            return entry.geomean
-    return NO_AGGREGATE
+    return next((entry.geomean for entry in aggregate.groups if entry.group == group), NO_AGGREGATE)
 
 
 def flat_geomean_of(candidate: CandidateComparison) -> GeomeanResult:

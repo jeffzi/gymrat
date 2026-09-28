@@ -175,12 +175,14 @@ def build_judge_detail(detail: JudgeDetail) -> Text:
     text.append(" · ", style=STYLE_META)
     if regressed:
         text.append(f"{len(regressed)} regressed: ", style=STYLE_META)
-        for i, name in enumerate(regressed[:REGRESSED_NAME_CAP]):
-            if i > 0:
-                text.append(", ", style=STYLE_META)
-            text.append_text(Text.from_markup(format_inline(parse(name))))
+        names = [
+            Text.from_markup(format_inline(parse(name))) for name in regressed[:REGRESSED_NAME_CAP]
+        ]
         if len(regressed) > REGRESSED_NAME_CAP:
-            text.append(", …", style=STYLE_META)
+            names.append(Text.styled("…", STYLE_META))
+        # Text.styled, not Text(style=...): join copies the separator's base
+        # style onto the whole result, which would dim the names too.
+        text.append_text(Text.styled(", ", STYLE_META).join(names))
     else:
         text.append("no gating regression", style=STYLE_META)
     return text

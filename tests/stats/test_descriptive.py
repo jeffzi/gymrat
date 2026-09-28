@@ -11,7 +11,6 @@ from gymrat.stats import (
     GeomeanCombination,
     combine_geomean,
     compute_half_range,
-    compute_median,
     normalize_ratio,
     percent_delta,
 )
@@ -40,32 +39,6 @@ def test_percent_delta_when_reference_defined_does_scale_by_reference_magnitude(
 @pytest.mark.parametrize("value", [5.0, -5.0])
 def test_percent_delta_when_only_reference_zero_does_return_nan(value: float):
     assert math.isnan(percent_delta(0.0, value))
-
-
-# ---------------------------------------------------------------------------
-# compute_median
-# ---------------------------------------------------------------------------
-
-
-def test_compute_median_when_odd_length_does_return_middle_element():
-    assert compute_median([3, 1, 2]) == 2.0
-
-
-def test_compute_median_when_even_length_does_return_mean_of_middle_two():
-    assert compute_median([1, 2, 3, 4]) == 2.5
-
-
-def test_compute_median_when_called_does_not_mutate_input():
-    values = [3, 1, 2]
-
-    compute_median(values)
-
-    assert values == [3, 1, 2]
-
-
-def test_compute_median_when_empty_does_raise_valueerror():
-    with pytest.raises(ValueError, match="empty"):
-        compute_median([])
 
 
 # ---------------------------------------------------------------------------
@@ -143,12 +116,22 @@ def test_normalize_ratio_when_rho_not_positive_finite_does_return_infinite_rho(
 # ---------------------------------------------------------------------------
 
 
-def test_combine_geomean_when_multiple_entries_does_return_value_band_and_count():
-    result = combine_geomean([(1.5, 2.0), (2.0, 3.0)])
+@pytest.mark.parametrize(
+    ("entries", "expected_band"),
+    [
+        pytest.param([(1.5, 2.0), (2.0, 3.0)], math.hypot(2.0, 3.0) / 2.0, id="all-noisy"),
+        pytest.param([(1.5, 0.0), (2.0, 3.0)], math.hypot(0.0, 3.0) / 2.0, id="exact-beside-noisy"),
+    ],
+)
+def test_combine_geomean_when_multiple_entries_does_return_value_band_and_count(
+    entries: list[tuple[float, float]],
+    expected_band: float,
+):
+    result = combine_geomean(entries)
 
     assert result.n == 2
     assert result.value == pytest.approx((math.sqrt(3.0) - 1.0) * 100.0)
-    assert result.band == pytest.approx(math.sqrt(13.0) / 2.0)
+    assert result.band == pytest.approx(expected_band)
 
 
 def test_combine_geomean_when_empty_does_return_zeros():
@@ -175,23 +158,6 @@ _bounded_floats = st.floats(
     allow_nan=False,
     allow_infinity=False,
 )
-
-
-@given(values=st.lists(_bounded_floats, min_size=1))
-def test_compute_median_when_any_samples_does_lie_within_min_and_max(values: list[float]):
-    median = compute_median(values)
-
-    assert min(values) <= median <= max(values)
-
-
-@given(values=st.lists(_bounded_floats, min_size=1), data=st.data())
-def test_compute_median_when_shuffled_does_return_same_value(
-    values: list[float],
-    data: st.DataObject,
-):
-    shuffled = data.draw(st.permutations(values))
-
-    assert compute_median(list(shuffled)) == compute_median(values)
 
 
 @given(values=st.lists(_bounded_floats, min_size=1))

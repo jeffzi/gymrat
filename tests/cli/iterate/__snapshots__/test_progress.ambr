@@ -103,22 +103,88 @@
   ○ record
   '''
 # ---
+# name: test_frame_when_judge_finished_does_style_regressed_names_in_judge_row[one]
+  list([
+    tuple(
+      '✓ ',
+      'green',
+    ),
+    tuple(
+      'judged ',
+      '',
+    ),
+    tuple(
+      '-3.2% on geomean · 1 regressed: ',
+      'dim',
+    ),
+    tuple(
+      'latency',
+      '',
+    ),
+  ])
+# ---
+# name: test_frame_when_judge_finished_does_style_regressed_names_in_judge_row[several-capped-with-bracket]
+  list([
+    tuple(
+      '✓ ',
+      'green',
+    ),
+    tuple(
+      'judged ',
+      '',
+    ),
+    tuple(
+      '-3.2% on geomean · 4 regressed: node/',
+      'dim',
+    ),
+    tuple(
+      'access',
+      '',
+    ),
+    tuple(
+      '#time, ',
+      'dim',
+    ),
+    tuple(
+      'parse[json]',
+      '',
+    ),
+    tuple(
+      ', ',
+      'dim',
+    ),
+    tuple(
+      'throughput',
+      '',
+    ),
+    tuple(
+      ', …',
+      'dim',
+    ),
+  ])
+# ---
+# name: test_frame_when_judge_finished_does_style_regressed_names_in_judge_row[zero]
+  list([
+    tuple(
+      '✓ ',
+      'green',
+    ),
+    tuple(
+      'judged ',
+      '',
+    ),
+    tuple(
+      '-3.2% on geomean · no gating regression',
+      'dim',
+    ),
+  ])
+# ---
 # name: test_frame_when_judge_finished_no_regressions_does_drop_confirm_and_show_verdict
   '''
   iterate #1 · session test-session · 00:06/00:11
   ✓ prepared
   ○ passes
   ✓ judged -2.0% on geomean · no gating regression
-  ○ record
-  '''
-# ---
-# name: test_frame_when_judge_regressed_does_style_names_via_format_inline
-  '''
-  iterate #1 · session test-session · 00:06/00:11
-  ✓ prepared
-  ○ passes
-  ✓ judged -3.2% on geomean · 1 regressed: node/access#time
-  ○ confirm (only if a gating metric regresses)
   ○ record
   '''
 # ---

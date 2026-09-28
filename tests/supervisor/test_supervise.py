@@ -9,6 +9,7 @@ stay deterministic under ``pytest-randomly`` and ``pytest-xdist``.
 """
 
 import asyncio
+import importlib
 import itertools
 import sys
 import time
@@ -20,10 +21,7 @@ from typing import override
 import pytest
 
 from gymrat.supervisor import (
-    LaunchEvent,
     SessionOutcome,
-    SupervisedSession,
-    SupervisionResult,
     TextDeltaEvent,
     supervise,
 )
@@ -36,6 +34,7 @@ from tests.supervisor._fixtures import (
     make_launch,
     make_prompt,
     read_log_lines,
+    supervise_fast,
 )
 from tests.supervisor._mock_driver import (
     ActionStep,
@@ -44,30 +43,6 @@ from tests.supervisor._mock_driver import (
     TurnEndStep,
     create_mock_driver,
 )
-
-
-async def _supervise_fast(
-    driver: Driver,
-    prompt: SessionPrompt,
-    *,
-    context: SupervisedSession,
-    launch: LaunchEvent,
-    observer: SessionObserver | None = None,
-    is_lock_held: Callable[[], bool] = lambda: False,
-    grace_ms: int = 30_000,
-) -> SupervisionResult:
-    """Call ``supervise`` with the settle-window and lock-poll defaults every fast test shares."""
-    return await supervise(
-        driver,
-        prompt,
-        context=context,
-        launch=launch,
-        observer=observer,
-        settle_window_ms=0,
-        lock_poll_ms=1,
-        is_lock_held=is_lock_held,
-        grace_ms=grace_ms,
-    )
 
 
 @dataclass
@@ -346,6 +321,28 @@ async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(tmp_
     assert result.ended_by == "wall-clock"  # type: ignore[attr-defined]
 
 
+async def test_supervise_when_session_settles_within_grace_does_cancel_grace_timer(
+    tmp_path: Path,
+):
+    wrapper = _WrapDriver(create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)]))
+    grace_ms = 50
+
+    result = await supervise(
+        wrapper,
+        make_prompt(),
+        context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
+        launch=make_launch(max_minutes=0.001),
+        grace_ms=grace_ms,
+    )
+
+    await asyncio.sleep(grace_ms * 3 / 1000)
+
+    assert result.ended_by == "wall-clock"
+    assert wrapper.captured_abort is not None
+    assert not wrapper.captured_abort.is_set()
+    assert asyncio.all_tasks() == {asyncio.current_task()}
+
+
 # ---------------------------------------------------------------------------
 # spend cap
 # ---------------------------------------------------------------------------
@@ -356,7 +353,7 @@ async def test_supervise_when_cost_reaches_max_usd_does_report_spend_cap(
 ):
     driver = create_mock_driver([TurnEndStep(cost_usd=0.12)])
 
-    result = await _supervise_fast(
+    result = await supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
@@ -372,7 +369,7 @@ async def test_supervise_when_cost_reaches_max_usd_does_emit_single_spend_cap_ev
     probe = collecting_observer()
     driver = create_mock_driver([TurnEndStep(cost_usd=0.12)])
 
-    await _supervise_fast(
+    await supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
@@ -407,7 +404,7 @@ async def test_supervise_when_spend_cap_trips_does_log_usage_update_before_cap(
     driver = create_mock_driver([CostStep(cost_usd=0.12), TurnEndStep(cost_usd=0.12)])
     log_path = tmp_path / "events.jsonl"
 
-    await _supervise_fast(
+    await supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=0.1, log_path=str(log_path)),
@@ -428,19 +425,34 @@ async def test_supervise_when_spend_cap_trips_does_log_usage_update_before_cap(
 
 
 async def test_supervise_when_both_caps_could_fire_does_report_first_cap_only(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     probe = collecting_observer()
-    # The turn end carries cost above max_usd. The settle → classify fires
-    # the spend-cap before the wall clock reaches its deadline, proving the
-    # spend cap wins the race when both could fire.
-    driver = create_mock_driver([TurnEndStep(cost_usd=0.15)])
+    deadline_ms = 60
+    now_ms = _Box()
+    # The package re-exports ``supervise``, which shadows the module of the same name.
+    supervise_module = importlib.import_module("gymrat.supervisor.supervise")
+    monkeypatch.setattr(supervise_module, "now_ms", lambda: now_ms.value)
 
-    result = await _supervise_fast(
+    async def _pass_deadline() -> None:
+        now_ms.value = deadline_ms + 1
+
+    # The wall-clock poller has already seen the clock before the deadline and
+    # is asleep when the clock passes it; the turn end then carries cost above
+    # max_usd, so both caps are due at settle and the spend cap must win alone.
+    driver = create_mock_driver([
+        ActionStep(action=_pass_deadline),
+        TurnEndStep(cost_usd=0.15),
+    ])
+
+    result = await supervise_fast(
         driver,
         make_prompt(),
         context=make_context(
-            max_minutes=0.001, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")
+            deadline_ms=deadline_ms,
+            max_minutes=0.001,
+            max_usd=0.1,
+            log_path=str(tmp_path / "events.jsonl"),
         ),
         launch=make_launch(max_minutes=0.001, max_usd=0.1),
         observer=probe.observer,
@@ -460,7 +472,7 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
         TurnEndStep(cost_usd=5.0),
     ])
 
-    result = await _supervise_fast(
+    result = await supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=1.0, log_path=str(tmp_path / "events.jsonl")),
@@ -543,7 +555,7 @@ async def test_supervise_when_observer_raises_does_still_fire_spend_cap(tmp_path
 
     driver = create_mock_driver([TurnEndStep(cost_usd=0.5)])
 
-    result = await _supervise_fast(
+    result = await supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
@@ -747,7 +759,7 @@ async def test_supervise_when_spawned_end_raises_does_warn_to_stderr(
     inner = create_mock_driver([TurnEndStep(cost_usd=0.5)])
     driver = _WrapDriver(inner, _EndThenRaiseSession)
 
-    result = await _supervise_fast(
+    result = await supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
@@ -804,7 +816,7 @@ async def test_supervise_when_end_session_called_twice_does_fire_session_end_onc
 
     monkeypatch.setattr(cls, "_end_session", double_end)
 
-    result = await _supervise_fast(
+    result = await supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),

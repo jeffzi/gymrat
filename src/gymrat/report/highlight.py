@@ -73,8 +73,8 @@ def select_highlights(
     Returns:
         The highlights in report order.
     """
-    ranked: list[tuple[int, float, int, MetricHighlight]] = []
-    for order, (name, metric) in enumerate(metrics.items()):
+    ranked: list[tuple[int, float, MetricHighlight]] = []
+    for name, metric in metrics.items():
         candidate = _candidate_at(metric, candidate_index)
         if candidate is None or candidate.verdict is None:
             continue
@@ -82,10 +82,10 @@ def select_highlights(
         if rank is None:
             continue
         highlight = MetricHighlight(name=name, metric=metric, candidate=candidate)
-        ranked.append((rank, -_highlight_weight(candidate.verdict), order, highlight))
+        ranked.append((rank, -_highlight_weight(candidate.verdict), highlight))
 
-    ranked.sort(key=operator.itemgetter(0, 1, 2))
-    return [entry[3] for entry in ranked]
+    ranked.sort(key=operator.itemgetter(0, 1))
+    return [highlight for _, _, highlight in ranked]
 
 
 UNSTABLE_FUTILITY_NOTE = "unstable metrics won't stabilize with more samples"

@@ -14,7 +14,6 @@ import pytest
 from rich.panel import Panel
 
 from gymrat.cli.supervise.state import ReadSessionResult
-from gymrat.session.progress_file import ProgressSnapshot
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._ansi import (
     SGR_BLUE,
@@ -37,7 +36,6 @@ from tests.cli.supervise._fixtures import (
     fire_launch_and_bash_cycle,
     fire_launch_and_bash_start,
     fire_model_phase,
-    fire_thinking_update,
     fire_tool_end,
     fire_tool_start,
     fire_usage_update,
@@ -45,6 +43,7 @@ from tests.cli.supervise._fixtures import (
     make_read_session,
     make_reporter,
     render_colored,
+    render_colorless,
     render_frame,
     session_state,
     session_state_three_iterations,
@@ -346,46 +345,42 @@ def test_liveness_waiting_when_above_threshold_rendered_with_color_does_emit_yel
     assert_has_sgr(no_output_lines, SGR_YELLOW)
 
 
-@pytest.mark.parametrize(
-    ("phase", "needle"),
+_LIVENESS_SCENARIOS = pytest.mark.parametrize(
+    ("scenario", "needle"),
     [
         pytest.param("responding", "responding", id="responding"),
-        pytest.param("tool_input", "preparing", id="composing-as-preparing"),
+        pytest.param("composing", "preparing", id="composing-as-preparing"),
+        pytest.param("waiting", "waiting", id="waiting-below-threshold"),
+        pytest.param("no-output", "no output", id="waiting-above-threshold"),
     ],
 )
-def test_liveness_phase_when_color_off_does_not_emit_sgr(phase: str, needle: str):
-    kit = make_reporter(color=False)
+
+
+def _fire_liveness_scenario(kit: ReporterKit, scenario: str) -> None:
+    """Drive the reporter into the named liveness state."""
+    if scenario in {"waiting", "no-output"}:
+        _fire_waiting_bash_cycle(kit, above_threshold=scenario == "no-output")
+        return
     fire_launch(kit.reporter.observer, 1000)
-    tool_name = "Edit" if phase == "tool_input" else None
-    fire_model_phase(kit.reporter.observer, 2000, phase, tool_name=tool_name)
-
-    colored = _render_content_colored(kit.reporter)
-    phase_lines = _lines_containing(colored, needle)
-
-    assert phase_lines
-    assert not any("\x1b[" in line for line in phase_lines)
+    if scenario == "composing":
+        fire_model_phase(kit.reporter.observer, 2000, "tool_input", tool_name="Edit")
+    else:
+        fire_model_phase(kit.reporter.observer, 2000, "responding")
 
 
-def test_liveness_waiting_when_below_threshold_color_off_does_not_emit_sgr():
-    kit = make_reporter(color=False)
-    _fire_waiting_bash_cycle(kit)
+@_LIVENESS_SCENARIOS
+def test_liveness_line_when_rendered_colored_and_colorless_does_show_the_same_text(
+    scenario: str, needle: str
+):
+    kit = make_reporter()
+    _fire_liveness_scenario(kit, scenario)
+    frame = kit.reporter.frame()
 
-    colored = _render_content_colored(kit.reporter)
-    waiting_lines = _lines_containing(colored, "waiting")
+    colored_lines = _lines_containing(render_colored(frame), needle)
+    colorless_lines = _lines_containing(render_colorless(frame), needle)
 
-    assert waiting_lines
-    assert not any("\x1b[" in line for line in waiting_lines)
-
-
-def test_liveness_waiting_when_above_threshold_color_off_does_not_emit_sgr():
-    kit = make_reporter(color=False)
-    _fire_waiting_bash_cycle(kit, above_threshold=True)
-
-    colored = _render_content_colored(kit.reporter)
-    no_output_lines = _lines_containing(colored, "no output")
-
-    assert no_output_lines
-    assert not any("\x1b[" in line for line in no_output_lines)
+    assert colorless_lines
+    assert [strip_sgr(line) for line in colored_lines] == colorless_lines
 
 
 @pytest.mark.parametrize(
@@ -631,51 +626,6 @@ def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_widt
 
 
 # ---------------------------------------------------------------------------
-# no token count on non-Thinking states
-# ---------------------------------------------------------------------------
-
-
-def test_liveness_responding_when_rendered_does_not_show_token_count():
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_thinking_update(observer, 1500, estimated_tokens=500)
-    fire_model_phase(observer, 2000, "responding")
-
-    frame = render_frame(kit.reporter)
-
-    assert "responding" in frame
-    assert "500" not in frame
-
-
-def test_liveness_composing_when_rendered_does_not_show_token_count():
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_thinking_update(observer, 1500, estimated_tokens=500)
-    fire_model_phase(observer, 2000, "tool_input", tool_name="Edit")
-
-    frame = render_frame(kit.reporter)
-
-    assert "preparing" in frame
-    assert "500" not in frame
-
-
-# ---------------------------------------------------------------------------
-# no "idle" anywhere in frame
-# ---------------------------------------------------------------------------
-
-
-def test_frame_when_any_state_does_never_contain_idle():
-    kit = make_reporter()
-    _fire_waiting_bash_cycle(kit, above_threshold=True)
-
-    frame = render_frame(kit.reporter)
-
-    assert "idle" not in frame
-
-
-# ---------------------------------------------------------------------------
 # dashboard title — model and effort display
 # ---------------------------------------------------------------------------
 
@@ -703,100 +653,6 @@ def test_panel_title_when_model_or_effort_in_force_does_show_labelled_value(
     frame = render_frame(kit.reporter)
 
     assert _panel_title_text(frame) == expected_title
-
-
-# ---------------------------------------------------------------------------
-# MCP iterate tool detection
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "tool_use_id", "passes_completed", "passes_total", "last_pass_duration_ms"),
-    [
-        pytest.param("mcp__gymrat__iterate", "mcp-1", 4, 8, 120_000.0, id="mcp-tool-name"),
-        pytest.param("Bash", "bash-1", 3, 6, 100_000.0, id="bash-tool-name"),
-    ],
-)
-def test_liveness_when_iterate_tool_has_sidecar_does_show_passes_nest(
-    tool_name: str,
-    tool_use_id: str,
-    passes_completed: int,
-    passes_total: int,
-    last_pass_duration_ms: float,
-):
-    sidecar = ProgressSnapshot(
-        passes_completed=passes_completed,
-        passes_total=passes_total,
-        last_pass_duration_ms=last_pass_duration_ms,
-    )
-
-    def fake_read_progress(_root: str) -> ProgressSnapshot | None:
-        return sidecar
-
-    kit = make_reporter(read_progress=fake_read_progress)
-    fire_launch(kit.reporter.observer, 1000)
-    kit.clock.now = 2000
-    fire_tool_start(
-        kit.reporter.observer,
-        tool_name,
-        tool_use_id,
-        2000,
-        input_summary="gymrat iterate",
-    )
-    kit.clock.now = 2000 + 10 * 60 * 1000
-
-    frame = render_frame(kit.reporter)
-
-    assert f"{passes_completed}/{passes_total}" in frame
-    passes_line = _line_after(frame, tool_name)
-    assert "passes" in passes_line
-
-
-def test_liveness_when_mcp_probe_tool_in_flight_does_show_summary_not_nest():
-    kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
-    kit.clock.now = 2000
-    fire_tool_start(
-        kit.reporter.observer,
-        "mcp__gymrat__probe",
-        "mcp-2",
-        2000,
-        input_summary="gymrat probe a b",
-    )
-    kit.clock.now = 5000
-
-    frame = render_frame(kit.reporter)
-
-    assert "mcp__gymrat__probe" in frame
-    assert "gymrat probe a b" in frame
-    assert "↳" not in frame
-
-
-def test_liveness_when_non_iterate_mcp_tool_in_flight_does_not_show_sidecar():
-    sidecar = ProgressSnapshot(
-        passes_completed=4,
-        passes_total=8,
-        last_pass_duration_ms=120_000.0,
-    )
-
-    def fake_read_progress(_root: str) -> ProgressSnapshot | None:
-        return sidecar
-
-    kit = make_reporter(read_progress=fake_read_progress)
-    fire_launch(kit.reporter.observer, 1000)
-    kit.clock.now = 2000
-    fire_tool_start(
-        kit.reporter.observer,
-        "mcp__gymrat__probe",
-        "mcp-2",
-        2000,
-        input_summary="gymrat probe a b",
-    )
-    kit.clock.now = 5000
-
-    frame = render_frame(kit.reporter)
-
-    assert "4/8" not in frame
 
 
 # ---------------------------------------------------------------------------

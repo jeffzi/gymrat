@@ -133,6 +133,11 @@ def termination_signals_deferred() -> Iterator[None]:
     signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
+async def outcome_of(session: DriverSession) -> SessionOutcome:
+    """Await the session's settled outcome within the test timeout."""
+    return await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+
+
 async def abort_session(_session: DriverSession, abort: asyncio.Event) -> None:
     """Settle the session through its abort event."""
     abort.set()
@@ -168,7 +173,28 @@ async def read_report(report_path: Path, timeout_s: float = _TEST_TIMEOUT_S) -> 
         pytest.param(
             {},
             {"kickoff": "do the thing", "cwd": None},
-            id="optionals-omitted",
+            id="all-optionals-none",
+        ),
+        pytest.param(
+            {
+                "system_prompt_append": "extra",
+                "model": "opus",
+                "effort": "high",
+                "command_timeout_ms": 300000,
+                "max_budget_usd": 2.5,
+                "traceparent": "00-abc123-def456-01",
+            },
+            {
+                "kickoff": "do the thing",
+                "cwd": None,
+                "system_prompt_append": "extra",
+                "model": "opus",
+                "effort": "high",
+                "command_timeout_ms": 300000,
+                "max_budget_usd": 2.5,
+                "traceparent": "00-abc123-def456-01",
+            },
+            id="all-optionals-set",
         ),
         pytest.param(
             {"system_prompt_append": "extra", "model": "opus"},
@@ -207,7 +233,7 @@ async def test_stdio_driver_when_started_does_spawn_with_correct_start_line(
     probe = collecting_observer()
     session = create_stdio_driver(double_argv(config)).start(prompt, probe.observer)
 
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await outcome_of(session)
 
     report_data = await read_report(report)
     expected_prompt = {**expected_prompt, "cwd": str(tmp_path)}
@@ -255,7 +281,7 @@ async def test_stdio_driver_when_child_emits_lines_does_relay_typed_events(
         make_prompt(cwd=str(tmp_path)), probe.observer
     )
 
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await outcome_of(session)
 
     assert probe.events == [
         UsageUpdateEvent(at=6_000_000_000, cost_usd=0.01),
@@ -295,7 +321,7 @@ async def test_stdio_driver_when_outcome_line_received_does_settle_with_its_fiel
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
 
     assert outcome == SessionOutcome(reason="completed", cost_usd=0.5, message="all done")
 
@@ -329,7 +355,7 @@ async def test_stdio_driver_when_outcome_cost_is_boolean_does_fall_back_to_runni
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
 
     assert outcome.cost_usd == 0.42
 
@@ -356,7 +382,7 @@ async def test_stdio_driver_when_child_exits_without_outcome_does_error_with_exi
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
 
     assert outcome.reason == "error"
     assert outcome.cost_usd == 0.3
@@ -385,7 +411,7 @@ async def test_stdio_driver_when_spawn_rejected_before_any_process_does_settle_e
     prompt = make_prompt(cwd=str(tmp_path) if cwd is None else cwd)
     session = create_stdio_driver(argv).start(prompt, collecting_observer().observer)
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
 
     assert outcome.reason == "error"
     assert expected_fragment in (outcome.message or "")
@@ -420,7 +446,7 @@ async def test_stdio_driver_when_interrupt_then_child_exits_does_settle_interrup
 
     await session.interrupt()
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
     assert outcome == SessionOutcome(reason="interrupted", cost_usd=0.5)
 
 
@@ -449,7 +475,7 @@ async def test_stdio_driver_when_interrupt_precedes_a_later_outcome_line_does_wi
 
     await session.interrupt()
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
     assert outcome == SessionOutcome(reason="interrupted", cost_usd=0.7)
 
 
@@ -485,7 +511,7 @@ async def test_stdio_driver_when_abort_fires_does_settle_interrupted(
 
     abort.set()
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
     assert outcome == SessionOutcome(reason="interrupted", cost_usd=0.4)
     await wait_until_dead(int(processes["pid"]))
     await wait_until_dead(int(processes["grandchild"]))
@@ -510,10 +536,8 @@ async def test_stdio_driver_when_child_exits_after_outcome_does_not_warn_about_k
     # Repeating the session is the scenario: each run is one more chance for
     # teardown to land while the child is still exiting after its outcome line.
     for _ in range(_RACE_SESSIONS):
-        await asyncio.wait_for(
-            driver.start(make_prompt(cwd=str(tmp_path)), collecting_observer().observer).outcome,
-            _TEST_TIMEOUT_S,
-        )
+        session = driver.start(make_prompt(cwd=str(tmp_path)), collecting_observer().observer)
+        await outcome_of(session)
 
     assert killpg_warnings(recwarn) == []
 
@@ -546,7 +570,7 @@ async def test_stdio_driver_when_grandchild_outlives_leader_does_kill_grandchild
     grandchild = int((await read_report(report))["grandchild"])
     stray_process_ids.append(grandchild)
 
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await outcome_of(session)
 
     await wait_until_dead(grandchild)
 
@@ -587,7 +611,7 @@ async def test_stdio_driver_when_child_lingers_after_outcome_does_kill_it_prompt
     child = int((await read_report(report))["pid"])
     stray_process_ids.append(child)
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
     settled_at = loop.time()
 
     assert outcome.reason == "completed"
@@ -612,7 +636,7 @@ async def test_stdio_driver_when_torn_down_leaving_only_a_zombie_in_group_does_n
 
     abort.set()
 
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await outcome_of(session)
     assert killpg_warnings(recwarn) == []
 
 
@@ -653,7 +677,7 @@ async def test_stdio_driver_when_child_emits_turn_end_does_relay_as_turn_end_eve
         make_prompt(cwd=str(tmp_path)), probe.observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
 
     turn_ends = [e for e in probe.events if isinstance(e, TurnEndEvent)]
     assert turn_ends == [
@@ -711,92 +735,12 @@ async def test_stdio_driver_when_send_and_end_does_write_protocol_lines_to_child
     await session.send("follow-up text")
     await session.end()
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
     assert outcome.reason == "completed"
     report_data = await read_report(report)
     assert report_data["message_text"] == "follow-up text"
     turn_ends = [e for e in probe.events if isinstance(e, TurnEndEvent)]
     assert len(turn_ends) == 2
-
-
-# ---------------------------------------------------------------------------
-# max_budget_usd in start command — snake_case
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("budget", "expected_in_start"),
-    [
-        pytest.param(
-            2.5,
-            True,
-            id="budget-present",
-        ),
-        pytest.param(
-            None,
-            False,
-            id="budget-omitted",
-        ),
-    ],
-)
-async def test_stdio_driver_when_max_budget_usd_does_include_or_omit_in_start_command(
-    tmp_path: Path,
-    budget: float | None,
-    expected_in_start: bool,
-) -> None:
-    report = tmp_path / "report.json"
-    config = {
-        "mode": "script",
-        "report_path": str(report),
-        "outcome": {"type": "outcome", "reason": "completed", "cost_usd": 0.0},
-    }
-    prompt = make_prompt(cwd=str(tmp_path), max_budget_usd=budget)
-    session = create_stdio_driver(double_argv(config)).start(prompt, collecting_observer().observer)
-
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    report_data = await read_report(report)
-    start_obj = json.loads(report_data["start_line"])
-    if expected_in_start:
-        assert start_obj["prompt"]["max_budget_usd"] == budget
-    else:
-        assert "max_budget_usd" not in start_obj["prompt"]
-
-
-# ---------------------------------------------------------------------------
-# traceparent in start command — snake_case
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("traceparent", "expected_in_start"),
-    [
-        pytest.param("00-abc123-def456-01", True, id="traceparent-present"),
-        pytest.param(None, False, id="traceparent-omitted"),
-    ],
-)
-async def test_stdio_driver_when_traceparent_does_include_or_omit_in_start_command(
-    tmp_path: Path,
-    traceparent: str | None,
-    expected_in_start: bool,
-) -> None:
-    report = tmp_path / "report.json"
-    config = {
-        "mode": "script",
-        "report_path": str(report),
-        "outcome": {"type": "outcome", "reason": "completed", "cost_usd": 0.0},
-    }
-    prompt = make_prompt(cwd=str(tmp_path), traceparent=traceparent)
-    session = create_stdio_driver(double_argv(config)).start(prompt, collecting_observer().observer)
-
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
-
-    report_data = await read_report(report)
-    start_obj = json.loads(report_data["start_line"])
-    if expected_in_start:
-        assert start_obj["prompt"]["traceparent"] == traceparent
-    else:
-        assert "traceparent" not in start_obj["prompt"]
 
 
 # ---------------------------------------------------------------------------
@@ -821,7 +765,7 @@ async def test_kill_live_process_groups_when_stdio_session_live_does_kill_child_
 
     gymrat_exec.kill_live_process_groups()
 
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await outcome_of(session)
     await wait_until_dead(child)
     await wait_until_dead(grandchild)
 
@@ -850,7 +794,7 @@ async def test_kill_live_process_groups_when_stdio_child_exits_on_terminate_does
         gymrat_exec.kill_live_process_groups()
 
         sweep_times.append(time.monotonic() - started)
-        await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+        await outcome_of(session)
 
     assert killpg_warnings(recwarn) == []
     assert max(sweep_times) < TERMINATE_GRACE_S, "the sweep waited out a grace for exited leaders"
@@ -891,7 +835,7 @@ async def test_stdio_driver_when_containment_raises_after_spawn_does_settle_erro
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
     stray_process_ids.extend(proc.pid for proc in spawned)
 
     assert outcome == SessionOutcome(reason="error", cost_usd=0.0, message=str(error))
@@ -942,7 +886,7 @@ async def test_kill_live_process_groups_when_stdio_session_settled_does_signal_n
     session = create_stdio_driver(argv).start(
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await outcome_of(session)
     attempted = record_registry_sweep(monkeypatch)
 
     gymrat_exec.kill_live_process_groups()
@@ -971,7 +915,7 @@ async def test_kill_live_process_groups_when_stdio_session_torn_down_does_signal
     )
     await wait_for_event(probe.events, UsageUpdateEvent)
     await settle(session, abort)
-    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await outcome_of(session)
     attempted = record_registry_sweep(monkeypatch)
 
     gymrat_exec.kill_live_process_groups()
@@ -1002,5 +946,5 @@ async def test_stdio_driver_when_spawned_while_signals_deferred_does_leave_them_
 
     os.kill(child, signal_number)
 
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await outcome_of(session)
     assert outcome == SessionOutcome(reason="completed", cost_usd=0.0, message=signal_number.name)

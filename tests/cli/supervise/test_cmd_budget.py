@@ -4,6 +4,7 @@ Shares its seam-installation harness with :mod:`tests.cli.supervise.test_cmd`,
 which owns the ``CliRunner`` wiring these tests reuse.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -12,16 +13,18 @@ from gymrat.clock import now_ms, now_ns
 from gymrat.errors import GymratError
 from gymrat.loop.start import StartResult
 from gymrat.session import append_record
-from gymrat.session.budget import Budget, read_budget, write_budget
+from gymrat.session.budget import Budget, clear_budget, read_budget, write_budget
 from gymrat.session.paths import budget_path, session_jsonl_path
 from gymrat.supervisor import SupervisionResult
 from tests.cli.supervise._fixtures import baseline_record, make_supervision_result
 from tests.cli.supervise.test_cmd import (
     _CAP_MINUTES,
     _CAP_MS,
+    _err_text,
     _install_seams,
     _make_start_result,
     _run,
+    _Seams,
 )
 
 # ---------------------------------------------------------------------------
@@ -111,28 +114,96 @@ def test_supervise_when_preflight_records_baseline_does_start_budget_no_earlier(
     assert captured_budgets[0].started_at_ms >= baseline_epoch_ms
 
 
-def test_supervise_when_run_completes_does_clear_budget(repo: str, monkeypatch: pytest.MonkeyPatch):
-    _install_seams(monkeypatch)
-    cleared: list[str] = []
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.clear_budget", cleared.append)
+def _record_budget_release(
+    monkeypatch: pytest.MonkeyPatch, seams: _Seams, *, clear_error: Exception | None = None
+) -> tuple[list[str], list[Callable[[], None]]]:
+    """Record the budget clear and every registered cleanup's uninstall, tagged by index.
+
+    The run also registers the reporter-stop and process-kill cleanups through the
+    same seam; their uninstalls are tagged too so a test can filter the log down to
+    the budget one, identified after the run by :func:`_budget_uninstall_tag` rather
+    than by its position in the registration order.
+    """
+    events: list[str] = []
+    installed: list[Callable[[], None]] = []
+
+    def fake_install(cleanup: Callable[[], None]) -> Callable[[], None]:
+        tag = f"uninstall-{len(installed)}"
+        installed.append(cleanup)
+        return lambda: events.append(tag)
+
+    def fake_clear(root: str) -> None:
+        events.append("clear")
+        if clear_error is not None:
+            raise clear_error
+
+    seams.install_cleanup.side_effect = fake_install
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.clear_budget", fake_clear)
+    return events, installed
+
+
+def _budget_uninstall_tag(
+    repo: str, monkeypatch: pytest.MonkeyPatch, installed: list[Callable[[], None]]
+) -> str:
+    """The uninstall tag of whichever installed cleanup clears the budget file.
+
+    Restores the real ``clear_budget`` so each candidate can be invoked against a
+    probe budget file and identified by its effect, not its registration order.
+    """
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.clear_budget", clear_budget)
+    write_budget(repo, Budget(started_at_ms=0.0, max_minutes=10, deadline_ms=600_000.0))
+    for index, cleanup in enumerate(installed):
+        cleanup()
+        if not Path(budget_path(repo)).exists():
+            return f"uninstall-{index}"
+    msg = "no installed cleanup removed the budget file"
+    raise AssertionError(msg)
+
+
+@pytest.mark.parametrize(
+    ("raises", "expected_exit"),
+    [
+        pytest.param(None, 0, id="run-completes"),
+        pytest.param(GymratError("boom"), 2, id="supervise-raises"),
+    ],
+)
+def test_supervise_when_run_ends_does_clear_budget_then_uninstall_its_cleanup_once(
+    repo: str, monkeypatch: pytest.MonkeyPatch, raises: Exception | None, expected_exit: int
+):
+    seams = _install_seams(monkeypatch, raises=raises)
+    events, installed = _record_budget_release(monkeypatch, seams)
 
     result = _run("optimize it", "--max-minutes", "10")
 
-    assert result.exit_code == 0
-    assert len(cleared) == 1
+    assert result.exit_code == expected_exit
+    budget_tag = _budget_uninstall_tag(repo, monkeypatch, installed)
+    assert [event for event in events if event in ("clear", budget_tag)] == ["clear", budget_tag]
 
 
-def test_supervise_when_supervise_raises_does_still_clear_budget(
+def test_supervise_when_clear_budget_raises_does_still_uninstall_budget_cleanup(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _install_seams(monkeypatch, raises=GymratError("boom"))
-    cleared: list[str] = []
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.clear_budget", cleared.append)
+    seams = _install_seams(monkeypatch)
+    events, installed = _record_budget_release(
+        monkeypatch, seams, clear_error=OSError("budget file locked")
+    )
+
+    _run("optimize it", "--max-minutes", "10")
+
+    budget_tag = _budget_uninstall_tag(repo, monkeypatch, installed)
+    assert [event for event in events if event in ("clear", budget_tag)] == ["clear", budget_tag]
+
+
+def test_supervise_when_clear_budget_raises_does_exit_two_naming_the_error(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch)
+    _record_budget_release(monkeypatch, seams, clear_error=OSError("budget file locked"))
 
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 2
-    assert len(cleared) >= 1
+    assert "Error: budget file locked" in _err_text(result)
 
 
 def test_supervise_when_run_does_clear_budget_before_stopping_reporter(

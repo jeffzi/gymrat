@@ -7,7 +7,6 @@ from gymrat.stats.descriptive import (
     RatioOutcome,
     combine_geomean,
     compute_half_range,
-    compute_median,
     normalize_ratio,
     percent_delta,
 )
@@ -28,7 +27,6 @@ __all__ = [
     "SignificanceResult",
     "combine_geomean",
     "compute_half_range",
-    "compute_median",
     "normalize_ratio",
     "percent_delta",
     "sign_flip_permutation_test",

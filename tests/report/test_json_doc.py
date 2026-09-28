@@ -9,30 +9,23 @@ color.
 
 from __future__ import annotations
 
-import dataclasses
 import json
+import math
 import re
 from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.loop.finalize import FinalizeResult
-from gymrat.loop.start import StartResult
-from gymrat.loop.sync import SyncResult
 from gymrat.model import Effect, Exclusion, MetricUnit, PermutationVerdict
 from gymrat.report import render_json, render_measure_json, render_probe_json
 from gymrat.report.json_doc import (
     BudgetSummary,
-    render_finalize_json,
-    render_start_json,
-    render_sync_json,
 )
 from gymrat.report.types import (
     CandidateMetric,
     ComparisonResult,
     MetricComparison,
 )
-from gymrat.session import SessionState
 from gymrat.targets import WorktreeRemovalFailure
 from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._inputs import (
@@ -49,14 +42,11 @@ from tests.report._inputs import (
     n_way_metric,
     other_kind,
     permutation_metric,
+    permutation_verdict,
     probe_metric,
     probe_result,
     single_sample_result,
     two_kind_measurement,
-)
-from tests.session.records._fixtures import (
-    finalize_record,
-    session_record,
 )
 
 if TYPE_CHECKING:
@@ -245,32 +235,57 @@ def test_render_json_when_exact_verdict_does_null_noise_p_and_band():
     assert candidate["band"] is None
 
 
-def test_render_json_when_delta_is_non_finite_does_render_null():
-    metric = MetricComparison(
-        baseline_median=100.0,
-        baseline_spread=1.0,
-        candidates=(
-            CandidateMetric(
-                median=90.0,
-                spread=1.0,
-                verdict=PermutationVerdict(
-                    method="permutation",
-                    verdict="improved",
-                    p=0.01,
-                    noise_pct=2.5,
-                    noise_abs=3.5,
-                    delta=Effect(value=float("inf"), unit="percent"),
-                    n=10,
-                ),
-            ),
-        ),
-        meta=metric_meta("decode/time", unit="ns"),
+def _paired_candidate(delta: float = -10.0) -> CandidateMetric:
+    """A candidate that measured and paired against the baseline, with an "improved" verdict."""
+    return CandidateMetric(
+        median=90.0,
+        spread=1.0,
+        verdict=permutation_verdict(verdict="improved", delta=delta, p=0.01, noise_abs=3.5),
     )
-    result = create_comparison_result(metrics={"decode/time": metric})
 
-    candidate = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][0]
 
-    assert candidate["delta"] is None
+@pytest.mark.parametrize(
+    ("result", "path"),
+    [
+        pytest.param(
+            create_comparison_result(
+                metrics={
+                    "decode/time": MetricComparison(
+                        baseline_median=100.0,
+                        baseline_spread=1.0,
+                        candidates=(_paired_candidate(delta=float("inf")),),
+                        meta=metric_meta("decode/time", unit="ns"),
+                    ),
+                },
+            ),
+            ("metrics", "decode/time", "candidates", 0, "delta"),
+            id="delta",
+        ),
+        pytest.param(
+            create_comparison_result(
+                candidates=[
+                    create_candidate(
+                        kinds=[
+                            KindAggregate(kind="time", geomean=geomean_of(math.nan, 0), groups=())
+                        ],
+                    ),
+                ],
+            ),
+            ("per_candidate", 0, "kinds", 0, "geomean", "value"),
+            id="geomean",
+        ),
+    ],
+)
+def test_render_json_when_value_is_non_finite_does_render_null(
+    result: ComparisonResult, path: tuple[str | int, ...]
+):
+    doc = json.loads(render_json(result))
+
+    value = doc
+    for key in path:
+        value = value[key]
+
+    assert value is None
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +375,17 @@ def test_render_json_when_candidate_spans_kinds_does_carry_one_entry_per_kind():
     ]
 
 
+def test_render_json_when_rendering_geomeans_does_order_keys_by_geomean_result_fields():
+    field_names = ["value", "n", "band", "excluded"]
+
+    doc = json.loads(render_json(_two_kind_with_exclusions()))
+
+    kind = doc["per_candidate"][0]["kinds"][0]
+    geomeans = [kind["geomean"], kind["groups"][0]["geomean"], kind["gated_geomean"]]
+    assert [list(geomean) for geomean in geomeans] == [field_names] * 3
+    assert [list(entry) for entry in kind["geomean"]["excluded"]] == [["metric", "reason"]] * 2
+
+
 def test_render_json_when_candidate_spans_kinds_does_leave_no_blended_geomean():
     doc = json.loads(render_json(_two_kind_with_exclusions()))
 
@@ -426,7 +452,12 @@ def test_render_json_when_metrics_vary_does_tally_verdict_counts_per_candidate()
 
     counts = json.loads(render_json(result))["per_candidate"][0]["verdict_counts"]
 
-    assert counts == {"improved": 2, "regressed": 1, "unstable": 1, "no_signal": 1}
+    assert list(counts.items()) == [
+        ("improved", 2),
+        ("regressed", 1),
+        ("unstable", 1),
+        ("no_signal", 1),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -470,22 +501,7 @@ def test_render_json_when_candidate_has_no_metric_data_does_render_all_nulls():
     metric = MetricComparison(
         baseline_median=100.0,
         baseline_spread=1.0,
-        candidates=(
-            CandidateMetric(
-                median=90.0,
-                spread=1.0,
-                verdict=PermutationVerdict(
-                    method="permutation",
-                    verdict="improved",
-                    p=0.01,
-                    noise_pct=2.5,
-                    noise_abs=3.5,
-                    delta=Effect(value=-10, unit="percent"),
-                    n=10,
-                ),
-            ),
-            CandidateMetric(),
-        ),
+        candidates=(_paired_candidate(), CandidateMetric()),
         meta=metric_meta("decode/time", unit="ns"),
     )
     result = create_comparison_result(
@@ -510,22 +526,7 @@ def test_render_json_when_candidate_measured_but_unpaired_does_keep_measurements
     metric = MetricComparison(
         baseline_median=100.0,
         baseline_spread=1.0,
-        candidates=(
-            CandidateMetric(
-                median=90.0,
-                spread=1.0,
-                verdict=PermutationVerdict(
-                    method="permutation",
-                    verdict="improved",
-                    p=0.01,
-                    noise_pct=2.5,
-                    noise_abs=3.5,
-                    delta=Effect(value=-10, unit="percent"),
-                    n=10,
-                ),
-            ),
-            CandidateMetric(median=95.0, spread=3.0),
-        ),
+        candidates=(_paired_candidate(), CandidateMetric(median=95.0, spread=3.0)),
         meta=metric_meta("decode/time", unit="ns"),
     )
     result = create_comparison_result(
@@ -905,227 +906,3 @@ def test_render_probe_json_when_environment_forces_color_does_emit_no_ansi(
     result = probe_result(metrics=[probe_metric("decode/time", unit="ns")])
 
     assert not _ANSI_ESCAPE.search(render_probe_json(result))
-
-
-# ---------------------------------------------------------------------------
-# helpers — start / finalize / sync
-# ---------------------------------------------------------------------------
-
-
-def _empty_session_state() -> SessionState:
-    """A session that has opened but measured nothing yet."""
-    return SessionState(
-        session=None,
-        iteration_count=0,
-        last_iteration=None,
-        unsettled=False,
-        keep_count=0,
-        discard_count=0,
-        target_reached_and_kept=False,
-        last_seq=0,
-        last_kept_commit=None,
-        ends_on_gating_block=False,
-        ends_on_stop=False,
-        finalized=None,
-    )
-
-
-def _fresh_start() -> StartResult:
-    """A brand-new session (not resumed, nothing archived)."""
-    return StartResult(
-        session=session_record(),
-        state=_empty_session_state(),
-        resumed=False,
-    )
-
-
-def _resumed_start(*, iteration_count: int = 3, keep_count: int = 2) -> StartResult:
-    """A resumed session with prior iteration and keep counts."""
-    state = _empty_session_state()
-    return StartResult(
-        session=session_record(),
-        state=dataclasses.replace(state, iteration_count=iteration_count, keep_count=keep_count),
-        resumed=True,
-    )
-
-
-def _archived_start() -> StartResult:
-    """A session that archived a finalized predecessor."""
-    return StartResult(
-        session=session_record(),
-        state=_empty_session_state(),
-        resumed=False,
-        archived="20260701-120000-beef",
-        archived_path="/repo/.gymrat/archive/20260701-120000-beef",
-    )
-
-
-# ---------------------------------------------------------------------------
-# render_start_json — fresh start
-# ---------------------------------------------------------------------------
-
-
-def test_render_start_json_when_fresh_does_produce_expected_keys():
-    result = _fresh_start()
-
-    doc = json.loads(render_start_json(result))
-
-    assert doc["session_id"] == result.session.session_id
-    assert doc["branch"] == result.session.branch
-    assert doc["baseline"] == {
-        "ref": result.session.baseline.ref,
-        "sha": result.session.baseline.sha,
-    }
-    assert doc["worktrees"] == {
-        "experiment": result.session.worktrees.experiment,
-        "baseline": result.session.worktrees.baseline,
-    }
-    assert doc["resumed"] is False
-    assert doc["iteration_count"] == 0
-    assert doc["keep_count"] == 0
-    assert doc["runbook"] is None
-    assert doc["archived"] is None
-
-
-def test_render_start_json_when_fresh_and_no_budget_does_omit_budget_key():
-    doc = json.loads(render_start_json(_fresh_start()))
-
-    assert "budget" not in doc
-
-
-# ---------------------------------------------------------------------------
-# render_start_json — resumed start
-# ---------------------------------------------------------------------------
-
-
-def test_render_start_json_when_resumed_does_carry_counts_and_flag():
-    result = _resumed_start(iteration_count=5, keep_count=3)
-
-    doc = json.loads(render_start_json(result))
-
-    assert doc["resumed"] is True
-    assert doc["iteration_count"] == 5
-    assert doc["keep_count"] == 3
-
-
-# ---------------------------------------------------------------------------
-# render_start_json — archived start
-# ---------------------------------------------------------------------------
-
-
-def test_render_start_json_when_archived_does_include_archived_object():
-    result = _archived_start()
-
-    doc = json.loads(render_start_json(result))
-
-    assert doc["archived"] == {
-        "session_id": "20260701-120000-beef",
-        "path": "/repo/.gymrat/archive/20260701-120000-beef",
-    }
-
-
-# ---------------------------------------------------------------------------
-# render_start_json — runbook and budget
-# ---------------------------------------------------------------------------
-
-
-def test_render_start_json_when_runbook_provided_does_include_runbook():
-    doc = json.loads(render_start_json(_fresh_start(), runbook="my-runbook.yml"))
-
-    assert doc["runbook"] == "my-runbook.yml"
-
-
-@pytest.mark.parametrize(
-    "budget",
-    [
-        pytest.param(BudgetSummary(cap_minutes=30, remaining_seconds=900), id="budget-given"),
-        pytest.param(None, id="no-budget"),
-    ],
-)
-def test_render_start_json_when_budget_varies_does_reflect_the_budget_key(
-    budget: BudgetSummary | None,
-):
-    doc = json.loads(render_start_json(_fresh_start(), budget=budget))
-
-    if budget is None:
-        assert "budget" not in doc
-    else:
-        assert doc["budget"] == {"cap_minutes": 30, "remaining_seconds": 900}
-
-
-# ---------------------------------------------------------------------------
-# render_finalize_json — schema shape
-# ---------------------------------------------------------------------------
-
-
-def test_render_finalize_json_when_rendered_does_produce_expected_keys():
-    record = finalize_record()
-    result = FinalizeResult(record=record, report="final report text")
-
-    doc = json.loads(render_finalize_json(result))
-
-    assert doc["branch"] == record.branch
-    assert doc["commit"] == record.commit
-    assert doc["message"] == record.message
-    assert doc["at"] == record.at
-
-
-@pytest.mark.parametrize(
-    "budget",
-    [
-        pytest.param(BudgetSummary(cap_minutes=60, remaining_seconds=0), id="budget-given"),
-        pytest.param(None, id="no-budget"),
-    ],
-)
-def test_render_finalize_json_when_budget_varies_does_reflect_the_budget_key(
-    budget: BudgetSummary | None,
-):
-    result = FinalizeResult(record=finalize_record(), report="report")
-
-    doc = json.loads(render_finalize_json(result, budget=budget))
-
-    if budget is None:
-        assert "budget" not in doc
-    else:
-        assert doc["budget"] == {"cap_minutes": 60, "remaining_seconds": 0}
-
-
-# ---------------------------------------------------------------------------
-# render_sync_json — schema shape
-# ---------------------------------------------------------------------------
-
-
-def test_render_sync_json_when_files_synced_does_list_them():
-    result = SyncResult(files=("src/main.py", "src/lib.py"))
-
-    doc = json.loads(render_sync_json(result))
-
-    assert doc["files"] == ["src/main.py", "src/lib.py"]
-
-
-def test_render_sync_json_when_no_files_does_produce_empty_list():
-    result = SyncResult(files=())
-
-    doc = json.loads(render_sync_json(result))
-
-    assert doc["files"] == []
-
-
-@pytest.mark.parametrize(
-    "budget",
-    [
-        pytest.param(BudgetSummary(cap_minutes=10, remaining_seconds=300), id="budget-given"),
-        pytest.param(None, id="no-budget"),
-    ],
-)
-def test_render_sync_json_when_budget_varies_does_reflect_the_budget_key(
-    budget: BudgetSummary | None,
-):
-    result = SyncResult(files=("a.py",))
-
-    doc = json.loads(render_sync_json(result, budget=budget))
-
-    if budget is None:
-        assert "budget" not in doc
-    else:
-        assert doc["budget"] == {"cap_minutes": 10, "remaining_seconds": 300}

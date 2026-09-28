@@ -4,7 +4,7 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.session import CommandReason, parse_record, record_to_wire
-from tests.session.records.test_records import (
+from tests.session.records._wire import (
     COMMAND_RECORD,
     COMMAND_RECORD_SUCCESS,
     COMMAND_RECORD_WITH_TRACEPARENT,
