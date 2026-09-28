@@ -18,7 +18,7 @@ import contextlib
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from gymrat.clock import now_ns
 from gymrat.supervisor.claude_messages import (
@@ -37,6 +37,9 @@ from gymrat.supervisor.driver import (
 from gymrat.supervisor.events import CompactionEvent, TurnEndEvent, UsageUpdateEvent
 from gymrat.supervisor.hooks import HooksFactory
 from gymrat.supervisor.tools import ToolsFactory
+
+if TYPE_CHECKING:
+    from claude_agent_sdk import ResultMessage
 
 
 class ClaudeClient(Protocol):
@@ -243,11 +246,10 @@ class _ClaudeSession:
         try:
             return _load_default_factory()
         except ModuleNotFoundError as err:
-            detail = str(err)
             return SessionOutcome(
                 reason="error",
                 cost_usd=0.0,
-                message=f"The claude-agent-sdk package is not installed: {detail}",
+                message=f"The claude-agent-sdk package is not installed: {err!s}",
             )
 
     async def _run(self) -> SessionOutcome:
@@ -327,57 +329,54 @@ class _ClaudeSession:
             await _disconnect_quietly(self._client)
 
     def _map_message(self, message: object) -> None:
-        """Dispatch by message shape, in order: stream event, result, content blocks."""
-        event = getattr(message, "event", None)
-        if isinstance(event, dict) and not hasattr(message, "content"):
-            parent = getattr(message, "parent_tool_use_id", None)
-            self._mapper.map_stream_event(event, parent)
-            return
+        """Dispatch one SDK message by class; messages of other classes emit nothing."""
+        from claude_agent_sdk import (  # noqa: PLC0415 -- deferred to avoid import-time SDK load
+            AssistantMessage,
+            ResultMessage,
+            StreamEvent,
+            SystemMessage,
+            UserMessage,
+        )
 
-        subtype = getattr(message, "subtype", None)
-        num_turns = getattr(message, "num_turns", None)
-
-        # System messages carry ``subtype`` but no ``num_turns``.
-        if isinstance(subtype, str) and num_turns is None:
-            if subtype == "compact_boundary":
+        match message:
+            case StreamEvent(event=event, parent_tool_use_id=parent):
+                self._mapper.map_stream_event(event, parent)
+            case SystemMessage(subtype="compact_boundary"):
                 self._observer(CompactionEvent(at=now_ns()))
-            return
+            case ResultMessage():
+                self._map_result(message)
+            case AssistantMessage(content=blocks, parent_tool_use_id=parent):
+                self._mapper.map_blocks(blocks, parent)
+            case UserMessage(content=list() as blocks, parent_tool_use_id=parent):
+                self._mapper.map_blocks(blocks, parent)
 
-        if isinstance(subtype, str) and num_turns is not None:
-            is_error = getattr(message, "is_error", False)
+    def _map_result(self, message: "ResultMessage") -> None:
+        """Settle on an error result, or close the turn on any other result.
 
-            if is_error and subtype != "error_max_budget_usd":
-                cost = read_cost(message)
-                if cost is not None:
-                    self._commit_cost(cost, settled=True)
-                self._result_outcome = result_outcome_from(message, subtype, self._cost_usd)
-                return
-
-            cost = read_cost(message)
-            if cost is not None:
-                self._commit_cost(cost)
-            self._observer(
-                TurnEndEvent(
-                    at=now_ns(),
-                    text=self._mapper.last_top_level_text,
-                    cost_usd=self._cost_usd,
-                    origin=detect_origin(message),
-                    budget_exhausted=bool(is_error and subtype == "error_max_budget_usd"),
-                )
-            )
-            self._had_turn_end = True
-            self._turn_end_count += 1
-            self._mapper.reset_turn_text()
-            return
-
+        A budget-exhausted result is an error the session survives: it closes
+        the turn with ``budget_exhausted`` set instead of settling.
+        """
+        budget_exhausted = message.is_error and message.subtype == "error_max_budget_usd"
+        settles = message.is_error and not budget_exhausted
         cost = read_cost(message)
         if cost is not None:
-            self._commit_cost(cost)
+            self._commit_cost(cost, settled=settles)
+        if settles:
+            self._result_outcome = result_outcome_from(message, self._cost_usd)
+            return
 
-        parent = getattr(message, "parent_tool_use_id", None)
-        content = getattr(message, "content", None)
-        if isinstance(content, list):
-            self._mapper.map_blocks(content, parent)
+        self._observer(
+            TurnEndEvent(
+                at=now_ns(),
+                text=self._mapper.last_top_level_text,
+                cost_usd=self._cost_usd,
+                origin=detect_origin(message),
+                budget_exhausted=budget_exhausted,
+            )
+        )
+        self._had_turn_end = True
+        self._turn_end_count += 1
+        self._mapper.reset_turn_text()
 
     def _commit_cost(self, cost: float, *, settled: bool = False) -> None:
         """Set the running cost and notify observers.

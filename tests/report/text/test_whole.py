@@ -1,13 +1,17 @@
 """Whole-report assembly and layout tests for the comparison report.
 
 These cover whole-report assembly and layout. The structural table-region and
-styles-at cases are asserted directly. Golden snapshots cannot byte-match the
-rich output, so each is pinned as a content/shape assertion: the table layout
-via :func:`table_region`, the assembled tail via the summary line(s), the
-highlights block, and the footer/worktree lines, plus ``styles_at`` on the
-colored markers. Highlight entries are compared with their internal padding
-collapsed — that padding is pinned exactly by ``test_text_verdicts`` — so these
-tests pin order and content without re-pinning column widths a second time.
+styles-at cases are asserted directly. Most scenarios are pinned as a
+content/shape assertion: the table layout via :func:`table_region`, the
+assembled tail via the summary line(s), the highlights block, and the
+footer/worktree lines, plus ``styles_at`` on the colored markers. Highlight
+entries are compared with their internal padding collapsed — that padding is
+pinned exactly by ``test_verdicts`` — so these tests pin order and content
+without re-pinning column widths a second time.
+
+A handful of representative layouts are also pinned byte for byte as golden
+outputs, colored and plain, so a change to how the table is drawn cannot shift
+a padding space, a rule dash or a style escape unnoticed.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from tests.report._inputs import (
     cells_of,
     create_candidate,
     create_comparison_result,
+    exact_metric,
     exact_verdict,
     geomean_of,
     grouped_comparison,
@@ -54,6 +59,8 @@ from tests.report._inputs import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from syrupy.assertion import SnapshotAssertion
+
     from gymrat.report.types import ComparisonResult
 
 _HEADER = (
@@ -64,7 +71,7 @@ _HEADER = (
 def _normalized_highlights(report: str) -> list[str]:
     """The highlight block's lines with runs of whitespace collapsed to one space.
 
-    ``test_text_verdicts`` pins the exact padding; here the concern is order and
+    ``test_verdicts`` pins the exact padding; here the concern is order and
     content, so the alignment padding is folded away.
     """
     return [re.sub(r"\s+", " ", line.strip()) for line in highlight_lines(report)]
@@ -115,8 +122,9 @@ def test_render_report_when_one_kind_does_keep_the_flat_layout_and_one_geomean_r
     ]
 
 
-def test_render_report_when_the_kind_does_not_gate_does_report_no_stable_metrics():
-    result = create_comparison_result(
+def _non_gating_result() -> ComparisonResult:
+    """One ``time`` kind that gates nothing, so its geomean has no stable metrics."""
+    return create_comparison_result(
         metrics={
             "warmup#time": kind_metric(
                 kind="time", short_name="warmup", verdict="improved", delta=-10, gating=False
@@ -129,7 +137,46 @@ def test_render_report_when_the_kind_does_not_gate_does_report_no_stable_metrics
         ],
     )
 
-    row = line_starting_with(render_report(result), "geomean")
+
+def _non_gating_two_candidate_result() -> ComparisonResult:
+    """Two candidates over one ``time`` kind that gates nothing."""
+    return create_comparison_result(
+        metrics={
+            "warmup#time": n_way_kind_metric(
+                kind="time",
+                short_name="warmup",
+                candidates=[
+                    NWayCandidate(verdict="improved", delta=-10, median=90),
+                    NWayCandidate(verdict="regressed", delta=4, median=104),
+                ],
+                gating=False,
+            ),
+        },
+        candidates=[
+            create_candidate(
+                label=label, kinds=[KindAggregate(kind="time", geomean=geomean, groups=())]
+            )
+            for label, geomean in (
+                ("candidate-a", geomean_of(-10, 1)),
+                ("candidate-b", geomean_of(4, 1)),
+            )
+        ],
+    )
+
+
+def _mixed_methods_result() -> ComparisonResult:
+    """Banded, exact and unstable rows in one verdict column, each over the run's ten pairs."""
+    return create_comparison_result(
+        metrics={
+            "latency#other": permutation_metric(verdict="improved", delta=-10, n=10),
+            "heap#other": exact_metric(delta=-5, n=10),
+            "flaky#other": permutation_metric(verdict="unstable", delta=50, n=10),
+        },
+    )
+
+
+def test_render_report_when_the_kind_does_not_gate_does_report_no_stable_metrics():
+    row = line_starting_with(render_report(_non_gating_result()), "geomean")
 
     assert [cell.strip() for cell in cells_of(row)] == ["geomean", "", "", "—  no stable metrics"]
 
@@ -725,3 +772,35 @@ def test_render_report_when_flat_non_gating_does_assemble_tag_summary_and_highli
         "= 0 identical   ~ 1 within noise   ? 0 inconclusive"
     )
     assert _normalized_highlights(report) == ["✓ warmup#time -10.0%"]
+
+
+# ---------------------------------------------------------------------------
+# byte-for-byte golden outputs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("make_result", "color"),
+    [
+        pytest.param(_one_kind_result, False, id="flat-grouped-plain"),
+        pytest.param(_one_kind_result, True, id="flat-grouped-colored"),
+        pytest.param(_degenerate_result, False, id="flat-degenerate-plain"),
+        pytest.param(_two_candidate_result, False, id="flat-two-candidates-plain"),
+        pytest.param(two_kind_result, False, id="sectioned-single-candidate-plain"),
+        pytest.param(grouped_comparison, False, id="sectioned-multi-candidate-plain"),
+        pytest.param(grouped_comparison, True, id="sectioned-multi-candidate-colored"),
+        pytest.param(_non_gating_result, False, id="flat-no-stable-metrics-plain"),
+        pytest.param(
+            _non_gating_two_candidate_result,
+            False,
+            id="flat-two-candidates-no-stable-metrics-plain",
+        ),
+        pytest.param(_mixed_methods_result, False, id="flat-mixed-methods-plain"),
+    ],
+)
+def test_render_report_when_rendered_does_match_its_golden(
+    make_result: Callable[[], ComparisonResult], color: bool, snapshot: SnapshotAssertion
+):
+    report = render_report(make_result(), ReportOptions(color=color))
+
+    assert report.split("\n") == snapshot

@@ -5,10 +5,12 @@ tests verify that the flat body groups metrics under group headers, uses case
 names for member rows, places ungrouped rows after groups, preserves
 first-appearance ordering, and renders the full path prefix for deeper groups.
 
-The verdict-cell alignment section tests that the styled (colored) and plain
-verdict cells produce the same visible width for every field combination,
-including the NaN-delta case where the delta field is empty but the column
-carries a non-zero width from sibling rows.
+The verdict-cell section pins the styled cell a verdict column is built from:
+its plain text is the column's width source, and its styles sit on the glyph,
+the delta (or the word standing in for it) and the band, never on padding.
+
+The body-rendering section pins the rules a planned body draws between a header
+and its rows and ahead of an aggregate row, including two rules in a row.
 """
 
 from __future__ import annotations
@@ -16,18 +18,24 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from rich.text import Text
 
-from gymrat.report.style import render_lines
 from gymrat.report.table import (
+    AggregateLine,
+    GroupLine,
+    HeaderLine,
+    MetricLine,
     VerdictParts,
     VerdictWidths,
-    join_verdict_cell,
-    style_verdict_cell,
+    render_body,
+    verdict_cell,
 )
+from gymrat.report.table.render import RuleLine
 from gymrat.report.text import render_report
 from gymrat.verdict import GroupAggregate, KindAggregate
 
 if TYPE_CHECKING:
+    from gymrat.report.table import BodyLine
     from gymrat.report.types import ComparisonResult
 from tests.report._inputs import (
     create_candidate,
@@ -90,13 +98,18 @@ def _grouped_flat_result() -> ComparisonResult:
 def test_table_region_when_flat_body_with_groups_does_emit_group_headers_and_case_names():
     region = table_region(render_report(_grouped_flat_result()))
 
-    assert "alive_check" in region
-    assert "spawn" in region
-    assert "entity/alive_check#time" not in region
-    assert "entity/spawn#time" not in region
-
-    group_headers = [entry for entry in region if entry.startswith("entity") and "/" not in entry]
-    assert group_headers
+    assert region == [
+        "gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata",
+        "metric",
+        "<rule>",
+        "entity · time",
+        "alive_check",
+        "spawn",
+        "",
+        "warmup",
+        "<rule>",
+        "geomean (3 stable metrics)",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -169,15 +182,20 @@ def test_table_region_when_flat_body_with_multiple_groups_does_preserve_first_ap
 
     region = table_region(render_report(result))
 
-    node_headers = [
-        i for i, entry in enumerate(region) if entry.startswith("node") and "/" not in entry
+    assert region == [
+        "gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata",
+        "metric",
+        "<rule>",
+        "node · time",
+        "get",
+        "set",
+        "",
+        "entity · time",
+        "spawn",
+        "check",
+        "<rule>",
+        "geomean (4 stable metrics)",
     ]
-    entity_headers = [
-        i for i, entry in enumerate(region) if entry.startswith("entity") and "/" not in entry
-    ]
-    assert node_headers
-    assert entity_headers
-    assert node_headers[0] < entity_headers[0]
 
 
 # ---------------------------------------------------------------------------
@@ -227,54 +245,152 @@ def test_table_region_when_flat_body_with_deeper_path_does_use_full_prefix_as_gr
 
 
 # ---------------------------------------------------------------------------
-# styled verdict cell alignment with plain verdict cell
+# styled verdict cell
 # ---------------------------------------------------------------------------
 
 
-def _plain_of_styled(markup: str) -> str:
-    """Render markup through rich to get visible text (ANSI stripped)."""
-    return render_lines(markup, color=False, width=200)
-
-
 @pytest.mark.parametrize(
-    ("parts", "widths", "glyph_style", "delta_style", "band_style"),
+    ("parts", "widths", "delta_style", "band_style", "expected"),
     [
         pytest.param(
-            VerdictParts(glyph="~", delta="", word="", band="±2.5%", pairs=""),
-            VerdictWidths(delta=7, band=5),
-            "dim",
+            VerdictParts(glyph="~", delta="", word="", band="2.5%", pairs=""),
+            VerdictWidths(delta=7, band=4),
             None,
             "dim",
+            ("~           ±2.5%", [("~", "green"), ("±2.5%", "dim")]),
             id="delta-empty-band-present",
         ),
         pytest.param(
-            VerdictParts(glyph="✓", delta="-10.0%", word="", band="±2.5%", pairs=""),
-            VerdictWidths(delta=7, band=5),
-            "green",
-            "green",
+            VerdictParts(glyph="✓", delta="-10.0%", word="", band="2.5%", pairs="n=8"),
+            VerdictWidths(delta=7, band=4),
+            "red",
             "dim",
+            ("✓   -10.0%  ±2.5%  n=8", [("✓", "green"), ("-10.0%", "red"), ("±2.5%", "dim")]),
             id="all-fields-present",
+        ),
+        pytest.param(
+            VerdictParts(glyph="✓", delta="-10.0%", word="", band="", pairs="n=8"),
+            VerdictWidths(delta=7, band=4),
+            "red",
+            "dim",
+            ("✓   -10.0%         n=8", [("✓", "green"), ("-10.0%", "red")]),
+            id="band-absent-with-pairs-reserves-band-slot",
+        ),
+        pytest.param(
+            VerdictParts(glyph="≈", delta="", word="unstable", band="", pairs=""),
+            VerdictWidths(delta=6, band=0),
+            "red",
+            None,
+            ("≈  unstable", [("≈", "green"), ("unstable", "red")]),
+            id="word-stands-in-for-delta",
         ),
         pytest.param(
             VerdictParts(glyph="~", delta="+4.0%", word="", band="", pairs=""),
             VerdictWidths(delta=6, band=0),
-            "dim",
-            "dim",
             None,
-            id="word-empty-delta-present",
+            None,
+            ("~   +4.0%", [("~", "green")]),
+            id="delta-unstyled-band-absent",
         ),
     ],
 )
-def test_verdict_cell_when_styled_does_match_plain_visible_width(
+def test_verdict_cell_when_fields_padded_to_widths_does_style_only_field_text(
     parts: VerdictParts,
     widths: VerdictWidths,
-    glyph_style: str,
     delta_style: str | None,
     band_style: str | None,
+    expected: tuple[str, list[tuple[str, str]]],
 ):
-    plain = join_verdict_cell(parts, widths)
-    styled = style_verdict_cell(
-        parts, widths, glyph_style=glyph_style, delta_style=delta_style, band_style=band_style
+    plain, styled = expected
+
+    cell = verdict_cell(
+        parts, widths, glyph_style="green", delta_style=delta_style, band_style=band_style
     )
 
-    assert len(plain) == len(_plain_of_styled(styled))
+    assert isinstance(cell, Text)
+    assert cell.plain == plain
+    assert [(cell.plain[span.start : span.end], span.style) for span in cell.spans] == styled
+
+
+# ---------------------------------------------------------------------------
+# body rules
+# ---------------------------------------------------------------------------
+
+
+def _text_cells(line: BodyLine[str, str]) -> tuple[Text, ...]:
+    """Two plain ``Text`` cells for a header, group, metric, or aggregate line."""
+    match line:
+        case HeaderLine():
+            return (Text("metric"), Text("value"))
+        case GroupLine(label=label):
+            return (Text(label), Text(""))
+        case MetricLine(row=row):
+            return (Text(row), Text("1"))
+        case AggregateLine(label=label, cell=cell):
+            return (Text(label), Text(cell))
+        case _:
+            msg = f"no cells for {line!r}"
+            raise AssertionError(msg)
+
+
+@pytest.mark.parametrize("color", [False, True])
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param(
+            [
+                HeaderLine(),
+                RuleLine(),
+                MetricLine("decode"),
+                RuleLine(),
+                AggregateLine("geomean", "-3.2%"),
+            ],
+            [
+                "metric   │ value",
+                "─────────┼───────",
+                "decode   │ 1",
+                "─────────┼───────",
+                "geomean  │ -3.2%",
+            ],
+            id="rule-after-header-and-before-aggregate",
+        ),
+        pytest.param(
+            [HeaderLine(), RuleLine(), RuleLine(), AggregateLine("geomean", "-3.2%")],
+            [
+                "metric   │ value",
+                "─────────┼───────",
+                "─────────┼───────",
+                "geomean  │ -3.2%",
+            ],
+            id="two-rules-with-no-row-between",
+        ),
+        pytest.param(
+            [HeaderLine(), RuleLine()],
+            ["metric   │ value", "─────────┼───────"],
+            id="rule-closing-the-body",
+        ),
+        pytest.param(
+            [
+                HeaderLine(),
+                RuleLine(),
+                GroupLine("[bold]"),
+                MetricLine("[dim]"),
+                AggregateLine("geomean", "-3.2%"),
+            ],
+            [
+                "metric   │ value",
+                "─────────┼───────",
+                "[bold]   │",
+                "[dim]    │ 1",
+                "geomean  │ -3.2%",
+            ],
+            id="bracketed-text-cells-render-literally",
+        ),
+    ],
+)
+def test_render_body_when_text_cells_does_draw_rows_and_rules(
+    body: list[BodyLine[str, str]], expected: list[str], color: bool
+):
+    lines = render_body(body, [8, 6], _text_cells, color=color)
+
+    assert lines == expected

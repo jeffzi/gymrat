@@ -32,7 +32,6 @@ from gymrat.report.types import (
 )
 from gymrat.sampling import (
     RunOptions,
-    SamplingOptions,
     TargetContext,
     TargetSamples,
     TargetSpec,
@@ -50,19 +49,21 @@ from gymrat.warn import WarnSink, warn_to_stderr
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class CompareOptions(RunOptions):
+class CompareOptions:
     """Caller-facing configuration for a single comparison run.
 
     One baseline, one or more candidates: every candidate is compared with the
     baseline and never with another candidate.
 
     Attributes:
+        run: The bench, sampling, adapter, and config-override settings of the run.
         baseline: The revision every candidate is judged against.
         candidates: The revisions judged against ``baseline``, reported in order.
         unstable_noise_pct: Noise band width, in percent, above which a metric is
             reported unstable.
     """
 
+    run: RunOptions
     baseline: TargetSpec
     candidates: list[TargetSpec]
     unstable_noise_pct: float
@@ -254,7 +255,8 @@ async def _compare_phase(
     worktrees: list[WorktreeInfo],
     abort: asyncio.Event,
 ) -> _Measurement:
-    adapter = get_adapter(options.adapter)
+    run = options.run
+    adapter = get_adapter(run.adapter)
 
     baseline_target = resolve_target(options.baseline.target, repo_dir)
     candidate_targets = [
@@ -269,22 +271,15 @@ async def _compare_phase(
     baseline, *candidates = await collect_samples(
         adapter,
         [baseline_context, *candidate_contexts],
-        SamplingOptions(
-            bench=options.bench,
-            prepare=options.prepare,
-            samples=options.samples,
-            timeout_seconds=options.timeout_seconds,
-            on_progress=options.on_progress,
-            warn=options.warn,
-        ),
+        run.sampling(),
         abort,
     )
 
     metric_meta = resolve_metric_meta_from_samples(
         [baseline.samples, *(candidate.samples for candidate in candidates)],
-        options.config_metrics,
+        run.config_metrics,
         adapter,
-        options.config_kinds,
+        run.config_kinds,
     )
 
     return _Measurement(
@@ -295,7 +290,7 @@ async def _compare_phase(
             candidates,
             metric_meta,
             options.unstable_noise_pct,
-            options.warn,
+            run.warn,
         ),
         metric_meta=metric_meta,
     )
@@ -322,6 +317,7 @@ async def compare(options: CompareOptions) -> ComparisonResult:
         CommandError: When a prepare or bench command times out or exits
             non-zero.
     """
+    run = options.run
     return await run_with_worktrees(
         lambda repo_dir, worktrees, abort: _compare_phase(options, repo_dir, worktrees, abort),
         lambda measurement, cleanup: build_comparison_result(
@@ -329,9 +325,9 @@ async def compare(options: CompareOptions) -> ComparisonResult:
             measurement.baseline_samples,
             measurement.candidates,
             measurement.metric_meta,
-            samples=options.samples,
-            adapter=options.adapter,
-            config_kinds=options.config_kinds,
+            samples=run.samples,
+            adapter=run.adapter,
+            config_kinds=run.config_kinds,
             cleanup=cleanup,
         ),
     )

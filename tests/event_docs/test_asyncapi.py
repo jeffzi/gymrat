@@ -16,12 +16,16 @@ channel and message type lists.
 import importlib.metadata
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from jsonschema import Draft7Validator
+from pydantic import BaseModel
 
+from gymrat.event_docs.asyncapi import render_asyncapi
 from gymrat.event_docs.json_schema import render_json_schemas
+from gymrat.session import SessionLogRecord
+from gymrat.supervisor import SessionEvent
 from tests.event_docs._imports import modules_imported_by
 
 # ---------------------------------------------------------------------------
@@ -61,11 +65,15 @@ SUPERVISOR_EVENT_CLASSES: dict[str, str] = {
 }
 
 
-def _render() -> dict[str, Any]:
+def _render_with_schemas() -> tuple[tuple[dict[str, Any], dict[str, Any]], dict[str, Any]]:
     from gymrat.event_docs.asyncapi import render_asyncapi
 
     schemas = render_json_schemas()
-    return render_asyncapi(schemas)
+    return schemas, render_asyncapi(schemas)
+
+
+def _render() -> dict[str, Any]:
+    return _render_with_schemas()[1]
 
 
 # ---------------------------------------------------------------------------
@@ -98,39 +106,72 @@ def test_render_asyncapi_when_called_does_have_two_channels_with_correct_address
     assert channels["supervisor-log"]["address"] == ".gymrat/supervisor-<ms>.jsonl"
 
 
-def test_render_asyncapi_when_called_does_have_session_log_channel_with_nine_messages():
+#: Each channel with the members of the union it documents.
+_CHANNEL_UNIONS = [
+    pytest.param("session-log", get_args(SessionLogRecord.__value__), id="session-log"),
+    pytest.param("supervisor-log", get_args(SessionEvent), id="supervisor-log"),
+]
+
+#: Each channel's position in the pair returned by ``render_json_schemas()``.
+_SCHEMA_INDEX = {"session-log": 0, "supervisor-log": 1}
+
+
+def _wire_type(model: type[BaseModel]) -> str:
+    return get_args(model.model_fields["type"].annotation)[0]
+
+
+@pytest.mark.parametrize(("channel", "members"), _CHANNEL_UNIONS)
+def test_render_asyncapi_when_called_does_list_channel_messages_in_union_order(
+    channel: str,
+    members: tuple[type[BaseModel], ...],
+):
     doc = _render()
 
-    messages = doc["channels"]["session-log"]["messages"]
+    messages = doc["channels"][channel]["messages"]
 
-    assert len(messages) == 9
-    for wire_type in SESSION_RECORD_CLASSES.values():
-        assert wire_type in messages
-        assert messages[wire_type]["$ref"] == f"#/components/messages/{wire_type}"
+    expected = [_wire_type(model) for model in members]
+    assert list(messages) == expected
+    assert messages == {wt: {"$ref": f"#/components/messages/{wt}"} for wt in expected}
 
 
-def test_render_asyncapi_when_called_does_have_supervisor_log_channel_with_twelve_messages():
+def test_render_asyncapi_when_called_does_list_component_messages_in_union_order():
     doc = _render()
 
-    messages = doc["channels"]["supervisor-log"]["messages"]
+    messages = doc["components"]["messages"]
 
-    assert len(messages) == 12
-    for wire_type in SUPERVISOR_EVENT_CLASSES.values():
-        assert wire_type in messages
-        assert messages[wire_type]["$ref"] == f"#/components/messages/{wire_type}"
+    members = (*get_args(SessionLogRecord.__value__), *get_args(SessionEvent))
+    assert list(messages) == [_wire_type(model) for model in members]
+
+
+def test_render_asyncapi_when_model_has_no_description_does_use_class_name_as_summary():
+    schemas = render_json_schemas()
+    del schemas[0]["$defs"]["KeepRecord"]["description"]
+
+    doc: dict[str, Any] = render_asyncapi(schemas)
+
+    assert doc["components"]["messages"]["keep"]["summary"] == "KeepRecord"
+
+
+@pytest.mark.parametrize(("channel", "members"), _CHANNEL_UNIONS)
+def test_render_asyncapi_when_called_does_take_message_summary_from_schema_description_first_line(
+    channel: str,
+    members: tuple[type[BaseModel], ...],
+):
+    schemas, doc = _render_with_schemas()
+    defs = schemas[_SCHEMA_INDEX[channel]]["$defs"]
+
+    summaries = {
+        wire_type: doc["components"]["messages"][wire_type]["summary"]
+        for wire_type in doc["channels"][channel]["messages"]
+    }
+    assert summaries == {
+        _wire_type(model): defs[model.__name__]["description"].split("\n")[0] for model in members
+    }
 
 
 # ---------------------------------------------------------------------------
 # components.messages — one per record/event type (21 total)
 # ---------------------------------------------------------------------------
-
-
-def test_render_asyncapi_when_called_does_have_21_component_messages():
-    doc = _render()
-
-    component_messages = doc["components"]["messages"]
-
-    assert len(component_messages) == 21
 
 
 def _assert_message_payload(msg: dict[str, Any], class_name: str, schema_file: str) -> None:

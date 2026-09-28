@@ -7,16 +7,18 @@ verdict cell's glyph, delta and band, into fields of their own live in
 :mod:`gymrat.report.table.markup`.
 
 The rendering half draws the grid. The box chrome — column padding, the ``│``
-separators, the ``─`` rules and their ``┼``/``┬`` junctions — is delegated to a
-:class:`rich.table.Table`, and styling is carried as rich markup that
-:func:`~gymrat.report.style.render_lines` resolves to color once. In-cell
-sub-field alignment stays in the string builders, because that is the behavior
-the tests pin; only the grid around the cells is rich's.
+separators, and the ``┼`` rules closing a header or a run of rows — is delegated
+to a :class:`rich.table.Table`; only a section's ``┬`` top border is drawn by
+hand. Cells are styled rich :class:`~rich.text.Text` (or markup strings, which
+rich parses), resolved to color once by
+:func:`~gymrat.report.style.render_lines`. In-cell sub-field alignment stays in
+the cell builders, because that is the behavior the tests pin; only the grid
+around the cells is rich's.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol, assert_never
 
 from rich import box
@@ -32,7 +34,6 @@ from gymrat.report.table.markup import (
     METRIC_COLUMN_MIN,
     VALUE_COLUMN_MIN,
     VERDICT_COLUMN_MIN,
-    AggregateColumnCell,
     ValueWidths,
     VerdictParts,
     VerdictWidths,
@@ -41,9 +42,8 @@ from gymrat.report.table.markup import (
     header_metric_cell,
     indented_section_label,
     join_value_cell,
-    join_verdict_cell,
-    style_verdict_cell,
     value_widths,
+    verdict_cell,
     verdict_parts,
     verdict_widths,
 )
@@ -54,6 +54,10 @@ if TYPE_CHECKING:
     from gymrat.config import KindEntry
     from gymrat.report.format import MetricCellParts
     from gymrat.report.sections import SectionLayout, SectionPlan
+
+
+type TableCell = str | Text
+"""A content row's cell: styled ``Text`` renders literally, a string is parsed as markup."""
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +338,61 @@ class TableSkeleton[Row]:
     value_width: int
 
 
+def is_grouped[Metric, Cell](
+    layout: SectionLayout[Metric],
+    body: Sequence[BodyLine[Metric, Cell]],
+) -> bool:
+    """Whether a row shows its indented, grouped label rather than its bare name.
+
+    True once the run spans more than one kind, or its one section has a group
+    holding more than one metric — the same test a measurement, probe, and
+    comparison table all apply to their body.
+
+    Args:
+        layout: The sectioned rows the body was planned from.
+        body: The planned body lines to check for a multi-metric group.
+
+    Returns:
+        Whether rows show their grouped label.
+    """
+    return len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
+
+
+def row_name_cell[Row: NamedRow](row: Row, *, grouped: bool) -> str:
+    """A row's metric-column text: its indented group label, or its bare name.
+
+    Args:
+        row: The row to name.
+        grouped: Whether the table shows the indented, grouped label rather
+            than the bare name.
+
+    Returns:
+        The row's name-cell text.
+    """
+    return row.label if grouped else row.name
+
+
+def metric_column_width[Metric, Cell](
+    body: Sequence[BodyLine[Metric, Cell]],
+    name_lengths: Sequence[int],
+) -> int:
+    """The metric column's width: the widest of its name cells, its header, and its floor.
+
+    Args:
+        body: The planned body lines, whose header and aggregate labels also
+            size the column.
+        name_lengths: Each row's name-cell width, in terminal cells.
+
+    Returns:
+        The metric column's settled width.
+    """
+    return compute_column_width(
+        cell_len(widest_header_label(body)),
+        list(name_lengths) + aggregate_label_lengths(body),
+        METRIC_COLUMN_MIN,
+    )
+
+
 def plan_table_skeleton[Row: NamedRow](
     layout: SectionLayout[Row],
     config_kinds: Mapping[str, KindEntry] | None,
@@ -365,19 +424,15 @@ def plan_table_skeleton[Row: NamedRow](
         None,
         lambda section: section_annotation(section, config_kinds),
     )
-    grouped = len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
+    grouped = is_grouped(layout, body)
 
     def name_cell(row: Row) -> str:
-        return row.label if grouped else row.name
+        return row_name_cell(row, grouped=grouped)
 
     def value_cell(row: Row) -> str:
         return join_value_cell(value_of(row), value_fields)
 
-    metric_width = compute_column_width(
-        cell_len(widest_header_label(body)),
-        [cell_len(name_cell(row)) for row in layout.ordered] + aggregate_label_lengths(body),
-        METRIC_COLUMN_MIN,
-    )
+    metric_width = metric_column_width(body, [cell_len(name_cell(row)) for row in layout.ordered])
     value_width = compute_column_width(
         cell_len(label),
         [cell_len(value_cell(row)) for row in layout.ordered],
@@ -394,10 +449,10 @@ def plan_table_skeleton[Row: NamedRow](
 
 
 def build_cell_dispatcher[Row, Cell](
-    header: Callable[[str | None], tuple[str, ...]],
-    group: Callable[[str], tuple[str, ...]],
-    metric: Callable[[Row], tuple[str, ...]],
-) -> Callable[[BodyLine[Row, Cell]], tuple[str, ...]]:
+    header: Callable[[str | None], tuple[TableCell, ...]],
+    group: Callable[[str], tuple[TableCell, ...]],
+    metric: Callable[[Row], tuple[TableCell, ...]],
+) -> Callable[[BodyLine[Row, Cell]], tuple[TableCell, ...]]:
     """A ``to_cells`` callable dispatching a header, group, or metric line to its cells.
 
     Both tables' ``to_cells`` differ only in how many columns each line states;
@@ -415,7 +470,7 @@ def build_cell_dispatcher[Row, Cell](
         ``TitleLine``, or ``AggregateLine``.
     """
 
-    def to_cells(line: BodyLine[Row, Cell]) -> tuple[str, ...]:
+    def to_cells(line: BodyLine[Row, Cell]) -> tuple[TableCell, ...]:
         if isinstance(line, HeaderLine):
             return header(line.title)
         if isinstance(line, GroupLine):
@@ -469,48 +524,72 @@ def _make_table(widths: Sequence[int]) -> Table:
     return table
 
 
-def render_body[Metric, Cell](
-    body: Sequence[BodyLine[Metric, Cell]],
+@dataclass(frozen=True, slots=True)
+class _BatchedRow:
+    """A content row waiting to be drawn, and whether a rule closes it."""
+
+    cells: tuple[TableCell, ...]
+    end_section: bool = False
+
+
+def _flush_batch(
+    batch: list[_BatchedRow],
     widths: Sequence[int],
-    to_cells: Callable[[BodyLine[Metric, Cell]], tuple[str, ...]],
     *,
     color: bool | None,
 ) -> list[str]:
-    """Render a planned body to text, delegating the grid to rich and rules to dashes.
+    """Draw the batched rows as one rich table; append a closing ``┼`` rule if wanted."""
+    if not batch:
+        return []
+    table = _make_table(widths)
+    for row in batch:
+        table.add_row(*row.cells, end_section=row.end_section)
+    out = render_lines(table, color=color, width=RENDER_WIDTH).split("\n")
+    # rich draws a section end only between rows, never after the last one.
+    if batch[-1].end_section:
+        out.append(_horizontal(widths, "┼"))
+    batch.clear()
+    return out
+
+
+def render_body[Metric, Cell](
+    body: Sequence[BodyLine[Metric, Cell]],
+    widths: Sequence[int],
+    to_cells: Callable[[BodyLine[Metric, Cell]], tuple[TableCell, ...]],
+    *,
+    color: bool | None,
+) -> list[str]:
+    """Render a planned body to text, delegating the grid and its rules to rich.
 
     Consecutive content rows (header, group, metric, aggregate) are drawn as one
-    rich table so their ``│`` separators line up; blanks, rules, borders and
-    titles break the run and are emitted as their own lines. Every column is fixed
-    to ``widths``, so separate tables across sections stay aligned. Color resolves
-    once per rendered fragment through
+    rich table so their ``│`` separators line up, and a rule following a row is
+    drawn by rich as that row's section end. Blanks, borders and titles break the
+    run and are emitted as their own lines; a rule with no row of its own to
+    close — the second of two in a row, or one ending a run — is drawn by hand.
+    Every column is fixed to ``widths``, so separate tables across sections stay
+    aligned. Color resolves once per rendered fragment through
     :func:`~gymrat.report.style.render_lines`.
 
     Args:
         body: The planned body lines.
         widths: The fixed content width of each column.
-        to_cells: Builds the markup cells of a content row.
+        to_cells: Builds the cells of a content row.
         color: The explicit color choice, or ``None`` to defer to the environment.
 
     Returns:
         The rendered lines, in order.
     """
     out: list[str] = []
-    batch: list[tuple[str, ...]] = []
-
-    def flush() -> None:
-        if not batch:
-            return
-        table = _make_table(widths)
-        for cells in batch:
-            table.add_row(*cells)
-        out.extend(render_lines(table, color=color, width=RENDER_WIDTH).split("\n"))
-        batch.clear()
+    batch: list[_BatchedRow] = []
 
     for line in body:
         if isinstance(line, (HeaderLine, GroupLine, MetricLine, AggregateLine)):
-            batch.append(to_cells(line))
+            batch.append(_BatchedRow(cells=to_cells(line)))
             continue
-        flush()
+        if isinstance(line, RuleLine) and batch and not batch[-1].end_section:
+            batch[-1] = replace(batch[-1], end_section=True)
+            continue
+        out.extend(_flush_batch(batch, widths, color=color))
         if isinstance(line, BlankLine):
             out.append("")
         elif isinstance(line, RuleLine):
@@ -526,7 +605,7 @@ def render_body[Metric, Cell](
         else:
             assert_never(line)
 
-    flush()
+    out.extend(_flush_batch(batch, widths, color=color))
     return out
 
 
@@ -535,7 +614,6 @@ __all__ = [
     "METRIC_COLUMN_MIN",
     "VALUE_COLUMN_MIN",
     "VERDICT_COLUMN_MIN",
-    "AggregateColumnCell",
     "AggregateLine",
     "AggregateRow",
     "AggregateRows",
@@ -544,6 +622,7 @@ __all__ = [
     "HeaderLine",
     "MetricLine",
     "NamedRow",
+    "TableCell",
     "TableSkeleton",
     "ValueWidths",
     "VerdictParts",
@@ -555,14 +634,16 @@ __all__ = [
     "group_metric_cell",
     "header_metric_cell",
     "indented_section_label",
+    "is_grouped",
     "join_value_cell",
-    "join_verdict_cell",
+    "metric_column_width",
     "plan_body",
     "plan_table_skeleton",
     "render_body",
+    "row_name_cell",
     "section_annotation",
-    "style_verdict_cell",
     "value_widths",
+    "verdict_cell",
     "verdict_parts",
     "verdict_widths",
     "widest_header_label",

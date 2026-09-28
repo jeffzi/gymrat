@@ -15,7 +15,58 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from gymrat.stats import SignificanceResult, sign_flip_permutation_test
-from gymrat.stats.permutation import RESAMPLE_BUDGET
+from gymrat.stats.permutation import RESAMPLE_BUDGET, count_nonzero_pairs
+
+# ---------------------------------------------------------------------------
+# count_nonzero_pairs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "expected"),
+    [
+        pytest.param([], [], (0, 0), id="empty"),
+        pytest.param([3.0, 5.0, 7.0], [3.0, 5.0, 7.0], (3, 0), id="all-tied"),
+        pytest.param([1, 2, 3, 4, 9], [1, 5, 3, 7], (4, 2), id="ties-and-unequal-lengths"),
+        pytest.param([4.0, 1.0], [1.0, 4.0], (2, 2), id="no-ties"),
+        pytest.param(
+            [math.inf, -math.inf, 1.0],
+            [math.inf, -math.inf, 2.0],
+            (3, 1),
+            id="equal-infinities-tied",
+        ),
+        pytest.param([math.nan, 1.0], [math.nan, 2.0], (2, 2), id="nan-pair-differs"),
+    ],
+)
+def test_count_nonzero_pairs_when_paired_positionally_does_count_paired_and_differing(
+    x: list[float],
+    y: list[float],
+    expected: tuple[int, int],
+):
+    assert count_nonzero_pairs(x, y) == expected
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "expected_n"),
+    [
+        pytest.param(
+            [math.inf, -math.inf, 4.0, 1.0],
+            [math.inf, -math.inf, 1.0, 4.0],
+            2,
+            id="equal-infinities",
+        ),
+        pytest.param([math.nan, 4.0, 1.0], [math.nan, 1.0, 4.0], 3, id="nan-pair"),
+    ],
+)
+def test_sign_flip_permutation_test_when_non_finite_pairs_does_count_only_unequal_pairs(
+    x: list[float],
+    y: list[float],
+    expected_n: int,
+):
+    result = sign_flip_permutation_test(x, y)
+
+    assert result.n == expected_n
+
 
 # ---------------------------------------------------------------------------
 # sign_flip_permutation_test — pinned empirical fixtures
@@ -41,6 +92,42 @@ _SIX_PAIR_Y = [9, 10, 13, 14, 15, 17]
             1.0,
             1,
             id="near-identical-no-separation",
+        ),
+        pytest.param(
+            [10, 20, 30, 40],
+            [10, 21, 30, 41],
+            1.0,
+            2,
+            id="interleaved-ties-two-differing-pairs",
+        ),
+        pytest.param([1, 3], [3, 1], 1.0, 2, id="symmetric-swap-clipped-to-one"),
+        pytest.param(
+            [10, 11, 12, 13, 14, 15, 16, 17],
+            [12, 11, 15, 13, 18, 15, 21, 23],
+            0.5,
+            5,
+            id="interleaved-ties-five-differing-pairs",
+        ),
+        pytest.param(
+            [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+            [12, 13, 15, 13, 18, 15, 21, 23, 24, 19],
+            0.125,
+            7,
+            id="interleaved-ties-seven-differing-pairs",
+        ),
+        pytest.param(
+            [100.0 + 2.0 * i for i in range(13)],
+            [95.0 + 2.0 * i for i in range(13)],
+            0.0625,
+            13,
+            id="thirteen-pair-largest-exact-enumeration",
+        ),
+        pytest.param(
+            [100.0 + 2.0 * i for i in range(14)],
+            [95.0 + 2.0 * i for i in range(14)],
+            0.028,
+            14,
+            id="fourteen-pair-seeded-monte-carlo",
         ),
     ],
 )
@@ -94,45 +181,6 @@ def test_sign_flip_permutation_test_when_baseline_median_zero_does_return_p_one_
     result = sign_flip_permutation_test(x, y)
 
     assert result == SignificanceResult(p=1.0, n=2)
-
-
-# ---------------------------------------------------------------------------
-# Determinism by explicit policy — both sides of the exact / Monte Carlo seam
-# ---------------------------------------------------------------------------
-
-
-def _arithmetic_pairs(n: int) -> tuple[list[float], list[float]]:
-    """Build ``n`` (x, y) pairs on parallel arithmetic sequences, x offset +5 above y."""
-    return (
-        [100.0 + 2.0 * i for i in range(n)],
-        [95.0 + 2.0 * i for i in range(n)],
-    )
-
-
-_EXACT_PAIRS_N13 = _arithmetic_pairs(13)
-_MONTE_CARLO_PAIRS_N14 = _arithmetic_pairs(14)
-
-
-def test_sign_flip_permutation_test_when_exact_path_does_return_same_p_across_calls():
-    x, y = _EXACT_PAIRS_N13
-
-    first = sign_flip_permutation_test(x, y)
-    second = sign_flip_permutation_test(x, y)
-
-    assert first.n == 13
-    assert 2**first.n <= RESAMPLE_BUDGET
-    assert first.p == second.p
-
-
-def test_sign_flip_permutation_test_when_monte_carlo_path_does_return_same_p_across_calls():
-    x, y = _MONTE_CARLO_PAIRS_N14
-
-    first = sign_flip_permutation_test(x, y)
-    second = sign_flip_permutation_test(x, y)
-
-    assert first.n == 14
-    assert 2**first.n > RESAMPLE_BUDGET
-    assert first.p == second.p
 
 
 # ---------------------------------------------------------------------------

@@ -11,10 +11,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from rich.console import Console as StyledConsole
 
 from gymrat.cli.iterate.progress import IterateRenderer
-from gymrat.cli.style import CLI_THEME
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
@@ -47,7 +45,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from typing import Literal
 
-    from rich.console import Console
+    from rich.console import Console, RenderableType
     from syrupy.assertion import SnapshotAssertion
 
 
@@ -797,56 +795,57 @@ def test_frame_when_compact_confirm_started_does_reset_bar_for_rerun():
 # ---------------------------------------------------------------------------
 
 
-def test_frame_when_judge_regressed_does_style_names_via_format_inline(
-    snapshot: SnapshotAssertion,
-):
-    _console, clock, renderer = _live(sample_count=1, metric_count=3)
+def _judge_row_style_runs(renderable: RenderableType) -> list[tuple[str, str]]:
+    """Render *renderable* in color and return the judge row as ``(text, style)`` runs.
 
+    Adjacent segments sharing a style merge into one run, so the result pins
+    what the user sees regardless of how the row's spans are split.
+    """
+    styled = sealed_console(width=120, no_color=False)
+    lines = styled.render_lines(renderable, pad=False)
+    judge_row = next(line for line in lines if "judged" in "".join(seg.text for seg in line))
+    runs: list[tuple[str, str]] = []
+    for seg in judge_row:
+        style = str(seg.style) if seg.style else ""
+        if runs:
+            prev_text, prev_style = runs[-1]
+            if prev_style == style:
+                runs[-1] = (prev_text + seg.text, style)
+            else:
+                runs.append((seg.text, style))
+        else:
+            runs.append((seg.text, style))
+    return runs
+
+
+@pytest.mark.parametrize(
+    "regressed",
+    [
+        pytest.param((), id="zero"),
+        pytest.param(("latency",), id="one"),
+        pytest.param(
+            ("node/access#time", "parse[json]", "throughput", "alloc"),
+            id="several-capped-with-bracket",
+        ),
+    ],
+)
+def test_frame_when_judge_finished_does_style_regressed_names_in_judge_row(
+    snapshot: SnapshotAssertion,
+    regressed: tuple[str, ...],
+):
+    _console, clock, renderer = _live(sample_count=1, metric_count=5)
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
     clock.tick(6)
     renderer.report(
         JudgeFinished(
             primary_delta_pct=-3.2,
-            regressed=("node/access#time",),
-            metric_count=3,
+            regressed=regressed,
+            metric_count=5,
             at_ms=_ms(clock),
         )
     )
 
-    styled = StyledConsole(
-        width=120,
-        force_terminal=True,
-        no_color=False,
-        color_system="truecolor",  # cspell:disable-line
-        _environ={},
-        legacy_windows=False,
-        theme=CLI_THEME,
-    )
-    renderable = renderer.frame()
-    assert frame_text(renderable) == snapshot
+    result = _judge_row_style_runs(renderer.frame())
 
-    segments = [seg for line in styled.render_lines(renderable) for seg in line]
-
-    group_dim: bool | None = None
-    case_dim: bool | None = None
-    kind_dim: bool | None = None
-
-    for seg in segments:
-        dim = seg.style is not None and seg.style.dim is True
-        if "node/" in seg.text and group_dim is None:
-            group_dim = dim
-        if "access" in seg.text and case_dim is None:
-            case_dim = dim
-        if "#time" in seg.text and kind_dim is None:
-            kind_dim = dim
-
-    assert case_dim is not None, "No segment containing case part 'access' in the judge row"
-    assert group_dim is True, "Group prefix 'node/' should be dim (format_inline)"
-    assert case_dim is False, (
-        "Case part 'access' should not be dim — "
-        "format_inline leaves the case unstyled while dimming group and kind"
-    )
-    assert kind_dim is True, "Kind suffix '#time' should be dim (format_inline)"
-
-    renderer.stop()
+    assert result == snapshot

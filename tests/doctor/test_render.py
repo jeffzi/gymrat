@@ -112,7 +112,7 @@ def test_render_doctor_report_when_multiline_detail_does_indent_continuations_un
     assert "    line three" in rendered
 
 
-def test_render_doctor_report_omits_hint_line_when_check_has_none():
+def test_render_doctor_report_when_check_has_no_hint_does_omit_hint_line():
     report = _report([CheckSection(title="Env", checks=[Check("git", "ok", "found")])])
 
     matched = [line for line in lines(render_doctor_report(report)) if "found" in line]
@@ -215,38 +215,35 @@ def test_render_doctor_report_when_multiple_per_status_does_pluralize_counts():
 # ---------------------------------------------------------------------------
 
 
-def test_render_doctor_report_when_no_color_does_suppress_ansi(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("NO_COLOR", "1")
-    report = _report([
+# CSI introducer; present in the output iff any ANSI escape was emitted.
+_ESCAPE_PREFIX = "\x1b["
+
+
+def _two_status_report() -> DoctorReport:
+    """A report with one passing and one failing check."""
+    return _report([
         CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
     ])
 
-    assert "\x1b[" not in render_doctor_report(report)
 
+@pytest.mark.parametrize(
+    ("env", "color", "expect_ansi"),
+    [
+        pytest.param("FORCE_COLOR", None, True, id="default-defers-to-env"),
+        pytest.param(None, True, True, id="forced-on"),
+        pytest.param(None, False, False, id="forced-off"),
+    ],
+)
+def test_render_doctor_report_when_color_resolved_does_control_ansi(
+    monkeypatch: pytest.MonkeyPatch, env: str | None, color: bool | None, expect_ansi: bool
+):
+    if env is not None:
+        monkeypatch.setenv(env, "1")
+    report = _two_status_report()
 
-def test_render_doctor_report_when_force_color_does_emit_ansi(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    report = _report([
-        CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
-    ])
+    output = render_doctor_report(report, color=color)
 
-    assert "\x1b[" in render_doctor_report(report)
-
-
-def test_render_doctor_report_when_color_false_does_suppress_ansi():
-    report = _report([
-        CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
-    ])
-
-    assert "\x1b[" not in render_doctor_report(report, color=False)
-
-
-def test_render_doctor_report_when_color_true_does_emit_ansi():
-    report = _report([
-        CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
-    ])
-
-    assert "\x1b[" in render_doctor_report(report, color=True)
+    assert (_ESCAPE_PREFIX in output) is expect_ansi
 
 
 # ---------------------------------------------------------------------------
@@ -258,23 +255,21 @@ def test_render_doctor_json_when_force_color_env_does_carry_no_ansi(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    report = _report([
-        CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
-    ])
+    report = _two_status_report()
 
     output = render_doctor_json(report)
 
-    assert "\x1b[" not in output
+    assert _ESCAPE_PREFIX not in output
 
 
-def test_render_doctor_json_when_rendered_does_carry_environment_sections_and_counts():
+def test_render_doctor_json_when_rendered_does_emit_full_document():
     report = _report(
         [
             CheckSection(
                 title="Environment",
                 checks=[
                     Check("git", "ok", "available"),
-                    Check("repo", "warn", "not in repo", hint="run inside repo"),
+                    Check("repo", "fail", "not in repo", hint="run inside repo"),
                 ],
             )
         ],
@@ -283,25 +278,42 @@ def test_render_doctor_json_when_rendered_does_carry_environment_sections_and_co
 
     parsed = json.loads(render_doctor_json(report))
 
-    assert parsed["environment"]["gymrat_version"] == "1.0.0"
-    assert parsed["environment"]["python_version"] == "3.13.0"
-    assert "node_version" not in parsed["environment"]
-    assert parsed["ok_count"] == 1
-    assert parsed["warn_count"] == 1
-    assert parsed["fail_count"] == 0
-    assert parsed["has_failures"] is False
-
-
-def test_render_doctor_json_when_check_has_hint_does_carry_status_and_hint():
-    report = _report([
-        CheckSection(
-            title="Config",
-            checks=[Check("file", "fail", "missing", hint="create gymrat.json")],
-        )
-    ])
-
-    parsed = json.loads(render_doctor_json(report))
-    check = parsed["sections"][0]["checks"][0]
-
-    assert check["status"] == "fail"
-    assert check["hint"] == "create gymrat.json"
+    assert parsed == {
+        "environment": {
+            "gymrat_version": "1.0.0",
+            "python_version": "3.13.0",
+            "platform": "darwin",
+        },
+        "sections": [
+            {
+                "title": "Environment",
+                "checks": [
+                    {"name": "git", "status": "ok", "detail": "available"},
+                    {
+                        "name": "repo",
+                        "status": "fail",
+                        "detail": "not in repo",
+                        "hint": "run inside repo",
+                    },
+                ],
+            }
+        ],
+        "ok_count": 1,
+        "warn_count": 0,
+        "fail_count": 1,
+        "has_failures": True,
+    }
+    section = parsed["sections"][0]
+    plain_check, hinted_check = section["checks"]
+    assert list(parsed) == [
+        "environment",
+        "sections",
+        "ok_count",
+        "warn_count",
+        "fail_count",
+        "has_failures",
+    ]
+    assert list(parsed["environment"]) == ["gymrat_version", "python_version", "platform"]
+    assert list(section) == ["title", "checks"]
+    assert list(plain_check) == ["name", "status", "detail"]
+    assert list(hinted_check) == ["name", "status", "detail", "hint"]

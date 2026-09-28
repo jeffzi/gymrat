@@ -7,13 +7,13 @@ Color follows the project's :func:`render_lines` resolution — ``NO_COLOR`` /
 """
 
 import json
+from dataclasses import asdict
 
 from rich.markup import escape
 
 from gymrat.doctor.checks import (
     WORKFLOW_SECTION_TITLE,
     WORKFLOW_SKIP_CHECK_NAME,
-    Check,
     CheckStatus,
     DoctorReport,
 )
@@ -120,35 +120,21 @@ def render_doctor_report(report: DoctorReport, *, color: bool | None = None) -> 
     return render_lines(*lines, color=color, width=RENDER_WIDTH)
 
 
+def _drop_none(fields: list[tuple[str, object]]) -> dict[str, object]:
+    return {key: value for key, value in fields if value is not None}
+
+
 def render_doctor_json(report: DoctorReport) -> str:
-    """Serialize the report as JSON for machine consumption, keyed in snake_case."""
-    document = {
-        "environment": {
-            "gymrat_version": report.environment.gymrat_version,
-            "python_version": report.environment.python_version,
-            "platform": report.environment.platform,
-        },
-        "sections": [
-            {
-                "title": section.title,
-                "checks": [_check_json(check) for check in section.checks],
-            }
-            for section in report.sections
-        ],
-        "ok_count": report.ok_count,
-        "warn_count": report.warn_count,
-        "fail_count": report.fail_count,
-        "has_failures": report.has_failures,
-    }
+    """Serialize the report as JSON for machine consumption, keyed in snake_case.
+
+    Args:
+        report: The assembled doctor report.
+
+    Returns:
+        The JSON document: fields in model declaration order followed by
+        ``has_failures``, with every field whose value is ``None`` omitted
+        rather than emitted as ``null``.
+    """
+    document = asdict(report, dict_factory=_drop_none)
+    document["has_failures"] = report.has_failures
     return json.dumps(document, ensure_ascii=False)
-
-
-def _check_json(check: Check) -> dict[str, str]:
-    payload: dict[str, str] = {
-        "name": check.name,
-        "status": check.status,
-        "detail": check.detail,
-    }
-    if check.hint is not None:
-        payload["hint"] = check.hint
-    return payload

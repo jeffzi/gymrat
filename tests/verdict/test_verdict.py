@@ -6,6 +6,7 @@ API only.
 """
 
 import math
+from collections.abc import Callable
 
 import pytest
 
@@ -861,6 +862,62 @@ def test_compute_verdicts_when_zero_median_with_spread_does_report_unstable(
     verdict = get_permutation(result) if method == "permutation" else get_band(result)
     assert verdict.verdict == "unstable"
     assert not math.isinf(verdict.noise_pct)
+
+
+# A median so close to zero that spread (or the one-byte floor) divided by it
+# overflows to infinity takes the zero-median path: each case pairs the tiny
+# median run with an otherwise matching run whose median is exactly zero. The
+# permutation case keeps both sides' medians tiny so every sign-flipped delta
+# stays finite and only the noise ratio overflows.
+
+
+@pytest.mark.parametrize(
+    ("narrow", "meta", "tiny_median_pair", "zero_median_pair"),
+    [
+        pytest.param(
+            get_band,
+            METRIC_APPROX_LOWER,
+            (create_samples(3, 10.0), samples(-5.0, 1e-310, 5.0)),
+            (create_samples(3, 10.0), samples(-5.0, 0.0, 5.0)),
+            id="band-spread",
+        ),
+        pytest.param(
+            get_permutation,
+            METRIC_APPROX_LOWER,
+            (
+                samples(-5.0, -3.0, 0.0, 4e-310, 3.0, 5.0),
+                samples(-6.0, -4.0, 1e-310, 3e-310, 4.0, 6.0),
+            ),
+            (
+                samples(-5.0, -3.0, -1.0, 1.0, 3.0, 5.0),
+                samples(-6.0, -4.0, -2.0, 2.0, 4.0, 6.0),
+            ),
+            id="permutation-spread",
+        ),
+        pytest.param(
+            get_band,
+            METRIC_BYTES_LOWER,
+            (create_samples(2, 4.0), create_samples(2, 1e-310)),
+            (create_samples(2, 4.0), create_samples(2, 0.0)),
+            id="byte-floor",
+        ),
+    ],
+)
+def test_compute_verdicts_when_noise_ratio_overflows_does_match_zero_median(
+    narrow: Callable[[dict[str, MetricVerdict]], BandVerdict | PermutationVerdict],
+    meta: dict[str, MetricMeta],
+    tiny_median_pair: tuple[list[dict[str, float]], list[dict[str, float]]],
+    zero_median_pair: tuple[list[dict[str, float]], list[dict[str, float]]],
+):
+    zero_median = narrow(run(*zero_median_pair, meta))
+
+    tiny_median = narrow(run(*tiny_median_pair, meta))
+
+    assert math.isfinite(tiny_median.noise_pct)
+    assert (tiny_median.verdict, tiny_median.noise_pct) == (
+        zero_median.verdict,
+        zero_median.noise_pct,
+    )
 
 
 def test_compute_verdicts_when_bytes_zero_median_and_zero_spread_does_not_report_unstable():

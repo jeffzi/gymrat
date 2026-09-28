@@ -17,9 +17,10 @@ import pytest
 
 from gymrat import measure as measure_mod
 from gymrat import sampling
+from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import CommandError, GymratError
 from gymrat.measure import MeasureOptions, measure
-from gymrat.sampling import TargetSpec
+from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.targets import CleanupResult, WorktreeInfo, WorktreeRemovalFailure
 from tests._git import git as _git
 from tests._pipeline import install_pipeline
@@ -37,19 +38,23 @@ def _options(
     spec: TargetSpec | None = None,
     on_progress: Callable[[ProgressEvent], None] | None = None,
     warn: WarnSink | None = None,
+    config_metrics: dict[str, MetricEntry] | None = None,
+    config_kinds: dict[str, KindEntry] | None = None,
 ) -> MeasureOptions:
     resolved_spec = spec if spec is not None else TargetSpec(label=None, target=target)
     return MeasureOptions(
-        bench="run",
-        prepare=None,
-        adapter="metric-lines",
-        samples=3,
-        timeout_seconds=1.0,
-        config_metrics=None,
-        config_kinds=None,
+        run=RunOptions(
+            bench="run",
+            prepare="prep",
+            adapter="metric-lines",
+            samples=3,
+            timeout_seconds=1.0,
+            config_metrics=config_metrics,
+            config_kinds=config_kinds,
+            on_progress=on_progress,
+            warn=warn,
+        ),
         target=resolved_spec,
-        on_progress=on_progress,
-        warn=warn,
     )
 
 
@@ -136,7 +141,7 @@ async def test_measure_when_progress_and_warn_given_does_forward_to_sampling(
     forwarded = captured.options
     assert forwarded is not None
     assert forwarded.bench == "run"
-    assert forwarded.prepare is None
+    assert forwarded.prepare == "prep"
     assert forwarded.samples == 3
     assert forwarded.timeout_seconds == 1.0
 
@@ -146,6 +151,21 @@ async def test_measure_when_progress_and_warn_given_does_forward_to_sampling(
     assert forwarded.warn is not None
     forwarded.warn("test warning")
     assert warnings[-1] == "test warning"
+
+
+async def test_measure_when_config_overrides_given_does_apply_them_to_the_result(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}, {"x": 2.0}]])
+    kinds = {"other": KindEntry(gating=False)}
+
+    result = await measure(
+        _options(config_metrics={"x": MetricEntry(direction="higher")}, config_kinds=kinds)
+    )
+
+    assert result.metrics["x"].meta.direction == "higher"
+    assert result.metrics["x"].meta.gating is False
+    assert result.config_kinds == kinds
 
 
 # ---------------------------------------------------------------------------
@@ -166,13 +186,15 @@ def _commit_bench(repo: str, script: str) -> None:
 
 def _e2e_options(target: str) -> MeasureOptions:
     return MeasureOptions(
-        bench="sh bench.sh",
-        prepare=None,
-        adapter="metric-lines",
-        samples=2,
-        timeout_seconds=30.0,
-        config_metrics=None,
-        config_kinds=None,
+        run=RunOptions(
+            bench="sh bench.sh",
+            prepare=None,
+            adapter="metric-lines",
+            samples=2,
+            timeout_seconds=30.0,
+            config_metrics=None,
+            config_kinds=None,
+        ),
         target=TargetSpec(label=None, target=target),
     )
 

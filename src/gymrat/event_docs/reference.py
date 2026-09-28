@@ -9,14 +9,15 @@ import json
 import textwrap
 from typing import Any
 
+from pydantic import BaseModel
+
 from gymrat.event_docs.asyncapi import (
-    _MODEL_BY_NAME,
     SESSION_LOG_ADDRESS,
+    SESSION_LOG_MODELS,
     SUPERVISOR_LOG_ADDRESS,
+    SUPERVISOR_LOG_MODELS,
     ReaderSpec,
-)
-from gymrat.event_docs.asyncapi import (
-    _docstring_first_line as _model_docstring_first_line,
+    _summary_line,
 )
 from gymrat.event_docs.asyncapi import (
     _wire_type_to_class_name as _wire_type_to_class,
@@ -37,45 +38,23 @@ The `schema` field appears on the first line only."""
 
 _PROSE_WIDTH = 100
 
-_SESSION_WIRE_ORDER = [
-    "session",
-    "baseline",
-    "iteration",
-    "keep",
-    "discard",
-    "hook",
-    "finalize",
-    "stop",
-    "command",
-]
-
-_SUPERVISOR_WIRE_ORDER = [
-    "thinking_update",
-    "tool_start",
-    "tool_progress",
-    "tool_end",
-    "text_delta",
-    "usage_update",
-    "cap",
-    "model_phase",
-    "launch",
-    "turn_end",
-    "follow_up",
-    "compaction",
-]
-
-
 # ---------------------------------------------------------------------------
 # Type and value rendering
 # ---------------------------------------------------------------------------
 
 
-def _docstring_first_line(class_name: str, schema_def: dict[str, Any]) -> str:
-    cls = _MODEL_BY_NAME.get(class_name)
-    if cls is not None:
-        return _model_docstring_first_line(cls)
+def _type_summary(
+    class_name: str,
+    schema_def: dict[str, Any],
+    defs: dict[str, dict[str, Any]],
+    wire_to_class: dict[str, str],
+) -> str:
     description = schema_def.get("description")
-    return str(description) if description else class_name
+    if not description:
+        return class_name
+    if class_name in wire_to_class.values():
+        return _summary_line(defs, class_name)
+    return str(description)
 
 
 def _ref_name(ref: str) -> str:
@@ -271,7 +250,7 @@ def _render_type_block(
         subsections.
     """
     schema_def = defs[class_name]
-    doc = _docstring_first_line(class_name, schema_def)
+    doc = _type_summary(class_name, schema_def, defs, wire_to_class)
     parts: list[str] = [heading, "", doc, "", _build_field_table(schema_def)]
     nested = _nested_defs_for(schema_def, defs, wire_to_class)
     _append_nested_sections(parts, nested, defs, wire_to_class, rendered)
@@ -300,22 +279,18 @@ def _render_nested_subsection(
 
 def _render_log_section(
     heading: str,
-    wire_order: list[str],
+    models: tuple[type[BaseModel], ...],
     defs: dict[str, dict[str, Any]],
 ) -> str:
-    """Render a ## log section with ### subsections per wire type."""
-    wire_to_class = _wire_type_to_class(defs)
+    """Render a ## log section with ### subsections per wire type, in the models' order."""
+    wire_to_class = _wire_type_to_class(models)
     parts: list[str] = []
     parts.append(f"## {heading}")
     parts.append("")
 
     rendered_nested: set[str] = set()
 
-    for wire_type in wire_order:
-        class_name = wire_to_class.get(wire_type)
-        if class_name is None:
-            continue
-
+    for wire_type, class_name in wire_to_class.items():
         block = _render_type_block(
             f"### `{wire_type}`", class_name, defs, wire_to_class, rendered_nested
         )
@@ -381,12 +356,12 @@ def render_reference(
     sections.append(_INTRO)
     sections.append("")
     sections.append(
-        _render_log_section("Session Log", _SESSION_WIRE_ORDER, session_defs),
+        _render_log_section("Session Log", SESSION_LOG_MODELS, session_defs),
     )
     sections.append(
         _render_log_section(
             "Supervisor Log",
-            _SUPERVISOR_WIRE_ORDER,
+            SUPERVISOR_LOG_MODELS,
             supervisor_defs,
         ),
     )

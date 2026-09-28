@@ -7,9 +7,11 @@ under test is pure git orchestration, and only real worktrees reveal the
 pruning, unwind, and detachment behavior these tests pin.
 """
 
+import os
 import re
 import shutil
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -617,3 +619,35 @@ def test_worktree_fingerprint_when_git_fails_does_return_none(tmp_path: Path):
     result = worktree_fingerprint(tmp_path)
 
     assert result is None
+
+
+def test_worktree_fingerprint_when_scratch_directory_cannot_be_created_does_return_none(
+    repo: str, baseline: BaselineRef, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "missing"))
+
+    result = worktree_fingerprint(Path(experiment_worktree_dir(repo)))
+
+    assert result is None
+
+
+def test_worktree_fingerprint_when_scratch_cleanup_fails_does_still_return_the_hash(
+    repo: str, baseline: BaselineRef, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    experiment = Path(experiment_worktree_dir(repo))
+    # The worktree is a fresh, clean checkout of the baseline commit, so its
+    # tree hash already equals what ``worktree_fingerprint`` will compute.
+    expected = _git(["rev-parse", "HEAD^{tree}"], str(experiment))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    def _refuse_rmdir(path: str | os.PathLike[str], *args: object, **kwargs: object) -> None:
+        msg = f"directory is busy: {path}"
+        raise OSError(msg)
+
+    monkeypatch.setattr(os, "rmdir", _refuse_rmdir)
+
+    result = worktree_fingerprint(experiment)
+
+    assert result == expected

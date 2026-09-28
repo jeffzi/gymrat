@@ -30,7 +30,6 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, override
 
 import pytest
@@ -366,7 +365,7 @@ async def test_claude_driver_when_abort_fires_mid_read_does_not_leak_task_diagno
     records = install_task_leak_recorder()
     # The stream hangs after the cost update, so the abort is what unblocks it:
     # the watch task starts, fires, then teardown cancels it on the settle path.
-    client = BlockingClaudeClient([SimpleNamespace(total_cost_usd=0.1)])
+    client = BlockingClaudeClient([result_message(total_cost_usd=0.1)])
     driver = create_claude_driver(client_factory=claude_factory(client))
     abort = asyncio.Event()
 

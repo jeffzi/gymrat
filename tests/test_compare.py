@@ -18,9 +18,11 @@ import pytest
 from gymrat import compare as compare_mod
 from gymrat.adapters import get_adapter
 from gymrat.compare import CompareOptions, compare
+from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT, Observations
 from gymrat.sampling import (
+    RunOptions,
     TargetSpec,
     resolve_metric_meta_from_samples,
 )
@@ -43,6 +45,8 @@ def _options(
     candidates: list[TargetSpec] | None = None,
     on_progress: Callable[[ProgressEvent], None] | None = None,
     warn: WarnSink | None = None,
+    config_metrics: dict[str, MetricEntry] | None = None,
+    config_kinds: dict[str, KindEntry] | None = None,
 ) -> CompareOptions:
     resolved_baseline = baseline if baseline is not None else TargetSpec(label=None, target="base")
     resolved_candidates = (
@@ -51,18 +55,20 @@ def _options(
         else [TargetSpec(label=None, target=name) for name in candidate_targets]
     )
     return CompareOptions(
-        bench="run",
-        prepare=None,
-        adapter="metric-lines",
-        samples=4,
-        timeout_seconds=1.0,
-        config_metrics=None,
-        config_kinds=None,
+        run=RunOptions(
+            bench="run",
+            prepare="prep",
+            adapter="metric-lines",
+            samples=4,
+            timeout_seconds=1.0,
+            config_metrics=config_metrics,
+            config_kinds=config_kinds,
+            on_progress=on_progress,
+            warn=warn,
+        ),
         baseline=resolved_baseline,
         candidates=resolved_candidates,
         unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
-        on_progress=on_progress,
-        warn=warn,
     )
 
 
@@ -212,11 +218,28 @@ async def test_compare_when_progress_and_warn_given_does_forward_to_sampling(
 
     forwarded = captured.options
     assert forwarded is not None
-    assert forwarded.on_progress is options.on_progress
-    assert forwarded.warn is options.warn
+    run = options.run
+    assert forwarded.on_progress is run.on_progress
+    assert forwarded.warn is run.warn
     assert forwarded.bench == "run"
+    assert forwarded.prepare == "prep"
     assert forwarded.samples == 4
     assert forwarded.timeout_seconds == 1.0
+
+
+async def test_compare_when_config_overrides_given_does_apply_them_to_the_result(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_pipeline(monkeypatch, compare_mod, [[{"x": 1.0}, {"x": 2.0}], [{"x": 3.0}, {"x": 4.0}]])
+    kinds = {"other": KindEntry(gating=False)}
+
+    result = await compare(
+        _options(config_metrics={"x": MetricEntry(direction="higher")}, config_kinds=kinds)
+    )
+
+    assert result.metrics["x"].meta.direction == "higher"
+    assert result.metrics["x"].meta.gating is False
+    assert result.config_kinds == kinds
 
 
 # ---------------------------------------------------------------------------
@@ -234,13 +257,15 @@ def _commit_bench(repo: str, value: int) -> None:
 
 def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
     return CompareOptions(
-        bench="sh bench.sh",
-        prepare=None,
-        adapter="metric-lines",
-        samples=3,
-        timeout_seconds=30.0,
-        config_metrics=None,
-        config_kinds=None,
+        run=RunOptions(
+            bench="sh bench.sh",
+            prepare=None,
+            adapter="metric-lines",
+            samples=3,
+            timeout_seconds=30.0,
+            config_metrics=None,
+            config_kinds=None,
+        ),
         baseline=TargetSpec(label=None, target=baseline),
         candidates=[TargetSpec(label=None, target=candidate)],
         unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,

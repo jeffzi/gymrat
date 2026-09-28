@@ -18,7 +18,7 @@ Two entry points bridge the two forms:
 
 from collections.abc import Callable
 from contextvars import ContextVar
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, get_args
 
 from pydantic import (
     BaseModel,
@@ -26,6 +26,7 @@ from pydantic import (
     ConfigDict,
     Field,
     SerializerFunctionWrapHandler,
+    Strict,
     TypeAdapter,
     model_serializer,
     model_validator,
@@ -52,13 +53,6 @@ from gymrat.session.workspace import BaselineRef, Worktrees
 
 #: Metric name to measured value for one sample round.
 type SampleRound = dict[str, float | int]
-
-
-def _to_tuple(value: object) -> object:
-    """Coerce a list into a tuple before strict-mode validation."""
-    if isinstance(value, list):
-        return tuple(value)
-    return value
 
 
 _BaselineRefAdapter = TypeAdapter(BaselineRef)
@@ -162,7 +156,10 @@ _PositiveInt = Annotated[int, Field(ge=1), BeforeValidator(_coerce_integer)]
 _NonNegativeInt = Annotated[int, Field(ge=0), BeforeValidator(_coerce_integer)]
 _OptNonNegativeInt = _NonNegativeInt | SkipJsonSchema[None]
 
-_SampleRounds = Annotated[tuple[dict[str, _Number], ...], BeforeValidator(_to_tuple)]
+# Lax mode on the tuple itself lets a JSON array fill it; the items keep the
+# model's strict mode, so a bool or numeric string inside is still rejected.
+_NameList = Annotated[tuple[str, ...], Strict(strict=False)]
+_SampleRounds = Annotated[tuple[dict[str, _Number], ...], Strict(strict=False)]
 
 
 # ---------------------------------------------------------------------------
@@ -335,13 +332,10 @@ class Confirm(BaseModel):
     model_config = _RECORD_CONFIG
 
     ran: bool = Field(description="Whether the confirmation rerun actually executed.")
-    filtered: Annotated[tuple[str, ...], BeforeValidator(_to_tuple)] = Field(
-        description="Metric names the rerun was filtered to."
-    )
+    filtered: _NameList = Field(description="Metric names the rerun was filtered to.")
     absent: Annotated[
-        tuple[str, ...] | SkipJsonSchema[None],
+        _NameList | SkipJsonSchema[None],
         BeforeValidator(_reject_none),
-        BeforeValidator(_to_tuple),
     ] = Field(default=None, description="Metric names the rerun was asked about but skipped.")
     samples: PairedSamples = Field(
         description="Sample rounds collected during the confirmation rerun."
@@ -538,6 +532,22 @@ type SessionLogRecord = (
     | StopRecord
     | CommandRecord
 )
+
+#: Session-log record models, in ``SessionLogRecord`` union order.
+SESSION_LOG_MODELS: tuple[type[BaseModel], ...] = get_args(SessionLogRecord.__value__)
+
+
+def wire_type(model: type[BaseModel]) -> str:
+    """Read the wire ``type`` literal a session-log model discriminates on.
+
+    Args:
+        model: A model with a ``type: Literal[...]`` discriminator field --
+            typically a ``SessionLogRecord`` union member.
+
+    Returns:
+        The model's ``type`` literal value.
+    """
+    return get_args(model.model_fields["type"].annotation)[0]
 
 
 def record_to_wire(record: SessionLogRecord) -> dict[str, object]:

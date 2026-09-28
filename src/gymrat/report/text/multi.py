@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rich.cells import cell_len
-from rich.markup import escape
+from rich.text import Text
 
 from gymrat.report.display import display_class
 from gymrat.report.format import baseline_cell_parts, candidate_cell_parts
@@ -27,40 +27,33 @@ from gymrat.report.sections import (
     kind_geomean_of,
     plan_sections,
 )
-from gymrat.report.style import (
-    AGGREGATE_LABEL_STYLE,
-    VARIANT_NAME_STYLE,
-    VERDICT_STYLES,
-    markup,
-)
+from gymrat.report.style import VERDICT_STYLES
 from gymrat.report.table import (
     CELL_GUTTER,
-    METRIC_COLUMN_MIN,
     VALUE_COLUMN_MIN,
-    AggregateColumnCell,
     AggregateLine,
     AggregateRow,
     AggregateRows,
     GroupLine,
     HeaderLine,
     MetricLine,
-    aggregate_label_lengths,
     compute_column_width,
     geomean_column_cell,
     group_metric_cell,
     header_metric_cell,
     indented_section_label,
+    is_grouped,
     join_value_cell,
-    join_verdict_cell,
     plan_body,
     render_body,
     section_annotation,
-    style_verdict_cell,
     value_widths,
+    verdict_cell,
     verdict_parts,
     verdict_widths,
-    widest_header_label,
 )
+from gymrat.report.table.markup import aggregate_label_cell, variant_name_cell
+from gymrat.report.table.render import metric_column_width, row_name_cell
 from gymrat.report.types import candidate_at
 
 if TYPE_CHECKING:
@@ -69,14 +62,24 @@ if TYPE_CHECKING:
     from gymrat.model import GeomeanResult
     from gymrat.report.display import DisplayClass
     from gymrat.report.format import MetricCellParts
-    from gymrat.report.table import BodyLine, ValueWidths, VerdictParts, VerdictWidths
+    from gymrat.report.table import (
+        BodyLine,
+        TableCell,
+        ValueWidths,
+        VerdictParts,
+        VerdictWidths,
+    )
     from gymrat.report.types import (
         CandidateComparison,
         ComparisonResult,
         MetricComparison,
     )
 
-type _AggregateCells = tuple[AggregateColumnCell, ...]
+type _AggregateCells = tuple[Text, ...]
+type _MetricCells = tuple[Text, ...]
+
+# The name and baseline columns precede a table's candidate columns.
+_LEADING_COLUMNS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,36 +152,21 @@ def _measure_columns(
 
 def _column_widths(
     body: Sequence[BodyLine[_ComparisonRow, _AggregateCells]],
-    ordered: Sequence[_ComparisonRow],
+    cells_by_name: dict[str, _MetricCells],
     table: _TableContext,
 ) -> list[int]:
-    """The column widths, measured over the plain rows, headers and aggregates."""
+    """The column widths, measured over the rows, headers and aggregates' plain text."""
+    rows = list(cells_by_name.values())
     aggregate_lines = [line for line in body if isinstance(line, AggregateLine)]
-
-    def candidate_text(row: _ComparisonRow, index: int) -> str:
-        cell = row.candidates[index]
-        value = join_value_cell(cell.value, table.fields.values[index])
-        if cell.verdict is None:
-            return value
-        verdict = join_verdict_cell(cell.verdict.parts, table.fields.verdicts[index])
-        return f"{value}{CELL_GUTTER}{verdict}"
-
-    metric_width = compute_column_width(
-        cell_len(widest_header_label(body)),
-        [cell_len(row.label if table.grouped else row.name) for row in ordered]
-        + aggregate_label_lengths(body),
-        METRIC_COLUMN_MIN,
-    )
+    metric_width = metric_column_width(body, [row[0].cell_len for row in rows])
     baseline_width = compute_column_width(
-        cell_len(table.baseline_header),
-        [cell_len(join_value_cell(row.baseline, table.fields.baseline)) for row in ordered],
-        VALUE_COLUMN_MIN,
+        cell_len(table.baseline_header), [row[1].cell_len for row in rows], VALUE_COLUMN_MIN
     )
     candidate_widths = [
         compute_column_width(
             cell_len(candidate.label),
-            [cell_len(candidate_text(row, index)) for row in ordered]
-            + [cell_len(line.cell[index].text) for line in aggregate_lines],
+            [row[_LEADING_COLUMNS + index].cell_len for row in rows]
+            + [line.cell[index].cell_len for line in aggregate_lines],
             VALUE_COLUMN_MIN,
         )
         for index, candidate in enumerate(table.candidates)
@@ -186,35 +174,36 @@ def _column_widths(
     return [metric_width, baseline_width, *candidate_widths]
 
 
+def _metric_cells(row: _ComparisonRow, table: _TableContext) -> _MetricCells:
+    """One metric row's cells: its name, the baseline figure, and each candidate's side."""
+    return (
+        Text(row_name_cell(row, grouped=table.grouped)),
+        Text(join_value_cell(row.baseline, table.fields.baseline)),
+        *(
+            _candidate_cell(cell, table.fields.values[index], table.fields.verdicts[index])
+            for index, cell in enumerate(row.candidates)
+        ),
+    )
+
+
 def _to_cells(
     line: BodyLine[_ComparisonRow, _AggregateCells],
     table: _TableContext,
-) -> tuple[str, ...]:
-    """The markup cells one content row renders to."""
+    cells_by_name: dict[str, _MetricCells],
+) -> tuple[TableCell, ...]:
+    """The cells one content row renders to."""
     if isinstance(line, HeaderLine):
         return (
             header_metric_cell(line.title),
-            markup(table.baseline_header, VARIANT_NAME_STYLE),
-            *(markup(candidate.label, VARIANT_NAME_STYLE) for candidate in table.candidates),
+            variant_name_cell(table.baseline_header),
+            *(variant_name_cell(candidate.label) for candidate in table.candidates),
         )
     if isinstance(line, GroupLine):
         return (group_metric_cell(line.label), "", *("" for _ in table.candidates))
     if isinstance(line, MetricLine):
-        row = line.row
-        return (
-            escape(row.label if table.grouped else row.name),
-            escape(join_value_cell(row.baseline, table.fields.baseline)),
-            *(
-                _candidate_markup(cell, table.fields.values[index], table.fields.verdicts[index])
-                for index, cell in enumerate(row.candidates)
-            ),
-        )
+        return cells_by_name[line.row.name]
     if isinstance(line, AggregateLine):
-        return (
-            markup(line.label, AGGREGATE_LABEL_STYLE),
-            "",
-            *(_aggregate_cell_markup(cell) for cell in line.cell),
-        )
+        return (aggregate_label_cell(line.label), "", *line.cell)
     msg = f"unexpected body line {line!r}"
     raise AssertionError(msg)
 
@@ -246,19 +235,19 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
         aggregates,
         lambda section: section_annotation(section, result.config_kinds),
     )
-    grouped = len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
     table = _TableContext(
         baseline_header=baseline_header,
         candidates=candidates,
         fields=fields,
-        grouped=grouped,
+        grouped=is_grouped(layout, body),
     )
-    widths = _column_widths(body, layout.ordered, table)
+    cells_by_name = {row.name: _metric_cells(row, table) for row in layout.ordered}
+    widths = _column_widths(body, cells_by_name, table)
 
     return render_body(
         body,
         widths,
-        lambda line: _to_cells(line, table),
+        lambda line: _to_cells(line, table, cells_by_name),
         color=color,
     )
 
@@ -332,12 +321,12 @@ def _aggregate_rows(
     )
 
 
-def _candidate_markup(
+def _candidate_cell(
     cell: _CandidateCell,
     values: ValueWidths,
     verdicts: VerdictWidths,
-) -> str:
-    """One candidate cell's markup: the value left plain, the glyph and delta in the verdict color.
+) -> Text:
+    """One candidate cell: the value left plain, the glyph and delta in the verdict color.
 
     The band is dropped from the multi-candidate cell, so only the glyph and the
     delta (or the ``unstable`` word standing in for it) carry the verdict's color;
@@ -350,30 +339,17 @@ def _candidate_markup(
         verdicts: The column's verdict field widths.
 
     Returns:
-        The cell as a rich-markup string.
+        The styled cell.
     """
     value = join_value_cell(cell.value, values)
     if cell.verdict is None:
-        return escape(value)
+        return Text(value)
     style = VERDICT_STYLES[cell.verdict.outcome]
-    verdict_cell = style_verdict_cell(
+    verdict = verdict_cell(
         cell.verdict.parts,
         verdicts,
         glyph_style=style,
         delta_style=style,
         band_style=None,
     )
-    return f"{escape(value)}{CELL_GUTTER}{verdict_cell}"
-
-
-def _aggregate_cell_markup(cell: AggregateColumnCell) -> str:
-    """A geomean column cell rendered to markup, each span wrapped where it sits in the text."""
-    pieces: list[str] = []
-    cursor = 0
-    for span in cell.spans:
-        start = cell.text.index(span.text, cursor)
-        pieces.append(escape(cell.text[cursor:start]))
-        pieces.append(markup(span.text, span.style))
-        cursor = start + len(span.text)
-    pieces.append(escape(cell.text[cursor:]))
-    return "".join(pieces)
+    return Text.assemble(value, CELL_GUTTER, verdict)

@@ -51,6 +51,8 @@ from tests.report._inputs import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from gymrat.report.types import ComparisonResult
 
 
@@ -617,37 +619,53 @@ def test_render_report_when_only_prune_failed_and_nothing_else_does_report_the_r
     assert "worktree prune failed: fatal: not a git repository" in output
 
 
-def test_render_report_when_left_behind_reason_spans_lines_does_collapse_to_one_line():
-    result = create_comparison_result(
+def _with_left_behind_reason(reason: str) -> ComparisonResult:
+    return create_comparison_result(
         worktrees_removed=1,
-        worktrees_left_behind=[
-            WorktreeRemovalFailure(
-                dir="/tmp/gymrat-abc",
-                error="warning: could not open directory\n  fatal: '/tmp/gymrat-abc' is locked",
-            ),
-        ],
+        worktrees_left_behind=[WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error=reason)],
     )
 
-    detail_lines = [line for line in render_report(result).split("\n") if "/tmp/gymrat-abc" in line]
 
-    assert detail_lines == [
-        (
-            "  left behind: /tmp/gymrat-abc "
-            "(warning: could not open directory fatal: '/tmp/gymrat-abc' is locked)"
+def _with_prune_error(reason: str) -> ComparisonResult:
+    return create_comparison_result(worktree_prune_error=reason)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        pytest.param("fatal:\tnot a git repository", id="tab"),
+        pytest.param("fatal:    not a git repository", id="space-run"),
+        pytest.param("  fatal: not a git repository \n", id="leading-and-trailing"),
+        pytest.param("fatal:\r\nnot a git repository", id="carriage-return"),
+        pytest.param(f"fatal:{chr(0xA0)}not a{chr(0x2003)}git repository", id="unicode-spaces"),
+        pytest.param("\n\t fatal: \t\n  not   a git\n\nrepository\t ", id="mixed"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("build_result", "expected"),
+    [
+        pytest.param(
+            _with_left_behind_reason,
+            "  left behind: /tmp/gymrat-abc (fatal: not a git repository)",
+            id="left-behind",
         ),
+        pytest.param(
+            _with_prune_error,
+            "  worktree prune failed: fatal: not a git repository",
+            id="prune-error",
+        ),
+    ],
+)
+def test_render_report_when_a_cleanup_reason_has_whitespace_runs_does_collapse_each_to_one_space(
+    build_result: Callable[[str], ComparisonResult], expected: str, reason: str
+):
+    result = build_result(reason)
+
+    matching_lines = [
+        line for line in render_report(result).split("\n") if "not a git repository" in line
     ]
 
-
-def test_render_report_when_prune_reason_spans_lines_does_collapse_to_one_line():
-    result = create_comparison_result(
-        worktree_prune_error="warning: unable to unlink\n  fatal: not a git repository",
-    )
-
-    prune_lines = [line for line in render_report(result).split("\n") if "prune failed" in line]
-
-    assert prune_lines == [
-        "  worktree prune failed: warning: unable to unlink fatal: not a git repository",
-    ]
+    assert matching_lines == [expected]
 
 
 def test_render_report_when_cleanup_is_dirty_does_close_with_left_behind_and_prune():

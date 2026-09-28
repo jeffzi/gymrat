@@ -10,10 +10,11 @@ way the reported p-value is deterministic for a given input.
 """
 
 import math
+import statistics
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from gymrat.stats.descriptive import compute_median, percent_delta
+from gymrat.stats.descriptive import percent_delta
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,8 +23,8 @@ class SignificanceResult:
 
     Attributes:
         p: The two-sided p-value, always within ``[0.0, 1.0]``.
-        n: The number of paired entries whose difference is non-zero.  Tied
-            pairs (zero difference) are held fixed on both sides — they
+        n: The number of paired entries whose two values differ.  Tied
+            pairs (equal values) are held fixed on both sides — they
             contribute to medians under every rearrangement but are not
             sign-flipped.
     """
@@ -33,11 +34,13 @@ class SignificanceResult:
 
 
 def count_nonzero_pairs(x: Sequence[float], y: Sequence[float]) -> tuple[int, int]:
-    """Pair ``x`` and ``y`` positionally over the shorter input and count non-zero diffs.
+    """Pair ``x`` and ``y`` positionally over the shorter input and count differing pairs.
 
     Shared by every paired significance test: each pairs ``x[i]`` with ``y[i]``
-    for ``i`` below the shorter input's length.  The caller holds zero-difference
-    (tied) pairs fixed on both sides of the test rather than dropping them.
+    for ``i`` below the shorter input's length.  A pair is tied when its values
+    compare equal (``x[i] == y[i]``) and differing otherwise, so a pair of equal
+    infinities is tied and a pair holding a NaN always differs.  The caller holds
+    tied pairs fixed on both sides of the test rather than dropping them.
 
     Args:
         x: The first sample.
@@ -45,12 +48,11 @@ def count_nonzero_pairs(x: Sequence[float], y: Sequence[float]) -> tuple[int, in
 
     Returns:
         A ``(m, n)`` pair: ``m`` is the number of positions paired (the shorter
-        input's length), and ``n`` is how many of those pairs have a non-zero
-        difference.
+        input's length), and ``n`` is how many of those pairs have values that
+        differ (``x[i] != y[i]``).
     """
-    pairs = list(zip(x, y, strict=False))
-    n = sum(1 for xi, yi in pairs if xi - yi != 0)
-    return len(pairs), n
+    tied_x, _, diff_x, _ = _partition_pairs(x, y)
+    return len(tied_x) + len(diff_x), len(diff_x)
 
 
 # The permutation needs at least two paired observations; a single pair admits
@@ -71,14 +73,13 @@ PERMUTATION_SEED = 12345
 
 
 def _partition_pairs(
-    x: Sequence[float], y: Sequence[float], m: int
+    x: Sequence[float], y: Sequence[float]
 ) -> tuple[list[float], list[float], list[float], list[float]]:
-    """Separate tied (zero-diff) and differing pairs over the first ``m`` indices.
+    """Separate tied (equal values) and differing pairs, paired over the shorter input.
 
     Args:
         x: The first value of each pair.
         y: The second value of each pair.
-        m: How many leading pairs to partition.
 
     Returns:
         A tuple ``(tied_x, tied_y, diff_x, diff_y)`` partitioning the pairs.
@@ -87,7 +88,7 @@ def _partition_pairs(
     tied_y: list[float] = []
     diff_x: list[float] = []
     diff_y: list[float] = []
-    for xi, yi in zip(x[:m], y[:m], strict=True):
+    for xi, yi in zip(x, y, strict=False):
         if xi == yi:
             tied_x.append(xi)
             tied_y.append(yi)
@@ -95,6 +96,17 @@ def _partition_pairs(
             diff_x.append(xi)
             diff_y.append(yi)
     return tied_x, tied_y, diff_x, diff_y
+
+
+def _median_delta(
+    tied_x: list[float],
+    tied_y: list[float],
+    baseline: Sequence[float],
+    candidate: Sequence[float],
+) -> float:
+    return percent_delta(
+        statistics.median(tied_x + list(baseline)), statistics.median(tied_y + list(candidate))
+    )
 
 
 def _make_statistic(
@@ -108,8 +120,8 @@ def _make_statistic(
     ``observed``, so scipy's null tally counts it on the correct tail.
 
     Args:
-        tied_x: Baseline values of the zero-difference pairs, held fixed.
-        tied_y: Candidate values of the zero-difference pairs, held fixed.
+        tied_x: Baseline values of the tied (equal-value) pairs, held fixed.
+        tied_y: Candidate values of the tied (equal-value) pairs, held fixed.
         observed: The delta the samples produced in their original order.
 
     Returns:
@@ -117,9 +129,7 @@ def _make_statistic(
     """
 
     def statistic(baseline: Sequence[float], candidate: Sequence[float]) -> float:
-        delta = percent_delta(
-            compute_median(tied_x + list(baseline)), compute_median(tied_y + list(candidate))
-        )
+        delta = _median_delta(tied_x, tied_y, baseline, candidate)
         if math.isnan(delta):
             return math.copysign(math.inf, observed)
         return delta
@@ -133,9 +143,9 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> Signif
     The inputs are paired positionally over the shorter of the two: ``x[i]`` is
     compared with ``y[i]`` for ``i < min(len(x), len(y))``, and trailing entries
     of the longer input are ignored. The reported ``n`` counts only pairs whose
-    difference is non-zero.
+    two values differ.
 
-    Tied pairs (zero difference) are held fixed on both sides: they contribute
+    Tied pairs (equal values) are held fixed on both sides: they contribute
     to the median under every rearrangement but are never sign-flipped, so the
     effective null space is ``2**n`` where ``n`` is the differing-pair count.
 
@@ -152,15 +162,14 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> Signif
         y: The candidate sample, paired positionally with ``x``.
 
     Returns:
-        The p-value and the count of non-zero-difference pairs used.
+        The p-value and the count of differing pairs used.
     """
-    m, n = count_nonzero_pairs(x, y)
+    tied_x, tied_y, diff_x, diff_y = _partition_pairs(x, y)
+    n = len(diff_x)
     if n < _MIN_PAIRS:
         return SignificanceResult(p=1.0, n=n)
 
-    tied_x, tied_y, diff_x, diff_y = _partition_pairs(x, y, m)
-
-    observed = percent_delta(compute_median(tied_x + diff_x), compute_median(tied_y + diff_y))
+    observed = _median_delta(tied_x, tied_y, diff_x, diff_y)
     if not math.isfinite(observed):
         return SignificanceResult(p=1.0, n=n)
 
@@ -168,14 +177,14 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> Signif
     import numpy as np  # noqa: PLC0415
     from scipy.stats import permutation_test  # noqa: PLC0415
 
-    n_resamples = min(2**n, RESAMPLE_BUDGET)
+    # scipy enumerates all 2**n sign flips itself whenever they fit the budget.
     result = permutation_test(
         (diff_x, diff_y),
         _make_statistic(tied_x, tied_y, observed),
         permutation_type="samples",
         alternative="two-sided",
         vectorized=False,
-        n_resamples=n_resamples,
+        n_resamples=RESAMPLE_BUDGET,
         rng=np.random.default_rng(PERMUTATION_SEED),
     )
-    return SignificanceResult(p=min(float(result.pvalue), 1.0), n=n)
+    return SignificanceResult(p=float(result.pvalue), n=n)

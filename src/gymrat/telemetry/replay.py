@@ -323,9 +323,6 @@ def _parse_session_log_line(path: str, line_number: int, line: str) -> SessionLo
 def _construct_command(data: dict[str, object]) -> CommandRecord:
     """Build a CommandRecord without running model validators."""
     filled = dict(data)
-    filled.setdefault("reason", None)
-    filled.setdefault("seq", None)
-    filled.setdefault("traceparent", None)
     filled.setdefault("args", {})
     filled.setdefault("name", _UNKNOWN_COMMAND_NAME)
     filled.setdefault("duration_ms", 0)

@@ -13,7 +13,7 @@ before the dump, and ``allow_nan=False`` guards against any that slip through.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, assert_never
 
 from gymrat.finite_json import null_non_finite
@@ -30,8 +30,7 @@ if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
     from gymrat.loop.status import StatusData
     from gymrat.loop.sync import SyncResult
-    from gymrat.model import GeomeanResult, MetricVerdict
-    from gymrat.report.tally import VerdictCounts
+    from gymrat.model import MetricVerdict
     from gymrat.report.types import (
         CandidateComparison,
         ComparisonResult,
@@ -250,7 +249,7 @@ def _serialize_per_candidate(result: ComparisonResult) -> list[dict[str, object]
         {
             "label": candidate.label,
             "kinds": [_serialize_kind(kind) for kind in candidate.kinds],
-            "verdict_counts": _serialize_counts(count_verdicts(result.metrics, index)),
+            "verdict_counts": asdict(count_verdicts(result.metrics, index)),
         }
         for index, candidate in enumerate(result.candidates)
     ]
@@ -262,35 +261,11 @@ def _serialize_kind(kind: KindAggregate) -> dict[str, object]:
     return {
         "kind": kind.kind,
         "has_gating": gated is not None,
-        "geomean": _serialize_geomean(kind.geomean),
+        "geomean": asdict(kind.geomean),
         "groups": [
-            {"group": group.group, "geomean": _serialize_geomean(group.geomean)}
-            for group in kind.groups
+            {"group": group.group, "geomean": asdict(group.geomean)} for group in kind.groups
         ],
-        "gated_geomean": _serialize_geomean(gated) if gated is not None else None,
-    }
-
-
-def _serialize_geomean(geomean: GeomeanResult) -> dict[str, object]:
-    """A geomean's value, contributing count, exclusions, and band."""
-    return {
-        "value": geomean.value,
-        "n": geomean.n,
-        "excluded": [
-            {"metric": exclusion.metric, "reason": exclusion.reason}
-            for exclusion in geomean.excluded
-        ],
-        "band": geomean.band,
-    }
-
-
-def _serialize_counts(counts: VerdictCounts) -> dict[str, int]:
-    """The per-candidate verdict tally under its snake_case keys."""
-    return {
-        "improved": counts.improved,
-        "regressed": counts.regressed,
-        "unstable": counts.unstable,
-        "no_signal": counts.no_signal,
+        "gated_geomean": asdict(gated) if gated is not None else None,
     }
 
 
@@ -341,18 +316,20 @@ def render_iterate_stop_json(reason: str, *, budget: BudgetSummary | None = None
 
 
 def render_keep_json(result: KeepResult, *, budget: BudgetSummary | None = None) -> str:
-    """Status, reason, nested checks outcome, commit SHA, and message."""
+    """Status, reason, nested checks outcome, commit SHA, and message.
+
+    Args:
+        result: The keep outcome to render.
+        budget: Pre-computed budget snapshot to include, or ``None`` to omit.
+
+    Returns:
+        The document as a two-space-indented JSON string.
+    """
     record = result.record
-    checks: dict[str, object] = {
-        "configured": record.checks.configured,
-        "passed": record.checks.passed,
-        "stdout_bytes": record.checks.stdout_bytes,
-        "stderr_bytes": record.checks.stderr_bytes,
-    }
     document: dict[str, object] = {
         "status": record.status,
         "reason": record.reason,
-        "checks": checks,
+        "checks": record.checks.model_dump(),
         "commit": record.commit,
         "message": record.message,
     }

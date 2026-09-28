@@ -96,7 +96,6 @@ def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the se
             SESSION_BRANCH: branch,
         },
     )
-    state.session_span.__enter__()
 
     run_attrs: dict[str, object] = {
         SESSION_ID: session_id,
@@ -118,7 +117,6 @@ def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the se
         attributes=run_attrs,
         context=session_ctx,
     )
-    state.run_span.__enter__()
 
     prompt = replace(prompt, traceparent=format_traceparent(state.run_span))
     observer = combine_observers(reporter_observer, create_run_span_observer(state.run_span))
@@ -152,7 +150,7 @@ def finalize_tracing(
 
             run_span.set_status(Status(StatusCode.ERROR))
     if run_span is not None:
-        run_span.__exit__(None, None, None)
+        run_span.end()
     if state.session_span is not None:
-        state.session_span.__exit__(None, None, None)
+        state.session_span.end()
     flush_tracing()

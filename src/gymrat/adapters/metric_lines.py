@@ -7,10 +7,10 @@ to their median so a benchmark run with several samples yields one value per nam
 
 import math
 import re
+import statistics
 
 from gymrat.adapters.defaults import defaults_from_suffixes
 from gymrat.adapters.types import AdapterError, MetricDefaults
-from gymrat.stats.descriptive import compute_median
 from gymrat.warn import WarnSink, warn_to_stderr
 
 _PREFIX = "METRIC"
@@ -91,9 +91,7 @@ class _MetricLinesAdapter:
     def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
         """Parse ``METRIC`` lines from ``stdout`` into a median-per-name metric map.
 
-        Splits ``stdout`` into lines, reads each ``METRIC <name>=<value>`` line,
-        and warns through ``warn`` about any line it cannot read. Repeated names
-        collapse to their median.
+        Splits ``stdout`` into lines and reads each ``METRIC <name>=<value>`` line.
 
         Args:
             stdout: The bench script's full standard output.
@@ -101,7 +99,7 @@ class _MetricLinesAdapter:
                 stderr.
 
         Returns:
-            One median value per metric name.
+            One value per metric name: the median of that name's samples.
 
         Raises:
             AdapterError: When no line yields a usable metric, or a metric name
@@ -153,7 +151,7 @@ class _MetricLinesAdapter:
             msg = "No valid METRIC lines found"
             raise AdapterError(msg)
 
-        return {metric_name: compute_median(values) for metric_name, values in samples.items()}
+        return {metric_name: statistics.median(values) for metric_name, values in samples.items()}
 
 
 metric_lines_adapter = _MetricLinesAdapter()

@@ -58,23 +58,6 @@ _NON_EMPTY_STRING_FIELDS = frozenset({
 # ---------------------------------------------------------------------------
 
 
-def _coerce_number(value: object) -> object:
-    """Widen a plain ``int`` to ``float`` so it satisfies strict float validation.
-
-    ``bool`` is left untouched so it is rejected as a non-number.
-
-    Args:
-        value: The raw value being validated.
-
-    Returns:
-        The value as a ``float`` when it was an ``int``, or the original value
-        unchanged.
-    """
-    if isinstance(value, int) and not isinstance(value, bool):
-        return float(value)
-    return value
-
-
 def _reject_non_finite(value: float | None) -> float | None:
     """Reject a non-finite float that TOML accepts as a literal.
 
@@ -128,6 +111,7 @@ def _reject_bad_dict(value: object) -> object:
 _NonEmptyStr = Annotated[str | None, Field(default=None, min_length=1, pattern=r"\S")]
 _AnyStr = Annotated[str | None, Field(default=None)]
 _Bool = Annotated[bool | None, Field(default=None)]
+_FiniteFloat = Annotated[float | None, AfterValidator(_reject_non_finite)]
 
 
 class _MetricModel(BaseModel):
@@ -147,12 +131,7 @@ class _KindModel(BaseModel):
 class _StopModel(BaseModel):
     model_config = STRICT_FORBID
 
-    target_value: Annotated[
-        float | None,
-        BeforeValidator(_coerce_number),
-        AfterValidator(_reject_non_finite),
-        Field(default=None),
-    ]
+    target_value: Annotated[_FiniteFloat, Field(default=None)]
     max_iterations: Annotated[
         int | None,
         BeforeValidator(coerce_integer),
@@ -196,12 +175,7 @@ class _ConfigModel(BaseModel):
         BeforeValidator(coerce_integer),
         Field(default=None, ge=1, le=MAX_TIMEOUT_SECONDS),
     ]
-    unstable_noise_pct: Annotated[
-        float | None,
-        BeforeValidator(_coerce_number),
-        AfterValidator(_reject_non_finite),
-        Field(default=None, ge=NOISE_FLOOR_PCT),
-    ]
+    unstable_noise_pct: Annotated[_FiniteFloat, Field(default=None, ge=NOISE_FLOOR_PCT)]
     metrics: Annotated[
         dict[str, _MetricModel] | None, BeforeValidator(_reject_bad_dict), Field(default=None)
     ]

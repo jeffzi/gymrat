@@ -224,7 +224,6 @@ class ReporterCtx:
     warn_fn: Callable[[str], None]
     live: Live | None
     tz: tzinfo | None
-    no_color: bool
     is_plain: bool
     idle_warn_ms: int
     refresh_ms: int

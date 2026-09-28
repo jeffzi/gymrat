@@ -7,34 +7,13 @@ by ``render_json_schemas()``.
 """
 
 import importlib.metadata
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, get_args
+
+from pydantic import BaseModel
 
 from gymrat.session.paths import SESSION_DIR_NAME, SESSION_LOG_NAME, supervisor_log_name
-from gymrat.session.records import (
-    BaselineRecord,
-    CommandRecord,
-    DiscardRecord,
-    FinalizeRecord,
-    HookRecord,
-    IterationRecord,
-    KeepRecord,
-    SessionRecord,
-    StopRecord,
-)
-from gymrat.supervisor.events import (
-    CapEvent,
-    CompactionEvent,
-    FollowUpEvent,
-    LaunchEvent,
-    ModelPhaseEvent,
-    TextDeltaEvent,
-    ThinkingUpdateEvent,
-    ToolEndEvent,
-    ToolProgressEvent,
-    ToolStartEvent,
-    TurnEndEvent,
-    UsageUpdateEvent,
-)
+from gymrat.session.records.models import SESSION_LOG_MODELS, wire_type
+from gymrat.supervisor.events import SessionEvent
 
 _SESSION_LOG_FILE = "./session-log.schema.json"
 _SUPERVISOR_LOG_FILE = "./supervisor-log.schema.json"
@@ -49,32 +28,8 @@ _YAML_WIDTH = 100
 # Model registries and reader specs
 # ---------------------------------------------------------------------------
 
-_SESSION_RECORD_MODELS: tuple[type, ...] = (
-    SessionRecord,
-    BaselineRecord,
-    IterationRecord,
-    KeepRecord,
-    DiscardRecord,
-    HookRecord,
-    FinalizeRecord,
-    StopRecord,
-    CommandRecord,
-)
-
-_SUPERVISOR_EVENT_MODELS: tuple[type, ...] = (
-    LaunchEvent,
-    ThinkingUpdateEvent,
-    ToolStartEvent,
-    ToolProgressEvent,
-    ToolEndEvent,
-    TextDeltaEvent,
-    UsageUpdateEvent,
-    CapEvent,
-    ModelPhaseEvent,
-    TurnEndEvent,
-    FollowUpEvent,
-    CompactionEvent,
-)
+#: Supervisor-log event models, in ``SessionEvent`` union order.
+SUPERVISOR_LOG_MODELS: tuple[type[BaseModel], ...] = get_args(SessionEvent)
 
 
 class ReaderSpec(NamedTuple):
@@ -132,32 +87,36 @@ READERS: dict[str, ReaderSpec] = {
 
 
 # ---------------------------------------------------------------------------
-# Wire-type and docstring helpers
+# Wire-type and summary helpers
 # ---------------------------------------------------------------------------
 
 
 def _wire_type_to_class_name(
-    defs: dict[str, dict[str, object]],
+    models: tuple[type[BaseModel], ...],
 ) -> dict[str, str]:
-    """Map wire-type strings to class names, skipping nested helper models."""
-    mapping: dict[str, str] = {}
-    for class_name, schema_def in defs.items():
-        props = schema_def.get("properties", {})
-        type_prop = props.get("type", {})  # type: ignore[union-attr]
-        const = type_prop.get("const") if isinstance(type_prop, dict) else None  # type: ignore[union-attr]
-        if const is not None:
-            mapping[const] = class_name
-    return mapping
+    """Map each model's wire type to its class name, in the models' order.
+
+    Args:
+        models: The union members documented by one log schema.
+
+    Returns:
+        The wire-type string of each model mapped to its class name.
+    """
+    return {wire_type(model): model.__name__ for model in models}
 
 
-def _docstring_first_line(cls: type) -> str:
-    doc = cls.__doc__ or cls.__name__
-    return doc.strip().split("\n")[0]
+def _summary_line(defs: dict[str, dict[str, Any]], class_name: str) -> str:
+    """First line of a top-level model's schema description, or its class name.
 
+    Args:
+        defs: The schema's ``$defs``, keyed by class name.
+        class_name: The model class whose description to summarize.
 
-_MODEL_BY_NAME: dict[str, type] = {
-    cls.__name__: cls for cls in (*_SESSION_RECORD_MODELS, *_SUPERVISOR_EVENT_MODELS)
-}
+    Returns:
+        The first line of the description, or ``class_name`` when the schema
+        carries none.
+    """
+    return defs[class_name].get("description", class_name).split("\n")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -167,16 +126,16 @@ _MODEL_BY_NAME: dict[str, type] = {
 
 def _build_messages(
     wire_to_class: dict[str, str],
+    defs: dict[str, dict[str, Any]],
     schema_file: str,
 ) -> dict[str, object]:
     """Build ``components.messages`` entries for one schema's message types."""
     messages: dict[str, object] = {}
-    for wire_type, class_name in wire_to_class.items():
-        model_cls = _MODEL_BY_NAME[class_name]
-        messages[wire_type] = {
+    for wire, class_name in wire_to_class.items():
+        messages[wire] = {
             "contentType": "application/json",
             "title": class_name,
-            "summary": _docstring_first_line(model_cls),
+            "summary": _summary_line(defs, class_name),
             "payload": {
                 "schemaFormat": _SCHEMA_FORMAT,
                 "schema": {"$ref": f"{schema_file}#/$defs/{class_name}"},
@@ -249,12 +208,14 @@ def render_asyncapi(
         serialization.
     """
     session_log_schema, supervisor_log_schema = schemas
+    session_defs: dict[str, dict[str, Any]] = session_log_schema["$defs"]
+    supervisor_defs: dict[str, dict[str, Any]] = supervisor_log_schema["$defs"]
 
-    session_wire = _wire_type_to_class_name(session_log_schema.get("$defs", {}))
-    supervisor_wire = _wire_type_to_class_name(supervisor_log_schema.get("$defs", {}))
+    session_wire = _wire_type_to_class_name(SESSION_LOG_MODELS)
+    supervisor_wire = _wire_type_to_class_name(SUPERVISOR_LOG_MODELS)
 
-    session_messages = _build_messages(session_wire, _SESSION_LOG_FILE)
-    supervisor_messages = _build_messages(supervisor_wire, _SUPERVISOR_LOG_FILE)
+    session_messages = _build_messages(session_wire, session_defs, _SESSION_LOG_FILE)
+    supervisor_messages = _build_messages(supervisor_wire, supervisor_defs, _SUPERVISOR_LOG_FILE)
 
     version = importlib.metadata.version("gymrat")
 

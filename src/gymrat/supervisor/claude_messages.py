@@ -2,14 +2,16 @@
 
 This module owns the message vocabulary only; session-lifecycle concerns
 (connect, stream, interrupt, send, end) belong in
-:mod:`gymrat.supervisor.claude`. This module imports nothing from the SDK —
-duck-typed attribute access handles both real and fake messages.
+:mod:`gymrat.supervisor.claude`. Content blocks are matched structurally on the
+SDK's own dataclasses; the SDK import is deferred to call time so importing this
+module never loads the SDK.
 """
 
+from __future__ import annotations
+
 import json
-from collections.abc import Mapping
 from math import ceil
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from gymrat import clock
 from gymrat.clock import now_ns
@@ -24,6 +26,9 @@ from gymrat.supervisor.events import (
     summarize,
     summarize_input,
 )
+
+if TYPE_CHECKING:
+    from claude_agent_sdk import ContentBlock, ResultMessage
 
 #: Rough chars-per-token ratio used to estimate thinking-block token counts,
 #: since the SDK reports thinking as text, not a token count.
@@ -54,63 +59,55 @@ def _stringify_result(content: object) -> str:
         return str(content)
 
 
-def detect_origin(message: object) -> Literal["agent", "injected"]:
+def detect_origin(message: ResultMessage) -> Literal["agent", "injected"]:
     """Classify a result message's origin for the turn-end event.
 
-    ``"agent"`` when the origin is absent, ``None``, or a mapping/object
-    whose ``kind`` is ``"human"`` (a human-initiated turn is still the
-    agent's response). Any other ``kind`` — e.g. ``"task-notification"`` —
-    means the turn was injected into the conversation.
+    A human-initiated turn is still the agent's response.
 
     Args:
         message: The result message to classify.
 
     Returns:
-        ``"agent"`` for human-initiated or origin-less turns, ``"injected"``
-        otherwise.
+        ``"agent"`` when the origin is absent, lacks a ``kind``, or has
+        ``kind == "human"``; ``"injected"`` for any other ``kind`` (e.g.
+        ``"task-notification"``).
     """
-    origin = getattr(message, "origin", None)
-    if origin is None:
-        return "agent"
-    kind = origin.get("kind") if isinstance(origin, Mapping) else getattr(origin, "kind", None)
-    if kind is None or kind == "human":
+    origin = message.origin
+    if origin is None or origin.get("kind", "human") == "human":
         return "agent"
     return "injected"
 
 
-def result_outcome_from(message: object, subtype: str, cost_usd: float) -> SessionOutcome:
+def result_outcome_from(message: ResultMessage, cost_usd: float) -> SessionOutcome:
     """Classify a settled error result message.
 
     Args:
-        message: The SDK message whose ``.result`` attribute supplies the
-            outcome text.  Accessed via ``getattr`` — any object is accepted.
-        subtype: Fallback label used when ``.result`` is not a string.
+        message: The error result message.
         cost_usd: Cumulative cost to record on the outcome.
 
     Returns:
-        A ``SessionOutcome`` with ``reason="error"`` and the resolved message.
+        A ``SessionOutcome`` with ``reason="error"`` whose message is the
+        result text, or the subtype when the result has no text.
     """
-    result_text = getattr(message, "result", None)
     return SessionOutcome(
         reason="error",
         cost_usd=cost_usd,
-        message=result_text if isinstance(result_text, str) else subtype,
+        message=message.result if message.result is not None else message.subtype,
     )
 
 
-def read_cost(message: object) -> float | None:
-    """Extract cumulative cost from a message, or ``None`` when absent or zero.
+def read_cost(message: ResultMessage) -> float | None:
+    """Extract cumulative cost from a result message.
 
     Args:
-        message: The SDK message whose ``.total_cost_usd`` attribute is read
-            via ``getattr``.  Any object is accepted.
+        message: The result message to read.
 
     Returns:
         The cost as a float when present and positive, ``None`` otherwise.
     """
-    cost = getattr(message, "total_cost_usd", None)
-    if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
-        return float(cost)
+    cost = message.total_cost_usd
+    if cost is not None and cost > 0:
+        return cost
     return None
 
 
@@ -163,16 +160,39 @@ class MessageMapper:
         elif event_type == "message_stop":
             self._emit_phase("turn_end", parent)
 
-    def map_blocks(self, content: list[object], parent: str | None) -> None:
+    def map_blocks(self, content: list[ContentBlock], parent: str | None) -> None:
         """Map settled content blocks (text, tool-use, tool-result) to events.
+
+        Client and server tool blocks map alike. Thinking blocks emit nothing:
+        their tokens were already counted from the streamed thinking deltas.
 
         Args:
             content: The settled content blocks from a message response.
             parent: The tool-use ID of the enclosing tool call, or ``None``
                 for top-level content.
         """
+        from claude_agent_sdk import (  # noqa: PLC0415 -- deferred to avoid import-time SDK load
+            ServerToolResultBlock,
+            ServerToolUseBlock,
+            TextBlock,
+            ToolResultBlock,
+            ToolUseBlock,
+        )
+
         for block in content:
-            self._map_block(block, parent)
+            match block:
+                case TextBlock(text=text):
+                    self._emit_text(text, parent)
+                case (
+                    ToolUseBlock(id=tool_use_id, name=name, input=tool_input)
+                    | ServerToolUseBlock(id=tool_use_id, name=name, input=tool_input)
+                ):
+                    self._start_tool(tool_use_id, name, tool_input, parent)
+                case (
+                    ToolResultBlock(tool_use_id=tool_use_id, content=result)
+                    | ServerToolResultBlock(tool_use_id=tool_use_id, content=result)
+                ):
+                    self._end_tool(tool_use_id, result, parent)
 
     def _emit_phase(
         self, phase: _ModelPhase, parent: str | None, tool_name: str | None = None
@@ -230,52 +250,43 @@ class MessageMapper:
         if stream is not None and stream.chars_since_emit != 0:
             self._emit_thinking_update(stream, parent)
 
-    def _map_block(self, block: object, parent: str | None = None) -> None:
-        text = getattr(block, "text", None)
-        if isinstance(text, str):
-            if parent is None:
-                self._last_top_level_text = text
-            self._observer(TextDeltaEvent(at=now_ns(), chunk=text, parent_tool_use_id=parent))
-            return
+    def _emit_text(self, text: str, parent: str | None) -> None:
+        if parent is None:
+            self._last_top_level_text = text
+        self._observer(TextDeltaEvent(at=now_ns(), chunk=text, parent_tool_use_id=parent))
 
-        if hasattr(block, "thinking"):
-            return
-
-        block_id = getattr(block, "id", None)
-        name = getattr(block, "name", None)
-        if isinstance(block_id, str) and isinstance(name, str):
-            self._tool_starts[block_id] = clock.monotonic_ms()
-            self._tool_names[block_id] = name
-            tool_input = getattr(block, "input", None)
-            self._observer(
-                ToolStartEvent(
-                    at=now_ns(),
-                    tool_use_id=block_id,
+    def _start_tool(
+        self, tool_use_id: str, name: str, tool_input: dict[str, object], parent: str | None
+    ) -> None:
+        self._tool_starts[tool_use_id] = clock.monotonic_ms()
+        self._tool_names[tool_use_id] = name
+        self._observer(
+            ToolStartEvent(
+                at=now_ns(),
+                tool_use_id=tool_use_id,
+                tool_name=name,
+                input=tool_input,
+                input_summary=summarize_input(
+                    tool_input,
                     tool_name=name,
-                    input=tool_input,
-                    input_summary=summarize_input(
-                        tool_input,
-                        tool_name=name,
-                        supervised_root=self._supervised_root,
-                    ),
-                    parent_tool_use_id=parent,
-                )
+                    supervised_root=self._supervised_root,
+                ),
+                parent_tool_use_id=parent,
             )
-            return
+        )
 
-        tool_use_id = getattr(block, "tool_use_id", None)
-        if isinstance(tool_use_id, str):
-            start = self._tool_starts.get(tool_use_id)
-            duration_ms = int(clock.monotonic_ms() - start) if start is not None else 0
-            result = _stringify_result(getattr(block, "content", None))
-            self._observer(
-                ToolEndEvent(
-                    at=now_ns(),
-                    tool_use_id=tool_use_id,
-                    tool_name=self._tool_names.get(tool_use_id, "unknown"),
-                    duration_ms=duration_ms,
-                    result=result,
-                    result_summary=summarize(result),
-                    parent_tool_use_id=parent,
-                )
+    def _end_tool(self, tool_use_id: str, content: object, parent: str | None) -> None:
+        start = self._tool_starts.get(tool_use_id)
+        duration_ms = int(clock.monotonic_ms() - start) if start is not None else 0
+        result = _stringify_result(content)
+        self._observer(
+            ToolEndEvent(
+                at=now_ns(),
+                tool_use_id=tool_use_id,
+                tool_name=self._tool_names.get(tool_use_id, "unknown"),
+                duration_ms=duration_ms,
+                result=result,
+                result_summary=summarize(result),
+                parent_tool_use_id=parent,
             )
+        )

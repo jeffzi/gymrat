@@ -338,24 +338,22 @@ def worktree_fingerprint(directory: Path) -> str | None:
         invocation fails (missing repo, bad permissions, …).
     """
     cwd = str(directory)
-    tmp_dir: str | None = None
     try:
         real_index = run_git(["rev-parse", "--git-path", "index"], cwd).strip()
         # Resolve relative paths git may print against the worktree root.
         real_index_path = Path(cwd, real_index)
 
-        tmp_dir = tempfile.mkdtemp(prefix="gymrat-idx-")
-        tmp_index = str(Path(tmp_dir) / "index")
-        shutil.copy2(real_index_path, tmp_index)
+        with tempfile.TemporaryDirectory(
+            prefix="gymrat-idx-", ignore_cleanup_errors=True
+        ) as tmp_dir:
+            tmp_index = str(Path(tmp_dir) / "index")
+            shutil.copy2(real_index_path, tmp_index)
 
-        env = {"GIT_INDEX_FILE": tmp_index}
-        run_git(["add", "-A"], cwd, env=env)
-        return run_git(["write-tree"], cwd, env=env).strip()
+            env = {"GIT_INDEX_FILE": tmp_index}
+            run_git(["add", "-A"], cwd, env=env)
+            return run_git(["write-tree"], cwd, env=env).strip()
     except (subprocess.SubprocessError, OSError):
         return None
-    finally:
-        if tmp_dir is not None:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def worktree_head(directory: str) -> str:

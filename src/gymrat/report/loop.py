@@ -19,6 +19,7 @@ text inside a styled span is escaped so a metric named ``[i]`` renders literally
 
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, assert_never
 
@@ -32,7 +33,6 @@ from gymrat.report.display import get_glyph
 from gymrat.report.format import format_delta, format_value, is_improvement
 from gymrat.report.style import VARIANT_NAME_STYLE, format_hint, markup
 from gymrat.report.text import paired_samples
-from gymrat.stats.descriptive import compute_median
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -532,7 +532,7 @@ def baseline_medians(record: BaselineRecord) -> dict[str, float]:
     for round_ in record.samples:
         for name, value in round_.items():
             readings.setdefault(name, []).append(value)
-    return {name: compute_median(values) for name, values in readings.items()}
+    return {name: statistics.median(values) for name, values in readings.items()}
 
 
 def format_status_baseline(record: BaselineRecord) -> str:

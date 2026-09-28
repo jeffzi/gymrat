@@ -65,6 +65,7 @@ LOCK_POLL_MS = 5000
 waiting for another process to release it."""
 
 EndedBy = Literal["session", "wall-clock", "spend-cap", "guard", "stop-condition", "hook-failure"]
+"""How a supervised run ended. See ``SupervisionResult.ended_by`` for the meaning of each member."""
 
 _IN_FLIGHT_EXCLUSION = frozenset({
     "usage_update",
@@ -136,7 +137,7 @@ class _Supervision:
         self._end_reason: str | None = None
         self._cap_fired = False
         self._wall_task: asyncio.Task[None] | None = None
-        self._grace_task: asyncio.Task[None] | None = None
+        self._grace_timer: asyncio.TimerHandle | None = None
         self._interrupt_task: asyncio.Task[None] | None = None
         self._session: DriverSession | None = None
         self._pending_cap: CapType | None = None
@@ -387,11 +388,9 @@ class _Supervision:
             self._spawn(self._session.end())
         else:
             self._interrupt_task = fire_and_report_interrupt(self._session)
-            self._grace_task = asyncio.create_task(self._run_grace())
-
-    async def _run_grace(self) -> None:
-        await asyncio.sleep(self._config.grace_ms / 1000)
-        self._abort_event.set()
+            self._grace_timer = asyncio.get_running_loop().call_later(
+                self._config.grace_ms / 1000, self._abort_event.set
+            )
 
     async def _run_wall_clock(self) -> None:
         deadline = self._config.deadline_ms
@@ -442,12 +441,9 @@ class _Supervision:
         finally:
             self._cancel("settle")
             self._cancel("lock_poll")
-            if self._wall_task is not None:
-                self._wall_task.cancel()
-            if self._grace_task is not None:
-                self._grace_task.cancel()
-            if self._interrupt_task is not None:
-                self._interrupt_task.cancel()
+            for handle in (self._wall_task, self._grace_timer, self._interrupt_task):
+                if handle is not None:
+                    handle.cancel()
 
 
 async def supervise(  # noqa: PLR0913 - one parameter per supervision knob

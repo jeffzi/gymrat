@@ -42,18 +42,7 @@ async def measure_baseline(
         measure as engine,
     )
 
-    options = engine.MeasureOptions(
-        target=target,
-        bench=run_options.bench,
-        prepare=run_options.prepare,
-        adapter=run_options.adapter,
-        samples=run_options.samples,
-        timeout_seconds=run_options.timeout_seconds,
-        config_metrics=run_options.config_metrics,
-        config_kinds=run_options.config_kinds,
-        on_progress=run_options.on_progress,
-        warn=run_options.warn,
-    )
+    options = engine.MeasureOptions(run=run_options, target=target)
 
     start = _clock.monotonic_ms()
     result = await engine.measure(options)

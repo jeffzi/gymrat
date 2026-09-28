@@ -12,9 +12,11 @@ from pydantic_core import ErrorDetails
 from gymrat.errors import GymratError
 from gymrat.pydantic_errors import alternatives, describe_key, drop_prefix_errors
 from gymrat.session.records.models import (
+    SESSION_LOG_MODELS,
     CommandRecord,
     SessionLogRecord,
     _wire_validation,
+    wire_type,
 )
 from gymrat.session.schema import (
     SCHEMA_VERSION,
@@ -56,29 +58,20 @@ def parse_record(value: object) -> SessionLogRecord:
         errors = exc.errors()
         _raise_discriminator_error(errors, value)
         error = drop_prefix_errors(errors)[0]
-        record_type = value.get("type", "")
-        raise GymratError(message_for_error(error, str(record_type))) from exc
+        raise GymratError(message_for_error(error, value)) from exc
     finally:
         _wire_validation.reset(token)
 
 
-_KNOWN_TYPES = (
-    "session",
-    "baseline",
-    "iteration",
-    "keep",
-    "discard",
-    "hook",
-    "finalize",
-    "stop",
-    "command",
-)
+def _known_types() -> list[str]:
+    return [wire_type(member) for member in SESSION_LOG_MODELS]
 
 
 def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, object]) -> None:
     """Raise with the canonical "Unknown session record type" message.
 
-    Callers match on this exact wording and the ``_KNOWN_TYPES`` hint.
+    Callers match on this exact wording and on the hint, which lists every
+    ``SessionLogRecord`` member's ``type`` literal in union order.
 
     Args:
         errors: The validation errors pydantic reported.
@@ -95,7 +88,7 @@ def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, obje
     type_value = value.get("type")
     tag_missing = error_type == "union_tag_not_found" and type_value is None and "type" not in value
     rendered = "undefined" if tag_missing else json.dumps(type_value)
-    hint = "Expected one of: " + ", ".join(_KNOWN_TYPES) + "."
+    hint = "Expected one of: " + ", ".join(_known_types()) + "."
     message = f"Unknown session record type: {rendered}"
     raise GymratError(message, hint=hint)
 
@@ -291,44 +284,155 @@ def _strip_type_prefix(loc: tuple[int | str, ...], record_type: str) -> tuple[in
     return loc
 
 
+def _walk_to_target(
+    loc: tuple[int | str, ...], node: object, target: object
+) -> tuple[int | str, ...] | None:
+    """Find the location prefix that walks ``node`` down to ``target``.
+
+    Nodes are matched against ``target`` by identity, so ``target`` must be a
+    container: a scalar may be one object shared by every equal value.
+
+    A segment that also names a key or index of ``node`` is tried first, since
+    a coincidental match should win when it leads to ``target``. If it
+    doesn't, the segment is retried as a tag naming nothing in the input,
+    leaving ``node`` unchanged for the next segment.
+
+    Args:
+        loc: The remaining location segments to consume.
+        node: The record node the walk is currently on.
+        target: The node the walk must end on.
+
+    Returns:
+        The consumed segments on the path to ``target``, or ``None`` when no
+        path reaches it.
+    """
+    if not loc:
+        return () if node is target else None
+    segment, rest = loc[0], loc[1:]
+    match node:
+        case dict() if segment in node:
+            taken = _walk_to_target(rest, node[segment], target)
+            if taken is not None:
+                return (segment, *taken)
+        case list() if isinstance(segment, int) and 0 <= segment < len(node):
+            taken = _walk_to_target(rest, node[segment], target)
+            if taken is not None:
+                return (segment, *taken)
+    return _walk_to_target(rest, node, target)
+
+
+def _greedy_walk(loc: tuple[int | str, ...], node: object) -> tuple[int | str, ...]:
+    """Consume every location segment that names a key or index of ``node``.
+
+    Used when the error's ``input`` cannot be located by identity: it is a
+    scalar, whose object CPython may share with equal values elsewhere in the
+    record, or a container a ``BeforeValidator`` replaced with a new object no
+    walk can land on. Without a target to confirm against, a segment that also
+    names a key or index of ``node`` is always followed; a tag segment naming
+    nothing in the input is skipped, leaving ``node`` unchanged for the next
+    segment.
+
+    Args:
+        loc: The remaining location segments to consume.
+        node: The record node the walk is currently on.
+
+    Returns:
+        The consumed segments.
+    """
+    if not loc:
+        return ()
+    segment, rest = loc[0], loc[1:]
+    match node:
+        case dict() if segment in node:
+            return (segment, *_greedy_walk(rest, node[segment]))
+        case list() if isinstance(segment, int) and 0 <= segment < len(node):
+            return (segment, *_greedy_walk(rest, node[segment]))
+    return _greedy_walk(rest, node)
+
+
+def _data_path(
+    loc: tuple[int | str, ...], record: dict[str, object], target: object, *, missing: bool
+) -> tuple[int | str, ...]:
+    """Keep only the location segments that address a key or index of ``record``.
+
+    For every union member it tries, pydantic inserts a tag segment into the
+    location -- a model's class name, or a type such as ``int`` or
+    ``tuple[str, ...]``. A tag names nothing in the input, so a segment that
+    also happens to be a present key is disambiguated by whether continuing
+    the walk under it still reaches ``target`` -- the error's ``input``
+    (for a ``missing`` error, the parent object). A ``missing`` error's final
+    segment names a key absent by definition, so it is kept without being
+    looked up.
+
+    The identity walk runs only when ``target`` is a ``dict`` or ``list``:
+    each decoded JSON container is a distinct object, so identity pins down
+    exactly one node. A scalar ``target`` proves nothing -- CPython shares one
+    object for equal small ints, ``True``, ``False`` and ``None``, and a
+    ``BeforeValidator`` that coerces ``0.0`` to ``0`` hands back that shared
+    object -- so identity would land on whichever equal value the walk meets
+    first, anywhere in the record. For a scalar, and whenever no path reaches
+    a container ``target`` because a ``BeforeValidator`` replaced it,
+    ``_greedy_walk`` follows every segment that matches a key or index
+    instead.
+
+    Args:
+        loc: A pydantic error location, relative to ``record``.
+        record: The raw record that failed validation.
+        target: The error's ``input``; a ``dict`` or ``list`` is the node the
+            walk must end on, any other value is ignored.
+        missing: Whether the error reports a missing key.
+
+    Returns:
+        The location without union member tags.
+    """
+    walked = loc[:-1] if missing else loc
+    match target:
+        case dict() | list():
+            path = _walk_to_target(walked, record, target)
+        case _:
+            path = None
+    if path is None:
+        path = _greedy_walk(walked, record)
+    if missing and loc:
+        path = (*path, loc[-1])
+    return path
+
+
 _VALUE_ERROR_PREFIX = "Value error, "
 
 
-def message_for_error(error: ErrorDetails, record_type: str) -> str:
+def message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
     """Translate one pydantic error into a session-record problem string.
 
     Model-level validators (``type="value_error"``, empty ``loc``) carry their
-    own sentence in ``msg``; field-level errors use the phrase table.
+    own sentence in ``msg``; field-level errors use the phrase table. The
+    reported path is the one the user wrote in ``record``, free of the union
+    member tags pydantic adds to the error location.
 
     Args:
         error: The pydantic ``ErrorDetails`` being translated.
-        record_type: The wire type name used to look up the phrase table.
+        record: The raw record that failed validation; its ``type`` selects the
+            phrase table entries.
 
     Returns:
         A human-readable problem string for the error.
     """
-    raw_loc = _strip_type_prefix(error["loc"], record_type)
-    display_loc = tuple(str(part) for part in raw_loc)
+    record_type = str(record.get("type", ""))
+    missing = error["type"] == "missing"
+    path = _data_path(
+        _strip_type_prefix(error["loc"], record_type), record, error["input"], missing=missing
+    )
+    display_loc = tuple(str(part) for part in path)
+    key = describe_key(display_loc)
     if error["type"] == "extra_forbidden":
-        return f"Unknown session record key: {describe_key(display_loc)}"
-    if error["type"] == "value_error" and not raw_loc:
+        return f"Unknown session record key: {key}"
+    if error["type"] == "value_error" and not path:
         # Pydantic renders a model validator's ValueError as
         # "Value error, <text>"; surface <text> directly.
         msg = error["msg"].removeprefix(_VALUE_ERROR_PREFIX)
-        key = describe_key(display_loc)
         separator = ": " if key else ""
         return f"Invalid session record: {key}{separator}{msg}"
-    normalized = _normalize_loc(raw_loc)
-    phrase = _PHRASES.get((record_type, *normalized))
-    if phrase is None and len(normalized) > 1:
-        # Union-type fields (e.g. int | float) produce error paths with a
-        # variant suffix; fall back to the parent key and strip the variant
-        # from the display path so the user sees ``seq``, not ``seq.int``.
-        phrase = _PHRASES.get((record_type, *normalized[:-1]))
-        if phrase is not None:
-            display_loc = display_loc[:-1]
-    if phrase is None:
-        phrase = "a valid value"
-    got = "undefined" if error["type"] == "missing" else json.dumps(error["input"])
-    key = describe_key(display_loc)
+    normalized = _normalize_loc(path)
+    phrase = _PHRASES.get((record_type, *normalized), "a valid value")
+    got = "undefined" if missing else json.dumps(error["input"])
     return f"Invalid session record value for {key}: expected {phrase}, got {got}"

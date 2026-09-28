@@ -12,12 +12,15 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat.config import KindEntry, MetricEntry
 from gymrat.loop.baseline import measure_baseline
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.records import BaselineRecord
 from tests.report._inputs import create_measurement_result
 
 if TYPE_CHECKING:
+    from gymrat.measure import MeasureOptions
+    from gymrat.progress_events import ProgressEvent
     from gymrat.report.types import MeasurementResult
 
 # ---------------------------------------------------------------------------
@@ -26,15 +29,19 @@ if TYPE_CHECKING:
 
 
 def _run_options() -> RunOptions:
-    """Minimal run options the engine never actually uses (the engine is faked)."""
+    """Run options with every field set away from its default, so a dropped field shows."""
+    warnings: list[str] = []
+    events: list[ProgressEvent] = []
     return RunOptions(
         bench="sh bench.sh",
-        prepare=None,
+        prepare="sh prepare.sh",
         adapter="metric-lines",
         samples=5,
         timeout_seconds=30,
-        config_metrics=None,
-        config_kinds=None,
+        config_metrics={"decode/time": MetricEntry(direction="higher")},
+        config_kinds={"memory": KindEntry(gating=False)},
+        on_progress=events.append,
+        warn=warnings.append,
     )
 
 
@@ -76,3 +83,23 @@ def test_measure_baseline_when_called_does_return_result_and_record_with_matchin
     assert record.label == "build"
     assert record.samples == tuple(rounds)
     assert record.duration_ms == 500
+
+
+def test_measure_baseline_when_called_does_hand_the_engine_the_target_and_run_options(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: list[MeasureOptions] = []
+
+    async def spy_measure(options: MeasureOptions) -> MeasurementResult:
+        captured.append(options)
+        return create_measurement_result(label="build")
+
+    monkeypatch.setattr("gymrat.measure.measure", spy_measure)
+    target = TargetSpec(label="build", target="main")
+    run_options = _run_options()
+
+    asyncio.run(measure_baseline(target, run_options))
+
+    assert len(captured) == 1
+    assert captured[0].target == target
+    assert captured[0].run is run_options

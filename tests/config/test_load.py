@@ -1,3 +1,5 @@
+from collections.abc import Callable
+from operator import attrgetter
 from pathlib import Path
 
 import pytest
@@ -431,6 +433,48 @@ def test_load_config_file_when_noise_pct_on_floor_does_accept(tmp_path: Path):
     result = load_config_file(config_path)
 
     assert result == ConfigFile(unstable_noise_pct=0.5)
+
+
+# ---------------------------------------------------------------------------
+# number-typed keys: integers accepted, booleans rejected
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "read", "expected"),
+    [
+        pytest.param(
+            "unstable_noise_pct = 3", attrgetter("unstable_noise_pct"), 3.0, id="noise-pct"
+        ),
+        pytest.param(
+            "[stop]\ntarget_value = -2",
+            attrgetter("stop.target_value"),
+            -2.0,
+            id="stop-target-value",
+        ),
+    ],
+)
+def test_load_config_file_when_number_key_given_integer_does_accept_as_float(
+    tmp_path: Path, text: str, read: Callable[[ConfigFile], object], expected: float
+):
+    config_path = write_raw(tmp_path, text)
+
+    value = read(load_config_file(config_path))
+
+    assert (type(value), value) == (float, expected)
+
+
+def test_load_config_file_when_stop_target_value_boolean_does_reject_with_exact_message(
+    tmp_path: Path,
+):
+    config_path = write_raw(tmp_path, "[stop]\ntarget_value = false")
+
+    with pytest.raises(GymratError) as exc:
+        load_config_file(config_path)
+
+    assert str(exc.value) == (
+        "Invalid config value for stop.target_value: expected a number, got false"
+    )
 
 
 # ---------------------------------------------------------------------------

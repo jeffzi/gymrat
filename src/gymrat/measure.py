@@ -18,7 +18,6 @@ from gymrat.model import ResolvedMetricMeta
 from gymrat.report.types import MeasurementResult, MetricMeasurement
 from gymrat.sampling import (
     RunOptions,
-    SamplingOptions,
     TargetContext,
     TargetSpec,
     collect_samples,
@@ -33,16 +32,18 @@ from gymrat.targets import CleanupResult, WorktreeInfo, resolve_target
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class MeasureOptions(RunOptions):
+class MeasureOptions:
     """Caller-facing configuration for a single measurement run.
 
     One target, no baseline: nothing is judged, so there is no noise band to set
     and no verdict to gate on.
 
     Attributes:
+        run: The bench, sampling, adapter, and config-override settings of the run.
         target: The revision or directory to measure.
     """
 
+    run: RunOptions
     target: TargetSpec
 
 
@@ -65,6 +66,7 @@ def _build_measurement_result(
     cleanup: CleanupResult,
 ) -> MeasurementResult:
     """Assemble the rendered result from the measurement and the cleanup outcome."""
+    run = options.run
     metrics: dict[str, MetricMeasurement] = {}
     for metric_name, meta in measurement.metric_meta.items():
         stats = compute_metric_stats(own_values(measurement.samples, metric_name))
@@ -77,11 +79,11 @@ def _build_measurement_result(
         worktrees_left_behind=tuple(cleanup.failures),
         worktree_prune_error=cleanup.prune_error,
         label=measurement.label,
-        samples=options.samples,
-        adapter=options.adapter,
+        samples=run.samples,
+        adapter=run.adapter,
         metrics=metrics,
         rounds=tuple(measurement.samples),
-        config_kinds=options.config_kinds,
+        config_kinds=run.config_kinds,
     )
 
 
@@ -112,7 +114,8 @@ async def measure(options: MeasureOptions) -> MeasurementResult:
         worktrees: list[WorktreeInfo],
         abort: asyncio.Event,
     ) -> _Measurement:
-        adapter = get_adapter(options.adapter)
+        run = options.run
+        adapter = get_adapter(run.adapter)
         target = resolve_target(options.target.target, repo_dir)
 
         ctx = TargetContext(
@@ -124,14 +127,7 @@ async def measure(options: MeasureOptions) -> MeasurementResult:
         (collected,) = await collect_samples(
             adapter,
             [ctx],
-            SamplingOptions(
-                bench=options.bench,
-                prepare=options.prepare,
-                samples=options.samples,
-                timeout_seconds=options.timeout_seconds,
-                on_progress=options.on_progress,
-                warn=options.warn,
-            ),
+            run.sampling(),
             abort,
         )
 
@@ -140,9 +136,9 @@ async def measure(options: MeasureOptions) -> MeasurementResult:
             samples=collected.samples,
             metric_meta=resolve_metric_meta_from_samples(
                 [collected.samples],
-                options.config_metrics,
+                run.config_metrics,
                 adapter,
-                options.config_kinds,
+                run.config_kinds,
             ),
         )
 

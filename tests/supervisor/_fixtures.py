@@ -6,23 +6,36 @@ test file. ``collecting_observer`` hands back an appending observer paired with
 the list it fills; ``make_launch`` builds a fully-populated ``LaunchEvent`` from
 overridable defaults; ``read_log_lines`` parses a JSONL log into dicts.
 ``seed_session_log``, ``seed_with_stop``, ``add_stop_async``, and
-``supervise_fast`` share the turn-loop test boilerplate.
+``supervise_fast`` share the turn-loop test boilerplate. ``result_message``,
+``system_message``, ``assistant``, ``tool_results``, and ``stream_event`` build
+the real ``claude-agent-sdk`` message dataclasses the Claude driver consumes.
 """
 
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Literal, NamedTuple, override
 
+from claude_agent_sdk import (
+    AssistantMessage,
+    ContentBlock,
+    MessageOrigin,
+    ResultMessage,
+    StreamEvent,
+    SystemMessage,
+    ToolResultBlock,
+    UserMessage,
+)
+
 from gymrat.clock import now_ms, now_ns
-from gymrat.config import BenchlessConfig, Effort
+from gymrat.config import BenchlessConfig, Effort, StopConfig
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor import (
     Driver,
     FollowUpEvent,
+    create_claude_driver,
     supervise,
 )
 from gymrat.supervisor.context import SupervisedSession
@@ -41,6 +54,9 @@ from tests.session.records._fixtures import (
     stop_record,
 )
 from tests.supervisor._mock_driver import EmitStep, _MockSession
+
+_SESSION_ID = "sdk-session"
+_MODEL = "claude-test"
 
 
 class ObserverProbe(NamedTuple):
@@ -193,6 +209,11 @@ class InterruptEmitsEndDriver:
         return _InterruptEmitsEndSession(inner_session, observer)
 
 
+# ---------------------------------------------------------------------------
+# SDK message builders
+# ---------------------------------------------------------------------------
+
+
 def result_message(
     *,
     subtype: str = "success",
@@ -200,29 +221,49 @@ def result_message(
     num_turns: int = 1,
     total_cost_usd: float | None = None,
     result: str | None = None,
-) -> SimpleNamespace:
-    """Build a result message shaped like the SDK's ``ResultMessage``.
-
-    A result message is identified by having both ``subtype`` and ``num_turns``
-    attributes; a system message has ``subtype`` alone.
-    """
-    return SimpleNamespace(
+    origin: MessageOrigin | None = None,
+) -> ResultMessage:
+    """Build an SDK ``ResultMessage`` with fixed bookkeeping fields."""
+    return ResultMessage(
         subtype=subtype,
+        duration_ms=0,
+        duration_api_ms=0,
         is_error=is_error,
         num_turns=num_turns,
+        session_id=_SESSION_ID,
         total_cost_usd=total_cost_usd,
         result=result,
+        origin=origin,
     )
 
 
 def system_message(
     *, subtype: str = "init", data: dict[str, object] | None = None
-) -> SimpleNamespace:
-    """Build a system message (has ``subtype`` but lacks ``num_turns``)."""
-    ns = SimpleNamespace(subtype=subtype)
-    if data is not None:
-        ns.data = data
-    return ns
+) -> SystemMessage:
+    """Build an SDK ``SystemMessage`` carrying ``data`` (empty when omitted)."""
+    return SystemMessage(subtype=subtype, data=data if data is not None else {})
+
+
+def assistant(*blocks: ContentBlock, parent_tool_use_id: str | None = None) -> AssistantMessage:
+    """Build an SDK ``AssistantMessage`` carrying the given content blocks."""
+    return AssistantMessage(
+        content=list(blocks), model=_MODEL, parent_tool_use_id=parent_tool_use_id
+    )
+
+
+def tool_results(*blocks: ToolResultBlock, parent_tool_use_id: str | None = None) -> UserMessage:
+    """Build an SDK ``UserMessage`` carrying tool results, as the CLI delivers them."""
+    return UserMessage(content=list(blocks), parent_tool_use_id=parent_tool_use_id)
+
+
+def stream_event(event: dict[str, object], *, parent_tool_use_id: str | None = None) -> StreamEvent:
+    """Build an SDK ``StreamEvent`` wrapping one raw API stream event."""
+    return StreamEvent(
+        uuid="event-uuid",
+        session_id=_SESSION_ID,
+        event=event,
+        parent_tool_use_id=parent_tool_use_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +342,15 @@ class FactoryProbe:
         return self._client
 
 
-def _default_benchless_config() -> BenchlessConfig:
-    """A minimal ``BenchlessConfig`` for tests that need a context but not a real config."""
+def default_benchless_config(*, stop: StopConfig | None = None) -> BenchlessConfig:
+    """A minimal ``BenchlessConfig`` for tests that need a context but not a real config.
+
+    Args:
+        stop: The stop conditions the config carries, or ``None`` for none.
+
+    Returns:
+        A config with neutral sampling defaults and no runbook.
+    """
     return BenchlessConfig(
         adapter="mitata",
         samples=1,
@@ -310,7 +358,7 @@ def _default_benchless_config() -> BenchlessConfig:
         unstable_noise_pct=5.0,
         primary="geomean",
         runbook=None,
-        stop=None,
+        stop=stop,
     )
 
 
@@ -335,7 +383,7 @@ def make_context(
         root=root,
         log_path=log_path,
         lock_path=lock_path,
-        config=config if config is not None else _default_benchless_config(),
+        config=config if config is not None else default_benchless_config(),
         deadline_ms=deadline_ms,
         max_minutes=max_minutes,
         max_usd=max_usd,
@@ -422,3 +470,49 @@ async def supervise_fast(
         is_lock_held=is_lock_held,
         grace_ms=grace_ms,
     )
+
+
+async def run_session(
+    driver: Driver,
+    observer: SessionObserver,
+    prompt: SessionPrompt | None = None,
+    abort: asyncio.Event | None = None,
+    *,
+    max_wait: float = 30.0,
+) -> SessionOutcome:
+    """Start a session and await its settled outcome."""
+    session = driver.start(prompt or make_prompt(), observer, abort)
+    return await asyncio.wait_for(session.outcome, max_wait)
+
+
+async def run_outcome(
+    client: FakeClient, observer: SessionObserver | None = None
+) -> SessionOutcome:
+    """Drive ``client`` through a session and return its settled outcome."""
+    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    return await run_session(driver, observer or noop_observer())
+
+
+async def run_with_messages(messages: Sequence[object]) -> list[SessionEvent]:
+    """Drive a session over scripted ``messages`` and return the events it emitted.
+
+    The stream terminates naturally after the scripted messages so mapping
+    tests exercise message-to-event logic without a result message or an
+    explicit ``end()`` call.  Tests that need a specific outcome or the
+    turn-end protocol use ``run_session`` directly.
+
+    Args:
+        messages: The scripted SDK messages the fake client replays.
+
+    Returns:
+        The events the observer received, in emission order.
+    """
+    driver = create_claude_driver(client_factory=FactoryProbe(FiniteClient(list(messages))))
+    probe = collecting_observer()
+    await run_session(driver, probe.observer)
+    return probe.events
+
+
+def events_of[T: SessionEvent](events: Sequence[SessionEvent], event_type: type[T]) -> list[T]:
+    """The events of ``event_type`` in ``events``, in emission order."""
+    return [e for e in events if isinstance(e, event_type)]

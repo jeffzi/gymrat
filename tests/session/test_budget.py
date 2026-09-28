@@ -28,6 +28,8 @@ from gymrat.session.budget import (
 from gymrat.session.paths import budget_path
 from tests.session.records._fixtures import iteration_record
 
+_FAR_FUTURE_DEADLINE_MS = 999_999_999.0
+
 
 @pytest.fixture
 def root(tmp_path: Path) -> str:
@@ -63,7 +65,7 @@ def _budget_json(**overrides: object) -> str:
         "version": 1,
         "started_at_ms": 1000.0,
         "max_minutes": 30,
-        "deadline_ms": 999_999_999.0,
+        "deadline_ms": _FAR_FUTURE_DEADLINE_MS,
     }
     defaults.update(overrides)
     return json.dumps(defaults)
@@ -132,7 +134,7 @@ def test_write_budget_when_called_twice_does_overwrite_previous(root: str):
 def test_read_budget_when_file_exists_and_lock_held_and_deadline_ahead_does_return_budget(
     root: str,
 ):
-    original = _make_budget(deadline_ms=999_999_999.0)
+    original = _make_budget(deadline_ms=_FAR_FUTURE_DEADLINE_MS)
     write_budget(root, original)
 
     with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
@@ -156,6 +158,7 @@ def test_read_budget_when_file_exists_and_lock_held_and_deadline_ahead_does_retu
         pytest.param(_budget_json(deadline_ms=True), id="deadline-bool"),
         pytest.param(_budget_json(version=True), id="version-bool"),
         pytest.param(_budget_json(version=1.0), id="version-float"),
+        pytest.param(_budget_json(version=2), id="version-newer"),
         pytest.param(_budget_json(extra=1), id="unexpected-field"),
     ],
 )
@@ -171,16 +174,15 @@ def test_read_budget_when_file_unreadable_or_invalid_does_return_none(
     assert result is None
 
 
-def test_read_budget_when_version_unrecognized_does_return_none(root: str):
-    write_budget(root, _make_budget())
-    raw = _read_json(root)
-    raw["version"] = 999
+def test_read_budget_when_version_missing_does_return_version_one_budget(root: str):
+    raw = json.loads(_budget_json())
+    del raw["version"]
     _budget_file(root).write_text(json.dumps(raw), encoding="utf-8")
 
     with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
         result = read_budget(root, now_ms=0.0)
 
-    assert result is None
+    assert result == _make_budget(deadline_ms=_FAR_FUTURE_DEADLINE_MS)
 
 
 def test_read_budget_when_deadline_passed_does_return_none(root: str):
@@ -193,7 +195,7 @@ def test_read_budget_when_deadline_passed_does_return_none(root: str):
 
 
 def test_read_budget_when_supervise_lock_not_held_does_return_none(root: str):
-    write_budget(root, _make_budget(deadline_ms=999_999_999.0))
+    write_budget(root, _make_budget(deadline_ms=_FAR_FUTURE_DEADLINE_MS))
 
     with patch("gymrat.session.budget.is_held", autospec=True, return_value=False):
         result = read_budget(root, now_ms=1000.0)

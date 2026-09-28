@@ -16,6 +16,7 @@ three methods:
 
 import dataclasses
 import math
+import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -39,7 +40,6 @@ from gymrat.model import (
 )
 from gymrat.stats import (
     compute_half_range,
-    compute_median,
     percent_delta,
     sign_flip_permutation_test,
 )
@@ -106,30 +106,44 @@ def _determine_verdict(delta: float, direction: Direction) -> Verdict:
     return "improved" if improved else "regressed"
 
 
-def _fraction_of_median(numerator: float, median: float) -> float:
-    """A value as a fraction of a median's magnitude, or 0 with no magnitude.
+def _verdict_if_signal(delta: float, direction: Direction, *, has_signal: bool) -> Verdict:
+    return _determine_verdict(delta, direction) if has_signal else "no-signal"
 
-    A side that measured 0 contributes nothing instead of making the result
-    infinite, so each side stands on its own term.
+
+def _fraction_of_median(numerator: float, median: float) -> float | None:
+    """A value as a fraction of a median's magnitude, or ``None`` with no magnitude.
+
+    A median of 0 has no magnitude to measure against, and neither does one so
+    close to 0 that the ratio overflows to infinity: both return ``None`` so the
+    caller treats the side the same way instead of carrying an infinite value.
 
     Args:
         numerator: The value to express as a fraction of the median.
         median: The median whose magnitude is the denominator.
 
     Returns:
-        The fraction, or ``0.0`` when *median* is zero.
+        The fraction, or ``None`` when *median* is zero or the fraction is not
+        finite.
     """
-    return 0.0 if median == 0 else numerator / abs(median)
+    if median == 0:
+        return None
+    fraction = numerator / abs(median)
+    return fraction if math.isfinite(fraction) else None
 
 
 def _compute_noise(samples: _PairedSamples, unit: MetricUnit | None) -> _Noise:
-    """Compute the measurement noise of a metric.
+    """The percentage and absolute noise thresholds a paired delta must clear.
+
+    Also reports whether the metric is forced unstable.
 
     Percentage form:
     ``max(K * 100 * max(spread(A), spread(B)), floor%, byteFloor%)`` where each
     ``spread`` is a side's half-range over its median magnitude, ``K`` is
     :data:`NOISE_K`, and ``floor`` is :data:`NOISE_FLOOR_PCT`. Absolute form:
     ``K * max(halfRange(A), halfRange(B))``.
+
+    A side whose median is 0, or so close to 0 that its ratio overflows, contributes
+    no term; with a non-zero half-range it also forces the verdict unstable.
 
     A byte-valued metric takes a further floor of one byte against each median: it
     is quantized to whole bytes, so a 4B → 3B move is one step of resolution
@@ -141,33 +155,29 @@ def _compute_noise(samples: _PairedSamples, unit: MetricUnit | None) -> _Noise:
         unit: The metric's unit, or ``None`` when it carries no unit.
 
     Returns:
-        The computed noise thresholds for this metric.
+        The `_Noise` thresholds and the forced-unstable flag.
     """
     half_range_a = compute_half_range(samples.left)
     half_range_b = compute_half_range(samples.right)
 
-    spread_a = _fraction_of_median(half_range_a, samples.median_left)
-    spread_b = _fraction_of_median(half_range_b, samples.median_right)
-    max_spread = max(spread_a, spread_b)
+    spread_pct_a = _fraction_of_median(NOISE_K * 100 * half_range_a, samples.median_left)
+    spread_pct_b = _fraction_of_median(NOISE_K * 100 * half_range_b, samples.median_right)
 
-    byte_floor_pct = (
-        max(
-            _fraction_of_median(ONE_BYTE_PCT, samples.median_left),
-            _fraction_of_median(ONE_BYTE_PCT, samples.median_right),
-        )
-        if unit == "bytes"
-        else 0.0
-    )
+    byte_floor_pct = 0.0
+    if unit == "bytes":
+        byte_pct_a = _fraction_of_median(ONE_BYTE_PCT, samples.median_left)
+        byte_pct_b = _fraction_of_median(ONE_BYTE_PCT, samples.median_right)
+        byte_floor_pct = max(byte_pct_a or 0.0, byte_pct_b or 0.0)
 
-    # A side with median 0 and non-zero half-range makes the noise fraction
-    # undefined (division by zero). Force the unstable flag so the engine
-    # never serializes an infinite noise_pct into session records.
-    force_unstable = (samples.median_left == 0 and half_range_a != 0) or (
-        samples.median_right == 0 and half_range_b != 0
+    # A side with no median magnitude but a non-zero half-range has no finite
+    # noise percentage. Force the unstable flag so the engine never serializes
+    # an infinite noise_pct into session records.
+    force_unstable = (spread_pct_a is None and half_range_a != 0) or (
+        spread_pct_b is None and half_range_b != 0
     )
 
     return _Noise(
-        pct=max(NOISE_K * 100 * max_spread, NOISE_FLOOR_PCT, byte_floor_pct),
+        pct=max(spread_pct_a or 0.0, spread_pct_b or 0.0, NOISE_FLOOR_PCT, byte_floor_pct),
         abs=NOISE_K * max(half_range_a, half_range_b),
         resolution_pct=byte_floor_pct,
         force_unstable=force_unstable,
@@ -212,7 +222,7 @@ def _compute_approximate_verdict(
     record: PermutationVerdict | BandVerdict
     if nonzero_n < PERMUTATION_FLOORS.min_n:
         has_signal = nonzero_n >= BAND_FLOORS.min_n and abs(delta) > noise.pct
-        verdict = _determine_verdict(delta, meta.direction) if has_signal else "no-signal"
+        verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
         record = BandVerdict(
             method="band",
             verdict=verdict,
@@ -228,7 +238,7 @@ def _compute_approximate_verdict(
             msg = "PERMUTATION_FLOORS.p_threshold must be set"
             raise ValueError(msg)
         has_signal = result.p < PERMUTATION_FLOORS.p_threshold and abs(delta) > noise.resolution_pct
-        verdict = _determine_verdict(delta, meta.direction) if has_signal else "no-signal"
+        verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
         record = PermutationVerdict(
             method="permutation",
             verdict=verdict,
@@ -257,10 +267,10 @@ def compute_verdicts(
 ) -> dict[str, MetricVerdict]:
     """Compute per-metric verdicts across two observation sets.
 
-    Metrics are visited in ``metric_meta`` insertion order. For each, values are
-    paired by round; windows where either side is missing the metric are dropped.
-    A metric present on only one side across every window yields no paired samples
-    and is skipped silently — it produces no verdict and no warning.
+    Values of each metric are paired by round; windows where either side is
+    missing the metric are dropped. A metric present on only one side across
+    every window yields no paired samples and is skipped silently — it produces
+    no verdict and no warning.
 
     A metric that did produce a verdict but lost windows to one-sided measurement
     emits a single warning through ``warn`` naming the metric and the dropped
@@ -296,8 +306,8 @@ def compute_verdicts(
         samples = _PairedSamples(
             left=paired.left,
             right=paired.right,
-            median_left=compute_median(paired.left),
-            median_right=compute_median(paired.right),
+            median_left=statistics.median(paired.left),
+            median_right=statistics.median(paired.right),
         )
         delta = percent_delta(samples.median_left, samples.median_right)
 

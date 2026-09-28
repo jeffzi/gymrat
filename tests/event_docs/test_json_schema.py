@@ -125,6 +125,27 @@ def test_render_json_schemas_when_called_does_have_const_type_discriminator(
     assert type_prop.get("const") == expected_const
 
 
+@pytest.mark.parametrize(
+    ("schema_idx", "members"),
+    [
+        pytest.param(0, get_args(SessionLogRecord.__value__), id="session-log"),
+        pytest.param(1, get_args(SessionEvent), id="supervisor-log"),
+    ],
+)
+def test_render_json_schemas_when_called_does_map_every_type_to_its_member_def(
+    schema_idx: int,
+    members: tuple[type, ...],
+):
+    expected_mapping = {
+        get_args(member.model_fields["type"].annotation)[0]: f"#/$defs/{member.__name__}"
+        for member in members
+    }
+
+    schema = _schemas()[schema_idx]
+
+    assert schema["discriminator"] == {"propertyName": "type", "mapping": expected_mapping}
+
+
 # ---------------------------------------------------------------------------
 # additionalProperties — present on record models, absent on event models
 # ---------------------------------------------------------------------------

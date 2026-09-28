@@ -116,20 +116,11 @@ async def _compare_body(
             compare as engine,
         )
 
-        run_opts = run_options_of(config_resolved, progress)
         options = engine.CompareOptions(
+            run=run_options_of(config_resolved, progress),
             baseline=baseline,
             candidates=candidates,
             unstable_noise_pct=config_resolved.unstable_noise_pct,
-            bench=run_opts.bench,
-            prepare=run_opts.prepare,
-            adapter=run_opts.adapter,
-            samples=run_opts.samples,
-            timeout_seconds=run_opts.timeout_seconds,
-            config_metrics=run_opts.config_metrics,
-            config_kinds=run_opts.config_kinds,
-            on_progress=run_opts.on_progress,
-            warn=run_opts.warn,
         )
         return await engine.compare(options)
     finally:
