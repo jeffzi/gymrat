@@ -250,7 +250,11 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
             keep_result = await keep_session(
                 root,
                 resolve_benchless_config(flags, root),
-                KeepOptions(message=message, allow_unimproved=allow_unimproved),
+                KeepOptions(
+                    message=message,
+                    allow_unimproved=allow_unimproved,
+                    warn_color=resolve_stream_color(color_override, sys.stderr),
+                ),
                 color=resolved_color,
             )
             trace.seq = keep_result.record.seq

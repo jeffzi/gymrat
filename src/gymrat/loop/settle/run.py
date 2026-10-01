@@ -62,11 +62,16 @@ class KeepOptions:
             options keeps only what the loop measured as an improvement.
         warn: Sink for the checks gate's warnings. Defaults to ``None``, which
             leaves those warnings on stderr.
+        warn_color: Whether a warning left on stderr carries color. Defaults to
+            ``None``, which defers to ``FORCE_COLOR``, ``NO_COLOR`` and stderr's
+            TTY state. A ``warn`` sink always receives plain text, so it ignores
+            this.
     """
 
     message: str | None = None
     allow_unimproved: bool = False
     warn: WarnSink | None = None
+    warn_color: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +98,7 @@ class _KeepContext:
     iteration: IterationRecord
     message: str | None
     warn: WarnSink | None
+    warn_color: bool | None
 
 
 async def keep_session(
@@ -191,6 +197,7 @@ async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions)
         iteration=iteration,
         message=options.message,
         warn=options.warn,
+        warn_color=options.warn_color,
     )
 
     if not is_worktree_dirty(experiment_dir):
@@ -264,7 +271,9 @@ async def _gated_keep(context: _KeepContext, *, commit: Callable[[str], str]) ->
         GymratError: When ``commit``, the baseline advance, or the record append
             fails.
     """
-    checks = await run_checks(context.config, context.experiment_dir, context.warn)
+    checks = await run_checks(
+        context.config, context.experiment_dir, context.warn, color=context.warn_color
+    )
     if checks is not None and not checks.passed:
         return _checks_failed_keep(context.jsonl_path, context.iteration.seq, checks)
 

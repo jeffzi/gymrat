@@ -75,7 +75,11 @@ def _gate_off_warning(*, color: bool) -> str:
 
 
 async def run_checks(
-    config: BenchlessConfig, experiment_dir: str, warn: WarnSink | None = None
+    config: BenchlessConfig,
+    experiment_dir: str,
+    warn: WarnSink | None = None,
+    *,
+    color: bool | None = None,
 ) -> ChecksRun | None:
     """Run the configured checks in the experiment worktree.
 
@@ -91,6 +95,8 @@ async def run_checks(
             A caller-supplied sink owns its own presentation — a CLI interleaving
             the warning with a progress line, for one — so it is handed plain
             text, while the stderr default keeps the color it renders with.
+        color: Whether the warning written to stderr carries color, or ``None``
+            to defer to ``FORCE_COLOR``, ``NO_COLOR`` and stderr's TTY state.
 
     Returns:
         What the command answered, or ``None`` when no checks are configured — in
@@ -99,7 +105,8 @@ async def run_checks(
     command = config.checks
     if command is None:
         if warn is None:
-            warn_to_stderr(_gate_off_warning(color=_stderr_color()))
+            stderr_color = _stderr_color() if color is None else color
+            warn_to_stderr(_gate_off_warning(color=stderr_color))
         else:
             warn(_gate_off_warning(color=False))
         return None

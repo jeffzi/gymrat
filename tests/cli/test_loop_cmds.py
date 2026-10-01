@@ -18,13 +18,17 @@ Budget-line tests verify that loop commands append a time-left line to their
 text output when a live budget is present, and omit it otherwise.
 """
 
+import contextlib
+import io
 import re
 import subprocess
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Generator
 from pathlib import Path
+from typing import Any, override
 
 import pytest
+from typer.testing import CliRunner
 
 from gymrat.cli import loop_cmds
 from gymrat.cli.app import app
@@ -913,6 +917,68 @@ def test_keep_command_when_color_does_force_ansi_on_stdout_report(repo: str):
 
     assert result.exit_code == 1
     assert SGR_RE.search(result.stdout)
+
+
+#: Environment that forces color on, alone or under a --no-color flag that must outrank it.
+_FORCE_COLOR = {"FORCE_COLOR": "1"}
+
+
+class _TerminalTextIO(io.TextIOWrapper):
+    """A text stream over a captured buffer that reports itself as a terminal."""
+
+    @override
+    def isatty(self) -> bool:
+        return True
+
+
+class _TerminalStderrRunner(CliRunner):
+    """A ``CliRunner`` whose isolated ``sys.stderr`` is a terminal while stdout stays piped."""
+
+    @override
+    @contextlib.contextmanager
+    def isolation(self, *args: Any, **kwargs: Any) -> Generator[Any]:
+        with super().isolation(*args, **kwargs) as streams:
+            captured_stderr = sys.stderr
+            terminal = _TerminalTextIO(captured_stderr.buffer, encoding="utf-8", write_through=True)
+            sys.stderr = terminal
+            try:
+                yield streams
+            finally:
+                terminal.flush()
+                # Detach so collecting the wrapper never closes the runner's capture buffer.
+                terminal.detach()
+                sys.stderr = captured_stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "env", "cli_runner", "expect_ansi"),
+    [
+        pytest.param(["keep", "--no-color"], _FORCE_COLOR, runner, False, id="no-color-flag"),
+        pytest.param(["keep", "--color"], {}, runner, True, id="color-flag-without-tty"),
+        pytest.param(["--no-color", "keep"], _FORCE_COLOR, runner, False, id="root-no-color"),
+        pytest.param(["keep"], {}, _TerminalStderrRunner(), True, id="stderr-tty-stdout-piped"),
+        pytest.param(["keep"], _FORCE_COLOR, runner, True, id="force-color-without-tty"),
+        pytest.param(
+            ["keep"], {"NO_COLOR": "1"}, _TerminalStderrRunner(), False, id="no-color-on-tty"
+        ),
+        pytest.param(["--color", "keep", "--no-color"], {}, runner, False, id="command-beats-root"),
+    ],
+)
+def test_keep_command_when_no_checks_does_color_the_warning_hint_per_flags_and_stderr(
+    repo: str,
+    args: list[str],
+    env: dict[str, str],
+    cli_runner: CliRunner,
+    expect_ansi: bool,
+):
+    _start_edited_session(repo)
+
+    result = cli_runner.invoke(app, args, env=env)
+
+    assert result.exit_code == 0
+    assert "no checks command is configured" in strip_ansi(result.stderr)
+    hint = result.stderr.splitlines()[1]
+    assert bool(SGR_RE.search(hint)) is expect_ansi
 
 
 def test_discard_command_when_no_color_does_strip_ansi_from_stderr_error(
