@@ -56,6 +56,7 @@ from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
 from tests._ansi import strip_ansi
 from tests._rich import unwrap_panel
+from tests.cli._help import help_output
 from tests.cli._session import closed_stdout_error, closed_stdout_runner
 from tests.cli.supervise._fixtures import (
     CleanupRegistry,
@@ -899,6 +900,29 @@ def test_supervise_when_help_does_describe_flags(repo: str):
     assert re.search(r"stop condition.*already met", flat, re.IGNORECASE)
     assert "--max-minutes" in text
     assert re.search(r"counted.*baseline.*recorded", flat, re.IGNORECASE)
+
+
+@pytest.mark.parametrize(
+    ("name", "metavar", "description"),
+    [
+        pytest.param("[PROMPT]", "<str>", "optimization prompt for the agent", id="prompt"),
+        pytest.param("--max-minutes", "<float>", "wall-clock cap in minutes", id="max-minutes"),
+        pytest.param("--max-usd", "<float>", "spend cap in USD", id="max-usd"),
+        pytest.param("--log", "<str>", "path for the JSONL event log", id="log"),
+        pytest.param("--model", "<str>", "model to use for the agent session", id="model"),
+        pytest.param("--effort", "<level>", "effort level", id="effort"),
+        pytest.param("--allow-dirty", "", "allow launching with uncommitted changes", id="dirty"),
+        pytest.param(
+            "--no-finalize", "", "leave the session open instead of finalizing it", id="finalize"
+        ),
+    ],
+)
+def test_supervise_when_help_does_list_each_flag_with_its_metavar_and_text(
+    name: str, metavar: str, description: str
+):
+    text = help_output("supervise")
+
+    assert re.search(rf"{re.escape(name)}\s+{re.escape(metavar)}\s*{re.escape(description)}", text)
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import sys
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import typer
 
@@ -25,24 +25,14 @@ if TYPE_CHECKING:
     from gymrat.supervisor.events import SessionObserver
 
 from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
-from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
+from gymrat.cli.options import (
     BaselineOption,
     ColorOption,
     DebugOption,
+    parse_max_minutes,
+    parse_positive_number,
 )
 from gymrat.cli.shared import exit_with_error, resolve_render_mode, write_and_flush, write_stdout
-from gymrat.cli.supervise.options import (
-    AllowDirtyOption,
-    EffortOption,
-    ForceOption,
-    LogOption,
-    MaxMinutesOption,
-    MaxUsdOption,
-    ModelOption,
-    NoFinalizeOption,
-    Options,
-    PromptArgument,
-)
 from gymrat.cli.supervise.preflight import doctor_gate, run_preflight, validate_experiment_worktree
 from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.cli.supervise.summary import SessionLabels, build_summary
@@ -94,6 +84,70 @@ from gymrat.supervisor.event_log import probe_event_log_path
 from gymrat.supervisor.events import DirtyInfo, LaunchEvent, summarize
 from gymrat.supervisor.exit_sequence import ExitReport, run_exit_sequence
 from gymrat.warn import warn_to_stderr
+
+# ---------------------------------------------------------------------------
+# Flag surface
+# ---------------------------------------------------------------------------
+
+PromptArgument = Annotated[
+    str | None,
+    typer.Argument(metavar="[PROMPT]", help="optimization prompt for the agent"),
+]
+MaxMinutesOption = Annotated[
+    float,
+    typer.Option(
+        "--max-minutes",
+        parser=parse_max_minutes,
+        metavar="<float>",
+        help="wall-clock cap in minutes, counted from when the baseline is recorded",
+    ),
+]
+MaxUsdOption = Annotated[
+    float | None,
+    typer.Option(
+        "--max-usd", parser=parse_positive_number, metavar="<float>", help="spend cap in USD"
+    ),
+]
+LogOption = Annotated[str | None, typer.Option("--log", help="path for the JSONL event log")]
+ModelOption = Annotated[
+    str | None, typer.Option("--model", help="model to use for the agent session")
+]
+AllowDirtyOption = Annotated[
+    bool, typer.Option("--allow-dirty", help="allow launching with uncommitted changes")
+]
+ForceOption = Annotated[
+    bool,
+    typer.Option(
+        "--force",
+        help="launch even when the cap cannot fit one iteration or a stop condition is already met",
+    ),
+]
+NoFinalizeOption = Annotated[
+    bool,
+    typer.Option("--no-finalize", help="leave the session open instead of finalizing it on exit"),
+]
+EffortOption = Annotated[
+    Effort | None,
+    typer.Option("--effort", metavar="<level>", help="effort level"),
+]
+
+
+@dataclass(frozen=True, slots=True)
+class Options:
+    """The parsed flag surface, gathered so the run helpers take one argument."""
+
+    prompt: str | None
+    max_minutes: float
+    max_usd: float | None
+    log: str | None
+    baseline: str | None
+    model: str | None
+    effort: Effort | None
+    allow_dirty: bool
+    force: bool
+    color: bool | None
+    finalize: bool
+
 
 # ---------------------------------------------------------------------------
 # Pre-flight guards

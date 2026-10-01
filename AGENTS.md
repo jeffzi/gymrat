@@ -60,10 +60,9 @@ more than one concern; it is not a budget.
 - **At the cap, move one whole concern** — the code least tied to the rest that changes together for
   one reason — into a module named for what it does (never "helpers", "utils", "misc"): a new
   module, or an existing one you have read that already owns that concern. A module carved off its
-  only importer, such as `supervisor/tasks.py`, owns nothing; never add to it. Never move just
-  enough to pass, and never compress code. One concern, one move: the file should land at 450 or
-  below, and if it doesn't, pick a different, larger concern — never top up the move with other
-  code.
+  only importer owns nothing; never add to it. Never move just enough to pass, and never compress
+  code. One concern, one move: the file should land at 450 or below, and if it doesn't, pick a
+  different, larger concern — never top up the move with other code.
 
 ## Docstrings
 
