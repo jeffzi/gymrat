@@ -20,7 +20,7 @@ import pytest
 from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.loop.settle import KeepOptions, keep_session
+from gymrat.loop.keep import KeepOptions, keep_session
 from gymrat.session import (
     BaselineRecord,
     Confirm,
@@ -38,7 +38,7 @@ from gymrat.session.schema import Outcome
 from gymrat.session.store import latest_baseline
 from tests._ansi import SGR_RE, strip_ansi
 from tests._streams import FakeStream
-from tests.loop.settle._fixtures import (
+from tests.loop._settle import (
     CHECKS,
     CHECKS_STDERR,
     CHECKS_STDOUT,

@@ -52,7 +52,7 @@ from tests.cli._session import (
 )
 from tests.conftest import hold_lock
 from tests.loop._probe import MeasureRecorder, baseline_of, install_measure, measurement, only_call
-from tests.loop.settle._fixtures import start_with
+from tests.loop._settle import start_with
 from tests.session.records._fixtures import finalize_record, iteration_record
 
 runner = CliRunner()

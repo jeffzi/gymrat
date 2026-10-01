@@ -38,12 +38,12 @@ from tests.cli._session import (
     strip_ansi,
     write_config,
 )
-from tests.loop.iterate._fixtures import resolved_config
-from tests.loop.settle._fixtures import (
+from tests.loop._settle import (
     git,
     head_of,
     settling_record_of,
 )
+from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     committed_keep,
     iteration_record,

@@ -6,7 +6,7 @@ against a throwaway repository from the ``create_scratch_repo`` factory, so the
 suite stays order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 
 The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.loop.settle._fixtures``.
+helper imported as ``tests.loop._settle``.
 """
 
 import subprocess
@@ -153,9 +153,9 @@ class ExecRecorder:
 def install_exec(
     monkeypatch: pytest.MonkeyPatch, result: ExecResult | ExecTimeoutError
 ) -> ExecRecorder:
-    """Replace the settle_checks module's ``exec`` with a recorder answering ``result``."""
+    """Replace the keep module's ``exec`` with a recorder answering ``result``."""
     recorder = ExecRecorder(result)
-    monkeypatch.setattr("gymrat.loop.settle.checks.exec", recorder)
+    monkeypatch.setattr("gymrat.loop.keep.exec", recorder)
     return recorder
 
 

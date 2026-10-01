@@ -55,8 +55,9 @@ from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.config import CliFlags, resolve_benchless_config, resolve_config
 from gymrat.errors import GATE_EXIT_CODE
+from gymrat.loop.discard import DiscardResult, discard_session
 from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError, iterate_session
-from gymrat.loop.settle import DiscardResult, KeepOptions, KeepResult, discard_session, keep_session
+from gymrat.loop.keep import KeepOptions, KeepResult, keep_session
 from gymrat.loop.status import status_data, status_session
 from gymrat.observers import fan_out
 from gymrat.report.json_doc import (

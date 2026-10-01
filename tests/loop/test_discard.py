@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.loop.settle import discard_session, keep_session
+from gymrat.loop.discard import discard_session
+from gymrat.loop.keep import keep_session
 from gymrat.session import (
     SessionLogRecord,
     append_record,
@@ -25,7 +26,7 @@ from gymrat.session import (
     read_records,
     session_jsonl_path,
 )
-from tests.loop.settle._fixtures import (
+from tests.loop._settle import (
     assert_settling_record,
     checks_config,
     checks_pass,

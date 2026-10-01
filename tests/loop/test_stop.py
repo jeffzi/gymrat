@@ -25,7 +25,7 @@ from gymrat.session import (
     read_records,
     session_jsonl_path,
 )
-from tests.loop.settle._fixtures import (
+from tests.loop._settle import (
     capture_error,
     confirmed_regression,
     gating_block,

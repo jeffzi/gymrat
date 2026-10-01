@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.loop.finalize import FinalizeResult
-from gymrat.loop.settle import KeepResult
+from gymrat.loop.keep import KeepResult
 from gymrat.loop.start import StartResult
 from gymrat.loop.sync import SyncResult
 from gymrat.report.json_doc import (

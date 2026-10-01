@@ -58,8 +58,7 @@ from tests.cli._session import (
     strip_ansi,
     write_config,
 )
-from tests.loop.iterate._fixtures import resolved_config
-from tests.loop.settle._fixtures import (
+from tests.loop._settle import (
     CHECKS,
     KEPT_MEDIANS_LINE,
     checks_fail,
@@ -74,6 +73,7 @@ from tests.loop.settle._fixtures import (
     status_of,
     unimproved,
 )
+from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     SESSION_ID,
     committed_keep,

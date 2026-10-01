@@ -189,7 +189,7 @@ def make_discard_repo(repo: str) -> str:
 
 def make_stop_repo(repo: str) -> str:
     """Set up ``repo`` with a settled, configured session ready for the stop command."""
-    from tests.loop.settle._fixtures import iteration, start_with
+    from tests.loop._settle import iteration, start_with
     from tests.session.records._fixtures import committed_keep
 
     start_with(repo, (iteration(1), committed_keep(1)))

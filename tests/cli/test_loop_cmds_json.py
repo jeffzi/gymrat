@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 from gymrat.cli.app import app
-from gymrat.loop.settle import DiscardResult, KeepResult
+from gymrat.loop.discard import DiscardResult
+from gymrat.loop.keep import KeepResult
 from gymrat.loop.start import start_session
 from gymrat.session import (
     DiscardRecord,
@@ -33,8 +34,7 @@ from tests.cli._session import (
     runner,
     write_config,
 )
-from tests.loop.iterate._fixtures import resolved_config
-from tests.loop.settle._fixtures import (
+from tests.loop._settle import (
     CHECKS,
     checks_pass,
     edit_experiment,
@@ -43,6 +43,7 @@ from tests.loop.settle._fixtures import (
     start_with,
     unimproved,
 )
+from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     AT,
     COMMIT,

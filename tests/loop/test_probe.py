@@ -36,7 +36,7 @@ from tests.loop._probe import (
     measurement,
     only_call,
 )
-from tests.loop.settle._fixtures import checks_config, start_with
+from tests.loop._settle import checks_config, start_with
 from tests.report._inputs import line_containing, measured_metric, metric_meta, styles_at
 from tests.session.records._fixtures import finalize_record
 
