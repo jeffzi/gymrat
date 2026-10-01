@@ -14,22 +14,26 @@ braces like ``cpu: {model`` — does not prevent the real payload from being fou
 import json
 import math
 import re
-from typing import TypeGuard
+from typing import Annotated
+
+from pydantic import (
+    BaseModel,
+    Field,
+    Strict,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    WrapValidator,
+)
 
 from gymrat.adapters.defaults import defaults_from_suffixes
 from gymrat.adapters.types import AdapterError, MetricDefaults, WarnSink, warn_to_stderr
-
-_FORBIDDEN_NAME_CHARS = re.compile("[\\n\\r\\u2028\\u2029]")
-"""Characters a metric name may not carry.
-
-All four are line terminators to a JavaScript regular-expression engine, so an
-anchored name check on the session record could never match a name holding one —
-gymrat must never write a record it cannot read back. Unlike ``metric-lines``,
-whose input is split on ``\\n`` and ``\\r`` before any name is read, mitata's JSON
-can carry every one of them inside an alias or an argument value. Written as
-escapes so the source stays plain ASCII.
-"""
-
+from gymrat.metric_name import LINE_TERMINATORS
+from gymrat.pydantic_errors import (
+    UNKNOWN_SHAPE_PHRASE,
+    describe_key,
+    drop_prefix_errors,
+    phrase_for_error,
+)
 
 _JSON_DECODER = json.JSONDecoder()
 
@@ -176,26 +180,34 @@ def _record_metric(metrics: dict[str, float], name: str, value: float, warn: War
     metrics[name] = value
 
 
+def _escape_line_terminator(match: re.Match[str]) -> str:
+    return json.dumps(match.group())[1:-1]
+
+
 def _describe_run_error(error: object) -> str:
-    """Render mitata's ``run.error`` for a warning message.
+    r"""Render mitata's ``run.error`` for a warning message.
 
     ``error`` is read from parsed JSON, so it can be any JSON value, not just a
     string — ``str()`` on a plain dict would print an unhelpful Python repr.
-    ``json.dumps`` renders that case usefully instead, with a ``str()`` fallback
-    for values it cannot serialize.
+    ``json.dumps`` renders that case usefully instead, and cannot fail since the
+    value round-trips from ``json.loads``.
+
+    A string is written as-is so a plain message reads naturally, except that
+    each character of ``LINE_TERMINATORS`` becomes its JSON escape (``\n``,
+    ``\u000b``, ``\f``, ``\r``, ``\u001c`` to ``\u001e``, ``\u0085``,
+    ``\u2028``, ``\u2029``): the warning must stay on one line.
+    ``json.dumps`` keeps ``ensure_ascii`` on, so a non-string value is already
+    escaped the same way.
 
     Args:
         error: The ``run.error`` value as parsed from JSON.
 
     Returns:
-        A human-readable rendering of the error value.
+        A single-line, human-readable rendering of the error value.
     """
     if isinstance(error, str):
-        return error
-    try:
-        return json.dumps(error)
-    except (TypeError, ValueError):
-        return str(error)
+        return LINE_TERMINATORS.sub(_escape_line_terminator, error)
+    return json.dumps(error)
 
 
 def _serialize_arg_value(value: object) -> str:
@@ -255,44 +267,113 @@ def _build_metric_name_prefix(alias: str, args: dict[str, object]) -> str:
     return pattern.sub(_repl, alias)
 
 
-def _is_number(value: object) -> TypeGuard[float]:
-    """Tell whether a parsed value is a JS-style number.
+def _keep_integer(value: object, handler: ValidatorFunctionWrapHandler) -> float:
+    number: float = handler(value)
+    # Strict float validation widens an int to float; the int is kept so a
+    # whole-number reading is written back as ``42``, not ``42.0``.
+    return value if isinstance(value, int) else number
 
-    Python's ``bool`` is an ``int`` subclass, so it is excluded to mirror
-    JavaScript's ``typeof value === "number"``.
+
+_Number = Annotated[float, Strict(), WrapValidator(_keep_integer)]
+"""A JSON number; strict, so ``bool`` is rejected as JavaScript's ``typeof`` would."""
+
+_FINITE_NUMBER_PHRASE = "a finite number"
+_HEAP_LOC = ("stats", "heap")
+
+
+class _Heap(BaseModel):
+    """The ``stats.heap`` object mitata writes when it measured allocations."""
+
+    avg: _Number | None = None
+
+
+class _Stats(BaseModel):
+    """A run's ``stats`` object.
+
+    ``heap`` is left loose here and validated against :class:`_Heap` on its own,
+    so a malformed heap costs only the ``#heap`` metric, never the ``#time`` one.
+    """
+
+    p50: _Number
+    heap: object = None
+
+
+class _Run(BaseModel):
+    """One entry of a benchmark's ``runs`` array."""
+
+    # A run that never varied its arguments can omit ``args`` entirely.
+    args: dict[str, object] = Field(default_factory=dict)
+    stats: _Stats
+
+
+class _Benchmark(BaseModel):
+    """One entry of the top-level ``benchmarks`` array."""
+
+    alias: Annotated[str, Strict()]
+    runs: list[object]
+
+
+def _invalid_value_tail(key: str, phrase: str, value: object) -> str:
+    """Phrase a rejected value as the tail of a skip warning.
 
     Args:
-        value: The parsed JSON value to test.
+        key: The dotted path of the rejected value; empty for the entry itself.
+        phrase: What was expected, such as ``"a number"``.
+        value: The rejected value.
 
     Returns:
-        True for an ``int`` or ``float`` that is not a ``bool``.
+        The text that follows the skipped entry's name in the warning.
     """
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    detail = f"expected {phrase}, got {json.dumps(value)}"
+    return f" with invalid {key}: {detail}" if key else f": {detail}"
 
 
-def _resolve_p50(stats: dict[str, object], alias: str, warn: WarnSink) -> float | None:
-    """Read ``stats.p50``, warning and returning ``None`` when it is unusable."""
-    p50 = stats.get("p50")
-    if _is_number(p50):
-        if math.isfinite(p50):
-            return p50
-        warn(f"Skipping run with non-finite p50: {alias} ({p50})")
-        return None
-    warn(f"Skipping run with malformed stats shape: {alias} (stats.p50 is not a number)")
-    return None
+def _first_problem(exc: ValidationError, prefix: tuple[str, ...] = ()) -> str:
+    """Phrase the first problem pydantic found as the tail of a skip warning.
+
+    Args:
+        exc: The validation failure.
+        prefix: The path of the validated value inside the run, prepended to
+            each error location.
+
+    Returns:
+        The text that follows the skipped entry's name in the warning.
+    """
+    error = drop_prefix_errors(exc.errors())[0]
+    key = describe_key((*prefix, *(str(part) for part in error["loc"])))
+    if error["type"] == "missing":
+        return f" with missing {key}"
+    return _invalid_value_tail(key, phrase_for_error(error) or UNKNOWN_SHAPE_PHRASE, error["input"])
+
+
+def _warn_skip(warn: WarnSink, subject: str, tail: str) -> None:
+    """Send a "Skipping <subject><tail>" warning.
+
+    Args:
+        warn: The sink that receives the warning.
+        subject: What is being skipped, e.g. ``'run of "my-bench"'``. Any alias it
+            names is JSON-escaped, so a line terminator in the alias cannot split the
+            warning.
+        tail: The reason, from :func:`_invalid_value_tail` or :func:`_first_problem`.
+    """
+    warn(f"Skipping {subject}{tail}")
 
 
 def _resolve_metric_prefix(alias: str, args: dict[str, object], warn: WarnSink) -> str | None:
     prefix = _build_metric_name_prefix(alias, args)
     if "#" in prefix:
         msg = (
-            f"Metric prefix \"{prefix}\" contains '#', which is reserved as the "
-            f"metric-type separator (alias: {alias})"
+            f"Metric prefix {json.dumps(prefix)} contains '#', which is reserved as the "
+            f"metric-type separator (alias: {json.dumps(alias)})"
         )
         raise AdapterError(msg)
-    if _FORBIDDEN_NAME_CHARS.search(prefix):
+    if LINE_TERMINATORS.search(prefix):
+        # Check every entry of LINE_TERMINATORS, not just ``\n`` and ``\r``: mitata's JSON
+        # can carry any of them inside an alias or an argument value.
+        # json.dumps keeps ensure_ascii on so U+0085, U+2028 and U+2029 are escaped
+        # like the ASCII terminators, keeping the warning on one line.
         warn(
-            f"Skipping run with a line terminator in its metric name: {alias} "
+            f"Skipping run with a line terminator in its metric name: {json.dumps(alias)} "
             "(the alias or one of its argument values carries one)"
         )
         return None
@@ -300,24 +381,25 @@ def _resolve_metric_prefix(alias: str, args: dict[str, object], warn: WarnSink) 
 
 
 def _record_heap_metric(
-    stats: dict[str, object],
+    heap: object,
     prefix: str,
     alias: str,
     metrics: dict[str, float],
     warn: WarnSink,
 ) -> None:
     """Record ``<prefix>#heap`` from ``stats.heap.avg`` when mitata measured it."""
-    heap = stats.get("heap")
     if heap is None:
         return
-    if not isinstance(heap, dict):
-        warn(f"Skipping heap metric for {alias}: stats.heap is not an object ({heap!r})")
+    subject = f"heap metric of {json.dumps(alias)}"
+    try:
+        avg = _Heap.model_validate(heap).avg
+    except ValidationError as exc:
+        _warn_skip(warn, subject, _first_problem(exc, _HEAP_LOC))
         return
-    avg = heap.get("avg")
     if avg is None:
         return
-    if not _is_number(avg) or not math.isfinite(avg):
-        warn(f"Skipping heap metric for {alias}: stats.heap.avg is not a finite number ({avg!r})")
+    if not math.isfinite(avg):
+        _warn_skip(warn, subject, _invalid_value_tail("stats.heap.avg", _FINITE_NUMBER_PHRASE, avg))
         return
     _record_metric(metrics, f"{prefix}#heap", avg, warn)
 
@@ -325,59 +407,46 @@ def _record_heap_metric(
 def _extract_run_metrics(
     run: object, alias: str, metrics: dict[str, float], warn: WarnSink
 ) -> None:
-    if not isinstance(run, dict):
-        warn(f"Skipping non-object run entry for benchmark: {alias}")
+    # An errored run carries no usable stats, so the error is the one problem
+    # worth reporting — checked before the shape, which it would otherwise fail.
+    if isinstance(run, dict) and run.get("error") is not None:
+        error = _describe_run_error(run["error"])
+        warn(f"Skipping run with an error: {json.dumps(alias)} ({error})")
         return
 
-    if run.get("error") is not None:
-        warn(f"Skipping run with an error: {alias} ({_describe_run_error(run['error'])})")
+    subject = f"run of {json.dumps(alias)}"
+    try:
+        parsed = _Run.model_validate(run)
+    except ValidationError as exc:
+        _warn_skip(warn, subject, _first_problem(exc))
         return
 
-    # A run that never varied its arguments can omit ``args`` entirely, so absence
-    # is tolerated as an empty record rather than a malformed shape.
-    args: object = run.get("args", {})
-    if not isinstance(args, dict):
-        warn(f"Skipping run with malformed args shape: {alias} (args is not a record)")
+    p50 = parsed.stats.p50
+    if not math.isfinite(p50):
+        _warn_skip(warn, subject, _invalid_value_tail("stats.p50", _FINITE_NUMBER_PHRASE, p50))
         return
 
-    stats = run.get("stats")
-    if not isinstance(stats, dict):
-        warn(f"Skipping run with malformed stats shape: {alias} (stats is not a record)")
-        return
-
-    p50 = _resolve_p50(stats, alias, warn)
-    if p50 is None:
-        return
-
-    prefix = _resolve_metric_prefix(alias, args, warn)
+    prefix = _resolve_metric_prefix(alias, parsed.args, warn)
     if prefix is None:
         return
 
     _record_metric(metrics, f"{prefix}#time", p50, warn)
-    _record_heap_metric(stats, prefix, alias, metrics, warn)
+    _record_heap_metric(parsed.stats.heap, prefix, alias, metrics, warn)
 
 
 def _extract_benchmark_metrics(
     benchmark: object, metrics: dict[str, float], warn: WarnSink
 ) -> None:
-    if not isinstance(benchmark, dict):
-        warn(f"Skipping non-object benchmark entry: {json.dumps(benchmark)}")
+    try:
+        parsed = _Benchmark.model_validate(benchmark)
+    except ValidationError as exc:
+        alias = benchmark.get("alias") if isinstance(benchmark, dict) else None
+        label = f" {json.dumps(alias)}" if isinstance(alias, str) else ""
+        _warn_skip(warn, f"benchmark{label}", _first_problem(exc))
         return
 
-    alias = benchmark.get("alias")
-    if not isinstance(alias, str):
-        warn(
-            f"Skipping benchmark with malformed alias: {json.dumps(alias)} (alias is not a string)"
-        )
-        return
-
-    runs = benchmark.get("runs")
-    if not isinstance(runs, list):
-        warn(f"Skipping benchmark with malformed runs shape: {alias} (runs is not an array)")
-        return
-
-    for run in runs:
-        _extract_run_metrics(run, alias, metrics, warn)
+    for run in parsed.runs:
+        _extract_run_metrics(run, parsed.alias, metrics, warn)
 
 
 class _MitataAdapter:

@@ -110,31 +110,33 @@ def _verdict_if_signal(delta: float, direction: Direction, *, has_signal: bool) 
     return _determine_verdict(delta, direction) if has_signal else "no-signal"
 
 
-def _fraction_of_median(numerator: float, median: float) -> float | None:
-    """A value as a fraction of a median's magnitude, or ``None`` with no magnitude.
+def _fraction_of_median(numerator: float, median: float, scale: float = 1.0) -> float | None:
+    """A value as a scaled fraction of a median's magnitude.
 
-    A median of 0 has no magnitude to measure against, and neither does one so
-    close to 0 that the ratio overflows to infinity: both return ``None`` so the
-    caller treats the side the same way instead of carrying an infinite value.
+    The scale is applied after the division so a large numerator alone cannot
+    overflow.
 
     Args:
         numerator: The value to express as a fraction of the median.
         median: The median whose magnitude is the denominator.
+        scale: The factor applied to the fraction.
 
     Returns:
-        The fraction, or ``None`` when *median* is zero or the fraction is not
-        finite.
+        The scaled fraction, or ``None`` when *median* is zero or the scaled
+        fraction is not finite.
     """
     if median == 0:
         return None
-    fraction = numerator / abs(median)
+    fraction = (numerator / abs(median)) * scale
     return fraction if math.isfinite(fraction) else None
+
+
+def _largest_term(*fractions: float | None) -> float:
+    return max((f for f in fractions if f is not None), default=0.0)
 
 
 def _compute_noise(samples: _PairedSamples, unit: MetricUnit | None) -> _Noise:
     """The percentage and absolute noise thresholds a paired delta must clear.
-
-    Also reports whether the metric is forced unstable.
 
     Percentage form:
     ``max(K * 100 * max(spread(A), spread(B)), floor%, byteFloor%)`` where each
@@ -155,29 +157,29 @@ def _compute_noise(samples: _PairedSamples, unit: MetricUnit | None) -> _Noise:
         unit: The metric's unit, or ``None`` when it carries no unit.
 
     Returns:
-        The `_Noise` thresholds and the forced-unstable flag.
+        The ``_Noise`` thresholds and the forced-unstable flag.
     """
     half_range_a = compute_half_range(samples.left)
     half_range_b = compute_half_range(samples.right)
 
-    spread_pct_a = _fraction_of_median(NOISE_K * 100 * half_range_a, samples.median_left)
-    spread_pct_b = _fraction_of_median(NOISE_K * 100 * half_range_b, samples.median_right)
+    noise_pct_a = _fraction_of_median(half_range_a, samples.median_left, NOISE_K * 100)
+    noise_pct_b = _fraction_of_median(half_range_b, samples.median_right, NOISE_K * 100)
 
     byte_floor_pct = 0.0
     if unit == "bytes":
         byte_pct_a = _fraction_of_median(ONE_BYTE_PCT, samples.median_left)
         byte_pct_b = _fraction_of_median(ONE_BYTE_PCT, samples.median_right)
-        byte_floor_pct = max(byte_pct_a or 0.0, byte_pct_b or 0.0)
+        byte_floor_pct = _largest_term(byte_pct_a, byte_pct_b)
 
-    # A side with no median magnitude but a non-zero half-range has no finite
-    # noise percentage. Force the unstable flag so the engine never serializes
-    # an infinite noise_pct into session records.
-    force_unstable = (spread_pct_a is None and half_range_a != 0) or (
-        spread_pct_b is None and half_range_b != 0
+    # A side with scatter but no median magnitude cannot express its noise as a
+    # percentage and adds no term to `pct`, which would understate the band; force
+    # unstable instead of reporting a verdict against an understated band.
+    force_unstable = (noise_pct_a is None and half_range_a != 0) or (
+        noise_pct_b is None and half_range_b != 0
     )
 
     return _Noise(
-        pct=max(spread_pct_a or 0.0, spread_pct_b or 0.0, NOISE_FLOOR_PCT, byte_floor_pct),
+        pct=max(_largest_term(noise_pct_a, noise_pct_b), NOISE_FLOOR_PCT, byte_floor_pct),
         abs=NOISE_K * max(half_range_a, half_range_b),
         resolution_pct=byte_floor_pct,
         force_unstable=force_unstable,

@@ -15,10 +15,13 @@ import traceback
 from typing import TYPE_CHECKING, Annotated
 
 import typer
+from rich.prompt import Confirm
+from rich.text import Text
 
+from gymrat.cli.console import stderr_console
 from gymrat.cli.iterate.progress import IterateRenderer
 from gymrat.cli.lock import GATE_EXIT_CODE, CommandTrace, config_trace_args, with_repo_lock
-from gymrat.cli.shared import (
+from gymrat.cli.options import (
     AdapterOption,
     AllowUnimprovedOption,
     BenchOption,
@@ -32,9 +35,10 @@ from gymrat.cli.shared import (
     SamplesOption,
     TimeoutOption,
     VerboseOption,
+)
+from gymrat.cli.shared import (
     apply_color_override,
     apply_debug,
-    broken_pipe_guard,
     budget_snapshot,
     exit_with_error,
     is_debug_mode,
@@ -45,10 +49,10 @@ from gymrat.cli.shared import (
     run_with_signal_abort,
     write_and_flush,
     write_budget_report,
+    write_stdout,
 )
 from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.config import CliFlags, resolve_benchless_config, resolve_config
-from gymrat.confirm import confirm_action
 from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError, iterate_session
 from gymrat.loop.settle import DiscardResult, KeepOptions, KeepResult, discard_session, keep_session
 from gymrat.loop.status import status_data, status_session
@@ -105,8 +109,6 @@ async def _iterate_body(
     guard_supervised_origin(root, "iterate")
     resolved = resolve_config(flags, root)
     required = require_open_session(root, "iterate")
-
-    from gymrat.cli.console import stderr_console  # noqa: PLC0415 -- avoids circular import
 
     mode = resolve_render_mode()
     console = stderr_console(color_flag=color)
@@ -193,10 +195,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         except LoopStopError as error:
             trailer, summary = budget_snapshot(root)
             if use_json:
-                write_and_flush(
-                    sys.stdout,
-                    render_iterate_stop_json(str(error), budget=summary) + "\n",
-                )
+                write_stdout(render_iterate_stop_json(str(error), budget=summary) + "\n")
                 raise typer.Exit(GATE_EXIT_CODE) from None
             if trailer:
                 write_and_flush(sys.stderr, trailer.lstrip("\n") + "\n")
@@ -277,6 +276,21 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
 # ---------------------------------------------------------------------------
 
 
+def _confirm_discard(worktree: str, *, color: bool | None) -> bool:
+    # A Text question skips markup and emoji parsing, so the path prints as typed.
+    question = Text(
+        f"discard will revert uncommitted changes in {worktree}.\nProceed?", style="prompt"
+    )
+    console = stderr_console(color_flag=color)
+    # Soft wrap hands line breaking to the terminal; rich would otherwise split or
+    # crop a path longer than the console width.
+    console.soft_wrap = True
+    try:
+        return Confirm.ask(question, console=console, default=False)
+    except EOFError:
+        return False
+
+
 def discard(
     *,
     force: ForceOption = False,
@@ -296,12 +310,11 @@ def discard(
         if is_tty(sys.stdin) and not force:
             required = require_open_session(root, "discard")
             confirmed_session_id = required.session.session_id
-            confirmed = confirm_action(
-                "discard will revert uncommitted changes in "
-                f"{required.session.worktrees.experiment}.\nProceed?",
-                sys.stdin,
-            )
-            if not confirmed:
+            # With stderr closed the question cannot be shown, so there is no
+            # consent to act on — and no stream to report the decline on.
+            if sys.stderr is None:
+                raise typer.Exit(GATE_EXIT_CODE)
+            if not _confirm_discard(required.session.worktrees.experiment, color=color):
                 write_and_flush(sys.stderr, "discard cancelled\n")
                 raise typer.Exit(GATE_EXIT_CODE)
 
@@ -354,7 +367,6 @@ def status(
             )
 
         report = await with_repo_lock("status", body)
-        with broken_pipe_guard():
-            write_and_flush(sys.stdout, report + "\n")
+        write_stdout(report + "\n")
 
     run_cli(run)

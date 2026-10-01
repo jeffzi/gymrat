@@ -19,9 +19,19 @@ from gymrat.cli.export_cmd import export_command
 from gymrat.cli.init_cmd import init_command
 from gymrat.cli.loop_cmds import discard, iterate, keep, status
 from gymrat.cli.measure_cmd import measure
+from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
+    ColorOption,
+    DebugOption,
+)
 from gymrat.cli.probe_cmd import probe
 from gymrat.cli.session_cmds import finalize, start, stop, sync
-from gymrat.cli.shared import BUGS_URL, ColorOption, DebugOption, set_color_override, set_debug_mode
+from gymrat.cli.shared import (
+    BUGS_URL,
+    exit_with_error,
+    set_color_override,
+    set_debug_mode,
+    write_stdout,
+)
 from gymrat.cli.supervise.cmd import supervise_command
 from gymrat.report.style import format_hint
 
@@ -68,9 +78,20 @@ Examples:
 
 
 def _version_callback(*, value: bool) -> None:
-    """Print the installed package version and exit when ``--version`` is given."""
+    """Print the installed package version and exit when ``--version`` is given.
+
+    Args:
+        value: Whether ``--version`` was passed on the command line.
+
+    Raises:
+        typer.Exit: Always — code 0 on success or closed pipe, code 2 when the
+            write fails for another reason (reported through the error formatter).
+    """
     if value:
-        typer.echo(importlib.metadata.version("gymrat"))
+        try:
+            write_stdout(importlib.metadata.version("gymrat") + "\n")
+        except OSError as error:
+            exit_with_error(error)
         raise typer.Exit
 
 

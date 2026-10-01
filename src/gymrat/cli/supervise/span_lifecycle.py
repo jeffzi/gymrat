@@ -70,8 +70,9 @@ def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the se
 
     Returns:
         A three-tuple of ``(prompt, observer, state)``.  When no tracing
-        endpoint is configured the prompt and observer are returned unchanged
-        and no spans are opened; when tracing is active
+        endpoint is configured, or the spans it opens carry no valid trace
+        context (as when the SDK is disabled), the prompt and observer are
+        returned unchanged with an inactive state and no spans left open; when tracing is active
         the prompt carries a ``traceparent`` and the observer fans out to
         both the reporter and the tracing observer.
     """
@@ -117,6 +118,13 @@ def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the se
         attributes=run_attrs,
         context=session_ctx,
     )
+
+    # A disabled SDK (OTEL_SDK_DISABLED=true) still configures a provider but
+    # hands out non-recording spans with no trace context to propagate.
+    if not state.run_span.get_span_context().is_valid:
+        state.run_span.end()
+        state.session_span.end()
+        return prompt, reporter_observer, TracingState()
 
     prompt = replace(prompt, traceparent=format_traceparent(state.run_span))
     observer = combine_observers(reporter_observer, create_run_span_observer(state.run_span))

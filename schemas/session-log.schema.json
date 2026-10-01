@@ -26,10 +26,10 @@
             "additionalProperties": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "number"
                 },
                 {
-                  "type": "number"
+                  "type": "integer"
                 }
               ]
             },
@@ -306,10 +306,10 @@
         "duration_ms": {
           "anyOf": [
             {
-              "type": "integer"
+              "type": "number"
             },
             {
-              "type": "number"
+              "type": "integer"
             }
           ],
           "description": "Wall-clock milliseconds the hook command ran.",
@@ -380,10 +380,10 @@
         "delta_pct": {
           "anyOf": [
             {
-              "type": "integer"
+              "type": "number"
             },
             {
-              "type": "number"
+              "type": "integer"
             },
             {
               "type": "null"
@@ -616,10 +616,10 @@
         "delta_pct": {
           "anyOf": [
             {
-              "type": "integer"
+              "type": "number"
             },
             {
-              "type": "number"
+              "type": "integer"
             },
             {
               "type": "null"
@@ -687,10 +687,10 @@
             "additionalProperties": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "number"
                 },
                 {
-                  "type": "number"
+                  "type": "integer"
                 }
               ]
             },
@@ -705,10 +705,10 @@
             "additionalProperties": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "number"
                 },
                 {
-                  "type": "number"
+                  "type": "integer"
                 }
               ]
             },

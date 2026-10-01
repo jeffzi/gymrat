@@ -1,14 +1,16 @@
 """Tests for the report style/color primitives.
 
-These cover the style/color primitives (code-point splitting only — the
-grapheme-cluster/ZWJ-emoji cases are out of scope) plus the color-resolution and
-capture-rendering tests.
+These cover the style/color primitives (label clipping by terminal cells and
+grapheme clusters) plus the color-resolution and capture-rendering tests.
 """
 
 import io
 import os
 
 import pytest
+from hypothesis import assume, given
+from hypothesis import strategies as st
+from rich.cells import cell_len, split_graphemes
 from rich.markup import escape
 
 from gymrat.report.display import DisplayClass
@@ -87,18 +89,60 @@ def test_shorten_label_when_width_leaves_no_room_does_return_empty(max_width: in
     assert shorten_label(_TEXT, max_width) == ""
 
 
+_E_ACUTE = "e\N{COMBINING ACUTE ACCENT}"
+_HEART = "\N{HEAVY BLACK HEART}\N{VARIATION SELECTOR-16}"
+_FAMILY = "\N{MAN}\N{ZERO WIDTH JOINER}\N{WOMAN}\N{ZERO WIDTH JOINER}\N{GIRL}"
+
+
 @pytest.mark.parametrize(
     ("text", "max_width", "expected"),
     [
         pytest.param("一二三", 6, "一二三", id="fits-by-cells-verbatim"),
         pytest.param("一二三", 4, "一…", id="overflows-by-cells-truncates"),
         pytest.param("一二三四五六", 9, "一二…五六", id="wide-middle-ellipsis"),
+        pytest.param("世界世界世界", 3, "…", id="wide-clusters-wider-than-both-shares"),
+        pytest.param("世界世界世界", 5, "世…界", id="wide-clusters-filling-both-shares"),
+        pytest.param("世abc", 3, "…c", id="wide-first-cluster-wider-than-head-share"),
+        pytest.param(
+            f"abc{_E_ACUTE}thunderbird", 9, f"abc{_E_ACUTE}…bird", id="combining-mark-in-head"
+        ),
+        pytest.param(f"abcdefghij{_E_ACUTE}xyz", 7, "abc…xyz", id="combining-mark-at-tail-edge"),
+        pytest.param(f"ab{_HEART}understatement", 7, "ab…ent", id="emoji-selector-at-head-edge"),
+        pytest.param(
+            f"abcdefghijklmnop{_FAMILY}xy", 9, f"abcd…{_FAMILY}xy", id="zwj-sequence-in-tail"
+        ),
     ],
 )
-def test_shorten_label_when_measuring_wide_chars_does_use_terminal_cells(
+def test_shorten_label_when_text_has_wide_or_combined_clusters_does_clip_on_whole_clusters(
     text: str, max_width: int, expected: str
 ):
     assert shorten_label(text, max_width) == expected
+
+
+_CLUSTER_TEXT = st.lists(st.sampled_from(["a", "世", _E_ACUTE, _HEART, _FAMILY]), max_size=12).map(
+    "".join
+)
+
+
+@given(text=_CLUSTER_TEXT, max_width=st.integers(min_value=0, max_value=20))
+def test_shorten_label_when_given_any_text_does_stay_within_budget(text: str, max_width: int):
+    assert cell_len(shorten_label(text, max_width)) <= max_width
+
+
+@given(text=_CLUSTER_TEXT, max_width=st.integers(min_value=1, max_value=20))
+def test_shorten_label_when_clipping_does_keep_whole_clusters_from_both_ends(
+    text: str, max_width: int
+):
+    assume(cell_len(text) > max_width)
+    spans, _ = split_graphemes(text)
+    boundaries = {0, *(end for _start, end, _width in spans)}
+
+    head, ellipsis, tail = shorten_label(text, max_width).partition("…")
+
+    assert ellipsis == "…"
+    assert text.startswith(head)
+    assert text.endswith(tail)
+    assert {len(head), len(text) - len(tail)} <= boundaries
 
 
 # ---------------------------------------------------------------------------

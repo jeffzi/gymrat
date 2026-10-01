@@ -3,7 +3,7 @@
 import tomllib
 from pathlib import Path
 
-from gymrat.config.schema import validate_and_convert
+from gymrat.config.schema import validate_config_file
 from gymrat.config.types import ConfigFile, ConfigFileResult
 from gymrat.errors import GymratError
 
@@ -64,7 +64,7 @@ def _validate_read(
     except tomllib.TOMLDecodeError as exc:
         return None, [f"Failed to parse config file at {config_path}: {exc}"]
 
-    return validate_and_convert(data)
+    return validate_config_file(data)
 
 
 # ---------------------------------------------------------------------------

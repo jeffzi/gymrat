@@ -24,16 +24,19 @@ if TYPE_CHECKING:
     from gymrat.supervisor.events import SessionObserver
 
 from gymrat.cli.lock import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE
-from gymrat.cli.shared import (
+from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BaselineOption,
     ColorOption,
     DebugOption,
+)
+from gymrat.cli.shared import (
     apply_color_override,
     apply_debug,
     exit_with_error,
     resolve_render_mode,
     resolve_stream_color,
     write_and_flush,
+    write_stdout,
 )
 from gymrat.cli.supervise.options import (
     AllowDirtyOption,
@@ -219,7 +222,7 @@ def _report_result(
         color=resolve_stream_color(ctx.color, sys.stdout),
         width=RENDER_WIDTH,
     )
-    write_and_flush(sys.stdout, f"{summary}\n")
+    write_stdout(f"{summary}\n")
 
     if result.outcome.reason == "error":
         if result.outcome.message:
@@ -321,7 +324,7 @@ async def _supervise_then_release(
         release_budget()
 
 
-async def _start_and_supervise(
+async def _supervise_and_exit_sequence(
     reporter: SuperviseReporter,
     pending: Coroutine[object, object, SupervisionResult],
     *,
@@ -336,7 +339,7 @@ async def _start_and_supervise(
     the same event log and observer the supervisor wrote to.
 
     Args:
-        reporter: The dashboard, started before the supervisor is awaited.
+        reporter: The dashboard, already showing when the supervisor is awaited.
         pending: The supervisor run, which releases the budget when it stops so
             the exit sequence never runs under a live budget.
         ctx: The session run's context.
@@ -349,7 +352,6 @@ async def _start_and_supervise(
     Raises:
         Exception: Whatever the supervisor raised, unchanged.
     """
-    reporter.start()
     result = await pending
     exit_report = await run_exit_sequence(
         context,
@@ -375,10 +377,14 @@ def _create_driver(root: str) -> Driver:
 def _run_session(ctx: _SessionContext) -> None:
     """Drive the supervised session, reporting progress and stopping it cleanly.
 
-    Everything the session arms — the reporter-stop cleanup, the budget file and
-    its cleanup, the process-group kill cleanup — is released before this
-    returns, including when the setup between arming them and starting the
-    supervisor fails, so a failed run leaves nothing registered behind.
+    Everything the session arms — the reporter, the budget file and its cleanup,
+    the process-group kill cleanup — is released before this returns, including
+    when the setup between arming them and starting the supervisor fails, so a
+    failed run leaves nothing registered behind.
+
+    The reporter is built before either cleanup is installed: its live display
+    installs its own signal erase as it starts, and that erase must run before
+    the budget release and the process-group kill.
 
     Args:
         ctx: Everything the run needs, assembled once the lock is held.
@@ -390,7 +396,10 @@ def _run_session(ctx: _SessionContext) -> None:
     reporter = _create_reporter(ctx, mode)
 
     with ExitStack() as armed:
-        armed.callback(install_termination_cleanup(reporter.stop))
+        # Stops the display exactly once: here when setup below fails, before the
+        # error reaches the terminal, or when the run path closes it early.
+        display = armed.enter_context(ExitStack())
+        display.callback(reporter.stop)
         deadline_ms, release_budget = _init_budget(ctx.root, ctx.max_minutes)
         armed.callback(release_budget)
         # A signal mid-exit-sequence exits the process before the loop can cancel
@@ -417,7 +426,7 @@ def _run_session(ctx: _SessionContext) -> None:
         try:
             try:
                 result, exit_report = asyncio.run(
-                    _start_and_supervise(
+                    _supervise_and_exit_sequence(
                         reporter,
                         _supervise_then_release(
                             supervise(
@@ -435,7 +444,7 @@ def _run_session(ctx: _SessionContext) -> None:
                     )
                 )
             finally:
-                reporter.stop()
+                display.close()
             _report_result(
                 result,
                 ctx=ctx,

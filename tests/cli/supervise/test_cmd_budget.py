@@ -119,10 +119,10 @@ def _record_budget_release(
 ) -> tuple[list[str], list[Callable[[], None]]]:
     """Record the budget clear and every registered cleanup's uninstall, tagged by index.
 
-    The run also registers the reporter-stop and process-kill cleanups through the
-    same seam; their uninstalls are tagged too so a test can filter the log down to
-    the budget one, identified after the run by :func:`_budget_uninstall_tag` rather
-    than by its position in the registration order.
+    The run also registers the process-kill cleanup through the same seam; its
+    uninstall is tagged too so a test can filter the log down to the budget one,
+    identified after the run by :func:`_budget_uninstall_tag` rather than by its
+    position in the registration order.
     """
     events: list[str] = []
     installed: list[Callable[[], None]] = []
@@ -229,8 +229,9 @@ def test_supervise_when_run_does_register_budget_termination_cleanup(
     seams = _install_seams(monkeypatch)
 
     _run("optimize it", "--max-minutes", "10")
-    (registered,) = seams.install_cleanup.call_args_list[1].args
     write_budget(repo, Budget(started_at_ms=0.0, max_minutes=10, deadline_ms=600_000.0))
-    registered()
+
+    for cleanup in seams.installed_cleanups():
+        cleanup()
 
     assert not Path(budget_path(repo)).exists()

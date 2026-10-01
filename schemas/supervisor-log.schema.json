@@ -80,7 +80,7 @@
       "type": "object"
     },
     "FollowUpEvent": {
-      "description": "Emitted when the supervisor acts on a completed turn.\n\n``reason`` and ``text`` are ``None``-optional and omitted from the wire\nform via the global ``exclude_none=True`` in :func:`to_json_line`.",
+      "description": "Emitted when the supervisor acts on a completed turn.\n\n``reason`` and ``text`` are ``None``-optional and omitted from the wire\nform when unset.",
       "properties": {
         "action": {
           "description": "Supervisor action taken after the turn.",
@@ -125,7 +125,7 @@
       "type": "object"
     },
     "LaunchEvent": {
-      "description": "Written by the supervisor as the log's first line: launch provenance.\n\n``max_usd``, ``model``, and ``effort`` are ``None``-optional and omitted\nfrom the wire form via the global ``exclude_none=True`` in\n:func:`to_json_line`.",
+      "description": "Written by the supervisor as the log's first line: launch provenance.\n\n``max_usd``, ``model``, and ``effort`` are ``None``-optional and omitted\nfrom the wire form when unset.",
       "properties": {
         "at": {
           "description": "Nanoseconds since the Unix epoch when the event was created.",
@@ -499,7 +499,7 @@
           "type": "boolean"
         },
         "cost_usd": {
-          "description": "Cost of this turn in US dollars.",
+          "description": "Cumulative session cost in US dollars when the turn ended.",
           "title": "Cost Usd",
           "type": "number"
         },

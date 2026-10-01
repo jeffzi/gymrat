@@ -35,19 +35,6 @@ def _ok_result(text: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "is_error": False}
 
 
-def _validate_probe_input(input_data: dict[str, Any]) -> str | None:
-    """Return an error message if ``input_data`` has invalid fields, else ``None``."""
-    if "names" in input_data:
-        names = input_data["names"]
-        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
-            return "names must be a list of strings"
-    if "samples" in input_data:
-        samples = input_data["samples"]
-        if not isinstance(samples, int) or isinstance(samples, bool) or samples < 1:
-            return "samples must be a positive integer"
-    return None
-
-
 def _is_json_document(outcome: ExecResult) -> bool:
     """Return whether the run exited 0 or 1 with stdout holding a complete JSON object."""
     if outcome.exit_code not in _DOCUMENT_EXIT_CODES:
@@ -144,16 +131,13 @@ class ToolHost:
         """Run ``gymrat probe`` with optional name filtering and sample count.
 
         Args:
-            input_data: Tool input dict; may contain ``names`` (list of strings)
-                and ``samples`` (positive integer).
+            input_data: Tool input dict, already validated against the tool
+                schema; may contain ``names`` (list of strings) and ``samples``
+                (positive integer).
 
         Returns:
             MCP tool result dict with ``content`` and ``is_error``.
         """
-        err = _validate_probe_input(input_data)
-        if err is not None:
-            return _error_result(err)
-
         argv: list[str] = [*self._prefix, "probe"]
 
         samples = input_data.get("samples")
@@ -212,7 +196,7 @@ def gymrat_tool_definitions(host: ToolHost) -> list[SdkMcpTool[dict[str, Any]]]:
             "type": "object",
             "properties": {
                 "names": {"type": "array", "items": {"type": "string"}},
-                "samples": {"type": "integer"},
+                "samples": {"type": "integer", "minimum": 1},
             },
             "additionalProperties": False,
         },

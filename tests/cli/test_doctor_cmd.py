@@ -19,6 +19,7 @@ from gymrat.doctor.checks import Check, CheckSection
 from gymrat.doctor.report import GitEnvironment
 from gymrat.init.scaffold import SKILL_RELATIVE_PATH
 from tests.cli._help import help_output
+from tests.cli._session import closed_stdout_error, closed_stdout_runner
 from tests.doctor._fixtures import patch_common_seams
 
 runner = CliRunner()
@@ -173,6 +174,22 @@ def test_doctor_when_command_crashes_does_exit_two_with_message_on_stderr(
 
     assert result.exit_code == 2
     assert "unexpected doctor crash" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# closed stdout
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fmt", ["text", "json"])
+def test_doctor_when_stdout_reader_closed_does_exit_zero_without_stderr(
+    monkeypatch: pytest.MonkeyPatch, fmt: str
+):
+    _patch_doctor(monkeypatch)
+
+    result = closed_stdout_runner(closed_stdout_error()).invoke(app, ["doctor", "--format", fmt])
+
+    assert (result.exit_code, result.stderr) == (0, "")
 
 
 # ---------------------------------------------------------------------------

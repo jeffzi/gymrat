@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.metric_name import format_inline, parse
+from gymrat.metric_name import LINE_TERMINATORS, format_inline, parse
 from gymrat.report.style import render_lines
 
 
@@ -124,3 +126,11 @@ def test_format_inline_when_color_on_and_brackets_in_segments_does_render_litera
     rendered = render_lines(markup, color=False, width=200)
 
     assert rendered == expected_plain
+
+
+def test_line_terminators_when_scanning_every_code_point_does_match_exactly_splitlines_breaks():
+    code_points = [chr(code) for code in range(sys.maxunicode + 1)]
+
+    matched = {char for char in code_points if LINE_TERMINATORS.search(char)}
+
+    assert matched == {char for char in code_points if len(f"a{char}b".splitlines()) == 2}

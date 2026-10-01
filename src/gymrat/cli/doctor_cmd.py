@@ -13,7 +13,7 @@ from pathlib import Path
 import typer
 
 from gymrat.cli.lock import GATE_EXIT_CODE
-from gymrat.cli.shared import (
+from gymrat.cli.options import (
     AdapterOption,
     BenchOption,
     ColorOption,
@@ -23,14 +23,16 @@ from gymrat.cli.shared import (
     OutputFormat,
     PrepareOption,
     SamplesOption,
-    SharedFlags,
     TimeoutOption,
+)
+from gymrat.cli.shared import (
+    SharedFlags,
     apply_color_override,
     apply_debug,
     resolve_stream_color,
     run_cli,
     wants_json,
-    write_and_flush,
+    write_stdout,
 )
 from gymrat.doctor.render import (
     render_doctor_json,
@@ -71,11 +73,11 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
         report = build_doctor_report(flags, cwd=str(Path.cwd()))
 
         if wants_json(flags):
-            write_and_flush(sys.stdout, render_doctor_json(report) + "\n")
+            output = render_doctor_json(report)
         else:
             resolved_color = resolve_stream_color(color_override, sys.stdout)
             output = render_doctor_report(report, color=resolved_color)
-            write_and_flush(sys.stdout, output + "\n")
+        write_stdout(output + "\n")
 
         if report.has_failures:
             raise typer.Exit(GATE_EXIT_CODE)

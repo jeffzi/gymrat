@@ -17,9 +17,9 @@ This module owns three concerns the text renderers share:
 The CLI-side style vocabulary lives in :mod:`gymrat.cli.style`.
 
 Display widths are measured in terminal cells (:func:`rich.cells.cell_len`), so
-a wide CJK character counts as two columns. Slicing is on code points: Python
-has no standard-library grapheme segmentation, so a cut may land between the
-code points of a combined emoji. Such clusters are out of scope here.
+a wide CJK character counts as two columns. Slicing follows rich's grapheme
+clusters, so a cut never separates a combining mark, a variation selector or a
+zero-width-joiner sequence from the character it modifies.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ import os
 import re
 from typing import TYPE_CHECKING, Literal, cast
 
-from rich.cells import cell_len
+from rich.cells import cell_len, split_graphemes
 from rich.console import Console
 from rich.markup import escape
 
@@ -53,38 +53,28 @@ _ELLIPSIS = "…"
 LABEL_DISPLAY_WIDTH = 20
 
 
-def _clip_to_cells(text: str, budget: int, *, from_end: bool) -> str:
-    """Return the run of code points from one end of ``text`` fitting ``budget`` cells.
-
-    Args:
-        text: The source string.
-        budget: The number of terminal cells the returned slice may occupy.
-        from_end: Take code points from the end of ``text`` instead of the start.
-
-    Returns:
-        The longest prefix (or suffix) of ``text`` whose cell width does not
-        exceed ``budget``. A wide character is kept only when it fits whole, so
-        the result never overshoots the budget.
-    """
-    if budget <= 0:
-        return ""
-
-    chars = list(text)
-    if from_end:
-        chars.reverse()
-
-    kept: list[str] = []
+def _clip_head(text: str, budget: int) -> str:
+    spans, _ = split_graphemes(text)
+    end = 0
     used = 0
-    for char in chars:
-        width = cell_len(char)
+    for _span_start, span_end, width in spans:
         if used + width > budget:
             break
-        kept.append(char)
+        end = span_end
         used += width
+    return text[:end]
 
-    if from_end:
-        kept.reverse()
-    return "".join(kept)
+
+def _clip_tail(text: str, budget: int) -> str:
+    spans, _ = split_graphemes(text)
+    start = len(text)
+    used = 0
+    for span_start, _span_end, width in reversed(spans):
+        if used + width > budget:
+            break
+        start = span_start
+        used += width
+    return text[start:]
 
 
 def shorten_label(text: str, max_width: int) -> str:
@@ -101,8 +91,9 @@ def shorten_label(text: str, max_width: int) -> str:
     extra cell of an odd remainder going to the head.
 
     Width is measured in terminal cells, so a wide CJK character counts as two.
-    The kept head and tail are sliced on code points and each is filled only
-    with characters that fit whole, so a kept slice never overshoots its share.
+    The kept head and tail are sliced on grapheme clusters and each is filled
+    only with clusters that fit whole, so a kept slice never splits a cluster
+    and never overshoots its share.
 
     Args:
         text: The label to fit.
@@ -125,8 +116,8 @@ def shorten_label(text: str, max_width: int) -> str:
 
     head_budget = (kept + 1) // 2
     tail_budget = kept - head_budget
-    head = _clip_to_cells(text, head_budget, from_end=False)
-    tail = _clip_to_cells(text, tail_budget, from_end=True)
+    head = _clip_head(text, head_budget)
+    tail = _clip_tail(text, tail_budget)
     return f"{head}{_ELLIPSIS}{tail}"
 
 

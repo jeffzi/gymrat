@@ -1,233 +1,25 @@
-"""Internal pydantic models and validation-error translation for gymrat config.
+"""Validation of a parsed ``gymrat.toml`` and translation of its pydantic errors.
 
-These models are never exposed to consumers — they validate the on-disk TOML and
-produce the frozen dataclasses from :mod:`gymrat.config.types`.
+The frozen dataclasses from :mod:`gymrat.config.types` carry the validation
+annotations; this module runs them through a pydantic ``TypeAdapter`` and words
+each failure as a gymrat problem string.
 """
 
 import json
-import math
-from typing import Annotated, get_args
 
-from pydantic import (
-    AfterValidator,
-    BaseModel,
-    BeforeValidator,
-    Field,
-    ValidationError,
-    model_validator,
-)
+from pydantic import TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
 
-from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
-from gymrat.config.types import (
-    ConfigFile,
-    Effort,
-    HooksConfig,
-    KindEntry,
-    MetricEntry,
-    StopConfig,
-    SuperviseConfig,
-)
-from gymrat.model import NOISE_FLOOR_PCT, Direction
+from gymrat.config.types import ConfigFile
 from gymrat.pydantic_errors import (
-    STRICT_FORBID,
-    alternatives,
-    coerce_integer,
+    UNKNOWN_SHAPE_PHRASE,
+    VALUE_ERROR_PREFIX,
     describe_key,
     drop_prefix_errors,
+    phrase_for_error,
 )
 
-EFFORT_LEVELS: tuple[str, ...] = get_args(Effort)
-#: The comma/or-joined list of valid effort levels, quoted for validation error messages.
-EFFORT_PHRASE: str = alternatives(Effort)
-
-_LINE_BREAKS = ("\n", "\r", "\u2028", "\u2029")
-
-_NON_EMPTY_STRING_FIELDS = frozenset({
-    "bench",
-    "prepare",
-    "adapter",
-    "checks",
-    "runbook",
-    "primary",
-})
-
-
-# ---------------------------------------------------------------------------
-# Value coercion / rejection for the internal pydantic models
-# ---------------------------------------------------------------------------
-
-
-def _reject_non_finite(value: float | None) -> float | None:
-    """Reject a non-finite float that TOML accepts as a literal.
-
-    TOML parses ``nan``/``inf``/``-inf`` into real floats, so a numeric key can
-    carry one past parsing. This surfaces it as an invalid value naming the key
-    rather than letting it settle as a silent NaN or infinity.
-
-    Args:
-        value: The float being validated, or ``None``.
-
-    Returns:
-        The value unchanged when it is finite or ``None``.
-
-    Raises:
-        ValueError: When the value is ``nan``, ``inf``, or ``-inf``.
-    """
-    if value is not None and not math.isfinite(value):
-        msg = "value must be finite"
-        raise ValueError(msg)
-    return value
-
-
-def _reject_bad_dict(value: object) -> object:
-    """Reject any mapping whose key embeds a line terminator.
-
-    A non-mapping falls through to the model's own ``dict``-type error. The
-    offending key is JSON-escaped so naming it cannot itself split the reported
-    problem across lines.
-
-    Args:
-        value: The raw value being validated.
-
-    Returns:
-        The value unchanged when it is not a mapping or all keys are clean.
-
-    Raises:
-        ValueError: When a mapping key contains a line terminator.
-    """
-    if isinstance(value, dict):
-        for key in value:
-            if isinstance(key, str) and any(char in key for char in _LINE_BREAKS):
-                msg = f"key {json.dumps(key)} must not embed a line break"
-                raise ValueError(msg)
-    return value
-
-
-# ---------------------------------------------------------------------------
-# Internal pydantic models (never exposed)
-# ---------------------------------------------------------------------------
-
-_NonEmptyStr = Annotated[str | None, Field(default=None, min_length=1, pattern=r"\S")]
-_AnyStr = Annotated[str | None, Field(default=None)]
-_Bool = Annotated[bool | None, Field(default=None)]
-_FiniteFloat = Annotated[float | None, AfterValidator(_reject_non_finite)]
-
-
-class _MetricModel(BaseModel):
-    model_config = STRICT_FORBID
-
-    direction: Annotated[Direction | None, Field(default=None)]
-    gating: _Bool
-    exact: _Bool
-
-
-class _KindModel(BaseModel):
-    model_config = STRICT_FORBID
-
-    gating: _Bool
-
-
-class _StopModel(BaseModel):
-    model_config = STRICT_FORBID
-
-    target_value: Annotated[_FiniteFloat, Field(default=None)]
-    max_iterations: Annotated[
-        int | None,
-        BeforeValidator(coerce_integer),
-        Field(default=None, ge=1),
-    ]
-
-
-class _HooksModel(BaseModel):
-    model_config = STRICT_FORBID
-
-    before: _NonEmptyStr
-    after: _NonEmptyStr
-
-
-class _SuperviseModel(BaseModel):
-    model_config = STRICT_FORBID
-
-    model: _NonEmptyStr
-    effort: Annotated[Effort | None, Field(default=None)]
-
-
-class _ConfigModel(BaseModel):
-    model_config = STRICT_FORBID
-
-    @model_validator(mode="before")
-    @classmethod
-    def _reject_line_break_keys(cls, value: object) -> object:
-        """Apply the line-break key guard to the document root, not just its tables."""
-        return _reject_bad_dict(value)
-
-    bench: _NonEmptyStr
-    prepare: _NonEmptyStr
-    adapter: _NonEmptyStr
-    samples: Annotated[
-        int | None,
-        BeforeValidator(coerce_integer),
-        Field(default=None, ge=1, le=MAX_SAFE_INTEGER),
-    ]
-    timeout_seconds: Annotated[
-        int | None,
-        BeforeValidator(coerce_integer),
-        Field(default=None, ge=1, le=MAX_TIMEOUT_SECONDS),
-    ]
-    unstable_noise_pct: Annotated[_FiniteFloat, Field(default=None, ge=NOISE_FLOOR_PCT)]
-    metrics: Annotated[
-        dict[str, _MetricModel] | None, BeforeValidator(_reject_bad_dict), Field(default=None)
-    ]
-    kinds: Annotated[
-        dict[str, _KindModel] | None, BeforeValidator(_reject_bad_dict), Field(default=None)
-    ]
-    checks: _NonEmptyStr
-    runbook: _NonEmptyStr
-    filter: _AnyStr
-    primary: _NonEmptyStr
-    stop: Annotated[_StopModel | None, Field(default=None)]
-    hooks: Annotated[_HooksModel | None, Field(default=None)]
-    supervise: Annotated[_SuperviseModel | None, Field(default=None)]
-
-
-# ---------------------------------------------------------------------------
-# Validation-error translation
-# ---------------------------------------------------------------------------
-
-_PHRASES: dict[tuple[str, ...], str] = {
-    **{(field,): "a non-empty string" for field in _NON_EMPTY_STRING_FIELDS},
-    ("filter",): "a string",
-    ("samples",): "a positive integer",
-    ("timeout_seconds",): "a positive integer",
-    ("unstable_noise_pct",): f"a number at or above the {NOISE_FLOOR_PCT}% noise floor",
-    ("metrics",): "an object",
-    ("kinds",): "an object",
-    ("stop",): "an object",
-    ("hooks",): "an object",
-    ("stop", "target_value"): "a number",
-    ("stop", "max_iterations"): "a positive integer",
-    ("hooks", "before"): "a non-empty string",
-    ("hooks", "after"): "a non-empty string",
-    ("metrics", "*"): "an object",
-    ("kinds", "*"): "an object",
-    ("metrics", "*", "direction"): '"lower" or "higher"',
-    ("metrics", "*", "gating"): "a boolean",
-    ("metrics", "*", "exact"): "a boolean",
-    ("kinds", "*", "gating"): "a boolean",
-    ("supervise",): "an object",
-    ("supervise", "model"): "a non-empty string",
-    ("supervise", "effort"): EFFORT_PHRASE,
-}
-
-_PYDANTIC_VALUE_ERROR_PREFIX = "Value error, "
-
-
-def _phrase_for_loc(loc: tuple[str, ...]) -> str:
-    """Human-facing description of the value a location expects."""
-    nested = len(loc) > 1 and loc[0] in {"metrics", "kinds"}
-    shape = (loc[0], "*", *loc[2:]) if nested else loc
-    return _PHRASES.get(shape, "a valid value")
+_CONFIG_ADAPTER = TypeAdapter(ConfigFile)
 
 
 def invalid_value_message(field_name: str, expected_phrase: str, value: object) -> str:
@@ -255,9 +47,9 @@ def invalid_value_message(field_name: str, expected_phrase: str, value: object) 
 def _message_for_error(error: ErrorDetails) -> str:
     """Translate one pydantic error into a gymrat-worded problem string.
 
-    A custom validator (``_reject_non_finite``, ``_reject_bad_dict``) already
-    knows why it refused the value, so its own message is reported: the shape
-    phrase for the location would describe a fault the value does not have.
+    A custom validator (the line-break key guard) already knows why it refused
+    the value, so its own message is reported: a shape phrase would describe a
+    fault the value does not have.
 
     Args:
         error: The pydantic error detail to translate.
@@ -265,73 +57,18 @@ def _message_for_error(error: ErrorDetails) -> str:
     Returns:
         The problem string describing the validation failure.
     """
-    loc = tuple(str(part) for part in error["loc"])
-    if error["type"] == "extra_forbidden":
-        return f"Unknown config key: {describe_key(loc)}"
+    key = describe_key(tuple(str(part) for part in error["loc"]))
+    if error["type"] == "unexpected_keyword_argument":
+        return f"Unknown config key: {key}"
     if error["type"] == "value_error":
-        detail = error["msg"].removeprefix(_PYDANTIC_VALUE_ERROR_PREFIX)
-        if not loc:
-            return f"Invalid config file: {detail}"
-        return f"Invalid config value for {describe_key(loc)}: {detail}"
-    return invalid_value_message(describe_key(loc), _phrase_for_loc(loc), error["input"])
+        detail = error["msg"].removeprefix(VALUE_ERROR_PREFIX)
+        return f"Invalid config value for {key}: {detail}"
+    phrase = phrase_for_error(error) or UNKNOWN_SHAPE_PHRASE
+    return invalid_value_message(key, phrase, error["input"])
 
 
-# ---------------------------------------------------------------------------
-# Model-to-dataclass conversion
-# ---------------------------------------------------------------------------
-
-
-def _to_metric_entry(model: _MetricModel) -> MetricEntry:
-    return MetricEntry(direction=model.direction, gating=model.gating, exact=model.exact)
-
-
-def _to_config_file(model: _ConfigModel) -> ConfigFile:
-    metrics = (
-        {name: _to_metric_entry(entry) for name, entry in model.metrics.items()}
-        if model.metrics is not None
-        else None
-    )
-    kinds = (
-        {name: KindEntry(gating=entry.gating) for name, entry in model.kinds.items()}
-        if model.kinds is not None
-        else None
-    )
-    stop = (
-        StopConfig(target_value=model.stop.target_value, max_iterations=model.stop.max_iterations)
-        if model.stop is not None
-        else None
-    )
-    hooks = (
-        HooksConfig(before=model.hooks.before, after=model.hooks.after)
-        if model.hooks is not None
-        else None
-    )
-    supervise = (
-        SuperviseConfig(model=model.supervise.model, effort=model.supervise.effort)
-        if model.supervise is not None
-        else None
-    )
-    return ConfigFile(
-        bench=model.bench,
-        prepare=model.prepare,
-        adapter=model.adapter,
-        samples=model.samples,
-        timeout_seconds=model.timeout_seconds,
-        unstable_noise_pct=model.unstable_noise_pct,
-        metrics=metrics,
-        kinds=kinds,
-        checks=model.checks,
-        runbook=model.runbook,
-        filter=model.filter,
-        primary=model.primary,
-        stop=stop,
-        hooks=hooks,
-        supervise=supervise,
-    )
-
-
-def validate_and_convert(data: dict[str, object]) -> tuple[ConfigFile | None, list[str]]:
-    """Run strict pydantic validation and return the converted config on success.
+def validate_config_file(data: dict[str, object]) -> tuple[ConfigFile | None, list[str]]:
+    """Validate parsed config data into a :class:`ConfigFile`.
 
     Never raises: validation failures are returned as a problem list, not
     exceptions, so callers can collect and display all errors at once.
@@ -340,11 +77,11 @@ def validate_and_convert(data: dict[str, object]) -> tuple[ConfigFile | None, li
         data: Raw config data, shaped like a parsed ``gymrat.toml``.
 
     Returns:
-        A ``(config_file, problems)`` pair: the converted :class:`ConfigFile`
+        A ``(config_file, problems)`` pair: the validated :class:`ConfigFile`
         (``None`` on failure) and any validation problems.
     """
     try:
-        model = _ConfigModel.model_validate(data)
+        config_file = _CONFIG_ADAPTER.validate_python(data)
     except ValidationError as exc:
         return None, [_message_for_error(error) for error in drop_prefix_errors(exc.errors())]
-    return _to_config_file(model), []
+    return config_file, []

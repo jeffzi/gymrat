@@ -292,14 +292,19 @@ def _try_append_command_record(  # noqa: PLR0913 -- all six params are distinct 
 
 
 def _maybe_configure_tracing(root: str, jsonl: str) -> tuple[str, bool]:
-    if not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip():
+    from gymrat.telemetry.provider import (  # noqa: PLC0415
+        ENDPOINT_ENV,
+        configure_tracing,
+        otlp_endpoint,
+    )
+
+    if otlp_endpoint(os.environ.get(ENDPOINT_ENV)) is None:
         return "", False
     if _jsonl_is_empty(jsonl):
         return "", False
     header = session_header(root)
     if header is None:
         return "", False
-    from gymrat.telemetry.provider import configure_tracing  # noqa: PLC0415
 
     active = configure_tracing(header.session_id)
     return header.session_id, active

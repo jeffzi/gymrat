@@ -11,6 +11,7 @@ import statistics
 
 from gymrat.adapters.defaults import defaults_from_suffixes
 from gymrat.adapters.types import AdapterError, MetricDefaults
+from gymrat.metric_name import LINE_TERMINATORS
 from gymrat.warn import WarnSink, warn_to_stderr
 
 _PREFIX = "METRIC"
@@ -20,17 +21,10 @@ _LINE_SPLIT = re.compile(r"\r\n|[\n\r]")
 """Line boundary: CRLF, or a lone LF or CR.
 
 Deliberately narrower than :meth:`str.splitlines`, which also breaks on U+000B,
-U+000C, U+001C to U+001E, U+0085, U+2028, and U+2029 — splitting on those would
-change which text forms a line and let a name carry a separator the caller's JSON
-layer cannot represent.
-"""
-
-_FORBIDDEN_NAME_CHAR = re.compile("[\\u2028\\u2029]")
-"""Line and paragraph separators a metric name may not contain.
-
-CR and LF cannot reach a name — the input is already split on them — so only the
-JSON-illegal separators U+2028 and U+2029 remain to reject. Written as escapes so
-the source stays plain ASCII.
+U+000C, U+001C to U+001E, U+0085, U+2028, and U+2029. Those characters must stay
+inside their line so that :meth:`parse` can reject a name holding one with
+``LINE_TERMINATORS`` and report the whole line, instead of splitting one METRIC
+line into fragments.
 """
 
 _RADIX_NUMBER = re.compile(r"0[xX][0-9a-fA-F]+$|0[oO][0-7]+$|0[bB][01]+$")
@@ -123,7 +117,9 @@ class _MetricLinesAdapter:
                 continue
 
             metric_name = after[:last_eq]
-            if _FORBIDDEN_NAME_CHAR.search(metric_name):
+            # CR and LF never reach a name (the input is split on them above), so this
+            # rejects the other boundaries str.splitlines breaks on.
+            if LINE_TERMINATORS.search(metric_name):
                 warn(parse_failure)
                 continue
 

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Literal
 
 from gymrat import clock
 from gymrat.clock import now_ns
-from gymrat.supervisor.driver import SessionOutcome
+from gymrat.supervisor.driver import SessionOutcome, usable_cost
 from gymrat.supervisor.events import (
     ModelPhaseEvent,
     SessionObserver,
@@ -103,12 +103,10 @@ def read_cost(message: ResultMessage) -> float | None:
         message: The result message to read.
 
     Returns:
-        The cost as a float when present and positive, ``None`` otherwise.
+        The cost as a float when it passes
+        :func:`~gymrat.supervisor.driver.usable_cost`, ``None`` otherwise.
     """
-    cost = message.total_cost_usd
-    if cost is not None and cost > 0:
-        return cost
-    return None
+    return usable_cost(message.total_cost_usd)
 
 
 class MessageMapper:

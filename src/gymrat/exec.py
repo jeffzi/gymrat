@@ -22,9 +22,10 @@ a caller cannot mutate one run's result into a landmine for the next.
 import asyncio
 import codecs
 import contextlib
+import os
 import signal as _signal_module
 import sys
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypedDict, cast
 
@@ -36,8 +37,14 @@ from gymrat.process_group import (
     resume_process_group,
     terminate_process_group,
     wait_for_process_group_exit,
+    wait_for_process_group_exit_async,
 )
-from gymrat.signals import TERMINATION_SIGNALS, deferring_termination_signals, pthread_sigmask
+from gymrat.signals import (
+    TERMINATION_SIGNALS,
+    deferring_termination_signals,
+    install_termination_escalation,
+    pthread_sigmask,
+)
 
 FAILURE_EXIT_CODE = 1
 """Exit code reported when a run fails without a positive child exit code."""
@@ -53,6 +60,35 @@ _CANCEL_REAP_TIMEOUT_S = 2.0
 
 _FINAL_OUTPUT_GRACE_S = 0.1
 """Seconds a child that stopped on request gets to have its last output read to EOF."""
+
+_ESCALATION_GRACE_S = 0.2
+"""Seconds the outermost gymrat run's double-signal sweep waits for a re-terminated child.
+
+Kept well under :data:`TERMINATE_GRACE_S`: the user is already waiting on a second Ctrl-C.
+A nested run waits less, halved per nesting level (see :func:`_escalation_grace_s`).
+"""
+
+_NESTING_DEPTH_ENV = "GYMRAT_NESTING_DEPTH"
+"""Environment variable telling a gymrat run how many gymrat runs sit above it.
+
+:func:`spawn_contained` sets it on every child, so a nested run can wait a shorter
+escalation grace than the run that spawned it.
+"""
+
+
+def _read_nesting_depth() -> int:
+    """This process's nesting depth: 0 when the variable is missing, invalid, or negative."""
+    try:
+        return max(int(os.environ.get(_NESTING_DEPTH_ENV, "0")), 0)
+    except ValueError:
+        return 0
+
+
+_NESTING_DEPTH = _read_nesting_depth()
+"""How many gymrat runs sit above this process.
+
+Read once because the environment a process starts with is fixed.
+"""
 
 _CREATE_SUSPENDED: int = 0x4 if sys.platform == "win32" else 0
 """Win32 ``CREATE_SUSPENDED``: the child exists but runs nothing until resumed.
@@ -114,9 +150,39 @@ def kill_live_process_groups() -> None:
             terminate_process_group(pid)
     with contextlib.suppress(Exception):
         wait_for_process_group_exit(leaders, TERMINATE_GRACE_S)
+    _kill_process_groups(leaders)
+
+
+def _kill_process_groups(leaders: Iterable[int]) -> None:
     for pid in leaders:
         with contextlib.suppress(Exception):
             kill_process_group(pid)
+
+
+def _escalation_grace_s() -> float:
+    # A parent must outwait its child's whole escalation, or its SIGKILL lands
+    # first and the child dies before killing the benches it started in sessions
+    # the parent's group kill cannot reach. Halving per nesting level keeps every
+    # level strictly longer than the one below it at any depth, with no maximum
+    # depth to know. The margin at depth d is _ESCALATION_GRACE_S / 2**(d + 1), so
+    # past depth 3 it drops under the 10 ms liveness poll and the ordering is no
+    # longer guaranteed in practice.
+    return _ESCALATION_GRACE_S * 0.5**_NESTING_DEPTH
+
+
+def _kill_live_process_groups_now() -> None:
+    # The escalation for a second termination signal: the sweep with a much
+    # shorter grace, so a tree ignoring the polite request cannot outlive a double
+    # Ctrl-C. Terminating again first hands a child that is itself a gymrat run
+    # its own second signal, so it kills the benches it started in sessions of
+    # its own instead of being killed mid-grace and orphaning them.
+    leaders = list(_live_process_groups)
+    for pid in leaders:
+        with contextlib.suppress(Exception):
+            terminate_process_group(pid)
+    with contextlib.suppress(Exception):
+        wait_for_process_group_exit(leaders, _escalation_grace_s())
+    _kill_process_groups(leaders)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,9 +195,9 @@ class ExecOptions:
         abort: Event that, once set, kills the run and resolves a failed result.
         stdin: Text delivered to the command's standard input, then closed;
             ``None`` gives an immediately closed (EOF) input.
-        env: Environment variables for the child process. When set, the child
-            sees exactly this mapping; when ``None``, it inherits the parent's
-            environment.
+        env: Environment variables for the child process; ``None`` inherits the
+            parent's environment. Either way the child also sees
+            ``GYMRAT_NESTING_DEPTH``.
     """
 
     cwd: str
@@ -234,9 +300,24 @@ def _exit_code(returncode: int | None) -> int:
 
 
 async def _wait_for_exit(proc: asyncio.subprocess.Process, grace_s: float) -> bool:
-    """Wait up to ``grace_s`` seconds for the child to exit, reporting whether it did."""
+    """Wait up to ``grace_s`` seconds for the child's whole group to exit.
+
+    The child is awaited first so its exit status is collected; the rest of the
+    grace then goes to any member it leaves behind, such as a nested run still
+    cleaning up after the child itself died on the request.
+
+    Args:
+        proc: The child leading the group.
+        grace_s: Seconds the child and its group get, shared between them.
+
+    Returns:
+        Whether the child's exit status was collected within the grace.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + grace_s
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(proc.wait(), grace_s)
+    await wait_for_process_group_exit_async(proc.pid, deadline - loop.time())
     return proc.returncode is not None
 
 
@@ -468,6 +549,19 @@ def _containment_kwargs() -> dict[str, Any]:
     return kwargs
 
 
+def _nested_child_env(env: Mapping[str, str] | None) -> dict[str, str]:
+    """The environment a child starts with: ``env`` (or this process's) plus its nesting depth.
+
+    Args:
+        env: The environment the caller asked for, or ``None`` to inherit this process's.
+
+    Returns:
+        A copy of that environment with :data:`_NESTING_DEPTH_ENV` set one level deeper.
+    """
+    base = os.environ if env is None else env
+    return {**base, _NESTING_DEPTH_ENV: str(_NESTING_DEPTH + 1)}
+
+
 def release_contained(pid: int) -> None:
     """Forget a child :func:`spawn_contained` started, and drop its container.
 
@@ -541,7 +635,8 @@ async def spawn_contained[**P](
             arguments, or the shell command line.
         **kwargs: Keyword arguments for ``create_child`` — pipes, ``cwd``,
             ``env``, a stream ``limit``. The containment arguments are added
-            here and must not be passed.
+            here and must not be passed. The child's environment, ``env`` or
+            this process's when absent, also gains :data:`_NESTING_DEPTH_ENV`.
 
     Returns:
         The running, registered, contained child.
@@ -563,7 +658,9 @@ async def spawn_contained[**P](
             create_contained = cast(
                 "Callable[..., Awaitable[asyncio.subprocess.Process]]", create_child
             )
-            proc = await create_contained(*args, **kwargs, **_containment_kwargs())
+            requested_env = cast("Mapping[str, str] | None", kwargs.get("env"))
+            child_kwargs = {**kwargs, "env": _nested_child_env(requested_env)}
+            proc = await create_contained(*args, **child_kwargs, **_containment_kwargs())
         except (OSError, ValueError) as error:
             # ValueError covers what CPython rejects while marshalling the spawn
             # arguments, before any fork: a NUL byte in an argument, in cwd, or
@@ -574,6 +671,9 @@ async def spawn_contained[**P](
         containment_error: Exception | None = None
         try:
             _live_process_groups.add(proc.pid)
+            # Registered with every live group rather than once at import, so
+            # the escalation is in place whenever there is a group to kill.
+            install_termination_escalation(_kill_live_process_groups_now)
             attach_process_group(proc.pid)
             resumed = resume_process_group(proc.pid)
         except Exception as error:  # noqa: BLE001 -- re-raised as SpawnError once the child is torn down

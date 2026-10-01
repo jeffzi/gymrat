@@ -562,7 +562,7 @@ _FLAG_AND_ENV_PROBLEMS = [
         ),
         pytest.param(
             {"samples": "bad", "filter": "npm run bench", "runbook": "missing.md"},
-            ['Invalid config value for samples: expected a positive integer, got "bad"'],
+            ['Invalid config value for samples: expected an integer, got "bad"'],
             id="schema-stops-before-loop-keys",
         ),
     ],

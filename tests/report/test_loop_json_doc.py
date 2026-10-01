@@ -8,7 +8,6 @@ variants, the runbook and budget fields, and the keep record's checks object.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 from typing import TYPE_CHECKING
 
@@ -25,11 +24,13 @@ from gymrat.report.json_doc import (
     render_start_json,
     render_sync_json,
 )
-from gymrat.session import KeepChecks, SessionState
+from gymrat.session import KeepChecks
 from tests.session.records._fixtures import (
     committed_keep,
+    empty_session_state,
     finalize_record,
     session_record,
+    session_state,
 )
 
 if TYPE_CHECKING:
@@ -40,39 +41,20 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _empty_session_state() -> SessionState:
-    """A session that has opened but measured nothing yet."""
-    return SessionState(
-        session=None,
-        iteration_count=0,
-        last_iteration=None,
-        unsettled=False,
-        keep_count=0,
-        discard_count=0,
-        target_reached_and_kept=False,
-        last_seq=0,
-        last_kept_commit=None,
-        ends_on_gating_block=False,
-        ends_on_stop=False,
-        finalized=None,
-    )
-
-
 def _fresh_start() -> StartResult:
     """A brand-new session (not resumed, nothing archived)."""
     return StartResult(
         session=session_record(),
-        state=_empty_session_state(),
+        state=empty_session_state(),
         resumed=False,
     )
 
 
 def _resumed_start(*, iteration_count: int = 3, keep_count: int = 2) -> StartResult:
     """A resumed session with prior iteration and keep counts."""
-    state = _empty_session_state()
     return StartResult(
         session=session_record(),
-        state=dataclasses.replace(state, iteration_count=iteration_count, keep_count=keep_count),
+        state=session_state(iteration_count=iteration_count, keep_count=keep_count),
         resumed=True,
     )
 
@@ -81,7 +63,7 @@ def _archived_start() -> StartResult:
     """A session that archived a finalized predecessor."""
     return StartResult(
         session=session_record(),
-        state=_empty_session_state(),
+        state=empty_session_state(),
         resumed=False,
         archived="20260701-120000-beef",
         archived_path="/repo/.gymrat/archive/20260701-120000-beef",

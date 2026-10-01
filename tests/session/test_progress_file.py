@@ -9,7 +9,9 @@ partial file.  ``clear_progress`` removes the sidecar when the iteration exits.
 
 import json
 import os
+import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -217,6 +219,29 @@ def test_read_progress_when_read_text_raises_os_error_does_return_none(
     monkeypatch.setattr(Path, "read_text", failing_read)
 
     result = read_progress(root)
+
+    assert result is None
+
+
+_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+@pytest.fixture
+def unsearchable_sidecar(root: str) -> Iterator[str]:
+    """A written sidecar whose session directory denies search, so the file cannot be stat'd."""
+    write_progress(root, _make_snapshot())
+    session = Path(session_dir(root))
+    session.chmod(0o600)
+    yield root
+    session.chmod(0o700)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or _IS_ROOT,
+    reason="POSIX directory permissions are required, and root bypasses them",
+)
+def test_read_progress_when_sidecar_cannot_be_stat_does_return_none(unsearchable_sidecar: str):
+    result = read_progress(unsearchable_sidecar)
 
     assert result is None
 

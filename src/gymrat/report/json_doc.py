@@ -4,19 +4,18 @@ Each builder assembles a plain nested structure keyed in snake_case and
 serializes it with a two-space indent. None takes presentation options, so the
 output never carries ANSI, whatever the ambient environment forces.
 
-``json.dumps`` emits invalid ``NaN``/``Infinity`` literals by default, whereas
-the contract is a JSON ``null`` for any non-finite float (matching JavaScript's
-``JSON.stringify``). A pre-pass replaces every non-finite float with ``None``
-before the dump, and ``allow_nan=False`` guards against any that slip through.
+The contract is a JSON ``null`` for any non-finite float (matching JavaScript's
+``JSON.stringify``), which ``pydantic_core.to_json`` provides through
+``inf_nan_mode="null"``. Non-ASCII text is written raw, not escaped.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, assert_never
 
-from gymrat.finite_json import null_non_finite
+from pydantic_core import to_json
+
 from gymrat.model import BandVerdict, ExactVerdict, PermutationVerdict
 from gymrat.report.tally import count_verdicts
 from gymrat.report.types import CandidateMetric
@@ -491,7 +490,7 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
 def _render(document: dict[str, object], budget: BudgetSummary | None) -> str:
     """Insert the budget key when present, then serialize with a two-space indent.
 
-    Every non-finite float is nulled before the dump (see module docstring).
+    Every non-finite float serializes as ``null`` (see module docstring).
 
     Args:
         document: The JSON document to serialize, mutated in place with the
@@ -506,4 +505,4 @@ def _render(document: dict[str, object], budget: BudgetSummary | None) -> str:
             "cap_minutes": budget.cap_minutes,
             "remaining_seconds": budget.remaining_seconds,
         }
-    return json.dumps(null_non_finite(document), indent=2, allow_nan=False)
+    return to_json(document, indent=2, inf_nan_mode="null").decode()

@@ -6,14 +6,13 @@ never pulls the SDK into ``sys.modules``.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gymrat.errors import GymratError
 from gymrat.session.records.models import CommandRecord, SessionRecord
-from gymrat.session.records.parse import parse_record
+from gymrat.session.records.parse import decode_log_line, parse_record
 from gymrat.supervisor.events import (
     CapEvent,
     CompactionEvent,
@@ -42,8 +41,8 @@ from gymrat.telemetry.attributes import (
     SESSION_ID,
     SESSION_SPAN,
     TURN_BUDGET_EXHAUSTED,
-    TURN_COST_USD,
     TURN_ORIGIN,
+    TURN_SESSION_COST_USD,
     command_span_inputs,
     record_event,
 )
@@ -278,11 +277,27 @@ class _ParsedRun:
 
 
 def _read_lines(path: str) -> list[str]:
-    """Read *path* as UTF-8 text split into lines, or ``[]`` if it doesn't exist."""
+    """Read *path* as UTF-8 text.
+
+    Deliberately narrower than :meth:`str.splitlines`, which also breaks on
+    U+0085, U+2028 and U+2029 — characters a JSON string may carry raw, so
+    splitting there would tear one record into two invalid halves.
+    ``read_text`` already folds CRLF and lone CR into a line feed.
+
+    Args:
+        path: The file to read.
+
+    Returns:
+        The file's lines split on line feeds, or ``[]`` when the file does not
+        exist.
+    """
     try:
-        return Path(path).read_text(encoding="utf-8").splitlines()
+        lines = Path(path).read_text(encoding="utf-8").split("\n")
     except FileNotFoundError:
         return []
+    if lines[-1] == "":
+        lines.pop()
+    return lines
 
 
 def _read_session_log(path: str) -> list[_NumberedRecord]:
@@ -300,24 +315,24 @@ def _read_session_log(path: str) -> list[_NumberedRecord]:
 def _parse_session_log_line(path: str, line_number: int, line: str) -> SessionLogRecord | None:
     """Parse one JSONL line into a typed record, or None to skip it."""
     try:
-        data = json.loads(line)
-    except json.JSONDecodeError:
+        wire_value = decode_log_line(line)
+    except ValueError:
         logger.warning("session log %s: skipping line %d (invalid JSON)", path, line_number)
         return None
-    if not isinstance(data, dict):
+    if not isinstance(wire_value, dict):
         return None
     try:
-        return parse_record(data)
+        return parse_record(wire_value)
     except GymratError:
-        if data.get("type") != "command":
+        if wire_value.get("type") != "command":
             return None
-        cmd_name = data.get("name", _UNKNOWN_COMMAND_NAME)
+        cmd_name = wire_value.get("name", _UNKNOWN_COMMAND_NAME)
         logger.warning(
             "session log %s: command %r fell back to model_construct",
             path,
             cmd_name,
         )
-        return _construct_command(data)
+        return _construct_command(wire_value)
 
 
 def _construct_command(data: dict[str, object]) -> CommandRecord:
@@ -384,7 +399,7 @@ def _collect_run_event(run: _ParsedRun, event: SessionEvent) -> None:
         run.events.append((
             EVENT_TURN_END,
             {
-                TURN_COST_USD: event.cost_usd,
+                TURN_SESSION_COST_USD: event.cost_usd,
                 TURN_ORIGIN: event.origin,
                 TURN_BUDGET_EXHAUSTED: event.budget_exhausted,
             },
@@ -429,7 +444,7 @@ def _find_parent_by_traceparent(traceparent: str, run_infos: list[_RunInfo]) -> 
 def _safe_json(line: str) -> dict[str, object] | None:
     """Parse a JSON line into a dict, or None on failure."""
     try:
-        obj = json.loads(line)
-    except (json.JSONDecodeError, ValueError):
+        wire_value = decode_log_line(line)
+    except ValueError:
         return None
-    return obj if isinstance(obj, dict) else None
+    return wire_value if isinstance(wire_value, dict) else None

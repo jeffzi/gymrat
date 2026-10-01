@@ -6,7 +6,9 @@ both positions, the root epilogue, and unknown-command routing are exercised the
 way a shell would invoke them.
 """
 
+import errno
 import importlib.metadata
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -14,10 +16,17 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
+from gymrat.cli.lock import TOOL_FAILURE_EXIT_CODE
 from gymrat.cli.shared import BUGS_URL
 from tests._ansi import SGR_RE, strip_ansi
+from tests._rich import unwrap_panel
 from tests.cli._help import help_output
-from tests.cli._session import write_config
+from tests.cli._session import (
+    closed_stdout_error,
+    closed_stdout_runner,
+    disk_full_error,
+    write_config,
+)
 from tests.report._inputs import create_measurement_result
 from tests.session.records._fixtures import (
     committed_keep,
@@ -68,6 +77,19 @@ def test_app_when_version_flag_does_print_package_version():
 
     assert result.exit_code == 0
     assert importlib.metadata.version("gymrat") in result.stdout
+
+
+def test_app_when_version_and_stdout_closed_does_exit_zero_without_stderr():
+    result = closed_stdout_runner(closed_stdout_error()).invoke(app, ["--version"])
+
+    assert (result.exit_code, result.stderr) == (0, "")
+
+
+def test_app_when_version_and_stdout_write_fails_otherwise_does_exit_two_with_error_on_stderr():
+    result = closed_stdout_runner(disk_full_error()).invoke(app, ["--version"])
+
+    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert os.strerror(errno.ENOSPC) in unwrap_panel(result.stderr)
 
 
 # ---------------------------------------------------------------------------

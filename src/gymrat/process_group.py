@@ -26,6 +26,7 @@ takes the process handle. A child that cannot be assigned falls back to
 ``taskkill /T /F``, which walks the parent-child tree instead.
 """
 
+import asyncio
 import ctypes
 import errno
 import functools
@@ -37,6 +38,7 @@ import sys
 import time
 import warnings
 from collections.abc import Callable, Iterable
+from pathlib import Path
 
 TERMINATE_GRACE_S = 1.0
 """Seconds a tree gets to act on a stop request before it is killed."""
@@ -71,6 +73,12 @@ _DARWIN_SZOMB = 5
 
 _DARWIN_LISTING_HEADROOM = 4
 """Extra ``kinfo_proc`` slots for members that join between the size query and the read."""
+
+_PROC_ROOT = Path("/proc")
+"""Where Linux lists every process, as a ``<pid>/stat`` file per process."""
+
+_LINUX_GONE_STATES = frozenset({"Z", "X", "x"})
+"""``/proc/<pid>/stat`` states of a process that has exited: zombie or dead."""
 
 _KILL_SIGNAL = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
 """Signal that kills a POSIX process group outright.
@@ -398,14 +406,17 @@ def kill_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
 
 
 def wait_for_process_group_exit(leaders: Iterable[int], timeout_s: float) -> None:
-    """Block until every leader in ``leaders`` has exited, or ``timeout_s`` elapses.
+    """Block until no member of any group led by ``leaders`` is running, or ``timeout_s`` elapses.
 
     This is the signal path's grace, where there is no event loop to await on: a
     child asked to stop gets this long to tear down benches of its own before it
-    is killed. A leader that exited counts as gone even though nothing has
-    reaped it yet, so the wait ends as soon as every leader has stopped. Windows
-    offers no pid probe that is not itself destructive, and its terminate
-    already waits for the job to empty, so there the wait is a no-op.
+    is killed. The whole group is waited for, not just its leader: a leader
+    that dies on the request can leave a nested run behind in its group, still
+    cleaning up. A member that exited counts as gone even though nothing has
+    reaped it yet, so the wait ends as soon as nothing in the groups still runs.
+    Where a group's members cannot be listed, the wait falls back to its leader
+    alone. Windows offers no pid probe that is not itself destructive, and its
+    terminate already waits for the job to empty, so there the wait is a no-op.
 
     Args:
         leaders: Process IDs of the group leaders to wait for.
@@ -415,10 +426,98 @@ def wait_for_process_group_exit(leaders: Iterable[int], timeout_s: float) -> Non
         return
     waited = list(leaders)
     deadline = time.monotonic() + timeout_s
-    while any(_leader_alive(pid) for pid in waited):
+    while any(_group_running(pid) for pid in waited):
         if time.monotonic() >= deadline:
             return
         time.sleep(_EXIT_POLL_S)
+
+
+async def wait_for_process_group_exit_async(leader: int, timeout_s: float) -> None:
+    """Wait until no member of the group led by ``leader`` is running, or ``timeout_s`` elapses.
+
+    The event-loop twin of :func:`wait_for_process_group_exit`, for one group:
+    it polls without blocking the loop, and never reaps the leader, so the loop
+    that owns it still collects its exit status.
+
+    Args:
+        leader: Process ID of the group leader to wait for.
+        timeout_s: Seconds to wait before giving up on the stragglers.
+    """
+    if sys.platform == "win32":
+        return
+    deadline = time.monotonic() + timeout_s
+    while _group_running(leader):
+        if time.monotonic() >= deadline:
+            return
+        await asyncio.sleep(_EXIT_POLL_S)
+
+
+def _group_running(group_id: int) -> bool:
+    """Whether the leader ``group_id``, or any other member of its group, is still running.
+
+    Zombies and exiting members count as gone. Only macOS and Linux list a
+    group's members; elsewhere, and whenever the listing fails, the leader alone
+    decides.
+
+    Args:
+        group_id: The process group, whose id is also its leader's pid.
+
+    Returns:
+        ``True`` while the leader or a listed member still runs.
+    """
+    if _leader_alive(group_id):
+        return True
+    try:
+        if sys.platform == "darwin":
+            return not all(
+                _darwin_member_gone(flag, state) for flag, state in _darwin_group_members(group_id)
+            )
+        if sys.platform == "linux":
+            return any(state not in _LINUX_GONE_STATES for state in _linux_group_states(group_id))
+    # A listing that fails or cannot be parsed leaves the leader alone to decide.
+    except (OSError, ValueError, struct.error):
+        return False
+    return False
+
+
+def _darwin_member_gone(flag: int, state: int) -> bool:
+    # A zombie or a member already exiting no longer runs any code of its own.
+    return state == _DARWIN_SZOMB or bool(flag & _DARWIN_P_WEXIT)
+
+
+def _linux_group_states(group_id: int) -> list[str]:
+    """List the ``/proc/<pid>/stat`` state of every member of group ``group_id``, zombies included.
+
+    Linux has no call listing one group, so every process is scanned. A process
+    that exits between the scan and the read of its ``stat`` file is skipped.
+
+    Args:
+        group_id: The process group to list.
+
+    Returns:
+        One state letter per member; empty when the group no longer exists.
+
+    Raises:
+        OSError: ``/proc`` could not be listed or a ``stat`` file could not be read.
+        ValueError: A ``stat`` file does not hold the fields Linux writes there.
+    """
+    states: list[str] = []
+    for entry in _PROC_ROOT.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_bytes()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        # The command name before the state is parenthesized and may itself
+        # hold spaces and parentheses, so the fields start after the last ")".
+        # The name is never decoded: the kernel cuts it at 15 bytes, which can
+        # split a multi-byte character, so only the fields after it are text.
+        fields = stat.rpartition(b")")[2].decode("ascii")
+        state, _parent, member_group = fields.split(maxsplit=3)[:3]
+        if int(member_group) == group_id:
+            states.append(state)
+    return states
 
 
 def _leader_alive(pid: int) -> bool:
@@ -526,10 +625,10 @@ def _darwin_group_settled(group_id: int) -> bool:
     """
     try:
         members = _darwin_group_members(group_id)
-    except OSError:
+    except (OSError, struct.error):
         return False
     if members:
-        return all(state == _DARWIN_SZOMB or flag & _DARWIN_P_WEXIT for flag, state in members)
+        return all(_darwin_member_gone(flag, state) for flag, state in members)
     try:
         os.killpg(group_id, 0)
     except ProcessLookupError:
@@ -590,14 +689,20 @@ def _darwin_group_members(group_id: int) -> list[tuple[int, int]]:
     Raises:
         OSError: ``sysctl`` failed, including a group that outgrew its headroom
             between the size query and the read.
+        struct.error: A record is too short for the fields decoded from it, which
+            happens only when ``_DARWIN_KINFO_PROC_SIZE`` does not match the
+            platform's layout.
     """
     mib = (ctypes.c_int * (len(_DARWIN_PROC_PGRP_MIB) + 1))(*_DARWIN_PROC_PGRP_MIB, group_id)
     capacity = _sysctl(mib, None, 0) + _DARWIN_LISTING_HEADROOM * _DARWIN_KINFO_PROC_SIZE
     buffer = ctypes.create_string_buffer(capacity)
     length = _sysctl(mib, buffer, capacity)
+    # A trailing partial record holds bytes the kernel never wrote: the zeroed
+    # buffer would decode as a running member.
+    whole_records_length = length - length % _DARWIN_KINFO_PROC_SIZE
     return [
         _DARWIN_FLAG_AND_STATE.unpack_from(buffer, offset + _DARWIN_FLAG_AND_STATE_OFFSET)
-        for offset in range(0, length, _DARWIN_KINFO_PROC_SIZE)
+        for offset in range(0, whole_records_length, _DARWIN_KINFO_PROC_SIZE)
     ]
 
 

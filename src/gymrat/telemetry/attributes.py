@@ -51,7 +51,7 @@ RUN_ENDED_BY = "gymrat.run.ended_by"
 RUN_END_REASON = "gymrat.run.end_reason"
 RUN_DURATION_MS = "gymrat.run.duration_ms"
 
-TURN_COST_USD = "gymrat.turn.cost_usd"
+TURN_SESSION_COST_USD = "gymrat.turn.session_cost_usd"
 TURN_ORIGIN = "gymrat.turn.origin"
 TURN_BUDGET_EXHAUSTED = "gymrat.turn.budget_exhausted"
 FOLLOW_UP_ACTION = "gymrat.follow_up.action"
@@ -96,7 +96,7 @@ _RUN_ATTRS = frozenset({
 })
 
 _TURN_AND_EVENT_ATTRS = frozenset({
-    TURN_COST_USD,
+    TURN_SESSION_COST_USD,
     TURN_ORIGIN,
     TURN_BUDGET_EXHAUSTED,
     FOLLOW_UP_ACTION,

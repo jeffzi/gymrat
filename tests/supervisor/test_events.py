@@ -3,26 +3,30 @@
 Events are frozen pydantic models whose base ``_EventModel`` carries a per-event
 ``type`` discriminator and ``at: int`` (nanoseconds since epoch), with snake_case
 wire keys via ``validate_by_name`` / ``serialize_by_alias``. ``to_json_line``
-writes snake_case keys with ``exclude_none=True`` globally; ``event_from_wire``
+writes one compact JSON line with snake_case keys, omitting an unset optional
+field, keeping non-ASCII text raw except the Unicode line breaks (escaped, or
+every non-ASCII character when the event holds a lone surrogate), writing a NaN
+or infinite float nested in a free-form payload as ``null`` on either path,
+refusing a non-finite value in a typed float field at construction, and
+writing a value pydantic cannot serialize as its ``str()``; ``event_from_wire``
 accepts only the snake_case wire; ``combine_observers`` is pinned on ordering,
 identity, and error propagation.
 """
 
 import json
 import typing
-from pathlib import Path
+from collections.abc import Callable
 
 import pytest
 from pydantic import ValidationError
 
+from gymrat.session.records.parse import decode_log_line
 from gymrat.supervisor.events import (
-    ITERATE_TOOL,
-    PROBE_TOOL,
-    SUMMARY_MAX_CHARS,
     CapEvent,
     CompactionEvent,
     DirtyInfo,
     FollowUpEvent,
+    LaunchEvent,
     ModelPhaseEvent,
     SessionEvent,
     TextDeltaEvent,
@@ -34,11 +38,14 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
     combine_observers,
     event_from_wire,
-    summarize,
-    summarize_input,
     to_json_line,
 )
-from tests.supervisor._fixtures import collecting_observer, make_launch, make_prompt
+from tests.supervisor._fixtures import (
+    NotJsonEncodable,
+    collecting_observer,
+    make_launch,
+    make_prompt,
+)
 
 # ---------------------------------------------------------------------------
 # Event vocabulary — at: int (nanoseconds), no timestamp field
@@ -155,7 +162,7 @@ def test_event_when_constructed_does_not_have_timestamp_attribute():
 
 
 # ---------------------------------------------------------------------------
-# to_json_line — snake_case keys, exclude_none=True
+# to_json_line — snake_case keys, unset optional fields left off
 # ---------------------------------------------------------------------------
 
 JSON_CASES = [
@@ -277,6 +284,47 @@ def test_to_json_line_when_serializing_does_use_snake_case_keys(
     assert parsed == expected
 
 
+@pytest.mark.parametrize(
+    ("event", "expected_line"),
+    [
+        pytest.param(
+            TextDeltaEvent(at=5_000_000_000, chunk="café \U0001f3af"),
+            '{"type":"text_delta","at":5000000000,"chunk":"café \U0001f3af"}',
+            id="non-ascii-written-raw",
+        ),
+        pytest.param(
+            UsageUpdateEvent(at=6_000_000_000, cost_usd=1e-7),
+            '{"type":"usage_update","at":6000000000,"cost_usd":1e-7,"settled":false}',
+            id="float-exponent-without-leading-zero",
+        ),
+        pytest.param(
+            TextDeltaEvent(at=5_000_000_000, chunk="a\x85b"),
+            '{"type":"text_delta","at":5000000000,"chunk":"a\\u0085b"}',
+            id="next-line-escaped",
+        ),
+        pytest.param(
+            TextDeltaEvent(at=5_000_000_000, chunk="a\u2028b"),
+            '{"type":"text_delta","at":5000000000,"chunk":"a\\u2028b"}',
+            id="line-separator-escaped",
+        ),
+        pytest.param(
+            TextDeltaEvent(at=5_000_000_000, chunk="a\u2029b"),
+            '{"type":"text_delta","at":5000000000,"chunk":"a\\u2029b"}',
+            id="paragraph-separator-escaped",
+        ),
+        pytest.param(
+            TextDeltaEvent(at=5_000_000_000, chunk="café \ud800"),
+            '{"type":"text_delta","at":5000000000,"chunk":"caf\\u00e9 \\ud800"}',
+            id="lone-surrogate-escapes-all-non-ascii",
+        ),
+    ],
+)
+def test_to_json_line_when_serializing_does_write_exact_compact_line(
+    event: SessionEvent, expected_line: str
+):
+    assert to_json_line(event) == expected_line
+
+
 def test_to_json_line_when_none_field_does_omit_it():
     event = ThinkingUpdateEvent(at=1_000_000_000, estimated_tokens=100, delta=10)
 
@@ -378,7 +426,7 @@ def test_to_json_line_when_launch_does_emit_schema_and_session_id():
 
 
 # ---------------------------------------------------------------------------
-# FollowUpEvent — None-optional omission via global exclude_none
+# FollowUpEvent — unset optional fields omitted
 # ---------------------------------------------------------------------------
 
 
@@ -432,6 +480,14 @@ ROUND_TRIP_EVENTS = [pytest.param(event, id=id_) for event, _, id_ in EVENT_SAMP
     pytest.param(
         FollowUpEvent(at=20_000_000_000, action="waiting"),
         id="follow_up-no-optionals",
+    ),
+    pytest.param(
+        TextDeltaEvent(at=5_000_000_000, chunk="a\x85b\u2028c\u2029d"),
+        id="text_delta-unicode-line-breaks",
+    ),
+    pytest.param(
+        TextDeltaEvent(at=5_000_000_000, chunk="café \ud800"),
+        id="text_delta-lone-surrogate",
     ),
 ]
 
@@ -624,343 +680,6 @@ def test_event_from_wire_when_text_delta_lacks_parent_tool_use_id_does_default_t
 
 
 # ---------------------------------------------------------------------------
-# SUMMARY_MAX_CHARS
-# ---------------------------------------------------------------------------
-
-
-def test_summarize_when_called_without_max_chars_does_truncate_to_summary_max_chars():
-    overflow = 50
-    text = "a" * (SUMMARY_MAX_CHARS + overflow)
-
-    result = summarize(text)
-
-    assert result == "a" * SUMMARY_MAX_CHARS + "…"
-
-
-# ---------------------------------------------------------------------------
-# summarize
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        pytest.param("short text", "short text", id="plain-fit"),
-        pytest.param("hello   world", "hello world", id="internal-whitespace-collapsed"),
-        pytest.param("  trimmed  ", "trimmed", id="leading-trailing-trimmed"),
-        pytest.param("line1\nline2\nline3", "line1 line2 line3", id="newlines-collapsed"),
-    ],
-)
-def test_summarize_when_within_budget_does_return_collapsed_text(text: str, expected: str):
-    assert summarize(text, 100) == expected
-
-
-def test_summarize_when_over_budget_does_truncate_with_bare_ellipsis():
-    overflow = 250
-    max_chars = 50
-
-    result = summarize("a" * (max_chars + overflow), max_chars)
-
-    assert result == "a" * max_chars + "…"
-
-
-def test_summarize_when_multiline_over_budget_does_truncate_with_bare_ellipsis():
-    result = summarize("line1\nline2\nline3\nline4", 20)
-
-    assert result == "line1 line2 line3 li…"
-
-
-@pytest.mark.parametrize(
-    ("text", "max_chars", "expected"),
-    [
-        pytest.param(
-            "\U0001f3af" * 8,
-            5,
-            "\U0001f3af\U0001f3af\U0001f3af\U0001f3af\U0001f3af…",
-            id="all-emoji",
-        ),
-        pytest.param(  # cspell:disable-next-line
-            "ab\U0001f3af\U0001f3afcd\U0001f3af", 3, "ab\U0001f3af…", id="mixed-width"
-        ),
-    ],
-)
-def test_summarize_when_truncating_does_split_on_code_point_boundaries(
-    text: str, max_chars: int, expected: str
-):
-    assert summarize(text, max_chars) == expected
-
-
-# ---------------------------------------------------------------------------
-# summarize_input
-# ---------------------------------------------------------------------------
-
-
-class _NotJsonEncodable:
-    """A value ``json.dumps`` cannot encode, with a deterministic string form."""
-
-    def __str__(self) -> str:
-        return "not-json-encodable"
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        pytest.param({"key": "value"}, '{"key":"value"}', id="dict-no-spaces"),
-        pytest.param(None, "null", id="none-to-json-null"),
-        pytest.param(_NotJsonEncodable(), "not-json-encodable", id="non-serializable-str-fallback"),
-    ],
-)
-def test_summarize_input_when_given_value_does_summarize_its_json_form(
-    value: object, expected: str
-):
-    assert summarize_input(value, 200) == expected
-
-
-# ---------------------------------------------------------------------------
-# summarize_input — tool-specific extraction
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "tool_input", "expected"),
-    [
-        pytest.param("Read", {"file_path": "/a/b.py"}, "/a/b.py", id="read"),
-        pytest.param(
-            "Edit",
-            {"file_path": "/a/b.py", "old_string": "x", "new_string": "y"},
-            "/a/b.py",
-            id="edit",
-        ),
-        pytest.param("Write", {"file_path": "/a/b.py", "content": "..."}, "/a/b.py", id="write"),
-        pytest.param(
-            "MultiEdit",
-            {"file_path": "/a/b.py", "edits": [{"old_string": "x", "new_string": "y"}]},
-            "/a/b.py",
-            id="multi-edit",
-        ),
-        pytest.param(
-            "NotebookEdit",
-            {"notebook_path": "/a/nb.ipynb"},
-            "/a/nb.ipynb",
-            id="notebook-edit",
-        ),
-    ],
-)
-def test_summarize_input_when_file_tool_does_extract_path_only(
-    tool_name: str, tool_input: dict[str, object], expected: str
-):
-    assert summarize_input(tool_input, tool_name=tool_name) == expected
-
-
-def test_summarize_input_when_path_under_root_does_render_relative():
-    result = summarize_input(
-        {"file_path": "/project/src/main.py"},
-        tool_name="Read",
-        supervised_root="/project",
-    )
-
-    assert result == "src/main.py"
-
-
-def test_summarize_input_when_path_under_home_does_render_tilde_prefixed():
-    home = str(Path.home())
-
-    result = summarize_input(
-        {"file_path": f"{home}/Documents/notes.md"},
-        tool_name="Read",
-        supervised_root="/other/project",
-    )
-
-    assert result == "~/Documents/notes.md"
-
-
-def test_summarize_input_when_path_under_root_and_home_does_prefer_root_relative():
-    home = str(Path.home())
-    root = f"{home}/project"
-
-    result = summarize_input(
-        {"file_path": f"{root}/src/main.py"},
-        tool_name="Read",
-        supervised_root=root,
-    )
-
-    assert result == "src/main.py"
-
-
-def test_summarize_input_when_path_outside_root_and_home_does_render_verbatim():
-    result = summarize_input(
-        {"file_path": "/etc/config.ini"},
-        tool_name="Read",
-        supervised_root="/project",
-    )
-
-    assert result == "/etc/config.ini"
-
-
-def test_summarize_input_when_bash_does_extract_command():
-    result = summarize_input({"command": "echo hello"}, tool_name="Bash")
-
-    assert result == "echo hello"
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "tool_input"),
-    [
-        pytest.param(
-            "Agent",
-            {
-                "subagent_type": "Explore",
-                "description": "Explore ECS source architecture",
-                "prompt": "long prompt body that should never appear",
-            },
-            id="agent-subagent-type",
-        ),
-        pytest.param(
-            "Task",
-            {
-                "type": "Explore",
-                "description": "Explore ECS source architecture",
-                "prompt": "long prompt body that should never appear",
-            },
-            id="task-type",
-        ),
-    ],
-)
-def test_summarize_input_when_agent_or_task_does_extract_type_and_description(
-    tool_name: str, tool_input: dict[str, object]
-):
-    result = summarize_input(tool_input, tool_name=tool_name)
-
-    assert result == "Explore: Explore ECS source architecture"
-
-
-def test_summarize_input_when_agent_has_no_subagent_type_does_show_description_only():
-    result = summarize_input(
-        {"description": "Explore ECS source architecture", "prompt": "..."},
-        tool_name="Agent",
-    )
-
-    assert result == "Explore ECS source architecture"
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "tool_input", "expected"),
-    [
-        pytest.param("Skill", {"skill": "gymrat"}, "gymrat", id="skill-name-only"),
-        pytest.param(
-            "Skill",
-            {"skill": "gymrat", "args": "some args"},
-            "gymrat some args",
-            id="skill-name-with-args",
-        ),
-    ],
-)
-def test_summarize_input_when_skill_tool_does_extract_skill_and_args(
-    tool_name: str, tool_input: dict[str, object], expected: str
-):
-    assert summarize_input(tool_input, tool_name=tool_name) == expected
-
-
-# ---------------------------------------------------------------------------
-# summarize_input — gymrat MCP tools
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "tool_input",
-    [
-        pytest.param({}, id="no-payload"),
-        pytest.param({"some": "data"}, id="with-payload"),
-    ],
-)
-def test_summarize_input_when_iterate_tool_does_return_gymrat_iterate(
-    tool_input: dict[str, object],
-):
-    result = summarize_input(tool_input, tool_name=ITERATE_TOOL)
-
-    assert result == "gymrat iterate"
-
-
-@pytest.mark.parametrize(
-    ("tool_input", "expected"),
-    [
-        pytest.param(
-            {"names": ["bench", "squat"], "samples": 6},
-            "gymrat probe bench squat --samples 6",
-            id="names-and-samples",
-        ),
-        pytest.param(
-            {"names": ["bench"]},
-            "gymrat probe bench",
-            id="single-name-no-samples",
-        ),
-        pytest.param(
-            {},
-            "gymrat probe",
-            id="empty-dict",
-        ),
-        pytest.param(
-            {"names": "not-a-list"},
-            "gymrat probe",
-            id="names-not-a-list-dropped",
-        ),
-        pytest.param(
-            {"names": [1, 2]},
-            "gymrat probe",
-            id="names-not-strings-dropped",
-        ),
-        pytest.param(
-            {"names": ["a"], "samples": "five"},
-            "gymrat probe a",
-            id="samples-not-int-dropped",
-        ),
-    ],
-)
-def test_summarize_input_when_probe_tool_does_build_cli_summary(
-    tool_input: dict[str, object], expected: str
-):
-    result = summarize_input(tool_input, tool_name=PROBE_TOOL)
-
-    assert result == expected
-
-
-def test_summarize_input_when_probe_names_long_does_truncate_via_length_cap():
-    long_names = [f"exercise_{i}" for i in range(100)]
-    tool_input: dict[str, object] = {"names": long_names}
-
-    result = summarize_input(tool_input, tool_name=PROBE_TOOL)
-
-    assert len(result) <= SUMMARY_MAX_CHARS + 1  # +1 for the ellipsis character
-    assert result.startswith("gymrat probe exercise_0")
-    assert result.endswith("…")
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "tool_input"),
-    [
-        pytest.param("Read", {"not_file_path": "/a.py"}, id="read-missing-file-path"),
-        pytest.param("Bash", {"not_command": "echo"}, id="bash-missing-command"),
-        pytest.param("Agent", {"prompt": "..."}, id="agent-missing-type"),
-        pytest.param("Skill", {"not_skill": "foo"}, id="skill-missing-skill"),
-    ],
-)
-def test_summarize_input_when_expected_field_missing_does_fall_back_to_json(
-    tool_name: str, tool_input: dict[str, object]
-):
-    result = summarize_input(tool_input, tool_name=tool_name)
-
-    assert result == json.dumps(tool_input, separators=(",", ":"))
-
-
-def test_summarize_input_when_unknown_tool_does_fall_back_to_json():
-    tool_input = {"some_key": "some_value"}
-
-    result = summarize_input(tool_input, tool_name="UnknownTool")
-
-    assert result == '{"some_key":"some_value"}'
-
-
-# ---------------------------------------------------------------------------
 # combine_observers
 # ---------------------------------------------------------------------------
 
@@ -1006,21 +725,123 @@ def test_combine_observers_when_an_observer_raises_does_warn_and_call_remaining(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "cost",
-    [
-        pytest.param(float("nan"), id="nan"),
-        pytest.param(float("inf"), id="positive-infinity"),
-        pytest.param(float("-inf"), id="negative-infinity"),
-    ],
-)
-def test_to_json_line_when_cost_is_non_finite_does_serialize_as_null(cost: float):
-    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=cost)
+_NON_FINITE_FLOATS = [
+    pytest.param(float("nan"), id="nan"),
+    pytest.param(float("inf"), id="positive-infinity"),
+    pytest.param(float("-inf"), id="negative-infinity"),
+]
+
+
+@pytest.mark.parametrize("value", _NON_FINITE_FLOATS)
+def test_to_json_line_when_nested_float_is_non_finite_does_serialize_as_null(value: float):
+    event = ToolStartEvent(
+        at=1_000_000_000,
+        tool_use_id="t1",
+        tool_name="Probe",
+        input={"limit": value},
+        input_summary="probe",
+    )
 
     line = to_json_line(event)
 
     parsed = json.loads(line)
-    assert parsed["cost_usd"] is None
+    assert parsed["input"]["limit"] is None
+
+
+#: A turn-end text holding a lone surrogate, which forces the ASCII-escaping
+#: fallback serializer, next to a raw non-ASCII character it must escape.
+_SURROGATE_TEXT = "café \ud800"
+
+
+@pytest.mark.parametrize(
+    ("cost", "expected_cost"),
+    [
+        pytest.param(0.05, "0.05", id="finite-unchanged"),
+        pytest.param(1e-07, "1e-07", id="finite-exponent-unchanged"),
+    ],
+)
+def test_to_json_line_when_lone_surrogate_and_float_does_write_escaped_line_with_json_float(
+    cost: float, expected_cost: str
+):
+    event = TurnEndEvent(
+        at=12_000_000_000,
+        text=_SURROGATE_TEXT,
+        cost_usd=cost,
+        origin="agent",
+        budget_exhausted=False,
+    )
+
+    line = to_json_line(event)
+
+    assert line == (
+        '{"type":"turn_end","at":12000000000,"text":"caf\\u00e9 \\ud800",'
+        f'"cost_usd":{expected_cost},"origin":"agent","budget_exhausted":false}}'
+    )
+
+
+def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write_null():
+    event = ToolStartEvent(
+        at=2_000_000_000,
+        tool_use_id="t1",
+        tool_name="Probe",
+        input={"weights": [float("nan"), 1.5, float("-inf")], "limit": {"max": float("inf")}},
+        input_summary=_SURROGATE_TEXT,
+    )
+
+    decoded = decode_log_line(to_json_line(event))
+
+    assert decoded == {
+        "type": "tool_start",
+        "at": 2_000_000_000,
+        "tool_use_id": "t1",
+        "tool_name": "Probe",
+        "input": {"weights": [None, 1.5, None], "limit": {"max": None}},
+        "input_summary": _SURROGATE_TEXT,
+    }
+
+
+# ---------------------------------------------------------------------------
+# non-finite floats refused at construction
+# ---------------------------------------------------------------------------
+
+
+def _usage_update_with_cost(value: float) -> UsageUpdateEvent:
+    return UsageUpdateEvent(at=1_000_000_000, cost_usd=value)
+
+
+def _turn_end_with_cost(value: float) -> TurnEndEvent:
+    return TurnEndEvent(
+        at=1_000_000_000,
+        text="done",
+        cost_usd=value,
+        origin="agent",
+        budget_exhausted=False,
+    )
+
+
+def _launch_with_max_minutes(value: float) -> LaunchEvent:
+    return make_launch(max_minutes=value)
+
+
+def _launch_with_max_usd(value: float) -> LaunchEvent:
+    return make_launch(max_usd=value)
+
+
+@pytest.mark.parametrize("value", _NON_FINITE_FLOATS)
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(_usage_update_with_cost, id="usage-update-cost"),
+        pytest.param(_turn_end_with_cost, id="turn-end-cost"),
+        pytest.param(_launch_with_max_minutes, id="launch-max-minutes"),
+        pytest.param(_launch_with_max_usd, id="launch-max-usd"),
+    ],
+)
+def test_event_when_float_field_is_non_finite_does_raise(
+    build: Callable[[float], object], value: float
+):
+    with pytest.raises(ValidationError, match="finite number"):
+        build(value)
 
 
 # ---------------------------------------------------------------------------
@@ -1033,7 +854,7 @@ def test_to_json_line_when_field_not_json_encodable_does_stringify_instead_of_ra
         at=1_000_000_000,
         tool_use_id="t1",
         tool_name="Test",
-        input={"key": _NotJsonEncodable()},
+        input={"key": NotJsonEncodable()},
         input_summary="test",
     )
 

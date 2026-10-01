@@ -5,6 +5,7 @@ Each constant is a record exactly as it is written to the session log, before
 variants from them.
 """
 
+import json
 import re
 
 from tests.session.records._fixtures import AT, COMMIT, SESSION_ID
@@ -155,6 +156,32 @@ def omitting(record: dict[str, object], key: str) -> dict[str, object]:
 def patching(record: dict[str, object], patch: dict[str, object]) -> dict[str, object]:
     """Copy of ``record`` with ``patch`` merged over it."""
     return {**record, **patch}
+
+
+_RAW_NUMBER = "raw-number-placeholder"
+
+
+def with_raw_number(line: str, keys: tuple[str, ...], literal: str) -> str:
+    """Rewrite a JSON ``line`` so the value at ``keys`` is the bare number text ``literal``.
+
+    ``json.dumps`` cannot emit ``NaN``-style or overflowing literals as bare
+    numbers, so a placeholder string stands in for the value and is replaced,
+    quotes included, once the line is dumped.
+
+    Args:
+        line: A JSON object line.
+        keys: The key path from the top-level object to the value to replace.
+        literal: The number text to splice in unquoted, such as ``"NaN"`` or ``"1e999"``.
+
+    Returns:
+        The rewritten JSON line.
+    """
+    data = json.loads(line)
+    node = data
+    for key in keys[:-1]:
+        node = node[key]
+    node[keys[-1]] = _RAW_NUMBER
+    return json.dumps(data).replace(f'"{_RAW_NUMBER}"', literal)
 
 
 def mentions(field: str) -> re.Pattern[str]:

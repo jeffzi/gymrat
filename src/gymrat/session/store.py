@@ -18,15 +18,16 @@ the guards a command needs: a session must exist, and — for the writers — it
 must not already be finalized.
 """
 
-import json
+import math
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
+from pydantic_core import PydanticSerializationError
+
 from gymrat.errors import GymratError, hint_of
-from gymrat.finite_json import null_non_finite
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     BaselineRecord,
@@ -40,8 +41,9 @@ from gymrat.session.records import (
     SessionRecord,
     StopRecord,
     parse_record,
-    record_to_wire,
 )
+from gymrat.session.records.models import record_to_json_line
+from gymrat.session.records.parse import NonFiniteNumberError, decode_log_line
 from gymrat.session.schema import KeepReason
 
 __all__ = [
@@ -137,6 +139,31 @@ def last_kept_position(state: SessionState, baseline_sha: str) -> str:
     return state.last_kept_commit or baseline_sha
 
 
+def _decode_log_line_at(line: str, at: str, line_number: int) -> object:
+    """Decode one session-log line, naming its location when it is not JSON.
+
+    Args:
+        line: The line to decode.
+        at: The ``path:line`` location the message names.
+        line_number: The 1-based line number the hint names.
+
+    Returns:
+        The decoded JSON value.
+
+    Raises:
+        GymratError: When the line is not strict JSON. The hint names the
+            non-finite number when that is what the line holds.
+    """
+    message = f"Invalid JSON at {at}"
+    try:
+        return decode_log_line(line)
+    except NonFiniteNumberError as error:
+        hint = f"Line {line_number} holds a number the session log never stores: {error}."
+        raise GymratError(message, hint=hint) from error
+    except ValueError as error:
+        raise GymratError(message, hint=f"Line {line_number} is not a JSON object.") from error
+
+
 def _read_first_line(path: Path) -> str | None:
     """The first line of ``path``, or ``None`` when the file does not exist."""
     # Binary read: a text-mode readline decodes a whole buffered chunk, so bytes
@@ -157,7 +184,8 @@ def first_line_json(path: Path) -> dict[str, object] | None:
 
     Returns:
         The decoded object, or ``None`` when the file does not exist or its
-        first line is not a JSON object, including a line that is not valid UTF-8.
+        first line is not a JSON object, including a line that is not valid
+        UTF-8 or holds a non-finite number.
 
     Raises:
         OSError: When the file exists but cannot be read, such as a directory
@@ -170,8 +198,8 @@ def first_line_json(path: Path) -> dict[str, object] | None:
     if first_line is None:
         return None
     try:
-        parsed = json.loads(first_line)
-    except json.JSONDecodeError:
+        parsed = decode_log_line(first_line)
+    except ValueError:
         return None
     return parsed if isinstance(parsed, dict) else None
 
@@ -205,11 +233,7 @@ def read_session_header(jsonl_path: str) -> SessionRecord | None:
     if first_line is None or not first_line.strip():
         return None
 
-    try:
-        value = json.loads(first_line)
-    except json.JSONDecodeError as error:
-        message = f"Invalid JSON at {location}"
-        raise GymratError(message, hint="Line 1 is not a JSON object.") from error
+    value = _decode_log_line_at(first_line, location, 1)
 
     record = parse_record(value)
     if not isinstance(record, SessionRecord):
@@ -274,11 +298,12 @@ def _serialize_record(record: SessionLogRecord) -> str:
     A record can satisfy the type checker and still not survive JSON: ``NaN`` and
     ``Infinity`` are floats in Python but JSON ``null`` under JavaScript's
     ``JSON.stringify``, and any measurement an adapter hands back unchecked can
-    carry one. Non-finite floats are lowered to ``None`` — matching that wire
-    form — and the serialized line is run back through :func:`parse_record`, the
-    very parser :func:`read_records` uses. Nothing is written until that round
-    trip succeeds, which stops a single bad measurement from leaving the whole
-    session log unreadable.
+    carry one. The line is the record's compact JSON with ``None``-valued keys
+    omitted, and pydantic writes non-finite floats as ``null`` — matching that
+    wire form. The line is then run back through :func:`parse_record`, the very
+    parser :func:`read_records` uses. Nothing is written until that round trip
+    succeeds, which stops a single bad measurement from leaving the whole session
+    log unreadable.
 
     Args:
         record: The record to serialize.
@@ -290,17 +315,62 @@ def _serialize_record(record: SessionLogRecord) -> str:
         GymratError: When the record does not survive the JSON round trip.
     """
     try:
-        wire = record_to_wire(record)
-        line = json.dumps(null_non_finite(wire))
-        parse_record(json.loads(line))
+        line = record_to_json_line(record)
+    except PydanticSerializationError as error:
+        hint = _NOT_UTF8_HINT if _any_leaf(record, _is_lone_surrogate_text) else _NOT_JSON_HINT
+        raise GymratError(_refusal(record, error), hint=hint) from error
+    try:
+        parse_record(decode_log_line(line))
     except (GymratError, ValueError, TypeError) as error:
-        message = f"Refusing to log an unreadable {record.type} record: {error!s}"
-        hint = (
-            "Nothing was written. A metric that is NaN or Infinity becomes "
-            "null in JSON and no longer reads back."
-        )
-        raise GymratError(message, hint=hint) from error
+        hint = _NON_FINITE_HINT if _any_leaf(record, _is_non_finite) else _OFF_SCHEMA_HINT
+        raise GymratError(_refusal(record, error), hint=hint) from error
     return line
+
+
+_NOT_UTF8_HINT = (
+    "Nothing was written. A text field holds characters that are not valid UTF-8, for "
+    "example from a non-UTF-8 argument or path."
+)
+_NOT_JSON_HINT = "Nothing was written. A field holds a value JSON cannot represent."
+_NON_FINITE_HINT = (
+    "Nothing was written. A metric that is NaN or Infinity becomes null in JSON and no "
+    "longer reads back."
+)
+_OFF_SCHEMA_HINT = "Nothing was written. The record does not match the session-log schema."
+
+
+def _any_leaf(record: SessionLogRecord, test: Callable[[object], bool]) -> bool:
+    # Walks the record's values, so a refusal's hint names what the record holds
+    # rather than guessing from the error text.
+    pending: list[object] = [record.model_dump()]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            pending.extend(value)
+        elif test(value):
+            return True
+    return False
+
+
+def _is_lone_surrogate_text(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode()
+    except UnicodeEncodeError:
+        return True
+    return False
+
+
+def _is_non_finite(value: object) -> bool:
+    return isinstance(value, float) and not math.isfinite(value)
+
+
+def _refusal(record: SessionLogRecord, error: Exception) -> str:
+    return f"Refusing to log an unreadable {record.type} record: {error!s}"
 
 
 def recover_torn_tail(jsonl_path: str) -> None:
@@ -385,11 +455,7 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
                 message, hint=f"Line {index + 1} contains invalid UTF-8 bytes."
             ) from error
 
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError as error:
-            message = f"Invalid JSON at {at}"
-            raise GymratError(message, hint=f"Line {index + 1} is not a JSON object.") from error
+        value = _decode_log_line_at(line, at, index + 1)
 
         try:
             record = parse_record(value)

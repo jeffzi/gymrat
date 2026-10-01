@@ -8,6 +8,8 @@ and the base-directory resolution are exercised the way a shell would invoke
 them.
 """
 
+import errno
+import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -16,15 +18,18 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
+from gymrat.cli.lock import TOOL_FAILURE_EXIT_CODE
 from gymrat.loop.start import start_session
 from gymrat.session import experiment_worktree_dir, read_records, session_jsonl_path
 from gymrat.session.budget import write_budget
 from tests._ansi import strip_ansi
+from tests._rich import unwrap_panel
 from tests.cli._budget import (
     LIVE_BUDGET,
     set_origin,
 )
 from tests.cli._help import help_output
+from tests.cli._session import closed_stdout_error, closed_stdout_runner, disk_full_error
 from tests.loop.iterate._fixtures import resolved_config
 
 runner = CliRunner()
@@ -299,15 +304,22 @@ def test_init_when_no_color_flag_does_suppress_ansi_in_summary():
 
 
 @pytest.mark.usefixtures("non_repo_cwd")
-def test_init_when_stdout_broken_pipe_does_exit_zero(monkeypatch: pytest.MonkeyPatch):
-    def broken_write(_stream: object, _data: str) -> None:
-        raise BrokenPipeError
+def test_init_when_stdout_reader_closed_does_exit_zero_without_stderr():
+    result = closed_stdout_runner(closed_stdout_error()).invoke(
+        app, ["init", "--bench", "npm run bench"]
+    )
 
-    monkeypatch.setattr("gymrat.cli.init_cmd.write_and_flush", broken_write)
+    assert (result.exit_code, result.stderr) == (0, "")
 
-    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
 
-    assert result.exit_code == 0
+@pytest.mark.usefixtures("non_repo_cwd")
+def test_init_when_stdout_write_fails_otherwise_does_report_the_error():
+    result = closed_stdout_runner(disk_full_error()).invoke(
+        app, ["init", "--bench", "npm run bench"]
+    )
+
+    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert os.strerror(errno.ENOSPC) in unwrap_panel(result.stderr)
 
 
 # ---------------------------------------------------------------------------

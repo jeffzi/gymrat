@@ -5,15 +5,10 @@ are the Python attribute names (snake_case) -- no alias generator, except
 :attr:`SessionRecord.schema_version`, which aliases to ``schema`` because
 ``schema`` collides with :meth:`BaseModel.schema`.
 
-Two entry points bridge the two forms:
-
-- :func:`parse_record` (in ``parse.py``) validates a decoded-JSON value into the
-  typed model for its ``type``, raising a :class:`GymratError` worded for a
-  session log.
-- :func:`record_to_wire` renders a model back to its snake_case wire dict,
-  the form the store serializes. Optional fields whose value is ``None`` are
-  omitted, except ``delta_pct`` (on a metric verdict and on an iteration's
-  primary), which is always present and serializes ``None`` as JSON ``null``.
+:func:`record_to_wire` renders a model back to its snake_case wire dict, the
+same shape the store writes. Optional fields whose value is ``None`` are
+omitted, except ``delta_pct`` (on a metric verdict and on an iteration's
+primary), which is always present and serializes ``None`` as JSON ``null``.
 """
 
 from collections.abc import Callable
@@ -94,67 +89,59 @@ _RECORD_CONFIG = ConfigDict(
     serialize_by_alias=True,
 )
 
-_NULL_MESSAGE = "value must not be null"
-
 _wire_validation: ContextVar[bool] = ContextVar("_wire_validation", default=False)
 
 
-def _reject_none(value: object) -> object:
-    """Reject an explicitly-provided ``null`` during wire validation.
+def _not_null(member: object) -> BeforeValidator:
+    """Build a validator that holds an explicit wire ``null`` to ``member``'s type check.
 
-    An absent key falls back to the ``None`` default without invoking this
-    validator; only a present ``null`` reaches here, so an optional-but-not-
-    nullable field rejects it while an absent key stays ``None``.
+    An absent key falls back to the ``None`` default without invoking the
+    validator; only a present ``null`` reaches it, so an optional-but-not-
+    nullable field rejects it while an absent key stays ``None``. The ``null``
+    fails with the error pydantic reports for ``member`` itself -- a
+    ``string_type`` for ``str``, a ``literal_error`` for a ``Literal`` -- so
+    the problem message names the field's own type.
 
     The check is skipped when the ``_wire_validation`` context variable is not
     set, so Python-side construction with ``field=None`` passes through.
 
     Args:
-        value: The value under validation.
+        member: The non-null type the optional field holds.
 
     Returns:
-        The original value, unchanged.
-
-    Raises:
-        ValueError: When ``value`` is ``None`` and wire validation is active.
+        A before-validator for an ``Annotated`` optional of ``member``.
     """
-    if value is None and _wire_validation.get():
-        raise ValueError(_NULL_MESSAGE)
-    return value
+    adapter = TypeAdapter(member)
+
+    def check(value: object) -> object:
+        if value is None and _wire_validation.get():
+            # pydantic-core re-reports a ValidationError raised in a validator
+            # as its own line errors, keeping their type, ctx and input.
+            adapter.validate_python(value)
+        return value
+
+    return BeforeValidator(check)
 
 
-def _coerce_integer(value: object) -> object:
-    """Reject ``null``, then fold an integral float into ``int``."""
-    _reject_none(value)
-    return coerce_integer(value)
+# ``float`` leads so a rejected value's first union error is ``float_type``, which
+# the problem message words as "a number". Smart-mode union validation still keeps
+# an ``int`` input as ``int``, since that branch matches its type exactly.
+_Number = float | int
 
-
-_Number = int | float
-
-_OptStr = Annotated[
-    str | SkipJsonSchema[None],
-    BeforeValidator(_reject_none),
-]
-_OptNonEmptyStr = Annotated[
-    str | SkipJsonSchema[None],
-    BeforeValidator(_reject_none),
-    Field(min_length=1),
-]
-_OptBool = Annotated[
-    bool | SkipJsonSchema[None],
-    BeforeValidator(_reject_none),
-]
+_OptStr = Annotated[str | SkipJsonSchema[None], _not_null(str)]
+_OptNonEmptyStr = Annotated[str | SkipJsonSchema[None], _not_null(str), Field(min_length=1)]
+_OptBool = Annotated[bool | SkipJsonSchema[None], _not_null(bool)]
 _OptNumber = Annotated[
     _Number | SkipJsonSchema[None],
-    BeforeValidator(_reject_none),
+    _not_null(_Number),
     WithJsonSchema({"type": "number"}),
 ]
 
 _DeltaPct = _Number | None
 
-_PositiveInt = Annotated[int, Field(ge=1), BeforeValidator(_coerce_integer)]
-_NonNegativeInt = Annotated[int, Field(ge=0), BeforeValidator(_coerce_integer)]
-_OptNonNegativeInt = _NonNegativeInt | SkipJsonSchema[None]
+_PositiveInt = Annotated[int, Field(ge=1), BeforeValidator(coerce_integer)]
+_NonNegativeInt = Annotated[int, Field(ge=0), BeforeValidator(coerce_integer)]
+_OptNonNegativeInt = Annotated[_NonNegativeInt | SkipJsonSchema[None], _not_null(int)]
 
 # Lax mode on the tuple itself lets a JSON array fill it; the items keep the
 # model's strict mode, so a bool or numeric string inside is still rejected.
@@ -187,7 +174,8 @@ class _SequencedEnvelope(_RecordEnvelope):
 
     seq: Annotated[
         int | SkipJsonSchema[None],
-        BeforeValidator(_coerce_integer),
+        _not_null(int),
+        BeforeValidator(coerce_integer),
     ] = Field(
         default=None, description="Iteration sequence number, present on per-iteration records."
     )
@@ -220,16 +208,12 @@ class SessionConfig(BaseModel):
     )
     adapter: str = Field(description="Output adapter for parsing benchmark results.")
     samples: _PositiveInt = Field(description="Number of sample rounds per side.")
-    timeout_seconds: Annotated[
-        int,
-        Field(ge=1, description="Maximum seconds per bench invocation."),
-        BeforeValidator(_coerce_integer),
-    ]
+    timeout_seconds: _PositiveInt = Field(description="Maximum seconds per bench invocation.")
     primary: str = Field(description="Primary metric or aggregation method for judging iterations.")
     filter: _OptStr = Field(default=None, description="Filter expression for selecting benchmarks.")
     hooks: Annotated[
         SessionHooks | SkipJsonSchema[None],
-        BeforeValidator(_reject_none),
+        _not_null(SessionHooks),
     ] = Field(default=None, description="Hook commands to run around iterations.")
 
 
@@ -335,7 +319,7 @@ class Confirm(BaseModel):
     filtered: _NameList = Field(description="Metric names the rerun was filtered to.")
     absent: Annotated[
         _NameList | SkipJsonSchema[None],
-        BeforeValidator(_reject_none),
+        _not_null(_NameList),
     ] = Field(default=None, description="Metric names the rerun was asked about but skipped.")
     samples: PairedSamples = Field(
         description="Sample rounds collected during the confirmation rerun."
@@ -368,7 +352,7 @@ class IterationRecord(_SequencedEnvelope):
     )
     confirm: Annotated[
         Confirm | SkipJsonSchema[None],
-        BeforeValidator(_reject_none),
+        _not_null(Confirm),
     ] = Field(default=None, description="Confirmation rerun results, if one was triggered.")
     primary: IterationPrimary = Field(
         description="The primary metric or aggregate the outcome was judged on."
@@ -416,7 +400,7 @@ class KeepRecord(_SequencedEnvelope):
     message: _OptStr = Field(default=None, description="Commit message when status is committed.")
     reason: Annotated[
         KeepReason | SkipJsonSchema[None],
-        BeforeValidator(_reject_none),
+        _not_null(KeepReason),
     ] = Field(default=None, description="Why the keep was blocked, when status is blocked.")
     checks: KeepChecks = Field(description="Outcome of the configured checks.")
 
@@ -438,7 +422,7 @@ class HookRecord(_SequencedEnvelope):
     seq: _NonNegativeInt = Field(
         description="Iteration sequence number this hook is associated with."
     )
-    exit_code: Annotated[int, BeforeValidator(_coerce_integer)] = Field(
+    exit_code: Annotated[int, BeforeValidator(coerce_integer)] = Field(
         description="Process exit code of the hook command."
     )
     duration_ms: _Number = Field(description="Wall-clock milliseconds the hook command ran.")
@@ -485,7 +469,7 @@ class CommandRecord(_SequencedEnvelope):
     )
     reason: Annotated[
         CommandReason | SkipJsonSchema[None],
-        BeforeValidator(_reject_none),
+        _not_null(CommandReason),
     ] = Field(default=None, description="Why the command exited non-zero, when it did.")
     duration_ms: _NonNegativeInt = Field(description="Wall-clock milliseconds the command took.")
     origin: CommandOrigin = Field(
@@ -565,3 +549,18 @@ def record_to_wire(record: SessionLogRecord) -> dict[str, object]:
         The wire-format dict, ready for JSON serialization.
     """
     return record.model_dump(mode="json", exclude_none=True)
+
+
+def record_to_json_line(record: SessionLogRecord) -> str:
+    """Render a session-log model as the compact JSON line the store writes.
+
+    Optional fields whose value is ``None`` are omitted, matching
+    :func:`record_to_wire`. Pydantic writes non-finite floats as ``null``.
+
+    Args:
+        record: The parsed session-log model to render.
+
+    Returns:
+        The record's compact JSON, without a trailing newline.
+    """
+    return record.model_dump_json(exclude_none=True)

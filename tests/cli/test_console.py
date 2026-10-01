@@ -1,5 +1,6 @@
 """Tests for the stderr console factory."""
 
+import errno
 import io
 import sys
 from typing import override
@@ -7,6 +8,8 @@ from typing import override
 import pytest
 
 from gymrat.cli.console import stderr_console
+from tests._process_helpers import run_with_closed_reader
+from tests._streams import RaisingStream
 
 
 class _FakeStderr(io.StringIO):
@@ -141,3 +144,41 @@ def test_stderr_console_when_colorless_does_strip_all_sgr_including_bold(
         console.print("probe", style="bold", end="")
 
     assert "\x1b[" not in capture.get()
+
+
+# ---------------------------------------------------------------------------
+# broken pipe on the console's own stream
+# ---------------------------------------------------------------------------
+
+
+def test_stderr_console_when_stderr_pipe_breaks_does_exit_one_without_output():
+    probe = (
+        "from gymrat.cli.console import stderr_console\n"
+        "stderr_console(color_flag=False).print('probe')\n"
+        "print('after the broken pipe')\n"
+    )
+
+    result = run_with_closed_reader([sys.executable, "-c", probe], stream="stderr", timeout=60)
+
+    assert (result.returncode, result.stdout) == (1, b"")
+
+
+@pytest.mark.parametrize(
+    ("platform", "error"),
+    [
+        pytest.param("linux", BrokenPipeError(), id="posix-broken-pipe"),
+        pytest.param("win32", OSError(errno.EINVAL, "Invalid argument"), id="windows-einval"),
+    ],
+)
+def test_stderr_console_when_stream_has_no_file_descriptor_does_exit_one_on_broken_pipe(
+    monkeypatch: pytest.MonkeyPatch, platform: str, error: OSError
+):
+    monkeypatch.setattr("sys.platform", platform)
+    monkeypatch.setattr("sys.stdout", io.StringIO())
+    monkeypatch.setattr("sys.stderr", RaisingStream(error))
+    console = stderr_console(color_flag=False)
+
+    with pytest.raises(SystemExit) as exc:
+        console.print("probe")
+
+    assert exc.value.code == 1

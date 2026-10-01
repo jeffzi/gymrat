@@ -35,6 +35,8 @@ from tests.cli._budget import (
     mark_tool_origin,
 )
 from tests.cli._session import (
+    closed_stdout_error,
+    closed_stdout_runner,
     last_command_record,
     plain_lines,
     records_of,
@@ -314,6 +316,14 @@ def _wire_successful_iterate(
     recorder = _IterateSessionRecorder(_make_iterate_result())
     _install_iterate_session(monkeypatch, recorder)
     return factory, recorder
+
+
+def _wire_stopping_iterate(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wire ``iterate`` with a renderer factory and a session stub that hits the stop condition."""
+    write_session_log(repo, iterate_session_header(repo))
+    _install_renderer_factory(monkeypatch)
+    raiser = _IterateSessionRaiser(LoopStopError("max iterations (3) reached"))
+    _install_iterate_session(monkeypatch, raiser)
 
 
 def test_iterate_command_when_run_does_wire_on_progress_into_iterate_options(
@@ -659,10 +669,7 @@ def test_iterate_command_when_format_json_does_include_confirm_when_rerun_happen
 def test_iterate_command_when_format_json_and_stop_condition_does_emit_stop_document(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    write_session_log(repo, iterate_session_header(repo))
-    _install_renderer_factory(monkeypatch)
-    raiser = _IterateSessionRaiser(LoopStopError("max iterations (3) reached"))
-    _install_iterate_session(monkeypatch, raiser)
+    _wire_stopping_iterate(repo, monkeypatch)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
 
@@ -670,6 +677,18 @@ def test_iterate_command_when_format_json_and_stop_condition_does_emit_stop_docu
     doc = json.loads(result.stdout)
     assert doc["stopped"] is True
     assert "max iterations" in doc["reason"]
+
+
+def test_iterate_command_when_stop_and_format_json_and_stdout_closed_does_exit_one(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _wire_stopping_iterate(repo, monkeypatch)
+
+    result = closed_stdout_runner(closed_stdout_error()).invoke(
+        app, ["iterate", "--bench", "npm run bench", "--format", "json"]
+    )
+
+    assert (result.exit_code, result.stderr) == (1, "")
 
 
 @pytest.mark.parametrize(
@@ -690,6 +709,18 @@ def test_iterate_command_when_format_text_does_produce_plain_report(
     lines = plain_lines(result.stdout)
     assert lines[0] == "iteration 1 · experiment vs baseline · 10 paired samples"
     assert lines[-1] == "gymrat keep"
+
+
+def test_iterate_command_when_stdout_reader_closed_does_exit_zero_without_stderr(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _wire_successful_iterate(repo, monkeypatch)
+
+    result = closed_stdout_runner(closed_stdout_error()).invoke(
+        app, ["iterate", "--bench", "npm run bench"]
+    )
+
+    assert (result.exit_code, result.stderr) == (0, "")
 
 
 # ---------------------------------------------------------------------------

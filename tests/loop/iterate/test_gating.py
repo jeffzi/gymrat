@@ -66,6 +66,9 @@ if TYPE_CHECKING:
 #: The confirm-rerun template a consumer configures when their bench can be narrowed.
 FILTER = "npm run bench -- --filter {names}"
 
+#: The smallest positive float; dividing any ordinary median by it overflows to infinity.
+_SMALLEST_POSITIVE_FLOAT = 5e-324
+
 
 def _jittered(values: list[float], up: float, down: float) -> list[float]:
     """Nudge alternate rounds up by ``up`` and the rest down by ``down``.
@@ -539,9 +542,9 @@ async def test_iterate_session_when_metric_named_proto_does_count_it_in_the_geom
 # ---------------------------------------------------------------------------
 
 
-def _zero_baseline_rounds() -> list[dict[str, float]]:
-    """The baseline's ten rounds, but with ``total_ms`` flat at zero."""
-    return rounds([0.0 for _ in BASELINE_MS], BASELINE_BYTES)
+def _flat_total_ms_baseline(value: float) -> list[dict[str, float]]:
+    """The baseline's ten rounds, but with ``total_ms`` flat at ``value``."""
+    return rounds([value for _ in BASELINE_MS], BASELINE_BYTES)
 
 
 def _undefined_delta_iteration(seq: int) -> IterationRecord:
@@ -564,28 +567,17 @@ def _undefined_delta_iteration(seq: int) -> IterationRecord:
     )
 
 
+def _zero_baseline_run() -> PairedRun:
+    """A paired run whose baseline has ``total_ms`` flat at zero."""
+    return PairedRun(improved_rounds(), _flat_total_ms_baseline(0.0))
+
+
 @pytest.fixture
-def zero_baseline_repo(open_repo: str, samples_mock: CollectSamplesRecorder):
+def zero_baseline_repo(open_repo: str, samples_mock: CollectSamplesRecorder) -> str:
     """An open session whose baseline has ``total_ms`` flat at zero."""
-    stub_samples(samples_mock, open_repo, improved_rounds(), _zero_baseline_rounds())
+    run = _zero_baseline_run()
+    stub_samples(samples_mock, open_repo, run.experiment, run.baseline)
     return open_repo
-
-
-async def test_iterate_session_when_baseline_median_zero_does_record_null_delta(
-    zero_baseline_repo: str,
-):
-    result = await iterate_session(zero_baseline_repo, resolved_config())
-
-    assert result.record.metrics["total_ms"].delta_pct is None
-    assert result.record.metrics["alloc_bytes"].delta_pct == pytest.approx(-20, abs=1e-6)
-
-
-async def test_iterate_session_when_baseline_median_zero_does_stay_readable_off_the_log(
-    zero_baseline_repo: str,
-):
-    result = await iterate_session(zero_baseline_repo, resolved_config())
-
-    assert as_logged(last_iteration_of(zero_baseline_repo)) == as_logged(result.record)
 
 
 async def test_iterate_session_when_baseline_median_zero_does_record_primary_delta_null_and_state_no_percentage(
@@ -610,6 +602,59 @@ async def test_iterate_session_when_log_holds_null_delta_does_measure_again(
     result = await iterate_session(zero_baseline_repo, resolved_config())
 
     assert result.record.seq == 2
+
+
+# ---------------------------------------------------------------------------
+# a metric's delta ratio is undefined: zero baseline, or overflow past the largest float
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(
+    params=[
+        pytest.param((_zero_baseline_run(), -20), id="zero-baseline"),
+        pytest.param(
+            (
+                PairedRun(
+                    rounds(scaled(BASELINE_MS, 1.0), BASELINE_BYTES),
+                    _flat_total_ms_baseline(_SMALLEST_POSITIVE_FLOAT),
+                ),
+                0,
+            ),
+            id="tiny-baseline-positive-experiment",
+        ),
+        pytest.param(
+            (
+                PairedRun(
+                    rounds(scaled(BASELINE_MS, -1.0), BASELINE_BYTES),
+                    _flat_total_ms_baseline(_SMALLEST_POSITIVE_FLOAT),
+                ),
+                0,
+            ),
+            id="tiny-baseline-negative-experiment",
+        ),
+    ]
+)
+def undefined_delta_repo(
+    request: pytest.FixtureRequest, open_repo: str, samples_mock: CollectSamplesRecorder
+) -> tuple[str, float]:
+    """An open session with no finite ``total_ms`` delta, and its expected ``alloc_bytes`` delta."""
+    run, expected_alloc_delta = request.param
+    stub_samples(samples_mock, open_repo, run.experiment, run.baseline)
+    return open_repo, expected_alloc_delta
+
+
+async def test_iterate_session_when_delta_undefined_does_record_null_delta_and_keep_other_metric_deltas(
+    undefined_delta_repo: tuple[str, float],
+):
+    repo, expected_alloc_delta = undefined_delta_repo
+
+    result = await iterate_session(repo, resolved_config())
+
+    assert result.record.metrics["total_ms"].delta_pct is None
+    assert result.record.metrics["alloc_bytes"].delta_pct == pytest.approx(
+        expected_alloc_delta, abs=1e-6
+    )
+    assert as_logged(last_iteration_of(repo)) == as_logged(result.record)
 
 
 # ---------------------------------------------------------------------------

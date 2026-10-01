@@ -38,6 +38,7 @@ from gymrat.supervisor.driver import (
     SessionObserver,
     SessionOutcome,
     SessionPrompt,
+    usable_cost,
 )
 from gymrat.supervisor.events import TurnEndEvent, UsageUpdateEvent, event_from_wire
 
@@ -68,15 +69,11 @@ _SESSION_END_REASONS = frozenset(get_args(SessionEndReason))
 
 
 def _outcome_from_wire(wire: dict[str, Any], cost_usd: float) -> SessionOutcome:
-    """Read a terminal ``outcome`` line, falling back to the running cost."""
+    """Read an ``outcome`` line, keeping ``cost_usd`` unless its cost is finite and positive."""
     raw_reason = wire.get("reason", "error")
     reason: SessionEndReason = raw_reason if raw_reason in _SESSION_END_REASONS else "error"
-    raw_cost = wire.get("cost_usd")
-    cost = (
-        float(raw_cost)
-        if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
-        else cost_usd
-    )
+    reported = usable_cost(wire.get("cost_usd"))
+    cost = cost_usd if reported is None else reported
     message = wire.get("message")
     return SessionOutcome(reason=reason, cost_usd=cost, message=message)
 

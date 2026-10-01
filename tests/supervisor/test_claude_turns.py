@@ -6,6 +6,7 @@ termination — never from a result message alone.
 """
 
 import asyncio
+import math
 from collections.abc import Sequence
 from typing import override
 
@@ -218,6 +219,29 @@ async def test_turn_when_two_results_with_rising_cost_does_emit_two_unsettled_up
     assert len(turn_ends) == 2
     assert turn_ends[0].cost_usd == 0.05
     assert turn_ends[1].cost_usd == 0.15
+
+
+@pytest.mark.parametrize(
+    "bogus_cost",
+    [
+        pytest.param(math.nan, id="nan"),
+        pytest.param(math.inf, id="positive-infinity"),
+        pytest.param(-math.inf, id="negative-infinity"),
+        pytest.param(-0.5, id="negative"),
+    ],
+)
+async def test_turn_when_result_cost_is_unusable_does_keep_running_cost(bogus_cost: float):
+    messages = [
+        result_message(total_cost_usd=0.05),
+        result_message(total_cost_usd=bogus_cost),
+    ]
+
+    events = await _run_turns(messages, drain=5)
+
+    usage_costs = {update.cost_usd for update in events_of(events, UsageUpdateEvent)}
+    turn_end_costs = [turn_end.cost_usd for turn_end in events_of(events, TurnEndEvent)]
+    assert usage_costs == {0.05}
+    assert turn_end_costs == [0.05, 0.05]
 
 
 # ---------------------------------------------------------------------------

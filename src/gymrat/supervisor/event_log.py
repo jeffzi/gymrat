@@ -39,9 +39,11 @@ def probe_event_log_path(log_path: str | Path) -> None:
 def create_event_log_writer(log_path: str | Path) -> SessionObserver:
     """Return a :data:`SessionObserver` that appends each event to ``log_path``.
 
-    The parent directory is created (recursively) on the first write if it does
-    not already exist. A write failure surfaces as a :class:`GymratError` naming
-    the log path, chaining the underlying OS error as its cause.
+    Each event is one JSON line ending in a bare line feed on every platform,
+    as in the session log; Windows never gets a carriage return added. The
+    parent directory is created (recursively) on the first write if it does not
+    already exist. A write failure surfaces as a :class:`GymratError` naming the
+    log path, chaining the underlying OS error as its cause.
 
     Args:
         log_path: The event log path to append to.
@@ -54,7 +56,7 @@ def create_event_log_writer(log_path: str | Path) -> SessionObserver:
     def write(event: SessionEvent) -> None:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as log:
+            with path.open("a", encoding="utf-8", newline="\n") as log:
                 log.write(to_json_line(event) + "\n")
         except OSError as error:
             message = f"Failed to write event log: {path}"

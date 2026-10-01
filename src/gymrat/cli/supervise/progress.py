@@ -8,16 +8,14 @@ asks for it, replaces the state, and renders the result.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import sys
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
-from rich.live import Live
-
 from gymrat.cli.console import stderr_console
+from gymrat.cli.style import ErasableLive, mount_live
 from gymrat.cli.supervise.frame import build_frame
 from gymrat.cli.supervise.reducer import (
     ReporterState,
@@ -42,14 +40,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import tzinfo
 
-    from rich.console import RenderableType
+    from rich.console import Console, RenderableType
 
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.supervisor.events import SessionEvent
     from gymrat.supervisor.exit_sequence import ExitPhase
 
-_tick_logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 REFRESH_MS = 1000
 """Default Live dashboard refresh interval in milliseconds."""
@@ -64,7 +62,7 @@ def _stderr_write(text: str) -> None:
     sys.stderr.write(f"{text}\n")
 
 
-def _stop_live(live: Live | None) -> None:
+def _stop_live(live: ErasableLive | None) -> None:
     if live is not None:
         try:
             # stderr closed or broken at shutdown raises OSError on write
@@ -76,6 +74,17 @@ def _stop_live(live: Live | None) -> None:
             # and must propagate.
             if "closed file" not in str(exc):
                 raise
+
+
+def _nothing_installed() -> None:
+    pass
+
+
+def _stop(ctx: ReporterCtx, uninstall_erase: Callable[[], None]) -> None:
+    # Uninstalled first: once the display starts stopping, a signal must not
+    # erase rows that Live.stop() has already cleared, or the output above them.
+    uninstall_erase()
+    _stop_live(ctx.live)
 
 
 def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
@@ -97,7 +106,6 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
     model: str | None,
     effort: Effort | None,
     idle_warn_ms: int,
-    refresh_ms: int,
 ) -> ReporterCtx:
     return ReporterCtx(
         state=ReporterState(
@@ -121,7 +129,6 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
         tz=tz,
         is_plain=is_plain,
         idle_warn_ms=idle_warn_ms,
-        refresh_ms=refresh_ms,
     )
 
 
@@ -131,6 +138,10 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
 
 
 def _frame(ctx: ReporterCtx) -> RenderableType:
+    # Runs on rich's refresh thread while events replace ctx.state on the
+    # caller's thread. Read ctx.state exactly once: the state is immutable and
+    # swapped by a single assignment, so one read is a consistent snapshot and
+    # no lock is needed. A second read could mix two states in one frame.
     return build_frame(
         ctx.state,
         ctx.now(),
@@ -140,8 +151,42 @@ def _frame(ctx: ReporterCtx) -> RenderableType:
     )
 
 
+@dataclass(slots=True)
+class _LiveFrame:
+    """The live display's ``get_renderable``, which keeps the display up when a frame fails.
+
+    rich builds a frame while the display is set up (in its constructor and on
+    the mount's first paint), on its refresh thread, on every event-driven
+    repaint, and once more inside ``Live.stop()``. An error escaping the build
+    would end the refresh thread for good, freezing elapsed time and the idle
+    indicator, or escape ``stop``. A frame that fails to build is replaced by the last one
+    that built, and only the first failure is warned about, so a persistent
+    fault does not print a line every second. The warning goes through
+    ``ctx.warn_fn``, which is the dashboard's channel before rich builds its
+    first frame.
+    """
+
+    ctx: ReporterCtx
+    last: RenderableType = ""
+    warned: bool = False
+
+    def __call__(self) -> RenderableType:
+        try:
+            self.last = _frame(self.ctx)
+        except Exception as exc:
+            # Not logged at warning level: with no handler configured, logging
+            # would print the traceback over the dashboard on every refresh.
+            _logger.debug("dashboard frame failed to render", exc_info=True)
+            if not self.warned:
+                self.warned = True
+                self.ctx.warn_fn(
+                    f"warning: dashboard frame failed to render: {type(exc).__name__}: {exc}"
+                )
+        return self.last
+
+
 def render_live(ctx: ReporterCtx) -> None:
-    """Push one explicit frame refresh to the Live display.
+    """Repaint the Live display now, building the frame once through its ``get_renderable``.
 
     In plain mode or when no Live exists, this is a no-op.
 
@@ -151,14 +196,14 @@ def render_live(ctx: ReporterCtx) -> None:
     """
     if ctx.is_plain or ctx.live is None:
         return
-    ctx.live.update(_frame(ctx), refresh=True)
+    ctx.live.refresh()
 
 
 def _read_session(ctx: ReporterCtx) -> ReadSessionResult | None:
     try:
         return ctx.read_session_fn()
     except Exception as exc:
-        _tick_logger.exception("session read failed")
+        _logger.exception("session read failed")
         ctx.warn_fn(f"session read failed: {exc}")
         return None
 
@@ -168,8 +213,8 @@ def handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
 
     When the reducer hands back the state it was given — a text delta or a tool
     progress ping changes nothing — live mode skips the repaint, since the only
-    part of the frame that could have moved is elapsed time and :func:`_tick`
-    already keeps that current.
+    part of the frame that could have moved is elapsed time and the Live
+    display's refresh timer already keeps that current.
 
     Args:
         ctx: The reporter shell whose state is replaced with the reduced one.
@@ -207,65 +252,11 @@ def _report_exit_phase(ctx: ReporterCtx, phase: ExitPhase) -> None:
         render_live(ctx)
 
 
-async def _tick(ctx: ReporterCtx) -> None:
-    """Periodically refresh the Live display so elapsed time stays current.
-
-    Runs until cancelled. If a render raises, the failure is reported once
-    through ``ctx.warn_fn`` and the task exits — event-driven renders are
-    unaffected.
-
-    Args:
-        ctx: The shared reporter context supplying the refresh interval and
-            the state rendered on each tick.
-    """
-    interval = ctx.refresh_ms / MS_PER_SECOND
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            render_live(ctx)
-        except Exception as exc:
-            # warn_fn may write to the same failed console; never let it mask
-            # the original failure or skip the log below.
-            with contextlib.suppress(Exception):
-                ctx.warn_fn(f"tick render failed: {exc}")
-            _tick_logger.exception("tick render failed")
-            return
-
-
-def _on_tick_done(task: asyncio.Task[None]) -> None:
-    """Log unhandled tick-task failures so they are never silently swallowed."""
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        _tick_logger.error("tick task failed", exc_info=exc)
-
-
-def _start_tick(ctx: ReporterCtx) -> None:
-    """Create the tick task if in live mode; no-op in plain mode."""
-    if ctx.is_plain:
-        return
-    task = asyncio.create_task(_tick(ctx))
-    task.add_done_callback(_on_tick_done)
-    ctx.tick_task = task
-
-
-def _stop_tick_and_live(ctx: ReporterCtx) -> None:
-    """Cancel the tick task (if running) then stop Live."""
-    if ctx.tick_task is not None:
-        ctx.tick_task.cancel()
-        ctx.tick_task = None
-    _stop_live(ctx.live)
-
-
-def _make_warn(ctx: ReporterCtx) -> Callable[[str], None]:
+def _console_warn(console: Console) -> Callable[[str], None]:
     def warn(message: str) -> None:
-        if ctx.is_plain:
-            ctx.plain_write_fn(message)
-        elif ctx.live is not None:
-            # Messages carry arbitrary text (paths, command output); markup would
-            # swallow anything in square brackets.
-            ctx.live.console.print(message, markup=False)
+        # Messages carry arbitrary text (paths, command output); markup would
+        # swallow anything in square brackets.
+        console.print(message, markup=False)
 
     return warn
 
@@ -294,10 +285,19 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard.
 
-    In live mode the Live display starts here, taking over stderr before the
-    reporter's ``start`` is called; ``start`` only arms the refresh tick, must be
-    called from within a running event loop, and is a no-op in plain mode. The
-    reporter's ``stop`` must always run once the reporter exists.
+    In live mode the Live display starts here, taking over stderr, and rich
+    repaints the frame on its own refresh thread every ``refresh_ms``, so
+    elapsed time and the idle indicator advance without events. A frame that
+    fails to render never raises: while the display is being set up, on the
+    refresh thread, or on an event-driven repaint, the last frame that rendered
+    stays on screen (none yet during setup) and the refresh thread keeps
+    running; on the final paint inside ``stop``, ``stop`` returns normally. The
+    first such failure is reported once, through ``warn``, as a warning line
+    naming the error. The reporter's ``stop`` stops the display and its refresh
+    thread, and must always run once the reporter exists.
+
+    While the live display is up, a termination signal erases it and shows the
+    cursor again, through a cleanup installed here and removed by ``stop``.
 
     Args:
         root: Project root whose session directory is monitored.
@@ -350,24 +350,33 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         model=model,
         effort=effort,
         idle_warn_ms=idle_warn_ms,
-        refresh_ms=refresh_ms,
     )
 
+    uninstall_erase: Callable[[], None] = _nothing_installed
     if not ctx.is_plain:
-        ctx.live = Live(
-            console=stderr_console(color_flag=color),
-            auto_refresh=False,
+        console = stderr_console(color_flag=color)
+        # Set before the display exists: rich builds a frame while it is being
+        # set up, and a failure then must already reach the dashboard's channel.
+        ctx.warn_fn = _console_warn(console)
+        live = ErasableLive(
+            console=console,
+            auto_refresh=True,
+            refresh_per_second=MS_PER_SECOND / refresh_ms,
+            get_renderable=_LiveFrame(ctx),
             transient=True,
         )
-        ctx.live.start()
-        ctx.live.update(_frame(ctx), refresh=True)
+        ctx.live = live
+        # A signal exits through os._exit, which skips stop(). The mount's erase
+        # waits on the display lock only for a bounded time, unlike Live.stop(),
+        # so the cleanups installed after it always get to run. No reporter
+        # exists for the caller to stop until this returns, so the mount itself
+        # stops the display when starting or writing the first paint fails.
+        uninstall_erase = mount_live(live)
 
-    warn = _make_warn(ctx)
-    ctx.warn_fn = warn
+    warn = ctx.warn_fn
     return SuperviseReporter(
         observer=lambda event: handle_event(ctx, event),
-        start=lambda: _start_tick(ctx),
-        stop=lambda: _stop_tick_and_live(ctx),
+        stop=lambda: _stop(ctx, uninstall_erase),
         frame=lambda: _frame(ctx),
         warn=warn,
         session_result=lambda: ctx.state.session_result,

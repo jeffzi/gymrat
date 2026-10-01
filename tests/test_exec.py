@@ -32,8 +32,10 @@ from gymrat.exec import (
 )
 from gymrat.exec import exec as run_exec
 from gymrat.signals import TERMINATION_SIGNALS
+from tests._exec_fixtures import (
+    isolate_live_groups as _isolate_live_groups,  # noqa: F401 -- registers the autouse fixture
+)
 from tests._process_helpers import (
-    capture_spawns,
     is_alive,
     killpg_warnings,
     wait_for_pid_file,
@@ -244,53 +246,6 @@ def expected_result(stdout: str, stderr: str, exit_code: int) -> ExecResult:
         stdout_bytes=len(stdout.encode()),
         stderr_bytes=len(stderr.encode()),
     )
-
-
-@pytest.fixture
-def make_opts(tmp_path: Path) -> Callable[..., ExecOptions]:
-    """Build ``ExecOptions`` rooted at the test's ``tmp_path``, with any override."""
-
-    def _make(
-        *,
-        timeout_ms: int | None = None,
-        abort: asyncio.Event | None = None,
-        stdin: str | None = None,
-        env: dict[str, str] | None = None,
-    ) -> ExecOptions:
-        return ExecOptions(
-            cwd=str(tmp_path),
-            timeout_ms=timeout_ms,
-            abort=abort,
-            stdin=stdin,
-            env=env,
-        )
-
-    return _make
-
-
-@pytest.fixture
-def spawned_processes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[list[asyncio.subprocess.Process]]:
-    """Record every child ``exec`` spawns, so a test can reach into its stdio pipes."""
-    # exec calls asyncio.create_subprocess_shell (module-qualified), so
-    # wrapping that attribute captures the real Process while leaving the spawn
-    # itself real.
-    processes = capture_spawns(monkeypatch, "create_subprocess_shell")
-    yield processes
-
-    # Safety net: reap any group a test deliberately stopped exec from killing.
-    for proc in processes:
-        if proc.returncode is not None or not proc.pid:
-            continue
-        with contextlib.suppress(OSError):
-            os.killpg(proc.pid, signal.SIGKILL)
-
-
-@pytest.fixture(autouse=True)
-def _isolate_live_groups(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the module-level live-group registry from bleeding across tests."""
-    monkeypatch.setattr(exec_mod, "_live_process_groups", set())
 
 
 @pytest.fixture
@@ -1080,7 +1035,7 @@ def test_output_buffer_when_many_small_appends_does_accumulate_all_chunks() -> N
 # ---------------------------------------------------------------------------
 
 
-async def test_exec_when_env_set_does_use_exact_mapping(
+async def test_exec_when_env_set_does_pass_the_mapping_to_the_child(
     make_opts: Callable[..., ExecOptions],
 ) -> None:
     result = await run_exec("echo $CUSTOM_VAR", make_opts(env={"CUSTOM_VAR": "custom_value"}))

@@ -6,13 +6,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    import asyncio
     from collections.abc import Callable
     from datetime import tzinfo
 
     from rich.console import RenderableType
-    from rich.live import Live
 
+    from gymrat.cli.style import ErasableLive
     from gymrat.cli.supervise.reducer import ReporterState
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.store import SessionState
@@ -64,8 +63,9 @@ class SuperviseReporter:
     ``session_result`` hands back the session state as of the last re-read, which
     is what the closing summary reports once the display has stopped.
 
-    ``start`` must be called from within a running event loop — it schedules the
-    tick task via ``asyncio.create_task``. In plain mode it is a no-op.
+    Live mode's display and its refresh timer run from construction until
+    ``stop``, and for that span a termination signal erases the display: its
+    cleanup is installed at construction and uninstalled by ``stop``.
 
     ``exit_phase`` shows the run-end exit sequence's current phase: live mode
     repaints the frame, plain mode writes the phase line once per phase change.
@@ -78,7 +78,6 @@ class SuperviseReporter:
     """
 
     observer: SessionObserver
-    start: Callable[[], None]
     stop: Callable[[], None]
     frame: Callable[[], RenderableType]
     warn: Callable[[str], None]
@@ -222,9 +221,7 @@ class ReporterCtx:
     read_progress_fn: Callable[[str], ProgressSnapshot | None]
     plain_write_fn: Callable[[str], None]
     warn_fn: Callable[[str], None]
-    live: Live | None
+    live: ErasableLive | None
     tz: tzinfo | None
     is_plain: bool
     idle_warn_ms: int
-    refresh_ms: int
-    tick_task: asyncio.Task[None] | None = None

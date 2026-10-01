@@ -13,9 +13,11 @@ reports in ``worktree list``). Every repository is order-independent and safe
 under ``pytest-xdist`` / ``pytest-randomly``.
 
 The helpers expose a common fixture surface so later worktree and driver
-tests can reuse the same building blocks.
+tests can reuse the same building blocks, among them ``make_opts`` and
+``spawned_processes`` for the ``exec`` tests.
 """
 
+import asyncio
 import contextlib
 import importlib
 import json
@@ -32,13 +34,16 @@ from pathlib import Path
 import pytest
 from filelock import FileLock
 
+from gymrat import signals
 from gymrat.cli.shared import set_color_override
 from gymrat.clock import now_iso
+from gymrat.exec import ExecOptions
 from gymrat.session.lock import _os_lock_file
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset
 from tests._git import run_git as _run_git
+from tests._process_helpers import capture_spawns
 
 #: Names a test may inherit from the launching shell, value unchanged. An
 #: allowlisted name the shell does not export stays absent. ``PATH`` and
@@ -161,6 +166,96 @@ def _restore_signal_dispositions() -> Iterator[None]:
             signal.signal(sig, handler)
 
 
+class _ProcessExitedError(BaseException):
+    """Raised by the stubbed exit seam so a handler unwinds where it would exit.
+
+    A ``BaseException``, like the ``SystemExit`` a real exit is closest to, so
+    no ``except Exception`` between the exit and the test swallows it.
+    """
+
+    def __init__(self, code: int) -> None:
+        self.code = code
+        super().__init__(f"_exit_process({code})")
+
+
+@pytest.fixture
+def make_opts(tmp_path: Path) -> Callable[..., ExecOptions]:
+    """Build ``ExecOptions`` rooted at the test's ``tmp_path``, with any override."""
+
+    def _make(
+        *,
+        timeout_ms: int | None = None,
+        abort: asyncio.Event | None = None,
+        stdin: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> ExecOptions:
+        return ExecOptions(
+            cwd=str(tmp_path),
+            timeout_ms=timeout_ms,
+            abort=abort,
+            stdin=stdin,
+            env=env,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def spawned_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[list[asyncio.subprocess.Process]]:
+    """Record every child ``exec`` spawns, so a test can reach into its stdio pipes."""
+    # exec calls asyncio.create_subprocess_shell (module-qualified), so
+    # wrapping that attribute captures the real Process while leaving the spawn
+    # itself real.
+    processes = capture_spawns(monkeypatch, "create_subprocess_shell")
+    yield processes
+
+    # Safety net: reap any group a test deliberately stopped exec from killing.
+    for proc in processes:
+        if proc.returncode is not None or not proc.pid:
+            continue
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+
+
+@pytest.fixture
+def raise_signal(monkeypatch: pytest.MonkeyPatch) -> Callable[[int], int]:
+    """Stub the process exit and return a helper that runs the installed signal handler."""
+    # Emitting a real signal would take the test runner down, so the helper
+    # fetches the handler via signal.getsignal and calls it directly. With the
+    # exit seam stubbed to raise, the handler unwinds exactly where the real one
+    # would exit, and the helper reports the exit code.
+    #
+    # A signal delivered while another is being handled (a call made from
+    # inside a cleanup) ends the process for both: its exit unwinds through the
+    # outer handler, and the outermost call reports the code.
+    depth = 0
+
+    def fake_exit(code: int) -> None:
+        raise _ProcessExitedError(code)
+
+    monkeypatch.setattr(signals, "_exit_process", fake_exit)
+
+    def _raise(signal_number: int) -> int:
+        nonlocal depth
+        handler = signal.getsignal(signal_number)
+        if not callable(handler):
+            pytest.fail(f"no handler installed for signal {signal_number}")
+        depth += 1
+        try:
+            handler(signal_number, None)
+        except _ProcessExitedError as exited:
+            if depth > 1:
+                raise
+            return exited.code
+        finally:
+            depth -= 1
+        pytest.fail("handler returned instead of exiting")
+
+    return _raise
+
+
 @pytest.fixture(autouse=True)
 def _restore_env_baseline() -> Iterator[None]:
     """Put ``os.environ`` back to its pre-test contents after every test."""
@@ -193,9 +288,19 @@ def stray_process_ids() -> Iterator[list[int]]:
             os.kill(pid, signal.SIGKILL)
 
 
-def _init_scratch_repo() -> str:
-    """Create one temporary git repo on ``main`` with a single committed file."""
-    directory = os.path.realpath(tempfile.mkdtemp(prefix="gymrat-test-"))
+_SCRATCH_PREFIX = "gymrat-test-"
+
+
+def _init_scratch_repo(prefix: str) -> str:
+    """Create one temporary git repo on ``main`` with a single committed file.
+
+    Args:
+        prefix: How the repository's directory name starts.
+
+    Returns:
+        The resolved path of the new repository.
+    """
+    directory = os.path.realpath(tempfile.mkdtemp(prefix=prefix))
     try:
         _run_git(["init", "-b", "main"], directory)
         for key, value in (
@@ -274,24 +379,25 @@ def _remove_stranded_worktrees(repo_dir: str) -> None:
 
     A test may move or delete its scratch repository; git then has no registry
     left to list, so the repository is skipped rather than failing teardown for
-    every repository after it.
+    every repository after it. Starting git in the vanished directory fails with
+    ``FileNotFoundError`` on POSIX and ``NotADirectoryError`` on Windows.
     """
     try:
         stranded = _list_worktree_dirs(repo_dir, include_main=False)
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, FileNotFoundError, NotADirectoryError):
         return
     for directory in stranded:
         shutil.rmtree(directory, ignore_errors=True)
 
 
 @pytest.fixture
-def create_scratch_repo() -> Iterator[Callable[[], str]]:
+def create_scratch_repo() -> Iterator[Callable[..., str]]:
     """Factory yielding fresh scratch repositories, all cleaned up on teardown."""
     created: list[str] = []
     original_cwd = Path.cwd()
 
-    def factory() -> str:
-        directory = _init_scratch_repo()
+    def factory(prefix: str = _SCRATCH_PREFIX) -> str:
+        directory = _init_scratch_repo(prefix)
         created.append(directory)
         return directory
 

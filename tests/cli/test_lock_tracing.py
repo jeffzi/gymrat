@@ -280,6 +280,65 @@ async def test_with_repo_lock_when_tracing_enabled_does_flush_before_return(
 
 
 # ---------------------------------------------------------------------------
+# with_repo_lock — command span export to a real collector
+# ---------------------------------------------------------------------------
+
+
+async def test_with_repo_lock_when_endpoint_padded_does_export_command_span_to_trimmed_endpoint(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from tests.telemetry._collector import otlp_collector
+
+    _seeded_session(repo)
+
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+    with otlp_collector() as collector:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", f"  {collector.endpoint} ")
+        await with_repo_lock("measure", _ok_body)
+
+    assert {export.path for export in collector.received} == {"/v1/traces"}
+    assert "gymrat.command.measure" in collector.span_names
+
+
+async def test_with_repo_lock_when_collector_rejects_the_export_does_return_body_result(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from gymrat.telemetry.provider import export_failed
+    from tests.telemetry._collector import otlp_collector
+
+    _seeded_session(repo)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+
+    with otlp_collector(statuses=[400]) as collector:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint)
+        result = await with_repo_lock("measure", _ok_body)
+
+    assert (result, export_failed(), "gymrat.command.measure" in collector.span_names) == (
+        "ok",
+        True,
+        True,
+    )
+
+
+async def test_with_repo_lock_when_endpoint_whitespace_only_does_export_nothing(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from tests.telemetry._collector import otlp_collector
+
+    _seeded_session(repo)
+
+    with otlp_collector() as collector:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", " \t ")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", f"{collector.endpoint}/v1/traces")
+        await with_repo_lock("measure", _ok_body)
+
+    assert collector.received == []
+
+
+# ---------------------------------------------------------------------------
 # with_repo_lock — command_span_inputs delegation
 # ---------------------------------------------------------------------------
 

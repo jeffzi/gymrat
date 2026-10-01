@@ -17,10 +17,14 @@ from gymrat.telemetry.ids import span_id_of, trace_id_of
 from gymrat.telemetry.provider import (
     _reset_for_tests,
     configure_tracing,
+    export_failed,
     flush_tracing,
     start_span,
 )
+from tests.telemetry._collector import otlp_collector
 from tests.telemetry._fixtures import memory_tracing
+
+_TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 
 SESSION = "test-session-provider"
 
@@ -51,14 +55,75 @@ def test_configure_tracing_when_endpoint_unset_does_return_false():
     assert result is False
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(" \t ", id="whitespace-only"),
+    ],
+)
 def test_configure_tracing_when_endpoint_blank_does_return_false(
     monkeypatch: pytest.MonkeyPatch,
+    endpoint: str,
 ):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
 
     result = configure_tracing(SESSION)
 
     assert result is False
+
+
+def test_configure_tracing_when_endpoint_padded_does_export_to_trimmed_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv(_TRACES_ENDPOINT_ENV, raising=False)
+    with otlp_collector() as collector:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", f"  {collector.endpoint} ")
+        configure_tracing(SESSION)
+        with start_span("probe"):
+            pass
+
+        flush_tracing()
+
+    assert [(export.path, export.span_names) for export in collector.received] == [
+        ("/v1/traces", ["probe"])
+    ]
+
+
+def test_configure_tracing_when_traces_endpoint_padded_does_export_to_it_trimmed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+    with otlp_collector() as collector:
+        monkeypatch.setenv(_TRACES_ENDPOINT_ENV, f"  {collector.endpoint}/custom/traces ")
+        configure_tracing(SESSION)
+        with start_span("probe"):
+            pass
+
+        flush_tracing()
+
+    assert [(export.path, export.span_names) for export in collector.received] == [
+        ("/custom/traces", ["probe"])
+    ]
+
+
+class _StalledFlushSpanProcessor(SpanProcessor):
+    """Span processor whose flush never finishes in time, as a hung exporter's would."""
+
+    @override
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return False
+
+
+def test_flush_tracing_when_flush_does_not_finish_in_time_does_count_as_failed_export(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+    configure_tracing(SESSION, span_processor=_StalledFlushSpanProcessor())
+
+    flush_tracing()
+
+    assert export_failed()
 
 
 # ---------------------------------------------------------------------------

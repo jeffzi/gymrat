@@ -18,14 +18,16 @@ from typing import Annotated
 import typer
 
 from gymrat.cli.lock import with_repo_lock
-from gymrat.cli.shared import (
+from gymrat.cli.options import (
     ColorOption,
     ConfigOption,
     DebugOption,
     FormatOption,
     OutputFormat,
-    ReportRenderers,
     SamplesOption,
+)
+from gymrat.cli.shared import (
+    ReportRenderers,
     SharedFlags,
     apply_color_override,
     apply_debug,

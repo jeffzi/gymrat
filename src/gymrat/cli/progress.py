@@ -41,7 +41,6 @@ from rich.text import Text
 from gymrat.cli.progress_state import ProgressState, advance, plain_line
 from gymrat.cli.style import (
     COMPACT_HEIGHT_THRESHOLD,
-    LIVE_REFRESH_PER_SECOND,
     SPINNER_NAME,
     STYLE_LABEL,
     STYLE_META,
@@ -52,7 +51,6 @@ from gymrat.cli.style import (
     LiveDisplayMixin,
 )
 from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
-from gymrat.signals import install_termination_cleanup
 
 
 class _ClockColumn(ProgressColumn):
@@ -275,20 +273,10 @@ class ProgressReporter(LiveDisplayMixin):
             )
             self._pass_progress, self._clock_column = passes_progress(console, clock=clock)
 
-        self._live = ErasableLive(
-            console=console,
-            auto_refresh=True,
-            refresh_per_second=LIVE_REFRESH_PER_SECOND,
-            transient=True,
-            redirect_stderr=False,
-            get_renderable=self.frame,
-        )
-        self._live.start()
-
         # A termination signal exits via os._exit without unwinding the run's
         # finally block, so the live display would strand its last frame on the
-        # terminal. Clearing it here keeps the terminal clean.
-        self._uninstall_cleanup = install_termination_cleanup(self.clear_on_signal)
+        # terminal; the mount erases it instead.
+        self._mount_live(transient=True, get_renderable=self.frame)
 
     def _header_text(self) -> Text | None:
         if not self._command:
@@ -380,9 +368,8 @@ class ProgressReporter(LiveDisplayMixin):
 
     def stop(self) -> None:
         """Stop the reporter and clean up any live display."""
-        if self._stopped:
+        if not self._claim_stop():
             return
-        self._stopped = True
         self._uninstall_cleanup()
         if self._live is not None:
             self._live.stop()

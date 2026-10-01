@@ -25,8 +25,8 @@ from gymrat.telemetry.attributes import (
     FOLLOW_UP_ACTION,
     FOLLOW_UP_REASON,
     TURN_BUDGET_EXHAUSTED,
-    TURN_COST_USD,
     TURN_ORIGIN,
+    TURN_SESSION_COST_USD,
 )
 
 _log = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ def _mirror(span: Span, event: SessionEvent) -> None:
         span.add_event(
             EVENT_TURN_END,
             attributes={
-                TURN_COST_USD: event.cost_usd,
+                TURN_SESSION_COST_USD: event.cost_usd,
                 TURN_ORIGIN: event.origin,
                 TURN_BUDGET_EXHAUSTED: event.budget_exhausted,
             },

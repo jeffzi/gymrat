@@ -1,14 +1,15 @@
-"""Command-level tests for iterate, keep, discard, status, and subdirectory resolution.
+"""Command-level tests for keep, discard, status, and subdirectory resolution.
 
 Each command is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
 suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 The seams mocked here mirror the engine suites' boundaries: for ``discard``'s
-prompt the ``is_tty`` and ``confirm_action`` helpers as the ``loop_cmds`` module
-imports them. Config resolution is exercised for real where a test lays down a
-``gymrat.toml`` and stubbed at the ``loop_cmds`` seam where a test needs to pin
-what a command reads (the runbook row) or observe where it looked (the
-subdirectory case).
+prompt the ``is_tty`` check as the ``loop_cmds`` module imports it, with the
+answer typed on the runner's stdin. The prompt's broken-stderr cases run the
+CLI in a child process, since only a real file descriptor can be closed or
+broken. Config resolution is exercised for real where a test lays down a
+``gymrat.toml`` and stubbed at the ``loop_cmds`` seam in the subdirectory case,
+where the test observes the directory a command resolves its config from.
 
 Iterate and JSON-contract tests live in ``test_loop_cmds_iterate`` and
 ``test_loop_cmds_json``.
@@ -18,6 +19,8 @@ text output when a live budget is present, and omit it otherwise.
 """
 
 import re
+import subprocess
+import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -37,11 +40,15 @@ from gymrat.session import (
     session_jsonl_path,
 )
 from tests._ansi import SGR_RE
+from tests._cli import no_color_env
+from tests._process_helpers import run_with_closed_reader
 from tests.cli._budget import install_budget
+from tests.cli._help import help_output
 from tests.cli._session import (
     always_tty,
+    closed_stdout_error,
+    closed_stdout_runner,
     last_command_record,
-    make_discard_repo,
     never_tty,
     runner,
     strip_ansi,
@@ -70,18 +77,6 @@ from tests.session.records._fixtures import (
     session_record,
     write_session_log,
 )
-
-
-class _ConfirmRecorder:
-    """A stand-in for ``confirm_action`` recording its calls and answering ``answer``."""
-
-    def __init__(self, *, answer: bool) -> None:
-        self.answer = answer
-        self.calls: list[tuple[str, object]] = []
-
-    def __call__(self, message: str, stream: object) -> bool:
-        self.calls.append((message, stream))
-        return self.answer
 
 
 class _ResolverRecorder:
@@ -136,6 +131,13 @@ def _close_session_with_one_keep(root: str) -> str:
     return header.session_id
 
 
+def _start_edited_session(root: str, **config: object) -> None:
+    """Open a session with one unsettled iteration, edit the experiment, and write the config."""
+    start_with(root, (iteration(1),))
+    edit_experiment(root)
+    write_config(root, **config)
+
+
 # ---------------------------------------------------------------------------
 # the status command
 # ---------------------------------------------------------------------------
@@ -153,7 +155,7 @@ def _close_session_with_one_keep(root: str) -> str:
 )
 def test_status_command_when_given_a_bench_run_flag_does_exit_two_with_usage_error(
     flag: str, value: str
-) -> None:
+):
     result = runner.invoke(app, ["status", flag, value])
 
     assert result.exit_code == 2
@@ -231,20 +233,28 @@ def test_status_command_color(
     assert bool(SGR_RE.search(result.stdout)) is expect_ansi
 
 
-def test_status_command_when_stdout_broken_pipe_does_exit_zero(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+@pytest.fixture
+def keep_ready_repo(repo: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A repository with an experiment edit whose configured checks pass, ready for any loop command."""
+    _start_edited_session(repo, checks=CHECKS)
+    checks_pass(monkeypatch)
+    return repo
 
-    def broken_write(_stream: object, _data: str) -> None:
-        raise BrokenPipeError
 
-    monkeypatch.setattr("gymrat.cli.loop_cmds.write_and_flush", broken_write)
+@pytest.mark.usefixtures("keep_ready_repo")
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(["status", "--format", "text"], id="status-text"),
+        pytest.param(["status", "--format", "json"], id="status-json"),
+        pytest.param(["keep"], id="keep"),
+        pytest.param(["discard"], id="discard"),
+    ],
+)
+def test_loop_command_when_stdout_reader_closed_does_exit_zero_without_stderr(command: list[str]):
+    result = closed_stdout_runner(closed_stdout_error()).invoke(app, command)
 
-    result = runner.invoke(app, ["status"])
-
-    assert result.exit_code == 0
+    assert (result.exit_code, result.stderr) == (0, "")
 
 
 def test_status_command_when_run_inside_the_experiment_worktree_does_render_the_session(
@@ -267,72 +277,191 @@ def test_status_command_when_run_inside_the_experiment_worktree_does_render_the_
 # ---------------------------------------------------------------------------
 
 
+_PROMPT_CHOICES = "[y/n] (n): "
+"""How the discard question ends: the two answers and the default."""
+
+_TTY_DISCARD = (
+    "import runpy, sys\n"
+    "from gymrat.cli import loop_cmds\n"
+    "loop_cmds.is_tty = lambda _stream: True\n"
+    "sys.argv = ['gymrat', 'discard']\n"
+    "runpy.run_module('gymrat.cli.app', run_name='__main__')\n"
+)
+"""A child-process driver running ``gymrat discard`` as if stdin were a terminal."""
+
+
+def _discard_state(repo: str) -> tuple[bool, bool]:
+    """Whether the experiment edit is still present, and whether a discard was logged."""
+    edit_present = status_of(experiment_worktree_dir(repo)) != ""
+    discard_logged = any(
+        record.type == "discard" for record in read_records(session_jsonl_path(repo))
+    )
+    return edit_present, discard_logged
+
+
 @pytest.fixture
-def discard_repo(repo: str) -> str:
-    """A repository with an open session and one unsettled iteration to discard."""
-    return make_discard_repo(repo)
+def edited_repo(repo: str) -> str:
+    """A configured repository with an open session and an experiment edit to discard."""
+    _start_edited_session(repo)
+    return repo
 
 
-def test_discard_command_documents_force_in_its_help():
-    from tests.cli._help import help_output
+@pytest.fixture
+def markup_repo(create_scratch_repo: Callable[..., str], monkeypatch: pytest.MonkeyPatch) -> str:
+    """A discard-ready repository whose path carries rich markup and emoji codes, chdir'd into."""
+    # Windows forbids ":" in a file name, so the emoji codes are POSIX-only.
+    prefix = "bench [fast] " if sys.platform == "win32" else "bench [fast] :x: :ok: "
+    root = create_scratch_repo(prefix)
+    monkeypatch.chdir(root)
+    _start_edited_session(root)
+    return root
 
+
+@pytest.fixture
+def narrow_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Narrow the console well below the length of any experiment worktree path."""
+    monkeypatch.setenv("COLUMNS", "40")
+
+
+@pytest.fixture
+def tty_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the discard command believe stdin is a terminal."""
+    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", always_tty)
+
+
+def test_discard_command_when_help_requested_does_document_force():
     assert "--force" in help_output("discard")
 
 
-def test_discard_command_when_tty_and_confirmed_does_prompt_and_proceed(
-    discard_repo: str, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.usefixtures("narrow_terminal", "tty_stdin")
+def test_discard_command_when_tty_does_ask_on_stderr_naming_the_worktree_literally(
+    markup_repo: str,
 ):
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", always_tty)
-    confirm = _ConfirmRecorder(answer=True)
-    monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", confirm)
+    worktree = experiment_worktree_dir(markup_repo)
 
-    result = runner.invoke(app, ["discard"])
+    result = runner.invoke(app, ["discard"], input="y\n")
+
+    assert re.search(
+        re.escape(worktree) + ".*" + re.escape(_PROMPT_CHOICES),
+        strip_ansi(result.stderr),
+        flags=re.DOTALL,
+    )
+    assert _PROMPT_CHOICES not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param("y\n", id="lowercase-y"),
+        pytest.param("Y\n", id="uppercase-y"),
+        pytest.param("  y  \n", id="padded-y"),
+    ],
+)
+@pytest.mark.usefixtures("tty_stdin")
+def test_discard_command_when_tty_and_confirmed_does_discard(edited_repo: str, answer: str):
+    result = runner.invoke(app, ["discard"], input=answer)
 
     assert result.exit_code == 0
-    assert len(confirm.calls) == 1
-    assert experiment_worktree_dir(discard_repo) in confirm.calls[0][0]
+    assert _discard_state(edited_repo) == (False, True)
     assert re.search(r"discard", result.stdout, re.IGNORECASE)
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param("n\n", id="lowercase-n"),
+        pytest.param("N\n", id="uppercase-n"),
+        pytest.param("\n", id="empty-line-takes-the-default"),
+        pytest.param("", id="end-of-input"),
+    ],
+)
+@pytest.mark.usefixtures("tty_stdin")
 def test_discard_command_when_tty_and_declined_does_cancel_with_exit_one(
-    discard_repo: str, monkeypatch: pytest.MonkeyPatch
+    edited_repo: str, answer: str
 ):
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", always_tty)
-    monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", _ConfirmRecorder(answer=False))
-
-    result = runner.invoke(app, ["discard"])
+    result = runner.invoke(app, ["discard"], input=answer)
 
     assert result.exit_code == 1
     assert "discard cancelled" in result.stderr
+    assert _discard_state(edited_repo) == (True, False)
 
 
-@pytest.mark.parametrize("flag", ["--force", "-f"])
-def test_discard_command_when_force_does_skip_the_prompt(
-    discard_repo: str, monkeypatch: pytest.MonkeyPatch, flag: str
+@pytest.mark.parametrize(
+    ("answers", "outcome"),
+    [
+        pytest.param("yes\ny\n", (0, False, (False, True)), id="yes-then-y-discards"),
+        pytest.param("maybe\nN\n", (1, True, (True, False)), id="maybe-then-n-declines"),
+        pytest.param("yes\n", (1, True, (True, False)), id="yes-then-end-of-input-declines"),
+    ],
+)
+@pytest.mark.usefixtures("tty_stdin")
+def test_discard_command_when_tty_and_answer_invalid_does_ask_again(
+    edited_repo: str,
+    answers: str,
+    outcome: tuple[int, bool, tuple[bool, bool]],
 ):
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", always_tty)
-    confirm = _ConfirmRecorder(answer=True)
-    monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", confirm)
+    result = runner.invoke(app, ["discard"], input=answers)
 
-    result = runner.invoke(app, ["discard", flag])
+    assert "Please enter Y or N" in result.stderr
+    assert result.stderr.count(_PROMPT_CHOICES) == 2
+    assert (
+        result.exit_code,
+        "discard cancelled" in result.stderr,
+        _discard_state(edited_repo),
+    ) == outcome
+
+
+@pytest.mark.parametrize(
+    ("args", "is_tty_stub"),
+    [
+        pytest.param(["--force"], always_tty, id="force-long"),
+        pytest.param(["-f"], always_tty, id="force-short"),
+        pytest.param([], never_tty, id="stdin-not-tty"),
+    ],
+)
+def test_discard_command_when_force_or_stdin_not_tty_does_skip_the_prompt(
+    edited_repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    is_tty_stub: Callable[[object], bool],
+):
+    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", is_tty_stub)
+
+    result = runner.invoke(app, ["discard", *args], input="n\n")
 
     assert result.exit_code == 0
-    assert confirm.calls == []
-    assert re.search(r"discard", result.stdout, re.IGNORECASE)
+    assert _PROMPT_CHOICES not in result.stderr
+    assert _discard_state(edited_repo) == (False, True)
 
 
-def test_discard_command_when_stdin_not_tty_does_skip_the_prompt(
-    discard_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", never_tty)
-    confirm = _ConfirmRecorder(answer=True)
-    monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", confirm)
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
+def test_discard_command_when_stderr_closed_does_decline_silently(edited_repo: str):
+    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
+        ["/bin/sh", "-c", 'exec "$0" -c "$1" 2>&-', sys.executable, _TTY_DISCARD],
+        cwd=edited_repo,
+        input=b"y\n",
+        stdout=subprocess.PIPE,
+        env=no_color_env(),
+        check=False,
+        timeout=60,
+    )
 
-    result = runner.invoke(app, ["discard"])
+    assert (result.returncode, result.stdout) == (1, b"")
+    assert _discard_state(edited_repo) == (True, False)
 
-    assert result.exit_code == 0
-    assert confirm.calls == []
-    assert re.search(r"discard", result.stdout, re.IGNORECASE)
+
+def test_discard_command_when_stderr_pipe_breaks_does_exit_one_without_output(edited_repo: str):
+    result = run_with_closed_reader(
+        [sys.executable, "-c", _TTY_DISCARD],
+        stream="stderr",
+        cwd=edited_repo,
+        input=b"y\n",
+        env=no_color_env(),
+        timeout=60,
+    )
+
+    assert (result.returncode, result.stdout) == (1, b"")
+    assert _discard_state(edited_repo) == (True, False)
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +514,7 @@ def test_loop_command_when_run_from_subdirectory_does_resolve_config_at_repo_roo
 )
 def test_keep_command_when_given_a_bench_run_flag_does_exit_two_with_usage_error(
     flag: str, value: str
-) -> None:
+):
     result = runner.invoke(app, ["keep", flag, value])
 
     assert result.exit_code == 2
@@ -542,8 +671,6 @@ def test_keep_command_when_refusing_does_take_report_color_from_the_environment(
 
 
 def test_keep_command_when_help_requested_does_document_allow_unimproved():
-    from tests.cli._help import help_output
-
     help_text = help_output("keep")
 
     assert "--allow-unimproved" in help_text
@@ -551,8 +678,6 @@ def test_keep_command_when_help_requested_does_document_allow_unimproved():
 
 
 def test_keep_command_when_help_does_describe_message_as_commit_message_for_kept_edit():
-    from tests.cli._help import help_output
-
     help_text = help_output("keep")
 
     assert "commit message for the kept edit" in help_text

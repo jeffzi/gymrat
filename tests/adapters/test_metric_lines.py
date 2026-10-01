@@ -2,6 +2,7 @@ import pytest
 
 from gymrat.adapters.metric_lines import metric_lines_adapter
 from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults
+from tests.adapters._inputs import LINE_BREAKS
 
 # ---------------------------------------------------------------------------
 # adapter shape
@@ -231,19 +232,21 @@ def test_parse_when_malformed_line_precedes_valid_does_continue_parsing():
 
 
 # ---------------------------------------------------------------------------
-# names carrying a JSON-illegal line separator
+# names carrying a line terminator the line splitter keeps
 # ---------------------------------------------------------------------------
 
 
+# LF and CR are excluded: the adapter splits on them before it checks a name.
 @pytest.mark.parametrize(
-    "code_point",
+    "terminator",
     [
-        pytest.param(0x2028, id="line-separator-u2028"),
-        pytest.param(0x2029, id="paragraph-separator-u2029"),
+        pytest.param(line_break.char, id=line_break.name)
+        for line_break in LINE_BREAKS
+        if line_break.char not in "\n\r"
     ],
 )
-def test_parse_when_name_holds_line_separator_does_warn_and_skip(code_point: int):
-    offending = f"METRIC na{chr(code_point)}me=42"
+def test_parse_when_name_holds_line_terminator_does_warn_and_skip(terminator: str):
+    offending = f"METRIC na{terminator}me=42"
     warnings: list[str] = []
 
     result = metric_lines_adapter.parse(f"{offending}\nMETRIC valid=1", warnings.append)

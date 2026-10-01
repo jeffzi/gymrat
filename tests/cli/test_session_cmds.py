@@ -30,6 +30,8 @@ from gymrat.session import (
 from tests._ansi import SGR_RE
 from tests.cli._budget import install_budget
 from tests.cli._session import (
+    closed_stdout_error,
+    closed_stdout_runner,
     last_command_record,
     make_stop_repo,
     runner,
@@ -521,6 +523,35 @@ def test_stop_command_when_message_given_does_print_stopped_and_append_a_stop_re
     stop_records = [r for r in records if isinstance(r, StopRecord)]
     assert len(stop_records) == 1
     assert stop_records[0].message == "switched to a different approach"
+
+
+@pytest.fixture
+def kept_repo(repo: str) -> str:
+    """A configured repository whose open session has one kept commit, ready for any session command."""
+    _open_session_with_one_keep(repo)
+    write_config(repo)
+    return repo
+
+
+@pytest.mark.usefixtures("kept_repo")
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(["start", "--format", "text"], id="start-text"),
+        pytest.param(["start", "--format", "json"], id="start-json"),
+        pytest.param(["stop", "-m", "done"], id="stop"),
+        pytest.param(["finalize", "--format", "text"], id="finalize-text"),
+        pytest.param(["finalize", "--format", "json"], id="finalize-json"),
+        pytest.param(["sync", "--format", "text"], id="sync-text"),
+        pytest.param(["sync", "--format", "json"], id="sync-json"),
+    ],
+)
+def test_session_command_when_stdout_reader_closed_does_exit_zero_without_stderr(
+    command: list[str],
+):
+    result = closed_stdout_runner(closed_stdout_error()).invoke(app, command)
+
+    assert (result.exit_code, result.stderr) == (0, "")
 
 
 def test_stop_command_when_message_flag_does_accept_both_forms(stop_repo: str):

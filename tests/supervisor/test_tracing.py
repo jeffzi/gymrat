@@ -51,10 +51,11 @@ def test_create_run_span_observer_when_turn_end_does_add_span_event():
     finished = exporter.get_finished_spans()
     span_events = [e for e in finished[0].events if e.name == "gymrat.turn_end"]
     assert len(span_events) == 1
-    attrs = span_events[0].attributes
-    assert attrs["gymrat.turn.cost_usd"] == pytest.approx(0.05)  # pyrefly: ignore[unsupported-operation]
-    assert attrs["gymrat.turn.origin"] == "agent"  # pyrefly: ignore[unsupported-operation]
-    assert attrs["gymrat.turn.budget_exhausted"] is False  # pyrefly: ignore[unsupported-operation]
+    assert dict(span_events[0].attributes or {}) == {
+        "gymrat.turn.session_cost_usd": pytest.approx(0.05),
+        "gymrat.turn.origin": "agent",
+        "gymrat.turn.budget_exhausted": False,
+    }
     assert span_events[0].timestamp == 1_000_000_000
 
 

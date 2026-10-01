@@ -7,24 +7,26 @@ discriminator and ``at: int`` (nanoseconds since epoch) — together forming
 the :data:`SessionEvent` union.
 
 :func:`to_json_line` renders an event to a single compact JSON line with
-snake_case keys and ``exclude_none=True`` — the shared wire form the event log
-and the stdio driver both write. :func:`summarize` and :func:`summarize_input`
-produce the compact, single-line summaries carried on tool events.
+snake_case keys, leaving unset optional fields off — the shared wire form the
+event log and the stdio driver both write. :func:`summarize` and
+:func:`summarize_input` produce the compact, single-line summaries carried on
+tool events.
 :func:`combine_observers` fans one event out to several observers in order.
 """
 
 import json
+import math
 import os
 import re
 import warnings
 from collections.abc import Callable
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, TypeAdapter, ValidationError
 from pydantic.json_schema import SkipJsonSchema
+from pydantic_core import PydanticSerializationError
 
 from gymrat.config.types import Effort
-from gymrat.finite_json import null_non_finite
 from gymrat.observers import fan_out
 from gymrat.paths import abbreviate_home
 
@@ -46,11 +48,19 @@ ITERATE_SUMMARY = "gymrat iterate"
 # json.dumps separators for the wire's no-padding compact form: `{"key":"value"}`.
 _COMPACT_JSON_SEPARATORS = (",", ":")
 
-# Repeated optional-field unions, shared across event fields below. Each field
-# still builds its own `Field(...)` so pydantic's per-model `FieldInfo` is unaffected.
-_OptStr = str | SkipJsonSchema[None]
-_OptFloat = float | SkipJsonSchema[None]
-_OptEffort = Effort | SkipJsonSchema[None]
+
+def _is_none(value: object) -> bool:
+    return value is None
+
+
+# Repeated optional-field unions, shared across event fields below. An unset
+# (None) value is left off the wire; a required field whose domain includes None
+# (ToolStartEvent.input) does not use these and stays on the wire as null. Each
+# field still builds its own `Field(...)`, which pydantic merges with this one.
+_OMIT_NONE = Field(exclude_if=_is_none)
+_OptStr = Annotated[str | SkipJsonSchema[None], _OMIT_NONE]
+_OptFloat = Annotated[FiniteFloat | SkipJsonSchema[None], _OMIT_NONE]
+_OptEffort = Annotated[Effort | SkipJsonSchema[None], _OMIT_NONE]
 
 # Description shared by every `parent_tool_use_id` field below.
 _PARENT_TOOL_USE_ID_DESCRIPTION = "Tool use ID of the enclosing tool call, if any."
@@ -135,7 +145,7 @@ class UsageUpdateEvent(_EventModel):
 
     type: Literal["usage_update"] = Field("usage_update", description="Event type discriminator.")
     at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
-    cost_usd: float = Field(description="Cumulative session cost in US dollars.")
+    cost_usd: FiniteFloat = Field(description="Cumulative session cost in US dollars.")
     settled: bool = Field(default=False, description="Whether the session has already settled.")
 
 
@@ -175,8 +185,7 @@ class LaunchEvent(_EventModel):
     """Written by the supervisor as the log's first line: launch provenance.
 
     ``max_usd``, ``model``, and ``effort`` are ``None``-optional and omitted
-    from the wire form via the global ``exclude_none=True`` in
-    :func:`to_json_line`.
+    from the wire form when unset.
     """
 
     type: Literal["launch"] = Field("launch", description="Event type discriminator.")
@@ -188,7 +197,7 @@ class LaunchEvent(_EventModel):
     dirty: Literal[False] | DirtyInfo = Field(
         description="False when the worktree is clean, or dirty-file details."
     )
-    max_minutes: float = Field(description="Wall-clock timeout in minutes.")
+    max_minutes: FiniteFloat = Field(description="Wall-clock timeout in minutes.")
     max_usd: _OptFloat = Field(default=None, description="Spend cap in US dollars, if configured.")
     model: _OptStr = Field(default=None, description="Model identifier, if specified.")
     effort: _OptEffort = Field(default=None, description="Effort level, if specified.")
@@ -202,7 +211,9 @@ class TurnEndEvent(_EventModel):
     type: Literal["turn_end"] = Field("turn_end", description="Event type discriminator.")
     at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
     text: str = Field(description="Full text the agent produced in this turn.")
-    cost_usd: float = Field(description="Cost of this turn in US dollars.")
+    cost_usd: FiniteFloat = Field(
+        description="Cumulative session cost in US dollars when the turn ended."
+    )
     origin: Literal["agent", "injected"] = Field(
         description="Whether the turn was agent-generated or injected by the supervisor."
     )
@@ -213,7 +224,7 @@ class FollowUpEvent(_EventModel):
     """Emitted when the supervisor acts on a completed turn.
 
     ``reason`` and ``text`` are ``None``-optional and omitted from the wire
-    form via the global ``exclude_none=True`` in :func:`to_json_line`.
+    form when unset.
     """
 
     type: Literal["follow_up"] = Field("follow_up", description="Event type discriminator.")
@@ -270,8 +281,30 @@ def session_event_adapter() -> TypeAdapter[SessionEvent]:
 _SCHEMA_KEY = LaunchEvent.model_fields["schema_version"].alias
 
 
+_UNICODE_LINE_BREAKS = str.maketrans({
+    "\u0085": "\\u0085",
+    "\u2028": "\\u2028",
+    "\u2029": "\\u2029",
+})
+"""Non-ASCII characters that ``str.splitlines`` treats as line boundaries.
+
+They occur only inside JSON strings, so writing them as ``\\uXXXX`` escapes is
+lossless and keeps one event on one line for any reader that splits with
+``str.splitlines``.
+"""
+
+
 def to_json_line(event: SessionEvent) -> str:
     """Serialize an event to a single compact JSON line with snake_case keys.
+
+    Non-ASCII text is written raw except U+0085, U+2028 and U+2029, which are
+    written as JSON unicode escapes so the event never spans several lines. A NaN
+    or infinite float nested in a free-form payload such as
+    ``ToolStartEvent.input`` is written as ``null`` (the typed float fields
+    refuse non-finite values at construction), and a value pydantic cannot
+    serialize is written as its ``str()``. An event holding a lone surrogate,
+    which cannot be encoded as UTF-8, is written with every non-ASCII character
+    escaped.
 
     Args:
         event: The session event to serialize.
@@ -279,13 +312,27 @@ def to_json_line(event: SessionEvent) -> str:
     Returns:
         A single JSON line with no trailing newline.
     """
-    wire = event.model_dump(mode="python", exclude_none=True)
-    # exclude_none drops every None, but required fields whose domain includes
-    # None (e.g. ToolStartEvent.input) must stay on the wire as null.
-    for name, info in type(event).model_fields.items():
-        if getattr(event, name) is None and info.default is not None:
-            wire[info.serialization_alias or info.alias or name] = None
-    return json.dumps(null_non_finite(wire), separators=_COMPACT_JSON_SEPARATORS, default=str)
+    try:
+        return event.model_dump_json(fallback=str).translate(_UNICODE_LINE_BREAKS)
+    except PydanticSerializationError:
+        return json.dumps(
+            _null_non_finite(event.model_dump(mode="json", fallback=str)),
+            separators=_COMPACT_JSON_SEPARATORS,
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+
+
+def _null_non_finite(value: object) -> object:
+    # Mirrors pydantic's JSON mode, which writes NaN and infinities as null: the
+    # strict log decoder rejects the bare NaN/Infinity literals json.dumps emits.
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _null_non_finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_null_non_finite(item) for item in value]
+    return value
 
 
 def event_from_wire(obj: object) -> SessionEvent | None:

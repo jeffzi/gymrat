@@ -368,7 +368,7 @@ for those record types.
 | `gymrat.iteration.seq`         | int    | command, events                  | Iteration sequence number the record belongs to.                                                                          |
 | `gymrat.iteration.outcome`     | string | iteration event                  | Overall iteration outcome: improved, regressed, or no-signal.                                                             |
 | `gymrat.iteration.delta_pct`   | float  | iteration event                  | Percentage change from baseline for the primary metric.                                                                   |
-| `gymrat.turn.cost_usd`         | float  | turn_end event                   | Cost of the turn in US dollars.                                                                                           |
+| `gymrat.turn.session_cost_usd` | float  | turn_end event                   | Cumulative session cost in US dollars when the turn ended.                                                                |
 | `gymrat.turn.origin`           | string | turn_end event                   | Whether the turn was agent-generated or injected by the supervisor.                                                       |
 | `gymrat.turn.budget_exhausted` | bool   | turn_end event                   | Whether the turn exhausted the remaining budget.                                                                          |
 | `gymrat.follow_up.action`      | string | follow_up event                  | Supervisor action taken after the turn.                                                                                   |

@@ -1,21 +1,27 @@
-"""Tests for the CLI shared infrastructure: parsing, error rendering, render modes.
+"""Tests for the CLI shared infrastructure: error rendering, render modes, output.
 
-These cover the CLI shared surface — the positional grammar, the numeric flag
-coercers, the render-mode resolution, the error formatter and exit path — plus
-the import-latency guard. Lock and trace tests live in ``test_lock.py``.
+These cover the CLI shared surface — the stream helpers, the render-mode
+resolution, the error formatter and exit path — plus the import-latency guard.
+Flag parser tests live in ``test_options.py``; lock and trace tests live in
+``test_lock.py``.
 """
 
 import asyncio
+import errno
 import io
+import os
 import subprocess
 import sys
 from collections.abc import Callable
+from pathlib import Path
+from typing import override
 
 import pytest
 import typer
 
 from gymrat.adapters.types import AdapterError
 from gymrat.cli import shared
+from gymrat.cli.app import app
 from gymrat.cli.lock import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE
 from gymrat.cli.progress import ProgressReporter
 from gymrat.cli.shared import (
@@ -26,27 +32,26 @@ from gymrat.cli.shared import (
     begin_run,
     exit_with_error,
     format_cli_error,
+    is_broken_pipe,
     is_tty,
-    parse_fail_on,
-    parse_max_minutes,
-    parse_positional,
-    parse_positive_integer_up_to,
-    parse_positive_number,
+    point_stream_at_devnull,
     resolve_render_mode,
-    run_cli,
     run_with_signal_abort,
     set_color_override,
     set_debug_mode,
     write_and_flush,
     write_budget_report,
+    write_stdout,
 )
-from gymrat.config import MAX_TIMEOUT_SECONDS
 from gymrat.errors import GymratError
 from gymrat.report.json_doc import BudgetSummary
-from gymrat.report.types import GeomeanFailOn, RegressedFailOn
-from gymrat.sampling import TargetSpec
+from gymrat.report.types import RegressedFailOn
+from tests._process_helpers import run_with_closed_reader, run_with_failing_stdout
+from tests._rich import unwrap_panel
 from tests._streams import FakeStream as _FakeStream
+from tests._streams import RaisingStream
 from tests.cli._help import help_output
+from tests.cli._session import CLOSED_STDOUT_ERRORS, runner, stub_measure
 
 
 class _StubReporter:
@@ -145,18 +150,157 @@ def test_write_and_flush_when_called_does_write_then_flush():
     assert recorder.flushed is True
 
 
-def test_run_cli_when_broken_pipe_does_exit_cleanly(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("error", "platform", "expected"),
+    [
+        pytest.param(BrokenPipeError(), "linux", True, id="posix-broken-pipe"),
+        pytest.param(OSError(errno.EINVAL, "Invalid argument"), "win32", True, id="windows-einval"),
+        pytest.param(OSError(errno.EINVAL, "Invalid argument"), "linux", False, id="posix-einval"),
+        pytest.param(OSError(errno.EACCES, "Access denied"), "win32", False, id="windows-eacces"),
+        pytest.param(ValueError("banana"), "win32", False, id="not-an-os-error"),
+    ],
+)
+def test_is_broken_pipe_when_called_does_recognize_each_platforms_closed_pipe_error(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException, platform: str, expected: bool
 ):
-    async def boom() -> None:
-        raise BrokenPipeError
+    monkeypatch.setattr("sys.platform", platform)
 
-    with pytest.raises(typer.Exit) as exc:
-        run_cli(boom)
+    assert is_broken_pipe(error) is expected
 
-    assert exc.value.exit_code == 0
-    captured = capsys.readouterr()
-    assert BUGS_URL not in captured.err
+
+class _BadDescriptorStream(io.StringIO):
+    """A stream whose descriptor is invalid, so redirecting it fails."""
+
+    @override
+    def fileno(self) -> int:
+        return -1
+
+
+def _open_descriptors() -> set[str]:
+    """List the descriptors this process holds open."""
+    return {entry.name for entry in Path("/dev/fd").iterdir()}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
+def test_point_stream_at_devnull_when_redirected_does_point_descriptor_at_devnull(tmp_path: Path):
+    with (tmp_path / "out.txt").open("w") as stream:
+        point_stream_at_devnull(stream)
+
+        assert os.path.samestat(os.fstat(stream.fileno()), Path(os.devnull).stat())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
+def test_point_stream_at_devnull_when_redirected_does_close_devnull(tmp_path: Path):
+    with (tmp_path / "out.txt").open("w") as stream:
+        before = _open_descriptors()
+
+        point_stream_at_devnull(stream)
+
+        assert _open_descriptors() == before
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
+def test_point_stream_at_devnull_when_redirect_fails_does_close_devnull_and_raise():
+    before = _open_descriptors()
+
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        point_stream_at_devnull(_BadDescriptorStream())
+
+    assert _open_descriptors() == before
+
+
+#: Lines each flood probe prints: 16384 lines of 64 bytes overflow any pipe buffer.
+_FLOOD_LINES = 1 << 14
+
+#: Characters per flood line; with the trailing newline, each line is 64 bytes.
+_FLOOD_LINE_CHARS = 63
+
+_FLOOD_THROUGH_RUN_CLI = f"""
+import typer
+from gymrat.cli.shared import run_cli, write_stdout
+
+app = typer.Typer()
+
+@app.command()
+def flood() -> None:
+    async def run() -> None:
+        for _ in range({_FLOOD_LINES}):
+            write_stdout("x" * {_FLOOD_LINE_CHARS} + "\\n")
+
+    run_cli(run)
+
+app()
+"""
+
+_FLOOD_OUTSIDE_RUN_CLI = f"""
+import typer
+from gymrat.cli.shared import write_stdout
+
+app = typer.Typer()
+
+@app.command()
+def flood() -> None:
+    for _ in range({_FLOOD_LINES}):
+        write_stdout("x" * {_FLOOD_LINE_CHARS} + "\\n")
+
+app()
+"""
+
+
+@pytest.mark.parametrize(
+    "probe",
+    [
+        pytest.param(_FLOOD_THROUGH_RUN_CLI, id="run_cli"),
+        pytest.param(_FLOOD_OUTSIDE_RUN_CLI, id="bare-command"),
+    ],
+)
+def test_write_stdout_when_reader_closed_does_exit_zero_without_stderr(probe: str):
+    result = run_with_closed_reader(
+        [sys.executable, "-c", probe], stream="stdout", text=True, timeout=60
+    )
+
+    assert (result.returncode, result.stderr) == (0, "")
+
+
+@pytest.mark.parametrize(("error", "platform"), CLOSED_STDOUT_ERRORS)
+def test_write_stdout_when_pipe_closed_does_return_without_raising(
+    monkeypatch: pytest.MonkeyPatch, error: OSError, platform: str
+):
+    monkeypatch.setattr("sys.platform", platform)
+    monkeypatch.setattr("sys.stdout", RaisingStream(error))
+
+    write_stdout("first line\n")
+
+
+@pytest.mark.usefixtures("repo")
+def test_run_cli_when_body_raises_broken_pipe_does_exit_two_with_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stub_measure(monkeypatch)
+
+    async def _explode(*_args: object, **_kwargs: object) -> None:
+        raise BrokenPipeError(errno.EPIPE, "Broken pipe")
+
+    monkeypatch.setattr("gymrat.measure.measure", _explode)
+
+    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert "Broken pipe" in unwrap_panel(result.stderr)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no file-size limit")
+@pytest.mark.parametrize("fmt", ["text", "json"])
+def test_gymrat_when_stdout_write_fails_otherwise_does_exit_two_without_shutdown_traceback(
+    tmp_path: Path, fmt: str
+):
+    result = run_with_failing_stdout(
+        [sys.executable, "-m", "gymrat", "doctor", "--format", fmt], cwd=tmp_path, timeout=60
+    )
+
+    assert result.returncode == TOOL_FAILURE_EXIT_CODE
+    assert os.strerror(errno.EFBIG) in unwrap_panel(result.stderr)
+    assert "Exception ignored" not in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -191,129 +335,10 @@ def test_format_cli_error_when_stderr_color_override_false_does_strip_all_sgr(
     monkeypatch.setenv("TERM", "xterm-256color")
 
     set_color_override(False)
+
     result = format_cli_error(ValueError("boom"))
-    set_color_override(None)
 
     assert "\x1b[" not in result
-
-
-# ---------------------------------------------------------------------------
-# parse_positional / collect_positional
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("positional", "expected"),
-    [
-        pytest.param("main=HEAD", TargetSpec(label="main", target="HEAD"), id="label-and-target"),
-        pytest.param("a=b=c", TargetSpec(label="a", target="b=c"), id="first-equals-splits"),
-        pytest.param("HEAD", TargetSpec(label=None, target="HEAD"), id="no-equals"),
-    ],
-)
-def test_parse_positional_when_called_does_split_on_the_first_equals(
-    positional: str, expected: TargetSpec
-):
-    assert parse_positional(positional) == expected
-
-
-def test_parse_positional_when_label_empty_raises_dedicated_message():
-    with pytest.raises(typer.BadParameter) as exc:
-        parse_positional("=HEAD")
-
-    assert (
-        exc.value.message
-        == 'the label before "=" is empty; write the positional as "label=<ref|dir>" or drop the "=".'
-    )
-
-
-@pytest.mark.parametrize(
-    "positional",
-    [pytest.param("main=", id="trailing-equals"), pytest.param("", id="empty-string")],
-)
-def test_parse_positional_when_target_empty_raises_dedicated_message(positional: str):
-    with pytest.raises(typer.BadParameter) as exc:
-        parse_positional(positional)
-
-    assert exc.value.message == 'the target is empty; write the positional as "[label=]<ref|dir>".'
-
-
-# ---------------------------------------------------------------------------
-# parse_positive_integer_up_to
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("value", ["1", "5", "100"])
-def test_parse_positive_integer_when_positive_does_accept(value: str):
-    parse = parse_positive_integer_up_to(MAX_TIMEOUT_SECONDS)
-
-    assert parse(value) == int(value)
-
-
-@pytest.mark.parametrize(
-    "value",
-    ["0", "-1", "1.5", "abc", "", " 5", "5 "],
-)
-def test_parse_positive_integer_when_non_positive_does_reject(value: str):
-    parse = parse_positive_integer_up_to(MAX_TIMEOUT_SECONDS)
-
-    with pytest.raises(typer.BadParameter) as exc:
-        parse(value)
-
-    assert exc.value.message == "must be a positive integer."
-
-
-def test_parse_positive_integer_when_over_maximum_does_reject():
-    parse = parse_positive_integer_up_to(10)
-
-    with pytest.raises(typer.BadParameter) as exc:
-        parse("11")
-
-    assert exc.value.message == "must be a positive integer no greater than 10."
-
-
-# ---------------------------------------------------------------------------
-# parse_positive_number / parse_max_minutes
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(("value", "expected"), [("1", 1.0), ("2.5", 2.5)])
-def test_parse_positive_number_when_positive_decimal_does_accept(value: str, expected: float):
-    assert parse_positive_number(value) == expected
-
-
-@pytest.mark.parametrize("value", ["0", "-1", "abc", "", "1."])
-def test_parse_positive_number_when_non_positive_or_malformed_does_reject(value: str):
-    with pytest.raises(typer.BadParameter) as exc:
-        parse_positive_number(value)
-
-    assert exc.value.message == "must be a positive number."
-
-
-def test_parse_positive_number_when_value_overflows_to_infinity_does_reject():
-    huge = "1" + "0" * 310
-
-    with pytest.raises(typer.BadParameter) as exc:
-        parse_positive_number(huge)
-
-    assert exc.value.message == "must be a positive number."
-
-
-def test_parse_max_minutes_when_within_ceiling_does_accept():
-    assert parse_max_minutes("10") == 10.0
-
-
-def test_parse_max_minutes_when_over_ceiling_does_reject():
-    with pytest.raises(typer.BadParameter) as exc:
-        parse_max_minutes("35792")
-
-    assert exc.value.message == "must be at most 35791 minutes."
-
-
-def test_parse_max_minutes_when_non_positive_does_reject_before_bounding():
-    with pytest.raises(typer.BadParameter) as exc:
-        parse_max_minutes("0")
-
-    assert exc.value.message == "must be a positive number."
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +502,7 @@ def test_importing_cli_modules_does_not_pull_the_heavy_stack_or_command_bodies()
     probe = """
 import sys
 import gymrat.cli.shared
+import gymrat.cli.options
 import gymrat.cli.progress
 import gymrat.cli.gating
 heavy = sorted(
@@ -497,42 +523,6 @@ assert not bodies, f'cli import pulled command bodies: {bodies}'
     )
 
     assert result.returncode == 0, result.stderr
-
-
-# ---------------------------------------------------------------------------
-# parse_fail_on
-# ---------------------------------------------------------------------------
-
-
-def test_parse_fail_on_when_regressed_does_accept():
-    assert parse_fail_on("regressed") == RegressedFailOn()
-
-
-@pytest.mark.parametrize(
-    ("value", "expected_pct"),
-    [
-        pytest.param("geomean:2", 2.0, id="integer"),
-        pytest.param("geomean:-1.5", -1.5, id="negative-decimal"),
-    ],
-)
-def test_parse_fail_on_when_geomean_percentage_does_accept(value: str, expected_pct: float):
-    condition = parse_fail_on(value)
-
-    assert condition == GeomeanFailOn(pct=expected_pct)
-
-
-@pytest.mark.parametrize(
-    "value",
-    ["geomean:", "geomean:0x10", "unknown", "", " geomean:2"],
-)
-def test_parse_fail_on_rejects_everything_else(value: str):
-    with pytest.raises(typer.BadParameter) as exc:
-        parse_fail_on(value)
-
-    assert (
-        exc.value.message
-        == 'allowed values are "regressed" or "geomean:<number>" (e.g. geomean:2).'
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -678,27 +668,6 @@ def test_exit_with_error_honors_debug_mode_for_the_stack(monkeypatch: pytest.Mon
 
     set_debug_mode(False)
     assert "Traceback" in captured.getvalue()
-
-
-# ---------------------------------------------------------------------------
-# stop-target helpers — not part of the public surface
-# ---------------------------------------------------------------------------
-
-
-def test_shared_when_stop_target_removed_does_not_export_helpers():
-    assert not hasattr(shared, "parse_stop_target_value")
-    assert not hasattr(shared, "_STOP_TARGET_RE")
-
-
-# ---------------------------------------------------------------------------
-# lock helpers — owned by gymrat.cli.lock, not re-exported here
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("name", ["with_repo_lock", "CommandTrace", "config_trace_args"])
-def test_shared_when_lock_helper_requested_does_not_re_export_it(name: str):
-    assert not hasattr(shared, name)
-    assert name not in getattr(shared, "__all__", ())
 
 
 # ---------------------------------------------------------------------------

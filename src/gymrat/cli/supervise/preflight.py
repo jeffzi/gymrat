@@ -20,6 +20,7 @@ from gymrat.cli.shared import (
     resolve_stream_color,
     run_options_of,
     write_and_flush,
+    write_stdout,
 )
 from gymrat.config import CliFlags, ResolvedConfig
 from gymrat.doctor.render import render_doctor_report
@@ -151,7 +152,7 @@ def _session_step(
     result = start_session(root, baseline_ref, config)
 
     summary = format_start_summary(result, config.runbook)
-    write_and_flush(sys.stdout, summary + "\n")
+    write_stdout(summary + "\n")
 
     if result.resumed and baseline_ref is not None:
         warn_to_stderr(

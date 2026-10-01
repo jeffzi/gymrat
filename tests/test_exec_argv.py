@@ -875,7 +875,7 @@ async def test_exec_argv_when_cancelled_leaving_only_a_zombie_in_group_does_not_
 # ---------------------------------------------------------------------------
 
 
-async def test_exec_argv_when_env_set_does_use_exact_mapping(
+async def test_exec_argv_when_env_set_does_pass_the_mapping_to_the_child(
     make_opts: Callable[..., ExecOptions],
 ) -> None:
     result = await exec_argv(
@@ -910,6 +910,35 @@ async def test_exec_argv_when_env_none_does_inherit_parent_env(
     assert isinstance(result, ExecResult)
     assert result.exit_code == 0
     assert result.stdout.strip() == "inherited"
+
+
+@pytest.mark.parametrize(
+    ("env", "expected_marker"),
+    [
+        pytest.param(None, "inherited", id="inherited-env"),
+        pytest.param({"GYMRAT_TEST_MARKER": "mapped"}, "mapped", id="explicit-env"),
+    ],
+)
+async def test_exec_argv_when_spawned_does_give_child_nesting_depth_one_deeper(
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    env: dict[str, str] | None,
+    expected_marker: str,
+) -> None:
+    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", 2)
+    monkeypatch.setenv("GYMRAT_TEST_MARKER", "inherited")
+
+    result = await exec_argv(
+        [sys.executable, "-c", "import os, json; print(json.dumps(dict(os.environ)))"],
+        make_opts(env=env),
+    )
+
+    assert isinstance(result, ExecResult)
+    child_env = json.loads(result.stdout.strip())
+    assert {
+        "GYMRAT_TEST_MARKER": child_env.get("GYMRAT_TEST_MARKER"),
+        "GYMRAT_NESTING_DEPTH": child_env.get("GYMRAT_NESTING_DEPTH"),
+    } == {"GYMRAT_TEST_MARKER": expected_marker, "GYMRAT_NESTING_DEPTH": "3"}
 
 
 # ---------------------------------------------------------------------------

@@ -327,11 +327,20 @@ async def test_stdio_driver_when_outcome_line_received_does_settle_with_its_fiel
 
 
 @pytest.mark.parametrize(
-    "bool_cost", [pytest.param(True, id="true"), pytest.param(False, id="false")]
+    "unusable_cost",
+    [
+        pytest.param(True, id="true"),
+        pytest.param(False, id="false"),
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+        pytest.param(0.0, id="zero"),
+        pytest.param(-0.3, id="negative"),
+    ],
 )
-async def test_stdio_driver_when_outcome_cost_is_boolean_does_fall_back_to_running_cost(
+async def test_stdio_driver_when_outcome_cost_is_not_finite_positive_does_fall_back_to_running_cost(
     tmp_path: Path,
-    bool_cost: bool,
+    unusable_cost: float,
 ) -> None:
     config = {
         "mode": "script",
@@ -348,7 +357,7 @@ async def test_stdio_driver_when_outcome_cost_is_boolean_does_fall_back_to_runni
         "outcome": {
             "type": "outcome",
             "reason": "completed",
-            "cost_usd": bool_cost,
+            "cost_usd": unusable_cost,
         },
     }
     session = create_stdio_driver(double_argv(config)).start(

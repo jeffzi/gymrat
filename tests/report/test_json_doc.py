@@ -605,6 +605,31 @@ def test_render_json_when_environment_forces_color_does_emit_no_ansi(
     assert not _ANSI_ESCAPE.search(render_json(_two_kind_with_exclusions()))
 
 
+@pytest.mark.parametrize(
+    ("result", "fragment"),
+    [
+        pytest.param(
+            create_comparison_result(candidates=[create_candidate(label="café")]),
+            '"café"',
+            id="non-ascii-raw",
+        ),
+        pytest.param(
+            create_comparison_result(
+                metrics={"decode/time": permutation_metric(verdict="improved", delta=-10, p=1e-7)},
+            ),
+            '"p": 1e-7',
+            id="float-exponent-without-leading-zero",
+        ),
+    ],
+)
+def test_render_json_when_serializing_does_write_compact_json_forms(
+    result: ComparisonResult, fragment: str
+):
+    output = render_json(result)
+
+    assert fragment in output
+
+
 # ---------------------------------------------------------------------------
 # render_measure_json — schema shape
 # ---------------------------------------------------------------------------

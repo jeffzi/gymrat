@@ -1,32 +1,33 @@
-"""Shared CLI infrastructure: parsing, exit routing, error rendering.
+"""Shared CLI infrastructure: exit routing, error rendering, report output.
 
-This module holds the pieces every benchmarking command reuses — the argument
-coercers, the error formatter and exit path, and the render-mode resolution —
+This module holds the pieces every benchmarking command reuses — the error
+formatter and exit path, the render-mode resolution, and the report writers —
 with no dependency on the heavy statistics stack or the command bodies, so
-importing it stays cheap. The repository lock and command trace live in
+importing it stays cheap. The flag parsers and option declarations live in
+:mod:`gymrat.cli.options`; the repository lock and command trace live in
 :mod:`gymrat.cli.lock`.
 """
 
 import asyncio
 import contextlib
-import math
-import re
+import errno
+import io
+import os
 import sys
 import traceback
-from collections.abc import Awaitable, Callable, Coroutine, Generator
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
-from enum import StrEnum
-from typing import Annotated, Any, Literal, NoReturn, Protocol, override
+from typing import IO, Any, Literal, NoReturn, Protocol
 
-import click
 import typer
 from rich.markup import escape
 
 from gymrat import clock as _clock
 from gymrat.adapters.types import AdapterError
 from gymrat.cli.lock import TOOL_FAILURE_EXIT_CODE
+from gymrat.cli.options import OutputFormat
 from gymrat.cli.progress import ProgressReporter
-from gymrat.config import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
+from gymrat.config import CliFlags, ResolvedConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.eta import format_duration
 from gymrat.exec import kill_live_process_groups
@@ -39,8 +40,8 @@ from gymrat.report.style import (
     markup,
     render_lines,
 )
-from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn, ReportOptions
-from gymrat.sampling import RunOptions, TargetSpec
+from gymrat.report.types import FailOnCondition, ReportOptions
+from gymrat.sampling import RunOptions
 from gymrat.session.budget import (
     SIDES_PER_ITERATE,
     Budget,
@@ -58,10 +59,6 @@ from gymrat.warn import warn_to_stderr
 # ---------------------------------------------------------------------------
 
 BUGS_URL = "https://github.com/jeffzi/gymrat/issues"
-
-_POSITIVE_INTEGER_RE = re.compile(r"\d+")
-_POSITIVE_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
-_GEOMEAN_CONDITION_RE = re.compile(r"geomean:(-?\d+(?:\.\d+)?)")
 
 
 class _WritableStream(Protocol):
@@ -253,159 +250,86 @@ def exit_with_error(error: object, code: int = TOOL_FAILURE_EXIT_CODE) -> NoRetu
     raise typer.Exit(code)
 
 
-@contextlib.contextmanager
-def broken_pipe_guard() -> Generator[None]:
-    """Catch BrokenPipeError from a stdout write and exit cleanly.
+def is_broken_pipe(error: BaseException) -> bool:
+    """Whether ``error`` is a write to a pipe whose reading end has closed.
 
-    Sync counterpart of the same mapping in ``run_cli``: a broken pipe from the
-    reading end closing is not an error for a CLI that already produced its
-    output.
+    POSIX reports it as ``BrokenPipeError``. Windows reports it as a plain
+    ``OSError`` with ``EINVAL``: the C runtime maps the ``ERROR_NO_DATA`` a write
+    to a closed pipe fails with onto that errno, so no ``BrokenPipeError`` is
+    ever raised there.
 
-    Raises:
-        typer.Exit: With code 0 when a ``BrokenPipeError`` is caught.
+    Args:
+        error: The exception a stream write or flush raised.
+
+    Returns:
+        ``True`` when ``error`` means the pipe's reader is gone.
+    """
+    if isinstance(error, BrokenPipeError):
+        return True
+    return sys.platform == "win32" and isinstance(error, OSError) and error.errno == errno.EINVAL
+
+
+def point_stream_at_devnull(stream: IO[str]) -> None:
+    """Redirect ``stream``'s file descriptor to devnull; a stream without one is left alone.
+
+    The interpreter flushes a stream's unwritten buffer at shutdown. After a
+    failed write that flush would fail again and turn the exit status into 120;
+    a devnull descriptor lets it succeed.
+
+    Args:
+        stream: The stream whose descriptor is redirected.
     """
     try:
-        yield
-    except BrokenPipeError:
-        raise typer.Exit(0) from None
+        fd = stream.fileno()
+    except io.UnsupportedOperation:
+        return
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, fd)
+    finally:
+        os.close(devnull)
+
+
+def write_stdout(data: str) -> None:
+    """Write a command's result to stdout, returning silently if the reader has gone.
+
+    This write is the only place a closed stdout pipe is classified, per
+    :func:`is_broken_pipe`: the same error from anywhere else in a command body
+    is a real failure. The stderr console classifies its own closed pipe.
+    After any failed write stdout is pointed at devnull, so the unwritten bytes
+    left in its buffer cannot fail the interpreter's shutdown flush and replace
+    the command's exit status with 120.
+
+    Args:
+        data: The text to write.
+
+    Raises:
+        OSError: When the write fails for any reason other than a closed pipe.
+    """
+    try:
+        write_and_flush(sys.stdout, data)
+    except OSError as error:
+        point_stream_at_devnull(sys.stdout)
+        if not is_broken_pipe(error):
+            raise
 
 
 def run_cli(run: Callable[[], Coroutine[Any, Any, None]]) -> None:
-    """Run an async CLI body, routing any failure through the shared error formatter."""
+    """Run an async CLI body, routing any failure through the shared error formatter.
+
+    Args:
+        run: Builds the command body's coroutine.
+
+    Raises:
+        typer.Exit: The body's own exit, or the tool-failure code once any other
+            failure has been reported on stderr.
+    """
     try:
         asyncio.run(run())
     except typer.Exit:
         raise
-    except BrokenPipeError:
-        raise typer.Exit(0) from None
     except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
         exit_with_error(error)
-
-
-# ---------------------------------------------------------------------------
-# Flag parsers
-# ---------------------------------------------------------------------------
-
-
-def parse_positional(positional: str) -> TargetSpec:
-    """Parse the ``label=target`` syntax of a positional, splitting on the first ``=`` only.
-
-    A target containing its own ``=`` survives intact — ``a=b=c`` parses to label
-    ``a``, target ``b=c``. An empty half is always a typo, so each raises its own
-    usage error rather than resolving to a silent default.
-
-    Args:
-        positional: The raw positional argument in ``label=target`` or bare
-            ``target`` form.
-
-    Returns:
-        The parsed label and target.
-
-    Raises:
-        typer.BadParameter: When the label or target half is empty.
-    """
-    head, sep, tail = positional.partition("=")
-    label: str | None = head if sep else None
-    target = tail if sep else positional
-
-    if label == "":
-        message = (
-            'the label before "=" is empty; '
-            'write the positional as "label=<ref|dir>" or drop the "=".'
-        )
-        raise typer.BadParameter(message)
-    if target == "":
-        message = 'the target is empty; write the positional as "[label=]<ref|dir>".'
-        raise typer.BadParameter(message)
-
-    return TargetSpec(label=label, target=target)
-
-
-class PositionalParamType(click.ParamType[TargetSpec, str]):
-    """Click type for ``[label=]<ref|dir>`` positional arguments.
-
-    Wraps :func:`parse_positional` in a proper :class:`click.ParamType` so the
-    help panel shows ``<ref|dir>`` instead of the parser function repr.
-    """
-
-    name = "<ref|dir>"
-
-    @override
-    def convert(
-        self,
-        value: str | TargetSpec,
-        param: click.Parameter | None,
-        ctx: click.Context | None,
-    ) -> TargetSpec:
-        if isinstance(value, TargetSpec):
-            return value
-        return parse_positional(value)
-
-
-def parse_positive_integer_up_to(max_value: int) -> Callable[[str], int]:
-    """Build a coercer accepting only a positive integer at or below ``max_value``."""
-
-    def parse(value: str) -> int:
-        if _POSITIVE_INTEGER_RE.fullmatch(value) is None:
-            message = "must be a positive integer."
-            raise typer.BadParameter(message)
-        parsed = int(value)
-        if parsed <= 0:
-            message = "must be a positive integer."
-            raise typer.BadParameter(message)
-        if parsed > max_value:
-            message = f"must be a positive integer no greater than {max_value}."
-            raise typer.BadParameter(message)
-        return parsed
-
-    return parse
-
-
-def parse_positive_number(value: str) -> float:
-    """Parse a strictly positive finite decimal, rejecting negatives, zero, and trailing garbage."""
-    if _POSITIVE_NUMBER_RE.fullmatch(value) is None:
-        message = "must be a positive number."
-        raise typer.BadParameter(message)
-    parsed = float(value)
-    if parsed <= 0 or not math.isfinite(parsed):
-        message = "must be a positive number."
-        raise typer.BadParameter(message)
-    return parsed
-
-
-def parse_max_minutes(value: str) -> float:
-    """Parse a positive number of minutes bounded by the 32-bit timer ceiling."""
-    parsed = parse_positive_number(value)
-    max_minutes = MAX_TIMEOUT_SECONDS // 60
-    if parsed > max_minutes:
-        message = f"must be at most {max_minutes} minutes."
-        raise typer.BadParameter(message)
-    return parsed
-
-
-def parse_fail_on(value: str) -> FailOnCondition:
-    """Parse a fail-on condition: ``regressed`` or ``geomean:<number>``.
-
-    Anything else raises a usage error naming the allowed grammar.
-
-    Args:
-        value: The raw ``--fail-on`` flag value.
-
-    Returns:
-        The parsed fail-on condition.
-
-    Raises:
-        typer.BadParameter: When the value does not match the allowed grammar.
-    """
-    if value == "regressed":
-        return RegressedFailOn()
-
-    match = _GEOMEAN_CONDITION_RE.fullmatch(value)
-    if match is not None:
-        return GeomeanFailOn(pct=float(match.group(1)))
-
-    message = 'allowed values are "regressed" or "geomean:<number>" (e.g. geomean:2).'
-    raise typer.BadParameter(message)
 
 
 # ---------------------------------------------------------------------------
@@ -489,86 +413,6 @@ class MeasureFlags(SharedFlags):
     """The measure command's flags: the shared set plus whether to record the run."""
 
     record: bool = False
-
-
-# ---------------------------------------------------------------------------
-# CLI option declarations
-# ---------------------------------------------------------------------------
-
-
-class OutputFormat(StrEnum):
-    """The ``--format`` choices: a human report or a machine-readable document."""
-
-    text = "text"
-    json = "json"
-
-
-# The config-bearing options every command shares, declared once as reusable
-# annotations so ``compare`` and ``measure`` carry an identical surface.
-BenchOption = Annotated[str | None, typer.Option("--bench", "-b", help="bench command")]
-PrepareOption = Annotated[
-    str | None,
-    typer.Option("--prepare", "-p", help="preparation script to run before each revision"),
-]
-AdapterOption = Annotated[
-    str | None, typer.Option("--adapter", "-a", help="adapter type for parsing benchmark output")
-]
-SamplesOption = Annotated[
-    int | None,
-    typer.Option(
-        "--samples",
-        "-s",
-        parser=parse_positive_integer_up_to(MAX_SAFE_INTEGER),
-        metavar="<int>",
-        help="paired samples per target",
-    ),
-]
-TimeoutOption = Annotated[
-    int | None,
-    typer.Option(
-        "--timeout",
-        "-t",
-        parser=parse_positive_integer_up_to(MAX_TIMEOUT_SECONDS),
-        metavar="<int>",
-        help="timeout in seconds",
-    ),
-]
-ConfigOption = Annotated[str | None, typer.Option("--config", "-c", help="configuration file path")]
-ColorOption = Annotated[
-    bool | None, typer.Option("--color/--no-color", help="force or suppress ANSI styles")
-]
-FormatOption = Annotated[OutputFormat, typer.Option("--format", help="output format")]
-DebugOption = Annotated[bool, typer.Option("--debug", "-d", help="show stack traces on errors")]
-RecordOption = Annotated[
-    bool,
-    typer.Option("--record", "-r", help="append the run to the session log as a baseline"),
-]
-BranchOption = Annotated[
-    str | None,
-    typer.Option("--branch", help="branch to point at the squash commit (default: <branch>-final)"),
-]
-BaselineOption = Annotated[
-    str | None,
-    typer.Option(
-        "--baseline",
-        metavar="<ref>",
-        help=(
-            "git ref that pins a freshly opened session; "
-            "defaults to HEAD and is ignored when a session is resumed"
-        ),
-    ),
-]
-ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
-AllowUnimprovedOption = Annotated[
-    bool,
-    typer.Option(
-        "--allow-unimproved",
-        help="keep the edit even when the iteration was not improved",
-    ),
-]
-VerboseOption = Annotated[
-    bool, typer.Option("--verbose", "-v", help="keep the progress tree visible after the run")
-]
 
 
 # ---------------------------------------------------------------------------
@@ -692,7 +536,7 @@ def write_budget_report(
     """
     trailer, summary = budget_snapshot(root)
     report = render_json(summary) if use_json else text_report + trailer
-    write_and_flush(sys.stdout, report + "\n")
+    write_stdout(report + "\n")
 
 
 def _repo_root_or_none() -> str | None:
@@ -787,8 +631,8 @@ def emit_report[T](  # noqa: PLR0913 -- keyword-only budget params extend a 4-po
             in machine-readable output.
     """
     if wants_json(flags):
-        write_and_flush(sys.stdout, renderers.json(result, budget=budget_summary) + "\n")
+        write_stdout(renderers.json(result, budget=budget_summary) + "\n")
         return
     color = resolve_stream_color(render_opts.color, sys.stdout)
     output = renderers.text(result, replace(render_opts, color=color))
-    write_and_flush(sys.stdout, output + budget_trailer + "\n")
+    write_stdout(output + budget_trailer + "\n")
