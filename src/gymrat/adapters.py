@@ -141,6 +141,7 @@ class Adapter(Protocol):
 # name-based metric defaults
 # ---------------------------------------------------------------------------
 
+
 _METRIC_SUFFIXES: Final[tuple[tuple[str, MetricUnit, str], ...]] = (
     ("#time", "ns", "time"),
     ("#heap", "bytes", "memory"),
@@ -192,6 +193,7 @@ def defaults_from_suffixes(metric_name: str) -> MetricDefaults:
 # ---------------------------------------------------------------------------
 # metric-lines adapter
 # ---------------------------------------------------------------------------
+
 
 _PREFIX = "METRIC"
 _PREFIX_WITH_SPACE = "METRIC "
@@ -336,6 +338,7 @@ metric_lines_adapter = _MetricLinesAdapter()
 # ---------------------------------------------------------------------------
 # mitata adapter
 # ---------------------------------------------------------------------------
+
 
 _JSON_DECODER = json.JSONDecoder()
 
@@ -808,6 +811,7 @@ mitata_adapter = _MitataAdapter()
 # ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
+
 
 _ADAPTERS: dict[str, Adapter] = {
     metric_lines_adapter.name: metric_lines_adapter,

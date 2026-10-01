@@ -10,45 +10,50 @@ A single policy site turns a failed command (non-zero exit or timeout) into a
 :class:`~gymrat.errors.CommandError`, so a failure anywhere stops the schedule
 with the same formatted diagnosis.
 
-The package also resolves each target to the directory and display label it runs
+The module also resolves each target to the directory and display label it runs
 under, and wraps a phase that may claim git worktrees so they are swept on every
 exit path.
+
+Besides collection, it holds the sampling dataclasses, the per-metric summary
+statistics, and metric-meta resolution from collected samples. For each metric
+name the samples carry, the adapter's defaults give the unit and direction, and
+the kind and short name when the adapter reports them (otherwise ``other`` and
+the metric name itself); gating defaults to on and exact to off. A per-kind
+config entry may set gating, and a per-metric entry overrides direction, gating
+and exact.
 """
 
 import asyncio
+import math
+import statistics
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
-from gymrat.adapters import Adapter
+from gymrat.adapters import DEFAULT_GATING, DEFAULT_METRIC_KIND, Adapter
+from gymrat.clock import monotonic_ms
+from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.errors import CommandError, GymratError, hint_of
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, kill_live_process_groups
 from gymrat.exec import (
-    exec as exec,  # noqa: A004 -- names the subprocess executor `exec`
+    ExecOptions,
+    ExecResult,
+    ExecTimeoutError,
+    exec,  # noqa: A004 -- names the subprocess executor `exec`
+    kill_live_process_groups,
 )
+from gymrat.model import ResolvedMetricMeta
 from gymrat.progress_events import (
     PassFinished,
     PassStarted,
     PrepareFinished,
     PrepareStarted,
+    ProgressCallback,
     emit_progress,
 )
 from gymrat.report.text import format_cleanup_failures
-from gymrat.sampling.summary import (
-    compute_metric_stats,
-    own_values,
-    paired_or_own_values,
-    resolve_metric_meta_from_samples,
-)
-from gymrat.sampling.types import (
-    MetricStats,
-    RunOptions,
-    SamplingOptions,
-    TargetContext,
-    TargetSamples,
-    TargetSpec,
-)
 from gymrat.signals import install_termination_cleanup
+from gymrat.stats import compute_half_range
 from gymrat.targets import (
     CleanupResult,
     RefTarget,
@@ -60,22 +65,324 @@ from gymrat.targets import (
 )
 from gymrat.warn import WarnSink
 
-__all__ = [
-    "MetricStats",
-    "RunOptions",
-    "SamplingOptions",
-    "TargetContext",
-    "TargetSamples",
-    "TargetSpec",
-    "collect_samples",
-    "compute_metric_stats",
-    "own_values",
-    "paired_or_own_values",
-    "resolve_dir",
-    "resolve_label",
-    "resolve_metric_meta_from_samples",
-    "run_with_worktrees",
-]
+# ---------------------------------------------------------------------------
+# sampling types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TargetSpec:
+    """One target a comparison or measurement names, before resolution.
+
+    Attributes:
+        label: An explicit display label, or ``None`` to derive one from the
+            resolved target (a ref's name or a directory's basename).
+        target: A git ref (resolved to a throwaway worktree) or a filesystem
+            directory path (benched in place).
+    """
+
+    label: str | None
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContext:
+    """A target paired with where and how it is run.
+
+    Attributes:
+        target: The thing being benchmarked.
+        dir: The directory the command runs in.
+        label: The target's display label.
+        position: Which side of a comparison the target occupies, or ``None``
+            when the run is not a two-sided comparison.
+    """
+
+    target: Target
+    dir: str
+    label: str
+    position: Literal["old", "new"] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TargetSamples:
+    """Every metric record collected for one target, with its context.
+
+    Attributes:
+        ctx: The context the samples were collected under.
+        samples: One metric record per successful bench run, in round order.
+    """
+
+    ctx: TargetContext
+    samples: list[dict[str, float]]
+
+
+@dataclass(frozen=True, slots=True)
+class SamplingOptions:
+    """Inputs governing a sampling run.
+
+    Attributes:
+        bench: The command run once per target per round.
+        prepare: A command run once per target before sampling, or ``None``.
+        samples: The number of rounds.
+        timeout_seconds: Per-command wall-clock budget, in seconds.
+        on_progress: Invoked with each progress event, or ``None`` for silence.
+        warn: Where an adapter sends complaints about output it could not read,
+            or ``None`` to use the adapter's own default.
+        clock: A source of monotonic millisecond timestamps for event stamping.
+            Defaults to :func:`~gymrat.clock.monotonic_ms`.
+    """
+
+    bench: str
+    prepare: str | None
+    samples: int
+    timeout_seconds: float
+    on_progress: ProgressCallback | None = None
+    warn: WarnSink | None = None
+    clock: Callable[[], float] = monotonic_ms
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RunOptions:
+    """The run settings a comparison and a measurement both take.
+
+    Beyond the sampling fields :class:`SamplingOptions` reads, this adds the
+    three inputs a caller needs to turn raw samples into a report: which adapter
+    parses the bench output, and the per-metric and per-kind config overrides
+    that settle each metric's metadata.
+
+    Attributes:
+        bench: The command run once per target per round.
+        prepare: A command run once per target before sampling, or ``None``.
+        adapter: Which output format ``bench`` writes, by adapter name.
+        samples: The number of rounds.
+        timeout_seconds: Per-command wall-clock budget, in seconds.
+        config_metrics: Per-metric overrides from config, or ``None``.
+        config_kinds: Per-kind overrides from config, or ``None``.
+        on_progress: Invoked with each progress event, or ``None`` for silence.
+        warn: Where an adapter sends complaints about unreadable output, or
+            ``None`` to use the adapter's own default.
+    """
+
+    bench: str
+    prepare: str | None
+    adapter: str
+    samples: int
+    timeout_seconds: float
+    config_metrics: dict[str, MetricEntry] | None
+    config_kinds: dict[str, KindEntry] | None
+    on_progress: ProgressCallback | None = None
+    warn: WarnSink | None = None
+
+    def sampling(self) -> SamplingOptions:
+        """The sampling settings this run hands the collector.
+
+        The collector's clock is left at its default.
+
+        Returns:
+            The bench and prepare commands, round count, timeout, and hooks of
+            this run.
+        """
+        return SamplingOptions(
+            bench=self.bench,
+            prepare=self.prepare,
+            samples=self.samples,
+            timeout_seconds=self.timeout_seconds,
+            on_progress=self.on_progress,
+            warn=self.warn,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MetricStats:
+    """A metric's central value and relative spread.
+
+    Attributes:
+        median: The metric's median, or ``None`` when there were no values.
+        spread: The half-range as a percentage of the median's magnitude, or
+            ``None`` when it is undefined (fewer than two values, a zero median,
+            or a non-finite ratio).
+    """
+
+    median: float | None
+    spread: float | None
+
+
+# ---------------------------------------------------------------------------
+# metric metadata
+# ---------------------------------------------------------------------------
+
+
+def _resolve_one_metric(
+    name: str,
+    entry: MetricEntry | None,
+    adapter: Adapter,
+    config_kinds: dict[str, KindEntry] | None,
+) -> ResolvedMetricMeta:
+    defaults = adapter.defaults(name)
+    kind = defaults.kind if defaults.kind is not None else DEFAULT_METRIC_KIND
+    direction = (
+        entry.direction if entry is not None and entry.direction is not None else defaults.direction
+    )
+
+    gating = DEFAULT_GATING
+    if entry is not None and entry.gating is not None:
+        gating = entry.gating
+    elif config_kinds is not None:
+        kind_entry = config_kinds.get(kind)
+        if kind_entry is not None and kind_entry.gating is not None:
+            gating = kind_entry.gating
+
+    exact = entry.exact if entry is not None and entry.exact is not None else False
+    short_name = defaults.short_name if defaults.short_name is not None else name
+
+    return ResolvedMetricMeta(
+        direction=direction,
+        gating=gating,
+        exact=exact,
+        unit=defaults.unit,
+        kind=kind,
+        short_name=short_name,
+    )
+
+
+def resolve_metric_meta(
+    metric_names: Sequence[str],
+    config_metrics: dict[str, MetricEntry] | None,
+    adapter: Adapter,
+    config_kinds: dict[str, KindEntry] | None = None,
+) -> dict[str, ResolvedMetricMeta]:
+    """Resolve each metric's display metadata from adapter defaults and config overrides.
+
+    For every name in ``metric_names`` (preserving input order), the adapter's
+    per-metric defaults are the base; a matching ``config_metrics`` entry overrides
+    direction, gating, and exact, and a ``config_kinds`` entry for the resolved kind
+    supplies gating when the metric entry does not. A per-metric gating override wins
+    over its kind's gating.
+
+    Args:
+        metric_names: Metric names to resolve, in the order they should appear
+            in the result.
+        config_metrics: Per-metric overrides from the config file, keyed by
+            metric name, or ``None`` if none are configured.
+        adapter: Adapter supplying each metric's defaults.
+        config_kinds: Per-kind gating overrides from the config file, keyed by
+            kind name, or ``None`` if none are configured.
+
+    Returns:
+        An ordered mapping from metric name to its resolved
+        :class:`ResolvedMetricMeta`.
+    """
+    return {
+        name: _resolve_one_metric(
+            name,
+            config_metrics.get(name) if config_metrics is not None else None,
+            adapter,
+            config_kinds,
+        )
+        for name in metric_names
+    }
+
+
+# ---------------------------------------------------------------------------
+# sample summaries
+# ---------------------------------------------------------------------------
+
+
+_MIN_SPREAD_SAMPLES = 2
+
+
+def compute_metric_stats(values: Sequence[float]) -> MetricStats:
+    """Summarize a metric's samples as a median and relative spread.
+
+    Args:
+        values: The metric's sampled values.
+
+    Returns:
+        The median and its half-range as a percentage of ``abs(median)``. The
+        spread is absent when there are fewer than two values, the median is
+        zero, or the ratio is non-finite.
+    """
+    if not values:
+        return MetricStats(median=None, spread=None)
+
+    median = statistics.median(values)
+    if len(values) < _MIN_SPREAD_SAMPLES or median == 0:
+        return MetricStats(median=median, spread=None)
+
+    ratio = compute_half_range(values) / abs(median) * 100
+    if not math.isfinite(ratio):
+        return MetricStats(median=median, spread=None)
+    return MetricStats(median=median, spread=ratio)
+
+
+def own_values(samples: Sequence[dict[str, float]], name: str) -> list[float]:
+    """Collect the values a side reported for ``name``, skipping rounds without it.
+
+    Args:
+        samples: One metric record per round.
+        name: The metric to extract.
+
+    Returns:
+        The reported values for ``name``, in round order.
+    """
+    return [record[name] for record in samples if name in record]
+
+
+def paired_or_own_values(
+    paired: Sequence[float],
+    samples: Sequence[dict[str, float]],
+    name: str,
+) -> list[float]:
+    """Prefer already-paired values, falling back to a side's own values.
+
+    Args:
+        paired: Values paired across sides; used as-is when non-empty.
+        samples: One metric record per round, used only for the fallback.
+        name: The metric to extract when falling back.
+
+    Returns:
+        ``paired`` when it holds any values, otherwise ``own_values(samples, name)``.
+    """
+    return list(paired) or own_values(samples, name)
+
+
+def resolve_metric_meta_from_samples(
+    sample_sets: Sequence[list[dict[str, float]]],
+    config_metrics: dict[str, MetricEntry] | None,
+    adapter: Adapter,
+    config_kinds: dict[str, KindEntry] | None = None,
+) -> dict[str, ResolvedMetricMeta]:
+    """Collect every metric name across the sample sets and resolve its metadata.
+
+    The union of names is taken in first-appearance order across the flattened
+    samples, so the resolved metadata — and every report drawn from it — reads in
+    the order the run first reported each metric.
+
+    Args:
+        sample_sets: One list of per-round metric records per target.
+        config_metrics: Per-metric overrides from config, or ``None``.
+        adapter: The adapter whose defaults seed each metric's metadata.
+        config_kinds: Per-kind overrides from config, or ``None``.
+
+    Returns:
+        The resolved metadata for each metric, keyed by metric name.
+
+    Raises:
+        GymratError: No sample set reported any metric. Adapters reject empty
+            output themselves, so this guards the otherwise-unreachable case.
+    """
+    names = dict.fromkeys(name for samples in sample_sets for sample in samples for name in sample)
+    if not names:
+        message = "No metrics found in benchmark output"
+        raise GymratError(message)
+
+    return resolve_metric_meta(list(names), config_metrics, adapter, config_kinds)
+
+
+# ---------------------------------------------------------------------------
+# sample collection
+# ---------------------------------------------------------------------------
+
 
 _REF_HINT = (
     "the worktree only contains files tracked at this ref; "
