@@ -7,7 +7,7 @@ importing it stays cheap. The debug, color and stream state lives in
 :mod:`gymrat.cli.console`; the flag parsers and option declarations live in
 :mod:`gymrat.cli.options`; the session budget trailers and warnings live in
 :mod:`gymrat.cli.budget_report`; the repository lock and command trace live in
-:mod:`gymrat.cli.command_run`.
+:mod:`gymrat.command_run`.
 """
 
 import asyncio

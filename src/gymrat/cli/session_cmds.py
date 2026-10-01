@@ -11,7 +11,6 @@ from typing import Annotated
 import typer
 
 from gymrat.cli.budget_report import budget_snapshot, write_budget_report
-from gymrat.cli.command_run import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.cli.console import apply_color_override, apply_debug
 from gymrat.cli.options import (
     AdapterOption,
@@ -28,6 +27,7 @@ from gymrat.cli.options import (
     TimeoutOption,
 )
 from gymrat.cli.shared import run_cli, write_stdout
+from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.config import CliFlags, resolve_config
 from gymrat.loop.finalize import FinalizeOptions, FinalizeResult, finalize_session
 from gymrat.loop.start import StartResult, start_session

@@ -26,8 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from gymrat.cli.command_run import with_repo_lock
 from gymrat.clock import monotonic_ms, now_ns
+from gymrat.command_run import with_repo_lock
 from gymrat.session.lock import LockContentionError, is_held, read_holder
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import fold_session, read_records
@@ -37,7 +37,7 @@ from gymrat.supervisor.exit_settle import ExitSinks, ExitStep, decide_exit_steps
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.cli.command_run import CommandTrace
+    from gymrat.command_run import CommandTrace
     from gymrat.supervisor.context import SupervisedSession
     from gymrat.supervisor.events import SessionObserver
     from gymrat.supervisor.supervise import EndedBy

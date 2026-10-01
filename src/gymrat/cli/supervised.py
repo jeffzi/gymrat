@@ -6,23 +6,15 @@ drive the loop through its tools, so a command whose origin is not ``tool`` is
 refused with a hint pointing at the matching tool.
 """
 
-import os
-
 from gymrat import clock
+from gymrat.command_run import command_origin
 from gymrat.errors import GymratError
 from gymrat.session.budget import read_budget
-from gymrat.session.schema import CommandOrigin
 
 __all__ = [
-    "command_origin",
     "guard_supervised_origin",
     "is_supervised_run_live",
 ]
-
-
-def command_origin() -> CommandOrigin:
-    """The running command's origin: ``tool`` only when the supervisor says so, else ``cli``."""
-    return "tool" if os.environ.get("GYMRAT_COMMAND_ORIGIN") == "tool" else "cli"
 
 
 def is_supervised_run_live(root: str) -> bool:

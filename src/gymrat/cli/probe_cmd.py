@@ -18,7 +18,6 @@ from typing import Annotated
 import typer
 
 from gymrat.cli.budget_report import budget_for_report, warn_duration_over_budget
-from gymrat.cli.command_run import with_repo_lock
 from gymrat.cli.console import apply_color_override, apply_debug
 from gymrat.cli.options import (
     ColorOption,
@@ -37,6 +36,7 @@ from gymrat.cli.shared import (
     run_with_signal_abort,
 )
 from gymrat.cli.supervised import guard_supervised_origin
+from gymrat.command_run import with_repo_lock
 from gymrat.config import resolve_config
 from gymrat.loop.probe import EXPERIMENT_LABEL, ProbeOptions, ProbeResult, probe_session
 from gymrat.report import render_probe_json, render_probe_report

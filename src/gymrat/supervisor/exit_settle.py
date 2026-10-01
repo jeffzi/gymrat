@@ -31,7 +31,7 @@ from gymrat.session.workspace import changed_file_count, worktree_fingerprint
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.cli.command_run import CommandTrace
+    from gymrat.command_run import CommandTrace
     from gymrat.session.records import IterationRecord
     from gymrat.session.store import SessionState
     from gymrat.supervisor.context import SupervisedSession

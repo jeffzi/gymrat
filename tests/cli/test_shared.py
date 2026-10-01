@@ -4,7 +4,8 @@ These cover the CLI shared surface — stdout writing, the render-mode
 resolution, the error formatter and exit path — plus the import-latency guard.
 Flag parser tests live in ``test_options.py``; stream-helper and stderr-console
 tests live in ``test_console.py``; budget report tests live in
-``test_budget_report.py``; lock and trace tests live in ``test_command_run.py``.
+``test_budget_report.py``; lock and trace tests live in
+``tests/test_command_run.py``.
 """
 
 import asyncio

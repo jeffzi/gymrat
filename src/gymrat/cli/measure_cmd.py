@@ -14,7 +14,6 @@ from typing import Annotated
 import typer
 
 from gymrat.cli.budget_report import budget_for_report, warn_duration_over_budget
-from gymrat.cli.command_run import config_trace_args, with_repo_lock
 from gymrat.cli.console import apply_color_override, apply_debug
 from gymrat.cli.options import (
     AdapterOption,
@@ -41,6 +40,7 @@ from gymrat.cli.shared import (
     write_and_flush,
     write_stdout,
 )
+from gymrat.command_run import config_trace_args, with_repo_lock
 from gymrat.config import resolve_config
 from gymrat.loop.baseline import measure_baseline
 from gymrat.report import render_measure_json, render_measure_report
