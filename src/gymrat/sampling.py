@@ -51,7 +51,7 @@ from gymrat.progress_events import (
     ProgressCallback,
     emit_progress,
 )
-from gymrat.report.text import format_cleanup_failures
+from gymrat.report.text.render import format_cleanup_failures
 from gymrat.signals import install_termination_cleanup
 from gymrat.stats import compute_half_range
 from gymrat.targets import (

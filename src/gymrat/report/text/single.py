@@ -33,32 +33,36 @@ from gymrat.report.sections import (
     plan_sections,
 )
 from gymrat.report.style import VERDICT_STYLES
-from gymrat.report.table import (
+from gymrat.report.table.markup import (
     VALUE_COLUMN_MIN,
     VERDICT_COLUMN_MIN,
+    VerdictParts,
+    aggregate_label_cell,
+    group_metric_cell,
+    header_metric_cell,
+    indented_section_label,
+    join_value_cell,
+    value_widths,
+    variant_name_cell,
+    verdict_cell,
+    verdict_parts,
+    verdict_widths,
+)
+from gymrat.report.table.render import (
     AggregateLine,
     AggregateRow,
     AggregateRows,
     GroupLine,
     HeaderLine,
     MetricLine,
-    VerdictParts,
     compute_column_width,
-    group_metric_cell,
-    header_metric_cell,
-    indented_section_label,
     is_grouped,
-    join_value_cell,
+    metric_column_width,
     plan_body,
     render_body,
+    row_name_cell,
     section_annotation,
-    value_widths,
-    verdict_cell,
-    verdict_parts,
-    verdict_widths,
 )
-from gymrat.report.table.markup import aggregate_label_cell, variant_name_cell
-from gymrat.report.table.render import metric_column_width, row_name_cell
 from gymrat.report.types import candidate_at
 
 if TYPE_CHECKING:
@@ -67,7 +71,8 @@ if TYPE_CHECKING:
     from gymrat.model import GeomeanResult, MetricVerdict
     from gymrat.report.display import DisplayClass
     from gymrat.report.format import MetricCellParts
-    from gymrat.report.table import BodyLine, TableCell, VerdictWidths
+    from gymrat.report.table.markup import VerdictWidths
+    from gymrat.report.table.render import BodyLine, TableCell
     from gymrat.report.types import CandidateComparison, ComparisonResult, MetricComparison
 
 # The glyph slot a geomean figure fills — a blank, since the row states a mean,

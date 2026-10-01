@@ -20,22 +20,20 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.text import Text
 
-from gymrat.report.table import (
+from gymrat.report.table.markup import VerdictParts, VerdictWidths, verdict_cell
+from gymrat.report.table.render import (
     AggregateLine,
     GroupLine,
     HeaderLine,
     MetricLine,
-    VerdictParts,
-    VerdictWidths,
+    RuleLine,
     render_body,
-    verdict_cell,
 )
-from gymrat.report.table.render import RuleLine
-from gymrat.report.text import render_report
+from gymrat.report.text.render import render_report
 from gymrat.verdict import GroupAggregate, KindAggregate
 
 if TYPE_CHECKING:
-    from gymrat.report.table import BodyLine
+    from gymrat.report.table.render import BodyLine
     from gymrat.report.types import ComparisonResult
 from tests.report._inputs import (
     create_candidate,

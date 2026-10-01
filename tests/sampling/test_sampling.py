@@ -20,7 +20,7 @@ from gymrat.progress_events import (
     PrepareStarted,
     ProgressEvent,
 )
-from gymrat.report.text import format_cleanup_failures
+from gymrat.report.text.render import format_cleanup_failures
 from gymrat.sampling import (
     MetricStats,
     RunOptions,

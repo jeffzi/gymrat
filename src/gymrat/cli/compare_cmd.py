@@ -43,8 +43,9 @@ from gymrat.cli.shared import (
 from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.config.resolve import resolve_config
 from gymrat.errors import GATE_EXIT_CODE
-from gymrat.report import render_json, render_report
+from gymrat.report.json_doc import render_json
 from gymrat.report.tally import count_verdicts
+from gymrat.report.text.render import render_report
 from gymrat.report.types import (
     CandidateComparison,
     ComparisonResult,

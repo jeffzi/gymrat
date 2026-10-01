@@ -20,7 +20,7 @@ import pytest
 
 from gymrat.config.types import KindEntry
 from gymrat.model import Exclusion
-from gymrat.report.text import render_report
+from gymrat.report.text.render import render_report
 from gymrat.report.types import ReportOptions
 from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._inputs import (

@@ -30,6 +30,7 @@ from gymrat.progress_events import (
     PrepareStarted,
     ProgressEvent,
 )
+from gymrat.report.format import format_delta
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -497,9 +498,6 @@ def format_primary_delta(primary_delta_pct: float | None) -> str:
         for a value that rounds to zero), or :data:`MISSING_DELTA` for a
         missing or non-finite delta.
     """
-    # Lazy import: the gymrat.report package import loads rich, which this module must not.
-    from gymrat.report.format import format_delta  # noqa: PLC0415
-
     if primary_delta_pct is None or not math.isfinite(primary_delta_pct):
         return MISSING_DELTA
     return format_delta(Effect(value=primary_delta_pct, unit="percent"))

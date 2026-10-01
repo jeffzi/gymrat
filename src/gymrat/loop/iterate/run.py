@@ -49,7 +49,7 @@ from gymrat.report.loop import (
     format_verdict_block,
 )
 from gymrat.report.style import RENDER_WIDTH, render_lines
-from gymrat.report.text import render_report
+from gymrat.report.text.render import render_report
 from gymrat.report.types import ComparisonResult, ReportOptions
 from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
@@ -67,13 +67,12 @@ if TYPE_CHECKING:
     from gymrat.warn import WarnSink
 
 __all__ = [
-    "BenchRunOutputs",
     "BudgetExceededError",
     "IterateOptions",
     "IterateResult",
     "LoopStopError",
-    "build_iteration_comparison",
     "iterate_session",
+    "stop_condition",
 ]
 
 

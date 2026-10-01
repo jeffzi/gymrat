@@ -1,0 +1,41 @@
+# serializer version: 1
+# name: test_render_probe_report_when_rendered_does_match_its_golden[colored]
+  list([
+    '\x1b[1mgymrat probe\x1b[0m \x1b[2m·\x1b[0m \x1b[1;4mexperiment\x1b[0m \x1b[2m·\x1b[0m 6 samples \x1b[2m·\x1b[0m adapter: mitata',
+    '',
+    '─────────────────┬──────────────┬──────────────┬─────────────',
+    '\x1b[1mtime\x1b[0m             │ \x1b[1;4mexperiment\x1b[0m   │ baseline     │ delta',
+    '─────────────────┼──────────────┼──────────────┼─────────────',
+    'total_ns         │ 90ns ± 2%    │ 100ns        │ \x1b[32m-10.0%\x1b[0m',
+    '',
+    '─────────────────┬──────────────┬──────────────┬─────────────',
+    '\x1b[1mthroughput\x1b[0m       │ \x1b[1;4mexperiment\x1b[0m   │ baseline     │ delta',
+    '─────────────────┼──────────────┼──────────────┼─────────────',
+    'ops_per_sec      │ 1200 ± 2%    │  1000        │ \x1b[32m+20.0%\x1b[0m',
+    '',
+    '─────────────────┬──────────────┬──────────────┬─────────────',
+    '\x1b[1mother\x1b[0m            │ \x1b[1;4mexperiment\x1b[0m   │ baseline     │ delta',
+    '─────────────────┼──────────────┼──────────────┼─────────────',
+    'cold_start_ns    │ 90ns ± 2%    │              │ no reference',
+  ])
+# ---
+# name: test_render_probe_report_when_rendered_does_match_its_golden[plain]
+  list([
+    'gymrat probe · experiment · 6 samples · adapter: mitata',
+    '',
+    '─────────────────┬──────────────┬──────────────┬─────────────',
+    'time             │ experiment   │ baseline     │ delta',
+    '─────────────────┼──────────────┼──────────────┼─────────────',
+    'total_ns         │ 90ns ± 2%    │ 100ns        │ -10.0%',
+    '',
+    '─────────────────┬──────────────┬──────────────┬─────────────',
+    'throughput       │ experiment   │ baseline     │ delta',
+    '─────────────────┼──────────────┼──────────────┼─────────────',
+    'ops_per_sec      │ 1200 ± 2%    │  1000        │ +20.0%',
+    '',
+    '─────────────────┬──────────────┬──────────────┬─────────────',
+    'other            │ experiment   │ baseline     │ delta',
+    '─────────────────┼──────────────┼──────────────┼─────────────',
+    'cold_start_ns    │ 90ns ± 2%    │              │ no reference',
+  ])
+# ---

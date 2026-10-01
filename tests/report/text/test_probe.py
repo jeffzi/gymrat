@@ -28,7 +28,9 @@ from tests.report._inputs import (
 )
 
 if TYPE_CHECKING:
-    from gymrat.loop.probe import ProbeMetric
+    from syrupy.assertion import SnapshotAssertion
+
+    from gymrat.loop.probe import ProbeMetric, ProbeResult
     from gymrat.model import Direction
 
 # ---------------------------------------------------------------------------
@@ -218,3 +220,35 @@ def test_render_probe_report_when_color_off_does_carry_the_same_text_unstyled():
 
     assert "\x1b[" not in output
     assert output == strip_ansi(render_probe_report(result, ReportOptions(color=True)))
+
+
+# ---------------------------------------------------------------------------
+# whole report — golden
+# ---------------------------------------------------------------------------
+
+
+def _golden_probe() -> ProbeResult:
+    """A probe with a paired metric, a higher-is-better metric, and one the baseline lacks."""
+    return probe_result(
+        metrics=[
+            probe_metric("total_ns", unit="ns", kind="time"),
+            probe_metric(
+                "ops_per_sec",
+                median=1200.0,
+                reference_median=1000.0,
+                delta_pct=20.0,
+                direction="higher",
+                kind="throughput",
+            ),
+            probe_metric("cold_start_ns", reference_median=None, delta_pct=None, unit="ns"),
+        ]
+    )
+
+
+@pytest.mark.parametrize("color", [False, True], ids=["plain", "colored"])
+def test_render_probe_report_when_rendered_does_match_its_golden(
+    color: bool, snapshot: SnapshotAssertion
+):
+    report = render_probe_report(_golden_probe(), ReportOptions(color=color))
+
+    assert report.split("\n") == snapshot

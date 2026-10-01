@@ -57,7 +57,7 @@ from gymrat.config.resolve import resolve_benchless_config, resolve_config
 from gymrat.config.types import CliFlags
 from gymrat.errors import GATE_EXIT_CODE
 from gymrat.loop.discard import DiscardResult, discard_session
-from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError, iterate_session
+from gymrat.loop.iterate.run import IterateOptions, IterateResult, LoopStopError, iterate_session
 from gymrat.loop.keep import KeepOptions, KeepResult, keep_session
 from gymrat.loop.status import status_data, status_session
 from gymrat.observers import fan_out

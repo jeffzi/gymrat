@@ -19,7 +19,7 @@ import pytest
 
 from gymrat.config.types import HooksConfig, MetricEntry, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
-from gymrat.loop.iterate import iterate_session
+from gymrat.loop.iterate.run import iterate_session
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     Confirm,

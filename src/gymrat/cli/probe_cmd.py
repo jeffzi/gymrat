@@ -39,7 +39,8 @@ from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.command_run import with_repo_lock
 from gymrat.config.resolve import resolve_config
 from gymrat.loop.probe import EXPERIMENT_LABEL, ProbeOptions, ProbeResult, probe_session
-from gymrat.report import render_probe_json, render_probe_report
+from gymrat.report.json_doc import render_probe_json
+from gymrat.report.text.probe import render_probe_report
 from gymrat.report.types import ReportOptions
 from gymrat.session.paths import repo_root
 

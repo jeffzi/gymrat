@@ -25,7 +25,7 @@ import pytest
 
 from gymrat.config.types import KindEntry
 from gymrat.model import Exclusion
-from gymrat.report.text import render_report
+from gymrat.report.text.render import render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
 from gymrat.targets import WorktreeRemovalFailure
 from gymrat.verdict import GroupAggregate, KindAggregate

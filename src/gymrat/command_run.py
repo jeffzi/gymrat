@@ -24,7 +24,7 @@ import typer
 from gymrat import clock as _clock
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.git import NotAGitRepositoryError
-from gymrat.loop.iterate import LoopStopError
+from gymrat.loop.iterate.run import LoopStopError
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
 from gymrat.session.records import CommandRecord

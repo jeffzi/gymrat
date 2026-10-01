@@ -20,7 +20,7 @@ from gymrat.command_run import CommandTrace, command_origin, config_trace_args, 
 from gymrat.config.types import CliFlags
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
-from gymrat.loop.iterate import LoopStopError
+from gymrat.loop.iterate.run import LoopStopError
 from gymrat.session.lock import _os_lock_file, acquire_lock
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
 from gymrat.session.records import CommandRecord

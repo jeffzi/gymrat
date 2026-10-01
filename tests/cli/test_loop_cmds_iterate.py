@@ -16,7 +16,7 @@ import pytest
 from gymrat import signals
 from gymrat.cli.app import app
 from gymrat.cli.iterate.progress import IterateRenderer
-from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError
+from gymrat.loop.iterate.run import IterateOptions, IterateResult, LoopStopError
 from gymrat.progress_events import JudgeStarted, PrepareFinished, PrepareStarted, ProgressEvent
 from gymrat.session.paths import progress_path, session_jsonl_path
 from gymrat.session.progress_file import ProgressSnapshot, write_progress

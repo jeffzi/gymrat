@@ -24,7 +24,7 @@ from gymrat.verdict import infer_group
 if TYPE_CHECKING:
     from gymrat.loop.discard import DiscardResult
     from gymrat.loop.finalize import FinalizeResult
-    from gymrat.loop.iterate import IterateResult
+    from gymrat.loop.iterate.run import IterateResult
     from gymrat.loop.keep import KeepResult
     from gymrat.loop.probe import ProbeMetric, ProbeResult
     from gymrat.loop.start import StartResult

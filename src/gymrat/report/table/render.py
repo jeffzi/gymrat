@@ -29,23 +29,11 @@ from rich.text import Text
 from gymrat.report.sections import GroupBlock, MetricBlock, informational_tag
 from gymrat.report.style import RENDER_WIDTH, markup, render_lines
 from gymrat.report.table.markup import (
-    CELL_GUTTER,
     METRIC_COLUMN_HEADER,
     METRIC_COLUMN_MIN,
     VALUE_COLUMN_MIN,
-    VERDICT_COLUMN_MIN,
-    ValueWidths,
-    VerdictParts,
-    VerdictWidths,
-    geomean_column_cell,
-    group_metric_cell,
-    header_metric_cell,
-    indented_section_label,
     join_value_cell,
     value_widths,
-    verdict_cell,
-    verdict_parts,
-    verdict_widths,
 )
 
 if TYPE_CHECKING:
@@ -610,10 +598,6 @@ def render_body[Metric, Cell](
 
 
 __all__ = [
-    "CELL_GUTTER",
-    "METRIC_COLUMN_MIN",
-    "VALUE_COLUMN_MIN",
-    "VERDICT_COLUMN_MIN",
     "AggregateLine",
     "AggregateRow",
     "AggregateRows",
@@ -622,29 +606,18 @@ __all__ = [
     "HeaderLine",
     "MetricLine",
     "NamedRow",
+    "RuleLine",
     "TableCell",
     "TableSkeleton",
-    "ValueWidths",
-    "VerdictParts",
-    "VerdictWidths",
     "aggregate_label_lengths",
     "build_cell_dispatcher",
     "compute_column_width",
-    "geomean_column_cell",
-    "group_metric_cell",
-    "header_metric_cell",
-    "indented_section_label",
     "is_grouped",
-    "join_value_cell",
     "metric_column_width",
     "plan_body",
     "plan_table_skeleton",
     "render_body",
     "row_name_cell",
     "section_annotation",
-    "value_widths",
-    "verdict_cell",
-    "verdict_parts",
-    "verdict_widths",
     "widest_header_label",
 ]

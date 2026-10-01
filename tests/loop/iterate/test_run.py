@@ -16,7 +16,12 @@ import pytest
 
 from gymrat.config.types import HooksConfig, MetricEntry, StopConfig
 from gymrat.errors import GymratError, hint_of
-from gymrat.loop.iterate import BudgetExceededError, IterateOptions, LoopStopError, iterate_session
+from gymrat.loop.iterate.run import (
+    BudgetExceededError,
+    IterateOptions,
+    LoopStopError,
+    iterate_session,
+)
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
@@ -68,6 +73,8 @@ from tests.session.records._fixtures import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+
+    from syrupy.assertion import SnapshotAssertion
 
     from tests.loop.iterate._fixtures import CollectSamplesRecorder
 
@@ -343,6 +350,14 @@ async def test_iterate_session_when_target_met_does_state_it_above_the_next_step
     )
 
     assert trimmed_report_lines(result.report)[-2] == "target reached — keep it"
+
+
+async def test_iterate_session_when_measured_does_render_the_report_golden(
+    settled: str, samples_mock: CollectSamplesRecorder, snapshot: SnapshotAssertion
+):
+    result = await iterate_session(settled, resolved_config(primary="total_ms"))
+
+    assert result.report.split("\n") == snapshot
 
 
 @pytest.mark.parametrize(
