@@ -8,6 +8,7 @@ and a missing ``--config`` surfacing as a config failure rather than a crash.
 
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -192,16 +193,35 @@ def test_doctor_when_stdout_reader_closed_does_exit_zero_without_stderr(
 
 
 # ---------------------------------------------------------------------------
-# skill file: directory at path
+# skill file: only a regular file at the path counts as installed
 # ---------------------------------------------------------------------------
 
 
-def test_doctor_when_skill_path_is_directory_does_not_report_installed(
+def _skill_directory(path: Path) -> None:
+    """Put a directory where the skill file belongs."""
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _skill_file(path: Path) -> None:
+    """Put a regular skill file at its path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("skill", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("make_entry", "installed"),
+    [
+        pytest.param(_skill_directory, False, id="directory"),
+        pytest.param(_skill_file, True, id="file"),
+    ],
+)
+def test_doctor_when_skill_path_checked_does_report_installed_only_for_a_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    make_entry: Callable[[Path], None],
+    installed: bool,
 ):
-    skill_dir = tmp_path / SKILL_RELATIVE_PATH
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    make_entry(tmp_path / SKILL_RELATIVE_PATH)
 
     git_env = GitEnvironment(git_available=True, inside_git_repo=True, repo_root_dir=str(tmp_path))
     monkeypatch.setattr(
@@ -222,4 +242,4 @@ def test_doctor_when_skill_path_is_directory_does_not_report_installed(
     runner.invoke(app, ["doctor"])
 
     assert len(workflow_calls) >= 1
-    assert workflow_calls[0].get("skill_file_exists") is False
+    assert workflow_calls[0].get("skill_file_exists") is installed
