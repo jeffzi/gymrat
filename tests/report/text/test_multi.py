@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config import KindEntry
+from gymrat.config.types import KindEntry
 from gymrat.model import Exclusion
 from gymrat.report.text import render_report
 from gymrat.report.types import ReportOptions

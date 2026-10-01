@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.config import ResolvedConfig
+from gymrat.config.types import ResolvedConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.loop.start import start_session
 from gymrat.loop.sync import SyncResult, sync_to_experiment

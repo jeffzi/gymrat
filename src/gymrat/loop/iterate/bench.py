@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Literal
 
 from gymrat.adapters import get_adapter
 from gymrat.clock import monotonic_ms
-from gymrat.config import GEOMEAN_PRIMARY, ResolvedConfig
+from gymrat.config.types import GEOMEAN_PRIMARY, ResolvedConfig
 from gymrat.model import MetricVerdict, Observations, ResolvedMetricMeta
 from gymrat.progress_events import JudgeStarted, emit_progress
 from gymrat.report.loop import (
@@ -35,7 +35,7 @@ from gymrat.targets import InPlaceTarget
 from gymrat.verdict import compute_geomean, compute_kind_aggregates, compute_verdicts
 
 if TYPE_CHECKING:
-    from gymrat.config import KindEntry
+    from gymrat.config.types import KindEntry
     from gymrat.loop.iterate.confirm import Confirmation
     from gymrat.loop.iterate.run import IterateOptions
     from gymrat.report.types import ComparisonResult, MetricComparisons

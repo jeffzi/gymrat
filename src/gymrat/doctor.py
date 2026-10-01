@@ -39,14 +39,8 @@ from typing import Literal
 from rich.markup import escape
 
 from gymrat.adapters import get_adapter
-from gymrat.config import (
-    CONFIG_DEFAULTS,
-    BenchlessConfig,
-    CliFlags,
-    ConfigInspection,
-    StopConfig,
-    inspect_config,
-)
+from gymrat.config.resolve import ConfigInspection, inspect_config
+from gymrat.config.types import CONFIG_DEFAULTS, BenchlessConfig, CliFlags, StopConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.git import NotAGitRepositoryError, try_git
 from gymrat.plural import pluralize

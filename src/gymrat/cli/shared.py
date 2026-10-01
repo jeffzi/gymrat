@@ -25,7 +25,7 @@ from gymrat.adapters import AdapterError
 from gymrat.cli import console
 from gymrat.cli.options import OutputFormat
 from gymrat.cli.progress import ProgressReporter
-from gymrat.config import CliFlags, ResolvedConfig
+from gymrat.config.types import CliFlags, ResolvedConfig
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError, hint_of
 from gymrat.exec import kill_live_process_groups
 from gymrat.report.json_doc import BudgetSummary

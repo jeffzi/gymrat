@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.config import Effort
+    from gymrat.config.types import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.store import SessionState
     from gymrat.supervisor.supervise import EndedBy

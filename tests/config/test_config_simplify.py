@@ -12,13 +12,8 @@ from pathlib import Path
 import pytest
 import tomli_w
 
-from gymrat.config import (
-    BenchlessConfig,
-    CliFlags,
-    HooksConfig,
-    StopConfig,
-    resolve_benchless_config,
-)
+from gymrat.config.resolve import resolve_benchless_config
+from gymrat.config.types import BenchlessConfig, CliFlags, HooksConfig, StopConfig
 from gymrat.errors import GymratError
 
 
@@ -33,9 +28,9 @@ def write_config(directory: Path, content: dict[str, object]) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_config_package_when_imported_fresh_does_not_raise_import_error():
+def test_config_resolve_when_imported_fresh_does_not_raise_import_error():
     result = subprocess.run(
-        [sys.executable, "-c", "import gymrat.config"],
+        [sys.executable, "-c", "import gymrat.config.resolve"],
         capture_output=True,
         text=True,
         timeout=10,
@@ -43,7 +38,7 @@ def test_config_package_when_imported_fresh_does_not_raise_import_error():
     )
 
     assert result.returncode == 0, (
-        f"Importing gymrat.config failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        f"Importing gymrat.config.resolve failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
 
 

@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from gymrat.clock import now_ns
-from gymrat.config import HooksConfig, ResolvedConfig, StopConfig
+from gymrat.config.types import HooksConfig, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.start import StartResult, start_session
 from gymrat.session.paths import (

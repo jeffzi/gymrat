@@ -24,7 +24,7 @@ from gymrat.session.records import CommandRecord, DiscardRecord, HookRecord, Kee
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from gymrat.config import BenchlessConfig
+    from gymrat.config.types import BenchlessConfig
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import TurnEndEvent

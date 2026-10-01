@@ -32,7 +32,7 @@ from gymrat.cli.supervise import cmd as supervise_cmd
 from gymrat.cli.supervise.preflight import run_preflight
 from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.cli.supervise.types import ReadSessionResult, SuperviseReporter
-from gymrat.config import Effort, ResolvedConfig, StopConfig, SuperviseConfig
+from gymrat.config.types import Effort, ResolvedConfig, StopConfig, SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.exec import kill_live_process_groups
 from gymrat.loop.start import StartResult

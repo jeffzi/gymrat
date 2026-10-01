@@ -18,7 +18,7 @@ import pytest
 import tomli_w
 from typer.testing import CliRunner
 
-from gymrat.config import ResolvedConfig
+from gymrat.config.types import ResolvedConfig
 from gymrat.measure import MeasureOptions
 from gymrat.report.types import MeasurementResult
 from gymrat.session.paths import session_jsonl_path

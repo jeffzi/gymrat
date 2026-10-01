@@ -6,9 +6,15 @@ from pathlib import Path
 import pytest
 import tomli_w
 
-from gymrat.config import (
-    MAX_SAFE_INTEGER,
-    MAX_TIMEOUT_SECONDS,
+from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
+from gymrat.config.resolve import (
+    flag_problem,
+    inspect_config,
+    resolve_benchless_config,
+    resolve_config,
+    runbook_problem,
+)
+from gymrat.config.types import (
     BenchlessConfig,
     CliFlags,
     HooksConfig,
@@ -17,11 +23,6 @@ from gymrat.config import (
     ResolvedConfig,
     StopConfig,
     SuperviseConfig,
-    flag_problem,
-    inspect_config,
-    resolve_benchless_config,
-    resolve_config,
-    runbook_problem,
 )
 from gymrat.errors import GymratError
 

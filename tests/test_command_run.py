@@ -17,7 +17,7 @@ import typer
 from filelock import FileLock, Timeout
 
 from gymrat.command_run import CommandTrace, command_origin, config_trace_args, with_repo_lock
-from gymrat.config import CliFlags
+from gymrat.config.types import CliFlags
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate import LoopStopError

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from gymrat.adapters import get_adapter
-from gymrat.config import KindEntry
+from gymrat.config.types import KindEntry
 from gymrat.model import (
     MetricVerdict,
     Observations,

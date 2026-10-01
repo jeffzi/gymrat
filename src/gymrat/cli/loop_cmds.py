@@ -53,7 +53,8 @@ from gymrat.cli.shared import (
 )
 from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
-from gymrat.config import CliFlags, resolve_benchless_config, resolve_config
+from gymrat.config.resolve import resolve_benchless_config, resolve_config
+from gymrat.config.types import CliFlags
 from gymrat.errors import GATE_EXIT_CODE
 from gymrat.loop.discard import DiscardResult, discard_session
 from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError, iterate_session

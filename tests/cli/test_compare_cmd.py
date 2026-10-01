@@ -26,7 +26,7 @@ from typer.testing import CliRunner
 
 from gymrat.cli.app import app
 from gymrat.cli.compare_cmd import _serialize_fail_on
-from gymrat.config import CliFlags, KindEntry, MetricEntry, ResolvedConfig
+from gymrat.config.types import CliFlags, KindEntry, MetricEntry, ResolvedConfig
 from gymrat.report.types import (
     ComparisonResult,
     FailOnCondition,

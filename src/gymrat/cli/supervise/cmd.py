@@ -38,13 +38,8 @@ from gymrat.cli.supervise.preflight import doctor_gate, run_preflight, validate_
 from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.cli.supervise.summary import SessionLabels, build_summary
 from gymrat.clock import now_ms, now_ns
-from gymrat.config import (
-    CliFlags,
-    Effort,
-    ResolvedConfig,
-    SuperviseConfig,
-    resolve_config,
-)
+from gymrat.config.resolve import resolve_config
+from gymrat.config.types import CliFlags, Effort, ResolvedConfig, SuperviseConfig
 from gymrat.display_path import abbreviate_home
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.exec import kill_live_process_groups

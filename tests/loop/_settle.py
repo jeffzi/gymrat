@@ -16,13 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.config import (
-    HooksConfig,
-    KindEntry,
-    MetricEntry,
-    ResolvedConfig,
-    StopConfig,
-)
+from gymrat.config.types import HooksConfig, KindEntry, MetricEntry, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.loop.start import start_session

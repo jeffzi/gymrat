@@ -51,7 +51,7 @@ from tests.cli.supervise._fixtures import (
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import SuperviseReporter
-    from gymrat.config import Effort
+    from gymrat.config.types import Effort
 
 
 # ---------------------------------------------------------------------------

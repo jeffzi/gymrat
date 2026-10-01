@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
     from rich.console import Console, RenderableType
 
-    from gymrat.config import Effort
+    from gymrat.config.types import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.records import SessionLogRecord
     from gymrat.supervisor.events import SessionEvent

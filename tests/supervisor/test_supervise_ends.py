@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, get_args
 import pytest
 
 from gymrat.clock import now_ms, now_ns
-from gymrat.config import BenchlessConfig, StopConfig
+from gymrat.config.types import BenchlessConfig, StopConfig
 from gymrat.session.paths import session_dir, session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor.events import (

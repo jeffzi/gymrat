@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config import HooksConfig, MetricEntry, ResolvedConfig, StopConfig
+from gymrat.config.types import HooksConfig, MetricEntry, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.iterate import iterate_session
 from gymrat.session.paths import session_jsonl_path

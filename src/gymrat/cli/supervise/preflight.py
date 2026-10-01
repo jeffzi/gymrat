@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from gymrat.cli.console import resolve_stream_color
 from gymrat.cli.shared import SharedFlags, begin_run, run_options_of, write_and_flush, write_stdout
-from gymrat.config import CliFlags, ResolvedConfig
+from gymrat.config.types import CliFlags, ResolvedConfig
 from gymrat.doctor import build_doctor_report, render_doctor_report
 from gymrat.errors import GymratError
 from gymrat.loop.baseline import measure_baseline

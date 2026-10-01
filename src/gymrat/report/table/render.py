@@ -51,7 +51,7 @@ from gymrat.report.table.markup import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    from gymrat.config import KindEntry
+    from gymrat.config.types import KindEntry
     from gymrat.report.format import MetricCellParts
     from gymrat.report.sections import SectionLayout, SectionPlan
 

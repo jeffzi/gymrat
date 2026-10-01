@@ -20,7 +20,7 @@ import pytest
 from opentelemetry.trace import StatusCode
 
 from gymrat.cli.supervise import span_lifecycle
-from gymrat.config import SuperviseConfig
+from gymrat.config.types import SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
 from gymrat.supervisor.driver import SessionPrompt
