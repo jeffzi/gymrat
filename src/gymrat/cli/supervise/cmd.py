@@ -276,6 +276,7 @@ def _create_reporter(ctx: _SessionContext, mode: Literal["live", "plain"]) -> Su
         model=ctx.model,
         effort=ctx.effort,
         session_id=ctx.launch.session_id,
+        branch=ctx.branch,
     )
 
 

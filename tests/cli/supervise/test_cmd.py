@@ -16,7 +16,7 @@ import os
 import re
 import time
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,7 +60,9 @@ from tests.cli._session import closed_stdout_error, closed_stdout_runner
 from tests.cli.supervise._fixtures import (
     CleanupRegistry,
     empty_session_state,
+    fire_launch,
     make_supervision_result,
+    render_frame,
     session_state_three_iterations,
 )
 from tests.conftest import hold_lock
@@ -184,13 +186,15 @@ def _config(
     )
 
 
-def _make_start_result(root: str = "/repo") -> StartResult:
-    """Build a ``StartResult`` carrying sensible defaults for the test harness."""
+def _make_start_result(root: str = "/repo", branch: str | None = None) -> StartResult:
+    """Build a ``StartResult`` carrying sensible defaults, its session on ``branch`` when given."""
+    overrides = {} if branch is None else {"branch": branch}
     rec = session_record(
         worktrees=Worktrees(
             experiment=f"{root}/.gymrat/worktrees/experiment",
             baseline=f"{root}/.gymrat/worktrees/baseline",
         ),
+        **overrides,
     )
     return StartResult(
         session=rec,
@@ -207,6 +211,7 @@ def _install_seams(
     session_result: ReadSessionResult | None = None,
     final_text: str | None = None,
     raises: Exception | None = None,
+    branch: str | None = None,
 ) -> _Seams:
     """Replace every seam ``supervise.cmd`` composes over, returning the recorders."""
     seams = _Seams()
@@ -230,7 +235,7 @@ def _install_seams(
             "max_minutes": max_minutes,
             "force": force,
         })
-        return _make_start_result(root)
+        return _make_start_result(root, branch)
 
     def fake_compose(
         cfg: object,
@@ -638,6 +643,74 @@ def test_supervise_when_max_minutes_fractional_does_forward_it_without_flooring_
 
     assert result.exit_code == 0
     assert seams.reporter_calls[0]["max_minutes"] == 5.5
+
+
+def _dashboard_title(reporter_kwargs: Mapping[str, Any]) -> str:
+    """Build the real dashboard from the arguments the command passed and return its title line."""
+    reporter = create_supervise_reporter(**reporter_kwargs)
+    try:
+        fire_launch(reporter.observer, 1000)
+        frame = render_frame(reporter)
+        return next(line for line in frame.splitlines() if line.startswith("╭"))
+    finally:
+        reporter.stop()
+
+
+def test_supervise_when_live_and_session_has_branch_does_show_it_in_the_dashboard_title(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch, branch="banana")
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.resolve_render_mode", _live_mode)
+
+    result = _run("optimize it", "--max-minutes", "10")
+    title = _dashboard_title(seams.reporter_calls[0])
+
+    assert result.exit_code == 0
+    assert "· branch banana" in title
+
+
+def test_supervise_when_live_and_session_has_no_branch_does_omit_it_from_the_dashboard_title(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch, branch="")
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.resolve_render_mode", _live_mode)
+
+    result = _run("optimize it", "--max-minutes", "10")
+    title = _dashboard_title(seams.reporter_calls[0])
+
+    assert result.exit_code == 0
+    assert "branch" not in title
+
+
+def _plain_mode() -> Literal["live", "plain"]:
+    """Stand in for ``resolve_render_mode`` so the run reports in plain mode."""
+    return "plain"
+
+
+def _plain_writes(reporter_kwargs: Mapping[str, Any]) -> list[str]:
+    """Build the real plain reporter from the command's arguments and return what launch prints."""
+    writes: list[str] = []
+    reporter = create_supervise_reporter(**reporter_kwargs, plain_write=writes.append)
+    try:
+        fire_launch(reporter.observer, 1000)
+    finally:
+        reporter.stop()
+    return writes
+
+
+def test_supervise_when_plain_and_session_has_branch_does_print_no_title(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch, branch="banana")
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.resolve_render_mode", _plain_mode)
+
+    result = _run("optimize it", "--max-minutes", "10")
+    writes = _plain_writes(seams.reporter_calls[0])
+
+    assert result.exit_code == 0
+    assert writes
+    assert not any("banana" in line for line in writes)
+    assert "banana" not in strip_ansi(result.stderr)
 
 
 def test_supervise_when_no_color_passed_does_still_run_supervise(
