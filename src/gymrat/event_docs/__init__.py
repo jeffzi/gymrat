@@ -18,7 +18,7 @@ from pydantic import Field, TypeAdapter
 
 from gymrat.event_docs.asyncapi import READERS, render_asyncapi, render_asyncapi_yaml
 from gymrat.event_docs.reference import render_reference
-from gymrat.session.records.models import SessionLogRecord
+from gymrat.session.records import SessionLogRecord
 from gymrat.supervisor.events import session_event_adapter
 
 _SESSION_LOG_TITLE = "gymrat session log record"

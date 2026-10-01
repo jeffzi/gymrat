@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from gymrat.config import CliFlags
-    from gymrat.session.records.models import SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import CommandOrigin, CommandReason
 
 import typer
@@ -27,7 +27,7 @@ from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate import LoopStopError
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
-from gymrat.session.records.models import CommandRecord
+from gymrat.session.records import CommandRecord
 from gymrat.session.store import append_record, recover_torn_tail, session_header
 from gymrat.warn import warn_to_stderr
 

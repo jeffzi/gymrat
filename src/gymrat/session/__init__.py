@@ -11,7 +11,6 @@ from gymrat.session.paths import (
     supervise_lockfile_path,
 )
 from gymrat.session.records import (
-    SCHEMA_VERSION,
     BaselineRecord,
     CommandRecord,
     Confirm,
@@ -32,7 +31,7 @@ from gymrat.session.records import (
     parse_record,
     record_to_wire,
 )
-from gymrat.session.schema import CommandOrigin, CommandReason, KeepReason
+from gymrat.session.schema import SCHEMA_VERSION, CommandOrigin, CommandReason, KeepReason
 from gymrat.session.store import (
     RequiredSession,
     SessionState,

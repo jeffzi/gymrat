@@ -21,7 +21,7 @@ import pytest
 
 from gymrat.cli.supervise.progress import make_default_read
 from gymrat.cli.supervise.types import ReadSessionResult
-from gymrat.session.records.models import BaselineRecord, IterationPrimary
+from gymrat.session.records import BaselineRecord, IterationPrimary
 from gymrat.supervisor.events import TextDeltaEvent
 from tests.cli.supervise._fixtures import (
     _throwing_read,

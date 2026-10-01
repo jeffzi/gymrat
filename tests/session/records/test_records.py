@@ -8,10 +8,11 @@ from gymrat.session.records import (
     FinalizeRecord,
     HookRecord,
     IterationRecord,
+    NonFiniteNumberError,
     SessionRecord,
     StopRecord,
+    decode_log_line,
 )
-from gymrat.session.records.parse import NonFiniteNumberError, decode_log_line
 from tests.session.records._fixtures import session_record
 from tests.session.records._wire import (
     AT,

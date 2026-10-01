@@ -24,7 +24,7 @@ from typing import Annotated, Any, Literal, get_args
 from pydantic import BaseModel, Field, TypeAdapter
 
 from gymrat.session import SessionLogRecord
-from gymrat.session.records.models import SESSION_LOG_MODELS
+from gymrat.session.records import SESSION_LOG_MODELS
 from gymrat.supervisor import SessionEvent
 from gymrat.supervisor.events import session_event_adapter
 

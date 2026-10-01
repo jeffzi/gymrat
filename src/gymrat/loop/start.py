@@ -18,7 +18,8 @@ from gymrat.clock import now_ns
 from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
 from gymrat.session.paths import archived_session_path, session_jsonl_path
-from gymrat.session.records import SCHEMA_VERSION, SessionConfig, SessionHooks, SessionRecord
+from gymrat.session.records import SessionConfig, SessionHooks, SessionRecord
+from gymrat.session.schema import SCHEMA_VERSION
 from gymrat.session.store import SessionState, append_record, fold_session, read_records
 from gymrat.session.workspace import BaselineRef, create_workspace, recreate_workspace
 from gymrat.targets import RefTarget, resolve_target
