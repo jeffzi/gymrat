@@ -27,8 +27,8 @@ from pydantic.json_schema import SkipJsonSchema
 from pydantic_core import PydanticSerializationError
 
 from gymrat.config.types import Effort
+from gymrat.display_path import abbreviate_home
 from gymrat.observers import fan_out
-from gymrat.paths import abbreviate_home
 
 # ---------------------------------------------------------------------------
 # Event vocabulary

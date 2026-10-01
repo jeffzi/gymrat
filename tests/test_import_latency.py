@@ -55,6 +55,7 @@ import sys
 import gymrat
 import gymrat.stats
 import gymrat.model
+import gymrat.verdict
 import gymrat.adapters
 import gymrat.exec
 import gymrat.signals
@@ -63,7 +64,7 @@ import gymrat.targets
 import gymrat.supervisor
 import gymrat.supervisor.tools
 import gymrat.supervisor.hooks
-import gymrat.supervisor.hooks_files
+import gymrat.cli.supervise.span_lifecycle
 import gymrat.telemetry
 import gymrat.telemetry.attributes
 import gymrat.telemetry.ids

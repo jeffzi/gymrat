@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
-from gymrat.supervisor import hooks_files
-from gymrat.supervisor.hooks_files import check_file_edit
+from gymrat.supervisor import hooks
+from gymrat.supervisor.hooks import check_file_edit
 
 _needs_symlinks = pytest.mark.skipif(
     sys.platform == "win32", reason="creating symlinks needs extra privileges on Windows"
@@ -203,7 +203,7 @@ def test_check_file_edit_when_posix_tmp_missing_does_deny_path_under_it(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ):
     missing_tmp = Path(root.anchor) / "banana"
-    monkeypatch.setattr(hooks_files, "_POSIX_TMP", missing_tmp)
+    monkeypatch.setattr(hooks, "_POSIX_TMP", missing_tmp)
     path = str(missing_tmp / "x.py")
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
@@ -317,10 +317,12 @@ def test_check_file_edit_when_root_is_symlinked_spelling_does_deny_real_main_tre
         pytest.param({}, id="missing"),
         pytest.param({"file_path": 42}, id="not-string"),
         pytest.param({"file_path": ""}, id="empty"),
+        pytest.param(None, id="input-not-a-mapping"),
+        pytest.param("src/x.py", id="input-is-a-string"),
     ],
 )
 def test_check_file_edit_when_path_missing_or_empty_does_deny_naming_the_rule(
-    root: Path, tool_input: dict[str, object]
+    root: Path, tool_input: object
 ):
     hook_input = {"tool_name": "Edit", "tool_input": tool_input, "cwd": str(root)}
 
@@ -348,6 +350,21 @@ def test_check_file_edit_when_path_has_nul_does_deny_naming_the_rule(
     reason = check_file_edit(hook_input, root)
 
     assert reason == "edits belong in the experiment worktree: src/x\\x00.py cannot be resolved"
+
+
+@pytest.mark.parametrize("error", [ValueError("bad path"), OSError("too many links")])
+def test_check_file_edit_when_realpath_raises_does_deny_naming_the_rule(
+    root: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+):
+    def failing_realpath(_path: str) -> str:
+        raise error
+
+    monkeypatch.setattr(os.path, "realpath", failing_realpath)
+    hook_input = {"tool_name": "Edit", "tool_input": {"file_path": "src/x.py"}, "cwd": str(root)}
+
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == "edits belong in the experiment worktree: src/x.py cannot be resolved"
 
 
 # ---------------------------------------------------------------------------
@@ -389,10 +406,13 @@ def test_check_file_edit_when_path_has_special_characters_does_echo_them_on_one_
     [
         pytest.param("Read", {"file_path": "/banana/x.py"}, id="read"),
         pytest.param("Bash", {"command": "echo banana > /banana/x.py"}, id="bash"),
+        pytest.param(None, {"file_path": "/banana/x.py"}, id="name-missing"),
+        pytest.param(42, {"file_path": "/banana/x.py"}, id="name-not-a-string"),
+        pytest.param(["Edit"], {"file_path": "/banana/x.py"}, id="name-unhashable"),
     ],
 )
 def test_check_file_edit_when_tool_not_an_editing_tool_does_allow(
-    root: Path, tool_name: str, tool_input: dict[str, object]
+    root: Path, tool_name: object, tool_input: dict[str, object]
 ):
     hook_input = {"tool_name": tool_name, "tool_input": tool_input}
 

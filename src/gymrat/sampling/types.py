@@ -1,4 +1,4 @@
-"""Dataclasses and constants for the sampling subsystem."""
+"""Dataclasses for the sampling subsystem."""
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -146,11 +146,3 @@ class MetricStats:
 
     median: float | None
     spread: float | None
-
-
-_REF_HINT = (
-    "the worktree only contains files tracked at this ref; "
-    "untracked, gitignored, or not-yet-committed files are absent"
-)
-_LABEL_WIDTH = 11
-_MIN_SPREAD_SAMPLES = 2

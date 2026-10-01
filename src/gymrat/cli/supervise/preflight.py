@@ -14,14 +14,8 @@ import asyncio
 import sys
 from typing import TYPE_CHECKING
 
-from gymrat.cli.shared import (
-    SharedFlags,
-    begin_run,
-    resolve_stream_color,
-    run_options_of,
-    write_and_flush,
-    write_stdout,
-)
+from gymrat.cli.console import resolve_stream_color
+from gymrat.cli.shared import SharedFlags, begin_run, run_options_of, write_and_flush, write_stdout
 from gymrat.config import CliFlags, ResolvedConfig
 from gymrat.doctor.render import render_doctor_report
 from gymrat.doctor.report import build_doctor_report

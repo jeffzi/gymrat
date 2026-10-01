@@ -8,7 +8,7 @@ metric defaults and the resolver's fallbacks from drifting apart.
 from typing import Final
 
 from gymrat.adapters.types import MetricDefaults
-from gymrat.model.metrics import MetricUnit
+from gymrat.model import MetricUnit
 
 _METRIC_SUFFIXES: Final[tuple[tuple[str, MetricUnit, str], ...]] = (
     ("#time", "ns", "time"),

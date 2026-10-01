@@ -16,8 +16,9 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
-from gymrat.cli.lock import TOOL_FAILURE_EXIT_CODE
+from gymrat.cli.console import is_debug_mode
 from gymrat.cli.shared import BUGS_URL
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from tests._ansi import SGR_RE, strip_ansi
 from tests._rich import unwrap_panel
 from tests.cli._help import help_output
@@ -187,6 +188,36 @@ def test_app_when_debug_flag_does_show_traceback_on_error(
 
     assert result.exit_code == 2
     assert "Traceback" in result.output
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["init"], id="init"),
+        pytest.param(["compare", "main", "cand", "--bench", "sh bench.sh"], id="compare"),
+        pytest.param(["measure", "--bench", "sh bench.sh"], id="measure"),
+        pytest.param(["probe"], id="probe"),
+        pytest.param(["doctor"], id="doctor"),
+        pytest.param(["start"], id="start"),
+        pytest.param(["iterate", "--bench", "sh bench.sh"], id="iterate"),
+        pytest.param(["keep"], id="keep"),
+        pytest.param(["discard"], id="discard"),
+        pytest.param(["finalize"], id="finalize"),
+        pytest.param(["stop", "--message", "done"], id="stop"),
+        pytest.param(["status"], id="status"),
+        pytest.param(["sync"], id="sync"),
+        pytest.param(["supervise", "optimize", "--max-minutes", "1"], id="supervise"),
+        pytest.param(["export"], id="export"),
+    ],
+)
+def test_app_when_command_debug_flag_does_turn_debug_mode_on(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.chdir(tmp_path)
+
+    runner.invoke(app, [*argv, "--debug"])
+
+    assert is_debug_mode()
 
 
 # ---------------------------------------------------------------------------

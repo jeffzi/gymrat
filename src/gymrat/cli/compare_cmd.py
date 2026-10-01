@@ -5,16 +5,20 @@ progress reporter before any report or error text, renders the result to stdout
 once the lock is released, and gates the exit code on the ``--fail-on``
 conditions. The comparison engine is imported inside the action so assembling the
 CLI never pulls the heavy statistics stack.
+
+Only gating metrics participate in the fail-on gate — informational verdicts never
+trip an exit-code gate. Conditions are OR-ed: any one that trips fails the run.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, assert_never
+from typing import TYPE_CHECKING, Annotated, assert_never
 
 import typer
 
-from gymrat.cli.gating import should_fail_gate, warn_empty_geomean_gates
-from gymrat.cli.lock import GATE_EXIT_CODE, CommandTrace, config_trace_args, with_repo_lock
+from gymrat.cli.budget_report import budget_for_report, warn_duration_over_budget
+from gymrat.cli.command_run import CommandTrace, config_trace_args, with_repo_lock
+from gymrat.cli.console import apply_color_override, apply_debug
 from gymrat.cli.options import (
     AdapterOption,
     BenchOption,
@@ -32,25 +36,29 @@ from gymrat.cli.options import (
 from gymrat.cli.shared import (
     CompareFlags,
     ReportRenderers,
-    apply_color_override,
-    apply_debug,
     begin_run,
-    budget_for_report,
     emit_report,
     run_cli,
     run_options_of,
-    warn_duration_over_budget,
 )
 from gymrat.config import resolve_config
+from gymrat.errors import GATE_EXIT_CODE
 from gymrat.report import render_json, render_report
+from gymrat.report.tally import count_verdicts
 from gymrat.report.types import (
+    CandidateComparison,
     ComparisonResult,
     FailOnCondition,
     GeomeanFailOn,
+    MetricComparisons,
     RegressedFailOn,
     ReportOptions,
 )
 from gymrat.sampling import TargetSpec
+from gymrat.warn import WarnSink, warn_to_stderr
+
+if TYPE_CHECKING:
+    from gymrat.model import GeomeanResult
 
 _BaselineArgument = Annotated[
     TargetSpec,
@@ -99,6 +107,79 @@ def _serialize_fail_on(conditions: tuple[FailOnCondition, ...]) -> str:
 def _label_of(spec: TargetSpec) -> str:
     """The display label for ``spec`` — its explicit label, or the target itself."""
     return spec.label or spec.target
+
+
+def _gating_metrics(metrics: MetricComparisons) -> MetricComparisons:
+    """The gating subset of ``metrics`` — the only metrics a gate may judge."""
+    return {name: metric for name, metric in metrics.items() if metric.meta.gating}
+
+
+def _gated_geomeans_of(candidate: CandidateComparison) -> list[GeomeanResult]:
+    """The gated geomean of every kind that gates, one entry per such kind."""
+    return [kind.gated_geomean for kind in candidate.kinds if kind.gated_geomean is not None]
+
+
+def should_fail_gate(conditions: tuple[FailOnCondition, ...], result: ComparisonResult) -> bool:
+    """Return ``True`` when any condition trips — meaning the process should exit non-zero.
+
+    Args:
+        conditions: The fail-on conditions to evaluate (OR-ed).
+        result: The comparison result to check the conditions against.
+
+    Returns:
+        ``True`` when any condition trips.
+    """
+    if not conditions:
+        return False
+
+    gating = _gating_metrics(result.metrics)
+
+    for condition in conditions:
+        match condition:
+            case RegressedFailOn():
+                if any(
+                    count_verdicts(gating, index).regressed > 0
+                    for index in range(len(result.candidates))
+                ):
+                    return True
+            case GeomeanFailOn(pct=pct):
+                if any(
+                    geomean.n > 0 and geomean.value >= pct
+                    for candidate in result.candidates
+                    for geomean in _gated_geomeans_of(candidate)
+                ):
+                    return True
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    return False
+
+
+def warn_empty_geomean_gates(
+    conditions: tuple[FailOnCondition, ...],
+    result: ComparisonResult,
+    *,
+    warn: WarnSink = warn_to_stderr,
+) -> None:
+    """Warn once per candidate whose geomean gate had nothing stable to judge.
+
+    Runs only when a geomean condition is present; such a candidate never trips
+    the gate, so the warning is how the user learns the gate was inert for it.
+
+    Args:
+        conditions: The fail-on conditions in effect.
+        result: The comparison result to inspect for inert gates.
+        warn: Where each warning goes.
+    """
+    if not any(isinstance(condition, GeomeanFailOn) for condition in conditions):
+        return
+
+    for candidate in result.candidates:
+        if all(geomean.n == 0 for geomean in _gated_geomeans_of(candidate)):
+            warn(
+                f'warning: geomean gate for "{candidate.label}" '
+                "had no stable gating metrics to measure"
+            )
 
 
 async def _compare_body(

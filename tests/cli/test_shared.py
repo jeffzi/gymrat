@@ -1,9 +1,10 @@
 """Tests for the CLI shared infrastructure: error rendering, render modes, output.
 
-These cover the CLI shared surface — the stream helpers, the render-mode
+These cover the CLI shared surface — stdout writing, the render-mode
 resolution, the error formatter and exit path — plus the import-latency guard.
-Flag parser tests live in ``test_options.py``; lock and trace tests live in
-``test_lock.py``.
+Flag parser tests live in ``test_options.py``; stream-helper and stderr-console
+tests live in ``test_console.py``; budget report tests live in
+``test_budget_report.py``; lock and trace tests live in ``test_command_run.py``.
 """
 
 import asyncio
@@ -14,7 +15,6 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import override
 
 import pytest
 import typer
@@ -22,7 +22,7 @@ import typer
 from gymrat.adapters.types import AdapterError
 from gymrat.cli import shared
 from gymrat.cli.app import app
-from gymrat.cli.lock import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE
+from gymrat.cli.console import set_color_override, set_debug_mode
 from gymrat.cli.progress import ProgressReporter
 from gymrat.cli.shared import (
     BUGS_URL,
@@ -32,19 +32,12 @@ from gymrat.cli.shared import (
     begin_run,
     exit_with_error,
     format_cli_error,
-    is_broken_pipe,
-    is_tty,
-    point_stream_at_devnull,
     resolve_render_mode,
     run_with_signal_abort,
-    set_color_override,
-    set_debug_mode,
     write_and_flush,
-    write_budget_report,
     write_stdout,
 )
-from gymrat.errors import GymratError
-from gymrat.report.json_doc import BudgetSummary
+from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.report.types import RegressedFailOn
 from tests._process_helpers import run_with_closed_reader, run_with_failing_stdout
 from tests._rich import unwrap_panel
@@ -94,14 +87,6 @@ def _force_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NO_COLOR", "1")
 
 
-@pytest.fixture(autouse=True)
-def _reset_color_override():
-    """Reset the module-level color override between tests so xdist workers don't leak state."""
-    set_color_override(None)
-    yield
-    set_color_override(None)
-
-
 # ---------------------------------------------------------------------------
 # constants
 # ---------------------------------------------------------------------------
@@ -114,20 +99,8 @@ def test_constants_when_checked_does_match_the_shipped_contract():
 
 
 # ---------------------------------------------------------------------------
-# stream helpers
+# stdout writing
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("stream", "expected"),
-    [
-        pytest.param(_FakeStream(tty=True), True, id="tty"),
-        pytest.param(_FakeStream(tty=False), False, id="non-tty"),
-        pytest.param(object(), False, id="no-isatty"),
-    ],
-)
-def test_is_tty_when_called_does_reflect_the_streams_isatty(stream: object, expected: bool):
-    assert is_tty(stream) is expected
 
 
 def test_write_and_flush_when_called_does_write_then_flush():
@@ -148,65 +121,6 @@ def test_write_and_flush_when_called_does_write_then_flush():
 
     assert recorder.data == "hello"
     assert recorder.flushed is True
-
-
-@pytest.mark.parametrize(
-    ("error", "platform", "expected"),
-    [
-        pytest.param(BrokenPipeError(), "linux", True, id="posix-broken-pipe"),
-        pytest.param(OSError(errno.EINVAL, "Invalid argument"), "win32", True, id="windows-einval"),
-        pytest.param(OSError(errno.EINVAL, "Invalid argument"), "linux", False, id="posix-einval"),
-        pytest.param(OSError(errno.EACCES, "Access denied"), "win32", False, id="windows-eacces"),
-        pytest.param(ValueError("banana"), "win32", False, id="not-an-os-error"),
-    ],
-)
-def test_is_broken_pipe_when_called_does_recognize_each_platforms_closed_pipe_error(
-    monkeypatch: pytest.MonkeyPatch, error: BaseException, platform: str, expected: bool
-):
-    monkeypatch.setattr("sys.platform", platform)
-
-    assert is_broken_pipe(error) is expected
-
-
-class _BadDescriptorStream(io.StringIO):
-    """A stream whose descriptor is invalid, so redirecting it fails."""
-
-    @override
-    def fileno(self) -> int:
-        return -1
-
-
-def _open_descriptors() -> set[str]:
-    """List the descriptors this process holds open."""
-    return {entry.name for entry in Path("/dev/fd").iterdir()}
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
-def test_point_stream_at_devnull_when_redirected_does_point_descriptor_at_devnull(tmp_path: Path):
-    with (tmp_path / "out.txt").open("w") as stream:
-        point_stream_at_devnull(stream)
-
-        assert os.path.samestat(os.fstat(stream.fileno()), Path(os.devnull).stat())
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
-def test_point_stream_at_devnull_when_redirected_does_close_devnull(tmp_path: Path):
-    with (tmp_path / "out.txt").open("w") as stream:
-        before = _open_descriptors()
-
-        point_stream_at_devnull(stream)
-
-        assert _open_descriptors() == before
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
-def test_point_stream_at_devnull_when_redirect_fails_does_close_devnull_and_raise():
-    before = _open_descriptors()
-
-    with pytest.raises(OSError, match="Bad file descriptor"):
-        point_stream_at_devnull(_BadDescriptorStream())
-
-    assert _open_descriptors() == before
 
 
 #: Lines each flood probe prints: 16384 lines of 64 bytes overflow any pipe buffer.
@@ -339,6 +253,30 @@ def test_format_cli_error_when_stderr_color_override_false_does_strip_all_sgr(
     result = format_cli_error(ValueError("boom"))
 
     assert "\x1b[" not in result
+
+
+@pytest.mark.parametrize(
+    ("override", "env_var", "tty", "colored"),
+    [
+        pytest.param(True, "NO_COLOR", False, True, id="color-beats-no-color-off-a-tty"),
+        pytest.param(False, "FORCE_COLOR", True, False, id="no-color-beats-force-color-on-a-tty"),
+    ],
+)
+def test_format_cli_error_when_color_override_set_does_beat_the_color_env_vars(
+    override: bool,
+    env_var: str,
+    tty: bool,
+    colored: bool,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=tty))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv(env_var, "1")
+    set_color_override(override)
+
+    result = format_cli_error(ValueError("boom"))
+
+    assert ("\x1b[" in result) is colored
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +442,7 @@ import sys
 import gymrat.cli.shared
 import gymrat.cli.options
 import gymrat.cli.progress
-import gymrat.cli.gating
+import gymrat.cli.compare_cmd
 heavy = sorted(
     name
     for name in sys.modules
@@ -666,115 +604,4 @@ def test_exit_with_error_honors_debug_mode_for_the_stack(monkeypatch: pytest.Mon
         with pytest.raises(typer.Exit):
             exit_with_error(error, code=TOOL_FAILURE_EXIT_CODE)
 
-    set_debug_mode(False)
     assert "Traceback" in captured.getvalue()
-
-
-# ---------------------------------------------------------------------------
-# write_budget_report
-# ---------------------------------------------------------------------------
-
-
-def _budget_active(root: str) -> tuple[str, BudgetSummary]:
-    """Stub returning an active budget snapshot."""
-    return "\n⏱ 29m left of 30m", BudgetSummary(cap_minutes=30, remaining_seconds=1740)
-
-
-def _budget_inactive(root: str) -> tuple[str, None]:
-    """Stub returning no budget."""
-    return "", None
-
-
-def test_write_budget_report_when_json_and_budget_active_does_write_json_with_budget(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
-    monkeypatch.setattr(shared, "budget_snapshot", _budget_active)
-
-    def render_json(s: BudgetSummary | None) -> str:
-        import json
-
-        doc: dict[str, object] = {"metric": "ops/s"}
-        if s is not None:
-            doc["budget"] = {
-                "cap_minutes": s.cap_minutes,
-                "remaining_seconds": s.remaining_seconds,
-            }
-        return json.dumps(doc)
-
-    write_budget_report(
-        "/fake/root",
-        use_json=True,
-        render_json=render_json,
-        text_report="ignored text",
-    )
-
-    import json
-
-    out = json.loads(capsys.readouterr().out)
-    assert out["budget"] == {"cap_minutes": 30, "remaining_seconds": 1740}
-
-
-def test_write_budget_report_when_json_and_no_budget_does_write_json_without_budget(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
-    monkeypatch.setattr(shared, "budget_snapshot", _budget_inactive)
-
-    def render_json(s: BudgetSummary | None) -> str:
-        import json
-
-        doc: dict[str, object] = {"metric": "ops/s"}
-        if s is not None:
-            doc["budget"] = {
-                "cap_minutes": s.cap_minutes,
-                "remaining_seconds": s.remaining_seconds,
-            }
-        return json.dumps(doc)
-
-    write_budget_report(
-        "/fake/root",
-        use_json=True,
-        render_json=render_json,
-        text_report="ignored text",
-    )
-
-    import json
-
-    out = json.loads(capsys.readouterr().out)
-    assert "budget" not in out
-
-
-def _noop_json(_s: BudgetSummary | None) -> str:
-    """A no-op JSON renderer for text-mode tests."""
-    return ""
-
-
-def test_write_budget_report_when_text_and_budget_active_does_write_report_with_trailer(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
-    monkeypatch.setattr(shared, "budget_snapshot", _budget_active)
-
-    write_budget_report(
-        "/fake/root",
-        use_json=False,
-        render_json=_noop_json,
-        text_report="benchmark results here",
-    )
-
-    out = capsys.readouterr().out
-    assert out == "benchmark results here\n⏱ 29m left of 30m\n"
-
-
-def test_write_budget_report_when_text_and_no_budget_does_write_report_without_trailer(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
-    monkeypatch.setattr(shared, "budget_snapshot", _budget_inactive)
-
-    write_budget_report(
-        "/fake/root",
-        use_json=False,
-        render_json=_noop_json,
-        text_report="benchmark results here",
-    )
-
-    out = capsys.readouterr().out
-    assert out == "benchmark results here\n"

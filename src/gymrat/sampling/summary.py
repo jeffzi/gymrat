@@ -9,8 +9,10 @@ from gymrat.config.meta import resolve_metric_meta
 from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.model import ResolvedMetricMeta
-from gymrat.sampling.types import _MIN_SPREAD_SAMPLES, MetricStats
-from gymrat.stats.descriptive import compute_half_range
+from gymrat.sampling.types import MetricStats
+from gymrat.stats import compute_half_range
+
+_MIN_SPREAD_SAMPLES = 2
 
 
 def compute_metric_stats(values: Sequence[float]) -> MetricStats:

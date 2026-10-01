@@ -124,17 +124,36 @@ def test_pair_metric_when_metric_absent_everywhere_does_return_empty_sequences()
     assert result.right == ()
 
 
+def test_pair_metric_when_key_orders_differ_does_follow_the_left_order():
+    left = Observations(by_key={1: ({"t": 1.0},), 0: ({"t": 0.0},)})
+    right = Observations(by_key={0: ({"t": 10.0},), 1: ({"t": 11.0},)})
+
+    result = pair_metric(left, right, "t")
+
+    assert (result.left, result.right) == ((1.0, 0.0), (11.0, 10.0))
+
+
 # ---------------------------------------------------------------------------
 # pair_metric — single-repeat requirement
 # ---------------------------------------------------------------------------
 
 
-def test_pair_metric_when_container_has_multiple_repeats_does_raise_value_error():
-    multi = Observations(by_key={0: ({"t": 1.0}, {"t": 2.0})})
-    single = Observations.from_rounds([{"t": 1.0}])
+_MULTI_REPEAT = Observations(by_key={0: ({"t": 1.0}, {"t": 2.0})})
+_SINGLE_REPEAT = Observations.from_rounds([{"t": 1.0}])
 
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        pytest.param(_MULTI_REPEAT, _SINGLE_REPEAT, id="left"),
+        pytest.param(_SINGLE_REPEAT, _MULTI_REPEAT, id="right"),
+    ],
+)
+def test_pair_metric_when_either_container_has_multiple_repeats_does_raise_value_error(
+    left: Observations, right: Observations
+):
     with pytest.raises(ValueError, match="single-repeat"):
-        pair_metric(multi, single, "t")
+        pair_metric(left, right, "t")
 
 
 # ---------------------------------------------------------------------------

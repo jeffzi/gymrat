@@ -12,7 +12,7 @@ from typing import Literal
 
 import pytest
 
-from gymrat.cli.supervise.state import ReadSessionResult
+from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
     empty_session_state,

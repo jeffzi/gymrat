@@ -1,15 +1,23 @@
-"""Tests for the stderr console factory."""
+"""Tests for the CLI console state: stream helpers and the stderr console factory.
+
+The console module owns the TTY, colour and debug state every command reads,
+and sits below the shared CLI infrastructure: importing it must never pull the
+shared module back in.
+"""
 
 import errno
 import io
+import os
+import subprocess
 import sys
+from pathlib import Path
 from typing import override
 
 import pytest
 
-from gymrat.cli.console import stderr_console
+from gymrat.cli.console import is_broken_pipe, is_tty, point_stream_at_devnull, stderr_console
 from tests._process_helpers import run_with_closed_reader
-from tests._streams import RaisingStream
+from tests._streams import FakeStream, RaisingStream
 
 
 class _FakeStderr(io.StringIO):
@@ -22,6 +30,104 @@ class _FakeStderr(io.StringIO):
     @override
     def isatty(self) -> bool:
         return self._tty
+
+
+class _BadDescriptorStream(io.StringIO):
+    """A stream whose descriptor is invalid, so redirecting it fails."""
+
+    @override
+    def fileno(self) -> int:
+        return -1
+
+
+def _open_descriptors() -> set[str]:
+    """List the descriptors this process holds open."""
+    return {entry.name for entry in Path("/dev/fd").iterdir()}
+
+
+# ---------------------------------------------------------------------------
+# module dependencies
+# ---------------------------------------------------------------------------
+
+
+def test_importing_console_does_not_import_the_shared_cli_module():
+    probe = """
+import sys
+import gymrat.cli.console
+assert 'gymrat.cli.shared' not in sys.modules, 'console import pulled gymrat.cli.shared'
+"""
+
+    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# stream helpers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    [
+        pytest.param(FakeStream(tty=True), True, id="tty"),
+        pytest.param(FakeStream(tty=False), False, id="non-tty"),
+        pytest.param(object(), False, id="no-isatty"),
+    ],
+)
+def test_is_tty_when_called_does_reflect_the_streams_isatty(stream: object, expected: bool):
+    assert is_tty(stream) is expected
+
+
+@pytest.mark.parametrize(
+    ("error", "platform", "expected"),
+    [
+        pytest.param(BrokenPipeError(), "linux", True, id="posix-broken-pipe"),
+        pytest.param(OSError(errno.EINVAL, "Invalid argument"), "win32", True, id="windows-einval"),
+        pytest.param(OSError(errno.EINVAL, "Invalid argument"), "linux", False, id="posix-einval"),
+        pytest.param(OSError(errno.EACCES, "Access denied"), "win32", False, id="windows-eacces"),
+        pytest.param(ValueError("banana"), "win32", False, id="not-an-os-error"),
+    ],
+)
+def test_is_broken_pipe_when_called_does_recognize_each_platforms_closed_pipe_error(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException, platform: str, expected: bool
+):
+    monkeypatch.setattr("sys.platform", platform)
+
+    assert is_broken_pipe(error) is expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
+def test_point_stream_at_devnull_when_redirected_does_point_descriptor_at_devnull(tmp_path: Path):
+    with (tmp_path / "out.txt").open("w") as stream:
+        point_stream_at_devnull(stream)
+
+        assert os.path.samestat(os.fstat(stream.fileno()), Path(os.devnull).stat())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
+def test_point_stream_at_devnull_when_redirected_does_close_devnull(tmp_path: Path):
+    with (tmp_path / "out.txt").open("w") as stream:
+        before = _open_descriptors()
+
+        point_stream_at_devnull(stream)
+
+        assert _open_descriptors() == before
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
+def test_point_stream_at_devnull_when_redirect_fails_does_close_devnull_and_raise():
+    before = _open_descriptors()
+
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        point_stream_at_devnull(_BadDescriptorStream())
+
+    assert _open_descriptors() == before
 
 
 # ---------------------------------------------------------------------------

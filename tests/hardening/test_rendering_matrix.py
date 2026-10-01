@@ -35,13 +35,8 @@ if sys.platform != "win32":
 
 import pytest
 
-from gymrat.cli.console import stderr_console
-from gymrat.cli.shared import (
-    format_cli_error,
-    resolve_render_mode,
-    resolve_stream_color,
-    set_color_override,
-)
+from gymrat.cli.console import resolve_stream_color, set_color_override, stderr_console
+from gymrat.cli.shared import format_cli_error, resolve_render_mode
 from gymrat.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
 from gymrat.doctor.render import render_doctor_report
 from tests._git import git as _git
@@ -352,7 +347,6 @@ def test_error_surface_when_stderr_color_override_false_on_tty_does_strip_sgr(
     result = format_cli_error(ValueError("boom"))
 
     assert "\x1b[" not in result
-    set_color_override(None)
 
 
 def test_progress_surface_when_colorless_does_strip_all_sgr_including_bold(

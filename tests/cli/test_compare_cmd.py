@@ -37,6 +37,7 @@ from gymrat.sampling import RunOptions
 from gymrat.session import append_record, session_jsonl_path
 from tests.cli._budget import install_budget, install_tight_budget
 from tests.cli._session import last_command_record
+from tests.report._comparisons import other_kind
 from tests.report._inputs import (
     create_candidate,
     create_comparison_result,
@@ -268,6 +269,27 @@ def test_compare_when_fail_on_does_not_trip_does_exit_zero(monkeypatch: pytest.M
     )
 
     assert result.exit_code == 0
+
+
+@pytest.mark.usefixtures("_in_non_repo")
+def test_compare_when_geomean_gate_has_nothing_stable_does_warn_on_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _stub_compare(
+        monkeypatch,
+        create_comparison_result(
+            candidates=[create_candidate(label="cand", kinds=[other_kind(5.0, 0)])]
+        ),
+    )
+
+    result = runner.invoke(
+        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "geomean:2"]
+    )
+
+    assert (
+        'warning: geomean gate for "cand" had no stable gating metrics to measure\n'
+        in result.stderr
+    )
 
 
 # ---------------------------------------------------------------------------

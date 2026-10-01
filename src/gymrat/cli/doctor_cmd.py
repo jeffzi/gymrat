@@ -12,7 +12,7 @@ from pathlib import Path
 
 import typer
 
-from gymrat.cli.lock import GATE_EXIT_CODE
+from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
 from gymrat.cli.options import (
     AdapterOption,
     BenchOption,
@@ -25,15 +25,7 @@ from gymrat.cli.options import (
     SamplesOption,
     TimeoutOption,
 )
-from gymrat.cli.shared import (
-    SharedFlags,
-    apply_color_override,
-    apply_debug,
-    resolve_stream_color,
-    run_cli,
-    wants_json,
-    write_stdout,
-)
+from gymrat.cli.shared import SharedFlags, run_cli, wants_json, write_stdout
 from gymrat.doctor.render import (
     render_doctor_json,
     render_doctor_report,
@@ -41,6 +33,7 @@ from gymrat.doctor.render import (
 from gymrat.doctor.report import (
     build_doctor_report,
 )
+from gymrat.errors import GATE_EXIT_CODE
 
 
 def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface

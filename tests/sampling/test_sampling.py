@@ -404,71 +404,92 @@ async def test_collect_samples_when_bench_fails_with_empty_stderr_does_raise_com
         await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
 
 
-async def test_collect_samples_when_bench_exits_non_zero_does_raise_error_with_full_shape(
+_IN_PLACE_NEW = TargetContext(
+    target=InPlaceTarget(dir="/work"), dir="/work", label="main", position="new"
+)
+_REF_OLD = TargetContext(
+    target=RefTarget(ref="feature", resolved_sha="deadbeef"),
+    dir="/wt",
+    label="base",
+    position="old",
+)
+_EXIT_THREE = ExecResult(stdout="", stderr="boom", exit_code=3, stdout_bytes=4, stderr_bytes=4)
+_TIMED_OUT = ExecTimeoutError(
+    stdout="partial", stderr="", timeout_ms=1500, stdout_bytes=7, stderr_bytes=0
+)
+_BENCH_ONLY = SamplingOptions(bench="run-bench", prepare=None, samples=1, timeout_seconds=1.5)
+_WITH_PREPARE = SamplingOptions(bench="run", prepare="setup", samples=1, timeout_seconds=1.5)
+
+
+@pytest.mark.parametrize(
+    ("result", "target", "options", "expected", "hint"),
+    [
+        pytest.param(
+            _EXIT_THREE,
+            _IN_PLACE_NEW,
+            _BENCH_ONLY,
+            'bench command failed (new, "main", sample 1)\n'
+            "  dir:       /work\n"
+            "  command:   run-bench\n"
+            "  exit code: 3\n"
+            "boom",
+            None,
+            id="bench-fails-in-a-dir",
+        ),
+        pytest.param(
+            _TIMED_OUT,
+            _IN_PLACE_NEW,
+            _BENCH_ONLY,
+            'bench command timed out (new, "main", sample 1)\n'
+            "  dir:       /work\n"
+            "  command:   run-bench\n"
+            "  timeout:   1500ms\n"
+            "partial",
+            None,
+            id="bench-times-out-in-a-dir",
+        ),
+        pytest.param(
+            _EXIT_THREE,
+            _REF_OLD,
+            _WITH_PREPARE,
+            'prepare command failed (old, "base")\n'
+            "  ref:       feature\n"
+            "  worktree:  /wt\n"
+            "  command:   setup\n"
+            "  exit code: 3\n"
+            "boom",
+            REF_HINT,
+            id="prepare-fails-on-a-ref",
+        ),
+        pytest.param(
+            _TIMED_OUT,
+            _REF_OLD,
+            _WITH_PREPARE,
+            'prepare command timed out (old, "base")\n'
+            "  ref:       feature\n"
+            "  worktree:  /wt\n"
+            "  command:   setup\n"
+            "  timeout:   1500ms\n"
+            "partial",
+            REF_HINT,
+            id="prepare-times-out-on-a-ref",
+        ),
+    ],
+)
+async def test_collect_samples_when_command_fails_does_raise_error_with_full_shape(  # noqa: PLR0917 -- one parameter per failure axis plus the fixture
+    result: ExecResult | ExecTimeoutError,
+    target: TargetContext,
+    options: SamplingOptions,
+    expected: str,
+    hint: str | None,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    patch_exec(
-        monkeypatch,
-        ExecResult(stdout="", stderr="boom", exit_code=3, stdout_bytes=4, stderr_bytes=4),
-    )
-    targets = [
-        TargetContext(
-            target=InPlaceTarget(dir="/work"),
-            dir="/work",
-            label="main",
-            position="new",
-        ),
-    ]
-    options = SamplingOptions(bench="run-bench", prepare=None, samples=1, timeout_seconds=1.0)
+    patch_exec(monkeypatch, result)
 
     with pytest.raises(CommandError) as caught:
-        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+        await collect_samples(metric_lines_adapter, [target], options, asyncio.Event())
 
-    assert str(caught.value) == (
-        'bench command failed (new, "main", sample 1)\n'
-        "  dir:       /work\n"
-        "  command:   run-bench\n"
-        "  exit code: 3\n"
-        "boom"
-    )
-    assert caught.value.hint is None
-
-
-async def test_collect_samples_when_prepare_times_out_on_ref_does_raise_error_with_full_shape(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    patch_exec(
-        monkeypatch,
-        ExecTimeoutError(
-            stdout="partial",
-            stderr="",
-            timeout_ms=1500,
-            stdout_bytes=7,
-            stderr_bytes=0,
-        ),
-    )
-    targets = [
-        TargetContext(
-            target=RefTarget(ref="feature", resolved_sha="deadbeef"),
-            dir="/wt",
-            label="base",
-            position="old",
-        ),
-    ]
-    options = SamplingOptions(bench="run", prepare="setup", samples=1, timeout_seconds=1.5)
-
-    with pytest.raises(CommandError) as caught:
-        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    assert str(caught.value) == (
-        'prepare command timed out (old, "base")\n'
-        "  ref:       feature\n"
-        "  worktree:  /wt\n"
-        "  command:   setup\n"
-        "  timeout:   1500ms\n"
-        "partial"
-    )
-    assert caught.value.hint == REF_HINT
+    assert (str(caught.value), caught.value.hint) == (expected, hint)
 
 
 async def test_collect_samples_when_no_position_does_omit_position_from_header(

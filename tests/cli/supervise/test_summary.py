@@ -28,7 +28,7 @@ from tests.cli.supervise._fixtures import (
 )
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.progress import ReadSessionResult
+    from gymrat.cli.supervise.types import ReadSessionResult
     from gymrat.supervisor import SessionEndReason
     from gymrat.supervisor.supervise import EndedBy
 

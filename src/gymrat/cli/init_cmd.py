@@ -19,28 +19,23 @@ from typing import Annotated
 import typer
 from rich.markup import escape
 
+from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BenchOption,
     ColorOption,
     DebugOption,
 )
-from gymrat.cli.shared import (
-    apply_color_override,
-    apply_debug,
-    exit_with_error,
-    resolve_stream_color,
-    write_stdout,
-)
+from gymrat.cli.shared import exit_with_error, write_stdout
 from gymrat.cli.supervised import is_supervised_run_live
 from gymrat.config import CONFIG_FILENAME, find_implicit_base
 from gymrat.errors import GymratError
-from gymrat.init.scaffold import (
+from gymrat.report.style import RENDER_WIDTH, format_hint, render_lines
+from gymrat.scaffold import (
     ScaffoldArtifact,
     ScaffoldRequest,
     ScaffoldResult,
     scaffold,
 )
-from gymrat.report.style import RENDER_WIDTH, format_hint, render_lines
 
 _NoRunbookOption = Annotated[bool, typer.Option("--no-runbook", help="skip the runbook")]
 _NoSkillOption = Annotated[bool, typer.Option("--no-skill", help="skip the skill file")]

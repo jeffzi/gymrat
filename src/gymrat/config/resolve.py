@@ -6,28 +6,32 @@ gathered into one list so a caller (a doctor/status command) can report them all
 at once, and a settled config is returned only when that list is empty.
 :func:`resolve_config` and :func:`resolve_benchless_config` run the same
 pipeline and raise the first collected problem.
+
+The checks the pipeline applies beyond the file schema live here too:
+:func:`flag_problem` for blank flags, :func:`loop_key_problems` for cross-field
+rules, and :func:`runbook_problem` for the runbook path. :func:`validate_config_dict`
+runs the schema and the cross-field rules over an in-memory config.
 """
 
 import dataclasses
+import json
 import os
+import stat
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from gymrat.config.env import NUMBER_ENV_FIELDS, STRING_ENV_FIELDS, env_string_result
 from gymrat.config.load import load_config_file_collecting
-from gymrat.config.schema import validate_config_file
+from gymrat.config.schema import invalid_value_message, validate_config_file
 from gymrat.config.types import (
     CONFIG_DEFAULTS,
     CONFIG_FILENAME,
+    FILTER_PLACEHOLDER,
+    GEOMEAN_PRIMARY,
     BenchlessConfig,
     CliFlags,
     ConfigFile,
     ResolvedConfig,
-)
-from gymrat.config.validate import (
-    flag_problem,
-    loop_key_problems,
-    runbook_problem,
 )
 from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root
@@ -113,6 +117,89 @@ def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
         hooks=config_file.hooks,
         supervise=config_file.supervise,
     )
+
+
+def flag_problem(field_name: str, value: str | None) -> str | None:
+    """Return a problem string when a flag is blank (empty or whitespace-only).
+
+    Flags bypass the file schema, so ``--bench ""`` or ``--bench "   "`` is the
+    one way a blank string reaches a settled field. The message names the flag,
+    not the config key, because the flag is what the user typed.
+
+    Args:
+        field_name: Name of the flag, without the leading ``--``.
+        value: The flag's value, or ``None`` if it was not passed.
+
+    Returns:
+        A problem string when ``value`` is blank, or ``None`` when it is
+        unset or non-blank.
+    """
+    if value is not None and not value.strip():
+        return invalid_value_message(f"--{field_name}", "a non-empty string", value)
+    return None
+
+
+def loop_key_problems(config: BenchlessConfig) -> list[str]:
+    """Return the cross-field violations the schema alone cannot express.
+
+    ``filter`` must carry its placeholder, and ``stop.target_value`` only makes
+    sense when ``primary`` names a metric — the geomean is a ratio, not a value.
+
+    Args:
+        config: The merged config to check for cross-field violations.
+
+    Returns:
+        The list of cross-field problem strings found, empty when none.
+    """
+    problems: list[str] = []
+    if config.filter is not None and FILTER_PLACEHOLDER not in config.filter:
+        problems.append(
+            invalid_value_message(
+                "filter",
+                f"a string containing the {FILTER_PLACEHOLDER} placeholder",
+                config.filter,
+            )
+        )
+    if (
+        config.stop is not None
+        and config.stop.target_value is not None
+        and config.primary == GEOMEAN_PRIMARY
+    ):
+        problems.append(
+            "Invalid config value for stop.target_value: it needs primary to name a metric, "
+            f"not {json.dumps(GEOMEAN_PRIMARY)}"
+        )
+    return problems
+
+
+def runbook_problem(runbook: str, base_dir: str | Path | None) -> str | None:
+    """Return a problem string when ``runbook`` does not name an existing file.
+
+    The runbook is anchored the same way as the implicit ``gymrat.toml`` lookup,
+    because a runbook path is authored relative to the repository the config
+    lives in.
+
+    Args:
+        runbook: Path to the runbook, relative to ``base_dir``.
+        base_dir: Directory the runbook path is resolved against, or ``None``
+            to use the current working directory.
+
+    Returns:
+        A problem string when ``runbook`` does not resolve to an existing
+        regular file, or ``None`` when it does.
+    """
+    base = Path(base_dir) if base_dir is not None else Path.cwd()
+    resolved = Path(os.path.normpath(base / runbook))
+    try:
+        info = resolved.stat()
+    except FileNotFoundError:
+        info = None
+    except (OSError, ValueError) as exc:
+        reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+        return f"Cannot read runbook path {json.dumps(runbook)}: {reason}"
+    if info is None or not stat.S_ISREG(info.st_mode):
+        return invalid_value_message("runbook", "a path to an existing file", runbook)
+    return None
 
 
 def validate_config_dict(config: dict[str, object]) -> None:

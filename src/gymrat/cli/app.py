@@ -14,6 +14,7 @@ from typing import Annotated
 import typer
 
 from gymrat.cli.compare_cmd import compare
+from gymrat.cli.console import set_color_override, set_debug_mode
 from gymrat.cli.doctor_cmd import doctor_command
 from gymrat.cli.export_cmd import export_command
 from gymrat.cli.init_cmd import init_command
@@ -25,13 +26,7 @@ from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotati
 )
 from gymrat.cli.probe_cmd import probe
 from gymrat.cli.session_cmds import finalize, start, stop, sync
-from gymrat.cli.shared import (
-    BUGS_URL,
-    exit_with_error,
-    set_color_override,
-    set_debug_mode,
-    write_stdout,
-)
+from gymrat.cli.shared import BUGS_URL, exit_with_error, write_stdout
 from gymrat.cli.supervise.cmd import supervise_command
 from gymrat.report.style import format_hint
 

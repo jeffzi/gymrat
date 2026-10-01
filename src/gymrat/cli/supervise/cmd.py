@@ -21,23 +21,16 @@ import typer
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
+    from gymrat.cli.supervise.types import ReadSessionResult, SuperviseReporter
     from gymrat.supervisor.events import SessionObserver
 
-from gymrat.cli.lock import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE
+from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BaselineOption,
     ColorOption,
     DebugOption,
 )
-from gymrat.cli.shared import (
-    apply_color_override,
-    apply_debug,
-    exit_with_error,
-    resolve_render_mode,
-    resolve_stream_color,
-    write_and_flush,
-    write_stdout,
-)
+from gymrat.cli.shared import exit_with_error, resolve_render_mode, write_and_flush, write_stdout
 from gymrat.cli.supervise.options import (
     AllowDirtyOption,
     EffortOption,
@@ -51,11 +44,7 @@ from gymrat.cli.supervise.options import (
     PromptArgument,
 )
 from gymrat.cli.supervise.preflight import doctor_gate, run_preflight, validate_experiment_worktree
-from gymrat.cli.supervise.progress import (
-    ReadSessionResult,
-    SuperviseReporter,
-    create_supervise_reporter,
-)
+from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.cli.supervise.summary import SessionLabels, build_summary
 from gymrat.clock import now_ms, now_ns
 from gymrat.config import (
@@ -65,10 +54,10 @@ from gymrat.config import (
     SuperviseConfig,
     resolve_config,
 )
-from gymrat.errors import GymratError
+from gymrat.display_path import abbreviate_home
+from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.exec import kill_live_process_groups
 from gymrat.git import run_git
-from gymrat.paths import abbreviate_home
 from gymrat.plural import pluralize
 from gymrat.report.style import RENDER_WIDTH, render_lines
 from gymrat.session.budget import (

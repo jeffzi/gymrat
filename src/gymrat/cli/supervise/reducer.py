@@ -21,7 +21,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, assert_never
 
-from gymrat.cli.supervise.state import (
+from gymrat.cli.supervise.text import (
+    NO_SESSION_TEXT,
+    format_caps,
+    format_cost,
+    loop_plain_text,
+)
+from gymrat.cli.supervise.types import (
     Capped,
     Composing,
     Exiting,
@@ -34,12 +40,6 @@ from gymrat.cli.supervise.state import (
     Thinking,
     TrackedTool,
     Waiting,
-)
-from gymrat.cli.supervise.text import (
-    NO_SESSION_TEXT,
-    format_caps,
-    format_cost,
-    loop_plain_text,
 )
 from gymrat.supervisor.events import (
     CapEvent,
@@ -57,7 +57,7 @@ from gymrat.supervisor.events import (
 )
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.state import (
+    from gymrat.cli.supervise.types import (
         Liveness,
         NestedActivity,
         ReadSessionResult,

@@ -20,7 +20,7 @@ from gymrat.cli.supervise.reducer import (
     plain_line,
     wants_session_refresh,
 )
-from gymrat.cli.supervise.state import (
+from gymrat.cli.supervise.types import (
     Capped,
     Composing,
     Exiting,

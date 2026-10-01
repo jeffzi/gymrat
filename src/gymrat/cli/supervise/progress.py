@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import operator
 import sys
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
@@ -24,17 +25,24 @@ from gymrat.cli.supervise.reducer import (
     plain_line,
     wants_session_refresh,
 )
-from gymrat.cli.supervise.session_read import make_default_read
-from gymrat.cli.supervise.state import (
+from gymrat.cli.supervise.text import exit_phase_text
+from gymrat.cli.supervise.types import (
     IDLE_WARN_MS,
     ReadSessionResult,
     ReporterCtx,
     SuperviseReporter,
 )
-from gymrat.cli.supervise.text import exit_phase_text
 from gymrat.clock import now_ms
 from gymrat.eta import MS_PER_SECOND
+from gymrat.session.paths import session_jsonl_path
 from gymrat.session.progress_file import read_progress as _default_read_progress
+from gymrat.session.records import (
+    IterationRecord,
+    KeepRecord,
+    SessionRecord,
+    StopRecord,
+)
+from gymrat.session.store import fold_session, latest_baseline, read_records
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -44,6 +52,7 @@ if TYPE_CHECKING:
 
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
+    from gymrat.session.records import SessionLogRecord
     from gymrat.supervisor.events import SessionEvent
     from gymrat.supervisor.exit_sequence import ExitPhase
 
@@ -51,6 +60,64 @@ _logger = logging.getLogger(__name__)
 
 REFRESH_MS = 1000
 """Default Live dashboard refresh interval in milliseconds."""
+
+
+# ---------------------------------------------------------------------------
+# Session read
+# ---------------------------------------------------------------------------
+
+
+def _find_best_kept_iteration(
+    records: list[SessionLogRecord], committed_seqs: set[int]
+) -> tuple[float | None, int | None, str | None]:
+    """Return ``(delta_pct, seq, primary_label)`` for the best committed keep."""
+    candidates = [
+        (r, delta)
+        for r in records
+        if isinstance(r, IterationRecord)
+        and r.seq in committed_seqs
+        and (delta := r.primary.delta_pct) is not None
+    ]
+    if not candidates:
+        return None, None, None
+
+    best, best_delta = min(candidates, key=operator.itemgetter(1))
+    return best_delta, best.seq, best.primary.name or best.primary.kind
+
+
+def _find_baseline_sha(records: list[SessionLogRecord]) -> str | None:
+    return next((r.baseline.sha for r in records if isinstance(r, SessionRecord)), None)
+
+
+def _find_stop_message(records: list[SessionLogRecord]) -> str | None:
+    """Return the newest stop record's message, or ``None`` if there is none."""
+    return next((r.message for r in reversed(records) if isinstance(r, StopRecord)), None)
+
+
+def make_default_read(root: str) -> Callable[[], ReadSessionResult]:
+    """Build a session-reader closure that folds the live session log at ``root``."""
+
+    def _read() -> ReadSessionResult:
+        records = read_records(session_jsonl_path(root))
+        state = fold_session(records)
+        has_baseline = latest_baseline(records) is not None
+
+        committed_seqs = {
+            r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"
+        }
+        best_delta_pct, best_seq, primary_label = _find_best_kept_iteration(records, committed_seqs)
+
+        return ReadSessionResult(
+            state=state,
+            has_baseline=has_baseline,
+            best_delta_pct=best_delta_pct,
+            best_seq=best_seq,
+            primary_label=primary_label,
+            baseline_sha=_find_baseline_sha(records),
+            stop_message=_find_stop_message(records) if state.ends_on_stop else None,
+        )
+
+    return _read
 
 
 # ---------------------------------------------------------------------------

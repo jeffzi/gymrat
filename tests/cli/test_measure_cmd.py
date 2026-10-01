@@ -20,8 +20,7 @@ from pathlib import Path
 import pytest
 
 from gymrat.cli.app import app
-from gymrat.cli.lock import TOOL_FAILURE_EXIT_CODE
-from gymrat.errors import GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.measure import MeasureOptions
 from gymrat.report.types import MeasurementResult
 from gymrat.sampling import TargetSpec

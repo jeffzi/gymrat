@@ -1,10 +1,11 @@
 """Tests for the fail-on gate evaluation and empty-geomean warning."""
 
 import io
+from collections.abc import Callable
 
 import pytest
 
-from gymrat.cli.gating import should_fail_gate, warn_empty_geomean_gates
+from gymrat.cli.compare_cmd import should_fail_gate, warn_empty_geomean_gates
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from tests.report._inputs import (
     create_candidate,
@@ -13,6 +14,24 @@ from tests.report._inputs import (
     permutation_metric,
     without_gated_geomean,
 )
+
+# ---------------------------------------------------------------------------
+# home module
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "gate_function",
+    [
+        pytest.param(should_fail_gate, id="should_fail_gate"),
+        pytest.param(warn_empty_geomean_gates, id="warn_empty_geomean_gates"),
+    ],
+)
+def test_gate_function_when_imported_does_live_in_compare_cmd(
+    gate_function: Callable[..., object],
+):
+    assert gate_function.__module__ == "gymrat.cli.compare_cmd"
+
 
 # ---------------------------------------------------------------------------
 # should_fail_gate

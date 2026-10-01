@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pytest
 
-import gymrat.init.scaffold as scaffold_module
+import gymrat.scaffold as scaffold_module
 from gymrat.config import load_config_file
 from gymrat.errors import GymratError, hint_of
-from gymrat.init.scaffold import (
+from gymrat.scaffold import (
     SKILL_RELATIVE_PATH,
     ScaffoldArtifact,
     ScaffoldRequest,
@@ -120,12 +120,27 @@ def test_scaffold_when_runbook_true_does_create_stub_with_expected_sections(
     scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
     content = (tmp_path / "gymrat-runbook.md").read_text(encoding="utf-8")
-    assert "# Optimization Runbook" in content
-    assert "## Goal" in content
-    assert "## Gating metrics" in content
-    assert "## Constraints" in content
-    assert "## Approaches to try" in content
-    assert "gymrat supervise" in content
+    assert content == (
+        "# Optimization Runbook\n"
+        "\n"
+        "## Goal\n"
+        "\n"
+        "<!-- Describe the optimization goal here. -->\n"
+        "\n"
+        "## Gating metrics\n"
+        "\n"
+        "<!-- List the metrics that must not regress. -->\n"
+        "\n"
+        "## Constraints\n"
+        "\n"
+        "<!-- List any constraints on the optimization. -->\n"
+        "\n"
+        "## Approaches to try\n"
+        "\n"
+        "<!-- List strategies for the agent to explore. -->\n"
+        "\n"
+        "`gymrat supervise` injects this file into the agent's instructions.\n"
+    )
 
 
 def test_scaffold_when_runbook_already_exists_does_leave_it_and_report_exists(
@@ -196,7 +211,7 @@ def _break_bundled_skill(monkeypatch: pytest.MonkeyPatch) -> None:
         message = "bundled skill missing"
         raise GymratError(message)
 
-    monkeypatch.setattr("gymrat.init.scaffold.read_bundled_skill", raise_missing)
+    monkeypatch.setattr("gymrat.scaffold.read_bundled_skill", raise_missing)
 
 
 def test_scaffold_when_skill_read_fails_does_not_leave_config_or_runbook_behind(
@@ -274,10 +289,31 @@ def test_scaffold_when_runbook_path_is_a_directory_does_raise_and_not_write_conf
 ):
     (tmp_path / "gymrat-runbook.md").mkdir()
 
-    with pytest.raises(GymratError, match="gymrat-runbook.md"):
+    with pytest.raises(GymratError) as caught:
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
+    assert (str(caught.value), caught.value.hint) == (
+        "Blocked path: gymrat-runbook.md",
+        "Remove or rename the blocking entry and re-run.",
+    )
     assert not (tmp_path / "gymrat.toml").exists()
+
+
+def test_scaffold_when_config_path_cannot_be_checked_does_raise_naming_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    def denied_exists(_path: Path, **_kwargs: object) -> bool:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "exists", denied_exists)
+
+    with pytest.raises(GymratError) as caught:
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+    assert (str(caught.value), caught.value.hint) == (
+        f"Cannot access {tmp_path / 'gymrat.toml'}: [Errno 13] Permission denied",
+        "Check directory permissions.",
+    )
 
 
 def test_scaffold_when_skill_path_is_a_directory_does_raise_and_not_write_config(

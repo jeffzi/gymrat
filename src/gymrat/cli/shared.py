@@ -3,38 +3,34 @@
 This module holds the pieces every benchmarking command reuses — the error
 formatter and exit path, the render-mode resolution, and the report writers —
 with no dependency on the heavy statistics stack or the command bodies, so
-importing it stays cheap. The flag parsers and option declarations live in
-:mod:`gymrat.cli.options`; the repository lock and command trace live in
-:mod:`gymrat.cli.lock`.
+importing it stays cheap. The debug, color and stream state lives in
+:mod:`gymrat.cli.console`; the flag parsers and option declarations live in
+:mod:`gymrat.cli.options`; the session budget trailers and warnings live in
+:mod:`gymrat.cli.budget_report`; the repository lock and command trace live in
+:mod:`gymrat.cli.command_run`.
 """
 
 import asyncio
 import contextlib
-import errno
-import io
-import os
 import sys
 import traceback
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
-from typing import IO, Any, Literal, NoReturn, Protocol
+from typing import Any, Literal, NoReturn, Protocol
 
 import typer
 from rich.markup import escape
 
-from gymrat import clock as _clock
 from gymrat.adapters.types import AdapterError
-from gymrat.cli.lock import TOOL_FAILURE_EXIT_CODE
+from gymrat.cli import console
 from gymrat.cli.options import OutputFormat
 from gymrat.cli.progress import ProgressReporter
 from gymrat.config import CliFlags, ResolvedConfig
-from gymrat.errors import GymratError, hint_of
-from gymrat.eta import format_duration
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError, hint_of
 from gymrat.exec import kill_live_process_groups
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.style import (
     RENDER_WIDTH,
-    color_from_env,
     format_hint,
     highlight_inline_code,
     markup,
@@ -42,17 +38,7 @@ from gymrat.report.style import (
 )
 from gymrat.report.types import FailOnCondition, ReportOptions
 from gymrat.sampling import RunOptions
-from gymrat.session.budget import (
-    SIDES_PER_ITERATE,
-    Budget,
-    estimate_iterate_duration,
-    format_budget_trailer,
-    read_budget,
-)
-from gymrat.session.paths import repo_root, session_jsonl_path
-from gymrat.session.store import read_records
 from gymrat.signals import install_termination_cleanup
-from gymrat.warn import warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -70,126 +56,14 @@ class _WritableStream(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Debug mode
-# ---------------------------------------------------------------------------
-
-
-class _DebugState:
-    """Holds the global ``--debug`` flag without reaching for a ``global`` statement."""
-
-    enabled: bool = False
-
-
-def set_debug_mode(value: bool) -> None:  # noqa: FBT001 -- 1:1 setter for the --debug flag
-    """Set the module debug flag that governs stack traces in error output."""
-    _DebugState.enabled = value
-
-
-def is_debug_mode() -> bool:
-    """Whether ``--debug`` is on, so error and warning output should carry stack traces."""
-    return _DebugState.enabled
-
-
-class _ColorState:
-    """Holds the ``--color`` / ``--no-color`` override for all color surfaces.
-
-    The root callback and per-command callbacks write this through
-    :func:`set_color_override` so :func:`resolve_stream_color` and
-    :func:`_resolve_stderr_color` share a single truth.
-    """
-
-    override: bool | None = None
-
-
-def set_color_override(override: bool | None) -> None:  # noqa: FBT001 -- 1:1 setter for the --no-color flag
-    """Set the module-level color override read by every color surface."""
-    _ColorState.override = override
-
-
-def apply_debug(debug: bool) -> None:  # noqa: FBT001 -- 1:1 pass-through of a command's --debug flag
-    """Enable debug mode when a command's own ``--debug`` flag is set.
-
-    Never disables debug mode: a command's local ``--debug`` defaulting to
-    ``False`` must not undo the root ``--debug`` flag already applied by
-    :func:`set_debug_mode`.
-
-    Args:
-        debug: The command's own ``--debug`` flag.
-    """
-    if debug:
-        set_debug_mode(True)
-
-
-# ---------------------------------------------------------------------------
 # Stream helpers
 # ---------------------------------------------------------------------------
-
-
-def is_tty(stream: object) -> bool:
-    """Whether ``stream`` reports itself as an interactive terminal."""
-    isatty = getattr(stream, "isatty", None)
-    return bool(isatty()) if callable(isatty) else False
 
 
 def write_and_flush(stream: _WritableStream, data: str) -> None:
     """Write ``data`` to ``stream`` and flush it so an immediate exit cannot truncate it."""
     stream.write(data)
     stream.flush()
-
-
-# ---------------------------------------------------------------------------
-# Color control
-# ---------------------------------------------------------------------------
-
-
-def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa: FBT001 -- the resolved --color/--no-color preference, never a bare literal
-    """Resolve whether ``stream`` should carry color.
-
-    Precedence, shared by every color surface (report on stdout, progress on
-    stderr, error text on stderr): an explicit per-call ``override`` wins; then
-    the module-level ``_ColorState.override`` set by the root or subcommand
-    callback; then ``FORCE_COLOR``; then ``NO_COLOR``; then the stream's TTY
-    status.
-
-    Args:
-        override: The explicit ``--color`` / ``--no-color`` flag, or ``None``
-            when neither was given.
-        stream: The output stream whose TTY status is the final fallback.
-
-    Returns:
-        Whether the stream should emit color.
-    """
-    if override is not None:
-        return override
-    if _ColorState.override is not None:
-        return _ColorState.override
-    from_env = color_from_env()
-    if from_env is not None:
-        return from_env
-    return is_tty(stream)
-
-
-def _resolve_stderr_color() -> bool:
-    """Whether stderr error output should carry color, per the shared precedence."""
-    return resolve_stream_color(_ColorState.override, sys.stderr)
-
-
-def apply_color_override(color: bool | None) -> bool | None:  # noqa: FBT001 -- 1:1 pass-through of the --color/--no-color flag
-    """Install a subcommand's color override and return it for report rendering.
-
-    Only writes when ``color`` is not ``None`` so a subcommand that declares no
-    local ``--color`` flag does not erase a root flag already applied by
-    :func:`set_color_override`.
-
-    Args:
-        color: The subcommand's ``--color``/``--no-color`` flag, or ``None`` when neither was given.
-
-    Returns:
-        The color override as passed in.
-    """
-    if color is not None:
-        set_color_override(color)
-    return color
 
 
 # ---------------------------------------------------------------------------
@@ -234,12 +108,23 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
         )
         doc += highlight_inline_code(footer)
 
-    return render_lines(doc, color=_resolve_stderr_color(), width=RENDER_WIDTH)
+    stderr_color = console.resolve_stream_color(None, sys.stderr)
+    return render_lines(doc, color=stderr_color, width=RENDER_WIDTH)
 
 
 def exit_with_error(error: object, code: int = TOOL_FAILURE_EXIT_CODE) -> NoReturn:
-    """Print a formatted error to stderr and exit on ``code``, even if the write fails."""
-    rendered = f"{format_cli_error(error, debug=_DebugState.enabled)}\n"
+    """Print a formatted error to stderr and exit on ``code``, even if the write fails.
+
+    The stack trace is included when ``--debug`` is on.
+
+    Args:
+        error: The error to report.
+        code: The process exit status.
+
+    Raises:
+        typer.Exit: Always, carrying ``code``.
+    """
+    rendered = f"{format_cli_error(error, debug=console.is_debug_mode())}\n"
     # stderr is the reporting channel, so a write failure (a closed or broken
     # pipe) has nowhere to be reported. Swallow it rather than let it change the
     # exit code this call was asked for.
@@ -250,52 +135,14 @@ def exit_with_error(error: object, code: int = TOOL_FAILURE_EXIT_CODE) -> NoRetu
     raise typer.Exit(code)
 
 
-def is_broken_pipe(error: BaseException) -> bool:
-    """Whether ``error`` is a write to a pipe whose reading end has closed.
-
-    POSIX reports it as ``BrokenPipeError``. Windows reports it as a plain
-    ``OSError`` with ``EINVAL``: the C runtime maps the ``ERROR_NO_DATA`` a write
-    to a closed pipe fails with onto that errno, so no ``BrokenPipeError`` is
-    ever raised there.
-
-    Args:
-        error: The exception a stream write or flush raised.
-
-    Returns:
-        ``True`` when ``error`` means the pipe's reader is gone.
-    """
-    if isinstance(error, BrokenPipeError):
-        return True
-    return sys.platform == "win32" and isinstance(error, OSError) and error.errno == errno.EINVAL
-
-
-def point_stream_at_devnull(stream: IO[str]) -> None:
-    """Redirect ``stream``'s file descriptor to devnull; a stream without one is left alone.
-
-    The interpreter flushes a stream's unwritten buffer at shutdown. After a
-    failed write that flush would fail again and turn the exit status into 120;
-    a devnull descriptor lets it succeed.
-
-    Args:
-        stream: The stream whose descriptor is redirected.
-    """
-    try:
-        fd = stream.fileno()
-    except io.UnsupportedOperation:
-        return
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(devnull, fd)
-    finally:
-        os.close(devnull)
-
-
 def write_stdout(data: str) -> None:
     """Write a command's result to stdout, returning silently if the reader has gone.
 
     This write is the only place a closed stdout pipe is classified, per
-    :func:`is_broken_pipe`: the same error from anywhere else in a command body
-    is a real failure. The stderr console classifies its own closed pipe.
+    :func:`~gymrat.cli.console.is_broken_pipe`: the same error from anywhere
+    else in a command body is a real failure. The stderr console classifies its
+    own closed pipe.
+
     After any failed write stdout is pointed at devnull, so the unwritten bytes
     left in its buffer cannot fail the interpreter's shutdown flush and replace
     the command's exit status with 120.
@@ -309,8 +156,8 @@ def write_stdout(data: str) -> None:
     try:
         write_and_flush(sys.stdout, data)
     except OSError as error:
-        point_stream_at_devnull(sys.stdout)
-        if not is_broken_pipe(error):
+        console.point_stream_at_devnull(sys.stdout)
+        if not console.is_broken_pipe(error):
             raise
 
 
@@ -347,7 +194,7 @@ def resolve_render_mode() -> Literal["live", "plain"]:
     Returns:
         ``"live"`` when stderr is a TTY, ``"plain"`` otherwise.
     """
-    return "live" if is_tty(sys.stderr) else "plain"
+    return "live" if console.is_tty(sys.stderr) else "plain"
 
 
 async def run_with_signal_abort[T](
@@ -427,16 +274,24 @@ def begin_run(
     command: str | None = None,
     target_labels: list[str] | None = None,
 ) -> ProgressReporter:
-    """Build the progress reporter a run prints through, sized and colored per the flags."""
-    from gymrat.cli.console import (  # noqa: PLC0415 -- console.py imports from shared.py
-        stderr_console,
-    )
+    """Build the progress reporter a run prints through, sized and colored per the flags.
 
+    Args:
+        flags: The command's flags; ``color`` styles the stderr console and
+            ``samples`` sizes the progress display.
+        target_count: How many targets the run measures.
+        command: The command name the reporter labels its output with.
+        target_labels: The display label of each target, in run order.
+
+    Returns:
+        A progress reporter writing to a stderr console in the render mode
+        stderr's TTY status selects.
+    """
     mode = resolve_render_mode()
-    console = stderr_console(color_flag=flags.color)
+    progress_console = console.stderr_console(color_flag=flags.color)
     return ProgressReporter(
         mode,
-        console,
+        progress_console,
         target_count,
         flags.samples,
         command=command,
@@ -492,115 +347,6 @@ def wants_json(flags: SharedFlags) -> bool:
     return flags.format == OutputFormat.json.value
 
 
-def budget_summary_of(budget: Budget, current_ms: float) -> BudgetSummary:
-    """The JSON ``budget`` field for an active budget at ``current_ms``."""
-    return BudgetSummary(
-        cap_minutes=budget.max_minutes,
-        remaining_seconds=int(budget.remaining_ms(current_ms) // 1000),
-    )
-
-
-def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:
-    """Read the live budget at *root* and return the text trailer and JSON summary.
-
-    Args:
-        root: The repository root whose session budget to read.
-
-    Returns:
-        The text trailer and JSON summary, or ``("", None)`` when no budget
-        is active.
-    """
-    current = _clock.now_ms()
-    budget = read_budget(root, now_ms=current)
-    if budget is None:
-        return "", None
-    return "\n" + format_budget_trailer(budget, current), budget_summary_of(budget, current)
-
-
-def write_budget_report(
-    root: str,
-    *,
-    use_json: bool,
-    render_json: Callable[[BudgetSummary | None], str],
-    text_report: str,
-) -> None:
-    """Render the JSON or text report from a single budget read, then write it once.
-
-    Args:
-        root: The repository root whose session budget to read.
-        use_json: When true, delegate to *render_json*; otherwise concatenate
-            *text_report* with the budget trailer.
-        render_json: Callable that turns an optional ``BudgetSummary`` into a
-            complete JSON string.
-        text_report: Pre-rendered text body used in plain-text mode.
-    """
-    trailer, summary = budget_snapshot(root)
-    report = render_json(summary) if use_json else text_report + trailer
-    write_stdout(report + "\n")
-
-
-def _repo_root_or_none() -> str | None:
-    """The current repository root, or ``None`` outside a git repo or on a read failure."""
-    try:
-        return repo_root()
-    except (GymratError, OSError):
-        return None
-
-
-def budget_for_report() -> tuple[str, BudgetSummary | None]:
-    """Read the live budget rooted at the current repository.
-
-    Returns:
-        The text trailer and JSON summary, or ``("", None)`` outside a git
-        repository or when no budget is active.
-    """
-    root = _repo_root_or_none()
-    if root is None:
-        return "", None
-    return budget_snapshot(root)
-
-
-def warn_duration_over_budget(*, halve: bool) -> None:
-    """Warn on stderr when the estimated duration would outlast the budget.
-
-    Nothing is written when the budget or the estimate is unknown.
-
-    Args:
-        halve: When ``True``, check half the last iterate estimate — one side,
-            the shape ``measure`` runs — and name that per-side figure on its
-            own. When ``False``, check the full estimate — both sides, the
-            shape ``compare`` runs — and lead with the full cost, keeping the
-            per-side figure in parentheses so a per-side number that still
-            fits does not read as if nothing were wrong.
-    """
-    root = _repo_root_or_none()
-    if root is None:
-        return
-    current = _clock.now_ms()
-    budget = read_budget(root, now_ms=current)
-    if budget is None:
-        return
-    try:
-        records = read_records(session_jsonl_path(root))
-    except (GymratError, OSError):
-        return
-    estimate = estimate_iterate_duration(records)
-    if estimate is None:
-        return
-    per_side_ms = estimate.duration_ms / SIDES_PER_ITERATE
-    threshold_ms = per_side_ms if halve else estimate.duration_ms
-    remaining = budget.remaining_ms(current)
-    if threshold_ms > remaining:
-        per_side = format_duration(per_side_ms)
-        cost = (
-            f"{per_side} per side"
-            if halve
-            else f"{format_duration(estimate.duration_ms)} ({per_side} per side)"
-        )
-        left = format_duration(remaining)
-        warn_to_stderr(f"warning: {left} left; the last full measurement took at most {cost}")
-
-
 def emit_report[T](  # noqa: PLR0913 -- keyword-only budget params extend a 4-positional surface
     result: T,
     flags: SharedFlags,
@@ -633,6 +379,6 @@ def emit_report[T](  # noqa: PLR0913 -- keyword-only budget params extend a 4-po
     if wants_json(flags):
         write_stdout(renderers.json(result, budget=budget_summary) + "\n")
         return
-    color = resolve_stream_color(render_opts.color, sys.stdout)
+    color = console.resolve_stream_color(render_opts.color, sys.stdout)
     output = renderers.text(result, replace(render_opts, color=color))
     write_stdout(output + budget_trailer + "\n")

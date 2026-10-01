@@ -19,8 +19,8 @@ from typing import Any
 import pytest
 
 from gymrat.cli.supervise import span_lifecycle
-from gymrat.cli.supervise.progress import ReadSessionResult
 from gymrat.cli.supervise.span_lifecycle import TracingState
+from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, _live_process_groups
 from gymrat.exec import exec as run_exec

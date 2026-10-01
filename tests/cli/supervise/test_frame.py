@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.panel import Panel
 
-from gymrat.cli.supervise.state import ReadSessionResult
+from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._ansi import (
     SGR_BLUE,
@@ -50,7 +50,7 @@ from tests.cli.supervise._fixtures import (
 )
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.progress import SuperviseReporter
+    from gymrat.cli.supervise.types import SuperviseReporter
     from gymrat.config import Effort
 
 

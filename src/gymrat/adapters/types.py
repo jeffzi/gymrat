@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from gymrat.errors import GymratError
-from gymrat.model.metrics import Direction, MetricUnit
+from gymrat.model import Direction, MetricUnit
 from gymrat.warn import WarnSink, warn_to_stderr
 
 __all__ = [

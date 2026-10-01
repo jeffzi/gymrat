@@ -1,8 +1,8 @@
-"""Verdict engine core: pairing, delta computation, and method dispatch.
+"""Verdict engine: per-metric verdicts and their geometric-mean aggregation.
 
-For each metric the engine pairs its per-round observations, computes a
-percentage delta from the paired medians, and classifies the move with one of
-three methods:
+For each metric, :func:`compute_verdicts` pairs its per-round observations,
+computes a percentage delta from the paired medians, and classifies the move
+with one of three methods:
 
 - **exact** — any difference between medians is signal; no noise band.
 - **permutation** — the sign-flip permutation test decides significance once
@@ -12,14 +12,22 @@ three methods:
   resolution.
 - **band** — the fallback for short or tied runs; a delta must exceed the
   metric's own noise band.
+
+Verdicts are then averaged hierarchically — one geometric mean per kind, per
+group, and per gating subset. Each mean covers exactly the metrics in its scope,
+in log space over each metric's normalized ratio, and propagates their noise
+bands in quadrature. Metrics that cannot contribute a usable ratio — never
+judged, judged unstable, or yielding a degenerate ratio — are reported as
+exclusions instead, keeping each aggregate accountable for every metric the
+caller asked it to cover.
 """
 
-import dataclasses
 import math
 import statistics
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import (
     BAND_FLOORS,
     DEFAULT_UNSTABLE_NOISE_PCT,
@@ -30,21 +38,39 @@ from gymrat.model import (
     Direction,
     Effect,
     ExactVerdict,
+    Exclusion,
+    GeomeanResult,
     MetricMeta,
     MetricUnit,
     MetricVerdict,
     Observations,
     PermutationVerdict,
+    ResolvedMetricMeta,
     Verdict,
     pair_metric,
 )
 from gymrat.stats import (
+    combine_geomean,
     compute_half_range,
+    count_nonzero_pairs,
+    normalize_ratio,
     percent_delta,
     sign_flip_permutation_test,
 )
-from gymrat.stats.permutation import count_nonzero_pairs
 from gymrat.warn import WarnSink, warn_to_stderr
+
+__all__ = [
+    "GroupAggregate",
+    "KindAggregate",
+    "compute_geomean",
+    "compute_kind_aggregates",
+    "compute_verdicts",
+    "infer_group",
+]
+
+# ---------------------------------------------------------------------------
+# Per-metric verdicts
+# ---------------------------------------------------------------------------
 
 ONE_BYTE_PCT = 100.0
 """One byte expressed as a percentage of a one-byte median: what a whole-byte metric
@@ -55,9 +81,9 @@ cannot measure below."""
 class _PairedSamples:
     """A metric's round-paired samples with the per-side medians already computed.
 
-    Bundles what every downstream step needs — the engine computes the medians
-    once for the delta, and the noise and verdict paths reuse them instead of
-    recomputing.
+    Bundles what every downstream step needs — :func:`compute_verdicts` computes
+    the medians once for the delta, and the noise and verdict paths reuse them
+    instead of recomputing.
     """
 
     left: Sequence[float]
@@ -255,7 +281,7 @@ def _compute_approximate_verdict(
     # unconditional. Strict comparison keeps a metric sitting exactly on the
     # threshold on its normal verdict.
     if noise.force_unstable or record.noise_pct > unstable_noise_pct:
-        return dataclasses.replace(record, verdict="unstable")
+        return replace(record, verdict="unstable")
     return record
 
 
@@ -330,3 +356,206 @@ def compute_verdicts(
             )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Geometric-mean aggregation
+# ---------------------------------------------------------------------------
+
+
+def compute_geomean(
+    verdicts: Mapping[str, MetricVerdict],
+    metric_meta: Mapping[str, MetricMeta],
+) -> GeomeanResult:
+    """Aggregate the metrics named in ``metric_meta`` into a geometric mean.
+
+    Which metrics belong in the geomean is the caller's decision: every metric
+    ``metric_meta`` names is in scope, gating or not, and ``verdicts`` may carry
+    others that are ignored. Each in-scope metric is either included as a
+    ``(rho, noise_pct)`` pair or reported as an exclusion, so ``n`` plus the
+    number of exclusions always equals the number of metrics in scope.
+
+    A metric is excluded, in this order, when it has no verdict
+    (``"no-verdict"``), when its verdict is unstable (``"unstable"``, decided
+    before the ratio so an unstable verdict with a NaN delta is still reported
+    unstable), or when its ratio is degenerate (``"undefined-ratio"`` for a NaN
+    delta, ``"infinite-rho"`` for a non-positive or non-finite ratio).
+
+    Args:
+        verdicts: Per-metric verdicts keyed by metric name.
+        metric_meta: The metrics to average, keyed by name, in the order they
+            should be considered.
+
+    Returns:
+        A :class:`GeomeanResult` carrying the combined value, the count of
+        included metrics, the propagated noise band, and every exclusion.
+    """
+    entries: list[tuple[float, float]] = []
+    exclusions: list[Exclusion] = []
+
+    for name, meta in metric_meta.items():
+        verdict = verdicts.get(name)
+        if verdict is None:
+            exclusions.append(Exclusion(metric=name, reason="no-verdict"))
+            continue
+        if verdict.verdict == "unstable":
+            exclusions.append(Exclusion(metric=name, reason="unstable"))
+            continue
+
+        outcome = normalize_ratio(verdict.delta.value, meta.direction)
+        if outcome.reason is not None:
+            exclusions.append(Exclusion(metric=name, reason=outcome.reason))
+            continue
+
+        rho = outcome.rho
+        assert rho is not None  # noqa: S101 -- reason is None, so normalize_ratio guarantees a rho
+        noise_pct = 0.0 if verdict.method == "exact" else verdict.noise_pct
+        entries.append((rho, noise_pct))
+
+    combination = combine_geomean(entries)
+    return GeomeanResult(
+        value=combination.value,
+        n=combination.n,
+        band=combination.band,
+        excluded=tuple(exclusions),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hierarchical aggregation by kind and group
+# ---------------------------------------------------------------------------
+
+type MetricEntry = tuple[str, ResolvedMetricMeta]
+"""A metric name paired with the metadata resolved for it."""
+
+
+@dataclass(frozen=True, slots=True)
+class GroupAggregate:
+    """The geomean over one group of a kind's metrics.
+
+    Attributes:
+        group: Path prefix the group's metrics share — the name minus its last
+            segment.
+        geomean: Geomean over the group's metrics, gating and non-gating alike.
+    """
+
+    group: str
+    geomean: GeomeanResult
+
+
+@dataclass(frozen=True, slots=True)
+class KindAggregate:
+    """One kind's aggregation for a single candidate.
+
+    ``geomean`` covers every metric of the kind and ``gated_geomean`` only the
+    gating ones, so a report can show what the whole section did next to what the
+    run is judged on. The two coincide when every metric of the kind gates.
+
+    Attributes:
+        kind: The metric kind these aggregates summarize.
+        geomean: Over every metric of the kind, gating and non-gating alike.
+        groups: One entry per group the kind's metric paths name, empty when
+            every path has a single segment.
+        gated_geomean: Over the kind's gating metrics alone, ``None`` when the
+            kind has none.
+    """
+
+    kind: str
+    geomean: GeomeanResult
+    groups: tuple[GroupAggregate, ...]
+    gated_geomean: GeomeanResult | None = None
+
+
+@dataclass(slots=True)
+class _KindBucket:
+    """A kind's metrics, and the groups their short names sort them into."""
+
+    metrics: list[MetricEntry]
+    groups: dict[str, list[MetricEntry]]
+
+
+def infer_group(name: str) -> str | None:
+    """The group a metric belongs to, derived from its name's path segments.
+
+    Parses ``name`` through :func:`gymrat.metric_name.parse` and returns the
+    path prefix (all segments but the last, joined with ``/``). Single-segment
+    paths have no group.
+
+    Exposed so a renderer laying out group blocks sorts its rows by the same rule
+    the aggregates were computed under — a second rule would put a metric in one
+    group and its geomean in another.
+
+    Args:
+        name: The metric name to derive the group from.
+
+    Returns:
+        The ``/``-joined group prefix, or ``None`` for single-segment names.
+    """
+    return parse_metric_name(name).group
+
+
+def _bucket_by_kind(
+    metric_meta: Mapping[str, ResolvedMetricMeta],
+) -> dict[str, _KindBucket]:
+    buckets: dict[str, _KindBucket] = {}
+
+    for name, meta in metric_meta.items():
+        bucket = buckets.setdefault(meta.kind, _KindBucket(metrics=[], groups={}))
+
+        entry: MetricEntry = (name, meta)
+        bucket.metrics.append(entry)
+
+        group = infer_group(name)
+        if group is None:
+            continue
+
+        bucket.groups.setdefault(group, []).append(entry)
+
+    return buckets
+
+
+def compute_kind_aggregates(
+    verdicts: Mapping[str, MetricVerdict],
+    metric_meta: Mapping[str, ResolvedMetricMeta],
+) -> list[KindAggregate]:
+    """Aggregate one candidate's verdicts into a geomean per kind, group, and gating subset.
+
+    Kinds, groups, and the metrics inside them keep the order ``metric_meta``
+    lists them in, which is the order the run first reported each metric — so a
+    report drawn from these aggregates reads in the same order as the metric
+    table.
+
+    Grouping is decided per kind: a group exists only where a name's path has
+    more than one segment, and a kind of single-segment names has no groups at
+    all rather than one group per metric. Inside a kind that does have groups, a
+    single-segment name joins none of them, yet still counts toward the kind.
+
+    Every geomean here is a plain ``compute_geomean`` call over a chosen subset,
+    so the unstable, undefined-ratio and infinite-rho exclusions apply throughout,
+    each reported against the subset it was excluded from.
+
+    Args:
+        verdicts: The candidate's verdicts, keyed by metric name.
+        metric_meta: Metadata for every metric of the run, in first-appearance
+            order.
+
+    Returns:
+        One :class:`KindAggregate` per kind, in first-appearance order.
+    """
+    aggregates: list[KindAggregate] = []
+
+    for kind, bucket in _bucket_by_kind(metric_meta).items():
+        gating = [entry for entry in bucket.metrics if entry[1].gating]
+        aggregates.append(
+            KindAggregate(
+                kind=kind,
+                geomean=compute_geomean(verdicts, dict(bucket.metrics)),
+                groups=tuple(
+                    GroupAggregate(group=group, geomean=compute_geomean(verdicts, dict(members)))
+                    for group, members in bucket.groups.items()
+                ),
+                gated_geomean=compute_geomean(verdicts, dict(gating)) if gating else None,
+            ),
+        )
+
+    return aggregates

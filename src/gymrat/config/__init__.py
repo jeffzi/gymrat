@@ -21,10 +21,13 @@ from gymrat.config.meta import resolve_metric_meta
 from gymrat.config.resolve import (
     ConfigInspection,
     find_implicit_base,
+    flag_problem,
     inspect_config,
+    loop_key_problems,
     merge_config,
     resolve_benchless_config,
     resolve_config,
+    runbook_problem,
     validate_config_dict,
 )
 from gymrat.config.types import (
@@ -43,11 +46,6 @@ from gymrat.config.types import (
     ResolvedConfig,
     StopConfig,
     SuperviseConfig,
-)
-from gymrat.config.validate import (
-    flag_problem,
-    loop_key_problems,
-    runbook_problem,
 )
 
 __all__ = [

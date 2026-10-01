@@ -5,9 +5,23 @@ from unittest.mock import patch
 
 import pytest
 
-from gymrat.cli.lock import TOOL_FAILURE_EXIT_CODE
-from gymrat.errors import GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.event_docs.__main__ import main
+from tests.event_docs._imports import modules_imported_by
+
+# ---------------------------------------------------------------------------
+# Entry point isolation
+# ---------------------------------------------------------------------------
+
+
+def test_import_main_module_when_loaded_does_not_import_the_cli_package():
+    loaded = modules_imported_by("gymrat.event_docs.__main__")
+
+    cli_modules = sorted(
+        name for name in loaded if name == "gymrat.cli" or name.startswith("gymrat.cli.")
+    )
+    assert cli_modules == []
+
 
 # ---------------------------------------------------------------------------
 # main — GymratError with hint
