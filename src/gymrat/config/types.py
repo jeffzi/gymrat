@@ -19,7 +19,7 @@ from gymrat.pydantic_errors import NON_BLANK_PATTERN, coerce_integer
 #: The effort dial the CLI and config file both accept for a supervised session.
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
-# Unknown keys must fail validation so ``schema.py`` reports an "Unknown config key"
+# Unknown keys must fail validation so ``config/resolve.py`` reports an "Unknown config key"
 # problem; every nested dataclass sets this, not only ``ConfigFile``.
 _FORBID_EXTRA = ConfigDict(extra="forbid")
 

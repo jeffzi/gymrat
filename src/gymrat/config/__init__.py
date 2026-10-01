@@ -16,12 +16,13 @@ error paths always name the snake_case key the user wrote.
 """
 
 from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
-from gymrat.config.load import load_config_file, load_config_file_collecting
 from gymrat.config.resolve import (
     ConfigInspection,
     find_implicit_base,
     flag_problem,
     inspect_config,
+    load_config_file,
+    load_config_file_collecting,
     loop_key_problems,
     merge_config,
     resolve_benchless_config,
