@@ -9,22 +9,24 @@ from typing import Annotated
 
 import typer
 
-from gymrat.cli.shared import (
+from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     ColorOption,
     DebugOption,
-    apply_color_override,
-    apply_debug,
-    exit_with_error,
-    write_and_flush,
 )
+from gymrat.cli.shared import apply_color_override, apply_debug, exit_with_error, write_and_flush
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
 from gymrat.session.store import first_line_json, read_session_header
 from gymrat.warn import warn_to_stderr
 
+_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
+
 SessionLogArg = Annotated[
     str | None, typer.Argument(metavar="[SESSION_LOG]", help="path to session.jsonl")
 ]
-EndpointOption = Annotated[str | None, typer.Option("--endpoint", help="OTLP HTTP endpoint URL")]
+EndpointOption = Annotated[
+    str | None,
+    typer.Option("--endpoint", envvar=_ENDPOINT_ENV, help="OTLP HTTP endpoint URL"),
+]
 
 _SDK_MISSING = "OpenTelemetry SDK not available. Install with: pip install 'gymrat[otel]'"
 
@@ -88,15 +90,19 @@ def _export(session_log: str | None, endpoint: str | None) -> None:
 
     session_id = header.session_id
 
-    resolved_endpoint = endpoint or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
-    if not resolved_endpoint:
-        exit_with_error("No endpoint: pass --endpoint or set OTEL_EXPORTER_OTLP_ENDPOINT")
-
-    if endpoint:
-        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
-
-    from gymrat.telemetry.provider import configure_tracing, flush_tracing  # noqa: PLC0415
+    from gymrat.telemetry.provider import (  # noqa: PLC0415
+        configure_tracing,
+        export_failed,
+        flush_tracing,
+        otlp_endpoint,
+    )
     from gymrat.telemetry.replay import replay_session  # noqa: PLC0415
+
+    endpoint = otlp_endpoint(endpoint)
+    if endpoint is None:
+        exit_with_error(f"No endpoint: pass --endpoint or set {_ENDPOINT_ENV}")
+
+    os.environ[_ENDPOINT_ENV] = endpoint
 
     try:
         if not configure_tracing(session_id):
@@ -107,8 +113,13 @@ def _export(session_log: str | None, endpoint: str | None) -> None:
     supervisor_logs = _matching_supervisor_logs(session_dir, session_id)
     count = replay_session(session_log, supervisor_logs)
     flush_tracing()
+    if export_failed():
+        exit_with_error(
+            f"Could not export spans to {endpoint}: the collector is unreachable or rejected "
+            "a batch. The exporter's log lines above give the cause."
+        )
 
     write_and_flush(
         sys.stderr,
-        f"exported {count} spans for session {session_id} to {resolved_endpoint}\n",
+        f"exported {count} spans for session {session_id} to {endpoint}\n",
     )

@@ -7,7 +7,6 @@ from ``test_cmd`` and add ``memory_tracing`` from the telemetry test fixtures.
 
 from __future__ import annotations
 
-import sys
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -18,7 +17,6 @@ if TYPE_CHECKING:
 import pytest
 from opentelemetry.trace import StatusCode
 
-from gymrat.cli.shared import write_and_flush
 from gymrat.cli.supervise import span_lifecycle
 from gymrat.config import SuperviseConfig
 from gymrat.errors import GymratError
@@ -30,11 +28,13 @@ from tests.cli.supervise.test_cmd import (
     _config,
     _err_text,
     _install_seams,
+    _record_stdout_writes,
     _run,
     _Seams,
     _track_cleanups,
 )
 from tests.session.records._fixtures import SESSION_ID
+from tests.supervisor._fixtures import make_prompt, noop_observer
 from tests.telemetry._fixtures import memory_tracing
 
 
@@ -174,15 +174,7 @@ def test_supervise_when_tracing_enabled_does_end_spans_after_report_and_flush(
 
     order: list[str] = []
     _tracing_seams(monkeypatch)
-
-    original_waf = write_and_flush
-
-    def tracking_waf(stream: Any, data: str) -> None:
-        if stream is sys.stdout:
-            order.append("summary")
-        original_waf(stream, data)
-
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.write_and_flush", tracking_waf)
+    _record_stdout_writes(monkeypatch, order, "summary")
 
     original_flush = None
 
@@ -296,6 +288,26 @@ def test_supervise_when_tracing_enabled_and_model_set_does_set_provider_attribut
     assert run_span.attributes["gen_ai.provider.name"] == "anthropic"  # pyrefly: ignore[unsupported-operation]
 
 
+def test_supervise_when_collector_rejects_the_export_does_exit_zero(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    from gymrat.telemetry.provider import export_failed
+    from tests.telemetry._collector import otlp_collector
+
+    _tracing_seams(monkeypatch)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+
+    with otlp_collector(statuses=[400] * 8) as collector:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint)
+        result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
+
+    assert (result.exit_code, export_failed(), "gymrat.run" in collector.span_names) == (
+        0,
+        True,
+        True,
+    )
+
+
 def test_supervise_when_tracing_disabled_does_pass_reporter_observer_directly(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -318,6 +330,54 @@ def test_supervise_when_tracing_disabled_does_not_set_traceparent_on_prompt(
     prompt = seams.supervise_calls[0]["prompt"]
     assert isinstance(prompt, SessionPrompt)
     assert prompt.traceparent is None
+
+
+# ---------------------------------------------------------------------------
+# tracing with the OTel SDK disabled — the run continues untraced
+# ---------------------------------------------------------------------------
+
+
+def _disable_sdk_with_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+
+
+def test_supervise_when_sdk_disabled_and_endpoint_set_does_run_untraced(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _tracing_seams(monkeypatch)
+    _disable_sdk_with_endpoint(monkeypatch)
+
+    result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
+
+    handed_over = [
+        (call["prompt"].traceparent, call["observer"])  # pyrefly: ignore[missing-attribute]
+        for call in seams.supervise_calls
+    ]
+    assert (result.exit_code, handed_over) == (0, [(None, seams.observer)]), _err_text(result)
+
+
+def test_setup_tracing_when_sdk_disabled_and_endpoint_set_does_hold_no_span(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _disable_sdk_with_endpoint(monkeypatch)
+    prompt = make_prompt()
+    observer = noop_observer()
+
+    traced = span_lifecycle.setup_tracing(
+        session_id=SESSION_ID,
+        branch=f"gymrat/{SESSION_ID}",
+        launch_at=1,
+        head_sha="a" * 40,
+        max_minutes=_CAP_MINUTES,
+        max_usd=None,
+        effort=None,
+        model=None,
+        prompt=prompt,
+        reporter_observer=observer,
+    )
+
+    assert traced == (prompt, observer, span_lifecycle.TracingState())
 
 
 # ---------------------------------------------------------------------------

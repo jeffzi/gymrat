@@ -424,8 +424,10 @@ async def test_run_exit_sequence_when_lock_frees_mid_wait_does_proceed_to_settle
         calls += 1
         return calls <= 2
 
+    # The probe frees the lock on its third call, so the bound never elapses; it
+    # only has to outlast a loaded runner's delay before the first poll.
     run = await run_sequence(
-        _context(repo), lock_poll_ms=1, lock_wait_ms=100, is_lock_held=held_then_freed
+        _context(repo), lock_poll_ms=1, lock_wait_ms=60_000, is_lock_held=held_then_freed
     )
 
     assert calls > 2

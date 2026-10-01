@@ -20,6 +20,10 @@ The same discipline covers ``claude_agent_sdk``, the supervise driver's backend:
 it drags in ``mcp``, ``starlette``, ``uvicorn``, and ``httpx``, so the Claude
 driver imports it lazily inside ``start`` — importing ``gymrat.supervisor``
 (and the CLI) must never pull it in.
+
+``opentelemetry`` ships only with the ``otel`` extra, so modules that load
+without it — including the traceparent helpers in ``gymrat.telemetry.ids`` and
+``gymrat.telemetry.attributes`` — import it inside the functions that need it.
 """
 
 import os
@@ -61,6 +65,8 @@ import gymrat.supervisor.tools
 import gymrat.supervisor.hooks
 import gymrat.supervisor.hooks_files
 import gymrat.telemetry
+import gymrat.telemetry.attributes
+import gymrat.telemetry.ids
 heavy = sorted(
     name
     for name in sys.modules

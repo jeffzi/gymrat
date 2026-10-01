@@ -22,7 +22,6 @@ from gymrat.cli.iterate.state import advance, initial_state, plain_line
 from gymrat.cli.progress import compact_progress, passes_progress
 from gymrat.cli.style import (
     COMPACT_HEIGHT_THRESHOLD,
-    LIVE_REFRESH_PER_SECOND,
     SPINNER_NAME,
     STYLE_LABEL,
     STYLE_META,
@@ -37,7 +36,6 @@ from gymrat.progress_events import (
     PassStarted,
     ProgressEvent,
 )
-from gymrat.signals import install_termination_cleanup
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -150,17 +148,7 @@ class IterateRenderer(LiveDisplayMixin):
                 self._console, clock=self._clock
             )
 
-        self._live = ErasableLive(
-            console=self._console,
-            auto_refresh=True,
-            refresh_per_second=LIVE_REFRESH_PER_SECOND,
-            transient=not self._verbose,
-            redirect_stderr=False,
-            get_renderable=self.frame,
-        )
-        self._live.start()
-
-        self._uninstall_cleanup = install_termination_cleanup(self.clear_on_signal)
+        self._mount_live(transient=not self._verbose, get_renderable=self.frame)
 
     # -----------------------------------------------------------------------
     # Rendering
@@ -347,9 +335,8 @@ class IterateRenderer(LiveDisplayMixin):
 
     def stop(self) -> None:
         """Stop the renderer and clean up any live display."""
-        if self._stopped:
+        if not self._claim_stop():
             return
-        self._stopped = True
         self._uninstall_cleanup()
         if self._live is not None:
             self._live.stop()

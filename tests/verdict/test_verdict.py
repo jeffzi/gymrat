@@ -864,21 +864,28 @@ def test_compute_verdicts_when_zero_median_with_spread_does_report_unstable(
     assert not math.isinf(verdict.noise_pct)
 
 
-# A median so close to zero that spread (or the one-byte floor) divided by it
-# overflows to infinity takes the zero-median path: each case pairs the tiny
-# median run with an otherwise matching run whose median is exactly zero. The
-# permutation case keeps both sides' medians tiny so every sign-flipped delta
-# stays finite and only the noise ratio overflows.
+# A subnormal median: any spread (or the one-byte floor) divided by it overflows
+# to infinity.
+_OVERFLOWING_MEDIAN = 1e-310
+
+# When the noise ratio overflows, noise_pct stays finite and the noise band falls
+# back to the floor or byte floor. Where a side has a non-zero half-range the
+# verdict is forced unstable with the floor as its noise_pct; the byte-floor row
+# has no spread, so the tiny side only loses its byte-floor term and the other
+# side's one-byte floor (25%) remains. The permutation case keeps both sides'
+# medians tiny so every sign-flipped delta stays finite and only the noise ratio
+# overflows.
 
 
 @pytest.mark.parametrize(
-    ("narrow", "meta", "tiny_median_pair", "zero_median_pair"),
+    ("narrow", "meta", "tiny_median_pair", "expected_verdict", "expected_noise_pct"),
     [
         pytest.param(
             get_band,
             METRIC_APPROX_LOWER,
-            (create_samples(3, 10.0), samples(-5.0, 1e-310, 5.0)),
-            (create_samples(3, 10.0), samples(-5.0, 0.0, 5.0)),
+            (create_samples(3, 10.0), samples(-5.0, _OVERFLOWING_MEDIAN, 5.0)),
+            "unstable",
+            0.5,
             id="band-spread",
         ),
         pytest.param(
@@ -888,36 +895,33 @@ def test_compute_verdicts_when_zero_median_with_spread_does_report_unstable(
                 samples(-5.0, -3.0, 0.0, 4e-310, 3.0, 5.0),
                 samples(-6.0, -4.0, 1e-310, 3e-310, 4.0, 6.0),
             ),
-            (
-                samples(-5.0, -3.0, -1.0, 1.0, 3.0, 5.0),
-                samples(-6.0, -4.0, -2.0, 2.0, 4.0, 6.0),
-            ),
+            "unstable",
+            0.5,
             id="permutation-spread",
         ),
         pytest.param(
             get_band,
             METRIC_BYTES_LOWER,
-            (create_samples(2, 4.0), create_samples(2, 1e-310)),
-            (create_samples(2, 4.0), create_samples(2, 0.0)),
+            (create_samples(2, 4.0), create_samples(2, _OVERFLOWING_MEDIAN)),
+            "improved",
+            25.0,
             id="byte-floor",
         ),
     ],
 )
-def test_compute_verdicts_when_noise_ratio_overflows_does_match_zero_median(
+def test_compute_verdicts_when_noise_ratio_overflows_does_fall_back_to_floor(
     narrow: Callable[[dict[str, MetricVerdict]], BandVerdict | PermutationVerdict],
     meta: dict[str, MetricMeta],
     tiny_median_pair: tuple[list[dict[str, float]], list[dict[str, float]]],
-    zero_median_pair: tuple[list[dict[str, float]], list[dict[str, float]]],
+    expected_verdict: str,
+    expected_noise_pct: float,
 ):
-    zero_median = narrow(run(*zero_median_pair, meta))
+    result = run(*tiny_median_pair, meta)
 
-    tiny_median = narrow(run(*tiny_median_pair, meta))
-
-    assert math.isfinite(tiny_median.noise_pct)
-    assert (tiny_median.verdict, tiny_median.noise_pct) == (
-        zero_median.verdict,
-        zero_median.noise_pct,
-    )
+    verdict = narrow(result)
+    assert math.isfinite(verdict.noise_pct)
+    assert verdict.noise_pct == pytest.approx(expected_noise_pct, abs=1e-5)
+    assert verdict.verdict == expected_verdict
 
 
 def test_compute_verdicts_when_bytes_zero_median_and_zero_spread_does_not_report_unstable():

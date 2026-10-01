@@ -1,8 +1,10 @@
 """Config-file schema and loading for gymrat.
 
-The on-disk ``gymrat.toml`` file is validated against pydantic models internally,
-but the public surface is plain frozen dataclasses -- no pydantic type ever leaks
-to consumers. Two entry points share one read/parse/validate pipeline:
+The on-disk ``gymrat.toml`` file is validated by pydantic against the frozen
+dataclasses themselves. Consumers receive plain frozen dataclasses and values;
+the pydantic metadata lives only in their class definitions, in field
+annotations and a ``__pydantic_config__`` class attribute. Two entry points
+share one read/parse/validate pipeline:
 
 - :func:`load_config_file` raises a :class:`GymratError` on the first problem.
 - :func:`load_config_file_collecting` returns every problem alongside an
@@ -25,7 +27,6 @@ from gymrat.config.resolve import (
     resolve_config,
     validate_config_dict,
 )
-from gymrat.config.schema import EFFORT_LEVELS, EFFORT_PHRASE
 from gymrat.config.types import (
     CONFIG_DEFAULTS,
     CONFIG_FILENAME,
@@ -52,8 +53,6 @@ from gymrat.config.validate import (
 __all__ = [
     "CONFIG_DEFAULTS",
     "CONFIG_FILENAME",
-    "EFFORT_LEVELS",
-    "EFFORT_PHRASE",
     "FILTER_PLACEHOLDER",
     "GEOMEAN_PRIMARY",
     "MAX_SAFE_INTEGER",

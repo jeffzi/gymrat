@@ -120,7 +120,7 @@ writer, not a degenerate measurement.
 
 | Name | Type | Status | Description |
 | --- | --- | --- | --- |
-| `delta_pct` | integer \| number \| null | required | Percentage change from baseline, or null when undefined. |
+| `delta_pct` | number \| integer \| null | required | Percentage change from baseline, or null when undefined. |
 | `verdict` | `"improved"` \| `"regressed"` \| `"no-signal"` \| `"unstable"` | required | Whether the metric improved, regressed, or showed no signal. |
 | `method` | `"permutation"` \| `"band"` \| `"exact"` | required | Statistical test used to judge the metric. |
 | `p` | number | optional | P-value from the statistical test. |
@@ -148,7 +148,7 @@ The primary an iteration was judged on -- the geomean, or a named metric.
 
 | Name | Type | Status | Description |
 | --- | --- | --- | --- |
-| `delta_pct` | integer \| number \| null | required | Percentage change from baseline, or null when undefined. |
+| `delta_pct` | number \| integer \| null | required | Percentage change from baseline, or null when undefined. |
 | `kind` | `"geomean"` \| `"metric"` | required | Whether the primary is a geomean aggregate or a named metric. |
 | `name` | string | optional | Metric name when kind is 'metric'. |
 
@@ -199,7 +199,7 @@ One hook invocation around an iteration.
 | `type` | `"hook"` | required | Record type discriminator. |
 | `stage` | `"before"` \| `"after"` | required | Whether the hook ran before or after the iteration. |
 | `exit_code` | integer | required | Process exit code of the hook command. |
-| `duration_ms` | integer \| number | required | Wall-clock milliseconds the hook command ran. |
+| `duration_ms` | number \| integer | required | Wall-clock milliseconds the hook command ran. |
 | `stdout_bytes` | integer | required | Bytes the hook command wrote to stdout. |
 | `stderr_bytes` | integer | optional | Bytes the hook command wrote to stderr. |
 | `timed_out` | boolean | required | Whether the hook command exceeded its timeout. |
@@ -378,7 +378,7 @@ Emitted when the agent finishes a conversational turn.
 | `type` | `"turn_end"` | required | Event type discriminator. |
 | `at` | integer | required | Nanoseconds since the Unix epoch when the event was created. |
 | `text` | string | required | Full text the agent produced in this turn. |
-| `cost_usd` | number | required | Cost of this turn in US dollars. |
+| `cost_usd` | number | required | Cumulative session cost in US dollars when the turn ended. |
 | `origin` | `"agent"` \| `"injected"` | required | Whether the turn was agent-generated or injected by the supervisor. |
 | `budget_exhausted` | boolean | required | Whether the turn exhausted the remaining budget. |
 

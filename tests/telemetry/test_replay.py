@@ -31,6 +31,7 @@ from tests.session.records._fixtures import (
     session_record,
     write_session_log,
 )
+from tests.session.records._wire import with_raw_number
 from tests.telemetry._fixtures import memory_tracing
 
 if TYPE_CHECKING:
@@ -59,14 +60,16 @@ _T5 = _T4 + 1_000_000_000
 _HEAD_SHA = "a" * 40
 
 
+def _write_lines(path: str, lines: list[str]) -> None:
+    Path(path).write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+
+
 def _write_session_log(path: str, records: list[Any]) -> None:
-    with Path(path).open("w", encoding="utf-8") as fh:
-        fh.writelines(json.dumps(record_to_wire(rec)) + "\n" for rec in records)
+    _write_lines(path, [json.dumps(record_to_wire(rec)) for rec in records])
 
 
 def _write_supervisor_log(path: str, events: list[Any]) -> None:
-    with Path(path).open("w", encoding="utf-8") as fh:
-        fh.writelines(to_json_line(ev) + "\n" for ev in events)
+    _write_lines(path, [to_json_line(ev) for ev in events])
 
 
 def _launch_event(
@@ -264,6 +267,26 @@ def test_replay_session_when_turn_end_in_supervisor_does_set_cost_usd(log_paths:
     spans = _replay(session_log, sup_log)
     run_span = _span_by_name(spans, "gymrat.run")
     assert run_span.attributes["gymrat.run.cost_usd"] == pytest.approx(0.42)
+
+
+def test_replay_session_when_turn_end_in_supervisor_does_mirror_session_cost_onto_span_event(
+    log_paths: tuple[str, str],
+):
+    session_log, sup_log = log_paths
+    _write_session_log(session_log, [session_record(at=_T0)])
+    _write_supervisor_log(sup_log, [_launch_event(at=_T1), _turn_end(at=_T3, cost_usd=0.42)])
+
+    spans = _replay(session_log, sup_log)
+
+    run_span = _span_by_name(spans, "gymrat.run")
+    turn_ends = [ev for ev in run_span.events if ev.name == "gymrat.turn_end"]
+    assert [dict(ev.attributes) for ev in turn_ends] == [
+        {
+            "gymrat.turn.session_cost_usd": pytest.approx(0.42),
+            "gymrat.turn.origin": "agent",
+            "gymrat.turn.budget_exhausted": False,
+        }
+    ]
 
 
 def test_replay_session_when_usage_update_in_supervisor_does_set_cost_usd(
@@ -606,6 +629,41 @@ def test_replay_session_when_supervisor_line_unrecognized_does_skip_it(log_paths
     assert run_span is not None
 
 
+def test_replay_session_when_supervisor_line_holds_non_finite_number_does_skip_it_silently(
+    log_paths: tuple[str, str],
+    caplog: pytest.LogCaptureFixture,
+):
+    session_log, sup_log = log_paths
+    _write_session_log(session_log, [session_record(at=_T0)])
+    _write_lines(
+        sup_log,
+        [
+            to_json_line(_launch_event(at=_T1)),
+            to_json_line(_turn_end(at=_T2, cost_usd=0.10)),
+            with_raw_number(to_json_line(_turn_end(at=_T3)), ("cost_usd",), "NaN"),
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING, logger=_REPLAY_LOGGER):
+        spans = _replay(session_log, sup_log)
+
+    run_span = _span_by_name(spans, "gymrat.run")
+    assert run_span.attributes["gymrat.run.cost_usd"] == pytest.approx(0.10)
+    assert [r for r in caplog.records if r.name == _REPLAY_LOGGER] == []
+
+
+def test_replay_session_when_supervisor_first_line_malformed_does_ignore_the_log(
+    log_paths: tuple[str, str],
+):
+    session_log, sup_log = log_paths
+    _write_session_log(session_log, [session_record(at=_T0)])
+    _write_lines(sup_log, ["{not json", to_json_line(_turn_end(at=_T3))])
+
+    spans = _replay(session_log, sup_log)
+
+    assert _spans_by_prefix(spans, "gymrat.run") == []
+
+
 # ---------------------------------------------------------------------------
 # supervisor log without matching session_id is skipped
 # ---------------------------------------------------------------------------
@@ -638,18 +696,30 @@ def _assert_warning_mentions(
     )
 
 
+_ITERATION_LINE = json.dumps(record_to_wire(iteration_record(at=_T1)))
+
+
+@pytest.mark.parametrize(
+    "bad_line",
+    [
+        pytest.param(_ITERATION_LINE[:-1], id="malformed-json"),
+        pytest.param(
+            with_raw_number(_ITERATION_LINE, ("primary", "delta_pct"), "NaN"), id="nan-literal"
+        ),
+    ],
+)
 def test_replay_session_when_session_line_unparseable_does_log_warning_with_line_number(
     log_paths: tuple[str, str],
     caplog: pytest.LogCaptureFixture,
+    bad_line: str,
 ) -> None:
     session_log, sup_log = log_paths
     header = session_record(at=_T0)
     cmd = _command("measure")
-
-    with Path(session_log).open("w", encoding="utf-8") as fh:
-        fh.write(json.dumps(record_to_wire(header)) + "\n")
-        fh.write("not valid json\n")
-        fh.write(json.dumps(record_to_wire(cmd)) + "\n")
+    _write_lines(
+        session_log,
+        [json.dumps(record_to_wire(header)), bad_line, json.dumps(record_to_wire(cmd))],
+    )
     _write_standard_run(sup_log)
 
     with (
@@ -658,10 +728,10 @@ def test_replay_session_when_session_line_unparseable_does_log_warning_with_line
     ):
         replay_session(session_log, [sup_log])
 
-    _assert_warning_mentions(caplog.records, "2", "line 2")
-
+    _assert_warning_mentions(caplog.records, "skipping line 2 (invalid JSON)", "line 2")
     spans = exporter.get_finished_spans()
     _span_by_name(spans, "gymrat.command.measure")
+    assert all(ev.name != "gymrat.iteration" for span in spans for ev in span.events)
 
 
 def _wire_command_with_unknown_field(**overrides: object) -> dict[str, object]:

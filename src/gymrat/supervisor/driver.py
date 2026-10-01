@@ -8,6 +8,7 @@ calling :meth:`DriverSession.interrupt`.
 """
 
 import asyncio
+import math
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -41,6 +42,28 @@ class SessionOutcome:
     reason: SessionEndReason
     cost_usd: float
     message: str | None = None
+
+
+def usable_cost(value: object) -> float | None:
+    """Accept a reported session cost only when it is a finite, positive number.
+
+    Every driver funnels the cost its agent reports through this rule, so a
+    missing, non-numeric, NaN, infinite, zero, or negative cost is treated the
+    same everywhere: the caller keeps the cost it already has.
+
+    Args:
+        value: The cost as reported, of any type.
+
+    Returns:
+        The cost as a float, or ``None`` when it is unusable. Booleans are
+        unusable even though ``bool`` subclasses ``int``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    cost = float(value)
+    if math.isfinite(cost) and cost > 0:
+        return cost
+    return None
 
 
 class DriverSession(Protocol):

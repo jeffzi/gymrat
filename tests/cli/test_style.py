@@ -1,19 +1,23 @@
-"""Tests for CLI style vocabulary constants, theme wiring, and signal clearing.
+"""Tests for CLI style vocabulary constants, theme wiring, and signal erasing.
 
 Running-state elements (spinners, in-flight timers) render cyan.  Alert
 surfaces (idle warnings, caps) render yellow.  The theme entries that Rich
 progress columns hard-code (``progress.spinner``, ``progress.elapsed``) follow
 the style constants so a colour change in one place propagates everywhere.
 
-``LiveDisplayMixin.clear_on_signal`` writes raw escapes past rich, so its tests
-replay the console's paint history plus the handler's write through a ``pyte``
-screen: the screen a user is left with after ``os._exit``.
+``mount_live`` installs a termination cleanup that hands raw escapes to the
+handler, which writes them past rich.  Its tests mount a live display, run the
+installed handler with the process exit stubbed out, and replay the console's
+paint history plus the handler's write through a ``pyte`` screen: the screen a
+user is left with after ``os._exit``.
 
 A signal can land while a frame is being painted, either by the auto-refresh
 thread or by the main thread itself.  The race tests freeze a paint at a known
-point -- a frame whose render blocks until released, or a console file that
-runs the handler in place of its next write -- so the outcome never depends on
-scheduling.
+point -- a frame whose render blocks until released, a console file whose write
+stalls, or one that runs the handler at a chosen write -- so the outcome never
+depends on scheduling.  While a write is in flight the erase cannot know whether
+its frame reached the terminal, so it covers the shorter of the old and new
+frames: rows of the taller one may remain, but no line above the frame goes.
 """
 
 from __future__ import annotations
@@ -21,11 +25,10 @@ from __future__ import annotations
 import sys
 import threading
 import time
+import warnings
 from io import StringIO
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, NamedTuple, override
 
-import pyte
-import pyte.modes
 import pytest
 from rich.style import Style
 from rich.text import Text
@@ -36,9 +39,24 @@ from gymrat.cli.style import (
     STYLE_RUNNING,
     STYLE_TIMER_RUNNING,
     ErasableLive,
-    LiveDisplayMixin,
+    erase_display_for_exit,
+    mount_live,
 )
-from tests._rich import console_output, screen_lines, sealed_console
+from gymrat.signals import install_termination_cleanup
+from tests._rich import (
+    HIDE_CURSOR,
+    KEPT_LINE,
+    TERMINATION_SIGNAL,
+    WARNING_LINE,
+    InterruptedTerminal,
+    ProcessExit,
+    console_output,
+    cursor_hidden,
+    screen_lines,
+    sealed_console,
+    track_mounted_cleanups,
+)
+from tests._streams import RecordingStream
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -76,37 +94,72 @@ def test_cli_theme_when_elapsed_resolved_does_match_timer_running_style():
 
 
 # ---------------------------------------------------------------------------
-# LiveDisplayMixin.clear_on_signal
+# mount_live -- erase on a termination signal
 # ---------------------------------------------------------------------------
 
 
-class _Renderer(LiveDisplayMixin):
-    """A minimal mixin client that paints whatever frame it is handed."""
-
-    def __init__(self, live: ErasableLive | None) -> None:
-        self._live = live
-        self._stopped = False
-
-    def paint(self, frame: Text) -> None:
-        assert self._live is not None
-        self._live.update(frame)
-        self._refresh_live()
-
-    def queue(self, frame: RenderableType) -> None:
-        assert self._live is not None
-        self._live.update(frame)
-
-
-def _rows(count: int) -> Text:
-    return Text("\n".join(f"row {index}" for index in range(1, count + 1)))
-
-
+# The error a frame raises when its first paint fails.
+_PAINT_FAILURE = "first paint failed"
+# The error a frame raises when a later paint, such as Live.stop()'s, fails.
+_REPAINT_FAILURE = "final paint failed"
+# The error a terminal that can no longer be written raises.
+_TERMINAL_GONE = "terminal gone"
 # Generous bound on waits that only time out when the code under test is broken.
 _WAIT_SECONDS = 5.0
 # How long the handler must wait for a frozen refresh-thread paint to resume.
 _RELEASE_DELAY_SECONDS = 0.05
 # Many refresh intervals at 100 refreshes per second: a live thread paints here.
 _QUIET_SECONDS = 0.2
+# The erase's wait for an in-flight paint, shortened so a test that outlasts it
+# does not sit through the real one.
+_SHORT_PAINT_WAIT_SECONDS = 0.05
+
+
+class _InFlight(NamedTuple):
+    """A frame of old rows repainted as new rows, with a signal landing mid-write.
+
+    ``lands`` says whether the new frame's write reached the terminal before the
+    signal; ``screen`` is what the terminal shows once the erase has run.
+    """
+
+    rows_before: int
+    rows_after: int
+    lands: bool
+    screen: list[str]
+
+
+# The signal lands before the new frame's write, so the old frame is still on screen.
+_BEFORE_WRITE_CASES = [
+    pytest.param(_InFlight(2, 4, lands=False, screen=[KEPT_LINE]), id="grows-before-write"),
+    pytest.param(
+        _InFlight(4, 2, lands=False, screen=[KEPT_LINE, "old 1", "old 2"]),
+        id="shrinks-before-write",
+    ),
+]
+
+# The erase covers the shorter frame, so the taller frame's extra rows remain.
+_IN_FLIGHT_CASES = [
+    *_BEFORE_WRITE_CASES,
+    pytest.param(
+        _InFlight(2, 4, lands=True, screen=[KEPT_LINE, "new 1", "new 2"]), id="grows-after-write"
+    ),
+    pytest.param(_InFlight(4, 2, lands=True, screen=[KEPT_LINE]), id="shrinks-after-write"),
+]
+
+
+def _rows(count: int, label: str = "row") -> Text:
+    return Text("\n".join(f"{label} {index}" for index in range(1, count + 1)))
+
+
+# The thread the termination handler writes its exit output from.
+_EXIT_WRITER_THREAD = "gymrat-exit-output"
+
+
+def _on_refresh_thread() -> bool:
+    # Besides the main thread, only rich's refresh thread paints; the handler's
+    # exit-output writer is the one other thread that writes to the terminal.
+    thread = threading.current_thread()
+    return thread is not threading.main_thread() and thread.name != _EXIT_WRITER_THREAD
 
 
 class _GatedFrame:
@@ -125,289 +178,656 @@ class _GatedFrame:
         yield self._text
 
 
+class _ResizableFrame:
+    """A frame of "old" rows that the test resizes in place into "new" rows.
+
+    rich's print path repaints the renderable the last ``refresh()`` handed it,
+    so a print picks up a height change only from a frame that changes itself.
+    """
+
+    def __init__(self, count: int) -> None:
+        self._text = _rows(count, "old")
+
+    def resize(self, count: int) -> None:
+        self._text = _rows(count, "new")
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        yield self._text
+
+
+class _Abort(BaseException):
+    """Stands in for a ``KeyboardInterrupt``, which would end the test run itself."""
+
+
+class _FailingFrame:
+    """A frame whose first render raises, and every later render *repaint_error*, if given."""
+
+    def __init__(self, *, repaint_error: BaseException | None = None) -> None:
+        self._repaint_error = repaint_error
+        self._rendered = False
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        if not self._rendered:
+            self._rendered = True
+            raise RuntimeError(_PAINT_FAILURE)
+        if self._repaint_error is not None:
+            raise self._repaint_error
+        yield from ()
+
+
+def _spawned_threads_ended(before: set[threading.Thread]) -> bool:
+    """Whether every thread started since *before* was snapshotted has ended."""
+    spawned = [thread for thread in threading.enumerate() if thread not in before]
+    for thread in spawned:
+        thread.join(timeout=_WAIT_SECONDS)
+    return not any(thread.is_alive() for thread in spawned)
+
+
+class _BrokenTerminal(StringIO):
+    """A console file that can no longer be written."""
+
+    @override
+    def write(self, text: str) -> int:
+        raise OSError(_TERMINAL_GONE)
+
+
 class _WriteLog(StringIO):
-    """A console file that flags every write made off the main thread."""
+    """A console file that flags every write rich's refresh thread makes."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.painted_off_main = threading.Event()
+        self.painted_by_refresh = threading.Event()
 
     @override
     def write(self, text: str) -> int:
         written = super().write(text)
-        if threading.current_thread() is not threading.main_thread():
-            self.painted_off_main.set()
+        if _on_refresh_thread():
+            self.painted_by_refresh.set()
         return written
 
 
 class _StalledWrites(StringIO):
-    """A console file whose off-main-thread writes, once armed, block until released."""
+    """A console file that stalls rich's refresh thread on its first write of a marked frame.
 
-    def __init__(self) -> None:
+    The refresh-thread write carrying *marker* sets ``stalled`` and blocks,
+    holding rich's display lock, until ``release`` is set. Its text lands before
+    the stall when *lands* is true and after it otherwise. Every other write,
+    such as the signal handler's, passes straight through.
+    """
+
+    def __init__(self, marker: str, *, lands: bool) -> None:
         super().__init__()
-        self.armed = threading.Event()
+        self._marker = marker
+        self._lands = lands
         self.stalled = threading.Event()
         self.release = threading.Event()
 
     @override
     def write(self, text: str) -> int:
-        if self.armed.is_set() and threading.current_thread() is not threading.main_thread():
-            self.stalled.set()
-            self.release.wait(timeout=2 * _WAIT_SECONDS)
-        return super().write(text)
-
-
-class _ProcessExit(BaseException):
-    """Stands in for the ``os._exit`` that follows the handler in production."""
-
-
-class _InterruptedFile(StringIO):
-    """A console file that runs a signal handler in place of its next write."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._handler: Callable[[], None] | None = None
-
-    def interrupt_next_write(self, handler: Callable[[], None]) -> None:
-        self._handler = handler
-
-    @override
-    def write(self, text: str) -> int:
-        handler, self._handler = self._handler, None
-        if handler is None:
+        if self.stalled.is_set() or self._marker not in text or not _on_refresh_thread():
             return super().write(text)
-        handler()
-        raise _ProcessExit
+        if self._lands:
+            super().write(text)
+        self.stalled.set()
+        self.release.wait(timeout=2 * _WAIT_SECONDS)
+        return len(text) if self._lands else super().write(text)
 
 
-def _replay(raw: str) -> pyte.Screen:
-    screen = pyte.Screen(80, 24)
-    screen.set_mode(pyte.modes.LNM)
-    pyte.Stream(screen).feed(raw)
-    return screen
+def _warn() -> None:
+    warnings.warn(WARNING_LINE, RuntimeWarning, stacklevel=1)
 
 
 @pytest.fixture
-def live_renderer() -> Iterator[Callable[..., _Renderer]]:
-    """Build live renderers on a console and stop their displays at teardown."""
-    started: list[ErasableLive] = []
+def mounted_live() -> Iterator[Callable[..., ErasableLive]]:
+    """Mount live displays on a console and take them down at teardown."""
+    mounted: list[tuple[ErasableLive, Callable[[], None]]] = []
 
-    def build(console: Console, *, auto_refresh: bool = False) -> _Renderer:
+    def mount(
+        console: Console,
+        frame: RenderableType | None,
+        *,
+        auto_refresh: bool = False,
+        redirect_stdout: bool = False,
+        redirect_stderr: bool = False,
+        get_renderable: Callable[[], RenderableType] | None = None,
+    ) -> ErasableLive:
         live = ErasableLive(
+            frame,
             console=console,
             auto_refresh=auto_refresh,
             refresh_per_second=100,
-            redirect_stdout=False,
-            redirect_stderr=False,
+            redirect_stdout=redirect_stdout,
+            redirect_stderr=redirect_stderr,
+            get_renderable=get_renderable,
         )
-        live.start()
-        started.append(live)
-        return _Renderer(live)
+        mounted.append((live, mount_live(live)))
+        return live
 
-    yield build
-    for live in started:
+    yield mount
+    for live, uninstall in mounted:
+        uninstall()
         live.stop()
 
 
-def test_clear_on_signal_when_live_up_does_show_cursor(
+def _signal_mid_paint(
     monkeypatch: pytest.MonkeyPatch,
-    live_renderer: Callable[..., _Renderer],
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+) -> tuple[Console, _WriteLog, _GatedFrame]:
+    """Erase on a signal while a refresh-thread paint outlasts the erase's wait."""
+    console = sealed_console()
+    log = _WriteLog()
+    console.file = log
+    console.print(KEPT_LINE)
+    live = mounted_live(console, _rows(2), auto_refresh=True)
+    # The gate outlasts the erase's wait, so the paint is still in flight after it.
+    frame = _GatedFrame(3, gate_seconds=2 * _WAIT_SECONDS)
+    live.update(frame)
+    frame.entered.wait(timeout=_WAIT_SECONDS)
+    monkeypatch.setattr(sys, "stderr", log)
+    raise_signal(TERMINATION_SIGNAL)
+    return console, log, frame
+
+
+def test_mount_live_when_signal_arrives_does_show_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
 ):
     console = sealed_console()
-    renderer = live_renderer(console)
-    renderer.paint(_rows(3))
+    mounted_live(console, _rows(3))
     monkeypatch.setattr(sys, "stderr", console.file)
-    hidden_before = _replay(console_output(console)).cursor.hidden
+    hidden_before = cursor_hidden(console_output(console))
 
-    renderer.clear_on_signal()
+    raise_signal(TERMINATION_SIGNAL)
 
-    assert (hidden_before, _replay(console_output(console)).cursor.hidden) == (True, False)
+    assert (hidden_before, cursor_hidden(console_output(console))) == (True, False)
 
 
 @pytest.mark.parametrize("row_count", [1, 4])
-def test_clear_on_signal_when_live_up_does_blank_every_frame_row(
+def test_mount_live_when_signal_arrives_does_blank_every_frame_row(
     monkeypatch: pytest.MonkeyPatch,
-    live_renderer: Callable[..., _Renderer],
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
     row_count: int,
 ):
     console = sealed_console()
-    console.print("kept above")
-    renderer = live_renderer(console)
-    renderer.paint(_rows(row_count))
+    console.print(KEPT_LINE)
+    mounted_live(console, _rows(row_count))
     monkeypatch.setattr(sys, "stderr", console.file)
 
-    renderer.clear_on_signal()
+    raise_signal(TERMINATION_SIGNAL)
 
-    assert screen_lines(console_output(console)) == ["kept above"]
+    assert screen_lines(console_output(console)) == [KEPT_LINE]
 
 
-def test_clear_on_signal_when_live_never_painted_does_only_show_cursor(
+def test_mount_live_when_live_redirects_stderr_does_blank_every_frame_row(
     monkeypatch: pytest.MonkeyPatch,
-    live_renderer: Callable[..., _Renderer],
-):
-    renderer = live_renderer(sealed_console())
-    buffer = StringIO()
-    monkeypatch.setattr(sys, "stderr", buffer)
-
-    renderer.clear_on_signal()
-
-    assert buffer.getvalue() == "\x1b[?25h"
-
-
-def test_clear_on_signal_when_plain_mode_does_clear_only_current_line(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    renderer = _Renderer(None)
-    buffer = StringIO()
-    monkeypatch.setattr(sys, "stderr", buffer)
-
-    renderer.clear_on_signal()
-
-    assert buffer.getvalue() == "\r\x1b[K"
-
-
-def test_clear_on_signal_when_called_twice_does_write_nothing_second_time(
-    monkeypatch: pytest.MonkeyPatch,
-    live_renderer: Callable[..., _Renderer],
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
 ):
     console = sealed_console()
-    renderer = live_renderer(console)
-    renderer.paint(_rows(3))
-    monkeypatch.setattr(sys, "stderr", StringIO())
-    renderer.clear_on_signal()
-    buffer = StringIO()
-    monkeypatch.setattr(sys, "stderr", buffer)
+    console.print(KEPT_LINE)
+    monkeypatch.setattr(sys, "stderr", console.file)
+    mounted_live(console, _rows(3), redirect_stderr=True)
 
-    renderer.clear_on_signal()
+    raise_signal(TERMINATION_SIGNAL)
 
-    assert buffer.getvalue() == ""
+    assert screen_lines(console_output(console)) == [KEPT_LINE]
+
+
+def test_mount_live_when_signal_lands_before_first_paint_does_restore_the_screen(
+    monkeypatch: pytest.MonkeyPatch,
+    raise_signal: Callable[[int], int],
+):
+    console = sealed_console()
+    terminal = InterruptedTerminal()
+    console.file = terminal
+    console.print(KEPT_LINE)
+    monkeypatch.setattr(sys, "stderr", terminal)
+    terminal.interrupt_write(
+        lambda: raise_signal(TERMINATION_SIGNAL), marker=HIDE_CURSOR, lands=True
+    )
+    live = ErasableLive(_rows(3), console=console, auto_refresh=False)
+
+    with pytest.raises(ProcessExit):
+        mount_live(live)
+
+    assert (screen_lines(terminal.at_exit), cursor_hidden(terminal.at_exit)) == ([KEPT_LINE], False)
+
+
+def test_mount_live_when_mounted_does_paint_the_first_frame(
+    mounted_live: Callable[..., ErasableLive],
+):
+    console = sealed_console()
+
+    mounted_live(console, _rows(2))
+
+    assert screen_lines(console_output(console)) == ["row 1", "row 2"]
+
+
+def test_mount_live_when_first_paint_raises_does_roll_back_the_mount(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    registry = track_mounted_cleanups(monkeypatch)
+    live = ErasableLive(
+        _FailingFrame(),
+        console=sealed_console(),
+        auto_refresh=True,
+        refresh_per_second=4,
+    )
+    threads_before = set(threading.enumerate())
+
+    with pytest.raises(RuntimeError, match=_PAINT_FAILURE):
+        mount_live(live)
+
+    assert (live.is_started, _spawned_threads_ended(threads_before), registry.live()) == (
+        False,
+        True,
+        [],
+    )
+
+
+def test_mount_live_when_start_raises_does_roll_back_the_mount(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    registry = track_mounted_cleanups(monkeypatch)
+    console = sealed_console()
+    console.file = _BrokenTerminal()
+    live = ErasableLive(_rows(2), console=console, auto_refresh=True, refresh_per_second=4)
+    threads_before = set(threading.enumerate())
+
+    with pytest.raises(OSError, match=_TERMINAL_GONE):
+        mount_live(live)
+
+    assert (live.is_started, _spawned_threads_ended(threads_before), registry.live()) == (
+        False,
+        True,
+        [],
+    )
+
+
+@pytest.mark.parametrize(
+    "stop_error",
+    [
+        pytest.param(RuntimeError(_REPAINT_FAILURE), id="exception"),
+        pytest.param(_Abort(_REPAINT_FAILURE), id="base-exception"),
+    ],
+)
+def test_mount_live_when_rollback_stop_raises_does_raise_the_mount_failure_with_a_note(
+    stop_error: BaseException,
+):
+    live = ErasableLive(
+        _FailingFrame(repaint_error=stop_error), console=sealed_console(), auto_refresh=False
+    )
+
+    with pytest.raises(RuntimeError, match=_PAINT_FAILURE) as raised:
+        mount_live(live)
+
+    assert raised.value.__notes__ == [f"stopping the display also failed: {stop_error!r}"]
+
+
+def test_erasable_live_refresh_when_erased_does_not_build_or_paint_a_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+):
+    builds: list[None] = []
+
+    def build_frame() -> Text:
+        builds.append(None)
+        return _rows(2)
+
+    console = sealed_console()
+    console.print(KEPT_LINE)
+    live = mounted_live(console, None, get_renderable=build_frame)
+    monkeypatch.setattr(sys, "stderr", console.file)
+    raise_signal(TERMINATION_SIGNAL)
+    built, erased = len(builds), console_output(console)
+
+    live.refresh()
+
+    assert (len(builds), console_output(console)) == (built, erased)
+
+
+def test_mount_live_when_later_cleanup_warns_does_write_erase_and_warning_in_one_write(
+    monkeypatch: pytest.MonkeyPatch,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+):
+    console = sealed_console()
+    console.print(KEPT_LINE)
+    mounted_live(console, _rows(3))
+    stderr = RecordingStream()
+    monkeypatch.setattr(sys, "stderr", stderr)
+    install_termination_cleanup(_warn)
+
+    raise_signal(TERMINATION_SIGNAL)
+
+    on_screen = console_output(console) + "".join(stderr.writes)
+    assert (len(stderr.writes), screen_lines(on_screen)) == (1, [KEPT_LINE, WARNING_LINE])
+
+
+def test_mount_live_when_live_redirects_stdio_does_hand_later_cleanups_the_real_streams(
+    monkeypatch: pytest.MonkeyPatch,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+):
+    stdout, stderr = StringIO(), StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    mounted_live(sealed_console(), _rows(2), redirect_stdout=True, redirect_stderr=True)
+    seen: list[tuple[object, object]] = []
+    install_termination_cleanup(lambda: seen.append((sys.stdout, sys.stderr)))
+
+    raise_signal(TERMINATION_SIGNAL)
+
+    assert seen == [(stdout, stderr)]
+
+
+def test_erase_display_for_exit_when_display_already_erased_does_leave_the_screen_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+):
+    console = sealed_console()
+    console.print(KEPT_LINE)
+    live = mounted_live(console, _rows(3))
+    monkeypatch.setattr(sys, "stderr", console.file)
+    install_termination_cleanup(lambda: erase_display_for_exit(live))
+
+    raise_signal(TERMINATION_SIGNAL)
+
+    assert screen_lines(console_output(console)) == [KEPT_LINE]
 
 
 @pytest.mark.parametrize(
     ("rows_before", "rows_after"),
     [pytest.param(2, 4, id="grows"), pytest.param(4, 2, id="shrinks")],
 )
-def test_clear_on_signal_when_refresh_thread_mid_paint_does_erase_frame_it_paints(
+def test_mount_live_when_refresh_thread_mid_paint_does_erase_frame_it_paints(
     monkeypatch: pytest.MonkeyPatch,
-    live_renderer: Callable[..., _Renderer],
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
     rows_before: int,
     rows_after: int,
 ):
     console = sealed_console()
     log = _WriteLog()
     console.file = log
-    console.print("kept above")
-    renderer = live_renderer(console, auto_refresh=True)
-    renderer.paint(_rows(rows_before))
+    console.print(KEPT_LINE)
+    live = mounted_live(console, _rows(rows_before), auto_refresh=True)
     frame = _GatedFrame(rows_after)
-    renderer.queue(frame)
+    live.update(frame)
     frame.entered.wait(timeout=_WAIT_SECONDS)
-    log.painted_off_main.clear()
+    log.painted_by_refresh.clear()
     monkeypatch.setattr(sys, "stderr", log)
     threading.Timer(_RELEASE_DELAY_SECONDS, frame.release.set).start()
 
-    renderer.clear_on_signal()
-    log.painted_off_main.wait(timeout=_WAIT_SECONDS)
+    raise_signal(TERMINATION_SIGNAL)
+    log.painted_by_refresh.wait(timeout=_WAIT_SECONDS)
 
-    assert screen_lines(log.getvalue()) == ["kept above"]
+    assert screen_lines(log.getvalue()) == [KEPT_LINE]
 
 
-def test_clear_on_signal_when_refresh_thread_paint_never_finishes_does_return(
+def test_mount_live_when_refresh_thread_paint_never_finishes_does_return_after_one_wait(
     monkeypatch: pytest.MonkeyPatch,
-    live_renderer: Callable[..., _Renderer],
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
 ):
+    monkeypatch.setattr("gymrat.cli.style._PAINT_WAIT_SECONDS", _SHORT_PAINT_WAIT_SECONDS)
     console = sealed_console()
-    console.print("kept above")
-    renderer = live_renderer(console, auto_refresh=True)
-    renderer.paint(_rows(2))
+    console.print(KEPT_LINE)
+    live = mounted_live(console, _rows(2), auto_refresh=True)
     # The gate outlasts the assertion bound, so an unbounded wait fails decisively.
     frame = _GatedFrame(3, gate_seconds=2 * _WAIT_SECONDS)
-    renderer.queue(frame)
+    live.update(frame)
     frame.entered.wait(timeout=_WAIT_SECONDS)
     buffer = StringIO()
     monkeypatch.setattr(sys, "stderr", buffer)
 
     started = time.monotonic()
     try:
-        renderer.clear_on_signal()
+        raise_signal(TERMINATION_SIGNAL)
     finally:
         returned_after = time.monotonic() - started
         on_screen = console_output(console) + buffer.getvalue()
         frame.release.set()
 
     assert returned_after < _WAIT_SECONDS
-    assert screen_lines(on_screen) == ["kept above"]
+    assert screen_lines(on_screen) == [KEPT_LINE]
 
 
-@pytest.mark.parametrize(
-    ("rows_before", "rows_after"),
-    [pytest.param(2, 4, id="grows"), pytest.param(4, 2, id="shrinks")],
-)
-def test_clear_on_signal_when_refresh_thread_write_stalls_does_erase_frame_on_screen(
+def test_mount_live_when_refresh_thread_paint_outlasts_erase_does_not_land_its_frame(
     monkeypatch: pytest.MonkeyPatch,
-    live_renderer: Callable[..., _Renderer],
-    rows_before: int,
-    rows_after: int,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+):
+    _console, log, frame = _signal_mid_paint(monkeypatch, mounted_live, raise_signal)
+    log.painted_by_refresh.clear()
+
+    frame.release.set()
+    log.painted_by_refresh.wait(timeout=_QUIET_SECONDS)
+
+    assert screen_lines(log.getvalue()) == [KEPT_LINE]
+
+
+def test_console_print_when_signal_erased_display_mid_paint_does_print_without_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+):
+    console, log, frame = _signal_mid_paint(monkeypatch, mounted_live, raise_signal)
+    # rich holds the console lock while rendering a frame, so the print waits
+    # for the in-flight paint either way; releasing it first keeps the test fast.
+    frame.release.set()
+
+    console.print("banana")
+
+    assert screen_lines(log.getvalue()) == [KEPT_LINE, "banana"]
+
+
+def test_console_print_when_signal_erased_display_lock_held_does_return_within_bound(
+    monkeypatch: pytest.MonkeyPatch,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+):
+    monkeypatch.setattr("gymrat.cli.style._PAINT_WAIT_SECONDS", _SHORT_PAINT_WAIT_SECONDS)
+    armed, held, release = threading.Event(), threading.Event(), threading.Event()
+
+    def build_frame() -> Text:
+        # rich builds the frame while holding the display lock, so a stalled
+        # build keeps that lock without holding the console's own.
+        if armed.is_set() and not held.is_set():
+            held.set()
+            release.wait(timeout=2 * _WAIT_SECONDS)
+        return _rows(2)
+
+    console = sealed_console()
+    live = mounted_live(console, None, get_renderable=build_frame)
+    monkeypatch.setattr(sys, "stderr", console.file)
+    armed.set()
+    threading.Thread(target=live.refresh, daemon=True).start()
+    held.wait(timeout=_WAIT_SECONDS)
+    raise_signal(TERMINATION_SIGNAL)
+
+    started = time.monotonic()
+    try:
+        console.print("banana")
+    finally:
+        returned_after = time.monotonic() - started
+        release.set()
+
+    assert returned_after < _WAIT_SECONDS
+
+
+@pytest.mark.parametrize("case", _IN_FLIGHT_CASES)
+def test_mount_live_when_refresh_thread_write_stalls_does_erase_the_shorter_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+    case: _InFlight,
 ):
     console = sealed_console()
-    terminal = _StalledWrites()
+    terminal = _StalledWrites("new", lands=case.lands)
     console.file = terminal
-    console.print("kept above")
-    renderer = live_renderer(console, auto_refresh=True)
-    renderer.paint(_rows(rows_before))
-    terminal.armed.set()
-    renderer.queue(_rows(rows_after))
+    console.print(KEPT_LINE)
+    live = mounted_live(console, _rows(case.rows_before, "old"), auto_refresh=True)
+    live.update(_rows(case.rows_after, "new"))
     terminal.stalled.wait(timeout=_WAIT_SECONDS)
     buffer = StringIO()
     monkeypatch.setattr(sys, "stderr", buffer)
 
     try:
-        renderer.clear_on_signal()
+        raise_signal(TERMINATION_SIGNAL)
     finally:
         on_screen = terminal.getvalue() + buffer.getvalue()
         terminal.release.set()
 
-    assert screen_lines(on_screen) == ["kept above"]
+    assert screen_lines(on_screen) == case.screen
 
 
-def test_clear_on_signal_when_refresh_thread_running_does_stop_its_paints(
+def test_mount_live_when_refresh_thread_running_does_stop_its_paints(
     monkeypatch: pytest.MonkeyPatch,
-    live_renderer: Callable[..., _Renderer],
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
 ):
     console = sealed_console()
     log = _WriteLog()
     console.file = log
-    renderer = live_renderer(console, auto_refresh=True)
-    renderer.paint(_rows(2))
-    log.painted_off_main.wait(timeout=_WAIT_SECONDS)
+    mounted_live(console, _rows(2), auto_refresh=True)
+    log.painted_by_refresh.wait(timeout=_WAIT_SECONDS)
     monkeypatch.setattr(sys, "stderr", StringIO())
 
-    renderer.clear_on_signal()
-    log.painted_off_main.clear()
+    raise_signal(TERMINATION_SIGNAL)
+    log.painted_by_refresh.clear()
 
-    assert not log.painted_off_main.wait(timeout=_QUIET_SECONDS)
+    assert not log.painted_by_refresh.wait(timeout=_QUIET_SECONDS)
+
+
+@pytest.mark.parametrize("case", _IN_FLIGHT_CASES)
+def test_mount_live_when_main_thread_paint_interrupted_does_erase_the_shorter_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+    case: _InFlight,
+):
+    console = sealed_console()
+    terminal = InterruptedTerminal()
+    console.file = terminal
+    console.print(KEPT_LINE)
+    live = mounted_live(console, _rows(case.rows_before, "old"))
+    monkeypatch.setattr(sys, "stderr", terminal)
+    terminal.interrupt_write(lambda: raise_signal(TERMINATION_SIGNAL), lands=case.lands)
+
+    with pytest.raises(ProcessExit):
+        live.update(_rows(case.rows_after, "new"), refresh=True)
+
+    assert screen_lines(terminal.at_exit) == case.screen
+
+
+# The thread whose render of the frame the next test holds at a gate.
+_GATED_REFRESH_THREAD = "gated-refresh"
+
+
+class _FrameGatedOnThread(_ResizableFrame):
+    """A resizable frame whose render blocks, on the thread named ``_GATED_REFRESH_THREAD`` only, until released."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__(count)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    @override
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        if threading.current_thread().name == _GATED_REFRESH_THREAD:
+            self.entered.set()
+            self.release.wait(timeout=_WAIT_SECONDS)
+        yield from super().__rich_console__(console, options)
+
+
+def test_erase_for_exit_when_paint_dropped_while_earlier_paint_in_flight_does_erase_the_shorter_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+):
+    # The erase waits on the display lock until the refresh has dropped its
+    # frame and let go, however late the release fires.
+    monkeypatch.setattr("gymrat.cli.style._PAINT_WAIT_SECONDS", _WAIT_SECONDS)
+    console = sealed_console()
+    console.print(KEPT_LINE)
+    frame = _FrameGatedOnThread(2)
+    live = mounted_live(console, frame)
+    monkeypatch.setattr(sys, "stderr", console.file)
+    frame.resize(4)
+    refresh = threading.Thread(target=live.refresh, name=_GATED_REFRESH_THREAD, daemon=True)
+    decide_landing = ErasableLive._frame_lands
+
+    def release_once_erased() -> None:
+        # The refresh must reach its landing decision after the erase has begun,
+        # so it drops its frame rather than landing it.
+        deadline = time.monotonic() + _WAIT_SECONDS
+        while not live.erased and time.monotonic() < deadline:
+            time.sleep(_RELEASE_DELAY_SECONDS / 10)
+        frame.release.set()
+
+    def signal_after_landing_decided(
+        self: ErasableLive, paint: object, buffer: list[object]
+    ) -> bool:
+        # The print has rendered its four-row frame and will land it, but has
+        # not written yet: the two old rows are still on screen. A refresh then
+        # records the four-row frame as the one it replaces, holds the display
+        # lock through the erase's wait, and drops its frame once erased.
+        lands = decide_landing(self, paint, buffer)  # pyrefly: ignore[bad-argument-type]
+        if threading.current_thread() is threading.main_thread() and not self.erased:
+            refresh.start()
+            frame.entered.wait(timeout=_WAIT_SECONDS)
+            threading.Thread(target=release_once_erased, daemon=True).start()
+            raise_signal(TERMINATION_SIGNAL)
+            raise ProcessExit
+        return lands
+
+    monkeypatch.setattr(ErasableLive, "_frame_lands", signal_after_landing_decided)
+
+    try:
+        with pytest.raises(ProcessExit):
+            console.print("banana")
+    finally:
+        frame.release.set()
+
+    assert screen_lines(console_output(console)) == [KEPT_LINE]
 
 
 @pytest.mark.parametrize(
-    ("rows_before", "rows_after"),
-    [pytest.param(2, 4, id="grows"), pytest.param(4, 2, id="shrinks")],
+    "case",
+    [
+        *_BEFORE_WRITE_CASES,
+        pytest.param(
+            _InFlight(2, 4, lands=True, screen=[KEPT_LINE, "banana", "new 1", "new 2"]),
+            id="grows-after-write",
+        ),
+        pytest.param(
+            _InFlight(4, 2, lands=True, screen=[KEPT_LINE, "banana"]), id="shrinks-after-write"
+        ),
+    ],
 )
-def test_clear_on_signal_when_main_thread_mid_paint_does_erase_frame_on_screen(
+def test_mount_live_when_print_interrupted_does_erase_the_shorter_frame(
     monkeypatch: pytest.MonkeyPatch,
-    live_renderer: Callable[..., _Renderer],
-    rows_before: int,
-    rows_after: int,
+    mounted_live: Callable[..., ErasableLive],
+    raise_signal: Callable[[int], int],
+    case: _InFlight,
 ):
     console = sealed_console()
-    terminal = _InterruptedFile()
+    terminal = InterruptedTerminal()
     console.file = terminal
-    console.print("kept above")
-    renderer = live_renderer(console)
-    renderer.paint(_rows(rows_before))
+    console.print(KEPT_LINE)
+    frame = _ResizableFrame(case.rows_before)
+    mounted_live(console, frame)
+    frame.resize(case.rows_after)
     monkeypatch.setattr(sys, "stderr", terminal)
-    terminal.interrupt_next_write(renderer.clear_on_signal)
+    terminal.interrupt_write(lambda: raise_signal(TERMINATION_SIGNAL), lands=case.lands)
 
-    with pytest.raises(_ProcessExit):
-        renderer.paint(_rows(rows_after))
+    with pytest.raises(ProcessExit):
+        console.print("banana")
 
-    assert screen_lines(terminal.getvalue()) == ["kept above"]
+    assert screen_lines(terminal.at_exit) == case.screen

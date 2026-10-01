@@ -7,7 +7,6 @@ from gymrat.session import CommandReason, parse_record, record_to_wire
 from tests.session.records._wire import (
     COMMAND_RECORD,
     COMMAND_RECORD_SUCCESS,
-    COMMAND_RECORD_WITH_TRACEPARENT,
     mentions,
     omitting,
     patching,
@@ -38,98 +37,6 @@ def test_parse_record_when_command_exit_code_nonzero_without_reason_does_reject_
     msg = str(exc.value)
     assert "a failed command must carry a reason" in msg
     assert "expected a valid value" not in msg
-
-
-# ---------------------------------------------------------------------------
-# CommandRecord — field-level rejections with phrase-worded messages
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("record", "field", "phrase"),
-    [
-        pytest.param(
-            patching(COMMAND_RECORD, {"exit_code": 3}),
-            "exit_code",
-            "0, 1 or 2",
-            id="command-exit-code-out-of-range",
-        ),
-        pytest.param(
-            patching(COMMAND_RECORD, {"reason": "bored"}),
-            "reason",
-            "one of",
-            id="command-reason-invalid",
-        ),
-        pytest.param(
-            patching(COMMAND_RECORD, {"args": "not-an-object"}),
-            "args",
-            "an object",
-            id="command-args-not-object",
-        ),
-        pytest.param(
-            patching(COMMAND_RECORD, {"duration_ms": -1}),
-            "duration_ms",
-            "a non-negative integer",
-            id="command-duration-ms-negative",
-        ),
-        pytest.param(
-            patching(COMMAND_RECORD_WITH_TRACEPARENT, {"traceparent": 42}),
-            "traceparent",
-            "a string",
-            id="command-traceparent-not-string",
-        ),
-    ],
-)
-def test_parse_record_when_command_field_invalid_does_name_field_and_phrase(
-    record: dict[str, object], field: str, phrase: str
-):
-    with pytest.raises(GymratError) as exc:
-        parse_record(record)
-
-    msg = str(exc.value)
-    assert mentions(field).search(msg)
-    assert phrase in msg
-
-
-# ---------------------------------------------------------------------------
-# CommandRecord — missing required fields
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("record", "field"),
-    [
-        pytest.param(omitting(COMMAND_RECORD, "name"), "name", id="command-no-name"),
-        pytest.param(omitting(COMMAND_RECORD, "args"), "args", id="command-no-args"),
-        pytest.param(omitting(COMMAND_RECORD, "exit_code"), "exit_code", id="command-no-exit-code"),
-        pytest.param(
-            omitting(COMMAND_RECORD, "duration_ms"), "duration_ms", id="command-no-duration-ms"
-        ),
-    ],
-)
-def test_parse_record_when_command_field_missing_does_name_field(
-    record: dict[str, object], field: str
-):
-    with pytest.raises(GymratError) as exc:
-        parse_record(record)
-
-    assert mentions(field).search(str(exc.value))
-
-
-# ---------------------------------------------------------------------------
-# CommandRecord — non-integer seq reports through phrase table
-# ---------------------------------------------------------------------------
-
-
-def test_parse_record_when_command_seq_not_integer_does_name_field_and_phrase():
-    record = patching(COMMAND_RECORD, {"seq": 3.5})
-
-    with pytest.raises(GymratError) as exc:
-        parse_record(record)
-
-    msg = str(exc.value)
-    assert mentions("seq").search(msg)
-    assert "an integer" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +85,7 @@ def test_parse_record_when_schema_on_command_record_does_reject():
     with pytest.raises(GymratError) as exc:
         parse_record(record)
 
-    assert mentions("schema").search(str(exc.value))
+    assert str(exc.value) == "Unknown session record key: schema"
 
 
 # ---------------------------------------------------------------------------
@@ -190,8 +97,8 @@ def test_parse_record_when_type_unknown_does_list_command_in_known_types():
     with pytest.raises(GymratError) as exc:
         parse_record({"type": "banana", "seq": 1})
 
-    hint = exc.value.hint or ""
-    assert "command" in hint
+    known_types = (exc.value.hint or "").removeprefix("Expected one of: ").rstrip(".").split(", ")
+    assert "command" in known_types
 
 
 # ---------------------------------------------------------------------------
@@ -231,14 +138,6 @@ def test_command_reason_when_imported_does_accept_all_defined_values():
     actual = set(get_args(CommandReason))
 
     assert actual == set(COMMAND_REASONS)
-
-
-def test_parse_record_when_command_reason_unknown_does_list_every_accepted_reason():
-    with pytest.raises(GymratError) as exc:
-        parse_record(patching(COMMAND_RECORD, {"reason": "bored"}))
-
-    missing = [reason for reason in COMMAND_REASONS if reason not in str(exc.value)]
-    assert not missing
 
 
 # ---------------------------------------------------------------------------

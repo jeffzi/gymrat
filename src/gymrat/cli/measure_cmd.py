@@ -14,21 +14,23 @@ from typing import Annotated
 import typer
 
 from gymrat.cli.lock import config_trace_args, with_repo_lock
-from gymrat.cli.shared import (
+from gymrat.cli.options import (
     AdapterOption,
     BenchOption,
     ColorOption,
     ConfigOption,
     DebugOption,
     FormatOption,
-    MeasureFlags,
     OutputFormat,
     PositionalParamType,
     PrepareOption,
     RecordOption,
-    ReportRenderers,
     SamplesOption,
     TimeoutOption,
+)
+from gymrat.cli.shared import (
+    MeasureFlags,
+    ReportRenderers,
     apply_color_override,
     apply_debug,
     begin_run,
@@ -39,6 +41,7 @@ from gymrat.cli.shared import (
     wants_json,
     warn_duration_over_budget,
     write_and_flush,
+    write_stdout,
 )
 from gymrat.config import resolve_config
 from gymrat.loop.baseline import measure_baseline
@@ -150,7 +153,9 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                 f'baseline "{outcome.result.label}" '
                 f"recorded to session {outcome.recording.session.session_id}\n"
             )
-            stream = sys.stderr if wants_json(flags) else sys.stdout
-            write_and_flush(stream, note)
+            if wants_json(flags):
+                write_and_flush(sys.stderr, note)
+            else:
+                write_stdout(note)
 
     run_cli(run)

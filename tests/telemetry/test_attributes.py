@@ -482,7 +482,7 @@ def test_all_attribute_names_when_called_does_return_nonempty_frozenset():
         pytest.param("gymrat.run.head_sha", id="run-head_sha"),
         pytest.param("gymrat.run.max_minutes", id="run-max_minutes"),
         pytest.param("gymrat.run.cost_usd", id="run-cost_usd"),
-        pytest.param("gymrat.turn.cost_usd", id="turn_and_follow_up-turn_cost_usd"),
+        pytest.param("gymrat.turn.session_cost_usd", id="turn_and_follow_up-turn_session_cost_usd"),
         pytest.param("gymrat.follow_up.action", id="turn_and_follow_up-follow_up_action"),
         pytest.param("gymrat.cap.name", id="turn_and_follow_up-cap_name"),
         pytest.param("gymrat.iteration.seq", id="iteration-seq"),

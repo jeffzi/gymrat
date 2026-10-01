@@ -11,6 +11,7 @@ from gymrat.session.records import (
     SessionRecord,
     StopRecord,
 )
+from gymrat.session.records.parse import NonFiniteNumberError, decode_log_line
 from tests.session.records._fixtures import session_record
 from tests.session.records._wire import (
     AT,
@@ -237,6 +238,50 @@ def test_parse_record_when_baseline_lacks_duration_does_default_to_none():
 
     assert isinstance(parsed, BaselineRecord)
     assert parsed.duration_ms is None
+
+
+# ---------------------------------------------------------------------------
+# decode_log_line
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param('{"a":NaN}', id="nan-literal"),
+        pytest.param('{"a":Infinity}', id="infinity-literal"),
+        pytest.param('{"a":-Infinity}', id="negative-infinity-literal"),
+        pytest.param('[{"a":[NaN]}]', id="nan-literal-nested-in-an-array"),
+    ],
+)
+def test_decode_log_line_when_a_number_is_nan_or_infinity_does_raise_naming_it_invalid_json(
+    line: str,
+):
+    with pytest.raises(NonFiniteNumberError, match="non-finite number, which is not valid JSON"):
+        decode_log_line(line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param('{"a":1e999}', id="overflowing-literal"),
+        pytest.param('{"a":-1e999}', id="negative-overflowing-literal"),
+        pytest.param('{"a":{"b":[1,2e999]}}', id="overflowing-literal-nested"),
+    ],
+)
+def test_decode_log_line_when_a_number_overflows_a_float_does_raise_saying_so(line: str):
+    with pytest.raises(NonFiniteNumberError, match="overflows a float") as excinfo:
+        decode_log_line(line)
+
+    assert "not valid JSON" not in str(excinfo.value)
+
+
+def test_decode_log_line_when_numbers_finite_does_decode_them_unchanged():
+    line = '{"a":1.5,"b":[-2,0,1e308],"c":{"d":-0.25,"e":"NaN"}}'
+
+    decoded = decode_log_line(line)
+
+    assert decoded == {"a": 1.5, "b": [-2, 0, 1e308], "c": {"d": -0.25, "e": "NaN"}}
 
 
 # ---------------------------------------------------------------------------

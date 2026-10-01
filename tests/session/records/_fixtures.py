@@ -9,6 +9,7 @@ The module is name-prefixed with ``_`` so pytest never collects it: it is a
 helper imported as ``tests.session.records._fixtures``.
 """
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,7 @@ from gymrat.session import (
     Worktrees,
     session_jsonl_path,
 )
-from gymrat.session.store import append_record
+from gymrat.session.store import SessionState, append_record
 
 #: The instant every fixture record in this file was written at (nanoseconds since epoch).
 AT = 1_786_198_530_000_000_000
@@ -205,6 +206,36 @@ def command_record(**overrides: Any) -> CommandRecord:
         seq=3,
     )
     return _overridden(default, overrides)
+
+
+def empty_session_state() -> SessionState:
+    """The state of a session log that holds no records yet (``session=None``)."""
+    return SessionState(
+        session=None,
+        iteration_count=0,
+        last_iteration=None,
+        unsettled=False,
+        keep_count=0,
+        discard_count=0,
+        target_reached_and_kept=False,
+        last_seq=0,
+        last_kept_commit=None,
+        ends_on_gating_block=False,
+        ends_on_stop=False,
+        finalized=None,
+    )
+
+
+def session_state(**changes: Any) -> SessionState:
+    """The empty session state with the named fields overridden.
+
+    Args:
+        **changes: Field values that replace the empty state's.
+
+    Returns:
+        The empty session state with ``changes`` applied.
+    """
+    return replace(empty_session_state(), **changes)
 
 
 def write_session_log(

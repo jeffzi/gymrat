@@ -6,6 +6,7 @@ collected. An unset variable yields an empty result so the next source in the
 precedence chain -- config file, then built-in default -- can supply the value.
 """
 
+import contextlib
 import json
 import os
 from collections.abc import Callable
@@ -61,11 +62,28 @@ def env_string_result(env_var: str) -> EnvResult:
     return EnvResult(value=raw)
 
 
-def env_positive_int_result(env_var: str, maximum: int | None = None) -> EnvResult:
-    r"""Read a ``GYMRAT_*`` positive-integer env var, returning its value or a problem.
+def is_positive_integer(raw: str) -> bool:
+    """Whether ``raw`` names a positive integer.
 
-    The ``isascii() and isdigit()`` check rejects sign, decimal point,
-    exponent, and hex notation, so only a bare run of ASCII digits parses.
+    Every source of a positive-integer setting -- the ``--samples`` and
+    ``--timeout`` flags and their ``GYMRAT_*`` env vars -- applies this one rule,
+    so the same input is accepted or rejected no matter which one it arrives
+    through. ``int`` alone is too lenient: it accepts surrounding whitespace, a
+    sign, ``_`` separators, and non-ASCII digits.
+
+    Args:
+        raw: The text as the user wrote it.
+
+    Returns:
+        ``True`` when ``raw`` is only ASCII digits and not all of them are zero.
+    """
+    return raw.isascii() and raw.isdigit() and raw.strip("0") != ""
+
+
+def env_positive_int_result(env_var: str, maximum: int | None = None) -> EnvResult:
+    """Read a ``GYMRAT_*`` positive-integer env var, returning its value or a problem.
+
+    The value must satisfy :func:`is_positive_integer`.
 
     Args:
         env_var: Name of the ``GYMRAT_*`` environment variable to read.
@@ -78,17 +96,14 @@ def env_positive_int_result(env_var: str, maximum: int | None = None) -> EnvResu
     raw = os.environ.get(env_var)
     if raw is None:
         return EnvResult()
-    try:
-        valid = (
-            raw.isascii()
-            and raw.isdigit()
-            and int(raw) >= 1
-            and (maximum is None or int(raw) <= maximum)
-        )
-    except ValueError:
-        valid = False
-    if valid:
-        return EnvResult(value=int(raw))
+    value: int | None = None
+    if is_positive_integer(raw):
+        # A digit run past the interpreter's int-conversion limit raises here;
+        # it is past every ceiling too, so it is reported like any bad value.
+        with contextlib.suppress(ValueError):
+            value = int(raw)
+    if value is not None and (maximum is None or value <= maximum):
+        return EnvResult(value=value)
     phrase = "a positive integer"
     got = json.dumps(raw)
     return EnvResult(problem=f"Invalid value for {env_var}: expected {phrase}, got {got}")

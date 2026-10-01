@@ -6,16 +6,16 @@ helper imported as ``tests.cli.supervise._fixtures``.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, datetime, tzinfo
 from io import StringIO
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
+    from gymrat.session.store import SessionState
     from gymrat.supervisor.supervise import EndedBy
 
 from rich.console import Console, RenderableType
@@ -36,7 +36,6 @@ from gymrat.session import (
     append_record,
     session_jsonl_path,
 )
-from gymrat.session.store import SessionState
 from gymrat.supervisor import SessionOutcome, SupervisionResult
 from gymrat.supervisor.events import (
     CapAction,
@@ -53,13 +52,20 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
     UsageUpdateEvent,
 )
-from tests._rich import frame_text
+from tests._rich import CleanupRegistry, frame_text
 from tests.loop.iterate._fixtures import resolved_config
-from tests.session.records._fixtures import AT, finalize_record, iteration_record
+from tests.session.records._fixtures import (
+    AT,
+    empty_session_state,
+    finalize_record,
+    iteration_record,
+    session_state,
+)
 
 __all__ = [
     "FRAME_WIDTH",
     "LIVE_CLASS_PATH",
+    "CleanupRegistry",
     "Clock",
     "PlainCapture",
     "ReporterKit",
@@ -95,6 +101,7 @@ __all__ = [
     "session_state",
     "session_state_three_iterations",
     "start_open_session",
+    "stop_built_reporters",
     "thinking_event",
     "tool_end_event",
     "tool_start_event",
@@ -121,29 +128,6 @@ class Clock:
 # ---------------------------------------------------------------------------
 # Builders
 # ---------------------------------------------------------------------------
-
-
-def empty_session_state() -> SessionState:
-    """A session that has opened but measured nothing yet."""
-    return SessionState(
-        session=None,
-        iteration_count=0,
-        last_iteration=None,
-        unsettled=False,
-        keep_count=0,
-        discard_count=0,
-        target_reached_and_kept=False,
-        last_seq=0,
-        last_kept_commit=None,
-        ends_on_gating_block=False,
-        ends_on_stop=False,
-        finalized=None,
-    )
-
-
-def session_state(**changes: Any) -> SessionState:
-    """The empty session state with the named fields overridden."""
-    return replace(empty_session_state(), **changes)
 
 
 def baseline_record(
@@ -612,8 +596,13 @@ def fire_launch_and_bash_start(observer: SessionObserver) -> None:
 # Fixed width for all golden-snapshot tests so frames are stable.
 FRAME_WIDTH = 100
 
-#: Patch target for the ``Live`` the live-mode reporter drives.
-LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.Live"
+#: Patch target for the ``ErasableLive`` the live-mode reporter drives.
+LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.ErasableLive"
+
+
+# Every reporter make_reporter builds, so teardown can stop the live refresh
+# thread each one starts.
+_built_reporters: list[SuperviseReporter] = []
 
 
 class ReporterKit(NamedTuple):
@@ -643,14 +632,46 @@ def make_reporter(
     effort: Effort | None = None,
     idle_warn_ms: int = IDLE_WARN_MS,
     refresh_ms: int = REFRESH_MS,
+    clock: Clock | None = None,
 ) -> ReporterKit:
     """Build a reporter with injectable dependencies for deterministic testing.
 
-    The ``tz`` parameter defaults to ``UTC`` so snapshot tests produce stable
-    timestamps regardless of host timezone.  Pass ``tz=None`` to exercise the
-    system-local fallback path.
+    The reporter is recorded so ``stop_built_reporters`` can stop it at
+    teardown.
+
+    Args:
+        mode: ``"live"`` for a Rich Live dashboard, ``"plain"`` for line-by-line output.
+        max_minutes: Wall-clock cap in minutes.
+        max_usd: Spend cap in USD, or ``None`` for uncapped.
+        max_iterations: Iteration cap, or ``None`` for uncapped.
+        read_session: Reads the current session state; defaults to an empty
+            session with no baseline.
+        clock_start: Start value of the ``Clock`` built when ``clock`` is omitted.
+        root: Project root whose session directory is monitored.
+        read_progress: Reads the iterate progress sidecar, or ``None`` for the
+            standard reader.
+        plain_write: Line writer for plain mode, or ``None`` for the standard writer.
+        label: Human label for the run, shown in the frame header.
+        session_id: Session identifier propagated to the frame.
+        branch: Git branch name shown in the frame header.
+        color: Tri-state color override: ``True`` forces color, ``False``
+            disables it, ``None`` auto-detects.
+        tz: Timezone for wall-clock timestamps. Defaults to ``UTC`` so snapshot
+            tests produce stable timestamps regardless of host timezone; pass
+            ``None`` to exercise the system-local fallback path.
+        model: Model name shown as a labelled row when set.
+        effort: Effort level shown as a labelled row when set.
+        idle_warn_ms: Milliseconds of inactivity before the liveness line
+            escalates to alert styling.
+        refresh_ms: Live dashboard refresh interval in milliseconds.
+        clock: Drives the reporter, e.g. a ``Clock`` subclass; replaces the one
+            built from ``clock_start``.
+
+    Returns:
+        The reporter paired with the clock that drives it.
     """
-    clock = Clock(clock_start)
+    if clock is None:
+        clock = Clock(clock_start)
     if read_session is None:
         read_session = make_read_session(empty_session_state(), has_baseline=False)
     reporter = create_supervise_reporter(
@@ -673,7 +694,14 @@ def make_reporter(
         idle_warn_ms=idle_warn_ms,
         refresh_ms=refresh_ms,
     )
+    _built_reporters.append(reporter)
     return ReporterKit(reporter, clock)
+
+
+def stop_built_reporters() -> None:
+    """Stop every reporter ``make_reporter`` built, ending its live refresh thread."""
+    while _built_reporters:
+        _built_reporters.pop().stop()
 
 
 def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> str:

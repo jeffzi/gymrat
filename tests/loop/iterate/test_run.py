@@ -812,7 +812,7 @@ async def test_iterate_session_when_after_hook_writes_file_does_not_change_measu
     assert result.record.measured_tree != tree_after
 
 
-async def test_iterate_session_when_fingerprint_fails_does_record_none_and_warn_field_omitted(
+async def test_iterate_session_when_fingerprint_fails_does_omit_measured_tree_with_warning(
     settled: str,
     samples_mock: CollectSamplesRecorder,
     capsys: pytest.CaptureFixture[str],

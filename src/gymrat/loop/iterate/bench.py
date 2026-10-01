@@ -252,7 +252,7 @@ def resolve_primary(
         The resolved primary — a :class:`GeomeanPrimary` or :class:`MetricPrimary`
         carrying the recorded delta. Its ``delta_pct`` is ``None`` when the named
         metric has no verdict, when no gating metric feeds the geomean, or when
-        the ratio is NaN.  A zero must never stand there: a zero is a
+        the ratio is not finite.  A zero must never stand there: a zero is a
         measurement, and it would have the report, the log, and the keep commit
         all claim the run held its ground.
     """
@@ -269,21 +269,22 @@ def resolve_primary(
 
 
 def recorded_delta(delta: float) -> float | None:
-    """A delta in the form the log keeps it: ``None`` where the ratio had no value.
+    """A delta in the form the log keeps it.
 
     The engine answers a degenerate ratio — a baseline median of zero — with
-    ``NaN``, and JSON serialization writes that as ``null`` whatever the writer
-    intended. Making the substitution here keeps the record a caller holds
-    identical to the one read back off the log, and never lets a zero stand where
-    there was no measurement.
+    ``NaN``, and a ratio that overflows past the largest float comes out as
+    positive or negative infinity. JSON serialization writes any non-finite float
+    as ``null`` whatever the writer intended. Making the substitution here keeps
+    the record a caller holds identical to the one read back off the log, and
+    never lets a zero stand where there was no measurement.
 
     Args:
-        delta: The raw delta ratio, possibly ``NaN``.
+        delta: The raw delta ratio, possibly ``NaN`` or infinite.
 
     Returns:
-        The delta as a float, or ``None`` when the ratio had no value.
+        The delta as a float, or ``None`` when the ratio is ``NaN`` or infinite.
     """
-    return None if math.isnan(delta) else delta
+    return delta if math.isfinite(delta) else None
 
 
 def target_reached(

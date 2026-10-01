@@ -6,13 +6,12 @@ single-flight lock for the duration.
 
 from __future__ import annotations
 
-import sys
 from typing import Annotated
 
 import typer
 
 from gymrat.cli.lock import CommandTrace, config_trace_args, with_repo_lock
-from gymrat.cli.shared import (
+from gymrat.cli.options import (
     AdapterOption,
     BaselineOption,
     BenchOption,
@@ -25,12 +24,14 @@ from gymrat.cli.shared import (
     PrepareOption,
     SamplesOption,
     TimeoutOption,
+)
+from gymrat.cli.shared import (
     apply_color_override,
     apply_debug,
     budget_snapshot,
     run_cli,
-    write_and_flush,
     write_budget_report,
+    write_stdout,
 )
 from gymrat.config import CliFlags, resolve_config
 from gymrat.loop.finalize import FinalizeOptions, FinalizeResult, finalize_session
@@ -92,13 +93,16 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
 
         result, runbook = await with_repo_lock("start", body, args=start_args)
         if use_json:
-            _, summary = budget_snapshot(repo_root())
-            write_and_flush(
-                sys.stdout,
-                render_start_json(result, runbook=runbook, budget=summary) + "\n",
+            write_budget_report(
+                repo_root(),
+                use_json=True,
+                render_json=lambda summary: render_start_json(
+                    result, runbook=runbook, budget=summary
+                ),
+                text_report="",
             )
         else:
-            write_and_flush(sys.stdout, format_start_summary(result, runbook) + "\n")
+            write_stdout(format_start_summary(result, runbook) + "\n")
 
     run_cli(run)
 
@@ -137,13 +141,14 @@ def finalize(
 
         result = await with_repo_lock("finalize", body, args=finalize_args)
         if use_json:
-            _, summary = budget_snapshot(repo_root())
-            write_and_flush(
-                sys.stdout,
-                render_finalize_json(result, budget=summary) + "\n",
+            write_budget_report(
+                repo_root(),
+                use_json=True,
+                render_json=lambda summary: render_finalize_json(result, budget=summary),
+                text_report="",
             )
         else:
-            write_and_flush(sys.stdout, result.report + "\n")
+            write_stdout(result.report + "\n")
 
     run_cli(run)
 
@@ -230,6 +235,6 @@ def sync(
                 header = f"Synced {pluralize(len(result.files), 'file')} to experiment worktree:"
                 summary = "\n".join([header, *(f"  {f}" for f in result.files)])
             trailer, _ = budget_snapshot(repo_root())
-            write_and_flush(sys.stdout, summary + trailer + "\n")
+            write_stdout(summary + trailer + "\n")
 
     run_cli(run)

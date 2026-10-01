@@ -7,9 +7,10 @@ import pathlib
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from gymrat import exec as gymrat_exec
 
@@ -228,6 +229,101 @@ def wait_for_pid_file_blocking(pid_path: pathlib.Path, timeout_s: float = _DEFAU
             raise TimeoutError(message)
         time.sleep(_POLL_INTERVAL_S)
     return pid
+
+
+@overload
+def run_with_closed_reader(
+    argv: list[str],
+    *,
+    stream: Literal["stdout", "stderr"],
+    text: Literal[True],
+    **run_kwargs: Any,
+) -> subprocess.CompletedProcess[str]: ...
+
+
+@overload
+def run_with_closed_reader(
+    argv: list[str],
+    *,
+    stream: Literal["stdout", "stderr"],
+    text: Literal[False] | None = None,
+    **run_kwargs: Any,
+) -> subprocess.CompletedProcess[bytes]: ...
+
+
+def run_with_closed_reader(
+    argv: list[str],
+    *,
+    stream: Literal["stdout", "stderr"],
+    **run_kwargs: Any,
+) -> subprocess.CompletedProcess[Any]:
+    """Run ``argv`` with ``stream`` writing into a pipe whose reader has already gone.
+
+    The other output stream is captured through a pipe. The pipe is closed on
+    return whether or not the child failed.
+
+    Args:
+        argv: The command to run.
+        stream: The output stream wired to the closed pipe.
+        **run_kwargs: Extra ``subprocess.run`` arguments such as ``cwd``, ``env``,
+            ``input``, ``text`` and ``timeout``.
+
+    Returns:
+        The finished child, run with ``check=False``.
+    """
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    stdout = write_end if stream == "stdout" else subprocess.PIPE
+    stderr = write_end if stream == "stderr" else subprocess.PIPE
+
+    try:
+        return subprocess.run(  # noqa: S603 -- caller passes a fixed argv
+            argv,
+            stdout=stdout,
+            stderr=stderr,
+            check=False,
+            **run_kwargs,
+        )
+    finally:
+        os.close(write_end)
+
+
+# Execs ``argv[1:]`` with the file-size limit at zero, so every write the new
+# program makes to a regular file fails with EFBIG. Bytecode caching is off so
+# the child never trips the limit on its own ``.pyc`` files.
+_ZERO_FILE_SIZE_TRAMPOLINE = """
+import os, resource, sys
+resource.setrlimit(resource.RLIMIT_FSIZE, (0, resource.RLIM_INFINITY))
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.execv(sys.argv[1], sys.argv[1:])
+"""
+
+
+def run_with_failing_stdout(argv: list[str], **run_kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` with every stdout write failing for a reason other than a closed pipe.
+
+    Stdout is a regular file and the child's file-size limit is zero, so each
+    write fails with EFBIG, the portable stand-in for a full disk (macOS has no
+    ``/dev/full``). Stderr is captured through a pipe, which the limit does not
+    cover. POSIX only: Windows has no file-size limit.
+
+    Args:
+        argv: The command to run; ``argv[0]`` must be an executable path.
+        **run_kwargs: Extra ``subprocess.run`` arguments such as ``cwd`` and
+            ``timeout``.
+
+    Returns:
+        The finished child, run with ``check=False`` and text-decoded stderr.
+    """
+    with tempfile.TemporaryFile() as stdout:
+        return subprocess.run(  # noqa: S603 -- caller passes a fixed argv
+            [sys.executable, "-c", _ZERO_FILE_SIZE_TRAMPOLINE, *argv],
+            stdout=stdout,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            **run_kwargs,
+        )
 
 
 def capture_spawns(

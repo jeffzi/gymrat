@@ -9,7 +9,7 @@ Two entry points bridge the two forms:
 - :func:`parse_record` validates a decoded-JSON value into the typed model
   for its ``type``, raising a :class:`GymratError` worded for a session log.
 - :func:`record_to_wire` renders a model back to its snake_case wire dict,
-  the form the store serializes. Optional fields whose value is ``None`` are
+  the same shape the store writes. Optional fields whose value is ``None`` are
   omitted, except ``delta_pct`` (on a metric verdict and on an iteration's
   primary), which is always present and serializes ``None`` as JSON ``null``.
 """

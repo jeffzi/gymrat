@@ -18,7 +18,6 @@ from typing import Any
 
 import pytest
 
-from gymrat.cli.shared import write_and_flush
 from gymrat.cli.supervise import span_lifecycle
 from gymrat.cli.supervise.progress import ReadSessionResult
 from gymrat.cli.supervise.span_lifecycle import TracingState
@@ -30,12 +29,20 @@ from gymrat.supervisor import SupervisionResult, create_event_log_writer, event_
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
 from gymrat.supervisor.supervise import EndedBy
 from tests._process_helpers import is_alive, wait_for_pid_file, wait_until_dead
+from tests._rich import unwrap_panel
 from tests.cli.supervise._fixtures import (
     follow_up_event,
     make_supervision_result,
     session_state_three_iterations,
 )
-from tests.cli.supervise.test_cmd import _CAP_MINUTES, _CAP_MS, _err_text, _install_seams, _run
+from tests.cli.supervise.test_cmd import (
+    _CAP_MINUTES,
+    _CAP_MS,
+    _err_text,
+    _install_seams,
+    _record_stdout_writes,
+    _run,
+)
 
 _EXIT_ERROR = "finalize failed: disk full"
 
@@ -50,8 +57,8 @@ _KILL_SETTLE_S = 3.0
 
 def test_supervise_help_when_rendered_does_describe_the_no_finalize_flag(repo: str):
     result = _run("--help")
+    flat = unwrap_panel(_err_text(result))
 
-    flat = re.sub(r"[│╭╮╰╯─\s]+", " ", _err_text(result))
     assert result.exit_code == 0
     assert "--no-finalize" in flat
     assert "leave the session open instead of finalizing it on exit" in flat
@@ -197,13 +204,19 @@ def test_supervise_when_run_ends_does_run_the_exit_sequence_in_the_supervisor_lo
 ):
     seams = _install_seams(monkeypatch)
     loops: list[asyncio.AbstractEventLoop] = []
-    seams.reporter_start.side_effect = lambda: loops.append(asyncio.get_running_loop())
+    record_supervise_call = seams.record_supervise_call
+
+    def recording_supervise(args: tuple[object, ...], kwargs: dict[str, object]) -> None:
+        loops.append(asyncio.get_running_loop())
+        record_supervise_call(args, kwargs)
+
+    seams.record_supervise_call = recording_supervise
     seams.exit_hook = lambda _call: loops.append(asyncio.get_running_loop())
 
     _run("optimize it", "--max-minutes", "10")
 
-    start_loop, exit_loop = loops
-    assert exit_loop is start_loop
+    supervise_loop, exit_loop = loops
+    assert exit_loop is supervise_loop
 
 
 # ---------------------------------------------------------------------------
@@ -214,17 +227,13 @@ def test_supervise_when_run_ends_does_run_the_exit_sequence_in_the_supervisor_lo
 def test_supervise_when_run_ends_does_exit_sequence_then_stop_reporter_then_print_summary(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
+    # Without stop-before-print ordering the summary appends to the still-open
+    # status row, corrupting the output.
     order: list[str] = []
     seams = _install_seams(monkeypatch)
     seams.exit_hook = lambda _call: order.append("exit")
     seams.reporter_stop.side_effect = lambda: order.append("stop")
-
-    def tracking_write(stream: Any, data: str) -> None:
-        if stream is sys.stdout:
-            order.append("write")
-        write_and_flush(stream, data)
-
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.write_and_flush", tracking_write)
+    _record_stdout_writes(monkeypatch, order, "write")
 
     result = _run("optimize it", "--max-minutes", "10")
 
@@ -519,7 +528,7 @@ def test_supervise_when_a_signal_arrives_does_kill_the_live_process_groups_it_sp
 ):
     seams = _install_seams(monkeypatch)
     _run("optimize it", "--max-minutes", "10")
-    cleanups = [call.args[0] for call in seams.install_cleanup.call_args_list]
+    cleanups = seams.installed_cleanups()
 
     survived = asyncio.run(_child_survives_cleanups(cleanups, tmp_path))
 

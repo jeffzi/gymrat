@@ -28,14 +28,26 @@ rich's defaults, so every style name it does not name keeps its stock value.
 
 from __future__ import annotations
 
-import sys
+import functools
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, override
 
 from rich.live import Live
+from rich.segment import Segment
 from rich.theme import Theme
 
+from gymrat.signals import install_termination_cleanup, write_on_exit
+
 if TYPE_CHECKING:
-    from rich.console import Console
+    from collections.abc import Callable
+
+    from rich.console import (
+        Console,
+        ConsoleOptions,
+        ConsoleRenderable,
+        RenderableType,
+        RenderResult,
+    )
 
 GLYPH_DONE = "✓"
 GLYPH_PENDING = "○"
@@ -63,10 +75,6 @@ STYLE_TIMER_DONE = "dim green"
 
 # Spinner frames are 80ms apart; refreshing any slower makes them look frozen.
 LIVE_REFRESH_PER_SECOND = 10
-
-# The escape sequence a live renderer writes to blank the current terminal
-# line before redrawing or clearing it.
-CLEAR_LINE = "\r\x1b[K"
 
 # The escape sequence that makes the terminal cursor visible again after
 # ``Live.start()`` hid it.
@@ -100,51 +108,115 @@ CLI_THEME = Theme({
 })
 
 
-# pyrefly: ignore[invalid-inheritance] -- rich/live.py re-imports Live in its __main__ demo, which pyrefly reads as a rebinding
-class ErasableLive(Live):
-    """A rich ``Live`` that a termination handler can erase row for row.
+@dataclass(slots=True)
+class _Paint:
+    """One frame paint, from the display adding its frame to a print until the print's write.
 
-    rich records a frame's height while rendering it into the console buffer,
-    before the bytes reach the terminal, so mid-paint its bookkeeping runs one
-    frame ahead of the screen. This subclass remembers the height the terminal
-    still shows for as long as a paint is in flight, so
-    :meth:`erase_for_exit` erases exactly the rows on screen.
+    ``buffer`` is the painting thread's console buffer, holding a marker from
+    the moment the frame has rendered; rich empties it once the write has
+    returned, so a paint whose buffer is empty again has reached the terminal.
+    A paint that dropped its frame or failed to render puts no frame on screen
+    and is ``settled`` from the start.
     """
 
-    # Height of the frame on screen while this display's own refresh() is
-    # mid-paint; None when no paint is in flight.
-    _height_before_paint: int | None = None
+    height_before: int
+    buffer: list[Segment] | None = None
+    settled: bool = False
+
+    def in_flight(self) -> bool:
+        return not self.settled and (self.buffer is None or bool(self.buffer))
+
+
+# pyrefly: ignore[invalid-inheritance] -- rich/live.py re-imports Live in its __main__ demo, which pyrefly reads as a rebinding
+class ErasableLive(Live):
+    """A rich ``Live`` that a termination handler can erase without removing a line above it.
+
+    rich records a frame's height while rendering it into the console buffer,
+    before the bytes reach the terminal, and a print writes its frame after
+    releasing the display lock. While a paint is in flight the terminal shows
+    either the frame it replaces or the new one, so :meth:`erase_for_exit`
+    erases the shorter of the two: rows of the taller one may remain, but the
+    line above the frame never goes.
+
+    Once erased, the display paints nothing more and adds its frame to nothing
+    printed through its console, so no frame lands after the erase however the
+    termination handler and the painting threads interleave.
+    """
+
+    # Paints whose frame may not have reached the terminal yet, oldest first.
+    _paints: tuple[_Paint, ...] = ()
+    # Height of the frame left on screen by a paint the erase made drop its
+    # frame; None while no paint has been dropped.
+    _height_kept_by_drop: int | None = None
+    _erased: bool = False
+
+    @property
+    def erased(self) -> bool:
+        """Whether :meth:`erase_for_exit` has run."""
+        return self._erased
 
     @override
     # pyrefly: ignore[bad-override] -- same __main__ rebinding hides Live.refresh from pyrefly
     def refresh(self) -> None:
-        """Paint the current frame, keeping the on-screen height readable until the write lands."""
+        """Paint the current frame; paint nothing once :meth:`erase_for_exit` has run."""
         with self._lock:
-            self._height_before_paint = self._live_render.last_render_height
-            try:
-                super().refresh()
-            finally:
-                self._height_before_paint = None
+            if self._erased:
+                return
+            super().refresh()
+
+    @override
+    # pyrefly: ignore[bad-override] -- same __main__ rebinding hides Live.process_renderables from pyrefly
+    def process_renderables(self, renderables: list[ConsoleRenderable]) -> list[ConsoleRenderable]:
+        """Add the cursor reset and the live frame to a print, until the display is erased.
+
+        Once erased, a print goes out as it is, without waiting on the display
+        lock that a stalled paint may hold. A paint already under way when the
+        erase ran drops its cursor reset and frame once rendered, keeping only
+        the printed renderables.
+
+        Args:
+            renderables: What the print renders, before the live display adds to it.
+
+        Returns:
+            The renderables to print.
+        """
+        if self._erased:
+            return renderables
+        with self._lock:
+            paint = _Paint(self._live_render.last_render_height)
+            self._paints = (*(held for held in self._paints if held.in_flight()), paint)
+            painted = super().process_renderables(renderables)
+        lands = functools.partial(self._frame_lands, paint)
+        return [_PaintUnlessErased(painted, renderables, paint, lands)]
 
     def erase_for_exit(self) -> str:
         """Stop painting for good and return the escapes that erase the frame on screen.
 
         Built for a termination handler that exits right after writing the
         result. The auto-refresh thread is told to stop, and a paint it has in
-        flight finishes first so that no frame lands after the erase. When the
-        handler interrupted the main thread's own paint, the display lock
-        re-enters and the frame that paint was replacing is the one erased.
-        A paint that is still stalled after a bounded wait has not reached the
-        terminal either, so the frame it is replacing is erased as well.
+        flight gets a bounded wait to finish, so that no frame lands after the
+        erase. When a paint is still in flight, on the refresh thread after the
+        wait or on the main thread the handler interrupted, the shorter of its
+        old and new frames is erased.
+
+        When the display redirected ``sys.stdout`` or ``sys.stderr``, the real
+        streams are put back, so anything written after the erase reaches the
+        terminal directly rather than printing through the display.
 
         ``Live.stop()`` is never called: it paints a final frame and waits on
         the display lock without a bound.
 
         Returns:
-            The escapes that erase every row of the frame on screen and show
-            the cursor again; only the show-cursor escape when nothing was
-            painted.
+            The escapes that erase the frame on screen and show the cursor
+            again; only the show-cursor escape when nothing was painted; an
+            empty string when the frame was already erased.
         """
+        if self._erased:
+            return ""
+        # Set before waiting on the lock, so a paint queued behind a stalled
+        # one skips instead of landing a frame after the erase.
+        self._erased = True
+        self._disable_redirect_io()
         if self._refresh_thread is not None:
             self._refresh_thread.stop()
         if self._lock.acquire(timeout=_PAINT_WAIT_SECONDS):
@@ -157,9 +229,56 @@ class ErasableLive(Live):
         return _erase_rows(height) + SHOW_CURSOR
 
     def _height_on_screen(self) -> int:
-        if self._height_before_paint is not None:
-            return self._height_before_paint
-        return self._live_render.last_render_height
+        base = (
+            self._height_kept_by_drop
+            if self._height_kept_by_drop is not None
+            else self._live_render.last_render_height
+        )
+        in_flight = [paint.height_before for paint in self._paints if paint.in_flight()]
+        return min([base, *in_flight])
+
+    def _frame_lands(self, paint: _Paint, buffer: list[Segment]) -> bool:
+        # rich recorded the rendered frame's height already; a dropped frame
+        # leaves the one before it on screen, which the erase must match.
+        if self._erased:
+            self._height_kept_by_drop = paint.height_before
+            paint.settled = True
+            return False
+        # The marker keeps the buffer non-empty from here until rich's write
+        # has returned, including before rich adds the print's own segments.
+        buffer.append(Segment(""))
+        paint.buffer = buffer
+        return True
+
+
+@dataclass(frozen=True, slots=True)
+class _PaintUnlessErased:
+    """A print with the live display's additions, reduced to the print alone if erased meanwhile.
+
+    The frame renders before the erase check, so a paint whose render was still
+    under way when the display was erased lands no frame after the erase.
+    """
+
+    painted: list[ConsoleRenderable]
+    printed: list[ConsoleRenderable]
+    paint: _Paint
+    frame_lands: Callable[[list[Segment]], bool]
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        try:
+            segments = [
+                segment
+                for renderable in self.painted
+                for segment in console.render(renderable, options)
+            ]
+        except BaseException:
+            # The print fails before writing anything, so its frame never lands.
+            self.paint.settled = True
+            raise
+        if not self.frame_lands(console._buffer):  # noqa: SLF001 -- rich exposes no other view of the pending write
+            yield from self.printed
+            return
+        yield from segments
 
 
 def _erase_rows(height: int) -> str:
@@ -168,19 +287,76 @@ def _erase_rows(height: int) -> str:
     return f"\r{_ERASE_LINE}" + f"{_CURSOR_UP}{_ERASE_LINE}" * (height - 1)
 
 
+def erase_display_for_exit(live: ErasableLive) -> None:
+    """Erase a live display from the terminal on the way out of a termination handler.
+
+    Nothing is written here; the escapes go to
+    :func:`gymrat.signals.write_on_exit`, which defers them until every cleanup
+    has run.
+
+    Args:
+        live: The display to erase.
+    """
+    write_on_exit(live.erase_for_exit())
+
+
+def mount_live(live: ErasableLive) -> Callable[[], None]:
+    """Start a live display and paint its first frame, erasing it on a termination signal.
+
+    The erase is installed before the display starts, so a signal at any moment
+    from the cursor being hidden onward erases what is on screen and shows the
+    cursor again. When starting or the first paint fails, the display is
+    stopped and the erase uninstalled before the error propagates.
+
+    Args:
+        live: The display to start, not yet started.
+
+    Returns:
+        Uninstalls the erase. Call it before stopping the display, so a signal
+        from then on leaves the terminal to ``Live.stop()``.
+    """
+    uninstall = install_termination_cleanup(functools.partial(erase_display_for_exit, live))
+    try:
+        live.start()
+        live.refresh()
+    except BaseException as failure:
+        uninstall()
+        try:
+            live.stop()
+        except BaseException as stop_failure:  # noqa: BLE001 -- the mount failure propagates, carrying this one
+            # A start that failed partway leaves rich unable to stop cleanly,
+            # and an interrupt may land mid-stop; either way the mount failure
+            # is the one the caller must see.
+            failure.add_note(f"stopping the display also failed: {stop_failure!r}")
+        raise
+    return uninstall
+
+
 class LiveDisplayMixin:
     """Shared live-display bookkeeping for ``ProgressReporter`` and ``IterateRenderer``.
 
     Both renderers own the ``Console`` they render to, an ``ErasableLive``
-    display (``None`` in plain mode) and a ``_stopped`` guard against a
-    termination signal racing the normal ``stop()`` path. Mixing this in keeps
-    the refresh, warning, and signal-clear behavior identical without giving the
-    two renderers a shared base class.
+    display (``None`` in plain mode) and a ``_stopped`` guard that makes
+    ``stop()`` run once. Mixing this in keeps the refresh, warning, and stop
+    bookkeeping identical without giving the two renderers a shared base class.
     """
 
     _console: Console
     _live: ErasableLive | None = None
+    _uninstall_cleanup: Callable[[], None]
     _stopped: bool = False
+
+    def _mount_live(self, *, transient: bool, get_renderable: Callable[[], RenderableType]) -> None:
+        live = ErasableLive(
+            console=self._console,
+            auto_refresh=True,
+            refresh_per_second=LIVE_REFRESH_PER_SECOND,
+            transient=transient,
+            redirect_stderr=False,
+            get_renderable=get_renderable,
+        )
+        self._uninstall_cleanup = mount_live(live)
+        self._live = live
 
     @property
     def live(self) -> ErasableLive | None:
@@ -191,6 +367,15 @@ class LiveDisplayMixin:
         if self._live is not None:
             self._live.refresh()
 
+    def _claim_stop(self) -> bool:
+        # False when stop() already ran, or when a termination signal erased the
+        # display: Live.stop() would then restore the cursor over rows the erase
+        # already cleared, taking lines above the frame with them.
+        if self._stopped or (self._live is not None and self._live.erased):
+            return False
+        self._stopped = True
+        return True
+
     def warn(self, message: str) -> None:
         """Print ``message`` verbatim on its own line, above the live frame when one is up.
 
@@ -198,18 +383,3 @@ class LiveDisplayMixin:
             message: The warning text, printed without markup or highlighting.
         """
         self._console.print(message, highlight=False, markup=False)
-
-    def clear_on_signal(self) -> None:
-        """Erase the display once, guarding against repeated signal delivery.
-
-        In plain mode only the current line is cleared. With a live display up,
-        every row of the frame on screen is erased and the cursor is shown
-        again, because ``os._exit`` follows and ``Live.stop()`` never runs.
-        """
-        # os._exit skips buffer flushing, so the clear must be flushed explicitly
-        # or it never reaches the terminal.
-        if self._stopped:
-            return
-        self._stopped = True
-        sys.stderr.write(CLEAR_LINE if self._live is None else self._live.erase_for_exit())
-        sys.stderr.flush()

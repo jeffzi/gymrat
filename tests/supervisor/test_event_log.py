@@ -16,9 +16,11 @@ import pytest
 from gymrat.errors import GymratError
 from gymrat.supervisor import (
     CapEvent,
+    TextDeltaEvent,
     UsageUpdateEvent,
     combine_observers,
     create_event_log_writer,
+    to_json_line,
 )
 from gymrat.supervisor.event_log import probe_event_log_path
 from tests.supervisor._fixtures import read_log_lines
@@ -45,17 +47,6 @@ def test_create_event_log_writer_when_observing_events_does_append_one_line_each
     ]
 
 
-def test_create_event_log_writer_when_writing_does_terminate_each_line_with_newline(
-    tmp_path: Path,
-):
-    log_path = tmp_path / "events.jsonl"
-    writer = create_event_log_writer(log_path)
-
-    writer(UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01))
-
-    assert log_path.read_text(encoding="utf-8").endswith("\n")
-
-
 def test_create_event_log_writer_when_parent_missing_does_create_tree_on_first_write(
     tmp_path: Path,
 ):
@@ -78,6 +69,18 @@ def test_create_event_log_writer_when_write_fails_does_raise_gymrat_error_naming
 
     with pytest.raises(GymratError, match=re.escape(str(log_path))):
         writer(UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01))
+
+
+def test_create_event_log_writer_when_event_holds_non_ascii_text_does_write_utf8_line_with_newline(
+    tmp_path: Path,
+):
+    log_path = tmp_path / "events.jsonl"
+    writer = create_event_log_writer(log_path)
+    event = TextDeltaEvent(at=1_000_000_000_000, chunk="café")
+
+    writer(event)
+
+    assert log_path.read_bytes() == (to_json_line(event) + "\n").encode("utf-8")
 
 
 def test_create_event_log_writer_when_cap_event_written_does_round_trip(

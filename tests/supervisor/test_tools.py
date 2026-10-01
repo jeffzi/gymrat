@@ -15,7 +15,10 @@ from unittest.mock import AsyncMock
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from mcp.types import CallToolResult
+
 import pytest
+from mcp import Client
 
 from gymrat.exec import (
     ExecOptions,
@@ -109,26 +112,6 @@ def host(tmp_path: pathlib.Path, fake_exec: AsyncMock) -> ToolHost:
 # ---------------------------------------------------------------------------
 # argv construction and child environment
 # ---------------------------------------------------------------------------
-
-
-async def test_probe_when_names_and_samples_given_does_build_correct_argv(
-    host: ToolHost, fake_exec: AsyncMock
-) -> None:
-    await host.probe({"names": ["a", "b"], "samples": 6})
-
-    argv = fake_exec.call_args[0][0]
-    assert list(argv) == [
-        "gym",
-        "rat",
-        "probe",
-        "--samples",
-        "6",
-        "--format",
-        "json",
-        "--",
-        "a",
-        "b",
-    ]
 
 
 async def test_probe_when_empty_input_does_build_minimal_argv(
@@ -414,52 +397,6 @@ async def test_iterate_when_no_output_and_no_abort_does_return_failed_message(
 
 
 # ---------------------------------------------------------------------------
-# input validation
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "names",
-    [
-        pytest.param("not-a-list", id="string"),
-        pytest.param(123, id="integer"),
-        pytest.param(["ok", 42], id="list-with-non-string"),
-    ],
-)
-async def test_probe_when_names_invalid_does_return_error_without_spawn(
-    host: ToolHost,
-    fake_exec: AsyncMock,
-    names: Any,
-) -> None:
-    result = await host.probe({"names": names})
-
-    assert result["is_error"] is True
-    assert "names" in _text_of(result)
-    fake_exec.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "samples",
-    [
-        pytest.param("five", id="string"),
-        pytest.param(-1, id="negative"),
-        pytest.param(0, id="zero"),
-        pytest.param(3.5, id="float"),
-    ],
-)
-async def test_probe_when_samples_invalid_does_return_error_without_spawn(
-    host: ToolHost,
-    fake_exec: AsyncMock,
-    samples: Any,
-) -> None:
-    result = await host.probe({"samples": samples})
-
-    assert result["is_error"] is True
-    assert "samples" in _text_of(result)
-    fake_exec.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
 # helpers: concurrency and gate-file child scripts
 # ---------------------------------------------------------------------------
 
@@ -725,7 +662,7 @@ async def test_gymrat_tool_definitions_when_called_does_set_probe_description_an
     assert schema["type"] == "object"
     assert schema["properties"] == {
         "names": {"type": "array", "items": {"type": "string"}},
-        "samples": {"type": "integer"},
+        "samples": {"type": "integer", "minimum": 1},
     }
     assert schema.get("required", []) == []
     assert schema["additionalProperties"] is False
@@ -749,74 +686,74 @@ async def test_gymrat_tool_definitions_when_called_does_set_iterate_description_
 
 
 # ---------------------------------------------------------------------------
-# SDK schema validation (through _build_input_schema + jsonschema)
+# SDK server input validation (through an in-memory MCP client)
 # ---------------------------------------------------------------------------
 
 
-def _wire_schema_for(host: ToolHost, tool_name: str) -> dict[str, Any]:
-    """Build *tool_name*'s wire-format JSON schema via the SDK's own builder."""
-    from claude_agent_sdk import _build_input_schema
+async def _call_via_sdk(
+    host: ToolHost, tool_name: str, arguments: dict[str, Any]
+) -> CallToolResult:
+    """Call *tool_name* through an in-memory MCP client on the SDK server built around *host*."""
+    config = create_gymrat_tools(host)
+    async with Client(config["instance"]) as client:
+        return await client.call_tool(tool_name, arguments)
 
-    defs = gymrat_tool_definitions(host)
-    tool_def = next(d for d in defs if d.name == tool_name)
-    return _build_input_schema(tool_def)
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "expected_argv"),
+    [
+        pytest.param(
+            "iterate",
+            {},
+            ["gym", "rat", "iterate", "--format", "json"],
+            id="iterate-empty",
+        ),
+        pytest.param(
+            "probe",
+            {},
+            ["gym", "rat", "probe", "--format", "json", "--"],
+            id="probe-no-args",
+        ),
+        pytest.param(
+            "probe",
+            {"names": ["a", "b"], "samples": 6},
+            ["gym", "rat", "probe", "--samples", "6", "--format", "json", "--", "a", "b"],
+            id="probe-names-and-samples",
+        ),
+    ],
+)
+async def test_sdk_server_when_valid_arguments_given_does_run_child_with_expected_argv(
+    host: ToolHost,
+    fake_exec: AsyncMock,
+    tool_name: str,
+    arguments: dict[str, Any],
+    expected_argv: list[str],
+) -> None:
+    result = await _call_via_sdk(host, tool_name, arguments)
+
+    assert result.is_error is False
+    assert list(fake_exec.call_args[0][0]) == expected_argv
 
 
 @pytest.mark.parametrize(
     ("tool_name", "arguments"),
     [
-        pytest.param("iterate", {}, id="iterate-empty"),
-        pytest.param("probe", {"names": ["a"], "samples": 3}, id="probe-valid"),
-        pytest.param("probe", {}, id="probe-no-args"),
+        pytest.param("iterate", {"anything": 1}, id="iterate-extra-key"),
+        pytest.param("probe", {"samples": 0}, id="probe-zero-samples"),
+        pytest.param("probe", {"samples": True}, id="probe-bool-samples"),
+        pytest.param("probe", {"names": "a"}, id="probe-string-names"),
     ],
 )
-def test_tool_schema_when_valid_arguments_given_does_pass_sdk_validation(
-    host: ToolHost,
-    tool_name: str,
-    arguments: dict[str, Any],
-) -> None:
-    import jsonschema
-
-    wire_schema = _wire_schema_for(host, tool_name)
-
-    jsonschema.validate(arguments, wire_schema)
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "arguments", "failed_rule"),
-    [
-        pytest.param(
-            "iterate", {"anything": 1}, "additionalProperties", id="iterate-rejects-extra-key"
-        ),
-        pytest.param("probe", {"samples": True}, "type", id="probe-rejects-bool-samples"),
-    ],
-)
-def test_tool_schema_when_invalid_arguments_given_does_fail_sdk_validation(
-    host: ToolHost,
-    tool_name: str,
-    arguments: dict[str, Any],
-    failed_rule: str,
-) -> None:
-    import jsonschema
-
-    wire_schema = _wire_schema_for(host, tool_name)
-
-    with pytest.raises(jsonschema.ValidationError) as exc_info:
-        jsonschema.validate(arguments, wire_schema)
-    assert exc_info.value.validator == failed_rule
-
-
-async def test_gymrat_tool_definitions_when_probe_handler_called_does_invoke_host_probe(
+async def test_sdk_server_when_invalid_arguments_given_does_reject_before_running_child(
     host: ToolHost,
     fake_exec: AsyncMock,
+    tool_name: str,
+    arguments: dict[str, Any],
 ) -> None:
-    defs = gymrat_tool_definitions(host)
-    probe_def = defs[0]
+    result = await _call_via_sdk(host, tool_name, arguments)
 
-    await probe_def.handler({"names": ["x"], "samples": 3})
-
-    argv = fake_exec.call_args[0][0]
-    assert "probe" in argv
+    assert result.is_error is True
+    fake_exec.assert_not_called()
 
 
 async def test_gymrat_tool_definitions_when_iterate_handler_called_does_invoke_host_iterate(

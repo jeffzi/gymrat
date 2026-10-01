@@ -1,4 +1,6 @@
+import json
 from collections.abc import Callable
+from dataclasses import fields
 from operator import attrgetter
 from pathlib import Path
 
@@ -16,8 +18,10 @@ from gymrat.config import (
     StopConfig,
     load_config_file,
     load_config_file_collecting,
+    validate_config_dict,
 )
 from gymrat.errors import GymratError
+from tests.adapters._inputs import LINE_BREAKS
 
 # Byte-order mark that editors on Windows prepend to UTF-8 files: EF BB BF.
 UTF8_BOM = "﻿"
@@ -31,10 +35,10 @@ LOOP_CONFIG: dict[str, object] = {
     "hooks": {"before": "npm run warm-cache", "after": "npm run cool-down"},
 }
 
-# Characters JavaScript regexes treat as line terminators; a `^…$` key pattern
-# stops at every one of them, so any of these embedded in a config key can
-# smuggle the rest of the key past validation.
-LINE_BREAKS = ["\n", "\r", "\u2028", "\u2029"]
+# Every character `str.splitlines` breaks on. Any of these embedded in a config
+# key would split the key, and every message naming it, across lines, so a key
+# holding one is rejected.
+LINE_BREAK_CHARS = [line_break.char for line_break in LINE_BREAKS]
 
 
 def write_config(directory: Path, content: dict[str, object]) -> Path:
@@ -45,6 +49,28 @@ def write_raw(directory: Path, text: str) -> Path:
     config_path = directory / "gymrat.toml"
     config_path.write_text(text, encoding="utf-8")
     return config_path
+
+
+def _unknown_line_break_key_param(char: str) -> object:
+    key = f"bench{char}samples"
+    return pytest.param(
+        {key: 1}, [f"Unknown config key: {json.dumps(key)}"], id=f"line-break-{ord(char)}"
+    )
+
+
+def load_error_message(config_path: Path) -> str:
+    """Load a config file that must be rejected and return the error message.
+
+    Args:
+        config_path: Config file that `load_config_file` must reject.
+
+    Returns:
+        The text of the raised `GymratError`.
+    """
+    with pytest.raises(GymratError) as exc:
+        load_config_file(config_path)
+
+    return str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -153,50 +179,42 @@ def test_load_config_file_when_partial_metrics_metadata_given_does_round_trip(tm
 def test_load_config_file_when_toml_invalid_does_raise_naming_path(tmp_path: Path):
     config_path = write_raw(tmp_path, "key = ")
 
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
+    message = load_error_message(config_path)
 
-    assert str(config_path) in str(exc.value)
+    assert str(config_path) in message
 
 
 def test_load_config_file_when_duplicate_key_does_raise_naming_path(tmp_path: Path):
     config_path = write_raw(tmp_path, 'bench = "first"\nbench = "second"')
 
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
+    message = load_error_message(config_path)
 
-    assert str(config_path) in str(exc.value)
+    assert str(config_path) in message
 
 
-@pytest.mark.parametrize("literal", ["nan", "inf", "-inf"])
-def test_load_config_file_when_noise_pct_non_finite_does_name_key_not_parse(
-    tmp_path: Path, literal: str
+@pytest.mark.parametrize(
+    ("literal", "token"),
+    [
+        pytest.param("nan", "NaN", id="nan"),
+        pytest.param("inf", "Infinity", id="inf"),
+        pytest.param("-inf", "-Infinity", id="negative-inf"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("prefix", "key"),
+    [
+        pytest.param("unstable_noise_pct = ", "unstable_noise_pct", id="noise-pct"),
+        pytest.param("[stop]\ntarget_value = ", "stop.target_value", id="stop-target-value"),
+    ],
+)
+def test_load_config_file_when_number_key_non_finite_does_reject_as_not_a_number(
+    tmp_path: Path, literal: str, token: str, prefix: str, key: str
 ):
-    config_path = write_raw(tmp_path, f"unstable_noise_pct = {literal}")
+    config_path = write_raw(tmp_path, f"{prefix}{literal}")
 
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
+    message = load_error_message(config_path)
 
-    message = str(exc.value)
-    assert "unstable_noise_pct" in message
-    assert "Failed to parse" not in message
-    # The value is rejected for not being finite, not for sitting below the
-    # noise floor, so the floor phrasing would name the wrong fault.
-    assert "noise floor" not in message
-
-
-@pytest.mark.parametrize("literal", ["nan", "inf", "-inf"])
-def test_load_config_file_when_stop_target_value_non_finite_does_name_key_not_parse(
-    tmp_path: Path, literal: str
-):
-    config_path = write_raw(tmp_path, f"[stop]\ntarget_value = {literal}")
-
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
-
-    message = str(exc.value)
-    assert "stop.target_value" in message
-    assert "Failed to parse" not in message
+    assert message == f"Invalid config value for {key}: expected a number, got {token}"
 
 
 def test_load_config_file_when_prefixed_with_bom_does_parse_as_if_absent(tmp_path: Path):
@@ -214,48 +232,28 @@ def test_load_config_file_when_prefixed_with_bom_does_parse_as_if_absent(tmp_pat
 # ---------------------------------------------------------------------------
 
 
-def test_load_config_file_when_unknown_top_level_key_does_raise_naming_key(tmp_path: Path):
-    config_path = write_config(tmp_path, {"unknownKey": "value"})
-
-    with pytest.raises(GymratError, match="unknownKey"):
-        load_config_file(config_path)
-
-
-def test_load_config_file_when_unknown_key_mixed_with_known_does_raise_naming_unknown(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("content", "expected_problems"),
+    [
+        pytest.param({"unknownKey": "value"}, ["Unknown config key: unknownKey"], id="only-key"),
+        pytest.param(
+            {"bench": "name", "badKey": "value"},
+            ["Unknown config key: badKey"],
+            id="mixed-with-known",
+        ),
+        pytest.param({"": 1}, ['Unknown config key: ""'], id="empty-string"),
+        *[_unknown_line_break_key_param(char) for char in LINE_BREAK_CHARS],
+    ],
+)
+def test_load_config_file_collecting_when_top_level_key_unknown_does_report_key_quoted_as_needed(
+    tmp_path: Path, content: dict[str, object], expected_problems: list[str]
 ):
-    config_path = write_config(tmp_path, {"bench": "name", "badKey": "value"})
-
-    with pytest.raises(GymratError, match="badKey"):
-        load_config_file(config_path)
-
-
-def test_load_config_file_when_empty_string_top_level_key_does_name_quoted_empty_key(
-    tmp_path: Path,
-):
-    config_path = write_config(tmp_path, {"": 1})
-
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
-
-    assert 'Unknown config key: ""' in str(exc.value)
-
-
-@pytest.mark.parametrize("char", LINE_BREAKS)
-def test_load_config_file_when_top_level_key_embeds_line_break_does_report_single_line_problem(
-    tmp_path: Path, char: str
-):
-    config_path = write_config(tmp_path, {f"bench{char}samples = 0": 1})
+    config_path = write_config(tmp_path, content)
 
     result = load_config_file_collecting(config_path, required=False)
 
     assert result.config_file is None
-    split_problems = [
-        problem
-        for problem in result.problems
-        if any(line_break in problem for line_break in LINE_BREAKS)
-    ]
-    assert split_problems == []
+    assert result.problems == expected_problems
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +267,63 @@ def test_load_config_file_when_empty_object_does_return_empty_config(tmp_path: P
     result = load_config_file(config_path)
 
     assert result == ConfigFile()
+
+
+# ---------------------------------------------------------------------------
+# sections and flags of the wrong type
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("content", "key_path"),
+    [
+        pytest.param({"metrics": "latency"}, "metrics", id="metrics-string"),
+        pytest.param({"metrics": {"latency": "lower"}}, "metrics.latency", id="metrics-entry"),
+        pytest.param({"metrics": {"": 5}}, 'metrics.""', id="metrics-entry-empty-key"),
+        pytest.param({"kinds": "memory"}, "kinds", id="kinds-string"),
+        pytest.param({"kinds": {"memory": False}}, "kinds.memory", id="kinds-entry"),
+        pytest.param({"hooks": "gymrat.hooks"}, "hooks", id="hooks-string"),
+        pytest.param({"supervise": "claude-sonnet"}, "supervise", id="supervise-string"),
+    ],
+)
+def test_load_config_file_when_section_not_object_does_name_key_path_and_object(
+    tmp_path: Path, content: dict[str, object], key_path: str
+):
+    config_path = write_config(tmp_path, content)
+
+    message = load_error_message(config_path)
+
+    assert message.startswith(f"Invalid config value for {key_path}: expected an object, got ")
+
+
+@pytest.mark.parametrize(
+    ("content", "key_path"),
+    [
+        pytest.param(
+            {"metrics": {"latency": {"gating": "yes"}}},
+            "metrics.latency.gating",
+            id="metrics-gating-string",
+        ),
+        pytest.param(
+            {"metrics": {"latency": {"exact": 1}}},
+            "metrics.latency.exact",
+            id="metrics-exact-number",
+        ),
+        pytest.param(
+            {"kinds": {"memory": {"gating": "yes"}}},
+            "kinds.memory.gating",
+            id="kinds-gating-string",
+        ),
+    ],
+)
+def test_load_config_file_when_flag_non_boolean_does_name_key_path_and_boolean(
+    tmp_path: Path, content: dict[str, object], key_path: str
+):
+    config_path = write_config(tmp_path, content)
+
+    message = load_error_message(config_path)
+
+    assert message.startswith(f"Invalid config value for {key_path}: expected a boolean, got ")
 
 
 # ---------------------------------------------------------------------------
@@ -292,8 +347,9 @@ def test_load_config_file_when_string_key_holds_non_string_does_name_key_and_str
 ):
     config_path = write_config(tmp_path, {key: value})
 
-    with pytest.raises(GymratError, match=rf"{key}.*string"):
-        load_config_file(config_path)
+    message = load_error_message(config_path)
+
+    assert message.startswith(f"Invalid config value for {key}: expected a string, got ")
 
 
 # ---------------------------------------------------------------------------
@@ -320,8 +376,9 @@ def test_load_config_file_when_non_empty_string_key_holds_blank_does_name_key_an
 ):
     config_path = write_config(tmp_path, {key: value})
 
-    with pytest.raises(GymratError, match=rf"{key}.*non-empty"):
-        load_config_file(config_path)
+    message = load_error_message(config_path)
+
+    assert message.startswith(f"Invalid config value for {key}: expected a non-empty string, got ")
 
 
 # ---------------------------------------------------------------------------
@@ -330,22 +387,23 @@ def test_load_config_file_when_non_empty_string_key_holds_blank_does_name_key_an
 
 
 @pytest.mark.parametrize(
-    ("key", "value"),
+    ("key", "value", "phrase"),
     [
-        pytest.param("samples", "ten", id="samples-string"),
-        pytest.param("samples", 1.5, id="samples-non-integer"),
-        pytest.param("samples", 0, id="samples-zero"),
-        pytest.param("timeout_seconds", -1, id="timeout-negative"),
-        pytest.param("timeout_seconds", True, id="timeout-boolean"),
+        pytest.param("samples", "ten", "an integer", id="samples-string"),
+        pytest.param("samples", 1.5, "an integer", id="samples-non-integer"),
+        pytest.param("samples", 0, "a number at or above 1", id="samples-zero"),
+        pytest.param("timeout_seconds", -1, "a number at or above 1", id="timeout-negative"),
+        pytest.param("timeout_seconds", True, "an integer", id="timeout-boolean"),
     ],
 )
-def test_load_config_file_when_integer_key_invalid_does_name_key_and_positive_integer(
-    tmp_path: Path, key: str, value: object
+def test_load_config_file_when_integer_key_invalid_does_name_key_and_expected_shape(
+    tmp_path: Path, key: str, value: object, phrase: str
 ):
     config_path = write_config(tmp_path, {key: value})
 
-    with pytest.raises(GymratError, match=rf"{key}.*positive integer"):
-        load_config_file(config_path)
+    message = load_error_message(config_path)
+
+    assert message.startswith(f"Invalid config value for {key}: expected {phrase}, got ")
 
 
 def test_load_config_file_when_integer_key_given_integral_float_does_accept(tmp_path: Path):
@@ -368,12 +426,11 @@ def test_load_config_file_when_integer_key_exceeds_cap_does_name_key_and_cap(
 ):
     config_path = write_config(tmp_path, {key: cap + 1})
 
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
+    message = load_error_message(config_path)
 
-    message = str(exc.value)
-    assert key in message
-    assert "a positive integer" in message
+    assert message == (
+        f"Invalid config value for {key}: expected a number at or below {cap}, got {cap + 1}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -404,27 +461,22 @@ def test_load_config_file_when_integer_key_on_cap_does_accept(
 
 
 @pytest.mark.parametrize(
-    "value",
+    ("value", "phrase"),
     [
-        pytest.param("loud", id="string"),
-        pytest.param(0, id="zero"),
-        pytest.param(-5, id="negative"),
-        pytest.param(True, id="boolean"),
-        pytest.param(0.25, id="below-floor"),
+        pytest.param("loud", "a number", id="string"),
+        pytest.param(0.25, "a number at or above 0.5", id="below-floor"),
     ],
 )
-def test_load_config_file_when_noise_pct_invalid_does_name_key_and_noise_floor(
-    tmp_path: Path, value: object
+def test_load_config_file_when_noise_pct_invalid_does_name_key_and_expected_shape(
+    tmp_path: Path, value: object, phrase: str
 ):
     config_path = write_config(tmp_path, {"unstable_noise_pct": value})
 
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
+    message = load_error_message(config_path)
 
-    message = str(exc.value)
-    assert "unstable_noise_pct" in message
-    assert "0.5" in message
-    assert "noise floor" in message
+    assert message.startswith(
+        f"Invalid config value for unstable_noise_pct: expected {phrase}, got "
+    )
 
 
 def test_load_config_file_when_noise_pct_on_floor_does_accept(tmp_path: Path):
@@ -469,50 +521,14 @@ def test_load_config_file_when_stop_target_value_boolean_does_reject_with_exact_
 ):
     config_path = write_raw(tmp_path, "[stop]\ntarget_value = false")
 
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
+    message = load_error_message(config_path)
 
-    assert str(exc.value) == (
-        "Invalid config value for stop.target_value: expected a number, got false"
-    )
+    assert message == "Invalid config value for stop.target_value: expected a number, got false"
 
 
 # ---------------------------------------------------------------------------
 # metrics
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        pytest.param([], id="array"),
-        pytest.param("latency", id="string"),
-        pytest.param(3, id="number"),
-    ],
-)
-def test_load_config_file_when_metrics_not_object_does_name_metrics_and_object(
-    tmp_path: Path, value: object
-):
-    config_path = write_config(tmp_path, {"metrics": value})
-
-    with pytest.raises(GymratError, match=r"metrics.*object"):
-        load_config_file(config_path)
-
-
-def test_load_config_file_when_metrics_entry_not_object_does_name_entry_and_object(tmp_path: Path):
-    config_path = write_config(tmp_path, {"metrics": {"latency": "lower"}})
-
-    with pytest.raises(GymratError, match=r"metrics\.latency.*object"):
-        load_config_file(config_path)
-
-
-def test_load_config_file_when_metrics_entry_under_empty_key_invalid_does_quote_empty_key(
-    tmp_path: Path,
-):
-    config_path = write_config(tmp_path, {"metrics": {"": 5}})
-
-    with pytest.raises(GymratError, match=r'metrics\."".*object'):
-        load_config_file(config_path)
 
 
 @pytest.mark.parametrize(
@@ -528,24 +544,11 @@ def test_load_config_file_when_metrics_direction_invalid_does_name_direction_and
 ):
     config_path = write_config(tmp_path, {"metrics": {"latency": {"direction": value}}})
 
-    with pytest.raises(GymratError, match=r'metrics\.latency\.direction.*"lower".*"higher"'):
-        load_config_file(config_path)
+    message = load_error_message(config_path)
 
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        pytest.param("gating", "yes", id="gating-string"),
-        pytest.param("exact", 1, id="exact-number"),
-    ],
-)
-def test_load_config_file_when_metrics_flag_non_boolean_does_name_field_and_boolean(
-    tmp_path: Path, field: str, value: object
-):
-    config_path = write_config(tmp_path, {"metrics": {"latency": {field: value}}})
-
-    with pytest.raises(GymratError, match=rf"metrics\.latency\.{field}.*boolean"):
-        load_config_file(config_path)
+    assert message.startswith(
+        "Invalid config value for metrics.latency.direction: expected 'lower' or 'higher', got "
+    )
 
 
 def test_load_config_file_when_metrics_entry_has_unknown_key_does_name_key(tmp_path: Path):
@@ -553,21 +556,19 @@ def test_load_config_file_when_metrics_entry_has_unknown_key_does_name_key(tmp_p
         tmp_path, {"metrics": {"latency": {"direction": "lower", "threshold": "higher"}}}
     )
 
-    with pytest.raises(GymratError, match=r"metrics\.latency\.threshold"):
+    with pytest.raises(GymratError, match=r"^Unknown config key: metrics\.latency\.threshold$"):
         load_config_file(config_path)
 
 
-@pytest.mark.parametrize("char", LINE_BREAKS)
+@pytest.mark.parametrize("char", LINE_BREAK_CHARS)
 def test_load_config_file_when_metrics_key_embeds_line_break_does_report_key_not_shape(
     tmp_path: Path, char: str
 ):
     smuggled = f"latency{char}direction: 999, gating: 0"
     config_path = write_config(tmp_path, {"metrics": {smuggled: {"direction": "lower"}}})
 
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
+    message = load_error_message(config_path)
 
-    message = str(exc.value)
     assert "metrics" in message
     # The rejected value is an object; only its key is bad, so any phrasing
     # that demands an object contradicts what the user wrote.
@@ -587,10 +588,9 @@ def test_load_config_file_when_metric_name_needs_quoting_does_quote_it_in_key_pa
 ):
     config_path = write_config(tmp_path, {"metrics": {metric_name: {"direction": "sideways"}}})
 
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
+    message = load_error_message(config_path)
 
-    assert expected_path in str(exc.value)
+    assert expected_path in message
 
 
 # ---------------------------------------------------------------------------
@@ -598,8 +598,11 @@ def test_load_config_file_when_metric_name_needs_quoting_does_quote_it_in_key_pa
 # ---------------------------------------------------------------------------
 
 
-def test_load_config_file_when_kinds_key_embeds_line_break_does_name_kinds(tmp_path: Path):
-    config_path = write_config(tmp_path, {"kinds": {"memory\ngating: 999": {"gating": False}}})
+@pytest.mark.parametrize("char", LINE_BREAK_CHARS)
+def test_load_config_file_when_kinds_key_embeds_line_break_does_name_kinds(
+    tmp_path: Path, char: str
+):
+    config_path = write_config(tmp_path, {"kinds": {f"memory{char}gating: 999": {"gating": False}}})
 
     with pytest.raises(GymratError, match="kinds"):
         load_config_file(config_path)
@@ -611,46 +614,6 @@ def test_load_config_file_when_kinds_section_given_does_round_trip(tmp_path: Pat
     result = load_config_file(config_path)
 
     assert result == ConfigFile(kinds={"memory": KindEntry(gating=False), "time": KindEntry()})
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        pytest.param([], id="array"),
-        pytest.param("memory", id="string"),
-        pytest.param(3, id="number"),
-    ],
-)
-def test_load_config_file_when_kinds_not_object_does_name_kinds_and_object(
-    tmp_path: Path, value: object
-):
-    config_path = write_config(tmp_path, {"kinds": value})
-
-    with pytest.raises(GymratError, match=r"kinds.*object"):
-        load_config_file(config_path)
-
-
-def test_load_config_file_when_kinds_entry_not_object_does_name_entry_and_object(tmp_path: Path):
-    config_path = write_config(tmp_path, {"kinds": {"memory": False}})
-
-    with pytest.raises(GymratError, match=r"kinds\.memory.*object"):
-        load_config_file(config_path)
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        pytest.param("yes", id="string"),
-        pytest.param(1, id="number"),
-    ],
-)
-def test_load_config_file_when_kinds_gating_non_boolean_does_name_gating_and_boolean(
-    tmp_path: Path, value: object
-):
-    config_path = write_config(tmp_path, {"kinds": {"memory": {"gating": value}}})
-
-    with pytest.raises(GymratError, match=r"kinds\.memory\.gating.*boolean"):
-        load_config_file(config_path)
 
 
 def test_load_config_file_when_kinds_entry_has_unknown_key_does_name_dotted_path(tmp_path: Path):
@@ -688,6 +651,27 @@ def test_load_config_file_when_loop_keys_given_does_round_trip(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# explicit None and empty values
+# ---------------------------------------------------------------------------
+
+
+def test_validate_config_dict_when_optional_keys_explicitly_none_does_accept():
+    config: dict[str, object] = {field.name: None for field in fields(ConfigFile)}
+
+    result = validate_config_dict(config)
+
+    assert result is None
+
+
+def test_load_config_file_when_filter_empty_does_keep_empty_filter(tmp_path: Path):
+    config_path = write_config(tmp_path, {"filter": ""})
+
+    result = load_config_file(config_path)
+
+    assert result == ConfigFile(filter="")
+
+
+# ---------------------------------------------------------------------------
 # hooks
 # ---------------------------------------------------------------------------
 
@@ -716,39 +700,23 @@ def test_load_config_file_when_hooks_partial_does_round_trip(
 
 
 @pytest.mark.parametrize(
-    "value",
+    ("stage", "value", "phrase"),
     [
-        pytest.param("gymrat.hooks", id="string"),
-        pytest.param([], id="array"),
-        pytest.param(True, id="boolean"),
-    ],
-)
-def test_load_config_file_when_hooks_not_object_does_name_hooks_and_object(
-    tmp_path: Path, value: object
-):
-    config_path = write_config(tmp_path, {"hooks": value})
-
-    with pytest.raises(GymratError, match=r"hooks.*object"):
-        load_config_file(config_path)
-
-
-@pytest.mark.parametrize(
-    ("stage", "value"),
-    [
-        pytest.param("before", "", id="before-empty"),
-        pytest.param("after", "", id="after-empty"),
-        pytest.param("before", 42, id="before-number"),
-        pytest.param("before", " ", id="before-space"),
-        pytest.param("after", "\t\n ", id="after-mixed-whitespace"),
+        pytest.param("before", "", "a non-empty string", id="before-empty"),
+        pytest.param("after", "", "a non-empty string", id="after-empty"),
+        pytest.param("before", 42, "a string", id="before-number"),
+        pytest.param("before", " ", "a non-empty string", id="before-space"),
+        pytest.param("after", "\t\n ", "a non-empty string", id="after-mixed-whitespace"),
     ],
 )
 def test_load_config_file_when_hooks_command_not_non_empty_string_does_name_stage(
-    tmp_path: Path, stage: str, value: object
+    tmp_path: Path, stage: str, value: object, phrase: str
 ):
     config_path = write_config(tmp_path, {"hooks": {stage: value}})
 
-    with pytest.raises(GymratError, match=rf"hooks\.{stage}.*non-empty"):
-        load_config_file(config_path)
+    message = load_error_message(config_path)
+
+    assert message.startswith(f"Invalid config value for hooks.{stage}: expected {phrase}, got ")
 
 
 def test_load_config_file_when_hooks_has_unknown_key_does_name_dotted_path(tmp_path: Path):
@@ -766,22 +734,36 @@ def test_load_config_file_when_hooks_has_unknown_key_does_name_dotted_path(tmp_p
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "pattern"),
+    ("field", "value", "expected"),
     [
-        pytest.param("target_value", "fast", r"stop\.target_value.*number", id="target-string"),
-        pytest.param("max_iterations", 0, r"stop\.max_iterations.*positive integer", id="max-zero"),
         pytest.param(
-            "max_iterations", 1.5, r"stop\.max_iterations.*positive integer", id="max-non-integer"
+            "target_value",
+            "fast",
+            'Invalid config value for stop.target_value: expected a number, got "fast"',
+            id="target-string",
+        ),
+        pytest.param(
+            "max_iterations",
+            0,
+            "Invalid config value for stop.max_iterations: expected a number at or above 1, got 0",
+            id="max-zero",
+        ),
+        pytest.param(
+            "max_iterations",
+            1.5,
+            "Invalid config value for stop.max_iterations: expected an integer, got 1.5",
+            id="max-non-integer",
         ),
     ],
 )
-def test_load_config_file_when_stop_field_invalid_does_name_field(
-    tmp_path: Path, field: str, value: object, pattern: str
+def test_load_config_file_when_stop_field_invalid_does_name_field_and_expected_shape(
+    tmp_path: Path, field: str, value: object, expected: str
 ):
     config_path = write_config(tmp_path, {"stop": {field: value}})
 
-    with pytest.raises(GymratError, match=pattern):
-        load_config_file(config_path)
+    message = load_error_message(config_path)
+
+    assert message == expected
 
 
 def test_load_config_file_when_stop_has_unknown_key_does_name_dotted_path(tmp_path: Path):
@@ -806,23 +788,6 @@ def test_load_config_file_when_no_supervise_table_does_return_config_without_sup
     assert result.supervise is None
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        pytest.param("claude-sonnet", id="string"),
-        pytest.param([], id="array"),
-        pytest.param(True, id="boolean"),
-    ],
-)
-def test_load_config_file_when_supervise_not_object_does_name_supervise_and_object(
-    tmp_path: Path, value: object
-):
-    config_path = write_config(tmp_path, {"supervise": value})
-
-    with pytest.raises(GymratError, match=r"supervise.*object"):
-        load_config_file(config_path)
-
-
 def test_load_config_file_when_supervise_has_unknown_key_does_name_dotted_path(tmp_path: Path):
     config_path = write_config(
         tmp_path, {"supervise": {"model": "claude-sonnet", "temperature": 0.7}}
@@ -837,8 +802,11 @@ def test_load_config_file_when_supervise_model_blank_does_name_model_and_non_emp
 ):
     config_path = write_config(tmp_path, {"supervise": {"model": ""}})
 
-    with pytest.raises(GymratError, match=r"supervise\.model.*non-empty"):
-        load_config_file(config_path)
+    message = load_error_message(config_path)
+
+    assert message == (
+        'Invalid config value for supervise.model: expected a non-empty string, got ""'
+    )
 
 
 @pytest.mark.parametrize(
@@ -873,12 +841,11 @@ def test_load_config_file_when_supervise_effort_invalid_does_name_effort_and_all
 ):
     config_path = write_config(tmp_path, {"supervise": {"effort": effort}})
 
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
+    message = load_error_message(config_path)
 
-    assert str(exc.value) == (
+    assert message == (
         "Invalid config value for supervise.effort: "
-        f'expected "low", "medium", "high", "xhigh" or "max", got "{effort}"'
+        f"expected 'low', 'medium', 'high', 'xhigh' or 'max', got \"{effort}\""
     )
 
 

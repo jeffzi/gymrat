@@ -1,50 +1,75 @@
-"""Live-wiring, render-refresh, and tick-task tests.
+"""Live-wiring, render-refresh, and signal-erase tests.
 
-Tests for the ``Live`` construction contract (``auto_refresh=False``,
-``transient=True``, mounted via ``start()``), the explicit ``refresh=True`` on
-every ``update`` call, the skipped repaint for events that leave state unchanged,
-``_stop_live`` suppression scope, and the tick task lifecycle including its
-error-handling path.
+Tests for the ``Live`` construction contract (rich's refresh timer at one frame
+per second rendering through ``get_renderable``, ``transient=True``, mounted via
+``start()``), the single ``refresh()`` an event that changes state triggers, the
+skipped repaint for events that leave state unchanged, and ``_stop_live``
+suppression scope.
+
+The signal tests paint the dashboard on a sealed terminal console that is also
+the process's stderr from before the reporter is built, as a real terminal is,
+so the dashboard's stderr redirect is in effect when a signal lands. They run
+the installed termination handler with the process exit stubbed out, then
+replay what reached the terminal through a ``pyte`` screen: the screen a user
+is left with after ``os._exit``. The dashboard's erase is handed to the
+handler, which writes it together with any warnings a later cleanup raises, so
+the tests read the screen once the handler has run.
 """
 
 from __future__ import annotations
 
-import asyncio
-from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+import sys
+import threading
+import time
+from io import StringIO
+from typing import TYPE_CHECKING, override
+from unittest.mock import patch
 
 import pytest
 
+from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.events import TextDeltaEvent, ToolProgressEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
-from tests._ansi import strip_ansi
-from tests._rich import console_output, sealed_console
+from tests._rich import (
+    HIDE_CURSOR,
+    KEPT_LINE,
+    TERMINATION_SIGNAL,
+    WARNING_LINE,
+    CleanupRegistry,
+    InterruptedTerminal,
+    ProcessExit,
+    cursor_hidden,
+    frame_text,
+    screen_lines,
+    sealed_console,
+    track_mounted_cleanups,
+)
 from tests.cli.supervise._fixtures import (
+    FRAME_WIDTH,
     LIVE_CLASS_PATH,
+    Clock,
+    ReporterKit,
     fire_launch,
+    fire_tool_start,
     make_reporter,
+    render_frame,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from rich.console import Console
+
+    from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.supervisor.events import SessionEvent
 
+# Failure message the mount test raises and then matches.
+_MOUNT_FAILURE = "mount failed"
 
-async def _wait_for_call(mock: MagicMock, *, timeout_s: float = 1) -> None:
-    """Await the next call to *mock*, bounded by *timeout_s* seconds."""
-    called = asyncio.Event()
-    prior = mock.side_effect
-
-    def _signal(*a: object, **kw: object) -> None:
-        if callable(prior):
-            prior(*a, **kw)
-        called.set()
-
-    mock.side_effect = _signal
-    try:
-        async with asyncio.timeout(timeout_s):
-            await called.wait()
-    finally:
-        mock.side_effect = prior
+# The terminal the signal tests paint the dashboard on: wide enough for the
+# golden frame width and tall enough that the frame is never cropped.
+_SCREEN_WIDTH = FRAME_WIDTH
+_SCREEN_HEIGHT = 40
 
 
 # ---------------------------------------------------------------------------
@@ -63,40 +88,55 @@ def test_create_reporter_when_color_false_does_build_colorless_console():
 
 
 # ---------------------------------------------------------------------------
-# Live construction — auto_refresh=False, transient, mounted, initial paint
+# Live construction — refresh timer, transient, mounted, initial paint
 # ---------------------------------------------------------------------------
 
 
 def test_create_reporter_when_live_mode_does_configure_and_mount_live():
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         mock_live = mock_live_cls.return_value
-        make_reporter(mode="live")
+        kit = make_reporter(mode="live")
 
         call_kwargs = mock_live_cls.call_args.kwargs
-        assert call_kwargs.get("auto_refresh") is False
+        assert call_kwargs.get("auto_refresh") is True
+        assert call_kwargs.get("refresh_per_second") == 1
+        assert frame_text(call_kwargs["get_renderable"](), width=FRAME_WIDTH) == render_frame(
+            kit.reporter
+        )
         assert call_kwargs.get("transient") is True
         mock_live.start.assert_called_once()
-        mock_live.update.assert_called_once()
-        _, update_kwargs = mock_live.update.call_args
-        assert update_kwargs.get("refresh") is True
+        mock_live.refresh.assert_called_once()
+
+
+@pytest.mark.parametrize("failing_step", ["start", "refresh"])
+def test_create_reporter_when_mounting_live_raises_does_leave_nothing_running(
+    dashboard_cleanups: CleanupRegistry, failing_step: str
+):
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        mock_live = mock_live_cls.return_value
+        getattr(mock_live, failing_step).side_effect = RuntimeError(_MOUNT_FAILURE)
+
+        with pytest.raises(RuntimeError, match=_MOUNT_FAILURE):
+            make_reporter(mode="live")
+
+    mock_live.stop.assert_called_once()
+    assert dashboard_cleanups.live() == []
 
 
 # ---------------------------------------------------------------------------
-# render calls — explicit refresh=True on every update
+# render calls — one refresh per state-changing event
 # ---------------------------------------------------------------------------
 
 
-def test_render_when_event_fires_in_live_mode_does_call_update_with_refresh():
+def test_render_when_event_changes_state_in_live_mode_does_refresh_live_once():
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         mock_live = mock_live_cls.return_value
         kit = make_reporter(mode="live")
+        mock_live.reset_mock()
 
-        mock_live.update.reset_mock()
         fire_launch(kit.reporter.observer, 1000)
 
-        mock_live.update.assert_called()
-        _, update_kwargs = mock_live.update.call_args
-        assert update_kwargs.get("refresh") is True
+        mock_live.refresh.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -114,11 +154,11 @@ def test_render_when_event_leaves_state_unchanged_does_not_repaint_live(event: S
         live = mock_live_cls.return_value
         kit = make_reporter(mode="live")
         fire_launch(kit.reporter.observer, 1000)
-        painted = live.update.call_count
+        painted = live.refresh.call_count
 
         kit.reporter.observer(event)
 
-        assert live.update.call_count == painted
+        assert live.refresh.call_count == painted
 
 
 def test_exit_phase_when_live_mode_does_repaint_live():
@@ -126,11 +166,11 @@ def test_exit_phase_when_live_mode_does_repaint_live():
         live = mock_live_cls.return_value
         kit = make_reporter(mode="live")
         fire_launch(kit.reporter.observer, 1000)
-        painted = live.update.call_count
+        painted = live.refresh.call_count
 
         kit.reporter.exit_phase(ExitPhase(kind="settling", pid=None))
 
-        assert live.update.call_count > painted
+        assert live.refresh.call_count > painted
 
 
 # ---------------------------------------------------------------------------
@@ -138,15 +178,13 @@ def test_exit_phase_when_live_mode_does_repaint_live():
 # ---------------------------------------------------------------------------
 
 
-def test_warn_when_live_message_contains_brackets_does_print_it_verbatim():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        console = sealed_console()
-        mock_live_cls.return_value.console = console
-        kit = make_reporter(mode="live")
+def test_warn_when_live_message_contains_brackets_does_print_it_verbatim(terminal: StringIO):
+    kit = make_reporter(mode="live")
 
-        kit.reporter.warn("missing [banana] key")
+    kit.reporter.warn("missing [banana] key")
 
-        assert "missing [banana] key" in strip_ansi(console_output(console))
+    kit.reporter.stop()
+    assert _screen(terminal.getvalue()) == [KEPT_LINE, "missing [banana] key"]
 
 
 def test_render_when_plain_mode_does_not_create_live():
@@ -173,7 +211,7 @@ def test_stop_when_live_stop_raises_os_error_does_suppress():
 def test_stop_when_live_stop_raises_non_os_error_does_propagate():
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         mock_live = mock_live_cls.return_value
-        mock_live.stop.side_effect = ValueError("unexpected")
+        mock_live.stop.side_effect = [ValueError("unexpected"), None]
         kit = make_reporter(mode="live")
 
         with pytest.raises(ValueError, match="unexpected"):
@@ -181,102 +219,252 @@ def test_stop_when_live_stop_raises_non_os_error_does_propagate():
 
 
 # ---------------------------------------------------------------------------
-# tick task — start / stop (Behavior 4)
+# Termination signal — erase the dashboard without waiting on its lock
 # ---------------------------------------------------------------------------
 
 
-async def test_start_when_live_mode_does_render_tick_after_interval():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        mock_live = mock_live_cls.return_value
-        kit = make_reporter(mode="live", refresh_ms=10)
-        fire_launch(kit.reporter.observer, 1000)
-        kit.clock.now = 2000
+def _paint_dashboards_on(console: Console, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hand every dashboard built from here on *console* as its stderr console."""
 
-        mock_live.update.reset_mock()
-        kit.reporter.start()
-        await _wait_for_call(mock_live.update)
+    def dashboard_console(**_kwargs: object) -> Console:
+        return console
 
-        assert mock_live.update.call_count == 1
-        _, update_kwargs = mock_live.update.call_args
-        assert update_kwargs.get("refresh") is True
-
-        kit.reporter.stop()
+    monkeypatch.setattr("gymrat.cli.supervise.progress.stderr_console", dashboard_console)
 
 
-async def test_start_when_plain_mode_does_nothing():
-    writes: list[str] = []
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        kit = make_reporter(mode="plain", plain_write=writes.append, refresh_ms=10)
-        fire_launch(kit.reporter.observer, 1000)
-        writes_before_start = list(writes)
+def _mount_terminal(term: StringIO, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make *term* the terminal a dashboard paints on and the process's stderr.
 
-        kit.reporter.start()
-        await asyncio.sleep(0.05)
-        kit.reporter.stop()
-
-        mock_live_cls.assert_not_called()
-        assert writes == writes_before_start
+    One line is already printed on it, above where the dashboard will go.
+    """
+    console = sealed_console(width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
+    console.file = term
+    console.print(KEPT_LINE)
+    _paint_dashboards_on(console, monkeypatch)
+    monkeypatch.setattr(sys, "stderr", term)
 
 
-async def test_stop_when_tick_running_does_cancel_tick_task():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        mock_live = mock_live_cls.return_value
-        kit = make_reporter(mode="live", refresh_ms=10)
-        fire_launch(kit.reporter.observer, 1000)
+@pytest.fixture
+def terminal(monkeypatch: pytest.MonkeyPatch) -> StringIO:
+    """The stderr terminal the live dashboard paints on, with one line kept above it."""
+    term = StringIO()
+    _mount_terminal(term, monkeypatch)
+    return term
 
-        mock_live.update.reset_mock()
-        kit.reporter.start()
-        await _wait_for_call(mock_live.update)
-        kit.reporter.stop()
-        call_count_after_stop = mock_live.update.call_count
-        await asyncio.sleep(0.05)
 
-        assert mock_live.update.call_count == call_count_after_stop
+@pytest.fixture
+def dashboard_cleanups(monkeypatch: pytest.MonkeyPatch) -> CleanupRegistry:
+    """Record the termination cleanups the dashboard installs, in place of the real handler."""
+    return track_mounted_cleanups(monkeypatch)
+
+
+def _screen(raw: str) -> list[str]:
+    return screen_lines(raw, width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
+
+
+def _cursor_hidden(raw: str) -> bool:
+    return cursor_hidden(raw, width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
+
+
+def test_stderr_write_when_live_dashboard_up_does_land_above_the_frame(terminal: StringIO):
+    kit = make_reporter(mode="live")
+    fire_launch(kit.reporter.observer, 1000)
+
+    sys.stderr.write(f"{WARNING_LINE}\n")
+    sys.stderr.flush()
+
+    frame_rows = _screen(render_frame(kit.reporter, width=_SCREEN_WIDTH))
+    assert _screen(terminal.getvalue()) == [KEPT_LINE, WARNING_LINE, *frame_rows]
+
+
+def test_signal_when_dashboard_just_hid_the_cursor_does_restore_the_screen(
+    raise_signal: Callable[[int], int],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    term = InterruptedTerminal()
+    _mount_terminal(term, monkeypatch)
+    install_termination_cleanup(lambda: None)
+    term.interrupt_write(lambda: raise_signal(TERMINATION_SIGNAL), marker=HIDE_CURSOR, lands=True)
+
+    with pytest.raises(ProcessExit):
+        make_reporter(mode="live")
+
+    assert (_screen(term.at_exit), _cursor_hidden(term.at_exit)) == ([KEPT_LINE], False)
+
+
+def test_signal_when_dashboard_already_stopped_does_leave_the_screen_untouched(
+    terminal: StringIO, raise_signal: Callable[[int], int]
+):
+    kit = make_reporter(mode="live")
+    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.stop()
+    install_termination_cleanup(lambda: None)
+    before = terminal.getvalue()
+
+    raise_signal(TERMINATION_SIGNAL)
+
+    assert terminal.getvalue() == before
 
 
 # ---------------------------------------------------------------------------
-# tick error handling (Behavior 5)
+# Render failure — the dashboard survives a frame that fails to render
 # ---------------------------------------------------------------------------
 
-RENDER_LIVE_PATH = "gymrat.cli.supervise.progress.render_live"
+# Message of the error the flaky sidecar raises, which the warning names.
+_RENDER_FAILURE = "sidecar unreadable"
+
+# The one warning line a failed render leaves on the terminal.
+_RENDER_FAILURE_WARNING = (
+    f"warning: dashboard frame failed to render: RuntimeError: {_RENDER_FAILURE}"
+)
+
+# Refresh interval for the render-failure tests: fast enough that the refresh
+# thread renders many frames while a test waits on it.
+_FAST_REFRESH_MS = 10
+
+# Upper bound on how long a test waits for the refresh thread to render again.
+_RECOVERY_TIMEOUT_S = 5.0
 
 
-async def test_tick_when_render_raises_does_warn_and_end_tick():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        mock_live = mock_live_cls.return_value
-        mock_live.console = MagicMock()
-        kit = make_reporter(mode="live", refresh_ms=10)
-        fire_launch(kit.reporter.observer, 1000)
+class _FlakySidecar:
+    """A sidecar reader a test arms to fail its next reads.
 
-        with patch(RENDER_LIVE_PATH, autospec=True, side_effect=RuntimeError("render boom")):
-            kit.reporter.start()
-            await _wait_for_call(mock_live.console.print)
+    ``fail_next(count)`` makes the next *count* reads raise; the first read
+    that succeeds after them sets ``recovered``. ``fail_next(None)`` makes every
+    read from then on raise. The dashboard reads the sidecar on every frame
+    while an iterate call is in flight, so each failed read is a failed render.
+    """
 
-        update_count_after_error = mock_live.update.call_count
-        await asyncio.sleep(0.05)
+    def __init__(self) -> None:
+        self.recovered = threading.Event()
+        self._lock = threading.Lock()
+        self._failures_left: int | None = 0
+        self._armed = False
 
-        assert mock_live.update.call_count == update_count_after_error
-        mock_live.console.print.assert_called_once()
-        (warn_message,), _ = mock_live.console.print.call_args
-        assert "render boom" in warn_message
+    def fail_next(self, count: int | None) -> None:
+        with self._lock:
+            self._failures_left = count
+            self._armed = True
 
-        kit.reporter.stop()
+    def __call__(self, _root: str) -> ProgressSnapshot | None:
+        with self._lock:
+            if self._failures_left is None or self._failures_left > 0:
+                if self._failures_left is not None:
+                    self._failures_left -= 1
+                raise RuntimeError(_RENDER_FAILURE)
+            if self._armed:
+                self.recovered.set()
+        return None
 
 
-async def test_tick_when_render_raises_does_allow_subsequent_event_render():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        mock_live = mock_live_cls.return_value
-        mock_live.console = MagicMock()
-        kit = make_reporter(mode="live", refresh_ms=10)
-        fire_launch(kit.reporter.observer, 1000)
+def _dashboard_reading(sidecar: _FlakySidecar) -> ReporterKit:
+    """Mount a fast-refreshing live dashboard with an iterate call reading *sidecar*."""
+    kit = make_reporter(mode="live", read_progress=sidecar, refresh_ms=_FAST_REFRESH_MS)
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    return kit
 
-        with patch(RENDER_LIVE_PATH, autospec=True, side_effect=RuntimeError("render boom")):
-            kit.reporter.start()
-            await _wait_for_call(mock_live.console.print)
 
-        mock_live.update.reset_mock()
-        fire_launch(kit.reporter.observer, 2000)
+def _painted_after(terminal: StringIO, length: int) -> bool:
+    """Wait for the refresh thread to write past *length* characters of *terminal*."""
+    deadline = time.monotonic() + _RECOVERY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if len(terminal.getvalue()) > length:
+            return True
+        time.sleep(_FAST_REFRESH_MS / 1000)
+    return False
 
-        assert mock_live.update.call_count >= 1
 
-        kit.reporter.stop()
+def test_refresh_when_a_frame_fails_to_render_does_keep_painting_later_frames(
+    terminal: StringIO,
+):
+    sidecar = _FlakySidecar()
+    _dashboard_reading(sidecar)
+    sidecar.fail_next(1)
+    recovered = sidecar.recovered.wait(_RECOVERY_TIMEOUT_S)
+
+    painted = _painted_after(terminal, len(terminal.getvalue()))
+
+    assert (recovered, painted) == (True, True)
+
+
+def test_refresh_when_frames_fail_to_render_in_live_mode_does_warn_once_naming_the_error(
+    terminal: StringIO,
+):
+    sidecar = _FlakySidecar()
+    kit = _dashboard_reading(sidecar)
+    sidecar.fail_next(2)
+    recovered = sidecar.recovered.wait(_RECOVERY_TIMEOUT_S)
+
+    kit.reporter.stop()
+
+    assert (recovered, _screen(terminal.getvalue())) == (
+        True,
+        [KEPT_LINE, _RENDER_FAILURE_WARNING],
+    )
+
+
+def test_create_reporter_when_plain_mode_frame_would_fail_does_not_warn():
+    sidecar = _FlakySidecar()
+    sidecar.fail_next(None)
+    plain_lines: list[str] = []
+    kit = make_reporter(mode="plain", read_progress=sidecar, plain_write=plain_lines.append)
+    fire_launch(kit.reporter.observer, 1000)
+    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+
+    kit.reporter.stop()
+
+    assert not any("failed to render" in line for line in plain_lines)
+
+
+def test_stop_when_final_frame_fails_to_render_does_return_normally(terminal: StringIO):
+    sidecar = _FlakySidecar()
+    kit = _dashboard_reading(sidecar)
+    sidecar.fail_next(None)
+
+    kit.reporter.stop()
+
+
+class _SetupFailingClock(Clock):
+    """A clock that raises while ``failing`` is set, as a frame built during setup would."""
+
+    def __init__(self) -> None:
+        super().__init__(1000)
+        self.failing = True
+
+    @override
+    def __call__(self) -> int:
+        if self.failing:
+            raise RuntimeError(_RENDER_FAILURE)
+        return super().__call__()
+
+
+def test_create_reporter_when_setup_frame_fails_to_render_does_warn_through_the_dashboard(
+    terminal: StringIO,
+):
+    clock = _SetupFailingClock()
+    plain_lines: list[str] = []
+    kit = make_reporter(mode="live", clock=clock, plain_write=plain_lines.append)
+    clock.failing = False
+
+    kit.reporter.stop()
+
+    assert (plain_lines, _screen(terminal.getvalue())) == (
+        [],
+        [KEPT_LINE, _RENDER_FAILURE_WARNING],
+    )
+
+
+def test_signal_when_plain_mode_does_write_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    raise_signal: Callable[[int], int],
+):
+    make_reporter(mode="plain", plain_write=lambda _: None)
+    install_termination_cleanup(lambda: None)
+    buffer = StringIO()
+    monkeypatch.setattr(sys, "stderr", buffer)
+
+    raise_signal(TERMINATION_SIGNAL)
+
+    assert buffer.getvalue() == ""

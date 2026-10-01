@@ -12,20 +12,51 @@ import os
 import random
 import warnings
 from contextvars import ContextVar
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from gymrat.telemetry.ids import span_id_of, trace_id_of
 
 if TYPE_CHECKING:
-    from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
+    from collections.abc import Sequence
+
+    from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
+    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
     from opentelemetry.trace import Span, Tracer
+
+ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
+"""Environment variable every tracing entry point reads the OTLP endpoint from."""
+_TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+_TRACES_PATH = "v1/traces"
 
 _session_id: str = ""
 _session_trace_id: int = 0
 _provider: TracerProvider | None = None
 _tracer: Tracer | None = None
+_export_failed: bool = False
 
 _queued_span_id: ContextVar[int | None] = ContextVar("_queued_span_id", default=None)
+
+
+def otlp_endpoint(value: str | None) -> str | None:
+    """Apply the endpoint rule shared by command tracing, the provider, and ``export``.
+
+    Args:
+        value: A raw endpoint, from ``--endpoint`` or ``OTEL_EXPORTER_OTLP_ENDPOINT``.
+
+    Returns:
+        The endpoint with surrounding whitespace trimmed, or ``None`` when
+        nothing is left, which means "no endpoint".
+    """
+    return (value or "").strip() or None
+
+
+def _traces_url(endpoint: str) -> str:
+    """Build the URL spans are posted to, as the OTLP exporter does from the environment."""
+    traces_endpoint = otlp_endpoint(os.environ.get(_TRACES_ENDPOINT_ENV))
+    if traces_endpoint is not None:
+        return traces_endpoint
+    separator = "" if endpoint.endswith("/") else "/"
+    return f"{endpoint}{separator}{_TRACES_PATH}"
 
 
 def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None = None) -> bool:
@@ -63,8 +94,8 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
             raise ValueError(msg)
         return True
 
-    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
-    if not endpoint:
+    endpoint = otlp_endpoint(os.environ.get(ENDPOINT_ENV))
+    if endpoint is None:
         return False
 
     try:
@@ -93,7 +124,8 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
         )
         from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415
 
-        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+        exporter = _failure_recording(OTLPSpanExporter(endpoint=_traces_url(endpoint)))
+        provider.add_span_processor(BatchSpanProcessor(exporter))
 
     _provider = provider
     _tracer = provider.get_tracer("gymrat")
@@ -129,9 +161,28 @@ def start_span(name: str, *, span_key: str | None = None, **kwargs: object) -> S
 
 
 def flush_tracing() -> None:
-    """Force-flush the provider if one exists; no-op otherwise."""
-    if _provider is not None:
-        _provider.force_flush()
+    """Force-flush the provider if one exists; no-op otherwise.
+
+    A flush that does not finish in time leaves exports whose outcome is
+    unknown, so it counts as a failed export for :func:`export_failed`.
+    """
+    global _export_failed  # noqa: PLW0603 — module singleton
+    if _provider is not None and not _provider.force_flush():
+        _export_failed = True
+
+
+def export_failed() -> bool:
+    """Whether any span export of the default OTLP exporter has failed.
+
+    ``BatchSpanProcessor`` only logs a failed export, so callers that must
+    report one (``gymrat export``) check this after :func:`flush_tracing`.
+    Command tracing is best-effort and never checks it.
+
+    Returns:
+        ``True`` once a batch was rejected, the collector was unreachable, or
+        a flush timed out, since tracing was configured.
+    """
+    return _export_failed
 
 
 def _reset_for_tests() -> None:
@@ -144,16 +195,44 @@ def _reset_for_tests() -> None:
         Exception: Whatever the provider's ``shutdown`` raises, propagated after
             the singleton has been cleared.
     """
-    global _provider, _tracer, _session_id, _session_trace_id  # noqa: PLW0603
+    global _provider, _tracer, _session_id, _session_trace_id, _export_failed  # noqa: PLW0603
     provider = _provider
     _provider = None
     _tracer = None
     _session_id = ""
     _session_trace_id = 0
+    _export_failed = False
     if provider is not None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             provider.shutdown()
+
+
+def _failure_recording(exporter: SpanExporter) -> SpanExporter:
+    """Wrap ``exporter`` so that any failed export sets :func:`export_failed`."""
+    from opentelemetry.sdk.trace.export import (  # noqa: PLC0415
+        SpanExporter,
+        SpanExportResult,
+    )
+
+    class _FailureRecordingExporter(SpanExporter):
+        @override
+        def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+            global _export_failed  # noqa: PLW0603 — module singleton
+            result = exporter.export(spans)
+            if result is not SpanExportResult.SUCCESS:
+                _export_failed = True
+            return result
+
+        @override
+        def shutdown(self) -> None:
+            exporter.shutdown()
+
+        @override
+        def force_flush(self, timeout_millis: int = 30000) -> bool:
+            return exporter.force_flush(timeout_millis)
+
+    return _FailureRecordingExporter()
 
 
 class _DeterministicIdGenerator:

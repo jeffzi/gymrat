@@ -21,13 +21,24 @@ from gymrat.progress_events import (
     PrepareFinished,
     PrepareStarted,
 )
+from gymrat.signals import install_termination_cleanup
 from tests._rich import (
+    HIDE_CURSOR,
+    KEPT_LINE,
+    TERMINATION_SIGNAL,
     Clock,
+    InterruptedTerminal,
+    ProcessExit,
     console_output,
+    cursor_hidden,
     fake_install,
     frame_text,
     screen_lines,
     sealed_console,
+)
+from tests.cli._progress_helpers import (
+    build_iterate_renderer,
+    build_progress_reporter,
 )
 from tests.cli._progress_helpers import (
     ms_from_clock as _ms,
@@ -40,10 +51,14 @@ from tests.cli._progress_helpers import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from rich.console import Console
     from syrupy.assertion import SnapshotAssertion
+
+    from tests.cli._progress_helpers import LiveRenderer
+
+    RendererFactory = Callable[[Literal["live", "plain"], Console], LiveRenderer]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -302,8 +317,9 @@ def test_plain_renderer_when_any_event_does_not_emit_ansi_codes():
 
 
 def test_live_wiring_when_created_does_set_transient_and_not_redirect_stderr():
-    # redirect_stderr=False keeps stderr untouched so a signal's raw write
-    # reaches the terminal.
+    # redirect_stderr=False leaves sys.stderr as the real stream: this display
+    # never swaps in rich's FileProxy, so there is nothing for the erase to
+    # restore.
     real_stderr = sys.stderr
     _console, _clock, reporter = _reporter("live")
 
@@ -350,7 +366,7 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat.cli.progress.install_termination_cleanup",
+        "gymrat.cli.style.install_termination_cleanup",
         fake_install(registered),
     )
 
@@ -365,7 +381,7 @@ def test_plain_mode_when_created_does_not_register_termination_cleanup(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat.cli.progress.install_termination_cleanup",
+        "gymrat.cli.style.install_termination_cleanup",
         fake_install(registered),
     )
 
@@ -470,33 +486,101 @@ def test_reporter_when_non_relevant_event_does_silently_ignore():
     reporter.stop()
 
 
-def test_clear_on_signal_when_live_up_does_erase_only_the_frame(
+# ---------------------------------------------------------------------------
+# Termination signal -- every CLI progress renderer erases its live display alike
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(build_progress_reporter, id="progress-reporter"),
+        pytest.param(build_iterate_renderer, id="iterate-renderer"),
+    ]
+)
+def build_renderer(request: pytest.FixtureRequest) -> Iterator[RendererFactory]:
+    """Build each CLI progress renderer in turn; stops whatever was built, even after a failure."""
+    built: list[LiveRenderer] = []
+
+    def build(mode: Literal["live", "plain"], console: Console) -> LiveRenderer:
+        renderer = request.param(mode, console)
+        built.append(renderer)
+        return renderer
+
+    yield build
+    for renderer in built:
+        # A termination signal marks the renderer stopped (as os._exit would
+        # follow in production), so stop() is then a no-op; stop the Live
+        # display directly so no refresh thread or console registration leaks.
+        if renderer.live is not None:
+            renderer.live.stop()
+        renderer.stop()
+
+
+def test_signal_when_live_up_does_erase_only_the_frame(
+    build_renderer: RendererFactory,
     monkeypatch: pytest.MonkeyPatch,
+    raise_signal: Callable[[int], int],
 ):
-    console, _clock, reporter = _reporter("live", command="measure")
-    console.print("kept above")
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
+    console = sealed_console()
+    console.print(KEPT_LINE)
+    renderer = build_renderer("live", console)
+    renderer.report(PrepareStarted(label="bench", at_ms=0))
     monkeypatch.setattr(sys, "stderr", console.file)
 
-    reporter.clear_on_signal()
+    raise_signal(TERMINATION_SIGNAL)
 
-    assert screen_lines(console_output(console)) == ["kept above"]
-    # clear_on_signal marks the reporter as stopped (as os._exit would follow
-    # in production), so stop() is a no-op; shut down the Live refresh thread
-    # directly so the test leaks neither the thread nor the console registry.
-    if reporter.live is not None:
-        reporter.live.stop()
+    assert screen_lines(console_output(console)) == [KEPT_LINE]
 
 
-def test_clear_on_signal_when_after_stop_does_write_nothing(
+def test_signal_when_live_display_just_hid_the_cursor_does_restore_the_screen(
+    build_renderer: RendererFactory,
     monkeypatch: pytest.MonkeyPatch,
+    raise_signal: Callable[[int], int],
 ):
-    _console, _clock, reporter = _reporter("live")
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-    reporter.stop()
+    terminal = InterruptedTerminal()
+    console = sealed_console()
+    console.file = terminal
+    console.print(KEPT_LINE)
+    monkeypatch.setattr(sys, "stderr", terminal)
+    install_termination_cleanup(lambda: None)
+    terminal.interrupt_write(
+        lambda: raise_signal(TERMINATION_SIGNAL), marker=HIDE_CURSOR, lands=True
+    )
+
+    with pytest.raises(ProcessExit):
+        build_renderer("live", console)
+
+    assert (screen_lines(terminal.at_exit), cursor_hidden(terminal.at_exit)) == ([KEPT_LINE], False)
+
+
+def test_signal_when_live_renderer_stopped_does_write_nothing(
+    build_renderer: RendererFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    raise_signal: Callable[[int], int],
+):
+    renderer = build_renderer("live", sealed_console())
+    renderer.report(PrepareStarted(label="bench", at_ms=0))
+    renderer.stop()
+    install_termination_cleanup(lambda: None)
     buf = StringIO()
     monkeypatch.setattr(sys, "stderr", buf)
 
-    reporter.clear_on_signal()
+    raise_signal(TERMINATION_SIGNAL)
+
+    assert buf.getvalue() == ""
+
+
+def test_signal_when_plain_mode_does_write_nothing(
+    build_renderer: RendererFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    raise_signal: Callable[[int], int],
+):
+    renderer = build_renderer("plain", sealed_console())
+    renderer.report(PrepareStarted(label="bench", at_ms=0))
+    install_termination_cleanup(lambda: None)
+    buf = StringIO()
+    monkeypatch.setattr(sys, "stderr", buf)
+
+    raise_signal(TERMINATION_SIGNAL)
 
     assert buf.getvalue() == ""

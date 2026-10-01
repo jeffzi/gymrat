@@ -15,26 +15,28 @@ import typer
 
 from gymrat.cli.gating import should_fail_gate, warn_empty_geomean_gates
 from gymrat.cli.lock import GATE_EXIT_CODE, CommandTrace, config_trace_args, with_repo_lock
-from gymrat.cli.shared import (
+from gymrat.cli.options import (
     AdapterOption,
     BenchOption,
     ColorOption,
-    CompareFlags,
     ConfigOption,
     DebugOption,
     FormatOption,
     OutputFormat,
     PositionalParamType,
     PrepareOption,
-    ReportRenderers,
     SamplesOption,
     TimeoutOption,
+    parse_fail_on,
+)
+from gymrat.cli.shared import (
+    CompareFlags,
+    ReportRenderers,
     apply_color_override,
     apply_debug,
     begin_run,
     budget_for_report,
     emit_report,
-    parse_fail_on,
     run_cli,
     run_options_of,
     warn_duration_over_budget,

@@ -1,42 +1,35 @@
-"""Behavioral tests for the session JSONL store and its fold state machine.
+"""Behavioral tests for the session JSONL store.
 
 Records are written and read through real files in a throwaway temp root, so
 the suite is order-independent and safe under ``pytest-xdist`` /
-``pytest-randomly``. Nothing is mocked: the module under test is file I/O plus a
-pure fold, and only real bytes on disk reveal the torn-tail recovery and the
-refusal to log a record that would not read back.
+``pytest-randomly``. Nothing is mocked: the module under test is file I/O, and
+only real bytes on disk reveal the torn-tail recovery and the refusal to log a
+record that would not read back. The fold state machine has its own tests in
+``test_fold_session.py``.
 """
 
 import json
 import os
 import re
-from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from gymrat.errors import GymratError, hint_of
-from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.session import (
     BaselineRecord,
-    HookRecord,
+    IterationPrimary,
     IterationRecord,
-    KeepChecks,
-    KeepRecord,
+    MetricVerdict,
     PairedSamples,
     SessionLogRecord,
-    SessionRecord,
-    record_to_wire,
     recover_torn_tail,
     session_jsonl_path,
 )
 from gymrat.session.store import (
     RequiredSession,
-    SessionState,
     append_record,
     first_line_json,
-    fold_session,
     latest_baseline,
     read_records,
     read_session_header,
@@ -44,82 +37,31 @@ from gymrat.session.store import (
     require_session,
     session_header,
 )
+from tests.session._store_records import (
+    BASELINE,
+    FINALIZE,
+    HOOK,
+    ITERATION_1,
+    KEPT_BASELINE,
+    SESSION,
+)
 from tests.session.records._fixtures import (
-    AT,
-    COMMIT,
     TORN_PREFIX,
-    Worktrees,
     blocked_keep,
     command_record,
     committed_keep,
     discard_record,
-    finalize_record,
-    hook_record,
     iteration_record,
-    session_record,
+    session_state,
     stop_record,
     tear_final_line,
     write_session_log,
 )
+from tests.session.records._wire import with_raw_number
 
 # ---------------------------------------------------------------------------
 # Fixture records
 # ---------------------------------------------------------------------------
-
-SESSION: SessionRecord = session_record(
-    worktrees=Worktrees(experiment="/repo/.gymrat/experiment", baseline="/repo/.gymrat/baseline")
-)
-
-BASELINE: BaselineRecord = BaselineRecord(
-    type="baseline",
-    at=AT,
-    label="main",
-    samples=({"total_ms": 15200}, {"total_ms": 15184}),
-)
-
-# The baseline a keep appends from the samples the kept iteration already
-# measured: labelled with the kept commit's short sha and timing nothing.
-KEPT_BASELINE: BaselineRecord = BaselineRecord(
-    type="baseline",
-    at=AT + 5_000,
-    label=COMMIT[:SHORT_SHA_LENGTH],
-    samples=({"total_ms": 14100}, {"total_ms": 14088}),
-)
-
-HOOK: HookRecord = hook_record()
-
-
-def _iteration(seq: int, *, target_reached: bool) -> IterationRecord:
-    """An iteration record numbered ``seq``, reaching the target metric or not."""
-    return iteration_record(
-        seq=seq,
-        samples=PairedSamples(
-            experiment=({"total_ms": 14100}, {"total_ms": 14088}),
-            baseline=({"total_ms": 15200}, {"total_ms": 15190}),
-        ),
-        target_reached=target_reached,
-    )
-
-
-def _gating_block(seq: int) -> KeepRecord:
-    """The keep a gating regression refused, numbered with the iteration it refused."""
-    return blocked_keep(seq, reason="gating-regression", checks=KeepChecks(configured=True))
-
-
-def _nothing_measured_block(seq: int) -> KeepRecord:
-    """The keep a retry refuses when nothing was measured since the last settle."""
-    return blocked_keep(seq, reason="nothing-measured", checks=KeepChecks(configured=True))
-
-
-def _not_improved_block(seq: int) -> KeepRecord:
-    """The keep the outcome gate refused, numbered with the iteration it refused."""
-    return blocked_keep(seq, reason="not-improved", checks=KeepChecks(configured=True))
-
-
-ITERATION_1 = _iteration(1, target_reached=False)
-ITERATION_1_ON_TARGET = _iteration(1, target_reached=True)
-ITERATION_2 = _iteration(2, target_reached=False)
-ITERATION_2_ON_TARGET = _iteration(2, target_reached=True)
 
 # An iteration a NaN sample makes unreadable: it serializes to a line with a
 # `null` sample that no schema accepts on read-back.
@@ -127,21 +69,31 @@ UNREADABLE_ITERATION: IterationRecord = iteration_record(
     samples=PairedSamples(experiment=({"total_ms": float("nan")},), baseline=({"total_ms": 15200},))
 )
 
-FINALIZE = finalize_record(branch=f"{SESSION.branch}-final")
+# The same, with an infinite sample: it serializes to `null` just as NaN does.
+INFINITE_ITERATION: IterationRecord = iteration_record(
+    samples=PairedSamples(experiment=({"total_ms": float("inf")},), baseline=({"total_ms": 15200},))
+)
 
-EMPTY_STATE = SessionState(
-    session=None,
-    iteration_count=0,
-    last_iteration=None,
-    unsettled=False,
-    keep_count=0,
-    discard_count=0,
-    target_reached_and_kept=False,
-    last_seq=0,
-    last_kept_commit=None,
-    ends_on_gating_block=False,
-    ends_on_stop=False,
-    finalized=None,
+_NON_FINITE_HINT = (
+    "Nothing was written. A metric that is NaN or Infinity becomes null in JSON and no longer "
+    "reads back."
+)
+_NOT_UTF8_HINT = (
+    "Nothing was written. A text field holds characters that are not valid UTF-8, for example "
+    "from a non-UTF-8 argument or path."
+)
+_NOT_JSON_VALUE_HINT = "Nothing was written. A field holds a value JSON cannot represent."
+_OFF_SCHEMA_HINT = "Nothing was written. The record does not match the session-log schema."
+
+# Text from a non-UTF-8 argument or path: POSIX `os.fsdecode(b"feat-\xff")`
+# maps the undecodable byte to the lone surrogate U+DCFF, which no UTF-8 line
+# can hold. The literal stands in for that call because Windows' `os.fsdecode`
+# raises on the byte instead of mapping it.
+LONE_SURROGATE_TEXT = "feat-" + chr(0xDCFF)
+
+# A baseline whose label came from a non-UTF-8 argument.
+SURROGATE_LABEL_BASELINE: BaselineRecord = BASELINE.model_copy(
+    update={"label": LONE_SURROGATE_TEXT}
 )
 
 
@@ -158,7 +110,7 @@ def fresh_root(tmp_path: Path) -> str:
 
 def _line(record: SessionLogRecord) -> str:
     """The JSON line the store writes for ``record``."""
-    return json.dumps(record_to_wire(record))
+    return record.model_dump_json(exclude_none=True)
 
 
 def _jsonl_holding(root: str, lines: list[str]) -> str:
@@ -175,6 +127,18 @@ def _jsonl_holding_bytes(root: str, raw: bytes) -> str:
     Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
     Path(jsonl_path).write_bytes(raw)
     return jsonl_path
+
+
+def _log_with_session_header(root: str) -> tuple[str, int]:
+    """Write a log holding only the session header; return its path and header byte length."""
+    jsonl_path = session_jsonl_path(root)
+    append_record(jsonl_path, SESSION)
+    return jsonl_path, len(Path(jsonl_path).read_bytes())
+
+
+def _appended_after_header(jsonl_path: str, header_len: int) -> bytes:
+    """The bytes the log holds after its first ``header_len`` bytes."""
+    return Path(jsonl_path).read_bytes()[header_len:]
 
 
 SESSION_LINE: bytes = _line(SESSION).encode("utf-8") + b"\n"
@@ -212,6 +176,57 @@ def test_append_record_when_log_holds_records_does_add_one_line_leaving_earlier_
     assert read_records(jsonl_path) == [SESSION, ITERATION_1]
 
 
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param(ITERATION_1, id="an-iteration-with-float-samples"),
+        pytest.param(committed_keep(1), id="a-keep-with-no-reason"),
+        pytest.param(blocked_keep(1, reason=None), id="a-blocked-keep-with-its-reason-erased"),
+        pytest.param(
+            command_record(exit_code=0, reason=None, seq=None), id="a-command-with-no-reason-or-seq"
+        ),
+    ],
+)
+def test_append_record_when_record_written_does_write_compact_json_without_none_keys(
+    fresh_root: str, record: SessionLogRecord
+):
+    jsonl_path, header_len = _log_with_session_header(fresh_root)
+
+    append_record(jsonl_path, record)
+
+    written = _appended_after_header(jsonl_path, header_len).decode("utf-8")
+    assert ", " not in written
+    assert ": " not in written
+    assert "null" not in written
+    assert read_records(jsonl_path) == [SESSION, record]
+
+
+def test_append_record_when_delta_undefined_does_write_delta_pct_as_null(fresh_root: str):
+    jsonl_path, header_len = _log_with_session_header(fresh_root)
+    record = iteration_record(
+        metrics={
+            "total_ms": MetricVerdict(
+                delta_pct=None,
+                verdict="no-signal",
+                method="permutation",
+                p=0.5,
+                noise_pct=1.4,
+                gating=True,
+                confirmed=False,
+            )
+        },
+        primary=IterationPrimary(kind="geomean", delta_pct=None),
+        outcome="no-signal",
+    )
+
+    append_record(jsonl_path, record)
+
+    written = json.loads(_appended_after_header(jsonl_path, header_len))
+    assert written["primary"]["delta_pct"] is None
+    assert written["metrics"]["total_ms"]["delta_pct"] is None
+    assert read_records(jsonl_path) == [SESSION, record]
+
+
 def test_append_record_when_final_line_torn_does_add_its_line_leaving_the_torn_bytes_intact(
     fresh_root: str,
 ):
@@ -228,18 +243,61 @@ def test_append_record_when_final_line_torn_does_add_its_line_leaving_the_torn_b
     assert Path(jsonl_path).read_bytes() == before + _line(ITERATION_1).encode("utf-8") + b"\n"
 
 
-def test_append_record_when_record_unreadable_does_raise_and_leave_the_log_byte_identical(
-    fresh_root: str,
+_UNREADABLE_RECORDS = [
+    pytest.param(UNREADABLE_ITERATION, "iteration", _NON_FINITE_HINT, id="a-nan-sample"),
+    pytest.param(INFINITE_ITERATION, "iteration", _NON_FINITE_HINT, id="an-infinite-sample"),
+    pytest.param(
+        SURROGATE_LABEL_BASELINE, "baseline", _NOT_UTF8_HINT, id="a-label-with-a-lone-surrogate"
+    ),
+    pytest.param(
+        command_record(args={"path": LONE_SURROGATE_TEXT}),
+        "command",
+        _NOT_UTF8_HINT,
+        id="an-argument-with-a-lone-surrogate",
+    ),
+    pytest.param(
+        command_record(args={"value": object()}),
+        "command",
+        _NOT_JSON_VALUE_HINT,
+        id="an-argument-json-cannot-represent",
+    ),
+    pytest.param(stop_record(message=""), "stop", _OFF_SCHEMA_HINT, id="an-empty-stop-message"),
+]
+
+
+@pytest.mark.parametrize(("record", "record_type", "hint"), _UNREADABLE_RECORDS)
+def test_append_record_when_record_unreadable_does_raise_naming_its_cause_and_leave_the_log(
+    fresh_root: str, record: SessionLogRecord, record_type: str, hint: str
 ):
     jsonl_path = session_jsonl_path(fresh_root)
     append_record(jsonl_path, SESSION)
     before = Path(jsonl_path).read_bytes()
 
     with pytest.raises(GymratError) as excinfo:
-        append_record(jsonl_path, UNREADABLE_ITERATION)
+        append_record(jsonl_path, record)
 
-    assert re.search(r"\biteration\b", str(excinfo.value))
+    assert re.search(rf"\b{record_type}\b", str(excinfo.value))
+    assert hint_of(excinfo.value) == hint
     assert Path(jsonl_path).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param(UNREADABLE_ITERATION, id="a-nan-sample"),
+        pytest.param(INFINITE_ITERATION, id="an-infinite-sample"),
+        pytest.param(SURROGATE_LABEL_BASELINE, id="a-label-with-a-lone-surrogate"),
+    ],
+)
+def test_append_record_when_record_unreadable_and_log_absent_does_not_create_its_directory(
+    tmp_path: Path, record: SessionLogRecord
+):
+    log_dir = tmp_path / "absent"
+
+    with pytest.raises(GymratError):
+        append_record(str(log_dir / "session.jsonl"), record)
+
+    assert not log_dir.exists()
 
 
 def test_append_record_when_os_write_short_does_retry_until_all_bytes_written(
@@ -365,19 +423,47 @@ def test_read_records_when_log_holds_appended_records_does_return_them_in_file_o
     assert read_records(jsonl_path) == written
 
 
-def test_read_records_when_a_line_is_not_json_does_raise_naming_the_log_and_line(fresh_root: str):
-    jsonl_path = _jsonl_holding(fresh_root, [_line(SESSION), "{not json", "{}"])
+_NOT_JSON_HINT = "Line 2 is not a JSON object."
+_NEVER_STORED = "Line 2 holds a number the session log never stores"
+
+
+def _with_delta(literal: str) -> str:
+    return with_raw_number(_line(ITERATION_1), ("primary", "delta_pct"), literal)
+
+
+@pytest.mark.parametrize(
+    ("bad_line", "hint"),
+    [
+        pytest.param("{not json", _NOT_JSON_HINT, id="malformed-json"),
+        *(
+            pytest.param(
+                _with_delta(literal),
+                f"{_NEVER_STORED}: {literal} is a non-finite number, which is not valid JSON.",
+                id=f"{literal.lower()}-literal",
+            )
+            for literal in ("NaN", "Infinity", "-Infinity")
+        ),
+        pytest.param(
+            _with_delta("1e999"), f"{_NEVER_STORED}: 1e999 overflows a float.", id="overflow"
+        ),
+    ],
+)
+def test_read_records_when_a_line_is_not_json_does_raise_naming_the_line_and_its_cause(
+    fresh_root: str, bad_line: str, hint: str
+):
+    jsonl_path = _jsonl_holding(fresh_root, [_line(SESSION), bad_line, "{}"])
 
     with pytest.raises(GymratError) as excinfo:
         read_records(jsonl_path)
 
-    assert f"{jsonl_path}:2" in str(excinfo.value)
+    assert str(excinfo.value) == f"Invalid JSON at {jsonl_path}:2"
+    assert hint_of(excinfo.value) == hint
 
 
 def test_read_records_when_a_line_matches_no_schema_does_raise_naming_line_and_field(
     fresh_root: str,
 ):
-    without_metrics = record_to_wire(ITERATION_1)
+    without_metrics = json.loads(_line(ITERATION_1))
     del without_metrics["metrics"]
     jsonl_path = _jsonl_holding(fresh_root, [_line(SESSION), json.dumps(without_metrics)])
 
@@ -475,6 +561,33 @@ def test_read_session_header_when_first_line_not_json_does_raise_naming_the_firs
     assert hint_of(excinfo.value) == "Line 1 is not a JSON object."
 
 
+@pytest.mark.parametrize(
+    ("literal", "cause"),
+    [
+        pytest.param("NaN", "NaN is a non-finite number, which is not valid JSON", id="nan"),
+        pytest.param(
+            "-Infinity",
+            "-Infinity is a non-finite number, which is not valid JSON",
+            id="negative-infinity",
+        ),
+        pytest.param("1e999", "1e999 overflows a float", id="overflow"),
+    ],
+)
+def test_read_session_header_when_first_line_holds_a_non_finite_number_does_hint_naming_it(
+    fresh_root: str, literal: str, cause: str
+):
+    bad_header = with_raw_number(_line(SESSION), ("schema",), literal)
+    jsonl_path = _jsonl_holding(fresh_root, [bad_header])
+
+    with pytest.raises(GymratError) as excinfo:
+        read_session_header(jsonl_path)
+
+    assert (str(excinfo.value), hint_of(excinfo.value)) == (
+        f"Invalid JSON at {jsonl_path}:1",
+        f"Line 1 holds a number the session log never stores: {cause}.",
+    )
+
+
 def test_read_session_header_when_first_record_not_session_does_raise_naming_its_type(
     fresh_root: str,
 ):
@@ -547,6 +660,7 @@ def test_session_header_when_first_line_unusable_does_return_none(fresh_root: st
     [
         pytest.param(b"{not json\n" + SESSION_LINE, id="a-first-line-that-is-not-json"),
         pytest.param(UNDECODABLE_LINE + SESSION_LINE, id="a-first-line-that-is-not-utf8"),
+        pytest.param(b'{"a":NaN}\n' + SESSION_LINE, id="a-first-line-holding-nan"),
     ],
 )
 def test_first_line_json_when_first_line_not_a_json_object_does_return_none(
@@ -555,382 +669,6 @@ def test_first_line_json_when_first_line_not_a_json_object_does_return_none(
     jsonl_path = _jsonl_holding_bytes(fresh_root, raw)
 
     assert first_line_json(Path(jsonl_path)) is None
-
-
-# ---------------------------------------------------------------------------
-# fold_session
-# ---------------------------------------------------------------------------
-
-
-def _state(**changes: Any) -> SessionState:
-    return replace(EMPTY_STATE, **changes)
-
-
-@pytest.mark.parametrize(
-    ("records", "expected"),
-    [
-        pytest.param([], EMPTY_STATE, id="an-empty-log"),
-        pytest.param([SESSION], _state(session=SESSION), id="a-session-with-nothing-measured"),
-        pytest.param(
-            [SESSION, ITERATION_1],
-            _state(
-                session=SESSION,
-                iteration_count=1,
-                last_iteration=ITERATION_1,
-                unsettled=True,
-                last_seq=1,
-            ),
-            id="a-measured-iteration-nobody-has-settled",
-        ),
-        pytest.param(
-            [SESSION, BASELINE, HOOK, ITERATION_1],
-            _state(
-                session=SESSION,
-                iteration_count=1,
-                last_iteration=ITERATION_1,
-                unsettled=True,
-                last_seq=1,
-            ),
-            id="baseline-and-hook-around-a-measured-iteration",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1)],
-            _state(
-                session=SESSION,
-                iteration_count=1,
-                last_iteration=ITERATION_1,
-                keep_count=1,
-                last_seq=1,
-                last_kept_commit=COMMIT,
-            ),
-            id="an-iteration-settled-by-a-keep",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, discard_record(1)],
-            _state(
-                session=SESSION,
-                iteration_count=1,
-                last_iteration=ITERATION_1,
-                discard_count=1,
-                last_seq=1,
-            ),
-            id="an-iteration-settled-by-a-discard",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), ITERATION_2],
-            _state(
-                session=SESSION,
-                iteration_count=2,
-                last_iteration=ITERATION_2,
-                unsettled=True,
-                keep_count=1,
-                last_seq=2,
-                last_kept_commit=COMMIT,
-            ),
-            id="a-fresh-iteration-after-a-settled-one",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1_ON_TARGET, committed_keep(1)],
-            _state(
-                session=SESSION,
-                iteration_count=1,
-                last_iteration=ITERATION_1_ON_TARGET,
-                keep_count=1,
-                target_reached_and_kept=True,
-                last_seq=1,
-                last_kept_commit=COMMIT,
-            ),
-            id="a-target-reaching-iteration-that-was-kept",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1_ON_TARGET, discard_record(1)],
-            _state(
-                session=SESSION,
-                iteration_count=1,
-                last_iteration=ITERATION_1_ON_TARGET,
-                discard_count=1,
-                last_seq=1,
-            ),
-            id="a-target-reaching-iteration-that-was-discarded",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), ITERATION_2_ON_TARGET],
-            _state(
-                session=SESSION,
-                iteration_count=2,
-                last_iteration=ITERATION_2_ON_TARGET,
-                unsettled=True,
-                keep_count=1,
-                last_seq=2,
-                last_kept_commit=COMMIT,
-            ),
-            id="a-target-reaching-iteration-nobody-has-kept-yet",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1_ON_TARGET, committed_keep(1), ITERATION_2, discard_record(2)],
-            _state(
-                session=SESSION,
-                iteration_count=2,
-                last_iteration=ITERATION_2,
-                keep_count=1,
-                discard_count=1,
-                target_reached_and_kept=True,
-                last_seq=2,
-                last_kept_commit=COMMIT,
-            ),
-            id="a-kept-target-followed-by-a-discarded-iteration",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), FINALIZE],
-            _state(
-                session=SESSION,
-                iteration_count=1,
-                last_iteration=ITERATION_1,
-                keep_count=1,
-                last_seq=1,
-                last_kept_commit=COMMIT,
-                finalized=FINALIZE,
-            ),
-            id="a-session-closed-by-a-finalize",
-        ),
-    ],
-)
-def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
-    records: list[SessionLogRecord], expected: SessionState
-):
-    assert fold_session(records) == expected
-
-
-@pytest.mark.parametrize(
-    ("keep_record", "expected_keep_count", "expected_unsettled"),
-    [
-        pytest.param(blocked_keep(1), 0, True, id="checks-failed"),
-        pytest.param(blocked_keep(1, reason=None), 0, True, id="reason-absent"),
-        pytest.param(_nothing_measured_block(2), 0, True, id="nothing-measured"),
-        pytest.param(_not_improved_block(1), 0, True, id="not-improved"),
-        pytest.param(_gating_block(1), 0, False, id="gating-regression"),
-    ],
-)
-def test_fold_session_when_keep_blocked_does_set_keep_count_and_unsettled(
-    keep_record: KeepRecord, expected_keep_count: int, expected_unsettled: bool
-):
-    state = fold_session([SESSION, ITERATION_1, keep_record])
-
-    assert state.keep_count == expected_keep_count
-    assert state.unsettled is expected_unsettled
-
-
-# ---------------------------------------------------------------------------
-# fold_session — ends_on_gating_block
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("records", "expected"),
-    [
-        pytest.param(
-            [SESSION, ITERATION_1, _gating_block(1)],
-            True,
-            id="a-log-ending-on-the-keep-a-gating-regression-refused",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, _gating_block(1), _nothing_measured_block(2)],
-            True,
-            id="a-retried-keep-that-refused-for-want-of-a-measurement",
-        ),
-        pytest.param(
-            [
-                SESSION,
-                ITERATION_1,
-                _gating_block(1),
-                _nothing_measured_block(2),
-                _nothing_measured_block(3),
-            ],
-            True,
-            id="a-second-refusal-on-top-of-the-first",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, _gating_block(1), ITERATION_2],
-            False,
-            id="a-fresh-iteration-measured-after-the-block",
-        ),
-        pytest.param(
-            [
-                SESSION,
-                ITERATION_1,
-                _gating_block(1),
-                _nothing_measured_block(2),
-                ITERATION_2,
-                committed_keep(2),
-            ],
-            False,
-            id="a-keep-committed-after-a-refusal-and-a-fresh-measurement",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, _gating_block(1), discard_record(2)],
-            False,
-            id="a-discard-of-the-edit-the-block-refused",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1],
-            False,
-            id="an-iteration-nobody-has-settled",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, _not_improved_block(1)],
-            False,
-            id="a-log-ending-on-the-keep-the-outcome-gate-refused",
-        ),
-    ],
-)
-def test_fold_session_when_records_replayed_does_report_ends_on_gating_block(
-    records: list[SessionLogRecord], expected: bool
-):
-    assert fold_session(records).ends_on_gating_block is expected
-
-
-# ---------------------------------------------------------------------------
-# fold_session — ends_on_stop
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("records", "expected"),
-    [
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), stop_record()],
-            True,
-            id="a-stop-after-a-kept-iteration",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), stop_record(), BASELINE],
-            True,
-            id="a-stop-followed-only-by-a-baseline",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), stop_record(), HOOK],
-            True,
-            id="a-stop-followed-only-by-a-hook",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), stop_record(), BASELINE, HOOK],
-            True,
-            id="a-stop-followed-only-by-baseline-and-hook",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), stop_record(), _nothing_measured_block(2)],
-            True,
-            id="a-stop-followed-by-a-nothing-measured-refusal",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), stop_record(), ITERATION_2],
-            False,
-            id="a-stop-followed-by-an-iteration",
-        ),
-        pytest.param(
-            [
-                SESSION,
-                ITERATION_1,
-                committed_keep(1),
-                stop_record(),
-                ITERATION_2,
-                committed_keep(2),
-            ],
-            False,
-            id="a-stop-followed-by-an-iteration-and-keep",
-        ),
-        pytest.param(
-            [
-                SESSION,
-                ITERATION_1,
-                committed_keep(1),
-                stop_record(),
-                ITERATION_2,
-                discard_record(2),
-            ],
-            False,
-            id="a-stop-followed-by-an-iteration-and-discard",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), stop_record(), FINALIZE],
-            False,
-            id="a-stop-followed-by-a-finalize",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1],
-            False,
-            id="no-stop-record-in-the-log",
-        ),
-    ],
-)
-def test_fold_session_when_records_replayed_does_report_ends_on_stop(
-    records: list[SessionLogRecord], expected: bool
-):
-    assert fold_session(records).ends_on_stop is expected
-
-
-# ---------------------------------------------------------------------------
-# fold_session — stop record changes nothing else
-# ---------------------------------------------------------------------------
-
-
-def test_fold_session_when_stop_appended_does_not_change_counts_or_seq():
-    stop = stop_record()
-    before = fold_session([SESSION, ITERATION_1, committed_keep(1), ITERATION_2])
-
-    after = fold_session([SESSION, ITERATION_1, committed_keep(1), ITERATION_2, stop])
-
-    assert after.iteration_count == before.iteration_count
-    assert after.keep_count == before.keep_count
-    assert after.discard_count == before.discard_count
-    assert after.unsettled == before.unsettled
-    assert after.last_seq == before.last_seq
-    assert after.ends_on_gating_block == before.ends_on_gating_block
-
-
-# ---------------------------------------------------------------------------
-# fold_session — a keep-appended baseline is transparent
-# ---------------------------------------------------------------------------
-
-
-def test_fold_session_when_a_keep_appended_a_baseline_does_leave_state_unchanged():
-    expected = fold_session([SESSION, ITERATION_1, committed_keep(1)])
-
-    state = fold_session([SESSION, ITERATION_1, committed_keep(1), KEPT_BASELINE])
-
-    assert state == expected
-
-
-# ---------------------------------------------------------------------------
-# fold_session — CommandRecord is transparent
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "base_records",
-    [
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), stop_record()],
-            id="a-command-after-a-stop-preserves-ends-on-stop",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, _gating_block(1)],
-            id="a-command-after-a-gating-block-preserves-ends-on-gating-block",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), ITERATION_2],
-            id="a-command-after-an-unsettled-iteration-preserves-unsettled",
-        ),
-    ],
-)
-def test_fold_session_when_command_record_appended_does_leave_state_unchanged(
-    base_records: list[SessionLogRecord],
-):
-    expected = fold_session(base_records)
-
-    with_command = [*base_records, command_record()]
-
-    assert fold_session(with_command) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -978,7 +716,7 @@ def test_require_session_when_log_holds_a_session_does_hand_back_the_full_handof
 
     assert required == RequiredSession(
         session=SESSION,
-        state=_state(
+        state=session_state(
             session=SESSION,
             iteration_count=1,
             last_iteration=ITERATION_1,

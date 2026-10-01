@@ -5,16 +5,19 @@ through real :class:`filelock.FileLock` operations and patched system calls at
 the exact seams a permission error or release failure would hit.
 """
 
+import errno
 import json
 import os
 import re
 import shutil
 import sys
 import tempfile
-from collections.abc import Callable, Iterator
+import threading
+import time
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from filelock import FileLock
@@ -41,6 +44,18 @@ AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 LIVE_HOLDER_HINT = "Another gymrat run is active in this repo. Wait for it to finish."
 
 FIXED_AT = "2026-01-01T00:00:00.000Z"
+
+# The transient-contention test widens the production acquisition budget to
+# ``TRANSIENT_WAIT_BUDGET_SECONDS`` and polls every
+# ``TRANSIENT_POLL_INTERVAL_SECONDS``, so the acquirer outlasts the
+# ``TRANSIENT_HOLD_SECONDS`` rival hold by orders of magnitude and scheduling
+# stalls under parallel test runs cannot tip the result.
+TRANSIENT_HOLD_SECONDS = 0.05
+TRANSIENT_WAIT_BUDGET_SECONDS = 5.0
+TRANSIENT_POLL_INTERVAL_SECONDS = 0.01
+
+# How long ``held_briefly`` waits for its holder thread to take the lock.
+HOLDER_READY_TIMEOUT_SECONDS = 5
 
 _temp_dirs: list[str] = []
 
@@ -88,26 +103,81 @@ def refuse_open(monkeypatch: pytest.MonkeyPatch, target_path: str) -> None:
 
     def spy_open(path: str, *args: int) -> int:
         if path == target_path:
-            raise PermissionError(13, "Permission denied")
+            raise PermissionError(errno.EACCES, "Permission denied")
         return real_open(path, *args)
 
     monkeypatch.setattr(os, "open", spy_open)
 
 
-def time_out_publish_lock(monkeypatch: pytest.MonkeyPatch, publish_path: str) -> None:
-    """Make ``FileLock.acquire`` raise ``Timeout`` only for the publish lock.
+def fail_acquire_for(
+    monkeypatch: pytest.MonkeyPatch,
+    target_path: str,
+    make_error: Callable[[str], Exception],
+) -> None:
+    """Make ``FileLock.acquire`` raise only for the lock file at ``target_path``.
 
-    Every other ``FileLock.acquire`` call (the main lock) behaves normally,
-    simulating a stalled publisher without blocking the winning acquisition.
+    Every other ``FileLock.acquire`` call behaves normally, so the failure
+    reaches one lock without blocking the rest of the acquisition.
+
+    Args:
+        monkeypatch: The fixture that patches ``FileLock.acquire`` for the test.
+        target_path: The lock file whose acquisition fails.
+        make_error: Builds the exception to raise, given the lock file's path.
     """
     real_acquire = FileLock.acquire
 
-    def selective_timeout(self: FileLock, *args: Any, **kwargs: Any) -> None:
-        if self.lock_file == publish_path:
-            raise FileLockTimeout(self.lock_file)
+    def selective_failure(self: FileLock, *args: Any, **kwargs: Any) -> None:
+        if self.lock_file == target_path:
+            raise make_error(self.lock_file)
         real_acquire(self, *args, **kwargs)
 
-    monkeypatch.setattr(FileLock, "acquire", selective_timeout)
+    monkeypatch.setattr(FileLock, "acquire", selective_failure)
+
+
+def time_out_publish_lock(monkeypatch: pytest.MonkeyPatch, publish_path: str) -> None:
+    """Make ``FileLock.acquire`` raise ``Timeout`` only for the publish lock.
+
+    Simulates a stalled publisher without blocking the winning acquisition.
+
+    Args:
+        monkeypatch: The fixture that patches ``FileLock.acquire`` for the test.
+        publish_path: The publish lock file whose acquisition times out.
+    """
+    fail_acquire_for(monkeypatch, publish_path, FileLockTimeout)
+
+
+@contextmanager
+def held_briefly(lock_path: str) -> Generator[None]:
+    """Hold ``lock_path`` from another thread for ``TRANSIENT_HOLD_SECONDS`` after entry.
+
+    The holder releases on its own; exiting the block joins its thread.
+
+    Args:
+        lock_path: The lock the rival thread takes.
+
+    Yields:
+        Once the rival thread holds the lock.
+
+    Raises:
+        RuntimeError: When the rival thread never signals that it holds the lock.
+    """
+    held = threading.Event()
+
+    def hold() -> None:
+        blocker = hold_lock(lock_path, "measure")
+        held.set()
+        time.sleep(TRANSIENT_HOLD_SECONDS)
+        blocker.release()
+
+    holder_thread = threading.Thread(target=hold)
+    holder_thread.start()
+    try:
+        if not held.wait(timeout=HOLDER_READY_TIMEOUT_SECONDS):
+            msg = f"holder thread did not take the lock within {HOLDER_READY_TIMEOUT_SECONDS}s"
+            raise RuntimeError(msg)
+        yield
+    finally:
+        holder_thread.join()
 
 
 # ---------------------------------------------------------------------------
@@ -115,13 +185,15 @@ def time_out_publish_lock(monkeypatch: pytest.MonkeyPatch, publish_path: str) ->
 # ---------------------------------------------------------------------------
 
 
-def test_acquire_lock_when_free_does_return_release_and_stamp_holder_json():
+def test_acquire_lock_when_free_does_stamp_compact_holder_json():
     lock_path = fresh_lock_path()
 
     release = acquire_lock(lock_path, "compare")
 
-    assert callable(release)
-    assert_holder_record(read_holder_json(lock_path))
+    raw = Path(lock_path).read_text(encoding="utf-8")
+    holder = json.loads(raw)
+    assert_holder_record(holder)
+    assert raw == json.dumps(holder, separators=(",", ":"))
     release()
 
 
@@ -208,30 +280,19 @@ def test_acquire_lock_when_released_then_reacquired_does_succeed():
     release2()
 
 
-def test_acquire_lock_when_transient_contention_does_succeed_after_retry(
+def test_acquire_lock_when_hold_is_shorter_than_the_wait_budget_does_succeed(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    monkeypatch.setattr("gymrat.session.lock._LOCK_ACQUIRE_TIMEOUT", TRANSIENT_WAIT_BUDGET_SECONDS)
+    monkeypatch.setattr(
+        "gymrat.session.lock._LOCK_ACQUIRE_POLL_INTERVAL", TRANSIENT_POLL_INTERVAL_SECONDS
+    )
     lock_path = fresh_lock_path()
-    monkeypatch.setattr("gymrat.session.lock.LOCK_ACQUIRE_POLL_MS", 1)
-    monkeypatch.setattr("gymrat.session.lock.LOCK_ACQUIRE_RETRIES", 3)
 
-    real_acquire = FileLock.acquire
-    os_lock = _os_lock_file(lock_path)
-    os_lock_calls: list[int] = []
+    with held_briefly(lock_path):
+        release = acquire_lock(lock_path, "compare")
 
-    def transient_timeout(self: FileLock, *args: Any, **kwargs: Any) -> None:
-        if self.lock_file == os_lock:
-            os_lock_calls.append(1)
-            if len(os_lock_calls) == 1:
-                raise FileLockTimeout(self.lock_file)
-        real_acquire(self, *args, **kwargs)
-
-    monkeypatch.setattr(FileLock, "acquire", transient_timeout)
-
-    release = acquire_lock(lock_path, "compare")
-
-    assert callable(release)
-    assert len(os_lock_calls) >= 2
+    assert_holder_record(read_holder_json(lock_path))
     release()
 
 
@@ -292,6 +353,7 @@ def test_release_when_called_does_not_delete_lock_file():
     release()
 
     assert Path(lock_path).exists()
+    assert Path(_os_lock_file(lock_path)).exists()
     assert read_holder_json(lock_path) == holder_before
 
 
@@ -332,19 +394,14 @@ def test_acquire_lock_when_permission_error_windows_does_advise_close_program(
     lock_path = fresh_lock_path()
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr("sys.platform", "win32")
+    os_lock_path = _os_lock_file(lock_path)
+    fail_acquire_for(
+        monkeypatch, os_lock_path, lambda _: PermissionError(errno.EACCES, "Permission denied")
+    )
 
-    with (
-        patch.object(
-            FileLock,
-            "acquire",
-            autospec=True,
-            side_effect=PermissionError(13, "Permission denied"),
-        ),
-        pytest.raises(GymratError) as caught,
-    ):
+    with pytest.raises(GymratError) as caught:
         acquire_lock(lock_path, "compare")
 
-    os_lock_path = _os_lock_file(lock_path)
     hint = caught.value.hint or ""
     assert "locked by another process" in hint.lower()
     assert os_lock_path in hint
@@ -523,6 +580,19 @@ def test_read_holder_when_lock_acquired_does_return_pid_command_and_time():
         pytest.param(
             b'{"pid":"forty-two","command":"measure","at":"2026-01-01T00:00:00.000Z"}',
             id="pid-not-an-integer",
+        ),
+        pytest.param(
+            b'{"pid":true,"command":"measure","at":"2026-01-01T00:00:00.000Z"}',
+            id="pid-is-a-bool",
+        ),
+        pytest.param(
+            b'{"pid":42,"command":7,"at":"2026-01-01T00:00:00.000Z"}',
+            id="command-not-a-string",
+        ),
+        pytest.param(b'{"pid":42,"command":"measure","at":1767225600}', id="at-not-a-string"),
+        pytest.param(
+            b'{"pid":42,"command":"measure","at":"2026-01-01T00:00:00.000Z","host":"box"}',
+            id="extra-field",
         ),
     ],
 )

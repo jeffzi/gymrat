@@ -6,6 +6,24 @@ and receive an uninstall callable. When the process receives ``SIGINT``,
 process then exits with ``128 + signal_number`` — the shell convention for
 "terminated by signal N".
 
+A second termination signal while the first is still being handled escalates:
+every action registered with :func:`install_termination_escalation` runs at
+once, the remaining cleanups and the pending exit output are skipped, and the
+process exits with ``128 +`` the number of the *first* signal. This holds from
+the first cleanup through the final stderr write, so a user pressing Ctrl-C
+twice never waits out a cleanup's grace period and never re-runs a cleanup.
+The escalation runs once: a third or later signal is ignored, so a held Ctrl-C
+neither re-runs the actions nor delays the exit. What the actions raise or warn
+is written to stderr the same bounded way as the cleanups' output.
+
+The handler never writes to stderr on the main thread. A signal can land while
+the main thread is itself inside a stderr write, where a second write on the
+same thread raises a reentrant-call ``RuntimeError``, and a terminal under flow
+control can stall a write indefinitely. Warnings raised during the cleanups and
+any output a cleanup hands over through :func:`write_on_exit` are collected
+instead, then written once from a daemon thread that the handler waits on for a
+bounded time before exiting regardless.
+
 The handler is installed once per signal for the lifetime of the process and is
 deliberately never restored. Python allows exactly one handler per signal, so a
 single module-level handler owns each termination signal and consults the live
@@ -15,11 +33,13 @@ that registry, never the signal disposition.
 
 import os
 import signal
+import sys
+import threading
 import warnings
 from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from types import FrameType
-from typing import NoReturn
+from typing import NoReturn, TextIO
 
 # Termination signals gymrat installs cleanup for, in the order the handler is
 # wired up. SIGHUP is POSIX-only and absent on win32, so each name is resolved
@@ -45,9 +65,20 @@ _registry: dict[object, Callable[[], None]] = {}
 # reused, so re-installing must not re-register it.
 _installed_signals: set[int] = set()
 
-# True while the handler is draining the registry. A second signal arriving
-# mid-drain must exit immediately rather than re-enter the cleanups.
-_handling = False
+# Actions a second termination signal runs before exiting, in registration
+# order. A dict keyed by the action keeps that order and makes registering the
+# same action again a no-op.
+_escalations: dict[Callable[[], None], None] = {}
+
+# The signal being handled, from its first cleanup until the process exits. Any
+# signal arriving while it is set escalates instead of re-entering the cleanups.
+_handled_signal: int | None = None
+
+# Set once a second signal starts the escalation. The handler ignores every
+# signal while it is set, so the escalation actions run exactly once. A flag
+# rather than a signal mask: CPython runs the handler on the main thread even
+# when a non-main thread receives the signal, whatever the main thread's mask.
+_escalating: bool = False
 
 # Python-level deferral state. In a multi-threaded program, ``pthread_sigmask``
 # blocks OS delivery to the main thread, but a non-main thread's C handler can
@@ -58,21 +89,37 @@ _handling = False
 _deferring: bool = False
 _deferred_signal: int | None = None
 
+# Terminal output cleanups hand over through ``write_on_exit``, written ahead of
+# the collected warnings once every cleanup has run.
+_exit_output: list[str] = []
+
+# Longest the handler waits on the writer thread before exiting anyway, so a
+# terminal stalled by flow control delays exit by at most this long. It must stay
+# bounded: an unbounded wait lets a stalled stderr keep the process alive past a
+# termination signal.
+_EXIT_WRITE_TIMEOUT_S = 1.0
+
+# Shell convention: a process terminated by signal N exits with 128 + N.
+_SIGNAL_EXIT_BASE = 128
+
 
 def reset() -> None:
-    """Clear the registry, installed-signal set, and in-handler flag.
+    """Clear the registries, installed-signal set, pending exit output, and flags.
 
     Test-only seam: production code never calls this, since handlers are wired
     up once for the process lifetime and deliberately never torn down. Tests use
     it to isolate module-global state between cases instead of reaching into the
     private attributes directly.
     """
-    global _handling, _deferring, _deferred_signal  # noqa: PLW0603 - module-level state the reset owns
+    global _handled_signal, _escalating, _deferring, _deferred_signal  # noqa: PLW0603 - module-level state the reset owns
     _registry.clear()
-    _handling = False
+    _escalations.clear()
+    _handled_signal = None
+    _escalating = False
     _deferring = False
     _deferred_signal = None
     _installed_signals.clear()
+    _exit_output.clear()
 
 
 def _exit_process(code: int) -> NoReturn:
@@ -89,30 +136,99 @@ def _exit_process(code: int) -> NoReturn:
     os._exit(code)
 
 
-def _run_cleanups() -> None:
-    """Run every registered cleanup in install order, warning on failures."""
-    for cleanup in list(_registry.values()):
-        try:
-            cleanup()
-        except Exception as exc:  # noqa: BLE001 - a failing cleanup must not stop the rest
-            warnings.warn(f"termination cleanup failed: {exc}", RuntimeWarning, stacklevel=2)
+def write_on_exit(text: str) -> None:
+    """Hand the termination handler terminal output to write before it exits.
+
+    Call this from a termination cleanup instead of writing to stderr directly:
+    the handler writes every contributed text, in call order and ahead of any
+    collected warnings, in a single bounded write once all cleanups have run.
+
+    Args:
+        text: Output written verbatim, so it carries its own trailing newline or
+            escape sequences.
+    """
+    _exit_output.append(text)
+
+
+def _run_collecting_warnings(callables: list[Callable[[], None]], kind: str) -> list[str]:
+    """Run each callable in order, collecting what they warn or raise.
+
+    Warnings are recorded rather than displayed, since displaying one writes to
+    stderr on the main thread.
+
+    Args:
+        callables: The zero-argument callables to run.
+        kind: What the callables are, naming them in a failure's text.
+
+    Returns:
+        The text of every warning the callables emitted, and of every failure,
+        in the order they occurred.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for run in callables:
+            try:
+                run()
+            except Exception as exc:  # noqa: BLE001 - a failing callable must not stop the rest
+                warnings.warn(f"termination {kind} failed: {exc}", RuntimeWarning, stacklevel=2)
+    return [str(warning.message) for warning in caught]
+
+
+def _unwrapped_stderr() -> TextIO:
+    # A rich live display swaps sys.stderr for a FileProxy that routes writes
+    # through its console; the exit output must reach the terminal directly.
+    stream = sys.stderr
+    while (proxied := getattr(stream, "rich_proxied_file", None)) is not None:
+        stream = proxied
+    return stream
+
+
+def _write_exit_output(warning_texts: list[str]) -> None:
+    text = "".join(_exit_output) + "".join(f"{warning}\n" for warning in warning_texts)
+    _exit_output.clear()
+    if not text:
+        return
+    stream = _unwrapped_stderr()
+
+    def write() -> None:
+        # The kernel hands a process-directed signal to any thread not blocking
+        # it. Landing here, CPython would only flag it for the main thread and
+        # leave that thread waiting out the whole timeout below; blocked here,
+        # it reaches the main thread and interrupts the wait at once.
+        if pthread_sigmask is not None:
+            pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
+        stream.write(text)
+        stream.flush()
+
+    writer = threading.Thread(target=write, name="gymrat-exit-output", daemon=True)
+    writer.start()
+    writer.join(_EXIT_WRITE_TIMEOUT_S)
+
+
+def _escalate(first_signal: int) -> NoReturn:
+    global _escalating  # noqa: PLW0603 - module-level state the escalation owns
+    _escalating = True
+    _exit_output.clear()
+    _write_exit_output(_run_collecting_warnings(list(_escalations), "escalation"))
+    _exit_process(_SIGNAL_EXIT_BASE + first_signal)
 
 
 def _handler(signal_number: int, _frame: FrameType | None) -> None:
-    global _handling, _deferred_signal  # noqa: PLW0603 - module-level state the handler owns
+    global _handled_signal, _deferred_signal  # noqa: PLW0603 - module-level state the handler owns
+
+    if _escalating:
+        return
 
     if _deferring:
         _deferred_signal = signal_number
         return
 
-    if not _handling:
-        _handling = True
-        try:
-            _run_cleanups()
-        finally:
-            _handling = False
+    if _handled_signal is not None:
+        _escalate(_handled_signal)
 
-    _exit_process(128 + signal_number)
+    _handled_signal = signal_number
+    _write_exit_output(_run_collecting_warnings(list(_registry.values()), "cleanup"))
+    _exit_process(_SIGNAL_EXIT_BASE + signal_number)
 
 
 def _ensure_handlers_installed() -> None:
@@ -175,8 +291,8 @@ def install_termination_cleanup(cleanup: Callable[[], None]) -> Callable[[], Non
 
     Args:
         cleanup: A zero-argument callable invoked during shutdown. An exception
-            it raises is reported as a warning and does not stop the remaining
-            cleanups.
+            it raises, and any warning it emits, is written to stderr before
+            the process exits and does not stop the remaining cleanups.
 
     Returns:
         An uninstall callable that removes this cleanup from the registry.
@@ -191,3 +307,24 @@ def install_termination_cleanup(cleanup: Callable[[], None]) -> Callable[[], Non
         _registry.pop(token, None)
 
     return uninstall
+
+
+def install_termination_escalation(action: Callable[[], None]) -> None:
+    """Register an action to run at once when a second termination signal arrives.
+
+    A second signal while the first is still being handled, whether during a
+    cleanup or during the final stderr write, runs every registered action in
+    registration order, skips whatever the first signal had left to do, and
+    exits with ``128 +`` the first signal's number. The escalation runs once: a
+    third or later signal that arrives while it runs is ignored. An action is
+    the fast, forceful form of a cleanup's slow one, such as killing child
+    processes outright instead of granting them a grace period. Registering the
+    same action again is a no-op; the registration lasts for the process
+    lifetime.
+
+    Args:
+        action: A zero-argument callable. An exception it raises, and any
+            warning it emits, is written to stderr before the process exits and
+            does not stop the remaining actions.
+    """
+    _escalations[action] = None

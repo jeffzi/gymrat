@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, cast
+from typing import Annotated
 
 import typer
 
-from gymrat.cli.shared import parse_max_minutes, parse_positive_number
-from gymrat.config import EFFORT_LEVELS, EFFORT_PHRASE, Effort
+from gymrat.cli.options import parse_max_minutes, parse_positive_number
+from gymrat.config import Effort
 
 PromptArgument = Annotated[
     str | None,
@@ -49,15 +49,9 @@ NoFinalizeOption = Annotated[
 ]
 
 
-def _parse_effort(value: str) -> Effort:
-    if value not in EFFORT_LEVELS:
-        raise typer.BadParameter(EFFORT_PHRASE)
-    return cast("Effort", value)
-
-
 EffortOption = Annotated[
     Effort | None,
-    typer.Option("--effort", parser=_parse_effort, metavar="<level>", help="effort level"),
+    typer.Option("--effort", metavar="<level>", help="effort level"),
 ]
 
 

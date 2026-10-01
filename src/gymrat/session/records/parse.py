@@ -1,37 +1,71 @@
-"""Inbound codec: wire value to typed session-log model.
+"""Inbound codec: log line to wire value to typed session-log model.
 
 Includes validation-error translation from pydantic errors to problem strings.
 """
 
 import json
-from typing import Annotated
+import math
+from typing import Annotated, NoReturn
 
 from pydantic import Field, TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
 
 from gymrat.errors import GymratError
-from gymrat.pydantic_errors import alternatives, describe_key, drop_prefix_errors
+from gymrat.pydantic_errors import (
+    UNKNOWN_SHAPE_PHRASE,
+    VALUE_ERROR_PREFIX,
+    describe_key,
+    drop_prefix_errors,
+    phrase_for_error,
+)
 from gymrat.session.records.models import (
     SESSION_LOG_MODELS,
-    CommandRecord,
     SessionLogRecord,
     _wire_validation,
     wire_type,
 )
-from gymrat.session.schema import (
-    SCHEMA_VERSION,
-    CommandOrigin,
-    CommandReason,
-    HookStage,
-    KeepReason,
-    KeepStatus,
-    Method,
-    Outcome,
-    PrimaryKind,
-    Verdict,
-)
 
 _SessionLogUnion = TypeAdapter(Annotated[SessionLogRecord, Field(discriminator="type")])
+
+
+class NonFiniteNumberError(ValueError):
+    """A log line holds a number that does not load as a finite float."""
+
+
+def _reject_non_finite(literal: str) -> NoReturn:
+    message = f"{literal} is a non-finite number, which is not valid JSON"
+    raise NonFiniteNumberError(message)
+
+
+def _parse_finite_float(literal: str) -> float:
+    value = float(literal)
+    if not math.isfinite(value):
+        message = f"{literal} overflows a float"
+        raise NonFiniteNumberError(message)
+    return value
+
+
+def decode_log_line(line: str) -> object:
+    """Decode one JSONL log line as strict JSON, refusing every non-finite number.
+
+    Python's decoder accepts the non-standard ``NaN``, ``Infinity`` and
+    ``-Infinity`` literals, and decodes a number literal too large for a float,
+    such as ``1e999``, to infinity. A log gymrat writes never holds either, so a
+    line that does was hand-edited or written by another tool and is refused like
+    any other malformed line rather than loading a non-finite measurement.
+
+    Args:
+        line: The line to decode.
+
+    Returns:
+        The decoded JSON value.
+
+    Raises:
+        NonFiniteNumberError: When the line holds a non-finite number, at any
+            depth.
+        ValueError: When the line is not JSON.
+    """
+    return json.loads(line, parse_constant=_reject_non_finite, parse_float=_parse_finite_float)
 
 
 def parse_record(value: object) -> SessionLogRecord:
@@ -93,184 +127,12 @@ def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, obje
     raise GymratError(message, hint=hint)
 
 
-_STRING = "a string"
-_NUMBER = "a number"
-_BOOL = "a boolean"
-_OBJECT = "an object"
-_POSITIVE_INT = "a positive integer"
-_NON_NEGATIVE_INT = "a non-negative integer"
-_INT = "an integer"
-_SAMPLE_ROUNDS = "an array of objects mapping metric names to numbers"
-_STRING_ARRAY = "an array of strings"
-_DELTA = "a number or null"
-
-
-_VERDICT = alternatives(Verdict)
-_METHOD = alternatives(Method)
-_KIND = alternatives(PrimaryKind)
-_OUTCOME = alternatives(Outcome)
-_STATUS = alternatives(KeepStatus)
-_REASON = alternatives(KeepReason)
-_STAGE = alternatives(HookStage)
-_EXIT_CODE = alternatives(CommandRecord.model_fields["exit_code"].annotation)
-_COMMAND_REASON = f"one of {alternatives(CommandReason)}"
-_ORIGIN = alternatives(CommandOrigin)
-
-_PHRASES: dict[tuple[str, ...], str] = {
-    # session
-    ("session", "schema"): str(SCHEMA_VERSION),
-    ("session", "session_id"): _STRING,
-    ("session", "at"): _INT,
-    ("session", "baseline"): _OBJECT,
-    ("session", "baseline", "ref"): _STRING,
-    ("session", "baseline", "sha"): _STRING,
-    ("session", "branch"): _STRING,
-    ("session", "worktrees"): _OBJECT,
-    ("session", "worktrees", "experiment"): _STRING,
-    ("session", "worktrees", "baseline"): _STRING,
-    ("session", "config"): _OBJECT,
-    ("session", "config", "bench"): _STRING,
-    ("session", "config", "prepare"): _STRING,
-    ("session", "config", "adapter"): _STRING,
-    ("session", "config", "samples"): _POSITIVE_INT,
-    ("session", "config", "timeout_seconds"): _POSITIVE_INT,
-    ("session", "config", "primary"): _STRING,
-    ("session", "config", "filter"): _STRING,
-    ("session", "config", "hooks"): _OBJECT,
-    ("session", "config", "hooks", "before"): "a non-empty string",
-    ("session", "config", "hooks", "after"): "a non-empty string",
-    # baseline
-    ("baseline", "at"): _INT,
-    ("baseline", "label"): _STRING,
-    ("baseline", "duration_ms"): _NUMBER,
-    ("baseline", "samples"): _SAMPLE_ROUNDS,
-    ("baseline", "samples", "*"): _OBJECT,
-    ("baseline", "samples", "*", "*"): _NUMBER,
-    # iteration
-    ("iteration", "seq"): _POSITIVE_INT,
-    ("iteration", "at"): _INT,
-    ("iteration", "samples"): _OBJECT,
-    ("iteration", "samples", "experiment"): _SAMPLE_ROUNDS,
-    ("iteration", "samples", "experiment", "*"): _OBJECT,
-    ("iteration", "samples", "experiment", "*", "*"): _NUMBER,
-    ("iteration", "samples", "baseline"): _SAMPLE_ROUNDS,
-    ("iteration", "samples", "baseline", "*"): _OBJECT,
-    ("iteration", "samples", "baseline", "*", "*"): _NUMBER,
-    ("iteration", "metrics"): _OBJECT,
-    ("iteration", "metrics", "*"): _OBJECT,
-    ("iteration", "metrics", "*", "delta_pct"): _DELTA,
-    ("iteration", "metrics", "*", "verdict"): _VERDICT,
-    ("iteration", "metrics", "*", "method"): _METHOD,
-    ("iteration", "metrics", "*", "p"): _NUMBER,
-    ("iteration", "metrics", "*", "noise_pct"): _NUMBER,
-    ("iteration", "metrics", "*", "gating"): _BOOL,
-    ("iteration", "metrics", "*", "confirmed"): _BOOL,
-    ("iteration", "confirm"): _OBJECT,
-    ("iteration", "confirm", "ran"): _BOOL,
-    ("iteration", "confirm", "filtered"): _STRING_ARRAY,
-    ("iteration", "confirm", "filtered", "*"): _STRING,
-    ("iteration", "confirm", "absent"): _STRING_ARRAY,
-    ("iteration", "confirm", "absent", "*"): _STRING,
-    ("iteration", "confirm", "samples"): _OBJECT,
-    ("iteration", "confirm", "samples", "experiment"): _SAMPLE_ROUNDS,
-    ("iteration", "confirm", "samples", "experiment", "*"): _OBJECT,
-    ("iteration", "confirm", "samples", "experiment", "*", "*"): _NUMBER,
-    ("iteration", "confirm", "samples", "baseline"): _SAMPLE_ROUNDS,
-    ("iteration", "confirm", "samples", "baseline", "*"): _OBJECT,
-    ("iteration", "confirm", "samples", "baseline", "*", "*"): _NUMBER,
-    ("iteration", "primary"): _OBJECT,
-    ("iteration", "primary", "kind"): _KIND,
-    ("iteration", "primary", "name"): _STRING,
-    ("iteration", "primary", "delta_pct"): _DELTA,
-    ("iteration", "outcome"): _OUTCOME,
-    ("iteration", "target_reached"): _BOOL,
-    ("iteration", "duration_ms"): _NUMBER,
-    ("iteration", "measured_tree"): _STRING,
-    # keep
-    ("keep", "seq"): _NON_NEGATIVE_INT,
-    ("keep", "at"): _INT,
-    ("keep", "status"): _STATUS,
-    ("keep", "commit"): _STRING,
-    ("keep", "message"): _STRING,
-    ("keep", "reason"): _REASON,
-    ("keep", "checks"): _OBJECT,
-    ("keep", "checks", "configured"): _BOOL,
-    ("keep", "checks", "passed"): _BOOL,
-    ("keep", "checks", "stdout_bytes"): _NON_NEGATIVE_INT,
-    ("keep", "checks", "stderr_bytes"): _NON_NEGATIVE_INT,
-    # discard
-    ("discard", "seq"): _NON_NEGATIVE_INT,
-    ("discard", "at"): _INT,
-    # hook
-    ("hook", "at"): _INT,
-    ("hook", "stage"): _STAGE,
-    ("hook", "seq"): _NON_NEGATIVE_INT,
-    ("hook", "exit_code"): _INT,
-    ("hook", "duration_ms"): _NUMBER,
-    ("hook", "stdout_bytes"): _INT,
-    ("hook", "stderr_bytes"): _INT,
-    ("hook", "timed_out"): _BOOL,
-    # finalize
-    ("finalize", "at"): _INT,
-    ("finalize", "branch"): _STRING,
-    ("finalize", "commit"): _STRING,
-    ("finalize", "message"): _STRING,
-    # stop
-    ("stop", "at"): _INT,
-    ("stop", "message"): "a non-empty string",
-    # command
-    ("command", "at"): _INT,
-    ("command", "name"): "a non-empty string",
-    ("command", "args"): _OBJECT,
-    ("command", "exit_code"): _EXIT_CODE,
-    ("command", "reason"): _COMMAND_REASON,
-    ("command", "origin"): _ORIGIN,
-    ("command", "seq"): _INT,
-    ("command", "duration_ms"): _NON_NEGATIVE_INT,
-    ("command", "traceparent"): _STRING,
-}
-
-
-def _normalize_loc(loc: tuple[int | str, ...]) -> tuple[str, ...]:
-    """Collapse array indices and dynamic map keys to ``"*"`` for phrase lookup.
-
-    An array index is an ``int`` segment (pydantic preserves the type). A dynamic
-    map key is either a metric name directly under ``metrics``, or a metric name
-    inside a sample round -- the segment following an index. Both are collapsed so
-    one phrase entry covers every concrete name.
-
-    Using ``isinstance(segment, int)`` instead of ``str.isdigit`` keeps all-digit
-    dict keys (e.g. a metric named ``"123"``) from being conflated with array
-    indices.
-
-    Args:
-        loc: A pydantic error location.
-
-    Returns:
-        The location tuple with indices and dynamic keys replaced by ``"*"``.
-    """
-    out: list[str] = []
-    prev_index = False
-    for i, segment in enumerate(loc):
-        if isinstance(segment, int):
-            out.append("*")
-            prev_index = True
-            continue
-        if prev_index or (i > 0 and loc[i - 1] == "metrics"):
-            out.append("*")
-            prev_index = False
-            continue
-        out.append(segment)
-        prev_index = False
-    return tuple(out)
-
-
 def _strip_type_prefix(loc: tuple[int | str, ...], record_type: str) -> tuple[int | str, ...]:
     """Strip the discriminated-union type prefix from an error location.
 
     The ``TypeAdapter`` on the tagged union prepends the record type (e.g.
-    ``"iteration"``) to every field-level error location.  The ``_PHRASES``
-    table and the display path both expect the location without that prefix.
+    ``"iteration"``) to every field-level error location, which the display
+    path expects without that prefix.
 
     Args:
         loc: A pydantic error location.
@@ -398,21 +260,19 @@ def _data_path(
     return path
 
 
-_VALUE_ERROR_PREFIX = "Value error, "
-
-
 def message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
     """Translate one pydantic error into a session-record problem string.
 
     Model-level validators (``type="value_error"``, empty ``loc``) carry their
-    own sentence in ``msg``; field-level errors use the phrase table. The
+    own sentence in ``msg``; a field-level error names the shape its pydantic
+    error ``type`` and ``ctx`` imply, and a missing key names only the key. The
     reported path is the one the user wrote in ``record``, free of the union
     member tags pydantic adds to the error location.
 
     Args:
         error: The pydantic ``ErrorDetails`` being translated.
-        record: The raw record that failed validation; its ``type`` selects the
-            phrase table entries.
+        record: The raw record that failed validation; its ``type`` is the
+            union member tag stripped from the error location.
 
     Returns:
         A human-readable problem string for the error.
@@ -422,17 +282,17 @@ def message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
     path = _data_path(
         _strip_type_prefix(error["loc"], record_type), record, error["input"], missing=missing
     )
-    display_loc = tuple(str(part) for part in path)
-    key = describe_key(display_loc)
+    key = describe_key(tuple(str(part) for part in path))
+    if missing:
+        return f"Missing session record key: {key}"
     if error["type"] == "extra_forbidden":
         return f"Unknown session record key: {key}"
     if error["type"] == "value_error" and not path:
         # Pydantic renders a model validator's ValueError as
         # "Value error, <text>"; surface <text> directly.
-        msg = error["msg"].removeprefix(_VALUE_ERROR_PREFIX)
+        msg = error["msg"].removeprefix(VALUE_ERROR_PREFIX)
         separator = ": " if key else ""
         return f"Invalid session record: {key}{separator}{msg}"
-    normalized = _normalize_loc(path)
-    phrase = _PHRASES.get((record_type, *normalized), "a valid value")
-    got = "undefined" if missing else json.dumps(error["input"])
+    phrase = phrase_for_error(error) or UNKNOWN_SHAPE_PHRASE
+    got = json.dumps(error["input"])
     return f"Invalid session record value for {key}: expected {phrase}, got {got}"

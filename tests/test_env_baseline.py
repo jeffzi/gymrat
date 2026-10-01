@@ -75,6 +75,9 @@ WORKER_ONLY = "GYMRAT_WORKER_ONLY"
 #: received its exports at all.
 WORKER_KEPT = {"UV_WORKER_PROBE": "1"}
 
+#: Runs the inner pytest in one process, without xdist.
+SINGLE_PROCESS_ARGS = ["-p", "no:xdist"]
+
 #: Runs under the project conftest in a child pytest; the tests run in file
 #: order, so each one after the first sees what the one before it left behind.
 INNER_TESTS = f"""
@@ -201,6 +204,9 @@ def _run_inner_pytest(
 ) -> subprocess.CompletedProcess[str]:
     test_file = tmp_path / "test_inner.py"
     test_file.write_text(source, encoding="utf-8")
+    # With `-c os.devnull` the conftest cutoff is the null device's directory, so
+    # collection would list every ancestor of tmp_path, the shared temp
+    # directory included, and fail when another test deletes an entry mid-scan.
     command = [
         sys.executable,
         "-m",
@@ -208,6 +214,8 @@ def _run_inner_pytest(
         "-c",
         os.devnull,
         "--rootdir",
+        str(tmp_path),
+        "--confcutdir",
         str(tmp_path),
         "-p",
         "tests.conftest",
@@ -233,7 +241,7 @@ def test_environ_when_test_starts_does_hold_only_allowlisted_and_pinned_names():
 @pytest.mark.parametrize(
     ("worker_args", "worker_kept"),
     [
-        pytest.param(["-p", "no:xdist"], {}, id="single-process"),
+        pytest.param(SINGLE_PROCESS_ARGS, {}, id="single-process"),
         pytest.param(
             [
                 "--dist",
@@ -273,18 +281,23 @@ def test_baseline_when_shell_exports_variables_does_hide_them_and_restore_after_
     assert (result.returncode, "13 passed" in result.stdout) == (0, True), result.stdout
 
 
-# ---------------------------------------------------------------------------
-# create_scratch_repo teardown
-# ---------------------------------------------------------------------------
-
 #: Runs under the project conftest in a child pytest: deletes one scratch repo
-#: and strands a linked worktree of another, leaving both to the teardown.
+#: and strands a linked worktree of another, leaving both to the teardown. Git
+#: writes its object files read-only, which Windows refuses to unlink until the
+#: read-only attribute is cleared.
 DELETED_REPO_INNER_TEST = """
+import os
 import shutil
+import stat
 
 from tests._git import git
 
 WORKTREE = {worktree!r}
+
+
+def _clear_read_only_and_retry(remove, path, _error):
+    os.chmod(path, stat.S_IWRITE)
+    remove(path)
 
 
 def test_strands_worktree_after_deleting_a_repo(create_scratch_repo):
@@ -292,7 +305,7 @@ def test_strands_worktree_after_deleting_a_repo(create_scratch_repo):
     kept = create_scratch_repo()
     git(kept, "worktree", "add", "--detach", WORKTREE)
 
-    shutil.rmtree(deleted)
+    shutil.rmtree(deleted, onexc=_clear_read_only_and_retry)
 """
 
 
@@ -303,6 +316,6 @@ def test_create_scratch_repo_when_a_repo_directory_is_deleted_does_still_remove_
     inner = DELETED_REPO_INNER_TEST.format(worktree=str(worktree))
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
 
-    result = _run_inner_pytest(tmp_path, inner, env, ["-p", "no:xdist"])
+    result = _run_inner_pytest(tmp_path, inner, env, SINGLE_PROCESS_ARGS)
 
     assert (result.returncode, worktree.exists()) == (0, False), result.stdout

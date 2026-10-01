@@ -19,16 +19,17 @@ from typing import Annotated
 import typer
 from rich.markup import escape
 
-from gymrat.cli.shared import (
+from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BenchOption,
     ColorOption,
     DebugOption,
+)
+from gymrat.cli.shared import (
     apply_color_override,
     apply_debug,
-    broken_pipe_guard,
     exit_with_error,
     resolve_stream_color,
-    write_and_flush,
+    write_stdout,
 )
 from gymrat.cli.supervised import is_supervised_run_live
 from gymrat.config import CONFIG_FILENAME, find_implicit_base
@@ -99,10 +100,8 @@ def init_command(
             install_skill=not no_skill,
         )
         result = scaffold(base_dir, request)
+        write_stdout(_format_summary(result, base_dir, color=resolved_color) + "\n")
     except typer.Exit:
         raise
     except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
         exit_with_error(error)
-
-    with broken_pipe_guard():
-        write_and_flush(sys.stdout, _format_summary(result, base_dir, color=resolved_color) + "\n")

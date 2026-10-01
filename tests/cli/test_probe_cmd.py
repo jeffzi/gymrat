@@ -44,7 +44,12 @@ from tests.cli._budget import (
     install_tight_budget,
     mark_tool_origin,
 )
-from tests.cli._session import last_command_record, plain_lines, records_of, write_config
+from tests.cli._session import (
+    last_command_record,
+    plain_lines,
+    records_of,
+    write_config,
+)
 from tests.conftest import hold_lock
 from tests.loop._probe import MeasureRecorder, baseline_of, install_measure, measurement, only_call
 from tests.loop.settle._fixtures import start_with

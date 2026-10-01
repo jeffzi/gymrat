@@ -4,10 +4,10 @@ from typing import Any
 
 import pytest
 
-from gymrat.adapters.mitata import find_json_candidates, mitata_adapter
+from gymrat.adapters.mitata import mitata_adapter
 from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults
 from gymrat.model.metrics import MetricUnit
-from tests.adapters._inputs import build_stdout
+from tests.adapters._inputs import LINE_BREAKS, build_stdout
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mitata.json"
 
@@ -143,19 +143,22 @@ def test_parse_when_arg_value_introduces_a_placeholder_does_not_re_substitute_it
 # metric names carrying a line terminator
 # ---------------------------------------------------------------------------
 
-_LINE_TERMINATORS = [
-    pytest.param(0x0A, id="line-feed"),
-    pytest.param(0x0D, id="carriage-return"),
-    pytest.param(0x2028, id="line-separator-u2028"),
-    pytest.param(0x2029, id="paragraph-separator-u2029"),
+_ESCAPED_LINE_TERMINATORS = [
+    pytest.param(line_break.char, line_break.escaped, id=line_break.name)
+    for line_break in LINE_BREAKS
 ]
 
 
-@pytest.mark.parametrize("code_point", _LINE_TERMINATORS)
-def test_parse_when_alias_holds_line_terminator_does_warn_and_skip(code_point: int):
-    offending = f"enc{chr(code_point)}ode"
+@pytest.mark.parametrize(("terminator", "escaped"), _ESCAPED_LINE_TERMINATORS)
+def test_parse_when_alias_holds_line_terminator_does_warn_on_one_line_and_skip(
+    terminator: str, escaped: str
+):
+    offending = f"enc{terminator}ode"
     stdout = build_stdout([
-        {"alias": offending, "runs": [{"name": "e", "args": {}, "stats": {"p50": 42}}]},
+        {
+            "alias": offending,
+            "runs": [{"name": "e", "args": {}, "stats": {"p50": 42, "heap": {"avg": "bad"}}}],
+        },
         {"alias": "valid", "runs": [{"name": "v", "args": {}, "stats": {"p50": 1}}]},
     ])
     warnings: list[str] = []
@@ -163,23 +166,23 @@ def test_parse_when_alias_holds_line_terminator_does_warn_and_skip(code_point: i
     result = mitata_adapter.parse(stdout, warnings.append)
 
     assert result == {"valid#time": 1}
-    assert any(
-        f"Skipping run with a line terminator in its metric name: {offending}" in w
-        for w in warnings
-    )
+    assert warnings == [
+        (
+            f'Skipping run with a line terminator in its metric name: "enc{escaped}ode" '
+            "(the alias or one of its argument values carries one)"
+        )
+    ]
 
 
-@pytest.mark.parametrize("code_point", _LINE_TERMINATORS)
-def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip(code_point: int):
+@pytest.mark.parametrize(
+    "terminator", [pytest.param(line_break.char, id=line_break.name) for line_break in LINE_BREAKS]
+)
+def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip(terminator: str):
     stdout = build_stdout([
         {
             "alias": "decode/$text",
             "runs": [
-                {
-                    "name": "d1",
-                    "args": {"text": f"di{chr(code_point)}gits"},
-                    "stats": {"p50": 10},
-                },
+                {"name": "d1", "args": {"text": f"di{terminator}gits"}, "stats": {"p50": 10}},
                 {"name": "d2", "args": {"text": "words"}, "stats": {"p50": 20}},
             ],
         }
@@ -189,10 +192,91 @@ def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip(code_poin
     result = mitata_adapter.parse(stdout, warnings.append)
 
     assert result == {"decode/text=words#time": 20}
-    assert any(
-        "Skipping run with a line terminator in its metric name: decode/$text" in w
-        for w in warnings
-    )
+    assert warnings == [
+        (
+            'Skipping run with a line terminator in its metric name: "decode/$text" '
+            "(the alias or one of its argument values carries one)"
+        )
+    ]
+
+
+_LINE_TERMINATOR_ALIASES = [
+    pytest.param(f"enc{line_break.char}ode", id=line_break.name) for line_break in LINE_BREAKS
+]
+
+
+@pytest.mark.parametrize("alias", _LINE_TERMINATOR_ALIASES)
+@pytest.mark.parametrize(
+    ("fields", "warning_template"),
+    [
+        pytest.param(
+            {"runs": [{"args": {}, "error": "boom"}]},
+            "Skipping run with an error: {alias} (boom)",
+            id="errored-run",
+        ),
+        pytest.param(
+            {"runs": [{"args": "bad", "stats": {"p50": 1}}]},
+            'Skipping run of {alias} with invalid args: expected an object, got "bad"',
+            id="invalid-run",
+        ),
+        pytest.param(
+            {"runs": [{"args": {}, "stats": {"p50": float("nan")}}]},
+            "Skipping run of {alias} with invalid stats.p50: expected a finite number, got NaN",
+            id="non-finite-p50",
+        ),
+        pytest.param(
+            {"runs": [None]},
+            "Skipping run of {alias}: expected an object, got null",
+            id="run-not-object",
+        ),
+        pytest.param({}, "Skipping benchmark {alias} with missing runs", id="runs-missing"),
+        pytest.param(
+            {"runs": 5},
+            "Skipping benchmark {alias} with invalid runs: expected an array, got 5",
+            id="runs-not-array",
+        ),
+    ],
+)
+def test_parse_when_skip_warning_names_alias_holding_line_terminator_does_escape_it(
+    alias: str, fields: dict[str, Any], warning_template: str
+):
+    stdout = build_stdout([
+        {"alias": alias, **fields},
+        {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
+    ])
+    warnings: list[str] = []
+
+    mitata_adapter.parse(stdout, warnings.append)
+
+    assert warnings == [warning_template.format(alias=json.dumps(alias))]
+
+
+@pytest.mark.parametrize(
+    ("alias", "args"),
+    [
+        *(
+            pytest.param(f"en{line_break.char}c#ode", {}, id=f"alias-{line_break.name}")
+            for line_break in LINE_BREAKS
+        ),
+        *(
+            pytest.param(
+                "enc#$text", {"text": f"a{line_break.char}b"}, id=f"arg-value-{line_break.name}"
+            )
+            for line_break in LINE_BREAKS
+        ),
+    ],
+)
+def test_parse_when_reserved_hash_name_holds_line_terminator_does_raise_on_one_line(
+    alias: str, args: dict[str, str]
+):
+    stdout = build_stdout([{"alias": alias, "runs": [{"args": args, "stats": {"p50": 42}}]}])
+
+    with pytest.raises(AdapterError) as exc_info:
+        mitata_adapter.parse(stdout)
+
+    message = str(exc_info.value)
+    assert json.dumps(alias) in message
+    assert message.splitlines() == [message]
 
 
 # ---------------------------------------------------------------------------
@@ -226,37 +310,87 @@ def test_parse_when_substituted_arg_introduces_hash_does_raise_adapter_error():
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_run_args_is_not_a_record_does_warn_and_skip():
-    stdout = build_stdout([
-        {
-            "alias": "test",
-            "runs": [
-                {"args": "not-a-record", "stats": {"p50": 1}},
-                {"args": {}, "stats": {"p50": 5}},
-            ],
-        }
-    ])
+_INVALID_RUN_PREFIX = 'Skipping run of "test" with invalid'
+
+
+@pytest.mark.parametrize(
+    ("bad_run", "warning"),
+    [
+        pytest.param(
+            {"args": "not-a-record", "stats": {"p50": 1}},
+            f'{_INVALID_RUN_PREFIX} args: expected an object, got "not-a-record"',
+            id="args-not-object",
+        ),
+        pytest.param(
+            {"args": None, "stats": {"p50": 1}},
+            f"{_INVALID_RUN_PREFIX} args: expected an object, got null",
+            id="args-null",
+        ),
+        pytest.param(
+            {"args": {}, "stats": "not-a-record"},
+            f'{_INVALID_RUN_PREFIX} stats: expected an object, got "not-a-record"',
+            id="stats-not-object",
+        ),
+        pytest.param({"args": {}}, 'Skipping run of "test" with missing stats', id="stats-missing"),
+        pytest.param(
+            {"args": {}, "stats": {}},
+            'Skipping run of "test" with missing stats.p50',
+            id="p50-missing",
+        ),
+        pytest.param(
+            {"args": {}, "stats": {"p50": True}},
+            f"{_INVALID_RUN_PREFIX} stats.p50: expected a number, got true",
+            id="p50-bool",
+        ),
+        pytest.param(
+            {"args": {}, "stats": {"p50": "fast"}},
+            f'{_INVALID_RUN_PREFIX} stats.p50: expected a number, got "fast"',
+            id="p50-string",
+        ),
+        pytest.param(
+            {"args": {}, "stats": {"p50": None}},
+            f"{_INVALID_RUN_PREFIX} stats.p50: expected a number, got null",
+            id="p50-null",
+        ),
+        pytest.param(
+            {"args": {}, "stats": {"p50": float("inf")}},
+            f"{_INVALID_RUN_PREFIX} stats.p50: expected a finite number, got Infinity",
+            id="p50-positive-infinity",
+        ),
+        pytest.param(
+            {"args": {}, "stats": {"p50": float("-inf")}},
+            f"{_INVALID_RUN_PREFIX} stats.p50: expected a finite number, got -Infinity",
+            id="p50-negative-infinity",
+        ),
+        pytest.param(
+            {"args": {}, "stats": {"p50": float("nan")}},
+            f"{_INVALID_RUN_PREFIX} stats.p50: expected a finite number, got NaN",
+            id="p50-nan",
+        ),
+        pytest.param(
+            {"args": {}, "stats": {"p50": 10**400}},
+            f"{_INVALID_RUN_PREFIX} stats.p50: expected a number, got {10**400}",
+            id="p50-integer-overflows-float",
+        ),
+        pytest.param(
+            {"args": 1, "stats": 2},
+            f"{_INVALID_RUN_PREFIX} args: expected an object, got 1",
+            id="args-and-stats-invalid",
+        ),
+        pytest.param(None, 'Skipping run of "test": expected an object, got null', id="run-null"),
+        pytest.param(42, 'Skipping run of "test": expected an object, got 42', id="run-number"),
+    ],
+)
+def test_parse_when_run_is_malformed_does_warn_once_and_keep_other_runs(
+    bad_run: object, warning: str
+):
+    stdout = build_stdout([{"alias": "test", "runs": [bad_run, {"args": {}, "stats": {"p50": 5}}]}])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
     assert result == {"test#time": 5}
-    assert any("Skipping run with malformed args shape: test" in w for w in warnings)
-
-
-def test_parse_when_run_stats_is_not_a_record_does_warn_and_skip():
-    stdout = build_stdout([
-        {
-            "alias": "test",
-            "runs": [{"args": {}, "stats": "not-a-record"}, {"args": {}, "stats": {"p50": 5}}],
-        }
-    ])
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"test#time": 5}
-    assert any("Skipping run with malformed stats shape: test" in w for w in warnings)
+    assert warnings == [warning]
 
 
 def test_parse_when_run_args_missing_does_treat_as_empty_and_not_warn():
@@ -269,9 +403,50 @@ def test_parse_when_run_args_missing_does_treat_as_empty_and_not_warn():
     assert warnings == []
 
 
-def test_parse_when_benchmark_alias_is_not_a_string_does_warn_and_skip():
+_INVALID_ALIAS_WARNING = "Skipping benchmark with invalid alias: expected a string, got 42"
+
+
+@pytest.mark.parametrize(
+    ("bad_benchmark", "warning"),
+    [
+        pytest.param(
+            {"alias": 42, "runs": [{"args": {}, "stats": {"p50": 1}}]},
+            _INVALID_ALIAS_WARNING,
+            id="alias-not-string",
+        ),
+        pytest.param(
+            {"runs": [{"args": {}, "stats": {"p50": 1}}]},
+            "Skipping benchmark with missing alias",
+            id="alias-missing",
+        ),
+        pytest.param(
+            {"alias": "orphan"},
+            'Skipping benchmark "orphan" with missing runs',
+            id="runs-missing",
+        ),
+        pytest.param(
+            {"alias": "orphan", "runs": 5},
+            'Skipping benchmark "orphan" with invalid runs: expected an array, got 5',
+            id="runs-not-array",
+        ),
+        pytest.param(
+            {"alias": 42, "runs": 5},
+            _INVALID_ALIAS_WARNING,
+            id="alias-and-runs-invalid",
+        ),
+        pytest.param(None, "Skipping benchmark: expected an object, got null", id="benchmark-null"),
+        pytest.param(
+            "string",
+            'Skipping benchmark: expected an object, got "string"',
+            id="benchmark-string",
+        ),
+    ],
+)
+def test_parse_when_benchmark_is_malformed_does_warn_once_and_keep_other_benchmarks(
+    bad_benchmark: object, warning: str
+):
     stdout = build_stdout([
-        {"alias": 42, "runs": [{"args": {}, "stats": {"p50": 1}}]},
+        bad_benchmark,
         {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
     ])
     warnings: list[str] = []
@@ -279,38 +454,7 @@ def test_parse_when_benchmark_alias_is_not_a_string_does_warn_and_skip():
     result = mitata_adapter.parse(stdout, warnings.append)
 
     assert result == {"valid#time": 1}
-    assert any("Skipping benchmark with malformed alias: 42" in w for w in warnings)
-
-
-def test_parse_when_benchmark_runs_is_not_an_array_does_warn_and_skip():
-    stdout = build_stdout([
-        {"alias": "orphan"},
-        {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
-    ])
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"valid#time": 1}
-    assert any("Skipping benchmark with malformed runs shape: orphan" in w for w in warnings)
-
-
-def test_parse_when_run_has_error_does_warn_and_skip():
-    stdout = build_stdout([
-        {
-            "alias": "test",
-            "runs": [
-                {"args": {}, "error": "boom", "stats": {"p50": 10}},
-                {"args": {}, "stats": {"p50": 20}},
-            ],
-        }
-    ])
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"test#time": 20}
-    assert any("Skipping run with an error: test" in w and "boom" in w for w in warnings)
+    assert warnings == [warning]
 
 
 # ---------------------------------------------------------------------------
@@ -378,26 +522,12 @@ def test_parse_when_p50_present_does_use_it_as_time_metric(p50: float):
     assert mitata_adapter.parse(stdout) == {"test#time": p50}
 
 
-def test_parse_when_p50_is_bool_does_warn_and_skip():
-    stdout = (
-        '{"benchmarks":[{"alias":"test","runs":['
-        '{"name":"a","args":{},"stats":{"p50":true}},'
-        '{"name":"b","args":{},"stats":{"p50":5}}]}]}'
-    )
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"test#time": 5}
-    assert any("stats.p50 is not a number" in w for w in warnings)
-
-
 # ---------------------------------------------------------------------------
 # heap metric emission
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_heap_avg_present_does_emit_heap_metric():
+def test_parse_when_heap_avg_present_does_emit_heap_metric_keeping_integers():
     stdout = build_stdout([
         {
             "alias": "test",
@@ -405,7 +535,10 @@ def test_parse_when_heap_avg_present_does_emit_heap_metric():
         }
     ])
 
-    assert mitata_adapter.parse(stdout) == {"test#time": 42, "test#heap": 1024}
+    result = mitata_adapter.parse(stdout)
+
+    assert result == {"test#time": 42, "test#heap": 1024}
+    assert [type(v) for v in result.values()] == [int, int]
 
 
 def test_parse_when_heap_avg_present_on_parameterized_bench_does_emit_named_heap_metric():
@@ -439,16 +572,49 @@ def test_parse_when_heap_avg_missing_does_skip_heap_metric():
     assert mitata_adapter.parse(stdout) == {"test#time": 42}
 
 
+_INVALID_HEAP_PREFIX = 'Skipping heap metric of "test" with invalid'
+
+
 @pytest.mark.parametrize(
-    "heap_value",
+    ("heap_value", "warning"),
     [
-        pytest.param(42, id="integer"),
-        pytest.param("bad", id="string"),
-        pytest.param([1, 2], id="array"),
-        pytest.param(True, id="boolean"),
+        pytest.param(
+            42, f"{_INVALID_HEAP_PREFIX} stats.heap: expected an object, got 42", id="integer"
+        ),
+        pytest.param(
+            "bad", f'{_INVALID_HEAP_PREFIX} stats.heap: expected an object, got "bad"', id="string"
+        ),
+        pytest.param(
+            [1, 2], f"{_INVALID_HEAP_PREFIX} stats.heap: expected an object, got [1, 2]", id="array"
+        ),
+        pytest.param(
+            True, f"{_INVALID_HEAP_PREFIX} stats.heap: expected an object, got true", id="boolean"
+        ),
+        pytest.param(
+            {"avg": "bad"},
+            f'{_INVALID_HEAP_PREFIX} stats.heap.avg: expected a number, got "bad"',
+            id="avg-string",
+        ),
+        pytest.param(
+            {"avg": True},
+            f"{_INVALID_HEAP_PREFIX} stats.heap.avg: expected a number, got true",
+            id="avg-boolean",
+        ),
+        pytest.param(
+            {"avg": float("inf")},
+            f"{_INVALID_HEAP_PREFIX} stats.heap.avg: expected a finite number, got Infinity",
+            id="avg-infinity",
+        ),
+        pytest.param(
+            {"avg": float("nan")},
+            f"{_INVALID_HEAP_PREFIX} stats.heap.avg: expected a finite number, got NaN",
+            id="avg-nan",
+        ),
     ],
 )
-def test_parse_when_heap_is_not_an_object_does_warn_and_skip_heap(heap_value: object):
+def test_parse_when_heap_is_malformed_does_warn_once_and_keep_time_metric(
+    heap_value: object, warning: str
+):
     stdout = build_stdout([
         {
             "alias": "test",
@@ -460,8 +626,7 @@ def test_parse_when_heap_is_not_an_object_does_warn_and_skip_heap(heap_value: ob
     result = mitata_adapter.parse(stdout, warnings.append)
 
     assert result == {"test#time": 42}
-    assert len(warnings) == 1
-    assert "stats.heap is not an object" in warnings[0]
+    assert warnings == [warning]
 
 
 def test_parse_when_heap_absent_does_not_warn():
@@ -481,24 +646,6 @@ def test_parse_when_heap_absent_does_not_warn():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "literal",
-    [pytest.param("1e999", id="positive-infinity"), pytest.param("-1e999", id="negative-infinity")],
-)
-def test_parse_when_p50_is_non_finite_does_warn_and_skip(literal: str):
-    stdout = (
-        '{"benchmarks":[{"alias":"test/$x","runs":['
-        f'{{"name":"a","args":{{"x":"a"}},"stats":{{"p50":{literal}}}}},'
-        '{"name":"b","args":{"x":"b"},"stats":{"p50":20}}]}]}'
-    )
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"test/x=b#time": 20}
-    assert any("test/$x" in w and "non-finite" in w.lower() for w in warnings)
-
-
 def test_parse_when_every_p50_non_finite_does_raise_no_valid_runs():
     stdout = (
         '{"benchmarks":[{"alias":"test","runs":[{"name":"t","args":{},"stats":{"p50":1e999}}]}]}'
@@ -506,16 +653,6 @@ def test_parse_when_every_p50_non_finite_does_raise_no_valid_runs():
 
     with pytest.raises(AdapterError, match=r"^No valid benchmark runs found$"):
         mitata_adapter.parse(stdout)
-
-
-def test_parse_when_heap_avg_non_finite_does_warn_and_skip_heap():
-    stdout = '{"benchmarks":[{"alias":"test","runs":[{"name":"t","args":{},"stats":{"p50":42,"heap":{"avg":1e999}}}]}]}'
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"test#time": 42}
-    assert any("stats.heap.avg is not a finite number" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -626,65 +763,6 @@ def test_defaults_when_prefix_empty_does_fall_back_to_full_metric_name(
 
 
 # ---------------------------------------------------------------------------
-# find_json_candidates
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        pytest.param('{"key": "value"}', ['{"key": "value"}'], id="single-object"),
-        pytest.param('{"a": 1} some text {"b": 2}', ['{"a": 1}', '{"b": 2}'], id="two-top-level"),
-        pytest.param(
-            '{"key": "value with {braces} inside"}',
-            ['{"key": "value with {braces} inside"}'],
-            id="braces-in-string",
-        ),
-        pytest.param(
-            r'{"key": "value with \"escaped\" quotes and {braces}"}',
-            [r'{"key": "value with \"escaped\" quotes and {braces}"}'],
-            id="escaped-quotes",
-        ),
-        pytest.param(
-            '{"outer": {"inner": {"deep": 1}}}',
-            ['{"outer": {"inner": {"deep": 1}}}'],
-            id="nested-braces",
-        ),
-        pytest.param("no braces here at all", [], id="no-braces"),
-        pytest.param("prefix { incomplete", [], id="unbalanced"),
-        pytest.param(
-            'weight: 5" tall\n{"benchmarks": []}', ['{"benchmarks": []}'], id="stray-quote-outside"
-        ),
-        pytest.param(
-            'cpu: {model}\n{"benchmarks": []}\nfooter: {info}',
-            ['{"benchmarks": []}'],
-            id="non-json-braces-around-payload",
-        ),
-    ],
-)
-def test_find_json_candidates_when_scanning_does_return_valid_json_objects(
-    text: str, expected: list[str]
-):
-    assert find_json_candidates(text) == expected
-
-
-# ---------------------------------------------------------------------------
-# truncated JSON diagnostic
-# ---------------------------------------------------------------------------
-
-
-def test_parse_when_truncated_json_has_nested_object_does_report_decode_failure():
-    # Truncated outer JSON — raw_decode at position 0 fails. The inner
-    # {"alias":"encode"} is valid JSON but carries no "benchmarks" key.
-    # The adapter should prefer the decode failure (explaining WHY the real
-    # payload could not parse) over the generic "JSON missing benchmarks array".
-    truncated = '{"benchmarks":[{"alias":"encode"}],"extra":'
-
-    with pytest.raises(AdapterError, match=r"^Failed to parse JSON:"):
-        mitata_adapter.parse(truncated)
-
-
-# ---------------------------------------------------------------------------
 # error handling
 # ---------------------------------------------------------------------------
 
@@ -716,62 +794,17 @@ def test_parse_when_no_run_has_valid_stats_does_raise():
         mitata_adapter.parse(stdout)
 
 
-def test_parse_when_benchmark_entries_not_objects_does_warn_and_skip():
-    stdout = build_stdout([
-        None,
-        42,
-        "string",
-        {"alias": "valid", "runs": [{"name": "valid", "args": {}, "stats": {"p50": 1}}]},
-    ])
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"valid#time": 1}
-    assert len(warnings) == 3
-
-
-def test_parse_when_benchmarks_have_non_string_alias_or_missing_runs_does_warn_and_skip():
-    stdout = build_stdout([
-        {"alias": 42, "runs": []},
-        {"alias": "orphan"},
-        {"runs": [{"args": {}, "stats": {"p50": 1}}]},
-        {"alias": "valid", "runs": [{"name": "valid", "args": {}, "stats": {"p50": 1}}]},
-    ])
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"valid#time": 1}
-    assert len(warnings) == 3
-    assert "alias is not a string" in warnings[0]
-    assert "runs is not an array" in warnings[1]
-    assert "alias is not a string" in warnings[2]
-
-
-def test_parse_when_runs_are_not_objects_does_warn_and_skip():
-    stdout = build_stdout([
-        {"alias": "test", "runs": [None, 42, {"args": {}, "stats": {"p50": 1}}]}
-    ])
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"test#time": 1}
-    assert len(warnings) == 2
-    assert all("test" in w for w in warnings)
-
-
 # ---------------------------------------------------------------------------
 # error field handling
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_run_has_error_field_does_warn_and_skip_that_run():
-    stdout = build_stdout([
-        {
-            "alias": "test/$x",
-            "runs": [
+@pytest.mark.parametrize(
+    ("alias", "runs", "metrics", "warning"),
+    [
+        pytest.param(
+            "test/$x",
+            [
                 {
                     "name": "a",
                     "args": {"x": "a"},
@@ -780,16 +813,59 @@ def test_parse_when_run_has_error_field_does_warn_and_skip_that_run():
                 },
                 {"name": "b", "args": {"x": "b"}, "stats": {"p50": 20}},
             ],
-        }
-    ])
+            {"test/x=b#time": 20},
+            'Skipping run with an error: "test/$x" (something went wrong)',
+            id="error-string",
+        ),
+        pytest.param(
+            "test",
+            [{"args": {}, "error": "boom"}, {"args": {}, "stats": {"p50": 20}}],
+            {"test#time": 20},
+            'Skipping run with an error: "test" (boom)',
+            id="error-without-stats",
+        ),
+        pytest.param(
+            "test",
+            [
+                {"name": "a", "args": {}, "error": {"code": 7}, "stats": {"p50": 10}},
+                {"name": "b", "args": {}, "stats": {"p50": 20}},
+            ],
+            {"test#time": 20},
+            'Skipping run with an error: "test" ({"code": 7})',
+            id="error-object",
+        ),
+    ],
+)
+def test_parse_when_run_has_error_field_does_warn_once_and_keep_other_runs(
+    alias: str, runs: list[dict[str, Any]], metrics: dict[str, float], warning: str
+):
+    stdout = build_stdout([{"alias": alias, "runs": runs}])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert result == {"test/x=b#time": 20}
-    assert len(warnings) == 1
-    assert "Skipping run with an error" in warnings[0]
-    assert "something went wrong" in warnings[0]
+    assert result == metrics
+    assert warnings == [warning]
+
+
+@pytest.mark.parametrize(("terminator", "escaped"), _ESCAPED_LINE_TERMINATORS)
+def test_parse_when_error_string_holds_line_terminator_does_escape_only_the_terminator(
+    terminator: str, escaped: str
+):
+    stdout = build_stdout([
+        {
+            "alias": "test",
+            "runs": [
+                {"args": {}, "error": f'naïve "x"{terminator}boom'},
+                {"args": {}, "stats": {"p50": 20}},
+            ],
+        }
+    ])
+    warnings: list[str] = []
+
+    mitata_adapter.parse(stdout, warnings.append)
+
+    assert warnings == [f'Skipping run with an error: "test" (naïve "x"{escaped}boom)']
 
 
 def test_parse_when_all_runs_have_errors_does_raise():
@@ -815,24 +891,6 @@ def test_parse_when_error_field_is_null_does_process_run_normally():
     ])
 
     assert mitata_adapter.parse(stdout) == {"test#time": 10}
-
-
-def test_parse_when_error_field_is_object_does_render_as_json_in_warning():
-    stdout = build_stdout([
-        {
-            "alias": "test",
-            "runs": [
-                {"name": "a", "args": {}, "error": {"code": 7}, "stats": {"p50": 10}},
-                {"name": "b", "args": {}, "stats": {"p50": 20}},
-            ],
-        }
-    ])
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"test#time": 20}
-    assert any('{"code": 7}' in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -891,26 +949,8 @@ def test_parse_when_arg_value_is_array_does_serialize_via_json():
 
 
 # ---------------------------------------------------------------------------
-# non-finite p50 or malformed shape warnings
+# skip warnings and the warning sink
 # ---------------------------------------------------------------------------
-
-
-def test_parse_when_p50_missing_does_warn_and_skip():
-    stdout = build_stdout([
-        {
-            "alias": "test/$x",
-            "runs": [
-                {"name": "a", "args": {"x": "a"}, "stats": {}},
-                {"name": "b", "args": {"x": "b"}, "stats": {"p50": 20}},
-            ],
-        }
-    ])
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"test/x=b#time": 20}
-    assert any("test/$x" in w for w in warnings)
 
 
 def test_parse_when_skip_warning_and_sink_given_does_route_off_stderr(
@@ -925,105 +965,8 @@ def test_parse_when_skip_warning_and_sink_given_does_route_off_stderr(
 
     mitata_adapter.parse(stdout, warnings.append)
 
-    assert warnings != []
-    assert "non-finite" in warnings[0].lower()
+    assert len(warnings) == 1
     assert capsys.readouterr().err == ""
-
-
-# ---------------------------------------------------------------------------
-# brace-aware extraction
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "template",
-    [
-        pytest.param("cpu: {{model}}\nruntime: bun {{version}}\n\n{json}", id="braces-before"),
-        pytest.param("{json}\nfooter: {{info}}", id="braces-after"),
-        pytest.param("cpu: {{model}}\n{json}\nfooter: {{info}}", id="braces-both-sides"),
-        pytest.param('weight: 5" tall\n{json}', id="stray-quote-before"),
-    ],
-)
-def test_parse_when_banner_text_carries_braces_or_quotes_does_still_extract(template: str):
-    payload = build_stdout([{"alias": "encode", "runs": [{"args": {}, "stats": {"p50": 42}}]}])
-
-    result = mitata_adapter.parse(template.format(json=payload))
-
-    assert result == {"encode#time": 42}
-
-
-def test_parse_when_only_incomplete_brace_fragments_present_does_raise():
-    with pytest.raises(AdapterError, match=r"^Failed to parse JSON:"):
-        mitata_adapter.parse("cpu: {model}\nno json here\nfooter: {info}")
-
-
-# ---------------------------------------------------------------------------
-# unbalanced brace before payload
-# ---------------------------------------------------------------------------
-
-
-def test_parse_when_unbalanced_brace_precedes_json_does_still_find_payload():
-    payload = build_stdout([{"alias": "encode", "runs": [{"args": {}, "stats": {"p50": 42}}]}])
-    stdout = f"cpu: {{model\n{payload}"
-
-    result = mitata_adapter.parse(stdout)
-
-    assert result == {"encode#time": 42}
-
-
-def test_parse_when_pathological_nesting_does_raise_adapter_error_not_recursion_error():
-    stdout = "{" * 5000
-
-    with pytest.raises(AdapterError, match=r"^Failed to parse JSON:"):
-        mitata_adapter.parse(stdout)
-
-
-# ---------------------------------------------------------------------------
-# candidate selection among multiple JSON objects
-# ---------------------------------------------------------------------------
-
-
-def test_parse_when_decoy_precedes_real_object_does_prefer_the_benchmarks_carrier():
-    decoy = json.dumps({"foo": "bar"})
-    real = build_stdout([{"alias": "a", "runs": [{"args": {}, "stats": {"p50": 1}}]}])
-
-    assert mitata_adapter.parse(f"{decoy}\n{real}") == {"a#time": 1}
-
-
-def test_parse_when_no_candidate_carries_benchmarks_does_report_missing_array():
-    stdout = f"{json.dumps({'foo': 'bar'})}\n{json.dumps({'baz': 1})}"
-
-    with pytest.raises(AdapterError, match=r"^JSON missing benchmarks array$"):
-        mitata_adapter.parse(stdout)
-
-
-def _decode_error_reason(text: str, pos: int = 0) -> str:
-    """Return the JSONDecodeError message from attempting ``raw_decode`` at *pos*.
-
-    Uses :meth:`json.JSONDecoder.raw_decode` to match how the adapter
-    discovers candidates. The resulting char offset is absolute within *text*,
-    not relative to a pre-sliced candidate.
-    """
-    try:
-        json.JSONDecoder().raw_decode(text, pos)
-    except json.JSONDecodeError as exc:
-        return str(exc)
-    msg = f"expected raw_decode at pos {pos} in {text!r} to fail"
-    raise AssertionError(msg)
-
-
-def test_parse_when_several_candidates_fail_does_report_longest_candidates_error():
-    long_bad = '{"padding":"' + ("x" * 100) + '","bad":@}'
-    short_bad = "{!}"
-    stdout = f"{long_bad} noise {short_bad}"
-
-    with pytest.raises(AdapterError) as exc_info:
-        mitata_adapter.parse(stdout)
-
-    longest_pos = stdout.index("{")
-    assert (
-        str(exc_info.value) == f"Failed to parse JSON: {_decode_error_reason(stdout, longest_pos)}"
-    )
 
 
 # ---------------------------------------------------------------------------

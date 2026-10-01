@@ -80,7 +80,7 @@ def read_progress(root: str) -> ProgressSnapshot | None:
     path = Path(progress_path(root))
     try:
         stat = path.stat()
-    except FileNotFoundError:
+    except OSError:
         return None
 
     if time.time() - stat.st_mtime > STALENESS_BOUND_SECONDS:

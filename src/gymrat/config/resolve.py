@@ -15,7 +15,7 @@ from pathlib import Path
 
 from gymrat.config.env import NUMBER_ENV_FIELDS, STRING_ENV_FIELDS, env_string_result
 from gymrat.config.load import load_config_file_collecting
-from gymrat.config.schema import validate_and_convert
+from gymrat.config.schema import validate_config_file
 from gymrat.config.types import (
     CONFIG_DEFAULTS,
     CONFIG_FILENAME,
@@ -128,7 +128,7 @@ def validate_config_dict(config: dict[str, object]) -> None:
     Raises:
         GymratError: On the first schema or cross-field validation problem.
     """
-    config_file, problems = validate_and_convert(config)
+    config_file, problems = validate_config_file(config)
     if problems:
         raise GymratError(problems[0])
     if config_file is None:

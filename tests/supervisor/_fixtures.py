@@ -4,7 +4,8 @@ These helpers are reused by later supervisor suites (the event log and the
 stdio driver), so they live in one module rather than being duplicated per
 test file. ``collecting_observer`` hands back an appending observer paired with
 the list it fills; ``make_launch`` builds a fully-populated ``LaunchEvent`` from
-overridable defaults; ``read_log_lines`` parses a JSONL log into dicts.
+overridable defaults; ``read_log_lines`` parses a JSONL log into dicts;
+``NotJsonEncodable`` is a value ``json.dumps`` cannot encode.
 ``seed_session_log``, ``seed_with_stop``, ``add_stop_async``, and
 ``supervise_fast`` share the turn-loop test boilerplate. ``result_message``,
 ``system_message``, ``assistant``, ``tool_results``, and ``stream_event`` build
@@ -57,6 +58,14 @@ from tests.supervisor._mock_driver import EmitStep, _MockSession
 
 _SESSION_ID = "sdk-session"
 _MODEL = "claude-test"
+
+
+class NotJsonEncodable:
+    """A value ``json.dumps`` cannot encode, with a deterministic string form."""
+
+    @override
+    def __str__(self) -> str:
+        return "not-json-encodable"
 
 
 class ObserverProbe(NamedTuple):
