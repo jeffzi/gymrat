@@ -24,15 +24,10 @@ from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
 from gymrat.exec import ExecResult
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
-from gymrat.session import (
-    IterationRecord,
-    SessionLogRecord,
-    SessionRecord,
-    Worktrees,
-    read_records,
-    record_to_wire,
-    session_jsonl_path,
-)
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord, record_to_wire
+from gymrat.session.store import read_records
+from gymrat.session.workspace import Worktrees
 from tests._ansi import SGR_RE
 from tests.session.records._fixtures import SESSION_ID
 from tests.session.records._fixtures import iteration_record as _iteration_record

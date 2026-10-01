@@ -41,13 +41,9 @@ if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
     from gymrat.report.display import DisplayClass
     from gymrat.report.types import MetricComparison, MetricComparisons
-    from gymrat.session import (
-        BaselineRecord,
-        BaselineRef,
-        FinalizeRecord,
-        SessionRecord,
-    )
+    from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
     from gymrat.session.schema import KeepReason
+    from gymrat.session.workspace import BaselineRef
 
 # ---------------------------------------------------------------------------
 # Outcome and primary-figure types

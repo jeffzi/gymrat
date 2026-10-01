@@ -21,21 +21,17 @@ from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.keep import KeepOptions, keep_session
-from gymrat.session import (
+from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
+from gymrat.session.records import (
     BaselineRecord,
     Confirm,
     IterationPrimary,
     IterationRecord,
     KeepChecks,
     SessionLogRecord,
-    append_record,
-    baseline_worktree_dir,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
 )
 from gymrat.session.schema import Outcome
-from gymrat.session.store import latest_baseline
+from gymrat.session.store import append_record, latest_baseline, read_records
 from tests._ansi import SGR_RE, strip_ansi
 from tests._streams import FakeStream
 from tests.loop._settle import (

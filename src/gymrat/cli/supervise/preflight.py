@@ -25,27 +25,32 @@ from gymrat.loop.start import start_session
 from gymrat.plural import pluralize
 from gymrat.report.loop import format_start_summary
 from gymrat.sampling import TargetSpec
-from gymrat.session import (
-    SessionLogRecord,
-    append_record,
-    baseline_worktree_dir,
-    read_records,
-    recover_torn_tail,
-    session_jsonl_path,
-)
 from gymrat.session.budget import (
     estimate_iterate_duration,
     minutes_to_ms,
     ms_to_minutes,
 )
 from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import experiment_worktree_dir, lockfile_path
-from gymrat.session.store import fold_session, last_kept_position, latest_baseline
+from gymrat.session.paths import (
+    baseline_worktree_dir,
+    experiment_worktree_dir,
+    lockfile_path,
+    session_jsonl_path,
+)
+from gymrat.session.store import (
+    append_record,
+    fold_session,
+    last_kept_position,
+    latest_baseline,
+    read_records,
+    recover_torn_tail,
+)
 from gymrat.session.workspace import changed_file_count
 from gymrat.warn import warn_to_stderr
 
 if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
+    from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
 
 _BASELINE_LABEL = ".gymrat/worktrees/baseline"

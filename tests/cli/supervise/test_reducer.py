@@ -34,7 +34,7 @@ from gymrat.cli.supervise.types import (
     TrackedTool,
     Waiting,
 )
-from gymrat.session import IterationPrimary
+from gymrat.session.records import IterationPrimary
 from gymrat.supervisor.events import (
     CompactionEvent,
     TextDeltaEvent,

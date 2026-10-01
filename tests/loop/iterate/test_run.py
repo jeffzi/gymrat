@@ -30,13 +30,11 @@ from gymrat.progress_events import (
     ProgressEvent,
 )
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
-from gymrat.session import (
-    PairedSamples,
-    read_records,
-    session_jsonl_path,
-)
 from gymrat.session import workspace as _workspace
 from gymrat.session.budget import Budget
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import PairedSamples
+from gymrat.session.store import read_records
 from gymrat.targets import InPlaceTarget
 from tests.loop._hooks import HookScripts
 from tests.loop.iterate._fixtures import (

@@ -64,7 +64,7 @@ from tests.supervisor._mock_driver import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
-    from gymrat.session import SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
     from gymrat.supervisor import Driver, SupervisionResult
     from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
     from gymrat.supervisor.events import SessionObserver

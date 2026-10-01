@@ -21,21 +21,15 @@ from gymrat.clock import now_ns
 from gymrat.config import HooksConfig, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.start import StartResult, start_session
-from gymrat.session import (
-    BaselineRef,
-    SessionConfig,
-    SessionHooks,
-    SessionRecord,
-    Worktrees,
-    append_record,
+from gymrat.session.paths import (
     archived_session_path,
     baseline_worktree_dir,
     experiment_worktree_dir,
-    fold_session,
-    read_records,
-    remove_worktrees,
     session_jsonl_path,
 )
+from gymrat.session.records import SessionConfig, SessionHooks, SessionRecord
+from gymrat.session.store import append_record, fold_session, read_records
+from gymrat.session.workspace import BaselineRef, Worktrees, remove_worktrees
 from tests._git import run_git
 from tests.session.records._fixtures import committed_keep, finalize_record, iteration_record
 

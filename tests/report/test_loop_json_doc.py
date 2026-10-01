@@ -24,7 +24,7 @@ from gymrat.report.json_doc import (
     render_start_json,
     render_sync_json,
 )
-from gymrat.session import KeepChecks
+from gymrat.session.records import KeepChecks
 from tests.session.records._fixtures import (
     committed_keep,
     empty_session_state,

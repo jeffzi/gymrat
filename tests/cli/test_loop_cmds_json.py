@@ -13,7 +13,8 @@ from gymrat.cli.app import app
 from gymrat.loop.discard import DiscardResult
 from gymrat.loop.keep import KeepResult
 from gymrat.loop.start import start_session
-from gymrat.session import (
+from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.records import (
     DiscardRecord,
     FinalizeRecord,
     KeepChecks,
@@ -21,11 +22,8 @@ from gymrat.session import (
     SessionLogRecord,
     SessionRecord,
     StopRecord,
-    append_record,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
 )
+from gymrat.session.store import append_record, read_records
 from tests.cli._budget import install_budget
 from tests.cli._session import (
     make_discard_repo,

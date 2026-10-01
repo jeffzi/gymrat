@@ -35,14 +35,9 @@ from gymrat.cli.app import app
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import start_session
-from gymrat.session import (
-    KeepRecord,
-    SessionRecord,
-    append_record,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
-)
+from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.records import KeepRecord, SessionRecord
+from gymrat.session.store import append_record, read_records
 from tests._ansi import SGR_RE
 from tests._cli import no_color_env
 from tests._process_helpers import run_with_closed_reader

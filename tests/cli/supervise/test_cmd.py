@@ -36,12 +36,11 @@ from gymrat.config import Effort, ResolvedConfig, StopConfig, SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.exec import kill_live_process_groups
 from gymrat.loop.start import StartResult
-from gymrat.session import Worktrees
 from gymrat.session.paths import (
     lockfile_path,
     supervise_lockfile_path,
 )
-from gymrat.session.workspace import ensure_git_exclude
+from gymrat.session.workspace import Worktrees, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import (
     HooksFactory,

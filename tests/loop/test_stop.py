@@ -17,14 +17,9 @@ import pytest
 
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.stop import StopResult, stop_session
-from gymrat.session import (
-    SessionLogRecord,
-    StopRecord,
-    append_record,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
-)
+from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.records import SessionLogRecord, StopRecord
+from gymrat.session.store import append_record, read_records
 from tests.loop._settle import (
     capture_error,
     confirmed_regression,

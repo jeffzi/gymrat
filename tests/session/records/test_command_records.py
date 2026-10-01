@@ -3,7 +3,8 @@ from typing import get_args
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.session import CommandReason, parse_record, record_to_wire
+from gymrat.session.records import parse_record, record_to_wire
+from gymrat.session.schema import CommandReason
 from tests.session.records._wire import (
     COMMAND_RECORD,
     COMMAND_RECORD_SUCCESS,

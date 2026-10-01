@@ -18,15 +18,9 @@ from gymrat.cli import session_cmds
 from gymrat.cli.app import app
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import start_session
-from gymrat.session import (
-    FinalizeRecord,
-    SessionRecord,
-    StopRecord,
-    append_record,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
-)
+from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.records import FinalizeRecord, SessionRecord, StopRecord
+from gymrat.session.store import append_record, read_records
 from tests._ansi import SGR_RE
 from tests.cli._budget import install_budget
 from tests.cli._session import (

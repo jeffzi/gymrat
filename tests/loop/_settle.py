@@ -26,7 +26,8 @@ from gymrat.config import (
 from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.loop.start import start_session
-from gymrat.session import (
+from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.records import (
     BaselineRecord,
     CommandRecord,
     Confirm,
@@ -38,12 +39,9 @@ from gymrat.session import (
     MetricVerdict,
     PairedSamples,
     SessionLogRecord,
-    append_record,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
 )
 from gymrat.session.schema import Outcome
+from gymrat.session.store import append_record, read_records
 from tests.session.records._fixtures import blocked_keep, iteration_record
 
 CHECKS = "npm test"

@@ -27,8 +27,8 @@ from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, probe_session
 from gymrat.report.text.probe import render_probe_report
 from gymrat.report.types import MetricMeasurement, ReportOptions
 from gymrat.sampling import TargetSpec
-from gymrat.session import experiment_worktree_dir, read_records, session_jsonl_path
-from gymrat.session.paths import progress_path
+from gymrat.session.paths import experiment_worktree_dir, progress_path, session_jsonl_path
+from gymrat.session.store import read_records
 from tests.loop._probe import (
     BASELINE_SAMPLES,
     baseline_of,
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.model import Direction
-    from gymrat.session import SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
 
 #: The rerun template a consumer configures when their bench can be narrowed.
 FILTER = "npm run bench -- --filter {names}"

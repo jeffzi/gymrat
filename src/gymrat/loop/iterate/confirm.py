@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     from gymrat.config import ResolvedConfig
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
-    from gymrat.session import PairedSamples
+    from gymrat.session.records import PairedSamples
 
 
 @dataclass(frozen=True, slots=True)

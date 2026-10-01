@@ -21,7 +21,9 @@ from typer.testing import CliRunner
 from gymrat.config import ResolvedConfig
 from gymrat.measure import MeasureOptions
 from gymrat.report.types import MeasurementResult
-from gymrat.session import CommandRecord, read_records, session_jsonl_path
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import CommandRecord
+from gymrat.session.store import read_records
 from tests._ansi import SGR_RE, strip_ansi
 from tests._streams import RaisingStream
 from tests.report._inputs import create_measurement_result
@@ -178,7 +180,8 @@ def never_tty(_stream: object) -> bool:
 def make_discard_repo(repo: str) -> str:
     """Set up ``repo`` with an open session and one unsettled iteration to discard."""
     from gymrat.loop.start import start_session
-    from gymrat.session import append_record, session_jsonl_path
+    from gymrat.session.paths import session_jsonl_path
+    from gymrat.session.store import append_record
     from tests.loop.iterate._fixtures import resolved_config
     from tests.session.records._fixtures import iteration_record
 

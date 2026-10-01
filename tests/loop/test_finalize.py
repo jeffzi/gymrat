@@ -21,16 +21,9 @@ from gymrat.loop.finalize import (
     finalize_session,
 )
 from gymrat.loop.start import start_session
-from gymrat.session import (
-    FinalizeRecord,
-    SessionLogRecord,
-    SessionRecord,
-    append_record,
-    baseline_worktree_dir,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
-)
+from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
+from gymrat.session.records import FinalizeRecord, SessionLogRecord, SessionRecord
+from gymrat.session.store import append_record, read_records
 from tests._git import run_git
 from tests.session.records._fixtures import committed_keep, iteration_record, stop_record
 

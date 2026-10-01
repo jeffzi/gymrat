@@ -15,8 +15,8 @@ from pydantic import BaseModel
 
 from gymrat.event_docs import render_json_schemas
 from gymrat.event_docs.asyncapi import READERS, SESSION_LOG_ADDRESS, SUPERVISOR_LOG_ADDRESS
-from gymrat.session import SessionLogRecord
 from gymrat.session.paths import SESSION_LOG_NAME, supervisor_log_name
+from gymrat.session.records import SessionLogRecord
 from gymrat.supervisor import SessionEvent
 
 

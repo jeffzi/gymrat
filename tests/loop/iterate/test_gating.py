@@ -20,17 +20,17 @@ import pytest
 from gymrat.config import HooksConfig, MetricEntry, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.iterate import iterate_session
-from gymrat.session import (
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import (
     Confirm,
     HookRecord,
     IterationPrimary,
     IterationRecord,
     MetricVerdict,
     PairedSamples,
-    read_records,
-    session_jsonl_path,
 )
-from gymrat.session import append_record as append_session_record
+from gymrat.session.store import append_record as append_session_record
+from gymrat.session.store import read_records
 from tests.loop._hooks import HookScripts, expected_hook_record
 from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,

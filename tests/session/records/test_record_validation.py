@@ -11,13 +11,13 @@ from typing import get_args
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.session import parse_record
 from gymrat.session.records import (
     BaselineRecord,
     IterationRecord,
     KeepChecks,
     KeepRecord,
     SessionLogRecord,
+    parse_record,
 )
 from tests.session.records._fixtures import AT
 from tests.session.records._wire import (

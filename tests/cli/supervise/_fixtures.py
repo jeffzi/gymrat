@@ -24,13 +24,9 @@ from gymrat.cli.style import CLI_THEME
 from gymrat.cli.supervise.progress import REFRESH_MS, create_supervise_reporter
 from gymrat.cli.supervise.types import IDLE_WARN_MS, ReadSessionResult, SuperviseReporter
 from gymrat.loop.start import start_session
-from gymrat.session import (
-    BaselineRecord,
-    IterationPrimary,
-    IterationRecord,
-    append_record,
-    session_jsonl_path,
-)
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import BaselineRecord, IterationPrimary, IterationRecord
+from gymrat.session.store import append_record
 from gymrat.supervisor import SessionOutcome, SupervisionResult
 from gymrat.supervisor.events import (
     CapAction,

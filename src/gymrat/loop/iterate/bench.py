@@ -30,7 +30,7 @@ from gymrat.sampling import (
     collect_samples,
     resolve_metric_meta_from_samples,
 )
-from gymrat.session import PairedSamples, SessionRecord
+from gymrat.session.records import PairedSamples, SessionRecord
 from gymrat.targets import InPlaceTarget
 from gymrat.verdict import compute_geomean, compute_kind_aggregates, compute_verdicts
 

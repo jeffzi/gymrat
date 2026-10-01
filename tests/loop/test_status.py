@@ -26,18 +26,17 @@ import pytest
 from gymrat.config import BenchlessConfig, StopConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.loop.status import status_session
-from gymrat.session import (
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import (
     BaselineRecord,
-    BaselineRef,
     IterationPrimary,
     IterationRecord,
     KeepChecks,
     KeepRecord,
     SessionLogRecord,
     SessionRecord,
-    Worktrees,
-    session_jsonl_path,
 )
+from gymrat.session.workspace import BaselineRef, Worktrees
 from tests._ansi import SGR_RE
 from tests.session.records._fixtures import (
     AT,

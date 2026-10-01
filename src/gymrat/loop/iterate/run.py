@@ -51,14 +51,9 @@ from gymrat.report.loop import (
 from gymrat.report.style import RENDER_WIDTH, render_lines
 from gymrat.report.text import render_report
 from gymrat.report.types import ComparisonResult, ReportOptions
-from gymrat.session import (
-    IterationRecord,
-    SessionState,
-    append_record,
-    require_open_session,
-)
 from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
+from gymrat.session.store import SessionState, append_record, require_open_session
 from gymrat.warn import warn_to_stderr
 
 if TYPE_CHECKING:
@@ -67,7 +62,7 @@ if TYPE_CHECKING:
 
     from gymrat.config import BenchlessConfig, ResolvedConfig
     from gymrat.progress_events import ProgressCallback
-    from gymrat.session import SessionLogRecord
+    from gymrat.session.records import IterationRecord, SessionLogRecord
     from gymrat.session.schema import CommandReason
     from gymrat.warn import WarnSink
 

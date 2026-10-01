@@ -14,8 +14,8 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 
 from gymrat.command_run import CommandTrace, with_repo_lock
 from gymrat.errors import GymratError
-from gymrat.session import append_record, read_records, session_jsonl_path
-from gymrat.session.paths import repo_root
+from gymrat.session.paths import repo_root, session_jsonl_path
+from gymrat.session.store import append_record, read_records
 from tests._command_run_fixtures import (
     isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )

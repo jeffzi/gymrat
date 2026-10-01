@@ -28,7 +28,8 @@ import pytest
 from gymrat.config import BenchlessConfig
 from gymrat.exec import ExecOptions, ExecResult
 from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.session import (
+from gymrat.session.paths import experiment_worktree_dir, lockfile_path, session_jsonl_path
+from gymrat.session.records import (
     CommandRecord,
     DiscardRecord,
     FinalizeRecord,
@@ -36,12 +37,8 @@ from gymrat.session import (
     KeepRecord,
     SessionLogRecord,
     SessionRecord,
-    append_record,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
 )
-from gymrat.session.paths import lockfile_path
+from gymrat.session.store import append_record, read_records
 from gymrat.session.workspace import worktree_fingerprint
 from gymrat.supervisor.exit_sequence import (
     ExitPhase,

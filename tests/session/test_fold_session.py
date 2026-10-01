@@ -7,11 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from gymrat.session import (
-    KeepChecks,
-    KeepRecord,
-    SessionLogRecord,
-)
+from gymrat.session.records import KeepChecks, KeepRecord, SessionLogRecord
 from gymrat.session.store import (
     SessionState,
     fold_session,

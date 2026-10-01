@@ -28,16 +28,10 @@ from gymrat.errors import GymratError
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import StartResult, start_session
-from gymrat.session import (
-    BaselineRecord,
-    FinalizeRecord,
-    SessionRecord,
-    append_record,
-    read_records,
-    session_jsonl_path,
-)
 from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import lockfile_path
+from gymrat.session.paths import lockfile_path, session_jsonl_path
+from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
+from gymrat.session.store import append_record, read_records
 from tests._git import run_git
 from tests.cli.supervise._fixtures import (
     baseline_record,

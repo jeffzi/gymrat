@@ -24,13 +24,9 @@ from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.measure import MeasureOptions
 from gymrat.report.types import MeasurementResult
 from gymrat.sampling import TargetSpec
-from gymrat.session import (
-    BaselineRecord,
-    CommandRecord,
-    append_record,
-    read_records,
-    session_jsonl_path,
-)
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import BaselineRecord, CommandRecord
+from gymrat.session.store import append_record, read_records
 from tests._rich import unwrap_panel
 from tests.cli._budget import install_budget, install_tight_budget
 from tests.cli._session import (
