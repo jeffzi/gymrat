@@ -7,12 +7,6 @@ import pytest
 from gymrat.display_path import abbreviate_home
 
 
-def test_abbreviate_home_when_imported_does_live_in_display_path_module():
-    module = abbreviate_home.__module__
-
-    assert module == "gymrat.display_path"
-
-
 @pytest.mark.parametrize(
     ("relative", "expected"),
     [

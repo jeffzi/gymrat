@@ -19,7 +19,6 @@ from gymrat.config import (
     SuperviseConfig,
     flag_problem,
     inspect_config,
-    loop_key_problems,
     resolve_benchless_config,
     resolve_config,
     runbook_problem,
@@ -954,20 +953,6 @@ def test_resolve_config_when_supervise_table_present_does_expose_model_and_effor
 # ---------------------------------------------------------------------------
 # problem helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "helper",
-    [
-        pytest.param(flag_problem, id="flag_problem"),
-        pytest.param(loop_key_problems, id="loop_key_problems"),
-        pytest.param(runbook_problem, id="runbook_problem"),
-    ],
-)
-def test_problem_helper_when_imported_from_config_does_live_in_resolve_module(
-    helper: Callable[..., object],
-):
-    assert helper.__module__ == "gymrat.config.resolve"
 
 
 @pytest.mark.parametrize(

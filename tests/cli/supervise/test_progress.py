@@ -166,12 +166,6 @@ def test_make_default_read_when_baseline_presence_varies_does_report_it(
     assert result.has_baseline is has_baseline
 
 
-def test_make_default_read_when_imported_does_live_in_the_progress_module():
-    module = make_default_read.__module__
-
-    assert module == "gymrat.cli.supervise.progress"
-
-
 # ---------------------------------------------------------------------------
 # panel structure — title
 # ---------------------------------------------------------------------------

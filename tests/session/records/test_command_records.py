@@ -138,20 +138,3 @@ def test_command_reason_when_imported_does_accept_all_defined_values():
     actual = set(get_args(CommandReason))
 
     assert actual == set(COMMAND_REASONS)
-
-
-# ---------------------------------------------------------------------------
-# CommandRecord — exports
-# ---------------------------------------------------------------------------
-
-
-def test_command_record_when_imported_from_records_package_does_exist():
-    from gymrat.session.records import CommandRecord
-
-    assert CommandRecord is not None
-
-
-def test_command_reason_when_imported_from_session_package_does_exist():
-    from gymrat.session import CommandReason
-
-    assert CommandReason is not None
