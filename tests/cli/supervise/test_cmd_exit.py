@@ -25,9 +25,10 @@ from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, _live_process_groups
 from gymrat.exec import exec as run_exec
 from gymrat.session.paths import budget_path
-from gymrat.supervisor import SupervisionResult, create_event_log_writer, event_from_wire
+from gymrat.supervisor.event_log import create_event_log_writer
+from gymrat.supervisor.events import event_from_wire
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
-from gymrat.supervisor.supervise import EndedBy
+from gymrat.supervisor.supervise import EndedBy, SupervisionResult
 from tests._process_helpers import is_alive, wait_for_pid_file, wait_until_dead
 from tests._rich import unwrap_panel
 from tests.cli.supervise._fixtures import (

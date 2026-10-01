@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
     from gymrat.cli.supervise.types import ReadSessionResult, SuperviseReporter
     from gymrat.supervisor.events import SessionObserver
+    from gymrat.supervisor.supervise import SupervisionResult
 
 from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
 from gymrat.cli.options import (
@@ -66,23 +67,16 @@ from gymrat.session.paths import (
 )
 from gymrat.session.workspace import dirty_file_count, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
-from gymrat.supervisor import (
-    Driver,
-    KickoffResult,
-    SessionPrompt,
-    SupervisedSession,
-    SupervisionResult,
-    combine_observers,
-    compose_kickoff,
-    create_claude_driver,
-    create_event_log_writer,
-    gymrat_tools_factory,
-    supervise,
-    supervise_hooks_factory,
-)
-from gymrat.supervisor.event_log import probe_event_log_path
-from gymrat.supervisor.events import DirtyInfo, LaunchEvent, summarize
+from gymrat.supervisor.claude import create_claude_driver
+from gymrat.supervisor.context import SupervisedSession
+from gymrat.supervisor.driver import Driver, SessionPrompt
+from gymrat.supervisor.event_log import create_event_log_writer, probe_event_log_path
+from gymrat.supervisor.events import DirtyInfo, LaunchEvent, combine_observers, summarize
 from gymrat.supervisor.exit_sequence import ExitReport, run_exit_sequence
+from gymrat.supervisor.hooks import supervise_hooks_factory
+from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
+from gymrat.supervisor.supervise import supervise
+from gymrat.supervisor.tools import gymrat_tools_factory
 from gymrat.warn import warn_to_stderr
 
 # ---------------------------------------------------------------------------

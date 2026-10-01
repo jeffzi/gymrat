@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from gymrat.event_docs import render_json_schemas
 from gymrat.event_docs.asyncapi import render_asyncapi
 from gymrat.session.records import SessionLogRecord
-from gymrat.supervisor import SessionEvent
+from gymrat.supervisor.events import SessionEvent
 from tests.event_docs._imports import modules_imported_by
 
 # ---------------------------------------------------------------------------

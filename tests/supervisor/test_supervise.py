@@ -20,13 +20,9 @@ from typing import override
 
 import pytest
 
-from gymrat.supervisor import (
-    SessionOutcome,
-    TextDeltaEvent,
-    supervise,
-)
-from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
-from gymrat.supervisor.events import SessionEvent, SessionObserver
+from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
+from gymrat.supervisor.events import SessionEvent, SessionObserver, TextDeltaEvent
+from gymrat.supervisor.supervise import supervise
 from tests.supervisor._fixtures import (
     _cap_events,
     collecting_observer,

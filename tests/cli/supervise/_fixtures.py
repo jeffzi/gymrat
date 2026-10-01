@@ -27,7 +27,7 @@ from gymrat.loop.start import start_session
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import BaselineRecord, IterationPrimary, IterationRecord
 from gymrat.session.store import append_record
-from gymrat.supervisor import SessionOutcome, SupervisionResult
+from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     CapAction,
     CapEvent,
@@ -43,6 +43,7 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
     UsageUpdateEvent,
 )
+from gymrat.supervisor.supervise import SupervisionResult
 from tests._rich import CleanupRegistry, frame_text
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (

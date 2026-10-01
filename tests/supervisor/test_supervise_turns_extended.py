@@ -10,21 +10,20 @@ import pytest
 from gymrat.clock import now_ms, now_ns
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
-from gymrat.supervisor import (
-    Driver,
+from gymrat.supervisor.events import (
     FollowUpEvent,
     LaunchEvent,
     SessionObserver,
-    SessionPrompt,
-    SupervisedSession,
     TextDeltaEvent,
     ToolStartEvent,
     UsageUpdateEvent,
-    supervise,
 )
+from gymrat.supervisor.supervise import supervise
 from gymrat.supervisor.turns import CONSECUTIVE_DISCARD_LIMIT
 
 if TYPE_CHECKING:
+    from gymrat.supervisor.context import SupervisedSession
+    from gymrat.supervisor.driver import Driver, SessionPrompt
     from gymrat.supervisor.supervise import SupervisionResult
 from tests.session.records._fixtures import discard_record
 from tests.supervisor._fixtures import (

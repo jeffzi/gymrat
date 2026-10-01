@@ -42,17 +42,13 @@ from gymrat.session.paths import (
 )
 from gymrat.session.workspace import Worktrees, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
-from gymrat.supervisor import (
-    HooksFactory,
-    SessionPrompt,
-    SupervisionResult,
-    ToolsFactory,
-    create_claude_driver,
-    gymrat_tools_factory,
-    supervise_hooks_factory,
-)
+from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.context import SupervisedSession
+from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
+from gymrat.supervisor.hooks import HooksFactory, supervise_hooks_factory
+from gymrat.supervisor.supervise import SupervisionResult
+from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
 from tests._ansi import strip_ansi
 from tests._rich import unwrap_panel
 from tests.cli._help import help_output
@@ -69,6 +65,7 @@ from tests.conftest import hold_lock
 from tests.session.records._fixtures import (
     session_record,
 )
+from tests.supervisor._mock_driver import CostStep, create_mock_driver
 
 runner = CliRunner()
 
@@ -588,6 +585,20 @@ def test_supervise_when_run_does_pass_the_claude_driver_to_supervise(
     assert result.exit_code == 0
     seams.create_driver.assert_called_once()
     assert seams.supervise_calls[0]["driver"] is seams.driver
+
+
+def test_supervise_when_driver_session_completes_does_run_the_real_supervisor(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    commands_supervise = supervise_cmd.supervise
+    seams = _install_seams(monkeypatch)
+    seams.create_driver.return_value = create_mock_driver([CostStep(cost_usd=0.01)])
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.supervise", commands_supervise)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    assert seams.exit_calls[0]["ended_by"] == "session"
 
 
 def test_supervise_when_prompt_given_does_compose_kickoff_with_it(

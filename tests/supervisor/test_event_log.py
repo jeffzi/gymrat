@@ -14,15 +14,14 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.supervisor import (
+from gymrat.supervisor.event_log import create_event_log_writer, probe_event_log_path
+from gymrat.supervisor.events import (
     CapEvent,
     TextDeltaEvent,
     UsageUpdateEvent,
     combine_observers,
-    create_event_log_writer,
     to_json_line,
 )
-from gymrat.supervisor.event_log import probe_event_log_path
 from tests.supervisor._fixtures import read_log_lines
 
 # ---------------------------------------------------------------------------

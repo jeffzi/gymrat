@@ -18,8 +18,12 @@ call time, never when the app is assembled.
 
 The same discipline covers ``claude_agent_sdk``, the supervise driver's backend:
 it drags in ``mcp``, ``starlette``, ``uvicorn``, and ``httpx``, so the Claude
-driver imports it lazily inside ``start`` — importing ``gymrat.supervisor``
-(and the CLI) must never pull it in.
+driver imports it lazily inside ``start`` — importing the supervisor modules
+(and the CLI) must never pull it in. The package ``__init__`` imports nothing,
+so the package probe names, one by one, the supervisor modules the package used
+to import (all but ``events``, which ``hooks`` imports). The modules those import
+load with them, and the exit-sequence modules load through the CLI probes, which
+import the ``supervise`` command.
 
 ``opentelemetry`` ships only with the ``otel`` extra, so modules that load
 without it — including the traceparent helpers in ``gymrat.telemetry.ids`` and
@@ -62,6 +66,13 @@ import gymrat.signals
 import gymrat.sampling
 import gymrat.targets
 import gymrat.supervisor
+import gymrat.supervisor.claude
+import gymrat.supervisor.context
+import gymrat.supervisor.driver
+import gymrat.supervisor.event_log
+import gymrat.supervisor.kickoff
+import gymrat.supervisor.stdio
+import gymrat.supervisor.supervise
 import gymrat.supervisor.tools
 import gymrat.supervisor.hooks
 import gymrat.cli.supervise.span_lifecycle

@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from gymrat.supervisor.supervise import SupervisionResult
+
 import pytest
 from opentelemetry.trace import StatusCode
 
@@ -21,7 +23,7 @@ from gymrat.cli.supervise import span_lifecycle
 from gymrat.config import SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
-from gymrat.supervisor import SessionPrompt, SupervisionResult
+from gymrat.supervisor.driver import SessionPrompt
 from tests.cli.supervise._fixtures import make_supervision_result
 from tests.cli.supervise.test_cmd import (
     _CAP_MINUTES,

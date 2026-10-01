@@ -26,7 +26,6 @@ import pytest
 
 from gymrat import exec as gymrat_exec
 from gymrat.process_group import TERMINATE_GRACE_S
-from gymrat.supervisor import create_stdio_driver
 from gymrat.supervisor.driver import DriverSession, SessionOutcome
 from gymrat.supervisor.events import (
     SessionEvent,
@@ -35,6 +34,7 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
     UsageUpdateEvent,
 )
+from gymrat.supervisor.stdio import create_stdio_driver
 from tests._cli import try_read_report
 from tests._process_helpers import (
     SLEEPER_ARGV,
