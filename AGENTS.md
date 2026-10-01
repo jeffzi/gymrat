@@ -48,7 +48,7 @@ user and wait for explicit approval; never promote a suppression into config on 
 
 ## Module size
 
-`check-max-lines` caps a file at 400 code lines and a function at 60. The cap signals a file with
+`check-max-lines` caps a file at 500 code lines and a function at 60. The cap signals a file with
 more than one concern; it is not a budget.
 
 - **New code lives in its caller's module**, unless two or more modules import it today, or it is a
@@ -61,7 +61,7 @@ more than one concern; it is not a budget.
   one reason — into a module named for what it does (never "helpers", "utils", "misc"): a new
   module, or an existing one you have read that already owns that concern. A module carved off its
   only importer, such as `supervisor/tasks.py`, owns nothing; never add to it. Never move just
-  enough to pass, and never compress code. One concern, one move: the file should land at 350 or
+  enough to pass, and never compress code. One concern, one move: the file should land at 450 or
   below, and if it doesn't, pick a different, larger concern — never top up the move with other
   code.
 

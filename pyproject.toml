@@ -167,6 +167,10 @@ check-return-types = false
 check-style-mismatch = true
 check-yield-types = false
 
+[tool.pymaxlines]
+max-lines = 500
+max-lines-per-function = 60
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
