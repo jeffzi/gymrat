@@ -15,8 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
-from gymrat.doctor.checks import Check, CheckSection
-from gymrat.doctor.report import GitEnvironment
+from gymrat.doctor import Check, CheckSection, GitEnvironment
 from gymrat.scaffold import SKILL_RELATIVE_PATH
 from tests.cli._help import help_output
 from tests.cli._session import closed_stdout_error, closed_stdout_runner
@@ -45,7 +44,7 @@ def _patch_doctor(
             raise env_error
         return CheckSection(title="Environment", checks=[Check("git", "ok", "available")])
 
-    monkeypatch.setattr("gymrat.doctor.report.build_environment_section", env_section)
+    monkeypatch.setattr("gymrat.doctor.build_environment_section", env_section)
 
     def fake_text(_report: object, **_kwargs: object) -> str:
         return "doctor text report"
@@ -206,7 +205,7 @@ def test_doctor_when_skill_path_is_directory_does_not_report_installed(
 
     git_env = GitEnvironment(git_available=True, inside_git_repo=True, repo_root_dir=str(tmp_path))
     monkeypatch.setattr(
-        "gymrat.doctor.report.detect_git_environment",
+        "gymrat.doctor.detect_git_environment",
         lambda _cwd: git_env,  # pyrefly: ignore
     )
 
@@ -218,7 +217,7 @@ def test_doctor_when_skill_path_is_directory_does_not_report_installed(
         workflow_calls.append(dict(kwargs))
         return CheckSection(title="Workflow", checks=[Check("skill file", "ok", "found")])
 
-    monkeypatch.setattr("gymrat.doctor.report.build_workflow_section", workflow_section)
+    monkeypatch.setattr("gymrat.doctor.build_workflow_section", workflow_section)
 
     runner.invoke(app, ["doctor"])
 

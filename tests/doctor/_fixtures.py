@@ -1,10 +1,10 @@
-"""Shared seam patches for ``gymrat.doctor.report`` tests.
+"""Shared seam patches for ``gymrat.doctor`` tests.
 
 This is test-support code, not a test module: it carries no test functions of
 its own. Both ``tests/doctor/test_report.py`` (assembly-level) and
 ``tests/cli/test_doctor_cmd.py`` (CLI-level) patch the config-inspection,
 config-section, workflow-section, and bench-section seams on
-``gymrat.doctor.report`` the same way; :func:`patch_common_seams` holds that
+``gymrat.doctor`` the same way; :func:`patch_common_seams` holds that
 shared body. Each call site still owns its own environment/git seams and its
 own ``problems`` wording, since those diverge between the two test files.
 """
@@ -20,9 +20,9 @@ if TYPE_CHECKING:
     import pytest
 
 from gymrat.config import BenchlessConfig, ConfigInspection
-from gymrat.doctor.checks import Check, CheckSection
+from gymrat.doctor import Check, CheckSection
 
-_MODULE = "gymrat.doctor.report"
+_MODULE = "gymrat.doctor"
 
 
 def sample_config() -> BenchlessConfig:

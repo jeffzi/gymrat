@@ -26,12 +26,10 @@ from gymrat.cli.options import (
     TimeoutOption,
 )
 from gymrat.cli.shared import SharedFlags, run_cli, wants_json, write_stdout
-from gymrat.doctor.render import (
+from gymrat.doctor import (
+    build_doctor_report,
     render_doctor_json,
     render_doctor_report,
-)
-from gymrat.doctor.report import (
-    build_doctor_report,
 )
 from gymrat.errors import GATE_EXIT_CODE
 

@@ -6,17 +6,20 @@ driven through ``NO_COLOR`` / ``FORCE_COLOR`` the way a shell would set it.
 """
 
 import json
+from collections.abc import Callable
 
 import pytest
+from syrupy.assertion import SnapshotAssertion
 
-from gymrat.doctor.checks import (
+from gymrat.doctor import (
     Check,
     CheckSection,
     DoctorReport,
     EnvironmentInfo,
     create_doctor_report,
+    render_doctor_json,
+    render_doctor_report,
 )
-from gymrat.doctor.render import render_doctor_json, render_doctor_report
 from tests._ansi import strip_ansi
 
 
@@ -244,6 +247,55 @@ def test_render_doctor_report_when_color_resolved_does_control_ansi(
     output = render_doctor_report(report, color=color)
 
     assert (_ESCAPE_PREFIX in output) is expect_ansi
+
+
+def _mixed_status_report() -> DoctorReport:
+    """A report with a passing, a warning and a failing check, each kind with a hint where it applies."""
+    return _report([
+        CheckSection(
+            title="Environment",
+            checks=[
+                Check("git", "ok", "git 2.45.0"),
+                Check("skill", "warn", "skill not installed", hint="run gymrat init"),
+            ],
+        ),
+        CheckSection(
+            title="Bench",
+            checks=[Check("bench", "fail", "bench not set", hint="set bench in gymrat.toml")],
+        ),
+    ])
+
+
+def _warning_only_report() -> DoctorReport:
+    """A report whose only problem is a warning."""
+    return _report([
+        CheckSection(
+            title="Environment",
+            checks=[
+                Check("git", "ok", "git 2.45.0"),
+                Check("skill", "warn", "skill not installed", hint="run gymrat init"),
+            ],
+        )
+    ])
+
+
+@pytest.mark.parametrize("color", [True, False], ids=["color-on", "color-off"])
+@pytest.mark.parametrize(
+    "make_report",
+    [
+        pytest.param(_two_status_report, id="ok-and-fail"),
+        pytest.param(_mixed_status_report, id="ok-warn-fail"),
+        pytest.param(_warning_only_report, id="warn-only"),
+    ],
+)
+def test_render_doctor_report_when_rendered_does_match_the_snapshot(
+    make_report: Callable[[], DoctorReport], color: bool, snapshot: SnapshotAssertion
+):
+    report = make_report()
+
+    output = render_doctor_report(report, color=color)
+
+    assert output.split("\n") == snapshot
 
 
 # ---------------------------------------------------------------------------

@@ -37,8 +37,13 @@ import pytest
 
 from gymrat.cli.console import resolve_stream_color, set_color_override, stderr_console
 from gymrat.cli.shared import format_cli_error, resolve_render_mode
-from gymrat.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
-from gymrat.doctor.render import render_doctor_report
+from gymrat.doctor import (
+    Check,
+    CheckSection,
+    EnvironmentInfo,
+    create_doctor_report,
+    render_doctor_report,
+)
 from tests._git import git as _git
 from tests.hardening._bench_helpers import drain as _drain
 from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench

@@ -8,7 +8,7 @@ dataclass, so a builder's status/detail/hint output is asserted directly.
 import pytest
 
 from gymrat.config import BenchlessConfig, ConfigInspection, StopConfig
-from gymrat.doctor.checks import (
+from gymrat.doctor import (
     Check,
     CheckSection,
     EnvironmentInfo,
