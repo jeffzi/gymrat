@@ -1,4 +1,4 @@
-"""Command-span export tests for :mod:`gymrat.cli.command_run`.
+"""Command-span export tests for :mod:`gymrat.command_run`.
 
 These cover the spans ``with_repo_lock`` emits when tracing is enabled: span
 identity, attributes, status, events, trace-context parenting and linking, the
@@ -12,14 +12,14 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 
-from gymrat.cli.command_run import CommandTrace, with_repo_lock
+from gymrat.command_run import CommandTrace, with_repo_lock
 from gymrat.errors import GymratError
 from gymrat.session import append_record, read_records, session_jsonl_path
 from gymrat.session.paths import repo_root
-from tests.cli._lock_fixtures import (
+from tests._command_run_fixtures import (
     isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )
-from tests.cli._lock_fixtures import (
+from tests._command_run_fixtures import (
     seeded_session as _seeded_session,
 )
 from tests.session.records._fixtures import iteration_record

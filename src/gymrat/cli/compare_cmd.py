@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Annotated, assert_never
 import typer
 
 from gymrat.cli.budget_report import budget_for_report, warn_duration_over_budget
-from gymrat.cli.command_run import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.cli.console import apply_color_override, apply_debug
 from gymrat.cli.options import (
     AdapterOption,
@@ -41,6 +40,7 @@ from gymrat.cli.shared import (
     run_cli,
     run_options_of,
 )
+from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.config import resolve_config
 from gymrat.errors import GATE_EXIT_CODE
 from gymrat.report import render_json, render_report

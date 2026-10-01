@@ -2,13 +2,15 @@
 
 These drive the assembled CLI through :class:`typer.testing.CliRunner`, so the
 root callback, the ``--version`` eager option, the shared ``--debug`` flag in
-both positions, the root epilogue, and unknown-command routing are exercised the
-way a shell would invoke them.
+both positions, the root epilogue, unknown-command routing, and the exit-2 error
+every locking command prints when the repository root cannot be resolved are
+exercised the way a shell would invoke them.
 """
 
 import errno
 import importlib.metadata
 import os
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -18,7 +20,7 @@ from typer.testing import CliRunner
 from gymrat.cli.app import app
 from gymrat.cli.console import is_debug_mode
 from gymrat.cli.shared import BUGS_URL
-from gymrat.errors import TOOL_FAILURE_EXIT_CODE
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from tests._ansi import SGR_RE, strip_ansi
 from tests._rich import unwrap_panel
 from tests.cli._help import help_output
@@ -229,6 +231,69 @@ def test_app_when_unknown_command_does_exit_two():
     result = runner.invoke(app, ["banana"])
 
     assert result.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# repository discovery failure
+# ---------------------------------------------------------------------------
+
+
+REPOSITORY_COMMANDS = [
+    pytest.param(["compare", "main", "main", "--bench", "sh bench.sh"], id="compare"),
+    pytest.param(["measure", "--bench", "sh bench.sh"], id="measure"),
+    pytest.param(["probe"], id="probe"),
+    pytest.param(["start"], id="start"),
+    pytest.param(["iterate"], id="iterate"),
+    pytest.param(["keep"], id="keep"),
+    pytest.param(["discard"], id="discard"),
+    pytest.param(["finalize"], id="finalize"),
+    pytest.param(["stop", "--message", "done"], id="stop"),
+    pytest.param(["status"], id="status"),
+    pytest.param(["sync"], id="sync"),
+]
+
+
+@pytest.mark.parametrize("argv", REPOSITORY_COMMANDS)
+@pytest.mark.usefixtures("repo")
+def test_app_when_repository_root_cannot_be_resolved_does_exit_two_with_git_diagnostics(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch
+):
+    def broken_git(*_args: object, **_kwargs: object) -> str:
+        raise subprocess.CalledProcessError(
+            128, ["git"], stderr="fatal: detected dubious ownership\n"
+        )
+
+    monkeypatch.setattr("gymrat.session.paths.run_git", broken_git)
+    cwd = os.getcwd()  # noqa: PTH109 -- the message quotes the str cwd repo discovery saw
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert (
+        strip_ansi(result.stderr).split()
+        == (
+            f"Error: Cannot determine the git repository at {cwd}: fatal: detected dubious ownership"
+        ).split()
+    )
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("argv", REPOSITORY_COMMANDS)
+@pytest.mark.usefixtures("repo")
+def test_app_when_seam_discovery_error_carries_a_hint_does_print_message_and_hint(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch
+):
+    def broken_discovery(*_args: object, **_kwargs: object) -> str:
+        message = "detected dubious ownership"
+        raise GymratError(message, hint="Mark the repository as safe.")
+
+    monkeypatch.setattr("gymrat.command_run.repo_root", broken_discovery)
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert result.stderr == "Error: detected dubious ownership\nMark the repository as safe.\n"
+    assert result.stdout == ""
 
 
 # ---------------------------------------------------------------------------

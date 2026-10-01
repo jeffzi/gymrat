@@ -17,12 +17,11 @@ if TYPE_CHECKING:
 
     from gymrat.config import CliFlags
     from gymrat.session.records.models import SessionLogRecord
-    from gymrat.session.schema import CommandReason
+    from gymrat.session.schema import CommandOrigin, CommandReason
 
 import typer
 
 from gymrat import clock as _clock
-from gymrat.cli.supervised import command_origin
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate import LoopStopError
@@ -35,6 +34,11 @@ from gymrat.warn import warn_to_stderr
 # ---------------------------------------------------------------------------
 # Trace bookkeeping
 # ---------------------------------------------------------------------------
+
+
+def command_origin() -> CommandOrigin:
+    """The running command's origin: ``tool`` only when the supervisor says so, else ``cli``."""
+    return "tool" if os.environ.get("GYMRAT_COMMAND_ORIGIN") == "tool" else "cli"
 
 
 @dataclass(slots=True)
@@ -131,13 +135,13 @@ async def with_repo_lock[T](
     The lock is acquired around ``body`` and released however it settles —
     including on exception, and always before the caller renders its report.
 
-    With no ``root`` the repository is discovered from the process working
-    directory: outside every git repository the answer is to run ``body`` with
-    no lock at all, and any other git failure exits without benchmarking rather
-    than running unlocked. A caller that passes ``root`` has already chosen the
-    repository, so the working directory is never consulted and the unlocked
-    "not a git repository" answer never applies — the lock is taken for that
-    root whether or not it is a repository.
+    With no ``root``, a run outside every git repository executes ``body`` with
+    no lock at all.
+
+    A caller that passes ``root`` has already chosen the repository, so the
+    working directory is never consulted and the unlocked "not a git
+    repository" answer never applies — the lock is taken for that root whether
+    or not it is a repository.
 
     Holding the lock is what makes repairing the session log safe: a torn final
     line can only belong to a writer the previous run left dead, so the tail is
@@ -159,8 +163,12 @@ async def with_repo_lock[T](
 
     Raises:
         LockContentionError: When another process already holds the lock.
-        GymratError: When the lock file cannot be opened. Any exception
-            ``body`` raises also propagates unchanged.
+        GymratError: When ``root`` is ``None`` and the repository root cannot
+            be resolved for a reason other than not being inside a git
+            repository, or when the lock file cannot be opened. The
+            root-resolution failure is raised before ``body`` runs, the lock is
+            taken, or a record is written.
+        Exception: Whatever ``body`` raises, propagated unchanged.
     """
     trace = CommandTrace(args=args if args is not None else {})
     start = _clock.monotonic_ms()
@@ -170,10 +178,6 @@ async def with_repo_lock[T](
             root = repo_root()
         except NotAGitRepositoryError:
             return await body(trace)
-        except GymratError as error:
-            from gymrat.cli.shared import exit_with_error  # noqa: PLC0415 -- avoids circular import
-
-            exit_with_error(error)
 
     jsonl = session_jsonl_path(root)
     session_id, tracing_active = _maybe_configure_tracing(root, jsonl)

@@ -836,7 +836,7 @@ def test_replay_session_when_skipped_line_before_command_does_key_span_id_on_phy
 async def test_replay_session_when_two_commands_run_live_does_match_replayed_spans(
     repo: str,
 ):
-    from gymrat.cli.command_run import CommandTrace, with_repo_lock
+    from gymrat.command_run import CommandTrace, with_repo_lock
     from gymrat.session.paths import session_jsonl_path
 
     header = session_record()
@@ -879,7 +879,7 @@ async def test_replay_session_when_gymrat_traceparent_set_live_does_match_replay
     monkeypatch: pytest.MonkeyPatch,
     tmp_path_factory: pytest.TempPathFactory,
 ):
-    from gymrat.cli.command_run import CommandTrace, with_repo_lock
+    from gymrat.command_run import CommandTrace, with_repo_lock
     from gymrat.session.paths import session_jsonl_path
 
     header = session_record()
