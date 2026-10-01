@@ -9,7 +9,6 @@ stay deterministic under ``pytest-randomly`` and ``pytest-xdist``.
 """
 
 import asyncio
-import importlib
 import itertools
 import sys
 import time
@@ -435,9 +434,7 @@ async def test_supervise_when_both_caps_could_fire_does_report_first_cap_only(
     probe = collecting_observer()
     deadline_ms = 60
     now_ms = _Box()
-    # The package re-exports ``supervise``, which shadows the module of the same name.
-    supervise_module = importlib.import_module("gymrat.supervisor.supervise")
-    monkeypatch.setattr(supervise_module, "now_ms", lambda: now_ms.value)
+    monkeypatch.setattr("gymrat.supervisor.supervise.now_ms", lambda: now_ms.value)
 
     async def _pass_deadline() -> None:
         now_ms.value = deadline_ms + 1

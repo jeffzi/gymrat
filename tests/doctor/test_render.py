@@ -314,6 +314,38 @@ def test_render_doctor_json_when_force_color_env_does_carry_no_ansi(
     assert _ESCAPE_PREFIX not in output
 
 
+def test_render_doctor_json_when_only_warnings_does_count_them_without_failing():
+    report = _warning_only_report()
+
+    parsed = json.loads(render_doctor_json(report))
+
+    assert parsed == {
+        "environment": {
+            "gymrat_version": "0.5.0",
+            "python_version": "3.13.0",
+            "platform": "darwin",
+        },
+        "sections": [
+            {
+                "title": "Environment",
+                "checks": [
+                    {"name": "git", "status": "ok", "detail": "git 2.45.0"},
+                    {
+                        "name": "skill",
+                        "status": "warn",
+                        "detail": "skill not installed",
+                        "hint": "run gymrat init",
+                    },
+                ],
+            }
+        ],
+        "ok_count": 1,
+        "warn_count": 1,
+        "fail_count": 0,
+        "has_failures": False,
+    }
+
+
 def test_render_doctor_json_when_rendered_does_emit_full_document():
     report = _report(
         [

@@ -632,11 +632,12 @@ def test_iterate_command_when_adapter_warns_does_route_the_warning_through_the_r
     assert spy.warnings == [MALFORMED_LINE_WARNING]
 
 
-def test_iterate_command_when_adapter_warns_does_print_it_once_on_stderr(
+def test_iterate_command_when_plain_and_adapter_warns_does_print_it_once_on_stderr(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     write_session_log(repo, iterate_session_header(repo))
     bench_malformed_once(monkeypatch)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.resolve_render_mode", lambda: "plain")
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
