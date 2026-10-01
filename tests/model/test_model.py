@@ -1,8 +1,10 @@
 import dataclasses
+from pathlib import Path
 from typing import assert_never
 
 import pytest
 
+import gymrat.model
 from gymrat.model import (
     BAND_FLOORS,
     DEFAULT_UNSTABLE_NOISE_PCT,
@@ -17,11 +19,61 @@ from gymrat.model import (
     MethodFloors,
     MetricMeta,
     MetricVerdict,
+    Observations,
+    PairResult,
     PermutationVerdict,
     ResolvedMetricMeta,
     Verdict,
     VerdictMethod,
 )
+
+# ---------------------------------------------------------------------------
+# Module layout
+# ---------------------------------------------------------------------------
+
+
+def test_model_when_imported_does_load_from_single_flat_module_file():
+    module_file = Path(gymrat.model.__file__)
+
+    assert (module_file.parent.name, module_file.name) == ("gymrat", "model.py")
+
+
+_PUBLIC_NAMES = frozenset({
+    "BAND_FLOORS",
+    "DEFAULT_UNSTABLE_NOISE_PCT",
+    "NOISE_FLOOR_PCT",
+    "NOISE_K",
+    "PERMUTATION_FLOORS",
+    "ApproximateVerdict",
+    "BandVerdict",
+    "Direction",
+    "Effect",
+    "EffectUnit",
+    "ExactVerdict",
+    "Exclusion",
+    "ExclusionReason",
+    "GeomeanResult",
+    "MethodFloors",
+    "MetricMeta",
+    "MetricUnit",
+    "MetricVerdict",
+    "Observations",
+    "PairResult",
+    "PairingKey",
+    "PermutationVerdict",
+    "Repeat",
+    "ResolvedMetricMeta",
+    "Verdict",
+    "VerdictMethod",
+    "pair_metric",
+})
+
+
+def test_model_when_public_names_resolved_does_export_every_shared_type():
+    exported = {name: getattr(gymrat.model, name) for name in gymrat.model.__all__}
+
+    assert exported.keys() == _PUBLIC_NAMES
+
 
 # ---------------------------------------------------------------------------
 # Effect
@@ -35,34 +87,79 @@ def test_effect_when_constructed_does_store_value_and_unit():
     assert effect.unit == "percent"
 
 
-@pytest.mark.parametrize(
-    ("instance", "field"),
-    [
-        pytest.param(Effect(value=1.0, unit="percent"), "value", id="effect"),
-        pytest.param(
-            MetricMeta(direction="higher", gating=False, exact=True, unit=None),
-            "gating",
-            id="metric-meta",
+_DELTA = Effect(value=1.0, unit="percent")
+
+_VALUE_RECORDS = [
+    pytest.param(_DELTA, "value", id="effect"),
+    pytest.param(
+        MetricMeta(direction="higher", gating=False, exact=True, unit=None),
+        "gating",
+        id="metric-meta",
+    ),
+    pytest.param(
+        ResolvedMetricMeta(
+            direction="lower",
+            gating=True,
+            exact=False,
+            unit="ns",
+            kind="time",
+            short_name="decode",
         ),
-        pytest.param(
-            ResolvedMetricMeta(
-                direction="lower",
-                gating=True,
-                exact=False,
-                unit="ns",
-                kind="time",
-                short_name="decode",
-            ),
-            "kind",
-            id="resolved-metric-meta",
+        "kind",
+        id="resolved-metric-meta",
+    ),
+    pytest.param(PERMUTATION_FLOORS, "min_n", id="method-floors"),
+    pytest.param(
+        PermutationVerdict(
+            method="permutation",
+            verdict="improved",
+            p=0.01,
+            noise_pct=1.0,
+            noise_abs=0.1,
+            delta=_DELTA,
+            n=6,
         ),
-    ],
-)
-def test_frozen_model_when_field_assigned_does_raise_frozen_instance_error(
+        "verdict",
+        id="permutation-verdict",
+    ),
+    pytest.param(
+        BandVerdict(
+            method="band",
+            verdict="no-signal",
+            usable_n=2,
+            noise_pct=1.0,
+            noise_abs=0.1,
+            delta=_DELTA,
+            n=2,
+        ),
+        "verdict",
+        id="band-verdict",
+    ),
+    pytest.param(
+        ExactVerdict(method="exact", verdict="regressed", delta=_DELTA, n=1),
+        "verdict",
+        id="exact-verdict",
+    ),
+    pytest.param(Exclusion(metric="a", reason="unstable"), "reason", id="exclusion"),
+    pytest.param(
+        GeomeanResult(value=1.1, n=2, band=0.5, excluded=()), "value", id="geomean-result"
+    ),
+    pytest.param(PairResult(left=(1.0,), right=(2.0,), dropped=0), "dropped", id="pair-result"),
+    pytest.param(Observations.from_rounds([{"t": 1.0}]), "by_key", id="observations"),
+]
+
+
+@pytest.mark.parametrize(("instance", "field"), _VALUE_RECORDS)
+def test_value_record_when_field_assigned_does_raise_frozen_instance_error(
     instance: object, field: str
 ):
     with pytest.raises(dataclasses.FrozenInstanceError):
         setattr(instance, field, None)
+
+
+@pytest.mark.parametrize(("instance", "_field"), _VALUE_RECORDS)
+def test_value_record_when_instantiated_does_carry_no_instance_dict(instance: object, _field: str):
+    assert not hasattr(instance, "__dict__")
 
 
 def test_effect_when_values_equal_does_compare_equal():

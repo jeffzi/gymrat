@@ -18,9 +18,17 @@ import typer
 from rich.prompt import Confirm
 from rich.text import Text
 
-from gymrat.cli.console import stderr_console
+from gymrat.cli.budget_report import budget_snapshot, write_budget_report
+from gymrat.cli.command_run import CommandTrace, config_trace_args, with_repo_lock
+from gymrat.cli.console import (
+    apply_color_override,
+    apply_debug,
+    is_debug_mode,
+    is_tty,
+    resolve_stream_color,
+    stderr_console,
+)
 from gymrat.cli.iterate.progress import IterateRenderer
-from gymrat.cli.lock import GATE_EXIT_CODE, CommandTrace, config_trace_args, with_repo_lock
 from gymrat.cli.options import (
     AdapterOption,
     AllowUnimprovedOption,
@@ -37,22 +45,16 @@ from gymrat.cli.options import (
     VerboseOption,
 )
 from gymrat.cli.shared import (
-    apply_color_override,
-    apply_debug,
-    budget_snapshot,
     exit_with_error,
-    is_debug_mode,
-    is_tty,
     resolve_render_mode,
-    resolve_stream_color,
     run_cli,
     run_with_signal_abort,
     write_and_flush,
-    write_budget_report,
     write_stdout,
 )
 from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.config import CliFlags, resolve_benchless_config, resolve_config
+from gymrat.errors import GATE_EXIT_CODE
 from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError, iterate_session
 from gymrat.loop.settle import DiscardResult, KeepOptions, KeepResult, discard_session, keep_session
 from gymrat.loop.status import status_data, status_session

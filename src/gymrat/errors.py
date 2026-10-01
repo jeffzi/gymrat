@@ -8,8 +8,8 @@ carrying a human-facing next step alongside the machine-facing message.
 Exit-code routing contract (enforced by ``exit_with_error`` in ``gymrat.cli.shared``):
 
 - An uncaught ``GymratError`` — including any subclass such as
-  :class:`CommandError` — maps to exit code ``2``.
-- A gate trip maps to exit code ``1``.
+  :class:`CommandError` — maps to exit code ``2`` (``TOOL_FAILURE_EXIT_CODE``).
+- A gate trip maps to exit code ``1`` (``GATE_EXIT_CODE``).
 
 Anything else escaping the boundary is an unexpected crash and is not covered by
 this contract.
@@ -21,6 +21,17 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from gymrat.session.schema import CommandReason
+
+GATE_EXIT_CODE = 1
+"""Exit status for a tripped gate, also the ``CommandRecord.exit_code`` recorded for it.
+
+``with_repo_lock`` records this code when the command body returns with ``CommandTrace.gate``
+set, raises ``LoopStopError``, or exits with ``typer.Exit(1)``. Recording does not set the
+process status: the command must itself exit with this code for the two to agree.
+"""
+
+TOOL_FAILURE_EXIT_CODE = 2
+"""Exit status for a tool failure, including any uncaught :class:`GymratError`."""
 
 
 class GymratError(Exception):

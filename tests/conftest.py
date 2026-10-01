@@ -35,7 +35,7 @@ import pytest
 from filelock import FileLock
 
 from gymrat import signals
-from gymrat.cli.shared import set_color_override
+from gymrat.cli.console import set_color_override, set_debug_mode
 from gymrat.clock import now_iso
 from gymrat.exec import ExecOptions
 from gymrat.session.lock import _os_lock_file
@@ -275,6 +275,14 @@ def _reset_color() -> Iterator[None]:
     set_color_override(None)
     yield
     set_color_override(None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_debug() -> Iterator[None]:
+    """Turn debug mode off before and after every test."""
+    set_debug_mode(False)
+    yield
+    set_debug_mode(False)
 
 
 @pytest.fixture

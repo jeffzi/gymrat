@@ -4,19 +4,28 @@ This module owns ``build_doctor_report``, the single entry point that coordinate
 the git probe, config inspection, and section builders into an assembled report.
 The CLI command layer calls it with an explicit working directory rather than
 reading ``Path.cwd()`` itself.
+
+The bench section, built by ``build_bench_section``, validates bench
+configuration without executing the bench command: the adapter name resolves, a
+bench command is set, and the command's executable is on PATH.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
 import platform
+import re
+import shlex
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from gymrat.adapters import get_adapter
 from gymrat.config import CONFIG_DEFAULTS, BenchlessConfig, CliFlags, inspect_config
-from gymrat.doctor.bench import build_bench_section
 from gymrat.doctor.checks import (
+    Check,
+    CheckSection,
     DoctorReport,
     EnvironmentInfo,
     build_config_section,
@@ -24,10 +33,14 @@ from gymrat.doctor.checks import (
     build_workflow_section,
     create_doctor_report,
 )
-from gymrat.errors import GymratError
+from gymrat.errors import GymratError, hint_of
 from gymrat.git import NotAGitRepositoryError, try_git
-from gymrat.init.scaffold import SKILL_RELATIVE_PATH
+from gymrat.scaffold import SKILL_RELATIVE_PATH
 from gymrat.session.paths import repo_root
+
+_NO_BENCH_HINT = 'Set the bench command with --bench or the "bench" config key'
+_BENCH_TITLE = "Bench"
+_SHELL_OPERATOR_RE = re.compile(r"[;&|(){}<>]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +71,98 @@ def detect_git_environment(cwd: str) -> GitEnvironment:
         return GitEnvironment(git_available=True, inside_git_repo=False)
     except GymratError as error:
         return GitEnvironment(git_available=True, inside_git_repo=True, git_error=str(error))
+
+
+def _first_command_word(bench: str) -> str | None:
+    """Extract the first real executable from a shell command string.
+
+    Skips env-var assignments (``VAR=val``). A command with shell
+    metacharacters yields no word, since the PATH check is meaningless for
+    compound shell expressions.
+
+    Args:
+        bench: The shell command string to extract the first token from.
+
+    Returns:
+        The first non-assignment token, or ``None`` when the command contains
+        shell metacharacters or has no executable token.
+    """
+    if _SHELL_OPERATOR_RE.search(bench):
+        return None
+
+    try:
+        tokens = shlex.split(bench)
+    except ValueError:
+        return None
+
+    for token in tokens:
+        if "=" in token:
+            continue
+        return token
+    return None
+
+
+def build_bench_section(
+    *, bench: str | None, adapter: str, config_problems: bool = False
+) -> CheckSection:
+    """Build the "Bench" section by validating config, without running anything.
+
+    When ``config_problems`` is True and ``bench`` is None the section collapses
+    to a single skip placeholder — the bench value was never resolved, so a FAIL
+    would be misleading.
+
+    Args:
+        bench: The configured bench command, or ``None`` if unresolved.
+        adapter: The name of the adapter to validate.
+        config_problems: Whether config inspection already found problems.
+
+    Returns:
+        The assembled bench check section.
+    """
+    if config_problems and bench is None:
+        return CheckSection(
+            title=_BENCH_TITLE,
+            checks=[Check(name="bench", status="ok", detail="Skipped — fix config errors first")],
+        )
+
+    try:
+        get_adapter(adapter)
+    except GymratError as error:
+        return CheckSection(
+            title=_BENCH_TITLE,
+            checks=[Check(name="adapter", status="fail", detail=str(error), hint=hint_of(error))],
+        )
+    checks: list[Check] = [Check(name="adapter", status="ok", detail=f"adapter: {adapter}")]
+
+    if bench is None:
+        checks.append(
+            Check(
+                name="bench",
+                status="fail",
+                detail="No bench command configured",
+                hint=_NO_BENCH_HINT,
+            )
+        )
+        return CheckSection(title=_BENCH_TITLE, checks=checks)
+
+    checks.append(Check(name="bench", status="ok", detail=f"bench: {bench}"))
+
+    executable = _first_command_word(bench)
+    if executable is not None:
+        if shutil.which(executable) is not None:
+            checks.append(
+                Check(name="executable", status="ok", detail=f"{executable} is available on PATH")
+            )
+        else:
+            checks.append(
+                Check(
+                    name="executable",
+                    status="warn",
+                    detail=f"{executable} was not found on PATH",
+                )
+            )
+
+    return CheckSection(title=_BENCH_TITLE, checks=checks)
 
 
 def _defaults_as_benchless() -> BenchlessConfig:

@@ -1,7 +1,7 @@
-"""Shared session-seeding and tracing-isolation fixtures for the lock test files.
+"""Shared session-seeding and tracing-isolation fixtures for the ``command_run`` tests.
 
-``test_lock.py`` and ``test_lock_tracing.py`` both exercise ``with_repo_lock``
-and need the same starting point: a session log seeded with a header record,
+``test_command_run.py`` and ``test_lock_tracing.py`` both exercise
+``gymrat.cli.command_run.with_repo_lock`` and need the same starting point: a session log seeded with a header record,
 and a telemetry provider reset between tests. Both modules import from here
 instead of duplicating the definitions.
 """

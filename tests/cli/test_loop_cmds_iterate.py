@@ -6,7 +6,7 @@ and inserts a ``budget`` key in JSON output, including on stop-condition exits.
 
 import json
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import override
@@ -16,7 +16,6 @@ import pytest
 from gymrat import signals
 from gymrat.cli.app import app
 from gymrat.cli.iterate.progress import IterateRenderer
-from gymrat.cli.shared import set_debug_mode
 from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError
 from gymrat.progress_events import JudgeStarted, PrepareFinished, PrepareStarted, ProgressEvent
 from gymrat.session import (
@@ -518,13 +517,6 @@ def _warning_lines(stderr: str) -> list[str]:
     return [line for line in strip_ansi(stderr).splitlines() if line.startswith("warning: ")]
 
 
-@pytest.fixture
-def _debug_reset() -> Iterator[None]:
-    """Turn debug mode back off after a test that enabled it through ``--debug``."""
-    yield
-    set_debug_mode(False)
-
-
 _THREE_DISK_FULL = ("disk full", "disk full", "disk full")
 
 
@@ -560,7 +552,6 @@ def test_iterate_command_when_subscriber_raises_without_debug_does_omit_the_trac
     assert "Traceback" not in result.stderr
 
 
-@pytest.mark.usefixtures("_debug_reset")
 @pytest.mark.parametrize(
     "argv",
     [

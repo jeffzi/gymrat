@@ -26,7 +26,7 @@ from gymrat.eta import format_duration
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.state import ReadSessionResult
+    from gymrat.cli.supervise.types import ReadSessionResult
     from gymrat.config import Effort
     from gymrat.supervisor import SupervisionResult
     from gymrat.supervisor.exit_sequence import ExitReport

@@ -18,7 +18,7 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
-from gymrat.cli.lock import TOOL_FAILURE_EXIT_CODE
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from gymrat.loop.start import start_session
 from gymrat.session import experiment_worktree_dir, read_records, session_jsonl_path
 from gymrat.session.budget import write_budget
@@ -247,6 +247,7 @@ def test_init_when_scaffolding_succeeds_does_write_summary_and_doctor_pointer():
     assert result.stderr == ""
     lines = strip_ansi(out).rstrip("\n").split("\n")
     pointer_index = next(i for i, line in enumerate(lines) if "gymrat doctor" in line)
+    assert lines[pointer_index].strip() == "Run gymrat doctor to verify the setup."
     # The hint closes the artifact block directly — no blank line before it.
     assert lines[pointer_index - 1].strip().startswith("Skill:")
 

@@ -1,7 +1,8 @@
-"""Repository lock and command-trace recording.
+"""The command-run seam: repository lock and command-trace recording.
 
-The single-flight lock and the seam that appends a :class:`CommandRecord` after
-every command that holds it.
+Wraps a command body in the single-flight lock, then appends a
+:class:`CommandRecord` once the body settles. The exit codes it records live in
+:mod:`gymrat.errors`.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import typer
 
 from gymrat import clock as _clock
 from gymrat.cli.supervised import command_origin
-from gymrat.errors import GymratError
+from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate import LoopStopError
 from gymrat.session.lock import acquire_lock
@@ -30,10 +31,6 @@ from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
 from gymrat.session.records.models import CommandRecord
 from gymrat.session.store import append_record, recover_torn_tail, session_header
 from gymrat.warn import warn_to_stderr
-
-GATE_EXIT_CODE = 1
-TOOL_FAILURE_EXIT_CODE = 2
-
 
 # ---------------------------------------------------------------------------
 # Trace bookkeeping
@@ -110,10 +107,10 @@ def _resolve_exit(  # noqa: PLR0911 -- flat branch per exception type, each an e
 
     if isinstance(caught, typer.Exit):
         code = caught.exit_code
-        if code == TOOL_FAILURE_EXIT_CODE:
+        if code >= TOOL_FAILURE_EXIT_CODE:
             return TOOL_FAILURE_EXIT_CODE, trace.reason or "error"
-        # exit_code is int; callers only pass 0|1|2
-        return min(code, TOOL_FAILURE_EXIT_CODE), trace.reason  # type: ignore[return-value]
+        # exit_code is int; below TOOL_FAILURE_EXIT_CODE callers only pass 0|1
+        return code, trace.reason  # type: ignore[return-value]
 
     if isinstance(caught, GymratError):
         gym_reason: CommandReason = caught.reason or "error"

@@ -1,11 +1,11 @@
 """Behavioral tests for the sign-flip permutation test.
 
 The permutation test pairs ``x`` and ``y`` index-wise over the shorter input,
-reports a ``SignificanceResult``, and
-derives its two-sided p-value from an exact sign-flip enumeration (small
-samples) or a fixed-seed Monte Carlo resample (large samples). scipy is the
-authority for the pinned p-values below; they were captured by running the
-statistic through ``scipy.stats.permutation_test`` directly.
+reports a ``SignificanceResult``, and derives its two-sided p-value from an
+exact sign-flip enumeration (small samples) or a fixed-seed Monte Carlo
+resample (large samples). scipy is the authority for the pinned p-values below;
+they were captured by running the statistic through
+``scipy.stats.permutation_test`` directly.
 """
 
 import math
@@ -14,8 +14,13 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from gymrat.stats import SignificanceResult, sign_flip_permutation_test
-from gymrat.stats.permutation import RESAMPLE_BUDGET, count_nonzero_pairs
+from gymrat.model import PERMUTATION_FLOORS
+from gymrat.stats import (
+    RESAMPLE_BUDGET,
+    SignificanceResult,
+    count_nonzero_pairs,
+    sign_flip_permutation_test,
+)
 
 # ---------------------------------------------------------------------------
 # count_nonzero_pairs
@@ -193,18 +198,6 @@ def test_resample_budget_when_inspected_does_bracket_the_exact_enumeration_bound
 
 
 # ---------------------------------------------------------------------------
-# Dormancy — exported from the package, wired into nothing else
-# ---------------------------------------------------------------------------
-
-
-def test_sign_flip_permutation_test_when_imported_from_stats_does_match_direct_import():
-    from gymrat import stats
-
-    assert stats.sign_flip_permutation_test is sign_flip_permutation_test
-    assert "sign_flip_permutation_test" in stats.__all__
-
-
-# ---------------------------------------------------------------------------
 # Property-based invariants
 # ---------------------------------------------------------------------------
 
@@ -229,6 +222,19 @@ _paired_samples = st.lists(
 # per-example deadline. That deadline is a wall-clock constraint orthogonal to
 # the invariants under test.
 _no_deadline = settings(deadline=None)
+
+
+@_no_deadline
+@given(pairs=_paired_samples)
+def test_sign_flip_permutation_test_when_any_positive_pairs_does_return_p_in_unit_interval(
+    pairs: list[tuple[float, float]],
+):
+    x = [pair[0] for pair in pairs]
+    y = [pair[1] for pair in pairs]
+
+    result = sign_flip_permutation_test(x, y)
+
+    assert 0.0 < result.p <= 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -285,19 +291,4 @@ def test_sign_flip_permutation_test_when_tied_pairs_reduce_exact_budget_does_rep
 
 
 def test_permutation_descriptor_when_inspected_does_expose_strict_p_threshold():
-    from gymrat.model.verdict_method import PERMUTATION_FLOORS
-
     assert PERMUTATION_FLOORS.p_threshold == 0.05
-
-
-@_no_deadline
-@given(pairs=_paired_samples)
-def test_sign_flip_permutation_test_when_any_positive_pairs_does_return_p_in_unit_interval(
-    pairs: list[tuple[float, float]],
-):
-    x = [pair[0] for pair in pairs]
-    y = [pair[1] for pair in pairs]
-
-    result = sign_flip_permutation_test(x, y)
-
-    assert 0.0 < result.p <= 1.0

@@ -19,7 +19,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.cli.supervise.state import ReadSessionResult
+from gymrat.cli.supervise.progress import make_default_read
+from gymrat.cli.supervise.types import ReadSessionResult
+from gymrat.session.records.models import BaselineRecord, IterationPrimary
 from gymrat.supervisor.events import TextDeltaEvent
 from tests.cli.supervise._fixtures import (
     _throwing_read,
@@ -41,10 +43,23 @@ from tests.cli.supervise._fixtures import (
     session_state,
     session_state_three_iterations,
 )
+from tests.session.records._fixtures import (
+    AT,
+    blocked_keep,
+    committed_keep,
+    iteration_record,
+    session_record,
+    stop_record,
+    write_session_log,
+)
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from syrupy.assertion import SnapshotAssertion
 
+    from gymrat.session.records import SessionLogRecord
+    from gymrat.session.schema import PrimaryKind
     from gymrat.supervisor.events import CapAction, CapType
 
 
@@ -70,6 +85,91 @@ def test_create_reporter_when_session_read_does_expose_the_latest_session_result
     session_result = kit.reporter.session_result()
     assert session_result is not None
     assert session_result.state == state
+
+
+def _read_back(tmp_path: Path, history: tuple[SessionLogRecord, ...]) -> ReadSessionResult:
+    """Write a session log under ``tmp_path`` and read it back the dashboard's way."""
+    write_session_log(str(tmp_path), session_record(), history)
+    return make_default_read(str(tmp_path))()
+
+
+@pytest.mark.parametrize(
+    ("kind", "name", "primary_label"),
+    [
+        pytest.param("geomean", None, "geomean", id="geomean-primary"),
+        pytest.param("metric", "decode/time", "decode/time", id="metric-primary"),
+    ],
+)
+def test_make_default_read_when_keeps_committed_does_report_the_best_committed_iteration(
+    tmp_path: Path, kind: PrimaryKind, name: str | None, primary_label: str
+):
+    history = (
+        iteration_record(seq=1, primary=IterationPrimary(kind=kind, name=name, delta_pct=-7.2)),
+        committed_keep(1),
+        iteration_record(seq=2, primary=IterationPrimary(kind=kind, name=name, delta_pct=-9.0)),
+        committed_keep(2),
+        iteration_record(seq=3, primary=IterationPrimary(kind=kind, name=name, delta_pct=-20.0)),
+        blocked_keep(3),
+    )
+
+    result = _read_back(tmp_path, history)
+
+    assert (
+        result.best_delta_pct,
+        result.best_seq,
+        result.primary_label,
+        result.baseline_sha,
+        result.has_baseline,
+        result.stop_message,
+    ) == (-9.0, 2, primary_label, "a" * 40, False, None)
+
+
+@pytest.mark.parametrize(
+    ("history", "stop_message"),
+    [
+        pytest.param((stop_record(message="done for today"),), "done for today", id="ends-on-stop"),
+        pytest.param(
+            (stop_record(message="done for today"), iteration_record(seq=1)),
+            None,
+            id="stop-then-iteration",
+        ),
+    ],
+)
+def test_make_default_read_when_stop_recorded_does_report_it_only_while_last(
+    tmp_path: Path, history: tuple[SessionLogRecord, ...], stop_message: str | None
+):
+    result = _read_back(tmp_path, history)
+
+    assert result.stop_message == stop_message
+
+
+@pytest.mark.parametrize(
+    ("history", "has_baseline"),
+    [
+        pytest.param((), False, id="no-baseline"),
+        pytest.param(
+            (
+                BaselineRecord(
+                    type="baseline", at=AT, label="experiment", samples=({"total_ms": 98.0},)
+                ),
+            ),
+            True,
+            id="baseline-recorded",
+        ),
+    ],
+)
+def test_make_default_read_when_baseline_presence_varies_does_report_it(
+    tmp_path: Path, history: tuple[SessionLogRecord, ...], has_baseline: bool
+):
+    result = _read_back(tmp_path, history)
+
+    assert result.has_baseline is has_baseline
+
+
+def test_make_default_read_when_imported_does_live_in_the_progress_module():
+    module = make_default_read.__module__
+
+    assert module == "gymrat.cli.supervise.progress"
 
 
 # ---------------------------------------------------------------------------

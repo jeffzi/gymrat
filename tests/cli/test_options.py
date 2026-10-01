@@ -232,3 +232,39 @@ def test_parse_fail_on_when_not_regressed_or_geomean_does_reject(value: str):
         exc.value.message
         == 'allowed values are "regressed" or "geomean:<number>" (e.g. geomean:2).'
     )
+
+
+# ---------------------------------------------------------------------------
+# --fail-on / --max-minutes / --max-usd through the CLI
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        pytest.param(
+            ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "banana"],
+            'allowed values are "regressed" or "geomean:<number>" (e.g. geomean:2).',
+            id="fail-on",
+        ),
+        pytest.param(
+            ["supervise", "optimize", "--max-minutes", "35792"],
+            "must be at most 35791 minutes.",
+            id="max-minutes",
+        ),
+        pytest.param(
+            ["supervise", "optimize", "--max-minutes", "1", "--max-usd", "0"],
+            _POSITIVE_NUMBER_MESSAGE,
+            id="max-usd",
+        ),
+    ],
+)
+def test_parsed_option_when_invalid_does_exit_two_with_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, argv: list[str], message: str
+):
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == 2
+    assert message in unwrap_panel(result.stderr)

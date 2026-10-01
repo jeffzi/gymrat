@@ -7,7 +7,8 @@ patched to control executable availability.
 
 import pytest
 
-from gymrat.doctor.bench import build_bench_section
+from gymrat.doctor.checks import Check, CheckSection
+from gymrat.doctor.report import build_bench_section
 from gymrat.errors import GymratError
 
 
@@ -15,11 +16,11 @@ def _patch_adapter_raises(monkeypatch: pytest.MonkeyPatch, error: GymratError) -
     def boom(_name: str) -> object:
         raise error
 
-    monkeypatch.setattr("gymrat.doctor.bench.get_adapter", boom)
+    monkeypatch.setattr("gymrat.doctor.report.get_adapter", boom)
 
 
 def _patch_adapter_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("gymrat.doctor.bench.get_adapter", lambda _name: None)  # pyrefly: ignore
+    monkeypatch.setattr("gymrat.doctor.report.get_adapter", lambda _name: None)  # pyrefly: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -212,3 +213,93 @@ def test_build_bench_section_when_shell_metacharacters_does_skip_path_check(
     section = build_bench_section(bench=bench, adapter="metric-lines")
 
     assert not any(c.name == "executable" for c in section.checks)
+
+
+# ---------------------------------------------------------------------------
+# whole section, per path
+# ---------------------------------------------------------------------------
+
+_ADAPTER_OK = Check(name="adapter", status="ok", detail="adapter: metric-lines")
+
+
+@pytest.mark.parametrize(
+    ("bench", "adapter", "config_problems", "on_path", "expected"),
+    [
+        pytest.param(
+            None,
+            "metric-lines",
+            True,
+            None,
+            [Check(name="bench", status="ok", detail="Skipped — fix config errors first")],
+            id="config-problems",
+        ),
+        pytest.param(
+            "node bench.js",
+            "banana",
+            False,
+            None,
+            [
+                Check(
+                    name="adapter",
+                    status="fail",
+                    detail='Unknown adapter: "banana".',
+                    hint="valid adapters are: metric-lines, mitata",
+                )
+            ],
+            id="adapter-unknown",
+        ),
+        pytest.param(
+            None,
+            "metric-lines",
+            False,
+            None,
+            [
+                _ADAPTER_OK,
+                Check(
+                    name="bench",
+                    status="fail",
+                    detail="No bench command configured",
+                    hint='Set the bench command with --bench or the "bench" config key',
+                ),
+            ],
+            id="bench-unresolved",
+        ),
+        pytest.param(
+            "npx tsx bench.ts",
+            "metric-lines",
+            False,
+            "/usr/bin/npx",
+            [
+                _ADAPTER_OK,
+                Check(name="bench", status="ok", detail="bench: npx tsx bench.ts"),
+                Check(name="executable", status="ok", detail="npx is available on PATH"),
+            ],
+            id="executable-found",
+        ),
+        pytest.param(
+            "node bench.js",
+            "metric-lines",
+            False,
+            None,
+            [
+                _ADAPTER_OK,
+                Check(name="bench", status="ok", detail="bench: node bench.js"),
+                Check(name="executable", status="warn", detail="node was not found on PATH"),
+            ],
+            id="executable-missing",
+        ),
+    ],
+)
+def test_build_bench_section_when_built_does_produce_the_exact_section(  # noqa: PLR0917 -- one parameter per input plus the expected section and fixture
+    bench: str | None,
+    adapter: str,
+    config_problems: bool,
+    on_path: str | None,
+    expected: list[Check],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("shutil.which", lambda _cmd: on_path)  # pyrefly: ignore
+
+    section = build_bench_section(bench=bench, adapter=adapter, config_problems=config_problems)
+
+    assert section == CheckSection(title="Bench", checks=expected)

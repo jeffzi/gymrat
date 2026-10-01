@@ -24,7 +24,8 @@ from gymrat.cli.style import (
     STYLE_RUNNING,
 )
 from gymrat.cli.supervise.reducer import pair_value
-from gymrat.cli.supervise.state import (
+from gymrat.cli.supervise.text import exit_phase_text, format_cost, loop_segments
+from gymrat.cli.supervise.types import (
     Capped,
     Composing,
     Exiting,
@@ -35,10 +36,9 @@ from gymrat.cli.supervise.state import (
     Thinking,
     Waiting,
 )
-from gymrat.cli.supervise.text import exit_phase_text, format_cost, loop_segments
+from gymrat.display_path import abbreviate_home
 from gymrat.eta import MS_PER_SECOND, format_duration, format_eta
 from gymrat.model import Effect
-from gymrat.paths import abbreviate_home
 from gymrat.report.format import format_delta
 from gymrat.report.loop import SHORT_SHA_LENGTH
 from gymrat.session.budget import minutes_to_ms
@@ -50,14 +50,14 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
 
     from gymrat.cli.supervise.reducer import ReporterState
-    from gymrat.cli.supervise.state import (
+    from gymrat.cli.supervise.text import LoopStyle
+    from gymrat.cli.supervise.types import (
         FinishedTool,
         Liveness,
         NestedPhase,
         ReadSessionResult,
         TrackedTool,
     )
-    from gymrat.cli.supervise.text import LoopStyle
     from gymrat.session.progress_file import ProgressSnapshot
 
 # Bounds for the tool-name column: floor prevents jitter across short names

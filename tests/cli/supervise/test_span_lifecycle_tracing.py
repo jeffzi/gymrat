@@ -7,14 +7,20 @@ import warnings
 
 import pytest
 
+from gymrat.cli.supervise.span_lifecycle import create_run_span_observer
 from gymrat.supervisor.events import (
     CapEvent,
     CompactionEvent,
     FollowUpEvent,
+    ModelPhaseEvent,
+    TextDeltaEvent,
+    ThinkingUpdateEvent,
+    ToolEndEvent,
+    ToolProgressEvent,
+    ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
 )
-from gymrat.supervisor.tracing import create_run_span_observer
 from gymrat.telemetry.provider import _reset_for_tests, start_span
 from tests.supervisor._fixtures import make_launch
 from tests.telemetry._fixtures import memory_tracing
@@ -78,9 +84,10 @@ def test_create_run_span_observer_when_follow_up_with_reason_does_include_reason
     finished = exporter.get_finished_spans()
     span_events = [e for e in finished[0].events if e.name == "gymrat.follow_up"]
     assert len(span_events) == 1
-    attrs = span_events[0].attributes
-    assert attrs["gymrat.follow_up.action"] == "replied"  # pyrefly: ignore[unsupported-operation]
-    assert attrs["gymrat.follow_up.reason"] == "user asked"  # pyrefly: ignore[unsupported-operation]
+    assert dict(span_events[0].attributes or {}) == {
+        "gymrat.follow_up.action": "replied",
+        "gymrat.follow_up.reason": "user asked",
+    }
     assert span_events[0].timestamp == 2_000_000_000
 
 
@@ -98,9 +105,7 @@ def test_create_run_span_observer_when_follow_up_without_reason_does_omit_reason
     finished = exporter.get_finished_spans()
     span_events = [e for e in finished[0].events if e.name == "gymrat.follow_up"]
     assert len(span_events) == 1
-    attrs = span_events[0].attributes
-    assert attrs["gymrat.follow_up.action"] == "waiting"  # pyrefly: ignore[unsupported-operation]
-    assert "gymrat.follow_up.reason" not in attrs  # pyrefly: ignore[not-iterable]
+    assert dict(span_events[0].attributes or {}) == {"gymrat.follow_up.action": "waiting"}
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +127,7 @@ def test_create_run_span_observer_when_cap_does_add_span_event():
     finished = exporter.get_finished_spans()
     span_events = [e for e in finished[0].events if e.name == "gymrat.cap"]
     assert len(span_events) == 1
-    assert span_events[0].attributes["gymrat.cap.name"] == "wall-clock"  # pyrefly: ignore[unsupported-operation]
+    assert dict(span_events[0].attributes or {}) == {"gymrat.cap.name": "wall-clock"}
     assert span_events[0].timestamp == 4_000_000_000
 
 
@@ -145,6 +150,7 @@ def test_create_run_span_observer_when_compaction_does_add_span_event():
     finished = exporter.get_finished_spans()
     span_events = [e for e in finished[0].events if e.name == "gymrat.compaction"]
     assert len(span_events) == 1
+    assert dict(span_events[0].attributes or {}) == {}
     assert span_events[0].timestamp == 5_000_000_000
 
 
@@ -158,6 +164,37 @@ def test_create_run_span_observer_when_compaction_does_add_span_event():
     [
         pytest.param(make_launch(at=6_000_000_000), id="launch"),
         pytest.param(UsageUpdateEvent(at=7_000_000_000, cost_usd=0.01), id="usage-update"),
+        pytest.param(
+            ThinkingUpdateEvent(at=7_000_000_000, estimated_tokens=10, delta=10),
+            id="thinking-update",
+        ),
+        pytest.param(
+            ToolStartEvent(
+                at=7_000_000_000,
+                tool_use_id="t1",
+                tool_name="Read",
+                input={},
+                input_summary="Read x.py",
+            ),
+            id="tool-start",
+        ),
+        pytest.param(
+            ToolProgressEvent(at=7_000_000_000, tool_use_id="t1", elapsed_ms=5),
+            id="tool-progress",
+        ),
+        pytest.param(
+            ToolEndEvent(
+                at=7_000_000_000,
+                tool_use_id="t1",
+                tool_name="Read",
+                duration_ms=5,
+                result="ok",
+                result_summary="ok",
+            ),
+            id="tool-end",
+        ),
+        pytest.param(TextDeltaEvent(at=7_000_000_000, chunk="hi"), id="text-delta"),
+        pytest.param(ModelPhaseEvent(at=7_000_000_000, phase="thinking"), id="model-phase"),
     ],
 )
 def test_create_run_span_observer_when_irrelevant_event_does_not_add_span_event(event: object):
@@ -178,7 +215,7 @@ def test_create_run_span_observer_when_irrelevant_event_does_not_add_span_event(
 # Error suppression
 # ---------------------------------------------------------------------------
 
-_TRACING_LOGGER = "gymrat.supervisor.tracing"
+_TRACING_LOGGER = "gymrat.cli.supervise.span_lifecycle"
 
 
 class _BrokenSpan:
@@ -212,3 +249,4 @@ def test_create_run_span_observer_when_mirror_fails_does_log_warning(
     ]
     assert len(warning_records) == 1
     assert "boom" in warning_records[0].message
+    assert warning_records[0].exc_info is not None

@@ -6,8 +6,8 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from gymrat.model import Direction
 from gymrat.stats import (
-    Direction,
     GeomeanCombination,
     combine_geomean,
     compute_half_range,
@@ -189,14 +189,15 @@ def test_compute_half_range_when_non_finite_present_does_return_nan(values: list
     assert math.isnan(compute_half_range(values)) == has_non_finite
 
 
-@given(
-    delta=st.floats(
-        min_value=-99.0,
-        max_value=1e6,
-        allow_nan=False,
-        allow_infinity=False,
-    ),
+_positive_factor_deltas = st.floats(
+    min_value=-99.0,
+    max_value=1e6,
+    allow_nan=False,
+    allow_infinity=False,
 )
+
+
+@given(delta=_positive_factor_deltas)
 def test_normalize_ratio_when_higher_does_reciprocate_lower(delta: float):
     lower_rho = normalize_ratio(delta, "lower").rho
     higher_rho = normalize_ratio(delta, "higher").rho
@@ -207,15 +208,7 @@ def test_normalize_ratio_when_higher_does_reciprocate_lower(delta: float):
     assert math.isclose(higher_rho, 1.0 / lower_rho, rel_tol=1e-9)
 
 
-@given(
-    delta=st.floats(
-        min_value=-99.0,
-        max_value=1e6,
-        allow_nan=False,
-        allow_infinity=False,
-    ),
-    direction=st.sampled_from(["lower", "higher"]),
-)
+@given(delta=_positive_factor_deltas, direction=st.sampled_from(["lower", "higher"]))
 def test_normalize_ratio_when_round_tripped_does_preserve_percent_delta(
     delta: float,
     direction: Direction,

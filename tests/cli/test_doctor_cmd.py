@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 from gymrat.cli.app import app
 from gymrat.doctor.checks import Check, CheckSection
 from gymrat.doctor.report import GitEnvironment
-from gymrat.init.scaffold import SKILL_RELATIVE_PATH
+from gymrat.scaffold import SKILL_RELATIVE_PATH
 from tests.cli._help import help_output
 from tests.cli._session import closed_stdout_error, closed_stdout_runner
 from tests.doctor._fixtures import patch_common_seams

@@ -15,7 +15,7 @@ from gymrat.model import Effect
 from gymrat.report.format import format_delta
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.state import Exiting, ReadSessionResult
+    from gymrat.cli.supervise.types import Exiting, ReadSessionResult
     from gymrat.supervisor.exit_sequence import ExitPhase
 
 #: Shown in place of the loop summary before any session data has been read.

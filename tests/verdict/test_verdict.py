@@ -14,6 +14,7 @@ from gymrat.model import (
     BandVerdict,
     Effect,
     ExactVerdict,
+    MethodFloors,
     MetricMeta,
     MetricVerdict,
     Observations,
@@ -329,6 +330,18 @@ def test_compute_verdicts_when_non_exact_and_six_pairs_does_use_permutation():
     result = run(create_samples(6, 100.0), create_samples(6, 95.0), METRIC_APPROX_LOWER)
 
     assert result["metric"].method == "permutation"
+
+
+def test_compute_verdicts_when_permutation_threshold_unset_does_raise_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "gymrat.verdict.PERMUTATION_FLOORS",
+        MethodFloors(method="permutation", min_n=6, p_threshold=None),
+    )
+
+    with pytest.raises(ValueError, match="p_threshold must be set"):
+        run(create_samples(6, 100.0), create_samples(6, 95.0), METRIC_APPROX_LOWER)
 
 
 def test_compute_verdicts_when_permutation_p_not_significant_does_no_signal():

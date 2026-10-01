@@ -1,11 +1,32 @@
-"""Session and run span lifecycle for supervised sessions."""
+"""Session and run span lifecycle for supervised sessions.
+
+:func:`setup_tracing` opens the session and run spans, and
+:func:`finalize_tracing` ends them. While the run is active,
+:func:`create_run_span_observer` mirrors supervisor events onto the run span as
+OpenTelemetry span events.
+"""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from gymrat.supervisor.events import (
+    CapEvent,
+    CompactionEvent,
+    FollowUpEvent,
+    TurnEndEvent,
+    combine_observers,
+)
 from gymrat.telemetry.attributes import (
+    CAP_NAME,
+    EVENT_CAP,
+    EVENT_COMPACTION,
+    EVENT_FOLLOW_UP,
+    EVENT_TURN_END,
+    FOLLOW_UP_ACTION,
+    FOLLOW_UP_REASON,
     GEN_AI_MODEL,
     GEN_AI_PROVIDER,
     RUN_COST_USD,
@@ -20,13 +41,23 @@ from gymrat.telemetry.attributes import (
     SESSION_BRANCH,
     SESSION_ID,
     SESSION_SPAN,
+    TURN_BUDGET_EXHAUSTED,
+    TURN_ORIGIN,
+    TURN_SESSION_COST_USD,
 )
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span
 
     from gymrat.supervisor import SessionPrompt, SupervisionResult
-    from gymrat.supervisor.events import SessionObserver
+    from gymrat.supervisor.events import SessionEvent, SessionObserver
+
+_log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Session and run spans
+# ---------------------------------------------------------------------------
 
 
 @dataclass(slots=True)
@@ -84,8 +115,6 @@ def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the se
 
     from opentelemetry.trace import set_span_in_context  # noqa: PLC0415
 
-    from gymrat.supervisor.events import combine_observers  # noqa: PLC0415
-    from gymrat.supervisor.tracing import create_run_span_observer  # noqa: PLC0415
     from gymrat.telemetry.ids import format_traceparent  # noqa: PLC0415
 
     state.active = True
@@ -162,3 +191,46 @@ def finalize_tracing(
     if state.session_span is not None:
         state.session_span.end()
     flush_tracing()
+
+
+# ---------------------------------------------------------------------------
+# Run-span event mirroring
+# ---------------------------------------------------------------------------
+
+
+def create_run_span_observer(span: Span) -> SessionObserver:
+    """Return a :data:`SessionObserver` that adds span events for each supervisor event."""
+
+    def observe(event: SessionEvent) -> None:
+        try:
+            _mirror(span, event)
+        except Exception as exc:  # noqa: BLE001 — telemetry must never crash the session
+            _log.warning("span event mirroring failed: %s", exc, exc_info=True)
+
+    return observe
+
+
+def _mirror(span: Span, event: SessionEvent) -> None:
+    if isinstance(event, TurnEndEvent):
+        span.add_event(
+            EVENT_TURN_END,
+            attributes={
+                TURN_SESSION_COST_USD: event.cost_usd,
+                TURN_ORIGIN: event.origin,
+                TURN_BUDGET_EXHAUSTED: event.budget_exhausted,
+            },
+            timestamp=event.at,
+        )
+    elif isinstance(event, FollowUpEvent):
+        attrs: dict[str, str] = {FOLLOW_UP_ACTION: event.action}
+        if event.reason is not None:
+            attrs[FOLLOW_UP_REASON] = event.reason
+        span.add_event(EVENT_FOLLOW_UP, attributes=attrs, timestamp=event.at)
+    elif isinstance(event, CapEvent):
+        span.add_event(
+            EVENT_CAP,
+            attributes={CAP_NAME: event.cap},
+            timestamp=event.at,
+        )
+    elif isinstance(event, CompactionEvent):
+        span.add_event(EVENT_COMPACTION, timestamp=event.at)

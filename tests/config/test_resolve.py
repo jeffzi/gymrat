@@ -17,9 +17,12 @@ from gymrat.config import (
     ResolvedConfig,
     StopConfig,
     SuperviseConfig,
+    flag_problem,
     inspect_config,
+    loop_key_problems,
     resolve_benchless_config,
     resolve_config,
+    runbook_problem,
 )
 from gymrat.errors import GymratError
 
@@ -909,9 +912,10 @@ def test_resolve_config_when_stop_target_value_with_geomean_does_raise_naming_ta
     with pytest.raises(GymratError) as exc:
         resolve_config(CliFlags())
 
-    message = str(exc.value)
-    assert "target_value" in message
-    assert "geomean" in message
+    assert (
+        'Invalid config value for stop.target_value: it needs primary to name a metric, not "geomean"'
+        in str(exc.value)
+    )
 
 
 def test_resolve_config_when_stop_sets_only_max_iterations_under_geomean_does_resolve(
@@ -945,3 +949,78 @@ def test_resolve_config_when_supervise_table_present_does_expose_model_and_effor
     result = resolve_config(CliFlags())
 
     assert result.supervise == SuperviseConfig(model="claude-sonnet", effort="high")
+
+
+# ---------------------------------------------------------------------------
+# problem helpers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        pytest.param(flag_problem, id="flag_problem"),
+        pytest.param(loop_key_problems, id="loop_key_problems"),
+        pytest.param(runbook_problem, id="runbook_problem"),
+    ],
+)
+def test_problem_helper_when_imported_from_config_does_live_in_resolve_module(
+    helper: Callable[..., object],
+):
+    assert helper.__module__ == "gymrat.config.resolve"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("   ", id="whitespace-spaces"),
+        pytest.param("\t", id="whitespace-tab"),
+    ],
+)
+def test_flag_problem_when_value_blank_does_return_problem_naming_flag(value: str):
+    result = flag_problem("bench", value)
+
+    assert result is not None
+    assert "--bench" in result
+    assert "non-empty" in result
+
+
+def test_flag_problem_when_value_none_does_return_none():
+    assert flag_problem("bench", None) is None
+
+
+def test_flag_problem_when_value_non_empty_does_return_none():
+    assert flag_problem("bench", "real-command") is None
+
+
+@pytest.mark.parametrize(
+    ("runbook", "stat_error", "expected"),
+    [
+        pytest.param(
+            "a\0b",
+            ValueError("embedded null byte"),
+            'Cannot read runbook path "a\\u0000b": embedded null byte',
+            id="value-error",
+        ),
+        pytest.param(
+            "runbook.md",
+            PermissionError(13, "Permission denied"),
+            'Cannot read runbook path "runbook.md": Permission denied',
+            id="unreadable",
+        ),
+    ],
+)
+def test_runbook_problem_when_path_cannot_be_read_does_name_the_path_and_reason(
+    runbook: str,
+    stat_error: Exception,
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def failing_stat(_path: Path, **_kwargs: object) -> object:
+        raise stat_error
+
+    monkeypatch.setattr(Path, "stat", failing_stat)
+
+    assert runbook_problem(runbook, tmp_path) == expected

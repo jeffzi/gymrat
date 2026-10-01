@@ -1,4 +1,8 @@
-"""Liveness states and reporter context for the supervise progress display."""
+"""Types for the supervise progress display.
+
+The session read result, the reporter surface, the liveness states and tool
+records the reducer tracks, and the context the reporter shell owns.
+"""
 
 from __future__ import annotations
 
@@ -36,8 +40,9 @@ class ReadSessionResult:
         best_seq: The sequence number of the committed-keep iteration with the
             best primary delta. ``None`` under the same condition as
             ``best_delta_pct``, and set alongside it.
-        primary_label: The kind or name of the primary metric for the best
-            committed-keep iteration. ``None`` under the same condition as
+        primary_label: The primary of the best committed-keep iteration: the
+            metric name for a named-metric primary, else the kind
+            (``"geomean"``). ``None`` under the same condition as
             ``best_delta_pct``, and set alongside it.
         baseline_sha: The commit the session started from, taken from the
             session record by ``make_default_read``. ``None`` before the session
