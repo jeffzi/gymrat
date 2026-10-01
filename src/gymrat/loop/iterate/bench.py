@@ -200,7 +200,8 @@ async def _measure(
     Args:
         session: The session whose baseline and experiment worktrees are benched.
         config: The resolved configuration supplying prepare, samples, and timeout.
-        options: The iterate options supplying the progress callback.
+        options: The iterate options supplying the progress callback and the
+            warning sink.
         bench: The bench command to run. A parameter because a confirmation rerun
             narrows the command while sampling the same pair of worktrees the same
             way.
@@ -222,6 +223,7 @@ async def _measure(
         samples=config.samples,
         timeout_seconds=config.timeout_seconds,
         on_progress=options.on_progress,
+        warn=options.warn,
     )
     adapter = get_adapter(config.adapter)
     abort = options.abort if options.abort is not None else asyncio.Event()

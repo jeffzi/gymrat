@@ -42,9 +42,11 @@ from tests.loop._hooks import HookScripts
 from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,
     BASELINE_MS,
+    MALFORMED_LINE_WARNING,
     PairedRun,
     as_logged,
     baseline_rounds,
+    bench_malformed_once,
     improved_rounds,
     install_collect_samples,
     iteration,
@@ -943,3 +945,32 @@ async def test_iterate_session_when_stop_condition_met_does_report_stop_before_b
         await iterate_session(repo, config)
 
     assert not isinstance(exc.value, BudgetExceededError)
+
+
+# ---------------------------------------------------------------------------
+# adapter warnings: a bench line the adapter cannot read
+# ---------------------------------------------------------------------------
+
+
+async def test_iterate_session_when_warn_sink_given_does_route_adapter_warnings_to_it(
+    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    write_session_log(repo, session_record(repo))
+    bench_malformed_once(monkeypatch)
+    warnings: list[str] = []
+
+    await iterate_session(repo, resolved_config(), options=IterateOptions(warn=warnings.append))
+
+    assert warnings == [MALFORMED_LINE_WARNING]
+    assert MALFORMED_LINE_WARNING not in capsys.readouterr().err
+
+
+async def test_iterate_session_when_no_warn_sink_does_print_adapter_warnings_on_stderr(
+    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    write_session_log(repo, session_record(repo))
+    bench_malformed_once(monkeypatch)
+
+    await iterate_session(repo, resolved_config())
+
+    assert MALFORMED_LINE_WARNING in capsys.readouterr().err.splitlines()

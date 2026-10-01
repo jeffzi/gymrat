@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from gymrat.progress_events import ProgressCallback
     from gymrat.session import SessionLogRecord
     from gymrat.session.schema import CommandReason
+    from gymrat.warn import WarnSink
 
 __all__ = [
     "BenchRunOutputs",
@@ -91,10 +92,13 @@ class IterateOptions:
             plus hook, judge, confirm, and record events from the loop itself.
         abort: Setting it kills the in-flight bench command. When ``None``, a
             fresh event is used and nothing can interrupt the run.
+        warn: Where the adapter reports bench output it could not read. When
+            ``None``, the adapter writes the warning to stderr.
     """
 
     on_progress: ProgressCallback | None = None
     abort: asyncio.Event | None = None
+    warn: WarnSink | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +186,8 @@ async def iterate_session(
     Args:
         root: The repository whose open session is measured.
         config: The resolved run configuration.
-        options: Progress and abort hooks; a fresh set is used when ``None``.
+        options: Progress, abort, and warning hooks; a fresh set is used when
+            ``None``.
         color: Explicit color choice for the iteration report — ``True``
             forces ANSI, ``False`` suppresses it, ``None`` defers to the
             environment and TTY.

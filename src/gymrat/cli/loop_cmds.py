@@ -142,7 +142,7 @@ async def _iterate_body(
             lambda abort: iterate_session(
                 root,
                 resolved,
-                IterateOptions(abort=abort, on_progress=on_progress),
+                IterateOptions(abort=abort, on_progress=on_progress, warn=renderer.warn),
                 color=resolved_color,
             )
         )
