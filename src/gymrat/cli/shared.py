@@ -21,7 +21,7 @@ from typing import Any, Literal, NoReturn, Protocol
 import typer
 from rich.markup import escape
 
-from gymrat.adapters.types import AdapterError
+from gymrat.adapters import AdapterError
 from gymrat.cli import console
 from gymrat.cli.options import OutputFormat
 from gymrat.cli.progress import ProgressReporter

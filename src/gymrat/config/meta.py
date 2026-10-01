@@ -2,8 +2,7 @@
 
 from collections.abc import Sequence
 
-from gymrat.adapters.defaults import DEFAULT_GATING, DEFAULT_METRIC_KIND
-from gymrat.adapters.types import Adapter
+from gymrat.adapters import DEFAULT_GATING, DEFAULT_METRIC_KIND, Adapter
 from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.model import ResolvedMetricMeta
 

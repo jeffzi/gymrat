@@ -4,7 +4,7 @@ import math
 import statistics
 from collections.abc import Sequence
 
-from gymrat.adapters.types import Adapter
+from gymrat.adapters import Adapter
 from gymrat.config.meta import resolve_metric_meta
 from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.errors import GymratError

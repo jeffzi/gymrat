@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import tomli_w
 
-from gymrat.adapters.types import Adapter, MetricDefaults
+from gymrat.adapters import Adapter, MetricDefaults
 from gymrat.config import (
     MAX_SAFE_INTEGER,
     MAX_TIMEOUT_SECONDS,

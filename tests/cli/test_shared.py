@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 import typer
 
-from gymrat.adapters.types import AdapterError
+from gymrat.adapters import AdapterError
 from gymrat.cli import shared
 from gymrat.cli.app import app
 from gymrat.cli.console import set_color_override, set_debug_mode

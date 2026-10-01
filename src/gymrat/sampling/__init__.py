@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from gymrat.adapters.types import Adapter
+from gymrat.adapters import Adapter
 from gymrat.errors import CommandError, GymratError, hint_of
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, kill_live_process_groups
 from gymrat.exec import (

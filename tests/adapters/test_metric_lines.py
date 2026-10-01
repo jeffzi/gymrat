@@ -1,7 +1,6 @@
 import pytest
 
-from gymrat.adapters.metric_lines import metric_lines_adapter
-from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults
+from gymrat.adapters import Adapter, AdapterError, MetricDefaults, metric_lines_adapter
 from tests.adapters._inputs import LINE_BREAKS
 
 # ---------------------------------------------------------------------------

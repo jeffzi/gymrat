@@ -28,7 +28,7 @@ from tests._pipeline import install_pipeline
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from gymrat.adapters.types import WarnSink
+    from gymrat.adapters import WarnSink
     from gymrat.progress_events import ProgressEvent
 
 

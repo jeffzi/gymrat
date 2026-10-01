@@ -10,8 +10,7 @@ import json
 
 import pytest
 
-from gymrat.adapters.mitata import find_json_candidates, mitata_adapter
-from gymrat.adapters.types import AdapterError
+from gymrat.adapters import AdapterError, find_json_candidates, mitata_adapter
 from tests.adapters._inputs import build_stdout
 
 # ---------------------------------------------------------------------------
