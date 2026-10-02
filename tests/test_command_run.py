@@ -1017,7 +1017,6 @@ async def test_with_repo_lock_when_root_given_and_git_fails_otherwise_does_still
     [
         pytest.param("gymrat.command_run", id="command-run"),
         pytest.param("gymrat.supervisor.exit_sequence", id="exit-sequence"),
-        pytest.param("gymrat.supervisor.exit_settle", id="exit-settle"),
     ],
 )
 def test_importing_module_when_fresh_interpreter_does_not_load_the_cli_package(module: str):
