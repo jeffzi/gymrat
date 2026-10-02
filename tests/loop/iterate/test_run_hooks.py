@@ -184,6 +184,18 @@ async def test_run_hook_when_clock_faked_does_record_duration_from_monotonic_clo
     assert run.record.duration_ms == 250.0
 
 
+async def test_run_hook_when_wall_clock_faked_does_stamp_the_record_in_nanoseconds(
+    hooks: HookScripts,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stamp_ns = 1_700_000_000_123_456_789
+    monkeypatch.setattr("gymrat.loop.iterate.run.now_ns", lambda: stamp_ns)
+
+    run = await run_hook(hooks.invocation_of(hooks.hook_command("")))
+
+    assert run.record.at == stamp_ns
+
+
 # ---------------------------------------------------------------------------
 # run_hook — the 8 KiB relay cut
 # ---------------------------------------------------------------------------
