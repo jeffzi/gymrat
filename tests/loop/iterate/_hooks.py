@@ -8,7 +8,7 @@ into the source, so a channel far larger than a source literal wants to be
 still reaches the runner byte for byte.
 
 The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.loop._hooks``.
+helper imported as ``tests.loop.iterate._hooks``.
 """
 
 import json
@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any, Literal
 
-from gymrat.loop.hooks import HookInvocation
+from gymrat.loop.iterate.run import HookInvocation
 from gymrat.session.records import HookRecord
 from gymrat.session.schema import HookStage
 from gymrat.session.workspace import Worktrees

@@ -12,18 +12,46 @@ degenerate delta is recorded is :func:`gymrat.loop.iterate.bench.recorded_delta`
 
 The loop header lands last, replacing the comparison table's own header, so the
 table opens on the loop's terms rather than on ``gymrat compare``'s.
+
+The before and after commands a consumer hangs off each measurement run here too.
+Hooks steer the loop; they cannot brick it. Every invocation that reaches
+:func:`run_hook` runs its command -- deciding whether a stage has a command at
+all is the caller's job. A command that fails, overruns its timeout, or never
+starts at all comes back as a report and a record, never as a raised exception:
+there is no hook failure worth throwing away a measurement over.
+
+Two shaping choices are worth spelling out:
+
+- The record's byte counts are what the command *wrote*, not what was relayed.
+  A figure above the relay limit is how a reader of the log learns the report
+  was cut, so the pre-relay totals from ``exec`` are what land in the record.
+- A successful hook's stderr is kept out of the report. Commands write progress
+  there routinely, and repeating it would drown the measurement the hook was
+  annotating. A *failing* hook's stderr is shown -- and held to the same byte
+  cap as its stdout, since a build log buries a measurement as easily on one
+  channel as on the other.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from gymrat import clock as _clock
-from gymrat.clock import monotonic_ms
+from gymrat.clock import monotonic_ms, now_ns
 from gymrat.errors import GymratError
-from gymrat.loop.hooks import HookInvocation, run_hook_stage
+
+# Bound at module scope under the builtin's name so a test can substitute the
+# subprocess boundary via ``monkeypatch.setattr`` on this module.
+from gymrat.exec import (
+    FAILURE_EXIT_CODE,
+    ExecOptions,
+    ExecResult,
+    ExecTimeoutError,
+    exec,  # noqa: A004 -- names the subprocess executor `exec`
+)
 from gymrat.loop.iterate.bench import (
     BenchRunOutputs,
     IterationContext,
@@ -35,7 +63,10 @@ from gymrat.loop.iterate.bench import (
 )
 from gymrat.loop.iterate.confirm import Confirmation, apply_confirmation, confirm_regressions
 from gymrat.loop.iterate.record import IterationJudgment, build_iteration_record
+from gymrat.loop.output_limit import limit_output
 from gymrat.progress_events import (
+    HookFinished,
+    HookStarted,
     IterationRecorded,
     JudgeFinished,
     emit_progress,
@@ -53,6 +84,7 @@ from gymrat.report.text.render import render_report
 from gymrat.report.types import ComparisonResult, ReportOptions
 from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
+from gymrat.session.records import HookRecord, record_to_wire
 from gymrat.session.store import SessionState, append_record, require_open_session
 from gymrat.warn import warn_to_stderr
 
@@ -62,16 +94,18 @@ if TYPE_CHECKING:
 
     from gymrat.config.types import BenchlessConfig, ResolvedConfig
     from gymrat.progress_events import ProgressCallback
-    from gymrat.session.records import IterationRecord, SessionLogRecord
-    from gymrat.session.schema import CommandReason
+    from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord
+    from gymrat.session.schema import CommandReason, HookStage
     from gymrat.warn import WarnSink
 
 __all__ = [
     "BudgetExceededError",
+    "HookInvocation",
     "IterateOptions",
     "IterateResult",
     "LoopStopError",
     "iterate_session",
+    "run_hook",
     "stop_condition",
 ]
 
@@ -241,6 +275,208 @@ async def iterate_session(
         part for part in (before_report, iteration_report, after_report) if part != ""
     )
     return IterateResult(record=record, report=report)
+
+
+#: How long a hook may run before it is killed. Long enough to build, short
+#: enough to notice.
+HOOK_TIMEOUT_MS = 30_000
+
+
+@dataclass(frozen=True, slots=True)
+class HookInvocation:
+    """Which command to run, and everything the payload tells it about the loop so far.
+
+    Attributes:
+        command: The command line the consumer configured for this stage.
+        stage: Which side of a measurement the hook runs on.
+        seq: The iteration the hook brackets -- about to be measured, or just recorded.
+        session: The session header, source of the worktree, baseline, and branch.
+        last_iteration: The iteration the hook can read, ``None`` while the
+            session has measured nothing.
+        iteration_count: How many iterations the log holds as of this invocation.
+        timeout_ms: Milliseconds before the command is killed; ``None`` uses
+            :data:`HOOK_TIMEOUT_MS`.
+        abort: Event whose setting kills the hook's process group; ``None``
+            leaves the hook uninterruptible.
+    """
+
+    command: str
+    stage: HookStage
+    seq: int
+    session: SessionRecord
+    last_iteration: IterationRecord | None
+    iteration_count: int
+    timeout_ms: int | None = None
+    abort: asyncio.Event | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HookRun:
+    """What one fired hook leaves behind: a record for the log, a report for the agent.
+
+    Attributes:
+        record: The record to append to the session log.
+        report: The hook's stdout, truncated and labeled with its stage, then a
+            note naming the exit code or timeout when the command did not
+            succeed, and the truncated stderr under it. Empty when a successful
+            hook printed nothing.
+    """
+
+    record: HookRecord
+    report: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CommandOutcome:
+    """What the command itself did, before any of it is shaped for log or report."""
+
+    stdout: str
+    stderr: str
+    exit_code: int
+    timed_out: bool
+    #: Bytes the command wrote on stdout, ahead of exec's cap and the relay's.
+    stdout_bytes: int
+    #: Bytes the command wrote on stderr, ahead of exec's cap and the relay's.
+    stderr_bytes: int
+
+
+async def run_hook(invocation: HookInvocation) -> HookRun:
+    """Run the stage's command, handing it the loop as JSON on stdin.
+
+    The command runs in the experiment worktree with the payload on its stdin.
+    Nothing here raises, so a hook that fails, times out, or cannot start never
+    aborts the loop. The record is not appended to any log: the caller owns
+    that.
+
+    Args:
+        invocation: The stage, command, session, and payload data for the run.
+
+    Returns:
+        The hook run result containing the log record and the formatted report,
+        whether the command succeeded, failed, timed out, or failed to start.
+    """
+    timeout_ms = HOOK_TIMEOUT_MS if invocation.timeout_ms is None else invocation.timeout_ms
+    payload = json.dumps(_build_payload(invocation))
+
+    started_at = _clock.monotonic_ms()
+    result = await exec(
+        invocation.command,
+        ExecOptions(
+            cwd=invocation.session.worktrees.experiment,
+            timeout_ms=timeout_ms,
+            abort=invocation.abort,
+            stdin=f"{payload}\n",
+        ),
+    )
+    duration_ms = _clock.monotonic_ms() - started_at
+    outcome = _describe_outcome(result)
+
+    record = HookRecord(
+        type="hook",
+        at=now_ns(),
+        stage=invocation.stage,
+        seq=invocation.seq,
+        exit_code=outcome.exit_code,
+        duration_ms=duration_ms,
+        # What the command wrote, not what was relayed: a figure above the relay
+        # limit is how a reader of the log learns the report was cut.
+        stdout_bytes=outcome.stdout_bytes,
+        stderr_bytes=outcome.stderr_bytes,
+        timed_out=outcome.timed_out,
+    )
+    return HookRun(record=record, report=_format_report(invocation.stage, outcome, timeout_ms))
+
+
+def _describe_outcome(result: ExecResult | ExecTimeoutError) -> _CommandOutcome:
+    """Fold exec's two result shapes into the one the log and report read."""
+    # A timeout carries no exit code of its own -- the process was killed before
+    # it had one -- so the shared failure code stands in for it.
+    if isinstance(result, ExecTimeoutError):
+        exit_code, timed_out = FAILURE_EXIT_CODE, True
+    else:
+        exit_code, timed_out = result.exit_code, False
+    return _CommandOutcome(
+        stdout=result.stdout,
+        stderr=result.stderr,
+        exit_code=exit_code,
+        timed_out=timed_out,
+        stdout_bytes=result.stdout_bytes,
+        stderr_bytes=result.stderr_bytes,
+    )
+
+
+def _build_payload(invocation: HookInvocation) -> dict[str, object]:
+    """The loop as the hook reads it: where the edit lives, which iteration, whose session."""
+    session = invocation.session
+    last_iteration = invocation.last_iteration
+    return {
+        "stage": invocation.stage,
+        "experiment_dir": session.worktrees.experiment,
+        "seq": invocation.seq,
+        "last_iteration": record_to_wire(last_iteration) if last_iteration is not None else None,
+        "session": {
+            "session_id": session.session_id,
+            "baseline": {"ref": session.baseline.ref, "sha": session.baseline.sha},
+            "branch": session.branch,
+            "iteration_count": invocation.iteration_count,
+        },
+    }
+
+
+def _format_report(stage: HookStage, outcome: _CommandOutcome, timeout_ms: int) -> str:
+    """Every stdout line labeled with the stage, then a failing hook's note and stderr under it."""
+    lines = _split_lines(limit_output(outcome.stdout))
+    note = _failure_note(outcome, timeout_ms)
+
+    if note is not None:
+        lines.append(note)
+        lines.extend(_split_lines(limit_output(outcome.stderr)))
+
+    return "\n".join(f"[{stage}] {line}" for line in lines)
+
+
+def _failure_note(outcome: _CommandOutcome, timeout_ms: int) -> str | None:
+    """What to tell the reader about a hook that did not succeed, or ``None`` if it did."""
+    if outcome.timed_out:
+        return f"hook timed out after {timeout_ms}ms"
+    if outcome.exit_code != 0:
+        return f"hook exited {outcome.exit_code}"
+    return None
+
+
+def _split_lines(text: str) -> list[str]:
+    """``text`` as lines, with the trailing newline a command leaves behind dropped."""
+    trimmed = text.removesuffix("\n")
+    return [] if trimmed == "" else trimmed.split("\n")
+
+
+async def run_hook_stage(
+    jsonl_path: str,
+    on_progress: ProgressCallback | None,
+    *,
+    invocation: HookInvocation | None,
+) -> str:
+    """Run one lifecycle hook stage, bracketed by progress events when a command is configured.
+
+    Args:
+        jsonl_path: Path to the session's JSONL log to append the hook record to.
+        on_progress: Callback for stage-started and stage-finished progress
+            events, or ``None`` to skip progress reporting.
+        invocation: The stage, command, session, and payload data for the run,
+            or ``None`` when the stage has no configured hook, which runs no
+            process, appends no record, and adds no line to the report.
+
+    Returns:
+        The text to print for the hook — empty when there was no hook or it
+        said nothing.
+    """
+    if invocation is None:
+        return ""
+    emit_progress(on_progress, HookStarted(stage=invocation.stage, at_ms=monotonic_ms()))
+    run = await run_hook(invocation)
+    append_record(jsonl_path, run.record)
+    emit_progress(on_progress, HookFinished(stage=invocation.stage, at_ms=monotonic_ms()))
+    return run.report
 
 
 async def _hook_stage(

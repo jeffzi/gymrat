@@ -31,7 +31,6 @@ from gymrat.session.records import (
 )
 from gymrat.session.store import append_record as append_session_record
 from gymrat.session.store import read_records
-from tests.loop._hooks import HookScripts, expected_hook_record
 from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,
     BASELINE_MS,
@@ -51,6 +50,7 @@ from tests.loop.iterate._fixtures import (
     stub_samples,
     trimmed_report_lines,
 )
+from tests.loop.iterate._hooks import HookScripts, expected_hook_record
 from tests.session.records._fixtures import (
     SESSION_ID,
     committed_keep,

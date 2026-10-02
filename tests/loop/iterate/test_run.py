@@ -41,7 +41,6 @@ from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import PairedSamples
 from gymrat.session.store import read_records
 from gymrat.targets import InPlaceTarget
-from tests.loop._hooks import HookScripts
 from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,
     BASELINE_MS,
@@ -63,6 +62,7 @@ from tests.loop.iterate._fixtures import (
     stub_samples,
     trimmed_report_lines,
 )
+from tests.loop.iterate._hooks import HookScripts
 from tests.session.records._fixtures import (
     committed_keep,
     discard_record,
