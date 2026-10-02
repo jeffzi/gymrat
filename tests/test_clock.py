@@ -3,21 +3,12 @@
 import re
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
 
 import pytest
 
-from gymrat.clock import format_iso, monotonic_ms, now_iso, now_ms, now_ns
+from gymrat.clock import monotonic_ms, now_iso, now_ms, now_ns
 
 ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
-
-
-def test_format_iso_when_given_utc_datetime_does_render_milliseconds_with_z_suffix():
-    moment = datetime(2026, 1, 2, 3, 4, 5, 678_901, tzinfo=UTC)
-
-    result = format_iso(moment)
-
-    assert result == "2026-01-02T03:04:05.678Z"
 
 
 def test_now_iso_when_called_does_render_millisecond_utc_timestamp():

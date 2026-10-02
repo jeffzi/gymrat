@@ -16,11 +16,12 @@ import math
 from dataclasses import dataclass, replace
 from typing import Self
 
-#: Shared by every module that converts between milliseconds and clock tiers,
-#: so the conversion factors are declared once.
+#: Shared by every module that converts between nanoseconds, milliseconds and
+#: clock tiers, so the conversion factors are declared once.
 SECONDS_PER_MINUTE = 60
 SECONDS_PER_HOUR = 3600
 MS_PER_SECOND = 1000
+NS_PER_MS = 1_000_000
 
 
 @dataclass(frozen=True, slots=True)

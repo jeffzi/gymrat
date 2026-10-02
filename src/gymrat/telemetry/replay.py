@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gymrat.errors import GymratError
+from gymrat.eta import NS_PER_MS
 from gymrat.session.records import CommandRecord, SessionRecord, decode_log_line, parse_record
 from gymrat.supervisor.events import (
     CapEvent,
@@ -62,7 +63,6 @@ type _NumberedRecord = tuple[int, SessionLogRecord]
 
 _UNKNOWN_COMMAND_NAME = "unknown"
 _EXIT_CODE_ERROR = 2  # CLI exit-code convention: 2 = error
-_NS_PER_MS = 1_000_000
 
 
 def replay_session(
@@ -210,7 +210,7 @@ def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay co
     inputs = command_span_inputs(rec, session_id=session_id, line_number=line_number)
     links = [Link(inputs.link)] if inputs.link is not None else None
 
-    start_ns = rec.at - rec.duration_ms * _NS_PER_MS
+    start_ns = rec.at - rec.duration_ms * NS_PER_MS
     cmd_span = start_span(
         inputs.name,
         span_key=inputs.key,

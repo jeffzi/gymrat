@@ -25,10 +25,11 @@ import contextlib
 import os
 import signal as _signal_module
 import sys
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypedDict, cast
 
+from gymrat.eta import MS_PER_SECOND
 from gymrat.process_group import (
     TERMINATE_GRACE_S,
     attach_process_group,
@@ -144,30 +145,7 @@ def kill_live_process_groups() -> None:
     error by a warnings filter) from escaping into the signal-path cleanup that
     calls this.
     """
-    leaders = list(_live_process_groups)
-    for pid in leaders:
-        with contextlib.suppress(Exception):
-            terminate_process_group(pid)
-    with contextlib.suppress(Exception):
-        wait_for_process_group_exit(leaders, TERMINATE_GRACE_S)
-    _kill_process_groups(leaders)
-
-
-def _kill_process_groups(leaders: Iterable[int]) -> None:
-    for pid in leaders:
-        with contextlib.suppress(Exception):
-            kill_process_group(pid)
-
-
-def _escalation_grace_s() -> float:
-    # A parent must outwait its child's whole escalation, or its SIGKILL lands
-    # first and the child dies before killing the benches it started in sessions
-    # the parent's group kill cannot reach. Halving per nesting level keeps every
-    # level strictly longer than the one below it at any depth, with no maximum
-    # depth to know. The margin at depth d is _ESCALATION_GRACE_S / 2**(d + 1), so
-    # past depth 3 it drops under the 10 ms liveness poll and the ordering is no
-    # longer guaranteed in practice.
-    return _ESCALATION_GRACE_S * 0.5**_NESTING_DEPTH
+    _sweep_live_process_groups(TERMINATE_GRACE_S)
 
 
 def _kill_live_process_groups_now() -> None:
@@ -176,13 +154,27 @@ def _kill_live_process_groups_now() -> None:
     # Ctrl-C. Terminating again first hands a child that is itself a gymrat run
     # its own second signal, so it kills the benches it started in sessions of
     # its own instead of being killed mid-grace and orphaning them.
+    #
+    # A parent must outwait its child's whole escalation, or its SIGKILL lands
+    # first and the child dies before killing the benches it started in sessions
+    # the parent's group kill cannot reach. Halving per nesting level keeps every
+    # level strictly longer than the one below it at any depth, with no maximum
+    # depth to know. The margin at depth d is _ESCALATION_GRACE_S / 2**(d + 1), so
+    # past depth 3 it drops under the 10 ms liveness poll and the ordering is no
+    # longer guaranteed in practice.
+    _sweep_live_process_groups(_ESCALATION_GRACE_S * 0.5**_NESTING_DEPTH)
+
+
+def _sweep_live_process_groups(grace_s: float) -> None:
     leaders = list(_live_process_groups)
     for pid in leaders:
         with contextlib.suppress(Exception):
             terminate_process_group(pid)
     with contextlib.suppress(Exception):
-        wait_for_process_group_exit(leaders, _escalation_grace_s())
-    _kill_process_groups(leaders)
+        wait_for_process_group_exit(leaders, grace_s)
+    for pid in leaders:
+        with contextlib.suppress(Exception):
+            kill_process_group(pid)
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,25 +270,6 @@ class OutputBuffer:
     def text(self) -> str:
         """The accumulated text, joined from internal chunks."""
         return "".join(self._chunks)
-
-
-def _exit_code(returncode: int | None) -> int:
-    """Map a child's raw return code to a reported exit code.
-
-    A signal kill surfaces as a negative return code, and a child whose status
-    has not been collected yet as ``None``; both collapse to
-    :data:`FAILURE_EXIT_CODE` rather than leaking a negative or missing value.
-
-    Args:
-        returncode: The child's raw return code.
-
-    Returns:
-        The non-negative exit code, or :data:`FAILURE_EXIT_CODE` for abnormal
-        terminations.
-    """
-    if returncode is None or returncode < 0:
-        return FAILURE_EXIT_CODE
-    return returncode
 
 
 async def _wait_for_exit(proc: asyncio.subprocess.Process, grace_s: float) -> bool:
@@ -506,7 +479,7 @@ class _PipedSpawnKwargs(TypedDict, total=False):
     stdin: int
     stdout: int
     stderr: int
-    env: dict[str, str]
+    env: Mapping[str, str] | None
 
 
 def _subprocess_kwargs(options: ExecOptions) -> _PipedSpawnKwargs:
@@ -518,15 +491,13 @@ def _subprocess_kwargs(options: ExecOptions) -> _PipedSpawnKwargs:
     Returns:
         The keyword arguments to hand :func:`spawn_contained`.
     """
-    kwargs = _PipedSpawnKwargs(
+    return _PipedSpawnKwargs(
         cwd=options.cwd,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=options.env,
     )
-    if options.env is not None:
-        kwargs["env"] = dict(options.env)
-    return kwargs
 
 
 def _containment_kwargs() -> dict[str, Any]:
@@ -720,7 +691,7 @@ async def _settle(
     waiters: list[asyncio.Task[object]] = [normal_task]
     if abort_task is not None:
         waiters.append(abort_task)
-    timeout = options.timeout_ms / 1000 if options.timeout_ms is not None else None
+    timeout = options.timeout_ms / MS_PER_SECOND if options.timeout_ms is not None else None
 
     try:
         done, _ = await asyncio.wait(
@@ -735,7 +706,13 @@ async def _settle(
                 await _terminate_reap_and_drain(proc, stdout_task, stderr_task)
                 stderr_buf.append_failure(str(reader_error))
                 return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
-            return _build_result(stdout_buf, stderr_buf, _exit_code(proc.returncode))
+            # A signal kill surfaces as a negative return code, and a child whose
+            # status has not been collected yet as None; both collapse to the
+            # failure code rather than leaking a negative or missing value.
+            returncode = proc.returncode
+            if returncode is None or returncode < 0:
+                returncode = FAILURE_EXIT_CODE
+            return _build_result(stdout_buf, stderr_buf, returncode)
 
         await _terminate_reap_and_drain(proc, stdout_task, stderr_task)
         if abort_task is not None and abort_task in done:
@@ -758,18 +735,21 @@ async def _settle(
 
 
 async def _run(
-    spawn: Callable[[], Awaitable[asyncio.subprocess.Process]],
+    create_child: Callable[..., Awaitable[asyncio.subprocess.Process]],
+    args: Sequence[str],
     options: ExecOptions,
 ) -> ExecResult | ExecTimeoutError:
-    """Shared entry point: spawn through ``spawn``, then settle.
+    """Shared entry point: spawn ``args`` through ``create_child``, then settle.
 
-    Both :func:`exec` (shell) and :func:`exec_argv` (direct) delegate here
-    with their own :func:`spawn_contained` call, so the abort short-circuit,
-    settle loop, and teardown are written once.
+    Both :func:`exec` (shell) and :func:`exec_argv` (direct) delegate here, so
+    the abort short-circuit, the contained spawn, the settle loop, and the
+    teardown are written once.
 
     Args:
-        spawn: Starts the contained child; called only when the run is not
-            already aborted.
+        create_child: The asyncio creation function the child is spawned
+            through; called only when the run is not already aborted.
+        args: Its positional arguments: the shell command line, or the program
+            and its arguments.
         options: Spawn, timeout, and abort settings for the run.
 
     Returns:
@@ -780,7 +760,7 @@ async def _run(
         return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)
 
     try:
-        proc = await spawn()
+        proc = await spawn_contained(create_child, *args, **_subprocess_kwargs(options))
     except SpawnError as error:
         return _spawn_failure(str(error))
 
@@ -810,12 +790,7 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
         An :class:`ExecResult` on completion (including failures), or an
         :class:`ExecTimeoutError` when the timeout is exceeded.
     """
-    return await _run(
-        lambda: spawn_contained(
-            asyncio.create_subprocess_shell, command, **_subprocess_kwargs(options)
-        ),
-        options,
-    )
+    return await _run(asyncio.create_subprocess_shell, (command,), options)
 
 
 async def exec_argv(argv: Sequence[str], options: ExecOptions) -> ExecResult | ExecTimeoutError:
@@ -835,9 +810,4 @@ async def exec_argv(argv: Sequence[str], options: ExecOptions) -> ExecResult | E
     """
     if not argv:
         return _spawn_failure("argv is empty: no program to run")
-    return await _run(
-        lambda: spawn_contained(
-            asyncio.create_subprocess_exec, *argv, **_subprocess_kwargs(options)
-        ),
-        options,
-    )
+    return await _run(asyncio.create_subprocess_exec, argv, options)

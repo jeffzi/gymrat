@@ -41,6 +41,7 @@ from gymrat.cli.supervise.types import (
     TrackedTool,
     Waiting,
 )
+from gymrat.eta import NS_PER_MS
 from gymrat.supervisor.events import (
     CapEvent,
     CompactionEvent,
@@ -66,8 +67,6 @@ if TYPE_CHECKING:
     from gymrat.supervisor.events import SessionEvent
     from gymrat.supervisor.exit_sequence import ExitPhase
 
-_NS_PER_MS = 1_000_000
-
 _MAX_FINISHED_TOOLS = 3
 
 _FOLLOW_UP_LABELS: dict[str, str] = {"replied": "replied", "waiting": "waiting for gymrat"}
@@ -75,7 +74,7 @@ _FOLLOW_UP_LABELS: dict[str, str] = {"replied": "replied", "waiting": "waiting f
 
 def _ms(at_ns: int) -> int:
     """Convert an event's nanosecond timestamp to whole milliseconds."""
-    return at_ns // _NS_PER_MS
+    return at_ns // NS_PER_MS
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -89,11 +89,6 @@ def _publish_lock_file(lock_path: str) -> str:
     return _os_lock_file(lock_path) + ".publish"
 
 
-def _non_blocking_lock(os_lock_path: str) -> FileLock:
-    """A ``FileLock`` that fails immediately on contention instead of blocking."""
-    return FileLock(os_lock_path, timeout=0, preserve_lock_file=True)
-
-
 def is_held(lock_path: Path) -> bool:
     """Report whether another party holds the advisory lock at ``lock_path``.
 
@@ -110,8 +105,7 @@ def is_held(lock_path: Path) -> bool:
     Returns:
         ``True`` when the lock is held by another party, ``False`` otherwise.
     """
-    os_lock_path = _os_lock_file(str(lock_path))
-    probe = _non_blocking_lock(os_lock_path)
+    probe = FileLock(_os_lock_file(str(lock_path)), timeout=0, preserve_lock_file=True)
     try:
         probe.acquire()
     except Timeout:
@@ -144,27 +138,31 @@ def read_holder(lock_path: str) -> LockHolder | None:
         return None
 
 
-def _acquire_publish_lock(pub_lock_path: str) -> tuple[FileLock, bool]:
+def _acquire_publish_lock(pub_lock_path: str) -> FileLock:
     """Best-effort acquire of the publish lock.
 
-    Returns the lock object and whether acquisition succeeded. A timeout is not
-    an error — the caller proceeds without the publish lock in that case.
+    A timeout is not an error — the caller proceeds without the publish lock in
+    that case, and reads ``is_locked`` off the returned lock to know whether it
+    has one to release.
 
     Args:
         pub_lock_path: Path to the publish lock file to acquire.
 
     Returns:
-        A ``(lock, acquired)`` pair: the lock object and whether it was taken.
+        The publish lock, acquired when the wait succeeded.
+
+    Raises:
+        GymratError: When the publish lock file cannot be opened due to
+            permissions.
     """
     pub_lock = FileLock(pub_lock_path, timeout=_PUBLISH_LOCK_TIMEOUT, preserve_lock_file=True)
     try:
         pub_lock.acquire()
     except Timeout:
-        return pub_lock, False
+        pass
     except PermissionError as error:
         _raise_permission_error(pub_lock_path, error)
-    else:
-        return pub_lock, True
+    return pub_lock
 
 
 def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
@@ -222,7 +220,7 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
     os_lock_path = _os_lock_file(lock_path)
     pub_lock_path = _publish_lock_file(lock_path)
 
-    pub_lock, has_pub_lock = _acquire_publish_lock(pub_lock_path)
+    pub_lock = _acquire_publish_lock(pub_lock_path)
     try:
         lock = _acquire_os_lock(lock_path, os_lock_path)
 
@@ -234,7 +232,7 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
         with contextlib.suppress(OSError):
             holder.chmod(_WORLD_WRITABLE_MODE)
     finally:
-        if has_pub_lock:
+        if pub_lock.is_locked:
             pub_lock.release()
 
     def release() -> None:

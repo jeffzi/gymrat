@@ -177,6 +177,8 @@ def git_common_dir(root: str) -> str:
     try:
         printed = run_git(["rev-parse", "--git-common-dir"], root).strip()
     except (subprocess.SubprocessError, OSError) as error:
+        # Bound first: ruff's DOC501 reads ``raise <call>()`` as raising the
+        # callee's name and would demand it in ``Raises:``.
         err = repository_lookup_error(root, error)
         raise err from error
     # An absolute path git prints (a linked worktree's common dir) stands on its

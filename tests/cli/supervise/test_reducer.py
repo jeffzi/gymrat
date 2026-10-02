@@ -34,6 +34,7 @@ from gymrat.cli.supervise.types import (
     TrackedTool,
     Waiting,
 )
+from gymrat.eta import NS_PER_MS
 from gymrat.session.records import IterationPrimary
 from gymrat.supervisor.events import (
     CompactionEvent,
@@ -41,7 +42,6 @@ from gymrat.supervisor.events import (
 )
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
-    _NS_PER_MS,
     cap_event,
     follow_up_event,
     launch_event,
@@ -507,7 +507,7 @@ def test_advance_when_follow_up_arrives_does_record_the_turn_decision(
 
 
 def test_advance_when_compaction_arrives_does_record_the_context_decision():
-    after = advance(make_state(), CompactionEvent(at=3000 * _NS_PER_MS), None)
+    after = advance(make_state(), CompactionEvent(at=3000 * NS_PER_MS), None)
 
     assert after.last_decision == "context compacted"
 
@@ -515,7 +515,7 @@ def test_advance_when_compaction_arrives_does_record_the_context_decision():
 def test_advance_when_text_delta_arrives_does_not_change_state():
     before = make_state()
 
-    after = advance(before, TextDeltaEvent(at=2000 * _NS_PER_MS, chunk="hi"), None)
+    after = advance(before, TextDeltaEvent(at=2000 * NS_PER_MS, chunk="hi"), None)
 
     assert after == before
 
@@ -687,7 +687,7 @@ def test_plain_line_when_follow_up_arrives_does_return_the_decision_line():
 
 
 def test_plain_line_when_compaction_arrives_does_return_the_context_line():
-    _, line = emit(make_state(), CompactionEvent(at=3000 * _NS_PER_MS))
+    _, line = emit(make_state(), CompactionEvent(at=3000 * NS_PER_MS))
 
     assert line == "context compacted"
 

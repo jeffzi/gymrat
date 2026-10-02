@@ -79,18 +79,6 @@ def hint_of(error: object) -> str | None:
     return error.hint if isinstance(error, GymratError) else None
 
 
-def _stream_text_of(error: Exception, stream_name: str) -> str | None:
-    """The trimmed text of a captured child stream, or ``None`` when blank."""
-    stream = getattr(error, stream_name, None)
-    if isinstance(stream, bytes):
-        # Captured streams are bytes unless the call ran in text mode; replace
-        # undecodable sequences so diagnostics never raise here.
-        stream = stream.decode("utf-8", errors="replace")
-    if isinstance(stream, str) and stream.strip():
-        return stream.strip()
-    return None
-
-
 def stderr_text_of(error: object) -> str:
     """The diagnostics a failed child process wrote to its output streams.
 
@@ -113,10 +101,12 @@ def stderr_text_of(error: object) -> str:
         The trimmed stderr when it is present and non-blank, else the trimmed
         stdout on the same terms, else the message.
     """
-    if isinstance(error, Exception):
-        for stream_name in ("stderr", "stdout"):
-            text = _stream_text_of(error, stream_name)
-            if text is not None:
-                return text
-
+    for stream_name in ("stderr", "stdout"):
+        stream = getattr(error, stream_name, None)
+        if isinstance(stream, bytes):
+            # Captured streams are bytes unless the call ran in text mode; replace
+            # undecodable sequences so diagnostics never raise here.
+            stream = stream.decode("utf-8", errors="replace")
+        if isinstance(stream, str) and stream.strip():
+            return stream.strip()
     return str(error)

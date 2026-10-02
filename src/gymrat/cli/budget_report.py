@@ -11,7 +11,7 @@ from collections.abc import Callable
 from gymrat import clock as _clock
 from gymrat.cli.shared import write_stdout
 from gymrat.errors import GymratError
-from gymrat.eta import format_duration
+from gymrat.eta import MS_PER_SECOND, format_duration
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.session.budget import (
     SIDES_PER_ITERATE,
@@ -37,7 +37,7 @@ def budget_summary_of(budget: Budget, current_ms: float) -> BudgetSummary:
     """
     return BudgetSummary(
         cap_minutes=budget.max_minutes,
-        remaining_seconds=int(budget.remaining_ms(current_ms) // 1000),
+        remaining_seconds=int(budget.remaining_ms(current_ms) // MS_PER_SECOND),
     )
 
 

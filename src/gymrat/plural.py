@@ -1,7 +1,5 @@
 """English pluralization for count-prefixed labels."""
 
-from __future__ import annotations
-
 _SIBILANT_ENDINGS = ("s", "x", "z", "ch", "sh")
 
 _VOWELS = "aeiou"  # cspell:ignore aeiou

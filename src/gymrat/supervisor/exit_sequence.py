@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Literal
 from gymrat.clock import monotonic_ms, now_ns
 from gymrat.command_run import with_repo_lock
 from gymrat.errors import GymratError
+from gymrat.eta import MS_PER_SECOND
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.discard import discard_session
 from gymrat.loop.finalize import finalize_session
@@ -209,7 +210,7 @@ async def _still_held(
         ``True`` when the lock was still held at the bound.
     """
     while monotonic_ms() - started_ms < bound_ms:
-        await asyncio.sleep(poll_ms / 1000)
+        await asyncio.sleep(poll_ms / MS_PER_SECOND)
         if not probe():
             return False
     return True
@@ -260,7 +261,9 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
         The steps the sequence took and the failure that ended it, if any.
     """
     probe = _lock_probe(context.lock_path) if is_lock_held is None else is_lock_held
-    bound_ms = context.config.timeout_seconds * 1000 if lock_wait_ms is None else lock_wait_ms
+    bound_ms = (
+        context.config.timeout_seconds * MS_PER_SECOND if lock_wait_ms is None else lock_wait_ms
+    )
     steps: list[ExitStep] = []
 
     def record(step: ExitStep) -> None:

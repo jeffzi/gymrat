@@ -20,6 +20,7 @@ from typing import Literal
 from gymrat import clock
 from gymrat.clock import now_ms, now_ns
 from gymrat.errors import GymratError
+from gymrat.eta import MS_PER_SECOND
 from gymrat.session.lock import is_held
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import fold_session, read_records
@@ -290,7 +291,7 @@ class _Supervision:
 
     async def _run_settle(self, turn: TurnEndEvent, *, after_wait: bool = False) -> None:
         if self._config.settle_window_ms > 0:
-            await asyncio.sleep(self._config.settle_window_ms / 1000)
+            await asyncio.sleep(self._config.settle_window_ms / MS_PER_SECOND)
 
         try:
             records = read_records(
@@ -382,7 +383,7 @@ class _Supervision:
         self._schedule("lock_poll", self._run_lock_poll(turn))
 
     async def _run_lock_poll(self, turn: TurnEndEvent) -> None:
-        poll_s = self._config.lock_poll_ms / 1000
+        poll_s = self._config.lock_poll_ms / MS_PER_SECOND
         while self._config.is_lock_held():  # noqa: ASYNC110 - lock poll uses real file probes
             await asyncio.sleep(poll_s)
         await self._run_settle(turn, after_wait=True)
@@ -431,12 +432,12 @@ class _Supervision:
         else:
             self._interrupt_task = _fire_and_report_interrupt(self._session)
             self._grace_timer = asyncio.get_running_loop().call_later(
-                self._config.grace_ms / 1000, self._abort_event.set
+                self._config.grace_ms / MS_PER_SECOND, self._abort_event.set
             )
 
     async def _run_wall_clock(self) -> None:
         deadline = self._config.deadline_ms
-        poll_s = self._config.wall_clock_poll_ms / 1000
+        poll_s = self._config.wall_clock_poll_ms / MS_PER_SECOND
         while now_ms() < deadline:  # noqa: ASYNC110 - wall-clock poll survives machine sleep
             await asyncio.sleep(poll_s)
         self._trigger_cap("wall-clock")

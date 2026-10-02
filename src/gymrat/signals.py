@@ -47,9 +47,9 @@ from typing import NoReturn, TextIO
 _TERMINATION_SIGNAL_NAMES = ("SIGINT", "SIGTERM", "SIGHUP")
 
 # The same signals resolved to their numbers, dropping any the platform does not
-# define. This is the canonical set: :mod:`gymrat.git` imports it to block
-# exactly these signals across a git subprocess call, so a signal cannot fire
-# this module's cleanup while a ``git worktree add`` is only half-materialized.
+# define. This is the canonical set: :mod:`gymrat.exec` imports it to unblock
+# exactly these signals in a spawned child, reversing the mask the parent holds
+# across the spawn.
 TERMINATION_SIGNALS: frozenset[int] = frozenset(
     resolved
     for name in _TERMINATION_SIGNAL_NAMES
@@ -240,8 +240,8 @@ def _ensure_handlers_installed() -> None:
 # POSIX-only seam for blocking signals. ``None`` on platforms without
 # ``pthread_sigmask`` (win32), where callers fall back to running unmasked.
 # Kept as a module-level reference so the fallback branch stays testable.
-# :mod:`gymrat.git` imports this to block the same signals across a git
-# subprocess call, rather than re-resolving ``pthread_sigmask`` itself.
+# :mod:`gymrat.exec` imports this to unblock the same signals in a spawned
+# child, rather than re-resolving ``pthread_sigmask`` itself.
 pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
     signal, "pthread_sigmask", None
 )

@@ -108,23 +108,6 @@ class CleanupResult:
     prune_error: str | None
 
 
-def _is_absent_path_error(error: OSError) -> bool:
-    """Whether a probe failure means "no directory here", not "the probe broke".
-
-    ``ENOENT`` is a missing path; ``ENOTDIR`` is a ref name carrying a slash
-    that resolves underneath one of its own components (``fix/typo`` with a file
-    named ``fix`` present). Both leave ref resolution as the input's only
-    remaining reading; any other errno is reported instead of retried as a ref.
-
-    Args:
-        error: The error the directory probe raised.
-
-    Returns:
-        Whether the error indicates the path simply does not exist.
-    """
-    return error.errno in (errno.ENOENT, errno.ENOTDIR)
-
-
 def _try_resolve_directory(target_input: str) -> InPlaceTarget | None:
     """Attempt directory resolution before the input is tried as a ref.
 
@@ -149,7 +132,11 @@ def _try_resolve_directory(target_input: str) -> InPlaceTarget | None:
     try:
         stats = absolute_path.stat()
     except OSError as error:
-        if _is_absent_path_error(error):
+        # ENOENT is a missing path; ENOTDIR is a ref name carrying a slash that
+        # resolves underneath one of its own components (``fix/typo`` with a
+        # file named ``fix`` present). Both leave ref resolution as the input's
+        # only remaining reading; any other errno is reported instead.
+        if error.errno in (errno.ENOENT, errno.ENOTDIR):
             return None
         message = f"Cannot resolve target '{target_input}': {stderr_text_of(error)}"
         raise GymratError(message, hint=_RESOLVE_TARGET_HINT) from error

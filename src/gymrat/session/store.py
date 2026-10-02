@@ -43,7 +43,6 @@ from gymrat.session.records import (
     StopRecord,
     decode_log_line,
     parse_record,
-    record_to_json_line,
 )
 from gymrat.session.schema import KeepReason
 
@@ -316,7 +315,7 @@ def _serialize_record(record: SessionLogRecord) -> str:
         GymratError: When the record does not survive the JSON round trip.
     """
     try:
-        line = record_to_json_line(record)
+        line = record.model_dump_json(exclude_none=True)
     except PydanticSerializationError as error:
         hint = _NOT_UTF8_HINT if _any_leaf(record, _is_lone_surrogate_text) else _NOT_JSON_HINT
         raise GymratError(_refusal(record, error), hint=hint) from error

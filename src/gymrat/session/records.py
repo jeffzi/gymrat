@@ -16,11 +16,10 @@ Two entry points bridge the two forms:
   omitted, except ``delta_pct`` (on a metric verdict and on an iteration's
   primary), which is always present and serializes ``None`` as JSON ``null``.
 
-Around them sit the line-level halves of the codec. Inbound, a log line goes to
-a wire value through :func:`decode_log_line`, which refuses non-finite numbers,
-and then to a typed model through :func:`parse_record`. Outbound,
-:func:`record_to_json_line` renders a model as the compact JSON line the store
-writes.
+Inbound, a log line goes to a wire value through :func:`decode_log_line`, which
+refuses non-finite numbers, and then to a typed model through
+:func:`parse_record`. Outbound, the store renders a model as a compact JSON line
+with ``model_dump_json(exclude_none=True)``.
 """
 
 import json
@@ -70,15 +69,8 @@ from gymrat.session.workspace import BaselineRef, Worktrees
 # Validation and coercion helpers
 # ---------------------------------------------------------------------------
 
-#: Metric name to measured value for one sample round.
-type SampleRound = dict[str, float | int]
 
-
-_BaselineRefAdapter = TypeAdapter(BaselineRef)
-_WorktreesAdapter = TypeAdapter(Worktrees)
-
-
-def _coerce[T](cls: type[T], adapter: TypeAdapter[T]) -> Callable[[object], T]:
+def _coerce[T](cls: type[T]) -> Callable[[object], T]:
     """Build a validator that coerces a dict into ``cls`` via lax-mode validation.
 
     Strict mode rejects dict-to-dataclass coercion, so the returned validator
@@ -87,11 +79,11 @@ def _coerce[T](cls: type[T], adapter: TypeAdapter[T]) -> Callable[[object], T]:
 
     Args:
         cls: The dataclass type to coerce values into.
-        adapter: The ``TypeAdapter`` used to validate and construct ``cls``.
 
     Returns:
         A before-validator callable that coerces dicts into ``cls``.
     """
+    adapter = TypeAdapter(cls)
 
     def coerce(value: object) -> T:
         if isinstance(value, cls):
@@ -101,8 +93,8 @@ def _coerce[T](cls: type[T], adapter: TypeAdapter[T]) -> Callable[[object], T]:
     return coerce
 
 
-_coerce_baseline_ref = _coerce(BaselineRef, _BaselineRefAdapter)
-_coerce_worktrees = _coerce(Worktrees, _WorktreesAdapter)
+_coerce_baseline_ref = _coerce(BaselineRef)
+_coerce_worktrees = _coerce(Worktrees)
 
 
 _RECORD_CONFIG = ConfigDict(
@@ -160,8 +152,6 @@ _OptNumber = Annotated[
     _not_null(_Number),
     WithJsonSchema({"type": "number"}),
 ]
-
-_DeltaPct = _Number | None
 
 _PositiveInt = Annotated[int, Field(ge=1), BeforeValidator(coerce_integer)]
 _NonNegativeInt = Annotated[int, Field(ge=0), BeforeValidator(coerce_integer)]
@@ -287,7 +277,7 @@ class _DeltaPctSerializer(BaseModel):
 
     model_config = _RECORD_CONFIG
 
-    delta_pct: _DeltaPct = Field(
+    delta_pct: _Number | None = Field(
         description="Percentage change from baseline, or null when undefined."
     )
 
@@ -575,21 +565,6 @@ def record_to_wire(record: SessionLogRecord) -> dict[str, object]:
     return record.model_dump(mode="json", exclude_none=True)
 
 
-def record_to_json_line(record: SessionLogRecord) -> str:
-    """Render a session-log model as the compact JSON line the store writes.
-
-    Optional fields whose value is ``None`` are omitted, matching
-    :func:`record_to_wire`. Pydantic writes non-finite floats as ``null``.
-
-    Args:
-        record: The parsed session-log model to render.
-
-    Returns:
-        The record's compact JSON, without a trailing newline.
-    """
-    return record.model_dump_json(exclude_none=True)
-
-
 # ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
@@ -667,10 +642,6 @@ def parse_record(value: object) -> SessionLogRecord:
         _wire_validation.reset(token)
 
 
-def _known_types() -> list[str]:
-    return [wire_type(member) for member in SESSION_LOG_MODELS]
-
-
 def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, object]) -> None:
     """Raise with the canonical "Unknown session record type" message.
 
@@ -692,7 +663,7 @@ def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, obje
     type_value = value.get("type")
     tag_missing = error_type == "union_tag_not_found" and type_value is None and "type" not in value
     rendered = "undefined" if tag_missing else json.dumps(type_value)
-    hint = "Expected one of: " + ", ".join(_known_types()) + "."
+    hint = "Expected one of: " + ", ".join(wire_type(member) for member in SESSION_LOG_MODELS) + "."
     message = f"Unknown session record type: {rendered}"
     raise GymratError(message, hint=hint)
 

@@ -103,7 +103,7 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
     standing = [
         directory
         for directory in (experiment_worktree_dir(root), baseline_worktree_dir(root))
-        if _is_directory(directory)
+        if Path(directory).is_dir()
     ]
 
     try:
@@ -169,8 +169,8 @@ def recreate_workspace(root: str, branch: str, baseline_sha: str) -> None:
     Raises:
         GymratError: When git refuses to prune or to add a worktree.
     """
-    needs_experiment = not _is_directory(experiment_worktree_dir(root))
-    needs_baseline = not _is_directory(baseline_worktree_dir(root))
+    needs_experiment = not Path(experiment_worktree_dir(root)).is_dir()
+    needs_baseline = not Path(baseline_worktree_dir(root)).is_dir()
 
     if not needs_experiment and not needs_baseline:
         return
@@ -193,7 +193,7 @@ def _prune_stale_worktrees(root: str) -> None:
         root: The repository root.
     """
     for directory in (experiment_worktree_dir(root), baseline_worktree_dir(root)):
-        if not _is_directory(directory):
+        if not Path(directory).is_dir():
             try_git(["worktree", "remove", "--force", directory], root)
 
 
@@ -235,7 +235,7 @@ def _unwind_workspace(root: str, branch: str, standing: list[str]) -> None:
         standing: The worktree directories that existed before the attempt began.
     """
     for directory in (experiment_worktree_dir(root), baseline_worktree_dir(root)):
-        if _is_directory(directory) and directory not in standing:
+        if Path(directory).is_dir() and directory not in standing:
             try_git(["worktree", "remove", "--force", directory], root)
     try_git(["branch", "-D", branch], root)
 
@@ -406,7 +406,7 @@ def dirty_file_count(directory: str) -> int:
     Returns:
         The number of dirty entries, or 0 when the directory is absent.
     """
-    if not _is_directory(directory):
+    if not Path(directory).is_dir():
         return 0
     return len(
         _git_lines(
@@ -432,7 +432,7 @@ def changed_file_count(directory: str, target: str) -> int:
     Returns:
         The number of changed or untracked files, or 0 when absent.
     """
-    if not _is_directory(directory):
+    if not Path(directory).is_dir():
         return 0
 
     tracked = _git_lines(
@@ -504,7 +504,7 @@ def remove_worktrees(root: str, worktrees: Worktrees) -> list[str]:
 
     for directory in (worktrees.experiment, worktrees.baseline):
         error = try_git(["worktree", "remove", "--force", directory], root)
-        if error is not None and _is_directory(directory):
+        if error is not None and Path(directory).is_dir():
             warnings.append(
                 f"Could not remove the worktree at {directory}: {error}\n"
                 f"  remove it by hand with: git worktree remove --force {directory}"
@@ -516,10 +516,6 @@ def remove_worktrees(root: str, worktrees: Worktrees) -> list[str]:
 # ---------------------------------------------------------------------------
 # Git plumbing
 # ---------------------------------------------------------------------------
-
-
-def _is_directory(directory: str) -> bool:
-    return Path(directory).is_dir()
 
 
 def run_git_step(args: list[str], cwd: str, message: str, hint: str) -> str:

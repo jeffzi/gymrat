@@ -203,24 +203,31 @@ def test_resolve_target_when_input_is_existing_dir_matching_a_ref_does_prefer_di
     assert result == InPlaceTarget(dir=os.path.realpath(shared_dir))
 
 
+@pytest.mark.parametrize(
+    "ref",
+    [
+        pytest.param("myfile", id="file-itself"),
+        pytest.param("myfile/typo", id="path-under-file"),
+    ],
+)
 def test_resolve_target_when_input_is_existing_file_does_fall_through_to_ref(
-    create_scratch_repo: Callable[[], str],
+    create_scratch_repo: Callable[[], str], ref: str
 ):
     repo = create_scratch_repo()
     sha = _get_head_sha(repo)
-    _run_git(["branch", "myfile"], repo)
+    _run_git(["branch", ref], repo)
     (Path(repo) / "myfile").write_text("not a directory\n")
     original_cwd = Path.cwd()
 
     try:
-        # The input names an existing regular file relative to the process cwd;
-        # a non-directory must fall through to ref resolution, not resolve
-        # in place and not raise.
+        # The input names an existing regular file relative to the process cwd,
+        # or a path underneath one; neither is a directory, so both must fall
+        # through to ref resolution, not resolve in place and not raise.
         os.chdir(repo)
 
-        result = resolve_target("myfile", repo)
+        result = resolve_target(ref, repo)
 
-        assert result == RefTarget(ref="myfile", resolved_sha=sha)
+        assert result == RefTarget(ref=ref, resolved_sha=sha)
     finally:
         os.chdir(original_cwd)
 

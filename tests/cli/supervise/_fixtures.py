@@ -23,6 +23,7 @@ from rich.console import Console, RenderableType
 from gymrat.cli.style import CLI_THEME
 from gymrat.cli.supervise.progress import REFRESH_MS, create_supervise_reporter
 from gymrat.cli.supervise.types import IDLE_WARN_MS, ReadSessionResult, SuperviseReporter
+from gymrat.eta import NS_PER_MS
 from gymrat.loop.start import start_session
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import BaselineRecord, IterationPrimary, IterationRecord
@@ -274,10 +275,6 @@ def _throwing_read() -> ReadSessionResult:
 # is computed against it so the two stay in sync.
 _DEFAULT_TOOL_START_TS = 2000
 
-# Converts an event firer's `at_ms` (milliseconds) to the `at` field's
-# nanosecond-since-epoch unit.
-_NS_PER_MS = 1_000_000
-
 
 def launch_event(
     at_ms: int = 1000,
@@ -287,7 +284,7 @@ def launch_event(
 ) -> LaunchEvent:
     """A ``LaunchEvent`` stamped at *at_ms* milliseconds, with sensible cap and model defaults."""
     return LaunchEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         schema_version=1,
         head_sha="abc123",
         dirty=False,
@@ -310,7 +307,7 @@ def fire_launch(
     """Publish a ``LaunchEvent`` with sensible defaults for cap and model fields.
 
     ``at_ms`` is in the test's millisecond vocabulary; the event is stamped
-    ``at=at_ms * _NS_PER_MS`` (nanoseconds) so the dashboard's ingestion
+    ``at=at_ms * NS_PER_MS`` (nanoseconds) so the dashboard's ingestion
     boundary (``event.at // 1_000_000``) recovers the same millisecond value.
     """
     observer(launch_event(at_ms, max_minutes=max_minutes, max_usd=max_usd))
@@ -326,7 +323,7 @@ def tool_start_event(
 ) -> ToolStartEvent:
     """A ``ToolStartEvent`` for *tool_name* stamped at *at_ms* milliseconds."""
     return ToolStartEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         tool_use_id=tool_use_id,
         tool_name=tool_name,
         input={},
@@ -368,7 +365,7 @@ def tool_end_event(
 ) -> ToolEndEvent:
     """A ``ToolEndEvent`` whose duration is measured from *started_at_ms*."""
     return ToolEndEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         tool_use_id=tool_use_id,
         tool_name=tool_name,
         duration_ms=at_ms - started_at_ms,
@@ -403,7 +400,7 @@ def fire_tool_end(
 
 def usage_event(cost_usd: float, at_ms: int = 4000) -> UsageUpdateEvent:
     """A ``UsageUpdateEvent`` carrying the given cumulative cost."""
-    return UsageUpdateEvent(at=at_ms * _NS_PER_MS, cost_usd=cost_usd)
+    return UsageUpdateEvent(at=at_ms * NS_PER_MS, cost_usd=cost_usd)
 
 
 def fire_usage_update(observer: SessionObserver, cost_usd: float, at_ms: int = 4000) -> None:
@@ -413,7 +410,7 @@ def fire_usage_update(observer: SessionObserver, cost_usd: float, at_ms: int = 4
 
 def cap_event(cap: CapType, at_ms: int = 5000, *, action: CapAction = "interrupting") -> CapEvent:
     """A ``CapEvent`` signaling that *cap* has fired."""
-    return CapEvent(at=at_ms * _NS_PER_MS, cap=cap, action=action)
+    return CapEvent(at=at_ms * NS_PER_MS, cap=cap, action=action)
 
 
 def fire_cap(
@@ -429,7 +426,7 @@ def fire_cap(
 
 def fire_compaction(observer: SessionObserver, at_ms: int = 5000) -> None:
     """Publish a ``CompactionEvent`` marking a context-window compaction."""
-    observer(CompactionEvent(at=at_ms * _NS_PER_MS))
+    observer(CompactionEvent(at=at_ms * NS_PER_MS))
 
 
 def model_phase_event(
@@ -441,7 +438,7 @@ def model_phase_event(
 ) -> ModelPhaseEvent:
     """A ``ModelPhaseEvent``; *parent_tool_use_id* scopes it to a nested tool."""
     return ModelPhaseEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         phase=phase,  # type: ignore[arg-type]
         tool_name=tool_name,
         parent_tool_use_id=parent_tool_use_id,
@@ -471,7 +468,7 @@ def thinking_event(
 ) -> ThinkingUpdateEvent:
     """A ``ThinkingUpdateEvent`` carrying the given cumulative token estimate."""
     return ThinkingUpdateEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         estimated_tokens=estimated_tokens,
         delta=delta,
         parent_tool_use_id=parent_tool_use_id,
@@ -507,7 +504,7 @@ def turn_end_event(
 ) -> TurnEndEvent:
     """A ``TurnEndEvent`` attributed to *origin*."""
     return TurnEndEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         text=text,
         cost_usd=cost_usd,
         origin=origin,
@@ -540,7 +537,7 @@ def follow_up_event(
     text: str | None = None,
 ) -> FollowUpEvent:
     """A ``FollowUpEvent`` carrying the supervisor's decision for the turn."""
-    return FollowUpEvent(at=at_ms * _NS_PER_MS, action=action, reason=reason, text=text)
+    return FollowUpEvent(at=at_ms * NS_PER_MS, action=action, reason=reason, text=text)
 
 
 def fire_follow_up(

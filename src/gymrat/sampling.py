@@ -35,6 +35,7 @@ from gymrat.adapters import DEFAULT_GATING, DEFAULT_METRIC_KIND, Adapter
 from gymrat.clock import monotonic_ms
 from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.errors import CommandError, GymratError, hint_of
+from gymrat.eta import MS_PER_SECOND
 from gymrat.exec import (
     ExecOptions,
     ExecResult,
@@ -483,7 +484,7 @@ async def collect_samples(
     schedule = _Schedule(
         targets=targets,
         options=options,
-        timeout_ms=int(options.timeout_seconds * 1000),
+        timeout_ms=int(options.timeout_seconds * MS_PER_SECOND),
         abort=abort,
     )
     collected: list[list[dict[str, float]]] = [[] for _ in targets]
