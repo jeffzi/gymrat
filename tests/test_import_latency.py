@@ -22,7 +22,7 @@ driver imports it lazily inside ``start`` — importing the supervisor modules
 (and the CLI) must never pull it in. The package ``__init__`` imports nothing,
 so the package probe names, one by one, the supervisor modules the package used
 to import (all but ``events``, which ``hooks`` imports). The modules those import
-load with them, and the exit-sequence modules load through the CLI probes, which
+load with them, and the exit-sequence module loads through the CLI probes, which
 import the ``supervise`` command.
 
 ``opentelemetry`` ships only with the ``otel`` extra, so modules that load
