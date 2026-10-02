@@ -6,6 +6,10 @@ verbose method footer, and the worktree-cleanup footer. A measure report is the
 run header, the measurement table, and the worktree-cleanup footer — it carries
 no verdict machinery, since a single run has nothing to compare against.
 
+The comparison tables come from :mod:`.single` and :mod:`.multi`. The measurement
+table, the selection of the metrics a compare report highlights, and the footer
+lines naming how each verdict was decided are built here.
+
 The table renderers return lines already resolved to text (ANSI or plain) for the
 run's color choice; the summary, highlights, and footer blocks are built as rich
 markup here and resolved the same way, so color is decided once per block through
@@ -14,50 +18,65 @@ markup here and resolved the same way, so color is decided once per block throug
 
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import TYPE_CHECKING
+import math
+import operator
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, assert_never
 
 from rich.cells import cell_len, set_cell_size
 from rich.markup import escape
 from rich.text import Text
 
+from gymrat.metric_name import format_inline, parse
 from gymrat.model import Effect
 from gymrat.plural import pluralize
-from gymrat.report.display import display_class, get_glyph
-from gymrat.report.footer import footer_lines
-from gymrat.report.format import format_delta, format_evidence, format_verdict_delta
-from gymrat.report.geomean_label import GATED_GEOMEAN_LABEL
-from gymrat.report.highlight import (
-    UNSTABLE_FUTILITY_NOTE,
-    HighlightBlock,
-    has_unstable_highlight,
-    highlight_label,
-    select_highlights,
+from gymrat.report.display import (
+    MIN_PERMUTATION_N,
+    DisplayClass,
+    display_class,
+    get_glyph,
+    shown_class,
 )
-from gymrat.report.sections import spans_many_kinds
+from gymrat.report.format import (
+    format_delta,
+    format_evidence,
+    format_metric_cell_parts,
+    format_pair_count,
+    format_verdict_delta,
+)
+from gymrat.report.geomean_label import GATED_GEOMEAN_LABEL
+from gymrat.report.sections import plan_sections, spans_many_kinds
 from gymrat.report.style import (
     RENDER_WIDTH,
+    SCOPE_SEPARATOR,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
+    format_hint,
     join_header_parts,
     markup,
     render_lines,
     truncate_labels,
 )
+from gymrat.report.table.markup import group_metric_cell, header_metric_cell, indented_section_label
+from gymrat.report.table.render import build_cell_dispatcher, plan_table_skeleton, render_body
 from gymrat.report.tally import verdict_summary_parts
-from gymrat.report.text.measure import render_measure_table
 from gymrat.report.text.multi import render_comparison_table
 from gymrat.report.text.single import render_table
 from gymrat.report.types import GeomeanFailOn, ReportOptions
+from gymrat.report.types import candidate_at as _candidate_at
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from gymrat.model import MetricVerdict
+    from gymrat.report.format import MetricCellParts
     from gymrat.report.types import (
         CandidateComparison,
+        CandidateMetric,
         ComparisonResult,
         FailOnCondition,
         MeasurementResult,
+        MetricComparison,
         MetricComparisons,
     )
     from gymrat.targets import WorktreeRemovalFailure
@@ -169,6 +188,121 @@ def _render_summaries(result: ComparisonResult) -> list[str]:
 # ---------------------------------------------------------------------------
 # Highlights and gate trips
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MetricHighlight:
+    """A metric worth calling out for one candidate, with the name it is reported under.
+
+    Attributes:
+        name: The metric name the highlight is reported under.
+        metric: The metric's comparison data.
+        candidate: The candidate slice that earned the highlight.
+    """
+
+    name: str
+    metric: MetricComparison
+    candidate: CandidateMetric
+
+
+_HIGHLIGHT_RANK: dict[DisplayClass, int | None] = {
+    "regressed": 0,
+    "improved": 1,
+    "unstable": 2,
+    "identical": None,
+    "within-noise": None,
+    "inconclusive": None,
+}
+
+
+def _highlight_weight(verdict: MetricVerdict) -> float:
+    """How loud a highlight is within its class: noise for unstable, delta magnitude otherwise."""
+    if verdict.verdict == "unstable":
+        return verdict.noise_pct
+    magnitude = abs(verdict.delta.value)
+    return 0.0 if math.isnan(magnitude) else magnitude
+
+
+def select_highlights(
+    metrics: MetricComparisons,
+    candidate_index: int,
+) -> list[MetricHighlight]:
+    """The metrics worth calling out for one candidate, ordered by class then loudness.
+
+    Regressions come first (by delta magnitude, descending), then improvements
+    the same way, then unstable metrics by noise. Ranking is per candidate
+    because the verdicts are. Metrics that sat within the noise, measured
+    identical, or were never reported carry no news and are left out. Ties keep
+    the order the metrics were measured in.
+
+    Args:
+        metrics: Every metric of the run, keyed by name.
+        candidate_index: Which candidate's verdicts to rank.
+
+    Returns:
+        The highlights in report order.
+    """
+    ranked: list[tuple[int, float, MetricHighlight]] = []
+    for name, metric in metrics.items():
+        candidate = _candidate_at(metric, candidate_index)
+        if candidate is None or candidate.verdict is None:
+            continue
+        rank = _HIGHLIGHT_RANK[display_class(candidate.verdict)]
+        if rank is None:
+            continue
+        highlight = MetricHighlight(name=name, metric=metric, candidate=candidate)
+        ranked.append((rank, -_highlight_weight(candidate.verdict), highlight))
+
+    ranked.sort(key=operator.itemgetter(0, 1))
+    return [highlight for _, _, highlight in ranked]
+
+
+UNSTABLE_FUTILITY_NOTE = "unstable metrics won't stabilize with more samples"
+
+
+def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
+    """The name a highlight is reported under, its kind named ahead of it when qualified.
+
+    The highlights sit below the table, away from the section titles that told the
+    reader which kind a row belonged to, so a multi-kind run has to carry the kind
+    on the line itself. A single-kind run would say the same word on every line,
+    which tells the reader nothing and only pushes the deltas right, so it stays
+    with the bare metric name.
+
+    Args:
+        highlight: The highlight to name.
+        qualify: Whether to prefix the metric's kind and short name, as a run
+            spanning several kinds does.
+
+    Returns:
+        The reported name.
+    """
+    if qualify:
+        meta = highlight.metric.meta
+        return f"{escape(meta.kind)} {SCOPE_SEPARATOR} {escape(meta.short_name)}"
+    return format_inline(parse(highlight.name))
+
+
+def has_unstable_highlight(highlights: Sequence[MetricHighlight]) -> bool:
+    """Whether any highlight is one the noise swamped, so it carries no usable delta."""
+    return any(shown_class(highlight.candidate.verdict) == "unstable" for highlight in highlights)
+
+
+@dataclass(frozen=True, slots=True)
+class HighlightBlock:
+    """One candidate's highlight entries, and whether the noise swamped any of them.
+
+    Attributes:
+        entries: The rendered highlight lines, gate trips included.
+        unstable: Whether any entry is an unstable metric, so the block earns the
+            futility note.
+        label: The candidate sub-label the block sits under, or ``None`` for a
+            single-candidate report that lists its entries directly.
+    """
+
+    entries: tuple[str, ...]
+    unstable: bool
+    label: str | None = None
 
 
 def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> HighlightBlock:
@@ -317,6 +451,170 @@ def _render_candidate_highlights(
 # ---------------------------------------------------------------------------
 
 
+def _samples_hint(command: str) -> str:
+    """The hint asking for more samples, naming the command that would carry them.
+
+    The command is stated whole and backtick-marked so
+    :func:`gymrat.report.style.format_hint` sets it apart from the prose: a
+    reader copies the line rather than assembling the invocation themselves.
+
+    Args:
+        command: The subcommand name to embed in the suggested re-run.
+
+    Returns:
+        The hint string naming the re-run command and sample count.
+    """
+    return (
+        f"re-run with `gymrat {command} --samples {MIN_PERMUTATION_N}` "
+        f"or more for statistical verdicts"
+    )
+
+
+_DROPPED_ROUNDS_HINT = (
+    "some rounds were dropped — not all samples produced paired measurements for every metric"
+)
+
+_BAND_METHOD = "noise band ±(half-range × K)"
+
+
+@dataclass(slots=True)
+class _FooterData:
+    """The pair counts the footer sorts by the cause that forced each fallback.
+
+    ``permutation`` carries the pair counts of every permutation verdict.
+    ``shortage`` and ``ties`` split the band-method verdicts by cause: too few
+    total pairs, or too many of them tied away.
+    """
+
+    permutation: list[int]
+    shortage: list[int]
+    ties: list[int]
+
+
+def _classify_verdict(verdict: MetricVerdict, data: _FooterData) -> None:
+    """Sort one verdict's pair count into the footer cause it belongs to.
+
+    The method union is discriminated exhaustively: exact verdicts contribute
+    nothing to the footer by decision, an explicit arm rather than a fall-through
+    a new method could slip past unnoticed.
+
+    Args:
+        verdict: The verdict to classify.
+        data: The footer tallies, updated in place.
+    """
+    match verdict.method:
+        case "permutation":
+            data.permutation.append(verdict.n)
+        case "band":
+            if verdict.n < MIN_PERMUTATION_N:
+                data.shortage.append(verdict.n)
+            else:
+                data.ties.append(verdict.usable_n)
+        case "exact":
+            return
+        case _ as unreachable:  # pragma: no cover — exhaustive match over VerdictMethod
+            assert_never(unreachable)
+
+
+def _collect_footer_data(metrics: MetricComparisons) -> _FooterData:
+    """Sort every verdict's pair count into the cause it belongs to, in one pass."""
+    data = _FooterData(permutation=[], shortage=[], ties=[])
+    for metric in metrics.values():
+        for candidate in metric.candidates:
+            if candidate.verdict is not None:
+                _classify_verdict(candidate.verdict, data)
+    return data
+
+
+def _method_lines(data: _FooterData) -> list[str]:
+    """The verbose method lines naming how each verdict was decided, each dimmed.
+
+    A band fallback gets one line per cause: the highest total pair count for a
+    shortage — even the best-off metric fell this far short — and the lowest
+    usable pair count for ties, so each line stays true of every metric behind
+    it.
+
+    Args:
+        data: The pair counts sorted by the cause that forced each fallback.
+
+    Returns:
+        One dimmed line per method that contributed a verdict.
+    """
+    lines: list[str] = []
+    if data.permutation:
+        desc = (
+            f"verdicts: sign-flip permutation test on pairs "
+            f"({format_pair_count(min(data.permutation))} ≥ {MIN_PERMUTATION_N}) "
+            f"· ~ = no signal at α=0.05"
+        )
+        lines.append(markup(desc, "dim"))
+    if data.shortage:
+        desc = (
+            f"{_BAND_METHOD} — {format_pair_count(max(data.shortage))} "
+            f"below permutation floor ({MIN_PERMUTATION_N} pairs)"
+        )
+        lines.append(markup(desc, "dim"))
+    if data.ties:
+        desc = (
+            f"{_BAND_METHOD} — ties left {format_pair_count(min(data.ties))} "
+            f"usable pairs ({MIN_PERMUTATION_N} needed)"
+        )
+        lines.append(markup(desc, "dim"))
+    return lines
+
+
+def _shortage_hint(shortage: Sequence[int], samples: int | None, command: str) -> str | None:
+    """The hint for metrics that fell to the band because their paired count was short.
+
+    When the run's own sample count is below the floor, more samples are the
+    fix. When it had enough samples but rounds were dropped during pairing,
+    suggesting more samples is misleading.
+
+    Args:
+        shortage: The pair counts of verdicts that fell to the band method
+            for lack of pairs.
+        samples: The run's own sample count, or ``None`` when unknown.
+        command: The subcommand name to embed in the suggested re-run.
+
+    Returns:
+        The samples hint, the dropped-rounds hint, or ``None`` when the
+        shortage list is empty.
+    """
+    if not shortage:
+        return None
+    if samples is not None and samples >= MIN_PERMUTATION_N:
+        return _DROPPED_ROUNDS_HINT
+    return _samples_hint(command)
+
+
+def footer_lines(
+    metrics: MetricComparisons,
+    *,
+    verbose: bool,
+    command: str,
+    samples: int | None = None,
+) -> list[str]:
+    """The footer: how each verdict was decided when verbose, and the samples hint.
+
+    Args:
+        metrics: Every metric of the run, keyed by name.
+        verbose: Whether to include the method lines naming each verdict's basis.
+        command: The subcommand the report was produced by, so a hint suggesting
+            a re-run names the whole invocation.
+        samples: The run's sample count, to distinguish shortage from dropped
+            rounds. Left ``None``, a shortage always suggests more samples.
+
+    Returns:
+        The footer lines, method lines (when verbose) first, then the hint.
+    """
+    data = _collect_footer_data(metrics)
+    hint = _shortage_hint(data.shortage, samples, command)
+    lines = _method_lines(data) if verbose else []
+    if hint is not None:
+        lines.append(format_hint(hint))
+    return lines
+
+
 def _render_method_footer(result: ComparisonResult, *, verbose: bool, command: str) -> list[str]:
     """The verbose method lines naming how each verdict was decided, and the samples hint."""
     return footer_lines(
@@ -380,6 +678,60 @@ def _render_worktree_footer(result: ComparisonResult | MeasurementResult) -> lis
         f"{pluralize(result.worktrees_removed, 'worktree')} removed · {left_behind} left behind"
     )
     return [escape(line) for line in (header, *details)]
+
+
+# ---------------------------------------------------------------------------
+# Measurement table
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _MeasureRow:
+    """One measured metric's name, its section label, and its padded value fields."""
+
+    name: str
+    label: str
+    value: MetricCellParts
+
+
+def render_measure_table(
+    result: MeasurementResult,
+    label: str,
+    *,
+    color: bool | None,
+) -> list[str]:
+    """Render a single-revision measurement table with a median and spread per metric.
+
+    Args:
+        result: The measurement to draw.
+        label: The target's display label, already truncated, heading the value
+            column.
+        color: The explicit color choice, or ``None`` to defer to the environment.
+
+    Returns:
+        The rendered table lines.
+    """
+    layout = plan_sections(
+        result.metrics,
+        lambda name, group, metric: _MeasureRow(
+            name=name,
+            label=indented_section_label(metric.meta.short_name, group),
+            value=format_metric_cell_parts(metric.median, metric.spread, metric.meta.unit),
+        ),
+    )
+    skeleton = plan_table_skeleton(layout, result.config_kinds, lambda row: row.value, label)
+    widths = [skeleton.metric_width, skeleton.value_width]
+
+    def metric_cells(row: _MeasureRow) -> tuple[str, str]:
+        return escape(skeleton.name_cell(row)), escape(skeleton.value_cell(row))
+
+    to_cells = build_cell_dispatcher(
+        header=lambda title: (header_metric_cell(title), markup(label, VARIANT_NAME_STYLE)),
+        group=lambda group_label: (group_metric_cell(group_label), ""),
+        metric=metric_cells,
+    )
+
+    return render_body(skeleton.body, widths, to_cells, color=color)
 
 
 # ---------------------------------------------------------------------------

@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.model import PERMUTATION_FLOORS
-from gymrat.report.footer import footer_lines
 from gymrat.report.style import format_hint
+from gymrat.report.text.render import footer_lines
 from tests.report._assertions import render_colored, render_plain, sgr_codes
 from tests.report._verdicts import approximate_metric, band_metric
 

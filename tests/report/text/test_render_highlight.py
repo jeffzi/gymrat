@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.report.highlight import highlight_label, select_highlights
+from gymrat.report.text.render import highlight_label, select_highlights
 from tests.report._assertions import render_colored, styles_at
 from tests.report._comparisons import kind_metric
 from tests.report._verdicts import (
