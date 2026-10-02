@@ -227,6 +227,18 @@ def test_frame_when_before_hook_running_does_show_spinner(
     renderer.stop()
 
 
+def test_frame_when_worktree_preparing_does_name_its_target(
+    snapshot: SnapshotAssertion,
+):
+    _console, _clock, renderer = _live()
+
+    renderer.report(PrepareStarted(label="baseline", at_ms=0))
+    result = frame_text(renderer.frame())
+
+    assert result == snapshot
+    renderer.stop()
+
+
 def test_frame_when_both_worktrees_prepared_does_show_elapsed(
     snapshot: SnapshotAssertion,
 ):

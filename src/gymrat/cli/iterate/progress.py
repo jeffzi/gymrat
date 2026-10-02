@@ -3,8 +3,12 @@
 Live mode shows a flat checklist of the iteration's phases; plain mode prints
 timestamped milestone lines. The renderer owns the terminal — the ``Live``, the
 spinners, and the progress bars — while the checklist's data lives in
-:mod:`.state`, which every event is folded through first. Row rendering helpers
-live in :mod:`.rows`.
+:mod:`.state`, which every event is folded through first.
+
+Each row of the checklist is a :class:`~gymrat.cli.iterate.state.NodeState`, a
+frozen value carrying the phase's three verb forms, its timing, and its completion
+status. The row functions here turn one such row into a Rich renderable, using the
+spinner and progress bar the renderer owns for that row.
 """
 
 from __future__ import annotations
@@ -17,19 +21,36 @@ from rich.console import Console, Group, RenderableType
 from rich.spinner import Spinner
 from rich.text import Text
 
-from gymrat.cli.iterate.rows import render_row
-from gymrat.cli.iterate.state import advance, initial_state, plain_line
+from gymrat.cli.iterate.state import (
+    MISSING_DELTA,
+    REGRESSED_NAME_CAP,
+    JudgeDetail,
+    advance,
+    format_primary_delta,
+    initial_state,
+    plain_line,
+)
 from gymrat.cli.progress import compact_progress, passes_progress
 from gymrat.cli.style import (
     COMPACT_HEIGHT_THRESHOLD,
+    GLYPH_ALERT,
+    GLYPH_DONE,
+    GLYPH_PENDING,
     SPINNER_NAME,
+    STYLE_ALERT,
+    STYLE_DONE,
     STYLE_LABEL,
     STYLE_META,
+    STYLE_PENDING,
+    STYLE_RUNNING,
+    STYLE_TIMER_DONE,
     STYLE_TIMER_RUNNING,
+    STYLE_VERB,
     ErasableLive,
     LiveDisplayMixin,
 )
 from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
+from gymrat.metric_name import format_inline, parse
 from gymrat.progress_events import (
     ConfirmStarted,
     PassFinished,
@@ -46,6 +67,165 @@ if TYPE_CHECKING:
     from gymrat.cli.progress import _ClockColumn
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Checklist rows
+# ---------------------------------------------------------------------------
+
+
+def render_row(
+    node: NodeState,
+    *,
+    spinner: Spinner,
+    bar: Progress | None,
+    running_ms: float | None,
+) -> RenderableType:
+    """Render one checklist row in whichever state it is in.
+
+    Args:
+        node: The row to render.
+        spinner: The renderer's persistent spinner for this row, updated in
+            place so its animation stays continuous across frames.
+        bar: The renderer's progress bar for this row, or ``None`` for a row
+            that has none. A running row with a bar renders as that bar.
+        running_ms: Elapsed milliseconds to show on a running row, or ``None``
+            to show no timer.
+
+    Returns:
+        The renderable for the row.
+    """
+    match node.status:
+        case "running" if bar is not None:
+            return bar
+        case "running":
+            return render_running_row(node, spinner, running_ms)
+        case "done":
+            return render_done_row(node)
+        case _:
+            return render_idle_row(node)
+
+
+def render_running_row(
+    node: NodeState, spinner: Spinner, running_ms: float | None
+) -> RenderableType:
+    """Render a running checklist row: verb, note, target, and live timer.
+
+    ``spinner`` is updated in place so its animation carries across frames.
+
+    Args:
+        node: The row's state.
+        spinner: The row's spinner, reused from frame to frame.
+        running_ms: How long the row has been running, or ``None`` to show no
+            timer.
+
+    Returns:
+        A static alert-glyph line when the row is in alert state, otherwise the
+        updated ``spinner``.
+    """
+    style = STYLE_ALERT if node.alert else STYLE_RUNNING
+    text = Text()
+    text.append(node.gerund, style=STYLE_VERB)
+    if node.note:
+        text.append(f" {node.note}", style=STYLE_META)
+    if node.target:
+        text.append(" · ", style=STYLE_META)
+        text.append(node.target, style=STYLE_LABEL)
+    if running_ms is not None:
+        text.append(f" {format_duration(running_ms)}", style=STYLE_TIMER_RUNNING)
+    if node.alert:
+        return Text.assemble((f"{GLYPH_ALERT} ", style), text)
+    spinner.update(text=text, style=style)
+    return spinner
+
+
+def render_done_row(node: NodeState) -> Text:
+    """Render a completed phase: its glyph, past-tense label, detail, and elapsed time.
+
+    A :class:`JudgeDetail` is styled by :func:`build_judge_detail`; a plain
+    string detail gets ``STYLE_META``.
+
+    Args:
+        node: The row's state.
+
+    Returns:
+        The styled row.
+    """
+    text = Text()
+    text.append(f"{_glyph(node)} ", style=STYLE_ALERT if node.alert else STYLE_DONE)
+    text.append(node.past)
+    if node.detail:
+        if isinstance(node.detail, JudgeDetail):
+            text.append(" ")
+            text.append_text(build_judge_detail(node.detail))
+        else:
+            text.append(f" {node.detail}", style=STYLE_META)
+    if node.elapsed_ms > 0:
+        text.append(f" {format_duration(node.elapsed_ms)}", style=STYLE_TIMER_DONE)
+    return text
+
+
+def render_idle_row(node: NodeState) -> Text:
+    """Render a not-yet-started phase: its glyph, noun, and optional hint."""
+    text = Text()
+    text.append(f"{_glyph(node)} {node.noun}", style=STYLE_PENDING)
+    if node.hint:
+        text.append(f" ({node.hint})", style=STYLE_PENDING)
+    return text
+
+
+def _glyph(node: NodeState) -> str:
+    if node.alert:
+        return GLYPH_ALERT
+    match node.status:
+        case "done":
+            return GLYPH_DONE
+        case _:
+            return GLYPH_PENDING
+
+
+# ---------------------------------------------------------------------------
+# Judge detail builder
+# ---------------------------------------------------------------------------
+
+
+def build_judge_detail(detail: JudgeDetail) -> Text:
+    """Build the rich Text detail for the judge's done row.
+
+    Args:
+        detail: The judge's verdict. At most :data:`REGRESSED_NAME_CAP`
+            regressed names are spelled out; the rest are collapsed to ``"…"``.
+            The delta renders through :func:`format_primary_delta`; the
+            primary metric's name is shown only beside a printable delta.
+
+    Returns:
+        A styled ``Text`` for the judge row's detail.
+    """
+    delta_str = format_primary_delta(detail.primary_delta_pct)
+    primary = delta_str if delta_str == MISSING_DELTA else f"{delta_str} on {detail.primary_metric}"
+    regressed = detail.regressed_names
+
+    text = Text()
+    text.append(primary, style=STYLE_META)
+    text.append(" · ", style=STYLE_META)
+    if regressed:
+        text.append(f"{len(regressed)} regressed: ", style=STYLE_META)
+        names = [
+            Text.from_markup(format_inline(parse(name))) for name in regressed[:REGRESSED_NAME_CAP]
+        ]
+        if len(regressed) > REGRESSED_NAME_CAP:
+            names.append(Text.styled("…", STYLE_META))
+        # Text.styled, not Text(style=...): join copies the separator's base
+        # style onto the whole result, which would dim the names too.
+        text.append_text(Text.styled(", ", STYLE_META).join(names))
+    else:
+        text.append("no gating regression", style=STYLE_META)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Renderer
+# ---------------------------------------------------------------------------
 
 
 @dataclass
