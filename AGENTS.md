@@ -49,22 +49,59 @@ user and wait for explicit approval; never promote a suppression into config on 
 ## Module size
 
 `check-max-lines` caps a file at 500 code lines and a function at 60. The cap signals a file with
-more than one concern; it is not a budget.
+more than one concern; it is not a budget. A fold, merge or move is made only when its target lands
+at 450 code lines or below, summing every file that goes into it. A file may then grow past 450:
+only the 500 cap forces a move.
 
-- **New code lives in its caller's module**, unless two or more modules import it today, or it is a
-  distinct concern of 50+ code lines — then it gets one flat module named after the concern.
+- **Code lives in a module that already exists**, the first of these that applies:
+  1. One module uses it: that module, unless the one-importer list below gives it its own. An entry
+     point (`__main__.py`, a console script) is neither a user nor an importer.
+  2. Two or more modules import it today (`TYPE_CHECKING` counts), it is under 50 code lines, and
+     every importer already imports its owner, or is it: the owner. Judging the code as one unit,
+     the owner is the module of the one function its types are passed to or its functions' results
+     go to; failing that, for module-level functions (methods do not count), the one module that
+     defines every project type in their signatures, parameters and returns, besides the code's own
+     — none left, no owner. Error types and a module the importers merely share never make an owner.
+  3. Otherwise: a module of its own, named after the concern, whatever its size.
+
   "Reusable later", "keeps the caller small" and "matches the existing small modules" are not
   reasons: the tiny modules and packages already in `src/` are debt, not precedent.
+- **No fold crosses a boundary.** `cli/` holds only code about the command line itself: flag
+  parsing, exit routing, terminal display, the wiring and guarding of commands. Code about anything
+  else — the loop, a session, a report, the supervisor, telemetry — stays out even when commands are
+  its only callers: it goes to the owner the tests in 2 give it on its own side (under 50 lines
+  only), else to a module of its own there. An import seam is what a test protects: code that loads
+  lazily, or without Rich, the agent SDK, OpenTelemetry or `cli/`. It blocks only a fold after which
+  that code would no longer load that way.
+- **A module with one importer needs a reason from this list**; "it is a distinct concern" is not
+  one.
+  - Folding it into its importer would land above 450. When several modules with no other reason
+    share an importer and not all fit, fold the smallest first and stop before the one that does not
+    fit.
+  - The boundary or a seam keeps it out of its importer.
+  - It is 50+ code lines of pure logic beside an importer that does I/O or renders. Pure means no
+    file, process, network or terminal I/O (a clock read is not I/O) and no Rich objects or markup,
+    directly or through what it calls.
+  - It is 50+ code lines and one of two or more peers: modules of one role that the importer only
+    registers or chooses between — the command modules under `cli/app.py`, the report kinds under
+    `report/text/render.py`. A helper the importer calls as part of its own work, on some paths or
+    all, is not a peer.
+
+  An existing module with no reason is debt: report it, and fold it into its importer when asked.
 - **No packages of small modules** behind a re-exporting `__init__.py`. A package is justified only
-  when the flat module would exceed the cap; planned features don't count.
+  when its modules merged into one would land above 450; planned features don't count.
 - **One import path per name.** Import a name from the module that defines it. A package
   `__init__.py` re-exports nothing, and a module's `__all__` lists only names it defines.
+- **Never pool unrelated code to cut the file count.** A module's name describes every name in it; a
+  name that fits only because it is wide ("common", "shared", "core") is "utils" renamed. Asked to
+  consolidate, fold only what this section folds and report the rest as compliant: a module with a
+  reason to exist is never merged into another.
 - **At the cap, move one whole concern** — the code least tied to the rest that changes together for
   one reason — into a module named for what it does (never "helpers", "utils", "misc"): a new
-  module, or an existing one you have read that already owns that concern. A module carved off its
-  only importer owns nothing; never add to it. Never move just enough to pass, and never compress
-  code. One concern, one move: the file should land at 450 or below, and if it doesn't, pick a
-  different, larger concern — never top up the move with other code.
+  module, or an existing one you have read that already owns that concern — never one carved off its
+  only importer, which owns nothing. Never move just enough to pass, and never compress code. One
+  concern, one move: the file should land at 450 or below, and if it doesn't, pick a different,
+  larger concern — never top up the move with other code.
 
 ## Docstrings
 
