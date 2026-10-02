@@ -43,7 +43,6 @@ from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
     _NS_PER_MS,
     cap_event,
-    empty_session_state,
     follow_up_event,
     launch_event,
     model_phase_event,
@@ -54,7 +53,7 @@ from tests.cli.supervise._fixtures import (
     usage_event,
 )
 from tests.event_docs._imports import modules_imported_by
-from tests.session.records._fixtures import iteration_record
+from tests.session.records._fixtures import empty_session_state, iteration_record
 
 if TYPE_CHECKING:
     from collections.abc import Callable

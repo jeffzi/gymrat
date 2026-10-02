@@ -24,9 +24,9 @@ from gymrat.report.types import MeasurementResult
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import CommandRecord
 from gymrat.session.store import read_records
-from tests._ansi import SGR_RE, strip_ansi
+from tests._ansi import SGR_RE
 from tests._streams import RaisingStream
-from tests.report._inputs import create_measurement_result
+from tests.report._measurements import create_measurement_result
 
 __all__ = [
     "CLOSED_STDOUT_ERRORS",
@@ -42,7 +42,6 @@ __all__ = [
     "plain_lines",
     "records_of",
     "runner",
-    "strip_ansi",
     "stub_measure",
     "stub_resolve",
     "write_config",

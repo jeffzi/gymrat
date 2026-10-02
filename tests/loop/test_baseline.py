@@ -16,7 +16,7 @@ from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.loop.baseline import measure_baseline
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.records import BaselineRecord
-from tests.report._inputs import create_measurement_result
+from tests.report._measurements import create_measurement_result
 
 if TYPE_CHECKING:
     from gymrat.measure import MeasureOptions

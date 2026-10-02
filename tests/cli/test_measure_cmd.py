@@ -39,7 +39,7 @@ from tests.cli._session import (
     stub_measure,
     stub_resolve,
 )
-from tests.report._inputs import create_measurement_result
+from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     finalize_record,
     iteration_record,

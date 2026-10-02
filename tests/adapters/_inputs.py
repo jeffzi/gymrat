@@ -51,4 +51,4 @@ def build_stdout(benchmarks: list[Any]) -> str:
     return json.dumps({"benchmarks": benchmarks})
 
 
-__all__ = ["build_stdout"]
+__all__ = ["LINE_BREAKS", "build_stdout"]

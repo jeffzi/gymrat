@@ -5,7 +5,7 @@ the suite is order-independent and safe under ``pytest-xdist`` /
 ``pytest-randomly``. Nothing is mocked: the module under test is file I/O, and
 only real bytes on disk reveal the torn-tail recovery and the refusal to log a
 record that would not read back. The fold state machine has its own tests in
-``test_fold_session.py``.
+``test_store_fold.py``.
 """
 
 import json

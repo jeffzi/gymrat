@@ -30,27 +30,26 @@ from gymrat.report.types import (
 )
 from gymrat.targets import WorktreeRemovalFailure
 from gymrat.verdict import GroupAggregate, KindAggregate
-from tests.report._inputs import (
+from tests.report._comparisons import (
     NWayCandidate,
-    band_metric,
     create_candidate,
     create_comparison_result,
-    create_measurement_result,
     exact_metric,
-    geomean_of,
     kind_metric,
-    measured_metric,
     metric_meta,
     n_way_metric,
     other_kind,
     permutation_metric,
-    permutation_verdict,
-    probe_metric,
-    probe_result,
     single_sample_result,
-    two_kind_measurement,
     two_kind_result,
 )
+from tests.report._measurements import (
+    create_measurement_result,
+    measured_metric,
+    two_kind_measurement,
+)
+from tests.report._probes import probe_metric, probe_result
+from tests.report._verdicts import band_metric, geomean_of, permutation_verdict
 
 if TYPE_CHECKING:
     from collections.abc import Callable

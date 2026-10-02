@@ -50,12 +50,10 @@ from gymrat.supervisor.hooks import HooksFactory, supervise_hooks_factory
 from gymrat.supervisor.supervise import SupervisionResult
 from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
 from tests._ansi import strip_ansi
-from tests._rich import unwrap_panel
+from tests._rich import CleanupRegistry, unwrap_panel
 from tests.cli._help import help_output
 from tests.cli._session import closed_stdout_error, closed_stdout_runner
 from tests.cli.supervise._fixtures import (
-    CleanupRegistry,
-    empty_session_state,
     fire_launch,
     make_supervision_result,
     render_frame,
@@ -63,6 +61,7 @@ from tests.cli.supervise._fixtures import (
 )
 from tests.conftest import hold_lock
 from tests.session.records._fixtures import (
+    empty_session_state,
     session_record,
 )
 from tests.supervisor._mock_driver import CostStep, create_mock_driver

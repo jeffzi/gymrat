@@ -30,7 +30,7 @@ from tests.cli._session import (
     disk_full_error,
     write_config,
 )
-from tests.report._inputs import create_measurement_result
+from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     committed_keep,
     iteration_record,

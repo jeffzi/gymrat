@@ -19,26 +19,27 @@ from rich.cells import cell_len
 from gymrat.model import ApproximateVerdict, Exclusion
 from gymrat.report.text.render import render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
-from tests.report._inputs import (
-    NWayCandidate,
-    band_metric,
+from tests._ansi import strip_ansi
+from tests.report._assertions import (
     cells_of,
-    create_candidate,
-    create_comparison_result,
     delta_cell,
-    exact_metric,
-    exact_verdict,
     last_table_row,
     line_containing,
     line_starting_with,
+    styles_at,
+)
+from tests.report._comparisons import (
+    NWayCandidate,
+    create_candidate,
+    create_comparison_result,
+    exact_metric,
     metric_meta,
     n_way_metric,
     other_kind,
     permutation_metric,
-    strip_ansi,
-    styles_at,
     two_kind_result,
 )
+from tests.report._verdicts import band_metric, exact_verdict
 
 # ---------------------------------------------------------------------------
 # run header

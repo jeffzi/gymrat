@@ -13,10 +13,10 @@ import pytest
 
 from gymrat.report.text.render import render_measure_report
 from gymrat.report.types import ReportOptions
-from tests.report._inputs import (
+from tests.report._assertions import table_region
+from tests.report._measurements import (
     create_measurement_result,
     measured_metric,
-    table_region,
     two_kind_measurement,
 )
 

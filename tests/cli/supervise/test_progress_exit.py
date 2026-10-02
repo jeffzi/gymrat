@@ -15,14 +15,13 @@ import pytest
 from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
-    empty_session_state,
     fire_follow_up,
     fire_launch,
     make_iteration,
     make_reporter,
     render_frame,
-    session_state,
 )
+from tests.session.records._fixtures import empty_session_state, session_state
 
 
 class SwitchableRead:

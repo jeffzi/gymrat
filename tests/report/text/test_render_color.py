@@ -19,44 +19,40 @@ from gymrat.model import Exclusion
 from gymrat.report.text.render import render_measure_report, render_report
 from gymrat.report.types import MeasurementResult, ReportOptions
 from gymrat.targets import WorktreeRemovalFailure
-from tests._ansi import SGR_RE
-from tests.report._inputs import (
+from tests._ansi import strip_ansi
+from tests.report._assertions import (
     DIMMED_LINE,
-    band_metric,
     cells_of,
-    create_candidate,
-    create_comparison_result,
-    create_measurement_result,
     delta_cell,
-    exact_metric,
     highlight_lines,
     line_containing,
     line_starting_with,
-    measured_metric,
-    other_kind,
-    permutation_metric,
     separator_offsets,
     separator_styles,
-    strip_ansi,
+    sgr_codes,
     styles_at,
     table_region,
     table_rows,
+)
+from tests.report._comparisons import (
+    create_candidate,
+    create_comparison_result,
+    exact_metric,
+    other_kind,
+    permutation_metric,
+)
+from tests.report._measurements import (
+    create_measurement_result,
+    measured_metric,
     two_kind_measurement,
 )
+from tests.report._verdicts import band_metric
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.model import ApproximateVerdict
     from gymrat.report.types import ComparisonResult
-
-
-def _sgr_codes(text: str) -> set[str]:
-    """All SGR parameter codes present in ``text``, ignoring resets."""
-    codes: set[str] = set()
-    for m in SGR_RE.finditer(text):
-        codes.update(p for p in m.group(1).split(";") if p not in {"", "0"})
-    return codes
 
 
 def _summary_segment(summary: str, label: str) -> str:
@@ -586,7 +582,7 @@ def test_render_report_when_colored_does_style_the_non_zero_tally_in_the_summary
 
     summary = line_containing(render_report(_colorful_result()), "improved")
 
-    assert code in _sgr_codes(_summary_segment(summary, label))
+    assert code in sgr_codes(_summary_segment(summary, label))
 
 
 @pytest.mark.parametrize(
@@ -613,7 +609,7 @@ def test_render_report_when_colored_does_paint_the_non_zero_identical_tally_cyan
     )
     summary = line_containing(render_report(result), "identical")
 
-    assert "36" in _sgr_codes(_summary_segment(summary, "identical"))
+    assert "36" in sgr_codes(_summary_segment(summary, "identical"))
 
 
 def test_render_report_when_colored_does_not_dim_nonzero_within_noise_segment(
@@ -623,7 +619,7 @@ def test_render_report_when_colored_does_not_dim_nonzero_within_noise_segment(
 
     summary = line_containing(render_report(_colorful_result()), "within noise")
 
-    assert "2" not in _sgr_codes(_summary_segment(summary, "within noise"))
+    assert "2" not in sgr_codes(_summary_segment(summary, "within noise"))
 
 
 # ---------------------------------------------------------------------------

@@ -21,8 +21,8 @@ from tests.cli.supervise._fixtures import (
     make_iteration,
     make_plain_reporter,
     make_read_session,
-    session_state,
 )
+from tests.session.records._fixtures import session_state
 
 
 def test_plain_when_launched_with_spend_cap_does_print_caps_with_dollars():

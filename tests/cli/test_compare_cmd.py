@@ -38,10 +38,10 @@ from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from tests.cli._budget import install_budget, install_tight_budget
 from tests.cli._session import last_command_record
-from tests.report._comparisons import other_kind
-from tests.report._inputs import (
+from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
+    other_kind,
     permutation_metric,
 )
 from tests.session.records._fixtures import iteration_record, session_record, write_session_log

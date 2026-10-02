@@ -22,25 +22,26 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.report.types import ComparisonResult
-from tests.report._inputs import (
+from tests._ansi import strip_ansi
+from tests.report._assertions import (
     cells_of,
+    line_containing,
+    line_starting_with,
+    offsets_of,
+    table_region,
+    table_rows,
+)
+from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
     exact_metric,
-    exact_verdict,
-    geomean_of,
     kind_metric,
-    line_containing,
-    line_starting_with,
     metric_meta,
-    offsets_of,
     permutation_metric,
-    strip_ansi,
-    table_region,
-    table_rows,
     two_kind_metrics,
     two_kind_result,
 )
+from tests.report._verdicts import exact_verdict, geomean_of
 
 
 def _grouped_flat_result() -> ComparisonResult:

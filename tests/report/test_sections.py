@@ -20,7 +20,7 @@ from gymrat.report.sections import (
     kind_geomean_of,
     plan_sections,
 )
-from tests.report._inputs import create_candidate, memory_kind, time_kind
+from tests.report._comparisons import create_candidate, memory_kind, time_kind
 
 if TYPE_CHECKING:
     from gymrat.report.sections import SectionLayout

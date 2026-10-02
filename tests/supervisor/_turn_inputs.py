@@ -19,7 +19,7 @@ from gymrat.supervisor.turns import (
     GuardState,
     classify,
 )
-from tests.cli.supervise._fixtures import session_state
+from tests.session.records._fixtures import session_state
 from tests.supervisor._fixtures import default_benchless_config
 
 

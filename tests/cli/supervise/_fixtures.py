@@ -44,12 +44,11 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 from gymrat.supervisor.supervise import SupervisionResult
-from tests._rich import CleanupRegistry, frame_text
+from tests._rich import frame_text
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     AT,
     empty_session_state,
-    finalize_record,
     iteration_record,
     session_state,
 )
@@ -57,14 +56,11 @@ from tests.session.records._fixtures import (
 __all__ = [
     "FRAME_WIDTH",
     "LIVE_CLASS_PATH",
-    "CleanupRegistry",
     "Clock",
     "PlainCapture",
     "ReporterKit",
     "baseline_record",
     "cap_event",
-    "empty_session_state",
-    "finalize_record",
     "fire_cap",
     "fire_compaction",
     "fire_follow_up",
@@ -90,7 +86,6 @@ __all__ = [
     "render_frame",
     "seed_session_with_baseline",
     "seed_session_with_iteration",
-    "session_state",
     "session_state_three_iterations",
     "start_open_session",
     "stop_built_reporters",

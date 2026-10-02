@@ -6,7 +6,7 @@ content/shape assertion: the table layout via :func:`table_region`, the
 assembled tail via the summary line(s), the highlights block, and the
 footer/worktree lines, plus ``styles_at`` on the colored markers. Highlight
 entries are compared with their internal padding collapsed — that padding is
-pinned exactly by ``test_verdicts`` — so these tests pin order and content
+pinned exactly by ``test_render_verdicts`` — so these tests pin order and content
 without re-pinning column widths a second time.
 
 A handful of representative layouts are also pinned byte for byte as golden
@@ -29,32 +29,31 @@ from gymrat.report.text.render import render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
 from gymrat.targets import WorktreeRemovalFailure
 from gymrat.verdict import GroupAggregate, KindAggregate
-from tests.report._inputs import (
-    NWayCandidate,
-    band_verdict,
+from tests.report._assertions import (
     cells_of,
+    highlight_lines,
+    line_containing,
+    line_starting_with,
+    styles_at,
+    table_region,
+)
+from tests.report._comparisons import (
+    NWayCandidate,
     create_candidate,
     create_comparison_result,
     exact_metric,
-    exact_verdict,
-    geomean_of,
     grouped_comparison,
-    highlight_lines,
     kind_metric,
-    line_containing,
-    line_starting_with,
     memory_kind,
     metric_meta,
     multi_candidate_result,
     n_way_kind_metric,
     other_kind,
     permutation_metric,
-    permutation_verdict,
     single_sample_result,
-    styles_at,
-    table_region,
     two_kind_result,
 )
+from tests.report._verdicts import band_verdict, exact_verdict, geomean_of, permutation_verdict
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -71,7 +70,7 @@ _HEADER = (
 def _normalized_highlights(report: str) -> list[str]:
     """The highlight block's lines with runs of whitespace collapsed to one space.
 
-    ``test_verdicts`` pins the exact padding; here the concern is order and
+    ``test_render_verdicts`` pins the exact padding; here the concern is order and
     content, so the alignment padding is folded away.
     """
     return [re.sub(r"\s+", " ", line.strip()) for line in highlight_lines(report)]

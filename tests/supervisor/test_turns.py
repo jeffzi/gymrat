@@ -28,12 +28,12 @@ from gymrat.supervisor.turns import (
     WaitForLock,
     detect_end_condition,
 )
-from tests.cli.supervise._fixtures import session_state
 from tests.session.records._fixtures import (
     command_record,
     finalize_record,
     hook_record,
     iteration_record,
+    session_state,
     stop_record,
 )
 from tests.supervisor._fixtures import default_benchless_config

@@ -37,7 +37,9 @@ from tests.loop._probe import (
     only_call,
 )
 from tests.loop._settle import checks_config, start_with
-from tests.report._inputs import line_containing, measured_metric, metric_meta, styles_at
+from tests.report._assertions import line_containing, styles_at
+from tests.report._comparisons import metric_meta
+from tests.report._measurements import measured_metric
 from tests.session.records._fixtures import finalize_record
 
 if TYPE_CHECKING:

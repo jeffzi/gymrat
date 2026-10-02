@@ -2,7 +2,8 @@
 
 These cover the loop header, the verdict block, outcome derivation, and the
 status-report formatters. The header block pins the iteration wording and sample
-pluralization; the verdict block pins the line shape and the outcome word;
+pluralization; the verdict block pins the line shape, the outcome word, and the
+dimmed metric name on rerun lines;
 outcome derivation pins the full truth table, including the gating-regression
 override, direction-aware metric primaries, the exactly-zero cases, and the
 unmeasured-primary case. The status formatters pin the header block, the
@@ -27,6 +28,7 @@ from gymrat.report.loop import (
     GeomeanPrimary,
     LoopPrimary,
     MetricPrimary,
+    RerunConfirmation,
     SettleDiscarded,
     SettleKeepBlocked,
     SettleKept,
@@ -44,29 +46,18 @@ from gymrat.report.loop import (
     format_status_stop,
     format_verdict_block,
 )
-from gymrat.report.style import render_lines
 from gymrat.session.records import BaselineRecord
 from gymrat.session.workspace import BaselineRef, Worktrees
-from tests.report._inputs import permutation_metric, styles_at
+from tests.report._assertions import render_colored, render_plain, styles_at
+from tests.report._comparisons import permutation_metric
 from tests.session.records._fixtures import SESSION_ID, finalize_record, session_record
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from gymrat.model import Direction
-    from gymrat.report.loop import LoopOutcome, SettleState
+    from gymrat.report.loop import LoopOutcome, RerunAnswer, SettleState
     from gymrat.report.types import MetricComparison, MetricComparisons
-
-# A width wide enough that no loop fragment ever soft-wraps.
-_WIDTH = 200
-
-
-def _plain(*markup: str) -> str:
-    return render_lines(*markup, color=False, width=_WIDTH)
-
-
-def _colored(*markup: str) -> str:
-    return render_lines(*markup, color=True, width=_WIDTH)
 
 
 def _geomean_primary(delta_pct: float = -4.2) -> GeomeanPrimary:
@@ -90,7 +81,7 @@ def _regressed_metrics(*, gating: bool) -> MetricComparisons:
 
 
 def test_format_loop_header_when_given_seq_and_samples_does_name_iteration_comparison_and_count():
-    header = _plain(format_loop_header(7, 6))
+    header = render_plain(format_loop_header(7, 6))
 
     assert header == "iteration 7 · experiment vs baseline · 6 paired samples"
 
@@ -103,19 +94,19 @@ def test_format_loop_header_when_given_seq_and_samples_does_name_iteration_compa
     ],
 )
 def test_format_loop_header_when_counting_samples_does_match_noun(samples: int, expected: str):
-    header = _plain(format_loop_header(1, samples))
+    header = render_plain(format_loop_header(1, samples))
 
     assert expected in header
 
 
 def test_format_loop_header_when_colored_does_embolden_the_iteration_label():
-    header = _colored(format_loop_header(7, 6))
+    header = render_colored(format_loop_header(7, 6))
 
     assert "1" in styles_at(header, "iteration 7")
 
 
 def test_format_loop_header_when_colored_does_dim_each_separator():
-    header = _colored(format_loop_header(7, 6))
+    header = render_colored(format_loop_header(7, 6))
 
     assert "2" in styles_at(header, "·")
 
@@ -140,7 +131,7 @@ def test_format_verdict_block_when_given_outcome_does_state_primary_delta_and_ve
         outcome=outcome, primary=_geomean_primary(), next_step="gymrat keep"
     )
 
-    assert _plain(block[0]) == f"primary: -4.2% · verdict: {word}"
+    assert render_plain(block[0]) == f"primary: -4.2% · verdict: {word}"
 
 
 def test_format_verdict_block_when_given_next_step_does_close_the_block_with_it():
@@ -149,7 +140,7 @@ def test_format_verdict_block_when_given_next_step_does_close_the_block_with_it(
     )
 
     assert len(block) == 2
-    assert _plain(block[1]) == "fix or gymrat discard"
+    assert render_plain(block[1]) == "fix or gymrat discard"
 
 
 @pytest.mark.parametrize(
@@ -167,7 +158,7 @@ def test_format_verdict_block_when_colored_does_paint_the_verdict_word(
         outcome=outcome, primary=_geomean_primary(), next_step="gymrat keep"
     )
 
-    codes = styles_at(_colored(block[0]), word)
+    codes = styles_at(render_colored(block[0]), word)
 
     assert "1" in codes
     if color_code is None:
@@ -185,8 +176,34 @@ def test_format_verdict_block_when_target_reached_but_regressed_does_omit_target
         target_reached=True,
     )
 
-    plain = "\n".join(_plain(line) for line in block)
+    plain = "\n".join(render_plain(line) for line in block)
     assert "target reached" not in plain
+
+
+@pytest.mark.parametrize(
+    ("answer", "phrase"),
+    [
+        pytest.param("confirmed", "regression confirmed on rerun", id="confirmed"),
+        pytest.param("disagreed", "regression not confirmed on rerun", id="disagreed"),
+        pytest.param("absent", "not measured on rerun", id="absent"),
+    ],
+)
+def test_format_verdict_block_when_rerun_does_dim_group_and_kind_in_metric_name(
+    answer: RerunAnswer, phrase: str
+):
+    rerun = RerunConfirmation(metric="entity/alive_check#time", answer=answer)
+
+    block = format_verdict_block(
+        outcome="regressed",
+        primary=GeomeanPrimary(delta_pct=3.1),
+        next_step="gymrat discard",
+        reruns=[rerun],
+    )
+
+    rerun_line = next(line for line in block if phrase in render_plain(line))
+    colored = render_colored(rerun_line)
+    assert "2" in styles_at(colored, "entity/")
+    assert "2" in styles_at(colored, "#time")
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +285,7 @@ def test_format_status_header_when_given_session_does_name_session_baseline_bran
 
     lines = format_status_header(session)
 
-    assert [_plain(line) for line in lines] == [
+    assert [render_plain(line) for line in lines] == [
         f"session {SESSION_ID} · baseline main@a1b2c3d · adapter metric-lines",
         f"branch gymrat/{SESSION_ID}",
         "experiment worktree /repo/.gymrat/worktrees/experiment",
@@ -279,7 +296,7 @@ def test_format_status_header_when_given_session_does_name_session_baseline_bran
 def test_format_status_header_when_colored_does_embolden_the_session():
     session = session_record(baseline=BaselineRef(ref="main", sha=_BASELINE_SHA))
 
-    header = _colored(format_status_header(session)[0])
+    header = render_colored(format_status_header(session)[0])
 
     assert "1" in styles_at(header, f"session {SESSION_ID}")
 
@@ -313,7 +330,7 @@ def test_format_status_header_when_colored_does_embolden_the_session():
 def test_format_status_iteration_when_given_settle_does_state_it(
     settle: SettleState, expected: str
 ):
-    assert _plain(format_status_iteration(_status_iteration(settle))) == expected
+    assert render_plain(format_status_iteration(_status_iteration(settle))) == expected
 
 
 @pytest.mark.parametrize(
@@ -329,13 +346,15 @@ def test_format_status_iteration_when_given_outcome_does_mark_it_with_glyph(
 ):
     entry = replace(_status_iteration(SettleUnsettled()), outcome=outcome)
 
-    assert _plain(format_status_iteration(entry)) == f"iteration 1 · {glyph} -7.2% · unsettled"
+    assert (
+        render_plain(format_status_iteration(entry)) == f"iteration 1 · {glyph} -7.2% · unsettled"
+    )
 
 
 def test_format_status_iteration_when_delta_unmeasured_does_state_no_percentage():
     entry = replace(_status_iteration(SettleUnsettled()), delta_pct=None, outcome="no-signal")
 
-    assert _plain(format_status_iteration(entry)) == "iteration 1 · ~ · unsettled"
+    assert render_plain(format_status_iteration(entry)) == "iteration 1 · ~ · unsettled"
 
 
 @pytest.mark.parametrize(
@@ -350,7 +369,7 @@ def test_format_status_iteration_when_colored_does_paint_the_glyph(
 ):
     entry = replace(_status_iteration(SettleUnsettled()), outcome=outcome)
 
-    assert color_code in styles_at(_colored(format_status_iteration(entry)), glyph)
+    assert color_code in styles_at(render_colored(format_status_iteration(entry)), glyph)
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +424,7 @@ def test_format_status_baseline_when_given_samples_does_state_label_and_median_p
         {"total_ms": 15184, "alloc_bytes": 1540},
     ))
 
-    line = _plain(format_status_baseline(record))
+    line = render_plain(format_status_baseline(record))
 
     assert line == "baseline main · total_ms 15192 · alloc_bytes 1520"
 
@@ -413,7 +432,7 @@ def test_format_status_baseline_when_given_samples_does_state_label_and_median_p
 def test_format_status_baseline_when_a_round_omits_a_metric_does_median_over_rounds_that_reported_it():
     record = _baseline_record(({"total_ms": 100, "alloc_bytes": 40}, {"total_ms": 300}))
 
-    line = _plain(format_status_baseline(record))
+    line = render_plain(format_status_baseline(record))
 
     assert line == "baseline main · total_ms 200 · alloc_bytes 40"
 
@@ -437,7 +456,7 @@ def test_format_status_baseline_when_a_round_omits_a_metric_does_median_over_rou
 def test_format_status_footer_when_given_summary_does_total_the_settles(
     summary: StatusSummary, expected: str
 ):
-    assert _plain(format_status_footer(summary)[0]) == expected
+    assert render_plain(format_status_footer(summary)[0]) == expected
 
 
 @pytest.mark.parametrize(
@@ -470,7 +489,7 @@ def test_format_status_footer_when_given_summary_does_total_the_settles(
 def test_format_status_footer_when_stop_configured_does_state_the_conditions(
     summary: StatusSummary, expected: str | None
 ):
-    lines = [_plain(line) for line in format_status_footer(summary)]
+    lines = [render_plain(line) for line in format_status_footer(summary)]
 
     stop_line = next((line for line in lines if line.startswith("stop:")), None)
 
@@ -483,13 +502,13 @@ def test_format_status_footer_when_stop_configured_does_state_the_conditions(
 
 
 def test_format_status_finalized_when_given_record_does_name_the_branch_and_commit():
-    line = _plain(format_status_finalized(finalize_record()))
+    line = render_plain(format_status_finalized(finalize_record()))
 
     assert line == f"finalized · branch gymrat/{SESSION_ID}-final · commit ccccccc"
 
 
 def test_format_status_finalized_when_colored_does_embolden_finalized():
-    line = _colored(format_status_finalized(finalize_record()))
+    line = render_colored(format_status_finalized(finalize_record()))
 
     assert "1" in styles_at(line, "finalized")
 
@@ -510,8 +529,8 @@ def test_format_status_header_when_worktree_path_contains_brackets_does_render_t
 
     lines = format_status_header(session)
 
-    experiment_line = _plain(lines[2])
-    baseline_line = _plain(lines[3])
+    experiment_line = render_plain(lines[2])
+    baseline_line = render_plain(lines[3])
 
     assert "[experiment]" in experiment_line
     assert "[baseline]" in baseline_line
@@ -520,7 +539,7 @@ def test_format_status_header_when_worktree_path_contains_brackets_does_render_t
 def test_format_status_baseline_when_metric_name_contains_brackets_does_render_them_literally():
     record = _baseline_record(({"total[ms]": 15200},))
 
-    line = _plain(format_status_baseline(record))
+    line = render_plain(format_status_baseline(record))
 
     assert "total[ms]" in line
 
@@ -531,24 +550,24 @@ def test_format_status_baseline_when_metric_name_contains_brackets_does_render_t
 
 
 def test_format_status_stop_when_given_single_line_message_does_render_stopped_and_message():
-    line = _plain(format_status_stop("user requested stop"))
+    line = render_plain(format_status_stop("user requested stop"))
 
     assert line == "stopped · user requested stop"
 
 
 def test_format_status_stop_when_given_multiline_message_does_render_only_the_first_line():
-    line = _plain(format_status_stop("target reached\ncleaning up\nfinal notes"))
+    line = render_plain(format_status_stop("target reached\ncleaning up\nfinal notes"))
 
     assert line == "stopped · target reached"
 
 
 def test_format_status_stop_when_colored_does_embolden_stopped():
-    line = _colored(format_status_stop("user requested stop"))
+    line = render_colored(format_status_stop("user requested stop"))
 
     assert "1" in styles_at(line, "stopped")
 
 
 def test_format_status_stop_when_colored_does_dim_the_separator():
-    line = _colored(format_status_stop("user requested stop"))
+    line = render_colored(format_status_stop("user requested stop"))
 
     assert "2" in styles_at(line, "·")

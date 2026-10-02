@@ -21,7 +21,7 @@ from gymrat.loop.start import start_session
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import FinalizeRecord, SessionRecord, StopRecord
 from gymrat.session.store import append_record, read_records
-from tests._ansi import SGR_RE
+from tests._ansi import SGR_RE, strip_ansi
 from tests.cli._budget import install_budget
 from tests.cli._session import (
     closed_stdout_error,
@@ -29,7 +29,6 @@ from tests.cli._session import (
     last_command_record,
     make_stop_repo,
     runner,
-    strip_ansi,
     write_config,
 )
 from tests.loop._settle import (

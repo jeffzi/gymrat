@@ -24,30 +24,34 @@ from gymrat.report.types import (
     ReportOptions,
 )
 from gymrat.targets import WorktreeRemovalFailure
-from tests.report._inputs import (
-    band_metric,
-    band_verdict,
+from tests._ansi import strip_ansi
+from tests.report._assertions import (
     cells_of,
-    create_candidate,
-    create_comparison_result,
-    exact_metric,
-    exact_verdict,
-    geomean_of,
-    grouped_comparison,
     highlight_lines,
     line_containing,
     line_starting_with,
+    styles_at,
+)
+from tests.report._comparisons import (
+    create_candidate,
+    create_comparison_result,
+    exact_metric,
+    grouped_comparison,
     memory_kind,
     metric_meta,
     other_kind,
     permutation_metric,
-    permutation_verdict,
     single_sample_result,
-    strip_ansi,
-    styles_at,
     time_kind,
     two_kind_result,
     without_gated_geomean,
+)
+from tests.report._verdicts import (
+    band_metric,
+    band_verdict,
+    exact_verdict,
+    geomean_of,
+    permutation_verdict,
 )
 
 if TYPE_CHECKING:

@@ -132,7 +132,6 @@ def unstable_band_verdict() -> BandVerdict:
     )
 
 
-# Re-exported for callers building explicit band/permutation verdicts.
 __all__ = [
     "METRIC_BYTES_LOWER",
     "MetricSpec",

@@ -45,9 +45,9 @@ from tests.cli.supervise._fixtures import (
     render_colored,
     render_colorless,
     render_frame,
-    session_state,
     session_state_three_iterations,
 )
+from tests.session.records._fixtures import session_state
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import SuperviseReporter

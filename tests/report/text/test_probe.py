@@ -15,17 +15,16 @@ import pytest
 
 from gymrat.report.text.probe import render_probe_report
 from gymrat.report.types import ReportOptions
-from tests.report._inputs import (
+from tests._ansi import strip_ansi
+from tests.report._assertions import (
     cells_of,
     delta_cell,
     line_containing,
     line_starting_with,
-    probe_metric,
-    probe_result,
-    strip_ansi,
     styles_at,
     table_rows,
 )
+from tests.report._probes import probe_metric, probe_result
 
 if TYPE_CHECKING:
     from syrupy.assertion import SnapshotAssertion

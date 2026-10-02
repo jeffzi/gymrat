@@ -21,7 +21,6 @@ from gymrat.supervisor.turns import (
     Reply,
     outcome_record_count,
 )
-from tests.cli.supervise._fixtures import session_state
 from tests.session.records._fixtures import (
     blocked_keep,
     command_record,
@@ -29,6 +28,7 @@ from tests.session.records._fixtures import (
     discard_record,
     hook_record,
     iteration_record,
+    session_state,
     stop_record,
 )
 from tests.supervisor._fixtures import default_benchless_config

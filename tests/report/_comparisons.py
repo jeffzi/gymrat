@@ -24,9 +24,9 @@ from gymrat.report.types import (
 )
 from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._verdicts import (
-    _percent,
     band_metric,
     geomean_of,
+    percent,
 )
 
 if TYPE_CHECKING:
@@ -158,7 +158,7 @@ def permutation_metric(
                     p=p,
                     noise_pct=noise_pct,
                     noise_abs=noise_abs,
-                    delta=_percent(delta),
+                    delta=percent(delta),
                     n=n,
                 ),
             ),
@@ -198,7 +198,7 @@ def exact_metric(
                 verdict=ExactVerdict(
                     method="exact",
                     verdict=verdict,
-                    delta=_percent(delta),
+                    delta=percent(delta),
                     n=n,
                 ),
             ),
@@ -238,7 +238,7 @@ def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricComparison:
                     p=0.01,
                     noise_pct=2.5,
                     noise_abs=3.5,
-                    delta=_percent(candidate.delta),
+                    delta=percent(candidate.delta),
                     n=10,
                 ),
             )
@@ -276,7 +276,7 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
                 p=0.002,
                 noise_pct=2.5,
                 noise_abs=2.5,
-                delta=_percent(-10),
+                delta=percent(-10),
                 n=10,
             ),
         ),
@@ -289,7 +289,7 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
                 p=0.002,
                 noise_pct=2.5,
                 noise_abs=2.5,
-                delta=_percent(4),
+                delta=percent(4),
                 n=10,
             ),
         ),
@@ -306,7 +306,7 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
                     usable_n=3,
                     noise_pct=30,
                     noise_abs=30,
-                    delta=_percent(50),
+                    delta=percent(50),
                     n=10,
                 ),
             )

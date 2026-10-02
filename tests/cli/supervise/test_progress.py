@@ -25,8 +25,6 @@ from gymrat.session.records import BaselineRecord, IterationPrimary
 from gymrat.supervisor.events import TextDeltaEvent
 from tests.cli.supervise._fixtures import (
     _throwing_read,
-    empty_session_state,
-    finalize_record,
     fire_cap,
     fire_compaction,
     fire_follow_up,
@@ -40,15 +38,17 @@ from tests.cli.supervise._fixtures import (
     make_read_session,
     make_reporter,
     render_frame,
-    session_state,
     session_state_three_iterations,
 )
 from tests.session.records._fixtures import (
     AT,
     blocked_keep,
     committed_keep,
+    empty_session_state,
+    finalize_record,
     iteration_record,
     session_record,
+    session_state,
     stop_record,
     write_session_log,
 )

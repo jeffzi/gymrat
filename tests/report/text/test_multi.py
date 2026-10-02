@@ -23,36 +23,38 @@ from gymrat.model import Exclusion
 from gymrat.report.text.render import render_report
 from gymrat.report.types import ReportOptions
 from gymrat.verdict import GroupAggregate, KindAggregate
-from tests.report._inputs import (
+from tests._ansi import strip_ansi
+from tests.report._assertions import (
     DIMMED_LINE,
-    NWayCandidate,
     cells_of,
-    create_candidate,
-    create_comparison_result,
-    geomean_of,
-    grouped_comparison,
     highlight_lines,
     last_table_row,
     line_containing,
     line_starting_with,
+    offsets_of,
+    separator_offsets,
+    separator_styles,
+    styles_at,
+    table_region,
+    table_rows,
+)
+from tests.report._comparisons import (
+    NWayCandidate,
+    create_candidate,
+    create_comparison_result,
+    grouped_comparison,
     memory_kind,
     multi_candidate_result,
     n_way_kind_metric,
     n_way_metric,
-    offsets_of,
     other_kind,
     permutation_metric,
-    separator_offsets,
-    separator_styles,
-    strip_ansi,
-    styles_at,
-    table_region,
-    table_rows,
     time_kind,
     two_kind_metrics,
     two_kind_result,
     without_gated_geomean,
 )
+from tests.report._verdicts import geomean_of
 
 if TYPE_CHECKING:
     from collections.abc import Callable

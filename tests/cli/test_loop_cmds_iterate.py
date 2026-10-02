@@ -22,6 +22,7 @@ from gymrat.session.paths import progress_path, session_jsonl_path
 from gymrat.session.progress_file import ProgressSnapshot, write_progress
 from gymrat.session.records import CommandRecord, Confirm, PairedSamples
 from gymrat.session.store import read_records
+from tests._ansi import strip_ansi
 from tests._rich import console_output, screen_lines, sealed_console
 from tests.cli._budget import (
     SUPERVISED_HINT,
@@ -36,7 +37,6 @@ from tests.cli._session import (
     plain_lines,
     records_of,
     runner,
-    strip_ansi,
     write_config,
 )
 from tests.loop.iterate._fixtures import (
