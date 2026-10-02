@@ -14,12 +14,13 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.supervisor.event_log import create_event_log_writer, probe_event_log_path
 from gymrat.supervisor.events import (
     CapEvent,
     TextDeltaEvent,
     UsageUpdateEvent,
     combine_observers,
+    create_event_log_writer,
+    probe_event_log_path,
     to_json_line,
 )
 from tests.supervisor._fixtures import read_log_lines
@@ -141,6 +142,16 @@ def test_probe_event_log_path_when_parent_is_a_file_does_raise_gymrat_error_nami
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("I am a file", encoding="utf-8")
     log_path = blocker / "events.jsonl"
+
+    with pytest.raises(GymratError, match=re.escape(str(log_path))):
+        probe_event_log_path(log_path)
+
+
+def test_probe_event_log_path_when_path_is_a_directory_does_raise_gymrat_error_naming_path(
+    tmp_path: Path,
+):
+    log_path = tmp_path / "a-directory"
+    log_path.mkdir()
 
     with pytest.raises(GymratError, match=re.escape(str(log_path))):
         probe_event_log_path(log_path)

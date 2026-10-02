@@ -69,7 +69,6 @@ import gymrat.supervisor
 import gymrat.supervisor.claude
 import gymrat.supervisor.context
 import gymrat.supervisor.driver
-import gymrat.supervisor.event_log
 import gymrat.supervisor.kickoff
 import gymrat.supervisor.stdio
 import gymrat.supervisor.supervise

@@ -26,7 +26,6 @@ from gymrat.session.store import fold_session, read_records
 from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.end_scan import EndConditionScan
-from gymrat.supervisor.event_log import create_event_log_writer
 from gymrat.supervisor.events import (
     CapAction,
     CapEvent,
@@ -39,6 +38,7 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
     UsageUpdateEvent,
     combine_observers,
+    create_event_log_writer,
 )
 from gymrat.supervisor.turns import (
     Decision,

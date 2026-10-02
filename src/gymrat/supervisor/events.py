@@ -12,6 +12,9 @@ event log and the stdio driver both write. :func:`summarize` and
 :func:`summarize_input` produce the compact, single-line summaries carried on
 tool events.
 :func:`combine_observers` fans one event out to several observers in order.
+:func:`create_event_log_writer` returns the observer that appends each event to
+the event log in that wire form, and :func:`probe_event_log_path` checks the log
+is writable before a session starts.
 """
 
 import json
@@ -20,6 +23,7 @@ import os
 import re
 import warnings
 from collections.abc import Callable
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, TypeAdapter, ValidationError
@@ -28,6 +32,7 @@ from pydantic_core import PydanticSerializationError
 
 from gymrat.config.types import Effort
 from gymrat.display_path import abbreviate_home
+from gymrat.errors import GymratError
 from gymrat.observers import fan_out
 
 # ---------------------------------------------------------------------------
@@ -380,6 +385,63 @@ def _warn_observer_failure(error: Exception) -> None:
     # stacklevel=3 skips this sink and fan_out's dispatch loop, attributing the
     # warning to whoever called the combined observer.
     warnings.warn(str(error), RuntimeWarning, stacklevel=3)
+
+
+# ---------------------------------------------------------------------------
+# Event log
+# ---------------------------------------------------------------------------
+
+
+def probe_event_log_path(log_path: str | Path) -> None:
+    """Verify ``log_path`` is writable before a session starts.
+
+    Attempts to create the parent directory and open the file for appending.
+    Raises :class:`GymratError` naming the path when the filesystem rejects the
+    operation, so the command can fail up front rather than after the session.
+
+    Args:
+        log_path: The event log path to verify.
+
+    Raises:
+        GymratError: When the path or its parent directory is not writable.
+    """
+    path = Path(log_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8"):
+            pass
+    except OSError as error:
+        message = f"Event log path is not writable: {path}"
+        raise GymratError(message) from error
+
+
+def create_event_log_writer(log_path: str | Path) -> SessionObserver:
+    """Return a :data:`SessionObserver` that appends each event to ``log_path``.
+
+    Each event is one JSON line ending in a bare line feed on every platform,
+    as in the session log; Windows never gets a carriage return added. The
+    parent directory is created (recursively) on the first write if it does not
+    already exist. A write failure surfaces as a :class:`GymratError` naming the
+    log path, chaining the underlying OS error as its cause.
+
+    Args:
+        log_path: The event log path to append to.
+
+    Returns:
+        An observer callback that appends each event as a JSON line.
+    """
+    path = Path(log_path)
+
+    def write(event: SessionEvent) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8", newline="\n") as log:
+                log.write(to_json_line(event) + "\n")
+        except OSError as error:
+            message = f"Failed to write event log: {path}"
+            raise GymratError(message) from error
+
+    return write
 
 
 # ---------------------------------------------------------------------------

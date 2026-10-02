@@ -65,8 +65,14 @@ from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import Driver, SessionPrompt
-from gymrat.supervisor.event_log import create_event_log_writer, probe_event_log_path
-from gymrat.supervisor.events import DirtyInfo, LaunchEvent, combine_observers, summarize
+from gymrat.supervisor.events import (
+    DirtyInfo,
+    LaunchEvent,
+    combine_observers,
+    create_event_log_writer,
+    probe_event_log_path,
+    summarize,
+)
 from gymrat.supervisor.exit_sequence import ExitReport, run_exit_sequence
 from gymrat.supervisor.hooks import supervise_hooks_factory
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
