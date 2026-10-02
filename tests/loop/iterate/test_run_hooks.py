@@ -5,8 +5,10 @@ interpreter, run through the asyncio ``exec`` layer. The scripts and their
 parked payload files live in a throwaway ``tmp_path`` root, so the suite is
 order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 
-The one exception is the exec-cap test, which mocks the ``exec`` boundary: no
-real subprocess can be made to overflow exec's own accumulation cap quickly.
+The exceptions are the exec-cap test and the default-timeout test, which mock the
+``exec`` boundary: no real subprocess can be made to overflow exec's own
+accumulation cap quickly, and none can show the default timeout without running
+for all of it.
 """
 
 import asyncio
@@ -36,6 +38,9 @@ RELAY_LIMIT_BYTES = 8192
 #: A generous upper bound proving a kill happened quickly rather than the
 #: hook's full sleep running to completion.
 KILL_SANITY_BOUND_MS = 4000
+
+#: How long a hook may run when its invocation names no timeout of its own.
+DEFAULT_TIMEOUT_MS = 30_000
 
 
 @pytest.fixture
@@ -347,3 +352,25 @@ async def test_run_hook_when_exec_output_capped_does_record_pre_cap_byte_counts(
 
     assert run.record.stdout_bytes == 200_000
     assert run.record.stderr_bytes == 150_000
+
+
+# ---------------------------------------------------------------------------
+# run_hook — the default timeout
+# ---------------------------------------------------------------------------
+
+
+async def test_run_hook_when_invocation_names_no_timeout_does_run_under_the_default(
+    hooks: HookScripts,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handed: list[ExecOptions] = []
+
+    async def recording_exec(command: str, options: ExecOptions) -> ExecResult:
+        handed.append(options)
+        return ExecResult(stdout="", stderr="", exit_code=0, stdout_bytes=0, stderr_bytes=0)
+
+    monkeypatch.setattr("gymrat.loop.iterate.run.exec", recording_exec)
+
+    await run_hook(hooks.invocation_of("unused-because-exec-is-mocked"))
+
+    assert [options.timeout_ms for options in handed] == [DEFAULT_TIMEOUT_MS]
