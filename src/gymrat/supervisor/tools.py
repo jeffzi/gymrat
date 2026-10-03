@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from gymrat.agent_env import COMMAND_ORIGIN_ENV, TOOL_ORIGIN
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
 
 if TYPE_CHECKING:
@@ -18,9 +19,6 @@ if TYPE_CHECKING:
 ToolsFactory = Callable[[asyncio.Event, Mapping[str, str]], object]
 
 _ExecFn = Callable[[Sequence[str], ExecOptions], Awaitable[ExecResult | ExecTimeoutError]]
-
-# click's default exit code for a UsageError (e.g. a rejected CLI argument).
-_USAGE_ERROR_EXIT_CODE = 2
 
 # gymrat emits its JSON document on success (0) and on a stop gate (1).
 _DOCUMENT_EXIT_CODES = frozenset({0, 1})
@@ -78,7 +76,8 @@ class ToolHost:
             text = outcome.stderr.strip() or f"gymrat {cmd} timed out"
             return _result(text, is_error=True)
 
-        if outcome.exit_code == _USAGE_ERROR_EXIT_CODE:
+        # A tool failure, which includes click's UsageError for a rejected argument.
+        if outcome.exit_code == TOOL_FAILURE_EXIT_CODE:
             text = outcome.stderr.strip() or f"gymrat {cmd} exited 2 with no output"
             return _result(text, is_error=True)
 

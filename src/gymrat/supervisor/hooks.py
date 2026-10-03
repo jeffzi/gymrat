@@ -180,36 +180,27 @@ _FILE_MATCHER = "|".join(_EDITING_TOOLS)
 _BASH_MATCHER = "Bash"
 
 
-def _refuse_on_error(evaluate: Callable[[], str | None]) -> HookJSONOutput:
-    """Run a rule and map its verdict to the hook output, refusing when it raises."""
-    try:
-        reason = evaluate()
-    except Exception:  # noqa: BLE001 -- any failure refuses the call rather than letting it through
-        reason = _REFUSED_REASON
-    if reason is None:
-        return {}
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    }
+def _deny_on(rule: Callable[[HookInput], str | None]) -> HookCallback:
+    """Adapt a rule to an SDK callback that denies on its reason, and when it raises."""
 
-
-def _file_callback(root: Path) -> HookCallback:
     async def callback(
         hook_input: HookInput, _tool_use_id: str | None, _context: HookContext
     ) -> HookJSONOutput:
-        return _refuse_on_error(lambda: check_file_edit(hook_input, root))
+        try:
+            reason = rule(hook_input)
+        except Exception:  # noqa: BLE001 -- any failure refuses the call rather than letting it through
+            reason = _REFUSED_REASON
+        if reason is None:
+            return {}
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
 
     return callback
-
-
-async def _bash_callback(
-    hook_input: HookInput, _tool_use_id: str | None, _context: HookContext
-) -> HookJSONOutput:
-    return _refuse_on_error(lambda: check_background_gymrat(hook_input))
 
 
 def supervise_hooks_factory(root: Path) -> HooksFactory:
@@ -233,10 +224,11 @@ def supervise_hooks_factory(root: Path) -> HooksFactory:
             HookMatcher,
         )
 
+        file_rule = _deny_on(lambda hook_input: check_file_edit(hook_input, root))
         return {
             "PreToolUse": [
-                HookMatcher(matcher=_FILE_MATCHER, hooks=[_file_callback(root)]),
-                HookMatcher(matcher=_BASH_MATCHER, hooks=[_bash_callback]),
+                HookMatcher(matcher=_FILE_MATCHER, hooks=[file_rule]),
+                HookMatcher(matcher=_BASH_MATCHER, hooks=[_deny_on(check_background_gymrat)]),
             ]
         }
 
