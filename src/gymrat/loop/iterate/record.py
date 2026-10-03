@@ -108,7 +108,7 @@ def build_iteration_record(
         type="iteration",
         seq=seq,
         at=now_ns(),
-        samples=judged.samples,
+        samples=judged.run.samples,
         metrics=recorded_verdicts(judged.run.verdicts, judged.run.metric_meta, confirmation),
         primary=IterationPrimary(
             kind=primary.kind,

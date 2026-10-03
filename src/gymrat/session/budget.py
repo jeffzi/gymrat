@@ -12,13 +12,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 
 from gymrat.atomic_write import write_text_atomic
-from gymrat.eta import MS_PER_SECOND, SECONDS_PER_MINUTE, format_duration
+from gymrat.eta import MS_PER_SECOND, SECONDS_PER_MINUTE
 from gymrat.session.lock import is_held
 from gymrat.session.paths import budget_path, supervise_lockfile_path
 from gymrat.session.records import BaselineRecord, IterationRecord, SessionLogRecord
+from gymrat.session.sidecar import read_sidecar
 
 _MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND
 
@@ -100,13 +101,8 @@ def read_budget(root: str, *, now_ms: float) -> Budget | None:
         an unrecognized version, its deadline has passed, or the supervise
         lock for *root* is not held.
     """
-    path = Path(budget_path(root))
-    try:
-        budget = Budget.model_validate_json(path.read_text(encoding="utf-8"))
-    except (ValidationError, OSError, UnicodeDecodeError):
-        return None
-
-    if now_ms >= budget.deadline_ms:
+    budget = read_sidecar(Path(budget_path(root)), Budget)
+    if budget is None or now_ms >= budget.deadline_ms:
         return None
 
     if not is_held(Path(supervise_lockfile_path(root))):
@@ -173,9 +169,3 @@ def estimate_iterate_duration(
             )
 
     return None
-
-
-def format_budget_trailer(budget: Budget, current_ms: float) -> str:
-    """The ``12m 34s left of 30m`` trailer a report appends when a budget is active."""
-    remaining = budget.remaining_ms(current_ms)
-    return f"{format_duration(remaining)} left of {budget.max_minutes:g}m"

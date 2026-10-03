@@ -10,7 +10,6 @@ into an abort event so an interrupted iteration abandons the current sample.
 from __future__ import annotations
 
 import sys
-import time
 import traceback
 from typing import TYPE_CHECKING, Annotated
 
@@ -18,6 +17,7 @@ import typer
 from rich.prompt import Confirm
 from rich.text import Text
 
+from gymrat import clock as _clock
 from gymrat.cli.budget_report import budget_snapshot, write_budget_report
 from gymrat.cli.console import (
     apply_color_override,
@@ -55,6 +55,7 @@ from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.config.resolve import resolve_benchless_config, resolve_config
 from gymrat.config.types import CliFlags
 from gymrat.errors import GATE_EXIT_CODE
+from gymrat.eta import MS_PER_SECOND
 from gymrat.loop.discard import DiscardResult, discard_session
 from gymrat.loop.iterate.run import IterateOptions, IterateResult, LoopStopError, iterate_session
 from gymrat.loop.keep import KeepOptions, KeepResult, keep_session
@@ -129,7 +130,7 @@ async def _iterate_body(
         metric_count,
         resolved.primary,
         verbose=verbose,
-        clock=time.perf_counter,
+        clock=lambda: _clock.monotonic_ms() / MS_PER_SECOND,
         checks_cmd=resolved.checks,
         has_before_hook=resolved.hooks is not None and resolved.hooks.before is not None,
         has_after_hook=resolved.hooks is not None and resolved.hooks.after is not None,

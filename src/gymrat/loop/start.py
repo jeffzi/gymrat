@@ -14,13 +14,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from gymrat.clock import now_ns
+from gymrat import clock as _clock
 from gymrat.config.types import ResolvedConfig
 from gymrat.errors import GymratError
+from gymrat.eta import MS_PER_SECOND, NS_PER_MS
 from gymrat.session.paths import archived_session_path, session_jsonl_path
 from gymrat.session.records import SessionConfig, SessionHooks, SessionRecord
 from gymrat.session.schema import SCHEMA_VERSION
-from gymrat.session.store import SessionState, append_record, fold_session, read_records
+from gymrat.session.store import (
+    SessionState,
+    append_record,
+    fold_session,
+    last_kept_position,
+    read_records,
+)
 from gymrat.session.workspace import BaselineRef, create_workspace, recreate_workspace
 from gymrat.targets import RefTarget, resolve_target
 
@@ -95,11 +102,7 @@ def start_session(root: str, ref: str | None, config: ResolvedConfig) -> StartRe
     # put back at the header's pinned SHA would have the next iteration measure the
     # whole session's diff instead of the edit in front of it. recreate_workspace
     # already no-ops when both worktrees stand, so no on-disk check is needed here.
-    recreate_workspace(
-        root,
-        session.branch,
-        state.last_kept_commit if state.last_kept_commit is not None else session.baseline.sha,
-    )
+    recreate_workspace(root, session.branch, last_kept_position(state, session.baseline.sha))
     return StartResult(session=session, state=state, resumed=True)
 
 
@@ -135,18 +138,19 @@ def _create_session(root: str, jsonl_path: str, ref: str, config: ResolvedConfig
     Returns:
         The created session record, folded state, and ``resumed=False``.
     """
-    sha = _resolve_baseline_sha(ref, root)
-    now = datetime.now(UTC)
-    session_id = _new_session_id(now)
-    workspace = create_workspace(root, session_id, BaselineRef(ref=ref, sha=sha))
+    baseline = BaselineRef(ref=ref, sha=_resolve_baseline_sha(ref, root))
+    # One clock read mints the id and stamps the header, so the two never disagree.
+    at = _clock.now_ns()
+    session_id = _new_session_id(at)
+    workspace = create_workspace(root, session_id, baseline)
 
     # pyrefly: ignore[missing-argument] -- validate_by_name=True accepts the Python name
     session = SessionRecord(
         type="session",
         schema_version=SCHEMA_VERSION,
         session_id=session_id,
-        at=now_ns(),
-        baseline=workspace.baseline,
+        at=at,
+        baseline=baseline,
         branch=workspace.branch,
         worktrees=workspace.worktrees,
         config=_snapshot_config(config),
@@ -175,20 +179,15 @@ def _resolve_baseline_sha(ref: str, root: str) -> str:
     """
     target = resolve_target(ref, root)
     if not isinstance(target, RefTarget):
-        err = _directory_baseline_error(ref)
-        raise err
+        message = f"Cannot start a session at '{ref}': it names a directory, not a git ref"
+        raise GymratError(
+            message,
+            hint="Pass a branch, tag, or commit the session's baseline is pinned to.",
+        )
     return target.resolved_sha
 
 
-def _directory_baseline_error(ref: str) -> GymratError:
-    """The failure a baseline that resolves to a directory is reported as."""
-    return GymratError(
-        f"Cannot start a session at '{ref}': it names a directory, not a git ref",
-        hint="Pass a branch, tag, or commit the session's baseline is pinned to.",
-    )
-
-
-def _new_session_id(now: datetime) -> str:
+def _new_session_id(at_ns: int) -> str:
     """``<YYYYMMDD-HHMMSS>-<4 hex>`` in UTC.
 
     The timestamp sorts sessions the way they were started and reads back as a
@@ -196,13 +195,14 @@ def _new_session_id(now: datetime) -> str:
     therefore their branches — apart.
 
     Args:
-        now: The instant the session is minted from.
+        at_ns: The instant the session is minted from, in epoch nanoseconds.
 
     Returns:
         The session id string.
     """
+    started = datetime.fromtimestamp(at_ns // (NS_PER_MS * MS_PER_SECOND), UTC)
     suffix = secrets.token_hex(SESSION_ID_ENTROPY_BYTES)
-    return f"{now.strftime('%Y%m%d-%H%M%S')}-{suffix}"
+    return f"{started.strftime('%Y%m%d-%H%M%S')}-{suffix}"
 
 
 def _snapshot_config(config: ResolvedConfig) -> SessionConfig:

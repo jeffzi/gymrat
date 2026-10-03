@@ -12,9 +12,8 @@ from pathlib import Path
 
 from gymrat.clock import now_ns
 from gymrat.errors import GymratError
-from gymrat.git import try_git
+from gymrat.git import SHORT_SHA_LENGTH, try_git
 from gymrat.plural import pluralize
-from gymrat.report.loop import SHORT_SHA_LENGTH
 from gymrat.session.records import FinalizeRecord, KeepRecord, SessionLogRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
@@ -23,7 +22,7 @@ from gymrat.session.store import (
     require_open_session,
 )
 from gymrat.session.workspace import (
-    is_worktree_dirty,
+    dirty_file_count,
     remove_worktrees,
     run_git_step,
     worktree_head,
@@ -90,7 +89,7 @@ def _validate_finalize(
             f"Finalize refused: iteration {state.last_seq} has been neither kept nor discarded."
         )
         raise GymratError(message, hint=_SETTLE_FIRST_HINT, reason="unsettled")
-    if is_worktree_dirty(session.worktrees.experiment):
+    if dirty_file_count(session.worktrees.experiment) > 0:
         message = (
             f"Finalize refused: the experiment worktree at {session.worktrees.experiment} "
             "carries uncommitted work."

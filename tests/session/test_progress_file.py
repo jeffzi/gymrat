@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from gymrat.progress_events import (
     HookStarted,
@@ -85,11 +86,9 @@ def test_write_progress_when_called_does_create_readable_json_file(root: str):
 
     write_progress(root, snapshot)
 
-    assert _read_json(root) == {
-        "passes_completed": 3,
-        "passes_total": 10,
-        "last_pass_duration_ms": 1234.5,
-    }
+    assert _progress_file(root).read_text(encoding="utf-8") == (
+        '{"passes_completed":3,"passes_total":10,"last_pass_duration_ms":1234.5}'
+    )
 
 
 def test_write_progress_when_called_twice_does_overwrite_previous_snapshot(
@@ -193,6 +192,26 @@ def test_read_progress_when_file_is_stale_does_return_none(root: str):
 
 
 @pytest.mark.parametrize(
+    ("age_seconds", "survives"),
+    [
+        pytest.param(540, True, id="inside-the-ten-minute-bound"),
+        pytest.param(660, False, id="past-the-ten-minute-bound"),
+    ],
+)
+def test_read_progress_when_clock_advances_does_discard_only_past_the_bound(
+    root: str, monkeypatch: pytest.MonkeyPatch, age_seconds: int, survives: bool
+):
+    snapshot = _make_snapshot()
+    write_progress(root, snapshot)
+    written_ms = _progress_file(root).stat().st_mtime * 1000
+    monkeypatch.setattr("gymrat.clock.now_ms", lambda: written_ms + age_seconds * 1000)
+
+    result = read_progress(root)
+
+    assert result == (snapshot if survives else None)
+
+
+@pytest.mark.parametrize(
     "exception",
     [
         pytest.param(
@@ -279,7 +298,7 @@ def test_clear_progress_when_file_absent_does_not_raise(root: str):
 def test_progress_snapshot_when_constructed_does_be_frozen():
     snapshot = _make_snapshot()
 
-    with pytest.raises(AttributeError):
+    with pytest.raises(ValidationError, match="frozen"):
         snapshot.passes_completed = 99  # type: ignore[misc]
 
 

@@ -29,7 +29,6 @@ from gymrat.report.loop import (
 from gymrat.report.style import render_lines
 from gymrat.session.records import (
     BaselineRecord,
-    CommandRecord,
     DiscardRecord,
     IterationRecord,
     KeepRecord,
@@ -184,8 +183,6 @@ def _history_lines(records: Sequence[SessionLogRecord]) -> list[str]:
     settled = _settle_states(records)
     history: list[str] = []
     for position, record in enumerate(records):
-        if isinstance(record, CommandRecord):
-            continue
         if isinstance(record, BaselineRecord):
             history.append(format_status_baseline(record))
         elif isinstance(record, IterationRecord):

@@ -174,6 +174,24 @@ def test_read_budget_when_file_unreadable_or_invalid_does_return_none(
     assert result is None
 
 
+def test_read_budget_when_file_is_not_utf8_does_return_none(root: str):
+    _budget_file(root).write_bytes(b"\xff\xfe not text")
+
+    with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
+        result = read_budget(root, now_ms=0.0)
+
+    assert result is None
+
+
+def test_read_budget_when_path_cannot_be_read_does_return_none(root: str):
+    _budget_file(root).mkdir()
+
+    with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
+        result = read_budget(root, now_ms=0.0)
+
+    assert result is None
+
+
 def test_read_budget_when_version_missing_does_return_version_one_budget(root: str):
     raw = json.loads(_budget_json())
     del raw["version"]

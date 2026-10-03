@@ -280,10 +280,13 @@ async def test_run_hook_when_hook_exits_nonzero_does_report_and_record(hooks: Ho
     )
 
 
-async def test_run_hook_when_hook_outruns_timeout_does_kill_and_report(hooks: HookScripts) -> None:
+async def test_run_hook_when_hook_outruns_timeout_does_kill_and_report(
+    hooks: HookScripts, monkeypatch: pytest.MonkeyPatch
+) -> None:
     command = hooks.hook_command("import time\ntime.sleep(5)\n")
+    monkeypatch.setattr("gymrat.loop.iterate.run.HOOK_TIMEOUT_MS", 200)
 
-    run = await run_hook(hooks.invocation_of(command, timeout_ms=200))
+    run = await run_hook(hooks.invocation_of(command))
 
     assert labeled_lines(run.report, "before") == ["hook timed out after 200ms"]
     assert run.record.timed_out is True
@@ -371,7 +374,7 @@ async def test_run_hook_when_exec_output_capped_does_record_pre_cap_byte_counts(
 # ---------------------------------------------------------------------------
 
 
-async def test_run_hook_when_invocation_names_no_timeout_does_run_under_the_default(
+async def test_run_hook_when_invoked_does_run_under_the_default_timeout(
     hooks: HookScripts,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

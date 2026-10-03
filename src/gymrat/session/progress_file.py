@@ -6,13 +6,14 @@ write.  Staleness detection lets readers discard orphaned files left by a
 crashed iteration.
 """
 
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import ConfigDict, TypeAdapter, ValidationError, with_config
+from pydantic import BaseModel, ConfigDict
 
+from gymrat import clock as _clock
 from gymrat.atomic_write import write_text_atomic
+from gymrat.eta import MS_PER_SECOND
 from gymrat.progress_events import (
     PassFinished,
     PassStarted,
@@ -20,15 +21,14 @@ from gymrat.progress_events import (
     ProgressEvent,
 )
 from gymrat.session.paths import progress_path
+from gymrat.session.sidecar import read_sidecar
 
 #: A reader discards files whose mtime is older than this many seconds.
 #: 600 s (10 min) is well above the longest single benchmark pass.
 STALENESS_BOUND_SECONDS: int = 600
 
 
-@with_config(ConfigDict(strict=True, extra="forbid"))
-@dataclass(frozen=True, slots=True)
-class ProgressSnapshot:
+class ProgressSnapshot(BaseModel):
     """Point-in-time progress state serialized to the sidecar.
 
     The dashboard computes ETAs from ``passes_completed`` / ``passes_total``
@@ -43,12 +43,11 @@ class ProgressSnapshot:
             pass, in milliseconds.
     """
 
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
     passes_completed: int
     passes_total: int
     last_pass_duration_ms: float
-
-
-_SNAPSHOT_ADAPTER: TypeAdapter[ProgressSnapshot] = TypeAdapter(ProgressSnapshot)
 
 
 def write_progress(root: str, snapshot: ProgressSnapshot) -> None:
@@ -61,8 +60,7 @@ def write_progress(root: str, snapshot: ProgressSnapshot) -> None:
         root: Repository root under which the progress sidecar lives.
         snapshot: The progress state to write.
     """
-    text = _SNAPSHOT_ADAPTER.dump_json(snapshot).decode("utf-8")
-    write_text_atomic(Path(progress_path(root)), text)
+    write_text_atomic(Path(progress_path(root)), snapshot.model_dump_json())
 
 
 def read_progress(root: str) -> ProgressSnapshot | None:
@@ -83,13 +81,11 @@ def read_progress(root: str) -> ProgressSnapshot | None:
     except OSError:
         return None
 
-    if time.time() - stat.st_mtime > STALENESS_BOUND_SECONDS:
+    age_ms = _clock.now_ms() - stat.st_mtime * MS_PER_SECOND
+    if age_ms > STALENESS_BOUND_SECONDS * MS_PER_SECOND:
         return None
 
-    try:
-        return _SNAPSHOT_ADAPTER.validate_json(path.read_text(encoding="utf-8"))
-    except (ValidationError, OSError, UnicodeDecodeError):
-        return None
+    return read_sidecar(path, ProgressSnapshot)
 
 
 def clear_progress(root: str) -> None:

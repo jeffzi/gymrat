@@ -52,24 +52,22 @@ class IterationContext:
 
 
 @dataclass(frozen=True, slots=True)
-class _BenchRun:
-    """One bench-and-judge pass: both sides' samples, the verdicts, and the metric metadata."""
-
-    baseline: TargetSamples
-    experiment: TargetSamples
-    metric_meta: dict[str, ResolvedMetricMeta]
-    verdicts: dict[str, MetricVerdict]
-    samples: PairedSamples
-
-
-@dataclass(frozen=True, slots=True)
 class BenchRunOutputs:
-    """One bench run's measurement outputs, shared by the record and the report."""
+    """One bench-and-judge pass: both sides' samples, the verdicts, and the metric metadata.
+
+    Attributes:
+        baseline: The baseline worktree's samples.
+        experiment: The experiment worktree's samples.
+        verdicts: The verdict computed for each measured metric, by name.
+        metric_meta: The resolved metadata for each measured metric, by name.
+        samples: Both sides' rounds in the form the log stores them.
+    """
 
     baseline: TargetSamples
     experiment: TargetSamples
     verdicts: dict[str, MetricVerdict]
     metric_meta: dict[str, ResolvedMetricMeta]
+    samples: PairedSamples
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +77,6 @@ class Judged:
     run: BenchRunOutputs
     result: ComparisonResult
     confirmation: Confirmation | None
-    samples: PairedSamples
 
 
 def build_iteration_comparison(
@@ -133,7 +130,7 @@ async def bench_and_judge(
     metric_meta: dict[str, ResolvedMetricMeta] | None = None,
     *,
     announce_judging: bool = False,
-) -> _BenchRun:
+) -> BenchRunOutputs:
     """Bench a session's worktrees and judge the resulting samples, in one call.
 
     Args:
@@ -178,11 +175,11 @@ async def bench_and_judge(
         resolved_meta,
         unstable_noise_pct=ctx.config.unstable_noise_pct,
     )
-    return _BenchRun(
+    return BenchRunOutputs(
         baseline=baseline,
         experiment=experiment,
-        metric_meta=resolved_meta,
         verdicts=verdicts,
+        metric_meta=resolved_meta,
         samples=PairedSamples(
             experiment=tuple(experiment.samples), baseline=tuple(baseline.samples)
         ),

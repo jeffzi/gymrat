@@ -35,7 +35,7 @@ Two shaping choices are worth spelling out:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -53,7 +53,6 @@ from gymrat.exec import (
     exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
 from gymrat.loop.iterate.bench import (
-    BenchRunOutputs,
     IterationContext,
     Judged,
     bench_and_judge,
@@ -357,8 +356,6 @@ class HookInvocation:
         last_iteration: The iteration the hook can read, ``None`` while the
             session has measured nothing.
         iteration_count: How many iterations the log holds as of this invocation.
-        timeout_ms: Milliseconds before the command is killed; ``None`` uses
-            :data:`HOOK_TIMEOUT_MS`.
         abort: Event whose setting kills the hook's process group; ``None``
             leaves the hook uninterruptible.
     """
@@ -369,7 +366,6 @@ class HookInvocation:
     session: SessionRecord
     last_iteration: IterationRecord | None
     iteration_count: int
-    timeout_ms: int | None = None
     abort: asyncio.Event | None = None
 
 
@@ -389,27 +385,13 @@ class HookRun:
     report: str
 
 
-@dataclass(frozen=True, slots=True)
-class _CommandOutcome:
-    """What the command itself did, before any of it is shaped for log or report."""
-
-    stdout: str
-    stderr: str
-    exit_code: int
-    timed_out: bool
-    #: Bytes the command wrote on stdout, ahead of exec's cap and the relay's.
-    stdout_bytes: int
-    #: Bytes the command wrote on stderr, ahead of exec's cap and the relay's.
-    stderr_bytes: int
-
-
 async def run_hook(invocation: HookInvocation) -> HookRun:
     """Run the stage's command, handing it the loop as JSON on stdin.
 
-    The command runs in the experiment worktree with the payload on its stdin.
-    Nothing here raises, so a hook that fails, times out, or cannot start never
-    aborts the loop. The record is not appended to any log: the caller owns
-    that.
+    The command runs in the experiment worktree with the payload on its stdin,
+    and is killed after :data:`HOOK_TIMEOUT_MS`. Nothing here raises, so a hook
+    that fails, times out, or cannot start never aborts the loop. The record is
+    not appended to any log: the caller owns that.
 
     Args:
         invocation: The stage, command, session, and payload data for the run.
@@ -418,7 +400,6 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
         The hook run result containing the log record and the formatted report,
         whether the command succeeded, failed, timed out, or failed to start.
     """
-    timeout_ms = HOOK_TIMEOUT_MS if invocation.timeout_ms is None else invocation.timeout_ms
     payload = json.dumps(_build_payload(invocation))
 
     started_at = _clock.monotonic_ms()
@@ -426,46 +407,30 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
         invocation.command,
         ExecOptions(
             cwd=invocation.session.worktrees.experiment,
-            timeout_ms=timeout_ms,
+            timeout_ms=HOOK_TIMEOUT_MS,
             abort=invocation.abort,
             stdin=f"{payload}\n",
         ),
     )
     duration_ms = _clock.monotonic_ms() - started_at
-    outcome = _describe_outcome(result)
 
+    timed_out = isinstance(result, ExecTimeoutError)
     record = HookRecord(
         type="hook",
         at=now_ns(),
         stage=invocation.stage,
         seq=invocation.seq,
-        exit_code=outcome.exit_code,
+        # A timeout carries no exit code of its own -- the process was killed
+        # before it had one -- so the shared failure code stands in for it.
+        exit_code=FAILURE_EXIT_CODE if isinstance(result, ExecTimeoutError) else result.exit_code,
         duration_ms=duration_ms,
         # What the command wrote, not what was relayed: a figure above the relay
         # limit is how a reader of the log learns the report was cut.
-        stdout_bytes=outcome.stdout_bytes,
-        stderr_bytes=outcome.stderr_bytes,
-        timed_out=outcome.timed_out,
-    )
-    return HookRun(record=record, report=_format_report(invocation.stage, outcome, timeout_ms))
-
-
-def _describe_outcome(result: ExecResult | ExecTimeoutError) -> _CommandOutcome:
-    """Fold exec's two result shapes into the one the log and report read."""
-    # A timeout carries no exit code of its own -- the process was killed before
-    # it had one -- so the shared failure code stands in for it.
-    if isinstance(result, ExecTimeoutError):
-        exit_code, timed_out = FAILURE_EXIT_CODE, True
-    else:
-        exit_code, timed_out = result.exit_code, False
-    return _CommandOutcome(
-        stdout=result.stdout,
-        stderr=result.stderr,
-        exit_code=exit_code,
-        timed_out=timed_out,
         stdout_bytes=result.stdout_bytes,
         stderr_bytes=result.stderr_bytes,
+        timed_out=timed_out,
     )
+    return HookRun(record=record, report=_format_report(invocation.stage, result))
 
 
 def _build_payload(invocation: HookInvocation) -> dict[str, object]:
@@ -486,24 +451,24 @@ def _build_payload(invocation: HookInvocation) -> dict[str, object]:
     }
 
 
-def _format_report(stage: HookStage, outcome: _CommandOutcome, timeout_ms: int) -> str:
+def _format_report(stage: HookStage, result: ExecResult | ExecTimeoutError) -> str:
     """Every stdout line labeled with the stage, then a failing hook's note and stderr under it."""
-    lines = _split_lines(limit_output(outcome.stdout))
-    note = _failure_note(outcome, timeout_ms)
+    lines = _split_lines(limit_output(result.stdout))
+    note = _failure_note(result)
 
     if note is not None:
         lines.append(note)
-        lines.extend(_split_lines(limit_output(outcome.stderr)))
+        lines.extend(_split_lines(limit_output(result.stderr)))
 
     return "\n".join(f"[{stage}] {line}" for line in lines)
 
 
-def _failure_note(outcome: _CommandOutcome, timeout_ms: int) -> str | None:
+def _failure_note(result: ExecResult | ExecTimeoutError) -> str | None:
     """What to tell the reader about a hook that did not succeed, or ``None`` if it did."""
-    if outcome.timed_out:
-        return f"hook timed out after {timeout_ms}ms"
-    if outcome.exit_code != 0:
-        return f"hook exited {outcome.exit_code}"
+    if isinstance(result, ExecTimeoutError):
+        return f"hook timed out after {result.timeout_ms}ms"
+    if result.exit_code != 0:
+        return f"hook exited {result.exit_code}"
     return None
 
 
@@ -511,35 +476,6 @@ def _split_lines(text: str) -> list[str]:
     """``text`` as lines, with the trailing newline a command leaves behind dropped."""
     trimmed = text.removesuffix("\n")
     return [] if trimmed == "" else trimmed.split("\n")
-
-
-async def run_hook_stage(
-    jsonl_path: str,
-    on_progress: ProgressCallback | None,
-    *,
-    invocation: HookInvocation | None,
-) -> str:
-    """Run one lifecycle hook stage, bracketed by progress events when a command is configured.
-
-    Args:
-        jsonl_path: Path to the session's JSONL log to append the hook record to.
-        on_progress: Callback for stage-started and stage-finished progress
-            events, or ``None`` to skip progress reporting.
-        invocation: The stage, command, session, and payload data for the run,
-            or ``None`` when the stage has no configured hook, which runs no
-            process, appends no record, and adds no line to the report.
-
-    Returns:
-        The text to print for the hook — empty when there was no hook or it
-        said nothing.
-    """
-    if invocation is None:
-        return ""
-    emit_progress(on_progress, HookStarted(stage=invocation.stage, at_ms=monotonic_ms()))
-    run = await run_hook(invocation)
-    append_record(jsonl_path, run.record)
-    emit_progress(on_progress, HookFinished(stage=invocation.stage, at_ms=monotonic_ms()))
-    return run.report
 
 
 async def _hook_stage(
@@ -550,13 +486,29 @@ async def _hook_stage(
     last_iteration: IterationRecord | None,
     iteration_count: int,
 ) -> str:
-    config, opts = ctx.config, ctx.options
-    command = (
-        (config.hooks.before if stage == "before" else config.hooks.after)
-        if config.hooks is not None
-        else None
-    )
-    invocation = (
+    """Run one lifecycle hook stage, bracketed by progress events and recorded in the log.
+
+    A stage with no configured command runs no process, appends no record, and
+    emits no event.
+
+    Args:
+        ctx: The iteration context, carrying the session, config, and options.
+        seq: The iteration the hook brackets.
+        stage: Which side of the measurement the hook runs on.
+        last_iteration: The iteration the hook can read, or ``None``.
+        iteration_count: How many iterations the log holds as of this stage.
+
+    Returns:
+        The text to print for the hook — empty when there was no hook or it
+        said nothing.
+    """
+    hooks = ctx.config.hooks
+    command = None if hooks is None else (hooks.before if stage == "before" else hooks.after)
+    if command is None:
+        return ""
+    on_progress = ctx.options.on_progress
+    emit_progress(on_progress, HookStarted(stage=stage, at_ms=monotonic_ms()))
+    run = await run_hook(
         HookInvocation(
             command=command,
             stage=stage,
@@ -564,16 +516,12 @@ async def _hook_stage(
             session=ctx.session,
             last_iteration=last_iteration,
             iteration_count=iteration_count,
-            abort=opts.abort,
+            abort=ctx.options.abort,
         )
-        if command is not None
-        else None
     )
-    return await run_hook_stage(
-        ctx.jsonl_path,
-        opts.on_progress,
-        invocation=invocation,
-    )
+    append_record(ctx.jsonl_path, run.record)
+    emit_progress(on_progress, HookFinished(stage=stage, at_ms=monotonic_ms()))
+    return run.report
 
 
 async def _measure_and_judge(ctx: IterationContext) -> Judged:
@@ -597,18 +545,11 @@ async def _measure_and_judge(ctx: IterationContext) -> Judged:
     )
 
     confirmation = await confirm_regressions(ctx, first.verdicts, first.metric_meta)
-    verdicts = apply_confirmation(first.verdicts, confirmation)
-    run = BenchRunOutputs(
-        baseline=first.baseline,
-        experiment=first.experiment,
-        verdicts=verdicts,
-        metric_meta=first.metric_meta,
-    )
+    run = replace(first, verdicts=apply_confirmation(first.verdicts, confirmation))
     return Judged(
         run=run,
         result=build_iteration_comparison(run, ctx.config.adapter, ctx.config.kinds),
         confirmation=confirmation,
-        samples=first.samples,
     )
 
 

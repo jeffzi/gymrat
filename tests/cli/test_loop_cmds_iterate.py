@@ -336,6 +336,20 @@ def test_iterate_command_when_run_does_wire_on_progress_into_iterate_options(
     assert factory.renderer.stop_called
 
 
+def test_iterate_command_when_run_does_hand_the_renderer_a_seconds_view_of_the_monotonic_clock(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
+    runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: 5000.0)
+    clock = factory.calls[0].clock
+    assert callable(clock)
+
+    seconds = clock()
+
+    assert seconds == 5.0
+
+
 def test_iterate_command_when_error_does_still_call_renderer_stop(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):

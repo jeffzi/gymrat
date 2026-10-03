@@ -44,7 +44,7 @@ from gymrat.session.store import append_record, last_kept_position, require_open
 from gymrat.session.workspace import (
     advance_baseline,
     commit_workspace,
-    is_worktree_dirty,
+    dirty_file_count,
     worktree_head,
 )
 from gymrat.warn import WarnSink, warn_to_stderr
@@ -389,7 +389,7 @@ async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions)
         warn_color=options.warn_color,
     )
 
-    if not is_worktree_dirty(experiment_dir):
+    if dirty_file_count(experiment_dir) == 0:
         return await _keep_clean_worktree(
             context, baseline_position=last_kept_position(state, session.baseline.sha)
         )
@@ -464,7 +464,21 @@ async def _gated_keep(context: _KeepContext, *, commit: Callable[[str], str]) ->
         context.config, context.experiment_dir, context.warn, color=context.warn_color
     )
     if checks is not None and not checks.passed:
-        return _checks_failed_keep(context.jsonl_path, context.iteration.seq, checks)
+        return _blocked_keep(
+            jsonl_path=context.jsonl_path,
+            seq=context.iteration.seq,
+            reason="checks-failed",
+            checks=KeepChecks(
+                configured=True,
+                passed=False,
+                stdout_bytes=checks.stdout_bytes,
+                stderr_bytes=checks.stderr_bytes,
+            ),
+            report=(
+                f"Keep refused: the checks command failed.\n\n{escape(checks.output)}\n"
+                + format_hint("fix the failures and run `keep` again.")
+            ),
+        )
 
     resolved_message = (
         context.message if context.message is not None else _generated_message(context.iteration)
@@ -474,33 +488,12 @@ async def _gated_keep(context: _KeepContext, *, commit: Callable[[str], str]) ->
         context,
         commit=commit(resolved_message),
         message=resolved_message,
-        checks=_passed_checks_field(checks),
-    )
-
-
-def _checks_failed_keep(jsonl_path: str, seq: int, checks: ChecksRun) -> KeepResult:
-    """Record the refusal a failing checks run earns, phrased for the agent."""
-    return _blocked_keep(
-        jsonl_path=jsonl_path,
-        seq=seq,
-        reason="checks-failed",
-        checks=KeepChecks(
-            configured=True,
-            passed=False,
-            stdout_bytes=checks.stdout_bytes,
-            stderr_bytes=checks.stderr_bytes,
-        ),
-        report=(
-            f"Keep refused: the checks command failed.\n\n{escape(checks.output)}\n"
-            + format_hint("fix the failures and run `keep` again.")
+        checks=(
+            KeepChecks(configured=False)
+            if checks is None
+            else KeepChecks(configured=True, passed=True)
         ),
     )
-
-
-def _passed_checks_field(checks: ChecksRun | None) -> KeepChecks:
-    if checks is None:
-        return KeepChecks(configured=False)
-    return KeepChecks(configured=True, passed=True)
 
 
 def _commit_keep(

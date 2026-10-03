@@ -49,11 +49,10 @@ class Worktrees:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceResult:
-    """A session's git state: the branch it edits on, its worktrees, and its pinned baseline."""
+    """A session's git state: the branch it edits on and its worktrees."""
 
     branch: str
     worktrees: Worktrees
-    baseline: BaselineRef
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +80,7 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
         baseline: The ref and commit sha to detach the baseline worktree at.
 
     Returns:
-        The branch name, worktree paths, and baseline ref.
+        The branch name and worktree paths.
 
     Raises:
         GymratError: When ``root`` is not a git repository, or when git refuses
@@ -119,7 +118,6 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
             experiment=experiment_worktree_dir(root),
             baseline=baseline_worktree_dir(root),
         ),
-        baseline=baseline,
     )
 
 
@@ -376,29 +374,14 @@ def worktree_head(directory: str) -> str:
     ).strip()
 
 
-def is_worktree_dirty(directory: str) -> bool:
-    """Whether ``directory`` holds work git has not committed — untracked files included.
-
-    A directory that is not there reads as clean: a worktree the user deleted
-    carries no uncommitted work anyone can still act on, and refusing to finalize
-    over a directory that cannot be inspected would strand the session.
-
-    Args:
-        directory: The worktree to check for uncommitted or untracked files.
-
-    Returns:
-        ``True`` when the worktree has uncommitted or untracked files.
-    """
-    return dirty_file_count(directory) > 0
-
-
 def dirty_file_count(directory: str) -> int:
     """Count the working-tree entries git reports, expanding untracked directories.
 
     ``--untracked-files=all`` lists each file inside an untracked directory
     rather than the directory alone, so a new folder of three files counts as
-    three.  A directory that does not exist returns 0 for the same reason
-    ``is_worktree_dirty`` reads a missing worktree as clean.
+    three.  A directory that is not there reads as clean: a worktree the user
+    deleted carries no uncommitted work anyone can still act on, and refusing to
+    finalize over a directory that cannot be inspected would strand the session.
 
     Args:
         directory: The worktree to count dirty entries in.

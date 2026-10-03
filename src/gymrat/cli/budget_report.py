@@ -17,12 +17,17 @@ from gymrat.session.budget import (
     SIDES_PER_ITERATE,
     Budget,
     estimate_iterate_duration,
-    format_budget_trailer,
     read_budget,
 )
 from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.session.store import read_records
 from gymrat.warn import warn_to_stderr
+
+
+def format_budget_trailer(budget: Budget, current_ms: float) -> str:
+    """The ``12m 34s left of 30m`` trailer a report appends when a budget is active."""
+    remaining = budget.remaining_ms(current_ms)
+    return f"{format_duration(remaining)} left of {budget.max_minutes:g}m"
 
 
 def budget_summary_of(budget: Budget, current_ms: float) -> BudgetSummary:

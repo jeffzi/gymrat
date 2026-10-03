@@ -21,7 +21,7 @@ must not already be finalized.
 import math
 import os
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import assert_never
 
@@ -498,18 +498,18 @@ class _FoldState:
     ``SessionState`` the rest of the codebase consumes.
     """
 
-    session: SessionRecord | None
-    iteration_count: int
-    last_iteration: IterationRecord | None
-    unsettled: bool
-    keep_count: int
-    discard_count: int
-    target_reached_and_kept: bool
-    last_seq: int
-    last_kept_commit: str | None
-    ends_on_gating_block: bool
-    ends_on_stop: bool
-    finalized: FinalizeRecord | None
+    session: SessionRecord | None = None
+    iteration_count: int = 0
+    last_iteration: IterationRecord | None = None
+    unsettled: bool = False
+    keep_count: int = 0
+    discard_count: int = 0
+    target_reached_and_kept: bool = False
+    last_seq: int = 0
+    last_kept_commit: str | None = None
+    ends_on_gating_block: bool = False
+    ends_on_stop: bool = False
+    finalized: FinalizeRecord | None = None
 
 
 def _clear_ends_on_flags(acc: _FoldState) -> None:
@@ -585,20 +585,7 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
     Returns:
         The accumulated session state.
     """
-    acc = _FoldState(
-        session=None,
-        iteration_count=0,
-        last_iteration=None,
-        unsettled=False,
-        keep_count=0,
-        discard_count=0,
-        target_reached_and_kept=False,
-        last_seq=0,
-        last_kept_commit=None,
-        ends_on_gating_block=False,
-        ends_on_stop=False,
-        finalized=None,
-    )
+    acc = _FoldState()
     target_reached: dict[int, bool] = {}
 
     for record in records:
@@ -622,20 +609,7 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
             case _ as unreachable:
                 assert_never(unreachable)
 
-    return SessionState(
-        session=acc.session,
-        iteration_count=acc.iteration_count,
-        last_iteration=acc.last_iteration,
-        unsettled=acc.unsettled,
-        keep_count=acc.keep_count,
-        discard_count=acc.discard_count,
-        target_reached_and_kept=acc.target_reached_and_kept,
-        last_seq=acc.last_seq,
-        last_kept_commit=acc.last_kept_commit,
-        ends_on_gating_block=acc.ends_on_gating_block,
-        ends_on_stop=acc.ends_on_stop,
-        finalized=acc.finalized,
-    )
+    return SessionState(**{field.name: getattr(acc, field.name) for field in fields(SessionState)})
 
 
 def require_session(root: str, verb: str) -> RequiredSession:

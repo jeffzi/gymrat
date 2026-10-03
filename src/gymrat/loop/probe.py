@@ -136,9 +136,7 @@ def _probe_bench(config: ResolvedConfig, names: tuple[str, ...]) -> str:
             — silently benching everything would answer a different question
             than the one asked.
     """
-    if not names:
-        return config.bench
-    if config.filter is None:
+    if names and config.filter is None:
         message = "filter is not configured — set filter in gymrat.toml to scope a probe"
         raise GymratError(message, reason="no-filter")
     return scoped_bench(config, names)

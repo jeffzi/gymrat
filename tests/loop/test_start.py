@@ -8,6 +8,7 @@ reveal their behavior against real worktrees, and the assertions read commit SHA
 straight out of the worktrees git laid down.
 """
 
+import itertools
 import json
 import re
 import shutil
@@ -19,7 +20,7 @@ import pytest
 
 from gymrat.clock import now_ns
 from gymrat.config.types import HooksConfig, ResolvedConfig, StopConfig
-from gymrat.errors import GymratError
+from gymrat.errors import GymratError, hint_of
 from gymrat.loop.start import StartResult, start_session
 from gymrat.session.paths import (
     archived_session_path,
@@ -180,6 +181,22 @@ def test_start_session_when_new_does_stamp_at_within_now_ns_bracket(repo: str):
     header = _session_header_of(repo)
     after = now_ns()
     assert before <= header.at <= after
+
+
+def test_start_session_when_new_does_mint_the_session_id_from_the_instant_the_header_stamps(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    # 2024-03-05T06:07:08.9Z in epoch nanoseconds, then a day later on every further read.
+    instant_ns = 1_709_618_828_900_000_000
+    day_ns = 86_400_000_000_000
+    reads = itertools.count(instant_ns, day_ns)
+    monkeypatch.setattr("gymrat.clock.now_ns", lambda: next(reads))
+
+    start_session(repo, "main", CONFIG)
+
+    header = _session_header_of(repo)
+    assert header.at == instant_ns
+    assert header.session_id.startswith("20240305-060708-")
 
 
 def test_start_session_when_new_does_write_no_created_at_or_schema_version_on_disk(repo: str):
@@ -381,5 +398,10 @@ def test_start_session_when_baseline_ref_is_a_directory_does_raise_naming_the_re
     with pytest.raises(GymratError) as excinfo:
         start_session(repo, target_dir, CONFIG)
 
-    assert target_dir in str(excinfo.value)
+    assert str(excinfo.value) == (
+        f"Cannot start a session at '{target_dir}': it names a directory, not a git ref"
+    )
+    assert hint_of(excinfo.value) == (
+        "Pass a branch, tag, or commit the session's baseline is pinned to."
+    )
     assert not Path(session_jsonl_path(repo)).exists()

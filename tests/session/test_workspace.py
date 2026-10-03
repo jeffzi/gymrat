@@ -28,7 +28,6 @@ from gymrat.session.workspace import (
     create_workspace,
     dirty_file_count,
     ensure_git_exclude,
-    is_worktree_dirty,
     recreate_workspace,
     remove_worktrees,
     revert_workspace,
@@ -126,7 +125,6 @@ def test_create_workspace_when_no_session_workspace_does_build_branch_worktrees_
     assert result == WorkspaceResult(
         branch=BRANCH,
         worktrees=Worktrees(experiment=exp, baseline=bl),
-        baseline=BaselineRef(ref=BASELINE_REF, sha=baseline_sha),
     )
 
 
@@ -336,33 +334,6 @@ def test_remove_worktrees_when_git_refuses_does_warn_naming_it_and_remove_the_ot
     assert len(warnings) == 1
     assert experiment_worktree_dir(repo) in warnings[0]
     assert not Path(baseline_worktree_dir(repo)).exists()
-
-
-# ---------------------------------------------------------------------------
-# is_worktree_dirty
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("edit", "expected"),
-    [
-        pytest.param(None, False, id="nothing-touched"),
-        pytest.param("README.md", True, id="tracked-file-edited"),
-        pytest.param("scratch.txt", True, id="untracked-file-added"),
-    ],
-)
-def test_is_worktree_dirty_when_worktree_edited_does_report_dirty(
-    repo: str, baseline: BaselineRef, edit: str | None, expected: bool
-):
-    create_workspace(repo, SESSION_ID, baseline)
-    worktree = experiment_worktree_dir(repo)
-    _edit_worktree(worktree, edit)
-
-    assert is_worktree_dirty(worktree) is expected
-
-
-def test_is_worktree_dirty_when_directory_missing_does_report_clean(repo: str):
-    assert is_worktree_dirty(experiment_worktree_dir(repo)) is False
 
 
 # ---------------------------------------------------------------------------

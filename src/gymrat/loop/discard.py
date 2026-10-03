@@ -29,9 +29,8 @@ from dataclasses import dataclass
 
 from gymrat.clock import now_ns
 from gymrat.errors import GymratError
-from gymrat.git import try_git
+from gymrat.git import SHORT_SHA_LENGTH, try_git
 from gymrat.plural import pluralize
-from gymrat.report.loop import SHORT_SHA_LENGTH
 from gymrat.session.records import DiscardRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
