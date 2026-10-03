@@ -509,11 +509,7 @@ def _gate_reason(root: str, iteration: IterationRecord, *, experiment: str) -> s
         The reason wording the step reads, or ``None`` when the gate passes.
     """
     for record in read_records(session_jsonl_path(root)):
-        if (
-            isinstance(record, HookRecord)
-            and record.seq == iteration.seq
-            and (record.timed_out or record.exit_code != 0)
-        ):
+        if isinstance(record, HookRecord) and record.seq == iteration.seq and record.failed:
             return f"{record.stage} hook failed"
 
     if (

@@ -31,6 +31,7 @@ from gymrat.session.lock import (
     _publish_lock_file,
     acquire_lock,
     is_held,
+    now_iso,
     read_holder,
 )
 from tests.conftest import hold_lock
@@ -183,6 +184,12 @@ def held_briefly(lock_path: str) -> Generator[None]:
 # ---------------------------------------------------------------------------
 # acquire + holder metadata
 # ---------------------------------------------------------------------------
+
+
+def test_now_iso_when_called_does_render_millisecond_utc_timestamp():
+    result = now_iso()
+
+    assert AT_PATTERN.match(result)
 
 
 def test_acquire_lock_when_free_does_stamp_compact_holder_json():

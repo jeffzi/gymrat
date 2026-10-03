@@ -1,20 +1,11 @@
 """Behavioral tests for the package clock: wall-clock stamps and the duration clock."""
 
-import re
 import time
 from collections.abc import Callable
 
 import pytest
 
-from gymrat.clock import monotonic_ms, now_iso, now_ms, now_ns
-
-ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
-
-
-def test_now_iso_when_called_does_render_millisecond_utc_timestamp():
-    result = now_iso()
-
-    assert ISO_PATTERN.match(result)
+from gymrat.clock import monotonic_ms, now_ms, now_ns
 
 
 @pytest.mark.parametrize(

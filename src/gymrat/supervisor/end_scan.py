@@ -68,7 +68,7 @@ def detect_end_condition(
 
     if cursor is not None:
         for record in records[cursor:]:
-            if isinstance(record, HookRecord) and (record.exit_code != 0 or record.timed_out):
+            if isinstance(record, HookRecord) and record.failed:
                 return EndCondition("hook-failure", _hook_failure_reason(record)), next_cursor
 
     if check_stop and (stop := stop_condition(config, state)) is not None:

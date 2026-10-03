@@ -36,9 +36,8 @@ from filelock import FileLock
 
 from gymrat import signals
 from gymrat.cli.console import set_color_override, set_debug_mode
-from gymrat.clock import now_iso
 from gymrat.exec import ExecOptions
-from gymrat.session.lock import _os_lock_file
+from gymrat.session.lock import _os_lock_file, now_iso
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset

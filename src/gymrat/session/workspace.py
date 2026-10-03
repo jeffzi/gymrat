@@ -282,8 +282,8 @@ def commit_workspace(experiment_dir: str, message: str) -> str:
     ).strip()
 
 
-def revert_workspace(experiment_dir: str, *, target: str | None = None) -> None:
-    """Reset the experiment worktree to ``target`` (or HEAD) and drop untracked files.
+def revert_workspace(experiment_dir: str, *, target: str) -> None:
+    """Reset the experiment worktree to ``target`` and drop untracked files.
 
     Destructive by contract, and safe because the directory is one gymrat owns:
     the reset covers tracked edits — staged or not — and moves the branch when
@@ -293,14 +293,13 @@ def revert_workspace(experiment_dir: str, *, target: str | None = None) -> None:
 
     Args:
         experiment_dir: Path to the experiment worktree to reset and clean.
-        target: Commit to reset to, or ``None`` to reset to HEAD.
+        target: Commit to reset to.
 
     Raises:
         GymratError: When git refuses to reset or to clean.
     """
-    sha = target or "HEAD"
     run_git_step(
-        ["reset", "--hard", sha],
+        ["reset", "--hard", target],
         experiment_dir,
         f"Cannot revert the experiment worktree at {experiment_dir}",
         INSPECT_STATUS_HINT,

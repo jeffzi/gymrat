@@ -445,6 +445,11 @@ class HookRecord(_SequencedEnvelope):
     )
     timed_out: bool = Field(description="Whether the hook command exceeded its timeout.")
 
+    @property
+    def failed(self) -> bool:
+        """Whether the hook timed out or exited non-zero."""
+        return self.timed_out or self.exit_code != 0
+
 
 # ---------------------------------------------------------------------------
 # Terminal records

@@ -472,7 +472,7 @@ def test_revert_workspace_when_worktree_dirty_does_restore_head_and_drop_untrack
     (Path(experiment) / "README.md").write_text("# dirtied\n", encoding="utf-8")
     (Path(experiment) / "untracked.txt").write_text("junk\n", encoding="utf-8")
 
-    revert_workspace(experiment)
+    revert_workspace(experiment, target="HEAD")
 
     assert (Path(experiment) / "README.md").read_text(encoding="utf-8") == "# Test Repo\n"
     assert not (Path(experiment) / "untracked.txt").exists()

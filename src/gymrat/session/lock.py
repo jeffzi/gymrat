@@ -27,16 +27,24 @@ import contextlib
 import os
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from gymrat.clock import now_iso
 from gymrat.errors import GymratError
+from gymrat.warn import warn_to_stderr
 
-__all__ = ["LockContentionError", "LockHolder", "acquire_lock", "is_held", "read_holder"]
+__all__ = [
+    "LockContentionError",
+    "LockHolder",
+    "acquire_lock",
+    "is_held",
+    "now_iso",
+    "read_holder",
+]
 
 type ReleaseLock = Callable[[], None]
 """Gives up an acquired lock. Calling it more than once is harmless."""
@@ -75,6 +83,11 @@ class LockHolder(BaseModel):
     pid: int
     command: str
     at: str
+
+
+def now_iso() -> str:
+    """The current UTC time as ISO-8601 with millisecond precision and a ``Z`` suffix."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class LockContentionError(GymratError):
@@ -239,8 +252,7 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
         try:
             lock.release()
         except Exception as error:  # noqa: BLE001 — intentional catch-all: release must never raise
-            text = f"Warning: failed to release lock at {lock_path}: {error!s}\n"
-            sys.stderr.write(text)
+            warn_to_stderr(f"Warning: failed to release lock at {lock_path}: {error!s}")
 
     return release
 
