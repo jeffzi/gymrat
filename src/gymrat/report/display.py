@@ -65,7 +65,7 @@ def _no_signal_class(verdict: MetricVerdict) -> DisplayClass:
             assert_never(unreachable)
 
 
-_GLYPHS: dict[DisplayClass, str] = {
+GLYPHS: dict[DisplayClass, str] = {
     "improved": "✓",
     "regressed": "✗",
     "unstable": "≈",
@@ -73,11 +73,7 @@ _GLYPHS: dict[DisplayClass, str] = {
     "within-noise": "~",
     "inconclusive": "?",
 }
-
-
-def get_glyph(shown: DisplayClass) -> str:
-    """The glyph a display class is drawn with in the report's rows and legend."""
-    return _GLYPHS[shown]
+"""The glyph each display class is drawn with in the report's rows and legend."""
 
 
 def shown_class(verdict: MetricVerdict | None) -> DisplayClass | None:

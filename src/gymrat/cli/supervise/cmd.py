@@ -45,7 +45,7 @@ from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.exec import kill_live_process_groups
 from gymrat.git import run_git
 from gymrat.plural import pluralize
-from gymrat.report.style import RENDER_WIDTH, render_lines
+from gymrat.report.style import render_lines
 from gymrat.session.budget import (
     Budget,
     clear_budget,
@@ -258,7 +258,6 @@ def _report_result(
             exit_report=exit_report,
         ),
         color=resolve_stream_color(ctx.color, sys.stdout),
-        width=RENDER_WIDTH,
     )
     write_stdout(f"{summary}\n")
 

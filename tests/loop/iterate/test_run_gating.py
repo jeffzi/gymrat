@@ -12,6 +12,7 @@ import json
 import re
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,7 +20,8 @@ import pytest
 
 from gymrat.config.types import HooksConfig, MetricEntry, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
-from gymrat.loop.iterate.run import iterate_session
+from gymrat.loop.iterate.run import derive_outcome, iterate_session
+from gymrat.report.loop import GeomeanPrimary, MetricPrimary
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     Confirm,
@@ -51,6 +53,7 @@ from tests.loop.iterate._fixtures import (
     trimmed_report_lines,
 )
 from tests.loop.iterate._hooks import HookScripts, expected_hook_record
+from tests.report._comparisons import permutation_metric
 from tests.session.records._fixtures import (
     SESSION_ID,
     committed_keep,
@@ -61,6 +64,9 @@ from tests.session.records._fixtures import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from gymrat.model import Direction
+    from gymrat.report.loop import LoopPrimary
+    from gymrat.report.types import MetricComparison, MetricComparisons
     from tests.loop.iterate._fixtures import CollectSamplesRecorder
 
 #: The confirm-rerun template a consumer configures when their bench can be narrowed.
@@ -981,3 +987,71 @@ async def test_iterate_session_when_before_stage_absent_does_run_nothing_for_it(
         line for line in trimmed_report_lines(result.report) if line.startswith("[before]")
     ]
     assert before_lines == []
+
+
+# ---------------------------------------------------------------------------
+# derive_outcome
+# ---------------------------------------------------------------------------
+
+
+def _directed_metric(direction: Direction, *, gating: bool = True) -> MetricComparison:
+    """A metric judged in ``direction`` with no signal of its own."""
+    return permutation_metric(verdict="no-signal", delta=0, direction=direction, gating=gating)
+
+
+def _regressed_metrics(*, gating: bool) -> MetricComparisons:
+    """A run whose single metric regressed, gating or not."""
+    return {"decode/time": permutation_metric(verdict="regressed", delta=4, gating=gating)}
+
+
+def test_derive_outcome_when_gating_metric_regressed_does_report_regressed_over_the_primary():
+    outcome = derive_outcome(_regressed_metrics(gating=True), GeomeanPrimary(-9))
+
+    assert outcome == "regressed"
+
+
+def test_derive_outcome_when_non_gating_metric_regressed_does_leave_it_out_of_the_outcome():
+    outcome = derive_outcome(_regressed_metrics(gating=False), GeomeanPrimary(-9))
+
+    assert outcome == "improved"
+
+
+@pytest.mark.parametrize(
+    ("primary", "expected"),
+    [
+        pytest.param(GeomeanPrimary(-3), "improved", id="geomean-negative-improves"),
+        pytest.param(GeomeanPrimary(3), "no-signal", id="geomean-positive-no-signal"),
+        pytest.param(GeomeanPrimary(0), "no-signal", id="geomean-zero-no-signal"),
+        pytest.param(MetricPrimary("lower/time", -3), "improved", id="lower-negative-improves"),
+        pytest.param(MetricPrimary("lower/time", 3), "no-signal", id="lower-positive-no-signal"),
+        pytest.param(MetricPrimary("higher/time", 3), "improved", id="higher-positive-improves"),
+        pytest.param(MetricPrimary("higher/time", -3), "no-signal", id="higher-negative-no-signal"),
+        pytest.param(MetricPrimary("lower/time", 0), "no-signal", id="lower-zero-no-signal"),
+        pytest.param(MetricPrimary("higher/time", 0), "no-signal", id="higher-zero-no-signal"),
+    ],
+)
+def test_derive_outcome_when_no_gating_regression_does_read_the_primary(
+    primary: LoopPrimary, expected: str
+):
+    metrics: MetricComparisons = {
+        "lower/time": _directed_metric("lower"),
+        "higher/time": _directed_metric("higher"),
+    }
+
+    assert derive_outcome(metrics, primary) == expected
+
+
+def test_derive_outcome_when_gating_metric_has_no_experiment_slice_does_read_the_primary():
+    unmeasured = replace(_directed_metric("lower"), candidates=())
+
+    outcome = derive_outcome({"lower/time": unmeasured}, GeomeanPrimary(-9))
+
+    assert outcome == "improved"
+
+
+def test_derive_outcome_when_primary_metric_never_measured_does_report_no_signal():
+    primary = MetricPrimary("absent/time", -30)
+
+    outcome = derive_outcome({"lower/time": _directed_metric("lower")}, primary)
+
+    assert outcome == "no-signal"

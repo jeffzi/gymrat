@@ -14,18 +14,16 @@ from typing import TYPE_CHECKING
 
 from rich.cells import cell_len
 from rich.markup import escape
-from rich.text import Text
 
 from gymrat.plural import pluralize
 from gymrat.report.format import format_metric_cell_parts, format_percent_delta, is_improvement
 from gymrat.report.sections import plan_sections
 from gymrat.report.style import (
-    RENDER_WIDTH,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
     join_header_parts,
     markup,
-    render_lines,
+    render_markup_line,
     truncate_labels,
 )
 from gymrat.report.table.markup import (
@@ -197,7 +195,5 @@ def render_probe_report(result: ProbeResult, options: ReportOptions = _DEFAULT_O
     """
     color = options.color
     label = truncate_labels([result.label])[0]
-    header = render_lines(
-        Text.from_markup(_probe_header(result, label)), color=color, width=RENDER_WIDTH
-    )
+    header = render_markup_line(_probe_header(result, label), color=color)
     return "\n".join([header, *_render_probe_table(result, label, color=color)])

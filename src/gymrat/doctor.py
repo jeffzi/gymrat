@@ -44,7 +44,6 @@ from gymrat.config.types import CONFIG_DEFAULTS, BenchlessConfig, CliFlags, Stop
 from gymrat.errors import GymratError, hint_of
 from gymrat.git import NotAGitRepositoryError, try_git
 from gymrat.report.style import (
-    RENDER_WIDTH,
     format_hint,
     markup,
     render_lines,
@@ -379,7 +378,7 @@ def render_doctor_report(report: DoctorReport, *, color: bool | None = None) -> 
         parts.append(f"{colored_count} {escape(word)}")
     lines.append(" · ".join(parts))
 
-    return render_lines(*lines, color=color, width=RENDER_WIDTH)
+    return render_lines(*lines, color=color)
 
 
 def _drop_none(fields: list[tuple[str, object]]) -> dict[str, object]:

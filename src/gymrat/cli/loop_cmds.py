@@ -23,7 +23,6 @@ from gymrat.cli.console import (
     apply_color_override,
     apply_debug,
     is_debug_mode,
-    is_tty,
     resolve_stream_color,
     stderr_console,
 )
@@ -68,6 +67,7 @@ from gymrat.report.json_doc import (
     render_keep_json,
     render_status_json,
 )
+from gymrat.report.style import is_tty
 from gymrat.session.paths import repo_root
 from gymrat.session.progress_file import clear_progress, create_sidecar_writer
 from gymrat.session.store import require_open_session

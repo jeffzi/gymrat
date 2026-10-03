@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from rich.cells import cell_len, split_graphemes
 from rich.console import Console
 from rich.markup import escape
+from rich.text import Text
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -229,9 +230,13 @@ def highlight_inline_code(text: str) -> str:
     """
 
     def style_span(match: re.Match[str]) -> str:
-        return f"[blue]{escape(match.group(1))}[/blue]"
+        return _code_span(match.group(1))
 
     return _INLINE_CODE_PATTERN.sub(style_span, text)
+
+
+def _code_span(code: str) -> str:
+    return f"[blue]{escape(code)}[/blue]"
 
 
 def format_hint(text: str) -> str:
@@ -244,9 +249,8 @@ def format_hint(text: str) -> str:
 
     Prose outside the code spans is escaped here rather than by the caller, so a
     hint naming a metric such as ``[i]`` renders it literally instead of having
-    rich parse it as a style tag. The spans are escaped by
-    :func:`highlight_inline_code`, so escaping the prose separately is what keeps
-    both from being escaped twice.
+    rich parse it as a style tag. The spans are escaped on their own, so
+    escaping the prose separately is what keeps both from being escaped twice.
 
     Args:
         text: The bare hint sentence, which may contain ``` `...` ``` spans.
@@ -254,13 +258,11 @@ def format_hint(text: str) -> str:
     Returns:
         Rich markup for the hint line, for :func:`render_lines` to resolve.
     """
-    parts: list[str] = []
-    position = 0
-    for span in _INLINE_CODE_PATTERN.finditer(text):
-        parts.append(escape(text[position : span.start()]))
-        parts.append(highlight_inline_code(span.group(0)))
-        position = span.end()
-    parts.append(escape(text[position:]))
+    # Splitting on a pattern with one capture group alternates prose and code.
+    parts = [
+        _code_span(piece) if index % 2 else escape(piece)
+        for index, piece in enumerate(_INLINE_CODE_PATTERN.split(text))
+    ]
     return f"[dim]{''.join(parts)}[/dim]"
 
 
@@ -328,22 +330,6 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
     )
 
 
-def _force_color_env() -> bool:
-    """Whether ``FORCE_COLOR`` in the environment asks for color, without mutating it.
-
-    ``FORCE_COLOR`` wins over ``NO_COLOR`` when both are set:
-    any value other than ``0``, ``false`` or the empty string enables color. Only
-    the ``color=None`` branch consults this; an explicit choice never does.
-
-    Returns:
-        Whether ``FORCE_COLOR`` is present and set to an enabling value.
-    """
-    value = os.environ.get("FORCE_COLOR")
-    if value is None:
-        return False
-    return value.lower() not in {"", "0", "false"}
-
-
 def color_from_env() -> bool | None:
     """The color preference the environment declares, or ``None`` to defer to the caller.
 
@@ -359,13 +345,32 @@ def color_from_env() -> bool | None:
         ``True`` for forced color, ``False`` for suppressed color, or ``None``
         when neither environment variable is set.
     """
-    if _force_color_env():
-        return True
-    if os.environ.get("FORCE_COLOR") is not None:
-        return False
+    force_color = os.environ.get("FORCE_COLOR")
+    if force_color is not None:
+        return force_color.lower() not in {"", "0", "false"}
     if "NO_COLOR" in os.environ:
         return False
     return None
+
+
+def is_tty(stream: object) -> bool:
+    """Whether ``stream`` reports itself as an interactive terminal."""
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty()) if callable(isatty) else False
+
+
+def stream_color_from_env(stream: object) -> bool:
+    """Whether ``stream`` carries color when no flag decides it.
+
+    Args:
+        stream: The output stream whose TTY status is the fallback.
+
+    Returns:
+        What :func:`color_from_env` declares, or the stream's own TTY status
+        when the environment declares nothing.
+    """
+    declared = color_from_env()
+    return declared if declared is not None else is_tty(stream)
 
 
 def render_lines(
@@ -406,3 +411,17 @@ def render_lines(
     if lines and lines[-1] == "":
         lines.pop()
     return "\n".join(line.rstrip() for line in lines)
+
+
+def render_markup_line(text: str, *, color: bool | None) -> str:
+    """Resolve one markup line to text, kept whole however long it is.
+
+    Args:
+        text: The rich-markup line to resolve.
+        color: The explicit color choice, or ``None`` to defer to the
+            environment and TTY detection.
+
+    Returns:
+        The rendered line.
+    """
+    return render_lines(Text.from_markup(text), color=color)

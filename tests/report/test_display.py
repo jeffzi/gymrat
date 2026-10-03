@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.report.display import DisplayClass, display_class, get_glyph
+from gymrat.report.display import GLYPHS, DisplayClass, display_class
 from tests.report._verdicts import band_verdict, exact_verdict, permutation_verdict
 
 if TYPE_CHECKING:
@@ -110,7 +110,7 @@ def test_display_class_when_at_minimum_n_does_keep_real_class(
 
 
 # ---------------------------------------------------------------------------
-# get_glyph
+# GLYPHS
 # ---------------------------------------------------------------------------
 
 
@@ -125,7 +125,7 @@ def test_display_class_when_at_minimum_n_does_keep_real_class(
         pytest.param("inconclusive", "?", id="inconclusive"),
     ],
 )
-def test_get_glyph_when_display_class_given_does_return_expected_mark(
+def test_glyphs_when_display_class_given_does_hold_expected_mark(
     shown: DisplayClass, expected: str
 ):
-    assert get_glyph(shown) == expected
+    assert GLYPHS[shown] == expected

@@ -30,9 +30,9 @@ from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError, hint_of
 from gymrat.exec import kill_live_process_groups
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.style import (
-    RENDER_WIDTH,
     format_hint,
     highlight_inline_code,
+    is_tty,
     markup,
     render_lines,
 )
@@ -108,7 +108,7 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
         doc += highlight_inline_code(footer)
 
     stderr_color = console.resolve_stream_color(None, sys.stderr)
-    return render_lines(doc, color=stderr_color, width=RENDER_WIDTH)
+    return render_lines(doc, color=stderr_color)
 
 
 def exit_with_error(error: object, code: int = TOOL_FAILURE_EXIT_CODE) -> NoReturn:
@@ -193,7 +193,7 @@ def resolve_render_mode() -> Literal["live", "plain"]:
     Returns:
         ``"live"`` when stderr is a TTY, ``"plain"`` otherwise.
     """
-    return "live" if console.is_tty(sys.stderr) else "plain"
+    return "live" if is_tty(sys.stderr) else "plain"
 
 
 async def run_with_signal_abort[T](

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from rich.text import Text
 
-from gymrat.report.display import VERDICT_GLOSSES, display_class, get_glyph
+from gymrat.report.display import GLYPHS, VERDICT_GLOSSES, display_class
 from gymrat.report.format import (
     PLUS_MINUS,
     SPREAD_SEPARATOR,
@@ -23,7 +23,12 @@ from gymrat.report.geomean_label import (
     geomean_value_style,
 )
 from gymrat.report.sections import section_label
-from gymrat.report.style import AGGREGATE_LABEL_STYLE, GROUP_LABEL_STYLE, VARIANT_NAME_STYLE
+from gymrat.report.style import (
+    AGGREGATE_LABEL_STYLE,
+    GROUP_LABEL_STYLE,
+    SCOPE_SEPARATOR,
+    VARIANT_NAME_STYLE,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -134,7 +139,7 @@ def verdict_parts(verdict: MetricVerdict, samples: int, *, with_band: bool) -> V
     if with_band and not unstable and shown != "inconclusive" and verdict.method != "exact":
         band = format_noise_band_value(verdict.noise_pct)
     return VerdictParts(
-        glyph=get_glyph(shown),
+        glyph=GLYPHS[shown],
         delta="" if unstable else format_percent_delta(verdict.delta),
         word=VERDICT_GLOSSES["unstable"] if unstable else "",
         band=band,
@@ -161,23 +166,10 @@ def verdict_widths(cells: Sequence[VerdictParts]) -> VerdictWidths:
     )
 
 
-def band_field(band: str, width: int) -> str:
-    """The band as it prints: the ``±`` pinned, its figure right-aligned behind it."""
-    return "" if band == "" else f"{PLUS_MINUS}{band.rjust(width)}"
-
-
-def _empty_band_cell(width: int) -> str:
-    """The blank a row with no band reserves where its column shows one: ``±`` plus figure width."""
-    return " " * (len(PLUS_MINUS) + width)
-
-
 def indented_section_label(short_name: str, group: str | None) -> str:
     """A metric's name cell inside a section: its short name, indented under its group."""
     label = section_label(short_name, group)
     return label if group is None else f"{GROUP_INDENT}{label}"
-
-
-_PROVENANCE_SEPARATOR = "·"
 
 
 def verdict_cell(
@@ -212,12 +204,12 @@ def verdict_cell(
     else:
         pad = " " * max(0, widths.delta - len(parts.delta))
         delta = Text(pad).append(parts.delta, delta_style)
-    band = band_field(parts.band, widths.band)
-    band_cell = (
-        Text(_empty_band_cell(widths.band))
-        if band == "" and widths.band > 0
-        else _field(band, band_style)
-    )
+    # The `±` is pinned and the figure right-aligned behind it; a row with no
+    # band reserves the same width blank where its column shows one.
+    if parts.band != "":
+        band_cell = _field(f"{PLUS_MINUS}{parts.band.rjust(widths.band)}", band_style)
+    else:
+        band_cell = Text(" " * (len(PLUS_MINUS) + widths.band) if widths.band > 0 else "")
     fields = [_field(parts.glyph, glyph_style), delta, band_cell, Text(parts.pairs)]
     cell = Text(CELL_GUTTER).join(field for field in fields if field.plain != "")
     cell.rstrip()
@@ -258,6 +250,6 @@ def geomean_column_cell(
         return cell
     return Text.assemble(
         (parts.delta, geomean_value_style(geomean, outcomes)),
-        f" {_PROVENANCE_SEPARATOR} ",
+        f" {SCOPE_SEPARATOR} ",
         (parts.provenance, "dim"),
     )

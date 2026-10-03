@@ -1,12 +1,9 @@
 """Tests for the loop report fragments.
 
-These cover the loop header, the verdict block, outcome derivation, and the
-status-report formatters. The header block pins the iteration wording and sample
+These cover the loop header, the verdict block, and the status-report
+formatters. The header block pins the iteration wording and sample
 pluralization; the verdict block pins the line shape, the outcome word, and the
-dimmed metric name on rerun lines;
-outcome derivation pins the full truth table, including the gating-regression
-override, direction-aware metric primaries, the exactly-zero cases, and the
-unmeasured-primary case. The status formatters pin the header block, the
+dimmed metric name on rerun lines. The status formatters pin the header block, the
 per-iteration line (glyph, delta, and settle state), the baseline medians, the
 totals-and-stop footer, and the finalized closer.
 
@@ -26,8 +23,6 @@ import pytest
 from gymrat.config.types import StopConfig
 from gymrat.report.loop import (
     GeomeanPrimary,
-    LoopPrimary,
-    MetricPrimary,
     RerunConfirmation,
     SettleDiscarded,
     SettleKeepBlocked,
@@ -36,7 +31,6 @@ from gymrat.report.loop import (
     StatusIteration,
     StatusSummary,
     baseline_medians,
-    derive_outcome,
     format_loop_header,
     format_status_baseline,
     format_status_finalized,
@@ -49,30 +43,17 @@ from gymrat.report.loop import (
 from gymrat.session.records import BaselineRecord
 from gymrat.session.workspace import BaselineRef, Worktrees
 from tests.report._assertions import render_colored, render_plain, styles_at
-from tests.report._comparisons import permutation_metric
 from tests.session.records._fixtures import SESSION_ID, finalize_record, session_record
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from gymrat.model import Direction
     from gymrat.report.loop import LoopOutcome, RerunAnswer, SettleState
-    from gymrat.report.types import MetricComparison, MetricComparisons
 
 
 def _geomean_primary(delta_pct: float = -4.2) -> GeomeanPrimary:
     """The geomean primary, improving by default."""
     return GeomeanPrimary(delta_pct=delta_pct)
-
-
-def _directed_metric(direction: Direction, *, gating: bool = True) -> MetricComparison:
-    """A metric judged in ``direction`` with no signal of its own."""
-    return permutation_metric(verdict="no-signal", delta=0, direction=direction, gating=gating)
-
-
-def _regressed_metrics(*, gating: bool) -> MetricComparisons:
-    """A run whose single metric regressed, gating or not."""
-    return {"decode/time": permutation_metric(verdict="regressed", delta=4, gating=gating)}
 
 
 # ---------------------------------------------------------------------------
@@ -204,56 +185,6 @@ def test_format_verdict_block_when_rerun_does_dim_group_and_kind_in_metric_name(
     colored = render_colored(rerun_line)
     assert "2" in styles_at(colored, "entity/")
     assert "2" in styles_at(colored, "#time")
-
-
-# ---------------------------------------------------------------------------
-# derive_outcome
-# ---------------------------------------------------------------------------
-
-
-def test_derive_outcome_when_gating_metric_regressed_does_report_regressed_over_the_primary():
-    outcome = derive_outcome(_regressed_metrics(gating=True), _geomean_primary(-9))
-
-    assert outcome == "regressed"
-
-
-def test_derive_outcome_when_non_gating_metric_regressed_does_leave_it_out_of_the_outcome():
-    outcome = derive_outcome(_regressed_metrics(gating=False), _geomean_primary(-9))
-
-    assert outcome == "improved"
-
-
-@pytest.mark.parametrize(
-    ("primary", "expected"),
-    [
-        pytest.param(GeomeanPrimary(-3), "improved", id="geomean-negative-improves"),
-        pytest.param(GeomeanPrimary(3), "no-signal", id="geomean-positive-no-signal"),
-        pytest.param(GeomeanPrimary(0), "no-signal", id="geomean-zero-no-signal"),
-        pytest.param(MetricPrimary("lower/time", -3), "improved", id="lower-negative-improves"),
-        pytest.param(MetricPrimary("lower/time", 3), "no-signal", id="lower-positive-no-signal"),
-        pytest.param(MetricPrimary("higher/time", 3), "improved", id="higher-positive-improves"),
-        pytest.param(MetricPrimary("higher/time", -3), "no-signal", id="higher-negative-no-signal"),
-        pytest.param(MetricPrimary("lower/time", 0), "no-signal", id="lower-zero-no-signal"),
-        pytest.param(MetricPrimary("higher/time", 0), "no-signal", id="higher-zero-no-signal"),
-    ],
-)
-def test_derive_outcome_when_no_gating_regression_does_read_the_primary(
-    primary: LoopPrimary, expected: str
-):
-    metrics: MetricComparisons = {
-        "lower/time": _directed_metric("lower"),
-        "higher/time": _directed_metric("higher"),
-    }
-
-    assert derive_outcome(metrics, primary) == expected
-
-
-def test_derive_outcome_when_primary_metric_never_measured_does_report_no_signal():
-    primary = MetricPrimary("absent/time", -30)
-
-    outcome = derive_outcome({"lower/time": _directed_metric("lower")}, primary)
-
-    assert outcome == "no-signal"
 
 
 # ---------------------------------------------------------------------------

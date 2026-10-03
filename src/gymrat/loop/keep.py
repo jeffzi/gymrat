@@ -33,7 +33,7 @@ from gymrat.exec import (
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.output_limit import limit_output
 from gymrat.report.format import format_percent_delta
-from gymrat.report.style import RENDER_WIDTH, color_from_env, format_hint, render_lines
+from gymrat.report.style import format_hint, render_lines, stream_color_from_env
 from gymrat.session.records import (
     BaselineRecord,
     IterationRecord,
@@ -72,20 +72,6 @@ class ChecksRun:
     stderr_bytes: int
 
 
-def _stderr_color() -> bool:
-    """Whether the warning gymrat writes to stderr carries color.
-
-    :func:`color_from_env` owns the ``FORCE_COLOR`` / ``NO_COLOR`` precedence
-    every color surface shares; with neither declared, stderr's own TTY state
-    decides, so a warning piped into a file stays plain.
-
-    Returns:
-        Whether stderr output should carry ANSI color escapes.
-    """
-    declared = color_from_env()
-    return declared if declared is not None else sys.stderr.isatty()
-
-
 def _gate_off_warning(*, color: bool) -> str:
     """The warning a keep emits when no checks command gates it.
 
@@ -100,7 +86,6 @@ def _gate_off_warning(*, color: bool) -> str:
             "set `checks` in `gymrat.toml` to the command that must pass before an edit is kept."
         ),
         color=color,
-        width=RENDER_WIDTH,
     )
     return (
         "Warning: no checks command is configured, so gymrat keep is committing "
@@ -139,7 +124,7 @@ async def run_checks(
     command = config.checks
     if command is None:
         if warn is None:
-            stderr_color = _stderr_color() if color is None else color
+            stderr_color = stream_color_from_env(sys.stderr) if color is None else color
             warn_to_stderr(_gate_off_warning(color=stderr_color))
         else:
             warn(_gate_off_warning(color=False))
@@ -329,7 +314,7 @@ async def keep_session(
             commit the worktree or to advance the baseline.
     """
     settled = await _settle_keep(root, config, options or KeepOptions())
-    return replace(settled, report=render_lines(settled.report, color=color, width=RENDER_WIDTH))
+    return replace(settled, report=render_lines(settled.report, color=color))
 
 
 async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions) -> KeepResult:

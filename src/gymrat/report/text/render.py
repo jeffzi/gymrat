@@ -30,12 +30,7 @@ from rich.text import Text
 from gymrat.metric_name import format_inline, parse
 from gymrat.model import PERMUTATION_MIN_N, PERMUTATION_P_THRESHOLD
 from gymrat.plural import pluralize
-from gymrat.report.display import (
-    DisplayClass,
-    display_class,
-    get_glyph,
-    shown_class,
-)
+from gymrat.report.display import GLYPHS, DisplayClass, display_class
 from gymrat.report.format import (
     format_evidence,
     format_metric_cell_parts,
@@ -46,7 +41,6 @@ from gymrat.report.format import (
 from gymrat.report.geomean_label import GATED_GEOMEAN_LABEL
 from gymrat.report.sections import plan_sections, spans_many_kinds
 from gymrat.report.style import (
-    RENDER_WIDTH,
     SCOPE_SEPARATOR,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
@@ -54,6 +48,7 @@ from gymrat.report.style import (
     join_header_parts,
     markup,
     render_lines,
+    render_markup_line,
     truncate_labels,
 )
 from gymrat.report.table.markup import group_metric_cell, header_metric_cell, indented_section_label
@@ -71,7 +66,6 @@ if TYPE_CHECKING:
     from gymrat.report.format import MetricCellParts
     from gymrat.report.types import (
         CandidateComparison,
-        CandidateMetric,
         ComparisonResult,
         FailOnCondition,
         MeasurementResult,
@@ -96,11 +90,6 @@ _HIGHLIGHTS_HEADING = "highlights"
 _GATE_TRIP_GLYPH = "⚑"
 
 
-def _render_line(text: str, *, color: bool | None) -> str:
-    """Resolve a markup line to text once, deferring wrapping so the line stays whole."""
-    return render_lines(Text.from_markup(text), color=color, width=RENDER_WIDTH)
-
-
 def _render_block(markup_lines: Sequence[str], *, color: bool | None) -> list[str]:
     """Resolve a block of markup lines to rendered text, one output line per input.
 
@@ -118,8 +107,7 @@ def _render_block(markup_lines: Sequence[str], *, color: bool | None) -> list[st
     """
     if not markup_lines:
         return []
-    rendered = render_lines(*markup_lines, color=color, width=RENDER_WIDTH)
-    return rendered.split("\n")
+    return render_lines(*markup_lines, color=color).split("\n")
 
 
 def with_display_labels(result: ComparisonResult) -> ComparisonResult:
@@ -196,12 +184,12 @@ class MetricHighlight:
     Attributes:
         name: The metric name the highlight is reported under.
         metric: The metric's comparison data.
-        candidate: The candidate slice that earned the highlight.
+        verdict: The candidate's verdict that earned the highlight.
     """
 
     name: str
     metric: MetricComparison
-    candidate: CandidateMetric
+    verdict: MetricVerdict
 
 
 _HIGHLIGHT_RANK: dict[DisplayClass, int | None] = {
@@ -249,7 +237,7 @@ def select_highlights(
         rank = _HIGHLIGHT_RANK[display_class(candidate.verdict)]
         if rank is None:
             continue
-        highlight = MetricHighlight(name=name, metric=metric, candidate=candidate)
+        highlight = MetricHighlight(name=name, metric=metric, verdict=candidate.verdict)
         ranked.append((rank, -_highlight_weight(candidate.verdict), highlight))
 
     ranked.sort(key=operator.itemgetter(0, 1))
@@ -284,7 +272,7 @@ def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
 
 def has_unstable_highlight(highlights: Sequence[MetricHighlight]) -> bool:
     """Whether any highlight is one the noise swamped, so it carries no usable delta."""
-    return any(shown_class(highlight.candidate.verdict) == "unstable" for highlight in highlights)
+    return any(display_class(highlight.verdict) == "unstable" for highlight in highlights)
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,10 +305,7 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
 
     entries: list[str] = []
     for highlight, label, width in zip(highlights, labels, label_widths, strict=True):
-        verdict = highlight.candidate.verdict
-        if verdict is None:  # pragma: no cover - select_highlights only keeps judged slices
-            msg = f"highlight {highlight.name!r} carries no verdict"
-            raise ValueError(msg)
+        verdict = highlight.verdict
         shown = display_class(verdict)
         style = VERDICT_STYLES[shown]
         delta = format_verdict_delta(verdict)
@@ -333,19 +318,9 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
             f"{' ' * max(0, _HIGHLIGHT_DELTA_WIDTH - cell_len(delta))}{markup(delta, style)}"
         )
         suffix = "" if evidence == "" else f"  {markup(evidence, 'dim')}"
-        entries.append(f"  {markup(get_glyph(shown), style)} {label_field}{delta_field}{suffix}")
+        entries.append(f"  {markup(GLYPHS[shown], style)} {label_field}{delta_field}{suffix}")
 
     return HighlightBlock(entries=tuple(entries), unstable=has_unstable_highlight(highlights))
-
-
-def _futility_line() -> str:
-    """The futility note, indented to sit under the entries it qualifies."""
-    return f"  {markup(UNSTABLE_FUTILITY_NOTE, 'dim')}"
-
-
-def _format_threshold(pct: float) -> str:
-    """A ``--fail-on`` threshold as it was written, dropping a trailing ``.0``."""
-    return f"{pct:g}"
 
 
 def _gate_trip_lines(
@@ -374,10 +349,11 @@ def _gate_trip_lines(
         if geomean is None or geomean.n == 0:
             continue
         delta = format_percent_delta(geomean.value)
+        # `:g` states the threshold as it was written, dropping a trailing `.0`.
         lines.extend(
             f"  {markup(_GATE_TRIP_GLYPH, style)} {escape(kind.kind)} "
             f"{GATED_GEOMEAN_LABEL} {markup(delta, style)} "
-            f"exceeded --fail-on geomean:{_format_threshold(pct)}"
+            f"exceeded --fail-on geomean:{pct:g}"
             for pct in thresholds
             if geomean.value >= pct
         )
@@ -409,29 +385,26 @@ def _highlight_section(blocks: Sequence[HighlightBlock]) -> list[str]:
             lines.append(f"  {markup(block.label, 'bold')}")
             lines.extend(f"  {entry}" for entry in block.entries)
     if any(block.unstable for block in non_empty):
-        lines.append(_futility_line())
+        lines.append(f"  {markup(UNSTABLE_FUTILITY_NOTE, 'dim')}")
     return lines
 
 
 def _render_highlights(
-    metrics: MetricComparisons,
-    candidate_index: int,
-    gate_trips: Sequence[str],
-) -> list[str]:
-    """The highlights block for a single-candidate report, gate trips folded in."""
-    block = _highlight_entries(metrics, candidate_index)
-    combined = HighlightBlock(
-        entries=(*block.entries, *gate_trips),
-        unstable=block.unstable,
-    )
-    return _highlight_section([combined])
-
-
-def _render_candidate_highlights(
     result: ComparisonResult,
     conditions: Sequence[FailOnCondition],
 ) -> list[str]:
-    """The highlights block for a multi-candidate report: one subsection per candidate."""
+    """The highlights block, gate trips folded in: one labeled subsection per candidate.
+
+    A single-candidate report lists its entries directly, with no sub-label.
+
+    Args:
+        result: The comparison whose candidates to highlight.
+        conditions: The run's ``--fail-on`` conditions.
+
+    Returns:
+        The highlights block lines, or an empty list when nothing highlighted.
+    """
+    multi = len(result.candidates) > 1
     blocks: list[HighlightBlock] = []
     for index, candidate in enumerate(result.candidates):
         block = _highlight_entries(result.metrics, index)
@@ -439,7 +412,7 @@ def _render_candidate_highlights(
             HighlightBlock(
                 entries=(*block.entries, *_gate_trip_lines(candidate, conditions)),
                 unstable=block.unstable,
-                label=candidate.label,
+                label=candidate.label if multi else None,
             )
         )
     return _highlight_section(blocks)
@@ -448,25 +421,6 @@ def _render_candidate_highlights(
 # ---------------------------------------------------------------------------
 # Footers
 # ---------------------------------------------------------------------------
-
-
-def _samples_hint(command: str) -> str:
-    """The hint asking for more samples, naming the command that would carry them.
-
-    The command is stated whole and backtick-marked so
-    :func:`gymrat.report.style.format_hint` sets it apart from the prose: a
-    reader copies the line rather than assembling the invocation themselves.
-
-    Args:
-        command: The subcommand name to embed in the suggested re-run.
-
-    Returns:
-        The hint string naming the re-run command and sample count.
-    """
-    return (
-        f"re-run with `gymrat {command} --samples {PERMUTATION_MIN_N}` "
-        f"or more for statistical verdicts"
-    )
 
 
 _DROPPED_ROUNDS_HINT = (
@@ -562,17 +516,21 @@ def _method_lines(data: _FooterData) -> list[str]:
     return lines
 
 
-def _shortage_hint(shortage: Sequence[int], samples: int | None, command: str) -> str | None:
+def _shortage_hint(shortage: Sequence[int], samples: int, command: str) -> str | None:
     """The hint for metrics that fell to the band because their paired count was short.
 
     When the run's own sample count is below the floor, more samples are the
     fix. When it had enough samples but rounds were dropped during pairing,
     suggesting more samples is misleading.
 
+    The suggested command is stated whole and backtick-marked so
+    :func:`gymrat.report.style.format_hint` sets it apart from the prose: a
+    reader copies the line rather than assembling the invocation themselves.
+
     Args:
         shortage: The pair counts of verdicts that fell to the band method
             for lack of pairs.
-        samples: The run's own sample count, or ``None`` when unknown.
+        samples: The run's own sample count.
         command: The subcommand name to embed in the suggested re-run.
 
     Returns:
@@ -581,9 +539,12 @@ def _shortage_hint(shortage: Sequence[int], samples: int | None, command: str) -
     """
     if not shortage:
         return None
-    if samples is not None and samples >= PERMUTATION_MIN_N:
+    if samples >= PERMUTATION_MIN_N:
         return _DROPPED_ROUNDS_HINT
-    return _samples_hint(command)
+    return (
+        f"re-run with `gymrat {command} --samples {PERMUTATION_MIN_N}` "
+        f"or more for statistical verdicts"
+    )
 
 
 def footer_lines(
@@ -591,7 +552,7 @@ def footer_lines(
     *,
     verbose: bool,
     command: str,
-    samples: int | None = None,
+    samples: int,
 ) -> list[str]:
     """The footer: how each verdict was decided when verbose, and the samples hint.
 
@@ -601,7 +562,7 @@ def footer_lines(
         command: The subcommand the report was produced by, so a hint suggesting
             a re-run names the whole invocation.
         samples: The run's sample count, to distinguish shortage from dropped
-            rounds. Left ``None``, a shortage always suggests more samples.
+            rounds.
 
     Returns:
         The footer lines, method lines (when verbose) first, then the hint.
@@ -612,16 +573,6 @@ def footer_lines(
     if hint is not None:
         lines.append(format_hint(hint))
     return lines
-
-
-def _render_method_footer(result: ComparisonResult, *, verbose: bool, command: str) -> list[str]:
-    """The verbose method lines naming how each verdict was decided, and the samples hint."""
-    return footer_lines(
-        result.metrics,
-        verbose=verbose,
-        command=command,
-        samples=result.samples,
-    )
 
 
 def _to_single_line(text: str) -> str:
@@ -764,28 +715,29 @@ def render_report(result: ComparisonResult, options: ReportOptions = _DEFAULT_OP
     if options.header is not None:
         lines = [options.header]
     else:
-        lines = [_render_line(_compare_header(display), color=color)]
+        lines = [render_markup_line(_compare_header(display), color=color)]
 
     if len(display.candidates) > 1:
         lines.extend(render_comparison_table(display, color=color))
         lines.append("")
         lines.extend(_render_block(_render_summaries(display), color=color))
-        highlights = _render_candidate_highlights(display, conditions)
-        if highlights:
-            lines.append("")
-            lines.extend(_render_block(highlights, color=color))
     elif len(display.candidates) == 1:
-        candidate = display.candidates[0]
-        lines.extend(render_table(display, candidate, 0, color=color))
+        lines.extend(render_table(display, display.candidates[0], 0, color=color))
         lines.append("")
         lines.extend(_render_block([_render_summary(display.metrics, 0)], color=color))
-        highlights = _render_highlights(display.metrics, 0, _gate_trip_lines(candidate, conditions))
-        if highlights:
-            lines.append("")
-            lines.extend(_render_block(highlights, color=color))
+
+    highlights = _render_highlights(display, conditions)
+    if highlights:
+        lines.append("")
+        lines.extend(_render_block(highlights, color=color))
 
     footer = [
-        *_render_method_footer(display, verbose=bool(options.verbose), command=options.command),
+        *footer_lines(
+            display.metrics,
+            verbose=bool(options.verbose),
+            command=options.command,
+            samples=display.samples,
+        ),
         *_render_worktree_footer(display),
     ]
     if footer:
@@ -822,7 +774,7 @@ def render_measure_report(
         f"adapter: {escape(result.adapter)}",
     ])
 
-    lines = [_render_line(header, color=color)]
+    lines = [render_markup_line(header, color=color)]
     lines.extend(render_measure_table(result, label, color=color))
 
     footer = _render_worktree_footer(result)

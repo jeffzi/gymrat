@@ -15,7 +15,7 @@ from typing import IO, override
 from rich.console import Console
 
 from gymrat.cli.style import CLI_THEME
-from gymrat.report.style import color_from_env
+from gymrat.report.style import stream_color_from_env
 
 # ---------------------------------------------------------------------------
 # Debug mode
@@ -55,12 +55,6 @@ def apply_debug(debug: bool) -> None:  # noqa: FBT001 -- 1:1 pass-through of a c
 # ---------------------------------------------------------------------------
 # Stream helpers
 # ---------------------------------------------------------------------------
-
-
-def is_tty(stream: object) -> bool:
-    """Whether ``stream`` reports itself as an interactive terminal."""
-    isatty = getattr(stream, "isatty", None)
-    return bool(isatty()) if callable(isatty) else False
 
 
 def is_broken_pipe(error: BaseException) -> bool:
@@ -163,10 +157,7 @@ def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa
         return override
     if _ColorState.override is not None:
         return _ColorState.override
-    from_env = color_from_env()
-    if from_env is not None:
-        return from_env
-    return is_tty(stream)
+    return stream_color_from_env(stream)
 
 
 # ---------------------------------------------------------------------------

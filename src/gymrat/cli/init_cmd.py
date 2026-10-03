@@ -30,7 +30,7 @@ from gymrat.cli.supervised import is_supervised_run_live
 from gymrat.config.resolve import find_implicit_base
 from gymrat.config.types import CONFIG_FILENAME
 from gymrat.errors import GymratError
-from gymrat.report.style import RENDER_WIDTH, format_hint, render_lines
+from gymrat.report.style import format_hint, render_lines
 from gymrat.scaffold import (
     ScaffoldArtifact,
     ScaffoldRequest,
@@ -62,7 +62,7 @@ def _format_summary(result: ScaffoldResult, base_dir: str, *, color: bool | None
         escape(_format_artifact("Skill:", result.skill, base_dir)),
         format_hint("Run `gymrat doctor` to verify the setup."),
     ])
-    return render_lines(doc, color=color, width=RENDER_WIDTH)
+    return render_lines(doc, color=color)
 
 
 def init_command(

@@ -95,7 +95,7 @@ def test_select_highlights_when_equal_magnitude_does_keep_declaration_order():
     ]
 
 
-def test_select_highlights_when_selected_does_carry_metric_and_candidate_slice():
+def test_select_highlights_when_selected_does_carry_metric_and_candidate_verdict():
     metrics: MetricComparisons = {
         "slower/time": metric_for([
             CandidateSpec(verdict="improved", delta=-10),
@@ -108,7 +108,7 @@ def test_select_highlights_when_selected_does_carry_metric_and_candidate_slice()
     (highlight,) = highlights
     assert highlight.name == "slower/time"
     assert highlight.metric is metrics["slower/time"]
-    assert highlight.candidate is metrics["slower/time"].candidates[1]
+    assert highlight.verdict is metrics["slower/time"].candidates[1].verdict
 
 
 @pytest.mark.parametrize(

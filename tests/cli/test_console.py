@@ -15,7 +15,8 @@ from typing import override
 
 import pytest
 
-from gymrat.cli.console import is_broken_pipe, is_tty, point_stream_at_devnull, stderr_console
+from gymrat.cli.console import is_broken_pipe, point_stream_at_devnull, stderr_console
+from gymrat.report.style import is_tty
 from tests._process_helpers import run_with_closed_reader
 from tests._streams import FakeStream, RaisingStream
 

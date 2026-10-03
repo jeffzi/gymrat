@@ -19,7 +19,7 @@ from pydantic_core import to_json
 from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import BandVerdict, ExactVerdict, PermutationVerdict
 from gymrat.report.tally import count_verdicts
-from gymrat.report.types import CandidateMetric
+from gymrat.report.types import CandidateMetric, candidate_at
 
 if TYPE_CHECKING:
     from gymrat.loop.discard import DiscardResult
@@ -42,9 +42,7 @@ if TYPE_CHECKING:
     from gymrat.session.records import IterationRecord
     from gymrat.verdict import KindAggregate
 
-_COMPARE_SCHEMA_VERSION = 2
-_MEASURE_SCHEMA_VERSION = 1
-_PROBE_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +76,7 @@ def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {
-        "schema_version": _COMPARE_SCHEMA_VERSION,
+        "schema_version": _SCHEMA_VERSION,
         "baseline": result.baseline_label,
         "candidates": [candidate.label for candidate in result.candidates],
         "samples": result.samples,
@@ -109,7 +107,7 @@ def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | No
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {
-        "schema_version": _MEASURE_SCHEMA_VERSION,
+        "schema_version": _SCHEMA_VERSION,
         "label": result.label,
         "samples": result.samples,
         "adapter": result.adapter,
@@ -141,7 +139,7 @@ def render_probe_json(result: ProbeResult, *, budget: BudgetSummary | None = Non
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {
-        "schema_version": _PROBE_SCHEMA_VERSION,
+        "schema_version": _SCHEMA_VERSION,
         "label": result.label,
         "samples": result.samples,
         "adapter": result.adapter,
@@ -170,10 +168,7 @@ def _serialize_metric(
     """One metric's meta, baseline, and positional per-candidate rows."""
     empty = CandidateMetric()
     rows = [
-        _candidate_row(
-            candidate.label,
-            metric.candidates[index] if index < len(metric.candidates) else empty,
-        )
+        _candidate_row(candidate.label, candidate_at(metric, index) or empty)
         for index, candidate in enumerate(candidates)
     ]
     return {
@@ -211,14 +206,7 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
         The verdict fields as a flat dict suitable for merging into a row.
     """
     if verdict is None:
-        return {
-            "verdict": None,
-            "method": None,
-            "delta": None,
-            "noise_pct": None,
-            "p": None,
-            "band": None,
-        }
+        return dict.fromkeys(("verdict", "method", "delta", "noise_pct", "p", "band"))
     noise_pct: float | None = None
     p: float | None = None
     band: float | None = None
@@ -502,8 +490,5 @@ def _render(document: dict[str, object], budget: BudgetSummary | None) -> str:
         The pretty-printed JSON string.
     """
     if budget is not None:
-        document["budget"] = {
-            "cap_minutes": budget.cap_minutes,
-            "remaining_seconds": budget.remaining_seconds,
-        }
+        document["budget"] = asdict(budget)
     return to_json(document, indent=2, inf_nan_mode="null").decode()

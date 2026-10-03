@@ -27,7 +27,7 @@ from rich.table import Table
 from rich.text import Text
 
 from gymrat.report.sections import GroupBlock, MetricBlock, informational_tag
-from gymrat.report.style import RENDER_WIDTH, markup, render_lines
+from gymrat.report.style import markup, render_lines, render_markup_line
 from gymrat.report.table.markup import (
     METRIC_COLUMN_HEADER,
     METRIC_COLUMN_MIN,
@@ -51,14 +51,6 @@ type TableCell = str | Text
 # ---------------------------------------------------------------------------
 # Body planning
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class AggregateRow[Cell]:
-    """An aggregate row: the scope it covers, and the cell it states for the column."""
-
-    label: str
-    cell: Cell
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,9 +126,9 @@ class AggregateRows[Metric, Cell]:
         flat: Builds the single aggregate closing a flat table.
     """
 
-    group: Callable[[str, str, Sequence[Metric]], AggregateRow[Cell]]
-    kind: Callable[[str, Sequence[Metric]], AggregateRow[Cell]]
-    flat: Callable[[Sequence[Metric]], AggregateRow[Cell]]
+    group: Callable[[str, str, Sequence[Metric]], AggregateLine[Cell]]
+    kind: Callable[[str, Sequence[Metric]], AggregateLine[Cell]]
+    flat: Callable[[Sequence[Metric]], AggregateLine[Cell]]
 
 
 def _section_metrics[Metric](section: SectionPlan[Metric]) -> list[Metric]:
@@ -170,8 +162,7 @@ def _plan_blocks[Metric, Cell](
         lines.append(GroupLine(label=block.group))
         lines.extend(MetricLine(row=metric) for metric in block.metrics)
         if rows is not None:
-            aggregate = rows.group(section.kind, block.group, block.metrics)
-            lines.append(AggregateLine(label=aggregate.label, cell=aggregate.cell))
+            lines.append(rows.group(section.kind, block.group, block.metrics))
     return lines
 
 
@@ -208,8 +199,7 @@ def plan_body[Metric, Cell](
         lines.extend(_plan_blocks(section, rows))
         if rows is not None:
             lines.append(RuleLine())
-            aggregate = rows.kind(section.kind, _section_metrics(section))
-            lines.append(AggregateLine(label=aggregate.label, cell=aggregate.cell))
+            lines.append(rows.kind(section.kind, _section_metrics(section)))
     return lines
 
 
@@ -241,25 +231,8 @@ def _plan_flat_body[Metric, Cell](
         body.extend(MetricLine(row=row) for row in layout.ordered)
     if rows is not None:
         body.append(RuleLine())
-        aggregate = rows.flat(layout.ordered)
-        body.append(AggregateLine(label=aggregate.label, cell=aggregate.cell))
+        body.append(rows.flat(layout.ordered))
     return body
-
-
-def aggregate_label_lengths[Metric, Cell](body: Sequence[BodyLine[Metric, Cell]]) -> list[int]:
-    """The labels of every non-metric row — what the name column widens for."""
-    return [cell_len(line.label) for line in body if isinstance(line, (GroupLine, AggregateLine))]
-
-
-def widest_header_label[Metric, Cell](body: Sequence[BodyLine[Metric, Cell]]) -> str:
-    """The widest label any header row carries, defaulting to the metric-column header."""
-    widest = METRIC_COLUMN_HEADER
-    for line in body:
-        if isinstance(line, HeaderLine):
-            label = line.title if line.title is not None else METRIC_COLUMN_HEADER
-            if cell_len(label) > cell_len(widest):
-                widest = label
-    return widest
 
 
 def compute_column_width(header_len: int, content_lengths: Sequence[int], minimum: int) -> int:
@@ -305,21 +278,18 @@ class NamedRow(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class TableSkeleton[Row]:
-    """The body, grouping flag, name/value cells, and widths a measurement and probe table share.
+    """The body, name/value cells, and widths a measurement and probe table share.
 
     Attributes:
         body: The planned body lines, ready for :func:`render_body`.
-        grouped: Whether a row's name cell shows its indented label rather than
-            its bare name — true once the run spans more than one kind, or its
-            one section has a group holding more than one metric.
-        name_cell: The metric-column cell for one row.
+        name_cell: The metric-column cell for one row — its indented label once
+            the table is grouped (see :func:`is_grouped`), its bare name otherwise.
         value_cell: The value-column cell for one row.
         metric_width: The metric column's settled width.
         value_width: The value column's settled width.
     """
 
     body: list[BodyLine[Row, object]]
-    grouped: bool
     name_cell: Callable[[Row], str]
     value_cell: Callable[[Row], str]
     metric_width: int
@@ -346,20 +316,6 @@ def is_grouped[Metric, Cell](
     return len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
 
 
-def row_name_cell[Row: NamedRow](row: Row, *, grouped: bool) -> str:
-    """A row's metric-column text: its indented group label, or its bare name.
-
-    Args:
-        row: The row to name.
-        grouped: Whether the table shows the indented, grouped label rather
-            than the bare name.
-
-    Returns:
-        The row's name-cell text.
-    """
-    return row.label if grouped else row.name
-
-
 def metric_column_width[Metric, Cell](
     body: Sequence[BodyLine[Metric, Cell]],
     name_lengths: Sequence[int],
@@ -367,16 +323,24 @@ def metric_column_width[Metric, Cell](
     """The metric column's width: the widest of its name cells, its header, and its floor.
 
     Args:
-        body: The planned body lines, whose header and aggregate labels also
-            size the column.
+        body: The planned body lines, whose section titles and group and
+            aggregate labels also size the column.
         name_lengths: Each row's name-cell width, in terminal cells.
 
     Returns:
         The metric column's settled width.
     """
+    label_lengths = [
+        cell_len(line.label) for line in body if isinstance(line, (GroupLine, AggregateLine))
+    ]
+    title_lengths = [
+        cell_len(line.title)
+        for line in body
+        if isinstance(line, HeaderLine) and line.title is not None
+    ]
     return compute_column_width(
-        cell_len(widest_header_label(body)),
-        list(name_lengths) + aggregate_label_lengths(body),
+        cell_len(METRIC_COLUMN_HEADER),
+        [*name_lengths, *label_lengths, *title_lengths],
         METRIC_COLUMN_MIN,
     )
 
@@ -402,8 +366,8 @@ def plan_table_skeleton[Row: NamedRow](
         label: The value column's header, sizing the value column.
 
     Returns:
-        The planned body, the grouping flag, the name and value cell builders, and
-        the metric and value column widths.
+        The planned body, the name and value cell builders, and the metric and
+        value column widths.
     """
     value_fields = value_widths([value_of(row) for row in layout.ordered])
 
@@ -415,7 +379,7 @@ def plan_table_skeleton[Row: NamedRow](
     grouped = is_grouped(layout, body)
 
     def name_cell(row: Row) -> str:
-        return row_name_cell(row, grouped=grouped)
+        return row.label if grouped else row.name
 
     def value_cell(row: Row) -> str:
         return join_value_cell(value_of(row), value_fields)
@@ -428,7 +392,6 @@ def plan_table_skeleton[Row: NamedRow](
     )
     return TableSkeleton(
         body=body,
-        grouped=grouped,
         name_cell=name_cell,
         value_cell=value_cell,
         metric_width=metric_width,
@@ -440,22 +403,25 @@ def build_cell_dispatcher[Row, Cell](
     header: Callable[[str | None], tuple[TableCell, ...]],
     group: Callable[[str], tuple[TableCell, ...]],
     metric: Callable[[Row], tuple[TableCell, ...]],
+    aggregate: Callable[[AggregateLine[Cell]], tuple[TableCell, ...]] | None = None,
 ) -> Callable[[BodyLine[Row, Cell]], tuple[TableCell, ...]]:
-    """A ``to_cells`` callable dispatching a header, group, or metric line to its cells.
+    """A ``to_cells`` callable dispatching each content line to its cells.
 
-    Both tables' ``to_cells`` differ only in how many columns each line states;
-    the header/group/metric dispatch itself is identical — neither a
-    measurement nor a probe table's body ever plans any other line.
+    The tables' ``to_cells`` differ only in how many columns each line states;
+    the dispatch itself is identical.
 
     Args:
         header: Builds a header row's cells from its section title.
         group: Builds a group row's cells from its label.
         metric: Builds a metric row's cells from its row.
+        aggregate: Builds an aggregate row's cells, or ``None`` for a table
+            whose body plans no aggregate.
 
     Returns:
         The dispatching ``to_cells`` callable. Calling it raises
-        ``AssertionError`` for a ``BlankLine``, ``RuleLine``, ``BorderLine``,
-        ``TitleLine``, or ``AggregateLine``.
+        ``AssertionError`` for a ``BlankLine``, ``RuleLine``, ``BorderLine`` or
+        ``TitleLine``, and for an ``AggregateLine`` when ``aggregate`` is
+        ``None``.
     """
 
     def to_cells(line: BodyLine[Row, Cell]) -> tuple[TableCell, ...]:
@@ -465,6 +431,8 @@ def build_cell_dispatcher[Row, Cell](
             return group(line.label)
         if isinstance(line, MetricLine):
             return metric(line.row)
+        if isinstance(line, AggregateLine) and aggregate is not None:
+            return aggregate(line)
         msg = f"unexpected body line {line!r}"
         raise AssertionError(msg)
 
@@ -532,7 +500,7 @@ def _flush_batch(
     table = _make_table(widths)
     for row in batch:
         table.add_row(*row.cells, end_section=row.end_section)
-    out = render_lines(table, color=color, width=RENDER_WIDTH).split("\n")
+    out = render_lines(table, color=color).split("\n")
     # rich draws a section end only between rows, never after the last one.
     if batch[-1].end_section:
         out.append(_horizontal(widths, "┼"))
@@ -585,11 +553,7 @@ def render_body[Metric, Cell](
         elif isinstance(line, BorderLine):
             out.append(_horizontal(widths, "┬"))
         elif isinstance(line, TitleLine):
-            out.extend(
-                render_lines(Text.from_markup(line.text), color=color, width=RENDER_WIDTH).split(
-                    "\n"
-                )
-            )
+            out.extend(render_markup_line(line.text, color=color).split("\n"))
         else:
             assert_never(line)
 
@@ -599,7 +563,6 @@ def render_body[Metric, Cell](
 
 __all__ = [
     "AggregateLine",
-    "AggregateRow",
     "AggregateRows",
     "BodyLine",
     "GroupLine",
@@ -609,7 +572,6 @@ __all__ = [
     "RuleLine",
     "TableCell",
     "TableSkeleton",
-    "aggregate_label_lengths",
     "build_cell_dispatcher",
     "compute_column_width",
     "is_grouped",
@@ -617,7 +579,5 @@ __all__ = [
     "plan_body",
     "plan_table_skeleton",
     "render_body",
-    "row_name_cell",
     "section_annotation",
-    "widest_header_label",
 ]

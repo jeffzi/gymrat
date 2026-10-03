@@ -28,9 +28,9 @@ from rich.markup import escape
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.metric_name import format_inline, parse
 from gymrat.plural import pluralize
-from gymrat.report.display import get_glyph
-from gymrat.report.format import format_percent_delta, format_value, is_improvement
-from gymrat.report.style import VARIANT_NAME_STYLE, format_hint, markup
+from gymrat.report.display import GLYPHS
+from gymrat.report.format import format_percent_delta, format_value
+from gymrat.report.style import VARIANT_NAME_STYLE, format_hint, join_header_parts, markup
 from gymrat.report.text.render import paired_samples
 
 if TYPE_CHECKING:
@@ -39,7 +39,6 @@ if TYPE_CHECKING:
     from gymrat.config.types import StopConfig
     from gymrat.loop.start import StartResult
     from gymrat.report.display import DisplayClass
-    from gymrat.report.types import MetricComparison, MetricComparisons
     from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
     from gymrat.session.schema import KeepReason
     from gymrat.session.workspace import BaselineRef
@@ -160,14 +159,6 @@ _RERUN_PHRASES: dict[RerunAnswer, tuple[str, str]] = {
     "absent": ("not measured on rerun", "yellow"),
 }
 
-#: The ``·`` the loop's lines separate their parts with, dimmed in color.
-_SEPARATOR = "·"
-
-
-def _separator() -> str:
-    """The dimmed ``·`` separator, spaces left outside the dim so each dot stands alone."""
-    return f" {markup(_SEPARATOR, 'dim')} "
-
 
 def _format_primary_delta(delta_pct: float | None) -> str:
     if delta_pct is None:
@@ -196,7 +187,7 @@ def format_loop_header(seq: int, samples: int) -> str:
         The header as a single rich-markup line.
     """
     parts = [markup(f"iteration {seq}", "bold"), _COMPARED, escape(paired_samples(samples))]
-    return _separator().join(parts)
+    return join_header_parts(parts)
 
 
 def _format_rerun_line(rerun: RerunConfirmation) -> str:
@@ -239,7 +230,7 @@ def format_verdict_block(
     # The delta renders blank when the ratio had no value, so the parts are
     # joined rather than interpolated: a blank between a space and the separator
     # would read as a gap.
-    verdict_line = _separator().join([
+    verdict_line = join_header_parts([
         f"primary:{_format_primary_delta(primary.delta_pct)}",
         f"verdict: {verdict}",
     ])
@@ -249,73 +240,6 @@ def format_verdict_block(
         lines.append(markup(_TARGET_REACHED, "green"))
     lines.append(format_hint(next_step))
     return lines
-
-
-# ---------------------------------------------------------------------------
-# Outcome derivation
-# ---------------------------------------------------------------------------
-
-
-def _experiment_regressed(metric: MetricComparison) -> bool:
-    """Whether the experiment's side of ``metric`` came back regressed."""
-    if len(metric.candidates) <= EXPERIMENT_INDEX:
-        return False
-    verdict = metric.candidates[EXPERIMENT_INDEX].verdict
-    return verdict is not None and verdict.verdict == "regressed"
-
-
-def _has_gating_regression(metrics: MetricComparisons) -> bool:
-    """Whether any metric the run is gated on came back regressed for the experiment."""
-    return any(metric.meta.gating and _experiment_regressed(metric) for metric in metrics.values())
-
-
-def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
-    """Whether the primary figure moved the way its direction calls an improvement.
-
-    A figure whose ratio had no value moved in no direction at all, so it
-    improves nothing. The geomean is normalized so that lower is better; a named
-    metric is judged in its own direction.
-
-    Args:
-        metrics: The run's metric comparisons, used to look up the primary's
-            direction when it names a metric rather than the geomean.
-        primary: The one figure the iteration is read on.
-
-    Returns:
-        Whether the primary figure moved in the direction its metric calls an
-        improvement.
-    """
-    if primary.delta_pct is None:
-        return False
-    if isinstance(primary, GeomeanPrimary):
-        return is_improvement(primary.delta_pct, "lower")
-    metric = metrics.get(primary.name)
-    if metric is None:
-        return False
-    return is_improvement(primary.delta_pct, metric.meta.direction)
-
-
-def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> LoopOutcome:
-    """What an iteration amounted to, read off its metrics and its primary figure.
-
-    A gating regression settles it whatever the primary did: the run is judged on
-    every metric it gates, so a headline that improved while a gate broke is still
-    an iteration to fix rather than one to keep.
-
-    Everything that is neither a gating regression nor an improvement in the
-    primary's own direction reads ``no-signal`` — including a primary the run
-    never measured, which reports nothing rather than reporting zero.
-
-    Args:
-        metrics: The run's per-metric comparisons.
-        primary: The one figure the iteration is read on.
-
-    Returns:
-        The iteration's outcome.
-    """
-    if _has_gating_regression(metrics):
-        return "regressed"
-    return "improved" if _primary_improved(metrics, primary) else "no-signal"
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +367,7 @@ def format_status_header(session: SessionRecord) -> list[str]:
     """
     baseline = format_baseline_ref(session.baseline)
     return [
-        _separator().join([
+        join_header_parts([
             markup(f"session {session.session_id}", "bold"),
             f"baseline {escape(baseline)}",
             f"adapter {escape(session.config.adapter)}",
@@ -497,8 +421,8 @@ def format_status_iteration(iteration: StatusIteration) -> str:
     Returns:
         The iteration as a single rich-markup line.
     """
-    glyph = markup(get_glyph(OUTCOME_GLYPHS[iteration.outcome]), _OUTCOME_STYLES[iteration.outcome])
-    return _separator().join([
+    glyph = markup(GLYPHS[OUTCOME_GLYPHS[iteration.outcome]], _OUTCOME_STYLES[iteration.outcome])
+    return join_header_parts([
         f"iteration {iteration.seq}",
         f"{glyph}{_format_primary_delta(iteration.delta_pct)}",
         format_status_settle(iteration.settle),
@@ -543,7 +467,7 @@ def format_status_baseline(record: BaselineRecord) -> str:
         f"{escape(name)} {format_value(median)}"
         for name, median in baseline_medians(record).items()
     )
-    return _separator().join(parts)
+    return join_header_parts(parts)
 
 
 def _format_stop_state(summary: StatusSummary) -> str | None:
@@ -558,7 +482,7 @@ def _format_stop_state(summary: StatusSummary) -> str | None:
         parts.append("target reached" if summary.target_reached else "target pending")
     if not parts:
         return None
-    return f"{markup('stop:', 'dim')} {_separator().join(parts)}"
+    return f"{markup('stop:', 'dim')} {join_header_parts(parts)}"
 
 
 def format_status_footer(summary: StatusSummary) -> list[str]:
@@ -573,7 +497,7 @@ def format_status_footer(summary: StatusSummary) -> list[str]:
     Returns:
         The totals line, and the stop-progress line when configured.
     """
-    totals = _separator().join([
+    totals = join_header_parts([
         pluralize(summary.iteration_count, "iteration"),
         f"{summary.keep_count} kept",
         f"{summary.discard_count} discarded",
@@ -589,7 +513,7 @@ def first_line(message: str) -> str:
 
 def format_status_stop(message: str) -> str:
     """The line a stopped session renders: the word and the first line of its message."""
-    return _separator().join([markup("stopped", "bold"), escape(first_line(message))])
+    return join_header_parts([markup("stopped", "bold"), escape(first_line(message))])
 
 
 def format_status_finalized(finalized: FinalizeRecord) -> str:
@@ -605,7 +529,7 @@ def format_status_finalized(finalized: FinalizeRecord) -> str:
     Returns:
         A single rich-markup line naming the branch and short commit.
     """
-    return _separator().join([
+    return join_header_parts([
         markup("finalized", "bold"),
         f"branch {escape(finalized.branch)}",
         f"commit {finalized.commit[:SHORT_SHA_LENGTH]}",

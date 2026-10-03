@@ -54,6 +54,37 @@ def test_render_measure_report_when_single_kind_grouped_does_show_group_headers(
 
 
 # ---------------------------------------------------------------------------
+# multi-kind measurement with no groups
+# ---------------------------------------------------------------------------
+
+_LONG_KIND = "allocation_throughput"
+
+
+def _ungrouped_two_kind_rows() -> list[str]:
+    """The table rows of a two-kind measurement whose metrics sit in no group."""
+    result = create_measurement_result(
+        metrics={
+            "decode#time": measured_metric(kind="time", short_name="decode", unit="ns"),
+            f"encode#{_LONG_KIND}": measured_metric(kind=_LONG_KIND, short_name="encode"),
+        },
+    )
+    report = render_measure_report(result, ReportOptions(color=False))
+    return [line for line in report.split("\n") if "│" in line]
+
+
+def test_render_measure_report_when_kinds_differ_without_groups_does_show_short_names():
+    names = [line.split("│")[0].rstrip() for line in _ungrouped_two_kind_rows() if "100" in line]
+
+    assert names == ["decode", "encode"]
+
+
+def test_render_measure_report_when_section_title_is_widest_does_size_the_metric_column_to_it():
+    separators = {line.index("│") for line in _ungrouped_two_kind_rows()}
+
+    assert separators == {len(_LONG_KIND) + 1}
+
+
+# ---------------------------------------------------------------------------
 # whole report — golden
 # ---------------------------------------------------------------------------
 

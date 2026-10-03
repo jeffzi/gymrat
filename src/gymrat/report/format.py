@@ -218,11 +218,6 @@ def format_noise_band_value(noise_pct: float) -> str:
     return f"{noise_pct:.1f}%"
 
 
-def _format_noise_band(noise_pct: float) -> str:
-    """A metric's noise band as the ``±N%`` the rows and highlights share."""
-    return f"{PLUS_MINUS}{format_noise_band_value(noise_pct)}"
-
-
 def format_pair_count(n: int) -> str:
     """How many pairs a verdict rests on, as the ``n=N`` the rows and footer share."""
     return f"n={n}"
@@ -256,4 +251,4 @@ def format_evidence(
     if verdict.noise_pct > _RELATIVE_SPREAD_CAP_PCT and baseline_median is not None:
         noise = format_value(verdict.noise_abs, unit)
         return f"{PLUS_MINUS}{noise} noise on a {format_value(baseline_median, unit)} median"
-    return f"noise {_format_noise_band(verdict.noise_pct)}"
+    return f"noise {PLUS_MINUS}{format_noise_band_value(verdict.noise_pct)}"

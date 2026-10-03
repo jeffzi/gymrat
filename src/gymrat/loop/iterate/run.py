@@ -71,17 +71,20 @@ from gymrat.progress_events import (
     JudgeFinished,
     emit_progress,
 )
+from gymrat.report.format import is_improvement
 from gymrat.report.loop import (
+    EXPERIMENT_INDEX,
+    GeomeanPrimary,
     LoopOutcome,
+    LoopPrimary,
     RerunAnswer,
     RerunConfirmation,
-    derive_outcome,
     format_loop_header,
     format_verdict_block,
 )
-from gymrat.report.style import RENDER_WIDTH, render_lines
+from gymrat.report.style import render_lines
 from gymrat.report.text.render import render_report
-from gymrat.report.types import ComparisonResult, ReportOptions
+from gymrat.report.types import ComparisonResult, ReportOptions, candidate_at
 from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
 from gymrat.session.records import HookRecord, record_to_wire
@@ -94,6 +97,7 @@ if TYPE_CHECKING:
 
     from gymrat.config.types import BenchlessConfig, ResolvedConfig
     from gymrat.progress_events import ProgressCallback
+    from gymrat.report.types import MetricComparisons
     from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord
     from gymrat.session.schema import CommandReason, HookStage
     from gymrat.warn import WarnSink
@@ -104,6 +108,7 @@ __all__ = [
     "IterateOptions",
     "IterateResult",
     "LoopStopError",
+    "derive_outcome",
     "iterate_session",
     "run_hook",
     "stop_condition",
@@ -140,6 +145,65 @@ class IterateResult:
 
     record: IterationRecord
     report: str
+
+
+def _has_gating_regression(metrics: MetricComparisons) -> bool:
+    """Whether any metric the run is gated on came back regressed for the experiment."""
+    for metric in metrics.values():
+        experiment = candidate_at(metric, EXPERIMENT_INDEX)
+        verdict = None if experiment is None else experiment.verdict
+        if metric.meta.gating and verdict is not None and verdict.verdict == "regressed":
+            return True
+    return False
+
+
+def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
+    """Whether the primary figure moved the way its direction calls an improvement.
+
+    A figure whose ratio had no value moved in no direction at all, so it
+    improves nothing. The geomean is normalized so that lower is better; a named
+    metric is judged in its own direction.
+
+    Args:
+        metrics: The run's metric comparisons, used to look up the primary's
+            direction when it names a metric rather than the geomean.
+        primary: The one figure the iteration is read on.
+
+    Returns:
+        Whether the primary figure moved in the direction its metric calls an
+        improvement.
+    """
+    if primary.delta_pct is None:
+        return False
+    if isinstance(primary, GeomeanPrimary):
+        return is_improvement(primary.delta_pct, "lower")
+    metric = metrics.get(primary.name)
+    if metric is None:
+        return False
+    return is_improvement(primary.delta_pct, metric.meta.direction)
+
+
+def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> LoopOutcome:
+    """What an iteration amounted to, read off its metrics and its primary figure.
+
+    A gating regression settles it whatever the primary did: the run is judged on
+    every metric it gates, so a headline that improved while a gate broke is still
+    an iteration to fix rather than one to keep.
+
+    Everything that is neither a gating regression nor an improvement in the
+    primary's own direction reads ``no-signal`` — including a primary the run
+    never measured, which reports nothing rather than reporting zero.
+
+    Args:
+        metrics: The run's per-metric comparisons.
+        primary: The one figure the iteration is read on.
+
+    Returns:
+        The iteration's outcome.
+    """
+    if _has_gating_regression(metrics):
+        return "regressed"
+    return "improved" if _primary_improved(metrics, primary) else "no-signal"
 
 
 def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
@@ -659,7 +723,7 @@ def render_iteration(
         if confirmation is not None
         else []
     )
-    header = render_lines(format_loop_header(seq, result.samples), color=color, width=RENDER_WIDTH)
+    header = render_lines(format_loop_header(seq, result.samples), color=color)
     report = render_report(result, ReportOptions(header=header, color=color, command="iterate"))
     verdict = render_lines(
         *format_verdict_block(
@@ -670,6 +734,5 @@ def render_iteration(
             target_reached=judgment.reached_target,
         ),
         color=color,
-        width=RENDER_WIDTH,
     )
     return f"{report}\n\n{verdict}"

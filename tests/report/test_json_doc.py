@@ -120,7 +120,7 @@ def _two_kind_with_exclusions() -> ComparisonResult:
 # ---------------------------------------------------------------------------
 
 
-def test_render_json_when_single_candidate_does_produce_schema_version_2_shape():
+def test_render_json_when_single_candidate_does_produce_schema_version_1_shape():
     result = create_comparison_result(
         baseline_label="main",
         candidates=[create_candidate(label="experiment")],
@@ -131,7 +131,7 @@ def test_render_json_when_single_candidate_does_produce_schema_version_2_shape()
 
     doc = json.loads(render_json(result))
 
-    assert doc["schema_version"] == 2
+    assert doc["schema_version"] == 1
     assert doc["baseline"] == "main"
     assert doc["candidates"] == ["experiment"]
     assert doc["samples"] == 10
@@ -517,15 +517,38 @@ def test_render_json_when_candidate_has_no_metric_data_does_render_all_nulls():
 
     beta = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][1]
 
-    assert beta["label"] == "beta"
-    assert beta["median"] is None
-    assert beta["spread_pct"] is None
-    assert beta["verdict"] is None
-    assert beta["method"] is None
-    assert beta["delta"] is None
-    assert beta["noise_pct"] is None
-    assert beta["p"] is None
-    assert beta["band"] is None
+    assert list(beta.items()) == list(_UNMEASURED_ROW.items())
+
+
+#: A candidate row with no measurement behind it, in the key order the document writes.
+_UNMEASURED_ROW: dict[str, object] = {
+    "label": "beta",
+    "median": None,
+    "spread_pct": None,
+    "verdict": None,
+    "method": None,
+    "delta": None,
+    "noise_pct": None,
+    "p": None,
+    "band": None,
+}
+
+
+def test_render_json_when_metric_has_fewer_slices_than_candidates_does_render_an_empty_row():
+    metric = MetricComparison(
+        baseline_median=100.0,
+        baseline_spread=1.0,
+        candidates=(_paired_candidate(),),
+        meta=metric_meta("decode/time", unit="ns"),
+    )
+    result = create_comparison_result(
+        candidates=[create_candidate(label="alpha"), create_candidate(label="beta")],
+        metrics={"decode/time": metric},
+    )
+
+    beta = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][1]
+
+    assert beta == _UNMEASURED_ROW
 
 
 def test_render_json_when_candidate_measured_but_unpaired_does_keep_measurements():
@@ -922,7 +945,7 @@ def test_render_probe_json_when_budget_varies_does_reflect_the_budget_key(
     if budget is None:
         assert "budget" not in doc
     else:
-        assert doc["budget"] == {"cap_minutes": 30, "remaining_seconds": 900}
+        assert list(doc["budget"].items()) == [("cap_minutes", 30), ("remaining_seconds", 900)]
 
 
 # ---------------------------------------------------------------------------

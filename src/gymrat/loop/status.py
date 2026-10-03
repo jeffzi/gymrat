@@ -26,7 +26,7 @@ from gymrat.report.loop import (
     format_status_settle,
     format_status_stop,
 )
-from gymrat.report.style import RENDER_WIDTH, render_lines
+from gymrat.report.style import render_lines
 from gymrat.session.records import (
     BaselineRecord,
     CommandRecord,
@@ -257,7 +257,7 @@ def status_session(root: str, config: BenchlessConfig, *, color: bool | None = N
     if state.finalized is not None:
         lines.append(format_status_finalized(state.finalized))
 
-    return render_lines(*lines, color=color, width=RENDER_WIDTH)
+    return render_lines(*lines, color=color)
 
 
 @dataclass(frozen=True, slots=True)

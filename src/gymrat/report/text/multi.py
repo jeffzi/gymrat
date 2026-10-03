@@ -45,17 +45,13 @@ from gymrat.report.table.markup import (
 )
 from gymrat.report.table.render import (
     AggregateLine,
-    AggregateRow,
     AggregateRows,
-    GroupLine,
-    HeaderLine,
-    MetricLine,
+    build_cell_dispatcher,
     compute_column_width,
     is_grouped,
     metric_column_width,
     plan_body,
     render_body,
-    row_name_cell,
     section_annotation,
 )
 from gymrat.report.types import candidate_at
@@ -67,7 +63,7 @@ if TYPE_CHECKING:
     from gymrat.report.display import DisplayClass
     from gymrat.report.format import MetricCellParts
     from gymrat.report.table.markup import ValueWidths, VerdictParts, VerdictWidths
-    from gymrat.report.table.render import BodyLine, TableCell
+    from gymrat.report.table.render import BodyLine
     from gymrat.report.types import (
         CandidateComparison,
         ComparisonResult,
@@ -176,35 +172,13 @@ def _column_widths(
 def _metric_cells(row: _ComparisonRow, table: _TableContext) -> _MetricCells:
     """One metric row's cells: its name, the baseline figure, and each candidate's side."""
     return (
-        Text(row_name_cell(row, grouped=table.grouped)),
+        Text(row.label if table.grouped else row.name),
         Text(join_value_cell(row.baseline, table.fields.baseline)),
         *(
             _candidate_cell(cell, table.fields.values[index], table.fields.verdicts[index])
             for index, cell in enumerate(row.candidates)
         ),
     )
-
-
-def _to_cells(
-    line: BodyLine[_ComparisonRow, _AggregateCells],
-    table: _TableContext,
-    cells_by_name: dict[str, _MetricCells],
-) -> tuple[TableCell, ...]:
-    """The cells one content row renders to."""
-    if isinstance(line, HeaderLine):
-        return (
-            header_metric_cell(line.title),
-            variant_name_cell(table.baseline_header),
-            *(variant_name_cell(candidate.label) for candidate in table.candidates),
-        )
-    if isinstance(line, GroupLine):
-        return (group_metric_cell(line.label), "", *("" for _ in table.candidates))
-    if isinstance(line, MetricLine):
-        return cells_by_name[line.row.name]
-    if isinstance(line, AggregateLine):
-        return (aggregate_label_cell(line.label), "", *line.cell)
-    msg = f"unexpected body line {line!r}"
-    raise AssertionError(msg)
 
 
 def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> list[str]:
@@ -243,12 +217,21 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
     cells_by_name = {row.name: _metric_cells(row, table) for row in layout.ordered}
     widths = _column_widths(body, cells_by_name, table)
 
-    return render_body(
-        body,
-        widths,
-        lambda line: _to_cells(line, table, cells_by_name),
-        color=color,
+    def cells_of(row: _ComparisonRow) -> _MetricCells:
+        return cells_by_name[row.name]
+
+    to_cells = build_cell_dispatcher(
+        header=lambda title: (
+            header_metric_cell(title),
+            variant_name_cell(baseline_header),
+            *(variant_name_cell(candidate.label) for candidate in candidates),
+        ),
+        group=lambda label: (group_metric_cell(label), "", *("" for _ in candidates)),
+        metric=cells_of,
+        aggregate=lambda line: (aggregate_label_cell(line.label), "", *line.cell),
     )
+
+    return render_body(body, widths, to_cells, color=color)
 
 
 def _build_row(
@@ -305,15 +288,15 @@ def _aggregate_rows(
         )
 
     return AggregateRows(
-        group=lambda kind, group, rows: AggregateRow(
+        group=lambda kind, group, rows: AggregateLine(
             label=geomean_scope_label(group),
             cell=column_cells(lambda candidate: group_geomean_of(candidate, kind, group), rows),
         ),
-        kind=lambda kind, rows: AggregateRow(
+        kind=lambda kind, rows: AggregateLine(
             label=geomean_scope_label(kind),
             cell=column_cells(lambda candidate: kind_geomean_of(candidate, kind), rows),
         ),
-        flat=lambda rows: AggregateRow(
+        flat=lambda rows: AggregateLine(
             label=GEOMEAN_LABEL,
             cell=column_cells(flat_geomean_of, [row for row in rows if row.gating]),
         ),

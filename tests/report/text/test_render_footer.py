@@ -39,7 +39,7 @@ SAMPLE_SHORTAGE_HINT_PLAIN = (
 def _verbose_lines(metrics: MetricComparisons) -> list[str]:
     return [
         line
-        for line in footer_lines(metrics, verbose=True, command="compare")
+        for line in footer_lines(metrics, verbose=True, command="compare", samples=4)
         if SAMPLE_SHORTAGE_HINT_PLAIN not in render_plain(line)
     ]
 
@@ -74,7 +74,7 @@ def test_footer_lines_when_colored_does_dim_the_descriptive_verdict_line():
 def test_footer_lines_when_verbose_does_close_on_the_sample_shortage_hint():
     metrics: MetricComparisons = {"a/time": band_metric(n=4)}
 
-    lines = footer_lines(metrics, verbose=True, command="compare")
+    lines = footer_lines(metrics, verbose=True, command="compare", samples=4)
 
     assert lines[-1] == format_hint(SAMPLE_SHORTAGE_HINT)
 
@@ -114,7 +114,7 @@ def test_footer_lines_when_cause_varies_does_phrase_band_line_accordingly(
 def test_footer_lines_when_hint_present_does_format_it():
     metrics: MetricComparisons = {"a/time": band_metric(n=4)}
 
-    assert footer_lines(metrics, verbose=False, command="compare") == [
+    assert footer_lines(metrics, verbose=False, command="compare", samples=4) == [
         format_hint(SAMPLE_SHORTAGE_HINT)
     ]
 
@@ -159,7 +159,7 @@ def test_footer_lines_when_hint_present_does_format_it():
 def test_footer_lines_when_cause_varies_does_hint_accordingly(
     metrics: MetricComparisons, expected: list[str]
 ):
-    lines = footer_lines(metrics, verbose=False, command="compare")
+    lines = footer_lines(metrics, verbose=False, command="compare", samples=4)
 
     assert [render_plain(line) for line in lines] == expected
 
