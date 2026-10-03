@@ -17,7 +17,7 @@ import pytest
 import typer
 
 from gymrat.cli.supervise.preflight import doctor_gate, run_preflight
-from gymrat.config.types import ResolvedConfig, StopConfig
+from gymrat.config import ResolvedConfig, StopConfig
 from gymrat.doctor import (
     Check,
     CheckSection,

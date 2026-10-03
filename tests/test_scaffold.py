@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 import gymrat.scaffold as scaffold_module
-from gymrat.config.resolve import load_config_file_collecting
+from gymrat.config import load_config_file_collecting
 from gymrat.errors import GymratError, hint_of
 from gymrat.scaffold import (
     SKILL_RELATIVE_PATH,

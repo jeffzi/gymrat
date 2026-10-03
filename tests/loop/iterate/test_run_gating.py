@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config.types import HooksConfig, MetricEntry, ResolvedConfig, StopConfig
+from gymrat.config import HooksConfig, MetricEntry, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.run import derive_outcome, iterate_session
 from gymrat.report.loop import GeomeanPrimary, MetricPrimary

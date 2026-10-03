@@ -52,7 +52,7 @@ from gymrat.warn import WarnSink, warn_to_stderr
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.config.types import BenchlessConfig
+    from gymrat.config import BenchlessConfig
     from gymrat.session.records import MetricVerdict
     from gymrat.session.schema import KeepReason
 

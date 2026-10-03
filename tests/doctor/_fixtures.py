@@ -19,8 +19,7 @@ if TYPE_CHECKING:
 
     import pytest
 
-from gymrat.config.resolve import ConfigInspection
-from gymrat.config.types import BenchlessConfig
+from gymrat.config import BenchlessConfig, ConfigInspection
 from gymrat.doctor import Check, CheckSection
 
 _MODULE = "gymrat.doctor"

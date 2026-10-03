@@ -33,7 +33,7 @@ from typing import Literal, Self
 
 from gymrat.adapters import DEFAULT_METRIC_KIND, Adapter
 from gymrat.clock import monotonic_ms
-from gymrat.config.types import KindEntry, MetricEntry, ResolvedConfig
+from gymrat.config import KindEntry, MetricEntry, ResolvedConfig
 from gymrat.errors import CommandError, GymratError, hint_of
 from gymrat.eta import MS_PER_SECOND
 from gymrat.exec import (

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from gymrat.config.types import KindEntry
+from gymrat.config import KindEntry
 from gymrat.model import (
     ApproximateVerdict,
     BandVerdict,

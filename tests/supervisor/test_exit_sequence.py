@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 
-from gymrat.config.types import BenchlessConfig
+from gymrat.config import BenchlessConfig
 from gymrat.exec import ExecOptions, ExecResult
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.session.paths import experiment_worktree_dir, lockfile_path, session_jsonl_path

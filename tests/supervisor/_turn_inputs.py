@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from gymrat.supervisor.events import TurnEndEvent
 
 if TYPE_CHECKING:
-    from gymrat.config.types import BenchlessConfig
+    from gymrat.config import BenchlessConfig
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
 from gymrat.supervisor.turns import (

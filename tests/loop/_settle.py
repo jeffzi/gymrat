@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from gymrat.config.types import ResolvedConfig
+from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.loop.start import start_session

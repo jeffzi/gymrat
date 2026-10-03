@@ -64,7 +64,7 @@ repos:
         entry: uv run python -m gymrat.event_docs
         language: system
         pass_filenames: false
-        files: ^(src/gymrat/(session|supervisor|config|event_docs)/.*\.py|schemas/.*|docs/event-reference\.md)$
+        files: ^(src/gymrat/(session|supervisor)/.*\.py|src/gymrat/(config|event_docs)\.py|schemas/.*|docs/event-reference\.md)$
 
   # Python type checking
   - repo: local

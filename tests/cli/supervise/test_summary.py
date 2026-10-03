@@ -28,7 +28,7 @@ from tests.session.records._fixtures import session_state
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import ReadSessionResult
-    from gymrat.config.types import Effort
+    from gymrat.config import Effort
     from gymrat.supervisor.driver import SessionEndReason
     from gymrat.supervisor.supervise import EndedBy
 

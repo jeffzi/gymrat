@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
-from gymrat.event_docs.__main__ import main
+from gymrat.event_docs import main
 from tests.event_docs._imports import modules_imported_by
 
 # ---------------------------------------------------------------------------
@@ -14,8 +14,8 @@ from tests.event_docs._imports import modules_imported_by
 # ---------------------------------------------------------------------------
 
 
-def test_import_main_module_when_loaded_does_not_import_the_cli_package():
-    loaded = modules_imported_by("gymrat.event_docs.__main__")
+def test_import_event_docs_when_loaded_does_not_import_the_cli_package():
+    loaded = modules_imported_by("gymrat.event_docs")
 
     cli_modules = sorted(
         name for name in loaded if name == "gymrat.cli" or name.startswith("gymrat.cli.")
@@ -33,7 +33,7 @@ def test_main_when_repo_root_raises_gymrat_error_with_hint_does_write_message_an
 ):
     error = GymratError("not a git repository", hint="run `git init` first")
     with (
-        patch("gymrat.event_docs.__main__.repo_root", side_effect=error, autospec=True),
+        patch("gymrat.event_docs.repo_root", side_effect=error, autospec=True),
         pytest.raises(SystemExit) as exc_info,
     ):
         main()
@@ -54,7 +54,7 @@ def test_main_when_repo_root_raises_gymrat_error_without_hint_does_write_only_me
 ):
     error = GymratError("not a git repository")
     with (
-        patch("gymrat.event_docs.__main__.repo_root", side_effect=error, autospec=True),
+        patch("gymrat.event_docs.repo_root", side_effect=error, autospec=True),
         pytest.raises(SystemExit) as exc_info,
     ):
         main()
@@ -76,8 +76,8 @@ def test_main_when_repo_root_succeeds_does_print_written_paths_to_stdout(
 ):
     fake_paths = [tmp_path / "schemas" / "a.json", tmp_path / "docs" / "b.md"]
     with (
-        patch("gymrat.event_docs.__main__.repo_root", return_value=str(tmp_path), autospec=True),
-        patch("gymrat.event_docs.__main__.write_all", return_value=fake_paths, autospec=True),
+        patch("gymrat.event_docs.repo_root", return_value=str(tmp_path), autospec=True),
+        patch("gymrat.event_docs.write_all", return_value=fake_paths, autospec=True),
     ):
         main()
 

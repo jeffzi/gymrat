@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
     from rich.console import RenderableType
 
-    from gymrat.config.types import Effort
+    from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.records import SessionLogRecord
     from gymrat.supervisor.events import SessionEvent, SessionObserver

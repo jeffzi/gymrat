@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from gymrat.config.types import CliFlags
+    from gymrat.config import CliFlags
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import CommandOrigin, CommandReason
 

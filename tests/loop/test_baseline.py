@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config.types import KindEntry, MetricEntry
+from gymrat.config import KindEntry, MetricEntry
 from gymrat.loop.baseline import measure_baseline
 from gymrat.sampling import RunOptions, SamplingOptions, TargetSpec
 from gymrat.session.records import BaselineRecord

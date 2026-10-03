@@ -17,7 +17,7 @@ import pytest
 
 from gymrat import measure as measure_mod
 from gymrat import sampling
-from gymrat.config.types import KindEntry, MetricEntry
+from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import CommandError, GymratError
 from gymrat.measure import MeasureOptions, measure
 from gymrat.sampling import RunOptions, SamplingOptions, TargetSpec

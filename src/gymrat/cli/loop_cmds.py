@@ -44,8 +44,7 @@ from gymrat.cli.options import (
 from gymrat.cli.run_setup import resolve_render_mode, run_with_signal_abort
 from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
-from gymrat.config.resolve import resolve_benchless_config, resolve_config
-from gymrat.config.types import CliFlags
+from gymrat.config import CliFlags, resolve_benchless_config, resolve_config
 from gymrat.errors import GATE_EXIT_CODE
 from gymrat.eta import MS_PER_SECOND
 from gymrat.loop.discard import DiscardResult, discard_session

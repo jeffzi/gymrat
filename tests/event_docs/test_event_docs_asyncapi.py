@@ -22,11 +22,9 @@ import pytest
 from jsonschema import Draft7Validator
 from pydantic import BaseModel
 
-from gymrat.event_docs import render_json_schemas
-from gymrat.event_docs.asyncapi import render_asyncapi
+from gymrat.event_docs import render_asyncapi, render_json_schemas
 from gymrat.session.records import SessionLogRecord
 from gymrat.supervisor.events import SessionEvent
-from tests.event_docs._imports import modules_imported_by
 
 # ---------------------------------------------------------------------------
 # shared helpers
@@ -66,7 +64,7 @@ SUPERVISOR_EVENT_CLASSES: dict[str, str] = {
 
 
 def _render_with_schemas() -> tuple[tuple[dict[str, Any], dict[str, Any]], dict[str, Any]]:
-    from gymrat.event_docs.asyncapi import render_asyncapi
+    from gymrat.event_docs import render_asyncapi
 
     schemas = render_json_schemas()
     return schemas, render_asyncapi(schemas)
@@ -370,7 +368,7 @@ def test_asyncapi_meta_schema_when_document_has_misspelled_key_does_reject():
 def test_render_asyncapi_yaml_when_called_does_return_yaml_string():
     doc = _render()
 
-    from gymrat.event_docs.asyncapi import render_asyncapi_yaml
+    from gymrat.event_docs import render_asyncapi_yaml
 
     result = render_asyncapi_yaml(doc)
 
@@ -379,19 +377,13 @@ def test_render_asyncapi_yaml_when_called_does_return_yaml_string():
     assert "3.0.0" in result
 
 
-def test_importing_asyncapi_when_loaded_does_not_import_yaml():
-    loaded = modules_imported_by("gymrat.event_docs.asyncapi")
-
-    assert "yaml" not in loaded, "importing asyncapi pulled in yaml at import time"
-
-
 # ---------------------------------------------------------------------------
 # READERS module-level constant
 # ---------------------------------------------------------------------------
 
 
 def test_readers_when_imported_does_expose_module_level_constant():
-    from gymrat.event_docs.asyncapi import READERS
+    from gymrat.event_docs import READERS
 
     assert isinstance(READERS, dict)
     assert "fold-session" in READERS
@@ -401,7 +393,7 @@ def test_readers_when_imported_does_expose_module_level_constant():
 
 
 def test_readers_when_imported_does_have_channel_and_types_per_entry():
-    from gymrat.event_docs.asyncapi import READERS
+    from gymrat.event_docs import READERS
 
     for op_name, entry in READERS.items():
         assert hasattr(entry, "channel"), f"{op_name!r} entry missing 'channel'"

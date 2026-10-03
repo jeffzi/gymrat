@@ -1,9 +1,19 @@
-"""Precedence pipeline: merge flags, env vars, config file, and defaults.
+"""The gymrat config surface: its types, its env readers, and the precedence pipeline.
 
-One settlement pipeline serves every caller. :func:`inspect_config` runs it and
-never raises: every flag, env var, file, schema, and cross-field problem is
-gathered into one list so a caller (a doctor/status command) can report them all
-at once, and a settled config is returned only when that list is empty.
+The frozen dataclasses a ``gymrat.toml`` settles into carry their own validation
+annotations, so ``TypeAdapter(ConfigFile)`` validates a parsed file directly.
+Constructing one in code runs no validation.
+
+Each ``GYMRAT_*`` reader returns an :class:`EnvResult` rather than raising, so
+the pipeline decides whether a problem throws (the CLI path) or is collected. An
+unset variable yields an empty result so the next source in the precedence chain
+-- config file, then built-in default -- can supply the value.
+
+The pipeline merges flags, env vars, config file, and defaults. One settlement
+pipeline serves every caller. :func:`inspect_config` runs it and never raises:
+every flag, env var, file, schema, and cross-field problem is gathered into one
+list so a caller (a doctor/status command) can report them all at once, and a
+settled config is returned only when that list is empty.
 :func:`resolve_config` and :func:`resolve_benchless_config` run the same
 pipeline and raise the first collected problem.
 
@@ -14,8 +24,7 @@ runs the schema and the cross-field rules over an in-memory config.
 
 The file side of the pipeline lives here as well. :func:`load_config_file_collecting`
 reads and validates ``gymrat.toml``, collecting every problem.
-:func:`validate_config_file` runs the frozen dataclasses from
-:mod:`gymrat.config.types`, which carry the validation annotations, through a
+:func:`validate_config_file` runs the frozen dataclasses through a
 pydantic ``TypeAdapter`` and words each failure as a gymrat problem string;
 :func:`invalid_value_message` is the one wording that translator and the
 cross-field checks share.
@@ -28,35 +37,345 @@ import stat
 import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Annotated, ClassVar, Literal
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BeforeValidator, ConfigDict, Field, Strict, TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
 
-from gymrat.config.env import (
-    NUMBER_ENV_FIELDS,
-    STRING_ENV_FIELDS,
-    env_positive_int_result,
-    env_string_result,
-)
-from gymrat.config.types import (
-    CONFIG_DEFAULTS,
-    CONFIG_FILENAME,
-    FILTER_PLACEHOLDER,
-    GEOMEAN_PRIMARY,
-    BenchlessConfig,
-    CliFlags,
-    ConfigFile,
-    ConfigFileResult,
-    ResolvedConfig,
-)
 from gymrat.errors import GymratError
+from gymrat.metric_name import LINE_TERMINATORS
+from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT, NOISE_FLOOR_PCT, Direction
 from gymrat.pydantic_errors import (
+    NON_BLANK_PATTERN,
     VALUE_ERROR_PREFIX,
+    coerce_integer,
     describe_key,
     drop_prefix_errors,
     phrase_for_error,
 )
 from gymrat.session.paths import repo_root
+
+# ---------------------------------------------------------------------------
+# Environment variables
+# ---------------------------------------------------------------------------
+
+MAX_TIMEOUT_SECONDS = 2_147_483
+"""Largest ``timeout_seconds`` a 32-bit millisecond timer can represent."""
+
+MAX_SAFE_INTEGER = 2**53 - 1
+"""Largest ``samples`` count, matching JavaScript's ``Number.MAX_SAFE_INTEGER``.
+
+Every source that can supply ``samples`` -- the ``--samples`` flag,
+``GYMRAT_SAMPLES``, and the config file -- shares this ceiling, so the same input
+is accepted or rejected no matter which one it arrives through.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class EnvResult[T]:
+    """The outcome of reading one env var: a value, a problem, or neither.
+
+    ``value`` and ``problem`` are mutually exclusive; both are ``None`` when the
+    variable is unset.
+    """
+
+    value: T | None = None
+    problem: str | None = None
+
+
+def _env_problem(env_var: str, phrase: str, raw: str) -> str:
+    return f"Invalid value for {env_var}: expected {phrase}, got {json.dumps(raw)}"
+
+
+def env_string_result(env_var: str) -> EnvResult[str]:
+    """Read a ``GYMRAT_*`` string env var, returning its value or a problem.
+
+    A whitespace-only value is rejected alongside the empty string: these vars
+    name work to do -- a command to run, or a config path to load -- and a blank
+    value would run as a no-op shell or resolve to a meaningless path.
+
+    Args:
+        env_var: Name of the ``GYMRAT_*`` environment variable to read.
+
+    Returns:
+        An :class:`EnvResult` with the raw string value, a problem, or neither
+        when the variable is unset.
+    """
+    raw = os.environ.get(env_var)
+    if raw is None:
+        return EnvResult()
+    if raw.strip() == "":
+        return EnvResult(problem=_env_problem(env_var, "a non-empty string", raw))
+    return EnvResult(value=raw)
+
+
+def is_positive_integer(raw: str) -> bool:
+    """Whether ``raw`` names a positive integer.
+
+    Every source of a positive-integer setting -- the ``--samples`` and
+    ``--timeout`` flags and their ``GYMRAT_*`` env vars -- applies this one rule,
+    so the same input is accepted or rejected no matter which one it arrives
+    through. ``int`` alone is too lenient: it accepts surrounding whitespace, a
+    sign, ``_`` separators, and non-ASCII digits.
+
+    Args:
+        raw: The text as the user wrote it.
+
+    Returns:
+        ``True`` when ``raw`` is only ASCII digits and not all of them are zero.
+    """
+    return raw.isascii() and raw.isdigit() and raw.strip("0") != ""
+
+
+def parse_bounded_positive_int(raw: str, maximum: int) -> int | None:
+    """Parse a positive integer no larger than ``maximum``.
+
+    Args:
+        raw: The text as the user wrote it.
+        maximum: Largest accepted value.
+
+    Returns:
+        The integer, or ``None`` when ``raw`` fails :func:`is_positive_integer`
+        or names a value above ``maximum``.
+    """
+    if not is_positive_integer(raw):
+        return None
+    # More significant digits than ``maximum`` means above it; comparing lengths
+    # first keeps ``int`` away from a run past the interpreter's conversion limit.
+    digits = raw.lstrip("0")
+    if len(digits) > len(str(maximum)) or int(digits) > maximum:
+        return None
+    return int(digits)
+
+
+def env_positive_int_result(env_var: str, maximum: int) -> EnvResult[int]:
+    """Read a ``GYMRAT_*`` positive-integer env var, returning its value or a problem.
+
+    Args:
+        env_var: Name of the ``GYMRAT_*`` environment variable to read.
+        maximum: Largest accepted value.
+
+    Returns:
+        An :class:`EnvResult` with the parsed integer, a problem when the value
+        fails :func:`parse_bounded_positive_int`, or neither when the variable
+        is unset.
+    """
+    raw = os.environ.get(env_var)
+    if raw is None:
+        return EnvResult()
+    value = parse_bounded_positive_int(raw, maximum)
+    if value is None:
+        return EnvResult(problem=_env_problem(env_var, "a positive integer", raw))
+    return EnvResult(value=value)
+
+
+#: Each ``GYMRAT_*`` string field's ``(CliFlags field, env var)`` association.
+STRING_ENV_FIELDS: tuple[tuple[str, str], ...] = (
+    ("bench", "GYMRAT_BENCH"),
+    ("prepare", "GYMRAT_PREPARE"),
+    ("adapter", "GYMRAT_ADAPTER"),
+)
+
+#: Each ``GYMRAT_*`` numeric field's ``(CliFlags field, env var, maximum)`` association.
+NUMBER_ENV_FIELDS: tuple[tuple[str, str, int], ...] = (
+    ("samples", "GYMRAT_SAMPLES", MAX_SAFE_INTEGER),
+    ("timeout", "GYMRAT_TIMEOUT", MAX_TIMEOUT_SECONDS),
+)
+
+# ---------------------------------------------------------------------------
+# Config types
+# ---------------------------------------------------------------------------
+
+#: The effort dial the CLI and config file both accept for a supervised session.
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+
+# Unknown keys must fail validation so the pipeline reports an "Unknown config key"
+# problem; every nested dataclass sets this, not only ``ConfigFile``.
+_FORBID_EXTRA = ConfigDict(extra="forbid")
+
+
+def _reject_line_break_keys(value: object) -> object:
+    """Reject any mapping whose key embeds a line terminator.
+
+    A non-mapping falls through to the field's own ``dict``-type error. The
+    offending key is JSON-escaped so naming it cannot itself split the reported
+    problem across lines.
+
+    Args:
+        value: The raw value being validated.
+
+    Returns:
+        The value unchanged when it is not a mapping or all keys are clean.
+
+    Raises:
+        ValueError: When a mapping key contains a line terminator.
+    """
+    if not isinstance(value, dict):
+        return value
+    for key in value:
+        if isinstance(key, str) and LINE_TERMINATORS.search(key):
+            msg = f"key {json.dumps(key)} must not embed a line break"
+            raise ValueError(msg)
+    return value
+
+
+_NoLineBreakKeys = BeforeValidator(_reject_line_break_keys)
+_Str = Annotated[str, Strict()]
+_NonEmptyStr = Annotated[str, Strict(), Field(min_length=1, pattern=NON_BLANK_PATTERN)]
+_Bool = Annotated[bool, Strict()]
+_FiniteFloat = Annotated[float, Strict(), Field(allow_inf_nan=False)]
+# TOML writes ``5.0`` for a whole number as readily as ``5``; fold it before the strict check.
+_PositiveInt = Annotated[int, BeforeValidator(coerce_integer), Strict(), Field(ge=1)]
+
+
+@dataclass(frozen=True, slots=True)
+class MetricEntry:
+    """Per-metric overrides declared under the ``metrics`` section."""
+
+    __pydantic_config__: ClassVar[ConfigDict] = _FORBID_EXTRA
+
+    direction: Direction | None = None
+    gating: _Bool | None = None
+    exact: _Bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class KindEntry:
+    """Per-kind overrides declared under the ``kinds`` section."""
+
+    __pydantic_config__: ClassVar[ConfigDict] = _FORBID_EXTRA
+
+    gating: _Bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StopConfig:
+    """Loop stopping criteria declared under the ``stop`` section."""
+
+    __pydantic_config__: ClassVar[ConfigDict] = _FORBID_EXTRA
+
+    target_value: _FiniteFloat | None = None
+    max_iterations: _PositiveInt | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HooksConfig:
+    """Loop lifecycle commands declared under the ``hooks`` section."""
+
+    __pydantic_config__: ClassVar[ConfigDict] = _FORBID_EXTRA
+
+    before: _NonEmptyStr | None = None
+    after: _NonEmptyStr | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SuperviseConfig:
+    """Agent supervision settings declared under the ``supervise`` section."""
+
+    __pydantic_config__: ClassVar[ConfigDict] = _FORBID_EXTRA
+
+    model: _NonEmptyStr | None = None
+    effort: Effort | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigFile:
+    """Parsed ``gymrat.toml`` contents; every key is optional."""
+
+    __pydantic_config__: ClassVar[ConfigDict] = _FORBID_EXTRA
+
+    bench: _NonEmptyStr | None = None
+    prepare: _NonEmptyStr | None = None
+    adapter: _NonEmptyStr | None = None
+    samples: Annotated[_PositiveInt, Field(le=MAX_SAFE_INTEGER)] | None = None
+    timeout_seconds: Annotated[_PositiveInt, Field(le=MAX_TIMEOUT_SECONDS)] | None = None
+    unstable_noise_pct: Annotated[_FiniteFloat, Field(ge=NOISE_FLOOR_PCT)] | None = None
+    metrics: Annotated[dict[str, MetricEntry], _NoLineBreakKeys] | None = None
+    kinds: Annotated[dict[str, KindEntry], _NoLineBreakKeys] | None = None
+    checks: _NonEmptyStr | None = None
+    runbook: _NonEmptyStr | None = None
+    filter: _Str | None = None
+    primary: _NonEmptyStr | None = None
+    stop: StopConfig | None = None
+    hooks: HooksConfig | None = None
+    supervise: SuperviseConfig | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigFileResult:
+    """Outcome of a collecting load.
+
+    Carries the parsed config (when valid), whether the file existed, and every
+    validation problem found.
+    """
+
+    config_file: ConfigFile | None
+    exists: bool
+    problems: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class CliFlags:
+    """Command-line overrides, named after the flags rather than the config keys."""
+
+    bench: str | None = None
+    prepare: str | None = None
+    adapter: str | None = None
+    samples: int | None = None
+    timeout: int | None = None
+    config: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BenchlessConfig:
+    """A settled configuration for a command that runs no benchmark.
+
+    Every value a non-benchmarking command (``status``, ``keep``) reads is present
+    with defaults already applied; ``bench`` is absent because such commands never
+    run one. Keyword-only so the required fields can precede the optional ones.
+    """
+
+    adapter: str
+    samples: int
+    timeout_seconds: int
+    unstable_noise_pct: float
+    primary: str
+    prepare: str | None = None
+    metrics: dict[str, MetricEntry] | None = None
+    kinds: dict[str, KindEntry] | None = None
+    checks: str | None = None
+    runbook: str | None = None
+    filter: str | None = None
+    stop: StopConfig | None = None
+    hooks: HooksConfig | None = None
+    supervise: SuperviseConfig | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ResolvedConfig(BenchlessConfig):
+    """A settled run configuration: every value a run needs, including ``bench``."""
+
+    bench: str
+
+
+#: The config file basename the CLI writes, loads, and probes for.
+CONFIG_FILENAME = "gymrat.toml"
+
+#: The primary that aggregates every gating metric rather than naming one.
+GEOMEAN_PRIMARY = "geomean"
+
+#: The token a ``filter`` command must carry, where the loop substitutes benchmark names.
+FILTER_PLACEHOLDER = "{names}"
+
+#: Built-in fallbacks for the fields no flag, env var, or config file sets: the
+#: configuration a command settles on when nothing else names one.
+CONFIG_DEFAULTS = BenchlessConfig(
+    adapter="metric-lines",
+    samples=10,
+    timeout_seconds=1800,
+    unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
+    primary=GEOMEAN_PRIMARY,
+)
 
 # ---------------------------------------------------------------------------
 # Schema validation

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gymrat.bundled_skill import read_bundled_skill
-from gymrat.config.types import BenchlessConfig
+from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
 
 DEFAULT_KICKOFF = (

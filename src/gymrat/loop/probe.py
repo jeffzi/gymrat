@@ -28,7 +28,7 @@ from gymrat.warn import warn_to_stderr
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.config.types import ResolvedConfig
+    from gymrat.config import ResolvedConfig
     from gymrat.model import ResolvedMetricMeta
     from gymrat.progress_events import ProgressCallback
     from gymrat.warn import WarnSink

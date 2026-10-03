@@ -29,7 +29,7 @@ from claude_agent_sdk import (
 )
 
 from gymrat.clock import now_ms, now_ns
-from gymrat.config.types import BenchlessConfig, Effort, StopConfig
+from gymrat.config import BenchlessConfig, Effort, StopConfig
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor.claude import create_claude_driver

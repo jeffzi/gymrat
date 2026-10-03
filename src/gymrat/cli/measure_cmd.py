@@ -31,7 +31,7 @@ from gymrat.cli.options import (
 )
 from gymrat.cli.run_setup import SharedFlags, begin_run
 from gymrat.command_run import config_trace_args, with_repo_lock
-from gymrat.config.resolve import resolve_config
+from gymrat.config import resolve_config
 from gymrat.loop.baseline import measure_baseline
 from gymrat.report.json_doc import render_measure_json
 from gymrat.report.text.render import render_measure_report

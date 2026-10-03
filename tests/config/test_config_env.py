@@ -1,6 +1,6 @@
 import pytest
 
-from gymrat.config.env import MAX_SAFE_INTEGER, env_positive_int_result, is_positive_integer
+from gymrat.config import MAX_SAFE_INTEGER, env_positive_int_result, is_positive_integer
 
 _ENV_VAR = "GYMRAT_SAMPLES"
 _CEILING = 10

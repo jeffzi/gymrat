@@ -39,7 +39,7 @@ from gymrat.session.store import require_session
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.config.types import BenchlessConfig
+    from gymrat.config import BenchlessConfig
     from gymrat.report.loop import SettleState
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import Outcome

@@ -8,15 +8,17 @@ from pathlib import Path
 import pytest
 import tomli_w
 
-from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
-from gymrat.config.resolve import load_config_file_collecting, validate_config_dict
-from gymrat.config.types import (
+from gymrat.config import (
+    MAX_SAFE_INTEGER,
+    MAX_TIMEOUT_SECONDS,
     ConfigFile,
     ConfigFileResult,
     HooksConfig,
     KindEntry,
     MetricEntry,
     StopConfig,
+    load_config_file_collecting,
+    validate_config_dict,
 )
 from gymrat.errors import GymratError
 from tests.adapters._inputs import LINE_BREAKS

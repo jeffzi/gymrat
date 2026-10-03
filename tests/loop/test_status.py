@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from gymrat.config.types import BenchlessConfig, StopConfig
+from gymrat.config import BenchlessConfig, StopConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.loop.status import status_session
 from gymrat.session.paths import session_jsonl_path

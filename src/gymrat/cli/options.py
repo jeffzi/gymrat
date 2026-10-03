@@ -13,7 +13,7 @@ from typing import Annotated
 
 import typer
 
-from gymrat.config.env import (
+from gymrat.config import (
     MAX_SAFE_INTEGER,
     MAX_TIMEOUT_SECONDS,
     is_positive_integer,
@@ -99,7 +99,7 @@ class PositionalParamType:
 def parse_positive_int(value: str, maximum: int) -> int:
     """Parse a positive integer flag bounded by ``maximum``.
 
-    The value goes through :func:`~gymrat.config.env.parse_bounded_positive_int`,
+    The value goes through :func:`~gymrat.config.parse_bounded_positive_int`,
     the rule the matching ``GYMRAT_*`` env var applies too.
 
     Args:

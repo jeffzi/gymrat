@@ -18,7 +18,7 @@ import pytest
 from gymrat import compare as compare_mod
 from gymrat.adapters import get_adapter
 from gymrat.compare import CompareOptions, compare
-from gymrat.config.types import KindEntry, MetricEntry
+from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
 from gymrat.sampling import (

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config.types import HooksConfig, MetricEntry, StopConfig
+from gymrat.config import HooksConfig, MetricEntry, StopConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.loop.iterate.run import (
     BudgetExceededError,

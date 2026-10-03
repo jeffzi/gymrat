@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from gymrat.config.types import StopConfig
+from gymrat.config import StopConfig
 from gymrat.report.loop import (
     GeomeanPrimary,
     RerunConfirmation,

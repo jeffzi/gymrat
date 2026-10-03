@@ -27,8 +27,7 @@ from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotati
     DebugOption,
 )
 from gymrat.cli.supervised import is_supervised_run_live
-from gymrat.config.resolve import find_implicit_base
-from gymrat.config.types import CONFIG_FILENAME
+from gymrat.config import CONFIG_FILENAME, find_implicit_base
 from gymrat.errors import GymratError
 from gymrat.report.style import format_hint, render_lines
 from gymrat.scaffold import (

@@ -13,7 +13,7 @@ from typing import Literal
 
 from gymrat.cli import console
 from gymrat.cli.progress import ProgressReporter
-from gymrat.config.types import CliFlags
+from gymrat.config import CliFlags
 from gymrat.exec import kill_live_process_groups
 from gymrat.report.style import is_tty
 from gymrat.signals import install_termination_cleanup

@@ -20,7 +20,7 @@ from gymrat.model import GeomeanResult
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from gymrat.config.types import KindEntry
+    from gymrat.config import KindEntry
     from gymrat.model import ResolvedMetricMeta
     from gymrat.report.types import CandidateComparison
     from gymrat.verdict import KindAggregate

@@ -19,7 +19,7 @@ import typer
 from gymrat.cli.console import resolve_stream_color
 from gymrat.cli.exit import write_and_flush, write_stdout
 from gymrat.cli.run_setup import SharedFlags, begin_run
-from gymrat.config.types import CliFlags, ResolvedConfig
+from gymrat.config import CliFlags, ResolvedConfig
 from gymrat.doctor import build_doctor_report, render_doctor_report
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.baseline import measure_baseline

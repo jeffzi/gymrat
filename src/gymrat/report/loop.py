@@ -36,7 +36,7 @@ from gymrat.report.text.render import paired_samples
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.config.types import StopConfig
+    from gymrat.config import StopConfig
     from gymrat.loop.start import StartResult
     from gymrat.report.display import DisplayClass
     from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord

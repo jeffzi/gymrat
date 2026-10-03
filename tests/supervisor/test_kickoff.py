@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.config.types import BenchlessConfig
+from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
 

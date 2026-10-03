@@ -3,9 +3,15 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
-from gymrat.config.resolve import inspect_config
-from gymrat.config.types import BenchlessConfig, CliFlags, HooksConfig, StopConfig
+from gymrat.config import (
+    MAX_SAFE_INTEGER,
+    MAX_TIMEOUT_SECONDS,
+    BenchlessConfig,
+    CliFlags,
+    HooksConfig,
+    StopConfig,
+    inspect_config,
+)
 from tests.config._toml import write_config, write_raw
 
 # ---------------------------------------------------------------------------

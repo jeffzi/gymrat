@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.config.types import ResolvedConfig, StopConfig
+from gymrat.config import ResolvedConfig, StopConfig
 from gymrat.loop.finalize import (
     FinalizeOptions,
     finalize_session,

@@ -13,15 +13,19 @@ from typing import get_args
 import pytest
 from pydantic import BaseModel
 
-from gymrat.event_docs import render_json_schemas
-from gymrat.event_docs.asyncapi import READERS, SESSION_LOG_ADDRESS, SUPERVISOR_LOG_ADDRESS
+from gymrat.event_docs import (
+    READERS,
+    SESSION_LOG_ADDRESS,
+    SUPERVISOR_LOG_ADDRESS,
+    render_json_schemas,
+)
 from gymrat.session.paths import SESSION_LOG_NAME, supervisor_log_name
 from gymrat.session.records import SessionLogRecord
 from gymrat.supervisor.events import SessionEvent
 
 
 def _render() -> str:
-    from gymrat.event_docs.reference import render_reference
+    from gymrat.event_docs import render_reference
 
     schemas = render_json_schemas()
     return render_reference(schemas)

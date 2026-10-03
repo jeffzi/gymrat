@@ -94,7 +94,7 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import Sequence
 
-    from gymrat.config.types import BenchlessConfig, ResolvedConfig
+    from gymrat.config import BenchlessConfig, ResolvedConfig
     from gymrat.progress_events import ProgressCallback
     from gymrat.report.types import MetricComparisons
     from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord

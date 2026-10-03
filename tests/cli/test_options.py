@@ -17,7 +17,7 @@ from gymrat.cli.options import (
     parse_positional,
     parse_positive_number,
 )
-from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
+from gymrat.config import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
 from tests._rich import unwrap_panel

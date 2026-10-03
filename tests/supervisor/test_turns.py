@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 
 import pytest
 
-from gymrat.config.types import StopConfig
+from gymrat.config import StopConfig
 from gymrat.eta import format_duration
 
 if TYPE_CHECKING:

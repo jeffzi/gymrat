@@ -13,7 +13,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from gymrat.config.types import Effort
+from gymrat.config import Effort
 from gymrat.supervisor.events import SessionObserver
 
 

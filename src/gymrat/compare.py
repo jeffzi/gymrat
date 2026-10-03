@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from functools import partial
 
 from gymrat.adapters import get_adapter
-from gymrat.config.types import KindEntry
+from gymrat.config import KindEntry
 from gymrat.model import MetricVerdict, ResolvedMetricMeta, pair_metric
 from gymrat.report.types import (
     CandidateComparison,

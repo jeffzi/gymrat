@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config.types import HooksConfig, KindEntry, MetricEntry
+from gymrat.config import HooksConfig, KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.confirm import scoped_bench
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, probe_session

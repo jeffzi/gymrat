@@ -5,7 +5,7 @@ from collections.abc import Callable, Sequence
 import pytest
 
 from gymrat.adapters import Adapter, MetricDefaults
-from gymrat.config.types import KindEntry, MetricEntry
+from gymrat.config import KindEntry, MetricEntry
 from gymrat.model import Direction, MetricUnit, ResolvedMetricMeta
 from gymrat.sampling import resolve_metric_meta_from_samples
 from gymrat.warn import WarnSink, warn_to_stderr

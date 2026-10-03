@@ -25,8 +25,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from gymrat.config.types import BenchlessConfig
-from gymrat.event_docs.asyncapi import READERS
+from gymrat.config import BenchlessConfig
+from gymrat.event_docs import READERS
 from gymrat.loop.status import status_session
 from gymrat.session.records import SessionLogRecord, SessionRecord
 from gymrat.session.store import fold_session

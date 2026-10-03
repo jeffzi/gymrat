@@ -11,13 +11,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from gymrat.config.types import Effort
+    from gymrat.config import Effort
     from gymrat.supervisor.supervise import SupervisionResult
 
 import pytest
 from opentelemetry.trace import StatusCode
 
-from gymrat.config.types import SuperviseConfig
+from gymrat.config import SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
 from gymrat.supervisor.driver import SessionPrompt

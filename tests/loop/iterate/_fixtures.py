@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from gymrat.config.types import ResolvedConfig
+from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
 from gymrat.exec import ExecResult
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
