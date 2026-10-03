@@ -41,18 +41,14 @@ from contextlib import contextmanager
 from types import FrameType
 from typing import NoReturn, TextIO
 
-# Termination signals gymrat installs cleanup for, in the order the handler is
-# wired up. SIGHUP is POSIX-only and absent on win32, so each name is resolved
-# defensively.
-_TERMINATION_SIGNAL_NAMES = ("SIGINT", "SIGTERM", "SIGHUP")
-
-# The same signals resolved to their numbers, dropping any the platform does not
-# define. This is the canonical set: :mod:`gymrat.exec` imports it to unblock
-# exactly these signals in a spawned child, reversing the mask the parent holds
-# across the spawn.
+# Termination signals gymrat installs cleanup for. SIGHUP is POSIX-only and
+# absent on win32, so each name is resolved defensively and any the platform
+# does not define is dropped. This is the canonical set: :mod:`gymrat.exec`
+# imports it to unblock exactly these signals in a spawned child, reversing the
+# mask the parent holds across the spawn.
 TERMINATION_SIGNALS: frozenset[int] = frozenset(
     resolved
-    for name in _TERMINATION_SIGNAL_NAMES
+    for name in ("SIGINT", "SIGTERM", "SIGHUP")
     if (resolved := getattr(signal, name, None)) is not None
 )
 

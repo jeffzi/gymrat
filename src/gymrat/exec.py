@@ -27,7 +27,7 @@ import signal as _signal_module
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, TypedDict, cast
+from typing import Any, cast
 
 from gymrat.eta import MS_PER_SECOND
 from gymrat.process_group import (
@@ -472,34 +472,6 @@ def _build_result(stdout_buf: OutputBuffer, stderr_buf: OutputBuffer, exit_code:
     )
 
 
-class _PipedSpawnKwargs(TypedDict, total=False):
-    """The keyword arguments both exec spawns hand their asyncio creation function."""
-
-    cwd: str
-    stdin: int
-    stdout: int
-    stderr: int
-    env: Mapping[str, str] | None
-
-
-def _subprocess_kwargs(options: ExecOptions) -> _PipedSpawnKwargs:
-    """The pipe, directory, and environment arguments both exec spawns share.
-
-    Args:
-        options: Spawn settings for the run.
-
-    Returns:
-        The keyword arguments to hand :func:`spawn_contained`.
-    """
-    return _PipedSpawnKwargs(
-        cwd=options.cwd,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=options.env,
-    )
-
-
 def _containment_kwargs() -> dict[str, Any]:
     """The creation arguments that put a child in a tree this process can tear down.
 
@@ -518,19 +490,6 @@ def _containment_kwargs() -> dict[str, Any]:
     if _CREATE_SUSPENDED:
         kwargs["creationflags"] = _CREATE_SUSPENDED
     return kwargs
-
-
-def _nested_child_env(env: Mapping[str, str] | None) -> dict[str, str]:
-    """The environment a child starts with: ``env`` (or this process's) plus its nesting depth.
-
-    Args:
-        env: The environment the caller asked for, or ``None`` to inherit this process's.
-
-    Returns:
-        A copy of that environment with :data:`_NESTING_DEPTH_ENV` set one level deeper.
-    """
-    base = os.environ if env is None else env
-    return {**base, _NESTING_DEPTH_ENV: str(_NESTING_DEPTH + 1)}
 
 
 def release_contained(pid: int) -> None:
@@ -629,8 +588,12 @@ async def spawn_contained[**P](
             create_contained = cast(
                 "Callable[..., Awaitable[asyncio.subprocess.Process]]", create_child
             )
+            # The child starts one nesting level deeper, in the environment the
+            # caller asked for; only an absent one inherits this process's.
             requested_env = cast("Mapping[str, str] | None", kwargs.get("env"))
-            child_kwargs = {**kwargs, "env": _nested_child_env(requested_env)}
+            base_env = os.environ if requested_env is None else requested_env
+            child_env = {**base_env, _NESTING_DEPTH_ENV: str(_NESTING_DEPTH + 1)}
+            child_kwargs = {**kwargs, "env": child_env}
             proc = await create_contained(*args, **child_kwargs, **_containment_kwargs())
         except (OSError, ValueError) as error:
             # ValueError covers what CPython rejects while marshalling the spawn
@@ -728,10 +691,7 @@ async def _settle(
         msg = "exec settled without a normal, abort, or timeout outcome"
         raise RuntimeError(msg)
     finally:
-        pending: list[asyncio.Task[object]] = [stdout_task, stderr_task, stdin_task, normal_task]
-        if abort_task is not None:
-            pending.append(abort_task)
-        await _cancel_all(pending)
+        await _cancel_all([stdout_task, stderr_task, stdin_task, *waiters])
 
 
 async def _run(
@@ -760,7 +720,15 @@ async def _run(
         return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)
 
     try:
-        proc = await spawn_contained(create_child, *args, **_subprocess_kwargs(options))
+        proc = await spawn_contained(
+            create_child,
+            *args,
+            cwd=options.cwd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=options.env,
+        )
     except SpawnError as error:
         return _spawn_failure(str(error))
 
