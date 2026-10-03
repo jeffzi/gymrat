@@ -35,7 +35,7 @@ tasks:
     internal: true
     deps: [_require-uv]
     cmds:
-      - uv sync --locked --all-extras
+      - uv sync --locked
 
   install:
     desc: Sync the project and dev dependencies from the lockfile
@@ -58,7 +58,7 @@ tasks:
       - for: { var: PYTHONS }
         cmd: >-
           UV_PROJECT_ENVIRONMENT=.venv-{{.ITEM}}
-          uv run --python {{.ITEM}} --locked --all-extras pytest
+          uv run --python {{.ITEM}} --locked pytest
 
   check:
     desc: Run every pre-commit hook across the repo (fixing hooks rewrite files in place)

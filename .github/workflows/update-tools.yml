@@ -26,9 +26,7 @@ jobs:
         with:
           python-version: "3.14"
       - name: Upgrade dependencies
-        run: |
-          uv lock --upgrade
-          uv sync
+        run: uv lock --upgrade
       - uses: ./.github/actions/setup-dprint # zizmor: ignore[self-repository] — actionlint rejects $/
       - name: Bump hook revs and dprint plugins
         run: |

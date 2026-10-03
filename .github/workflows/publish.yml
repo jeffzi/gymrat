@@ -39,7 +39,7 @@ jobs:
         shell: bash
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          version="$(python3 -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")"
+          version="$(uv version --short)"
           if [[ "$tag" != "$version" ]]; then
             printf "Tag %s does not match project version %s\n" "$tag" "$version" >&2
             exit 1
