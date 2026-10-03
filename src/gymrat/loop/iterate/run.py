@@ -63,6 +63,7 @@ from gymrat.loop.iterate.bench import (
 from gymrat.loop.iterate.confirm import Confirmation, apply_confirmation, confirm_regressions
 from gymrat.loop.iterate.record import IterationJudgment, build_iteration_record
 from gymrat.loop.output_limit import limit_output
+from gymrat.model import is_improvement
 from gymrat.progress_events import (
     HookFinished,
     HookStarted,
@@ -70,7 +71,6 @@ from gymrat.progress_events import (
     JudgeFinished,
     emit_progress,
 )
-from gymrat.report.format import is_improvement
 from gymrat.report.loop import (
     EXPERIMENT_INDEX,
     GeomeanPrimary,

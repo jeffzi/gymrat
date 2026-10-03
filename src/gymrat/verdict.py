@@ -47,6 +47,7 @@ from gymrat.model import (
     Repeat,
     ResolvedMetricMeta,
     Verdict,
+    is_improvement,
     pair_metric,
 )
 from gymrat.stats import (
@@ -129,8 +130,7 @@ def _determine_verdict(delta: float, direction: Direction) -> Verdict:
     if delta == 0 or math.isnan(delta):
         return "no-signal"
 
-    improved = delta < 0 if direction == "lower" else delta > 0
-    return "improved" if improved else "regressed"
+    return "improved" if is_improvement(delta, direction) else "regressed"
 
 
 def _verdict_if_signal(delta: float, direction: Direction, *, has_signal: bool) -> Verdict:

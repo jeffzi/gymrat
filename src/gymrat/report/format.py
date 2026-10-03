@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from gymrat.model import Direction, MetricUnit, MetricVerdict
+    from gymrat.model import MetricUnit, MetricVerdict
     from gymrat.report.types import CandidateMetric, MetricComparison
 
 
@@ -114,24 +114,6 @@ def format_percent_delta(value: float | None, *, missing: str = "") -> str:
         return "0.0%"
     sign = "+" if value > 0 else "-"
     return f"{sign}{magnitude}%"
-
-
-def is_improvement(delta: float, direction: Direction) -> bool:
-    """Whether a percentage delta moved the way its direction calls an improvement.
-
-    This is the single place the sign-of-improvement rule lives. A value of
-    exactly zero never improves — at rest a figure moved in no direction to call
-    good — and neither does ``NaN``.
-
-    Args:
-        delta: The percentage delta to judge.
-        direction: Whether a lower or higher value is the better outcome.
-
-    Returns:
-        ``True`` when ``delta`` is strictly negative for ``"lower"`` or strictly
-        positive for ``"higher"``.
-    """
-    return delta < 0 if direction == "lower" else delta > 0
 
 
 PLUS_MINUS = "±"
