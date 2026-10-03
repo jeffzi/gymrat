@@ -280,7 +280,6 @@ class IterateRenderer(LiveDisplayMixin):
         )
 
         self._is_live = mode == "live" and console.width > 0
-        self._compact = False
 
         self._spinners: dict[str, Spinner] = {}
         self._pass_view = _PhaseView()
@@ -294,9 +293,7 @@ class IterateRenderer(LiveDisplayMixin):
             self._init_live()
 
     def _init_live(self) -> None:
-        self._compact = self._console.height < COMPACT_HEIGHT_THRESHOLD
-
-        if self._compact:
+        if self._console.height < COMPACT_HEIGHT_THRESHOLD:
             self._compact_progress, self._compact_clock_col = compact_progress(
                 self._console, clock=self._clock
             )
@@ -316,7 +313,7 @@ class IterateRenderer(LiveDisplayMixin):
 
     def frame(self) -> RenderableType:
         """Return the renderable the live display paints from."""
-        if self._compact and self._compact_progress is not None:
+        if self._compact_progress is not None:
             return self._compact_progress
 
         rows: list[RenderableType] = [self._header_text()]
@@ -413,7 +410,7 @@ class IterateRenderer(LiveDisplayMixin):
         is_confirm = event.phase == "confirm"
         completed = self._counters(is_confirm=is_confirm).eta.completed
 
-        if self._compact and self._compact_progress is not None:
+        if self._compact_progress is not None:
             if self._compact_task_id is None:
                 self._compact_task_id = self._compact_progress.add_task(
                     "sampling", total=self._state.total, target=event.label
@@ -453,8 +450,8 @@ class IterateRenderer(LiveDisplayMixin):
         self._advance_bar(is_confirm=is_confirm, completed=counters.eta.completed)
 
     def _advance_bar(self, *, is_confirm: bool, completed: int) -> None:
-        if self._compact:
-            if self._compact_progress is not None and self._compact_task_id is not None:
+        if self._compact_progress is not None:
+            if self._compact_task_id is not None:
                 self._compact_progress.update(self._compact_task_id, completed=completed)
             return
         view = self._confirm_view if is_confirm else self._pass_view
@@ -463,7 +460,7 @@ class IterateRenderer(LiveDisplayMixin):
 
     def _start_confirm_task(self) -> None:
         """Swap the compact bar over to the confirm run, or open the confirm row's bar."""
-        if self._compact and self._compact_progress is not None:
+        if self._compact_progress is not None:
             if self._compact_task_id is not None:
                 self._compact_progress.remove_task(self._compact_task_id)
             self._compact_task_id = self._compact_progress.add_task(
