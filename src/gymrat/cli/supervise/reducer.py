@@ -51,7 +51,6 @@ from gymrat.supervisor.events import (
     TextDeltaEvent,
     ThinkingUpdateEvent,
     ToolEndEvent,
-    ToolProgressEvent,
     ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
@@ -463,7 +462,7 @@ def advance(  # noqa: C901 -- flat match over the event union
             advanced = _tool_start(state, event)
         case ToolEndEvent():
             advanced = _tool_end(state, event, session)
-        case ToolProgressEvent() | TextDeltaEvent():
+        case TextDeltaEvent():
             advanced = state
         case ThinkingUpdateEvent():
             advanced = _thinking_update(state, event)

@@ -400,40 +400,6 @@
       "title": "ToolEndEvent",
       "type": "object"
     },
-    "ToolProgressEvent": {
-      "description": "Emitted periodically while a long-running tool call is still in flight.",
-      "properties": {
-        "at": {
-          "description": "Nanoseconds since the Unix epoch when the event was created.",
-          "title": "At",
-          "type": "integer"
-        },
-        "elapsed_ms": {
-          "description": "Milliseconds elapsed since the tool call started.",
-          "title": "Elapsed Ms",
-          "type": "integer"
-        },
-        "tool_use_id": {
-          "description": "Unique identifier of the in-flight tool invocation.",
-          "title": "Tool Use Id",
-          "type": "string"
-        },
-        "type": {
-          "const": "tool_progress",
-          "default": "tool_progress",
-          "description": "Event type discriminator.",
-          "title": "Type",
-          "type": "string"
-        }
-      },
-      "required": [
-        "at",
-        "tool_use_id",
-        "elapsed_ms"
-      ],
-      "title": "ToolProgressEvent",
-      "type": "object"
-    },
     "ToolStartEvent": {
       "description": "Emitted when the model invokes a tool.",
       "properties": {
@@ -582,7 +548,6 @@
       "text_delta": "#/$defs/TextDeltaEvent",
       "thinking_update": "#/$defs/ThinkingUpdateEvent",
       "tool_end": "#/$defs/ToolEndEvent",
-      "tool_progress": "#/$defs/ToolProgressEvent",
       "tool_start": "#/$defs/ToolStartEvent",
       "turn_end": "#/$defs/TurnEndEvent",
       "usage_update": "#/$defs/UsageUpdateEvent"
@@ -595,9 +560,6 @@
     },
     {
       "$ref": "#/$defs/ToolStartEvent"
-    },
-    {
-      "$ref": "#/$defs/ToolProgressEvent"
     },
     {
       "$ref": "#/$defs/ToolEndEvent"

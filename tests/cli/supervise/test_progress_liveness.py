@@ -16,7 +16,7 @@ import pytest
 
 from gymrat.cli.supervise.progress import IDLE_WARN_MS
 from gymrat.session.progress_file import ProgressSnapshot
-from gymrat.supervisor.events import TextDeltaEvent, ThinkingUpdateEvent, ToolProgressEvent
+from gymrat.supervisor.events import TextDeltaEvent, ThinkingUpdateEvent
 from tests.cli.supervise._fixtures import (
     ReporterKit,
     _epoch_ms_to_local_hms,
@@ -719,18 +719,6 @@ def test_liveness_when_thinking_after_launch_does_show_thinking():
 
     assert "thinking" in frame
     assert "100" in frame
-
-
-def test_liveness_when_tool_progress_after_launch_does_not_crash():
-    kit = make_reporter()
-    observer = kit.reporter.observer
-
-    observer(launch_event(1000))
-    observer(ToolProgressEvent(at=2_000_000_000, tool_use_id="tp-1", elapsed_ms=500))
-
-    frame = render_frame(kit.reporter)
-
-    assert frame
 
 
 # ---------------------------------------------------------------------------

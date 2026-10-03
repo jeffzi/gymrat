@@ -60,7 +60,7 @@ def test_render_json_schemas_when_called_does_have_one_of_per_union_member():
     assert len(session_log["oneOf"]) == len(session_members) == 9
 
     assert "oneOf" in supervisor_log
-    assert len(supervisor_log["oneOf"]) == len(supervisor_members) == 12
+    assert len(supervisor_log["oneOf"]) == len(supervisor_members) == 11
 
 
 def test_render_json_schemas_when_called_does_have_defs_per_record_model():

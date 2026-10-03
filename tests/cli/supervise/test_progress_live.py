@@ -28,7 +28,7 @@ from unittest.mock import patch
 import pytest
 
 from gymrat.signals import install_termination_cleanup
-from gymrat.supervisor.events import TextDeltaEvent, ToolProgressEvent
+from gymrat.supervisor.events import TextDeltaEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._rich import (
     HIDE_CURSOR,
@@ -61,7 +61,6 @@ if TYPE_CHECKING:
     from rich.console import Console
 
     from gymrat.session.progress_file import ProgressSnapshot
-    from gymrat.supervisor.events import SessionEvent
 
 # Failure message the mount test raises and then matches.
 _MOUNT_FAILURE = "mount failed"
@@ -139,24 +138,14 @@ def test_render_when_event_changes_state_in_live_mode_does_refresh_live_once():
         mock_live.refresh.assert_called_once()
 
 
-@pytest.mark.parametrize(
-    "event",
-    [
-        pytest.param(TextDeltaEvent(at=2_000_000_000, chunk="hello"), id="text-delta"),
-        pytest.param(
-            ToolProgressEvent(at=2_000_000_000, tool_use_id="tp-1", elapsed_ms=500),
-            id="tool-progress",
-        ),
-    ],
-)
-def test_render_when_event_leaves_state_unchanged_does_not_repaint_live(event: SessionEvent):
+def test_render_when_event_leaves_state_unchanged_does_not_repaint_live():
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         live = mock_live_cls.return_value
         kit = make_reporter(mode="live")
         kit.reporter.observer(launch_event(1000))
         painted = live.refresh.call_count
 
-        kit.reporter.observer(event)
+        kit.reporter.observer(TextDeltaEvent(at=2_000_000_000, chunk="hello"))
 
         assert live.refresh.call_count == painted
 

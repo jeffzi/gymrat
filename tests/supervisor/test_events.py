@@ -32,7 +32,6 @@ from gymrat.supervisor.events import (
     TextDeltaEvent,
     ThinkingUpdateEvent,
     ToolEndEvent,
-    ToolProgressEvent,
     ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
@@ -57,7 +56,6 @@ _THINKING_UPDATE = ThinkingUpdateEvent(at=1_000_000_000, estimated_tokens=100, d
 _TOOL_START = ToolStartEvent(
     at=2_000_000_000, tool_use_id="t1", tool_name="Read", input={"path": "/x"}, input_summary="/x"
 )
-_TOOL_PROGRESS = ToolProgressEvent(at=3_000_000_000, tool_use_id="t1", elapsed_ms=500)
 _TOOL_END = ToolEndEvent(
     at=4_000_000_000,
     tool_use_id="t1",
@@ -87,7 +85,6 @@ _COMPACTION = CompactionEvent(at=14_000_000_000)
 EVENT_SAMPLES: list[tuple[object, str, str]] = [
     (_THINKING_UPDATE, "thinking_update", "thinking_update"),
     (_TOOL_START, "tool_start", "tool_start"),
-    (_TOOL_PROGRESS, "tool_progress", "tool_progress"),
     (_TOOL_END, "tool_end", "tool_end"),
     (_TEXT_DELTA, "text_delta", "text_delta"),
     (_USAGE_UPDATE, "usage_update", "usage_update"),
@@ -111,14 +108,13 @@ def test_event_when_constructed_does_expose_its_type_literal(event: object, expe
     assert event.type == expected_type  # type: ignore[attr-defined]
 
 
-def test_session_event_union_when_enumerated_does_expose_exactly_twelve_type_literals():
+def test_session_event_union_when_enumerated_does_expose_exactly_eleven_type_literals():
     event_classes = typing.get_args(SessionEvent)
     types = {cls.model_fields["type"].default for cls in event_classes}
 
     assert types == {
         "thinking_update",
         "tool_start",
-        "tool_progress",
         "tool_end",
         "text_delta",
         "usage_update",
@@ -187,11 +183,6 @@ JSON_CASES = [
             "input_summary": "/x",
         },
         id="tool_start",
-    ),
-    pytest.param(
-        _TOOL_PROGRESS,
-        {"type": "tool_progress", "at": 3_000_000_000, "tool_use_id": "t1", "elapsed_ms": 500},
-        id="tool_progress",
     ),
     pytest.param(
         _TOOL_END,

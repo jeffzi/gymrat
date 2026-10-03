@@ -110,7 +110,6 @@ READERS: dict[str, ReaderSpec] = {
             "launch",
             "thinking_update",
             "tool_start",
-            "tool_progress",
             "tool_end",
             "text_delta",
             "usage_update",

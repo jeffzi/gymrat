@@ -271,17 +271,6 @@ Emitted when the model invokes a tool.
 | `input_summary` | string | required | Human-readable summary of the tool input. |
 | `parent_tool_use_id` | string | optional | Tool use ID of the enclosing tool call, if any. |
 
-### `tool_progress`
-
-Emitted periodically while a long-running tool call is still in flight.
-
-| Name | Type | Status | Description |
-| --- | --- | --- | --- |
-| `type` | `"tool_progress"` | required | Event type discriminator. |
-| `at` | integer | required | Nanoseconds since the Unix epoch when the event was created. |
-| `tool_use_id` | string | required | Unique identifier of the in-flight tool invocation. |
-| `elapsed_ms` | integer | required | Milliseconds elapsed since the tool call started. |
-
 ### `tool_end`
 
 Emitted when a tool call completes and its result is available.
@@ -414,5 +403,5 @@ Each reader operation consumes a subset of record or event types from one log fi
 - **supervisor-guard** (channel: `session-log`): Reads session log state for supervisor startup.
   Types: `session`, `baseline`, `iteration`, `keep`, `discard`, `hook`, `finalize`, `stop`
 - **dashboard** (channel: `supervisor-log`): Streams supervisor events for live dashboard display.
-  Types: `launch`, `thinking_update`, `tool_start`, `tool_progress`, `tool_end`, `text_delta`,
-  `usage_update`, `cap`, `model_phase`, `turn_end`, `follow_up`, `compaction`
+  Types: `launch`, `thinking_update`, `tool_start`, `tool_end`, `text_delta`, `usage_update`, `cap`,
+  `model_phase`, `turn_end`, `follow_up`, `compaction`

@@ -14,7 +14,6 @@ from gymrat.supervisor.events import (
     TextDeltaEvent,
     ThinkingUpdateEvent,
     ToolEndEvent,
-    ToolProgressEvent,
     ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
@@ -171,10 +170,6 @@ def test_create_run_span_observer_when_compaction_does_add_span_event():
                 input_summary="Read x.py",
             ),
             id="tool-start",
-        ),
-        pytest.param(
-            ToolProgressEvent(at=7_000_000_000, tool_use_id="t1", elapsed_ms=5),
-            id="tool-progress",
         ),
         pytest.param(
             ToolEndEvent(

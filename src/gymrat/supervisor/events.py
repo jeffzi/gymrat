@@ -1,6 +1,6 @@
 """Session event vocabulary and the helpers that render and fan them out.
 
-A session emits a fixed set of twelve events to any number of
+A session emits a fixed set of eleven events to any number of
 :data:`SessionObserver` callbacks. Each event is a frozen pydantic model that
 inherits ``_EventModel`` — carrying a per-event ``Literal`` ``type``
 discriminator and ``at: int`` (nanoseconds since epoch) — together forming
@@ -109,15 +109,6 @@ class ToolStartEvent(_EventModel):
     input: object = Field(description="Raw input passed to the tool.")
     input_summary: str = Field(description="Human-readable summary of the tool input.")
     parent_tool_use_id: _OptStr = Field(default=None, description=_PARENT_TOOL_USE_ID_DESCRIPTION)
-
-
-class ToolProgressEvent(_EventModel):
-    """Emitted periodically while a long-running tool call is still in flight."""
-
-    type: Literal["tool_progress"] = Field("tool_progress", description="Event type discriminator.")
-    at: _At
-    tool_use_id: str = Field(description="Unique identifier of the in-flight tool invocation.")
-    elapsed_ms: int = Field(description="Milliseconds elapsed since the tool call started.")
 
 
 class ToolEndEvent(_EventModel):
@@ -257,7 +248,6 @@ class CompactionEvent(_EventModel):
 SessionEvent = (
     ThinkingUpdateEvent
     | ToolStartEvent
-    | ToolProgressEvent
     | ToolEndEvent
     | TextDeltaEvent
     | UsageUpdateEvent

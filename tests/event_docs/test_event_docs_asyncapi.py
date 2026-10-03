@@ -51,7 +51,6 @@ SUPERVISOR_EVENT_CLASSES: dict[str, str] = {
     "LaunchEvent": "launch",
     "ThinkingUpdateEvent": "thinking_update",
     "ToolStartEvent": "tool_start",
-    "ToolProgressEvent": "tool_progress",
     "ToolEndEvent": "tool_end",
     "TextDeltaEvent": "text_delta",
     "UsageUpdateEvent": "usage_update",
@@ -168,7 +167,7 @@ def test_render_asyncapi_when_called_does_take_message_summary_from_schema_descr
 
 
 # ---------------------------------------------------------------------------
-# components.messages — one per record/event type (21 total)
+# components.messages — one per record/event type (20 total)
 # ---------------------------------------------------------------------------
 
 
