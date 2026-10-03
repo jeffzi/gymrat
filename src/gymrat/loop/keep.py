@@ -285,9 +285,7 @@ class _KeepContext:
     experiment_dir: str
     baseline_dir: str
     iteration: IterationRecord
-    message: str | None
-    warn: WarnSink | None
-    warn_color: bool | None
+    options: KeepOptions
 
 
 async def keep_session(
@@ -384,9 +382,7 @@ async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions)
         experiment_dir=experiment_dir,
         baseline_dir=session.worktrees.baseline,
         iteration=iteration,
-        message=options.message,
-        warn=options.warn,
-        warn_color=options.warn_color,
+        options=options,
     )
 
     if dirty_file_count(experiment_dir) == 0:
@@ -460,8 +456,9 @@ async def _gated_keep(context: _KeepContext, *, commit: Callable[[str], str]) ->
         GymratError: When ``commit``, the baseline advance, or the record append
             fails.
     """
+    options = context.options
     checks = await run_checks(
-        context.config, context.experiment_dir, context.warn, color=context.warn_color
+        context.config, context.experiment_dir, options.warn, color=options.warn_color
     )
     if checks is not None and not checks.passed:
         return _blocked_keep(
@@ -481,7 +478,7 @@ async def _gated_keep(context: _KeepContext, *, commit: Callable[[str], str]) ->
         )
 
     resolved_message = (
-        context.message if context.message is not None else _generated_message(context.iteration)
+        options.message if options.message is not None else _generated_message(context.iteration)
     )
 
     return _commit_keep(

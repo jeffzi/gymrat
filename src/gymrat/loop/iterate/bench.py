@@ -34,6 +34,7 @@ from gymrat.targets import InPlaceTarget
 from gymrat.verdict import compute_geomean, compute_kind_aggregates, compute_verdicts
 
 if TYPE_CHECKING:
+    from gymrat.adapters import Adapter
     from gymrat.config import KindEntry
     from gymrat.loop.iterate.confirm import Confirmation
     from gymrat.loop.iterate.run import IterateOptions
@@ -152,13 +153,14 @@ async def bench_and_judge(
         and computed verdicts.
 
     Raises:
+        GymratError: When the configured adapter is unknown; nothing is sampled.
         CommandError: When a prepare or bench command times out or exits
             non-zero.
     """
-    baseline, experiment = await _measure(ctx.session, ctx.config, ctx.options, bench)
+    adapter = get_adapter(ctx.config.adapter)
+    baseline, experiment = await _measure(ctx, adapter, bench)
     if announce_judging:
         emit_progress(ctx.options.on_progress, JudgeStarted(at_ms=monotonic_ms()))
-    adapter = get_adapter(ctx.config.adapter)
     resolved_meta = (
         metric_meta
         if metric_meta is not None
@@ -187,10 +189,7 @@ async def bench_and_judge(
 
 
 async def _measure(
-    session: SessionRecord,
-    config: ResolvedConfig,
-    options: IterateOptions,
-    bench: str,
+    ctx: IterationContext, adapter: Adapter, bench: str
 ) -> tuple[TargetSamples, TargetSamples]:
     """Bench both of the session's worktrees, baseline first.
 
@@ -199,10 +198,11 @@ async def _measure(
     plain comparison would.
 
     Args:
-        session: The session whose baseline and experiment worktrees are benched.
-        config: The resolved configuration supplying prepare, samples, and timeout.
-        options: The iterate options supplying the progress callback and the
+        ctx: The iteration context: the session whose baseline and experiment
+            worktrees are benched, the configuration supplying prepare, samples,
+            and timeout, and the options supplying the progress callback and the
             warning sink.
+        adapter: Parses a bench run's stdout into a metric record.
         bench: The bench command to run. A parameter because a confirmation rerun
             narrows the command while sampling the same pair of worktrees the same
             way.
@@ -214,14 +214,15 @@ async def _measure(
         CommandError: When a prepare or bench command times out or exits
             non-zero.
     """
+    worktrees = ctx.session.worktrees
+    options = ctx.options
     contexts: list[TargetContext] = [
-        _worktree_context(session.worktrees.baseline, "baseline", "old"),
-        _worktree_context(session.worktrees.experiment, "experiment", "new"),
+        _worktree_context(worktrees.baseline, "baseline", "old"),
+        _worktree_context(worktrees.experiment, "experiment", "new"),
     ]
     sampling_options = RunOptions.from_config(
-        config, bench=bench, on_progress=options.on_progress, warn=options.warn
+        ctx.config, bench=bench, on_progress=options.on_progress, warn=options.warn
     ).sampling
-    adapter = get_adapter(config.adapter)
     abort = options.abort if options.abort is not None else asyncio.Event()
     baseline, experiment = await collect_samples(adapter, contexts, sampling_options, abort)
     return baseline, experiment

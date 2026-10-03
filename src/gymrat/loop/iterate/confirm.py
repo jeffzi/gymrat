@@ -96,18 +96,17 @@ async def confirm_regressions(
         GymratError: When the rerun's bench command fails — an iteration nobody
             could confirm is not recorded.
     """
-    filtered = [
+    filtered = tuple(
         name for name, meta in metric_meta.items() if _needs_confirmation(meta, verdicts.get(name))
-    ]
+    )
     if not filtered:
         return None
 
-    filtered_tuple = tuple(filtered)
     bench = scoped_bench(ctx.config, filtered)
     emit_progress(
         ctx.options.on_progress,
         ConfirmStarted(
-            filtered_metrics=None if ctx.config.filter is None else filtered_tuple,
+            filtered_metrics=None if ctx.config.filter is None else filtered,
             at_ms=monotonic_ms(),
         ),
     )
@@ -127,7 +126,7 @@ async def confirm_regressions(
     )
 
     return Confirmation(
-        filtered=filtered_tuple,
+        filtered=filtered,
         samples=rerun.samples,
         confirmed=confirmed,
         absent=absent,

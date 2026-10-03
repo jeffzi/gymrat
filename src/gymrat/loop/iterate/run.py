@@ -216,11 +216,11 @@ def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
     )
 
 
-def _append_iteration(ctx: IterationContext, record: IterationRecord, *, seq: int) -> None:
+def _append_iteration(ctx: IterationContext, record: IterationRecord) -> None:
     append_record(ctx.jsonl_path, record)
     emit_progress(
         ctx.options.on_progress,
-        IterationRecorded(seq=seq, outcome=record.outcome, at_ms=monotonic_ms()),
+        IterationRecorded(seq=record.seq, outcome=record.outcome, at_ms=monotonic_ms()),
     )
 
 
@@ -322,7 +322,7 @@ async def iterate_session(
     record = build_iteration_record(
         judged, seq, judgment, duration_ms=duration_ms, measured_tree=measured_tree
     )
-    _append_iteration(ctx, record, seq=seq)
+    _append_iteration(ctx, record)
 
     after_report = await _hook_stage(
         ctx,

@@ -10,7 +10,7 @@ and the repository's branches, so two concurrent runs must not reach it.
 
 import contextlib
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -90,13 +90,7 @@ def start_session(root: str, ref: str | None, config: ResolvedConfig) -> StartRe
         except BaseException:
             _restore_archived_log(archived_path, jsonl_path)
             raise
-        return StartResult(
-            session=created.session,
-            state=created.state,
-            resumed=False,
-            archived=session.session_id,
-            archived_path=archived_path,
-        )
+        return replace(created, archived=session.session_id, archived_path=archived_path)
 
     # Every keep moves the baseline onto the commit it made, so a baseline worktree
     # put back at the header's pinned SHA would have the next iteration measure the
