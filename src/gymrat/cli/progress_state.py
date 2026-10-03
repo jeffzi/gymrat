@@ -59,7 +59,7 @@ class ProgressState:
     pass_start_ms: float = 0.0
     run_start_ms: float | None = None
     run_end_ms: float | None = None
-    eta: SamplingEta = field(default_factory=lambda: SamplingEta.start(0))
+    eta: SamplingEta = field(default_factory=lambda: SamplingEta(total=0))
     prepare_visible: bool = False
     pass_visible: bool = False
     current_target: str = ""
@@ -80,7 +80,7 @@ class ProgressState:
         return cls(
             target_count=target_count,
             sample_count=sample_count,
-            eta=SamplingEta.start(total),
+            eta=SamplingEta(total=total),
         )
 
     @property
@@ -93,7 +93,7 @@ def _pass_started(state: ProgressState, event: PassStarted) -> ProgressState:
     total = state.total or event.total_rounds * event.target_count
     return replace(
         state,
-        eta=state.eta.with_total(total),
+        eta=replace(state.eta, total=total),
         pass_start_ms=event.at_ms,
         pass_visible=True,
         current_target=event.label,

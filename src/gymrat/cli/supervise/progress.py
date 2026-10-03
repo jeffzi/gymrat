@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from gymrat.cli.console import stderr_console
-from gymrat.cli.style import ErasableLive, mount_live
+from gymrat.cli.live_display import ErasableLive, mount_live
 from gymrat.cli.supervise.frame import build_frame
 from gymrat.cli.supervise.reducer import (
     ReporterState,
@@ -26,12 +26,7 @@ from gymrat.cli.supervise.reducer import (
     wants_session_refresh,
 )
 from gymrat.cli.supervise.text import exit_phase_text
-from gymrat.cli.supervise.types import (
-    IDLE_WARN_MS,
-    ReadSessionResult,
-    ReporterCtx,
-    SuperviseReporter,
-)
+from gymrat.cli.supervise.types import IDLE_WARN_MS, ReadSessionResult
 from gymrat.clock import now_ms
 from gymrat.eta import MS_PER_SECOND
 from gymrat.session.paths import session_jsonl_path
@@ -53,7 +48,7 @@ if TYPE_CHECKING:
     from gymrat.config.types import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.records import SessionLogRecord
-    from gymrat.supervisor.events import SessionEvent
+    from gymrat.supervisor.events import SessionEvent, SessionObserver
     from gymrat.supervisor.exit_sequence import ExitPhase
 
 _logger = logging.getLogger(__name__)
@@ -118,6 +113,63 @@ def make_default_read(root: str) -> Callable[[], ReadSessionResult]:
         )
 
     return _read
+
+
+# ---------------------------------------------------------------------------
+# Reporter shell
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class ReporterCtx:
+    """The terminal, clock, and I/O handles the reporter shell owns.
+
+    Everything the dashboard renders lives in ``state``, which the shell
+    replaces after each event.  Only the shell writes to this object; the
+    reducer never sees it.
+    """
+
+    state: ReporterState
+    now: Callable[[], int]
+    read_session_fn: Callable[[], ReadSessionResult]
+    read_progress_fn: Callable[[str], ProgressSnapshot | None]
+    plain_write_fn: Callable[[str], None]
+    warn_fn: Callable[[str], None]
+    live: ErasableLive | None
+    tz: tzinfo | None
+    is_plain: bool
+    idle_warn_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class SuperviseReporter:
+    """The observer/stop/frame/warn surface that drives the supervise progress display.
+
+    ``session_result`` hands back the session state as of the last re-read, which
+    is what the closing summary reports once the display has stopped.
+
+    Live mode's display and its refresh timer run from construction until
+    ``stop``, and for that span a termination signal erases the display: its
+    cleanup is installed at construction and uninstalled by ``stop``.
+
+    ``exit_phase`` shows the run-end exit sequence's current phase: live mode
+    repaints the frame, plain mode writes the phase line once per phase change.
+
+    ``refresh_session`` re-reads the session so ``session_result`` reflects
+    writes that no event announced, such as an exit-sequence step that failed after
+    writing to the session log. A successful re-read writes no plain line; a
+    failed read keeps the previous result and warns, as the event-driven
+    re-read does.
+    """
+
+    observer: SessionObserver
+    stop: Callable[[], None]
+    frame: Callable[[], RenderableType]
+    warn: Callable[[str], None]
+    session_result: Callable[[], ReadSessionResult | None]
+    final_text: Callable[[], str | None]
+    exit_phase: Callable[[ExitPhase], None]
+    refresh_session: Callable[[], None]
 
 
 # ---------------------------------------------------------------------------

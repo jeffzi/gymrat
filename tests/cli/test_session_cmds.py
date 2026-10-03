@@ -467,7 +467,7 @@ def test_sync_command_when_no_budget_does_omit_time_left_line(
     assert "left of" not in result.stdout
 
 
-def test_start_command_when_budget_active_does_not_include_time_left_line(
+def test_start_command_when_budget_active_does_end_text_with_time_left_line(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _stub_resolve_config(monkeypatch)
@@ -477,10 +477,10 @@ def test_start_command_when_budget_active_does_not_include_time_left_line(
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
     assert result.exit_code == 0
-    assert "left of" not in result.stdout
+    assert re.search(r"left of 30m\n$", strip_ansi(result.stdout))
 
 
-def test_finalize_command_when_budget_active_does_not_include_time_left_line(
+def test_finalize_command_when_budget_active_does_end_text_with_time_left_line(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _session_with_one_keep(repo)
@@ -489,7 +489,7 @@ def test_finalize_command_when_budget_active_does_not_include_time_left_line(
     result = runner.invoke(app, ["finalize"])
 
     assert result.exit_code == 0
-    assert "left of" not in result.stdout
+    assert re.search(r"left of 30m\n$", strip_ansi(result.stdout))
 
 
 # ---------------------------------------------------------------------------

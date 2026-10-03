@@ -24,7 +24,7 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
-from gymrat.cli.compare_cmd import _serialize_fail_on
+from gymrat.cli.compare_cmd import CompareFlags, _serialize_fail_on
 from gymrat.config.types import CliFlags, KindEntry, MetricEntry, ResolvedConfig
 from gymrat.report.types import (
     ComparisonResult,
@@ -685,3 +685,16 @@ def test_compare_when_short_verbose_flag_does_succeed(monkeypatch: pytest.Monkey
     result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh", "-v"])
 
     assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# flag dataclass
+# ---------------------------------------------------------------------------
+
+
+def test_compare_flags_when_built_does_add_verbose_and_fail_on():
+    flags = CompareFlags(verbose=True, fail_on=(RegressedFailOn(),))
+
+    assert flags.verbose is True
+    assert flags.fail_on == (RegressedFailOn(),)
+    assert flags.color is None

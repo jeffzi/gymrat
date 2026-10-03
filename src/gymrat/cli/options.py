@@ -277,16 +277,6 @@ FormatOption = Annotated[OutputFormat, typer.Option("--format", help="output for
 """--format: output format, an :class:`OutputFormat` choice."""
 DebugOption = Annotated[bool, typer.Option("--debug", "-d", help="show stack traces on errors")]
 """--debug/-d: show stack traces on errors."""
-RecordOption = Annotated[
-    bool,
-    typer.Option("--record", "-r", help="append the run to the session log as a baseline"),
-]
-"""--record/-r: append the run to the session log as a baseline."""
-BranchOption = Annotated[
-    str | None,
-    typer.Option("--branch", help="branch to point at the squash commit (default: <branch>-final)"),
-]
-"""--branch: branch to point at the squash commit; None uses ``<branch>-final``."""
 BaselineOption = Annotated[
     str | None,
     typer.Option(
@@ -304,15 +294,3 @@ Ignored when a session is resumed.
 """
 ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
 """--force/-f: skip the confirmation prompt."""
-AllowUnimprovedOption = Annotated[
-    bool,
-    typer.Option(
-        "--allow-unimproved",
-        help="keep the edit even when the iteration was not improved",
-    ),
-]
-"""--allow-unimproved: keep the edit even when the iteration was not improved."""
-VerboseOption = Annotated[
-    bool, typer.Option("--verbose", "-v", help="keep the progress tree visible after the run")
-]
-"""--verbose/-v: keep the progress tree visible after the run."""

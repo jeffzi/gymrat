@@ -3,7 +3,7 @@
 This module owns the process-wide ``--debug`` and ``--color`` / ``--no-color``
 state every command reads, the stream classification the output paths share,
 and the stderr ``Console`` factory built on top of them. It sits below
-:mod:`gymrat.cli.shared` and must never import it.
+:mod:`gymrat.cli.exit` and must never import it.
 """
 
 import errno

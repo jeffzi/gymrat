@@ -20,12 +20,12 @@ import typer
 from rich.markup import escape
 
 from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
+from gymrat.cli.exit import exit_with_error, write_stdout
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BenchOption,
     ColorOption,
     DebugOption,
 )
-from gymrat.cli.shared import exit_with_error, write_stdout
 from gymrat.cli.supervised import is_supervised_run_live
 from gymrat.config.resolve import find_implicit_base
 from gymrat.config.types import CONFIG_FILENAME

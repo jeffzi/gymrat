@@ -50,7 +50,7 @@ from tests.cli.supervise._fixtures import (
 from tests.session.records._fixtures import session_state
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.types import SuperviseReporter
+    from gymrat.cli.supervise.progress import SuperviseReporter
     from gymrat.config.types import Effort
 
 

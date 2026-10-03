@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+import typer
 
 from gymrat.cli.supervise.preflight import doctor_gate, run_preflight
 from gymrat.config.types import ResolvedConfig, StopConfig
@@ -24,7 +25,7 @@ from gymrat.doctor import (
     EnvironmentInfo,
     create_doctor_report,
 )
-from gymrat.errors import GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import StartResult, start_session
@@ -182,10 +183,10 @@ def test_doctor_gate_when_check_fails_does_exit_two_with_report(
 ):
     _install_doctor_seam(monkeypatch, report=_failing_report())
 
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(typer.Exit) as exc:
         doctor_gate(repo)
 
-    assert exc.value.code == 2
+    assert exc.value.exit_code == TOOL_FAILURE_EXIT_CODE
     captured = capsys.readouterr()
     assert "install git" in captured.err
 
@@ -584,7 +585,7 @@ def test_doctor_gate_when_color_true_does_produce_ansi_on_stderr(
 ):
     _install_doctor_seam(monkeypatch, report=_failing_report())
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(typer.Exit):
         doctor_gate(repo, color=True)
 
     captured = capsys.readouterr()

@@ -29,7 +29,12 @@ from gymrat.loop.iterate.run import LoopStopError
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
 from gymrat.session.records import CommandRecord
-from gymrat.session.store import append_record, recover_torn_tail, session_header
+from gymrat.session.store import (
+    append_record,
+    read_records,
+    recover_torn_tail,
+    session_header,
+)
 from gymrat.warn import warn_to_stderr
 
 # ---------------------------------------------------------------------------
@@ -198,18 +203,26 @@ async def with_repo_lock[T](
         elapsed_ms = int(_clock.monotonic_ms() - start)
         exit_code, reason = _resolve_exit(trace, caught)
         try:
-            _record_command_outcome(
+            _try_append_command_record(
                 root=root,
                 command=command,
                 trace=trace,
                 exit_code=exit_code,
                 reason=reason,
                 elapsed_ms=elapsed_ms,
-                tracing_active=tracing_active,
-                session_id=session_id,
-                start_ns=start_ns,
-                pre_body_lines=pre_body_lines,
             )
+            if tracing_active:
+                try:
+                    _emit_command_span(
+                        root=root,
+                        exit_code=exit_code,
+                        reason=reason,
+                        session_id=session_id,
+                        start_ns=start_ns,
+                        pre_body_lines=pre_body_lines,
+                    )
+                except Exception as span_error:  # noqa: BLE001 -- must not mask the command outcome
+                    warn_to_stderr(f"failed to emit command span: {span_error}")
         finally:
             release()
     return result
@@ -218,42 +231,6 @@ async def with_repo_lock[T](
 # ---------------------------------------------------------------------------
 # Command-record persistence
 # ---------------------------------------------------------------------------
-
-
-def _record_command_outcome(  # noqa: PLR0913 -- all params are distinct concerns of the command outcome
-    *,
-    root: str,
-    command: str,
-    trace: CommandTrace,
-    exit_code: Literal[0, 1, 2],
-    reason: CommandReason | None,
-    elapsed_ms: int,
-    tracing_active: bool,
-    session_id: str,
-    start_ns: int,
-    pre_body_lines: int,
-) -> None:
-    """Append the command record and, when tracing is active, emit its span."""
-    _try_append_command_record(
-        root=root,
-        command=command,
-        trace=trace,
-        exit_code=exit_code,
-        reason=reason,
-        elapsed_ms=elapsed_ms,
-    )
-    if tracing_active:
-        try:
-            _emit_command_span(
-                root=root,
-                exit_code=exit_code,
-                reason=reason,
-                session_id=session_id,
-                start_ns=start_ns,
-                pre_body_lines=pre_body_lines,
-            )
-        except Exception as span_error:  # noqa: BLE001 -- must not mask the command outcome
-            warn_to_stderr(f"failed to emit command span: {span_error}")
 
 
 def _try_append_command_record(  # noqa: PLR0913 -- all six params are distinct concerns of the command record
@@ -409,8 +386,6 @@ def _emit_command_span(  # noqa: PLR0913 -- keyword-only tracing context
 
 def _safe_read_records(jsonl_path: str) -> list[SessionLogRecord]:
     """Read records from the session log, returning empty on failure."""
-    from gymrat.session.store import read_records  # noqa: PLC0415
-
     try:
         return read_records(jsonl_path)
     except GymratError:

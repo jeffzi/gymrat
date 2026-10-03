@@ -178,7 +178,7 @@ import os
 import sys
 from pathlib import Path
 
-from gymrat.cli.shared import run_with_signal_abort
+from gymrat.cli.run_setup import run_with_signal_abort
 from gymrat.exec import ExecOptions, exec_argv
 
 

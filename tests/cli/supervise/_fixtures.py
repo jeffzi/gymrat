@@ -21,8 +21,12 @@ if TYPE_CHECKING:
 from rich.console import Console, RenderableType
 
 from gymrat.cli.style import CLI_THEME
-from gymrat.cli.supervise.progress import REFRESH_MS, create_supervise_reporter
-from gymrat.cli.supervise.types import IDLE_WARN_MS, ReadSessionResult, SuperviseReporter
+from gymrat.cli.supervise.progress import (
+    REFRESH_MS,
+    SuperviseReporter,
+    create_supervise_reporter,
+)
+from gymrat.cli.supervise.types import IDLE_WARN_MS, ReadSessionResult
 from gymrat.eta import NS_PER_MS
 from gymrat.loop.start import start_session
 from gymrat.session.paths import session_jsonl_path

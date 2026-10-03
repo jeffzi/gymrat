@@ -38,6 +38,7 @@ from rich.progress import (
 from rich.table import Column
 from rich.text import Text
 
+from gymrat.cli.live_display import LiveDisplayMixin
 from gymrat.cli.progress_state import ProgressState, advance, plain_line
 from gymrat.cli.style import (
     COMPACT_HEIGHT_THRESHOLD,
@@ -47,8 +48,6 @@ from gymrat.cli.style import (
     STYLE_TIMER_DONE,
     STYLE_TIMER_RUNNING,
     STYLE_VERB,
-    ErasableLive,
-    LiveDisplayMixin,
 )
 from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
 
@@ -95,12 +94,33 @@ class _TargetColumn(ProgressColumn):
         return text
 
 
+def phase_text(verb: str, note: str, target: str) -> Text:
+    """Build a running row: the verb, then the context the row carries.
+
+    Args:
+        verb: The gerund the row leads with (``"sampling"``).
+        note: Dim context shown after the verb; empty for none.
+        target: The in-flight target label, shown behind a dim separator;
+            empty for none.
+
+    Returns:
+        The styled row text.
+    """
+    text = Text()
+    text.append(verb, style=STYLE_VERB)
+    if note:
+        text.append(f" {note}", style=STYLE_META)
+    if target:
+        text.append(" · ", style=STYLE_META)
+        text.append(target, style=STYLE_LABEL)
+    return text
+
+
 class _PhaseColumn(ProgressColumn):
     """Renders the running verb plus the optional context the row carries.
 
     The task description holds the gerund (``"sampling"``); the optional
-    ``note`` field adds dim context after it, and the optional ``target`` field
-    adds the in-flight target label behind a dim separator.
+    ``note`` and ``target`` fields are the context :func:`phase_text` adds.
 
     The column never wraps: a narrow terminal shrinks the bar rather than
     spilling the verb onto a second line and breaking the checklist alignment.
@@ -112,16 +132,9 @@ class _PhaseColumn(ProgressColumn):
     @override
     def render(self, task: Task) -> Text:
         fields = task.fields
-        text = Text()
-        text.append(task.description, style=STYLE_VERB)
-        note = fields.get("note", "")
-        if note:
-            text.append(f" {note}", style=STYLE_META)
-        target = fields.get("target", "")
-        if target:
-            text.append(" · ", style=STYLE_META)
-            text.append(str(target), style=STYLE_LABEL)
-        return text
+        return phase_text(
+            task.description, str(fields.get("note", "")), str(fields.get("target", ""))
+        )
 
 
 def _clocked_progress(
@@ -244,23 +257,17 @@ class ProgressReporter(LiveDisplayMixin):
         # live/plain split stays in exactly one place.
         is_live = mode == "live" and console.width > 0
         self._is_live = is_live
-        self._live: ErasableLive | None = None
         self._clock_column: _ClockColumn | None = None
         self._prepare_progress: Progress | None = None
         self._pass_progress: Progress | None = None
         self._prepare_task_id: TaskID | None = None
         self._pass_task_id: TaskID | None = None
-        self._compact = False
-        self._stopped = False
-        self._uninstall_cleanup: Callable[[], None] = lambda: None
 
         if is_live:
             self._init_live(console, clock)
 
     def _init_live(self, console: Console, clock: Callable[[], float] | None) -> None:
-        self._compact = console.height < COMPACT_HEIGHT_THRESHOLD
-
-        if self._compact:
+        if console.height < COMPACT_HEIGHT_THRESHOLD:
             self._pass_progress, self._clock_column = compact_progress(console, clock=clock)
         else:
             self._prepare_progress = Progress(
@@ -366,17 +373,8 @@ class ProgressReporter(LiveDisplayMixin):
             completed=state.eta.completed,
         )
 
-    def stop(self) -> None:
-        """Stop the reporter and clean up any live display."""
-        if not self._claim_stop():
-            return
-        self._uninstall_cleanup()
-        if self._live is not None:
-            self._live.stop()
-            self._print_summary()
-            self._live = None
-
-    def _print_summary(self) -> None:
+    @override
+    def _after_live_stopped(self) -> None:
         """Print the run's timing; the report right below carries everything else."""
         state = self._state
         elapsed_ms = (

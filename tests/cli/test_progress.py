@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, Literal
 
 import pytest
 
+from gymrat.cli.live_display import LIVE_REFRESH_PER_SECOND
 from gymrat.cli.progress import ProgressReporter
-from gymrat.cli.style import LIVE_REFRESH_PER_SECOND
 from gymrat.progress_events import (
     HookStarted,
     PrepareFinished,
@@ -366,7 +366,7 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat.cli.style.install_termination_cleanup",
+        "gymrat.cli.live_display.install_termination_cleanup",
         fake_install(registered),
     )
 
@@ -381,7 +381,7 @@ def test_plain_mode_when_created_does_not_register_termination_cleanup(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat.cli.style.install_termination_cleanup",
+        "gymrat.cli.live_display.install_termination_cleanup",
         fake_install(registered),
     )
 
@@ -551,6 +551,21 @@ def test_signal_when_live_display_just_hid_the_cursor_does_restore_the_screen(
         build_renderer("live", console)
 
     assert (screen_lines(terminal.at_exit), cursor_hidden(terminal.at_exit)) == ([KEPT_LINE], False)
+
+
+def test_stop_when_signal_already_erased_the_display_does_write_nothing(
+    build_renderer: RendererFactory,
+):
+    console = sealed_console()
+    renderer = build_renderer("live", console)
+    renderer.report(PrepareStarted(label="bench", at_ms=0))
+    assert renderer.live is not None
+    renderer.live.erase_for_exit()
+    before = console_output(console)
+
+    renderer.stop()
+
+    assert console_output(console) == before
 
 
 def test_signal_when_live_renderer_stopped_does_write_nothing(

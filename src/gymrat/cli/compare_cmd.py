@@ -12,12 +12,14 @@ trip an exit-code gate. Conditions are OR-ed: any one that trips fails the run.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, assert_never
 
 import typer
 
-from gymrat.cli.budget_report import budget_for_report, warn_duration_over_budget
+from gymrat.cli.budget_report import emit_report, warn_duration_over_budget
 from gymrat.cli.console import apply_color_override, apply_debug
+from gymrat.cli.exit import run_cli
 from gymrat.cli.options import (
     AdapterOption,
     BenchOption,
@@ -32,13 +34,7 @@ from gymrat.cli.options import (
     TimeoutOption,
     parse_fail_on,
 )
-from gymrat.cli.shared import (
-    CompareFlags,
-    ReportRenderers,
-    begin_run,
-    emit_report,
-    run_cli,
-)
+from gymrat.cli.run_setup import SharedFlags, begin_run
 from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.config.resolve import resolve_config
 from gymrat.errors import GATE_EXIT_CODE
@@ -89,6 +85,14 @@ _FailOnOption = Annotated[
         help='exit 1 when a condition trips (repeatable: "regressed", "geomean:<pct>")',
     ),
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class CompareFlags(SharedFlags):
+    """The compare command's flags: the shared set plus the two only a verdict can answer."""
+
+    verbose: bool = False
+    fail_on: tuple[FailOnCondition, ...] = ()
 
 
 def _serialize_fail_on(conditions: tuple[FailOnCondition, ...]) -> str:
@@ -257,14 +261,12 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             return comparison
 
         result = await with_repo_lock("compare", body, args=trace_args)
-        budget_trailer, budget_summary = budget_for_report()
         emit_report(
             result,
             flags,
-            ReportRenderers(text=render_report, json=render_json),
             ReportOptions(verbose=flags.verbose, color=color_override, fail_on=flags.fail_on),
-            budget_trailer=budget_trailer,
-            budget_summary=budget_summary,
+            text=render_report,
+            json=render_json,
         )
         if should_fail_gate(flags.fail_on, result):
             raise typer.Exit(GATE_EXIT_CODE)

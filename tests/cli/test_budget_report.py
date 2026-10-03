@@ -3,7 +3,7 @@
 ``write_budget_report`` appends the live budget to a command's report: a
 trailer line under the text report, a ``budget`` object in the JSON document.
 
-``budget_for_report`` and ``warn_duration_over_budget`` sit between the report
+``emit_report`` and ``warn_duration_over_budget`` sit between the report
 writers and the session store. They read the live budget and the session log,
 swallow the expected failures — no git repository, a corrupt session log, any
 other ``OSError`` — and let anything else propagate so a programming error is
@@ -16,13 +16,16 @@ which differs between ``measure`` (half an iterate, so per-side) and ``compare``
 
 import json
 from collections.abc import Callable
+from typing import Literal
 
 import pytest
 
 from gymrat.cli import budget_report
+from gymrat.cli.run_setup import SharedFlags
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.report.json_doc import BudgetSummary
+from gymrat.report.types import ReportOptions
 from gymrat.session.budget import Budget
 from gymrat.session.records import IterationRecord
 from tests.session.records._fixtures import iteration_record
@@ -67,10 +70,41 @@ def _install_over_budget_session(monkeypatch: pytest.MonkeyPatch, *, remaining_m
 
 
 # ---------------------------------------------------------------------------
-# budget_for_report
+# emit_report
 # ---------------------------------------------------------------------------
 
 
+def _render_text(result: str, _options: ReportOptions) -> str:
+    """A text renderer that prints the result as it is."""
+    return result
+
+
+def _render_result_json(result: str, /, *, budget: BudgetSummary | None = None) -> str:
+    """A JSON renderer that carries the result and the budget summary it was handed."""
+    return json.dumps({
+        "result": result,
+        "budget": None if budget is None else [budget.cap_minutes, budget.remaining_seconds],
+    })
+
+
+def _emit(output_format: Literal["text", "json"]) -> None:
+    """Emit the ``report`` result in ``output_format`` through the stub renderers."""
+    budget_report.emit_report(
+        "report",
+        SharedFlags(format=output_format),
+        ReportOptions(color=False),
+        text=_render_text,
+        json=_render_result_json,
+    )
+
+
+@pytest.mark.parametrize(
+    ("output_format", "expected"),
+    [
+        pytest.param("text", "report\n", id="text"),
+        pytest.param("json", '{"result": "report", "budget": null}\n', id="json"),
+    ],
+)
 @pytest.mark.parametrize(
     "error",
     [
@@ -79,27 +113,43 @@ def _install_over_budget_session(monkeypatch: pytest.MonkeyPatch, *, remaining_m
         pytest.param(OSError("input/output error"), id="os-error"),
     ],
 )
-def test_budget_for_report_when_repo_root_fails_expectedly_does_return_an_empty_snapshot(
-    error: Exception, monkeypatch: pytest.MonkeyPatch
+def test_emit_report_when_repo_root_fails_expectedly_does_write_the_report_without_a_budget(
+    error: Exception,
+    output_format: Literal["text", "json"],
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ):
     monkeypatch.setattr("gymrat.cli.budget_report.repo_root", _raise(error))
 
-    result = budget_report.budget_for_report()
+    _emit(output_format)
 
-    assert result == ("", None)
+    assert capsys.readouterr().out == expected
 
 
-def test_budget_for_report_when_repo_root_fails_unexpectedly_does_propagate(
+def test_emit_report_when_repo_root_fails_unexpectedly_does_propagate(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr("gymrat.cli.budget_report.repo_root", _raise(RuntimeError("patched wrong")))
 
     with pytest.raises(RuntimeError, match="patched wrong"):
-        budget_report.budget_for_report()
+        _emit("text")
 
 
-def test_budget_for_report_when_budget_active_does_return_the_trailer_and_whole_seconds_left(
+@pytest.mark.parametrize(
+    ("output_format", "expected"),
+    [
+        pytest.param("text", "report\n12m 0s left of 60m\n", id="text-trailer"),
+        pytest.param(
+            "json", '{"result": "report", "budget": [60.0, 720]}\n', id="json-whole-seconds-left"
+        ),
+    ],
+)
+def test_emit_report_when_budget_active_does_write_the_report_with_the_budget(
+    output_format: Literal["text", "json"],
+    expected: str,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ):
     budget = Budget(started_at_ms=0.0, max_minutes=60, deadline_ms=720_999.0)
 
@@ -110,12 +160,9 @@ def test_budget_for_report_when_budget_active_does_return_the_trailer_and_whole_
     monkeypatch.setattr("gymrat.cli.budget_report.repo_root", lambda: "/repo")
     monkeypatch.setattr("gymrat.cli.budget_report.read_budget", read_budget)
 
-    result = budget_report.budget_for_report()
+    _emit(output_format)
 
-    assert result == (
-        "\n12m 0s left of 60m",
-        BudgetSummary(cap_minutes=60, remaining_seconds=720),
-    )
+    assert capsys.readouterr().out == expected
 
 
 # ---------------------------------------------------------------------------

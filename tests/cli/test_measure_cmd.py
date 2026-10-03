@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 
 from gymrat.cli.app import app
+from gymrat.cli.measure_cmd import MeasureFlags
+from gymrat.cli.run_setup import SharedFlags
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.measure import MeasureOptions
 from gymrat.report.types import MeasurementResult
@@ -553,3 +555,15 @@ def test_measure_when_bench_fails_does_record_trace_with_exit_two_error(
     assert cmd.args["target"] == "main"
     assert cmd.exit_code == 2
     assert cmd.reason == "error"
+
+
+# ---------------------------------------------------------------------------
+# flag dataclass
+# ---------------------------------------------------------------------------
+
+
+def test_measure_flags_when_built_does_subclass_shared_flags():
+    flags = MeasureFlags(adapter="mitata")
+
+    assert flags.adapter == "mitata"
+    assert isinstance(flags, SharedFlags)

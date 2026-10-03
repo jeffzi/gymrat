@@ -5,7 +5,7 @@ Every error raised by gymrat extends :class:`GymratError` rather than a bare
 whole family in one place, and it gives every error an optional ``hint`` field
 carrying a human-facing next step alongside the machine-facing message.
 
-Exit-code routing contract (enforced by ``exit_with_error`` in ``gymrat.cli.shared``):
+Exit-code routing contract (enforced by ``exit_with_error`` in ``gymrat.cli.exit``):
 
 - An uncaught ``GymratError`` — including any subclass such as
   :class:`CommandError` — maps to exit code ``2`` (``TOOL_FAILURE_EXIT_CODE``).

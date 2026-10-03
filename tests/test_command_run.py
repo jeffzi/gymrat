@@ -858,9 +858,10 @@ async def test_with_repo_lock_when_record_construction_raises_does_release_lock(
     assert released, "release() was never called"
 
 
-async def test_with_repo_lock_when_span_emission_raises_does_release_lock(
+async def test_with_repo_lock_when_span_emission_raises_does_warn_and_release_lock(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ):
     header = _seeded_session(repo)
     released: list[bool] = []
@@ -884,6 +885,7 @@ async def test_with_repo_lock_when_span_emission_raises_does_release_lock(
 
     assert span_called, "_emit_command_span was not reached"
     assert released, "release() was never called"
+    assert capsys.readouterr().err == "failed to emit command span: span export failed\n"
 
 
 # ---------------------------------------------------------------------------

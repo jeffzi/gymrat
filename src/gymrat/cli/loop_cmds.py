@@ -26,10 +26,10 @@ from gymrat.cli.console import (
     resolve_stream_color,
     stderr_console,
 )
+from gymrat.cli.exit import exit_with_error, run_cli, write_and_flush, write_stdout
 from gymrat.cli.iterate.progress import IterateRenderer
 from gymrat.cli.options import (
     AdapterOption,
-    AllowUnimprovedOption,
     BenchOption,
     ColorOption,
     ConfigOption,
@@ -40,16 +40,8 @@ from gymrat.cli.options import (
     PrepareOption,
     SamplesOption,
     TimeoutOption,
-    VerboseOption,
 )
-from gymrat.cli.shared import (
-    exit_with_error,
-    resolve_render_mode,
-    run_cli,
-    run_with_signal_abort,
-    write_and_flush,
-    write_stdout,
-)
+from gymrat.cli.run_setup import resolve_render_mode, run_with_signal_abort
 from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.config.resolve import resolve_benchless_config, resolve_config
@@ -78,6 +70,17 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.warn import WarnSink
+
+_VerboseOption = Annotated[
+    bool, typer.Option("--verbose", "-v", help="keep the progress tree visible after the run")
+]
+_AllowUnimprovedOption = Annotated[
+    bool,
+    typer.Option(
+        "--allow-unimproved",
+        help="keep the edit even when the iteration was not improved",
+    ),
+]
 
 # ---------------------------------------------------------------------------
 # Iterate
@@ -166,7 +169,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
     color: ColorOption = None,
-    verbose: VerboseOption = False,
+    verbose: _VerboseOption = False,
     output_format: FormatOption = OutputFormat.text,
     debug: DebugOption = False,
 ) -> None:
@@ -228,7 +231,7 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
         str | None,
         typer.Option("--message", "-m", help="commit message for the kept edit"),
     ] = None,
-    allow_unimproved: AllowUnimprovedOption = False,
+    allow_unimproved: _AllowUnimprovedOption = False,
     output_format: FormatOption = OutputFormat.text,
     color: ColorOption = None,
     debug: DebugOption = False,

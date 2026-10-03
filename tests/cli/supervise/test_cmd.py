@@ -24,16 +24,17 @@ from typing import Any, Literal, get_args
 from unittest.mock import Mock, create_autospec
 
 import pytest
+import typer
 from typer.testing import CliRunner, Result
 
 from gymrat.cli.app import app
-from gymrat.cli.shared import write_stdout
+from gymrat.cli.exit import write_stdout
 from gymrat.cli.supervise import cmd as supervise_cmd
 from gymrat.cli.supervise.preflight import run_preflight
-from gymrat.cli.supervise.progress import create_supervise_reporter
-from gymrat.cli.supervise.types import ReadSessionResult, SuperviseReporter
+from gymrat.cli.supervise.progress import SuperviseReporter, create_supervise_reporter
+from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.config.types import Effort, ResolvedConfig, StopConfig, SuperviseConfig
-from gymrat.errors import GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.exec import kill_live_process_groups
 from gymrat.loop.start import StartResult
 from gymrat.session.paths import (
@@ -755,6 +756,18 @@ def test_supervise_when_color_flag_given_does_forward_it_to_doctor_gate(
     assert result.exit_code == 0
     call_kwargs = seams.doctor_gate.call_args.kwargs
     assert call_kwargs.get("color") is expected_color
+
+
+def test_supervise_when_doctor_gate_refuses_does_exit_two_before_the_session_starts(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch)
+    seams.doctor_gate.side_effect = typer.Exit(TOOL_FAILURE_EXIT_CODE)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert seams.supervise_calls == []
 
 
 def test_supervise_when_supervise_raises_does_still_stop_the_reporter(

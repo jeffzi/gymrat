@@ -13,8 +13,9 @@ from typing import Annotated
 
 import typer
 
-from gymrat.cli.budget_report import budget_for_report, warn_duration_over_budget
+from gymrat.cli.budget_report import emit_report, wants_json, warn_duration_over_budget
 from gymrat.cli.console import apply_color_override, apply_debug
+from gymrat.cli.exit import run_cli, write_and_flush, write_stdout
 from gymrat.cli.options import (
     AdapterOption,
     BenchOption,
@@ -25,20 +26,10 @@ from gymrat.cli.options import (
     OutputFormat,
     PositionalParamType,
     PrepareOption,
-    RecordOption,
     SamplesOption,
     TimeoutOption,
 )
-from gymrat.cli.shared import (
-    MeasureFlags,
-    ReportRenderers,
-    begin_run,
-    emit_report,
-    run_cli,
-    wants_json,
-    write_and_flush,
-    write_stdout,
-)
+from gymrat.cli.run_setup import SharedFlags, begin_run
 from gymrat.command_run import config_trace_args, with_repo_lock
 from gymrat.config.resolve import resolve_config
 from gymrat.loop.baseline import measure_baseline
@@ -57,6 +48,17 @@ _TargetArgument = Annotated[
         help="[label=]<ref|dir> to measure; defaults to the current directory",
     ),
 ]
+_RecordOption = Annotated[
+    bool,
+    typer.Option("--record", "-r", help="append the run to the session log as a baseline"),
+]
+
+
+@dataclass(frozen=True, slots=True)
+class MeasureFlags(SharedFlags):
+    """The measure command's flags: the shared set plus whether to record the run."""
+
+    record: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +109,7 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     config: ConfigOption = None,
     output_format: FormatOption = OutputFormat.text,
     color: ColorOption = None,
-    record: RecordOption = False,
+    record: _RecordOption = False,
     debug: DebugOption = False,
 ) -> None:
     """Measure one revision or directory on its own, with nothing to compare it to."""
@@ -138,14 +140,12 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             lambda _trace: _measure_body(flags, resolved_target),
             args=trace_args,
         )
-        budget_trailer, budget_summary = budget_for_report()
         emit_report(
             outcome.result,
             flags,
-            ReportRenderers(text=render_measure_report, json=render_measure_json),
             ReportOptions(color=color_override),
-            budget_trailer=budget_trailer,
-            budget_summary=budget_summary,
+            text=render_measure_report,
+            json=render_measure_json,
         )
         if outcome.recording is not None:
             note = (

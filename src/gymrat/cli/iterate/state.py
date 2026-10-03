@@ -178,32 +178,37 @@ class IterateState:
 # ---------------------------------------------------------------------------
 
 
-def build_nodes(
-    primary_metric: str,
-    metric_count: int,
+def initial_state(  # noqa: PLR0913 -- one parameter per iteration fact the state carries
     *,
+    sample_count: int,
+    metric_count: int,
+    primary_metric: str,
+    checks_cmd: str | None,
     has_before_hook: bool,
     has_after_hook: bool,
-) -> IterateNodes:
-    """Build the per-phase node states an iteration starts from.
+) -> IterateState:
+    """Build the state an iteration starts from.
 
     Args:
-        primary_metric: Name of the primary metric, shown in the judge node's
-            hint.
-        metric_count: Total number of evaluated metrics, shown in the judge
-            hint alongside the primary.
-        has_before_hook: Whether to include a before-hook node in the
-            checklist.
-        has_after_hook: Whether the record node's hint should mention a
-            subsequent after hook.
+        sample_count: Passes per target; the iteration total is this times
+            :data:`TARGETS_PER_ROUND`.
+        metric_count: Number of metrics the judge evaluates, shown in the judge
+            row's hint alongside the primary.
+        primary_metric: Name of the metric the judge gates on, shown in the
+            judge row's hint.
+        checks_cmd: The shell command the record row mentions, or ``None`` to
+            omit the note.
+        has_before_hook: Whether the checklist includes a before-hook row.
+        has_after_hook: Whether the record row's hint mentions an after hook.
 
     Returns:
-        The assembled node collection, every row pending.
+        A state with every row pending and no event applied yet.
     """
+    total = sample_count * TARGETS_PER_ROUND
     judge_hint = f"{primary_metric} primary"
     if metric_count > 0:
         judge_hint = f"{pluralize(metric_count, 'metric')} · {judge_hint}"
-    return IterateNodes(
+    nodes = IterateNodes(
         before_hook=NodeState(noun="before hook", gerund="before hook", past="before hook"),
         prepare=NodeState(noun="prepare", gerund="preparing", past="prepared"),
         passes=NodeState(noun="passes", gerund="sampling", past="sampled"),
@@ -228,42 +233,10 @@ def build_nodes(
         ),
         has_before_hook=has_before_hook,
     )
-
-
-def initial_state(  # noqa: PLR0913 -- one parameter per iteration fact the state carries
-    *,
-    sample_count: int,
-    metric_count: int,
-    primary_metric: str,
-    checks_cmd: str | None,
-    has_before_hook: bool,
-    has_after_hook: bool,
-) -> IterateState:
-    """Build the state an iteration starts from.
-
-    Args:
-        sample_count: Passes per target; the iteration total is this times
-            :data:`TARGETS_PER_ROUND`.
-        metric_count: Number of metrics the judge evaluates.
-        primary_metric: Name of the metric the judge gates on.
-        checks_cmd: The shell command the record row mentions, or ``None`` to
-            omit the note.
-        has_before_hook: Whether the checklist includes a before-hook row.
-        has_after_hook: Whether the record row's hint mentions an after hook.
-
-    Returns:
-        A state with every row pending and no event applied yet.
-    """
-    total = sample_count * TARGETS_PER_ROUND
     return IterateState(
-        nodes=build_nodes(
-            primary_metric,
-            metric_count,
-            has_before_hook=has_before_hook,
-            has_after_hook=has_after_hook,
-        ),
-        pass_phase=PhaseCounters(eta=SamplingEta.start(total)),
-        confirm_phase=PhaseCounters(eta=SamplingEta.start(total)),
+        nodes=nodes,
+        pass_phase=PhaseCounters(eta=SamplingEta(total=total)),
+        confirm_phase=PhaseCounters(eta=SamplingEta(total=total)),
         prepare_current_start_ms=0.0,
         run_start_ms=None,
         primary_metric=primary_metric,

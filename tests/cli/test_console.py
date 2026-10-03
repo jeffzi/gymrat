@@ -51,11 +51,11 @@ def _open_descriptors() -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_importing_console_does_not_import_the_shared_cli_module():
+def test_importing_console_does_not_import_the_error_module():
     probe = """
 import sys
 import gymrat.cli.console
-assert 'gymrat.cli.shared' not in sys.modules, 'console import pulled gymrat.cli.shared'
+assert 'gymrat.cli.exit' not in sys.modules, 'console import pulled gymrat.cli.exit'
 """
 
     result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable

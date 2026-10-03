@@ -17,8 +17,9 @@ from typing import Annotated
 
 import typer
 
-from gymrat.cli.budget_report import budget_for_report, warn_duration_over_budget
+from gymrat.cli.budget_report import emit_report, warn_duration_over_budget
 from gymrat.cli.console import apply_color_override, apply_debug
+from gymrat.cli.exit import run_cli
 from gymrat.cli.options import (
     ColorOption,
     ConfigOption,
@@ -27,14 +28,7 @@ from gymrat.cli.options import (
     OutputFormat,
     SamplesOption,
 )
-from gymrat.cli.shared import (
-    ReportRenderers,
-    SharedFlags,
-    begin_run,
-    emit_report,
-    run_cli,
-    run_with_signal_abort,
-)
+from gymrat.cli.run_setup import SharedFlags, begin_run, run_with_signal_abort
 from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.command_run import with_repo_lock
 from gymrat.config.resolve import resolve_config
@@ -106,14 +100,12 @@ def probe(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
             lambda _trace: _probe_body(flags, probed),
             args={"names": probed, "samples": samples},
         )
-        budget_trailer, budget_summary = budget_for_report()
         emit_report(
             result,
             flags,
-            ReportRenderers(text=render_probe_report, json=render_probe_json),
             ReportOptions(color=color_override),
-            budget_trailer=budget_trailer,
-            budget_summary=budget_summary,
+            text=render_probe_report,
+            json=render_probe_json,
         )
 
     run_cli(run)

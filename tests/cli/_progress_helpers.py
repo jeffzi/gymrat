@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
     from rich.console import Console
 
-    from gymrat.cli.style import ErasableLive
+    from gymrat.cli.live_display import ErasableLive
     from gymrat.progress_events import ProgressEvent
 
 __all__ = [

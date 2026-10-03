@@ -5,7 +5,7 @@ warning, the session open/resume under the repository lock, the
 stop-condition refusal, the baseline measurement, and the feasibility check.
 The module raises :class:`GymratError` for refusals and lets the command's
 boundary route them to exit 2, except the doctor gate, which renders its own
-report to stderr and exits with code 2 directly.
+report to stderr and leaves with code 2 itself.
 """
 
 from __future__ import annotations
@@ -14,11 +14,14 @@ import asyncio
 import sys
 from typing import TYPE_CHECKING
 
+import typer
+
 from gymrat.cli.console import resolve_stream_color
-from gymrat.cli.shared import SharedFlags, begin_run, write_and_flush, write_stdout
+from gymrat.cli.exit import write_and_flush, write_stdout
+from gymrat.cli.run_setup import SharedFlags, begin_run
 from gymrat.config.types import CliFlags, ResolvedConfig
 from gymrat.doctor import build_doctor_report, render_doctor_report
-from gymrat.errors import GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.baseline import measure_baseline
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import start_session
@@ -107,13 +110,16 @@ def run_preflight(
 def doctor_gate(root: str, *, color: bool | None = None) -> None:
     """Run the four doctor sections and refuse to launch if any check fails.
 
-    On a failure the rendered doctor report goes to stderr and the process exits
-    with code 2 before anything else runs.
+    On a failure the rendered doctor report goes to stderr before anything else
+    runs.
 
     Args:
         root: The repository root path.
         color: The explicit color choice for the report, or ``None`` to defer to
             the environment and TTY detection.
+
+    Raises:
+        typer.Exit: With the tool-failure code when a doctor check fails.
     """
     report = build_doctor_report(CliFlags(), root)
     if not report.has_failures:
@@ -121,7 +127,7 @@ def doctor_gate(root: str, *, color: bool | None = None) -> None:
     resolved_color = resolve_stream_color(color, sys.stderr)
     rendered = render_doctor_report(report, color=resolved_color)
     write_and_flush(sys.stderr, rendered + "\n")
-    sys.exit(2)
+    raise typer.Exit(TOOL_FAILURE_EXIT_CODE)
 
 
 def _checks_warning(config: ResolvedConfig) -> None:

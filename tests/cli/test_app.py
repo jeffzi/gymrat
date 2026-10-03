@@ -19,7 +19,7 @@ from typer.testing import CliRunner
 
 from gymrat.cli.app import app
 from gymrat.cli.console import is_debug_mode
-from gymrat.cli.shared import BUGS_URL
+from gymrat.cli.exit import BUGS_URL
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from tests._ansi import SGR_RE, strip_ansi
 from tests._rich import unwrap_panel

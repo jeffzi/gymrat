@@ -218,7 +218,7 @@ def track_mounted_cleanups(monkeypatch: pytest.MonkeyPatch) -> CleanupRegistry:
         The registry recording every erase cleanup a display mounts.
     """
     registry = CleanupRegistry()
-    monkeypatch.setattr("gymrat.cli.style.install_termination_cleanup", registry.install)
+    monkeypatch.setattr("gymrat.cli.live_display.install_termination_cleanup", registry.install)
     return registry
 
 

@@ -13,7 +13,6 @@ spinner and progress bar the renderer owns for that row.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -30,7 +29,8 @@ from gymrat.cli.iterate.state import (
     initial_state,
     plain_line,
 )
-from gymrat.cli.progress import compact_progress, passes_progress
+from gymrat.cli.live_display import LiveDisplayMixin
+from gymrat.cli.progress import compact_progress, passes_progress, phase_text
 from gymrat.cli.style import (
     COMPACT_HEIGHT_THRESHOLD,
     GLYPH_ALERT,
@@ -45,9 +45,6 @@ from gymrat.cli.style import (
     STYLE_RUNNING,
     STYLE_TIMER_DONE,
     STYLE_TIMER_RUNNING,
-    STYLE_VERB,
-    ErasableLive,
-    LiveDisplayMixin,
 )
 from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
 from gymrat.metric_name import format_inline, parse
@@ -65,8 +62,6 @@ if TYPE_CHECKING:
 
     from gymrat.cli.iterate.state import NodeState, PhaseCounters
     from gymrat.cli.progress import _ClockColumn
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -124,13 +119,7 @@ def render_running_row(
         updated ``spinner``.
     """
     style = STYLE_ALERT if node.alert else STYLE_RUNNING
-    text = Text()
-    text.append(node.gerund, style=STYLE_VERB)
-    if node.note:
-        text.append(f" {node.note}", style=STYLE_META)
-    if node.target:
-        text.append(" · ", style=STYLE_META)
-        text.append(node.target, style=STYLE_LABEL)
+    text = phase_text(node.gerund, node.note, node.target)
     if running_ms is not None:
         text.append(f" {format_duration(running_ms)}", style=STYLE_TIMER_RUNNING)
     if node.alert:
@@ -152,7 +141,10 @@ def render_done_row(node: NodeState) -> Text:
         The styled row.
     """
     text = Text()
-    text.append(f"{_glyph(node)} ", style=STYLE_ALERT if node.alert else STYLE_DONE)
+    if node.alert:
+        text.append(f"{GLYPH_ALERT} ", style=STYLE_ALERT)
+    else:
+        text.append(f"{GLYPH_DONE} ", style=STYLE_DONE)
     text.append(node.past)
     if node.detail:
         if isinstance(node.detail, JudgeDetail):
@@ -168,20 +160,11 @@ def render_done_row(node: NodeState) -> Text:
 def render_idle_row(node: NodeState) -> Text:
     """Render a not-yet-started phase: its glyph, noun, and optional hint."""
     text = Text()
-    text.append(f"{_glyph(node)} {node.noun}", style=STYLE_PENDING)
+    glyph = GLYPH_ALERT if node.alert else GLYPH_PENDING
+    text.append(f"{glyph} {node.noun}", style=STYLE_PENDING)
     if node.hint:
         text.append(f" ({node.hint})", style=STYLE_PENDING)
     return text
-
-
-def _glyph(node: NodeState) -> str:
-    if node.alert:
-        return GLYPH_ALERT
-    match node.status:
-        case "done":
-            return GLYPH_DONE
-        case _:
-            return GLYPH_PENDING
 
 
 # ---------------------------------------------------------------------------
@@ -298,9 +281,6 @@ class IterateRenderer(LiveDisplayMixin):
 
         self._is_live = mode == "live" and console.width > 0
         self._compact = False
-        self._stopped = False
-        self._live: ErasableLive | None = None
-        self._uninstall_cleanup: Callable[[], None] = lambda: None
 
         self._spinners: dict[str, Spinner] = {}
         self._pass_view = _PhaseView()
@@ -360,9 +340,9 @@ class IterateRenderer(LiveDisplayMixin):
         header.append(" · ", style=STYLE_META)
         header.append(f"session {self._session_id}", style=STYLE_META)
 
-        elapsed_ms = self._clock_elapsed_ms(self._start_clock_time)
-        if elapsed_ms is None:
+        if self._start_clock_time is None or self._clock is None:
             return header
+        elapsed_ms = (self._clock() - self._start_clock_time) * MS_PER_SECOND
 
         header.append(" · ", style=STYLE_META)
         eta_ms = self._state.pass_phase.eta.eta_ms
@@ -382,15 +362,11 @@ class IterateRenderer(LiveDisplayMixin):
         return spinner
 
     def _bar_for(self, node: NodeState) -> Progress | None:
-        view = self._view_for(node)
-        return view.bar if view is not None else None
-
-    def _view_for(self, node: NodeState) -> _PhaseView | None:
         nodes = self._state.nodes
         if node is nodes.passes:
-            return self._pass_view
+            return self._pass_view.bar
         if node is nodes.confirm:
-            return self._confirm_view
+            return self._confirm_view.bar
         return None
 
     def _running_elapsed_ms(self, node: NodeState) -> float | None:
@@ -399,15 +375,6 @@ class IterateRenderer(LiveDisplayMixin):
         if self._clock is None or node.start_ms <= 0:
             return None
         return self._clock() * MS_PER_SECOND - node.start_ms
-
-    def _clock_elapsed_ms(self, start_clock: float | None) -> float | None:
-        if start_clock is None or self._clock is None:
-            return None
-        return (self._clock() - start_clock) * MS_PER_SECOND
-
-    def _print_plain(self, at_ms: float, message: str) -> None:
-        ts = format_timestamp(at_ms, self._state.run_start_ms)
-        self._console.print(f"{ts} {message}", highlight=False, markup=False)
 
     # -----------------------------------------------------------------------
     # Event handling
@@ -423,7 +390,8 @@ class IterateRenderer(LiveDisplayMixin):
         if not self._is_live:
             line = plain_line(before, self._state, event)
             if line is not None:
-                self._print_plain(event.at_ms, line)
+                ts = format_timestamp(event.at_ms, self._state.run_start_ms)
+                self._console.print(f"{ts} {line}", highlight=False, markup=False)
             return
 
         self._sync_live(event)
@@ -512,12 +480,3 @@ class IterateRenderer(LiveDisplayMixin):
 
     def _counters(self, *, is_confirm: bool) -> PhaseCounters:
         return self._state.confirm_phase if is_confirm else self._state.pass_phase
-
-    def stop(self) -> None:
-        """Stop the renderer and clean up any live display."""
-        if not self._claim_stop():
-            return
-        self._uninstall_cleanup()
-        if self._live is not None:
-            self._live.stop()
-            self._live = None

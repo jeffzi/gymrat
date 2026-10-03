@@ -15,14 +15,14 @@ from gymrat.eta import (
 # ---------------------------------------------------------------------------
 
 
-def test_sampling_eta_start_when_given_total_does_return_empty_state() -> None:
-    eta = SamplingEta.start(10)
+def test_sampling_eta_when_given_only_a_total_does_start_with_no_samples() -> None:
+    eta = SamplingEta(total=10)
 
     assert (eta.completed, eta.total_time_ms, eta.total) == (0, 0.0, 10)
 
 
 def test_sampling_eta_advanced_when_given_duration_does_return_incremented_copy() -> None:
-    eta = SamplingEta.start(4)
+    eta = SamplingEta(total=4)
 
     advanced = eta.advanced(100.0)
 
@@ -31,7 +31,7 @@ def test_sampling_eta_advanced_when_given_duration_does_return_incremented_copy(
 
 
 def test_sampling_eta_advanced_when_called_repeatedly_does_accumulate_samples() -> None:
-    eta = SamplingEta.start(4).advanced(100.0).advanced(300.0)
+    eta = SamplingEta(total=4).advanced(100.0).advanced(300.0)
 
     assert (eta.completed, eta.total_time_ms) == (2, 400.0)
 
@@ -51,15 +51,6 @@ def test_sampling_eta_eta_ms_when_given_state_does_return_expected_estimate(
     eta = SamplingEta(completed=completed, total_time_ms=total_time_ms, total=total)
 
     assert eta.eta_ms == expected
-
-
-def test_sampling_eta_with_total_when_given_new_total_does_carry_over_other_fields() -> None:
-    eta = SamplingEta(completed=2, total_time_ms=300.0, total=5)
-
-    updated = eta.with_total(9)
-
-    assert (updated.completed, updated.total_time_ms, updated.total) == (2, 300.0, 9)
-    assert eta.total == 5
 
 
 # ---------------------------------------------------------------------------

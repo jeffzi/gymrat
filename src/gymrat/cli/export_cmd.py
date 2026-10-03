@@ -10,11 +10,11 @@ from typing import Annotated
 import typer
 
 from gymrat.cli.console import apply_color_override, apply_debug
+from gymrat.cli.exit import exit_with_error, write_and_flush
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     ColorOption,
     DebugOption,
 )
-from gymrat.cli.shared import exit_with_error, write_and_flush
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
 from gymrat.session.store import first_line_json, read_session_header
 from gymrat.warn import warn_to_stderr

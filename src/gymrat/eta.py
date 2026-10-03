@@ -29,20 +29,15 @@ class SamplingEta:
     """Remaining-time estimate built from the average of finished passes.
 
     Attributes:
+        total: Passes the run expects in all.
         completed: Passes finished so far; every one of them contributed a
             sample to ``total_time_ms``.
         total_time_ms: Sum of the sampled durations, in milliseconds.
-        total: Passes the run expects in all.
     """
 
-    completed: int
-    total_time_ms: float
     total: int
-
-    @classmethod
-    def start(cls, total: int) -> Self:
-        """Return the estimate for a run of ``total`` passes that has not started."""
-        return cls(completed=0, total_time_ms=0.0, total=total)
+    completed: int = 0
+    total_time_ms: float = 0.0
 
     @property
     def eta_ms(self) -> float | None:
@@ -71,10 +66,6 @@ class SamplingEta:
             completed=self.completed + 1,
             total_time_ms=self.total_time_ms + duration_ms,
         )
-
-    def with_total(self, total: int) -> Self:
-        """Return a copy that expects ``total`` passes, keeping the samples taken so far."""
-        return replace(self, total=total)
 
 
 def _hours_minutes_seconds(total_seconds: int) -> tuple[int, int, int]:

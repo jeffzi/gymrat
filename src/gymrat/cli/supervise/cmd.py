@@ -21,11 +21,13 @@ import typer
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
-    from gymrat.cli.supervise.types import ReadSessionResult, SuperviseReporter
+    from gymrat.cli.supervise.progress import SuperviseReporter
+    from gymrat.cli.supervise.types import ReadSessionResult
     from gymrat.supervisor.events import SessionObserver
     from gymrat.supervisor.supervise import SupervisionResult
 
 from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
+from gymrat.cli.exit import exit_with_error, write_and_flush, write_stdout
 from gymrat.cli.options import (
     BaselineOption,
     ColorOption,
@@ -33,7 +35,7 @@ from gymrat.cli.options import (
     parse_max_minutes,
     parse_positive_number,
 )
-from gymrat.cli.shared import exit_with_error, resolve_render_mode, write_and_flush, write_stdout
+from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.cli.supervise.preflight import doctor_gate, run_preflight, validate_experiment_worktree
 from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.cli.supervise.summary import SessionLabels, build_summary

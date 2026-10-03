@@ -10,13 +10,13 @@ from typing import Annotated
 
 import typer
 
-from gymrat.cli.budget_report import budget_snapshot, write_budget_report
+from gymrat.cli.budget_report import write_budget_report
 from gymrat.cli.console import apply_color_override, apply_debug
+from gymrat.cli.exit import run_cli
 from gymrat.cli.options import (
     AdapterOption,
     BaselineOption,
     BenchOption,
-    BranchOption,
     ColorOption,
     ConfigOption,
     DebugOption,
@@ -26,7 +26,6 @@ from gymrat.cli.options import (
     SamplesOption,
     TimeoutOption,
 )
-from gymrat.cli.shared import run_cli, write_stdout
 from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.config.resolve import resolve_config
 from gymrat.config.types import CliFlags
@@ -88,17 +87,12 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
             return start_session(root, baseline, resolved), resolved.runbook
 
         result, runbook = await with_repo_lock("start", body, args=start_args)
-        if use_json:
-            write_budget_report(
-                repo_root(),
-                use_json=True,
-                render_json=lambda summary: render_start_json(
-                    result, runbook=runbook, budget=summary
-                ),
-                text_report="",
-            )
-        else:
-            write_stdout(format_start_summary(result, runbook) + "\n")
+        write_budget_report(
+            repo_root(),
+            use_json=use_json,
+            render_json=lambda summary: render_start_json(result, runbook=runbook, budget=summary),
+            text_report=format_start_summary(result, runbook),
+        )
 
     run_cli(run)
 
@@ -108,13 +102,19 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
 # ---------------------------------------------------------------------------
 
 
+_BranchOption = Annotated[
+    str | None,
+    typer.Option("--branch", help="branch to point at the squash commit (default: <branch>-final)"),
+]
+
+
 def finalize(
     *,
     message: Annotated[
         str | None,
         typer.Option("--message", "-m", help="message for the squash commit"),
     ] = None,
-    branch: BranchOption = None,
+    branch: _BranchOption = None,
     output_format: FormatOption = OutputFormat.text,
     color: ColorOption = None,
     debug: DebugOption = False,
@@ -136,15 +136,12 @@ def finalize(
             return finalize_session(repo_root(), FinalizeOptions(message=message, branch=branch))
 
         result = await with_repo_lock("finalize", body, args=finalize_args)
-        if use_json:
-            write_budget_report(
-                repo_root(),
-                use_json=True,
-                render_json=lambda summary: render_finalize_json(result, budget=summary),
-                text_report="",
-            )
-        else:
-            write_stdout(result.report + "\n")
+        write_budget_report(
+            repo_root(),
+            use_json=use_json,
+            render_json=lambda summary: render_finalize_json(result, budget=summary),
+            text_report=result.report,
+        )
 
     run_cli(run)
 
@@ -217,20 +214,16 @@ def sync(
             return sync_to_experiment(repo_root())
 
         result = await with_repo_lock("sync", body)
-        if use_json:
-            write_budget_report(
-                repo_root(),
-                use_json=True,
-                render_json=lambda summary: render_sync_json(result, budget=summary),
-                text_report="",
-            )
+        if not result.files:
+            text_report = "nothing to sync"
         else:
-            if not result.files:
-                summary = "nothing to sync"
-            else:
-                header = f"Synced {pluralize(len(result.files), 'file')} to experiment worktree:"
-                summary = "\n".join([header, *(f"  {f}" for f in result.files)])
-            trailer, _ = budget_snapshot(repo_root())
-            write_stdout(summary + trailer + "\n")
+            header = f"Synced {pluralize(len(result.files), 'file')} to experiment worktree:"
+            text_report = "\n".join([header, *(f"  {f}" for f in result.files)])
+        write_budget_report(
+            repo_root(),
+            use_json=use_json,
+            render_json=lambda summary: render_sync_json(result, budget=summary),
+            text_report=text_report,
+        )
 
     run_cli(run)

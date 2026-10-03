@@ -36,7 +36,8 @@ if sys.platform != "win32":
 import pytest
 
 from gymrat.cli.console import resolve_stream_color, set_color_override, stderr_console
-from gymrat.cli.shared import format_cli_error, resolve_render_mode
+from gymrat.cli.exit import format_cli_error
+from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.doctor import (
     Check,
     CheckSection,

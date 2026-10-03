@@ -12,7 +12,9 @@ from pathlib import Path
 
 import typer
 
+from gymrat.cli.budget_report import wants_json
 from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
+from gymrat.cli.exit import run_cli, write_stdout
 from gymrat.cli.options import (
     AdapterOption,
     BenchOption,
@@ -25,7 +27,7 @@ from gymrat.cli.options import (
     SamplesOption,
     TimeoutOption,
 )
-from gymrat.cli.shared import SharedFlags, run_cli, wants_json, write_stdout
+from gymrat.cli.run_setup import SharedFlags
 from gymrat.doctor import (
     build_doctor_report,
     render_doctor_json,
