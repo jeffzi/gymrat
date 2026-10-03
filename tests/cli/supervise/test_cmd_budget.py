@@ -63,15 +63,16 @@ def test_supervise_when_run_does_write_budget_with_correct_deadline(
         captured_budgets.append(budget)
 
     monkeypatch.setattr("gymrat.cli.supervise.cmd.write_budget", capturing_write)
+    earliest_start_ms = now_ms()
 
     result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
 
+    latest_start_ms = now_ms()
     assert result.exit_code == 0
     assert len(captured_budgets) == 1
     budget = captured_budgets[0]
     assert budget.max_minutes == _CAP_MINUTES
-    expected_deadline = budget.started_at_ms + _CAP_MS
-    assert budget.deadline_ms == expected_deadline
+    assert earliest_start_ms + _CAP_MS <= budget.deadline_ms <= latest_start_ms + _CAP_MS
 
 
 def test_supervise_when_preflight_records_baseline_does_start_budget_no_earlier(
@@ -112,7 +113,7 @@ def test_supervise_when_preflight_records_baseline_does_start_budget_no_earlier(
     assert result.exit_code == 0
     assert len(captured_budgets) == 1
     baseline_epoch_ms = baseline_at // 1_000_000
-    assert captured_budgets[0].started_at_ms >= baseline_epoch_ms
+    assert captured_budgets[0].deadline_ms >= baseline_epoch_ms + _CAP_MS
 
 
 def _record_budget_release(
@@ -152,7 +153,7 @@ def _budget_uninstall_tag(
     probe budget file and identified by its effect, not its registration order.
     """
     monkeypatch.setattr("gymrat.cli.supervise.cmd.clear_budget", clear_budget)
-    write_budget(repo, Budget(started_at_ms=0.0, max_minutes=10, deadline_ms=600_000.0))
+    write_budget(repo, Budget(max_minutes=10, deadline_ms=600_000.0))
     for index, cleanup in enumerate(installed):
         cleanup()
         if not Path(budget_path(repo)).exists():
@@ -230,7 +231,7 @@ def test_supervise_when_run_does_register_budget_termination_cleanup(
     seams = _install_seams(monkeypatch)
 
     _run("optimize it", "--max-minutes", "10")
-    write_budget(repo, Budget(started_at_ms=0.0, max_minutes=10, deadline_ms=600_000.0))
+    write_budget(repo, Budget(max_minutes=10, deadline_ms=600_000.0))
 
     for cleanup in seams.installed_cleanups():
         cleanup()

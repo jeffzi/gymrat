@@ -837,6 +837,16 @@ async def test_iterate_session_when_fingerprint_fails_does_omit_measured_tree_wi
 # ---------------------------------------------------------------------------
 
 
+def _install_live_budget(monkeypatch: pytest.MonkeyPatch, *, deadline_ms: float) -> None:
+    """Make ``read_budget`` answer a 30-minute budget due at *deadline_ms*, with the clock at zero."""
+    live_budget = Budget(max_minutes=30, deadline_ms=deadline_ms)
+    monkeypatch.setattr(
+        "gymrat.session.budget.read_budget",
+        lambda _root, **_kw: live_budget,  # pyrefly: ignore
+    )
+    monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0)
+
+
 async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_or_bench(
     repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
@@ -848,12 +858,7 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
 
     # Live budget with 12 min left, but last iteration took 14 min.
-    fake_budget = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=720_000.0)
-    monkeypatch.setattr(
-        "gymrat.session.budget.read_budget",
-        lambda _root, **_kw: fake_budget,  # pyrefly: ignore
-    )
-    monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0)
+    _install_live_budget(monkeypatch, deadline_ms=720_000.0)
 
     with pytest.raises(LoopStopError) as exc:
         await iterate_session(repo, resolved_config())
@@ -874,13 +879,7 @@ async def test_iterate_session_when_budget_exceeded_does_name_estimate_source_in
         (iteration_record(seq=1, duration_ms=840_000), committed_keep(1)),
     )
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
-
-    fake_budget = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=720_000.0)
-    monkeypatch.setattr(
-        "gymrat.session.budget.read_budget",
-        lambda _root, **_kw: fake_budget,  # pyrefly: ignore
-    )
-    monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0)
+    _install_live_budget(monkeypatch, deadline_ms=720_000.0)
 
     with pytest.raises(LoopStopError) as exc:
         await iterate_session(repo, resolved_config())
@@ -900,12 +899,7 @@ async def test_iterate_session_when_budget_live_but_no_estimate_does_run_normall
     write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
 
-    fake_budget = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=1_800_000.0)
-    monkeypatch.setattr(
-        "gymrat.session.budget.read_budget",
-        lambda _root, **_kw: fake_budget,  # pyrefly: ignore
-    )
-    monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0)
+    _install_live_budget(monkeypatch, deadline_ms=1_800_000.0)
 
     result = await iterate_session(repo, resolved_config())
 
@@ -927,12 +921,7 @@ async def test_iterate_session_when_stop_condition_met_does_report_stop_before_b
     write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
 
-    fake_budget = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=720_000.0)
-    monkeypatch.setattr(
-        "gymrat.session.budget.read_budget",
-        lambda _root, **_kw: fake_budget,  # pyrefly: ignore
-    )
-    monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0)
+    _install_live_budget(monkeypatch, deadline_ms=720_000.0)
 
     config = resolved_config(stop=StopConfig(max_iterations=1))
 

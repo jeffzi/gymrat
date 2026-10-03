@@ -1,7 +1,7 @@
 """Behavioral tests for the session budget file (write / read / clear / remaining).
 
-A budget is a frozen dataclass with ``version``, ``started_at_ms``,
-``max_minutes``, and ``deadline_ms``.  ``write_budget`` writes atomically via
+A budget is a frozen pydantic model with ``max_minutes`` and ``deadline_ms``, and
+the file carries exactly those two keys.  ``write_budget`` writes atomically via
 temp-file-and-replace so a concurrent reader never sees a partial file.
 ``read_budget`` returns the budget only when the file parses, the deadline has
 not passed, and the supervise lock for that root is held; otherwise it returns
@@ -43,7 +43,6 @@ def _read_json(root: str) -> dict[str, object]:
 def _make_budget(**overrides: object) -> Budget:
     """Build a Budget with sensible defaults, overridable per-field."""
     defaults: dict[str, object] = {
-        "started_at_ms": 1000.0,
         "max_minutes": 30,
         "deadline_ms": 1_800_000.0,
     }
@@ -54,8 +53,6 @@ def _make_budget(**overrides: object) -> Budget:
 def _budget_json(**overrides: object) -> str:
     """Serialize a budget JSON payload with sensible defaults, overridable per-field."""
     defaults: dict[str, object] = {
-        "version": 1,
-        "started_at_ms": 1000.0,
         "max_minutes": 30,
         "deadline_ms": _FAR_FUTURE_DEADLINE_MS,
     }
@@ -91,24 +88,18 @@ def test_remaining_ms_when_called_does_return_clamped_difference(
 # ---------------------------------------------------------------------------
 
 
-def test_write_budget_when_called_does_create_readable_json_file(root: str):
+def test_write_budget_when_called_does_write_only_the_cap_and_the_deadline(root: str):
     budget = _make_budget()
 
     write_budget(root, budget)
 
-    raw = _read_json(root)
-    assert raw["version"] == 1
-    assert raw["started_at_ms"] == 1000.0
-    assert raw["max_minutes"] == 30
-    assert raw["deadline_ms"] == 1_800_000.0
+    assert _read_json(root) == {"max_minutes": 30, "deadline_ms": 1_800_000.0}
 
 
 def test_write_budget_when_called_does_write_compact_json_bytes(root: str):
     write_budget(root, _make_budget())
 
-    assert _budget_file(root).read_bytes() == (
-        b'{"started_at_ms":1000.0,"max_minutes":30.0,"deadline_ms":1800000.0,"version":1}'
-    )
+    assert _budget_file(root).read_bytes() == b'{"max_minutes":30.0,"deadline_ms":1800000.0}'
 
 
 def test_write_budget_when_called_twice_does_overwrite_previous(root: str):
@@ -145,12 +136,8 @@ def test_read_budget_when_file_exists_and_lock_held_and_deadline_ahead_does_retu
         pytest.param(json.dumps(42), id="number-not-object"),
         pytest.param(_budget_json(deadline_ms="soon"), id="deadline-string"),
         pytest.param(_budget_json(deadline_ms=None), id="deadline-null"),
-        pytest.param(_budget_json(started_at_ms="early"), id="started-at-string"),
         pytest.param(_budget_json(max_minutes="long"), id="max-minutes-string"),
         pytest.param(_budget_json(deadline_ms=True), id="deadline-bool"),
-        pytest.param(_budget_json(version=True), id="version-bool"),
-        pytest.param(_budget_json(version=1.0), id="version-float"),
-        pytest.param(_budget_json(version=2), id="version-newer"),
         pytest.param(_budget_json(extra=1), id="unexpected-field"),
     ],
 )
@@ -182,17 +169,6 @@ def test_read_budget_when_path_cannot_be_read_does_return_none(root: str):
         result = read_budget(root, now_ms=0.0)
 
     assert result is None
-
-
-def test_read_budget_when_version_missing_does_return_version_one_budget(root: str):
-    raw = json.loads(_budget_json())
-    del raw["version"]
-    _budget_file(root).write_text(json.dumps(raw), encoding="utf-8")
-
-    with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
-        result = read_budget(root, now_ms=0.0)
-
-    assert result == _make_budget(deadline_ms=_FAR_FUTURE_DEADLINE_MS)
 
 
 def test_read_budget_when_deadline_passed_does_return_none(root: str):

@@ -13,7 +13,7 @@ import pytest
 from gymrat.session.budget import Budget, write_budget
 
 #: A 30-minute budget whose deadline sits far in the future, so it never expires mid-test.
-LIVE_BUDGET = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=9_999_999_999_999.0)
+LIVE_BUDGET = Budget(max_minutes=30, deadline_ms=9_999_999_999_999.0)
 
 #: The hint every supervised-run refusal attaches, pointing the caller at the tool.
 SUPERVISED_HINT = "Call the tool instead of the command."
@@ -35,11 +35,7 @@ def install_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def install_tight_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Write a budget with 5 minutes left and freeze the clock."""
-    tight_budget = Budget(
-        started_at_ms=0.0,
-        max_minutes=30,
-        deadline_ms=300_000.0,
-    )
+    tight_budget = Budget(max_minutes=30, deadline_ms=300_000.0)
     _install(repo, monkeypatch, tight_budget)
     monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0.0)
 

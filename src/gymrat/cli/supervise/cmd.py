@@ -282,13 +282,8 @@ def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], Non
         so the run's own teardown and the unwind of a session whose setup
         failed can both call it without clearing twice.
     """
-    started_at_ms = now_ms()
-    deadline_ms = started_at_ms + minutes_to_ms(max_minutes)
-    budget = Budget(
-        started_at_ms=started_at_ms,
-        max_minutes=max_minutes,
-        deadline_ms=deadline_ms,
-    )
+    deadline_ms = now_ms() + minutes_to_ms(max_minutes)
+    budget = Budget(max_minutes=max_minutes, deadline_ms=deadline_ms)
     Path(session_dir(root)).mkdir(parents=True, exist_ok=True)
     write_budget(root, budget)
     uninstall = install_termination_cleanup(lambda: clear_budget(root))

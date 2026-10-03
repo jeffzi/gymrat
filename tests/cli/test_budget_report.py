@@ -52,7 +52,7 @@ def _raise(error: Exception) -> Callable[..., object]:
 def _install_over_budget_session(monkeypatch: pytest.MonkeyPatch, *, remaining_ms: float) -> None:
     """Patch the budget report lookups onto a live budget plus one timed iteration record."""
     records = [iteration_record(duration_ms=ITERATE_MS)]
-    budget = Budget(started_at_ms=0.0, max_minutes=60, deadline_ms=remaining_ms)
+    budget = Budget(max_minutes=60, deadline_ms=remaining_ms)
 
     def repo_root(_cwd: str | None = None) -> str:
         return "/repo"
@@ -151,7 +151,7 @@ def test_emit_report_when_budget_active_does_write_the_report_with_the_budget(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    budget = Budget(started_at_ms=0.0, max_minutes=60, deadline_ms=720_999.0)
+    budget = Budget(max_minutes=60, deadline_ms=720_999.0)
 
     def read_budget(_root: str, **_kwargs: object) -> Budget:
         return budget
