@@ -31,7 +31,7 @@ SKILL_RELATIVE_PATH = ".claude/skills/gymrat/SKILL.md"
 
 DEFAULT_RUNBOOK_PATH = "gymrat-runbook.md"
 
-type ArtifactStatus = Literal["created", "exists", "declined", "is a directory"]
+type ArtifactStatus = Literal["created", "exists", "declined"]
 
 _RUNBOOK_STUB = """# Optimization Runbook
 
@@ -85,66 +85,56 @@ class ScaffoldResult:
     skill: ScaffoldArtifact
 
 
-def _serialize_config(config: dict[str, object]) -> str:
-    """Hand-written TOML: one key per line, trailing newline.
-
-    ``json.dumps`` escapes the bench value — every JSON basic-string escape is a
-    valid TOML basic-string escape, so the result round-trips through any TOML
-    parser.
+def _write_artifact(base_dir: Path, relative: str, content: str) -> ScaffoldArtifact:
+    """Write ``content`` to ``relative`` unless a file is already there.
 
     Args:
-        config: The scaffold config dict, with a ``"bench"`` key and an
-            optional ``"runbook"`` key.
+        base_dir: The project root the artifact is written into.
+        relative: The artifact's path, relative to ``base_dir``.
+        content: The text to write.
 
     Returns:
-        The TOML string with a trailing newline.
+        The artifact, reported as ``exists`` when a file already occupied the
+        path and as ``created`` otherwise.
+
+    Raises:
+        GymratError: When the file cannot be written.
     """
-    lines = [f"bench = {json.dumps(config['bench'])}"]
-    if "runbook" in config:
-        lines.append(f"runbook = {json.dumps(config['runbook'])}")
-    return "\n".join(lines) + "\n"
-
-
-def _write_runbook(base_dir: Path, *, runbook: bool) -> ScaffoldArtifact:
-    if not runbook:
-        return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="declined")
-
-    full_path = base_dir / DEFAULT_RUNBOOK_PATH
-    if full_path.exists():
-        if not full_path.is_file():
-            return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="is a directory")
-        return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="exists")
-
-    try:
-        full_path.write_text(_RUNBOOK_STUB, encoding="utf-8")
-    except OSError as exc:
-        msg = f"Cannot write {DEFAULT_RUNBOOK_PATH} in {base_dir}"
-        raise GymratError(msg, hint=str(exc)) from exc
-    return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="created")
-
-
-def _write_skill(base_dir: Path, content: str) -> ScaffoldArtifact:
-    full_path = base_dir / SKILL_RELATIVE_PATH
-    if full_path.exists():
-        if not full_path.is_file():
-            return ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="is a directory")
-        return ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="exists")
+    full_path = base_dir / relative
+    if full_path.is_file():
+        return ScaffoldArtifact(path=relative, status="exists")
 
     try:
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content, encoding="utf-8")
     except OSError as exc:
-        msg = f"Cannot write {SKILL_RELATIVE_PATH} in {base_dir}"
+        msg = f"Cannot write {relative} in {base_dir}"
         raise GymratError(msg, hint=str(exc)) from exc
-    return ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="created")
+    return ScaffoldArtifact(path=relative, status="created")
 
 
 def _prepare_config(request: ScaffoldRequest) -> str:
+    """Validate the scaffold config and serialize it as hand-written TOML.
+
+    One key per line, with a trailing newline. ``json.dumps`` escapes each
+    value — every JSON basic-string escape is a valid TOML basic-string escape,
+    so the result round-trips through any TOML parser.
+
+    Args:
+        request: The user choices; ``bench`` goes into the config and
+            ``runbook`` decides whether the runbook path does.
+
+    Returns:
+        The TOML string with a trailing newline.
+
+    Raises:
+        GymratError: When the config fails validation.
+    """
     config_dict: dict[str, object] = {"bench": request.bench}
     if request.runbook:
         config_dict["runbook"] = DEFAULT_RUNBOOK_PATH
     validate_config_dict(config_dict)
-    return _serialize_config(config_dict)
+    return "".join(f"{key} = {json.dumps(value)}\n" for key, value in config_dict.items())
 
 
 def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
@@ -244,11 +234,15 @@ def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
         else _write_config(base_dir, config_content)
     )
     try:
-        runbook_artifact = _write_runbook(base_dir, runbook=request.runbook)
+        runbook_artifact = (
+            _write_artifact(base_dir, DEFAULT_RUNBOOK_PATH, _RUNBOOK_STUB)
+            if request.runbook
+            else ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="declined")
+        )
         skill_artifact = (
             ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="declined")
             if skill_content is None
-            else _write_skill(base_dir, skill_content)
+            else _write_artifact(base_dir, SKILL_RELATIVE_PATH, skill_content)
         )
     except BaseException:
         # Only roll back a config this run created; a pre-existing one is the user's.

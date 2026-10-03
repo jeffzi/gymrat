@@ -1,6 +1,6 @@
 import pytest
 
-from gymrat.config.env import EnvResult, env_positive_int_result, is_positive_integer
+from gymrat.config.env import MAX_SAFE_INTEGER, env_positive_int_result, is_positive_integer
 
 _ENV_VAR = "GYMRAT_SAMPLES"
 _CEILING = 10
@@ -28,16 +28,19 @@ def test_env_positive_int_result_when_digit_string_exceeds_conversion_limit_does
     huge = "1" * 4301
     monkeypatch.setenv("GYMRAT_SAMPLES", huge)
 
-    result = env_positive_int_result("GYMRAT_SAMPLES")
+    result = env_positive_int_result("GYMRAT_SAMPLES", maximum=MAX_SAFE_INTEGER)
 
-    assert isinstance(result, EnvResult)
     assert result.problem is not None
     assert result.value is None
 
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [pytest.param("1", 1, id="one"), pytest.param("10", _CEILING, id="ceiling")],
+    [
+        pytest.param("1", 1, id="one"),
+        pytest.param("10", _CEILING, id="ceiling"),
+        pytest.param("007", 7, id="leading-zeros"),
+    ],
 )
 def test_env_positive_int_result_when_bare_digits_within_ceiling_does_accept(
     monkeypatch: pytest.MonkeyPatch, raw: str, expected: int

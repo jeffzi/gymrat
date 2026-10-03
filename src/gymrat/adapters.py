@@ -55,12 +55,7 @@ from pydantic import (
 from gymrat.errors import GymratError
 from gymrat.metric_name import LINE_TERMINATORS
 from gymrat.model import Direction, MetricUnit
-from gymrat.pydantic_errors import (
-    UNKNOWN_SHAPE_PHRASE,
-    describe_key,
-    drop_prefix_errors,
-    phrase_for_error,
-)
+from gymrat.pydantic_errors import describe_key, drop_prefix_errors, phrase_for_error
 from gymrat.warn import WarnSink, warn_to_stderr
 
 # ---------------------------------------------------------------------------
@@ -609,10 +604,10 @@ def _first_problem(exc: ValidationError, prefix: tuple[str, ...] = ()) -> str:
         The text that follows the skipped entry's name in the warning.
     """
     error = drop_prefix_errors(exc.errors())[0]
-    key = describe_key((*prefix, *(str(part) for part in error["loc"])))
+    key = describe_key((*prefix, *error["loc"]))
     if error["type"] == "missing":
         return f" with missing {key}"
-    return _invalid_value_tail(key, phrase_for_error(error) or UNKNOWN_SHAPE_PHRASE, error["input"])
+    return _invalid_value_tail(key, phrase_for_error(error), error["input"])
 
 
 def _warn_skip(warn: WarnSink, subject: str, tail: str) -> None:

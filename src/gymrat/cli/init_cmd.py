@@ -51,8 +51,6 @@ def _format_artifact(label: str, artifact: ScaffoldArtifact, base_dir: str) -> s
     if artifact.status == "declined":
         return f"  {label} declined"
     display = _display_path(base_dir, artifact.path)
-    if artifact.status == "is a directory":
-        return f"  {label} is a directory at {display}"
     verb = "created at" if artifact.status == "created" else "already exists at"
     return f"  {label} {verb} {display}"
 

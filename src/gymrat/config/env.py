@@ -6,12 +6,9 @@ collected. An unset variable yields an empty result so the next source in the
 precedence chain -- config file, then built-in default -- can supply the value.
 """
 
-import contextlib
 import json
 import os
-from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
 
 MAX_TIMEOUT_SECONDS = 2_147_483
 """Largest ``timeout_seconds`` a 32-bit millisecond timer can represent."""
@@ -26,18 +23,22 @@ is accepted or rejected no matter which one it arrives through.
 
 
 @dataclass(frozen=True, slots=True)
-class EnvResult:
+class EnvResult[T]:
     """The outcome of reading one env var: a value, a problem, or neither.
 
     ``value`` and ``problem`` are mutually exclusive; both are ``None`` when the
     variable is unset.
     """
 
-    value: str | int | None = None
+    value: T | None = None
     problem: str | None = None
 
 
-def env_string_result(env_var: str) -> EnvResult:
+def _env_problem(env_var: str, phrase: str, raw: str) -> str:
+    return f"Invalid value for {env_var}: expected {phrase}, got {json.dumps(raw)}"
+
+
+def env_string_result(env_var: str) -> EnvResult[str]:
     """Read a ``GYMRAT_*`` string env var, returning its value or a problem.
 
     A whitespace-only value is rejected alongside the empty string: these vars
@@ -55,10 +56,7 @@ def env_string_result(env_var: str) -> EnvResult:
     if raw is None:
         return EnvResult()
     if raw.strip() == "":
-        got = json.dumps(raw)
-        return EnvResult(
-            problem=f"Invalid value for {env_var}: expected a non-empty string, got {got}"
-        )
+        return EnvResult(problem=_env_problem(env_var, "a non-empty string", raw))
     return EnvResult(value=raw)
 
 
@@ -80,33 +78,46 @@ def is_positive_integer(raw: str) -> bool:
     return raw.isascii() and raw.isdigit() and raw.strip("0") != ""
 
 
-def env_positive_int_result(env_var: str, maximum: int | None = None) -> EnvResult:
-    """Read a ``GYMRAT_*`` positive-integer env var, returning its value or a problem.
+def parse_bounded_positive_int(raw: str, maximum: int) -> int | None:
+    """Parse a positive integer no larger than ``maximum``.
 
-    The value must satisfy :func:`is_positive_integer`.
+    Args:
+        raw: The text as the user wrote it.
+        maximum: Largest accepted value.
+
+    Returns:
+        The integer, or ``None`` when ``raw`` fails :func:`is_positive_integer`
+        or names a value above ``maximum``.
+    """
+    if not is_positive_integer(raw):
+        return None
+    # More significant digits than ``maximum`` means above it; comparing lengths
+    # first keeps ``int`` away from a run past the interpreter's conversion limit.
+    digits = raw.lstrip("0")
+    if len(digits) > len(str(maximum)) or int(digits) > maximum:
+        return None
+    return int(digits)
+
+
+def env_positive_int_result(env_var: str, maximum: int) -> EnvResult[int]:
+    """Read a ``GYMRAT_*`` positive-integer env var, returning its value or a problem.
 
     Args:
         env_var: Name of the ``GYMRAT_*`` environment variable to read.
-        maximum: Largest accepted value, or ``None`` for no upper bound.
+        maximum: Largest accepted value.
 
     Returns:
-        An :class:`EnvResult` with the parsed integer, a problem, or neither
-        when the variable is unset.
+        An :class:`EnvResult` with the parsed integer, a problem when the value
+        fails :func:`parse_bounded_positive_int`, or neither when the variable
+        is unset.
     """
     raw = os.environ.get(env_var)
     if raw is None:
         return EnvResult()
-    value: int | None = None
-    if is_positive_integer(raw):
-        # A digit run past the interpreter's int-conversion limit raises here;
-        # it is past every ceiling too, so it is reported like any bad value.
-        with contextlib.suppress(ValueError):
-            value = int(raw)
-    if value is not None and (maximum is None or value <= maximum):
-        return EnvResult(value=value)
-    phrase = "a positive integer"
-    got = json.dumps(raw)
-    return EnvResult(problem=f"Invalid value for {env_var}: expected {phrase}, got {got}")
+    value = parse_bounded_positive_int(raw, maximum)
+    if value is None:
+        return EnvResult(problem=_env_problem(env_var, "a positive integer", raw))
+    return EnvResult(value=value)
 
 
 #: Each ``GYMRAT_*`` string field's ``(CliFlags field, env var)`` association.
@@ -116,10 +127,8 @@ STRING_ENV_FIELDS: tuple[tuple[str, str], ...] = (
     ("adapter", "GYMRAT_ADAPTER"),
 )
 
-_NumberReader = Callable[[str], EnvResult]
-
-#: Each ``GYMRAT_*`` numeric field's ``(CliFlags field, env var, reader)`` association.
-NUMBER_ENV_FIELDS: tuple[tuple[str, str, _NumberReader], ...] = (
-    ("samples", "GYMRAT_SAMPLES", partial(env_positive_int_result, maximum=MAX_SAFE_INTEGER)),
-    ("timeout", "GYMRAT_TIMEOUT", partial(env_positive_int_result, maximum=MAX_TIMEOUT_SECONDS)),
+#: Each ``GYMRAT_*`` numeric field's ``(CliFlags field, env var, maximum)`` association.
+NUMBER_ENV_FIELDS: tuple[tuple[str, str, int], ...] = (
+    ("samples", "GYMRAT_SAMPLES", MAX_SAFE_INTEGER),
+    ("timeout", "GYMRAT_TIMEOUT", MAX_TIMEOUT_SECONDS),
 )

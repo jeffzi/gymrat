@@ -8,7 +8,6 @@ import tomli_w
 
 from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
 from gymrat.config.resolve import (
-    flag_problem,
     inspect_config,
     resolve_benchless_config,
     resolve_config,
@@ -194,6 +193,36 @@ def test_resolve_config_when_env_var_set_and_config_provides_field_does_use_env(
         pytest.param(
             EnvCase("GYMRAT_SAMPLES", "42", "samples", 7, flags=CliFlags(bench="b", samples=7)),
             id="samples",
+        ),
+        pytest.param(
+            EnvCase(
+                "GYMRAT_TIMEOUT",
+                "42",
+                "timeout_seconds",
+                7,
+                flags=CliFlags(bench="b", timeout=7),
+            ),
+            id="timeout",
+        ),
+        pytest.param(
+            EnvCase(
+                "GYMRAT_ADAPTER",
+                "metric-lines",
+                "adapter",
+                "mitata",
+                flags=CliFlags(bench="b", adapter="mitata"),
+            ),
+            id="adapter",
+        ),
+        pytest.param(
+            EnvCase(
+                "GYMRAT_PREPARE",
+                "env-prepare",
+                "prepare",
+                "flag-prepare",
+                flags=CliFlags(bench="b", prepare="flag-prepare"),
+            ),
+            id="prepare",
         ),
     ],
 )
@@ -954,30 +983,6 @@ def test_resolve_config_when_supervise_table_present_does_expose_model_and_effor
 # ---------------------------------------------------------------------------
 # problem helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        pytest.param("", id="empty"),
-        pytest.param("   ", id="whitespace-spaces"),
-        pytest.param("\t", id="whitespace-tab"),
-    ],
-)
-def test_flag_problem_when_value_blank_does_return_problem_naming_flag(value: str):
-    result = flag_problem("bench", value)
-
-    assert result is not None
-    assert "--bench" in result
-    assert "non-empty" in result
-
-
-def test_flag_problem_when_value_none_does_return_none():
-    assert flag_problem("bench", None) is None
-
-
-def test_flag_problem_when_value_non_empty_does_return_none():
-    assert flag_problem("bench", "real-command") is None
 
 
 @pytest.mark.parametrize(

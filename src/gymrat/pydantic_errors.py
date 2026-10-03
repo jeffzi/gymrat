@@ -6,6 +6,9 @@ same things from a pydantic ``ValidationError``: a dotted location string, a
 list pruned of parent errors whose only fault is that a child under them also
 failed, and the expected-shape phrase a pydantic error's ``type`` and ``ctx``
 imply.
+
+It also holds :func:`coerce_integer`, the boundary coercion both schemas apply
+before strict integer validation.
 """
 
 import json
@@ -17,9 +20,6 @@ NON_BLANK_PATTERN = r"\S"
 
 VALUE_ERROR_PREFIX = "Value error, "
 """Prefix pydantic prepends to a model validator's ``ValueError`` message."""
-
-UNKNOWN_SHAPE_PHRASE = "a valid value"
-"""Expected-shape wording for an error whose type :func:`phrase_for_error` does not map."""
 
 _TYPE_PHRASES: dict[str, str] = {
     "int_type": "an integer",
@@ -83,7 +83,7 @@ def _needs_quoting(part: str) -> bool:
     return part == "" or any(char in '."' or char.isspace() for char in part)
 
 
-def describe_key(loc: tuple[str, ...]) -> str:
+def describe_key(loc: tuple[str | int, ...]) -> str:
     """Join an error location into a dotted key path.
 
     Parts that would be misread bare are quoted with :func:`json.dumps`, which
@@ -91,12 +91,14 @@ def describe_key(loc: tuple[str, ...]) -> str:
     so the rendered path stays on one line.
 
     Args:
-        loc: The error location parts to join.
+        loc: The error location parts to join; a list index is written as its
+            digits.
 
     Returns:
         The dot-joined key path.
     """
-    return ".".join(json.dumps(part) if _needs_quoting(part) else part for part in loc)
+    parts = (str(part) for part in loc)
+    return ".".join(json.dumps(part) if _needs_quoting(part) else part for part in parts)
 
 
 def drop_prefix_errors(errors: list[ErrorDetails]) -> list[ErrorDetails]:
@@ -122,7 +124,7 @@ def drop_prefix_errors(errors: list[ErrorDetails]) -> list[ErrorDetails]:
     ]
 
 
-def phrase_for_error(error: ErrorDetails) -> str | None:
+def phrase_for_error(error: ErrorDetails) -> str:
     """Describe the value shape a pydantic error says was expected.
 
     The phrase is derived from the error ``type`` and its ``ctx`` constraint
@@ -133,8 +135,8 @@ def phrase_for_error(error: ErrorDetails) -> str | None:
 
     Returns:
         The phrase that completes ``expected ...``, such as ``"an integer"`` or
-        ``"a number greater than 0"``, or ``None`` when the error type implies
-        no shape (``missing``, or any type not mapped here).
+        ``"a number greater than 0"``, or ``"a valid value"`` when the error
+        type implies no shape (``missing``, or any type not mapped here).
     """
     error_type = error["type"]
     ctx = error.get("ctx", {})
@@ -142,4 +144,4 @@ def phrase_for_error(error: ErrorDetails) -> str | None:
         return "a non-empty string"
     if error_type in _CONSTRAINT_PHRASES:
         return _CONSTRAINT_PHRASES[error_type].format_map(ctx)
-    return _TYPE_PHRASES.get(error_type)
+    return _TYPE_PHRASES.get(error_type, "a valid value")

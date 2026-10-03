@@ -303,6 +303,25 @@ def test_inspect_config_when_flag_holds_empty_string_does_report_naming_flag(
     assert has_problem(result.problems, rf"--{key}.*non-empty")
 
 
+@pytest.mark.parametrize(
+    ("value", "got"),
+    [
+        pytest.param("   ", '"   "', id="whitespace-spaces"),
+        pytest.param("\t", '"\\t"', id="whitespace-tab"),
+    ],
+)
+def test_inspect_config_when_flag_is_whitespace_only_does_report_problem_naming_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str, got: str
+):
+    monkeypatch.chdir(tmp_path)
+
+    result = inspect_config(CliFlags(bench=value))
+
+    assert result.problems == [
+        f"Invalid config value for --bench: expected a non-empty string, got {got}"
+    ]
+
+
 def test_inspect_config_when_multiple_flags_empty_does_collect_all(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -310,9 +329,10 @@ def test_inspect_config_when_multiple_flags_empty_does_collect_all(
 
     result = inspect_config(CliFlags(bench="", adapter=""))
 
-    assert len(result.problems) >= 2
-    assert has_problem(result.problems, r"--bench.*non-empty")
-    assert has_problem(result.problems, r"--adapter.*non-empty")
+    assert result.problems == [
+        'Invalid config value for --bench: expected a non-empty string, got ""',
+        'Invalid config value for --adapter: expected a non-empty string, got ""',
+    ]
 
 
 _FLAG_AND_ENV_PROBLEMS = [

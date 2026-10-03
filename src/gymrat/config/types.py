@@ -188,15 +188,6 @@ class ResolvedConfig(BenchlessConfig):
     bench: str
 
 
-@dataclass(frozen=True, slots=True)
-class _ConfigDefaults:
-    adapter: str
-    samples: int
-    timeout_seconds: int
-    unstable_noise_pct: float
-    primary: str
-
-
 #: The config file basename the CLI writes, loads, and probes for.
 CONFIG_FILENAME = "gymrat.toml"
 
@@ -206,8 +197,9 @@ GEOMEAN_PRIMARY = "geomean"
 #: The token a ``filter`` command must carry, where the loop substitutes benchmark names.
 FILTER_PLACEHOLDER = "{names}"
 
-#: Built-in fallbacks for the fields no flag, env var, or config file sets.
-CONFIG_DEFAULTS = _ConfigDefaults(
+#: Built-in fallbacks for the fields no flag, env var, or config file sets: the
+#: configuration a command settles on when nothing else names one.
+CONFIG_DEFAULTS = BenchlessConfig(
     adapter="metric-lines",
     samples=10,
     timeout_seconds=1800,

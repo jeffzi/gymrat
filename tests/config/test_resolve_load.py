@@ -9,11 +9,7 @@ import pytest
 import tomli_w
 
 from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
-from gymrat.config.resolve import (
-    load_config_file,
-    load_config_file_collecting,
-    validate_config_dict,
-)
+from gymrat.config.resolve import load_config_file_collecting, validate_config_dict
 from gymrat.config.types import (
     ConfigFile,
     ConfigFileResult,
@@ -64,56 +60,19 @@ def _unknown_line_break_key_param(char: str) -> object:
 DIRECTORY_READ_REASON = "Permission denied" if sys.platform == "win32" else "Is a directory"
 
 
+def load_config(config_path: Path) -> ConfigFile:
+    """Load a config file that must be accepted and return what it parsed to."""
+    result = load_config_file_collecting(config_path, required=False)
+    assert result.problems == []
+    assert result.config_file is not None
+    return result.config_file
+
+
 def load_error_message(config_path: Path) -> str:
-    """Load a config file that must be rejected and return the error message.
-
-    Args:
-        config_path: Config file that `load_config_file` must reject.
-
-    Returns:
-        The text of the raised `GymratError`.
-    """
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
-
-    return str(exc.value)
-
-
-# ---------------------------------------------------------------------------
-# missing file
-# ---------------------------------------------------------------------------
-
-
-def test_load_config_file_when_file_missing_does_return_empty_config(tmp_path: Path):
-    missing = tmp_path / "nonexistent.toml"
-
-    result = load_config_file(missing)
-
-    assert result == ConfigFile()
-
-
-def test_load_config_file_when_file_missing_and_required_does_raise_naming_path(tmp_path: Path):
-    missing = tmp_path / "nonexistent.toml"
-
-    with pytest.raises(GymratError) as exc:
-        load_config_file(missing, required=True)
-
-    assert str(exc.value) == f"Config file not found at {missing}"
-
-
-# ---------------------------------------------------------------------------
-# unreadable path
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("required", [False, True])
-def test_load_config_file_when_path_is_directory_does_raise_naming_path(
-    tmp_path: Path, required: bool
-):
-    with pytest.raises(GymratError) as exc:
-        load_config_file(tmp_path, required=required)
-
-    assert str(exc.value) == f"Cannot read config file at {tmp_path}: {DIRECTORY_READ_REASON}"
+    """Load a config file that must be rejected and return the first problem."""
+    result = load_config_file_collecting(config_path, required=False)
+    assert result.config_file is None
+    return result.problems[0]
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +83,7 @@ def test_load_config_file_when_path_is_directory_does_raise_naming_path(
 def test_load_config_file_when_only_bench_given_does_return_parsed_bench(tmp_path: Path):
     config_path = write_config(tmp_path, {"bench": "custom-bench"})
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result == ConfigFile(bench="custom-bench")
 
@@ -146,7 +105,7 @@ def test_load_config_file_when_all_known_keys_given_does_round_trip(tmp_path: Pa
         },
     )
 
-    assert load_config_file(config_path) == ConfigFile(
+    assert load_config(config_path) == ConfigFile(
         bench="bench-name",
         prepare="prepare-cmd",
         adapter="adapter-name",
@@ -166,7 +125,7 @@ def test_load_config_file_when_partial_metrics_metadata_given_does_round_trip(tm
         {"metrics": {"responseTime": {"direction": "lower"}, "throughput": {"gating": True}}},
     )
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result == ConfigFile(
         metrics={
@@ -231,7 +190,7 @@ def test_load_config_file_when_prefixed_with_bom_does_parse_as_if_absent(tmp_pat
         tmp_path, f"{UTF8_BOM}{tomli_w.dumps({'bench': 'bom-bench', 'samples': 5})}"
     )
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result == ConfigFile(bench="bom-bench", samples=5)
 
@@ -273,7 +232,7 @@ def test_load_config_file_collecting_when_top_level_key_unknown_does_report_key_
 def test_load_config_file_when_empty_object_does_return_empty_config(tmp_path: Path):
     config_path = write_config(tmp_path, {})
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result == ConfigFile()
 
@@ -425,7 +384,7 @@ def test_load_config_file_when_integer_key_invalid_does_name_key_and_expected_sh
 def test_load_config_file_when_integer_key_given_integral_float_does_accept(tmp_path: Path):
     config_path = write_raw(tmp_path, "samples = 5.0")
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result == ConfigFile(samples=5)
 
@@ -468,7 +427,7 @@ def test_load_config_file_when_integer_key_on_cap_does_accept(
 ):
     config_path = write_config(tmp_path, {key: cap})
 
-    assert load_config_file(config_path) == expected
+    assert load_config(config_path) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +457,7 @@ def test_load_config_file_when_noise_pct_invalid_does_name_key_and_expected_shap
 def test_load_config_file_when_noise_pct_on_floor_does_accept(tmp_path: Path):
     config_path = write_config(tmp_path, {"unstable_noise_pct": 0.5})
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result == ConfigFile(unstable_noise_pct=0.5)
 
@@ -527,7 +486,7 @@ def test_load_config_file_when_number_key_given_integer_does_accept_as_float(
 ):
     config_path = write_raw(tmp_path, text)
 
-    value = read(load_config_file(config_path))
+    value = read(load_config(config_path))
 
     assert (type(value), value) == (float, expected)
 
@@ -572,8 +531,7 @@ def test_load_config_file_when_metrics_entry_has_unknown_key_does_name_key(tmp_p
         tmp_path, {"metrics": {"latency": {"direction": "lower", "threshold": "higher"}}}
     )
 
-    with pytest.raises(GymratError, match=r"^Unknown config key: metrics\.latency\.threshold$"):
-        load_config_file(config_path)
+    assert load_error_message(config_path) == "Unknown config key: metrics.latency.threshold"
 
 
 @pytest.mark.parametrize("char", LINE_BREAK_CHARS)
@@ -621,14 +579,13 @@ def test_load_config_file_when_kinds_key_embeds_line_break_does_name_kinds(
 ):
     config_path = write_config(tmp_path, {"kinds": {f"memory{char}gating: 999": {"gating": False}}})
 
-    with pytest.raises(GymratError, match="kinds"):
-        load_config_file(config_path)
+    assert "kinds" in load_error_message(config_path)
 
 
 def test_load_config_file_when_kinds_section_given_does_round_trip(tmp_path: Path):
     config_path = write_config(tmp_path, {"kinds": {"memory": {"gating": False}, "time": {}}})
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result == ConfigFile(kinds={"memory": KindEntry(gating=False), "time": KindEntry()})
 
@@ -636,8 +593,7 @@ def test_load_config_file_when_kinds_section_given_does_round_trip(tmp_path: Pat
 def test_load_config_file_when_kinds_entry_has_unknown_key_does_name_dotted_path(tmp_path: Path):
     config_path = write_config(tmp_path, {"kinds": {"memory": {"gating": False, "threshold": 5}}})
 
-    with pytest.raises(GymratError, match=r"Unknown config key: kinds\.memory\.threshold"):
-        load_config_file(config_path)
+    assert "Unknown config key: kinds.memory.threshold" in load_error_message(config_path)
 
 
 # ---------------------------------------------------------------------------
@@ -648,7 +604,7 @@ def test_load_config_file_when_kinds_entry_has_unknown_key_does_name_dotted_path
 def test_load_config_file_when_runbook_given_does_round_trip(tmp_path: Path):
     config_path = write_config(tmp_path, {"runbook": "RUNBOOK.md"})
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result == ConfigFile(runbook="RUNBOOK.md")
 
@@ -656,7 +612,7 @@ def test_load_config_file_when_runbook_given_does_round_trip(tmp_path: Path):
 def test_load_config_file_when_loop_keys_given_does_round_trip(tmp_path: Path):
     config_path = write_config(tmp_path, LOOP_CONFIG)
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result == ConfigFile(
         checks="npm test",
@@ -680,10 +636,17 @@ def test_validate_config_dict_when_optional_keys_explicitly_none_does_accept():
     assert result is None
 
 
+def test_validate_config_dict_when_schema_passes_but_filter_lacks_placeholder_does_raise():
+    config: dict[str, object] = {"bench": "npm run bench", "filter": "npm run bench"}
+
+    with pytest.raises(GymratError, match=r"^Invalid config value for filter: "):
+        validate_config_dict(config)
+
+
 def test_load_config_file_when_filter_empty_does_keep_empty_filter(tmp_path: Path):
     config_path = write_config(tmp_path, {"filter": ""})
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result == ConfigFile(filter="")
 
@@ -713,7 +676,7 @@ def test_load_config_file_when_hooks_partial_does_round_trip(
 ):
     config_path = write_config(tmp_path, {"hooks": hooks})
 
-    assert load_config_file(config_path) == ConfigFile(hooks=expected)
+    assert load_config(config_path) == ConfigFile(hooks=expected)
 
 
 @pytest.mark.parametrize(
@@ -743,8 +706,7 @@ def test_load_config_file_when_hooks_has_unknown_key_does_name_dotted_path(tmp_p
         tmp_path, {"hooks": {"before": "npm run warm-cache", "during": "npm run mid"}}
     )
 
-    with pytest.raises(GymratError, match=r"Unknown config key: hooks\.during"):
-        load_config_file(config_path)
+    assert "Unknown config key: hooks.during" in load_error_message(config_path)
 
 
 # ---------------------------------------------------------------------------
@@ -788,8 +750,7 @@ def test_load_config_file_when_stop_field_invalid_does_name_field_and_expected_s
 def test_load_config_file_when_stop_has_unknown_key_does_name_dotted_path(tmp_path: Path):
     config_path = write_config(tmp_path, {"stop": {"target_value": 1, "patience": 3}})
 
-    with pytest.raises(GymratError, match=r"Unknown config key: stop\.patience"):
-        load_config_file(config_path)
+    assert "Unknown config key: stop.patience" in load_error_message(config_path)
 
 
 # ---------------------------------------------------------------------------
@@ -802,7 +763,7 @@ def test_load_config_file_when_no_supervise_table_does_return_config_without_sup
 ):
     config_path = write_config(tmp_path, {"bench": "my-bench"})
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result.supervise is None
 
@@ -812,8 +773,7 @@ def test_load_config_file_when_supervise_has_unknown_key_does_name_dotted_path(t
         tmp_path, {"supervise": {"model": "claude-sonnet", "temperature": 0.7}}
     )
 
-    with pytest.raises(GymratError, match=r"Unknown config key: supervise\.temperature"):
-        load_config_file(config_path)
+    assert "Unknown config key: supervise.temperature" in load_error_message(config_path)
 
 
 def test_load_config_file_when_supervise_model_blank_does_name_model_and_non_empty(
@@ -841,7 +801,7 @@ def test_load_config_file_when_supervise_model_blank_does_name_model_and_non_emp
 def test_load_config_file_when_supervise_effort_valid_does_accept(tmp_path: Path, effort: str):
     config_path = write_config(tmp_path, {"supervise": {"effort": effort}})
 
-    result = load_config_file(config_path)
+    result = load_config(config_path)
 
     assert result.supervise is not None
     assert result.supervise.effort == effort
@@ -876,11 +836,11 @@ def test_load_config_file_when_supervise_effort_invalid_does_name_effort_and_all
 @pytest.mark.parametrize(
     ("content", "camel_key"),
     [
-        pytest.param({"timeoutSeconds": 30}, r"timeoutSeconds", id="timeout-seconds"),
-        pytest.param({"unstableNoisePct": 150.5}, r"unstableNoisePct", id="unstable-noise-pct"),
-        pytest.param({"stop": {"targetValue": 1.5}}, r"stop\.targetValue", id="stop-target-value"),
+        pytest.param({"timeoutSeconds": 30}, "timeoutSeconds", id="timeout-seconds"),
+        pytest.param({"unstableNoisePct": 150.5}, "unstableNoisePct", id="unstable-noise-pct"),
+        pytest.param({"stop": {"targetValue": 1.5}}, "stop.targetValue", id="stop-target-value"),
         pytest.param(
-            {"stop": {"maxIterations": 20}}, r"stop\.maxIterations", id="stop-max-iterations"
+            {"stop": {"maxIterations": 20}}, "stop.maxIterations", id="stop-max-iterations"
         ),
     ],
 )
@@ -889,8 +849,7 @@ def test_load_config_file_when_camel_case_key_given_does_reject_as_unknown(
 ):
     config_path = write_config(tmp_path, content)
 
-    with pytest.raises(GymratError, match=rf"Unknown config key: {camel_key}"):
-        load_config_file(config_path)
+    assert f"Unknown config key: {camel_key}" in load_error_message(config_path)
 
 
 # ---------------------------------------------------------------------------

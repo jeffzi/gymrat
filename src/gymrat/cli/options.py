@@ -13,7 +13,12 @@ from typing import Annotated
 
 import typer
 
-from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS, is_positive_integer
+from gymrat.config.env import (
+    MAX_SAFE_INTEGER,
+    MAX_TIMEOUT_SECONDS,
+    is_positive_integer,
+    parse_bounded_positive_int,
+)
 from gymrat.eta import SECONDS_PER_MINUTE
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
@@ -94,8 +99,8 @@ class PositionalParamType:
 def parse_positive_int(value: str, maximum: int) -> int:
     """Parse a positive integer flag bounded by ``maximum``.
 
-    The value must satisfy :func:`~gymrat.config.env.is_positive_integer`, the
-    rule the matching ``GYMRAT_*`` env var applies too.
+    The value goes through :func:`~gymrat.config.env.parse_bounded_positive_int`,
+    the rule the matching ``GYMRAT_*`` env var applies too.
 
     Args:
         value: The raw flag value.
@@ -111,13 +116,11 @@ def parse_positive_int(value: str, maximum: int) -> int:
     if not is_positive_integer(value):
         message = "must be a positive integer."
         raise typer.BadParameter(message)
-    # More significant digits than ``maximum`` means above it; comparing lengths
-    # first keeps ``int`` away from a run past the interpreter's conversion limit.
-    digits = value.lstrip("0")
-    if len(digits) > len(str(maximum)) or int(digits) > maximum:
+    parsed = parse_bounded_positive_int(value, maximum)
+    if parsed is None:
         message = f"must be at most {maximum}."
         raise typer.BadParameter(message)
-    return int(digits)
+    return parsed
 
 
 def parse_samples(value: str) -> int:

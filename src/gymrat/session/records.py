@@ -45,7 +45,6 @@ from pydantic_core import ErrorDetails
 
 from gymrat.errors import GymratError
 from gymrat.pydantic_errors import (
-    UNKNOWN_SHAPE_PHRASE,
     VALUE_ERROR_PREFIX,
     coerce_integer,
     describe_key,
@@ -826,7 +825,7 @@ def message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
     path = _data_path(
         _strip_type_prefix(error["loc"], record_type), record, error["input"], missing=missing
     )
-    key = describe_key(tuple(str(part) for part in path))
+    key = describe_key(path)
     if missing:
         return f"Missing session record key: {key}"
     if error["type"] == "extra_forbidden":
@@ -837,6 +836,6 @@ def message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
         msg = error["msg"].removeprefix(VALUE_ERROR_PREFIX)
         separator = ": " if key else ""
         return f"Invalid session record: {key}{separator}{msg}"
-    phrase = phrase_for_error(error) or UNKNOWN_SHAPE_PHRASE
+    phrase = phrase_for_error(error)
     got = json.dumps(error["input"])
     return f"Invalid session record value for {key}: expected {phrase}, got {got}"

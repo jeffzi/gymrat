@@ -48,12 +48,16 @@ class _Pair:
             "a non-empty string",
             id="blank-string",
         ),
-        pytest.param(Annotated[str, Field(min_length=2)], "a", None, id="longer-min-length"),
-        pytest.param(Annotated[str, Field(max_length=1)], "ab", None, id="unmapped-type"),
+        pytest.param(
+            Annotated[str, Field(min_length=2)], "a", "a valid value", id="longer-min-length"
+        ),
+        pytest.param(
+            Annotated[str, Field(max_length=1)], "ab", "a valid value", id="unmapped-type"
+        ),
     ],
 )
 def test_phrase_for_error_when_validation_fails_does_phrase_expected_shape(
-    annotation: object, value: object, expected: str | None
+    annotation: object, value: object, expected: str
 ):
     with pytest.raises(ValidationError) as exc:
         TypeAdapter(annotation).validate_python(value)

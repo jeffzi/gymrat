@@ -186,9 +186,7 @@ def test_render_doctor_report_when_mixed_statuses_does_report_all_three_counts()
 
     output = strip_ansi(render_doctor_report(report))
 
-    assert "2 ok" in output
-    assert "1 warning" in output
-    assert "1 failure" in output
+    assert "2 ok · 1 warning · 1 failure" in output
 
 
 def test_render_doctor_report_when_multiple_per_status_does_pluralize_counts():

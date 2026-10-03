@@ -7,18 +7,18 @@ at once, and a settled config is returned only when that list is empty.
 :func:`resolve_config` and :func:`resolve_benchless_config` run the same
 pipeline and raise the first collected problem.
 
-The checks the pipeline applies beyond the file schema live here too:
-:func:`flag_problem` for blank flags, :func:`loop_key_problems` for cross-field
-rules, and :func:`runbook_problem` for the runbook path. :func:`validate_config_dict`
+The checks the pipeline applies beyond the file schema live here too: the blank
+flag check, :func:`loop_key_problems` for cross-field rules, and
+:func:`runbook_problem` for the runbook path. :func:`validate_config_dict`
 runs the schema and the cross-field rules over an in-memory config.
 
 The file side of the pipeline lives here as well. :func:`load_config_file_collecting`
-reads and validates ``gymrat.toml``, collecting every problem, and
-:func:`load_config_file` raises the first one. :func:`validate_config_file` runs
-the frozen dataclasses from :mod:`gymrat.config.types`, which carry the
-validation annotations, through a pydantic ``TypeAdapter`` and words each failure
-as a gymrat problem string; :func:`invalid_value_message` is the one wording that
-translator and the cross-field checks share.
+reads and validates ``gymrat.toml``, collecting every problem.
+:func:`validate_config_file` runs the frozen dataclasses from
+:mod:`gymrat.config.types`, which carry the validation annotations, through a
+pydantic ``TypeAdapter`` and words each failure as a gymrat problem string;
+:func:`invalid_value_message` is the one wording that translator and the
+cross-field checks share.
 """
 
 import dataclasses
@@ -32,7 +32,12 @@ from pathlib import Path
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
 
-from gymrat.config.env import NUMBER_ENV_FIELDS, STRING_ENV_FIELDS, env_string_result
+from gymrat.config.env import (
+    NUMBER_ENV_FIELDS,
+    STRING_ENV_FIELDS,
+    env_positive_int_result,
+    env_string_result,
+)
 from gymrat.config.types import (
     CONFIG_DEFAULTS,
     CONFIG_FILENAME,
@@ -46,7 +51,6 @@ from gymrat.config.types import (
 )
 from gymrat.errors import GymratError
 from gymrat.pydantic_errors import (
-    UNKNOWN_SHAPE_PHRASE,
     VALUE_ERROR_PREFIX,
     describe_key,
     drop_prefix_errors,
@@ -97,14 +101,13 @@ def _message_for_error(error: ErrorDetails) -> str:
     Returns:
         The problem string describing the validation failure.
     """
-    key = describe_key(tuple(str(part) for part in error["loc"]))
+    key = describe_key(error["loc"])
     if error["type"] == "unexpected_keyword_argument":
         return f"Unknown config key: {key}"
     if error["type"] == "value_error":
         detail = error["msg"].removeprefix(VALUE_ERROR_PREFIX)
         return f"Invalid config value for {key}: {detail}"
-    phrase = phrase_for_error(error) or UNKNOWN_SHAPE_PHRASE
-    return invalid_value_message(key, phrase, error["input"])
+    return invalid_value_message(key, phrase_for_error(error), error["input"])
 
 
 def validate_config_file(data: dict[str, object]) -> tuple[ConfigFile | None, list[str]]:
@@ -132,6 +135,11 @@ def validate_config_file(data: dict[str, object]) -> tuple[ConfigFile | None, li
 # ---------------------------------------------------------------------------
 
 
+def _reason(exc: OSError | ValueError) -> str:
+    """Why a filesystem call failed: the OS's own wording when it gave one."""
+    return exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+
+
 def _read_source(path: Path) -> tuple[str | None, str | None]:
     """Read the config file, reporting a read failure as a problem rather than raising.
 
@@ -151,45 +159,8 @@ def _read_source(path: Path) -> tuple[str | None, str | None]:
     except FileNotFoundError:
         return None, None
     except (OSError, ValueError) as exc:
-        reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
-        return None, f"Cannot read config file at {path}: {reason}"
+        return None, f"Cannot read config file at {path}: {_reason(exc)}"
     return text, None
-
-
-# ---------------------------------------------------------------------------
-# Validation pipeline
-# ---------------------------------------------------------------------------
-
-
-def _validate_read(
-    text: str,
-    config_path: Path,
-) -> tuple[ConfigFile | None, list[str]]:
-    """Turn file content into a config or a problem list.
-
-    Shared by the collecting loader and the throwing loader: it never raises, so
-    each caller decides whether a non-empty problem list becomes an exception or
-    a returned result.
-
-    Args:
-        text: The raw config file content to parse.
-        config_path: Path to the config file, used to word parse-error messages.
-
-    Returns:
-        A ``(config_file, problems)`` pair: the parsed :class:`ConfigFile`
-        (``None`` on failure) and any validation problems found.
-    """
-    try:
-        data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        return None, [f"Failed to parse config file at {config_path}: {exc}"]
-
-    return validate_config_file(data)
-
-
-# ---------------------------------------------------------------------------
-# Public loaders
-# ---------------------------------------------------------------------------
 
 
 def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFileResult:
@@ -216,29 +187,13 @@ def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFi
             )
         return ConfigFileResult(config_file=ConfigFile(), exists=False, problems=[])
 
-    config_file, problems = _validate_read(text, config_path)
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        problem = f"Failed to parse config file at {config_path}: {exc}"
+        return ConfigFileResult(config_file=None, exists=True, problems=[problem])
+    config_file, problems = validate_config_file(data)
     return ConfigFileResult(config_file=config_file, exists=True, problems=problems)
-
-
-def load_config_file(path: str | Path, *, required: bool = False) -> ConfigFile:
-    """Load and validate a config file, raising on the first problem.
-
-    Args:
-        path: Path to the ``gymrat.toml`` file.
-        required: When ``True``, an absent file raises rather than returning an
-            empty config.
-
-    Returns:
-        The parsed :class:`ConfigFile`; an empty one when the file is absent and
-        not required.
-
-    Raises:
-        GymratError: On any read, parse, or validation problem.
-    """
-    result = load_config_file_collecting(path, required=required)
-    if result.problems:
-        raise GymratError(result.problems[0])
-    return result.config_file if result.config_file is not None else ConfigFile()
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +233,11 @@ def find_implicit_base() -> str:
         return str(Path.cwd())
 
 
+def _first_set[T](*values: T | None, default: T) -> T:
+    """The first value that is set, in precedence order, else ``default``."""
+    return next((value for value in values if value is not None), default)
+
+
 def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
     """Merge flags, config file, and defaults into every setting but ``bench``.
 
@@ -292,31 +252,17 @@ def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
         The merged :class:`BenchlessConfig` with every field resolved from its
         highest-precedence source.
     """
-    samples = (
-        flags.samples
-        if flags.samples is not None
-        else config_file.samples
-        if config_file.samples is not None
-        else CONFIG_DEFAULTS.samples
-    )
-    timeout_seconds = (
-        flags.timeout
-        if flags.timeout is not None
-        else config_file.timeout_seconds
-        if config_file.timeout_seconds is not None
-        else CONFIG_DEFAULTS.timeout_seconds
-    )
     return BenchlessConfig(
         adapter=flags.adapter or config_file.adapter or CONFIG_DEFAULTS.adapter,
-        samples=samples,
-        timeout_seconds=timeout_seconds,
-        unstable_noise_pct=(
-            config_file.unstable_noise_pct
-            if config_file.unstable_noise_pct is not None
-            else CONFIG_DEFAULTS.unstable_noise_pct
+        samples=_first_set(flags.samples, config_file.samples, default=CONFIG_DEFAULTS.samples),
+        timeout_seconds=_first_set(
+            flags.timeout, config_file.timeout_seconds, default=CONFIG_DEFAULTS.timeout_seconds
+        ),
+        unstable_noise_pct=_first_set(
+            config_file.unstable_noise_pct, default=CONFIG_DEFAULTS.unstable_noise_pct
         ),
         primary=config_file.primary or CONFIG_DEFAULTS.primary,
-        prepare=flags.prepare if flags.prepare is not None else config_file.prepare,
+        prepare=_first_set(flags.prepare, default=config_file.prepare),
         metrics=dict(config_file.metrics) if config_file.metrics is not None else None,
         kinds=dict(config_file.kinds) if config_file.kinds is not None else None,
         checks=config_file.checks,
@@ -326,26 +272,6 @@ def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
         hooks=config_file.hooks,
         supervise=config_file.supervise,
     )
-
-
-def flag_problem(field_name: str, value: str | None) -> str | None:
-    """Return a problem string when a flag is blank (empty or whitespace-only).
-
-    Flags bypass the file schema, so ``--bench ""`` or ``--bench "   "`` is the
-    one way a blank string reaches a settled field. The message names the flag,
-    not the config key, because the flag is what the user typed.
-
-    Args:
-        field_name: Name of the flag, without the leading ``--``.
-        value: The flag's value, or ``None`` if it was not passed.
-
-    Returns:
-        A problem string when ``value`` is blank, or ``None`` when it is
-        unset or non-blank.
-    """
-    if value is not None and not value.strip():
-        return invalid_value_message(f"--{field_name}", "a non-empty string", value)
-    return None
 
 
 def loop_key_problems(config: BenchlessConfig) -> list[str]:
@@ -381,7 +307,7 @@ def loop_key_problems(config: BenchlessConfig) -> list[str]:
     return problems
 
 
-def runbook_problem(runbook: str, base_dir: str | Path | None) -> str | None:
+def runbook_problem(runbook: str, base_dir: Path) -> str | None:
     """Return a problem string when ``runbook`` does not name an existing file.
 
     The runbook is anchored the same way as the implicit ``gymrat.toml`` lookup,
@@ -390,22 +316,19 @@ def runbook_problem(runbook: str, base_dir: str | Path | None) -> str | None:
 
     Args:
         runbook: Path to the runbook, relative to ``base_dir``.
-        base_dir: Directory the runbook path is resolved against, or ``None``
-            to use the current working directory.
+        base_dir: Directory the runbook path is resolved against.
 
     Returns:
         A problem string when ``runbook`` does not resolve to an existing
         regular file, or ``None`` when it does.
     """
-    base = Path(base_dir) if base_dir is not None else Path.cwd()
-    resolved = Path(os.path.normpath(base / runbook))
+    resolved = Path(os.path.normpath(base_dir / runbook))
     try:
         info = resolved.stat()
     except FileNotFoundError:
         info = None
     except (OSError, ValueError) as exc:
-        reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
-        return f"Cannot read runbook path {json.dumps(runbook)}: {reason}"
+        return f"Cannot read runbook path {json.dumps(runbook)}: {_reason(exc)}"
     if info is None or not stat.S_ISREG(info.st_mode):
         return invalid_value_message("runbook", "a path to an existing file", runbook)
     return None
@@ -427,20 +350,30 @@ def validate_config_dict(config: dict[str, object]) -> None:
     config_file, problems = validate_config_file(config)
     if problems:
         raise GymratError(problems[0])
-    if config_file is None:
-        return
+    assert config_file is not None  # noqa: S101 -- no problems means the schema produced a config
     problems = loop_key_problems(merge_config(CliFlags(), config_file))
     if problems:
         raise GymratError(problems[0])
 
 
 def _collect_flag_problems(flags: CliFlags) -> list[str]:
-    problems: list[str] = []
-    for field_name in ("bench", "prepare", "adapter", "config"):
-        problem = flag_problem(field_name, getattr(flags, field_name))
-        if problem is not None:
-            problems.append(problem)
-    return problems
+    """Return one problem per blank (empty or whitespace-only) string flag.
+
+    Flags bypass the file schema, so ``--bench ""`` or ``--bench "   "`` is the
+    one way a blank string reaches a settled field. Each message names the flag,
+    not the config key, because the flag is what the user typed.
+
+    Args:
+        flags: The command-line overrides to check.
+
+    Returns:
+        The problem strings, in flag order; empty when no flag is blank.
+    """
+    return [
+        invalid_value_message(f"--{field_name}", "a non-empty string", value)
+        for field_name in ("bench", "prepare", "adapter", "config")
+        if (value := getattr(flags, field_name)) is not None and not value.strip()
+    ]
 
 
 def _collect_env_flags(flags: CliFlags) -> tuple[CliFlags, list[str]]:
@@ -454,8 +387,8 @@ def _collect_env_flags(flags: CliFlags) -> tuple[CliFlags, list[str]]:
         flags: The CLI flags to check for unset fields before reading env vars.
 
     Returns:
-        A ``(env_flags, problems)`` pair: the flags populated from env vars and
-        any validation problems encountered.
+        An ``(effective, problems)`` pair: the flags with every unset field
+        filled from its env var, and any validation problems encountered.
     """
     problems: list[str] = []
     strings: dict[str, str] = {}
@@ -465,38 +398,24 @@ def _collect_env_flags(flags: CliFlags) -> tuple[CliFlags, list[str]]:
             if result.problem is not None:
                 problems.append(result.problem)
             if result.value is not None:
-                strings[field_name] = str(result.value)
+                strings[field_name] = result.value
     numbers: dict[str, int] = {}
-    for field_name, env_var, reader in NUMBER_ENV_FIELDS:
+    for field_name, env_var, maximum in NUMBER_ENV_FIELDS:
         if getattr(flags, field_name) is None:
-            result = reader(env_var)
+            result = env_positive_int_result(env_var, maximum)
             if result.problem is not None:
                 problems.append(result.problem)
-            if isinstance(result.value, int):
+            if result.value is not None:
                 numbers[field_name] = result.value
-    env_flags = CliFlags(
-        bench=strings.get("bench"),
-        prepare=strings.get("prepare"),
-        adapter=strings.get("adapter"),
-        samples=numbers.get("samples"),
-        timeout=numbers.get("timeout"),
+    effective = replace(
+        flags,
+        bench=_first_set(flags.bench, default=strings.get("bench")),
+        prepare=_first_set(flags.prepare, default=strings.get("prepare")),
+        adapter=_first_set(flags.adapter, default=strings.get("adapter")),
+        samples=_first_set(flags.samples, default=numbers.get("samples")),
+        timeout=_first_set(flags.timeout, default=numbers.get("timeout")),
     )
-    return env_flags, problems
-
-
-def _build_effective_flags(flags: CliFlags, env_flags: CliFlags) -> CliFlags:
-    """Layer flags over env values: flag > env, with empty strings ignored."""
-
-    def pick_string(flag_value: str | None, env_value: str | None) -> str | None:
-        return flag_value if flag_value is not None and flag_value != "" else env_value
-
-    return CliFlags(
-        bench=pick_string(flags.bench, env_flags.bench),
-        prepare=pick_string(flags.prepare, env_flags.prepare),
-        adapter=pick_string(flags.adapter, env_flags.adapter),
-        samples=flags.samples if flags.samples is not None else env_flags.samples,
-        timeout=flags.timeout if flags.timeout is not None else env_flags.timeout,
-    )
+    return effective, problems
 
 
 def _resolve_config_source(
@@ -528,7 +447,7 @@ def _resolve_config_source(
         if result.problem is not None:
             problems.append(result.problem)
             env_config_failed = True
-        env_config_path = str(result.value) if result.value is not None else None
+        env_config_path = result.value
 
     # A whitespace-only --config is as blank as an empty one, and
     # `_collect_flag_problems` has already reported it; probing it on disk would
@@ -594,10 +513,8 @@ def inspect_config(flags: CliFlags, base_dir: str | Path | None = None) -> Confi
     """
     problems = _collect_flag_problems(flags)
 
-    env_flags, env_problems = _collect_env_flags(flags)
+    effective, env_problems = _collect_env_flags(flags)
     problems.extend(env_problems)
-
-    effective = _build_effective_flags(flags, env_flags)
 
     config_path, config_file, source_problems = _resolve_config_source(flags, base_dir)
     problems.extend(source_problems)

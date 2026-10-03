@@ -43,7 +43,6 @@ from gymrat.config.resolve import ConfigInspection, inspect_config
 from gymrat.config.types import CONFIG_DEFAULTS, BenchlessConfig, CliFlags, StopConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.git import NotAGitRepositoryError, try_git
-from gymrat.plural import pluralize
 from gymrat.report.style import (
     RENDER_WIDTH,
     format_hint,
@@ -111,14 +110,6 @@ class DoctorReport:
         return self.fail_count > 0
 
 
-def _ok(name: str, detail: str) -> Check:
-    return Check(name=name, status="ok", detail=detail)
-
-
-def _issue(name: str, status: CheckStatus, detail: str, hint: str) -> Check:
-    return Check(name=name, status=status, detail=detail, hint=hint)
-
-
 def create_doctor_report(
     environment: EnvironmentInfo, sections: list[CheckSection]
 ) -> DoctorReport:
@@ -143,34 +134,40 @@ def build_environment_section(
     checks: list[Check] = []
 
     checks.append(
-        _ok("git", "git is available on PATH")
+        Check(name="git", status="ok", detail="git is available on PATH")
         if git_available
-        else _issue(
-            "git",
-            "fail",
-            "git is not available on PATH",
-            "Install git: https://git-scm.com/downloads",
+        else Check(
+            name="git",
+            status="fail",
+            detail="git is not available on PATH",
+            hint="Install git: https://git-scm.com/downloads",
         )
     )
 
     checks.append(
-        _ok("git repository", "current directory is inside a git repository")
+        Check(
+            name="git repository",
+            status="ok",
+            detail="current directory is inside a git repository",
+        )
         if inside_git_repo
-        else _issue(
-            "git repository",
-            "warn",
-            "current directory is not inside a git repository",
-            "The compare command resolves refs against a git repository",
+        else Check(
+            name="git repository",
+            status="warn",
+            detail="current directory is not inside a git repository",
+            hint="The compare command resolves refs against a git repository",
         )
     )
 
     if git_error is not None:
         checks.append(
-            _issue(
-                "git repository root",
-                "warn",
-                f"could not determine the repository root: {git_error}",
-                "Falling back to the current directory; commands may operate on the wrong path",
+            Check(
+                name="git repository root",
+                status="warn",
+                detail=f"could not determine the repository root: {git_error}",
+                hint=(
+                    "Falling back to the current directory; commands may operate on the wrong path"
+                ),
             )
         )
 
@@ -184,9 +181,11 @@ def build_config_section(inspection: ConfigInspection) -> CheckSection:
             Check(name="config", status="fail", detail=problem) for problem in inspection.problems
         ]
     elif inspection.config_path is None:
-        checks = [_ok("config", "No config file found; operating with defaults only")]
+        detail = "No config file found; operating with defaults only"
+        checks = [Check(name="config", status="ok", detail=detail)]
     else:
-        checks = [_ok("config", f"Config file loaded: {inspection.config_path}")]
+        detail = f"Config file loaded: {inspection.config_path}"
+        checks = [Check(name="config", status="ok", detail=detail)]
 
     return CheckSection(title="Configuration", checks=checks)
 
@@ -219,34 +218,50 @@ def build_workflow_section(
     if config_has_problems:
         return CheckSection(
             title=WORKFLOW_SECTION_TITLE,
-            checks=[_ok(WORKFLOW_SKIP_CHECK_NAME, "Skipped — fix config errors first")],
+            checks=[
+                Check(
+                    name=WORKFLOW_SKIP_CHECK_NAME,
+                    status="ok",
+                    detail="Skipped — fix config errors first",
+                )
+            ],
         )
 
     checks: list[Check] = []
 
     checks.append(
-        _ok("skill file", "Skill file is installed")
+        Check(name="skill file", status="ok", detail="Skill file is installed")
         if skill_file_exists
-        else _issue(
-            "skill file",
-            "warn",
-            "No skill file — Claude Code agents won't have gymrat's workflow instructions",
-            _SKILL_MISSING_HINT,
+        else Check(
+            name="skill file",
+            status="warn",
+            detail="No skill file — Claude Code agents won't have gymrat's workflow instructions",
+            hint=_SKILL_MISSING_HINT,
         )
     )
 
     checks.append(
-        _ok("checks", f"checks: {config.checks}")
+        Check(name="checks", status="ok", detail=f"checks: {config.checks}")
         if config.checks is not None
-        else _issue("checks", "warn", "checks is not configured", _CHECKS_MISSING_HINT)
+        else Check(
+            name="checks",
+            status="warn",
+            detail="checks is not configured",
+            hint=_CHECKS_MISSING_HINT,
+        )
     )
 
     checks.append(_build_stop_check(config.stop))
 
     checks.append(
-        _ok("runbook", f"runbook: {config.runbook}")
+        Check(name="runbook", status="ok", detail=f"runbook: {config.runbook}")
         if config.runbook is not None
-        else _issue("runbook", "warn", "runbook is not configured", _RUNBOOK_MISSING_HINT)
+        else Check(
+            name="runbook",
+            status="warn",
+            detail="runbook is not configured",
+            hint=_RUNBOOK_MISSING_HINT,
+        )
     )
 
     return CheckSection(title=WORKFLOW_SECTION_TITLE, checks=checks)
@@ -260,9 +275,11 @@ def _build_stop_check(stop: StopConfig | None) -> Check:
             parts.append(f"target_value: {stop.target_value}")
         if stop.max_iterations is not None:
             parts.append(f"max_iterations: {stop.max_iterations}")
-        return _ok("stop", f"stop: {', '.join(parts)}")
+        return Check(name="stop", status="ok", detail=f"stop: {', '.join(parts)}")
 
-    return _issue("stop", "warn", "stop is not configured", _STOP_MISSING_HINT)
+    return Check(
+        name="stop", status="warn", detail="stop is not configured", hint=_STOP_MISSING_HINT
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -348,16 +365,16 @@ def render_doctor_report(report: DoctorReport, *, color: bool | None = None) -> 
     lines.append(markup(note, "dim"))
     lines.append("")
 
-    segments: list[tuple[int, str, str | None, CheckStatus]] = [
-        (report.ok_count, "ok", "ok", "ok"),
-        (report.warn_count, "warning", None, "warn"),
-        (report.fail_count, "failure", None, "fail"),
+    segments: list[tuple[int, tuple[str, str], CheckStatus]] = [
+        (report.ok_count, ("ok", "ok"), "ok"),
+        (report.warn_count, ("warning", "warnings"), "warn"),
+        (report.fail_count, ("failure", "failures"), "fail"),
     ]
     parts: list[str] = []
-    for count, noun, plural, status in segments:
+    for count, (singular, plural), status in segments:
         if count == 0:
             continue
-        word = pluralize(count, noun, plural).split(" ", 1)[1]
+        word = singular if count == 1 else plural
         colored_count = markup(str(count), _STATUS_STYLES[status])
         parts.append(f"{colored_count} {escape(word)}")
     lines.append(" · ".join(parts))
@@ -517,27 +534,6 @@ def build_bench_section(
     return CheckSection(title=_BENCH_TITLE, checks=checks)
 
 
-def _defaults_as_benchless() -> BenchlessConfig:
-    """A benchless config carrying only the settled defaults.
-
-    Stands in whenever config inspection yields no config: either the config
-    has problems, in which case the workflow section collapses to a skip check,
-    or no config file exists, in which case the unset ``checks``, ``stop``, and
-    ``runbook`` surface as workflow warnings and ``adapter`` feeds the bench
-    section.
-
-    Returns:
-        A :class:`BenchlessConfig` populated from :data:`CONFIG_DEFAULTS`.
-    """
-    return BenchlessConfig(
-        adapter=CONFIG_DEFAULTS.adapter,
-        samples=CONFIG_DEFAULTS.samples,
-        timeout_seconds=CONFIG_DEFAULTS.timeout_seconds,
-        unstable_noise_pct=CONFIG_DEFAULTS.unstable_noise_pct,
-        primary=CONFIG_DEFAULTS.primary,
-    )
-
-
 def _environment_info() -> EnvironmentInfo:
     return EnvironmentInfo(
         gymrat_version=importlib.metadata.version("gymrat"),
@@ -549,9 +545,9 @@ def _environment_info() -> EnvironmentInfo:
 def build_doctor_report(flags: CliFlags, cwd: str) -> DoctorReport:
     """Coordinate the git probe, config inspection, and section builders into a single report.
 
-    Falls back to config defaults for the workflow and bench sections whenever
-    config inspection yields no config — on config problems or when no config
-    file exists.
+    Config inspection yields no config only when it found problems. The config
+    defaults then stand in so the bench section still has an adapter to name;
+    the workflow section collapses to its skip check.
 
     Args:
         flags: The command-line overrides to apply during config inspection.
@@ -572,7 +568,7 @@ def build_doctor_report(flags: CliFlags, cwd: str) -> DoctorReport:
         git_error=git_env.git_error,
     )
     config_section = build_config_section(inspection)
-    resolved = inspection.config or _defaults_as_benchless()
+    resolved = inspection.config or CONFIG_DEFAULTS
     workflow_section = build_workflow_section(
         resolved,
         config_has_problems=bool(inspection.problems),
