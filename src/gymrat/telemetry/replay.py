@@ -31,7 +31,7 @@ from gymrat.telemetry.attributes import (
     run_span_key,
 )
 from gymrat.telemetry.ids import parse_traceparent
-from gymrat.telemetry.provider import start_span
+from gymrat.telemetry.provider import start_command_span, start_span
 
 if TYPE_CHECKING:
     from opentelemetry.context import Context
@@ -180,30 +180,16 @@ def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay co
 ) -> None:
     """Create one command span, drain pending events onto it, and close it."""
     from opentelemetry import trace  # noqa: PLC0415
-    from opentelemetry.trace import Link, Status, StatusCode  # noqa: PLC0415
 
     parent_span = _find_parent_run(rec.at, run_spans)
     if parent_span is None and rec.traceparent:
         parent_span = _find_parent_by_traceparent(rec.traceparent, run_spans)
-    parent_ctx = trace.set_span_in_context(parent_span or session_span)
 
-    inputs = command_span_inputs(rec, session_id=session_id, line_number=line_number)
-    links = [Link(inputs.link)] if inputs.link is not None else None
-
-    start_ns = rec.at - rec.duration_ms * NS_PER_MS
-    cmd_span = start_span(
-        inputs.name,
-        span_key=inputs.key,
-        start_time=start_ns,
-        context=parent_ctx,
-        attributes=inputs.attributes,
-        links=links,
+    cmd_span = start_command_span(
+        command_span_inputs(rec, session_id=session_id, line_number=line_number),
+        context=trace.set_span_in_context(parent_span or session_span),
+        start_time=rec.at - rec.duration_ms * NS_PER_MS,
     )
-
-    if inputs.status is not None:
-        cmd_span.set_status(
-            Status(StatusCode[inputs.status], description=inputs.status_description)
-        )
 
     _add_events(cmd_span, pending_events)
     pending_events.clear()

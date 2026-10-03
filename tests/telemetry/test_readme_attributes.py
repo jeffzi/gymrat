@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from gymrat.telemetry.attributes import all_attribute_names
+from tests.telemetry._attribute_names import all_attribute_names
 
 _README = Path(__file__).resolve().parents[2] / "README.md"
 _HEADING = "### Attribute reference"

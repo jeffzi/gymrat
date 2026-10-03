@@ -20,9 +20,12 @@ from gymrat.telemetry.ids import span_id_of, trace_id_of
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from opentelemetry.context import Context
     from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
     from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
     from opentelemetry.trace import Span, Tracer
+
+    from gymrat.telemetry.attributes import CommandSpanInputs
 
 _TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 _TRACES_PATH = "v1/traces"
@@ -149,6 +152,36 @@ def start_span(name: str, *, span_key: str | None = None, **kwargs: object) -> S
     finally:
         if token is not None:
             _queued_span_id.reset(token)
+
+
+def start_command_span(inputs: CommandSpanInputs, *, context: Context, start_time: int) -> Span:
+    """Start a command span from its pre-computed inputs.
+
+    Shared by the live and the replay emitters, so both give a command the same
+    link and status.
+
+    Args:
+        inputs: The span's name, key, attributes, link, and status.
+        context: The parent context the span starts under.
+        start_time: When the command started, in nanoseconds since the epoch.
+
+    Returns:
+        The started span, linked and with its status set, or ``INVALID_SPAN``
+        when no tracer is configured.
+    """
+    from opentelemetry.trace import Link, Status, StatusCode  # noqa: PLC0415
+
+    span = start_span(
+        inputs.name,
+        span_key=inputs.key,
+        context=context,
+        links=[Link(inputs.link)] if inputs.link is not None else None,
+        attributes=inputs.attributes,
+        start_time=start_time,
+    )
+    if inputs.status is not None:
+        span.set_status(Status(StatusCode[inputs.status], description=inputs.status_description))
+    return span
 
 
 def flush_tracing() -> None:

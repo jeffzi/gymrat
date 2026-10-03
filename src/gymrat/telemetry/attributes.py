@@ -2,21 +2,15 @@
 
 from __future__ import annotations
 
-import functools
-import types
-import typing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from gymrat.session.records import (
-    SESSION_LOG_MODELS,
     CommandRecord,
     IterationRecord,
     SessionLogRecord,
-    SessionRecord,
     _SequencedEnvelope,
-    wire_type,
 )
 from gymrat.supervisor.events import CapEvent, CompactionEvent, FollowUpEvent, TurnEndEvent
 from gymrat.telemetry.ids import parse_traceparent
@@ -77,36 +71,6 @@ EVENT_COMPACTION = "gymrat.compaction"
 SESSION_SPAN_KEY = "session"
 """The key the session span's deterministic id is derived from."""
 
-# The attribute names that are not derived from a record model's fields.
-_FIXED_ATTRS = frozenset({
-    SESSION_ID,
-    SESSION_BRANCH,
-    COMMAND_NAME,
-    COMMAND_EXIT_CODE,
-    COMMAND_DURATION_MS,
-    COMMAND_REASON,
-    COMMAND_ARGS_PREFIX,
-    RUN_HEAD_SHA,
-    RUN_MAX_MINUTES,
-    RUN_MAX_USD,
-    RUN_EFFORT,
-    RUN_COST_USD,
-    RUN_ENDED_BY,
-    RUN_END_REASON,
-    RUN_DURATION_MS,
-    TURN_SESSION_COST_USD,
-    TURN_ORIGIN,
-    TURN_BUDGET_EXHAUSTED,
-    FOLLOW_UP_ACTION,
-    FOLLOW_UP_REASON,
-    CAP_NAME,
-    GEN_AI_MODEL,
-    GEN_AI_PROVIDER,
-    ITERATION_SEQ,
-    ITERATION_OUTCOME,
-    ITERATION_DELTA_PCT,
-})
-
 # Record fields carried by the envelope, not mapped to a `gymrat.<type>.<field>` attribute.
 _SKIPPED_FIELD_NAMES = frozenset({"at", "seq", "type"})
 
@@ -114,56 +78,6 @@ _SKIPPED_FIELD_NAMES = frozenset({"at", "seq", "type"})
 def _record_attr_name(record_type: str, field_name: str) -> str:
     """Build the ``gymrat.<type>.<field>`` attribute name."""
     return f"gymrat.{record_type}.{field_name}"
-
-
-def _is_scalar_or_literal(annotation: object) -> bool:
-    """True when ``annotation`` is a bare scalar type or a ``Literal[...]``."""
-    return annotation in _SCALAR_TYPES or typing.get_origin(annotation) is typing.Literal
-
-
-def _is_scalar_type(annotation: object) -> bool:
-    """True when ``annotation`` resolves to a scalar OTel attribute type."""
-    if _is_scalar_or_literal(annotation):
-        return True
-    if typing.get_origin(annotation) in {typing.Union, types.UnionType}:
-        return all(_is_scalar_or_none(arg) for arg in typing.get_args(annotation))
-    return False
-
-
-def _is_scalar_or_none(annotation: object) -> bool:
-    """True when ``annotation`` is a scalar type, NoneType, a Literal, or Annotated wrapping one."""
-    if typing.get_origin(annotation) is typing.Annotated:
-        inner = typing.get_args(annotation)
-        if inner:
-            annotation = inner[0]
-    return _is_scalar_or_literal(annotation) or annotation is type(None)
-
-
-@functools.cache
-def all_attribute_names() -> frozenset[str]:
-    """Return every attribute name the telemetry layer can emit.
-
-    The set includes fixed constants for session, run, turn, follow-up, cap,
-    and command spans, derived ``gymrat.<type>.<field>`` names from record
-    models other than session, iteration, and command — those are covered
-    by the fixed constants above and are excluded here — iteration names,
-    ``gen_ai.*`` names, and the ``gymrat.command.args`` pattern placeholder.
-
-    Returns:
-        A frozenset of dotted attribute name strings.
-    """
-    record_derived: set[str] = set()
-    for record_cls in SESSION_LOG_MODELS:
-        if record_cls in (SessionRecord, IterationRecord, CommandRecord):
-            continue
-        record_type = wire_type(record_cls)
-        for field_name, field_info in record_cls.model_fields.items():
-            if field_name in _SKIPPED_FIELD_NAMES:
-                continue
-            if _is_scalar_type(field_info.annotation):
-                record_derived.add(_record_attr_name(record_type, field_name))
-
-    return _FIXED_ATTRS | frozenset(record_derived)
 
 
 def run_span_key(launch_at: int) -> str:

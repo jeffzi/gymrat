@@ -19,7 +19,6 @@ from gymrat.session.records import (
     SessionLogRecord,
 )
 from gymrat.telemetry.attributes import (
-    all_attribute_names,
     command_attributes,
     command_span_inputs,
     record_event,
@@ -36,6 +35,7 @@ from tests.session.records._fixtures import (
     iteration_record,
     stop_record,
 )
+from tests.telemetry._attribute_names import all_attribute_names
 
 _ATTR_NAME_RE = re.compile(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$")
 

@@ -309,11 +309,8 @@ def _emit_command_span(
 ) -> None:
     """Create a retroactive command span with events, attributes, and links."""
     from opentelemetry.trace import (  # noqa: PLC0415
-        Link,
         NonRecordingSpan,
         SpanContext,
-        Status,
-        StatusCode,
         TraceFlags,
         set_span_in_context,
     )
@@ -328,7 +325,7 @@ def _emit_command_span(
         span_id_of,
         trace_id_of,
     )
-    from gymrat.telemetry.provider import flush_tracing, start_span  # noqa: PLC0415
+    from gymrat.telemetry.provider import flush_tracing, start_command_span  # noqa: PLC0415
 
     records = _safe_read_records(jsonl)
     if not records:
@@ -356,25 +353,11 @@ def _emit_command_span(
         )
         parent_ctx = set_span_in_context(NonRecordingSpan(session_span_ctx))
 
-    links = [Link(inputs.link)] if inputs.link is not None else None
-
-    with start_span(
-        inputs.name,
-        span_key=inputs.key,
-        context=parent_ctx,
-        links=links,
-        attributes=inputs.attributes,
-        start_time=start_ns,
-    ) as span:
+    with start_command_span(inputs, context=parent_ctx, start_time=start_ns) as span:
         # Outcome records appended by the body (between pre-body count and command record)
         for record in records[pre_body_lines:-1]:
             event_name, event_attrs = record_event(record)
             span.add_event(event_name, attributes=event_attrs, timestamp=record.at)
-
-        if inputs.status is not None:
-            span.set_status(
-                Status(StatusCode[inputs.status], description=inputs.status_description)
-            )
 
     flush_tracing()
 
