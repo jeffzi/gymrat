@@ -113,7 +113,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["E402", "F401"]
 "**/tests/*" = [
   "D101", # missing docstring in public class
   "DOC", # docstring section checks (fixtures and helpers)
@@ -146,9 +145,6 @@ ignore = [
   "TRY301", # raise within try
 ]
 
-[tool.ruff.lint.flake8-annotations]
-allow-star-arg-any = true
-
 [tool.ruff.lint.pydoclint]
 ignore-one-line-docstrings = true
 
@@ -157,7 +153,6 @@ convention = "google"
 
 [tool.pydoclint]
 style = "google"
-skip-checking-short-docstrings = true
 # Ruff's DOC501 covers direct raises; propagated errors are documented by review, which pydoclint's
 # body-only raise analysis would flag as extraneous.
 skip-checking-raises = true
@@ -186,9 +181,6 @@ parallel = true
 
 [tool.coverage.report]
 exclude_also = [
-  "if TYPE_CHECKING:",
   "if __name__ == .__main__.",
-  "raise NotImplementedError",
 ]
-show_missing = true
 fail_under = 90
