@@ -18,7 +18,7 @@ import pytest
 
 import gymrat.scaffold as scaffold_module
 from gymrat.config import load_config_file_collecting
-from gymrat.errors import GymratError, hint_of
+from gymrat.errors import GymratError
 from gymrat.scaffold import (
     SKILL_RELATIVE_PATH,
     ScaffoldArtifact,
@@ -461,7 +461,7 @@ def test_scaffold_when_filesystem_error_does_include_hint(
 
     # The report-a-bug footer must never appear for a filesystem error.
     assert str(exc_info.value) == f"Cannot write gymrat.toml in {tmp_path}"
-    assert hint_of(exc_info.value) == "Read-only file system"
+    assert exc_info.value.hint == "Read-only file system"
 
 
 def _fail_runbook_write(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -486,7 +486,7 @@ def test_scaffold_when_runbook_write_fails_does_raise_naming_the_artifact_with_h
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
     assert str(exc_info.value) == f"Cannot write gymrat-runbook.md in {tmp_path}"
-    assert hint_of(exc_info.value) == "No space left on device"
+    assert exc_info.value.hint == "No space left on device"
 
 
 def test_scaffold_when_runbook_write_fails_does_remove_the_config_it_created(

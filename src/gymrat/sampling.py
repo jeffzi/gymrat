@@ -34,7 +34,7 @@ from typing import Literal, Self
 from gymrat.adapters import DEFAULT_METRIC_KIND, Adapter
 from gymrat.clock import monotonic_ms
 from gymrat.config import KindEntry, MetricEntry, ResolvedConfig
-from gymrat.errors import CommandError, GymratError, hint_of
+from gymrat.errors import CommandError, GymratError
 from gymrat.eta import MS_PER_SECOND
 from gymrat.exec import (
     ExecOptions,
@@ -718,5 +718,5 @@ def _with_cleanup_failures(error: Exception, cleanup: CleanupResult) -> Exceptio
 
     combined = "\n".join([str(error), "", "cleanup did not finish:", *details])
     if isinstance(error, GymratError):
-        return type(error)(combined, hint=hint_of(error))
+        return type(error)(combined, hint=error.hint)
     return Exception(combined)

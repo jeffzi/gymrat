@@ -30,7 +30,7 @@ from typing import Any, NamedTuple, get_args
 
 from pydantic import BaseModel
 
-from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError, hint_of
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.session.paths import (
     SESSION_DIR_NAME,
     SESSION_LOG_NAME,
@@ -648,9 +648,8 @@ def main() -> None:
         root = repo_root()
     except GymratError as exc:
         print(exc, file=sys.stderr)  # noqa: T201 — CLI entry point
-        hint = hint_of(exc)
-        if hint is not None:
-            print(hint, file=sys.stderr)  # noqa: T201 — CLI entry point
+        if exc.hint is not None:
+            print(exc.hint, file=sys.stderr)  # noqa: T201 — CLI entry point
         sys.exit(TOOL_FAILURE_EXIT_CODE)
     paths = write_all(root)
     for path in paths:

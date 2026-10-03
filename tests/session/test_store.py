@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.errors import GymratError, hint_of
+from gymrat.errors import GymratError
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     BaselineRecord,
@@ -277,7 +277,7 @@ def test_append_record_when_record_unreadable_does_raise_naming_its_cause_and_le
         append_record(jsonl_path, record)
 
     assert re.search(rf"\b{record_type}\b", str(excinfo.value))
-    assert hint_of(excinfo.value) == hint
+    assert excinfo.value.hint == hint
     assert Path(jsonl_path).read_bytes() == before
 
 
@@ -457,7 +457,7 @@ def test_read_records_when_a_line_is_not_json_does_raise_naming_the_line_and_its
         read_records(jsonl_path)
 
     assert str(excinfo.value) == f"Invalid JSON at {jsonl_path}:2"
-    assert hint_of(excinfo.value) == hint
+    assert excinfo.value.hint == hint
 
 
 def test_read_records_when_a_line_matches_no_schema_does_raise_naming_line_and_field(
@@ -558,7 +558,7 @@ def test_read_session_header_when_first_line_not_json_does_raise_naming_the_firs
         read_session_header(jsonl_path)
 
     assert str(excinfo.value) == f"Invalid JSON at {jsonl_path}:1"
-    assert hint_of(excinfo.value) == "Line 1 is not a JSON object."
+    assert excinfo.value.hint == "Line 1 is not a JSON object."
 
 
 @pytest.mark.parametrize(
@@ -582,7 +582,7 @@ def test_read_session_header_when_first_line_holds_a_non_finite_number_does_hint
     with pytest.raises(GymratError) as excinfo:
         read_session_header(jsonl_path)
 
-    assert (str(excinfo.value), hint_of(excinfo.value)) == (
+    assert (str(excinfo.value), excinfo.value.hint) == (
         f"Invalid JSON at {jsonl_path}:1",
         f"Line 1 holds a number the session log never stores: {cause}.",
     )
@@ -599,7 +599,7 @@ def test_read_session_header_when_first_record_not_session_does_raise_naming_its
     assert str(excinfo.value) == (
         f"Expected session header at {jsonl_path}:1, got a iteration record"
     )
-    assert hint_of(excinfo.value) == (
+    assert excinfo.value.hint == (
         "Line 1 is not a session header. The session log is corrupt; start a new session."
     )
 
@@ -615,7 +615,7 @@ def test_read_session_header_when_first_line_undecodable_does_raise_as_read_reco
         read_session_header(jsonl_path)
 
     assert str(excinfo.value) == f"Corrupt session log at {jsonl_path}:1"
-    assert hint_of(excinfo.value) == hint_of(read_records_error.value)
+    assert excinfo.value.hint == read_records_error.value.hint
 
 
 # ---------------------------------------------------------------------------
@@ -736,7 +736,7 @@ def test_require_session_when_no_session_opened_does_raise_naming_root_and_verb(
         require_session(fresh_root, verb)
 
     assert fresh_root in str(excinfo.value)
-    assert hint_of(excinfo.value) == f"Run gymrat start to open one before {verb}."
+    assert excinfo.value.hint == f"Run gymrat start to open one before {verb}."
 
 
 def test_require_session_when_no_session_opened_does_carry_no_session_reason(fresh_root: str):
@@ -780,7 +780,7 @@ def test_require_open_session_when_session_finalized_does_raise_naming_the_close
         require_open_session(fresh_root, "measuring an edit")
 
     assert SESSION.session_id in str(excinfo.value)
-    assert "gymrat start" in (hint_of(excinfo.value) or "")
+    assert "gymrat start" in (excinfo.value.hint or "")
 
 
 def test_require_open_session_when_session_finalized_does_carry_finalized_reason(

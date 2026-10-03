@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.config import HooksConfig, MetricEntry, StopConfig
-from gymrat.errors import GymratError, hint_of
+from gymrat.errors import GymratError
 from gymrat.loop.iterate.run import (
     BudgetExceededError,
     IterateOptions,
@@ -106,7 +106,7 @@ async def test_iterate_session_when_no_session_does_refuse_pointing_at_start(
     with pytest.raises(GymratError) as exc:
         await iterate_session(repo, resolved_config())
 
-    assert "gymrat start" in (hint_of(exc.value) or "")
+    assert "gymrat start" in (exc.value.hint or "")
     assert samples_mock.call_count == 0
 
 
@@ -122,7 +122,7 @@ async def test_iterate_session_when_session_finalized_does_refuse_pointing_at_st
     with pytest.raises(GymratError) as exc:
         await iterate_session(repo, resolved_config())
 
-    assert "gymrat start" in (hint_of(exc.value) or "")
+    assert "gymrat start" in (exc.value.hint or "")
     assert samples_mock.call_count == 0
 
 
@@ -134,7 +134,7 @@ async def test_iterate_session_when_last_iteration_unsettled_does_refuse_naming_
     with pytest.raises(GymratError) as exc:
         await iterate_session(repo, resolved_config())
 
-    hint = hint_of(exc.value) or ""
+    hint = exc.value.hint or ""
     assert "gymrat keep" in hint
     assert "gymrat discard" in hint
     assert samples_mock.call_count == 0
@@ -860,7 +860,7 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_
 
     message = str(exc.value)
     assert "12m" in message
-    hint = hint_of(exc.value) or ""
+    hint = exc.value.hint or ""
     assert "report" in hint.lower() or "session" in hint.lower()
     assert samples_mock.call_count == 0
 

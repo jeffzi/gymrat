@@ -47,7 +47,7 @@ from gymrat.config import (
     StopConfig,
     inspect_config,
 )
-from gymrat.errors import GymratError, hint_of
+from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError, try_git
 from gymrat.report.style import (
     format_hint,
@@ -498,7 +498,7 @@ def build_bench_section(
     except GymratError as error:
         return CheckSection(
             title=_BENCH_TITLE,
-            checks=[Check(name="adapter", status="fail", detail=str(error), hint=hint_of(error))],
+            checks=[Check(name="adapter", status="fail", detail=str(error), hint=error.hint)],
         )
     checks: list[Check] = [Check(name="adapter", status="ok", detail=f"adapter: {adapter}")]
 

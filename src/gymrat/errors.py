@@ -66,19 +66,6 @@ class CommandError(GymratError):
     """A subprocess command invoked by gymrat failed."""
 
 
-def hint_of(error: object) -> str | None:
-    """Extract the ``hint`` from a :class:`GymratError`, else ``None``.
-
-    Args:
-        error: The caught value.
-
-    Returns:
-        The error's ``hint`` when it is a :class:`GymratError`, otherwise
-        ``None`` — no other thrown value carries a hint.
-    """
-    return error.hint if isinstance(error, GymratError) else None
-
-
 def stderr_text_of(error: object) -> str:
     """The diagnostics a failed child process wrote to its output streams.
 

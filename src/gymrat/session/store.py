@@ -27,7 +27,7 @@ from typing import assert_never
 
 from pydantic_core import PydanticSerializationError
 
-from gymrat.errors import GymratError, hint_of
+from gymrat.errors import GymratError
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     BaselineRecord,
@@ -461,7 +461,7 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
             record = parse_record(value)
         except GymratError as error:
             message = f"{error!s} (at {at})"
-            raise GymratError(message, hint=hint_of(error)) from error
+            raise GymratError(message, hint=error.hint) from error
 
         if not records and record.type != "session":
             message = f"Expected session header at {at}, got a {record.type} record"

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from gymrat.config import ResolvedConfig
-from gymrat.errors import GymratError, hint_of
+from gymrat.errors import GymratError
 from gymrat.loop.start import start_session
 from gymrat.loop.sync import SyncResult, sync_to_experiment
 from gymrat.session.paths import experiment_worktree_dir
@@ -123,7 +123,7 @@ def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_refuse_
         sync_to_experiment(session)
 
     assert "README.md" in str(excinfo.value)
-    hint = hint_of(excinfo.value) or ""
+    hint = excinfo.value.hint or ""
     assert "settle" in hint.lower() or "revert" in hint.lower()
     assert (Path(experiment) / "README.md").read_text(encoding="utf-8") == "# Experiment change\n"
 
@@ -152,7 +152,7 @@ def test_sync_to_experiment_when_no_session_does_raise_pointing_at_start(
     with pytest.raises(GymratError) as excinfo:
         sync_to_experiment(repo)
 
-    assert "gymrat start" in (hint_of(excinfo.value) or "")
+    assert "gymrat start" in (excinfo.value.hint or "")
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +260,7 @@ def test_sync_to_experiment_when_experiment_worktree_missing_does_raise_gymrat_e
     with pytest.raises(GymratError) as excinfo:
         sync_to_experiment(session)
 
-    assert hint_of(excinfo.value) is not None
+    assert excinfo.value.hint is not None
 
 
 def test_sync_to_experiment_when_git_status_fails_does_raise_gymrat_error(
@@ -291,7 +291,7 @@ def test_sync_to_experiment_when_source_is_directory_does_report_expected_file_a
         sync_to_experiment(session)
 
     assert "README.md" in str(excinfo.value)
-    hint = hint_of(excinfo.value) or ""
+    hint = excinfo.value.hint or ""
     assert "submodule" in hint
 
 

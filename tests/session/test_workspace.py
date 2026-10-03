@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.errors import GymratError, hint_of
+from gymrat.errors import GymratError
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
 from gymrat.session.workspace import (
     BaselineRef,
@@ -126,7 +126,7 @@ def test_create_workspace_when_branch_already_exists_does_raise_naming_branch_an
         create_workspace(repo, SESSION_ID, baseline)
 
     assert BRANCH in str(excinfo.value)
-    assert re.search(r"git branch -D", hint_of(excinfo.value) or "", re.IGNORECASE)
+    assert re.search(r"git branch -D", excinfo.value.hint or "", re.IGNORECASE)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
@@ -226,7 +226,7 @@ def test_create_workspace_when_directory_is_not_a_git_repository_does_raise(
         create_workspace(outside, SESSION_ID, BaselineRef(ref=BASELINE_REF, sha=baseline_sha))
 
     assert re.search(r"not a git repository", str(excinfo.value), re.IGNORECASE)
-    assert re.search(r"git repository", hint_of(excinfo.value) or "", re.IGNORECASE)
+    assert re.search(r"git repository", excinfo.value.hint or "", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from gymrat.config import BenchlessConfig, StopConfig
-from gymrat.errors import GymratError, hint_of
+from gymrat.errors import GymratError
 from gymrat.loop.status import status_session
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
@@ -148,7 +148,7 @@ def test_status_session_when_no_session_does_refuse_pointing_at_start(tmp_path: 
     with pytest.raises(GymratError) as exc:
         status_session(str(tmp_path), _config())
 
-    assert "gymrat start" in (hint_of(exc.value) or "")
+    assert "gymrat start" in (exc.value.hint or "")
 
 
 def test_status_session_when_a_log_line_is_not_json_does_surface_the_store_error_with_path_and_line(

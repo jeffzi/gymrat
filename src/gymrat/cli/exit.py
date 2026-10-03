@@ -20,7 +20,7 @@ from rich.markup import escape
 
 from gymrat.adapters import AdapterError
 from gymrat.cli import console
-from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError, hint_of
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.report.style import format_hint, highlight_inline_code, markup, render_lines
 
 BUGS_URL = "https://github.com/jeffzi/gymrat/issues"
@@ -65,11 +65,10 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
         stack = "".join(traceback.format_exception(type(error), error, error.__traceback__))
         doc += f"\n{escape(stack.rstrip())}"
 
-    hint = hint_of(error)
-    if hint is not None:
-        doc += f"\n{format_hint(hint)}"
-
-    if not isinstance(error, GymratError):
+    if isinstance(error, GymratError):
+        if error.hint is not None:
+            doc += f"\n{format_hint(error.hint)}"
+    else:
         footer = (
             "\nRun with `gymrat --debug` for details. "
             "If this is a bug, please report it at\n"

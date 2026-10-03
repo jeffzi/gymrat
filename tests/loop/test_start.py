@@ -20,7 +20,7 @@ import pytest
 
 from gymrat.clock import now_ns
 from gymrat.config import HooksConfig, ResolvedConfig, StopConfig
-from gymrat.errors import GymratError, hint_of
+from gymrat.errors import GymratError
 from gymrat.loop.start import StartResult, start_session
 from gymrat.session.paths import (
     archived_session_path,
@@ -382,7 +382,7 @@ def test_start_session_when_baseline_ref_is_a_directory_does_raise_naming_the_re
     assert str(excinfo.value) == (
         f"Cannot start a session at '{target_dir}': it names a directory, not a git ref"
     )
-    assert hint_of(excinfo.value) == (
+    assert excinfo.value.hint == (
         "Pass a branch, tag, or commit the session's baseline is pinned to."
     )
     assert not Path(session_jsonl_path(repo)).exists()

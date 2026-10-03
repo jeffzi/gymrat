@@ -343,6 +343,19 @@ def test_format_cli_error_when_hint_colored_does_dim_the_line_and_paint_inline_c
     assert "\x1b[2;34mgymrat doctor" in hint_line  # cspell:disable-line
 
 
+def test_format_cli_error_when_not_gymrat_error_prints_no_hint_line(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _force_no_color(monkeypatch)
+
+    output = format_cli_error(ValueError("boom"))
+
+    assert output.splitlines()[:2] == [
+        "Error: boom",
+        "Run with gymrat --debug for details. If this is a bug, please report it at",
+    ]
+
+
 def test_format_cli_error_when_not_gymrat_error_appends_bug_footer():
     output = format_cli_error(ValueError("boom"))
 

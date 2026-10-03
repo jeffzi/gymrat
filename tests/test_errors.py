@@ -5,7 +5,6 @@ import pytest
 from gymrat.errors import (
     CommandError,
     GymratError,
-    hint_of,
     stderr_text_of,
 )
 from gymrat.loop.iterate.run import BudgetExceededError, LoopStopError
@@ -126,23 +125,6 @@ def test_command_error_when_raised_does_subclass_gymrat_error_and_share_signatur
     assert isinstance(err, GymratError)
     assert str(err) == "command failed"
     assert err.hint == "check the target"
-
-
-# ---------------------------------------------------------------------------
-# hint_of
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("error", "expected"),
-    [
-        pytest.param(GymratError("boom", hint="try that"), "try that", id="gymrat-with-hint"),
-        pytest.param(GymratError("boom"), None, id="gymrat-no-hint"),
-        pytest.param(ValueError("boom"), None, id="plain-exception"),
-    ],
-)
-def test_hint_of_when_called_does_return_hint_or_none(error: Exception, expected: str | None):
-    assert hint_of(error) == expected
 
 
 # ---------------------------------------------------------------------------
