@@ -1,22 +1,12 @@
 import pytest
 
 from gymrat.adapters import (
-    ADAPTER_NAMES,
     Adapter,
     get_adapter,
     metric_lines_adapter,
     mitata_adapter,
 )
 from gymrat.errors import GymratError
-
-# ---------------------------------------------------------------------------
-# public surface
-# ---------------------------------------------------------------------------
-
-
-def test_adapter_names_when_referenced_does_list_builtins_sorted():
-    assert ADAPTER_NAMES == ("metric-lines", "mitata")
-
 
 # ---------------------------------------------------------------------------
 # get_adapter — registered names

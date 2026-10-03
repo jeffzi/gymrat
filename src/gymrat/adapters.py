@@ -332,20 +332,19 @@ def _scan_json_objects(text: str) -> tuple[list[dict[str, object]], str | None]:
 
     Each ``{`` in ``text`` is tried via ``raw_decode``, so unbalanced braces and
     banner text like ``cpu: {model}`` are rejected by the JSON decoder itself.
-    Successes become candidates; the failure spanning the most remaining text is
-    captured so ``_extract_json`` can surface an actionable diagnostic without a
-    second scan.
+    Successes become candidates; the first failure is captured so
+    ``_extract_benchmarks`` can surface an actionable diagnostic without a second
+    scan.
 
     Args:
         text: The bench output to scan.
 
     Returns:
-        A ``(candidates, longest_failure)`` pair: the objects that parsed, and
-        the error message from the longest failed attempt (or ``None``).
+        A ``(candidates, first_failure)`` pair: the objects that parsed, and the
+        error message from the first failed attempt (or ``None``).
     """
     candidates: list[dict[str, object]] = []
-    longest: tuple[int, str] | None = None
-    length = len(text)
+    first_failure: str | None = None
     pos = text.find("{")
     while pos != -1:
         try:
@@ -353,74 +352,63 @@ def _scan_json_objects(text: str) -> tuple[list[dict[str, object]], str | None]:
             # have produced a JSON object — no non-dict shape check is needed.
             parsed, end = _JSON_DECODER.raw_decode(text, pos)
         except (json.JSONDecodeError, RecursionError) as exc:
-            remaining = length - pos
-            reason = (
-                str(exc)
-                if isinstance(exc, json.JSONDecodeError)
-                else f"Exceeded maximum recursion depth while parsing at position {pos}"
-            )
-            if longest is None or remaining > longest[0]:
-                longest = (remaining, reason)
+            if first_failure is None:
+                first_failure = (
+                    str(exc)
+                    if isinstance(exc, json.JSONDecodeError)
+                    else f"Exceeded maximum recursion depth while parsing at position {pos}"
+                )
             pos = text.find("{", pos + 1)
             continue
         candidates.append(parsed)
         pos = text.find("{", end)
-    return candidates, longest[1] if longest is not None else None
+    return candidates, first_failure
 
 
-def _extract_json(stdout: str) -> dict[str, object]:
-    """Find mitata's JSON object using :func:`_scan_json_objects`.
+def _extract_benchmarks(stdout: str) -> list[object]:
+    """Find mitata's ``benchmarks`` array using :func:`_scan_json_objects`.
 
     A candidate carrying a ``benchmarks`` list wins over any earlier record that
     does not — a decoy object printed before mitata's own output must not shadow
     the real payload.
 
     When no candidate has a ``benchmarks`` list but a decode failure exists
-    alongside a non-benchmarks record, the failure diagnostic takes priority
-    over returning the record — the real payload was likely truncated or
-    malformed, and the parse error is more actionable than a generic "missing
-    benchmarks array" from the caller.
+    alongside a non-benchmarks record, the failure diagnostic takes priority —
+    the real payload was likely truncated or malformed, and the parse error is
+    more actionable than a generic "missing benchmarks array".
 
     When :func:`_scan_json_objects` returns no candidates, every ``{`` in
     ``stdout`` failed to start a valid JSON object. The diagnostic names the
-    failure of the longest attempt — the ``{`` spanning the most remaining text
-    is most likely to be the real payload.
+    failure of the first attempt — the ``{`` spanning the most remaining text is
+    most likely to be the real payload.
 
     Args:
         stdout: The bench command's captured stdout.
 
     Returns:
-        The parsed JSON object carrying a ``benchmarks`` list, or, when no
-        decode failed, the first dict-shaped record as a fallback.
+        The non-empty ``benchmarks`` list of the first JSON object carrying one.
 
     Raises:
-        AdapterError: When no usable JSON object is found, or the most
-            promising candidate failed to parse.
+        AdapterError: When no JSON object is found, the most promising candidate
+            failed to parse, or the ``benchmarks`` array is missing or empty.
     """
-    candidates, longest_failure = _scan_json_objects(stdout)
+    candidates, first_failure = _scan_json_objects(stdout)
 
     for candidate in candidates:
-        if isinstance(candidate.get("benchmarks"), list):
-            return candidate
+        benchmarks = candidate.get("benchmarks")
+        if isinstance(benchmarks, list):
+            if not benchmarks:
+                msg = "benchmarks array is empty"
+                raise AdapterError(msg)
+            return benchmarks
 
-    if longest_failure is not None:
-        msg = f"Failed to parse JSON: {longest_failure}"
-        raise AdapterError(msg)
-    if candidates:
-        return candidates[0]
-    msg = "No JSON object found in stdout"
-    raise AdapterError(msg)
-
-
-def _parse_benchmarks(json_obj: dict[str, object]) -> list[object]:
-    benchmarks = json_obj.get("benchmarks")
-    if not isinstance(benchmarks, list):
+    if first_failure is not None:
+        msg = f"Failed to parse JSON: {first_failure}"
+    elif candidates:
         msg = "JSON missing benchmarks array"
-        raise AdapterError(msg)
-    if not benchmarks:
-        msg = "benchmarks array is empty"
-        raise AdapterError(msg)
-    return benchmarks
+    else:
+        msg = "No JSON object found in stdout"
+    raise AdapterError(msg)
 
 
 def _record_metric(metrics: dict[str, float], name: str, value: float, warn: WarnSink) -> None:
@@ -747,10 +735,8 @@ class _MitataAdapter:
                 ``benchmarks`` array is missing or empty, a substituted metric
                 prefix contains ``#``, or no run yields a usable metric.
         """
-        json_obj = _extract_json(stdout)
-        benchmarks = _parse_benchmarks(json_obj)
         metrics: dict[str, float] = {}
-        for benchmark in benchmarks:
+        for benchmark in _extract_benchmarks(stdout):
             _extract_benchmark_metrics(benchmark, metrics, warn)
 
         if not metrics:
@@ -774,9 +760,6 @@ _ADAPTERS: dict[str, Adapter] = {
     mitata_adapter.name: mitata_adapter,
 }
 
-ADAPTER_NAMES: tuple[str, ...] = tuple(sorted(_ADAPTERS))
-"""The built-in adapter names, sorted, for display and error hints."""
-
 
 def get_adapter(name: str) -> Adapter:
     """Return the built-in adapter registered under ``name``.
@@ -795,5 +778,5 @@ def get_adapter(name: str) -> Adapter:
         return _ADAPTERS[name]
     except KeyError:
         msg = f'Unknown adapter: "{name}".'
-        hint = f"valid adapters are: {', '.join(ADAPTER_NAMES)}"
+        hint = f"valid adapters are: {', '.join(sorted(_ADAPTERS))}"
         raise GymratError(msg, hint=hint) from None

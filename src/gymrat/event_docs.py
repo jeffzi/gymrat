@@ -126,7 +126,7 @@ READERS: dict[str, ReaderSpec] = {
 
 
 # ---------------------------------------------------------------------------
-# Wire-type and summary helpers
+# Wire-type helpers
 # ---------------------------------------------------------------------------
 
 
@@ -142,20 +142,6 @@ def wire_type_to_class_name(
         The wire-type string of each model mapped to its class name.
     """
     return {wire_type(model): model.__name__ for model in models}
-
-
-def _summary_line(defs: dict[str, dict[str, Any]], class_name: str) -> str:
-    """First line of a top-level model's schema description, or its class name.
-
-    Args:
-        defs: The schema's ``$defs``, keyed by class name.
-        class_name: The model class whose description to summarize.
-
-    Returns:
-        The first line of the description, or ``class_name`` when the schema
-        carries none.
-    """
-    return defs[class_name].get("description", class_name).split("\n")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +160,8 @@ def _build_messages(
         messages[wire] = {
             "contentType": "application/json",
             "title": class_name,
-            "summary": _summary_line(defs, class_name),
+            # A model with no docstring is summarized by its class name.
+            "summary": defs[class_name].get("description", class_name).split("\n")[0],
             "payload": {
                 "schemaFormat": _SCHEMA_FORMAT,
                 "schema": {"$ref": f"{schema_file}#/$defs/{class_name}"},
@@ -241,9 +228,9 @@ def render_asyncapi(
             "version": version,
             "description": (
                 "gymrat writes two append-only JSONL log files during a session: "
-                "the session log (.gymrat/session.jsonl) records high-level "
+                f"the session log ({SESSION_LOG_ADDRESS}) records high-level "
                 "session lifecycle events, and the supervisor log "
-                "(.gymrat/supervisor-<ms>.jsonl) captures fine-grained agent "
+                f"({SUPERVISOR_LOG_ADDRESS}) captures fine-grained agent "
                 "activity. Both files are strictly append-only; each line is a "
                 "self-contained JSON object discriminated by a type field."
             ),

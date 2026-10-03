@@ -170,14 +170,14 @@ def env_positive_int_result(env_var: str, maximum: int) -> EnvResult[int]:
 
 
 #: Each ``GYMRAT_*`` string field's ``(CliFlags field, env var)`` association.
-STRING_ENV_FIELDS: tuple[tuple[str, str], ...] = (
+_STRING_ENV_FIELDS: tuple[tuple[str, str], ...] = (
     ("bench", "GYMRAT_BENCH"),
     ("prepare", "GYMRAT_PREPARE"),
     ("adapter", "GYMRAT_ADAPTER"),
 )
 
 #: Each ``GYMRAT_*`` numeric field's ``(CliFlags field, env var, maximum)`` association.
-NUMBER_ENV_FIELDS: tuple[tuple[str, str, int], ...] = (
+_NUMBER_ENV_FIELDS: tuple[tuple[str, str, int], ...] = (
     ("samples", "GYMRAT_SAMPLES", MAX_SAFE_INTEGER),
     ("timeout", "GYMRAT_TIMEOUT", MAX_TIMEOUT_SECONDS),
 )
@@ -711,7 +711,7 @@ def _collect_env_flags(flags: CliFlags) -> tuple[CliFlags, list[str]]:
     """
     problems: list[str] = []
     strings: dict[str, str] = {}
-    for field_name, env_var in STRING_ENV_FIELDS:
+    for field_name, env_var in _STRING_ENV_FIELDS:
         if getattr(flags, field_name) is None:
             result = env_string_result(env_var)
             if result.problem is not None:
@@ -719,20 +719,21 @@ def _collect_env_flags(flags: CliFlags) -> tuple[CliFlags, list[str]]:
             if result.value is not None:
                 strings[field_name] = result.value
     numbers: dict[str, int] = {}
-    for field_name, env_var, maximum in NUMBER_ENV_FIELDS:
+    for field_name, env_var, maximum in _NUMBER_ENV_FIELDS:
         if getattr(flags, field_name) is None:
             result = env_positive_int_result(env_var, maximum)
             if result.problem is not None:
                 problems.append(result.problem)
             if result.value is not None:
                 numbers[field_name] = result.value
+    # Each dict holds a field only when its flag was unset, so the flag is the fallback.
     effective = replace(
         flags,
-        bench=_first_set(flags.bench, default=strings.get("bench")),
-        prepare=_first_set(flags.prepare, default=strings.get("prepare")),
-        adapter=_first_set(flags.adapter, default=strings.get("adapter")),
-        samples=_first_set(flags.samples, default=numbers.get("samples")),
-        timeout=_first_set(flags.timeout, default=numbers.get("timeout")),
+        bench=strings.get("bench", flags.bench),
+        prepare=strings.get("prepare", flags.prepare),
+        adapter=strings.get("adapter", flags.adapter),
+        samples=numbers.get("samples", flags.samples),
+        timeout=numbers.get("timeout", flags.timeout),
     )
     return effective, problems
 
@@ -757,25 +758,18 @@ def _resolve_config_source(
         read/parse failure, an empty ``ConfigFile`` when the config source is
         blank), and any problems found.
     """
-    problems: list[str] = []
-
-    env_config_path: str | None = None
-    env_config_failed = False
-    if flags.config is None:
+    explicit_config = flags.config
+    if explicit_config is None:
         result = env_string_result("GYMRAT_CONFIG")
         if result.problem is not None:
-            problems.append(result.problem)
-            env_config_failed = True
-        env_config_path = result.value
+            return None, ConfigFile(), [result.problem]
+        explicit_config = result.value
+    elif not explicit_config.strip():
+        # A whitespace-only --config is as blank as an empty one, and
+        # `_collect_flag_problems` has already reported it; probing it on disk would
+        # add a second problem for a path the user never named.
+        return None, ConfigFile(), []
 
-    # A whitespace-only --config is as blank as an empty one, and
-    # `_collect_flag_problems` has already reported it; probing it on disk would
-    # add a second problem for a path the user never named.
-    config_flag_blank = flags.config is not None and not flags.config.strip()
-    if config_flag_blank or env_config_failed:
-        return None, ConfigFile(), problems
-
-    explicit_config = flags.config if flags.config is not None else env_config_path
     if explicit_config is not None:
         resolved_path = explicit_config
     else:
@@ -783,10 +777,9 @@ def _resolve_config_source(
         resolved_path = str(Path(anchor) / CONFIG_FILENAME)
     required = explicit_config is not None
     file_result = load_config_file_collecting(resolved_path, required=required)
-    problems.extend(file_result.problems)
 
     config_path = resolved_path if (required or file_result.exists) else None
-    return config_path, file_result.config_file, problems
+    return config_path, file_result.config_file, list(file_result.problems)
 
 
 def _resolve_runbook(
