@@ -173,9 +173,7 @@ def _path_blocked(base_dir: Path, relative: str) -> bool:
         the path.
     """
     full = base_dir / relative
-    if full.is_symlink():
-        return True
-    return full.exists() and not full.is_file()
+    return full.is_symlink() or (full.exists() and not full.is_file())
 
 
 def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:

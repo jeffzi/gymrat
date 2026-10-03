@@ -65,11 +65,11 @@ from gymrat.session.paths import repo_root
 CheckStatus = Literal["ok", "warn", "fail"]
 """The outcome severity of a single diagnostic check."""
 
-WORKFLOW_SECTION_TITLE = "Workflow"
-"""The title shared between the workflow section builder and the renderer's skip detector."""
+_WORKFLOW_SECTION_TITLE = "Workflow"
 
-WORKFLOW_SKIP_CHECK_NAME = "workflow"
-"""The synthetic check name emitted when config errors collapse the workflow section."""
+# The synthetic check name emitted when config errors collapse the workflow
+# section; the renderer detects the skip by it.
+_WORKFLOW_SKIP_CHECK_NAME = "workflow"
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,10 +222,10 @@ def build_workflow_section(
     """
     if config_has_problems:
         return CheckSection(
-            title=WORKFLOW_SECTION_TITLE,
+            title=_WORKFLOW_SECTION_TITLE,
             checks=[
                 Check(
-                    name=WORKFLOW_SKIP_CHECK_NAME,
+                    name=_WORKFLOW_SKIP_CHECK_NAME,
                     status="ok",
                     detail="Skipped — fix config errors first",
                 )
@@ -269,7 +269,7 @@ def build_workflow_section(
         )
     )
 
-    return CheckSection(title=WORKFLOW_SECTION_TITLE, checks=checks)
+    return CheckSection(title=_WORKFLOW_SECTION_TITLE, checks=checks)
 
 
 def _build_stop_check(stop: StopConfig | None) -> Check:
@@ -319,15 +319,13 @@ def _workflow_was_skipped(report: DoctorReport) -> bool:
         report: The doctor report whose workflow section is checked.
 
     Returns:
-        ``True`` when the workflow section contains only the skip placeholder.
+        ``True`` when the report carries the skip placeholder.
     """
-    workflow = next(
-        (section for section in report.sections if section.title == WORKFLOW_SECTION_TITLE),
-        None,
+    return any(
+        check.name == _WORKFLOW_SKIP_CHECK_NAME
+        for section in report.sections
+        for check in section.checks
     )
-    if workflow is None or not workflow.checks:
-        return False
-    return all(check.name == WORKFLOW_SKIP_CHECK_NAME for check in workflow.checks)
 
 
 def _header_line(report: DoctorReport) -> str:
@@ -469,11 +467,7 @@ def _first_command_word(bench: str) -> str | None:
     except ValueError:
         return None
 
-    for token in tokens:
-        if "=" in token:
-            continue
-        return token
-    return None
+    return next((token for token in tokens if "=" not in token), None)
 
 
 def build_bench_section(
@@ -523,18 +517,14 @@ def build_bench_section(
 
     executable = _first_command_word(bench)
     if executable is not None:
-        if shutil.which(executable) is not None:
-            checks.append(
-                Check(name="executable", status="ok", detail=f"{executable} is available on PATH")
+        found = shutil.which(executable) is not None
+        checks.append(
+            Check(
+                name="executable",
+                status="ok" if found else "warn",
+                detail=f"{executable} {'is available' if found else 'was not found'} on PATH",
             )
-        else:
-            checks.append(
-                Check(
-                    name="executable",
-                    status="warn",
-                    detail=f"{executable} was not found on PATH",
-                )
-            )
+        )
 
     return CheckSection(title=_BENCH_TITLE, checks=checks)
 

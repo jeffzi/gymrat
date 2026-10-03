@@ -117,8 +117,7 @@ def format_timestamp(at_ms: float, run_start_ms: float | None) -> str:
     Returns:
         A bracketed timestamp string, e.g. ``"[00:07:45]"``.
     """
-    start_ms = at_ms if run_start_ms is None else run_start_ms
-    elapsed_ms = at_ms - start_ms
+    elapsed_ms = 0 if run_start_ms is None else at_ms - run_start_ms
     total_seconds = _floored_whole_seconds(elapsed_ms)
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
     return f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
