@@ -191,7 +191,7 @@ def build_comparison_result(
         candidate_metrics: list[CandidateMetric] = []
         for candidate in candidates:
             paired = pair_metric(baseline_samples, candidate.samples, metric_name).right
-            stats = compute_metric_stats(list(paired) or own_values(candidate.samples, metric_name))
+            stats = compute_metric_stats(paired or own_values(candidate.samples, metric_name))
             candidate_metrics.append(
                 CandidateMetric(
                     median=stats.median,

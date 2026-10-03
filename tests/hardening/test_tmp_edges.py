@@ -32,12 +32,8 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.targets import (
-    RefTarget,
-    cleanup_worktrees,
-    materialize_worktree,
-    plan_worktree,
-)
+from gymrat.sampling import cleanup_worktrees, materialize_worktree, plan_worktree
+from gymrat.targets import RefTarget
 from tests._cli import no_color_env as _env
 from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 

@@ -17,15 +17,8 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.targets import (
-    InPlaceTarget,
-    RefTarget,
-    WorktreeInfo,
-    cleanup_worktrees,
-    materialize_worktree,
-    plan_worktree,
-    resolve_target,
-)
+from gymrat.sampling import cleanup_worktrees, materialize_worktree, plan_worktree
+from gymrat.targets import InPlaceTarget, RefTarget, WorktreeInfo, resolve_target
 from tests._git import run_git as _run_git
 
 # A sha no repository holds, so ``git worktree add`` rejects it outright.
