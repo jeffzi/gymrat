@@ -862,13 +862,14 @@ async def test_exec_argv_when_env_none_does_inherit_parent_env(
     [
         pytest.param(None, "inherited", id="inherited-env"),
         pytest.param({"GYMRAT_TEST_MARKER": "mapped"}, "mapped", id="explicit-env"),
+        pytest.param({}, None, id="empty-env"),
     ],
 )
 async def test_exec_argv_when_spawned_does_give_child_nesting_depth_one_deeper(
     make_opts: Callable[..., ExecOptions],
     monkeypatch: pytest.MonkeyPatch,
     env: dict[str, str] | None,
-    expected_marker: str,
+    expected_marker: str | None,
 ) -> None:
     monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", 2)
     monkeypatch.setenv("GYMRAT_TEST_MARKER", "inherited")

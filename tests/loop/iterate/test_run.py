@@ -151,6 +151,15 @@ async def test_iterate_session_when_last_iteration_unsettled_does_carry_unsettle
     assert exc.value.reason == "unsettled"
 
 
+async def test_iterate_session_when_adapter_unknown_does_refuse_before_sampling(
+    settled: str, samples_mock: CollectSamplesRecorder
+):
+    with pytest.raises(GymratError, match="banana"):
+        await iterate_session(settled, resolved_config(adapter="banana"))
+
+    assert samples_mock.call_count == 0
+
+
 # ---------------------------------------------------------------------------
 # a configured stop condition already met
 # ---------------------------------------------------------------------------

@@ -106,10 +106,11 @@ def test_format_duration_when_negative_input_does_render_zero(ms: float, expecte
         pytest.param(1_000, 1_000, id="zero-elapsed"),
         pytest.param(999, 1_000, id="negative-elapsed-clamps-to-zero"),
         pytest.param(0, 90_000, id="large-negative-elapsed-clamps-to-zero"),
+        pytest.param(90_000, None, id="unanchored-run"),
     ],
 )
 def test_format_timestamp_when_elapsed_not_positive_does_render_zero_timestamp(
-    at_ms: float, run_start_ms: float
+    at_ms: float, run_start_ms: float | None
 ) -> None:
     assert format_timestamp(at_ms, run_start_ms) == "[00:00:00]"
 

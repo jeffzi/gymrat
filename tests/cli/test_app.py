@@ -317,6 +317,19 @@ def test_app_when_root_color_does_force_ansi_on_status_stdout(repo: str):
     assert SGR_RE.search(result.stdout)
 
 
+def test_app_when_root_color_unset_does_leave_the_environment_to_decide(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
+    write_config(repo)
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    assert SGR_RE.search(result.stdout)
+
+
 def test_app_when_local_no_color_beats_root_color_does_produce_plain_output(repo: str):
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
     write_config(repo)

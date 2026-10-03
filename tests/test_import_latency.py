@@ -69,6 +69,7 @@ import gymrat.supervisor.hooks
 import gymrat.telemetry
 import gymrat.telemetry.attributes
 import gymrat.telemetry.ids
+import gymrat.telemetry.provider
 import gymrat.telemetry.run_spans
 heavy = sorted(
     name
