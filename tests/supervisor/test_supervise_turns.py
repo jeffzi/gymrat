@@ -91,7 +91,6 @@ def test_supervision_result_when_constructed_with_end_reason_does_carry_it():
         ended_by="session",
         end_reason="test-reason",
         duration_ms=100,
-        cost_usd=0.0,
     )
 
     assert result.end_reason == "test-reason"
@@ -102,7 +101,6 @@ def test_supervision_result_when_no_end_reason_does_default_to_none():
         outcome=SessionOutcome(reason="completed", cost_usd=0.0),
         ended_by="session",
         duration_ms=100,
-        cost_usd=0.0,
     )
 
     assert result.end_reason is None

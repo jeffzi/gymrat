@@ -26,7 +26,7 @@ from gymrat.cli.supervise.reducer import (
     wants_session_refresh,
 )
 from gymrat.cli.supervise.text import exit_phase_text
-from gymrat.cli.supervise.types import IDLE_WARN_MS, ReadSessionResult
+from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.clock import now_ms
 from gymrat.eta import MS_PER_SECOND
 from gymrat.session.paths import session_jsonl_path
@@ -51,6 +51,9 @@ _logger = logging.getLogger(__name__)
 
 REFRESH_MS = 1000
 """Default Live dashboard refresh interval in milliseconds."""
+
+IDLE_WARN_MS = 30_000
+"""After 30 seconds of no tool activity, the liveness line escalates to alert styling."""
 
 
 # ---------------------------------------------------------------------------
@@ -81,30 +84,34 @@ def _find_stop_message(records: list[SessionLogRecord]) -> str | None:
     return next((r.message for r in reversed(records) if isinstance(r, StopRecord)), None)
 
 
-def make_default_read(root: str) -> Callable[[], ReadSessionResult]:
-    """Build a session-reader closure that folds the live session log at ``root``."""
+def read_live_session(root: str) -> ReadSessionResult:
+    """Read and fold the live session log at ``root``.
 
-    def _read() -> ReadSessionResult:
-        records = read_records(session_jsonl_path(root))
-        state = fold_session(records)
-        has_baseline = latest_baseline(records) is not None
+    Args:
+        root: The repository root whose session log to read.
 
-        committed_seqs = {
-            r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"
-        }
-        best_delta_pct, best_seq, primary_label = _find_best_kept_iteration(records, committed_seqs)
+    Returns:
+        The folded session with its baseline presence, best kept iteration, and
+        trailing stop message.
+    """
+    records = read_records(session_jsonl_path(root))
+    state = fold_session(records)
+    has_baseline = latest_baseline(records) is not None
 
-        return ReadSessionResult(
-            state=state,
-            has_baseline=has_baseline,
-            best_delta_pct=best_delta_pct,
-            best_seq=best_seq,
-            primary_label=primary_label,
-            baseline_sha=state.session.baseline.sha if state.session is not None else None,
-            stop_message=_find_stop_message(records) if state.ends_on_stop else None,
-        )
+    committed_seqs = {
+        r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"
+    }
+    best_delta_pct, best_seq, primary_label = _find_best_kept_iteration(records, committed_seqs)
 
-    return _read
+    return ReadSessionResult(
+        state=state,
+        has_baseline=has_baseline,
+        best_delta_pct=best_delta_pct,
+        best_seq=best_seq,
+        primary_label=primary_label,
+        baseline_sha=state.session.baseline.sha if state.session is not None else None,
+        stop_message=_find_stop_message(records) if state.ends_on_stop else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +368,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         now: Wall-clock source returning epoch milliseconds.  Defaults to
             :func:`~gymrat.clock.now_ms`; override in tests.
         read_session: Callable that reads the current session state.  Defaults to
-            :func:`make_default_read`; override in tests.
+            :func:`read_live_session`; override in tests.
         session_id: Session identifier propagated to the frame.
         branch: Git branch name shown in the frame header.
         plain_write: Line writer for plain mode, called once per line without a
@@ -396,7 +403,9 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
             log_path=log_path,
         ),
         now=now if now is not None else now_ms,
-        read_session_fn=read_session if read_session is not None else make_default_read(root),
+        read_session_fn=(
+            read_session if read_session is not None else functools.partial(read_live_session, root)
+        ),
         read_progress_fn=read_progress if read_progress is not None else _default_read_progress,
         plain_write_fn=plain_write,
         warn_fn=plain_write,

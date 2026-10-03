@@ -13,9 +13,6 @@ if TYPE_CHECKING:
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import CapAction, CapType
 
-IDLE_WARN_MS = 30_000
-"""After 30 seconds of no tool activity, the liveness line escalates to alert styling."""
-
 
 @dataclass(frozen=True, slots=True)
 class ReadSessionResult:
@@ -26,7 +23,7 @@ class ReadSessionResult:
         has_baseline: Whether a baseline record has been recorded for the session.
         best_delta_pct: The best primary delta, in percent, among committed-keep
             iterations. ``None`` when no keep has been committed.
-            ``make_default_read`` computes it from the session records;
+            ``read_live_session`` computes it from the session records;
             injected test readers set it directly.
         best_seq: The sequence number of the committed-keep iteration with the
             best primary delta. ``None`` under the same condition as
@@ -36,7 +33,7 @@ class ReadSessionResult:
             (``"geomean"``). ``None`` under the same condition as
             ``best_delta_pct``, and set alongside it.
         baseline_sha: The commit the session started from, taken from the
-            session record by ``make_default_read``. ``None`` before the session
+            session record by ``read_live_session``. ``None`` before the session
             record has been written.
         stop_message: The newest stop record's message. Holds a value only
             while the folded log ends on a stop; ``None`` once any iteration,

@@ -22,19 +22,12 @@ from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.types import ReportOptions
 from gymrat.session.budget import (
     SIDES_PER_ITERATE,
-    Budget,
     estimate_iterate_duration,
     read_budget,
 )
 from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.session.store import read_records
 from gymrat.warn import warn_to_stderr
-
-
-def format_budget_trailer(budget: Budget, current_ms: float) -> str:
-    """The ``12m 34s left of 30m`` trailer a report appends when a budget is active."""
-    remaining = budget.remaining_ms(current_ms)
-    return f"{format_duration(remaining)} left of {budget.max_minutes:g}m"
 
 
 def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:
@@ -51,11 +44,12 @@ def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:
     budget = read_budget(root, now_ms=current)
     if budget is None:
         return "", None
+    remaining_ms = budget.remaining_ms(current)
     summary = BudgetSummary(
         cap_minutes=budget.max_minutes,
-        remaining_seconds=int(budget.remaining_ms(current) // MS_PER_SECOND),
+        remaining_seconds=int(remaining_ms // MS_PER_SECOND),
     )
-    return "\n" + format_budget_trailer(budget, current), summary
+    return f"\n{format_duration(remaining_ms)} left of {budget.max_minutes:g}m", summary
 
 
 def write_budget_report(

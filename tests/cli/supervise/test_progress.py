@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.cli.supervise.progress import make_default_read
+from gymrat.cli.supervise.progress import read_live_session
 from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.eta import NS_PER_MS
 from gymrat.session.records import IterationPrimary
@@ -90,7 +90,7 @@ def test_create_reporter_when_session_read_does_expose_the_latest_session_result
 def _read_back(tmp_path: Path, history: tuple[SessionLogRecord, ...]) -> ReadSessionResult:
     """Write a session log under ``tmp_path`` and read it back the dashboard's way."""
     write_session_log(str(tmp_path), session_record(), history)
-    return make_default_read(str(tmp_path))()
+    return read_live_session(str(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -100,7 +100,7 @@ def _read_back(tmp_path: Path, history: tuple[SessionLogRecord, ...]) -> ReadSes
         pytest.param("metric", "decode/time", "decode/time", id="metric-primary"),
     ],
 )
-def test_make_default_read_when_keeps_committed_does_report_the_best_committed_iteration(
+def test_read_live_session_when_keeps_committed_does_report_the_best_committed_iteration(
     tmp_path: Path, kind: PrimaryKind, name: str | None, primary_label: str
 ):
     history = (
@@ -135,7 +135,7 @@ def test_make_default_read_when_keeps_committed_does_report_the_best_committed_i
         ),
     ],
 )
-def test_make_default_read_when_stop_recorded_does_report_it_only_while_last(
+def test_read_live_session_when_stop_recorded_does_report_it_only_while_last(
     tmp_path: Path, history: tuple[SessionLogRecord, ...], stop_message: str | None
 ):
     result = _read_back(tmp_path, history)
@@ -154,7 +154,7 @@ def test_make_default_read_when_stop_recorded_does_report_it_only_while_last(
         ),
     ],
 )
-def test_make_default_read_when_baseline_presence_varies_does_report_it(
+def test_read_live_session_when_baseline_presence_varies_does_report_it(
     tmp_path: Path, history: tuple[SessionLogRecord, ...], has_baseline: bool
 ):
     result = _read_back(tmp_path, history)

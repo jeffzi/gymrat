@@ -149,13 +149,8 @@ def _format_reply(
     after_wait: bool,
 ) -> str:
     remaining = max(0.0, deadline_ms - now_ms)
-    parts = [
-        _RUNBOOK_INSTRUCTION,
-        f"\n{format_duration(remaining)} left of {max_minutes:g}m",
-    ]
-    if after_wait:
-        parts.append(f"\n{_AFTER_WAIT_LINE}")
-    return "".join(parts)
+    reply = f"{_RUNBOOK_INSTRUCTION}\n{format_duration(remaining)} left of {max_minutes:g}m"
+    return f"{reply}\n{_AFTER_WAIT_LINE}" if after_wait else reply
 
 
 def classify(  # noqa: PLR0913, PLR0911 - one parameter per classification input

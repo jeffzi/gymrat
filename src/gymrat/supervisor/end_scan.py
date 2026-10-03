@@ -44,7 +44,7 @@ def detect_end_condition(
     *,
     cursor: int | None,
     check_stop: bool,
-) -> tuple[EndCondition | None, int]:
+) -> EndCondition | None:
     """Find the condition in the session log that ends supervision, if any.
 
     A failed or timed-out hook record at or past *cursor* wins over a met stop
@@ -61,21 +61,18 @@ def detect_end_condition(
         check_stop: Whether a met stop condition is reported.
 
     Returns:
-        The end condition, or ``None`` when nothing ends supervision, paired
-        with the cursor for the next call.
+        The end condition, or ``None`` when nothing ends supervision.
     """
-    next_cursor = len(records)
-
     if cursor is not None:
         for record in records[cursor:]:
             if isinstance(record, HookRecord) and record.failed:
-                return EndCondition("hook-failure", _hook_failure_reason(record)), next_cursor
+                return EndCondition("hook-failure", _hook_failure_reason(record))
 
     if check_stop and (stop := stop_condition(config, state)) is not None:
         reason = str(stop).removeprefix(_STOP_MESSAGE_PREFIX).strip()
-        return EndCondition("stop-condition", reason), next_cursor
+        return EndCondition("stop-condition", reason)
 
-    return None, next_cursor
+    return None
 
 
 def _log_size(path: str) -> int:
@@ -171,13 +168,15 @@ class EndConditionScan:
             return
         if self._cursor is None:
             self._arm_stop_check(state)
-        self.pending, self._cursor = detect_end_condition(
+        self.pending = detect_end_condition(
             self._config,
             records,
             state,
             cursor=self._cursor,
             check_stop=self._check_stop,
         )
+        # Every record has now been scanned for hook failures, whatever was found.
+        self._cursor = len(records)
 
     def _arm_stop_check(self, state: SessionState) -> None:
         """Arm stop-condition detection unless ``state`` already satisfies one."""

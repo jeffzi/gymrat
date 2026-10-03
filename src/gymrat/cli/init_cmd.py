@@ -20,7 +20,7 @@ import typer
 from rich.markup import escape
 
 from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
-from gymrat.cli.exit import exit_with_error, write_stdout
+from gymrat.cli.exit import exit_with_error, run_guarded, write_stdout
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BenchOption,
     ColorOption,
@@ -41,15 +41,11 @@ _NoRunbookOption = Annotated[bool, typer.Option("--no-runbook", help="skip the r
 _NoSkillOption = Annotated[bool, typer.Option("--no-skill", help="skip the skill file")]
 
 
-def _display_path(base_dir: str, relative: str) -> str:
-    """Return a path navigable from the user's cwd, not from the project root."""
-    return os.path.relpath(str(Path(base_dir) / relative))
-
-
 def _format_artifact(label: str, artifact: ScaffoldArtifact, base_dir: str) -> str:
     if artifact.status == "declined":
         return f"  {label} declined"
-    display = _display_path(base_dir, artifact.path)
+    # Navigable from the user's cwd, not from the project root.
+    display = os.path.relpath(Path(base_dir) / artifact.path)
     verb = "created at" if artifact.status == "created" else "already exists at"
     return f"  {label} {verb} {display}"
 
@@ -86,7 +82,7 @@ def init_command(
     if bench is None and not (Path(base_dir) / CONFIG_FILENAME).exists():
         exit_with_error(GymratError("Missing --bench flag."))
 
-    try:
+    def scaffold_and_report() -> None:
         request = ScaffoldRequest(
             bench=bench,
             runbook=not no_runbook,
@@ -94,7 +90,5 @@ def init_command(
         )
         result = scaffold(base_dir, request)
         write_stdout(_format_summary(result, base_dir, color=resolved_color) + "\n")
-    except typer.Exit:
-        raise
-    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
-        exit_with_error(error)
+
+    run_guarded(scaffold_and_report)

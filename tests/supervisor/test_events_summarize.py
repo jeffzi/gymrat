@@ -103,7 +103,7 @@ def test_summarize_when_truncating_does_split_on_code_point_boundaries(
 def test_summarize_input_when_given_value_does_summarize_its_json_form(
     value: object, expected: str
 ):
-    assert summarize_input(value, 200) == expected
+    assert summarize_input(value) == expected
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.cli.supervise.types import IDLE_WARN_MS
+from gymrat.cli.supervise.progress import IDLE_WARN_MS
 from gymrat.session.progress_file import ProgressSnapshot
 from gymrat.supervisor.events import TextDeltaEvent, ThinkingUpdateEvent, ToolProgressEvent
 from tests.cli.supervise._fixtures import (

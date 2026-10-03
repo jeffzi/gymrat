@@ -130,13 +130,11 @@ class SupervisionResult:
             summary; for ``session``, ``None`` unless a log-read error set it.
         duration_ms: Elapsed milliseconds from start to settlement, measured
             on the monotonic clock.
-        cost_usd: The final cost reported by the session.
     """
 
     outcome: SessionOutcome
     ended_by: EndedBy
     duration_ms: int
-    cost_usd: float
     end_reason: str | None = None
 
 
@@ -270,14 +268,10 @@ class _Supervision:
         if self._cap_fired:
             return
         if self._reply_outstanding:
-            if event.origin == "agent":
-                self._reply_outstanding = False
-                self._schedule_settle(event)
-            return
+            if event.origin != "agent":
+                return
+            self._reply_outstanding = False
 
-        self._schedule_settle(event)
-
-    def _schedule_settle(self, event: TurnEndEvent) -> None:
         self._cancel("settle")
         self._schedule("settle", self._run_settle(event))
 
@@ -458,7 +452,6 @@ class _Supervision:
                     ended_by="session",
                     end_reason=self._end_reason,
                     duration_ms=duration_ms,
-                    cost_usd=self._last_cost_usd,
                 )
 
             return SupervisionResult(
@@ -466,7 +459,6 @@ class _Supervision:
                 ended_by=self._ended_by,
                 end_reason=self._end_reason,
                 duration_ms=duration_ms,
-                cost_usd=outcome.cost_usd,
             )
         finally:
             self._cancel_pending()

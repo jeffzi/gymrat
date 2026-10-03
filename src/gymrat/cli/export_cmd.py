@@ -9,7 +9,7 @@ from typing import Annotated
 import typer
 
 from gymrat.cli.console import apply_color_override, apply_debug
-from gymrat.cli.exit import exit_with_error, write_and_flush
+from gymrat.cli.exit import exit_with_error, run_guarded, write_and_flush
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     ColorOption,
     DebugOption,
@@ -69,12 +69,7 @@ def export_command(
     apply_debug(debug)
     apply_color_override(color)
 
-    try:
-        _export(session_log, endpoint)
-    except typer.Exit:
-        raise
-    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
-        exit_with_error(error)
+    run_guarded(lambda: _export(session_log, endpoint))
 
 
 def _export(session_log: str | None, endpoint: str | None) -> None:

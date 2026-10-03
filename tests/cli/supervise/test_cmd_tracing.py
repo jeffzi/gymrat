@@ -115,7 +115,7 @@ def test_supervise_when_tracing_enabled_does_set_run_end_attributes(
     assert result.exit_code == 0
     spans = exporter.get_finished_spans()
     run_span = next(s for s in spans if s.name == "gymrat.run")
-    assert run_span.attributes["gymrat.run.cost_usd"] == sup_result.cost_usd  # pyrefly: ignore[unsupported-operation]
+    assert run_span.attributes["gymrat.run.cost_usd"] == sup_result.outcome.cost_usd  # pyrefly: ignore[unsupported-operation]
     assert run_span.attributes["gymrat.run.ended_by"] == sup_result.ended_by  # pyrefly: ignore[unsupported-operation]
     assert "gymrat.run.end_reason" not in run_span.attributes  # pyrefly: ignore[not-iterable]
     assert run_span.attributes["gymrat.run.duration_ms"] == sup_result.duration_ms  # pyrefly: ignore[unsupported-operation]

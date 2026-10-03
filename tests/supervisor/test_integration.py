@@ -115,7 +115,7 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
 
     assert result.ended_by == "session"
     assert result.outcome.reason == "completed"
-    assert result.cost_usd == 0.42
+    assert result.outcome.cost_usd == 0.42
 
     log_lines = read_log_lines(log_path)
     assert log_lines[0]["type"] == "launch"

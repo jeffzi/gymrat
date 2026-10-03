@@ -432,10 +432,7 @@ def test_detect_end_condition_when_stop_condition_met_does_report_stop_condition
 
     result = detect_end_condition(config, records, state, cursor=cursor, check_stop=True)
 
-    assert result == (
-        EndCondition(ended_by="stop-condition", reason="max iterations (2 of 2)"),
-        2,
-    )
+    assert result == EndCondition(ended_by="stop-condition", reason="max iterations (2 of 2)")
 
 
 def test_detect_end_condition_when_state_is_met_but_records_are_not_does_use_state():
@@ -444,10 +441,7 @@ def test_detect_end_condition_when_state_is_met_but_records_are_not_does_use_sta
 
     result = detect_end_condition(config, [], state, cursor=0, check_stop=True)
 
-    assert result == (
-        EndCondition(ended_by="stop-condition", reason="max iterations (2 of 2)"),
-        0,
-    )
+    assert result == EndCondition(ended_by="stop-condition", reason="max iterations (2 of 2)")
 
 
 def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_nothing():
@@ -457,7 +451,7 @@ def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_not
 
     result = detect_end_condition(config, records, state, cursor=0, check_stop=False)
 
-    assert result == (None, 2)
+    assert result is None
 
 
 @pytest.mark.parametrize(
@@ -498,7 +492,7 @@ def test_detect_end_condition_when_hook_failed_after_cursor_does_report_hook_fai
         default_benchless_config(), records, session_state(), cursor=0, check_stop=True
     )
 
-    assert result == (EndCondition(ended_by="hook-failure", reason=reason), len(records))
+    assert result == EndCondition(ended_by="hook-failure", reason=reason)
 
 
 @pytest.mark.parametrize(
@@ -528,7 +522,7 @@ def test_detect_end_condition_when_no_failure_in_scan_and_no_stop_does_report_no
         default_benchless_config(), records, session_state(), cursor=cursor, check_stop=True
     )
 
-    assert result == (None, len(records))
+    assert result is None
 
 
 def test_detect_end_condition_when_hook_failed_and_stop_met_does_report_hook_failure():
@@ -541,10 +535,7 @@ def test_detect_end_condition_when_hook_failed_and_stop_met_does_report_hook_fai
 
     result = detect_end_condition(config, records, state, cursor=0, check_stop=True)
 
-    assert result == (
-        EndCondition(
-            ended_by="hook-failure",
-            reason="after hook failed on iteration 1: exit 2 (stdout 80 B, stderr 0 B)",
-        ),
-        2,
+    assert result == EndCondition(
+        ended_by="hook-failure",
+        reason="after hook failed on iteration 1: exit 2 (stdout 80 B, stderr 0 B)",
     )

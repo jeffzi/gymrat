@@ -185,12 +185,10 @@ def wants_session_refresh(state: ReporterState, event: SessionEvent) -> bool:
         session.
     """
     match event:
-        case LaunchEvent():
+        case LaunchEvent() | ToolEndEvent():
             return True
         case FollowUpEvent(action="ended"):
             return isinstance(state.liveness, Exiting)
-        case ToolEndEvent():
-            return True
         case _:
             return False
 

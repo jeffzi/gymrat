@@ -152,7 +152,7 @@ def finalize_tracing(
 
     run_span = state.run_span
     if result is not None and run_span is not None:
-        run_span.set_attribute(RUN_COST_USD, result.cost_usd)
+        run_span.set_attribute(RUN_COST_USD, result.outcome.cost_usd)
         run_span.set_attribute(RUN_ENDED_BY, result.ended_by)
         if result.end_reason is not None:
             run_span.set_attribute(RUN_END_REASON, result.end_reason)

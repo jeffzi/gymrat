@@ -67,6 +67,11 @@ _OptStr = Annotated[str | SkipJsonSchema[None], _OMIT_NONE]
 _OptFloat = Annotated[FiniteFloat | SkipJsonSchema[None], _OMIT_NONE]
 _OptEffort = Annotated[Effort | SkipJsonSchema[None], _OMIT_NONE]
 
+# The creation timestamp every event carries.
+_At = Annotated[
+    int, Field(description="Nanoseconds since the Unix epoch when the event was created.")
+]
+
 # Description shared by every `parent_tool_use_id` field below.
 _PARENT_TOOL_USE_ID_DESCRIPTION = "Tool use ID of the enclosing tool call, if any."
 
@@ -89,7 +94,7 @@ class ThinkingUpdateEvent(_EventModel):
     type: Literal["thinking_update"] = Field(
         "thinking_update", description="Event type discriminator."
     )
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     estimated_tokens: int = Field(description="Cumulative estimated thinking tokens so far.")
     delta: int = Field(description="Token count change since the last thinking update.")
     parent_tool_use_id: _OptStr = Field(default=None, description=_PARENT_TOOL_USE_ID_DESCRIPTION)
@@ -99,7 +104,7 @@ class ToolStartEvent(_EventModel):
     """Emitted when the model invokes a tool."""
 
     type: Literal["tool_start"] = Field("tool_start", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     tool_use_id: str = Field(description="Unique identifier for this tool invocation.")
     tool_name: str = Field(description="Name of the tool being invoked.")
     input: object = Field(description="Raw input passed to the tool.")
@@ -111,7 +116,7 @@ class ToolProgressEvent(_EventModel):
     """Emitted periodically while a long-running tool call is still in flight."""
 
     type: Literal["tool_progress"] = Field("tool_progress", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     tool_use_id: str = Field(description="Unique identifier of the in-flight tool invocation.")
     elapsed_ms: int = Field(description="Milliseconds elapsed since the tool call started.")
 
@@ -120,7 +125,7 @@ class ToolEndEvent(_EventModel):
     """Emitted when a tool call completes and its result is available."""
 
     type: Literal["tool_end"] = Field("tool_end", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     tool_use_id: str = Field(description="Unique identifier of the completed tool invocation.")
     tool_name: str = Field(description="Name of the tool that completed.")
     duration_ms: int = Field(description="Wall-clock milliseconds the tool call took.")
@@ -133,7 +138,7 @@ class TextDeltaEvent(_EventModel):
     """Emitted for each chunk of assistant text as it streams in."""
 
     type: Literal["text_delta"] = Field("text_delta", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     chunk: str = Field(description="Text chunk streamed from the assistant.")
     parent_tool_use_id: _OptStr = Field(default=None, description=_PARENT_TOOL_USE_ID_DESCRIPTION)
 
@@ -149,7 +154,7 @@ class UsageUpdateEvent(_EventModel):
     """
 
     type: Literal["usage_update"] = Field("usage_update", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     cost_usd: FiniteFloat = Field(description="Cumulative session cost in US dollars.")
     settled: bool = Field(default=False, description="Whether the session has already settled.")
 
@@ -165,7 +170,7 @@ class CapEvent(_EventModel):
     """Emitted when a supervision cap (wall-clock or spend) fires."""
 
     type: Literal["cap"] = Field("cap", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     cap: CapType = Field(description="Which supervision cap fired.")
     action: CapAction = Field(
         description=(
@@ -174,14 +179,16 @@ class CapEvent(_EventModel):
     )
 
 
+ModelPhase = Literal["thinking", "responding", "tool_input", "turn_end"]
+"""The processing phases a turn moves through."""
+
+
 class ModelPhaseEvent(_EventModel):
     """Emitted when the model transitions between processing phases within a turn."""
 
     type: Literal["model_phase"] = Field("model_phase", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
-    phase: Literal["thinking", "responding", "tool_input", "turn_end"] = Field(
-        description="Model processing phase the turn entered."
-    )
+    at: _At
+    phase: ModelPhase = Field(description="Model processing phase the turn entered.")
     tool_name: _OptStr = Field(default=None, description="Tool name when the phase is tool_input.")
     parent_tool_use_id: _OptStr = Field(default=None, description=_PARENT_TOOL_USE_ID_DESCRIPTION)
 
@@ -194,7 +201,7 @@ class LaunchEvent(_EventModel):
     """
 
     type: Literal["launch"] = Field("launch", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     schema_version: Literal[1] = Field(alias="schema", description="Supervisor log format version.")
     session_id: str = Field(description="Unique identifier for this session.")
 
@@ -214,7 +221,7 @@ class TurnEndEvent(_EventModel):
     """Emitted when the agent finishes a conversational turn."""
 
     type: Literal["turn_end"] = Field("turn_end", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     text: str = Field(description="Full text the agent produced in this turn.")
     cost_usd: FiniteFloat = Field(
         description="Cumulative session cost in US dollars when the turn ended."
@@ -233,7 +240,7 @@ class FollowUpEvent(_EventModel):
     """
 
     type: Literal["follow_up"] = Field("follow_up", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     action: Literal["replied", "waiting", "ended"] = Field(
         description="Supervisor action taken after the turn."
     )
@@ -245,7 +252,7 @@ class CompactionEvent(_EventModel):
     """Emitted when the agent SDK reports a context compaction boundary."""
 
     type: Literal["compaction"] = Field("compaction", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
 
 
 SessionEvent = (
@@ -514,7 +521,6 @@ def _render_path(path: str, supervised_root: str | None) -> str:
 
 def summarize_input(
     value: object,
-    max_chars: int = SUMMARY_MAX_CHARS,
     *,
     tool_name: str | None = None,
     supervised_root: str | None = None,
@@ -530,7 +536,6 @@ def summarize_input(
 
     Args:
         value: The raw tool-call input to summarize.
-        max_chars: The code-point budget before truncation kicks in.
         tool_name: The tool identifier, used to pick a field-specific extractor.
         supervised_root: The root a file-path summary should render relative to.
 
@@ -540,13 +545,13 @@ def summarize_input(
     if isinstance(value, dict) and tool_name is not None:
         extracted = _extract_tool_summary(value, tool_name, supervised_root)
         if extracted is not None:
-            return summarize(extracted, max_chars)
+            return summarize(extracted)
 
     try:
         encoded = json.dumps(value, separators=_COMPACT_JSON_SEPARATORS)
     except (TypeError, ValueError):
-        return summarize(str(value), max_chars)
-    return summarize(encoded, max_chars)
+        return summarize(str(value))
+    return summarize(encoded)
 
 
 def _extract_tool_summary(

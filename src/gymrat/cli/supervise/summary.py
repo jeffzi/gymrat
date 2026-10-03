@@ -70,7 +70,7 @@ def _build_outcome_text(result: SupervisionResult) -> Text:
     text.append(" · ", style=STYLE_META)
     text.append(format_duration(result.duration_ms))
     text.append(" · ", style=STYLE_META)
-    text.append(format_cost(result.cost_usd))
+    text.append(format_cost(result.outcome.cost_usd))
     return text
 
 

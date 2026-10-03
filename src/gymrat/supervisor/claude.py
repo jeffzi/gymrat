@@ -21,7 +21,7 @@ import json
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
-from math import ceil
+from math import ceil, isfinite
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from gymrat import clock
@@ -32,10 +32,10 @@ from gymrat.supervisor.driver import (
     DriverSession,
     SessionOutcome,
     SessionPrompt,
-    usable_cost,
 )
 from gymrat.supervisor.events import (
     CompactionEvent,
+    ModelPhase,
     ModelPhaseEvent,
     SessionObserver,
     TextDeltaEvent,
@@ -59,7 +59,27 @@ _CHARS_PER_TOKEN_ESTIMATE = 4
 #: A ThinkingUpdateEvent is emitted only after this many characters accumulate
 #: since the last emit, keeping the event rate bounded during long thinking blocks.
 _THINKING_EMIT_CHARS = 200
-_ModelPhase = Literal["thinking", "responding", "tool_input", "turn_end"]
+
+
+def usable_cost(value: object) -> float | None:
+    """Accept a reported session cost only when it is a finite, positive number.
+
+    A missing, non-numeric, NaN, infinite, zero, or negative cost is unusable:
+    the caller keeps the cost it already has.
+
+    Args:
+        value: The cost as reported, of any type.
+
+    Returns:
+        The cost as a float, or ``None`` when it is unusable. Booleans are
+        unusable even though ``bool`` subclasses ``int``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    cost = float(value)
+    if isfinite(cost) and cost > 0:
+        return cost
+    return None
 
 
 @dataclass(slots=True)
@@ -183,7 +203,7 @@ class MessageMapper:
                     self._end_tool(tool_use_id, result, parent)
 
     def _emit_phase(
-        self, phase: _ModelPhase, parent: str | None, tool_name: str | None = None
+        self, phase: ModelPhase, parent: str | None, tool_name: str | None = None
     ) -> None:
         self._observer(
             ModelPhaseEvent(
@@ -420,7 +440,8 @@ class _ClaudeSession:
         self._client_factory = client_factory
         self._prompt = prompt
         self._observer = observer
-        self._abort = abort
+        # No event supplied is the same as one that is never set.
+        self._abort = abort if abort is not None else asyncio.Event()
         self._factories = factories
         self._client: ClaudeClient | None = None
         self._abort_task: asyncio.Task[None] | None = None
@@ -467,8 +488,8 @@ class _ClaudeSession:
         if self._client is not None:
             await _disconnect_quietly(self._client)
 
-    async def _watch_abort(self, abort: asyncio.Event, client: ClaudeClient) -> None:
-        await abort.wait()
+    async def _watch_abort(self, client: ClaudeClient) -> None:
+        await self._abort.wait()
         self._claim_interrupted()
         # Disconnect so the streaming loop unblocks; the first stop already
         # captured the cost, so a later abort leaves it untouched.
@@ -490,7 +511,7 @@ class _ClaudeSession:
             )
 
     async def _run(self) -> SessionOutcome:
-        if self._abort is not None and self._abort.is_set():
+        if self._abort.is_set():
             return SessionOutcome(reason="interrupted", cost_usd=0.0)
 
         factory = await self._resolve_factory()
@@ -510,16 +531,14 @@ class _ClaudeSession:
         options = _build_options(self._prompt)
         tools = self._factories.tools
         if tools is not None:
-            abort = self._abort if self._abort is not None else asyncio.Event()
             env = _traceparent_env(self._prompt.traceparent)
-            options["mcp_servers"] = {"gymrat": tools(abort, env)}
+            options["mcp_servers"] = {"gymrat": tools(self._abort, env)}
         hooks = self._factories.hooks
         if hooks is not None:
             options["hooks"] = hooks()
         client = factory(options)
         self._client = client
-        if self._abort is not None:
-            self._abort_task = asyncio.create_task(self._watch_abort(self._abort, client))
+        self._abort_task = asyncio.create_task(self._watch_abort(client))
         await client.connect()
         if self._stopped is not None:
             return self._stopped

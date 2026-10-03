@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from gymrat.supervisor.supervise import SupervisionResult
 
 from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
-from gymrat.cli.exit import exit_with_error, write_and_flush, write_stdout
+from gymrat.cli.exit import exit_with_error, run_guarded, write_and_flush, write_stdout
 from gymrat.cli.options import (
     BaselineOption,
     ColorOption,
@@ -65,7 +65,7 @@ from gymrat.session.workspace import dirty_file_count, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.context import SupervisedSession
-from gymrat.supervisor.driver import Driver, SessionPrompt
+from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.events import (
     DirtyInfo,
     LaunchEvent,
@@ -202,11 +202,7 @@ class _SessionContext:
     launch: LaunchEvent
     kickoff: KickoffResult
     config: ResolvedConfig
-    max_minutes: float
-    max_usd: float | None
     max_iterations: int | None
-    model: str | None
-    effort: Effort | None
     color: bool | None
     branch: str
     finalize: bool
@@ -216,10 +212,10 @@ class _SessionContext:
             kickoff=self.kickoff.kickoff,
             cwd=self.root,
             system_prompt_append=self.kickoff.system_prompt_append,
-            model=self.model,
-            effort=self.effort,
-            command_timeout_ms=minutes_to_ms(self.max_minutes),
-            max_budget_usd=self.max_usd,
+            model=self.launch.model,
+            effort=self.launch.effort,
+            command_timeout_ms=minutes_to_ms(self.launch.max_minutes),
+            max_budget_usd=self.launch.max_usd,
         )
 
 
@@ -255,8 +251,8 @@ def _report_result(
             log_path=ctx.log_path,
             session_result=session_result,
             final_text=final_text,
-            model=ctx.model,
-            effort=ctx.effort,
+            model=ctx.launch.model,
+            effort=ctx.launch.effort,
             exit_report=exit_report,
         ),
         color=resolve_stream_color(ctx.color, sys.stdout),
@@ -317,14 +313,14 @@ def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], Non
 def _create_reporter(ctx: _SessionContext, mode: Literal["live", "plain"]) -> SuperviseReporter:
     return create_supervise_reporter(
         root=ctx.root,
-        max_minutes=ctx.max_minutes,
-        max_usd=ctx.max_usd,
+        max_minutes=ctx.launch.max_minutes,
+        max_usd=ctx.launch.max_usd,
         max_iterations=ctx.max_iterations,
         mode=mode,
         log_path=ctx.log_path,
         color=ctx.color,
-        model=ctx.model,
-        effort=ctx.effort,
+        model=ctx.launch.model,
+        effort=ctx.launch.effort,
         session_id=ctx.launch.session_id,
         branch=ctx.branch,
     )
@@ -337,8 +333,8 @@ def _supervised_session(ctx: _SessionContext, deadline_ms: float) -> SupervisedS
         lock_path=lockfile_path(ctx.root),
         config=ctx.config,
         deadline_ms=deadline_ms,
-        max_minutes=ctx.max_minutes,
-        max_usd=ctx.max_usd,
+        max_minutes=ctx.launch.max_minutes,
+        max_usd=ctx.launch.max_usd,
     )
 
 
@@ -391,13 +387,6 @@ async def _supervise_and_exit_sequence(  # noqa: PLR0913 -- the run and everythi
     return result, exit_report
 
 
-def _create_driver(root: str) -> Driver:
-    """The Claude driver with gymrat's tools and the worktree-guard hooks for ``root``."""
-    return create_claude_driver(
-        tools=gymrat_tools_factory(root), hooks=supervise_hooks_factory(Path(root))
-    )
-
-
 def _run_session(ctx: _SessionContext) -> None:
     """Drive the supervised session, reporting progress and stopping it cleanly.
 
@@ -415,7 +404,10 @@ def _run_session(ctx: _SessionContext) -> None:
     """
     from gymrat.telemetry.run_spans import finalize_tracing, setup_tracing  # noqa: PLC0415
 
-    driver = _create_driver(ctx.root)
+    launch = ctx.launch
+    driver = create_claude_driver(
+        tools=gymrat_tools_factory(ctx.root), hooks=supervise_hooks_factory(Path(ctx.root))
+    )
     mode = resolve_render_mode()
     reporter = _create_reporter(ctx, mode)
 
@@ -424,7 +416,7 @@ def _run_session(ctx: _SessionContext) -> None:
         # error reaches the terminal, or when the run path closes it early.
         display = armed.enter_context(ExitStack())
         display.callback(reporter.stop)
-        deadline_ms, release_budget = _init_budget(ctx.root, ctx.max_minutes)
+        deadline_ms, release_budget = _init_budget(ctx.root, launch.max_minutes)
         armed.callback(release_budget)
         # A signal mid-exit-sequence exits the process before the loop can cancel
         # the checks command it is running, so its process group is killed here.
@@ -433,14 +425,14 @@ def _run_session(ctx: _SessionContext) -> None:
             write_and_flush(sys.stderr, f"log: {abbreviate_home(ctx.log_path)}\n")
 
         prompt, observer, tracing = setup_tracing(
-            session_id=ctx.launch.session_id,
+            session_id=launch.session_id,
             branch=ctx.branch,
-            launch_at=ctx.launch.at,
-            head_sha=ctx.launch.head_sha,
-            max_minutes=ctx.max_minutes,
-            max_usd=ctx.max_usd,
-            effort=ctx.effort,
-            model=ctx.model,
+            launch_at=launch.at,
+            head_sha=launch.head_sha,
+            max_minutes=launch.max_minutes,
+            max_usd=launch.max_usd,
+            effort=launch.effort,
+            model=launch.model,
             prompt=ctx.session_prompt(),
             reporter_observer=reporter.observer,
         )
@@ -456,7 +448,7 @@ def _run_session(ctx: _SessionContext) -> None:
                             driver=driver,
                             prompt=prompt,
                             context=context,
-                            launch=ctx.launch,
+                            launch=launch,
                             observer=observer,
                         ),
                         release_budget,
@@ -548,11 +540,7 @@ def _execute(options: Options) -> None:
                 launch=launch,
                 kickoff=kickoff,
                 config=resolved,
-                max_minutes=options.max_minutes,
-                max_usd=options.max_usd,
                 max_iterations=resolved.stop.max_iterations if resolved.stop is not None else None,
-                model=model,
-                effort=effort,
                 color=options.color,
                 branch=preflight.session.branch,
                 finalize=options.finalize,
@@ -593,9 +581,4 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
         color=color,
         finalize=not no_finalize,
     )
-    try:
-        _execute(options)
-    except typer.Exit:
-        raise
-    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
-        exit_with_error(error)
+    run_guarded(lambda: _execute(options))

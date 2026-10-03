@@ -304,10 +304,6 @@ class LiveDisplayMixin:
         if self._live is not None:
             self._live.refresh()
 
-    def _uninstall_cleanup(self) -> None:
-        if self._uninstall_erase is not None:
-            self._uninstall_erase()
-
     def _after_live_stopped(self) -> None:
         """Runs once the live display has stopped, for a renderer's closing line."""
 
@@ -319,7 +315,8 @@ class LiveDisplayMixin:
         if self._stopped or (self._live is not None and self._live.erased):
             return
         self._stopped = True
-        self._uninstall_cleanup()
+        if self._uninstall_erase is not None:
+            self._uninstall_erase()
         if self._live is not None:
             self._live.stop()
             self._after_live_stopped()

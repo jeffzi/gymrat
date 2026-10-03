@@ -22,11 +22,12 @@ from rich.console import Console, RenderableType
 
 from gymrat.cli.style import CLI_THEME
 from gymrat.cli.supervise.progress import (
+    IDLE_WARN_MS,
     REFRESH_MS,
     SuperviseReporter,
     create_supervise_reporter,
 )
-from gymrat.cli.supervise.types import IDLE_WARN_MS, ReadSessionResult
+from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.eta import NS_PER_MS
 from gymrat.loop.start import start_session
 from gymrat.session.records import IterationPrimary, IterationRecord
@@ -168,7 +169,6 @@ def make_supervision_result(
         outcome=outcome,
         ended_by=ended_by,
         duration_ms=duration_ms,
-        cost_usd=cost_usd,
         end_reason=end_reason,
     )
 

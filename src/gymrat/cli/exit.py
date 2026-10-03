@@ -129,6 +129,24 @@ def write_stdout(data: str) -> None:
             raise
 
 
+def run_guarded(body: Callable[[], None]) -> None:
+    """Run a CLI body, routing any failure through the shared error formatter.
+
+    Args:
+        body: The command body.
+
+    Raises:
+        typer.Exit: The body's own exit, or the tool-failure code once any other
+            failure has been reported on stderr.
+    """
+    try:
+        body()
+    except typer.Exit:
+        raise
+    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
+        exit_with_error(error)
+
+
 def run_cli(run: Callable[[], Coroutine[Any, Any, None]]) -> None:
     """Run an async CLI body, routing any failure through the shared error formatter.
 
@@ -139,9 +157,4 @@ def run_cli(run: Callable[[], Coroutine[Any, Any, None]]) -> None:
         typer.Exit: The body's own exit, or the tool-failure code once any other
             failure has been reported on stderr.
     """
-    try:
-        asyncio.run(run())
-    except typer.Exit:
-        raise
-    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
-        exit_with_error(error)
+    run_guarded(lambda: asyncio.run(run()))

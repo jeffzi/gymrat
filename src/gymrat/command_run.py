@@ -205,7 +205,7 @@ async def with_repo_lock[T](
         exit_code, reason = _resolve_exit(trace, caught)
         try:
             _try_append_command_record(
-                root=root,
+                jsonl=jsonl,
                 command=command,
                 trace=trace,
                 exit_code=exit_code,
@@ -215,7 +215,7 @@ async def with_repo_lock[T](
             if tracing_active:
                 try:
                     _emit_command_span(
-                        root=root,
+                        jsonl=jsonl,
                         session_id=session_id,
                         start_ns=start_ns,
                         pre_body_lines=pre_body_lines,
@@ -234,7 +234,7 @@ async def with_repo_lock[T](
 
 def _try_append_command_record(  # noqa: PLR0913 -- all six params are distinct concerns of the command record
     *,
-    root: str,
+    jsonl: str,
     command: str,
     trace: CommandTrace,
     exit_code: Literal[0, 1, 2],
@@ -242,7 +242,6 @@ def _try_append_command_record(  # noqa: PLR0913 -- all six params are distinct 
     elapsed_ms: int,
 ) -> None:
     """Append a :class:`CommandRecord` when the session log exists and is non-empty."""
-    jsonl = session_jsonl_path(root)
     if _jsonl_is_empty(jsonl):
         return
 
@@ -303,7 +302,7 @@ def _count_lines(jsonl_path: str) -> int:
 
 def _emit_command_span(
     *,
-    root: str,
+    jsonl: str,
     session_id: str,
     start_ns: int,
     pre_body_lines: int,
@@ -331,7 +330,6 @@ def _emit_command_span(
     )
     from gymrat.telemetry.provider import flush_tracing, start_span  # noqa: PLC0415
 
-    jsonl = session_jsonl_path(root)
     records = _safe_read_records(jsonl)
     if not records:
         return

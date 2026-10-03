@@ -147,7 +147,7 @@ async def test_supervise_when_session_completes_does_report_outcome(
 
     assert result.ended_by == "session"
     assert result.outcome == SessionOutcome(reason="completed", cost_usd=0.12)
-    assert result.cost_usd == 0.12
+    assert result.outcome.cost_usd == 0.12
 
 
 async def test_supervise_when_clock_faked_does_report_duration_from_monotonic_clock(
@@ -368,7 +368,7 @@ async def test_supervise_when_max_usd_none_does_not_enforce_cost(tmp_path: Path)
 
     assert result.ended_by == "session"
     assert result.outcome.reason == "completed"
-    assert result.cost_usd == 10.0
+    assert result.outcome.cost_usd == 10.0
 
 
 async def test_supervise_when_spend_cap_trips_does_log_usage_update_before_cap(

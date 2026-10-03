@@ -14,7 +14,7 @@ from typing import Annotated
 import typer
 
 from gymrat.cli.compare_cmd import compare
-from gymrat.cli.console import set_color_override, set_debug_mode
+from gymrat.cli.console import apply_color_override, set_debug_mode
 from gymrat.cli.doctor_cmd import doctor_command
 from gymrat.cli.exit import BUGS_URL, exit_with_error, write_stdout
 from gymrat.cli.export_cmd import export_command
@@ -121,8 +121,7 @@ def _root(
 ) -> None:
     """Route the shared ``--debug`` and ``--color`` flags."""
     _ = version  # consumed eagerly by its callback; declared so --version is a root option
-    if color is not None:
-        set_color_override(color)
+    apply_color_override(color)
     set_debug_mode(debug)
 
 
