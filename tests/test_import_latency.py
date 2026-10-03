@@ -70,7 +70,6 @@ import gymrat.supervisor.claude
 import gymrat.supervisor.context
 import gymrat.supervisor.driver
 import gymrat.supervisor.kickoff
-import gymrat.supervisor.stdio
 import gymrat.supervisor.supervise
 import gymrat.supervisor.tools
 import gymrat.supervisor.hooks

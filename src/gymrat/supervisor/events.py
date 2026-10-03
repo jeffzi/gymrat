@@ -7,8 +7,8 @@ discriminator and ``at: int`` (nanoseconds since epoch) — together forming
 the :data:`SessionEvent` union.
 
 :func:`to_json_line` renders an event to a single compact JSON line with
-snake_case keys, leaving unset optional fields off — the shared wire form the
-event log and the stdio driver both write. :func:`summarize` and
+snake_case keys, leaving unset optional fields off — the wire form the event
+log writes. :func:`summarize` and
 :func:`summarize_input` produce the compact, single-line summaries carried on
 tool events.
 :func:`combine_observers` fans one event out to several observers in order.

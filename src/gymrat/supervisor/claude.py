@@ -321,7 +321,7 @@ class _ClaudeSession:
         if self._abort_task is not None:
             # Cancel then await under suppression so the abort watcher's
             # CancelledError is retrieved here, never surfaced by the loop as a
-            # forgotten-task diagnostic (matches the stdio driver's teardown).
+            # forgotten-task diagnostic.
             self._abort_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._abort_task

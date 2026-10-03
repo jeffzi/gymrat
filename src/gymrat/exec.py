@@ -53,7 +53,7 @@ FAILURE_EXIT_CODE = 1
 OUTPUT_CAP = 64 * 1024 * 1024
 """Per-stream cap, in bytes, on retained text. Byte counts keep counting past it."""
 
-READ_CHUNK = 65536
+_READ_CHUNK = 65536
 """Bytes requested per pipe read."""
 
 _CANCEL_REAP_TIMEOUT_S = 2.0
@@ -402,7 +402,7 @@ async def _read_stream(reader: asyncio.StreamReader, buffer: OutputBuffer) -> No
     """
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     while True:
-        chunk = await reader.read(READ_CHUNK)
+        chunk = await reader.read(_READ_CHUNK)
         if not chunk:
             tail = decoder.decode(b"", final=True)
             if tail:
@@ -605,7 +605,7 @@ async def spawn_contained[**P](
         *args: Positional arguments for ``create_child``: the program and its
             arguments, or the shell command line.
         **kwargs: Keyword arguments for ``create_child`` — pipes, ``cwd``,
-            ``env``, a stream ``limit``. The containment arguments are added
+            ``env``. The containment arguments are added
             here and must not be passed. The child's environment, ``env`` or
             this process's when absent, also gains :data:`_NESTING_DEPTH_ENV`.
 

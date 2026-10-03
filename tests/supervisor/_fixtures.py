@@ -1,8 +1,7 @@
 """Shared builders and probes for the supervisor event tests.
 
-These helpers are reused by later supervisor suites (the event log and the
-stdio driver), so they live in one module rather than being duplicated per
-test file. ``collecting_observer`` hands back an appending observer paired with
+These helpers are reused across the supervisor suites, so they live in one
+module rather than being duplicated per test file. ``collecting_observer`` hands back an appending observer paired with
 the list it fills; ``make_launch`` builds a fully-populated ``LaunchEvent`` from
 overridable defaults; ``read_log_lines`` parses a JSONL log into dicts;
 ``NotJsonEncodable`` is a value ``json.dumps`` cannot encode.
