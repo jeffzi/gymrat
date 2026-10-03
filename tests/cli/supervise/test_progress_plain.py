@@ -10,21 +10,22 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 
+from gymrat.eta import NS_PER_MS
+from gymrat.supervisor.events import CompactionEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
     ReporterKit,
     _throwing_read,
-    fire_cap,
-    fire_compaction,
-    fire_follow_up,
-    fire_launch,
-    fire_tool_end,
-    fire_tool_start,
-    fire_turn_end,
-    fire_usage_update,
+    cap_event,
+    follow_up_event,
+    launch_event,
     make_iteration,
     make_read_session,
     make_reporter,
+    tool_end_event,
+    tool_start_event,
+    turn_end_event,
+    usage_event,
 )
 from tests.session.records._fixtures import session_state
 
@@ -84,7 +85,7 @@ def test_plain_when_no_writer_given_does_print_each_line_to_stderr(
 ):
     kit = make_reporter(mode="plain", max_minutes=60)
 
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     assert capsys.readouterr().err == "caps 60m\n"
 
@@ -92,7 +93,7 @@ def test_plain_when_no_writer_given_does_print_each_line_to_stderr(
 def test_plain_when_launched_with_spend_cap_does_print_caps_with_dollars():
     plain = make_plain_reporter(max_usd=5.0, max_minutes=60)
 
-    fire_launch(plain.observer, 1000, max_usd=5.0)
+    plain.observer(launch_event(1000, max_usd=5.0))
 
     caps_line = plain.writes[-1]
     assert caps_line == "caps 60m, $5.00"
@@ -111,7 +112,7 @@ def test_plain_caps_when_max_minutes_given_does_render_the_actual_cap_value(
 ):
     plain = make_plain_reporter(max_minutes=max_minutes)
 
-    fire_launch(plain.observer, 1000, max_minutes=max_minutes)
+    plain.observer(launch_event(1000, max_minutes=max_minutes))
 
     assert plain.writes[-1] == expected
 
@@ -119,8 +120,8 @@ def test_plain_caps_when_max_minutes_given_does_render_the_actual_cap_value(
 def test_plain_when_usage_update_does_print_cost():
     plain = make_plain_reporter(max_usd=5.0)
 
-    fire_launch(plain.observer, 1000, max_usd=5.0)
-    fire_usage_update(plain.observer, 1.42, 2000)
+    plain.observer(launch_event(1000, max_usd=5.0))
+    plain.observer(usage_event(1.42, 2000))
 
     assert plain.writes[-1] == "cost $1.42"
 
@@ -137,9 +138,9 @@ def test_plain_when_loop_changes_does_print_loop_segment():
         read_session=make_read_session(state, has_baseline=True),
     )
 
-    fire_launch(plain.observer, 1000)
-    fire_tool_start(plain.observer, "Bash", "bash-1", 2000)
-    fire_tool_end(plain.observer, "Bash", "bash-1", 3000)
+    plain.observer(launch_event(1000))
+    plain.observer(tool_start_event("Bash", "bash-1", 2000))
+    plain.observer(tool_end_event("Bash", "bash-1", 3000))
 
     assert plain.writes[-1] == "2/20 iterations · 1 kept · 1 discarded · last +3.2% regressed"
 
@@ -147,7 +148,7 @@ def test_plain_when_loop_changes_does_print_loop_segment():
 def test_plain_when_no_session_yet_does_not_print_loop_segment():
     plain = make_plain_reporter(read_session=_throwing_read)
 
-    fire_launch(plain.observer, 1000)
+    plain.observer(launch_event(1000))
 
     assert plain.writes[-1] == "caps 60m"
     assert all("no session yet" not in w for w in plain.writes)
@@ -156,8 +157,8 @@ def test_plain_when_no_session_yet_does_not_print_loop_segment():
 def test_plain_when_capped_does_print_cap_interrupting():
     plain = make_plain_reporter()
 
-    fire_launch(plain.observer, 1000)
-    fire_cap(plain.observer, "wall-clock")
+    plain.observer(launch_event(1000))
+    plain.observer(cap_event("wall-clock"))
 
     cap_line = plain.writes[-1]
     assert cap_line == "cap wall-clock — interrupting"
@@ -165,7 +166,7 @@ def test_plain_when_capped_does_print_cap_interrupting():
 
 def test_plain_when_warn_called_does_record_warning():
     plain = make_plain_reporter()
-    fire_launch(plain.observer, 1000)
+    plain.observer(launch_event(1000))
 
     plain.reporter.warn("heads up")
 
@@ -174,7 +175,7 @@ def test_plain_when_warn_called_does_record_warning():
 
 def test_plain_stop_when_called_does_not_raise():
     plain = make_plain_reporter()
-    fire_launch(plain.observer, 1000)
+    plain.observer(launch_event(1000))
 
     plain.reporter.stop()
 
@@ -194,11 +195,11 @@ def test_plain_stop_when_called_does_not_raise():
 )
 def test_plain_when_follow_up_does_print_turn_count_and_action(action: str, expected_suffix: str):
     plain = make_plain_reporter()
-    fire_launch(plain.observer, 1000)
-    fire_turn_end(plain.observer, 2000, text="done")
+    plain.observer(launch_event(1000))
+    plain.observer(turn_end_event(2000, text="done"))
 
     reason = "budget exhausted" if action == "ended" else None
-    fire_follow_up(plain.observer, 3000, action=action, reason=reason)  # type: ignore[arg-type]
+    plain.observer(follow_up_event(3000, action=action, reason=reason))  # type: ignore[arg-type]
 
     assert any(f"turn 1 ended · {expected_suffix}" in w for w in plain.writes)
 
@@ -210,9 +211,9 @@ def test_plain_when_follow_up_does_print_turn_count_and_action(action: str, expe
 
 def test_plain_when_capped_while_idle_after_turn_end_does_print_cap_ending():
     plain = make_plain_reporter()
-    fire_launch(plain.observer, 1000)
-    fire_turn_end(plain.observer, 2000, text="done")
-    fire_cap(plain.observer, "wall-clock", action="ending")
+    plain.observer(launch_event(1000))
+    plain.observer(turn_end_event(2000, text="done"))
+    plain.observer(cap_event("wall-clock", action="ending"))
 
     assert plain.writes[-1] == "cap wall-clock — ending"
 
@@ -224,8 +225,8 @@ def test_plain_when_capped_while_idle_after_turn_end_does_print_cap_ending():
 
 def test_plain_when_compaction_does_print_context_compacted():
     plain = make_plain_reporter()
-    fire_launch(plain.observer, 1000)
-    fire_compaction(plain.observer, 3000)
+    plain.observer(launch_event(1000))
+    plain.observer(CompactionEvent(at=3000 * NS_PER_MS))
 
     assert any("context compacted" in w for w in plain.writes)
 
@@ -237,7 +238,7 @@ def test_plain_when_compaction_does_print_context_compacted():
 
 def test_plain_exit_phase_when_phase_changes_does_write_each_phase_line():
     plain = make_plain_reporter()
-    fire_launch(plain.observer, 1000)
+    plain.observer(launch_event(1000))
     launched = len(plain.writes)
 
     plain.reporter.exit_phase(ExitPhase(kind="waiting-lock", pid=4242))
@@ -248,7 +249,7 @@ def test_plain_exit_phase_when_phase_changes_does_write_each_phase_line():
 
 def test_plain_exit_phase_when_same_phase_repeats_does_write_nothing():
     plain = make_plain_reporter()
-    fire_launch(plain.observer, 1000)
+    plain.observer(launch_event(1000))
     plain.reporter.exit_phase(ExitPhase(kind="waiting-lock", pid=4242))
     written = list(plain.writes)
     plain.kit.clock.now = 5000

@@ -15,8 +15,8 @@ import pytest
 from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
-    fire_follow_up,
-    fire_launch,
+    follow_up_event,
+    launch_event,
     make_iteration,
     make_reporter,
     render_frame,
@@ -66,7 +66,7 @@ def test_liveness_when_exit_phase_reported_does_show_the_phase_with_advancing_el
     phase: ExitPhase, expected_line: str
 ):
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 5000
     kit.reporter.exit_phase(phase)
     kit.clock.now = 8000
@@ -79,9 +79,9 @@ def test_liveness_when_exit_phase_reported_does_show_the_phase_with_advancing_el
 def test_follow_up_when_ended_while_exiting_does_show_the_exit_step():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
+    observer(launch_event(1000))
     kit.reporter.exit_phase(ExitPhase(kind="settling", pid=None))
-    fire_follow_up(observer, 8000, action="ended", reason="finalize")
+    observer(follow_up_event(8000, action="ended", reason="finalize"))
 
     frame = render_frame(kit.reporter)
 
@@ -102,12 +102,12 @@ def test_session_result_when_follow_up_ends_does_reread_only_while_exiting(
     reader = SwitchableRead(_EMPTY)
     kit = make_reporter(read_session=reader)
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
+    observer(launch_event(1000))
     if exiting:
         kit.reporter.exit_phase(ExitPhase(kind="settling", pid=None))
     reader.result = reread
 
-    fire_follow_up(observer, 8000, action="ended", reason="keep")
+    observer(follow_up_event(8000, action="ended", reason="keep"))
 
     assert kit.reporter.session_result() == expected
 
@@ -136,7 +136,7 @@ def test_refresh_session_when_called_does_reread_the_session_and_warn_only_on_a_
     reader = SwitchableRead(_EMPTY)
     writes: list[str] = []
     kit = make_reporter(mode=mode, read_session=reader, plain_write=writes.append)
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     writes.clear()
     reader.result = reread
 

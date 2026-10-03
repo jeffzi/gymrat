@@ -20,18 +20,18 @@ from gymrat.supervisor.events import TextDeltaEvent, ThinkingUpdateEvent, ToolPr
 from tests.cli.supervise._fixtures import (
     ReporterKit,
     _epoch_ms_to_local_hms,
-    fire_cap,
-    fire_follow_up,
-    fire_launch,
+    cap_event,
     fire_launch_and_bash_start,
-    fire_model_phase,
-    fire_thinking_update,
-    fire_tool_end,
-    fire_tool_start,
-    fire_turn_end,
+    follow_up_event,
+    launch_event,
     line_after,
     make_reporter,
+    model_phase_event,
     render_frame,
+    thinking_event,
+    tool_end_event,
+    tool_start_event,
+    turn_end_event,
 )
 
 if TYPE_CHECKING:
@@ -67,7 +67,7 @@ def _content_line(frame: str, needle: str) -> str:
 
 def test_liveness_when_no_tool_has_started_does_show_starting():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     frame = render_frame(kit.reporter)
 
@@ -81,7 +81,7 @@ def test_liveness_when_no_tool_has_started_does_show_starting():
 
 def test_liveness_when_four_tools_finish_does_show_only_last_three(snapshot: SnapshotAssertion):
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     for i, (name, summary) in enumerate(
         [("Read", "src/a.ts"), ("Edit", "src/b.ts"), ("Bash", "npm test"), ("Read", "src/c.ts")],
@@ -89,9 +89,9 @@ def test_liveness_when_four_tools_finish_does_show_only_last_three(snapshot: Sna
     ):
         ts = 1000 + i * 1000
         kit.clock.now = ts
-        fire_tool_start(kit.reporter.observer, name, f"t-{i}", ts, input_summary=summary)
+        kit.reporter.observer(tool_start_event(name, f"t-{i}", ts, input_summary=summary))
         kit.clock.now = ts + 500
-        fire_tool_end(kit.reporter.observer, name, f"t-{i}", ts + 500)
+        kit.reporter.observer(tool_end_event(name, f"t-{i}", ts + 500))
 
     frame = render_frame(kit.reporter)
 
@@ -100,13 +100,13 @@ def test_liveness_when_four_tools_finish_does_show_only_last_three(snapshot: Sna
 
 def test_liveness_when_one_of_several_tools_ends_does_fall_back_to_remaining():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Read", "read-1", 2000)
+    kit.reporter.observer(tool_start_event("Read", "read-1", 2000))
     kit.clock.now = 2500
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2500)
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2500))
     kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Read", "read-1", 3000)
+    kit.reporter.observer(tool_end_event("Read", "read-1", 3000))
 
     frame = render_frame(kit.reporter)
 
@@ -115,8 +115,8 @@ def test_liveness_when_one_of_several_tools_ends_does_fall_back_to_remaining():
 
 def test_liveness_when_untracked_tool_ends_does_not_change():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
-    fire_tool_end(kit.reporter.observer, "Bash", "never-started", 3000)
+    kit.reporter.observer(launch_event(1000))
+    kit.reporter.observer(tool_end_event("Bash", "never-started", 3000))
 
     frame = render_frame(kit.reporter)
 
@@ -137,11 +137,13 @@ def test_liveness_when_untracked_tool_ends_does_not_change():
 )
 def test_finished_tool_when_ended_does_show_expected_mark(result: str, expect_error_mark: bool):
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    kit.reporter.observer(
+        tool_start_event("Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    )
     kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 3000, result=result)
+    kit.reporter.observer(tool_end_event("Edit", "edit-1", 3000, result=result))
 
     frame = render_frame(kit.reporter)
 
@@ -156,11 +158,11 @@ def test_finished_tool_when_ended_does_show_expected_mark(result: str, expect_er
 
 def test_finished_tool_when_under_one_second_does_show_less_than_one_second():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/a.ts")
+    kit.reporter.observer(tool_start_event("Edit", "edit-1", 2000, input_summary="src/a.ts"))
     kit.clock.now = 2500
-    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 2500)
+    kit.reporter.observer(tool_end_event("Edit", "edit-1", 2500))
 
     frame = render_frame(kit.reporter)
 
@@ -174,10 +176,10 @@ def test_finished_tool_when_under_one_second_does_show_less_than_one_second():
 
 def test_liveness_when_in_flight_summary_exceeds_width_does_truncate_to_one_line():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
     long_summary = "src/" + "/".join(f"level{i}" for i in range(20)) + "/file.ts"
-    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary=long_summary)
+    kit.reporter.observer(tool_start_event("Edit", "edit-1", 2000, input_summary=long_summary))
     kit.clock.now = 7000
 
     frame = render_frame(kit.reporter)
@@ -209,12 +211,12 @@ def test_finished_tool_when_ended_does_show_wall_clock_in_the_given_tz(
 ):
     started_at = _WALL_CLOCK_EPOCH_MS - 1000
     kit = make_reporter(tz=tz, clock_start=started_at)
-    fire_launch(kit.reporter.observer, started_at)
-    fire_tool_start(
-        kit.reporter.observer, "Edit", "edit-1", started_at, input_summary="src/archetype.ts"
+    kit.reporter.observer(launch_event(started_at))
+    kit.reporter.observer(
+        tool_start_event("Edit", "edit-1", started_at, input_summary="src/archetype.ts")
     )
     kit.clock.now = _WALL_CLOCK_EPOCH_MS
-    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", _WALL_CLOCK_EPOCH_MS)
+    kit.reporter.observer(tool_end_event("Edit", "edit-1", _WALL_CLOCK_EPOCH_MS))
 
     frame = render_frame(kit.reporter)
 
@@ -228,11 +230,13 @@ def test_finished_tool_when_ended_does_show_wall_clock_in_the_given_tz(
 
 def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
     kit = make_reporter(tz=None)
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    kit.reporter.observer(
+        tool_start_event("Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    )
     kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 3000)
+    kit.reporter.observer(tool_end_event("Edit", "edit-1", 3000))
 
     frame = render_frame(kit.reporter)
 
@@ -253,11 +257,11 @@ def _make_reporter_past_bash_end(
 ) -> ReporterKit:
     """A reporter with the given idle-warn threshold, clock frozen right after a Bash end."""
     kit = make_reporter(idle_warn_ms=idle_warn_ms)
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000))
     kit.clock.now = _BASH_END_MS
-    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", _BASH_END_MS, result=result)
+    kit.reporter.observer(tool_end_event("Bash", "bash-1", _BASH_END_MS, result=result))
     return kit
 
 
@@ -282,8 +286,8 @@ def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
 
 def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
-    fire_model_phase(kit.reporter.observer, 2000, "turn_end")
+    kit.reporter.observer(launch_event(1000))
+    kit.reporter.observer(model_phase_event(2000, "turn_end"))
     kit.clock.now = 2000 + IDLE_WARN_MS + 1
 
     frame = render_frame(kit.reporter)
@@ -333,8 +337,8 @@ def test_liveness_when_waiting_around_custom_idle_warn_does_show_expected_state(
 def test_liveness_when_model_phase_does_show_expected_state(phase: str, expected: str):
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_model_phase(observer, 2000, phase)
+    observer(launch_event(1000))
+    observer(model_phase_event(2000, phase))
 
     frame = render_frame(kit.reporter)
 
@@ -344,9 +348,9 @@ def test_liveness_when_model_phase_does_show_expected_state(phase: str, expected
 def test_liveness_when_model_phase_thinking_after_thinking_update_does_preserve_token_count():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_thinking_update(observer, 1500, estimated_tokens=200)
-    fire_model_phase(observer, 2000, "thinking")
+    observer(launch_event(1000))
+    observer(thinking_event(1500, estimated_tokens=200))
+    observer(model_phase_event(2000, "thinking"))
 
     frame = render_frame(kit.reporter)
 
@@ -365,8 +369,8 @@ def test_liveness_when_model_phase_tool_input_does_show_preparing(
 ):
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_model_phase(observer, 2000, "tool_input", tool_name=tool_name)
+    observer(launch_event(1000))
+    observer(model_phase_event(2000, "tool_input", tool_name=tool_name))
 
     frame = render_frame(kit.reporter)
 
@@ -381,28 +385,28 @@ def test_liveness_when_model_phase_tool_input_does_show_preparing(
 
 def _capped(observer: SessionObserver) -> None:
     """Launch, then fire a wall-clock cap, leaving the liveness line capped."""
-    fire_launch(observer, 1000)
-    fire_cap(observer, "wall-clock")
+    observer(launch_event(1000))
+    observer(cap_event("wall-clock"))
 
 
 def _fire_model_phase_while_capped(observer: SessionObserver) -> None:
     """Fire a responding model-phase event after the liveness line is capped."""
-    fire_model_phase(observer, 6000, "responding")
+    observer(model_phase_event(6000, "responding"))
 
 
 def _fire_thinking_update_while_capped(observer: SessionObserver) -> None:
     """Fire a thinking-update event after the liveness line is capped."""
-    fire_thinking_update(observer, 6000, estimated_tokens=100)
+    observer(thinking_event(6000, estimated_tokens=100))
 
 
 def _fire_model_phase_while_in_flight(observer: SessionObserver) -> None:
     """Fire a responding model-phase event while a tool is in flight."""
-    fire_model_phase(observer, 2000, "responding")
+    observer(model_phase_event(2000, "responding"))
 
 
 def _fire_thinking_update_while_in_flight(observer: SessionObserver) -> None:
     """Fire a thinking-update event while a tool is in flight."""
-    fire_thinking_update(observer, 2000, estimated_tokens=100)
+    observer(thinking_event(2000, estimated_tokens=100))
 
 
 @pytest.mark.parametrize(
@@ -467,17 +471,17 @@ def _liveness_lines(frame: str, needle: str) -> list[str]:
 
 def _fire_nested_tool_start(observer: SessionObserver) -> None:
     """Fire a nested Read tool-start event under a parent Bash tool."""
-    fire_tool_start(observer, "Read", "nested-read-1", 2000, parent_tool_use_id="bash-1")
+    observer(tool_start_event("Read", "nested-read-1", 2000, parent_tool_use_id="bash-1"))
 
 
 def _fire_nested_thinking_update(observer: SessionObserver) -> None:
     """Fire a nested thinking-update event under a parent Bash tool."""
-    fire_thinking_update(observer, 2000, estimated_tokens=999, parent_tool_use_id="bash-1")
+    observer(thinking_event(2000, estimated_tokens=999, parent_tool_use_id="bash-1"))
 
 
 def _fire_nested_model_phase(observer: SessionObserver) -> None:
     """Fire a nested responding model-phase event under a parent Bash tool."""
-    fire_model_phase(observer, 2000, "responding", parent_tool_use_id="bash-1")
+    observer(model_phase_event(2000, "responding", parent_tool_use_id="bash-1"))
 
 
 @pytest.mark.parametrize(
@@ -505,8 +509,8 @@ def test_liveness_when_nested_tool_ends_does_not_appear_in_finished_tools():
     kit = make_reporter()
     observer = kit.reporter.observer
     fire_launch_and_bash_start(observer)
-    fire_tool_start(observer, "Read", "nested-read-1", 2000, parent_tool_use_id="bash-1")
-    fire_tool_end(observer, "Read", "nested-read-1", 2500, parent_tool_use_id="bash-1")
+    observer(tool_start_event("Read", "nested-read-1", 2000, parent_tool_use_id="bash-1"))
+    observer(tool_end_event("Read", "nested-read-1", 2500, parent_tool_use_id="bash-1"))
 
     frame = render_frame(kit.reporter)
 
@@ -517,8 +521,8 @@ def test_liveness_when_nested_tool_ends_does_not_appear_in_finished_tools():
 def test_liveness_when_nested_event_has_no_matching_parent_does_ignore():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_tool_start(observer, "Read", "nested-read-1", 2000, parent_tool_use_id="nonexistent")
+    observer(launch_event(1000))
+    observer(tool_start_event("Read", "nested-read-1", 2000, parent_tool_use_id="nonexistent"))
 
     frame = render_frame(kit.reporter)
 
@@ -538,9 +542,9 @@ def test_liveness_when_iterate_sidecar_has_no_pass_left_does_show_passes_without
         last_pass_duration_ms=225_000.0,
     )
     kit = make_reporter(read_progress=lambda _root: sidecar)
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
     kit.clock.now = 2000 + 31 * 60 * 1000
 
     frame = render_frame(kit.reporter)
@@ -562,9 +566,9 @@ def test_liveness_when_iterate_tool_has_sidecar_does_show_passes_bar(
         return sidecar
 
     kit = make_reporter(read_progress=fake_read_progress)
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
     kit.clock.now = 2000 + 31 * 60 * 1000
 
     frame = render_frame(kit.reporter)
@@ -577,9 +581,9 @@ def test_liveness_when_iterate_tool_has_no_sidecar_does_show_plain_elapsed():
         return None
 
     kit = make_reporter(read_progress=fake_read_progress)
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
     kit.clock.now = 7000
 
     frame = render_frame(kit.reporter)
@@ -603,14 +607,10 @@ def test_liveness_when_iterate_tool_has_sidecar_does_show_passes_nest():
         return sidecar
 
     kit = make_reporter(read_progress=fake_read_progress)
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(
-        kit.reporter.observer,
-        "mcp__gymrat__iterate",
-        "mcp-1",
-        2000,
-        input_summary="gymrat iterate",
+    kit.reporter.observer(
+        tool_start_event("mcp__gymrat__iterate", "mcp-1", 2000, input_summary="gymrat iterate")
     )
     kit.clock.now = 2000 + 10 * 60 * 1000
 
@@ -623,14 +623,10 @@ def test_liveness_when_iterate_tool_has_sidecar_does_show_passes_nest():
 
 def test_liveness_when_mcp_probe_tool_in_flight_does_show_summary_not_nest():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(
-        kit.reporter.observer,
-        "mcp__gymrat__probe",
-        "mcp-2",
-        2000,
-        input_summary="gymrat probe a b",
+    kit.reporter.observer(
+        tool_start_event("mcp__gymrat__probe", "mcp-2", 2000, input_summary="gymrat probe a b")
     )
     kit.clock.now = 5000
 
@@ -652,14 +648,10 @@ def test_liveness_when_non_iterate_mcp_tool_in_flight_does_not_show_sidecar():
         return sidecar
 
     kit = make_reporter(read_progress=fake_read_progress)
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(
-        kit.reporter.observer,
-        "mcp__gymrat__probe",
-        "mcp-2",
-        2000,
-        input_summary="gymrat probe a b",
+    kit.reporter.observer(
+        tool_start_event("mcp__gymrat__probe", "mcp-2", 2000, input_summary="gymrat probe a b")
     )
     kit.clock.now = 5000
 
@@ -676,9 +668,9 @@ def test_liveness_when_non_iterate_mcp_tool_in_flight_does_not_show_sidecar():
 def test_liveness_responding_when_rendered_does_not_show_token_count():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_thinking_update(observer, 1500, estimated_tokens=500)
-    fire_model_phase(observer, 2000, "responding")
+    observer(launch_event(1000))
+    observer(thinking_event(1500, estimated_tokens=500))
+    observer(model_phase_event(2000, "responding"))
 
     frame = render_frame(kit.reporter)
 
@@ -689,9 +681,9 @@ def test_liveness_responding_when_rendered_does_not_show_token_count():
 def test_liveness_composing_when_rendered_does_not_show_token_count():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_thinking_update(observer, 1500, estimated_tokens=500)
-    fire_model_phase(observer, 2000, "tool_input", tool_name="Edit")
+    observer(launch_event(1000))
+    observer(thinking_event(1500, estimated_tokens=500))
+    observer(model_phase_event(2000, "tool_input", tool_name="Edit"))
 
     frame = render_frame(kit.reporter)
 
@@ -708,7 +700,7 @@ def test_liveness_when_text_delta_after_launch_does_stay_starting():
     kit = make_reporter()
     observer = kit.reporter.observer
 
-    fire_launch(observer, 1000)
+    observer(launch_event(1000))
     observer(TextDeltaEvent(at=2_500_000_000, chunk="hello"))
 
     frame = render_frame(kit.reporter)
@@ -720,7 +712,7 @@ def test_liveness_when_thinking_after_launch_does_show_thinking():
     kit = make_reporter()
     observer = kit.reporter.observer
 
-    fire_launch(observer, 1000)
+    observer(launch_event(1000))
     observer(ThinkingUpdateEvent(at=2_500_000_000, estimated_tokens=100, delta=10))
 
     frame = render_frame(kit.reporter)
@@ -733,7 +725,7 @@ def test_liveness_when_tool_progress_after_launch_does_not_crash():
     kit = make_reporter()
     observer = kit.reporter.observer
 
-    fire_launch(observer, 1000)
+    observer(launch_event(1000))
     observer(ToolProgressEvent(at=2_000_000_000, tool_use_id="tp-1", elapsed_ms=500))
 
     frame = render_frame(kit.reporter)
@@ -749,9 +741,9 @@ def test_liveness_when_tool_progress_after_launch_does_not_crash():
 def test_liveness_when_turn_ends_does_show_waiting():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_model_phase(observer, 1500, "responding")
-    fire_turn_end(observer, 2000, text="done")
+    observer(launch_event(1000))
+    observer(model_phase_event(1500, "responding"))
+    observer(turn_end_event(2000, text="done"))
 
     frame = render_frame(kit.reporter)
 
@@ -761,10 +753,10 @@ def test_liveness_when_turn_ends_does_show_waiting():
 def test_liveness_when_follow_up_does_not_change_liveness():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_model_phase(observer, 1500, "responding")
-    fire_turn_end(observer, 2000, text="done")
-    fire_follow_up(observer, 3000, action="replied")
+    observer(launch_event(1000))
+    observer(model_phase_event(1500, "responding"))
+    observer(turn_end_event(2000, text="done"))
+    observer(follow_up_event(3000, action="replied"))
 
     frame = render_frame(kit.reporter)
 

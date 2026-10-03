@@ -54,7 +54,7 @@ from tests._rich import CleanupRegistry, unwrap_panel
 from tests.cli._help import help_output
 from tests.cli._session import FailingStdoutRunner, closed_stdout_error
 from tests.cli.supervise._fixtures import (
-    fire_launch,
+    launch_event,
     make_supervision_result,
     render_frame,
     session_state_three_iterations,
@@ -651,7 +651,7 @@ def _dashboard_title(reporter_kwargs: Mapping[str, Any]) -> str:
     """Build the real dashboard from the arguments the command passed and return its title line."""
     reporter = create_supervise_reporter(**reporter_kwargs)
     try:
-        fire_launch(reporter.observer, 1000)
+        reporter.observer(launch_event(1000))
         frame = render_frame(reporter)
         return next(line for line in frame.splitlines() if line.startswith("╭"))
     finally:
@@ -694,7 +694,7 @@ def _plain_writes(reporter_kwargs: Mapping[str, Any]) -> list[str]:
     writes: list[str] = []
     reporter = create_supervise_reporter(**reporter_kwargs, plain_write=writes.append)
     try:
-        fire_launch(reporter.observer, 1000)
+        reporter.observer(launch_event(1000))
     finally:
         reporter.stop()
     return writes

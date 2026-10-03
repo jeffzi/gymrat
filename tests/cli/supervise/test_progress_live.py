@@ -49,10 +49,10 @@ from tests.cli.supervise._fixtures import (
     LIVE_CLASS_PATH,
     Clock,
     ReporterKit,
-    fire_launch,
-    fire_tool_start,
+    launch_event,
     make_reporter,
     render_frame,
+    tool_start_event,
 )
 
 if TYPE_CHECKING:
@@ -134,7 +134,7 @@ def test_render_when_event_changes_state_in_live_mode_does_refresh_live_once():
         kit = make_reporter(mode="live")
         mock_live.reset_mock()
 
-        fire_launch(kit.reporter.observer, 1000)
+        kit.reporter.observer(launch_event(1000))
 
         mock_live.refresh.assert_called_once()
 
@@ -153,7 +153,7 @@ def test_render_when_event_leaves_state_unchanged_does_not_repaint_live(event: S
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         live = mock_live_cls.return_value
         kit = make_reporter(mode="live")
-        fire_launch(kit.reporter.observer, 1000)
+        kit.reporter.observer(launch_event(1000))
         painted = live.refresh.call_count
 
         kit.reporter.observer(event)
@@ -165,7 +165,7 @@ def test_exit_phase_when_live_mode_does_repaint_live():
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         live = mock_live_cls.return_value
         kit = make_reporter(mode="live")
-        fire_launch(kit.reporter.observer, 1000)
+        kit.reporter.observer(launch_event(1000))
         painted = live.refresh.call_count
 
         kit.reporter.exit_phase(ExitPhase(kind="settling", pid=None))
@@ -268,7 +268,7 @@ def _cursor_hidden(raw: str) -> bool:
 
 def test_stderr_write_when_live_dashboard_up_does_land_above_the_frame(terminal: StringIO):
     kit = make_reporter(mode="live")
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     sys.stderr.write(f"{WARNING_LINE}\n")
     sys.stderr.flush()
@@ -296,7 +296,7 @@ def test_signal_when_dashboard_already_stopped_does_leave_the_screen_untouched(
     terminal: StringIO, raise_signal: Callable[[int], int]
 ):
     kit = make_reporter(mode="live")
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.reporter.stop()
     install_termination_cleanup(lambda: None)
     before = terminal.getvalue()
@@ -360,9 +360,9 @@ class _FlakySidecar:
 def _dashboard_reading(sidecar: _FlakySidecar) -> ReporterKit:
     """Mount a fast-refreshing live dashboard with an iterate call reading *sidecar*."""
     kit = make_reporter(mode="live", read_progress=sidecar, refresh_ms=_FAST_REFRESH_MS)
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
     return kit
 
 
@@ -410,8 +410,8 @@ def test_create_reporter_when_plain_mode_frame_would_fail_does_not_warn():
     sidecar.fail_next(None)
     plain_lines: list[str] = []
     kit = make_reporter(mode="plain", read_progress=sidecar, plain_write=plain_lines.append)
-    fire_launch(kit.reporter.observer, 1000)
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    kit.reporter.observer(launch_event(1000))
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
 
     kit.reporter.stop()
 

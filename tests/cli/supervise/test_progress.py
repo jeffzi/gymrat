@@ -21,24 +21,24 @@ import pytest
 
 from gymrat.cli.supervise.progress import make_default_read
 from gymrat.cli.supervise.types import ReadSessionResult
+from gymrat.eta import NS_PER_MS
 from gymrat.session.records import IterationPrimary
-from gymrat.supervisor.events import TextDeltaEvent
+from gymrat.supervisor.events import CompactionEvent, TextDeltaEvent
 from tests.cli.supervise._fixtures import (
     _throwing_read,
-    fire_cap,
-    fire_compaction,
-    fire_follow_up,
-    fire_launch,
+    cap_event,
     fire_launch_and_bash_cycle,
-    fire_tool_end,
-    fire_tool_start,
-    fire_turn_end,
-    fire_usage_update,
+    follow_up_event,
+    launch_event,
     make_iteration,
     make_read_session,
     make_reporter,
     render_frame,
     session_state_three_iterations,
+    tool_end_event,
+    tool_start_event,
+    turn_end_event,
+    usage_event,
 )
 from tests.session.records._fixtures import (
     baseline_record,
@@ -174,7 +174,7 @@ def test_panel_title_when_launched_does_contain_session_and_branch(
         session_id="20260813-125044-34ec",
         branch="gymrat/20260813-125044-34ec",
     )
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     frame = render_frame(kit.reporter)
 
@@ -183,7 +183,7 @@ def test_panel_title_when_launched_does_contain_session_and_branch(
 
 def test_panel_title_when_all_identity_empty_does_show_bare_supervise():
     kit = make_reporter(session_id="", branch="")
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     frame = render_frame(kit.reporter)
     title_line = frame.splitlines()[0]
@@ -202,7 +202,7 @@ def test_time_bar_when_launched_does_show_elapsed_and_cap_in_remaining(
     snapshot: SnapshotAssertion,
 ):
     kit = make_reporter(max_minutes=480, clock_start=1000)
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 1000 + (2 * 3600 + 41 * 60) * 1000
 
     frame = render_frame(kit.reporter)
@@ -218,7 +218,7 @@ def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero(
     snapshot: SnapshotAssertion,
 ):
     kit = make_reporter(max_minutes=60, clock_start=1000)
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 1000 + (2 * 3600) * 1000
 
     frame = render_frame(kit.reporter)
@@ -235,7 +235,7 @@ def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero(
 
 def test_cost_when_no_cap_and_no_usage_does_show_zero_cost(snapshot: SnapshotAssertion):
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     frame = render_frame(kit.reporter)
 
@@ -248,9 +248,9 @@ def test_cost_when_cap_set_and_usage_received_does_show_cost_against_cap(
     snapshot: SnapshotAssertion,
 ):
     kit = make_reporter(max_usd=10.0)
-    fire_launch(kit.reporter.observer, 1000, max_usd=10.0)
+    kit.reporter.observer(launch_event(1000, max_usd=10.0))
     kit.clock.now = 2000
-    fire_usage_update(kit.reporter.observer, 4.12, 2000)
+    kit.reporter.observer(usage_event(4.12, 2000))
 
     frame = render_frame(kit.reporter)
 
@@ -261,9 +261,9 @@ def test_cost_when_cap_set_and_usage_received_does_show_cost_against_cap(
 
 def test_cost_when_no_cap_and_usage_received_does_show_bare_cost():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_usage_update(kit.reporter.observer, 4.12, 2000)
+    kit.reporter.observer(usage_event(4.12, 2000))
 
     frame = render_frame(kit.reporter)
 
@@ -424,7 +424,7 @@ def test_loop_when_finalized_does_report_finalized():
 
 def test_best_when_no_kept_iteration_does_omit_best_row():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     frame = render_frame(kit.reporter)
 
@@ -532,13 +532,13 @@ def test_reread_when_any_tool_ends_does_reread():
     kit = make_reporter(read_session=counting)
     observer = kit.reporter.observer
 
-    fire_launch(observer, 1000)
+    observer(launch_event(1000))
     after_launch = counting.count
-    fire_tool_start(observer, "Read", "read-1", 2000)
-    fire_tool_end(observer, "Read", "read-1", 3000)
+    observer(tool_start_event("Read", "read-1", 2000))
+    observer(tool_end_event("Read", "read-1", 3000))
     after_read = counting.count
-    fire_tool_start(observer, "Bash", "bash-1", 4000)
-    fire_tool_end(observer, "Bash", "bash-1", 5000)
+    observer(tool_start_event("Bash", "bash-1", 4000))
+    observer(tool_end_event("Bash", "bash-1", 5000))
     after_bash = counting.count
 
     assert after_read > after_launch
@@ -550,9 +550,9 @@ def test_reread_when_tool_end_has_unknown_id_does_reread():
     kit = make_reporter(read_session=counting)
     observer = kit.reporter.observer
 
-    fire_launch(observer, 1000)
+    observer(launch_event(1000))
     after_launch = counting.count
-    fire_tool_end(observer, "Bash", "unknown-id", 3000)
+    observer(tool_end_event("Bash", "unknown-id", 3000))
 
     assert counting.count > after_launch
 
@@ -582,32 +582,28 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
             baseline_sha="abc1234567890abcdef1234567890abcdef123456",
         ),
     )
-    fire_launch(kit.reporter.observer, 1000, max_minutes=480, max_usd=10.0)
+    kit.reporter.observer(launch_event(1000, max_minutes=480, max_usd=10.0))
 
     kit.clock.now = 1000 + (2 * 3600 + 41 * 60) * 1000
-    fire_usage_update(kit.reporter.observer, 4.12, kit.clock.now)
+    kit.reporter.observer(usage_event(4.12, kit.clock.now))
 
     kit.clock.now += 1000
-    fire_tool_start(
-        kit.reporter.observer, "Read", "read-1", kit.clock.now, input_summary="src/archetype.ts"
+    kit.reporter.observer(
+        tool_start_event("Read", "read-1", kit.clock.now, input_summary="src/archetype.ts")
     )
     kit.clock.now += 500
-    fire_tool_end(kit.reporter.observer, "Read", "read-1", kit.clock.now)
+    kit.reporter.observer(tool_end_event("Read", "read-1", kit.clock.now))
 
     kit.clock.now += 200
-    fire_tool_start(
-        kit.reporter.observer, "Edit", "edit-1", kit.clock.now, input_summary="src/archetype.ts"
+    kit.reporter.observer(
+        tool_start_event("Edit", "edit-1", kit.clock.now, input_summary="src/archetype.ts")
     )
     kit.clock.now += 800
-    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", kit.clock.now)
+    kit.reporter.observer(tool_end_event("Edit", "edit-1", kit.clock.now))
 
     kit.clock.now += 100
-    fire_tool_start(
-        kit.reporter.observer,
-        "Bash",
-        "bash-1",
-        kit.clock.now,
-        input_summary="gymrat iterate",
+    kit.reporter.observer(
+        tool_start_event("Bash", "bash-1", kit.clock.now, input_summary="gymrat iterate")
     )
     kit.clock.now += 60_000
 
@@ -625,8 +621,8 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
 @pytest.mark.parametrize("action", ["ending", "interrupting"])
 def test_cap_when_fired_does_show_action_with_cap_type(cap: CapType, action: CapAction):
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
-    fire_cap(kit.reporter.observer, cap, action=action)
+    kit.reporter.observer(launch_event(1000))
+    kit.reporter.observer(cap_event(cap, action=action))
 
     frame = render_frame(kit.reporter)
 
@@ -635,11 +631,11 @@ def test_cap_when_fired_does_show_action_with_cap_type(cap: CapType, action: Cap
 
 def test_cap_when_fired_does_freeze_liveness_against_later_tool_events():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
-    fire_cap(kit.reporter.observer, "wall-clock")
+    kit.reporter.observer(launch_event(1000))
+    kit.reporter.observer(cap_event("wall-clock"))
     kit.clock.now = 6000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 6000)
-    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 7000)
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 6000))
+    kit.reporter.observer(tool_end_event("Bash", "bash-1", 7000))
 
     frame = render_frame(kit.reporter)
 
@@ -653,7 +649,7 @@ def test_cap_when_fired_does_freeze_liveness_against_later_tool_events():
 
 def test_warn_when_called_in_live_mode_does_not_crash():
     kit = make_reporter(mode="live")
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     kit.reporter.warn("something is wrong")
 
@@ -668,7 +664,7 @@ def test_warn_when_called_in_live_mode_does_not_crash():
 
 def test_final_text_when_no_text_received_does_return_none():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     assert kit.reporter.final_text() is None
 
@@ -676,9 +672,9 @@ def test_final_text_when_no_text_received_does_return_none():
 def test_final_text_when_agent_turn_ends_does_return_its_text():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_turn_end(observer, 2000, text="first turn summary")
-    fire_turn_end(observer, 3000, text="second turn summary")
+    observer(launch_event(1000))
+    observer(turn_end_event(2000, text="first turn summary"))
+    observer(turn_end_event(3000, text="second turn summary"))
 
     assert kit.reporter.final_text() == "second turn summary"
 
@@ -686,9 +682,9 @@ def test_final_text_when_agent_turn_ends_does_return_its_text():
 def test_final_text_when_injected_turn_ends_does_not_replace_agent_text():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_turn_end(observer, 2000, text="agent said this", origin="agent")
-    fire_turn_end(observer, 3000, text="injected turn text", origin="injected")
+    observer(launch_event(1000))
+    observer(turn_end_event(2000, text="agent said this", origin="agent"))
+    observer(turn_end_event(3000, text="injected turn text", origin="injected"))
 
     assert kit.reporter.final_text() == "agent said this"
 
@@ -696,7 +692,7 @@ def test_final_text_when_injected_turn_ends_does_not_replace_agent_text():
 def test_final_text_when_text_delta_received_does_not_set_final_text():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
+    observer(launch_event(1000))
     observer(TextDeltaEvent(at=2_000_000_000, chunk="streamed text"))
 
     assert kit.reporter.final_text() is None
@@ -710,9 +706,9 @@ def test_final_text_when_text_delta_received_does_not_set_final_text():
 def test_follow_up_when_replied_does_show_turn_count_and_replied():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_turn_end(observer, 2000, text="done")
-    fire_follow_up(observer, 3000, action="replied")
+    observer(launch_event(1000))
+    observer(turn_end_event(2000, text="done"))
+    observer(follow_up_event(3000, action="replied"))
 
     frame = render_frame(kit.reporter)
 
@@ -723,9 +719,9 @@ def test_follow_up_when_replied_does_show_turn_count_and_replied():
 def test_follow_up_when_waiting_does_show_turn_count_and_waiting_for_gymrat():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_turn_end(observer, 2000, text="done")
-    fire_follow_up(observer, 3000, action="waiting")
+    observer(launch_event(1000))
+    observer(turn_end_event(2000, text="done"))
+    observer(follow_up_event(3000, action="waiting"))
 
     frame = render_frame(kit.reporter)
 
@@ -736,9 +732,9 @@ def test_follow_up_when_waiting_does_show_turn_count_and_waiting_for_gymrat():
 def test_follow_up_when_ended_does_show_turn_count_and_ended_with_reason():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_turn_end(observer, 2000, text="done")
-    fire_follow_up(observer, 3000, action="ended", reason="budget exhausted")
+    observer(launch_event(1000))
+    observer(turn_end_event(2000, text="done"))
+    observer(follow_up_event(3000, action="ended", reason="budget exhausted"))
 
     frame = render_frame(kit.reporter)
 
@@ -749,11 +745,11 @@ def test_follow_up_when_ended_does_show_turn_count_and_ended_with_reason():
 def test_follow_up_when_multiple_turns_does_increment_turn_count():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
-    fire_turn_end(observer, 2000, text="first")
-    fire_follow_up(observer, 3000, action="replied")
-    fire_turn_end(observer, 4000, text="second")
-    fire_follow_up(observer, 5000, action="replied")
+    observer(launch_event(1000))
+    observer(turn_end_event(2000, text="first"))
+    observer(follow_up_event(3000, action="replied"))
+    observer(turn_end_event(4000, text="second"))
+    observer(follow_up_event(5000, action="replied"))
 
     frame = render_frame(kit.reporter)
 
@@ -767,7 +763,7 @@ def test_follow_up_when_multiple_turns_does_increment_turn_count():
 
 def test_stop_when_called_does_not_raise():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     kit.reporter.stop()
 
@@ -779,9 +775,9 @@ def test_stop_when_called_does_not_raise():
 
 def test_compaction_when_fired_does_show_context_compacted_in_frame():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 3000
-    fire_compaction(kit.reporter.observer, 3000)
+    kit.reporter.observer(CompactionEvent(at=3000 * NS_PER_MS))
 
     frame = render_frame(kit.reporter)
 
