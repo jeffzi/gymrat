@@ -12,13 +12,11 @@ as standalone schema files.
 
 import json
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
-from pydantic import Field, TypeAdapter
-
-from gymrat.event_docs.asyncapi import READERS, render_asyncapi, render_asyncapi_yaml
+from gymrat.event_docs.asyncapi import render_asyncapi, render_asyncapi_yaml
 from gymrat.event_docs.reference import render_reference
-from gymrat.session.records import SessionLogRecord
+from gymrat.session.records import SESSION_LOG_ADAPTER
 from gymrat.supervisor.events import SESSION_EVENT_ADAPTER
 
 _SESSION_LOG_TITLE = "gymrat session log record"
@@ -28,10 +26,6 @@ _SUPERVISOR_LOG_TITLE = "gymrat supervisor log event"
 _SUPERVISOR_LOG_ID = "https://github.com/jeffzi/gymrat/schemas/supervisor-log.schema.json"
 
 _DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
-
-_SessionLogAdapter: TypeAdapter[SessionLogRecord] = TypeAdapter(
-    Annotated[SessionLogRecord, Field(discriminator="type")]
-)
 
 
 def _stamp(schema: dict[str, Any], title: str, schema_id: str) -> dict[str, Any]:
@@ -50,36 +44,24 @@ def render_json_schemas() -> tuple[dict[str, Any], dict[str, Any]]:
         schema first, the supervisor-log schema second, both JSON-serializable
         draft 2020-12 JSON Schema documents.
     """
-    session_log = _stamp(_SessionLogAdapter.json_schema(), _SESSION_LOG_TITLE, _SESSION_LOG_ID)
+    session_log = _stamp(SESSION_LOG_ADAPTER.json_schema(), _SESSION_LOG_TITLE, _SESSION_LOG_ID)
     supervisor_log = _stamp(
         SESSION_EVENT_ADAPTER.json_schema(), _SUPERVISOR_LOG_TITLE, _SUPERVISOR_LOG_ID
     )
     return session_log, supervisor_log
 
 
-ARTIFACT_PATHS: dict[str, str] = {
-    "session_log_schema": "schemas/session-log.schema.json",
-    "supervisor_log_schema": "schemas/supervisor-log.schema.json",
-    "asyncapi": "schemas/asyncapi.yaml",
-    "reference": "docs/event-reference.md",
-}
-
-
 def render_all() -> dict[str, str]:
     """Return a dict mapping repo-relative path to rendered text for each artifact."""
     schemas = render_json_schemas()
-    session_log, supervisor_log = schemas
-    asyncapi_doc = render_asyncapi(schemas)
-
+    session_log, supervisor_log = (
+        json.dumps(schema, indent=2, sort_keys=True) + "\n" for schema in schemas
+    )
     return {
-        ARTIFACT_PATHS["session_log_schema"]: json.dumps(session_log, indent=2, sort_keys=True)
-        + "\n",
-        ARTIFACT_PATHS["supervisor_log_schema"]: json.dumps(
-            supervisor_log, indent=2, sort_keys=True
-        )
-        + "\n",
-        ARTIFACT_PATHS["asyncapi"]: render_asyncapi_yaml(asyncapi_doc),
-        ARTIFACT_PATHS["reference"]: render_reference(schemas, READERS),
+        "schemas/session-log.schema.json": session_log,
+        "schemas/supervisor-log.schema.json": supervisor_log,
+        "schemas/asyncapi.yaml": render_asyncapi_yaml(render_asyncapi(schemas)),
+        "docs/event-reference.md": render_reference(schemas),
     }
 
 

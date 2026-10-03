@@ -570,7 +570,10 @@ def record_to_wire(record: SessionLogRecord) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-_SessionLogUnion = TypeAdapter(Annotated[SessionLogRecord, Field(discriminator="type")])
+SESSION_LOG_ADAPTER: TypeAdapter[SessionLogRecord] = TypeAdapter(
+    Annotated[SessionLogRecord, Field(discriminator="type")]
+)
+"""Validates a wire object into its session-log record and renders the union's JSON Schema."""
 
 
 class NonFiniteNumberError(ValueError):
@@ -632,7 +635,7 @@ def parse_record(value: object) -> SessionLogRecord:
         raise GymratError(message)
     token = _wire_validation.set(True)
     try:
-        return _SessionLogUnion.validate_python(value)
+        return SESSION_LOG_ADAPTER.validate_python(value)
     except ValidationError as exc:
         errors = exc.errors()
         _raise_discriminator_error(errors, value)

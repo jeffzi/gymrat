@@ -1,6 +1,6 @@
 import pytest
 
-from gymrat.adapters import Adapter, AdapterError, MetricDefaults, metric_lines_adapter
+from gymrat.adapters import AdapterError, MetricDefaults, metric_lines_adapter
 from tests.adapters._inputs import LINE_BREAKS
 
 # ---------------------------------------------------------------------------
@@ -10,10 +10,6 @@ from tests.adapters._inputs import LINE_BREAKS
 
 def test_metric_lines_adapter_when_inspected_does_expose_name():
     assert metric_lines_adapter.name == "metric-lines"
-
-
-def test_metric_lines_adapter_when_checked_does_satisfy_adapter_protocol():
-    assert isinstance(metric_lines_adapter, Adapter)
 
 
 # ---------------------------------------------------------------------------

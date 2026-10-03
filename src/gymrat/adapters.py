@@ -25,8 +25,8 @@ parse, when the output yields no usable metric or a metric name with more than o
 ``#``.
 
 Both derive name-based metric defaults from one suffix table. Config resolution
-reads the fallback kind and gating default declared beside that table instead of
-re-declaring them, so the two cannot drift apart.
+reads the fallback kind declared beside that table instead of re-declaring it,
+so the two cannot drift apart.
 
 The set of adapters is fixed at import time: nothing registers an adapter at
 runtime, so :func:`get_adapter` is a lookup in a closed mapping rather than a
@@ -41,7 +41,7 @@ import math
 import re
 import statistics
 from dataclasses import dataclass
-from typing import Annotated, Final, Protocol, runtime_checkable
+from typing import Annotated, Final, Protocol
 
 from pydantic import (
     BaseModel,
@@ -102,7 +102,6 @@ class MetricDefaults:
     short_name: str | None = None
 
 
-@runtime_checkable
 class Adapter(Protocol):
     """Turns a benchmark harness's stdout into gymrat's metric map.
 
@@ -153,13 +152,6 @@ DEFAULT_METRIC_KIND: Final[str] = "other"
 
 Consumed by config resolution as the fallback kind for a metric whose
 adapter defaults carry no kind.
-"""
-
-DEFAULT_GATING: Final[bool] = True
-"""Whether a metric gates when nothing names it.
-
-Consumed by config resolution: the gating value applied when neither a
-``metrics`` entry nor a ``kinds`` entry names the metric.
 """
 
 
@@ -258,10 +250,7 @@ class _MetricLinesAdapter:
     """Adapter that reads ``METRIC name=value`` lines from a bench script's stdout."""
 
     name = "metric-lines"
-
-    def defaults(self, metric_name: str) -> MetricDefaults:
-        """Return name-derived defaults for ``metric_name`` via suffix matching."""
-        return defaults_from_suffixes(metric_name)
+    defaults = staticmethod(defaults_from_suffixes)
 
     def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
         """Parse ``METRIC`` lines from ``stdout`` into a median-per-name metric map.
@@ -343,27 +332,31 @@ metric_lines_adapter = _MetricLinesAdapter()
 _JSON_DECODER = json.JSONDecoder()
 
 
-def _scan_json_objects(text: str) -> tuple[list[str], str | None]:
+def _scan_json_objects(text: str) -> tuple[list[dict[str, object]], str | None]:
     """Scan ``text`` for JSON objects in a single pass.
 
-    Each ``{`` in ``text`` is tried via ``raw_decode``.  Successes become
-    candidates; the failure spanning the most remaining text is captured so
-    ``_extract_json`` can surface an actionable diagnostic without a second scan.
+    Each ``{`` in ``text`` is tried via ``raw_decode``, so unbalanced braces and
+    banner text like ``cpu: {model}`` are rejected by the JSON decoder itself.
+    Successes become candidates; the failure spanning the most remaining text is
+    captured so ``_extract_json`` can surface an actionable diagnostic without a
+    second scan.
 
     Args:
         text: The bench output to scan.
 
     Returns:
-        A ``(candidates, longest_failure)`` pair: valid JSON text slices, and the
-        error message from the longest failed attempt (or ``None``).
+        A ``(candidates, longest_failure)`` pair: the objects that parsed, and
+        the error message from the longest failed attempt (or ``None``).
     """
-    candidates: list[str] = []
+    candidates: list[dict[str, object]] = []
     longest: tuple[int, str] | None = None
     length = len(text)
     pos = text.find("{")
-    while pos != -1 and pos < length:
+    while pos != -1:
         try:
-            _, end = _JSON_DECODER.raw_decode(text, pos)
+            # Every attempt starts at a ``{``, so a successful raw_decode can only
+            # have produced a JSON object — no non-dict shape check is needed.
+            parsed, end = _JSON_DECODER.raw_decode(text, pos)
         except (json.JSONDecodeError, RecursionError) as exc:
             remaining = length - pos
             reason = (
@@ -375,37 +368,17 @@ def _scan_json_objects(text: str) -> tuple[list[str], str | None]:
                 longest = (remaining, reason)
             pos = text.find("{", pos + 1)
             continue
-        candidates.append(text[pos:end])
+        candidates.append(parsed)
         pos = text.find("{", end)
     return candidates, longest[1] if longest is not None else None
-
-
-def find_json_candidates(text: str) -> list[str]:
-    """Scan ``text`` for valid JSON objects using :meth:`json.JSONDecoder.raw_decode`.
-
-    For each ``{`` in ``text``, attempts a full JSON parse starting at that
-    position. Unbalanced braces and banner text like ``cpu: {model}`` are
-    rejected by the JSON decoder itself, so no hand-rolled brace-balancing
-    scanner is needed.
-
-    Args:
-        text: The raw text to scan for JSON objects.
-
-    Returns:
-        Original text slices of the objects that parsed; positions that fail
-        are skipped.
-    """
-    candidates, _ = _scan_json_objects(text)
-    return candidates
 
 
 def _extract_json(stdout: str) -> dict[str, object]:
     """Find mitata's JSON object using :func:`_scan_json_objects`.
 
-    Candidates from :func:`_scan_json_objects` are already valid JSON (parsed
-    via ``raw_decode``). A candidate carrying a ``benchmarks`` list wins over any
-    earlier record that does not — a decoy object printed before mitata's own
-    output must not shadow the real payload.
+    A candidate carrying a ``benchmarks`` list wins over any earlier record that
+    does not — a decoy object printed before mitata's own output must not shadow
+    the real payload.
 
     When no candidate has a ``benchmarks`` list but a decode failure exists
     alongside a non-benchmarks record, the failure diagnostic takes priority
@@ -431,24 +404,15 @@ def _extract_json(stdout: str) -> dict[str, object]:
     """
     candidates, longest_failure = _scan_json_objects(stdout)
 
-    first_record: dict[str, object] | None = None
     for candidate in candidates:
-        # Every candidate starts at a ``{``, so a successful raw_decode can only
-        # have produced a JSON object — no non-dict shape check is needed.
-        parsed: dict[str, object] = json.loads(candidate)
-        if isinstance(parsed.get("benchmarks"), list):
-            return parsed
-        if first_record is None:
-            first_record = parsed
+        if isinstance(candidate.get("benchmarks"), list):
+            return candidate
 
-    if first_record is not None:
-        if longest_failure is not None:
-            msg = f"Failed to parse JSON: {longest_failure}"
-            raise AdapterError(msg)
-        return first_record
     if longest_failure is not None:
         msg = f"Failed to parse JSON: {longest_failure}"
         raise AdapterError(msg)
+    if candidates:
+        return candidates[0]
     msg = "No JSON object found in stdout"
     raise AdapterError(msg)
 
@@ -758,10 +722,7 @@ class _MitataAdapter:
     """Adapter for bench scripts that print the JSON ``mitata --json`` writes."""
 
     name = "mitata"
-
-    def defaults(self, metric_name: str) -> MetricDefaults:
-        """Return name-derived defaults for ``metric_name`` via suffix matching."""
-        return defaults_from_suffixes(metric_name)
+    defaults = staticmethod(defaults_from_suffixes)
 
     def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
         """Parse mitata's JSON output into a metric map.

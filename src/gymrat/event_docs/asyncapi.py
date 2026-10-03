@@ -33,11 +33,20 @@ SUPERVISOR_LOG_MODELS: tuple[type[BaseModel], ...] = get_args(SessionEvent)
 
 
 class ReaderSpec(NamedTuple):
-    """A channel read: source channel, consumed wire-type strings, and doc sentence."""
+    """A channel read: source channel, consumed wire-type strings, and doc sentence.
+
+    Attributes:
+        channel: The log channel the reader consumes.
+        types: The wire types the reader consumes, in documentation order.
+        description: What the reader does, for the Markdown reference.
+        note: What the type selection means, for the AsyncAPI operation; absent
+            when the selection needs no explanation.
+    """
 
     channel: str
     types: tuple[str, ...]
     description: str
+    note: str | None = None
 
 
 READERS: dict[str, ReaderSpec] = {
@@ -64,6 +73,11 @@ READERS: dict[str, ReaderSpec] = {
             "stop",
         ),
         description="Reads session log state for supervisor startup.",
+        note=(
+            "Every record type except command. "
+            "keep and discard drive the discard streak "
+            "and the rest count as progress."
+        ),
     ),
     "dashboard": ReaderSpec(
         channel="supervisor-log",
@@ -91,7 +105,7 @@ READERS: dict[str, ReaderSpec] = {
 # ---------------------------------------------------------------------------
 
 
-def _wire_type_to_class_name(
+def wire_type_to_class_name(
     models: tuple[type[BaseModel], ...],
 ) -> dict[str, str]:
     """Map each model's wire type to its class name, in the models' order.
@@ -157,37 +171,15 @@ def _build_channel(
     }
 
 
-def _build_operation(
-    reader: ReaderSpec,
-    *,
-    description: str | None = None,
-) -> dict[str, object]:
+def _build_operation(reader: ReaderSpec) -> dict[str, object]:
     op: dict[str, object] = {
         "action": "receive",
         "channel": {"$ref": f"#/channels/{reader.channel}"},
         "messages": [{"$ref": f"#/channels/{reader.channel}/messages/{t}"} for t in reader.types],
     }
-    if description is not None:
-        op["description"] = description
+    if reader.note is not None:
+        op["description"] = reader.note
     return op
-
-
-def _build_components(
-    session_messages: dict[str, object],
-    supervisor_messages: dict[str, object],
-) -> dict[str, object]:
-    return {
-        "messages": {**session_messages, **supervisor_messages},
-        "messageTraits": {
-            "envelope": {
-                "description": (
-                    "Every record and event carries `type` (string discriminator) "
-                    "and `at` (integer nanoseconds since the Unix epoch). "
-                    "Sequenced records also carry `seq` (positive integer)."
-                ),
-            },
-        },
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -211,8 +203,8 @@ def render_asyncapi(
     session_defs: dict[str, dict[str, Any]] = session_log_schema["$defs"]
     supervisor_defs: dict[str, dict[str, Any]] = supervisor_log_schema["$defs"]
 
-    session_wire = _wire_type_to_class_name(SESSION_LOG_MODELS)
-    supervisor_wire = _wire_type_to_class_name(SUPERVISOR_LOG_MODELS)
+    session_wire = wire_type_to_class_name(SESSION_LOG_MODELS)
+    supervisor_wire = wire_type_to_class_name(SUPERVISOR_LOG_MODELS)
 
     session_messages = _build_messages(session_wire, session_defs, _SESSION_LOG_FILE)
     supervisor_messages = _build_messages(supervisor_wire, supervisor_defs, _SUPERVISOR_LOG_FILE)
@@ -237,20 +229,19 @@ def render_asyncapi(
             "session-log": _build_channel(session_wire, SESSION_LOG_ADDRESS),
             "supervisor-log": _build_channel(supervisor_wire, SUPERVISOR_LOG_ADDRESS),
         },
-        "operations": {
-            "fold-session": _build_operation(READERS["fold-session"]),
-            "status-history": _build_operation(READERS["status-history"]),
-            "supervisor-guard": _build_operation(
-                READERS["supervisor-guard"],
-                description=(
-                    "Every record type except command. "
-                    "keep and discard drive the discard streak "
-                    "and the rest count as progress."
-                ),
-            ),
-            "dashboard": _build_operation(READERS["dashboard"]),
+        "operations": {name: _build_operation(reader) for name, reader in READERS.items()},
+        "components": {
+            "messages": {**session_messages, **supervisor_messages},
+            "messageTraits": {
+                "envelope": {
+                    "description": (
+                        "Every record and event carries `type` (string discriminator) "
+                        "and `at` (integer nanoseconds since the Unix epoch). "
+                        "Sequenced records also carry `seq` (positive integer)."
+                    ),
+                },
+            },
         },
-        "components": _build_components(session_messages, supervisor_messages),
     }
 
 

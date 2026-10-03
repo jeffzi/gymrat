@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from gymrat.adapters import DEFAULT_GATING, DEFAULT_METRIC_KIND, Adapter
+from gymrat.adapters import DEFAULT_METRIC_KIND, Adapter
 from gymrat.clock import monotonic_ms
 from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.errors import CommandError, GymratError, hint_of
@@ -212,6 +212,9 @@ class MetricStats:
 # metric metadata
 # ---------------------------------------------------------------------------
 
+_DEFAULT_GATING = True
+"""Whether a metric gates when neither a ``metrics`` entry nor a ``kinds`` entry names it."""
+
 
 def _resolve_one_metric(
     name: str,
@@ -225,7 +228,7 @@ def _resolve_one_metric(
         entry.direction if entry is not None and entry.direction is not None else defaults.direction
     )
 
-    gating = DEFAULT_GATING
+    gating = _DEFAULT_GATING
     if entry is not None and entry.gating is not None:
         gating = entry.gating
     elif config_kinds is not None:

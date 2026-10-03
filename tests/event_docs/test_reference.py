@@ -1,7 +1,7 @@
 """Markdown reference document generation from JSON schemas and readers.
 
-``render_reference(schemas, readers)`` takes the two JSON Schema dicts from
-``render_json_schemas()`` and the ``READERS`` dict from ``asyncapi.py``,
+``render_reference(schemas)`` takes the two JSON Schema dicts from
+``render_json_schemas()`` and reads the ``READERS`` dict from ``asyncapi.py``,
 returning a Markdown document with a generated-file banner, per-log sections,
 per-record/event subsections with field tables, nested-object subsections,
 and a closing Readers section.
@@ -24,7 +24,7 @@ def _render() -> str:
     from gymrat.event_docs.reference import render_reference
 
     schemas = render_json_schemas()
-    return render_reference(schemas, READERS)
+    return render_reference(schemas)
 
 
 def _intro(md: str) -> str:
