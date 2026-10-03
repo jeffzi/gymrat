@@ -46,21 +46,20 @@ def test_render_probe_report_when_rendering_header_does_name_target_samples_adap
 
 
 @pytest.mark.parametrize(
-    ("scoped", "names", "suffix"),
+    ("names", "suffix"),
     [
         pytest.param(
-            True,
             ("total_ms", "decode large payload"),
             "· scoped: total_ms, decode large payload",
-            id="scoped",
+            id="names-given",
         ),
-        pytest.param(False, (), None, id="not-scoped"),
+        pytest.param((), None, id="no-names"),
     ],
 )
-def test_render_probe_report_when_scope_varies_does_reflect_scope_in_the_header(
-    scoped: bool, names: tuple[str, ...], suffix: str | None
+def test_render_probe_report_when_names_vary_does_reflect_scope_in_the_header(
+    names: tuple[str, ...], suffix: str | None
 ):
-    result = probe_result(scoped=scoped, names=names)
+    result = probe_result(names=names)
 
     header = line_containing(render_probe_report(result), "gymrat probe")
 

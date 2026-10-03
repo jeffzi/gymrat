@@ -47,7 +47,6 @@ def probe_result(
     samples: int = 6,
     adapter: str = "mitata",
     metrics: Sequence[ProbeMetric] = (),
-    scoped: bool = False,
     names: Sequence[str] = (),
 ) -> ProbeResult:
     """A probe of one worktree paired against the newest recorded baseline."""
@@ -56,6 +55,5 @@ def probe_result(
         samples=samples,
         adapter=adapter,
         metrics=tuple(metrics),
-        scoped=scoped,
         names=tuple(names),
     )

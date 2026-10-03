@@ -143,7 +143,7 @@ def render_probe_json(result: ProbeResult, *, budget: BudgetSummary | None = Non
         "label": result.label,
         "samples": result.samples,
         "adapter": result.adapter,
-        "scoped": result.scoped,
+        "scoped": bool(result.names),
         "names": list(result.names),
         "metrics": {metric.name: _serialize_probe_metric(metric) for metric in result.metrics},
     }

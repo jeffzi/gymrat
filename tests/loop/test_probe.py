@@ -108,7 +108,6 @@ async def test_probe_session_when_no_names_does_bench_the_whole_bench_in_the_exp
     forwarded = only_call(recorder)
     assert forwarded.target == TargetSpec(label="experiment", target=experiment_worktree_dir(repo))
     assert forwarded.run.sampling.bench == "npm run bench"
-    assert result.scoped is False
     assert result.names == ()
 
 
@@ -123,7 +122,6 @@ async def test_probe_session_when_names_given_does_bench_the_filter_scoped_comma
     result = await probe_session(repo, config, ProbeOptions(names=names))
 
     assert only_call(recorder).run.sampling.bench == scoped_bench(config, names)
-    assert result.scoped is True
     assert result.names == names
 
 

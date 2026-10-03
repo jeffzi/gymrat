@@ -126,7 +126,7 @@ def _probe_header(result: ProbeResult, label: str) -> str:
         escape(pluralize(result.samples, "sample")),
         f"adapter: {escape(result.adapter)}",
     ]
-    if result.scoped:
+    if result.names:
         parts.append(f"scoped: {escape(', '.join(result.names))}")
     return join_header_parts(parts)
 

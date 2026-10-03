@@ -99,15 +99,14 @@ class ProbeResult:
             :data:`PROBE_DEFAULT_SAMPLES`.
         adapter: The bench-output adapter the run parsed with.
         metrics: One entry per metric the run reported, in report order.
-        scoped: Whether the bench was narrowed to ``names``.
-        names: The metric names the bench was narrowed to, in the order given.
+        names: The metric names the bench was narrowed to, in the order given;
+            empty when the whole bench ran.
     """
 
     label: str
     samples: int
     adapter: str
     metrics: tuple[ProbeMetric, ...]
-    scoped: bool
     names: tuple[str, ...]
 
 
@@ -204,6 +203,5 @@ async def probe_session(
         samples=samples,
         adapter=config.adapter,
         metrics=tuple(metrics),
-        scoped=bool(names),
         names=names,
     )

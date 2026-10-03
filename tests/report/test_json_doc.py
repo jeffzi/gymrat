@@ -856,7 +856,7 @@ def test_render_probe_json_when_rendered_does_use_schema_version_1_shape():
     ("result", "scoped", "names", "samples"),
     [
         pytest.param(
-            probe_result(scoped=True, names=("total_ms", "decode"), samples=3),
+            probe_result(names=("total_ms", "decode"), samples=3),
             True,
             ["total_ms", "decode"],
             3,
@@ -865,7 +865,7 @@ def test_render_probe_json_when_rendered_does_use_schema_version_1_shape():
         pytest.param(probe_result(), False, [], 6, id="unscoped"),
     ],
 )
-def test_render_probe_json_when_scope_varies_does_report_the_scope_and_names(
+def test_render_probe_json_when_names_vary_does_report_the_scope_and_names(
     result: ProbeResult, scoped: bool, names: list[str], samples: int
 ):
     doc = json.loads(render_probe_json(result))
