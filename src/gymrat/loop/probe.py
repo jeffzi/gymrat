@@ -23,7 +23,7 @@ from gymrat.report.loop import baseline_medians
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.store import latest_baseline, require_open_session
 from gymrat.stats import percent_delta
-from gymrat.warn import warn_to_stderr
+from gymrat.utils import warn_to_stderr
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from gymrat.config import ResolvedConfig
     from gymrat.model import ResolvedMetricMeta
     from gymrat.progress_events import ProgressCallback
-    from gymrat.warn import WarnSink
+    from gymrat.utils import WarnSink
 
 #: Rounds a probe runs when the caller names no count of its own.
 PROBE_DEFAULT_SAMPLES = 6

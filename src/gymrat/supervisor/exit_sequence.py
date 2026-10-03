@@ -56,10 +56,9 @@ if TYPE_CHECKING:
     from gymrat.command_run import CommandTrace
     from gymrat.session.records import IterationRecord
     from gymrat.session.store import SessionState
-    from gymrat.supervisor.context import SupervisedSession
     from gymrat.supervisor.events import SessionObserver
-    from gymrat.supervisor.supervise import EndedBy
-    from gymrat.warn import WarnSink
+    from gymrat.supervisor.supervise import EndedBy, SupervisedSession
+    from gymrat.utils import WarnSink
 
 EXIT_LOCK_POLL_MS = 1000
 """How often the sequence re-probes a repository lock it is waiting out."""

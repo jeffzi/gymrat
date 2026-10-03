@@ -36,7 +36,7 @@ from gymrat.session.store import (
     session_header,
 )
 from gymrat.telemetry.endpoint import ENDPOINT_ENV, otlp_endpoint
-from gymrat.warn import warn_to_stderr
+from gymrat.utils import warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Trace bookkeeping

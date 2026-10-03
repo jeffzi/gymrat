@@ -61,7 +61,6 @@ import gymrat.sampling
 import gymrat.targets
 import gymrat.supervisor
 import gymrat.supervisor.claude
-import gymrat.supervisor.context
 import gymrat.supervisor.driver
 import gymrat.supervisor.kickoff
 import gymrat.supervisor.supervise

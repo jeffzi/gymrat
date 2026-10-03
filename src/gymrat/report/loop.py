@@ -27,11 +27,11 @@ from rich.markup import escape
 
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.metric_name import format_inline, parse
-from gymrat.plural import pluralize
 from gymrat.report.display import GLYPHS
 from gymrat.report.format import format_percent_delta, format_value
 from gymrat.report.style import VARIANT_NAME_STYLE, format_hint, join_header_parts, markup
 from gymrat.report.text.render import paired_samples
+from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

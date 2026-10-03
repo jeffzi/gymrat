@@ -20,10 +20,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from gymrat.atomic_write import write_text_atomic
 from gymrat.bundled_skill import read_bundled_skill
 from gymrat.config import CONFIG_FILENAME, validate_config_dict
 from gymrat.errors import GymratError
+from gymrat.utils import write_text_atomic
 
 #: Path, relative to the project root, where init writes and doctor checks for the skill.
 SKILL_RELATIVE_PATH = ".claude/skills/gymrat/SKILL.md"

@@ -29,7 +29,6 @@ from rich.text import Text
 
 from gymrat.metric_name import format_inline, parse
 from gymrat.model import PERMUTATION_MIN_N, PERMUTATION_P_THRESHOLD
-from gymrat.plural import pluralize
 from gymrat.report.display import GLYPHS, DisplayClass, display_class
 from gymrat.report.format import (
     format_evidence,
@@ -38,8 +37,6 @@ from gymrat.report.format import (
     format_percent_delta,
     format_verdict_delta,
 )
-from gymrat.report.geomean_label import GATED_GEOMEAN_LABEL
-from gymrat.report.sections import plan_sections, spans_many_kinds
 from gymrat.report.style import (
     SCOPE_SEPARATOR,
     VARIANT_NAME_STYLE,
@@ -51,13 +48,21 @@ from gymrat.report.style import (
     render_markup_line,
     truncate_labels,
 )
-from gymrat.report.table.markup import group_metric_cell, header_metric_cell, indented_section_label
+from gymrat.report.table.markup import (
+    GATED_GEOMEAN_LABEL,
+    group_metric_cell,
+    header_metric_cell,
+    indented_section_label,
+    plan_sections,
+    spans_many_kinds,
+)
 from gymrat.report.table.render import build_cell_dispatcher, plan_table_skeleton, render_body
 from gymrat.report.tally import verdict_summary_parts
 from gymrat.report.text.multi import render_comparison_table
 from gymrat.report.text.single import render_table
 from gymrat.report.types import GeomeanFailOn, ReportOptions
 from gymrat.report.types import candidate_at as _candidate_at
+from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

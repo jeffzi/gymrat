@@ -33,7 +33,6 @@ from gymrat.config import BenchlessConfig, Effort, StopConfig
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor.claude import create_claude_driver
-from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
     DirtyInfo,
@@ -43,7 +42,7 @@ from gymrat.supervisor.events import (
     SessionObserver,
     TurnEndEvent,
 )
-from gymrat.supervisor.supervise import SupervisionResult, supervise
+from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult, supervise
 from tests.session.records._fixtures import (
     session_record,
     stop_record,

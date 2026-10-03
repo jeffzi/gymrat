@@ -16,9 +16,7 @@ from rich.cells import cell_len
 from rich.markup import escape
 
 from gymrat.model import is_improvement
-from gymrat.plural import pluralize
 from gymrat.report.format import format_metric_cell_parts, format_percent_delta
-from gymrat.report.sections import plan_sections
 from gymrat.report.style import (
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
@@ -34,6 +32,7 @@ from gymrat.report.table.markup import (
     header_metric_cell,
     indented_section_label,
     join_value_cell,
+    plan_sections,
     value_widths,
 )
 from gymrat.report.table.render import (
@@ -43,6 +42,7 @@ from gymrat.report.table.render import (
     render_body,
 )
 from gymrat.report.types import ReportOptions
+from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from gymrat.loop.probe import ProbeMetric, ProbeResult

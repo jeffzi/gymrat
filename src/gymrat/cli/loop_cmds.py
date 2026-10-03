@@ -51,7 +51,6 @@ from gymrat.loop.discard import DiscardResult, discard_session
 from gymrat.loop.iterate.run import IterateOptions, IterateResult, LoopStopError, iterate_session
 from gymrat.loop.keep import KeepOptions, KeepResult, keep_session
 from gymrat.loop.status import status_data, status_session
-from gymrat.observers import fan_out
 from gymrat.report.json_doc import (
     render_discard_json,
     render_iterate_json,
@@ -64,11 +63,12 @@ from gymrat.session.paths import repo_root
 from gymrat.session.progress_file import clear_progress, create_sidecar_writer
 from gymrat.session.store import require_open_session
 from gymrat.signals import install_termination_cleanup
+from gymrat.utils import fan_out
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.warn import WarnSink
+    from gymrat.utils import WarnSink
 
 _VerboseOption = Annotated[
     bool, typer.Option("--verbose", "-v", help="keep the progress tree visible after the run")

@@ -5,9 +5,14 @@ and a sampling bar with an elapsed-over-total clock. The prepare row is removed
 once prepare finishes, so the display never grows past those two rows. Plain
 mode (non-TTY) prints timestamped milestone lines without ANSI escape codes.
 
-This module is the shell: it owns the terminal, the ``rich`` objects, and the
-live/plain branch. Every decision about what to show lives in the pure reducer
-:mod:`gymrat.cli.progress_state`.
+:class:`ProgressReporter` is the shell: it owns the terminal, the ``rich``
+objects, and the live/plain branch. Every decision about what to show lives in
+the pure reducer made of :class:`ProgressState`, :func:`advance` and
+:func:`plain_line` -- which rows are visible, how many passes are done, what
+the remaining estimate is, and which milestone line plain mode prints. The
+reducer touches no ``rich`` object and reads no clock: ``now`` always comes
+from the event's own ``at_ms``, so a transition is fully determined by
+``(state, event)``.
 
 Glyphs, verb forms, and timer colors follow the conventions in
 :mod:`gymrat.cli.style`.
@@ -15,7 +20,8 @@ Glyphs, verb forms, and timer colors follow the conventions in
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, override
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Literal, Self, override
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -39,7 +45,6 @@ from rich.table import Column
 from rich.text import Text
 
 from gymrat.cli.live_display import LiveDisplayMixin
-from gymrat.cli.progress_state import ProgressState, advance, plain_line
 from gymrat.cli.style import (
     COMPACT_HEIGHT_THRESHOLD,
     SPINNER_NAME,
@@ -49,7 +54,155 @@ from gymrat.cli.style import (
     STYLE_TIMER_RUNNING,
     STYLE_VERB,
 )
-from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
+from gymrat.eta import (
+    MS_PER_SECOND,
+    SamplingEta,
+    format_clock,
+    format_duration,
+    format_timestamp,
+)
+from gymrat.progress_events import (
+    PassFinished,
+    PassStarted,
+    PrepareFinished,
+    PrepareStarted,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressState:
+    """Everything the progress display needs to paint a frame.
+
+    Attributes:
+        target_count: How many targets (baseline plus candidates) the run covers.
+        sample_count: Samples per target, or ``None`` when the total is only
+            discovered at runtime from ``PassStarted.total_rounds``.
+        prepare_start_ms: Timestamp the current prepare step began.
+        pass_start_ms: Timestamp the current pass began.
+        run_start_ms: Timestamp of the first event seen, or ``None`` until the
+            first event arrives.
+        run_end_ms: Timestamp of the most recent event, or ``None`` until the
+            first event arrives.
+        eta: Finished-pass samples and the remaining-time estimate they make.
+            Its ``total`` is ``0`` while the pass count is still unknown, which
+            happens when no ``--samples`` flag pinned it up front; the first
+            ``PassStarted`` fills it in.
+        prepare_visible: Whether the prepare row is shown. Cleared on
+            ``PrepareFinished`` even though the run is still in progress; it
+            tracks row visibility, not whether the prepare phase is done.
+        pass_visible: Whether the pass row is shown.
+        current_target: Label of the in-flight target shown on whichever row
+            is currently visible, or ``""`` before one is set.
+    """
+
+    target_count: int
+    sample_count: int | None = None
+    prepare_start_ms: float = 0.0
+    pass_start_ms: float = 0.0
+    run_start_ms: float | None = None
+    run_end_ms: float | None = None
+    eta: SamplingEta = field(default_factory=lambda: SamplingEta(total=0))
+    prepare_visible: bool = False
+    pass_visible: bool = False
+    current_target: str = ""
+
+    @classmethod
+    def start(cls, *, target_count: int, sample_count: int | None) -> Self:
+        """Build the state a run begins in.
+
+        Args:
+            target_count: How many targets (baseline plus candidates) the run covers.
+            sample_count: Samples per target, or ``None`` when the total is only
+                discovered at runtime from ``PassStarted.total_rounds``.
+
+        Returns:
+            A state with nothing visible and the total pre-sized when it is known.
+        """
+        total = (sample_count or 0) * target_count
+        return cls(
+            target_count=target_count,
+            sample_count=sample_count,
+            eta=SamplingEta(total=total),
+        )
+
+    @property
+    def total(self) -> int:
+        """Passes the run expects in all, as the estimate counts them."""
+        return self.eta.total
+
+
+def _pass_started(state: ProgressState, event: PassStarted) -> ProgressState:
+    total = state.total or event.total_rounds * event.target_count
+    return replace(
+        state,
+        eta=replace(state.eta, total=total),
+        pass_start_ms=event.at_ms,
+        pass_visible=True,
+        current_target=event.label,
+    )
+
+
+def advance(state: ProgressState, event: ProgressEvent) -> ProgressState:
+    """Fold ``event`` into ``state``.
+
+    Args:
+        state: The state the run is in before the event.
+        event: The event to apply; anything outside the four prepare/pass
+            milestones is not a display change.
+
+    Returns:
+        The state the display should paint next, or ``state`` itself when the
+        event carries nothing the display shows.
+    """
+    match event:
+        case PrepareStarted():
+            updated = replace(
+                state,
+                prepare_start_ms=event.at_ms,
+                prepare_visible=True,
+                current_target=event.label,
+            )
+        case PrepareFinished():
+            # The prepare row has nothing left to say once sampling starts, so it
+            # leaves the display rather than lingering as a completed row.
+            updated = replace(state, prepare_visible=False)
+        case PassStarted():
+            updated = _pass_started(state, event)
+        case PassFinished():
+            updated = replace(state, eta=state.eta.advanced(event.at_ms - state.pass_start_ms))
+        case _:
+            return state
+
+    return replace(
+        updated,
+        run_start_ms=event.at_ms if state.run_start_ms is None else state.run_start_ms,
+        run_end_ms=event.at_ms,
+    )
+
+
+def plain_line(before: ProgressState, after: ProgressState, event: ProgressEvent) -> str | None:
+    """Render the milestone line plain mode prints for ``event``, without its timestamp.
+
+    Args:
+        before: The state before ``event`` was applied.
+        after: The state ``advance`` returned for ``event``.
+        event: The event being reported.
+
+    Returns:
+        The line to print, or ``None`` when the event is not a milestone plain
+        mode announces.
+    """
+    match event:
+        case PrepareFinished():
+            elapsed = format_duration(event.at_ms - before.prepare_start_ms)
+            return f"prepared {event.label} ({elapsed})"
+        case PassFinished():
+            # Taking the duration from the ETA delta rather than recomputing it
+            # keeps the printed number and the bar's estimate from ever disagreeing.
+            elapsed = format_duration(after.eta.total_time_ms - before.eta.total_time_ms)
+            return f"pass {event.round}/{event.total_rounds} · {event.label} ({elapsed})"
+        case _:
+            return None
 
 
 class _ClockColumn(ProgressColumn):

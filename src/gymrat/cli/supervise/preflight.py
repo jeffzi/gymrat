@@ -25,7 +25,6 @@ from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.baseline import measure_baseline
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import start_session
-from gymrat.plural import pluralize
 from gymrat.report.loop import format_start_summary
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.budget import (
@@ -49,7 +48,7 @@ from gymrat.session.store import (
     recover_torn_tail,
 )
 from gymrat.session.workspace import changed_file_count
-from gymrat.warn import warn_to_stderr
+from gymrat.utils import pluralize, warn_to_stderr
 
 if TYPE_CHECKING:
     from gymrat.loop.start import StartResult

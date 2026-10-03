@@ -1,7 +1,7 @@
 """The shared machinery both text tables draw through.
 
 The data half is the body planner that lays a
-:class:`~gymrat.report.sections.SectionLayout` out as titles, borders, rules
+:class:`~gymrat.report.table.markup.SectionLayout` out as titles, borders, rules
 and rows. The cell builders that pad a value cell's magnitude and spread, and a
 verdict cell's glyph, delta and band, into fields of their own live in
 :mod:`gymrat.report.table.markup`.
@@ -26,12 +26,14 @@ from rich.cells import cell_len
 from rich.table import Table
 from rich.text import Text
 
-from gymrat.report.sections import GroupBlock, MetricBlock, informational_tag
 from gymrat.report.style import markup, render_lines, render_markup_line
 from gymrat.report.table.markup import (
     METRIC_COLUMN_HEADER,
     METRIC_COLUMN_MIN,
     VALUE_COLUMN_MIN,
+    GroupBlock,
+    MetricBlock,
+    informational_tag,
     join_value_cell,
     value_widths,
 )
@@ -41,7 +43,7 @@ if TYPE_CHECKING:
 
     from gymrat.config import KindEntry
     from gymrat.report.format import MetricCellParts
-    from gymrat.report.sections import SectionLayout, SectionPlan
+    from gymrat.report.table.markup import SectionLayout, SectionPlan
 
 
 type TableCell = str | Text

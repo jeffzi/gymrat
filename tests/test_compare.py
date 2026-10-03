@@ -28,8 +28,8 @@ from gymrat.sampling import (
     resolve_metric_meta_from_samples,
 )
 from gymrat.targets import CleanupResult, WorktreeRemovalFailure
+from gymrat.utils import warn_to_stderr
 from gymrat.verdict import compute_verdicts
-from gymrat.warn import warn_to_stderr
 from tests._git import run_git as _git
 from tests._pipeline import install_pipeline
 
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.progress_events import ProgressEvent
-    from gymrat.warn import WarnSink
+    from gymrat.utils import WarnSink
 
 
 def _options(

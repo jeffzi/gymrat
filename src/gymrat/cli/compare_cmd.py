@@ -51,7 +51,7 @@ from gymrat.report.types import (
     ReportOptions,
 )
 from gymrat.sampling import RunOptions, TargetSpec
-from gymrat.warn import WarnSink, warn_to_stderr
+from gymrat.utils import WarnSink, warn_to_stderr
 
 if TYPE_CHECKING:
     from gymrat.model import GeomeanResult

@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
-from gymrat.plural import pluralize
 from gymrat.report.format import format_percent_delta
+from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import Exiting, ReadSessionResult

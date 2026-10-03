@@ -17,7 +17,7 @@ from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotati
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
 from gymrat.session.store import first_line_json, read_session_header
 from gymrat.telemetry.endpoint import ENDPOINT_ENV, otlp_endpoint
-from gymrat.warn import warn_to_stderr
+from gymrat.utils import warn_to_stderr
 
 SessionLogArg = Annotated[
     str | None, typer.Argument(metavar="[SESSION_LOG]", help="path to session.jsonl")

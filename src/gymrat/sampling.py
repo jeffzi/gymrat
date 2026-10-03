@@ -66,7 +66,7 @@ from gymrat.targets import (
     WorktreeInfo,
     WorktreeRemovalFailure,
 )
-from gymrat.warn import WarnSink, warn_to_stderr
+from gymrat.utils import WarnSink, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # sampling types

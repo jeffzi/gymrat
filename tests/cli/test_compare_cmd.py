@@ -33,7 +33,7 @@ from gymrat.report.types import (
 from gymrat.sampling import RunOptions, SamplingOptions
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
-from gymrat.warn import warn_to_stderr
+from gymrat.utils import warn_to_stderr
 from tests.cli._budget import install_budget, install_tight_budget
 from tests.cli._session import last_command_record, open_session
 from tests.report._comparisons import (

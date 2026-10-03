@@ -23,9 +23,8 @@ from gymrat.supervisor.supervise import supervise
 from gymrat.supervisor.turns import CONSECUTIVE_DISCARD_LIMIT
 
 if TYPE_CHECKING:
-    from gymrat.supervisor.context import SupervisedSession
     from gymrat.supervisor.driver import Driver, SessionPrompt
-    from gymrat.supervisor.supervise import SupervisionResult
+    from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult
 from tests.session.records._fixtures import discard_record
 from tests.supervisor._fixtures import (
     InterruptEmitsEndDriver,

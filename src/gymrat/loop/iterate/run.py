@@ -88,7 +88,7 @@ from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
 from gymrat.session.records import HookRecord, record_to_wire
 from gymrat.session.store import SessionState, append_record, require_open_session
-from gymrat.warn import warn_to_stderr
+from gymrat.utils import warn_to_stderr
 
 if TYPE_CHECKING:
     import asyncio
@@ -99,7 +99,7 @@ if TYPE_CHECKING:
     from gymrat.report.types import MetricComparisons
     from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord
     from gymrat.session.schema import CommandReason, HookStage
-    from gymrat.warn import WarnSink
+    from gymrat.utils import WarnSink
 
 __all__ = [
     "BudgetExceededError",

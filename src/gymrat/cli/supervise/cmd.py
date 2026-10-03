@@ -41,11 +41,9 @@ from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.cli.supervise.summary import build_summary
 from gymrat.clock import now_ms, now_ns
 from gymrat.config import CliFlags, Effort, ResolvedConfig, SuperviseConfig, resolve_config
-from gymrat.display_path import abbreviate_home
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.exec import kill_live_process_groups
 from gymrat.git import run_git
-from gymrat.plural import pluralize
 from gymrat.report.style import render_lines
 from gymrat.session.budget import (
     Budget,
@@ -64,7 +62,6 @@ from gymrat.session.paths import (
 from gymrat.session.workspace import dirty_file_count, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.claude import create_claude_driver
-from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.events import (
     DirtyInfo,
@@ -77,9 +74,9 @@ from gymrat.supervisor.events import (
 from gymrat.supervisor.exit_sequence import ExitReport, run_exit_sequence
 from gymrat.supervisor.hooks import supervise_hooks_factory
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
-from gymrat.supervisor.supervise import supervise
+from gymrat.supervisor.supervise import SupervisedSession, supervise
 from gymrat.supervisor.tools import gymrat_tools_factory
-from gymrat.warn import warn_to_stderr
+from gymrat.utils import abbreviate_home, pluralize, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Flag surface

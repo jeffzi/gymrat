@@ -20,12 +20,12 @@ from typing import Literal
 
 from gymrat import clock
 from gymrat.clock import now_ms, now_ns
+from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
 from gymrat.eta import MS_PER_SECOND
 from gymrat.session.lock import is_held
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import fold_session, read_records
-from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.end_scan import EndConditionScan
 from gymrat.supervisor.events import (
@@ -52,7 +52,7 @@ from gymrat.supervisor.turns import (
     outcome_record_count,
     spend_cap_reached,
 )
-from gymrat.warn import warn_to_stderr
+from gymrat.utils import warn_to_stderr
 
 WALL_CLOCK_POLL_MS = 1000
 """Default interval (in milliseconds) for polling wall-clock time against the
@@ -115,6 +115,27 @@ def _fire_and_report_interrupt(session: DriverSession) -> asyncio.Task[None] | N
     task = asyncio.create_task(pending)
     task.add_done_callback(partial(_warn_on_task_failure, context="session interrupt"))
     return task
+
+
+@dataclass(frozen=True, slots=True)
+class SupervisedSession:
+    """Immutable snapshot of everything a supervised session needs to run.
+
+    Built by the CLI layer (``_run_session``) and threaded into :func:`supervise`,
+    which extracts the values it needs rather than accepting them as individual
+    keyword arguments.
+
+    ``lock_path`` is the repository lock (``lockfile_path(root)``), not the
+    supervise lock.
+    """
+
+    root: str
+    log_path: str
+    lock_path: str
+    config: BenchlessConfig
+    deadline_ms: float
+    max_minutes: float
+    max_usd: float | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

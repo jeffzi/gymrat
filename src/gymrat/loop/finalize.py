@@ -13,7 +13,6 @@ from pathlib import Path
 from gymrat.clock import now_ns
 from gymrat.errors import GymratError
 from gymrat.git import SHORT_SHA_LENGTH, try_git
-from gymrat.plural import pluralize
 from gymrat.session.records import FinalizeRecord, KeepRecord, SessionLogRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
@@ -27,6 +26,7 @@ from gymrat.session.workspace import (
     run_git_step,
     worktree_head,
 )
+from gymrat.utils import pluralize
 
 #: The hint a refusal points at whenever the fix is to settle the last iteration.
 _SETTLE_FIRST_HINT = "Run gymrat keep or gymrat discard before closing the session."

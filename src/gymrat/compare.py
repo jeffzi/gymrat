@@ -37,8 +37,8 @@ from gymrat.sampling import (
     to_context,
 )
 from gymrat.targets import CleanupResult, WorktreeInfo, resolve_target
+from gymrat.utils import WarnSink
 from gymrat.verdict import KindAggregate, compute_kind_aggregates, compute_verdicts
-from gymrat.warn import WarnSink
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

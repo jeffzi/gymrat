@@ -18,30 +18,26 @@ from rich.text import Text
 
 from gymrat.report.display import QUIET_VERDICTS
 from gymrat.report.format import baseline_cell_parts, candidate_cell_parts
-from gymrat.report.geomean_label import (
-    NO_GEOMEAN_FIGURE,
-    NO_STABLE_METRICS,
-    geomean_label,
-    geomean_parts,
-    geomean_value_style,
-    scoped_geomean_label,
-)
-from gymrat.report.sections import (
-    flat_geomean_of,
-    group_geomean_of,
-    kind_geomean_of,
-    plan_sections,
-)
 from gymrat.report.style import VERDICT_STYLES
 from gymrat.report.table.markup import (
+    NO_GEOMEAN_FIGURE,
+    NO_STABLE_METRICS,
     VALUE_COLUMN_MIN,
     VERDICT_COLUMN_MIN,
     VerdictParts,
     aggregate_label_cell,
+    flat_geomean_of,
+    geomean_label,
+    geomean_parts,
+    geomean_value_style,
+    group_geomean_of,
     group_metric_cell,
     header_metric_cell,
     indented_section_label,
     join_value_cell,
+    kind_geomean_of,
+    plan_sections,
+    scoped_geomean_label,
     shown_verdict,
     value_widths,
     variant_name_cell,

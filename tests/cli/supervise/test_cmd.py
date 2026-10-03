@@ -43,11 +43,10 @@ from gymrat.session.paths import (
 from gymrat.session.workspace import Worktrees, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.claude import create_claude_driver
-from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
 from gymrat.supervisor.hooks import HooksFactory, supervise_hooks_factory
-from gymrat.supervisor.supervise import SupervisionResult
+from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult
 from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
 from tests._ansi import strip_ansi
 from tests._rich import CleanupRegistry, unwrap_panel

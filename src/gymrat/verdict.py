@@ -56,7 +56,7 @@ from gymrat.stats import (
     percent_delta,
     sign_flip_permutation_test,
 )
-from gymrat.warn import WarnSink, warn_to_stderr
+from gymrat.utils import WarnSink, warn_to_stderr
 
 __all__ = [
     "BAND_MIN_N",

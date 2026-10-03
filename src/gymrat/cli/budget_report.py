@@ -27,7 +27,7 @@ from gymrat.session.budget import (
 )
 from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.session.store import read_records
-from gymrat.warn import warn_to_stderr
+from gymrat.utils import warn_to_stderr
 
 
 def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:

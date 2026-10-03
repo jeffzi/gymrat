@@ -19,23 +19,22 @@ from rich.cells import cell_len
 from rich.text import Text
 
 from gymrat.report.format import baseline_cell_parts, candidate_cell_parts
-from gymrat.report.geomean_label import GEOMEAN_LABEL, geomean_scope_label
-from gymrat.report.sections import (
-    flat_geomean_of,
-    group_geomean_of,
-    kind_geomean_of,
-    plan_sections,
-)
 from gymrat.report.style import VERDICT_STYLES
 from gymrat.report.table.markup import (
     CELL_GUTTER,
+    GEOMEAN_LABEL,
     VALUE_COLUMN_MIN,
     aggregate_label_cell,
+    flat_geomean_of,
     geomean_column_cell,
+    geomean_scope_label,
+    group_geomean_of,
     group_metric_cell,
     header_metric_cell,
     indented_section_label,
     join_value_cell,
+    kind_geomean_of,
+    plan_sections,
     shown_verdict,
     value_widths,
     variant_name_cell,

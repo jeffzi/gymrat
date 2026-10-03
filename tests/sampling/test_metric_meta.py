@@ -8,7 +8,7 @@ from gymrat.adapters import Adapter, MetricDefaults
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.model import ResolvedMetricMeta
 from gymrat.sampling import resolve_metric_meta_from_samples
-from gymrat.warn import WarnSink, warn_to_stderr
+from gymrat.utils import WarnSink, warn_to_stderr
 from tests.report._comparisons import metric_meta
 
 

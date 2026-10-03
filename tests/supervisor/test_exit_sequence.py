@@ -84,9 +84,8 @@ if TYPE_CHECKING:
     from filelock import FileLock
 
     from gymrat.session.schema import Outcome
-    from gymrat.supervisor.context import SupervisedSession
     from gymrat.supervisor.events import SessionEvent, SessionObserver
-    from gymrat.supervisor.supervise import EndedBy
+    from gymrat.supervisor.supervise import EndedBy, SupervisedSession
     from tests.loop._settle import ExecRecorder
 
 #: The skip wording when the holder record cannot be read.

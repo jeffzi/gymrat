@@ -22,7 +22,7 @@ from gymrat.errors import CommandError, GymratError
 from gymrat.measure import MeasureOptions, measure
 from gymrat.sampling import RunOptions, SamplingOptions, TargetSpec
 from gymrat.targets import CleanupResult, WorktreeInfo, WorktreeRemovalFailure
-from gymrat.warn import warn_to_stderr
+from gymrat.utils import warn_to_stderr
 from tests._git import run_git as _git
 from tests._pipeline import install_pipeline
 
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from gymrat.progress_events import ProgressEvent
-    from gymrat.warn import WarnSink
+    from gymrat.utils import WarnSink
 
 
 def _options(

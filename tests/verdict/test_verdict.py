@@ -17,8 +17,8 @@ from gymrat.model import (
     MetricVerdict,
     PermutationVerdict,
 )
+from gymrat.utils import WarnSink
 from gymrat.verdict import compute_verdicts
-from gymrat.warn import WarnSink
 from tests.verdict._inputs import METRIC_BYTES_LOWER, create_samples, noop_warn
 
 # ---------------------------------------------------------------------------

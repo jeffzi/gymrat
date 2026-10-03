@@ -19,7 +19,7 @@ An adapter turns a bench harness's stdout into gymrat's metric map. Two ship:
 Every adapter satisfies the :class:`Adapter` contract. :class:`MetricDefaults` is
 what an adapter knows about a metric from its name alone. An adapter sends a
 complaint about each part of the output it cannot read cleanly to a
-:data:`~gymrat.warn.WarnSink`; most such parts (a line, a run, a benchmark, a
+:data:`~gymrat.utils.WarnSink`; most such parts (a line, a run, a benchmark, a
 duplicate name) are skipped. It raises :class:`AdapterError`, aborting the whole
 parse, when the output yields no usable metric or a metric name with more than one
 ``#``.
@@ -56,7 +56,7 @@ from gymrat.errors import GymratError
 from gymrat.metric_name import LINE_TERMINATORS
 from gymrat.model import Direction, MetricUnit
 from gymrat.pydantic_errors import describe_key, drop_prefix_errors, phrase_for_error
-from gymrat.warn import WarnSink, warn_to_stderr
+from gymrat.utils import WarnSink, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # adapter contract

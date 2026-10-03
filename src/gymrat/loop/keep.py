@@ -47,7 +47,7 @@ from gymrat.session.workspace import (
     dirty_file_count,
     worktree_head,
 )
-from gymrat.warn import WarnSink, warn_to_stderr
+from gymrat.utils import WarnSink, warn_to_stderr
 
 if TYPE_CHECKING:
     from collections.abc import Callable

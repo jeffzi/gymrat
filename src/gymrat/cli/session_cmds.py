@@ -32,7 +32,6 @@ from gymrat.loop.finalize import FinalizeOptions, FinalizeResult, finalize_sessi
 from gymrat.loop.start import StartResult, start_session
 from gymrat.loop.stop import StopResult, stop_session
 from gymrat.loop.sync import SyncResult, sync_to_experiment
-from gymrat.plural import pluralize
 from gymrat.report.json_doc import (
     render_finalize_json,
     render_start_json,
@@ -41,6 +40,7 @@ from gymrat.report.json_doc import (
 )
 from gymrat.report.loop import format_start_summary
 from gymrat.session.paths import repo_root
+from gymrat.utils import pluralize
 
 # ---------------------------------------------------------------------------
 # Start
