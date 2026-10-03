@@ -13,7 +13,7 @@ serializer's concern, not this contract's.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from gymrat.config import KindEntry
@@ -180,8 +180,6 @@ class MeasurementResult(WorktreeCleanupOutcome):
 class RegressedFailOn:
     """A ``--fail-on`` condition that trips on any regression."""
 
-    kind: Literal["regressed"] = "regressed"
-
 
 @dataclass(frozen=True, slots=True)
 class GeomeanFailOn:
@@ -192,7 +190,6 @@ class GeomeanFailOn:
     """
 
     pct: float
-    kind: Literal["geomean"] = "geomean"
 
 
 def candidate_at(metric: MetricComparison, index: int) -> CandidateMetric | None:

@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING
 from rich.cells import cell_len
 from rich.text import Text
 
-from gymrat.report.display import display_class
 from gymrat.report.format import baseline_cell_parts, candidate_cell_parts
 from gymrat.report.geomean_label import GEOMEAN_LABEL, geomean_scope_label
 from gymrat.report.sections import (
@@ -37,10 +36,10 @@ from gymrat.report.table.markup import (
     header_metric_cell,
     indented_section_label,
     join_value_cell,
+    shown_verdict,
     value_widths,
     variant_name_cell,
     verdict_cell,
-    verdict_parts,
     verdict_widths,
 )
 from gymrat.report.table.render import (
@@ -60,9 +59,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from gymrat.model import GeomeanResult
-    from gymrat.report.display import DisplayClass
     from gymrat.report.format import MetricCellParts
-    from gymrat.report.table.markup import ValueWidths, VerdictParts, VerdictWidths
+    from gymrat.report.table.markup import ShownVerdict, ValueWidths, VerdictWidths
     from gymrat.report.table.render import BodyLine
     from gymrat.report.types import (
         CandidateComparison,
@@ -78,22 +76,11 @@ _LEADING_COLUMNS = 2
 
 
 @dataclass(frozen=True, slots=True)
-class _CandidateVerdict:
-    """A candidate's verdict parts and display outcome, always present together.
-
-    Bundled so ``_CandidateCell.verdict`` being None means both are absent.
-    """
-
-    parts: VerdictParts
-    outcome: DisplayClass
-
-
-@dataclass(frozen=True, slots=True)
 class _CandidateCell:
     """One candidate's side of a metric row: its figure and optional verdict."""
 
     value: MetricCellParts
-    verdict: _CandidateVerdict | None
+    verdict: ShownVerdict | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,17 +232,12 @@ def _build_row(
     cells: list[_CandidateCell] = []
     for index in range(candidate_count):
         side = candidate_at(metric, index)
-        metric_verdict = side.verdict if side is not None else None
-        cell_verdict: _CandidateVerdict | None = None
-        if metric_verdict is not None:
-            cell_verdict = _CandidateVerdict(
-                parts=verdict_parts(metric_verdict, samples, with_band=False),
-                outcome=display_class(metric_verdict),
-            )
         cells.append(
             _CandidateCell(
                 value=candidate_cell_parts(side, metric.meta.unit),
-                verdict=cell_verdict,
+                verdict=shown_verdict(
+                    side.verdict if side is not None else None, samples, with_band=False
+                ),
             )
         )
     return _ComparisonRow(

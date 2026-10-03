@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape
 
-from gymrat.report.display import GLYPHS, VERDICT_GLOSSES, DisplayClass, display_class
+from gymrat.report.display import GLYPHS, VERDICT_GLOSSES, display_class
 from gymrat.report.style import VERDICT_STYLES, markup
 from gymrat.report.types import candidate_at as _candidate_at
 
@@ -78,16 +78,6 @@ def count_verdicts(metrics: MetricComparisons, candidate_index: int) -> VerdictC
     )
 
 
-_DISPLAY_CLASS_ORDER: tuple[DisplayClass, ...] = (
-    "improved",
-    "regressed",
-    "unstable",
-    "identical",
-    "within-noise",
-    "inconclusive",
-)
-
-
 def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> list[str]:
     """One tally part per display class, in legend order, as rich-markup strings.
 
@@ -105,13 +95,13 @@ def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> l
         One markup string per display class.
     """
     counts = Counter(display_class(verdict) for verdict in _each_verdict(metrics, candidate_index))
-    max_width = max(len(str(counts[shown])) for shown in _DISPLAY_CLASS_ORDER)
+    # GLYPHS lists the display classes in legend order.
+    max_width = max(len(str(counts[shown])) for shown in GLYPHS)
 
     parts: list[str] = []
-    for shown in _DISPLAY_CLASS_ORDER:
+    for shown, glyph in GLYPHS.items():
         count = counts[shown]
         padded = str(count).rjust(max_width)
-        glyph = GLYPHS[shown]
         gloss = VERDICT_GLOSSES[shown]
         if count == 0:
             parts.append(markup(f"{glyph} {padded} {gloss}", "dim"))

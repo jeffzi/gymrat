@@ -134,13 +134,6 @@ _COMPARED = (
 #: What an iteration that met the configured target says, and what it asks for.
 _TARGET_REACHED = "target reached — keep it"
 
-#: The word each outcome is announced with.
-_OUTCOME_WORDS: dict[LoopOutcome, str] = {
-    "improved": "IMPROVED",
-    "regressed": "REGRESSED",
-    "no-signal": "NO-SIGNAL",
-}
-
 #: How each outcome's word is painted: emboldened whatever it says, and colored
 #: only where there is a direction to report. A no-signal iteration is neither
 #: good nor bad, so it wears no color rather than a hedged one.
@@ -226,7 +219,7 @@ def format_verdict_block(
         The block as rich-markup lines, so the caller appends them to the report
         it already holds as lines.
     """
-    verdict = markup(_OUTCOME_WORDS[outcome], _OUTCOME_STYLES[outcome])
+    verdict = markup(outcome.upper(), _OUTCOME_STYLES[outcome])
     # The delta renders blank when the ratio had no value, so the parts are
     # joined rather than interpolated: a blank between a space and the separator
     # would read as a gap.
@@ -262,21 +255,16 @@ class SettleKept:
 
     commit: str | None = None
     outcome: LoopOutcome | None = None
-    kind: Literal["kept"] = "kept"
 
 
 @dataclass(frozen=True, slots=True)
 class SettleDiscarded:
     """An iteration whose edits were reverted."""
 
-    kind: Literal["discarded"] = "discarded"
-
 
 @dataclass(frozen=True, slots=True)
 class SettleUnsettled:
     """An iteration with no keep or discard yet."""
-
-    kind: Literal["unsettled"] = "unsettled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,7 +280,6 @@ class SettleKeepBlocked:
     """
 
     reason: KeepReason | None = None
-    kind: Literal["keep-blocked"] = "keep-blocked"
 
 
 #: What a single settling record says became of the iteration it settles.

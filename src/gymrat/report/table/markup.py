@@ -16,13 +16,11 @@ from gymrat.report.format import (
     format_percent_delta,
 )
 from gymrat.report.geomean_label import (
-    NO_GEOMEAN_CELL,
     NO_GEOMEAN_FIGURE,
     NO_STABLE_METRICS,
     geomean_parts,
     geomean_value_style,
 )
-from gymrat.report.sections import section_label
 from gymrat.report.style import (
     AGGREGATE_LABEL_STYLE,
     GROUP_LABEL_STYLE,
@@ -147,6 +145,40 @@ def verdict_parts(verdict: MetricVerdict, samples: int, *, with_band: bool) -> V
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ShownVerdict:
+    """A verdict's pre-split parts and display class, always present together.
+
+    Attributes:
+        parts: The fields the verdict column pads and styles.
+        outcome: The display class the verdict presents as.
+    """
+
+    parts: VerdictParts
+    outcome: DisplayClass
+
+
+def shown_verdict(
+    verdict: MetricVerdict | None, samples: int, *, with_band: bool
+) -> ShownVerdict | None:
+    """Bundle a verdict's column fields with its display class.
+
+    Args:
+        verdict: The verdict to render, or ``None`` when the metric has none.
+        samples: The run's sample count, so a full-count verdict drops its ``n=N``.
+        with_band: Whether the caller shows a noise band.
+
+    Returns:
+        The bundle, or ``None`` when there is no verdict to show.
+    """
+    if verdict is None:
+        return None
+    return ShownVerdict(
+        parts=verdict_parts(verdict, samples, with_band=with_band),
+        outcome=display_class(verdict),
+    )
+
+
 def verdict_widths(cells: Sequence[VerdictParts]) -> VerdictWidths:
     """The widest delta and band a column of verdict cells holds.
 
@@ -167,9 +199,17 @@ def verdict_widths(cells: Sequence[VerdictParts]) -> VerdictWidths:
 
 
 def indented_section_label(short_name: str, group: str | None) -> str:
-    """A metric's name cell inside a section: its short name, indented under its group."""
-    label = section_label(short_name, group)
-    return label if group is None else f"{GROUP_INDENT}{label}"
+    """A metric's name cell inside a section: its short name, indented under its group.
+
+    Args:
+        short_name: The metric's short name.
+        group: The group the metric sits under, or ``None`` when it has none.
+
+    Returns:
+        The short name as is when ungrouped, else the name with its group prefix
+        stripped and indented.
+    """
+    return short_name if group is None else f"{GROUP_INDENT}{short_name[len(group) + 1 :]}"
 
 
 def verdict_cell(
@@ -244,10 +284,7 @@ def geomean_column_cell(
     """
     parts = geomean_parts(geomean)
     if parts is None:
-        cell = Text(NO_GEOMEAN_CELL)
-        cell.stylize("bold", 0, len(NO_GEOMEAN_FIGURE))
-        cell.stylize("dim", len(NO_GEOMEAN_CELL) - len(NO_STABLE_METRICS))
-        return cell
+        return Text.assemble((NO_GEOMEAN_FIGURE, "bold"), "  ", (NO_STABLE_METRICS, "dim"))
     return Text.assemble(
         (parts.delta, geomean_value_style(geomean, outcomes)),
         f" {SCOPE_SEPARATOR} ",

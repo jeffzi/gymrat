@@ -83,11 +83,6 @@ class SectionLayout[Row]:
     ordered: tuple[Row, ...]
 
 
-def section_label(short_name: str, group: str | None) -> str:
-    """A metric's short name as its section shows it, the group prefix stripped when it has one."""
-    return short_name if group is None else short_name[len(group) + 1 :]
-
-
 def plan_sections[Row, Metric: SectionedMetric](
     metrics: Mapping[str, Metric],
     measure: Callable[[str, str | None, Metric], Row],

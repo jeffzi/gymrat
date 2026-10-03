@@ -23,8 +23,6 @@ NO_GEOMEAN_FIGURE = "—"
 
 NO_STABLE_METRICS = "no stable metrics"
 
-NO_GEOMEAN_CELL = f"{NO_GEOMEAN_FIGURE}  {NO_STABLE_METRICS}"
-
 
 def geomean_label(n: int) -> str:
     """The geomean row's label, carrying the count of metrics behind the figure.

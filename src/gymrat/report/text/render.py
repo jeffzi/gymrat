@@ -105,8 +105,6 @@ def _render_block(markup_lines: Sequence[str], *, color: bool | None) -> list[st
     Returns:
         One rendered text line per input markup line.
     """
-    if not markup_lines:
-        return []
     return render_lines(*markup_lines, color=color).split("\n")
 
 
@@ -270,11 +268,6 @@ def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
     return format_inline(parse(highlight.name))
 
 
-def has_unstable_highlight(highlights: Sequence[MetricHighlight]) -> bool:
-    """Whether any highlight is one the noise swamped, so it carries no usable delta."""
-    return any(display_class(highlight.verdict) == "unstable" for highlight in highlights)
-
-
 @dataclass(frozen=True, slots=True)
 class HighlightBlock:
     """One candidate's highlight entries, and whether the noise swamped any of them.
@@ -304,9 +297,11 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
     name_width = max(label_widths) + _HIGHLIGHT_NAME_GUTTER
 
     entries: list[str] = []
+    unstable = False
     for highlight, label, width in zip(highlights, labels, label_widths, strict=True):
         verdict = highlight.verdict
         shown = display_class(verdict)
+        unstable = unstable or shown == "unstable"
         style = VERDICT_STYLES[shown]
         delta = format_verdict_delta(verdict)
         evidence = format_evidence(
@@ -320,7 +315,7 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
         suffix = "" if evidence == "" else f"  {markup(evidence, 'dim')}"
         entries.append(f"  {markup(GLYPHS[shown], style)} {label_field}{delta_field}{suffix}")
 
-    return HighlightBlock(entries=tuple(entries), unstable=has_unstable_highlight(highlights))
+    return HighlightBlock(entries=tuple(entries), unstable=unstable)
 
 
 def _gate_trip_lines(
@@ -722,7 +717,7 @@ def render_report(result: ComparisonResult, options: ReportOptions = _DEFAULT_OP
         lines.append("")
         lines.extend(_render_block(_render_summaries(display), color=color))
     elif len(display.candidates) == 1:
-        lines.extend(render_table(display, display.candidates[0], 0, color=color))
+        lines.extend(render_table(display, color=color))
         lines.append("")
         lines.extend(_render_block([_render_summary(display.metrics, 0)], color=color))
 

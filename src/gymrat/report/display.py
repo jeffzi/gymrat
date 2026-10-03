@@ -76,11 +76,6 @@ GLYPHS: dict[DisplayClass, str] = {
 """The glyph each display class is drawn with in the report's rows and legend."""
 
 
-def shown_class(verdict: MetricVerdict | None) -> DisplayClass | None:
-    """:func:`display_class`, or ``None`` when there is no verdict to show one for."""
-    return None if verdict is None else display_class(verdict)
-
-
 VERDICT_GLOSSES: dict[DisplayClass, str] = {
     "improved": "improved",
     "regressed": "regressed",
