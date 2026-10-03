@@ -35,7 +35,6 @@ from gymrat.cli.shared import (
     begin_run,
     emit_report,
     run_cli,
-    run_options_of,
     wants_json,
     write_and_flush,
     write_stdout,
@@ -46,7 +45,7 @@ from gymrat.loop.baseline import measure_baseline
 from gymrat.report.json_doc import render_measure_json
 from gymrat.report.text.render import render_measure_report
 from gymrat.report.types import MeasurementResult, ReportOptions
-from gymrat.sampling import TargetSpec
+from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.paths import repo_root
 from gymrat.session.store import RequiredSession, append_record, require_open_session
 
@@ -77,15 +76,16 @@ async def _measure_body(
     flags: MeasureFlags,
     resolved_target: TargetSpec,
 ) -> _MeasureOutcome:
-    label = resolved_target.label or resolved_target.target
-    progress = begin_run(flags, 1, target_labels=[label])
+    progress = begin_run(flags, 1, target_labels=[resolved_target.display_label])
     try:
         config_resolved = resolve_config(flags)
         # Session check before bench: failing after a long run would lose samples.
         recording = (
             require_open_session(repo_root(), "recording a measurement") if flags.record else None
         )
-        run_opts = run_options_of(config_resolved, progress)
+        run_opts = RunOptions.from_config(
+            config_resolved, on_progress=progress.report, warn=progress.warn
+        )
         result, record = await measure_baseline(resolved_target, run_opts)
     finally:
         progress.stop()
@@ -129,7 +129,7 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     async def run() -> None:
         warn_duration_over_budget(halve=True)
         trace_args: dict[str, object] = {
-            "target": resolved_target.label or resolved_target.target,
+            "target": resolved_target.display_label,
             "record": record,
             **config_trace_args(flags),
         }

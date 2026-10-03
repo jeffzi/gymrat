@@ -20,8 +20,9 @@ from gymrat import sampling
 from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.errors import CommandError, GymratError
 from gymrat.measure import MeasureOptions, measure
-from gymrat.sampling import RunOptions, TargetSpec
+from gymrat.sampling import RunOptions, SamplingOptions, TargetSpec
 from gymrat.targets import CleanupResult, WorktreeInfo, WorktreeRemovalFailure
+from gymrat.warn import warn_to_stderr
 from tests._git import git as _git
 from tests._pipeline import install_pipeline
 
@@ -37,22 +38,24 @@ def _options(
     target: str = "main",
     spec: TargetSpec | None = None,
     on_progress: Callable[[ProgressEvent], None] | None = None,
-    warn: WarnSink | None = None,
+    warn: WarnSink = warn_to_stderr,
     config_metrics: dict[str, MetricEntry] | None = None,
     config_kinds: dict[str, KindEntry] | None = None,
 ) -> MeasureOptions:
     resolved_spec = spec if spec is not None else TargetSpec(label=None, target=target)
     return MeasureOptions(
         run=RunOptions(
-            bench="run",
-            prepare="prep",
+            sampling=SamplingOptions(
+                bench="run",
+                prepare="prep",
+                samples=3,
+                timeout_seconds=1.0,
+                on_progress=on_progress,
+                warn=warn,
+            ),
             adapter="metric-lines",
-            samples=3,
-            timeout_seconds=1.0,
             config_metrics=config_metrics,
             config_kinds=config_kinds,
-            on_progress=on_progress,
-            warn=warn,
         ),
         target=resolved_spec,
     )
@@ -71,6 +74,17 @@ async def test_measure_when_target_benched_does_report_metric_median_and_spread(
     assert result.samples == 3
     assert result.adapter == "metric-lines"
     assert result.label == "main"
+
+
+async def test_measure_when_target_sampled_does_give_it_no_comparison_position(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured = install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}]])
+
+    await measure(_options(target="main"))
+
+    assert captured.contexts is not None
+    assert [ctx.position for ctx in captured.contexts] == [None]
 
 
 async def test_measure_when_explicit_label_given_does_use_it(monkeypatch: pytest.MonkeyPatch):
@@ -187,11 +201,10 @@ def _commit_bench(repo: str, script: str) -> None:
 def _e2e_options(target: str) -> MeasureOptions:
     return MeasureOptions(
         run=RunOptions(
-            bench="sh bench.sh",
-            prepare=None,
+            sampling=SamplingOptions(
+                bench="sh bench.sh", prepare=None, samples=2, timeout_seconds=30.0
+            ),
             adapter="metric-lines",
-            samples=2,
-            timeout_seconds=30.0,
             config_metrics=None,
             config_kinds=None,
         ),

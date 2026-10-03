@@ -23,6 +23,7 @@ from gymrat.report.loop import baseline_medians
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.store import latest_baseline, require_open_session
 from gymrat.stats import percent_delta
+from gymrat.warn import warn_to_stderr
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -50,13 +51,13 @@ class ProbeOptions:
             :data:`PROBE_DEFAULT_SAMPLES`. The configured ``samples`` is never
             used — it sizes an iteration's verdict, which a probe does not reach.
         on_progress: Sink for the run's progress events, or ``None`` to drop them.
-        warn: Sink for warnings the adapter raises, or ``None`` to drop them.
+        warn: Sink for warnings the adapter raises.
     """
 
     names: Sequence[str] = ()
     samples: int | None = None
     on_progress: ProgressCallback | None = None
-    warn: WarnSink | None = None
+    warn: WarnSink = warn_to_stderr
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,16 +181,8 @@ async def probe_session(
         )
 
     samples = PROBE_DEFAULT_SAMPLES if options.samples is None else options.samples
-    run_options = RunOptions(
-        bench=bench,
-        prepare=config.prepare,
-        adapter=config.adapter,
-        samples=samples,
-        timeout_seconds=config.timeout_seconds,
-        config_metrics=config.metrics,
-        config_kinds=config.kinds,
-        on_progress=options.on_progress,
-        warn=options.warn,
+    run_options = RunOptions.from_config(
+        config, samples=samples, bench=bench, on_progress=options.on_progress, warn=options.warn
     )
     target = TargetSpec(label=EXPERIMENT_LABEL, target=required.session.worktrees.experiment)
     result, _ = await measure_baseline(target, run_options)

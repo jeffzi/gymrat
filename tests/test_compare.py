@@ -23,11 +23,13 @@ from gymrat.errors import GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT, Observations
 from gymrat.sampling import (
     RunOptions,
+    SamplingOptions,
     TargetSpec,
     resolve_metric_meta_from_samples,
 )
 from gymrat.targets import CleanupResult, WorktreeRemovalFailure
 from gymrat.verdict import compute_verdicts
+from gymrat.warn import warn_to_stderr
 from tests._git import git as _git
 from tests._pipeline import install_pipeline
 
@@ -44,7 +46,7 @@ def _options(
     candidate_targets: tuple[str, ...] = ("cand",),
     candidates: list[TargetSpec] | None = None,
     on_progress: Callable[[ProgressEvent], None] | None = None,
-    warn: WarnSink | None = None,
+    warn: WarnSink = warn_to_stderr,
     config_metrics: dict[str, MetricEntry] | None = None,
     config_kinds: dict[str, KindEntry] | None = None,
 ) -> CompareOptions:
@@ -56,15 +58,17 @@ def _options(
     )
     return CompareOptions(
         run=RunOptions(
-            bench="run",
-            prepare="prep",
+            sampling=SamplingOptions(
+                bench="run",
+                prepare="prep",
+                samples=4,
+                timeout_seconds=1.0,
+                on_progress=on_progress,
+                warn=warn,
+            ),
             adapter="metric-lines",
-            samples=4,
-            timeout_seconds=1.0,
             config_metrics=config_metrics,
             config_kinds=config_kinds,
-            on_progress=on_progress,
-            warn=warn,
         ),
         baseline=resolved_baseline,
         candidates=resolved_candidates,
@@ -105,6 +109,46 @@ async def test_compare_when_metric_on_one_side_only_does_include_union_in_order(
     result = await compare(_options())
 
     assert list(result.metrics.keys()) == ["a", "b"]
+
+
+async def test_compare_when_metric_on_one_side_only_does_report_that_sides_own_median(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    baseline = [{"a": 1.0}, {"a": 2.0}]
+    candidate = [{"b": 3.0}, {"b": 4.0}]
+    install_pipeline(monkeypatch, compare_mod, [baseline, candidate])
+
+    result = await compare(_options())
+
+    assert result.metrics["a"].baseline_median == 1.5
+    assert result.metrics["b"].candidates[0].median == 3.5
+
+
+async def test_compare_when_targets_sampled_does_place_baseline_old_and_candidates_new(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    samples = [{"x": 1.0}, {"x": 2.0}]
+    captured = install_pipeline(monkeypatch, compare_mod, [samples, samples, samples])
+
+    await compare(_options(candidate_targets=("one", "two")))
+
+    assert captured.contexts is not None
+    assert [ctx.position for ctx in captured.contexts] == ["old", "new", "new"]
+
+
+async def test_compare_when_a_round_is_one_sided_does_send_the_dropped_window_warning_to_the_sink(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    baseline = [{"x": 1.0}, {"x": 2.0}, {}]
+    candidate = [{"x": 3.0}, {"x": 4.0}, {"x": 5.0}]
+    install_pipeline(monkeypatch, compare_mod, [baseline, candidate])
+    warnings: list[str] = []
+
+    await compare(_options(warn=warnings.append))
+
+    assert warnings == [
+        "x: dropped 1 paired window(s) where the metric was measured on only one side"
+    ]
 
 
 async def test_compare_when_metric_named_like_dict_method_does_treat_as_ordinary_key(
@@ -218,9 +262,9 @@ async def test_compare_when_progress_and_warn_given_does_forward_to_sampling(
 
     forwarded = captured.options
     assert forwarded is not None
-    run = options.run
-    assert forwarded.on_progress is run.on_progress
-    assert forwarded.warn is run.warn
+    sampling = options.run.sampling
+    assert forwarded.on_progress is sampling.on_progress
+    assert forwarded.warn is sampling.warn
     assert forwarded.bench == "run"
     assert forwarded.prepare == "prep"
     assert forwarded.samples == 4
@@ -258,11 +302,10 @@ def _commit_bench(repo: str, value: int) -> None:
 def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
     return CompareOptions(
         run=RunOptions(
-            bench="sh bench.sh",
-            prepare=None,
+            sampling=SamplingOptions(
+                bench="sh bench.sh", prepare=None, samples=3, timeout_seconds=30.0
+            ),
             adapter="metric-lines",
-            samples=3,
-            timeout_seconds=30.0,
             config_metrics=None,
             config_kinds=None,
         ),

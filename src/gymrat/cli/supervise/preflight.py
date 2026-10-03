@@ -15,7 +15,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from gymrat.cli.console import resolve_stream_color
-from gymrat.cli.shared import SharedFlags, begin_run, run_options_of, write_and_flush, write_stdout
+from gymrat.cli.shared import SharedFlags, begin_run, write_and_flush, write_stdout
 from gymrat.config.types import CliFlags, ResolvedConfig
 from gymrat.doctor import build_doctor_report, render_doctor_report
 from gymrat.errors import GymratError
@@ -24,7 +24,7 @@ from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import start_session
 from gymrat.plural import pluralize
 from gymrat.report.loop import format_start_summary
-from gymrat.sampling import TargetSpec
+from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.budget import (
     estimate_iterate_duration,
     minutes_to_ms,
@@ -197,7 +197,9 @@ def _baseline_step(
     target = TargetSpec(label=_BASELINE_LABEL, target=worktree_dir)
     progress = begin_run(SharedFlags(), 1, command="supervise")
     try:
-        run_options = run_options_of(config, progress)
+        run_options = RunOptions.from_config(
+            config, on_progress=progress.report, warn=progress.warn
+        )
         _result, record = asyncio.run(measure_baseline(target, run_options))
         append_record(session_jsonl_path(root), record)
     finally:

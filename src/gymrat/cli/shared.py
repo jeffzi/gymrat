@@ -25,7 +25,7 @@ from gymrat.adapters import AdapterError
 from gymrat.cli import console
 from gymrat.cli.options import OutputFormat
 from gymrat.cli.progress import ProgressReporter
-from gymrat.config.types import CliFlags, ResolvedConfig
+from gymrat.config.types import CliFlags
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError, hint_of
 from gymrat.exec import kill_live_process_groups
 from gymrat.report.json_doc import BudgetSummary
@@ -37,7 +37,6 @@ from gymrat.report.style import (
     render_lines,
 )
 from gymrat.report.types import FailOnCondition, ReportOptions
-from gymrat.sampling import RunOptions
 from gymrat.signals import install_termination_cleanup
 
 # ---------------------------------------------------------------------------
@@ -296,21 +295,6 @@ def begin_run(
         flags.samples,
         command=command,
         target_labels=target_labels,
-    )
-
-
-def run_options_of(config: ResolvedConfig, progress: ProgressReporter) -> RunOptions:
-    """Wire ``config``'s run settings and ``progress``'s callbacks into the shared run fields."""
-    return RunOptions(
-        bench=config.bench,
-        prepare=config.prepare,
-        adapter=config.adapter,
-        samples=config.samples,
-        timeout_seconds=config.timeout_seconds,
-        config_metrics=config.metrics,
-        config_kinds=config.kinds,
-        on_progress=progress.report,
-        warn=progress.warn,
     )
 
 

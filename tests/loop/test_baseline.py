@@ -14,7 +14,7 @@ import pytest
 
 from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.loop.baseline import measure_baseline
-from gymrat.sampling import RunOptions, TargetSpec
+from gymrat.sampling import RunOptions, SamplingOptions, TargetSpec
 from gymrat.session.records import BaselineRecord
 from tests.report._measurements import create_measurement_result
 
@@ -33,15 +33,17 @@ def _run_options() -> RunOptions:
     warnings: list[str] = []
     events: list[ProgressEvent] = []
     return RunOptions(
-        bench="sh bench.sh",
-        prepare="sh prepare.sh",
+        sampling=SamplingOptions(
+            bench="sh bench.sh",
+            prepare="sh prepare.sh",
+            samples=5,
+            timeout_seconds=30,
+            on_progress=events.append,
+            warn=warnings.append,
+        ),
         adapter="metric-lines",
-        samples=5,
-        timeout_seconds=30,
         config_metrics={"decode/time": MetricEntry(direction="higher")},
         config_kinds={"memory": KindEntry(gating=False)},
-        on_progress=events.append,
-        warn=warnings.append,
     )
 
 

@@ -14,7 +14,7 @@ Rendering is the caller's job. Worktree cleanup and signal handling belong to
 
 import asyncio
 from dataclasses import dataclass
-from typing import Literal
+from functools import partial
 
 from gymrat.adapters import get_adapter
 from gymrat.config.types import KindEntry
@@ -32,20 +32,18 @@ from gymrat.report.types import (
 )
 from gymrat.sampling import (
     RunOptions,
-    TargetContext,
     TargetSamples,
     TargetSpec,
     collect_samples,
     compute_metric_stats,
-    paired_or_own_values,
-    resolve_dir,
-    resolve_label,
+    own_values,
     resolve_metric_meta_from_samples,
     run_with_worktrees,
+    to_context,
 )
-from gymrat.targets import CleanupResult, Target, WorktreeInfo, resolve_target
+from gymrat.targets import CleanupResult, WorktreeInfo, resolve_target
 from gymrat.verdict import KindAggregate, compute_kind_aggregates, compute_verdicts
-from gymrat.warn import WarnSink, warn_to_stderr
+from gymrat.warn import WarnSink
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -80,11 +78,17 @@ class CandidateMeasurement:
 
 
 @dataclass(frozen=True, slots=True)
-class _Measurement:
+class ComparisonMeasurement:
     """Everything the measurement phase produces that the report is built from.
 
     Bundling these lets the whole set outlive the phase, so the report can be
     assembled after worktree cleanup has already run.
+
+    Attributes:
+        baseline_label: Display label for the baseline target.
+        baseline_samples: Per-round metric samples collected for the baseline.
+        candidates: Measured candidates, each with its own verdicts and kinds.
+        metric_meta: Resolved metric metadata keyed by metric name.
     """
 
     baseline_label: str
@@ -115,17 +119,16 @@ def _baseline_paired_values(
         The baseline float values paired with at least one candidate, or all
         baseline values when no candidate reported the metric.
     """
-    paired: list[float] = []
-    for index, sample in enumerate(baseline_samples):
-        if metric_name not in sample:
-            continue
-        has_candidate = any(
+    paired = [
+        sample[metric_name]
+        for index, sample in enumerate(baseline_samples)
+        if metric_name in sample
+        and any(
             index < len(samples) and metric_name in samples[index]
             for samples in candidate_sample_sets
         )
-        if has_candidate:
-            paired.append(sample[metric_name])
-    return paired_or_own_values(paired, baseline_samples, metric_name)
+    ]
+    return paired or own_values(baseline_samples, metric_name)
 
 
 def _measure_candidates(
@@ -133,11 +136,9 @@ def _measure_candidates(
     candidates: list[TargetSamples],
     metric_meta: dict[str, ResolvedMetricMeta],
     unstable_noise_pct: float,
-    warn: WarnSink | None,
+    warn: WarnSink,
 ) -> list[CandidateMeasurement]:
     """Judge every candidate against the same baseline samples, one comparison each."""
-    resolved_warn = warn if warn is not None else warn_to_stderr
-
     baseline_obs = Observations.from_rounds(baseline_samples)
     measured: list[CandidateMeasurement] = []
     for candidate in candidates:
@@ -146,7 +147,7 @@ def _measure_candidates(
             Observations.from_rounds(candidate.samples),
             metric_meta,
             unstable_noise_pct=unstable_noise_pct,
-            warn=resolved_warn,
+            warn=warn,
         )
         measured.append(
             CandidateMeasurement(
@@ -159,16 +160,13 @@ def _measure_candidates(
     return measured
 
 
-def build_comparison_result(  # noqa: PLR0913 -- flat parameter list avoids an intermediate dataclass
-    baseline_label: str,
-    baseline_samples: list[dict[str, float]],
-    candidates: list[CandidateMeasurement],
-    metric_meta: dict[str, ResolvedMetricMeta],
+def build_comparison_result(
+    measurement: ComparisonMeasurement,
+    cleanup: CleanupResult,
     *,
     samples: int,
     adapter: str,
     config_kinds: dict[str, KindEntry] | None,
-    cleanup: CleanupResult,
 ) -> ComparisonResult:
     """Build a comparison result from measured candidates and a cleanup outcome.
 
@@ -176,24 +174,24 @@ def build_comparison_result(  # noqa: PLR0913 -- flat parameter list avoids an i
     (single candidate, zeroed cleanup) call this.
 
     Args:
-        baseline_label: Display label for the baseline target.
-        baseline_samples: Per-round metric samples collected for the baseline.
-        candidates: Measured candidates, each with its own verdicts and kinds.
-        metric_meta: Resolved metric metadata keyed by metric name.
+        measurement: The baseline samples, the measured candidates, and the
+            resolved metric metadata.
+        cleanup: Outcome of the worktree cleanup performed after sampling.
         samples: Number of samples requested per target.
         adapter: Name of the adapter used to parse bench output.
         config_kinds: Kind entries from the config, or ``None`` when not set.
-        cleanup: Outcome of the worktree cleanup performed after sampling.
 
     Returns:
         The assembled :class:`ComparisonResult` with per-metric baselines,
         candidate verdicts, and worktree cleanup status.
     """
+    baseline_samples = measurement.baseline_samples
+    candidates = measurement.candidates
     candidate_sample_sets = [c.samples for c in candidates]
     baseline_obs = Observations.from_rounds(baseline_samples)
 
     metrics: dict[str, MetricComparison] = {}
-    for metric_name, meta in metric_meta.items():
+    for metric_name, meta in measurement.metric_meta.items():
         baseline_stats = compute_metric_stats(
             _baseline_paired_values(baseline_samples, candidate_sample_sets, metric_name)
         )
@@ -202,9 +200,7 @@ def build_comparison_result(  # noqa: PLR0913 -- flat parameter list avoids an i
             paired = pair_metric(
                 baseline_obs, Observations.from_rounds(candidate.samples), metric_name
             ).right
-            stats = compute_metric_stats(
-                paired_or_own_values(paired, candidate.samples, metric_name)
-            )
+            stats = compute_metric_stats(list(paired) or own_values(candidate.samples, metric_name))
             candidate_metrics.append(
                 CandidateMetric(
                     median=stats.median,
@@ -223,7 +219,7 @@ def build_comparison_result(  # noqa: PLR0913 -- flat parameter list avoids an i
         worktrees_removed=cleanup.removed,
         worktrees_left_behind=tuple(cleanup.failures),
         worktree_prune_error=cleanup.prune_error,
-        baseline_label=baseline_label,
+        baseline_label=measurement.baseline_label,
         candidates=tuple(
             CandidateComparison(label=c.label, kinds=tuple(c.kinds)) for c in candidates
         ),
@@ -234,27 +230,12 @@ def build_comparison_result(  # noqa: PLR0913 -- flat parameter list avoids an i
     )
 
 
-def _to_context(
-    spec: TargetSpec,
-    target: Target,
-    position: Literal["old", "new"],
-    repo_dir: str,
-    worktrees: list[WorktreeInfo],
-) -> TargetContext:
-    return TargetContext(
-        target=target,
-        dir=resolve_dir(target, repo_dir, worktrees),
-        label=resolve_label(spec.label, target),
-        position=position,
-    )
-
-
 async def _compare_phase(
     options: CompareOptions,
     repo_dir: str,
     worktrees: list[WorktreeInfo],
     abort: asyncio.Event,
-) -> _Measurement:
+) -> ComparisonMeasurement:
     run = options.run
     adapter = get_adapter(run.adapter)
 
@@ -263,15 +244,15 @@ async def _compare_phase(
         (spec, resolve_target(spec.target, repo_dir)) for spec in options.candidates
     ]
 
-    baseline_context = _to_context(options.baseline, baseline_target, "old", repo_dir, worktrees)
+    baseline_context = to_context(options.baseline, baseline_target, repo_dir, worktrees, "old")
     candidate_contexts = [
-        _to_context(spec, target, "new", repo_dir, worktrees) for spec, target in candidate_targets
+        to_context(spec, target, repo_dir, worktrees, "new") for spec, target in candidate_targets
     ]
 
     baseline, *candidates = await collect_samples(
         adapter,
         [baseline_context, *candidate_contexts],
-        run.sampling(),
+        run.sampling,
         abort,
     )
 
@@ -282,7 +263,7 @@ async def _compare_phase(
         run.config_kinds,
     )
 
-    return _Measurement(
+    return ComparisonMeasurement(
         baseline_label=baseline.ctx.label,
         baseline_samples=baseline.samples,
         candidates=_measure_candidates(
@@ -290,7 +271,7 @@ async def _compare_phase(
             candidates,
             metric_meta,
             options.unstable_noise_pct,
-            run.warn,
+            run.sampling.warn,
         ),
         metric_meta=metric_meta,
     )
@@ -319,15 +300,11 @@ async def compare(options: CompareOptions) -> ComparisonResult:
     """
     run = options.run
     return await run_with_worktrees(
-        lambda repo_dir, worktrees, abort: _compare_phase(options, repo_dir, worktrees, abort),
-        lambda measurement, cleanup: build_comparison_result(
-            measurement.baseline_label,
-            measurement.baseline_samples,
-            measurement.candidates,
-            measurement.metric_meta,
-            samples=run.samples,
+        partial(_compare_phase, options),
+        partial(
+            build_comparison_result,
+            samples=run.sampling.samples,
             adapter=run.adapter,
             config_kinds=run.config_kinds,
-            cleanup=cleanup,
         ),
     )

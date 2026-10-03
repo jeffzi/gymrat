@@ -38,7 +38,6 @@ from gymrat.cli.shared import (
     begin_run,
     emit_report,
     run_cli,
-    run_options_of,
 )
 from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.config.resolve import resolve_config
@@ -55,7 +54,7 @@ from gymrat.report.types import (
     RegressedFailOn,
     ReportOptions,
 )
-from gymrat.sampling import TargetSpec
+from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.warn import WarnSink, warn_to_stderr
 
 if TYPE_CHECKING:
@@ -103,11 +102,6 @@ def _serialize_fail_on(conditions: tuple[FailOnCondition, ...]) -> str:
         else:
             assert_never(condition)
     return ",".join(parts)
-
-
-def _label_of(spec: TargetSpec) -> str:
-    """The display label for ``spec`` — its explicit label, or the target itself."""
-    return spec.label or spec.target
 
 
 def _gating_metrics(metrics: MetricComparisons) -> MetricComparisons:
@@ -188,7 +182,7 @@ async def _compare_body(
     baseline: TargetSpec,
     candidates: list[TargetSpec],
 ) -> ComparisonResult:
-    labels = [_label_of(s) for s in [baseline, *candidates]]
+    labels = [spec.display_label for spec in [baseline, *candidates]]
     progress = begin_run(
         flags,
         1 + len(candidates),
@@ -201,7 +195,9 @@ async def _compare_body(
         )
 
         options = engine.CompareOptions(
-            run=run_options_of(config_resolved, progress),
+            run=RunOptions.from_config(
+                config_resolved, on_progress=progress.report, warn=progress.warn
+            ),
             baseline=baseline,
             candidates=candidates,
             unstable_noise_pct=config_resolved.unstable_noise_pct,
@@ -246,8 +242,8 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     async def run() -> None:
         warn_duration_over_budget(halve=False)
         trace_args: dict[str, object] = {
-            "baseline": _label_of(baseline),
-            "candidates": [_label_of(s) for s in candidates],
+            "baseline": baseline.display_label,
+            "candidates": [spec.display_label for spec in candidates],
             "fail_on": _serialize_fail_on(flags.fail_on),
             **config_trace_args(flags),
         }

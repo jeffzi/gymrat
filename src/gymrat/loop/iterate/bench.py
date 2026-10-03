@@ -24,7 +24,7 @@ from gymrat.report.loop import (
     MetricPrimary,
 )
 from gymrat.sampling import (
-    SamplingOptions,
+    RunOptions,
     TargetContext,
     TargetSamples,
     collect_samples,
@@ -101,6 +101,7 @@ def build_iteration_comparison(
     """
     from gymrat.compare import (  # noqa: PLC0415 -- deferred to keep compare out of the CLI import chain
         CandidateMeasurement,
+        ComparisonMeasurement,
         build_comparison_result,
     )
     from gymrat.targets import CleanupResult  # noqa: PLC0415 -- same deferral as above
@@ -111,15 +112,18 @@ def build_iteration_comparison(
         verdicts=run.verdicts,
         kinds=compute_kind_aggregates(run.verdicts, run.metric_meta),
     )
+    measurement = ComparisonMeasurement(
+        baseline_label=run.baseline.ctx.label,
+        baseline_samples=run.baseline.samples,
+        candidates=[candidate],
+        metric_meta=run.metric_meta,
+    )
     return build_comparison_result(
-        run.baseline.ctx.label,
-        run.baseline.samples,
-        [candidate],
-        run.metric_meta,
+        measurement,
+        CleanupResult(removed=0, failures=(), prune_error=None),
         samples=min(len(run.baseline.samples), len(run.experiment.samples)),
         adapter=adapter,
         config_kinds=config_kinds,
-        cleanup=CleanupResult(removed=0, failures=(), prune_error=None),
     )
 
 
@@ -217,14 +221,9 @@ async def _measure(
         _worktree_context(session.worktrees.baseline, "baseline", "old"),
         _worktree_context(session.worktrees.experiment, "experiment", "new"),
     ]
-    sampling_options = SamplingOptions(
-        bench=bench,
-        prepare=config.prepare,
-        samples=config.samples,
-        timeout_seconds=config.timeout_seconds,
-        on_progress=options.on_progress,
-        warn=options.warn,
-    )
+    sampling_options = RunOptions.from_config(
+        config, bench=bench, on_progress=options.on_progress, warn=options.warn
+    ).sampling
     adapter = get_adapter(config.adapter)
     abort = options.abort if options.abort is not None else asyncio.Event()
     baseline, experiment = await collect_samples(adapter, contexts, sampling_options, abort)

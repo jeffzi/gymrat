@@ -143,7 +143,7 @@ def test_probe_command_when_no_names_given_does_bench_the_whole_bench_at_the_pro
     result = runner.invoke(app, ["probe"])
 
     assert result.exit_code == 0
-    run = only_call(measure).run
+    run = only_call(measure).run.sampling
     assert run.bench == "npm run bench"
     assert run.samples == PROBE_DEFAULT_SAMPLES
 
@@ -157,7 +157,7 @@ def test_probe_command_when_names_and_samples_given_does_scope_the_bench_to_them
     result = runner.invoke(app, ["probe", "total_ms", "decode large payload", "--samples", "3"])
 
     assert result.exit_code == 0
-    run = only_call(measure).run
+    run = only_call(measure).run.sampling
     assert run.bench == "sh bench.sh --filter total_ms 'decode large payload'"
     assert run.samples == 3
 

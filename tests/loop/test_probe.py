@@ -116,7 +116,7 @@ async def test_probe_session_when_no_names_does_bench_the_whole_bench_in_the_exp
 
     forwarded = only_call(recorder)
     assert forwarded.target == TargetSpec(label="experiment", target=experiment_worktree_dir(repo))
-    assert forwarded.run.bench == "npm run bench"
+    assert forwarded.run.sampling.bench == "npm run bench"
     assert result.scoped is False
     assert result.names == ()
 
@@ -131,7 +131,7 @@ async def test_probe_session_when_names_given_does_bench_the_filter_scoped_comma
 
     result = await probe_session(repo, config, ProbeOptions(names=names))
 
-    assert only_call(recorder).run.bench == scoped_bench(config, names)
+    assert only_call(recorder).run.sampling.bench == scoped_bench(config, names)
     assert result.scoped is True
     assert result.names == names
 
@@ -183,7 +183,7 @@ async def test_probe_session_when_sampling_does_take_the_count_from_options_neve
         repo, checks_config(adapter="mitata", samples=10), ProbeOptions(samples=requested)
     )
 
-    assert only_call(recorder).run.samples == expected
+    assert only_call(recorder).run.sampling.samples == expected
     assert result.samples == expected
     assert result.label == "experiment"
     assert result.adapter == "mitata"
@@ -205,9 +205,9 @@ async def test_probe_session_when_run_starts_does_take_the_rest_of_the_options_f
     await probe_session(repo, config, ProbeOptions())
 
     forwarded = only_call(recorder).run
-    assert forwarded.prepare == "npm ci"
+    assert forwarded.sampling.prepare == "npm ci"
     assert forwarded.adapter == "mitata"
-    assert forwarded.timeout_seconds == 900
+    assert forwarded.sampling.timeout_seconds == 900
     assert forwarded.config_metrics == config.metrics
     assert forwarded.config_kinds == config.kinds
 
@@ -224,12 +224,11 @@ async def test_probe_session_when_callbacks_given_does_forward_them_to_the_run(
         repo, checks_config(), ProbeOptions(on_progress=events.append, warn=warnings.append)
     )
 
-    forwarded = only_call(recorder).run
+    forwarded = only_call(recorder).run.sampling
     sentinel = object()
     assert forwarded.on_progress is not None
     forwarded.on_progress(sentinel)  # type: ignore[arg-type]
     assert events[-1] is sentinel
-    assert forwarded.warn is not None
     forwarded.warn("bench output looked odd")
     assert warnings[-1] == "bench output looked odd"
 

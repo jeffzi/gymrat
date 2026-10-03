@@ -120,13 +120,12 @@ class IterateOptions:
             plus hook, judge, confirm, and record events from the loop itself.
         abort: Setting it kills the in-flight bench command. When ``None``, a
             fresh event is used and nothing can interrupt the run.
-        warn: Where the adapter reports bench output it could not read. When
-            ``None``, the adapter writes the warning to stderr.
+        warn: Where the adapter reports bench output it could not read.
     """
 
     on_progress: ProgressCallback | None = None
     abort: asyncio.Event | None = None
-    warn: WarnSink | None = None
+    warn: WarnSink = warn_to_stderr
 
 
 @dataclass(frozen=True, slots=True)

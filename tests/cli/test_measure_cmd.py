@@ -435,6 +435,19 @@ def test_measure_when_success_does_record_trace_with_target_and_record_false(
         assert key not in cmd.args
 
 
+def test_measure_when_target_labeled_does_record_the_label_in_trace_args(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _open_session(repo)
+    stub_measure(monkeypatch)
+
+    result = runner.invoke(app, ["measure", "build=main", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    assert last_command_record(repo).args["target"] == "build"
+
+
 def test_measure_when_default_target_does_record_dot_in_trace_args(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,

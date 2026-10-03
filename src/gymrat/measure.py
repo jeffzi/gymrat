@@ -18,15 +18,13 @@ from gymrat.model import ResolvedMetricMeta
 from gymrat.report.types import MeasurementResult, MetricMeasurement
 from gymrat.sampling import (
     RunOptions,
-    TargetContext,
     TargetSpec,
     collect_samples,
     compute_metric_stats,
     own_values,
-    resolve_dir,
-    resolve_label,
     resolve_metric_meta_from_samples,
     run_with_worktrees,
+    to_context,
 )
 from gymrat.targets import CleanupResult, WorktreeInfo, resolve_target
 
@@ -79,7 +77,7 @@ def _build_measurement_result(
         worktrees_left_behind=tuple(cleanup.failures),
         worktree_prune_error=cleanup.prune_error,
         label=measurement.label,
-        samples=run.samples,
+        samples=run.sampling.samples,
         adapter=run.adapter,
         metrics=metrics,
         rounds=tuple(measurement.samples),
@@ -118,18 +116,9 @@ async def measure(options: MeasureOptions) -> MeasurementResult:
         adapter = get_adapter(run.adapter)
         target = resolve_target(options.target.target, repo_dir)
 
-        ctx = TargetContext(
-            target=target,
-            dir=resolve_dir(target, repo_dir, worktrees),
-            label=resolve_label(options.target.label, target),
-        )
+        ctx = to_context(options.target, target, repo_dir, worktrees)
 
-        (collected,) = await collect_samples(
-            adapter,
-            [ctx],
-            run.sampling(),
-            abort,
-        )
+        (collected,) = await collect_samples(adapter, [ctx], run.sampling, abort)
 
         return _Measurement(
             label=ctx.label,

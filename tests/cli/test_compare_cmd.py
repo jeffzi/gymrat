@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import fields
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -33,9 +32,10 @@ from gymrat.report.types import (
     GeomeanFailOn,
     RegressedFailOn,
 )
-from gymrat.sampling import RunOptions
+from gymrat.sampling import RunOptions, SamplingOptions
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
+from gymrat.warn import warn_to_stderr
 from tests.cli._budget import install_budget, install_tight_budget
 from tests.cli._session import last_command_record
 from tests.report._comparisons import (
@@ -180,20 +180,22 @@ def test_compare_when_run_options_built_does_forward_every_field_to_compare_opti
     assert len(captured) == 1
     resolved = _resolved()
     run = captured[0].run
-    callback_fields = {"on_progress", "warn"}
-    value_fields = {field.name for field in fields(RunOptions)} - callback_fields
-    forwarded = {name: getattr(run, name) for name in value_fields}
-    expected = {
-        "bench": resolved.bench,
-        "prepare": resolved.prepare,
-        "adapter": resolved.adapter,
-        "samples": resolved.samples,
-        "timeout_seconds": resolved.timeout_seconds,
-        "config_metrics": resolved.metrics,
-        "config_kinds": resolved.kinds,
-    }
-    assert forwarded == expected
-    assert all(getattr(run, name) is not None for name in callback_fields)
+    sampling = run.sampling
+    assert run == RunOptions(
+        sampling=SamplingOptions(
+            bench=resolved.bench,
+            prepare=resolved.prepare,
+            samples=resolved.samples,
+            timeout_seconds=resolved.timeout_seconds,
+            on_progress=sampling.on_progress,
+            warn=sampling.warn,
+        ),
+        adapter=resolved.adapter,
+        config_metrics=resolved.metrics,
+        config_kinds=resolved.kinds,
+    )
+    assert sampling.on_progress is not None
+    assert sampling.warn is not warn_to_stderr
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +472,20 @@ def test_compare_when_estimate_unknown_does_not_warn(
 def _open_session(repo: str) -> None:
     """Open a session in ``repo`` so the command trace has somewhere to write."""
     write_session_log(repo, session_record())
+
+
+def test_compare_when_targets_labeled_does_record_the_labels_in_trace_args(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _open_session(repo)
+    _stub_compare(monkeypatch)
+
+    result = runner.invoke(app, ["compare", "before=main", "after=cand", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert (cmd.args["baseline"], cmd.args["candidates"]) == ("before", ["after"])
 
 
 def test_compare_when_success_does_record_trace_with_baseline_candidates_fail_on(

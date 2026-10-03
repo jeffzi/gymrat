@@ -64,7 +64,7 @@ class MeasureRecorder:
 
     async def __call__(self, options: MeasureOptions) -> MeasurementResult:
         self.calls.append(options)
-        on_progress = options.run.on_progress
+        on_progress = options.run.sampling.on_progress
         if on_progress is not None:
             for event in self.progress:
                 on_progress(event)

@@ -11,6 +11,7 @@ import pytest
 
 from gymrat import sampling
 from gymrat.adapters import metric_lines_adapter
+from gymrat.config.types import KindEntry, MetricEntry, ResolvedConfig
 from gymrat.errors import CommandError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.progress_events import (
@@ -29,7 +30,6 @@ from gymrat.sampling import (
     collect_samples,
     compute_metric_stats,
     own_values,
-    paired_or_own_values,
     resolve_dir,
     resolve_label,
     run_with_worktrees,
@@ -367,6 +367,30 @@ async def test_collect_samples_when_warn_sink_given_does_pass_it_through_to_pars
     assert warnings == ["Failed to parse METRIC line: METRIC foo=bar"]
 
 
+async def test_collect_samples_when_bench_output_unreadable_does_warn_after_the_pass_finished(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    patch_exec(monkeypatch, make_success("METRIC foo=bar\nMETRIC x=1"))
+    log: list[object] = []
+    options = SamplingOptions(
+        bench="run",
+        prepare=None,
+        samples=1,
+        timeout_seconds=1.0,
+        on_progress=log.append,
+        warn=log.append,
+        clock=lambda: 0.0,
+    )
+
+    await collect_samples(metric_lines_adapter, one_in_place_target(), options, asyncio.Event())
+
+    assert log == [
+        PassStarted(round=1, total_rounds=1, target_count=1, label="old", at_ms=0.0),
+        PassFinished(round=1, total_rounds=1, target_count=1, label="old", at_ms=0.0),
+        "Failed to parse METRIC line: METRIC foo=bar",
+    ]
+
+
 async def test_collect_samples_when_prepare_fails_does_stop_before_any_bench(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -651,48 +675,54 @@ def test_own_values_when_rounds_missing_metric_does_skip_them():
     assert own_values(samples, "x") == [1.0, 3.0]
 
 
-def test_paired_or_own_values_when_paired_non_empty_does_return_paired():
-    samples = [{"x": 1.0}, {"x": 3.0}]
-
-    assert paired_or_own_values([7.0, 8.0], samples, "x") == [7.0, 8.0]
-
-
-def test_paired_or_own_values_when_paired_empty_does_fall_back_to_own_values():
-    samples = [{"x": 1.0}, {"x": 3.0}]
-
-    assert paired_or_own_values([], samples, "x") == [1.0, 3.0]
-
-
 # ---------------------------------------------------------------------------
-# RunOptions.sampling
+# RunOptions.from_config
 # ---------------------------------------------------------------------------
 
 
-def test_run_options_sampling_when_called_does_carry_the_run_settings_and_default_clock():
+def _resolved_config() -> ResolvedConfig:
+    """A resolved configuration with every run setting away from its default."""
+    return ResolvedConfig(
+        bench="run",
+        prepare="prep",
+        adapter="mitata",
+        samples=7,
+        timeout_seconds=25,
+        unstable_noise_pct=5.0,
+        primary="geomean",
+        metrics={"decode/time": MetricEntry(direction="higher")},
+        kinds={"memory": KindEntry(gating=False)},
+    )
+
+
+def test_run_options_from_config_when_called_does_copy_the_run_settings_and_default_clock():
     events: list[ProgressEvent] = []
     warnings: list[str] = []
-    run = RunOptions(
-        bench="run",
-        prepare="prep",
-        adapter="metric-lines",
-        samples=7,
-        timeout_seconds=2.5,
-        config_metrics=None,
-        config_kinds=None,
-        on_progress=events.append,
-        warn=warnings.append,
-    )
+    config = _resolved_config()
 
-    options = run.sampling()
+    run = RunOptions.from_config(config, on_progress=events.append, warn=warnings.append)
 
-    assert options == SamplingOptions(
-        bench="run",
-        prepare="prep",
-        samples=7,
-        timeout_seconds=2.5,
-        on_progress=run.on_progress,
-        warn=run.warn,
+    assert run == RunOptions(
+        sampling=SamplingOptions(
+            bench="run",
+            prepare="prep",
+            samples=7,
+            timeout_seconds=25,
+            on_progress=run.sampling.on_progress,
+            warn=run.sampling.warn,
+        ),
+        adapter="mitata",
+        config_metrics=config.metrics,
+        config_kinds=config.kinds,
     )
+    run.sampling.warn("unreadable line")
+    assert warnings == ["unreadable line"]
+
+
+def test_run_options_from_config_when_bench_and_samples_given_does_override_the_configured_ones():
+    run = RunOptions.from_config(_resolved_config(), samples=3, bench="run --filter a")
+
+    assert (run.sampling.bench, run.sampling.samples) == ("run --filter a", 3)
 
 
 # ---------------------------------------------------------------------------
@@ -902,6 +932,31 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_dirty_does_wrap_
         *details,
     ])
     assert caught.value.hint == "check the target"
+    assert caught.value.__cause__ is original
+
+
+async def test_run_with_worktrees_when_other_error_raised_and_cleanup_dirty_does_wrap_as_exception(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(sampling, "install_termination_cleanup", _InstallRecorder().install)
+    cleanup = _dirty_result()
+    _patch_cleanup(monkeypatch, cleanup)
+    original = RuntimeError("adapter exploded")
+
+    async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
+        raise original
+
+    with pytest.raises(Exception, match="adapter exploded") as caught:
+        await run_with_worktrees(phase, lambda m, c: (m, c))
+
+    details = format_cleanup_failures(cleanup.failures, cleanup.prune_error)
+    assert type(caught.value) is Exception
+    assert str(caught.value) == "\n".join([
+        "adapter exploded",
+        "",
+        "cleanup did not finish:",
+        *details,
+    ])
     assert caught.value.__cause__ is original
 
 
