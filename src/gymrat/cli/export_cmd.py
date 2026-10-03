@@ -16,16 +16,15 @@ from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotati
 )
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
 from gymrat.session.store import first_line_json, read_session_header
+from gymrat.telemetry.endpoint import ENDPOINT_ENV, otlp_endpoint
 from gymrat.warn import warn_to_stderr
-
-_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 
 SessionLogArg = Annotated[
     str | None, typer.Argument(metavar="[SESSION_LOG]", help="path to session.jsonl")
 ]
 EndpointOption = Annotated[
     str | None,
-    typer.Option("--endpoint", envvar=_ENDPOINT_ENV, help="OTLP HTTP endpoint URL"),
+    typer.Option("--endpoint", envvar=ENDPOINT_ENV, help="OTLP HTTP endpoint URL"),
 ]
 
 _SDK_MISSING = "OpenTelemetry SDK not available. Install with: pip install 'gymrat[otel]'"
@@ -94,13 +93,12 @@ def _export(session_log: str | None, endpoint: str | None) -> None:
         configure_tracing,
         export_failed,
         flush_tracing,
-        otlp_endpoint,
     )
     from gymrat.telemetry.replay import replay_session  # noqa: PLC0415
 
     endpoint = otlp_endpoint(endpoint)
     if endpoint is None:
-        exit_with_error(f"No endpoint: pass --endpoint or set {_ENDPOINT_ENV}")
+        exit_with_error(f"No endpoint: pass --endpoint or set {ENDPOINT_ENV}")
 
     try:
         if not configure_tracing(session_id, endpoint=endpoint):

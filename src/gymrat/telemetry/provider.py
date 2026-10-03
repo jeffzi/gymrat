@@ -14,6 +14,7 @@ import warnings
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, override
 
+from gymrat.telemetry.endpoint import ENDPOINT_ENV, otlp_endpoint
 from gymrat.telemetry.ids import span_id_of, trace_id_of
 
 if TYPE_CHECKING:
@@ -23,8 +24,6 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
     from opentelemetry.trace import Span, Tracer
 
-ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
-"""Environment variable every tracing entry point reads the OTLP endpoint from."""
 _TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 _TRACES_PATH = "v1/traces"
 
@@ -34,19 +33,6 @@ _tracer: Tracer | None = None
 _export_failed: bool = False
 
 _queued_span_id: ContextVar[int | None] = ContextVar("_queued_span_id", default=None)
-
-
-def otlp_endpoint(value: str | None) -> str | None:
-    """Apply the endpoint rule shared by command tracing, the provider, and ``export``.
-
-    Args:
-        value: A raw endpoint, from ``--endpoint`` or ``OTEL_EXPORTER_OTLP_ENDPOINT``.
-
-    Returns:
-        The endpoint with surrounding whitespace trimmed, or ``None`` when
-        nothing is left, which means "no endpoint".
-    """
-    return (value or "").strip() or None
 
 
 def _traces_url(endpoint: str) -> str:
