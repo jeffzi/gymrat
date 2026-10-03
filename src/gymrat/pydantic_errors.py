@@ -36,7 +36,6 @@ _TYPE_PHRASES: dict[str, str] = {
 
 # Templates filled from the error ``ctx``, which carries the constraint's own value.
 _CONSTRAINT_PHRASES: dict[str, str] = {
-    "greater_than": "a number greater than {gt}",
     "greater_than_equal": "a number at or above {ge}",
     "less_than_equal": "a number at or below {le}",
     "literal_error": "{expected}",
@@ -135,7 +134,7 @@ def phrase_for_error(error: ErrorDetails) -> str:
 
     Returns:
         The phrase that completes ``expected ...``, such as ``"an integer"`` or
-        ``"a number greater than 0"``, or ``"a valid value"`` when the error
+        ``"a number at or above 1"``, or ``"a valid value"`` when the error
         type implies no shape (``missing``, or any type not mapped here).
     """
     error_type = error["type"]
