@@ -28,7 +28,6 @@ from gymrat.errors import GymratError, hint_of
 from gymrat.loop.status import status_session
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
-    BaselineRecord,
     IterationPrimary,
     IterationRecord,
     KeepChecks,
@@ -38,8 +37,8 @@ from gymrat.session.records import (
 from gymrat.session.workspace import BaselineRef, Worktrees
 from tests._ansi import SGR_RE
 from tests.session.records._fixtures import (
-    AT,
     SESSION_ID,
+    baseline_record,
     blocked_keep,
     command_record,
     committed_keep,
@@ -115,12 +114,7 @@ def _iteration(seq: int, delta_pct: float, outcome: Outcome) -> IterationRecord:
 
 
 # A recorded baseline measurement of ``main``.
-_BASELINE = BaselineRecord(
-    type="baseline",
-    at=AT,
-    label="main",
-    samples=({"total_ms": 15200}, {"total_ms": 15184}),
-)
+_BASELINE = baseline_record(samples=({"total_ms": 15200}, {"total_ms": 15184}))
 
 # A hook run around the first iteration — history ``status`` has no line for.
 _HOOK = hook_record()

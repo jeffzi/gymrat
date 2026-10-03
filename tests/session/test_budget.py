@@ -25,7 +25,7 @@ from gymrat.session.budget import (
     write_budget,
 )
 from gymrat.session.paths import budget_path
-from gymrat.session.records import IterationRecord, SessionLogRecord
+from gymrat.session.records import SessionLogRecord
 from tests.session.records._fixtures import baseline_record, iteration_record
 
 _FAR_FUTURE_DEADLINE_MS = 999_999_999.0
@@ -235,49 +235,48 @@ def test_clear_budget_when_file_absent_does_not_raise(root: str):
 # ---------------------------------------------------------------------------
 
 
-def _iteration(duration_ms: float | None = None, *, seq: int = 1) -> IterationRecord:
-    """An iteration record with only the fields ``estimate_iterate_duration`` inspects."""
-    return iteration_record(seq=seq, duration_ms=duration_ms)
-
-
 @pytest.mark.parametrize(
     ("records", "expected"),
     [
         pytest.param([], None, id="no-records"),
-        pytest.param([baseline_record(), _iteration()], None, id="no-durations"),
+        pytest.param([baseline_record(), iteration_record()], None, id="no-durations"),
         pytest.param(
-            [baseline_record(), _iteration(duration_ms=840_000)],
+            [baseline_record(), iteration_record(duration_ms=840_000)],
             DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
             id="iteration-has-duration",
         ),
         pytest.param(
-            [baseline_record(duration_ms=420_000), _iteration()],
+            [baseline_record(duration_ms=420_000), iteration_record()],
             DurationEstimate(duration_ms=840_000, source="baseline", source_duration_ms=420_000),
             id="only-baseline-has-duration-doubles-it",
         ),
         pytest.param(
-            [baseline_record(duration_ms=420_000), _iteration(duration_ms=900_000)],
+            [baseline_record(duration_ms=420_000), iteration_record(duration_ms=900_000)],
             DurationEstimate(duration_ms=900_000, source="iteration", source_duration_ms=900_000),
             id="both-have-durations-prefers-iteration",
         ),
         pytest.param(
             [
                 baseline_record(),
-                _iteration(duration_ms=600_000, seq=1),
-                _iteration(duration_ms=840_000, seq=2),
+                iteration_record(duration_ms=600_000, seq=1),
+                iteration_record(duration_ms=840_000, seq=2),
             ],
             DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
             id="multiple-iterations-uses-newest",
         ),
         pytest.param(
-            [baseline_record(), _iteration(duration_ms=600_000, seq=1), _iteration(seq=2)],
+            [
+                baseline_record(),
+                iteration_record(duration_ms=600_000, seq=1),
+                iteration_record(seq=2),
+            ],
             DurationEstimate(duration_ms=600_000, source="iteration", source_duration_ms=600_000),
             id="newest-iteration-lacks-duration-uses-earlier",
         ),
         pytest.param(
             [
                 baseline_record(duration_ms=420_000),
-                _iteration(duration_ms=840_000),
+                iteration_record(duration_ms=840_000),
                 baseline_record(),
             ],
             DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),

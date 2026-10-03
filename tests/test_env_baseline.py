@@ -88,6 +88,8 @@ import sys
 
 import pytest
 
+from tests._git import run_git
+
 SHELL_EXPORTS = {SHELL_EXPORTS!r}
 ABSENT = {ABSENT!r}
 PINNED = {PINNED!r}
@@ -175,17 +177,11 @@ def test_typer_terminal_detection_ignores_shell_and_earlier_tests():
 
 
 def test_git_tag_ignores_global_gpg_sign(tmp_path):
-    def git(*args):
-        subprocess.run(
-            ["git", "-c", "user.name=a", "-c", "user.email=a@example.com", *args],
-            cwd=tmp_path,
-            check=True,
-            capture_output=True,
-        )
+    identity = ["-c", "user.name=a", "-c", "user.email=a@example.com"]
+    run_git(["init"], str(tmp_path))
+    run_git([*identity, "commit", "--allow-empty", "-m", "initial"], str(tmp_path))
 
-    git("init")
-    git("commit", "--allow-empty", "-m", "initial")
-    git("tag", "v1")
+    run_git(["tag", "v1"], str(tmp_path))
 
 
 def test_monkeypatch_undo_runs_before_module_cleanups_and_restore():

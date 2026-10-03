@@ -28,14 +28,14 @@ import yaml
 from gymrat.config.types import BenchlessConfig
 from gymrat.event_docs.asyncapi import READERS
 from gymrat.loop.status import status_session
-from gymrat.session.records import BaselineRecord, SessionLogRecord, SessionRecord
+from gymrat.session.records import SessionLogRecord, SessionRecord
 from gymrat.session.store import fold_session
 from gymrat.session.workspace import BaselineRef, Worktrees
 from gymrat.supervisor.events import SessionEvent
 from gymrat.supervisor.turns import outcome_record_count
 from tests.event_docs._extended_unions import PROBE_WIRE_TYPE, ProbeModel
 from tests.session.records._fixtures import (
-    AT,
+    baseline_record,
     command_record,
     committed_keep,
     discard_record,
@@ -295,12 +295,7 @@ def test_render_all_when_union_gains_model_does_document_it_in_every_generated_d
 
 
 #: A minimal baseline measurement.
-_BASELINE = BaselineRecord(
-    type="baseline",
-    at=AT,
-    label="main",
-    samples=({"total_ms": 15200},),
-)
+_BASELINE = baseline_record()
 
 
 def _config() -> BenchlessConfig:
