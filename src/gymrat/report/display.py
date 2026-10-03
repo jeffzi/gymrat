@@ -61,7 +61,7 @@ def _no_signal_class(verdict: MetricVerdict) -> DisplayClass:
             return "identical" if verdict.usable_n == 0 else "within-noise"
         case "permutation" | "exact":
             return "within-noise"
-        case _ as unreachable:  # pragma: no cover — exhaustive match over VerdictMethod
+        case _ as unreachable:  # pragma: no cover — exhaustive match over MetricVerdict.method
             assert_never(unreachable)
 
 

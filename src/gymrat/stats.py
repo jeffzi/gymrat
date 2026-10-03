@@ -22,15 +22,13 @@ imported inside that function, so importing this module never pulls them in.
 
 import math
 import statistics
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Literal
 
 from gymrat.model import Direction
 
 __all__ = [
-    "PERMUTATION_SEED",
     "RESAMPLE_BUDGET",
-    "RatioExclusion",
     "combine_geomean",
     "compute_half_range",
     "count_nonzero_pairs",
@@ -42,9 +40,6 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Descriptive statistics
 # ---------------------------------------------------------------------------
-
-type RatioExclusion = Literal["undefined-ratio", "infinite-rho"]
-"""Why a percent delta could not be normalized into a usable ratio rho."""
 
 
 def compute_half_range(values: Sequence[float]) -> float:
@@ -93,7 +88,9 @@ def percent_delta(reference: float, value: float) -> float:
     return (value - reference) / abs(reference) * 100
 
 
-def normalize_ratio(delta: float, direction: Direction) -> float | RatioExclusion:
+def normalize_ratio(
+    delta: float, direction: Direction
+) -> float | Literal["undefined-ratio", "infinite-rho"]:
     """Normalize a percent ``delta`` into a ratio rho for the given direction.
 
     For ``"lower"``, ``rho = 1 + delta / 100``. For ``"higher"``,
@@ -217,32 +214,6 @@ def _median_delta(
     )
 
 
-def _make_statistic(
-    tied: list[float],
-    observed: float,
-) -> Callable[[Sequence[float], Sequence[float]], float]:
-    """Build the test statistic closure for scipy's permutation_test.
-
-    An undefined delta (a zero baseline median) becomes infinity signed like
-    ``observed``, so scipy's null tally counts it on the correct tail.
-
-    Args:
-        tied: Values of the tied (equal-value) pairs, held fixed on both sides.
-        observed: The delta the samples produced in their original order.
-
-    Returns:
-        The statistic scipy evaluates on each rearrangement of the differing pairs.
-    """
-
-    def statistic(baseline: Sequence[float], candidate: Sequence[float]) -> float:
-        delta = _median_delta(tied, baseline, candidate)
-        if math.isnan(delta):
-            return math.copysign(math.inf, observed)
-        return delta
-
-    return statistic
-
-
 def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> float:
     """Run a two-sided sign-flip permutation test on index-paired samples.
 
@@ -282,10 +253,16 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> float:
     import numpy as np  # noqa: PLC0415
     from scipy.stats import permutation_test  # noqa: PLC0415
 
+    def statistic(baseline: Sequence[float], candidate: Sequence[float]) -> float:
+        delta = _median_delta(tied, baseline, candidate)
+        # An undefined delta (a zero baseline median) becomes infinity signed like
+        # `observed`, so scipy's null tally counts it on the correct tail.
+        return math.copysign(math.inf, observed) if math.isnan(delta) else delta
+
     # scipy enumerates all 2**n sign flips itself whenever they fit the budget.
     result = permutation_test(
         (diff_x, diff_y),
-        _make_statistic(tied, observed),
+        statistic,
         permutation_type="samples",
         alternative="two-sided",
         vectorized=False,

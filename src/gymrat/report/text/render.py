@@ -465,7 +465,7 @@ def _classify_verdict(verdict: MetricVerdict, data: _FooterData) -> None:
                 data.ties.append(verdict.usable_n)
         case "exact":
             return
-        case _ as unreachable:  # pragma: no cover — exhaustive match over VerdictMethod
+        case _ as unreachable:  # pragma: no cover — exhaustive match over MetricVerdict.method
             assert_never(unreachable)
 
 

@@ -29,10 +29,8 @@ from dataclasses import dataclass, replace
 
 from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import (
-    BAND_MIN_N,
     DEFAULT_UNSTABLE_NOISE_PCT,
     NOISE_FLOOR_PCT,
-    NOISE_K,
     PERMUTATION_MIN_N,
     PERMUTATION_P_THRESHOLD,
     BandVerdict,
@@ -61,6 +59,8 @@ from gymrat.stats import (
 from gymrat.warn import WarnSink, warn_to_stderr
 
 __all__ = [
+    "BAND_MIN_N",
+    "NOISE_K",
     "GroupAggregate",
     "KindAggregate",
     "compute_geomean",
@@ -75,6 +75,12 @@ __all__ = [
 ONE_BYTE_PCT = 100.0
 """One byte expressed as a percentage of a one-byte median: what a whole-byte metric
 cannot measure below."""
+
+BAND_MIN_N = 2
+"""Minimum count of differing pairs the band method requires."""
+
+NOISE_K = 1.5
+"""Multiplier applied to the noise floor when deriving the instability band."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,9 +414,6 @@ def compute_geomean(
 # Hierarchical aggregation by kind and group
 # ---------------------------------------------------------------------------
 
-type MetricEntry = tuple[str, ResolvedMetricMeta]
-"""A metric name paired with the metadata resolved for it."""
-
 
 @dataclass(frozen=True, slots=True)
 class GroupAggregate:
@@ -453,8 +456,8 @@ class KindAggregate:
 class _KindBucket:
     """A kind's metrics, and the groups their short names sort them into."""
 
-    metrics: list[MetricEntry]
-    groups: dict[str, list[MetricEntry]]
+    metrics: dict[str, ResolvedMetricMeta]
+    groups: dict[str, dict[str, ResolvedMetricMeta]]
 
 
 def _bucket_by_kind(
@@ -463,16 +466,12 @@ def _bucket_by_kind(
     buckets: dict[str, _KindBucket] = {}
 
     for name, meta in metric_meta.items():
-        bucket = buckets.setdefault(meta.kind, _KindBucket(metrics=[], groups={}))
-
-        entry: MetricEntry = (name, meta)
-        bucket.metrics.append(entry)
+        bucket = buckets.setdefault(meta.kind, _KindBucket(metrics={}, groups={}))
+        bucket.metrics[name] = meta
 
         group = parse_metric_name(name).group
-        if group is None:
-            continue
-
-        bucket.groups.setdefault(group, []).append(entry)
+        if group is not None:
+            bucket.groups.setdefault(group, {})[name] = meta
 
     return buckets
 
@@ -508,16 +507,16 @@ def compute_kind_aggregates(
     aggregates: list[KindAggregate] = []
 
     for kind, bucket in _bucket_by_kind(metric_meta).items():
-        gating = [entry for entry in bucket.metrics if entry[1].gating]
+        gating = {name: meta for name, meta in bucket.metrics.items() if meta.gating}
         aggregates.append(
             KindAggregate(
                 kind=kind,
-                geomean=compute_geomean(verdicts, dict(bucket.metrics)),
+                geomean=compute_geomean(verdicts, bucket.metrics),
                 groups=tuple(
-                    GroupAggregate(group=group, geomean=compute_geomean(verdicts, dict(members)))
+                    GroupAggregate(group=group, geomean=compute_geomean(verdicts, members))
                     for group, members in bucket.groups.items()
                 ),
-                gated_geomean=compute_geomean(verdicts, dict(gating)) if gating else None,
+                gated_geomean=compute_geomean(verdicts, gating) if gating else None,
             ),
         )
 

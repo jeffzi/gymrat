@@ -4,10 +4,8 @@ from typing import assert_never
 import pytest
 
 from gymrat.model import (
-    BAND_MIN_N,
     DEFAULT_UNSTABLE_NOISE_PCT,
     NOISE_FLOOR_PCT,
-    NOISE_K,
     PERMUTATION_MIN_N,
     PERMUTATION_P_THRESHOLD,
     BandVerdict,
@@ -21,6 +19,7 @@ from gymrat.model import (
     ResolvedMetricMeta,
     Verdict,
 )
+from gymrat.verdict import BAND_MIN_N, NOISE_K
 
 _DELTA = 1.0
 

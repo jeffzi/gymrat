@@ -12,10 +12,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 __all__ = [
-    "BAND_MIN_N",
     "DEFAULT_UNSTABLE_NOISE_PCT",
     "NOISE_FLOOR_PCT",
-    "NOISE_K",
     "PERMUTATION_MIN_N",
     "PERMUTATION_P_THRESHOLD",
     "ApproximateVerdict",
@@ -33,7 +31,6 @@ __all__ = [
     "Repeat",
     "ResolvedMetricMeta",
     "Verdict",
-    "VerdictMethod",
     "is_improvement",
     "pair_metric",
 ]
@@ -105,20 +102,11 @@ class ResolvedMetricMeta(MetricMeta):
 # Verdict methods and noise model
 # ---------------------------------------------------------------------------
 
-VerdictMethod = Literal["permutation", "band", "exact"]
-"""Tag identifying which statistical method produced a verdict."""
-
 PERMUTATION_MIN_N = 6
 """Minimum count of differing pairs the sign-flip permutation method requires."""
 
 PERMUTATION_P_THRESHOLD = 0.05
 """Significance threshold a permutation p-value must fall below."""
-
-BAND_MIN_N = 2
-"""Minimum count of differing pairs the band method requires."""
-
-NOISE_K = 1.5
-"""Multiplier applied to the noise floor when deriving the instability band."""
 
 NOISE_FLOOR_PCT = 0.5
 """Minimum noise level, as a percentage, below which measurements are treated as floor noise."""
