@@ -23,14 +23,13 @@ import io
 import re
 import subprocess
 import sys
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any, override
 
 import pytest
 from typer.testing import CliRunner
 
-from gymrat.cli import loop_cmds
 from gymrat.cli.app import app
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
@@ -74,24 +73,6 @@ from tests.session.records._fixtures import (
     session_record,
     write_session_log,
 )
-
-
-def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Patch ``with_repo_lock`` to record every command it locks, forwarding through."""
-    lock_names: list[str] = []
-    original_with_repo_lock = loop_cmds.with_repo_lock
-
-    async def recording_lock[T](
-        command: str,
-        body: Callable[..., Awaitable[T]],
-        *,
-        args: dict[str, object] | None = None,
-    ) -> T:
-        lock_names.append(command)
-        return await original_with_repo_lock(command, body, args=args)
-
-    monkeypatch.setattr(loop_cmds, "with_repo_lock", recording_lock)
-    return lock_names
 
 
 def _start_edited_session(root: str, **config: object) -> None:

@@ -9,7 +9,7 @@ text output when a live budget is present, and omit it otherwise.
 """
 
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
@@ -37,6 +37,25 @@ from tests.loop._settle import (
     settling_record_of,
 )
 from tests.loop.iterate._fixtures import resolved_config
+
+
+def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Patch ``with_repo_lock`` to record every command it locks, forwarding through."""
+    lock_names: list[str] = []
+    original_with_repo_lock = session_cmds.with_repo_lock
+
+    async def recording_lock[T](
+        command: str,
+        body: Callable[..., Awaitable[T]],
+        *,
+        args: dict[str, object] | None = None,
+    ) -> T:
+        lock_names.append(command)
+        return await original_with_repo_lock(command, body, args=args)
+
+    monkeypatch.setattr(session_cmds, "with_repo_lock", recording_lock)
+    return lock_names
+
 
 # ---------------------------------------------------------------------------
 # the start command
@@ -339,21 +358,7 @@ def test_sync_command_when_nothing_to_sync_does_print_nothing_to_sync(
 def test_sync_command_when_run_does_take_the_repo_lock(
     sync_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from collections.abc import Awaitable
-
-    lock_names: list[str] = []
-    original_with_repo_lock = session_cmds.with_repo_lock
-
-    async def recording_lock[T](
-        command: str,
-        body: Callable[..., Awaitable[T]],
-        *,
-        args: dict[str, object] | None = None,
-    ) -> T:
-        lock_names.append(command)
-        return await original_with_repo_lock(command, body, args=args)
-
-    monkeypatch.setattr(session_cmds, "with_repo_lock", recording_lock)
+    lock_names = _record_lock_names(monkeypatch)
 
     result = runner.invoke(app, ["sync"])
 
@@ -535,21 +540,7 @@ def test_stop_command_when_no_session_does_exit_two_with_a_start_hint(repo: str)
 def test_stop_command_when_run_does_take_the_repo_lock(
     stop_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from collections.abc import Awaitable
-
-    lock_names: list[str] = []
-    original_with_repo_lock = session_cmds.with_repo_lock
-
-    async def recording_lock[T](
-        command: str,
-        body: Callable[..., Awaitable[T]],
-        *,
-        args: dict[str, object] | None = None,
-    ) -> T:
-        lock_names.append(command)
-        return await original_with_repo_lock(command, body, args=args)
-
-    monkeypatch.setattr(session_cmds, "with_repo_lock", recording_lock)
+    lock_names = _record_lock_names(monkeypatch)
 
     result = runner.invoke(app, ["stop", "-m", "done"])
 

@@ -155,12 +155,6 @@ def _probe_lock(lock_path: str) -> str | None:
         return None
 
 
-def _assert_lock_released(repo: str) -> None:
-    """Verify the repo lock is free by acquiring and immediately releasing it."""
-    release = acquire_lock(lockfile_path(repo), "probe")
-    release()
-
-
 # ---------------------------------------------------------------------------
 # seam installation
 # ---------------------------------------------------------------------------

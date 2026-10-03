@@ -6,9 +6,10 @@ import pytest
 
 from gymrat.adapters import Adapter, MetricDefaults
 from gymrat.config import KindEntry, MetricEntry
-from gymrat.model import Direction, MetricUnit, ResolvedMetricMeta
+from gymrat.model import ResolvedMetricMeta
 from gymrat.sampling import resolve_metric_meta_from_samples
 from gymrat.warn import WarnSink, warn_to_stderr
+from tests.report._comparisons import metric_meta
 
 
 def resolve(
@@ -37,26 +38,6 @@ def make_adapter(
             return defaults_fn(metric_name)
 
     return MockAdapter()
-
-
-def metric_meta(
-    short_name: str,
-    *,
-    direction: Direction = "lower",
-    gating: bool = True,
-    exact: bool = False,
-    unit: MetricUnit | None = None,
-    kind: str = "other",
-) -> ResolvedMetricMeta:
-    """A resolved meta defaulting to a lower-is-better, gating, non-exact "other" metric."""
-    return ResolvedMetricMeta(
-        direction=direction,
-        gating=gating,
-        exact=exact,
-        unit=unit,
-        kind=kind,
-        short_name=short_name,
-    )
 
 
 # ---------------------------------------------------------------------------

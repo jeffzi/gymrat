@@ -23,6 +23,7 @@ from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, Sess
 from gymrat.supervisor.events import CapEvent, SessionEvent, SessionObserver, TextDeltaEvent
 from gymrat.supervisor.supervise import supervise
 from tests.supervisor._fixtures import (
+    DelegatingSession,
     collecting_observer,
     events_of,
     make_context,
@@ -52,40 +53,7 @@ class _Box:
 # ---------------------------------------------------------------------------
 
 
-class _DelegatingSession:
-    """Let subclasses override one method while inheriting the rest."""
-
-    def __init__(self, inner: DriverSession) -> None:
-        self._inner = inner
-
-    @property
-    def outcome(self) -> Awaitable[SessionOutcome]:
-        return self._inner.outcome
-
-    async def interrupt(self) -> None:
-        await self._inner.interrupt()
-
-    async def send(self, text: str) -> None:
-        await self._inner.send(text)
-
-    async def end(self) -> None:
-        await self._inner.end()
-
-
-class _CountingSession(_DelegatingSession):
-    """Track how many times the supervisor calls ``interrupt`` before it gives up."""
-
-    def __init__(self, inner: DriverSession, counter: _Box) -> None:
-        super().__init__(inner)
-        self._counter = counter
-
-    @override
-    async def interrupt(self) -> None:
-        self._counter.value += 1
-        await self._inner.interrupt()
-
-
-class _ThrowingInterruptSession(_DelegatingSession):
+class _ThrowingInterruptSession(DelegatingSession):
     """Raises from ``interrupt`` before any coroutine exists, to exercise the grace fallback."""
 
     @override
@@ -94,7 +62,7 @@ class _ThrowingInterruptSession(_DelegatingSession):
         raise RuntimeError(message)
 
 
-class _RejectingInterruptSession(_DelegatingSession):
+class _RejectingInterruptSession(DelegatingSession):
     """Hands back an ``interrupt`` coroutine that fails once the supervisor awaits it."""
 
     @override
@@ -669,7 +637,7 @@ async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
 # ---------------------------------------------------------------------------
 
 
-class _SlowInterruptSession(_DelegatingSession):
+class _SlowInterruptSession(DelegatingSession):
     """An interrupt that blocks until cancelled, to detect leaked tasks."""
 
     def __init__(self, inner: DriverSession) -> None:
@@ -759,7 +727,7 @@ async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
 # ---------------------------------------------------------------------------
 
 
-class _EndThenRaiseSession(_DelegatingSession):
+class _EndThenRaiseSession(DelegatingSession):
     """Delegates ``end()`` to the inner session, then raises.
 
     The inner call releases the mock's turn gate so the session settles
@@ -799,7 +767,7 @@ async def test_supervise_when_spawned_end_raises_does_warn_to_stderr(
 # ---------------------------------------------------------------------------
 
 
-class _CountingEndSession(_DelegatingSession):
+class _CountingEndSession(DelegatingSession):
     """Counts ``end`` calls to detect duplicate ``_end_session`` invocations."""
 
     def __init__(self, inner: DriverSession, counter: _Box) -> None:

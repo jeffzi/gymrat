@@ -148,7 +148,28 @@ def noop_observer() -> SessionObserver:
 # ---------------------------------------------------------------------------
 
 
-class _InterruptEmitsEndSession:
+class DelegatingSession:
+    """Let subclasses override one method while inheriting the rest."""
+
+    def __init__(self, inner: DriverSession) -> None:
+        self._inner = inner
+
+    @property
+    def outcome(self) -> Awaitable[SessionOutcome]:
+        """Forward the inner session's outcome."""
+        return self._inner.outcome
+
+    async def interrupt(self) -> None:
+        await self._inner.interrupt()
+
+    async def send(self, text: str) -> None:
+        await self._inner.send(text)
+
+    async def end(self) -> None:
+        await self._inner.end()
+
+
+class _InterruptEmitsEndSession(DelegatingSession):
     """A session whose ``interrupt`` also emits a ``TurnEndEvent`` to the observer.
 
     Models a driver that, on ``interrupt()``, pushes one more agent
@@ -157,14 +178,10 @@ class _InterruptEmitsEndSession:
     """
 
     def __init__(self, inner: DriverSession, observer: SessionObserver) -> None:
-        self._inner = inner
+        super().__init__(inner)
         self._observer = observer
 
-    @property
-    def outcome(self) -> Awaitable[SessionOutcome]:
-        """Forward the inner session's outcome."""
-        return self._inner.outcome
-
+    @override
     async def interrupt(self) -> None:
         await self._inner.interrupt()
         self._observer(
@@ -176,12 +193,6 @@ class _InterruptEmitsEndSession:
                 budget_exhausted=False,
             )
         )
-
-    async def send(self, text: str) -> None:
-        await self._inner.send(text)
-
-    async def end(self) -> None:
-        await self._inner.end()
 
 
 class InterruptEmitsEndDriver:

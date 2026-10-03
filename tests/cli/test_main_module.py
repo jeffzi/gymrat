@@ -10,13 +10,8 @@ import sys
 
 import pytest
 
-from tests._ansi import strip_ansi
+from tests._ansi import normalize
 from tests._cli import no_color_env
-
-
-def _normalize(text: str) -> str:
-    """Collapse whitespace after stripping ANSI codes so reflowed blocks match."""
-    return " ".join(strip_ansi(text).split())
 
 
 def _run_module(module: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -35,8 +30,8 @@ def test_main_module_when_help_does_show_same_description_and_epilogue_as_cli_ap
     app_result = _run_module("gymrat.cli.app", "--help")
 
     assert module_result.returncode == 0, module_result.stderr
-    module_text = _normalize(module_result.stdout)
-    app_text = _normalize(app_result.stdout)
+    module_text = normalize(module_result.stdout)
+    app_text = normalize(app_result.stdout)
     assert "Performance comparison tool for benchmarks" in module_text
     assert 'gymrat compare main my-branch --bench "npm run bench"' in module_text
     assert module_text == app_text
@@ -59,7 +54,7 @@ def test_module_entry_when_help_does_print_usage_with_gymrat_program_name(module
     result = _run_module(module, "--help")
 
     assert result.returncode == 0, result.stderr
-    assert "Usage: gymrat [" in _normalize(result.stdout)
+    assert "Usage: gymrat [" in normalize(result.stdout)
 
 
 @pytest.mark.parametrize("module", ["gymrat", "gymrat.cli.app"])
@@ -67,4 +62,4 @@ def test_module_entry_when_usage_error_does_print_usage_with_gymrat_program_name
     result = _run_module(module, "compare", "main")
 
     assert result.returncode == 2
-    assert "Usage: gymrat compare [" in _normalize(result.stderr)
+    assert "Usage: gymrat compare [" in normalize(result.stderr)

@@ -21,7 +21,7 @@ from gymrat.cli.app import app
 from gymrat.cli.console import is_debug_mode
 from gymrat.cli.exit import BUGS_URL
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
-from tests._ansi import SGR_RE, strip_ansi
+from tests._ansi import SGR_RE, normalize, sgr_params, strip_ansi
 from tests._rich import unwrap_panel
 from tests.cli._help import help_output
 from tests.cli._session import (
@@ -42,21 +42,6 @@ runner = CliRunner()
 
 DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
 """The documentation link the root epilogue points at."""
-
-
-def _normalize(text: str) -> str:
-    """Strip ANSI codes then collapse whitespace, so a reflowed help block matches."""
-    return " ".join(strip_ansi(text).split())
-
-
-def _sgr_params(text: str) -> str:
-    """The SGR parameter list of the last ANSI escape in ``text`` (e.g. ``"2;34"``).
-
-    Asserts which attributes a styled span carries without pinning the exact
-    escape bytes rich emits.
-    """
-    match = list(SGR_RE.finditer(text))[-1]
-    return match.group(1)
 
 
 @pytest.fixture
@@ -111,7 +96,7 @@ def test_app_when_help_does_show_description():
 
 
 def test_app_when_help_does_show_root_epilogue_examples_and_links():
-    normalized = _normalize(help_output())
+    normalized = normalize(help_output())
 
     assert 'gymrat compare main my-branch --bench "npm run bench"' in normalized
     assert (
@@ -153,7 +138,7 @@ def test_app_when_help_colored_does_render_the_docs_link_as_a_dim_hint(
 
     docs_line = next(line for line in result.stdout.splitlines() if "Docs:" in strip_ansi(line))
     assert docs_line.lstrip().startswith("\x1b[2m")  # cspell:disable-line
-    assert "34" in _sgr_params(docs_line[: docs_line.index(DOCS_URL)])
+    assert "34" in sgr_params(docs_line[: docs_line.index(DOCS_URL)])
 
 
 # ---------------------------------------------------------------------------

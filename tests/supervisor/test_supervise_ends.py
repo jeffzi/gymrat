@@ -19,7 +19,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, get_args
+from typing import TYPE_CHECKING, get_args, override
 
 import pytest
 
@@ -42,6 +42,7 @@ from tests.session.records._fixtures import (
     session_record,
 )
 from tests.supervisor._fixtures import (
+    DelegatingSession,
     InterruptEmitsEndDriver,
     collecting_observer,
     emit_turn_end,
@@ -62,10 +63,10 @@ from tests.supervisor._mock_driver import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Callable, Iterator
 
     from gymrat.session.records import SessionLogRecord
-    from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
+    from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
     from gymrat.supervisor.events import SessionObserver
     from gymrat.supervisor.supervise import SupervisionResult
     from tests.supervisor._mock_driver import MockStep
@@ -244,23 +245,18 @@ class _LockSwitch:
         self.held = False
 
 
-class _StubbornSession:
+class _StubbornSession(DelegatingSession):
     """A session that counts ``interrupt`` calls and ignores both ``interrupt`` and ``end``."""
 
     def __init__(self, inner: DriverSession, driver: _StubbornDriver) -> None:
-        self._inner = inner
+        super().__init__(inner)
         self._driver = driver
 
-    @property
-    def outcome(self) -> Awaitable[SessionOutcome]:
-        return self._inner.outcome
-
+    @override
     async def interrupt(self) -> None:
         self._driver.interrupts += 1
 
-    async def send(self, text: str) -> None:
-        await self._inner.send(text)
-
+    @override
     async def end(self) -> None:
         return None
 
@@ -789,23 +785,14 @@ async def test_supervise_when_wall_clock_fires_while_end_pending_does_report_the
     assert result.end_reason == "wall-clock"
 
 
-class _SlowEndSession:
+class _SlowEndSession(DelegatingSession):
     """A session whose ``end`` settles only after a delay."""
 
     def __init__(self, inner: DriverSession, delay_ms: int) -> None:
-        self._inner = inner
+        super().__init__(inner)
         self._delay_ms = delay_ms
 
-    @property
-    def outcome(self) -> Awaitable[SessionOutcome]:
-        return self._inner.outcome
-
-    async def interrupt(self) -> None:
-        await self._inner.interrupt()
-
-    async def send(self, text: str) -> None:
-        await self._inner.send(text)
-
+    @override
     async def end(self) -> None:
         await asyncio.sleep(self._delay_ms / 1000)
         await self._inner.end()

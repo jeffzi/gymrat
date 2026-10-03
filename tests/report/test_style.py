@@ -28,20 +28,10 @@ from gymrat.report.style import (
     shorten_label,
     truncate_labels,
 )
+from tests._ansi import sgr_params
 from tests.report._assertions import render_colored, render_plain
 
 _WIDTH = 80
-
-
-def _sgr_params(text: str) -> str:
-    """The SGR parameter list of the last ANSI escape in ``text`` (e.g. ``"4;33"``).
-
-    Used to assert which attributes a styled span carries without pinning the
-    exact escape bytes rich emits.
-    """
-    start = text.rindex("\x1b[")
-    end = text.index("m", start)
-    return text[start + 2 : end]
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +225,7 @@ def test_highlight_inline_code_when_span_present_does_strip_backticks_and_keep_c
 def test_highlight_inline_code_when_colored_does_paint_the_span_blue():
     styled = render_colored(highlight_inline_code("Run `gymrat doctor` to verify."))
 
-    assert "34" in _sgr_params(styled[: styled.index("gymrat doctor")])
+    assert "34" in sgr_params(styled[: styled.index("gymrat doctor")])
     assert "`" not in styled
 
 
@@ -295,7 +285,7 @@ def test_format_hint_when_colored_does_dim_the_whole_line():
 def test_format_hint_when_colored_does_paint_the_inline_code_blue():
     styled = render_colored(format_hint(_HINT))
 
-    assert "34" in _sgr_params(styled[: styled.index("gymrat doctor")])
+    assert "34" in sgr_params(styled[: styled.index("gymrat doctor")])
 
 
 @pytest.mark.parametrize(
