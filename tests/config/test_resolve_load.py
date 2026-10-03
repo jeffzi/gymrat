@@ -20,6 +20,7 @@ from gymrat.config.types import (
 )
 from gymrat.errors import GymratError
 from tests.adapters._inputs import LINE_BREAKS
+from tests.config._toml import write_config, write_raw
 
 # Byte-order mark that editors on Windows prepend to UTF-8 files: EF BB BF.
 UTF8_BOM = "﻿"
@@ -37,16 +38,6 @@ LOOP_CONFIG: dict[str, object] = {
 # key would split the key, and every message naming it, across lines, so a key
 # holding one is rejected.
 LINE_BREAK_CHARS = [line_break.char for line_break in LINE_BREAKS]
-
-
-def write_config(directory: Path, content: dict[str, object]) -> Path:
-    return write_raw(directory, tomli_w.dumps(content))
-
-
-def write_raw(directory: Path, text: str) -> Path:
-    config_path = directory / "gymrat.toml"
-    config_path.write_text(text, encoding="utf-8")
-    return config_path
 
 
 def _unknown_line_break_key_param(char: str) -> object:

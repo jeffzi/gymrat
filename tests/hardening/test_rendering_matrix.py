@@ -44,7 +44,7 @@ from gymrat.doctor import (
     create_doctor_report,
     render_doctor_report,
 )
-from tests._git import git as _git
+from tests._git import run_git as _git
 from tests._streams import FakeStream
 from tests.hardening._bench_helpers import drain as _drain
 from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
@@ -139,8 +139,8 @@ def test_compare_report_when_stdout_is_a_real_tty_does_render_styled(
 ):
     repo = create_scratch_repo()
     _write_committed_bench(repo, _METRIC_BENCH)
-    _git(repo, "switch", "-c", "candidate")
-    _git(repo, "switch", "main")
+    _git(["switch", "-c", "candidate"], repo)
+    _git(["switch", "main"], repo)
 
     output = _run_report_on_pty(
         ["compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],

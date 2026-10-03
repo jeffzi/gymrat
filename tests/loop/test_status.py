@@ -32,7 +32,6 @@ from gymrat.session.records import (
     IterationPrimary,
     IterationRecord,
     KeepChecks,
-    KeepRecord,
     SessionLogRecord,
     SessionRecord,
 )
@@ -113,15 +112,6 @@ def _iteration(seq: int, delta_pct: float, outcome: Outcome) -> IterationRecord:
         primary=IterationPrimary(kind="geomean", delta_pct=delta_pct),
         outcome=outcome,
     )
-
-
-def _nothing_measured_keep(seq: int) -> KeepRecord:
-    """``keep`` writes a blocked record when nothing has been measured since the last settle.
-
-    The number it carries belongs to an iteration that does not exist yet, and
-    may never — ``keep`` numbers the record past every iteration on file.
-    """
-    return blocked_keep(seq, reason="nothing-measured", checks=KeepChecks(configured=True))
 
 
 # A recorded baseline measurement of ``main``.
@@ -262,7 +252,7 @@ def test_status_session_when_nothing_measured_keep_took_a_later_number_does_read
         (
             _iteration(1, -7.2, "improved"),
             committed_keep(1, commit=_KEEP_COMMIT),
-            _nothing_measured_keep(2),
+            blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
             _iteration(2, -3.1, "improved"),
         ),
     )
@@ -287,7 +277,7 @@ def test_status_session_when_no_iteration_followed_a_nothing_measured_keep_does_
         (
             _iteration(1, -7.2, "improved"),
             committed_keep(1, commit=_KEEP_COMMIT),
-            _nothing_measured_keep(2),
+            blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
         ),
     )
 

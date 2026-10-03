@@ -24,6 +24,7 @@ from gymrat.config.types import (
     SuperviseConfig,
 )
 from gymrat.errors import GymratError
+from tests.config._toml import write_config
 
 LOOP_CONFIG: dict[str, object] = {
     "checks": "npm test",
@@ -54,10 +55,6 @@ RESOLVERS = [
 def write_toml(path: Path, content: dict[str, object]) -> Path:
     path.write_text(tomli_w.dumps(content), encoding="utf-8")
     return path
-
-
-def write_config(directory: Path, content: dict[str, object]) -> Path:
-    return write_toml(directory / "gymrat.toml", content)
 
 
 # ---------------------------------------------------------------------------

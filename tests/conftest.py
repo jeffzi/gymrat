@@ -43,7 +43,7 @@ from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset
 from tests._git import run_git as _run_git
-from tests._process_helpers import capture_spawns
+from tests._process_helpers import capture_spawns, kill_surviving_groups
 
 #: Names a test may inherit from the launching shell, value unchanged. An
 #: allowlisted name the shell does not export stays absent. ``PATH`` and
@@ -212,11 +212,7 @@ def spawned_processes(
     yield processes
 
     # Safety net: reap any group a test deliberately stopped exec from killing.
-    for proc in processes:
-        if proc.returncode is not None or not proc.pid:
-            continue
-        with contextlib.suppress(OSError):
-            os.killpg(proc.pid, signal.SIGKILL)
+    kill_surviving_groups(processes)
 
 
 @pytest.fixture

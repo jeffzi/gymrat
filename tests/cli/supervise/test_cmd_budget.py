@@ -16,7 +16,7 @@ from gymrat.session.budget import Budget, clear_budget, read_budget, write_budge
 from gymrat.session.paths import budget_path, session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor.supervise import SupervisionResult
-from tests.cli.supervise._fixtures import baseline_record, make_supervision_result
+from tests.cli.supervise._fixtures import make_supervision_result
 from tests.cli.supervise.test_cmd import (
     _CAP_MINUTES,
     _CAP_MS,
@@ -26,6 +26,7 @@ from tests.cli.supervise.test_cmd import (
     _run,
     _Seams,
 )
+from tests.session.records._fixtures import baseline_record
 
 # ---------------------------------------------------------------------------
 # budget lifecycle

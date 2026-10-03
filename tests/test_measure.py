@@ -23,7 +23,7 @@ from gymrat.measure import MeasureOptions, measure
 from gymrat.sampling import RunOptions, SamplingOptions, TargetSpec
 from gymrat.targets import CleanupResult, WorktreeInfo, WorktreeRemovalFailure
 from gymrat.warn import warn_to_stderr
-from tests._git import git as _git
+from tests._git import run_git as _git
 from tests._pipeline import install_pipeline
 
 if TYPE_CHECKING:
@@ -194,8 +194,8 @@ _FAIL = "#!/bin/sh\nexit 1\n"
 
 def _commit_bench(repo: str, script: str) -> None:
     (Path(repo) / "bench.sh").write_text(script, encoding="utf-8")
-    _git(repo, "add", "bench.sh")
-    _git(repo, "commit", "-m", "add bench")
+    _git(["add", "bench.sh"], repo)
+    _git(["commit", "-m", "add bench"], repo)
 
 
 def _e2e_options(target: str) -> MeasureOptions:

@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from gymrat.session.records import KeepChecks, KeepRecord, SessionLogRecord
+from gymrat.session.records import KeepChecks, SessionLogRecord
 from gymrat.session.store import (
     SessionState,
     fold_session,
@@ -34,21 +34,6 @@ from tests.session.records._fixtures import (
 # ---------------------------------------------------------------------------
 # Keep records
 # ---------------------------------------------------------------------------
-
-
-def _configured_block(seq: int, reason: str) -> KeepRecord:
-    """A keep refused for ``reason``, numbered ``seq``, on a project with checks configured."""
-    return blocked_keep(seq, reason=reason, checks=KeepChecks(configured=True))
-
-
-def _gating_block(seq: int) -> KeepRecord:
-    """The keep a gating regression refused, numbered with the iteration it refused."""
-    return _configured_block(seq, "gating-regression")
-
-
-def _nothing_measured_block(seq: int) -> KeepRecord:
-    """The keep a retry refuses when nothing was measured since the last settle."""
-    return _configured_block(seq, "nothing-measured")
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +181,11 @@ _ITERATION_1_UNSETTLED = session_state(
             id="a-keep-refused-for-no-stated-reason",
         ),
         pytest.param(
-            [SESSION, ITERATION_1, _nothing_measured_block(2)],
+            [
+                SESSION,
+                ITERATION_1,
+                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+            ],
             session_state(
                 session=SESSION,
                 iteration_count=1,
@@ -207,12 +196,20 @@ _ITERATION_1_UNSETTLED = session_state(
             id="a-keep-refused-for-want-of-a-measurement",
         ),
         pytest.param(
-            [SESSION, ITERATION_1, _configured_block(1, "not-improved")],
+            [
+                SESSION,
+                ITERATION_1,
+                blocked_keep(1, reason="not-improved", checks=KeepChecks(configured=True)),
+            ],
             _ITERATION_1_UNSETTLED,
             id="a-keep-the-outcome-gate-refused",
         ),
         pytest.param(
-            [SESSION, ITERATION_1, _gating_block(1)],
+            [
+                SESSION,
+                ITERATION_1,
+                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+            ],
             session_state(
                 session=SESSION,
                 iteration_count=1,
@@ -239,7 +236,12 @@ def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
     ("records", "expected"),
     [
         pytest.param(
-            [SESSION, ITERATION_1, _gating_block(1), _nothing_measured_block(2)],
+            [
+                SESSION,
+                ITERATION_1,
+                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+            ],
             True,
             id="a-retried-keep-that-refused-for-want-of-a-measurement",
         ),
@@ -247,15 +249,20 @@ def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
             [
                 SESSION,
                 ITERATION_1,
-                _gating_block(1),
-                _nothing_measured_block(2),
-                _nothing_measured_block(3),
+                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+                blocked_keep(3, reason="nothing-measured", checks=KeepChecks(configured=True)),
             ],
             True,
             id="a-second-refusal-on-top-of-the-first",
         ),
         pytest.param(
-            [SESSION, ITERATION_1, _gating_block(1), ITERATION_2],
+            [
+                SESSION,
+                ITERATION_1,
+                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                ITERATION_2,
+            ],
             False,
             id="a-fresh-iteration-measured-after-the-block",
         ),
@@ -263,8 +270,8 @@ def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
             [
                 SESSION,
                 ITERATION_1,
-                _gating_block(1),
-                _nothing_measured_block(2),
+                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
                 ITERATION_2,
                 committed_keep(2),
             ],
@@ -272,7 +279,12 @@ def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
             id="a-keep-committed-after-a-refusal-and-a-fresh-measurement",
         ),
         pytest.param(
-            [SESSION, ITERATION_1, _gating_block(1), discard_record(2)],
+            [
+                SESSION,
+                ITERATION_1,
+                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                discard_record(2),
+            ],
             False,
             id="a-discard-of-the-edit-the-block-refused",
         ),
@@ -313,7 +325,13 @@ def test_fold_session_when_records_replayed_does_report_ends_on_gating_block(
             id="a-stop-followed-only-by-baseline-and-hook",
         ),
         pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), stop_record(), _nothing_measured_block(2)],
+            [
+                SESSION,
+                ITERATION_1,
+                committed_keep(1),
+                stop_record(),
+                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+            ],
             True,
             id="a-stop-followed-by-a-nothing-measured-refusal",
         ),
@@ -392,7 +410,11 @@ def test_fold_session_when_stop_appended_does_change_only_ends_on_stop():
             id="a-command-after-a-stop-preserves-ends-on-stop",
         ),
         pytest.param(
-            [SESSION, ITERATION_1, _gating_block(1)],
+            [
+                SESSION,
+                ITERATION_1,
+                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+            ],
             command_record(),
             id="a-command-after-a-gating-block-preserves-ends-on-gating-block",
         ),

@@ -25,18 +25,10 @@ from gymrat.session.budget import (
     write_budget,
 )
 from gymrat.session.paths import budget_path
-from gymrat.session.records import BaselineRecord, IterationRecord, SessionLogRecord
-from tests.session.records._fixtures import iteration_record
+from gymrat.session.records import IterationRecord, SessionLogRecord
+from tests.session.records._fixtures import baseline_record, iteration_record
 
 _FAR_FUTURE_DEADLINE_MS = 999_999_999.0
-
-
-@pytest.fixture
-def root(tmp_path: Path) -> str:
-    """A fake repo root with the .gymrat session directory pre-created."""
-    session = tmp_path / ".gymrat"
-    session.mkdir()
-    return str(tmp_path)
 
 
 def _budget_file(root: str) -> Path:
@@ -243,17 +235,6 @@ def test_clear_budget_when_file_absent_does_not_raise(root: str):
 # ---------------------------------------------------------------------------
 
 
-def _baseline(duration_ms: float | None = None) -> BaselineRecord:
-    """A baseline record with only the fields ``estimate_iterate_duration`` inspects."""
-    return BaselineRecord(
-        type="baseline",
-        at=1_786_198_530_000_000_000,
-        label="main",
-        samples=({"total_ms": 15200},),
-        duration_ms=duration_ms,
-    )
-
-
 def _iteration(duration_ms: float | None = None, *, seq: int = 1) -> IterationRecord:
     """An iteration record with only the fields ``estimate_iterate_duration`` inspects."""
     return iteration_record(seq=seq, duration_ms=duration_ms)
@@ -263,25 +244,25 @@ def _iteration(duration_ms: float | None = None, *, seq: int = 1) -> IterationRe
     ("records", "expected"),
     [
         pytest.param([], None, id="no-records"),
-        pytest.param([_baseline(), _iteration()], None, id="no-durations"),
+        pytest.param([baseline_record(), _iteration()], None, id="no-durations"),
         pytest.param(
-            [_baseline(), _iteration(duration_ms=840_000)],
+            [baseline_record(), _iteration(duration_ms=840_000)],
             DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
             id="iteration-has-duration",
         ),
         pytest.param(
-            [_baseline(duration_ms=420_000), _iteration()],
+            [baseline_record(duration_ms=420_000), _iteration()],
             DurationEstimate(duration_ms=840_000, source="baseline", source_duration_ms=420_000),
             id="only-baseline-has-duration-doubles-it",
         ),
         pytest.param(
-            [_baseline(duration_ms=420_000), _iteration(duration_ms=900_000)],
+            [baseline_record(duration_ms=420_000), _iteration(duration_ms=900_000)],
             DurationEstimate(duration_ms=900_000, source="iteration", source_duration_ms=900_000),
             id="both-have-durations-prefers-iteration",
         ),
         pytest.param(
             [
-                _baseline(),
+                baseline_record(),
                 _iteration(duration_ms=600_000, seq=1),
                 _iteration(duration_ms=840_000, seq=2),
             ],
@@ -289,17 +270,21 @@ def _iteration(duration_ms: float | None = None, *, seq: int = 1) -> IterationRe
             id="multiple-iterations-uses-newest",
         ),
         pytest.param(
-            [_baseline(), _iteration(duration_ms=600_000, seq=1), _iteration(seq=2)],
+            [baseline_record(), _iteration(duration_ms=600_000, seq=1), _iteration(seq=2)],
             DurationEstimate(duration_ms=600_000, source="iteration", source_duration_ms=600_000),
             id="newest-iteration-lacks-duration-uses-earlier",
         ),
         pytest.param(
-            [_baseline(duration_ms=420_000), _iteration(duration_ms=840_000), _baseline()],
+            [
+                baseline_record(duration_ms=420_000),
+                _iteration(duration_ms=840_000),
+                baseline_record(),
+            ],
             DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
             id="a-keep-appended-baseline-times-nothing-and-is-skipped",
         ),
         pytest.param(
-            [_baseline(duration_ms=420_000), _baseline()],
+            [baseline_record(duration_ms=420_000), baseline_record()],
             DurationEstimate(duration_ms=840_000, source="baseline", source_duration_ms=420_000),
             id="newest-baseline-lacks-duration-uses-earlier",
         ),

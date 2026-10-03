@@ -2,11 +2,11 @@ import re
 from pathlib import Path
 
 import pytest
-import tomli_w
 
 from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
 from gymrat.config.resolve import inspect_config
 from gymrat.config.types import BenchlessConfig, CliFlags, HooksConfig, StopConfig
+from tests.config._toml import write_config, write_raw
 
 # ---------------------------------------------------------------------------
 # inspect_config — shared helpers and fixtures
@@ -32,18 +32,6 @@ LOOP_CONFIG: dict[str, object] = {
     "stop": {"target_value": 1.5, "max_iterations": 20},
     "hooks": {"before": "npm run warm-cache", "after": "npm run cool-down"},
 }
-
-
-def write_config(directory: Path, content: dict[str, object]) -> Path:
-    config_path = directory / "gymrat.toml"
-    config_path.write_text(tomli_w.dumps(content), encoding="utf-8")
-    return config_path
-
-
-def write_raw_config(directory: Path, content: str) -> Path:
-    config_path = directory / "gymrat.toml"
-    config_path.write_text(content, encoding="utf-8")
-    return config_path
 
 
 def has_problem(problems: list[str], pattern: str) -> bool:
@@ -212,7 +200,7 @@ def test_inspect_config_when_config_flag_names_missing_path_does_report_and_omit
 def test_inspect_config_when_file_is_invalid_toml_does_report_naming_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    config_path = write_raw_config(tmp_path, "= invalid toml =")
+    config_path = write_raw(tmp_path, "= invalid toml =")
     monkeypatch.chdir(tmp_path)
 
     result = inspect_config(CliFlags())
@@ -276,7 +264,7 @@ def test_inspect_config_when_runbook_missing_does_report_naming_field_and_path(
 def test_inspect_config_when_runbook_embeds_nul_does_report_problem_not_raise(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    write_raw_config(tmp_path, 'bench = "config-bench"\nrunbook = "a\\u0000b"\n')
+    write_raw(tmp_path, 'bench = "config-bench"\nrunbook = "a\\u0000b"\n')
     monkeypatch.chdir(tmp_path)
 
     result = inspect_config(CliFlags())

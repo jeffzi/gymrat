@@ -21,6 +21,9 @@ import pytest
 
 from gymrat import exec as exec_mod
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
+from tests._exec_fixtures import (
+    isolate_live_groups as _isolate_live_groups,  # noqa: F401 -- registers the autouse fixture
+)
 from tests._process_helpers import (
     KILLPG_FAILED,
     SLEEPER_ARGV,
@@ -35,12 +38,6 @@ if sys.platform == "win32":
 
 # Upper bound each awaited run or spawn gets before the test fails outright.
 _WAIT_TIMEOUT_S = 10
-
-
-@pytest.fixture(autouse=True)
-def _isolate_live_groups(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the module-level live-group registry from bleeding across tests."""
-    monkeypatch.setattr(exec_mod, "_live_process_groups", set())
 
 
 @pytest.fixture

@@ -34,7 +34,7 @@ from gymrat.session.workspace import (
     worktree_fingerprint,
     worktree_head,
 )
-from tests._git import run_git as _run_git
+from tests._git import run_git as _git
 
 SESSION_ID = "20260808-141530-a3f2"
 BRANCH = f"gymrat/{SESSION_ID}"
@@ -44,11 +44,6 @@ BASELINE_REF = "main"
 # earlier one's leftovers.
 NEXT_SESSION_ID = "20260808-152045-b7c1"
 NEXT_BRANCH = f"gymrat/{NEXT_SESSION_ID}"
-
-
-def _git(args: list[str], cwd: str) -> str:
-    """Run git in ``cwd`` for test setup and assertions, returning trimmed stdout."""
-    return _run_git(args, cwd).strip()
 
 
 def _checked_out_ref(worktree: str) -> str:
@@ -84,12 +79,6 @@ def _edit_worktree(worktree: str, edit: str | None) -> None:
     """Write agent-edit content to ``edit`` in ``worktree``, or leave it clean when ``None``."""
     if edit is not None:
         (Path(worktree) / edit).write_text("# edited by the agent\n", encoding="utf-8")
-
-
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str]) -> str:
-    """A throwaway git repository for workspace operations."""
-    return create_scratch_repo()
 
 
 @pytest.fixture

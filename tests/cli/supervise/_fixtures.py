@@ -29,7 +29,7 @@ from gymrat.cli.supervise.progress import (
 from gymrat.cli.supervise.types import IDLE_WARN_MS, ReadSessionResult
 from gymrat.eta import NS_PER_MS
 from gymrat.loop.start import start_session
-from gymrat.session.records import BaselineRecord, IterationPrimary, IterationRecord
+from gymrat.session.records import IterationPrimary, IterationRecord
 from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     CapAction,
@@ -50,7 +50,6 @@ from gymrat.supervisor.supervise import SupervisionResult
 from tests._rich import frame_text
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
-    AT,
     empty_session_state,
     iteration_record,
     session_state,
@@ -74,22 +73,6 @@ class Clock:
 # ---------------------------------------------------------------------------
 # Builders
 # ---------------------------------------------------------------------------
-
-
-def baseline_record(
-    *,
-    label: str = ".gymrat/worktrees/baseline",
-    duration_ms: float | None = None,
-    at: int = AT,
-) -> BaselineRecord:
-    """A baseline record with an optional wall-clock duration."""
-    return BaselineRecord(
-        type="baseline",
-        at=at,
-        label=label,
-        samples=({"total_ms": 15200},),
-        duration_ms=duration_ms,
-    )
 
 
 def start_open_session(repo: str) -> None:

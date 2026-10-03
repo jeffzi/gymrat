@@ -30,6 +30,10 @@ from gymrat.exec import (
     exec_argv,
 )
 from gymrat.signals import TERMINATION_SIGNALS
+from tests._exec_fixtures import expected_result, physical_path, wait_for_spawned
+from tests._exec_fixtures import (
+    isolate_live_groups as _isolate_live_groups,  # noqa: F401 -- registers the autouse fixture
+)
 from tests._process_helpers import (
     ZOMBIE_ONLY_GROUP_SCRIPT,
     capture_spawns,
@@ -42,37 +46,6 @@ from tests._process_helpers import (
 
 if sys.platform == "win32":
     pytest.skip("POSIX-only process groups", allow_module_level=True)
-
-
-def expected_result(stdout: str, stderr: str, exit_code: int) -> ExecResult:
-    """Build an expected ``ExecResult`` with byte counts derived from the strings."""
-    return ExecResult(
-        stdout=stdout,
-        stderr=stderr,
-        exit_code=exit_code,
-        stdout_bytes=len(stdout.encode()),
-        stderr_bytes=len(stderr.encode()),
-    )
-
-
-async def wait_for_spawned(
-    processes: list[asyncio.subprocess.Process],
-    timeout_s: float = 3.0,
-) -> asyncio.subprocess.Process:
-    """Return the most recent child ``exec_argv`` spawned, once the spawn has happened."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while not processes:
-        if loop.time() > deadline:
-            msg = "exec_argv() has not spawned a child yet"
-            raise TimeoutError(msg)
-        await asyncio.sleep(0.01)
-    return processes[-1]
-
-
-def physical_path(path: Path) -> str:
-    """Resolve symlinks so a directory compares equal to real-path output."""
-    return str(path.resolve())
 
 
 def script_writing_pid_and_sleeping(pid_file: Path) -> str:
@@ -188,28 +161,6 @@ def killpg_refusal(
 
 
 @pytest.fixture
-def make_opts(tmp_path: Path) -> Callable[..., ExecOptions]:
-    """Build ``ExecOptions`` rooted at the test's ``tmp_path``, with any override."""
-
-    def _make(
-        *,
-        timeout_ms: int | None = None,
-        abort: asyncio.Event | None = None,
-        stdin: str | None = None,
-        env: dict[str, str] | None = None,
-    ) -> ExecOptions:
-        return ExecOptions(
-            cwd=str(tmp_path),
-            timeout_ms=timeout_ms,
-            abort=abort,
-            stdin=stdin,
-            env=env,
-        )
-
-    return _make
-
-
-@pytest.fixture
 def spawned_processes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[list[asyncio.subprocess.Process]]:
@@ -242,12 +193,6 @@ async def cancel_and_settle(task: "asyncio.Task[object]", timeout_s: float = 5) 
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout_s)
-
-
-@pytest.fixture(autouse=True)
-def _isolate_live_groups(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the module-level live-group registry from bleeding across tests."""
-    monkeypatch.setattr(exec_mod, "_live_process_groups", set())
 
 
 # ---------------------------------------------------------------------------
@@ -636,7 +581,7 @@ async def test_exec_argv_when_child_alive_does_register_in_live_groups(
             make_opts(timeout_ms=300),
         ),
     )
-    proc = await wait_for_spawned(spawned_processes)
+    proc = await wait_for_spawned(spawned_processes, spawner="exec_argv")
 
     assert proc.pid in exec_mod._live_process_groups
 
@@ -724,7 +669,7 @@ async def test_kill_live_process_groups_when_exited_leader_group_with_live_membe
             ),
         ),
     )
-    leader = await wait_for_spawned(spawned_processes)
+    leader = await wait_for_spawned(spawned_processes, spawner="exec_argv")
     grandchild = await wait_for_pid_file(grandchild_pid_file)
     stray_process_ids.append(grandchild)
     await wait_until_dead(leader.pid)
@@ -751,7 +696,7 @@ async def test_exec_argv_when_cancelled_does_kill_child_and_deregister(
             make_opts(),
         ),
     )
-    proc = await wait_for_spawned(spawned_processes)
+    proc = await wait_for_spawned(spawned_processes, spawner="exec_argv")
     await wait_for_pid_file(pid_file)
 
     task.cancel()
@@ -787,7 +732,7 @@ async def test_exec_argv_when_cancelled_does_keep_pid_registered_until_the_kill_
             make_opts(),
         ),
     )
-    proc = await wait_for_spawned(spawned_processes)
+    proc = await wait_for_spawned(spawned_processes, spawner="exec_argv")
     await wait_for_pid_file(pid_file)
 
     task.cancel()
@@ -837,7 +782,7 @@ async def test_exec_argv_when_cancelled_does_kill_grandchild(
             make_opts(abort=None),
         ),
     )
-    await wait_for_spawned(spawned_processes)
+    await wait_for_spawned(spawned_processes, spawner="exec_argv")
     grandchild = await wait_for_pid_file(grandchild_pid_file)
 
     task.cancel()
@@ -862,7 +807,7 @@ async def test_exec_argv_when_cancelled_leaving_only_a_zombie_in_group_does_not_
             make_opts(),
         ),
     )
-    await wait_for_spawned(spawned_processes)
+    await wait_for_spawned(spawned_processes, spawner="exec_argv")
     stray_process_ids.append(await wait_for_pid_file(holder_pid_file))
 
     await cancel_and_settle(task)

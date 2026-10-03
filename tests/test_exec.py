@@ -32,6 +32,7 @@ from gymrat.exec import (
 )
 from gymrat.exec import exec as run_exec
 from gymrat.signals import TERMINATION_SIGNALS
+from tests._exec_fixtures import expected_result, physical_path, wait_for_spawned
 from tests._exec_fixtures import (
     isolate_live_groups as _isolate_live_groups,  # noqa: F401 -- registers the autouse fixture
 )
@@ -68,21 +69,6 @@ _CANCEL_SETTLE_S = 5.0
 _UNKNOWN_CHILD = "Unknown child process"
 
 _os_waitid: Callable[..., object] | None = getattr(os, "waitid", None)
-
-
-async def wait_for_spawned(
-    processes: list[asyncio.subprocess.Process],
-    timeout_s: float = 3.0,
-) -> asyncio.subprocess.Process:
-    """Return the most recent child ``exec`` spawned, once the spawn has happened."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while not processes:
-        if loop.time() > deadline:
-            msg = "exec() has not spawned a child yet"
-            raise TimeoutError(msg)
-        await asyncio.sleep(0.01)
-    return processes[-1]
 
 
 async def wait_for_shell_exit(proc: asyncio.subprocess.Process, timeout_s: float = 3.0) -> None:
@@ -190,15 +176,6 @@ class Teardown:
     trigger: Callable[[ExecTask, asyncio.subprocess.Process, asyncio.Event], None]
 
 
-def physical_path(path: Path) -> str:
-    """Resolve symlinks so a directory compares equal to ``pwd -P`` output.
-
-    Wrapped in a sync helper so the resolution stays out of the async test body,
-    where a blocking filesystem call would trip the async-blocking-call lint.
-    """
-    return str(path.resolve())
-
-
 def stub_taskkill(monkeypatch: pytest.MonkeyPatch, returncode: int) -> list[list[str]]:
     """Stub ``subprocess.run`` so a taskkill call records its args and fails with ``returncode``.
 
@@ -235,17 +212,6 @@ async def start_abortable_run(
     task = asyncio.create_task(run_exec("sleep 0.5", make_opts(abort=abort)))
     await wait_for_spawned(spawned_processes)
     return task, abort
-
-
-def expected_result(stdout: str, stderr: str, exit_code: int) -> ExecResult:
-    """Build an expected ``ExecResult`` with byte counts derived from the strings."""
-    return ExecResult(
-        stdout=stdout,
-        stderr=stderr,
-        exit_code=exit_code,
-        stdout_bytes=len(stdout.encode()),
-        stderr_bytes=len(stderr.encode()),
-    )
 
 
 @pytest.fixture

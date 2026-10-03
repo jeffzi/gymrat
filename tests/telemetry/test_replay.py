@@ -10,7 +10,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.session.records import BaselineRecord, HookRecord, record_to_wire
+from gymrat.session.records import HookRecord, record_to_wire
 from gymrat.supervisor.events import (
     CapEvent,
     CompactionEvent,
@@ -22,6 +22,7 @@ from gymrat.telemetry.ids import span_id_of, trace_id_of
 from gymrat.telemetry.replay import replay_session
 from tests.session.records._fixtures import (
     SESSION_ID,
+    baseline_record,
     command_record,
     iteration_record,
     session_record,
@@ -482,14 +483,7 @@ def test_replay_session_when_records_before_first_command_does_add_events_on_ses
 ):
     session_log, sup_log = log_paths
     header = session_record(at=T0)
-    from gymrat.session.records import BaselineRecord
-
-    baseline = BaselineRecord(
-        type="baseline",
-        at=T1,
-        label="initial",
-        samples=({"total_ms": 100},),
-    )
+    baseline = baseline_record(at=T1)
     write_records_log(session_log, [header, baseline])
     write_supervisor_log(sup_log, [launch_event(at=T0), turn_end(at=T3)])
 
@@ -505,7 +499,7 @@ def test_replay_session_when_pre_command_records_followed_by_command_does_attach
     session_log, sup_log = log_paths
     header = session_record(at=T0)
 
-    baseline = BaselineRecord(type="baseline", at=T1, label="initial", samples=({"total_ms": 100},))
+    baseline = baseline_record(at=T1)
     hook = HookRecord(
         type="hook",
         at=T1,

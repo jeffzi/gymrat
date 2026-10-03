@@ -9,14 +9,14 @@ its own copy of the same subprocess and pid-checking code.
 import os
 from pathlib import Path
 
-from tests._git import git
+from tests._git import run_git
 
 
 def write_committed_bench(repo: str, script: str) -> None:
     """Drop ``script`` as ``bench.sh`` and commit it so every ref can run it."""
     (Path(repo) / "bench.sh").write_text(script, encoding="utf-8")
-    git(repo, "add", "bench.sh")
-    git(repo, "commit", "-m", "add bench")
+    run_git(["add", "bench.sh"], repo)
+    run_git(["commit", "-m", "add bench"], repo)
 
 
 def drain(fd: int, chunks: list[bytes]) -> None:

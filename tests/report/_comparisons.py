@@ -443,6 +443,50 @@ def without_gated_geomean(kind: KindAggregate) -> KindAggregate:
     return replace(kind, gated_geomean=None)
 
 
+def grouped_flat_result() -> ComparisonResult:
+    """Single ``time`` kind: ``entity`` group (2 members) + ungrouped ``warmup``."""
+    geomean = geomean_of(-3.2, 3)
+    return create_comparison_result(
+        metrics={
+            "entity/alive_check#time": kind_metric(
+                kind="time",
+                short_name="entity.alive_check",
+                verdict="improved",
+                delta=-10,
+            ),
+            "entity/spawn#time": kind_metric(
+                kind="time",
+                short_name="entity.spawn",
+                verdict="regressed",
+                delta=4,
+            ),
+            "warmup#time": kind_metric(
+                kind="time",
+                short_name="warmup",
+                verdict="no-signal",
+                delta=0.3,
+            ),
+        },
+        candidates=[
+            create_candidate(
+                kinds=[
+                    KindAggregate(
+                        kind="time",
+                        geomean=geomean,
+                        groups=(
+                            GroupAggregate(
+                                group="entity",
+                                geomean=geomean_of(-3.1, 2),
+                            ),
+                        ),
+                        gated_geomean=geomean,
+                    )
+                ]
+            )
+        ],
+    )
+
+
 def grouped_comparison() -> ComparisonResult:
     """A two-candidate run spanning a grouped ``time`` kind and a ``memory`` kind.
 

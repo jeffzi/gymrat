@@ -26,7 +26,6 @@ import pytest
 from gymrat.clock import now_ms, now_ns
 from gymrat.config.types import BenchlessConfig, StopConfig
 from gymrat.session.paths import session_dir, session_jsonl_path
-from gymrat.session.store import append_record
 from gymrat.supervisor.events import (
     CapEvent,
     FollowUpEvent,
@@ -36,6 +35,7 @@ from gymrat.supervisor.events import (
 )
 from gymrat.supervisor.supervise import EndedBy, supervise
 from tests.session.records._fixtures import (
+    append_records,
     command_record,
     hook_record,
     iteration_record,
@@ -136,14 +136,9 @@ def _events_path(root: str) -> str:
     return str(Path(root).parent / "events.jsonl")
 
 
-def _append_now(root: str, *records: SessionLogRecord) -> None:
-    for record in records:
-        append_record(session_jsonl_path(root), record)
-
-
 def _append(root: str, *records: SessionLogRecord) -> ActionStep:
     async def append() -> None:
-        _append_now(root, *records)
+        append_records(root, *records)
 
     return ActionStep(action=append)
 
@@ -411,7 +406,7 @@ async def test_supervise_when_nothing_new_ends_run_at_tool_end_does_complete_as_
     stop: StopConfig | None,
     appended: tuple[SessionLogRecord, ...],
 ):
-    _append_now(root, *seeded)
+    append_records(root, *seeded)
     driver = create_mock_driver([_append(root, *appended), _tool_end()])
 
     result = await _supervise(root, driver, config=_config(stop))
@@ -458,7 +453,7 @@ async def test_supervise_when_launch_read_fails_does_scan_hooks_only_after_first
 
     async def repair_with_failed_hook() -> None:
         _overwrite_log(root, b"")
-        _append_now(root, session_record(), _FAILED_HOOK)
+        append_records(root, session_record(), _FAILED_HOOK)
 
     driver = create_mock_driver([
         ActionStep(action=repair_with_failed_hook),
@@ -502,7 +497,7 @@ def _repair_log(root: str, access: _SessionDirAccess, *records: SessionLogRecord
     async def repair() -> None:
         access.allow()
         _overwrite_log(root, b"")
-        _append_now(root, session_record(), *records)
+        append_records(root, session_record(), *records)
 
     return ActionStep(action=repair)
 

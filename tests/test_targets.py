@@ -47,7 +47,7 @@ skip_on_windows_or_root = pytest.mark.skipif(
 
 
 def _get_head_sha(repo_dir: str) -> str:
-    return _run_git(["rev-parse", "HEAD"], repo_dir).strip()
+    return _run_git(["rev-parse", "HEAD"], repo_dir)
 
 
 def _plan_and_attempt_materialize(target: RefTarget, repo_dir: str) -> tuple[WorktreeInfo, bool]:
@@ -262,7 +262,7 @@ def test_resolve_target_when_input_is_non_commit_object_sha_does_reject(
     create_scratch_repo: Callable[[], str], rev: str
 ):
     repo = create_scratch_repo()
-    sha = _run_git(["rev-parse", rev], repo).strip()
+    sha = _run_git(["rev-parse", rev], repo)
 
     with pytest.raises(GymratError, match=r"Cannot resolve target"):
         resolve_target(sha, repo)

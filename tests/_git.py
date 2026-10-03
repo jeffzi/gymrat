@@ -1,10 +1,10 @@
-"""Shared git subprocess helpers for test fixtures and test modules."""
+"""Shared git subprocess helper for test fixtures and test modules."""
 
 import subprocess
 
 
 def run_git(args: list[str], cwd: str) -> str:
-    """Run git in ``cwd`` for fixture setup, returning stdout and failing loudly."""
+    """Run git in ``cwd``, returning its stripped stdout and failing loudly on error."""
     result = subprocess.run(  # noqa: S603
         ["git", *args],  # noqa: S607
         cwd=cwd,
@@ -12,15 +12,4 @@ def run_git(args: list[str], cwd: str) -> str:
         capture_output=True,
         text=True,
     )
-    return result.stdout
-
-
-def git(repo: str, *args: str) -> None:
-    """Run a git command in ``repo``, discarding output and failing loudly."""
-    subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    return result.stdout.strip()

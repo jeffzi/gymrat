@@ -34,11 +34,12 @@ from gymrat.session.records import (
     DiscardRecord,
     FinalizeRecord,
     IterationRecord,
+    KeepChecks,
     KeepRecord,
     SessionLogRecord,
     SessionRecord,
 )
-from gymrat.session.store import append_record, read_records
+from gymrat.session.store import read_records
 from gymrat.session.workspace import worktree_fingerprint
 from gymrat.supervisor.events import FollowUpEvent
 from gymrat.supervisor.exit_sequence import (
@@ -47,6 +48,7 @@ from gymrat.supervisor.exit_sequence import (
     ExitStep,
     run_exit_sequence,
 )
+from tests._git import run_git
 from tests.conftest import hold_lock
 from tests.loop._settle import (
     CHECKS,
@@ -56,10 +58,7 @@ from tests.loop._settle import (
     commit_experiment_directly,
     confirmed_regression,
     edit_experiment,
-    gating_block,
-    git,
     install_exec,
-    iteration,
     settling_record_of,
     start_with,
     status_of,
@@ -67,10 +66,13 @@ from tests.loop._settle import (
 )
 from tests.session.records._fixtures import (
     TORN_PREFIX,
+    append_records,
+    blocked_keep,
     committed_keep,
     discard_record,
     finalize_record,
     hook_record,
+    iteration_record,
     stop_record,
     tear_final_line,
 )
@@ -239,17 +241,10 @@ def _fingerprint(root: str) -> str:
     return tree
 
 
-def _append(root: str, *records: SessionLogRecord) -> None:
-    """Append every record to the log of the session already open in ``root``."""
-    jsonl_path = session_jsonl_path(root)
-    for record in records:
-        append_record(jsonl_path, record)
-
-
 def _measured(root: str, record: IterationRecord, *trailing: SessionLogRecord) -> None:
     """Edit the experiment worktree, then log ``record`` fingerprinted to what it measured."""
     edit_experiment(root)
-    _append(root, record.model_copy(update={"measured_tree": _fingerprint(root)}), *trailing)
+    append_records(root, record.model_copy(update={"measured_tree": _fingerprint(root)}), *trailing)
 
 
 def _edit_again(root: str) -> None:
@@ -269,29 +264,29 @@ def _rewriting_checks(monkeypatch: pytest.MonkeyPatch, root: str) -> None:
 
 def _stale_tree(root: str) -> None:
     """An improved iteration whose worktree moved on behind the fingerprint."""
-    _measured(root, iteration(1))
+    _measured(root, iteration_record(seq=1))
     _edit_again(root)
 
 
 def _no_fingerprint(root: str) -> None:
     """An improved iteration that recorded no fingerprint at all."""
     edit_experiment(root)
-    _append(root, iteration(1, measured_tree=None))
+    append_records(root, iteration_record(seq=1, measured_tree=None))
 
 
 def _failed_before_hook(root: str) -> None:
     """An improved iteration whose before hook exited non-zero."""
-    _measured(root, iteration(1), hook_record(seq=1, stage="before", exit_code=1))
+    _measured(root, iteration_record(seq=1), hook_record(seq=1, stage="before", exit_code=1))
 
 
 def _timed_out_after_hook(root: str) -> None:
     """An improved iteration whose after hook ran past its timeout."""
-    _measured(root, iteration(1), hook_record(seq=1, stage="after", timed_out=True))
+    _measured(root, iteration_record(seq=1), hook_record(seq=1, stage="after", timed_out=True))
 
 
 def _improved_iteration(root: str) -> None:
     """An improved iteration the gate lets through, so the settle step keeps it."""
-    _measured(root, iteration(1))
+    _measured(root, iteration_record(seq=1))
 
 
 def _unimproved_iteration(root: str) -> None:
@@ -301,14 +296,18 @@ def _unimproved_iteration(root: str) -> None:
 
 def _gating_block_iteration(root: str) -> None:
     """A confirmed regression standing under a gating block, ready for the gate to decide it."""
-    _measured(root, confirmed_regression(1), gating_block(1))
+    _measured(
+        root,
+        confirmed_regression(1),
+        blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+    )
 
 
 def _keep_iteration(root: str, seq: int) -> None:
     """Commit the experiment worktree and log the iteration and the keep that settled it."""
     edit_experiment(root)
     commit = commit_experiment_directly(root)
-    _append(root, iteration(seq), committed_keep(seq, commit=commit))
+    append_records(root, iteration_record(seq=seq), committed_keep(seq, commit=commit))
 
 
 def _session_branch(root: str) -> str:
@@ -596,7 +595,7 @@ async def test_run_exit_sequence_when_no_session_was_opened_does_report_nothing_
 async def test_run_exit_sequence_when_the_last_iteration_was_discarded_does_report_nothing_to_settle(
     repo: str,
 ):
-    start_with(repo, (iteration(1), discard_record(1)))
+    start_with(repo, (iteration_record(seq=1), discard_record(1)))
 
     run = await run_sequence(_context(repo, checks=CHECKS))
 
@@ -708,7 +707,7 @@ async def test_run_exit_sequence_when_the_agent_committed_nothing_does_report_it
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo)
-    _append(repo, iteration(1, measured_tree=_fingerprint(repo)))
+    append_records(repo, iteration_record(seq=1, measured_tree=_fingerprint(repo)))
     checks_pass(monkeypatch)
 
     run = await run_sequence(_context(repo, checks=CHECKS))
@@ -722,7 +721,7 @@ async def test_run_exit_sequence_when_the_agent_committed_nothing_does_record_ex
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo)
-    _append(repo, iteration(1, measured_tree=_fingerprint(repo)))
+    append_records(repo, iteration_record(seq=1, measured_tree=_fingerprint(repo)))
     checks_pass(monkeypatch)
 
     await run_sequence(_context(repo, checks=CHECKS))
@@ -934,7 +933,7 @@ async def test_run_exit_sequence_when_the_log_ends_on_a_stop_record_does_finaliz
 ):
     start_with(repo)
     _keep_iteration(repo, 1)
-    _append(repo, stop_record())
+    append_records(repo, stop_record())
 
     run = await run_sequence(_context(repo), finalize=True)
 
@@ -948,7 +947,7 @@ async def test_run_exit_sequence_when_finalize_refuses_does_record_the_refusal_n
     _improved_iteration(repo)
     checks_pass(monkeypatch)
     taken = f"{_session_branch(repo)}-final"
-    git(["branch", taken], repo)
+    run_git(["branch", taken], repo)
 
     run = await run_sequence(_context(repo, checks=CHECKS), finalize=True)
 

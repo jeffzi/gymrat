@@ -10,18 +10,11 @@ import sys
 from pathlib import Path
 
 import pytest
-import tomli_w
 
 from gymrat.config.resolve import resolve_benchless_config
 from gymrat.config.types import BenchlessConfig, CliFlags, HooksConfig, StopConfig
 from gymrat.errors import GymratError
-
-
-def write_config(directory: Path, content: dict[str, object]) -> Path:
-    config_path = directory / "gymrat.toml"
-    config_path.write_text(tomli_w.dumps(content), encoding="utf-8")
-    return config_path
-
+from tests.config._toml import write_config
 
 # ---------------------------------------------------------------------------
 # No circular import at package load time

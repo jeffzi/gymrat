@@ -33,15 +33,6 @@ from gymrat.session.progress_file import (
     write_progress,
 )
 
-
-@pytest.fixture
-def root(tmp_path: Path) -> str:
-    """A fake repo root with the .gymrat session directory pre-created."""
-    session = tmp_path / ".gymrat"
-    session.mkdir()
-    return str(tmp_path)
-
-
 # ---------------------------------------------------------------------------
 # progress_path
 # ---------------------------------------------------------------------------

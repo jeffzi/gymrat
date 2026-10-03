@@ -40,7 +40,7 @@ if sys.platform != "win32":
 
 from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
-from tests._git import git as _git
+from tests._git import run_git as _git
 from tests._process_helpers import read_pid_file as _read_pid_file
 from tests._process_helpers import (
     wait_for_pid_file_blocking as _wait_for_pid_file_blocking,
@@ -296,9 +296,9 @@ def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
 ):
     repo = create_scratch_repo()
     _write_committed_bench(repo, _TRACKED_BENCH)
-    _git(repo, "switch", "-c", "candidate-one")
-    _git(repo, "switch", "-c", "candidate-two")
-    _git(repo, "switch", "main")
+    _git(["switch", "-c", "candidate-one"], repo)
+    _git(["switch", "-c", "candidate-two"], repo)
+    _git(["switch", "main"], repo)
 
     proc = subprocess.Popen(  # noqa: S603
         [
@@ -341,8 +341,8 @@ def test_compare_when_signalled_twice_during_cleanup_does_exit_promptly(
 ):
     repo = create_scratch_repo()
     _write_committed_bench(repo, _TRACKED_BENCH)
-    _git(repo, "switch", "-c", "candidate")
-    _git(repo, "switch", "main")
+    _git(["switch", "-c", "candidate"], repo)
+    _git(["switch", "main"], repo)
 
     proc = subprocess.Popen(  # noqa: S603
         [*_ENTRY, "compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],

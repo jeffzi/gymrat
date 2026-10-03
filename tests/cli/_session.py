@@ -28,9 +28,10 @@ from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import CommandRecord, SessionRecord
 from gymrat.session.store import append_record, read_records
 from tests._ansi import SGR_RE
+from tests._git import run_git
 from tests._streams import RaisingStream
 from tests.loop._probe import install_measure
-from tests.loop._settle import git, head_of, iteration, start_with
+from tests.loop._settle import head_of, start_with
 from tests.loop.iterate._fixtures import resolved_config
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
@@ -198,7 +199,7 @@ def open_session(repo: str) -> None:
 @pytest.fixture
 def stop_repo(repo: str) -> str:
     """A repository with a settled, configured session ready for the stop command."""
-    start_with(repo, (iteration(1), committed_keep(1)))
+    start_with(repo, (iteration_record(seq=1), committed_keep(1)))
     write_config(repo)
     return repo
 
@@ -215,8 +216,8 @@ def open_session_with_one_keep(root: str) -> SessionRecord:
     start_session(root, "main", resolved_config())
     worktree = experiment_worktree_dir(root)
     (Path(worktree) / "step.txt").write_text("cache the regex\n", encoding="utf-8")
-    git(["add", "-A"], worktree)
-    git(["commit", "-m", "cache the regex"], worktree)
+    run_git(["add", "-A"], worktree)
+    run_git(["commit", "-m", "cache the regex"], worktree)
     commit = head_of(worktree)
     append_record(session_jsonl_path(root), iteration_record(seq=1))
     append_record(session_jsonl_path(root), committed_keep(1, commit=commit))

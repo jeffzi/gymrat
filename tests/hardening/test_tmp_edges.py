@@ -61,7 +61,7 @@ _FAST_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
 
 
 def _get_head_sha(repo_dir: str) -> str:
-    return _run_git(["rev-parse", "HEAD"], repo_dir).strip()
+    return _run_git(["rev-parse", "HEAD"], repo_dir)
 
 
 def _point_temp_base_at(monkeypatch: pytest.MonkeyPatch, real_base: Path, shape: str) -> None:

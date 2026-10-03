@@ -40,10 +40,14 @@ from gymrat.report.loop import (
     format_status_stop,
     format_verdict_block,
 )
-from gymrat.session.records import BaselineRecord
 from gymrat.session.workspace import BaselineRef, Worktrees
 from tests.report._assertions import render_colored, render_plain, styles_at
-from tests.session.records._fixtures import SESSION_ID, finalize_record, session_record
+from tests.session.records._fixtures import (
+    SESSION_ID,
+    baseline_record,
+    finalize_record,
+    session_record,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -310,13 +314,6 @@ def test_format_status_iteration_when_colored_does_paint_the_glyph(
 # ---------------------------------------------------------------------------
 
 
-def _baseline_record(samples: tuple[Mapping[str, float], ...]) -> BaselineRecord:
-    """A baseline record labeled ``main`` over ``samples``."""
-    return BaselineRecord(
-        type="baseline", at=1_786_198_530_000_000_000, label="main", samples=samples
-    )
-
-
 @pytest.mark.parametrize(
     ("samples", "expected"),
     [
@@ -341,7 +338,7 @@ def _baseline_record(samples: tuple[Mapping[str, float], ...]) -> BaselineRecord
 def test_baseline_medians_when_given_record_does_median_each_metric_over_its_rounds(
     samples: tuple[Mapping[str, float], ...], expected: dict[str, float]
 ):
-    medians = baseline_medians(_baseline_record(samples))
+    medians = baseline_medians(baseline_record(samples=samples))
 
     assert medians == expected
 
@@ -352,10 +349,12 @@ def test_baseline_medians_when_given_record_does_median_each_metric_over_its_rou
 
 
 def test_format_status_baseline_when_given_samples_does_state_label_and_median_per_metric():
-    record = _baseline_record((
-        {"total_ms": 15200, "alloc_bytes": 1500},
-        {"total_ms": 15184, "alloc_bytes": 1540},
-    ))
+    record = baseline_record(
+        samples=(
+            {"total_ms": 15200, "alloc_bytes": 1500},
+            {"total_ms": 15184, "alloc_bytes": 1540},
+        )
+    )
 
     line = render_plain(format_status_baseline(record))
 
@@ -363,7 +362,7 @@ def test_format_status_baseline_when_given_samples_does_state_label_and_median_p
 
 
 def test_format_status_baseline_when_a_round_omits_a_metric_does_median_over_rounds_that_reported_it():
-    record = _baseline_record(({"total_ms": 100, "alloc_bytes": 40}, {"total_ms": 300}))
+    record = baseline_record(samples=({"total_ms": 100, "alloc_bytes": 40}, {"total_ms": 300}))
 
     line = render_plain(format_status_baseline(record))
 
@@ -470,7 +469,7 @@ def test_format_status_header_when_worktree_path_contains_brackets_does_render_t
 
 
 def test_format_status_baseline_when_metric_name_contains_brackets_does_render_them_literally():
-    record = _baseline_record(({"total[ms]": 15200},))
+    record = baseline_record(samples=({"total[ms]": 15200},))
 
     line = render_plain(format_status_baseline(record))
 

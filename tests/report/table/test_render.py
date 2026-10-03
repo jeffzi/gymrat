@@ -29,55 +29,14 @@ from gymrat.verdict import GroupAggregate, KindAggregate
 
 if TYPE_CHECKING:
     from gymrat.report.table.render import BodyLine
-    from gymrat.report.types import ComparisonResult
 from tests.report._assertions import table_region
-from tests.report._comparisons import create_candidate, create_comparison_result, kind_metric
+from tests.report._comparisons import (
+    create_candidate,
+    create_comparison_result,
+    grouped_flat_result,
+    kind_metric,
+)
 from tests.report._verdicts import geomean_of
-
-
-def _grouped_flat_result() -> ComparisonResult:
-    """Single ``time`` kind: ``entity`` group (2 members) + ungrouped ``warmup``."""
-    geomean = geomean_of(-3.2, 3)
-    return create_comparison_result(
-        metrics={
-            "entity/alive_check#time": kind_metric(
-                kind="time",
-                short_name="entity.alive_check",
-                verdict="improved",
-                delta=-10,
-            ),
-            "entity/spawn#time": kind_metric(
-                kind="time",
-                short_name="entity.spawn",
-                verdict="regressed",
-                delta=4,
-            ),
-            "warmup#time": kind_metric(
-                kind="time",
-                short_name="warmup",
-                verdict="no-signal",
-                delta=0.3,
-            ),
-        },
-        candidates=[
-            create_candidate(
-                kinds=[
-                    KindAggregate(
-                        kind="time",
-                        geomean=geomean,
-                        groups=(
-                            GroupAggregate(
-                                group="entity",
-                                geomean=geomean_of(-3.1, 2),
-                            ),
-                        ),
-                        gated_geomean=geomean,
-                    )
-                ]
-            )
-        ],
-    )
-
 
 # ---------------------------------------------------------------------------
 # group headers and case names
@@ -85,7 +44,7 @@ def _grouped_flat_result() -> ComparisonResult:
 
 
 def test_table_region_when_flat_body_with_groups_does_emit_group_headers_and_case_names():
-    region = table_region(render_report(_grouped_flat_result()))
+    region = table_region(render_report(grouped_flat_result()))
 
     assert region == [
         "gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata",
@@ -107,7 +66,7 @@ def test_table_region_when_flat_body_with_groups_does_emit_group_headers_and_cas
 
 
 def test_table_region_when_flat_body_has_ungrouped_rows_does_trail_after_groups():
-    region = table_region(render_report(_grouped_flat_result()))
+    region = table_region(render_report(grouped_flat_result()))
 
     group_member_indices = [
         i for i, entry in enumerate(region) if entry in ("alive_check", "spawn")

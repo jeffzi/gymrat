@@ -16,13 +16,13 @@ helper imported as ``tests.loop._bench``.
 """
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import tomli_w
 
 from gymrat.session.paths import experiment_worktree_dir
+from tests._git import run_git
 
 #: The bench script every worktree runs.
 BENCH_FILE = "bench.py"
@@ -134,17 +134,5 @@ def commit_project(
     }
     for name, content in files.items():
         (Path(repo_dir) / name).write_text(content, encoding="utf-8")
-    subprocess.run(  # noqa: S603
-        ["git", "add", *files],  # noqa: S607
-        cwd=repo_dir,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    subprocess.run(
-        ["git", "commit", "-m", "bench harness"],  # noqa: S607
-        cwd=repo_dir,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    run_git(["add", *files], repo_dir)
+    run_git(["commit", "-m", "bench harness"], repo_dir)

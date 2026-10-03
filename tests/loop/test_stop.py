@@ -10,7 +10,6 @@ and safe under ``pytest-xdist`` / ``pytest-randomly``.
 """
 
 import re
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -18,20 +17,20 @@ import pytest
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.stop import StopResult, stop_session
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
-from gymrat.session.records import SessionLogRecord, StopRecord
+from gymrat.session.records import KeepChecks, SessionLogRecord, StopRecord
 from gymrat.session.store import append_record, read_records
+from tests._git import run_git
 from tests.loop._settle import (
     capture_error,
     confirmed_regression,
-    gating_block,
-    git,
     head_of,
-    iteration,
     settling_record_of,
     start_with,
 )
 from tests.session.records._fixtures import (
+    blocked_keep,
     committed_keep,
+    iteration_record,
     stop_record,
 )
 
@@ -48,12 +47,6 @@ def _record_count(repo: str) -> int:
     return len(read_records(session_jsonl_path(repo)))
 
 
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str]) -> str:
-    """A fresh scratch git repository for one stop test."""
-    return create_scratch_repo()
-
-
 # ---------------------------------------------------------------------------
 # when the session is open and settled
 # ---------------------------------------------------------------------------
@@ -62,7 +55,7 @@ def repo(create_scratch_repo: Callable[[], str]) -> str:
 @pytest.mark.parametrize(
     "history",
     [
-        pytest.param((iteration(1), committed_keep(1)), id="settled-iteration"),
+        pytest.param((iteration_record(seq=1), committed_keep(1)), id="settled-iteration"),
         pytest.param((), id="no-iterations"),
     ],
 )
@@ -103,11 +96,11 @@ def test_stop_session_when_no_session_does_refuse_pointing_at_the_command_that_o
 
 
 def test_stop_session_when_finalized_does_refuse(repo: str):
-    start_with(repo, (iteration(1), committed_keep(1)))
+    start_with(repo, (iteration_record(seq=1), committed_keep(1)))
     worktree = experiment_worktree_dir(repo)
     (Path(worktree) / "step.txt").write_text("cache the regex\n", encoding="utf-8")
-    git(["add", "-A"], worktree)
-    git(["commit", "-m", "cache the regex"], worktree)
+    run_git(["add", "-A"], worktree)
+    run_git(["commit", "-m", "cache the regex"], worktree)
     commit = head_of(worktree)
     append_record(session_jsonl_path(repo), committed_keep(1, commit=commit))
     finalize_session(repo)
@@ -128,7 +121,7 @@ def test_stop_session_when_finalized_does_refuse(repo: str):
 
 
 def test_stop_session_when_last_iteration_unsettled_does_refuse_naming_settle_hint(repo: str):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     before = _record_count(repo)
 
     error = capture_error(lambda: stop_session(repo, "done"))
@@ -139,7 +132,7 @@ def test_stop_session_when_last_iteration_unsettled_does_refuse_naming_settle_hi
 
 
 def test_stop_session_when_last_iteration_unsettled_does_carry_unsettled_reason(repo: str):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
 
     error = capture_error(lambda: stop_session(repo, "done"))
 
@@ -152,7 +145,13 @@ def test_stop_session_when_last_iteration_unsettled_does_carry_unsettled_reason(
 
 
 def test_stop_session_when_gating_block_stands_does_refuse_with_settle_hint(repo: str):
-    start_with(repo, (confirmed_regression(1), gating_block(1)))
+    start_with(
+        repo,
+        (
+            confirmed_regression(1),
+            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+        ),
+    )
     before = _record_count(repo)
 
     error = capture_error(lambda: stop_session(repo, "done"))
@@ -163,7 +162,13 @@ def test_stop_session_when_gating_block_stands_does_refuse_with_settle_hint(repo
 
 
 def test_stop_session_when_gating_block_stands_does_carry_gating_block_reason(repo: str):
-    start_with(repo, (confirmed_regression(1), gating_block(1)))
+    start_with(
+        repo,
+        (
+            confirmed_regression(1),
+            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+        ),
+    )
 
     error = capture_error(lambda: stop_session(repo, "done"))
 
@@ -176,7 +181,7 @@ def test_stop_session_when_gating_block_stands_does_carry_gating_block_reason(re
 
 
 def test_stop_session_when_already_stopped_does_refuse_with_hint(repo: str):
-    start_with(repo, (iteration(1), committed_keep(1)))
+    start_with(repo, (iteration_record(seq=1), committed_keep(1)))
     append_record(session_jsonl_path(repo), stop_record())
     before = _record_count(repo)
 
@@ -188,7 +193,7 @@ def test_stop_session_when_already_stopped_does_refuse_with_hint(repo: str):
 
 
 def test_stop_session_when_already_stopped_does_carry_already_stopped_reason(repo: str):
-    start_with(repo, (iteration(1), committed_keep(1)))
+    start_with(repo, (iteration_record(seq=1), committed_keep(1)))
     append_record(session_jsonl_path(repo), stop_record())
 
     error = capture_error(lambda: stop_session(repo, "stop again"))

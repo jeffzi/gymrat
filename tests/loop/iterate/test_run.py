@@ -50,9 +50,8 @@ from tests.loop.iterate._fixtures import (
     baseline_rounds,
     bench_malformed_once,
     improved_rounds,
-    install_collect_samples,
-    iteration,
     last_iteration_of,
+    plain_report,
     resolved_config,
     rounds,
     sampling_call,
@@ -72,7 +71,7 @@ from tests.session.records._fixtures import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
     from syrupy.assertion import SnapshotAssertion
 
@@ -88,27 +87,10 @@ def _on_target_iteration(seq: int):
     return iteration_record(seq=seq, target_reached=True)
 
 
-def _plain(report: str) -> str:
-    """The report stripped of color, as a terminal's visible text would read."""
-    return "\n".join(trimmed_report_lines(report))
-
-
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str]) -> str:
-    """A fresh scratch repository, no gymrat session yet."""
-    return create_scratch_repo()
-
-
-@pytest.fixture
-def samples_mock(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
-    """A recorder installed in place of ``collect_samples``, not yet wired."""
-    return install_collect_samples(monkeypatch)
-
-
 @pytest.fixture
 def settled(repo: str, samples_mock: CollectSamplesRecorder) -> str:
     """A settled session on disk — one kept iteration — with sampling stubbed improved."""
-    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
     return repo
 
@@ -134,7 +116,7 @@ async def test_iterate_session_when_session_finalized_does_refuse_pointing_at_st
     write_session_log(
         repo,
         session_record(repo),
-        (iteration(1), committed_keep(1), finalize_record()),
+        (iteration_record(seq=1), committed_keep(1), finalize_record()),
     )
 
     with pytest.raises(GymratError) as exc:
@@ -147,7 +129,7 @@ async def test_iterate_session_when_session_finalized_does_refuse_pointing_at_st
 async def test_iterate_session_when_last_iteration_unsettled_does_refuse_naming_both_paths(
     repo: str, samples_mock: CollectSamplesRecorder
 ):
-    write_session_log(repo, session_record(repo), (iteration(1),))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1),))
 
     with pytest.raises(GymratError) as exc:
         await iterate_session(repo, resolved_config())
@@ -161,7 +143,7 @@ async def test_iterate_session_when_last_iteration_unsettled_does_refuse_naming_
 async def test_iterate_session_when_last_iteration_unsettled_does_carry_unsettled_reason(
     repo: str, samples_mock: CollectSamplesRecorder
 ):
-    write_session_log(repo, session_record(repo), (iteration(1),))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1),))
 
     with pytest.raises(GymratError) as exc:
         await iterate_session(repo, resolved_config())
@@ -180,7 +162,7 @@ async def test_iterate_session_when_max_iterations_reached_does_refuse_without_m
     write_session_log(
         repo,
         session_record(repo),
-        (iteration(1), committed_keep(1), iteration(2), committed_keep(2)),
+        (iteration_record(seq=1), committed_keep(1), iteration_record(seq=2), committed_keep(2)),
     )
     stub_runs(samples_mock, repo, [])
 
@@ -228,7 +210,7 @@ async def test_iterate_session_when_no_stop_configured_does_measure_past_a_kept_
     write_session_log(
         repo,
         session_record(repo),
-        (_on_target_iteration(1), committed_keep(1), iteration(2), committed_keep(2)),
+        (_on_target_iteration(1), committed_keep(1), iteration_record(seq=2), committed_keep(2)),
     )
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
 
@@ -372,7 +354,7 @@ async def test_iterate_session_when_target_not_met_does_leave_it_out_of_the_repo
 ):
     result = await iterate_session(settled, resolved_config(primary="total_ms", stop=stop))
 
-    assert "target reached" not in _plain(result.report)
+    assert "target reached" not in plain_report(result.report)
 
 
 async def test_iterate_session_when_color_false_does_suppress_ansi_in_report(
@@ -396,7 +378,7 @@ async def test_iterate_session_when_measuring_does_open_report_on_the_loop_heade
 ):
     result = await iterate_session(settled, resolved_config())
 
-    plain = _plain(result.report)
+    plain = plain_report(result.report)
     assert plain.split("\n")[0] == "iteration 2 · experiment vs baseline · 10 paired samples"
     assert "total_ms" in plain
 
@@ -416,7 +398,7 @@ async def test_iterate_session_when_hooks_configured_does_emit_hook_events(
     experiment_dir = session_record(repo).worktrees.experiment
     _ensure_dir(experiment_dir)
     hooks = HookScripts(repo, experiment_dir)
-    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
     events: list[ProgressEvent] = []
     config = resolved_config(
@@ -453,7 +435,7 @@ async def test_iterate_session_when_no_hooks_configured_does_emit_no_hook_events
 async def test_iterate_session_when_measuring_does_emit_judge_started_after_the_bench_passes(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     worktrees = session_record(repo).worktrees
     by_dir = {worktrees.experiment: improved_rounds(), worktrees.baseline: baseline_rounds()}
 
@@ -667,7 +649,7 @@ async def test_iterate_session_when_hooks_and_confirmation_does_order_all_events
     experiment_dir = session_record(repo).worktrees.experiment
     _ensure_dir(experiment_dir)
     hooks = HookScripts(repo, experiment_dir)
-    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     regressed_rounds = rounds(scaled(BASELINE_MS, 1.1), scaled(BASELINE_BYTES, 1.1))
     stub_runs(
         samples_mock,
@@ -718,7 +700,7 @@ async def test_iterate_session_when_measuring_does_record_duration_ms(
     experiment_dir = session_record(repo).worktrees.experiment
     _ensure_dir(experiment_dir)
     hooks = HookScripts(repo, experiment_dir)
-    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
     # The iteration reads the clock at start and end; the after hook times itself with two more reads.
     ticks = iter([1_000.0, 1_500.0, 2_000.0, 2_000.0])
@@ -736,7 +718,7 @@ async def test_iterate_session_when_after_hook_sleeps_does_not_include_its_durat
     experiment_dir = session_record(repo).worktrees.experiment
     _ensure_dir(experiment_dir)
     hooks = HookScripts(repo, experiment_dir)
-    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
     ticks = iter([0.0, 50.0, 100.0, 400.0])
     monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
@@ -771,7 +753,7 @@ async def test_iterate_session_when_bench_writes_file_does_change_measured_tree(
 ):
     experiment_dir = session_record(repo).worktrees.experiment
     _ensure_dir(experiment_dir)
-    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
 
     # First run: no extra file in the experiment worktree.
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
@@ -781,7 +763,7 @@ async def test_iterate_session_when_bench_writes_file_does_change_measured_tree(
     write_session_log(
         repo,
         session_record(repo),
-        (iteration(1), committed_keep(1), iteration(2), committed_keep(2)),
+        (iteration_record(seq=1), committed_keep(1), iteration_record(seq=2), committed_keep(2)),
     )
 
     # Second run: write a file into the experiment worktree before fingerprinting.
@@ -808,7 +790,7 @@ async def test_iterate_session_when_after_hook_writes_file_does_not_change_measu
     experiment_dir = session_record(repo).worktrees.experiment
     _ensure_dir(experiment_dir)
     hooks = HookScripts(repo, experiment_dir)
-    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
 
     artifact = Path(experiment_dir, "after-artifact.txt")
@@ -915,7 +897,7 @@ async def test_iterate_session_when_budget_exceeded_does_name_estimate_source_in
 async def test_iterate_session_when_budget_live_but_no_estimate_does_run_normally(
     repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
-    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
 
     fake_budget = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=1_800_000.0)
@@ -942,7 +924,7 @@ async def test_iterate_session_when_no_budget_does_run_normally(
 async def test_iterate_session_when_stop_condition_met_does_report_stop_before_budget_check(
     repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
-    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
 
     fake_budget = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=720_000.0)

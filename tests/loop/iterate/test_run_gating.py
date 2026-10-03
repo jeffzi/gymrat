@@ -40,9 +40,8 @@ from tests.loop.iterate._fixtures import (
     as_logged,
     baseline_rounds,
     improved_rounds,
-    install_collect_samples,
-    iteration,
     last_iteration_of,
+    plain_report,
     resolved_config,
     rounds,
     sampling_call,
@@ -62,8 +61,6 @@ from tests.session.records._fixtures import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from gymrat.model import Direction
     from gymrat.report.loop import LoopPrimary
     from gymrat.report.types import MetricComparison, MetricComparisons
@@ -111,11 +108,6 @@ def _total_ms_gating_config() -> ResolvedConfig:
     return resolved_config(filter=FILTER, metrics={"alloc_bytes": MetricEntry(gating=False)})
 
 
-def _plain(report: str) -> str:
-    """The report stripped of color, as a terminal's visible text would read."""
-    return "\n".join(trimmed_report_lines(report))
-
-
 def _primary_line(report: str) -> str:
     """The report's ``primary:`` line, failing when there is none."""
     for line in trimmed_report_lines(report):
@@ -135,18 +127,6 @@ def _assert_permutation(
     assert metric.noise_pct is not None
     assert metric.gating is True
     assert metric.confirmed is confirmed
-
-
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str]) -> str:
-    """A fresh scratch repository, no gymrat session yet."""
-    return create_scratch_repo()
-
-
-@pytest.fixture
-def samples_mock(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
-    """A recorder installed in place of ``collect_samples``, not yet wired."""
-    return install_collect_samples(monkeypatch)
 
 
 @pytest.fixture
@@ -775,7 +755,7 @@ async def test_iterate_session_when_outcome_settles_does_close_report_on_verdict
 
     result = await iterate_session(open_repo, resolved_config())
 
-    lines = _plain(result.report).split("\n")
+    lines = plain_report(result.report).split("\n")
     assert result.record.outcome == outcome
     assert word in lines[-2]
     assert lines[-1] == next_step
@@ -793,7 +773,7 @@ async def test_iterate_session_when_target_reached_but_regressed_does_omit_targe
 
     assert result.record.target_reached is True
     assert result.record.outcome == "regressed"
-    assert "target reached" not in _plain(result.report)
+    assert "target reached" not in plain_report(result.report)
 
 
 # ---------------------------------------------------------------------------
@@ -835,7 +815,7 @@ def hooks_setup(repo: str, samples_mock: CollectSamplesRecorder):
     experiment_dir = session_record(repo).worktrees.experiment
     Path(experiment_dir).mkdir(parents=True, exist_ok=True)
     scripts = HookScripts(repo, experiment_dir)
-    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
     return repo, experiment_dir, scripts
 
@@ -911,7 +891,7 @@ async def test_iterate_session_when_hooks_configured_does_tell_each_which_iterat
         "stage": "before",
         "experiment_dir": experiment_dir,
         "seq": 2,
-        "last_iteration": as_logged(iteration(1)),
+        "last_iteration": as_logged(iteration_record(seq=1)),
         "session": {**session_payload, "iteration_count": 1},
     }
     assert _payload_of(experiment_dir, "after") == {

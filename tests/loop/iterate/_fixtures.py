@@ -30,7 +30,6 @@ from gymrat.session.store import read_records
 from gymrat.session.workspace import Worktrees
 from tests._ansi import SGR_RE
 from tests.session.records._fixtures import SESSION_ID
-from tests.session.records._fixtures import iteration_record as _iteration_record
 from tests.session.records._fixtures import session_record as _session_record_defaults
 
 if TYPE_CHECKING:
@@ -86,11 +85,6 @@ def session_record(root: str) -> SessionRecord:
             baseline=str(Path(root) / "side-baseline"),
         ),
     )
-
-
-def iteration(seq: int) -> IterationRecord:
-    """A measured iteration numbered ``seq``, settled by nobody."""
-    return _iteration_record(seq=seq)
 
 
 def resolved_config(**overrides: Any) -> ResolvedConfig:
@@ -171,6 +165,19 @@ def install_collect_samples(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRe
     return recorder
 
 
+def _samples_by_dir(
+    targets: list[TargetContext], by_dir: dict[str, list[dict[str, float]]], stub: str
+) -> list[TargetSamples]:
+    """Answer each target with the rounds ``by_dir`` holds for its worktree directory."""
+    collected: list[TargetSamples] = []
+    for ctx in targets:
+        if ctx.dir not in by_dir:
+            message = f"{stub}: unrecognized worktree dir {ctx.dir}"
+            raise AssertionError(message)
+        collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
+    return collected
+
+
 def stub_samples(
     mock: CollectSamplesRecorder,
     root: str,
@@ -182,13 +189,7 @@ def stub_samples(
     by_dir = {worktrees.experiment: experiment, worktrees.baseline: baseline}
 
     def answer(targets: list[TargetContext]) -> list[TargetSamples]:
-        collected: list[TargetSamples] = []
-        for ctx in targets:
-            if ctx.dir not in by_dir:
-                message = f"stub_samples: unrecognized worktree dir {ctx.dir}"
-                raise AssertionError(message)
-            collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
-        return collected
+        return _samples_by_dir(targets, by_dir, "stub_samples")
 
     mock._answer = answer
 
@@ -217,13 +218,7 @@ def stub_runs(
         if isinstance(run, GymratError):
             raise run
         by_dir = {worktrees.experiment: run.experiment, worktrees.baseline: run.baseline}
-        collected: list[TargetSamples] = []
-        for ctx in targets:
-            if ctx.dir not in by_dir:
-                message = f"stub_runs: unrecognized worktree dir {ctx.dir}"
-                raise AssertionError(message)
-            collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
-        return collected
+        return _samples_by_dir(targets, by_dir, "stub_runs")
 
     mock._answer = answer
 
@@ -240,6 +235,11 @@ def sampling_call(mock: CollectSamplesRecorder, index: int) -> SamplingCall:
 def trimmed_report_lines(report: str) -> list[str]:
     """The report's lines, stripped of color and of the indentation a grouped metric carries."""
     return [SGR_RE.sub("", line).strip() for line in report.split("\n")]
+
+
+def plain_report(report: str) -> str:
+    """The report stripped of color, as a terminal's visible text would read."""
+    return "\n".join(trimmed_report_lines(report))
 
 
 def as_logged(value: SessionLogRecord) -> object:

@@ -60,7 +60,6 @@ from tests.loop._settle import (
     checks_pass,
     edit_experiment,
     head_of,
-    iteration,
     measured_rounds,
     settling_record_of,
     start_with,
@@ -97,7 +96,7 @@ def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 def _start_edited_session(root: str, **config: object) -> None:
     """Open a session with one unsettled iteration, edit the experiment, and write the config."""
-    start_with(root, (iteration(1),))
+    start_with(root, (iteration_record(seq=1),))
     edit_experiment(root)
     write_config(root, **config)
 
@@ -488,7 +487,7 @@ def test_keep_command_when_given_a_bench_run_flag_does_exit_two_with_usage_error
 def test_keep_command_when_checks_pass_does_commit_and_print_the_short_commit(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
     write_config(repo, checks=CHECKS)
@@ -522,7 +521,7 @@ def test_keep_command_when_committed_does_add_the_kept_baseline_to_the_status_hi
 def test_keep_command_when_committed_does_record_command_trace_with_seq_and_exit_zero(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
     write_config(repo, checks=CHECKS)
@@ -541,7 +540,7 @@ def test_keep_command_when_committed_does_record_command_trace_with_seq_and_exit
 def test_keep_command_when_blocked_does_record_command_trace_with_gate_and_reason(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     checks_pass(monkeypatch)
     write_config(repo, checks=CHECKS)
 
@@ -558,7 +557,7 @@ def test_keep_command_when_blocked_does_record_command_trace_with_gate_and_reaso
 def test_keep_command_when_checks_fail_does_record_command_trace_with_checks_failed_reason(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_fail(monkeypatch)
     write_config(repo, checks=CHECKS)
@@ -590,7 +589,7 @@ def test_keep_command_when_finalized_does_record_command_trace_with_exit_two(
 def test_keep_command_when_nothing_to_commit_does_exit_one_recording_the_block(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     checks_pass(monkeypatch)
     write_config(repo, checks=CHECKS)
 
@@ -604,7 +603,7 @@ def test_keep_command_when_nothing_to_commit_does_exit_one_recording_the_block(
 
 
 def test_keep_command_when_refusing_does_print_a_report_carrying_no_hint_label(repo: str):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     write_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep"])
@@ -626,7 +625,7 @@ def test_keep_command_when_refusing_does_take_report_color_from_the_environment(
     repo: str, monkeypatch: pytest.MonkeyPatch, variable: str, expect_ansi: bool
 ):
     monkeypatch.setenv(variable, "1")
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     write_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep"])
@@ -691,7 +690,7 @@ def test_keep_command_when_allow_unimproved_does_commit_and_record_the_flag_in_a
 def test_keep_command_when_checks_fail_does_exit_one_recording_the_block(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_fail(monkeypatch)
     write_config(repo, checks=CHECKS)
@@ -708,7 +707,7 @@ def test_keep_command_when_checks_fail_does_exit_one_recording_the_block(
 def test_discard_command_when_run_does_record_command_trace_with_seq_and_force(
     repo: str,
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     write_config(repo)
 
@@ -726,7 +725,7 @@ def test_discard_command_when_run_does_record_command_trace_with_seq_and_force(
 def test_discard_command_when_force_does_record_force_true_in_args(
     repo: str,
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     write_config(repo)
 
@@ -753,7 +752,7 @@ def test_discard_command_when_finalized_does_record_command_trace_with_exit_two(
 
 
 def test_discard_command_when_run_does_clean_the_worktree_and_record_the_discard(repo: str):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     write_config(repo)
 
@@ -809,7 +808,7 @@ def test_status_command_when_no_budget_does_omit_time_left_line(
 def test_keep_command_when_budget_active_and_committed_does_end_text_with_time_left_line(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
     write_config(repo, checks=CHECKS)
@@ -825,7 +824,7 @@ def test_keep_command_when_budget_active_and_committed_does_end_text_with_time_l
 def test_keep_command_when_budget_active_and_blocked_does_end_text_with_time_left_line(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     write_config(repo, checks=CHECKS)
     install_budget(repo, monkeypatch)
 
@@ -839,7 +838,7 @@ def test_keep_command_when_budget_active_and_blocked_does_end_text_with_time_lef
 def test_discard_command_when_budget_active_does_end_text_with_time_left_line(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     write_config(repo)
     install_budget(repo, monkeypatch)
@@ -860,7 +859,7 @@ def test_keep_command_when_no_color_does_strip_ansi_from_stdout_report(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     write_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep", "--no-color"])
@@ -870,7 +869,7 @@ def test_keep_command_when_no_color_does_strip_ansi_from_stdout_report(
 
 
 def test_keep_command_when_color_does_force_ansi_on_stdout_report(repo: str):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     write_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep", "--color"])
@@ -945,7 +944,7 @@ def test_discard_command_when_no_color_does_strip_ansi_from_stderr_error(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     write_config(repo)
 

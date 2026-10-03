@@ -35,7 +35,7 @@ from gymrat.session.paths import (
 from gymrat.session.store import append_record
 from tests._ansi import strip_ansi
 from tests._cli import ENTRY, no_color_env
-from tests._git import git
+from tests._git import run_git
 from tests._process_helpers import (
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
@@ -53,9 +53,15 @@ from tests.cli._session import (
     write_config,
 )
 from tests.conftest import hold_lock
-from tests.loop._probe import MeasureRecorder, baseline_of, install_measure, measurement, only_call
+from tests.loop._probe import (
+    BASELINE_SAMPLES,
+    MeasureRecorder,
+    install_measure,
+    measurement,
+    only_call,
+)
 from tests.loop._settle import start_with
-from tests.session.records._fixtures import finalize_record, iteration_record
+from tests.session.records._fixtures import baseline_record, finalize_record, iteration_record
 
 runner = CliRunner()
 
@@ -80,7 +86,7 @@ def measure(monkeypatch: pytest.MonkeyPatch) -> MeasureRecorder:
 @pytest.fixture
 def probe_repo(repo: str) -> str:
     """A scratch repo with an open session, a recorded baseline, and a filter template."""
-    start_with(repo, (baseline_of(),))
+    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
     write_config(repo, filter=FILTER)
     return repo
 
@@ -372,13 +378,13 @@ def _no_session(repo: str) -> None:
 
 def _finalized_session(repo: str) -> None:
     """A configured repository whose session was closed by a finalize record."""
-    start_with(repo, (baseline_of(), finalize_record()))
+    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES), finalize_record()))
     write_config(repo, filter=FILTER)
 
 
 def _no_filter(repo: str) -> None:
     """An open session with a baseline but no filter template to scope a probe."""
-    start_with(repo, (baseline_of(),))
+    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
     write_config(repo)
 
 
@@ -487,8 +493,8 @@ def test_probe_command_when_signalled_mid_bench_does_kill_the_bench_and_exit_128
 ):
     Path(repo, "bench.sh").write_text(_TRACKED_BENCH, encoding="utf-8")
     write_config(repo, bench="sh bench.sh", adapter="metric-lines", timeout_seconds=300)
-    git(repo, "add", "bench.sh", "gymrat.toml")
-    git(repo, "commit", "-m", "bench harness")
+    run_git(["add", "bench.sh", "gymrat.toml"], repo)
+    run_git(["commit", "-m", "bench harness"], repo)
     subprocess.run(  # noqa: S603
         [*ENTRY, "start", "--baseline", "main"],
         cwd=repo,
@@ -496,7 +502,7 @@ def test_probe_command_when_signalled_mid_bench_does_kill_the_bench_and_exit_128
         capture_output=True,
         check=True,
     )
-    append_record(session_jsonl_path(repo), baseline_of())
+    append_record(session_jsonl_path(repo), baseline_record(samples=BASELINE_SAMPLES))
 
     proc = subprocess.Popen(  # noqa: S603
         [*ENTRY, "probe"],

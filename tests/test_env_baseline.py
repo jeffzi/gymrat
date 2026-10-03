@@ -290,7 +290,7 @@ import os
 import shutil
 import stat
 
-from tests._git import git
+from tests._git import run_git
 
 WORKTREE = {worktree!r}
 
@@ -303,7 +303,7 @@ def _clear_read_only_and_retry(remove, path, _error):
 def test_strands_worktree_after_deleting_a_repo(create_scratch_repo):
     deleted = create_scratch_repo()
     kept = create_scratch_repo()
-    git(kept, "worktree", "add", "--detach", WORKTREE)
+    run_git(["worktree", "add", "--detach", WORKTREE], kept)
 
     shutil.rmtree(deleted, onexc=_clear_read_only_and_retry)
 """

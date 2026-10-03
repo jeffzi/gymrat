@@ -25,8 +25,8 @@ from gymrat.telemetry.attributes import (
     record_event,
 )
 from tests.session.records._fixtures import (
-    AT,
     SESSION_ID,
+    baseline_record,
     blocked_keep,
     command_record,
     committed_keep,
@@ -43,12 +43,6 @@ _ATTR_NAME_RE = re.compile(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$")
 def _assert_valid_attribute_names(keys: Iterable[str]) -> None:
     for key in keys:
         assert _ATTR_NAME_RE.match(key), f"bad attribute name: {key!r}"
-
-
-def _baseline_record(**overrides: object) -> BaselineRecord:
-    """A baseline record labeled ``"initial"`` unless ``label`` is overridden."""
-    default = BaselineRecord(type="baseline", at=AT, label="initial", samples=({"total_ms": 100},))
-    return default.model_copy(update=overrides) if overrides else default
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +278,7 @@ def test_record_event_when_keep_reason_none_does_omit_key():
 
 
 def test_record_event_when_baseline_does_map_label():
-    record = _baseline_record()
+    record = baseline_record(label="initial")
 
     _name, attrs = record_event(record)
 
@@ -344,7 +338,7 @@ def test_record_event_when_stop_has_no_seq_does_omit_iteration_seq():
 def test_record_event_when_baseline_does_not_carry_seq_field_does_omit_iteration_seq():
     assert "seq" not in BaselineRecord.model_fields
 
-    record = _baseline_record(label="main")
+    record = baseline_record(label="main")
 
     _name, attrs = record_event(record)
 
@@ -372,7 +366,7 @@ def test_record_event_when_called_does_never_produce_complex_values():
         hook_record(),
         stop_record(),
         committed_keep(1),
-        _baseline_record(),
+        baseline_record(),
         discard_record(2),
         finalize_record(branch="gymrat/test-final"),
     ]
@@ -562,7 +556,7 @@ def test_all_attribute_names_when_called_does_produce_valid_attribute_names():
 @pytest.mark.parametrize(
     "record",
     [
-        pytest.param(_baseline_record(duration_ms=42), id="baseline"),
+        pytest.param(baseline_record(duration_ms=42), id="baseline"),
         pytest.param(
             iteration_record(
                 duration_ms=500,

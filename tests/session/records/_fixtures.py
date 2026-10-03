@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
+    BaselineRecord,
     CommandRecord,
     DiscardRecord,
     FinalizeRecord,
@@ -89,6 +90,12 @@ def session_record(**overrides: Any) -> SessionRecord:
             primary="geomean",
         ),
     )
+    return _overridden(default, overrides)
+
+
+def baseline_record(**overrides: Any) -> BaselineRecord:
+    """A one-round baseline measurement of ``main`` that timed nothing, every field overridable."""
+    default = BaselineRecord(type="baseline", at=AT, label="main", samples=({"total_ms": 15200},))
     return _overridden(default, overrides)
 
 
@@ -243,6 +250,11 @@ def write_session_log(
     history: tuple[SessionLogRecord, ...] = (),
 ) -> None:
     """Append *header* then every record in *history* to the session JSONL log."""
+    append_records(root, header, *history)
+
+
+def append_records(root: str, *records: SessionLogRecord) -> None:
+    """Append every record, in order, to the session JSONL log under ``root``."""
     jsonl_path = session_jsonl_path(root)
-    for record in (header, *history):
+    for record in records:
         append_record(jsonl_path, record)

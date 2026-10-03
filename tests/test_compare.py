@@ -30,7 +30,7 @@ from gymrat.sampling import (
 from gymrat.targets import CleanupResult, WorktreeRemovalFailure
 from gymrat.verdict import compute_verdicts
 from gymrat.warn import warn_to_stderr
-from tests._git import git as _git
+from tests._git import run_git as _git
 from tests._pipeline import install_pipeline
 
 if TYPE_CHECKING:
@@ -291,8 +291,8 @@ _posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only she
 
 def _commit_bench(repo: str, value: int) -> None:
     (Path(repo) / "bench.sh").write_text(f"#!/bin/sh\necho 'METRIC x={value}'\n", encoding="utf-8")
-    _git(repo, "add", "bench.sh")
-    _git(repo, "commit", "-m", f"bench emits {value}")
+    _git(["add", "bench.sh"], repo)
+    _git(["commit", "-m", f"bench emits {value}"], repo)
 
 
 def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
@@ -319,9 +319,9 @@ async def test_compare_when_two_refs_does_produce_comparison_and_sweep(
 ):
     repo = create_scratch_repo()
     _commit_bench(repo, 1)
-    _git(repo, "switch", "-c", "candidate")
+    _git(["switch", "-c", "candidate"], repo)
     _commit_bench(repo, 2)
-    _git(repo, "switch", "main")
+    _git(["switch", "main"], repo)
     monkeypatch.chdir(repo)
 
     result = await compare(_e2e_options("main", "candidate"))

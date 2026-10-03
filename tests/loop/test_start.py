@@ -28,10 +28,11 @@ from gymrat.session.paths import (
     experiment_worktree_dir,
     session_jsonl_path,
 )
-from gymrat.session.records import SessionConfig, SessionHooks, SessionRecord
+from gymrat.session.records import SessionConfig, SessionHooks
 from gymrat.session.store import append_record, fold_session, read_records
 from gymrat.session.workspace import BaselineRef, Worktrees, remove_worktrees
-from tests._git import run_git
+from tests._git import run_git as _git
+from tests.loop._settle import session_header_of
 from tests.session.records._fixtures import committed_keep, finalize_record, iteration_record
 
 SESSION_ID_PATTERN = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
@@ -90,20 +91,6 @@ CONFIG_SNAPSHOT = SessionConfig(
 )
 
 
-def _git(args: list[str], cwd: str) -> str:
-    """Run git in ``cwd`` for test setup and assertions, returning trimmed stdout."""
-    return run_git(args, cwd).strip()
-
-
-def _session_header_of(root: str) -> SessionRecord:
-    """The session header ``root``'s log opens with, failing when there is none."""
-    records = read_records(session_jsonl_path(root))
-    assert records, f"expected a session header in {session_jsonl_path(root)}"
-    first = records[0]
-    assert isinstance(first, SessionRecord)
-    return first
-
-
 def _commit_in_experiment(root: str, message: str) -> str:
     """Commit an edit on the session branch from the experiment worktree, returning its SHA.
 
@@ -125,7 +112,7 @@ def _close_session_with_one_keep(root: str) -> str:
     appending a finalize record, so the next ``start_session`` meets a settled,
     closed session.
     """
-    header = _session_header_of(root)
+    header = session_header_of(root)
     commit = _commit_in_experiment(root, "cache the regex")
     jsonl = session_jsonl_path(root)
     append_record(jsonl, iteration_record(seq=1))
@@ -133,12 +120,6 @@ def _close_session_with_one_keep(root: str) -> str:
     remove_worktrees(root, header.worktrees)
     append_record(jsonl, finalize_record())
     return header.session_id
-
-
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str]) -> str:
-    """A fresh scratch repository for one start_session test."""
-    return create_scratch_repo()
 
 
 @pytest.fixture
@@ -157,7 +138,7 @@ def test_start_session_when_no_session_yet_does_write_header_naming_baseline_bra
 ):
     start_session(repo, "main", CONFIG)
 
-    header = _session_header_of(repo)
+    header = session_header_of(repo)
     assert read_records(session_jsonl_path(repo)) == [header]
     assert header.type == "session"
     assert header.schema_version == 1
@@ -178,7 +159,7 @@ def test_start_session_when_new_does_stamp_at_within_now_ns_bracket(repo: str):
 
     start_session(repo, "main", CONFIG)
 
-    header = _session_header_of(repo)
+    header = session_header_of(repo)
     after = now_ns()
     assert before <= header.at <= after
 
@@ -194,7 +175,7 @@ def test_start_session_when_new_does_mint_the_session_id_from_the_instant_the_he
 
     start_session(repo, "main", CONFIG)
 
-    header = _session_header_of(repo)
+    header = session_header_of(repo)
     assert header.at == instant_ns
     assert header.session_id.startswith("20240305-060708-")
 
@@ -216,7 +197,7 @@ def test_start_session_when_no_hooks_configured_does_leave_hooks_out_of_the_conf
 ):
     start_session(repo, "main", CONFIG_WITHOUT_HOOKS)
 
-    header = _session_header_of(repo)
+    header = session_header_of(repo)
     assert header.config.hooks is None
     assert header.config == CONFIG_SNAPSHOT_WITHOUT_HOOKS
 
@@ -237,7 +218,7 @@ def test_start_session_when_new_does_check_out_the_experiment_and_baseline_workt
 def test_start_session_when_new_does_return_the_recorded_session_with_no_history(repo: str):
     result = start_session(repo, "main", CONFIG)
 
-    header = _session_header_of(repo)
+    header = session_header_of(repo)
     assert result == StartResult(
         session=header,
         state=fold_session([header]),

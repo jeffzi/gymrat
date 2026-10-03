@@ -34,10 +34,15 @@ from gymrat.session.paths import lockfile_path, session_jsonl_path
 from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
 from gymrat.session.store import append_record, read_records
 from tests._git import run_git
-from tests.cli.supervise._fixtures import baseline_record, start_open_session
+from tests.cli.supervise._fixtures import start_open_session
 from tests.loop.iterate._fixtures import resolved_config
 from tests.report._measurements import create_measurement_result
-from tests.session.records._fixtures import committed_keep, iteration_record, tear_final_line
+from tests.session.records._fixtures import (
+    baseline_record,
+    committed_keep,
+    iteration_record,
+    tear_final_line,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -320,7 +325,7 @@ def test_preflight_when_finalized_session_does_archive_and_open_fresh(
 
     run_git(["add", "README.md"], str(worktree))
     run_git(["commit", "-m", "edit"], str(worktree))
-    commit = run_git(["rev-parse", "HEAD"], str(worktree)).strip()
+    commit = run_git(["rev-parse", "HEAD"], str(worktree))
     append_record(session_jsonl_path(repo), iteration_record(seq=1))
     append_record(session_jsonl_path(repo), committed_keep(1, commit=commit))
     finalize_session(repo)

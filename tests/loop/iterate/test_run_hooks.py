@@ -24,11 +24,7 @@ from gymrat.loop.iterate.run import run_hook
 from gymrat.session.records import IterationRecord, record_to_wire
 from gymrat.session.schema import HookStage
 from gymrat.session.workspace import Worktrees
-from tests.loop.iterate._hooks import (
-    HookScripts,
-    expected_hook_record,
-    labeled_lines,
-)
+from tests.loop.iterate._hooks import HookScripts, expected_hook_record
 from tests.session.records._fixtures import SESSION_ID, iteration_record, session_record
 
 #: The cap the runner holds each of a hook's channels to before it reaches
@@ -41,6 +37,24 @@ KILL_SANITY_BOUND_MS = 4000
 
 #: How long a hook may run when its invocation names no timeout of its own.
 DEFAULT_TIMEOUT_MS = 30_000
+
+
+def labeled_lines(report: str, stage: HookStage) -> list[str]:
+    """The report's lines with their ``[stage]`` label stripped off.
+
+    Every line the runner emits carries the label, so a line without one is a
+    leak of unlabeled hook output rather than something to quietly pass through.
+    """
+    if report == "":
+        return []
+    prefix = f"[{stage}] "
+    lines: list[str] = []
+    for line in report.split("\n"):
+        if not line.startswith(prefix):
+            message = f"expected every hook report line to be labeled {prefix.strip()}: {line}"
+            raise AssertionError(message)
+        lines.append(line[len(prefix) :])
+    return lines
 
 
 @pytest.fixture

@@ -21,7 +21,7 @@ import pytest
 
 from gymrat.cli.supervise.progress import make_default_read
 from gymrat.cli.supervise.types import ReadSessionResult
-from gymrat.session.records import BaselineRecord, IterationPrimary
+from gymrat.session.records import IterationPrimary
 from gymrat.supervisor.events import TextDeltaEvent
 from tests.cli.supervise._fixtures import (
     _throwing_read,
@@ -41,7 +41,7 @@ from tests.cli.supervise._fixtures import (
     session_state_three_iterations,
 )
 from tests.session.records._fixtures import (
-    AT,
+    baseline_record,
     blocked_keep,
     committed_keep,
     empty_session_state,
@@ -148,11 +148,7 @@ def test_make_default_read_when_stop_recorded_does_report_it_only_while_last(
     [
         pytest.param((), False, id="no-baseline"),
         pytest.param(
-            (
-                BaselineRecord(
-                    type="baseline", at=AT, label="experiment", samples=({"total_ms": 98.0},)
-                ),
-            ),
+            (baseline_record(),),
             True,
             id="baseline-recorded",
         ),
