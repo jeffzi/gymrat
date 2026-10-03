@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.model import Effect, Exclusion, MetricUnit, PermutationVerdict
+from gymrat.model import Exclusion, MetricUnit, PermutationVerdict
 from gymrat.report.json_doc import (
     BudgetSummary,
     render_json,
@@ -483,7 +483,7 @@ def test_render_json_when_baseline_unmeasured_does_render_null_baseline_fields()
                     p=0.01,
                     noise_pct=2.5,
                     noise_abs=3.5,
-                    delta=Effect(value=-5, unit="percent"),
+                    delta=-5,
                     n=10,
                 ),
             ),
@@ -686,7 +686,7 @@ def test_render_measure_json_when_top_level_keys_does_order_them_canonically():
 
 
 def test_render_measure_json_when_grouped_metric_does_carry_contract_derived_group():
-    # infer_group derives the group from the metric name key, not short_name:
+    # The group derives from the metric name key, not short_name:
     # "entity/alive_check#time" → group "entity"; short_name "alive_check"
     # would yield None.
     result = create_measurement_result(

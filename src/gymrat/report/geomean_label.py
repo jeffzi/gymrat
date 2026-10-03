@@ -5,10 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from gymrat.model import Effect
 from gymrat.plural import pluralize
 from gymrat.report.display import QUIET_VERDICTS, DisplayClass
-from gymrat.report.format import format_delta, format_noise_band_value
+from gymrat.report.format import format_noise_band_value, format_percent_delta
 from gymrat.report.style import SCOPE_SEPARATOR
 
 if TYPE_CHECKING:
@@ -25,21 +24,6 @@ NO_GEOMEAN_FIGURE = "—"
 NO_STABLE_METRICS = "no stable metrics"
 
 NO_GEOMEAN_CELL = f"{NO_GEOMEAN_FIGURE}  {NO_STABLE_METRICS}"
-
-
-def _delta_of(value: float) -> str:
-    """A raw percentage figure as a signed delta, wrapping it in a percent effect.
-
-    The aggregate figures carry a bare ratio rather than an :class:`Effect`, so
-    they reuse :func:`format_delta` through this adapter.
-
-    Args:
-        value: The raw ratio to format, such as ``2.2`` for ``+2.2%``.
-
-    Returns:
-        The signed delta string such as ``"+2.2%"`` or ``"0.0%"``.
-    """
-    return format_delta(Effect(value=value, unit="percent"))
 
 
 def geomean_label(n: int) -> str:
@@ -116,7 +100,7 @@ def geomean_parts(geomean: GeomeanResult) -> GeomeanParts | None:
     if geomean.n == 0:
         return None
     return GeomeanParts(
-        delta=_delta_of(geomean.value),
+        delta=format_percent_delta(geomean.value),
         provenance=pluralize(geomean.n, "stable metric"),
         band=format_noise_band_value(geomean.band) if geomean.band > 0 else "",
     )

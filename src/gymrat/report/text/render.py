@@ -28,20 +28,19 @@ from rich.markup import escape
 from rich.text import Text
 
 from gymrat.metric_name import format_inline, parse
-from gymrat.model import Effect
+from gymrat.model import PERMUTATION_MIN_N, PERMUTATION_P_THRESHOLD
 from gymrat.plural import pluralize
 from gymrat.report.display import (
-    MIN_PERMUTATION_N,
     DisplayClass,
     display_class,
     get_glyph,
     shown_class,
 )
 from gymrat.report.format import (
-    format_delta,
     format_evidence,
     format_metric_cell_parts,
     format_pair_count,
+    format_percent_delta,
     format_verdict_delta,
 )
 from gymrat.report.geomean_label import GATED_GEOMEAN_LABEL
@@ -219,7 +218,7 @@ def _highlight_weight(verdict: MetricVerdict) -> float:
     """How loud a highlight is within its class: noise for unstable, delta magnitude otherwise."""
     if verdict.verdict == "unstable":
         return verdict.noise_pct
-    magnitude = abs(verdict.delta.value)
+    magnitude = abs(verdict.delta)
     return 0.0 if math.isnan(magnitude) else magnitude
 
 
@@ -374,7 +373,7 @@ def _gate_trip_lines(
         geomean = kind.gated_geomean
         if geomean is None or geomean.n == 0:
             continue
-        delta = format_delta(Effect(value=geomean.value, unit="percent"))
+        delta = format_percent_delta(geomean.value)
         lines.extend(
             f"  {markup(_GATE_TRIP_GLYPH, style)} {escape(kind.kind)} "
             f"{GATED_GEOMEAN_LABEL} {markup(delta, style)} "
@@ -465,7 +464,7 @@ def _samples_hint(command: str) -> str:
         The hint string naming the re-run command and sample count.
     """
     return (
-        f"re-run with `gymrat {command} --samples {MIN_PERMUTATION_N}` "
+        f"re-run with `gymrat {command} --samples {PERMUTATION_MIN_N}` "
         f"or more for statistical verdicts"
     )
 
@@ -506,7 +505,7 @@ def _classify_verdict(verdict: MetricVerdict, data: _FooterData) -> None:
         case "permutation":
             data.permutation.append(verdict.n)
         case "band":
-            if verdict.n < MIN_PERMUTATION_N:
+            if verdict.n < PERMUTATION_MIN_N:
                 data.shortage.append(verdict.n)
             else:
                 data.ties.append(verdict.usable_n)
@@ -544,20 +543,20 @@ def _method_lines(data: _FooterData) -> list[str]:
     if data.permutation:
         desc = (
             f"verdicts: sign-flip permutation test on pairs "
-            f"({format_pair_count(min(data.permutation))} ≥ {MIN_PERMUTATION_N}) "
-            f"· ~ = no signal at α=0.05"
+            f"({format_pair_count(min(data.permutation))} ≥ {PERMUTATION_MIN_N}) "
+            f"· ~ = no signal at α={PERMUTATION_P_THRESHOLD}"
         )
         lines.append(markup(desc, "dim"))
     if data.shortage:
         desc = (
             f"{_BAND_METHOD} — {format_pair_count(max(data.shortage))} "
-            f"below permutation floor ({MIN_PERMUTATION_N} pairs)"
+            f"below permutation floor ({PERMUTATION_MIN_N} pairs)"
         )
         lines.append(markup(desc, "dim"))
     if data.ties:
         desc = (
             f"{_BAND_METHOD} — ties left {format_pair_count(min(data.ties))} "
-            f"usable pairs ({MIN_PERMUTATION_N} needed)"
+            f"usable pairs ({PERMUTATION_MIN_N} needed)"
         )
         lines.append(markup(desc, "dim"))
     return lines
@@ -582,7 +581,7 @@ def _shortage_hint(shortage: Sequence[int], samples: int | None, command: str) -
     """
     if not shortage:
         return None
-    if samples is not None and samples >= MIN_PERMUTATION_N:
+    if samples is not None and samples >= PERMUTATION_MIN_N:
         return _DROPPED_ROUNDS_HINT
     return _samples_hint(command)
 

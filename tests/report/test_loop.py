@@ -233,6 +233,8 @@ def test_derive_outcome_when_non_gating_metric_regressed_does_leave_it_out_of_th
         pytest.param(MetricPrimary("lower/time", 3), "no-signal", id="lower-positive-no-signal"),
         pytest.param(MetricPrimary("higher/time", 3), "improved", id="higher-positive-improves"),
         pytest.param(MetricPrimary("higher/time", -3), "no-signal", id="higher-negative-no-signal"),
+        pytest.param(MetricPrimary("lower/time", 0), "no-signal", id="lower-zero-no-signal"),
+        pytest.param(MetricPrimary("higher/time", 0), "no-signal", id="higher-zero-no-signal"),
     ],
 )
 def test_derive_outcome_when_no_gating_regression_does_read_the_primary(

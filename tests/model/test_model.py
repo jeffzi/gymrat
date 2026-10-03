@@ -4,43 +4,27 @@ from typing import assert_never
 import pytest
 
 from gymrat.model import (
-    BAND_FLOORS,
+    BAND_MIN_N,
     DEFAULT_UNSTABLE_NOISE_PCT,
     NOISE_FLOOR_PCT,
     NOISE_K,
-    PERMUTATION_FLOORS,
+    PERMUTATION_MIN_N,
+    PERMUTATION_P_THRESHOLD,
     BandVerdict,
-    Effect,
     ExactVerdict,
     Exclusion,
     GeomeanResult,
-    MethodFloors,
     MetricMeta,
     MetricVerdict,
-    Observations,
     PairResult,
     PermutationVerdict,
     ResolvedMetricMeta,
     Verdict,
-    VerdictMethod,
 )
 
-# ---------------------------------------------------------------------------
-# Effect
-# ---------------------------------------------------------------------------
-
-
-def test_effect_when_constructed_does_store_value_and_unit():
-    effect = Effect(value=12.5, unit="percent")
-
-    assert effect.value == 12.5
-    assert effect.unit == "percent"
-
-
-_DELTA = Effect(value=1.0, unit="percent")
+_DELTA = 1.0
 
 _VALUE_RECORDS = [
-    pytest.param(_DELTA, "value", id="effect"),
     pytest.param(
         MetricMeta(direction="higher", gating=False, exact=True, unit=None),
         "gating",
@@ -58,7 +42,6 @@ _VALUE_RECORDS = [
         "kind",
         id="resolved-metric-meta",
     ),
-    pytest.param(PERMUTATION_FLOORS, "min_n", id="method-floors"),
     pytest.param(
         PermutationVerdict(
             method="permutation",
@@ -95,7 +78,6 @@ _VALUE_RECORDS = [
         GeomeanResult(value=1.1, n=2, band=0.5, excluded=()), "value", id="geomean-result"
     ),
     pytest.param(PairResult(left=(1.0,), right=(2.0,), dropped=0), "dropped", id="pair-result"),
-    pytest.param(Observations.from_rounds([{"t": 1.0}]), "by_key", id="observations"),
 ]
 
 
@@ -110,14 +92,6 @@ def test_value_record_when_field_assigned_does_raise_frozen_instance_error(
 @pytest.mark.parametrize(("instance", "_field"), _VALUE_RECORDS)
 def test_value_record_when_instantiated_does_carry_no_instance_dict(instance: object, _field: str):
     assert not hasattr(instance, "__dict__")
-
-
-def test_effect_when_values_equal_does_compare_equal():
-    assert Effect(value=1.0, unit="percent") == Effect(value=1.0, unit="percent")
-
-
-def test_effect_when_values_differ_does_compare_unequal():
-    assert Effect(value=1.0, unit="percent") != Effect(value=2.0, unit="percent")
 
 
 # ---------------------------------------------------------------------------
@@ -186,22 +160,10 @@ def test_resolved_metric_meta_when_inspected_does_have_exactly_six_named_fields(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("floors", "method", "min_n", "p_threshold"),
-    [
-        (PERMUTATION_FLOORS, "permutation", 6, 0.05),
-        (BAND_FLOORS, "band", 2, None),
-    ],
-)
-def test_method_floors_when_defined_does_expose_statistical_floors(
-    floors: MethodFloors,
-    method: VerdictMethod,
-    min_n: int,
-    p_threshold: float | None,
-):
-    assert floors.method == method
-    assert floors.min_n == min_n
-    assert floors.p_threshold == p_threshold
+def test_method_floors_when_referenced_does_match_model_defaults():
+    assert PERMUTATION_MIN_N == 6
+    assert PERMUTATION_P_THRESHOLD == 0.05
+    assert BAND_MIN_N == 2
 
 
 def test_noise_constants_when_referenced_does_match_model_defaults():
@@ -215,11 +177,6 @@ def test_noise_constants_when_referenced_does_match_model_defaults():
 # ---------------------------------------------------------------------------
 
 
-def _percent(value: float) -> Effect:
-    """Build an ``Effect`` with an arbitrary, unit-under-test-irrelevant "percent" unit."""
-    return Effect(value=value, unit="percent")
-
-
 def test_permutation_verdict_when_constructed_does_store_fields():
     verdict = PermutationVerdict(
         method="permutation",
@@ -227,7 +184,7 @@ def test_permutation_verdict_when_constructed_does_store_fields():
         p=0.01,
         noise_pct=1.2,
         noise_abs=3.4,
-        delta=_percent(5.5),
+        delta=5.5,
         n=8,
     )
 
@@ -236,7 +193,7 @@ def test_permutation_verdict_when_constructed_does_store_fields():
     assert verdict.p == 0.01
     assert verdict.noise_pct == 1.2
     assert verdict.noise_abs == 3.4
-    assert verdict.delta == _percent(5.5)
+    assert verdict.delta == 5.5
     assert verdict.n == 8
 
 
@@ -247,7 +204,7 @@ def test_band_verdict_when_constructed_does_store_fields():
         usable_n=4,
         noise_pct=2.0,
         noise_abs=5.0,
-        delta=_percent(-7.0),
+        delta=-7.0,
         n=6,
     )
 
@@ -256,7 +213,7 @@ def test_band_verdict_when_constructed_does_store_fields():
     assert verdict.usable_n == 4
     assert verdict.noise_pct == 2.0
     assert verdict.noise_abs == 5.0
-    assert verdict.delta == _percent(-7.0)
+    assert verdict.delta == -7.0
     assert verdict.n == 6
 
 
@@ -264,13 +221,13 @@ def test_exact_verdict_when_constructed_does_store_fields():
     verdict = ExactVerdict(
         method="exact",
         verdict="regressed",
-        delta=_percent(-1.5),
+        delta=-1.5,
         n=10,
     )
 
     assert verdict.method == "exact"
     assert verdict.verdict == "regressed"
-    assert verdict.delta == _percent(-1.5)
+    assert verdict.delta == -1.5
     assert verdict.n == 10
 
 
@@ -290,7 +247,7 @@ def test_exact_verdict_verdict_when_passed_to_verdict_sink_does_round_trip():
     verdict = ExactVerdict(
         method="exact",
         verdict="no-signal",
-        delta=_percent(0.0),
+        delta=0.0,
         n=3,
     )
 
@@ -320,7 +277,7 @@ def describe(verdict: MetricVerdict) -> str:
                 p=0.01,
                 noise_pct=1.0,
                 noise_abs=2.0,
-                delta=_percent(1.0),
+                delta=1.0,
                 n=6,
             ),
             "permutation",
@@ -332,7 +289,7 @@ def describe(verdict: MetricVerdict) -> str:
                 usable_n=3,
                 noise_pct=1.0,
                 noise_abs=2.0,
-                delta=_percent(2.0),
+                delta=2.0,
                 n=4,
             ),
             "band",
@@ -341,7 +298,7 @@ def describe(verdict: MetricVerdict) -> str:
             ExactVerdict(
                 method="exact",
                 verdict="improved",
-                delta=_percent(1.0),
+                delta=1.0,
                 n=5,
             ),
             "exact",

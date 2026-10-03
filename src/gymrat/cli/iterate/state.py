@@ -9,12 +9,10 @@ reproducible and testable without a console.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, assert_never
 
 from gymrat.eta import SamplingEta, format_duration
-from gymrat.model import Effect
 from gymrat.plural import pluralize
 from gymrat.progress_events import (
     ConfirmFinished,
@@ -30,7 +28,7 @@ from gymrat.progress_events import (
     PrepareStarted,
     ProgressEvent,
 )
-from gymrat.report.format import format_delta
+from gymrat.report.format import format_percent_delta
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -498,9 +496,7 @@ def format_primary_delta(primary_delta_pct: float | None) -> str:
         for a value that rounds to zero), or :data:`MISSING_DELTA` for a
         missing or non-finite delta.
     """
-    if primary_delta_pct is None or not math.isfinite(primary_delta_pct):
-        return MISSING_DELTA
-    return format_delta(Effect(value=primary_delta_pct, unit="percent"))
+    return format_percent_delta(primary_delta_pct, missing=MISSING_DELTA)
 
 
 def format_judge_plain(

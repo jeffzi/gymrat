@@ -20,7 +20,7 @@ from gymrat.adapters import get_adapter
 from gymrat.compare import CompareOptions, compare
 from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.errors import GymratError
-from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT, Observations
+from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
 from gymrat.sampling import (
     RunOptions,
     SamplingOptions,
@@ -89,12 +89,8 @@ async def test_compare_when_candidates_judged_does_use_shared_baseline(
     meta = resolve_metric_meta_from_samples(
         [baseline, cand_a, cand_b], None, get_adapter("metric-lines"), None
     )
-    expected_a = compute_verdicts(
-        Observations.from_rounds(baseline), Observations.from_rounds(cand_a), meta
-    )["x"]
-    expected_b = compute_verdicts(
-        Observations.from_rounds(baseline), Observations.from_rounds(cand_b), meta
-    )["x"]
+    expected_a = compute_verdicts(baseline, cand_a, meta)["x"]
+    expected_b = compute_verdicts(baseline, cand_b, meta)["x"]
     assert result.metrics["x"].candidates[0].verdict == expected_a
     assert result.metrics["x"].candidates[1].verdict == expected_b
 

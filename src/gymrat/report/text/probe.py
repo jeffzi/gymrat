@@ -16,9 +16,8 @@ from rich.cells import cell_len
 from rich.markup import escape
 from rich.text import Text
 
-from gymrat.model import Effect
 from gymrat.plural import pluralize
-from gymrat.report.format import format_delta, format_metric_cell_parts, is_improvement
+from gymrat.report.format import format_metric_cell_parts, format_percent_delta, is_improvement
 from gymrat.report.sections import plan_sections
 from gymrat.report.style import (
     RENDER_WIDTH,
@@ -87,7 +86,7 @@ def _delta_style(delta: str, delta_pct: float | None, direction: Direction) -> s
     """The style a rendered delta wears, or ``None`` where it points nowhere.
 
     Args:
-        delta: The delta as :func:`~gymrat.report.format.format_delta` rendered
+        delta: The delta as :func:`~gymrat.report.format.format_percent_delta` rendered
             it, so the paint agrees with the digits on screen.
         delta_pct: The signed percentage behind that text, or ``None`` when the
             probe has no delta to state.
@@ -99,11 +98,7 @@ def _delta_style(delta: str, delta_pct: float | None, direction: Direction) -> s
     """
     if delta_pct is None or delta in _UNPAINTED_DELTAS:
         return None
-    # `is_improvement` reads a percentage as lower-is-better; a higher-is-better
-    # metric improves on the opposite sign, so the two agree exactly when the
-    # metric is itself lower-is-better.
-    improved = is_improvement(Effect(value=delta_pct, unit="percent"))
-    return VERDICT_STYLES["improved" if improved == (direction == "lower") else "regressed"]
+    return VERDICT_STYLES["improved" if is_improvement(delta_pct, direction) else "regressed"]
 
 
 def _probe_row(name: str, group: str | None, metric: ProbeMetric) -> _ProbeRow:
@@ -113,7 +108,7 @@ def _probe_row(name: str, group: str | None, metric: ProbeMetric) -> _ProbeRow:
     elif metric.delta_pct is None:
         delta = ""
     else:
-        delta = format_delta(Effect(value=metric.delta_pct, unit="percent"))
+        delta = format_percent_delta(metric.delta_pct)
     return _ProbeRow(
         name=name,
         label=indented_section_label(metric.meta.short_name, group),

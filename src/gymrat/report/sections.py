@@ -14,8 +14,8 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import GeomeanResult
-from gymrat.verdict import infer_group
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -124,7 +124,7 @@ def plan_sections[Row, Metric: SectionedMetric](
         if meta.gating:
             section.has_gating = True
 
-        group = infer_group(name)
+        group = parse_metric_name(name).group
         row = measure(name, group, metric)
         ordered.append(row)
 

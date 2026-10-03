@@ -57,7 +57,7 @@ def recorded_verdicts(
     for name, verdict in verdicts.items():
         meta = metric_meta.get(name)
         recorded[name] = RecordMetricVerdict(
-            delta_pct=recorded_delta(verdict.delta.value),
+            delta_pct=recorded_delta(verdict.delta),
             verdict=verdict.verdict,
             method=verdict.method,
             gating=meta.gating if meta is not None else True,

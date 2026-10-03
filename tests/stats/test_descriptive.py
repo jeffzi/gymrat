@@ -7,13 +7,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from gymrat.model import Direction
-from gymrat.stats import (
-    GeomeanCombination,
-    combine_geomean,
-    compute_half_range,
-    normalize_ratio,
-    percent_delta,
-)
+from gymrat.stats import combine_geomean, compute_half_range, normalize_ratio, percent_delta
 
 # ---------------------------------------------------------------------------
 # percent_delta
@@ -73,24 +67,15 @@ def test_compute_half_range_when_empty_does_raise_valueerror():
 
 
 def test_normalize_ratio_when_direction_lower_does_apply_lower_formula():
-    outcome = normalize_ratio(50.0, "lower")
-
-    assert outcome.reason is None
-    assert outcome.rho == pytest.approx(1.5)
+    assert normalize_ratio(50.0, "lower") == pytest.approx(1.5)
 
 
 def test_normalize_ratio_when_direction_higher_does_apply_higher_formula():
-    outcome = normalize_ratio(50.0, "higher")
-
-    assert outcome.reason is None
-    assert outcome.rho == pytest.approx(1.0 / 1.5)
+    assert normalize_ratio(50.0, "higher") == pytest.approx(1.0 / 1.5)
 
 
 def test_normalize_ratio_when_delta_nan_does_return_undefined_ratio():
-    outcome = normalize_ratio(float("nan"), "lower")
-
-    assert outcome.rho is None
-    assert outcome.reason == "undefined-ratio"
+    assert normalize_ratio(float("nan"), "lower") == "undefined-ratio"
 
 
 @pytest.mark.parametrize(
@@ -99,16 +84,14 @@ def test_normalize_ratio_when_delta_nan_does_return_undefined_ratio():
         pytest.param(-100.0, "lower", id="lower-rho-zero"),
         pytest.param(-200.0, "lower", id="lower-rho-negative"),
         pytest.param(-100.0, "higher", id="higher-divide-by-zero"),
+        pytest.param(math.inf, "lower", id="lower-rho-infinite"),
     ],
 )
 def test_normalize_ratio_when_rho_not_positive_finite_does_return_infinite_rho(
     delta: float,
     direction: Direction,
 ):
-    outcome = normalize_ratio(delta, direction)
-
-    assert outcome.rho is None
-    assert outcome.reason == "infinite-rho"
+    assert normalize_ratio(delta, direction) == "infinite-rho"
 
 
 # ---------------------------------------------------------------------------
@@ -123,29 +106,22 @@ def test_normalize_ratio_when_rho_not_positive_finite_does_return_infinite_rho(
         pytest.param([(1.5, 0.0), (2.0, 3.0)], math.hypot(0.0, 3.0) / 2.0, id="exact-beside-noisy"),
     ],
 )
-def test_combine_geomean_when_multiple_entries_does_return_value_band_and_count(
+def test_combine_geomean_when_multiple_entries_does_return_value_and_band(
     entries: list[tuple[float, float]],
     expected_band: float,
 ):
-    result = combine_geomean(entries)
+    value, band = combine_geomean(entries)
 
-    assert result.n == 2
-    assert result.value == pytest.approx((math.sqrt(3.0) - 1.0) * 100.0)
-    assert result.band == pytest.approx(expected_band)
+    assert value == pytest.approx((math.sqrt(3.0) - 1.0) * 100.0)
+    assert band == pytest.approx(expected_band)
 
 
 def test_combine_geomean_when_empty_does_return_zeros():
-    result = combine_geomean([])
-
-    assert result == GeomeanCombination(value=0.0, n=0, band=0.0)
+    assert combine_geomean([]) == (0.0, 0.0)
 
 
 def test_combine_geomean_when_single_entry_does_return_percent_and_own_band():
-    result = combine_geomean([(1.5, 4.0)])
-
-    assert result.n == 1
-    assert result.value == pytest.approx(50.0)
-    assert result.band == pytest.approx(4.0)
+    assert combine_geomean([(1.5, 4.0)]) == pytest.approx((50.0, 4.0))
 
 
 # ---------------------------------------------------------------------------
@@ -199,12 +175,12 @@ _positive_factor_deltas = st.floats(
 
 @given(delta=_positive_factor_deltas)
 def test_normalize_ratio_when_higher_does_reciprocate_lower(delta: float):
-    lower_rho = normalize_ratio(delta, "lower").rho
-    higher_rho = normalize_ratio(delta, "higher").rho
+    lower_rho = normalize_ratio(delta, "lower")
+    higher_rho = normalize_ratio(delta, "higher")
 
     # delta >= -99 keeps the factor strictly positive, so both are always usable.
-    assert lower_rho is not None
-    assert higher_rho is not None
+    assert isinstance(lower_rho, float)
+    assert isinstance(higher_rho, float)
     assert math.isclose(higher_rho, 1.0 / lower_rho, rel_tol=1e-9)
 
 
@@ -213,14 +189,14 @@ def test_normalize_ratio_when_round_tripped_does_preserve_percent_delta(
     delta: float,
     direction: Direction,
 ):
-    rho = normalize_ratio(delta, direction).rho
+    rho = normalize_ratio(delta, direction)
 
     # delta >= -99 keeps the factor strictly positive, so rho is always usable.
-    assert rho is not None
+    assert isinstance(rho, float)
     recovered_delta = (rho - 1.0) * 100.0 if direction == "lower" else (1.0 / rho - 1.0) * 100.0
-    renormalized_rho = normalize_ratio(recovered_delta, direction).rho
+    renormalized_rho = normalize_ratio(recovered_delta, direction)
 
-    assert renormalized_rho is not None
+    assert isinstance(renormalized_rho, float)
     assert math.isclose(renormalized_rho, rho, rel_tol=1e-9, abs_tol=1e-12)
 
 
@@ -243,7 +219,9 @@ _entries = st.lists(st.tuples(_positive_rho, _noise), min_size=1, max_size=50)
 def test_combine_geomean_when_any_inputs_does_stay_above_negative_100(
     entries: list[tuple[float, float]],
 ):
-    assert combine_geomean(entries).value > -100.0
+    value, _ = combine_geomean(entries)
+
+    assert value > -100.0
 
 
 @given(entries=_entries, data=st.data())
@@ -256,25 +234,4 @@ def test_combine_geomean_when_shuffled_does_return_same_value(
     original = combine_geomean(entries)
     permuted = combine_geomean(list(shuffled))
 
-    assert permuted.n == original.n
-    assert math.isclose(permuted.value, original.value, rel_tol=1e-9, abs_tol=1e-9)
-    assert math.isclose(permuted.band, original.band, rel_tol=1e-9, abs_tol=1e-9)
-
-
-# ---------------------------------------------------------------------------
-# Result-type shape
-# ---------------------------------------------------------------------------
-
-
-def test_ratio_outcome_when_field_assigned_does_raise_frozen():
-    outcome = normalize_ratio(50.0, "lower")
-
-    with pytest.raises((AttributeError, TypeError)):
-        outcome.rho = 2.0  # type: ignore[misc]
-
-
-def test_geomean_combination_when_field_assigned_does_raise_frozen():
-    result = combine_geomean([(1.5, 2.0)])
-
-    with pytest.raises((AttributeError, TypeError)):
-        result.value = 0.0  # type: ignore[misc]
+    assert permuted == pytest.approx(original, rel=1e-9, abs=1e-9)

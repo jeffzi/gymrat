@@ -113,7 +113,7 @@ def test_plan_sections_when_measure_callback_does_receive_contract_derived_group
 
 
 def test_plan_sections_when_group_members_interleave_does_gather_them_in_the_first_block():
-    # infer_group derives the group from the metric name key, not short_name:
+    # The group derives from the metric name key, not short_name:
     # "entity/spawn#time" → group "entity".
     layout = plan_sections(
         {

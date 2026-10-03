@@ -27,10 +27,9 @@ from rich.markup import escape
 
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.metric_name import format_inline, parse
-from gymrat.model import Effect
 from gymrat.plural import pluralize
 from gymrat.report.display import get_glyph
-from gymrat.report.format import format_delta, format_value, is_improvement
+from gymrat.report.format import format_percent_delta, format_value, is_improvement
 from gymrat.report.style import VARIANT_NAME_STYLE, format_hint, markup
 from gymrat.report.text.render import paired_samples
 
@@ -173,7 +172,7 @@ def _separator() -> str:
 def _format_primary_delta(delta_pct: float | None) -> str:
     if delta_pct is None:
         return ""
-    return f" {format_delta(Effect(value=delta_pct, unit='percent'))}"
+    return f" {format_percent_delta(delta_pct, missing='')}"
 
 
 # ---------------------------------------------------------------------------
@@ -274,10 +273,8 @@ def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
     """Whether the primary figure moved the way its direction calls an improvement.
 
     A figure whose ratio had no value moved in no direction at all, so it
-    improves nothing. The geomean case routes through :func:`is_improvement`
-    wrapping a percent effect; a named metric combines that verdict with its own
-    direction — a ``higher`` metric improves on the opposite sign, and never on a
-    delta of exactly zero.
+    improves nothing. The geomean is normalized so that lower is better; a named
+    metric is judged in its own direction.
 
     Args:
         metrics: The run's metric comparisons, used to look up the primary's
@@ -290,15 +287,12 @@ def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
     """
     if primary.delta_pct is None:
         return False
-    effect = Effect(value=primary.delta_pct, unit="percent")
     if isinstance(primary, GeomeanPrimary):
-        return is_improvement(effect)
+        return is_improvement(primary.delta_pct, "lower")
     metric = metrics.get(primary.name)
     if metric is None:
         return False
-    if metric.meta.direction == "higher":
-        return not is_improvement(effect) and primary.delta_pct != 0
-    return is_improvement(effect)
+    return is_improvement(primary.delta_pct, metric.meta.direction)
 
 
 def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> LoopOutcome:

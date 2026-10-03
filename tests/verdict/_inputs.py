@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from gymrat.model import (
     BandVerdict,
     Direction,
-    Effect,
     ExactVerdict,
     MetricMeta,
     MetricVerdict,
@@ -44,7 +43,7 @@ def exact_verdict(delta: float) -> ExactVerdict:
     return ExactVerdict(
         method="exact",
         verdict=verdict,
-        delta=Effect(value=delta, unit="percent"),
+        delta=delta,
         n=1,
     )
 
@@ -127,7 +126,7 @@ def unstable_band_verdict() -> BandVerdict:
         usable_n=4,
         noise_pct=250.0,
         noise_abs=25.0,
-        delta=Effect(value=-50.0, unit="percent"),
+        delta=-50.0,
         n=4,
     )
 

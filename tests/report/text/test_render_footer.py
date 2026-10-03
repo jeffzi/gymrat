@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.model import PERMUTATION_FLOORS
+from gymrat.model import PERMUTATION_MIN_N
 from gymrat.report.style import format_hint
 from gymrat.report.text.render import footer_lines
 from tests.report._assertions import render_colored, render_plain, sgr_codes
@@ -20,8 +20,6 @@ from tests.report._verdicts import approximate_metric, band_metric
 
 if TYPE_CHECKING:
     from gymrat.report.types import MetricComparisons
-
-MIN_PERMUTATION_N = PERMUTATION_FLOORS.min_n
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +168,8 @@ def test_footer_lines_when_cause_varies_does_hint_accordingly(
     ("metrics", "samples"),
     [
         pytest.param(
-            {"a/time": band_metric(n=MIN_PERMUTATION_N - 1)},
-            MIN_PERMUTATION_N - 1,
+            {"a/time": band_metric(n=PERMUTATION_MIN_N - 1)},
+            PERMUTATION_MIN_N - 1,
             id="fewer-samples-than-floor",
         ),
         pytest.param({"a/time": band_metric(n=1)}, 1, id="single-sample"),
@@ -197,8 +195,8 @@ def test_footer_lines_when_samples_below_floor_does_suggest_more_samples(
             id="enough-samples-but-rounds-dropped",
         ),
         pytest.param(
-            {"a/time": band_metric(n=MIN_PERMUTATION_N - 1)},
-            MIN_PERMUTATION_N,
+            {"a/time": band_metric(n=PERMUTATION_MIN_N - 1)},
+            PERMUTATION_MIN_N,
             id="floor-reached-but-fewer-paired",
         ),
     ],

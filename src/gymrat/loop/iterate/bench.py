@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Literal
 from gymrat.adapters import get_adapter
 from gymrat.clock import monotonic_ms
 from gymrat.config.types import GEOMEAN_PRIMARY, ResolvedConfig
-from gymrat.model import MetricVerdict, Observations, ResolvedMetricMeta
 from gymrat.progress_events import JudgeStarted, emit_progress
 from gymrat.report.loop import (
     EXPERIMENT_INDEX,
@@ -38,6 +37,7 @@ if TYPE_CHECKING:
     from gymrat.config.types import KindEntry
     from gymrat.loop.iterate.confirm import Confirmation
     from gymrat.loop.iterate.run import IterateOptions
+    from gymrat.model import MetricVerdict, ResolvedMetricMeta
     from gymrat.report.types import ComparisonResult, MetricComparisons
 
 
@@ -173,8 +173,8 @@ async def bench_and_judge(
         )
     )
     verdicts = compute_verdicts(
-        Observations.from_rounds(baseline.samples),
-        Observations.from_rounds(experiment.samples),
+        baseline.samples,
+        experiment.samples,
         resolved_meta,
         unstable_noise_pct=ctx.config.unstable_noise_pct,
     )
@@ -265,7 +265,7 @@ def resolve_primary(
     measured = verdicts.get(primary)
     return MetricPrimary(
         name=primary,
-        delta_pct=None if measured is None else recorded_delta(measured.delta.value),
+        delta_pct=None if measured is None else recorded_delta(measured.delta),
     )
 
 

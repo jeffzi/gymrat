@@ -11,9 +11,9 @@ from gymrat.report.display import VERDICT_GLOSSES, display_class, get_glyph
 from gymrat.report.format import (
     PLUS_MINUS,
     SPREAD_SEPARATOR,
-    format_delta,
     format_noise_band_value,
     format_pair_count,
+    format_percent_delta,
 )
 from gymrat.report.geomean_label import (
     NO_GEOMEAN_CELL,
@@ -135,7 +135,7 @@ def verdict_parts(verdict: MetricVerdict, samples: int, *, with_band: bool) -> V
         band = format_noise_band_value(verdict.noise_pct)
     return VerdictParts(
         glyph=get_glyph(shown),
-        delta="" if unstable else format_delta(verdict.delta),
+        delta="" if unstable else format_percent_delta(verdict.delta),
         word=VERDICT_GLOSSES["unstable"] if unstable else "",
         band=band,
         pairs="" if verdict.n == samples else format_pair_count(verdict.n),

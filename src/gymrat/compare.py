@@ -18,12 +18,7 @@ from functools import partial
 
 from gymrat.adapters import get_adapter
 from gymrat.config.types import KindEntry
-from gymrat.model import (
-    MetricVerdict,
-    Observations,
-    ResolvedMetricMeta,
-    pair_metric,
-)
+from gymrat.model import MetricVerdict, ResolvedMetricMeta, pair_metric
 from gymrat.report.types import (
     CandidateComparison,
     CandidateMetric,
@@ -139,12 +134,11 @@ def _measure_candidates(
     warn: WarnSink,
 ) -> list[CandidateMeasurement]:
     """Judge every candidate against the same baseline samples, one comparison each."""
-    baseline_obs = Observations.from_rounds(baseline_samples)
     measured: list[CandidateMeasurement] = []
     for candidate in candidates:
         verdicts = compute_verdicts(
-            baseline_obs,
-            Observations.from_rounds(candidate.samples),
+            baseline_samples,
+            candidate.samples,
             metric_meta,
             unstable_noise_pct=unstable_noise_pct,
             warn=warn,
@@ -188,7 +182,6 @@ def build_comparison_result(
     baseline_samples = measurement.baseline_samples
     candidates = measurement.candidates
     candidate_sample_sets = [c.samples for c in candidates]
-    baseline_obs = Observations.from_rounds(baseline_samples)
 
     metrics: dict[str, MetricComparison] = {}
     for metric_name, meta in measurement.metric_meta.items():
@@ -197,9 +190,7 @@ def build_comparison_result(
         )
         candidate_metrics: list[CandidateMetric] = []
         for candidate in candidates:
-            paired = pair_metric(
-                baseline_obs, Observations.from_rounds(candidate.samples), metric_name
-            ).right
+            paired = pair_metric(baseline_samples, candidate.samples, metric_name).right
             stats = compute_metric_stats(list(paired) or own_values(candidate.samples, metric_name))
             candidate_metrics.append(
                 CandidateMetric(

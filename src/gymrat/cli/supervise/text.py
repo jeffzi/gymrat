@@ -9,11 +9,9 @@ from ever disagreeing about what the summary says.  Segments carry a style
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
-from gymrat.model import Effect
-from gymrat.report.format import format_delta
+from gymrat.report.format import format_percent_delta
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import Exiting, ReadSessionResult
@@ -80,10 +78,7 @@ def _outcome_role(outcome: str) -> LoopStyle:
 def _last_iteration_segments(
     delta_pct: float | None, outcome: str, *, unsettled: bool
 ) -> list[LoopSegment]:
-    if delta_pct is None or not math.isfinite(delta_pct):
-        delta = "—"
-    else:
-        delta = format_delta(Effect(value=delta_pct, unit="percent"))
+    delta = format_percent_delta(delta_pct, missing="—")
     role = _outcome_role(outcome)
     segments = [
         LoopSegment(" · last ", "plain"),

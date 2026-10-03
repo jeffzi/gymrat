@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING, assert_never
 
 from pydantic_core import to_json
 
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import BandVerdict, ExactVerdict, PermutationVerdict
 from gymrat.report.tally import count_verdicts
 from gymrat.report.types import CandidateMetric
-from gymrat.verdict import infer_group
 
 if TYPE_CHECKING:
     from gymrat.loop.discard import DiscardResult
@@ -181,7 +181,7 @@ def _serialize_metric(
         "direction": metric.meta.direction,
         "gating": metric.meta.gating,
         "kind": metric.meta.kind,
-        "group": infer_group(name),
+        "group": parse_metric_name(name).group,
         "baseline": {"median": metric.baseline_median, "spread_pct": metric.baseline_spread},
         "candidates": rows,
     }
@@ -236,7 +236,7 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
     return {
         "verdict": verdict.verdict,
         "method": verdict.method,
-        "delta": verdict.delta.value,
+        "delta": verdict.delta,
         "noise_pct": noise_pct,
         "p": p,
         "band": band,
@@ -279,7 +279,7 @@ def _serialize_measure_metric(name: str, metric: MetricMeasurement) -> dict[str,
         "gating": metric.meta.gating,
         "exact": metric.meta.exact,
         "kind": metric.meta.kind,
-        "group": infer_group(name),
+        "group": parse_metric_name(name).group,
     }
 
 

@@ -32,8 +32,7 @@ from gymrat.exec import (
 )
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.output_limit import limit_output
-from gymrat.model import Effect
-from gymrat.report.format import format_delta
+from gymrat.report.format import format_percent_delta
 from gymrat.report.style import RENDER_WIDTH, color_from_env, format_hint, render_lines
 from gymrat.session.records import (
     BaselineRecord,
@@ -584,8 +583,6 @@ def _blocked_keep(
 def _generated_message(iteration: IterationRecord) -> str:
     primary = iteration.primary
     moved = (
-        "delta undefined"
-        if primary.delta_pct is None
-        else format_delta(Effect(value=primary.delta_pct, unit="percent"))
+        "delta undefined" if primary.delta_pct is None else format_percent_delta(primary.delta_pct)
     )
     return f"iteration {iteration.seq}: {primary.name or primary.kind} {moved}"

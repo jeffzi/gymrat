@@ -1,39 +1,34 @@
 """Core model value types and pairing logic for benchmark observations.
 
-An :class:`Observations` value holds, per pairing-axis key, one or more repeats — each repeat a
-mapping of metric name to value. The repeat axis is structurally distinct from the pairing axis: a
-key maps to a *sequence* of repeat-mappings, not a single mapping.
+A side's observations are a sequence of repeats, one per round — each repeat a mapping of metric
+name to value.
 
-:func:`pair_metric` aligns two containers on the keys they share, for a single metric, dropping any
-shared key where either side is missing that metric.
+:func:`pair_metric` aligns two sides round by round, for a single metric, dropping any round where
+either side is missing that metric.
 """
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, Self
+from typing import Literal
 
 __all__ = [
-    "BAND_FLOORS",
+    "BAND_MIN_N",
     "DEFAULT_UNSTABLE_NOISE_PCT",
     "NOISE_FLOOR_PCT",
     "NOISE_K",
-    "PERMUTATION_FLOORS",
+    "PERMUTATION_MIN_N",
+    "PERMUTATION_P_THRESHOLD",
     "ApproximateVerdict",
     "BandVerdict",
     "Direction",
-    "Effect",
-    "EffectUnit",
     "ExactVerdict",
     "Exclusion",
     "ExclusionReason",
     "GeomeanResult",
-    "MethodFloors",
     "MetricMeta",
     "MetricUnit",
     "MetricVerdict",
-    "Observations",
     "PairResult",
-    "PairingKey",
     "PermutationVerdict",
     "Repeat",
     "ResolvedMetricMeta",
@@ -87,58 +82,20 @@ class ResolvedMetricMeta(MetricMeta):
 
 
 # ---------------------------------------------------------------------------
-# Effect size
-# ---------------------------------------------------------------------------
-
-EffectUnit = Literal["percent"]
-"""Unit an :class:`Effect` is expressed in.
-
-Today only ``"percent"`` is admissible; the alias is shaped as a ``Literal`` union so a
-percentage-point (``"pp"``) member can be added later without touching call sites.
-"""
-
-
-@dataclass(frozen=True, slots=True)
-class Effect:
-    """An observed effect size, immutable and compared by value.
-
-    Attributes:
-        value: The magnitude of the effect.
-        unit: The unit ``value`` is expressed in.
-    """
-
-    value: float
-    unit: EffectUnit
-
-
-# ---------------------------------------------------------------------------
 # Verdict methods and noise model
 # ---------------------------------------------------------------------------
 
 VerdictMethod = Literal["permutation", "band", "exact"]
 """Tag identifying which statistical method produced a verdict."""
 
+PERMUTATION_MIN_N = 6
+"""Minimum count of differing pairs the sign-flip permutation method requires."""
 
-@dataclass(frozen=True, slots=True)
-class MethodFloors:
-    """Statistical floors for one method, carried as data.
+PERMUTATION_P_THRESHOLD = 0.05
+"""Significance threshold a permutation p-value must fall below."""
 
-    Attributes:
-        method: The method these floors apply to.
-        min_n: Minimum usable sample size the method requires.
-        p_threshold: Significance threshold, or ``None`` when the method has none.
-    """
-
-    method: VerdictMethod
-    min_n: int
-    p_threshold: float | None
-
-
-PERMUTATION_FLOORS = MethodFloors(method="permutation", min_n=6, p_threshold=0.05)
-"""Floors for the sign-flip permutation method."""
-
-BAND_FLOORS = MethodFloors(method="band", min_n=2, p_threshold=None)
-"""Floors for the band method, which has no significance threshold."""
+BAND_MIN_N = 2
+"""Minimum count of differing pairs the band method requires."""
 
 NOISE_K = 1.5
 """Multiplier applied to the noise floor when deriving the instability band."""
@@ -147,7 +104,7 @@ NOISE_FLOOR_PCT = 0.5
 """Minimum noise level, as a percentage, below which measurements are treated as floor noise."""
 
 DEFAULT_UNSTABLE_NOISE_PCT = 200
-"""Noise percentage assigned to a metric flagged unstable when no measured value applies."""
+"""Noise band width, as a percentage, above which a verdict is forced unstable."""
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +128,7 @@ class PermutationVerdict:
         p: The sign-flip permutation test p-value.
         noise_pct: Estimated noise as a percentage.
         noise_abs: Estimated noise in absolute units.
-        delta: The unit-tagged effect size of the comparison.
+        delta: The percentage delta between the paired medians.
         n: Number of paired samples.
     """
 
@@ -180,7 +137,7 @@ class PermutationVerdict:
     p: float
     noise_pct: float
     noise_abs: float
-    delta: Effect
+    delta: float
     n: int
 
 
@@ -194,7 +151,7 @@ class BandVerdict:
         usable_n: Number of usable samples.
         noise_pct: Estimated noise as a percentage.
         noise_abs: Estimated noise in absolute units.
-        delta: The unit-tagged effect size of the comparison.
+        delta: The percentage delta between the paired medians.
         n: Number of paired samples.
     """
 
@@ -203,7 +160,7 @@ class BandVerdict:
     usable_n: int
     noise_pct: float
     noise_abs: float
-    delta: Effect
+    delta: float
     n: int
 
 
@@ -214,13 +171,13 @@ class ExactVerdict:
     Attributes:
         method: Discriminant tag, always ``"exact"``.
         verdict: The (non-approximate) outcome.
-        delta: The unit-tagged effect size of the comparison.
+        delta: The percentage delta between the paired medians.
         n: Number of samples.
     """
 
     method: Literal["exact"]
     verdict: Verdict
-    delta: Effect
+    delta: float
     n: int
 
 
@@ -267,11 +224,8 @@ class GeomeanResult:
 
 
 # ---------------------------------------------------------------------------
-# Observations and pairing
+# Repeats and pairing
 # ---------------------------------------------------------------------------
-
-type PairingKey = int
-"""Pairing-axis key: a round index."""
 
 type Repeat = Mapping[str, float]
 """One repeat: a mapping of metric name to value."""
@@ -279,14 +233,14 @@ type Repeat = Mapping[str, float]
 
 @dataclass(frozen=True, slots=True)
 class PairResult:
-    """Aligned metric values for two containers, plus the count of shared keys that were dropped.
+    """Aligned metric values for two sides, plus the count of shared rounds that were dropped.
 
     Attributes:
-        left: Values from the left container, in shared-key order.
-        right: Values from the right container, aligned one-to-one with ``left``.
-        dropped: Count of shared keys where exactly one side carried the metric. A shared key where
-            neither side has the metric is not a drop; a key present in only one container is not
-            shared and is not counted.
+        left: Values from the left side, in round order.
+        right: Values from the right side, aligned one-to-one with ``left``.
+        dropped: Count of shared rounds where exactly one side carried the metric. A shared round
+            where neither side has the metric is not a drop; a round only the longer side reached
+            is not shared and is not counted.
     """
 
     left: tuple[float, ...]
@@ -294,83 +248,29 @@ class PairResult:
     dropped: int
 
 
-@dataclass(frozen=True, slots=True)
-class Observations:
-    """A frozen wrapper over an ordered mapping from pairing-axis key to a tuple of repeats."""
-
-    by_key: dict[PairingKey, tuple[Repeat, ...]]
-
-    @classmethod
-    def from_rounds(cls, samples: Sequence[Repeat]) -> Self:
-        """Build a container from per-round samples, preserving round order.
-
-        Args:
-            samples: One repeat per round, in round order.
-
-        Returns:
-            A container keyed by 0-based round index, one repeat per round.
-        """
-        return cls(by_key={index: (sample,) for index, sample in enumerate(samples)})
-
-
-def _require_single_repeat(observations: Observations) -> None:
-    """Reject a container that carries more than one repeat for any key.
-
-    A multi-repeat container is constructible, but pairing over one is not defined — surface it
-    rather than silently taking the first repeat.
-
-    Args:
-        observations: The container to check.
-
-    Raises:
-        ValueError: When any key carries more than one repeat.
-    """
-    for key, repeats in observations.by_key.items():
-        if len(repeats) != 1:
-            message = (
-                f"pair_metric requires single-repeat observations; "
-                f"key {key!r} has {len(repeats)} repeats"
-            )
-            raise ValueError(message)
-
-
 def pair_metric(
-    left: Observations,
-    right: Observations,
+    left: Sequence[Repeat],
+    right: Sequence[Repeat],
     metric: str,
 ) -> PairResult:
-    """Align two containers on their shared keys, in order, for a single metric.
-
-    Iterates the keys ``left`` and ``right`` share, in ``left``'s order. Pairing over a multi-repeat
-    container is not defined, so both must be single-repeat.
+    """Align two sides round by round, over the shorter of the two, for a single metric.
 
     Args:
-        left: The baseline observation container.
-        right: The candidate observation container.
-        metric: The metric name to pair across both containers.
+        left: The baseline repeats, one per round.
+        right: The candidate repeats, one per round.
+        metric: The metric name to pair across both sides.
 
     Returns:
-        The paired samples and drop count for the requested metric. A shared key where either
+        The paired samples and drop count for the requested metric. A shared round where either
         side's repeat lacks ``metric`` is left out of both sequences, so they are always equal
-        length; two empty sequences — the metric absent from every shared key — are the caller's
-        skip-metric signal. ``dropped`` counts the shared keys where exactly one side carried the
-        metric; a key where neither side has it is not a drop.
-
-    Raises:
-        ValueError: If any key in either container carries more than one repeat.
+        length; two empty sequences — the metric absent from every shared round — are the caller's
+        skip-metric signal. ``dropped`` counts the shared rounds where exactly one side carried the
+        metric; a round where neither side has it is not a drop.
     """
-    _require_single_repeat(left)
-    _require_single_repeat(right)
-
     left_values: list[float] = []
     right_values: list[float] = []
     dropped = 0
-    for key, left_repeats in left.by_key.items():
-        right_repeats = right.by_key.get(key)
-        if right_repeats is None:
-            continue
-        left_repeat = left_repeats[0]
-        right_repeat = right_repeats[0]
+    for left_repeat, right_repeat in zip(left, right, strict=False):
         in_left = metric in left_repeat
         in_right = metric in right_repeat
         if in_left and in_right:

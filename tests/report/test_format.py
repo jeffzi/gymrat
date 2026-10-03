@@ -1,7 +1,4 @@
-"""Tests for the report value, evidence, and delta formatters.
-
-``format_delta`` takes an :class:`~gymrat.model.Effect` rather than a bare number.
-"""
+"""Tests for the report value, evidence, and delta formatters."""
 
 from __future__ import annotations
 
@@ -9,8 +6,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.report.format import format_delta, format_evidence, format_value
-from tests.report._verdicts import exact_verdict, percent, permutation_verdict
+from gymrat.report.format import format_evidence, format_percent_delta, format_value
+from tests.report._verdicts import exact_verdict, permutation_verdict
 
 if TYPE_CHECKING:
     from gymrat.model import MetricUnit
@@ -121,7 +118,7 @@ def test_format_evidence_when_unstable_past_cap_does_state_absolute_units():
 
 
 # ---------------------------------------------------------------------------
-# format_delta
+# format_percent_delta
 # ---------------------------------------------------------------------------
 
 
@@ -138,17 +135,18 @@ def test_format_evidence_when_unstable_past_cap_does_state_absolute_units():
         pytest.param(-0.06, "-0.1%", id="just-below-rounding-floor"),
     ],
 )
-def test_format_delta_when_finite_does_sign_and_round(delta: float, expected: str):
-    assert format_delta(percent(delta)) == expected
+def test_format_percent_delta_when_finite_does_sign_and_round(delta: float, expected: str):
+    assert format_percent_delta(delta) == expected
 
 
 @pytest.mark.parametrize(
     "delta",
     [
+        pytest.param(None, id="missing"),
         pytest.param(float("nan"), id="undefined-arithmetic"),
         pytest.param(float("inf"), id="positive-infinity"),
         pytest.param(float("-inf"), id="negative-infinity"),
     ],
 )
-def test_format_delta_when_non_finite_does_render_nothing(delta: float):
-    assert format_delta(percent(delta)) == ""
+def test_format_percent_delta_when_no_finite_value_does_render_nothing(delta: float | None):
+    assert format_percent_delta(delta) == ""
