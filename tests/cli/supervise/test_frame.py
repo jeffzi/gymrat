@@ -123,8 +123,8 @@ def test_build_frame_panel_when_launched_does_have_nondefault_border_style():
 # ---------------------------------------------------------------------------
 
 
-def test_panel_title_when_label_present_does_style_supervise_and_label_with_label_style():
-    kit = make_reporter(label="ecstatic-ts", session_id="", branch="")
+def test_panel_title_when_rendered_does_style_supervise_with_label_style():
+    kit = make_reporter(session_id="", branch="")
     fire_launch(kit.reporter.observer, 1000)
 
     panel = kit.reporter.frame()
@@ -138,7 +138,6 @@ def test_panel_title_when_label_present_does_style_supervise_and_label_with_labe
 
 def test_panel_title_when_connector_present_does_dim_the_connector_word():
     kit = make_reporter(
-        label="",
         session_id="20260813-125044-34ec",
         branch="gymrat/20260813-125044-34ec",
     )
@@ -633,21 +632,16 @@ def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_widt
 @pytest.mark.parametrize(
     ("model", "effort", "expected_title"),
     [
-        pytest.param("opus", None, "supervise ecstatic-ts · model opus", id="model-only"),
-        pytest.param(None, "high", "supervise ecstatic-ts · effort high", id="effort-only"),
-        pytest.param(
-            "opus",
-            "max",
-            "supervise ecstatic-ts · model opus · effort max",
-            id="model-and-effort",
-        ),
-        pytest.param(None, None, "supervise ecstatic-ts", id="neither"),
+        pytest.param("opus", None, "supervise · model opus", id="model-only"),
+        pytest.param(None, "high", "supervise · effort high", id="effort-only"),
+        pytest.param("opus", "max", "supervise · model opus · effort max", id="model-and-effort"),
+        pytest.param(None, None, "supervise", id="neither"),
     ],
 )
 def test_panel_title_when_model_or_effort_in_force_does_show_labelled_value(
     model: str | None, effort: Effort | None, expected_title: str
 ) -> None:
-    kit = make_reporter(label="ecstatic-ts", session_id="", branch="", model=model, effort=effort)
+    kit = make_reporter(session_id="", branch="", model=model, effort=effort)
     fire_launch(kit.reporter.observer, 1000)
 
     frame = render_frame(kit.reporter)

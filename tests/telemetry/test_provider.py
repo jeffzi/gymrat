@@ -73,6 +73,23 @@ def test_configure_tracing_when_endpoint_blank_does_return_false(
     assert result is False
 
 
+def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv(_TRACES_ENDPOINT_ENV, raising=False)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9")
+    with otlp_collector() as collector:
+        configure_tracing(SESSION, endpoint=collector.endpoint)
+        with start_span("probe"):
+            pass
+
+        flush_tracing()
+
+    assert [(export.path, export.span_names) for export in collector.received] == [
+        ("/v1/traces", ["probe"])
+    ]
+
+
 def test_configure_tracing_when_endpoint_padded_does_export_to_trimmed_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ):

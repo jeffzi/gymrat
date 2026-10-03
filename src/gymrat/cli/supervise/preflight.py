@@ -94,7 +94,8 @@ def run_preflight(
         GymratError: When a stop condition is met (without ``force``) or the
             feasibility check refuses.
     """
-    _checks_warning(config)
+    if config.checks is None:
+        warn_to_stderr("warning: checks is not configured — keep will commit with the gate off")
     release = acquire_lock(lockfile_path(root), "supervise")
     try:
         recover_torn_tail(session_jsonl_path(root))
@@ -128,11 +129,6 @@ def doctor_gate(root: str, *, color: bool | None = None) -> None:
     rendered = render_doctor_report(report, color=resolved_color)
     write_and_flush(sys.stderr, rendered + "\n")
     raise typer.Exit(TOOL_FAILURE_EXIT_CODE)
-
-
-def _checks_warning(config: ResolvedConfig) -> None:
-    if config.checks is None:
-        warn_to_stderr("warning: checks is not configured — keep will commit with the gate off")
 
 
 def _session_step(

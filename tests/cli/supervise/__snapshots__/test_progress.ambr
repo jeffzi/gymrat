@@ -1,7 +1,7 @@
 # serializer version: 1
 # name: test_cost_when_cap_set_and_usage_received_does_show_cost_against_cap
   '''
-  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
   │ time                                                                           1s  cap in 7h 59m │
   │ cost $4.12 / $10.00                                                                              │
   │ loop   no session yet                                                                            │
@@ -11,7 +11,7 @@
 # ---
 # name: test_cost_when_no_cap_and_no_usage_does_show_zero_cost
   '''
-  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
   │ time                                                                           0s  cap in 8h 00m │
   │ cost $0.00                                                                                       │
   │ loop   no session yet                                                                            │
@@ -21,7 +21,7 @@
 # ---
 # name: test_dashboard_when_mid_session_does_render_full_layout
   '''
-  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
   │ time ━━━━━━━━━━━━━━━━━━━━━━━                                               2h 42m  cap in 5h 17m │
   │ cost $4.12 / $10.00                                                                              │
   │ loop   3/5 iterations · 1 kept · 1 discarded · last -6.8% improved                               │
@@ -34,7 +34,7 @@
 # ---
 # name: test_loop_when_iterations_present_does_show_counts_and_last
   '''
-  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
   │ time                                                                           0s  cap in 8h 00m │
   │ cost $0.00                                                                                       │
   │ loop   3/20 iterations · 2 kept · 1 discarded · last -3.2% improved                              │
@@ -43,9 +43,9 @@
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   '''
 # ---
-# name: test_panel_title_when_launched_does_contain_label_session_and_branch
+# name: test_panel_title_when_launched_does_contain_session_and_branch
   '''
-  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
   │ time                                                                           0s  cap in 8h 00m │
   │ cost $0.00                                                                                       │
   │ loop   no session yet                                                                            │
@@ -55,7 +55,7 @@
 # ---
 # name: test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero
   '''
-  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
   │ time ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2h 00m  cap in 0s │
   │ cost $0.00                                                                                       │
   │ loop   no session yet                                                                            │
@@ -65,7 +65,7 @@
 # ---
 # name: test_time_bar_when_launched_does_show_elapsed_and_cap_in_remaining
   '''
-  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
   │ time ━━━━━━━━━━━━━━━━━━━━━━━                                               2h 41m  cap in 5h 19m │
   │ cost $0.00                                                                                       │
   │ loop   no session yet                                                                            │

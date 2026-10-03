@@ -18,8 +18,6 @@ from typing import Any
 
 import pytest
 
-from gymrat.cli.supervise import span_lifecycle
-from gymrat.cli.supervise.span_lifecycle import TracingState
 from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, _live_process_groups
@@ -28,6 +26,8 @@ from gymrat.session.paths import budget_path
 from gymrat.supervisor.events import create_event_log_writer, event_from_wire
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
 from gymrat.supervisor.supervise import EndedBy, SupervisionResult
+from gymrat.telemetry import run_spans
+from gymrat.telemetry.run_spans import TracingState
 from tests._process_helpers import is_alive, wait_for_pid_file, wait_until_dead
 from tests._rich import unwrap_panel
 from tests.cli.supervise._fixtures import (
@@ -190,7 +190,7 @@ def test_supervise_when_exit_sequence_logs_an_event_does_hand_it_to_the_observer
     def tracing_with_its_own_observer(*, prompt: object, **_kwargs: object) -> tuple[object, ...]:
         return prompt, run_observed.append, TracingState()
 
-    monkeypatch.setattr(span_lifecycle, "setup_tracing", tracing_with_its_own_observer)
+    monkeypatch.setattr(run_spans, "setup_tracing", tracing_with_its_own_observer)
     event = follow_up_event(action="ended", reason="nothing to settle")
     seams.exit_hook = lambda call: call["log"](event)
 

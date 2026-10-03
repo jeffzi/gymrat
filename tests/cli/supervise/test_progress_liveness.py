@@ -537,6 +537,24 @@ def test_liveness_when_nested_event_has_no_matching_parent_does_ignore():
 # ---------------------------------------------------------------------------
 
 
+def test_liveness_when_iterate_sidecar_has_no_pass_left_does_show_passes_without_an_estimate():
+    sidecar = ProgressSnapshot(
+        passes_completed=10,
+        passes_total=10,
+        last_pass_duration_ms=225_000.0,
+    )
+    kit = make_reporter(read_progress=lambda _root: sidecar)
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    kit.clock.now = 2000 + 31 * 60 * 1000
+
+    frame = render_frame(kit.reporter)
+
+    passes_row = next(line for line in frame.splitlines() if "passes" in line)
+    assert passes_row.strip("│ ") == "passes 10/10 · 31m 0s"
+
+
 def test_liveness_when_iterate_tool_has_sidecar_does_show_passes_bar(
     snapshot: SnapshotAssertion,
 ):

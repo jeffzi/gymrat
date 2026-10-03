@@ -6,8 +6,9 @@ import functools
 import types
 import typing
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from gymrat.session.records import (
     SESSION_LOG_MODELS,
     CommandRecord,
@@ -17,10 +18,13 @@ from gymrat.session.records import (
     _SequencedEnvelope,
     wire_type,
 )
+from gymrat.supervisor.events import CapEvent, CompactionEvent, FollowUpEvent, TurnEndEvent
 from gymrat.telemetry.ids import parse_traceparent
 
 if TYPE_CHECKING:
     from opentelemetry.trace import SpanContext
+
+    from gymrat.supervisor.events import SessionEvent
 
 type _Attrs = dict[str, str | int | float | bool]
 
@@ -70,21 +74,18 @@ EVENT_FOLLOW_UP = "gymrat.follow_up"
 EVENT_CAP = "gymrat.cap"
 EVENT_COMPACTION = "gymrat.compaction"
 
-# ---------------------------------------------------------------------------
-# Namespace sets for all_attribute_names()
-# ---------------------------------------------------------------------------
+SESSION_SPAN_KEY = "session"
+"""The key the session span's deterministic id is derived from."""
 
-_SESSION_ATTRS = frozenset({SESSION_ID, SESSION_BRANCH})
-
-_COMMAND_ATTRS = frozenset({
+# The attribute names that are not derived from a record model's fields.
+_FIXED_ATTRS = frozenset({
+    SESSION_ID,
+    SESSION_BRANCH,
     COMMAND_NAME,
     COMMAND_EXIT_CODE,
     COMMAND_DURATION_MS,
     COMMAND_REASON,
     COMMAND_ARGS_PREFIX,
-})
-
-_RUN_ATTRS = frozenset({
     RUN_HEAD_SHA,
     RUN_MAX_MINUTES,
     RUN_MAX_USD,
@@ -93,20 +94,18 @@ _RUN_ATTRS = frozenset({
     RUN_ENDED_BY,
     RUN_END_REASON,
     RUN_DURATION_MS,
-})
-
-_TURN_AND_EVENT_ATTRS = frozenset({
     TURN_SESSION_COST_USD,
     TURN_ORIGIN,
     TURN_BUDGET_EXHAUSTED,
     FOLLOW_UP_ACTION,
     FOLLOW_UP_REASON,
     CAP_NAME,
+    GEN_AI_MODEL,
+    GEN_AI_PROVIDER,
+    ITERATION_SEQ,
+    ITERATION_OUTCOME,
+    ITERATION_DELTA_PCT,
 })
-
-_GEN_AI_ATTRS = frozenset({GEN_AI_MODEL, GEN_AI_PROVIDER})
-
-_ITERATION_ATTRS = frozenset({ITERATION_SEQ, ITERATION_OUTCOME, ITERATION_DELTA_PCT})
 
 # Record fields carried by the envelope, not mapped to a `gymrat.<type>.<field>` attribute.
 _SKIPPED_FIELD_NAMES = frozenset({"at", "seq", "type"})
@@ -164,37 +163,124 @@ def all_attribute_names() -> frozenset[str]:
             if _is_scalar_type(field_info.annotation):
                 record_derived.add(_record_attr_name(record_type, field_name))
 
-    return (
-        _SESSION_ATTRS
-        | _COMMAND_ATTRS
-        | _RUN_ATTRS
-        | _TURN_AND_EVENT_ATTRS
-        | _GEN_AI_ATTRS
-        | _ITERATION_ATTRS
-        | frozenset(record_derived)
-    )
+    return _FIXED_ATTRS | frozenset(record_derived)
+
+
+def run_span_key(launch_at: int) -> str:
+    """The key a run span's deterministic id is derived from."""
+    return f"run:{launch_at}"
+
+
+def run_attributes(  # noqa: PLR0913 -- one parameter per launch fact the run span carries
+    *,
+    session_id: str,
+    head_sha: str,
+    max_minutes: float,
+    max_usd: float | None,
+    effort: str | None,
+    model: str | None,
+) -> _Attrs:
+    """Build the attributes a run span starts with.
+
+    Args:
+        session_id: The session the run belongs to.
+        head_sha: The HEAD commit the run launched from.
+        max_minutes: The run's wall-clock cap.
+        max_usd: The run's spend cap, left out when ``None``.
+        effort: The agent effort level, left out when ``None``.
+        model: The model name, left out when ``None``.
+
+    Returns:
+        The flat attribute dict for the run span.
+    """
+    attrs: _Attrs = {
+        SESSION_ID: session_id,
+        RUN_HEAD_SHA: head_sha,
+        RUN_MAX_MINUTES: max_minutes,
+        GEN_AI_PROVIDER: "anthropic",
+    }
+    if max_usd is not None:
+        attrs[RUN_MAX_USD] = max_usd
+    if effort is not None:
+        attrs[RUN_EFFORT] = effort
+    if model is not None:
+        attrs[GEN_AI_MODEL] = model
+    return attrs
+
+
+def run_event(event: SessionEvent) -> tuple[str, _Attrs] | None:
+    """Map a supervisor event to the span event a run span mirrors it as.
+
+    Args:
+        event: The supervisor event.
+
+    Returns:
+        The span event's name and attributes, or ``None`` for an event the run
+        span does not mirror.
+    """
+    if isinstance(event, TurnEndEvent):
+        return EVENT_TURN_END, {
+            TURN_SESSION_COST_USD: event.cost_usd,
+            TURN_ORIGIN: event.origin,
+            TURN_BUDGET_EXHAUSTED: event.budget_exhausted,
+        }
+    if isinstance(event, FollowUpEvent):
+        attrs: _Attrs = {FOLLOW_UP_ACTION: event.action}
+        if event.reason is not None:
+            attrs[FOLLOW_UP_REASON] = event.reason
+        return EVENT_FOLLOW_UP, attrs
+    if isinstance(event, CapEvent):
+        return EVENT_CAP, {CAP_NAME: event.cap}
+    if isinstance(event, CompactionEvent):
+        return EVENT_COMPACTION, {}
+    return None
 
 
 @dataclass(frozen=True, slots=True)
 class CommandSpanInputs:
-    """Pre-computed span inputs shared by live and replay command-span emitters."""
+    """Pre-computed span inputs shared by live and replay command-span emitters.
+
+    Attributes:
+        name: The span name.
+        key: The key the span's deterministic id is derived from.
+        attributes: The span's attributes.
+        link: The span context the command was launched under, when it recorded one.
+        status: The name of the OpenTelemetry status code the span ends with,
+            or ``None`` to leave the status unset (a gate trip is not an error).
+        status_description: The reason an ``ERROR`` status carries, when the
+            record has one.
+    """
 
     name: str
     key: str
     attributes: _Attrs
     link: SpanContext | None
+    status: Literal["OK", "ERROR"] | None
+    status_description: str | None
 
 
 def command_span_inputs(
     record: CommandRecord, *, session_id: str, line_number: int
 ) -> CommandSpanInputs:
-    """Build the span name, key, attributes, and link for a command record."""
+    """Build the span name, key, attributes, link, and status for a command record.
+
+    Args:
+        record: The command record the span stands for.
+        session_id: The session the command ran in.
+        line_number: The record's line in the session log, which keys the span id.
+
+    Returns:
+        The inputs both the live and the replayed command span are built from.
+    """
     link = parse_traceparent(record.traceparent) if record.traceparent else None
+    failed = record.exit_code == TOOL_FAILURE_EXIT_CODE
     return CommandSpanInputs(
         name=f"gymrat.command.{record.name}",
         key=f"command:{line_number}",
         attributes=command_attributes(record, session_id),
         link=link,
+        status="OK" if record.exit_code == 0 else "ERROR" if failed else None,
+        status_description=record.reason if failed else None,
     )
 
 

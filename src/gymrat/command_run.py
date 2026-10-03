@@ -215,8 +215,6 @@ async def with_repo_lock[T](
                 try:
                     _emit_command_span(
                         root=root,
-                        exit_code=exit_code,
-                        reason=reason,
                         session_id=session_id,
                         start_ns=start_ns,
                         pre_body_lines=pre_body_lines,
@@ -306,11 +304,9 @@ def _count_lines(jsonl_path: str) -> int:
     return data.count(b"\n")
 
 
-def _emit_command_span(  # noqa: PLR0913 -- keyword-only tracing context
+def _emit_command_span(
     *,
     root: str,
-    exit_code: Literal[0, 1, 2],
-    reason: CommandReason | None,
     session_id: str,
     start_ns: int,
     pre_body_lines: int,
@@ -326,7 +322,11 @@ def _emit_command_span(  # noqa: PLR0913 -- keyword-only tracing context
         set_span_in_context,
     )
 
-    from gymrat.telemetry.attributes import command_span_inputs, record_event  # noqa: PLC0415
+    from gymrat.telemetry.attributes import (  # noqa: PLC0415
+        SESSION_SPAN_KEY,
+        command_span_inputs,
+        record_event,
+    )
     from gymrat.telemetry.ids import (  # noqa: PLC0415
         parse_traceparent,
         span_id_of,
@@ -355,7 +355,7 @@ def _emit_command_span(  # noqa: PLR0913 -- keyword-only tracing context
     if parent_ctx is None:
         session_span_ctx = SpanContext(
             trace_id=trace_id_of(session_id),
-            span_id=span_id_of(session_id, "session"),
+            span_id=span_id_of(session_id, SESSION_SPAN_KEY),
             is_remote=False,
             trace_flags=TraceFlags(TraceFlags.SAMPLED),
         )
@@ -376,10 +376,10 @@ def _emit_command_span(  # noqa: PLR0913 -- keyword-only tracing context
             event_name, event_attrs = record_event(record)
             span.add_event(event_name, attributes=event_attrs, timestamp=record.at)
 
-        if exit_code == 0:
-            span.set_status(Status(StatusCode.OK))
-        elif exit_code == TOOL_FAILURE_EXIT_CODE:
-            span.set_status(Status(StatusCode.ERROR, description=reason))
+        if inputs.status is not None:
+            span.set_status(
+                Status(StatusCode[inputs.status], description=inputs.status_description)
+            )
 
     flush_tracing()
 

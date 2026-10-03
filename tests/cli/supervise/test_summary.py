@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.cli.supervise.summary import SessionLabels, build_summary
+from gymrat.cli.supervise.summary import build_summary
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 from gymrat.supervisor.exit_sequence import ExitReport, ExitStep
 from tests._ansi import SGR_GREEN, SGR_RED, SGR_YELLOW, assert_has_sgr
@@ -28,6 +28,7 @@ from tests.session.records._fixtures import session_state
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import ReadSessionResult
+    from gymrat.config.types import Effort
     from gymrat.supervisor.driver import SessionEndReason
     from gymrat.supervisor.supervise import EndedBy
 
@@ -38,6 +39,9 @@ if TYPE_CHECKING:
 
 _LOG_PATH = "/repo/.gymrat/supervisor-1.jsonl"
 _LOG_ROW = f"  log     {_LOG_PATH}"
+
+#: An exit sequence that took no step, so the summary shows no ``exit`` row.
+_NO_EXIT_STEPS = ExitReport(steps=())
 
 
 def _session_result(*, with_best: bool) -> ReadSessionResult:
@@ -60,6 +64,7 @@ def test_summary_when_run_has_a_best_iteration_does_render_headline_best_loop_an
         make_supervision_result(reason="interrupted", ended_by="wall-clock", cost_usd=0.16),
         log_path=_LOG_PATH,
         session_result=_session_result(with_best=True),
+        exit_report=_NO_EXIT_STEPS,
     )
 
     assert frame_text(summary, width=FRAME_WIDTH) == (
@@ -96,6 +101,7 @@ def test_summary_headline_when_run_ends_does_name_the_outcome_duration_and_cost(
         make_supervision_result(reason=reason, ended_by=ended_by),  # type: ignore[arg-type]
         log_path=_LOG_PATH,
         session_result=None,
+        exit_report=_NO_EXIT_STEPS,
     )
 
     assert frame_text(summary, width=FRAME_WIDTH).splitlines()[0] == expected
@@ -116,7 +122,10 @@ def test_summary_when_no_best_delta_does_omit_the_best_row(
     session_result: ReadSessionResult | None, expected_loop: str
 ) -> None:
     summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=session_result
+        make_supervision_result(),
+        log_path=_LOG_PATH,
+        session_result=session_result,
+        exit_report=_NO_EXIT_STEPS,
     )
 
     assert frame_text(summary, width=FRAME_WIDTH) == (
@@ -151,7 +160,10 @@ def test_summary_loop_row_when_iteration_count_varies_does_name_the_count_as_a_n
     session_result: ReadSessionResult, expected_loop: str
 ) -> None:
     summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=session_result
+        make_supervision_result(),
+        log_path=_LOG_PATH,
+        session_result=session_result,
+        exit_report=_NO_EXIT_STEPS,
     )
 
     assert frame_text(summary, width=FRAME_WIDTH).splitlines()[1] == expected_loop
@@ -160,7 +172,12 @@ def test_summary_loop_row_when_iteration_count_varies_does_name_the_count_as_a_n
 def test_summary_when_log_lives_under_home_does_abbreviate_the_prefix_with_a_tilde():
     log_path = str(Path.home() / ".gymrat" / "supervisor-1.jsonl")
 
-    summary = build_summary(make_supervision_result(), log_path=log_path, session_result=None)
+    summary = build_summary(
+        make_supervision_result(),
+        log_path=log_path,
+        session_result=None,
+        exit_report=_NO_EXIT_STEPS,
+    )
 
     assert (
         frame_text(summary, width=FRAME_WIDTH).splitlines()[-1]
@@ -185,6 +202,7 @@ def test_summary_headline_when_rendered_with_color_does_emit_outcome_styling(
         make_supervision_result(reason=reason, ended_by=ended_by),  # type: ignore[arg-type]
         log_path=_LOG_PATH,
         session_result=None,
+        exit_report=_NO_EXIT_STEPS,
     )
 
     colored = render_colored(summary)
@@ -193,7 +211,12 @@ def test_summary_headline_when_rendered_with_color_does_emit_outcome_styling(
 
 
 def test_summary_log_row_when_rendered_with_color_does_leave_the_path_unstyled():
-    summary = build_summary(make_supervision_result(), log_path=_LOG_PATH, session_result=None)
+    summary = build_summary(
+        make_supervision_result(),
+        log_path=_LOG_PATH,
+        session_result=None,
+        exit_report=_NO_EXIT_STEPS,
+    )
 
     colored = render_colored(summary)
 
@@ -225,6 +248,7 @@ def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
         log_path=_LOG_PATH,
         session_result=None,
         final_text="Some final text.",
+        exit_report=_NO_EXIT_STEPS,
     )
 
     text = frame_text(summary, width=FRAME_WIDTH)
@@ -279,6 +303,7 @@ def test_summary_when_final_text_multiline_does_indent_continuation_under_conten
         log_path=_LOG_PATH,
         session_result=None,
         final_text=final_text,
+        exit_report=_NO_EXIT_STEPS,
     )
 
     text = frame_text(summary, width=FRAME_WIDTH)
@@ -299,6 +324,7 @@ def test_summary_agent_row_when_text_at_threshold_does_render_unchanged():
         log_path=_LOG_PATH,
         session_result=None,
         final_text=short_text,
+        exit_report=_NO_EXIT_STEPS,
     )
 
     text = frame_text(summary, width=FRAME_WIDTH + 200)
@@ -316,6 +342,7 @@ def test_summary_agent_row_when_text_exceeds_threshold_does_clip_with_ellipsis_a
         log_path=_LOG_PATH,
         session_result=None,
         final_text=long_text,
+        exit_report=_NO_EXIT_STEPS,
     )
 
     text = frame_text(summary, width=FRAME_WIDTH + 200)
@@ -336,6 +363,7 @@ def test_summary_agent_row_when_text_below_threshold_does_not_append_log_note():
         log_path=_LOG_PATH,
         session_result=None,
         final_text=short_text,
+        exit_report=_NO_EXIT_STEPS,
     )
 
     text = frame_text(summary, width=FRAME_WIDTH)
@@ -361,6 +389,7 @@ def test_summary_agent_row_when_stop_message_present_does_show_stop_message() ->
         log_path=_LOG_PATH,
         session_result=session_result,
         final_text="Some other final text.",
+        exit_report=_NO_EXIT_STEPS,
     )
 
     text = frame_text(summary, width=FRAME_WIDTH)
@@ -376,17 +405,22 @@ def test_summary_agent_row_when_stop_message_present_does_show_stop_message() ->
 
 
 @pytest.mark.parametrize(
-    ("labels", "expected_line"),
+    ("model", "effort", "expected_line"),
     [
-        pytest.param(SessionLabels(model="opus"), "  model   opus", id="model-only"),
-        pytest.param(SessionLabels(effort="high"), "  effort  high", id="effort-only"),
+        pytest.param("opus", None, "  model   opus", id="model-only"),
+        pytest.param(None, "high", "  effort  high", id="effort-only"),
     ],
 )
 def test_summary_when_model_or_effort_in_force_does_show_labelled_row(
-    labels: SessionLabels, expected_line: str
+    model: str | None, effort: Effort | None, expected_line: str
 ) -> None:
     summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=None, labels=labels
+        make_supervision_result(),
+        log_path=_LOG_PATH,
+        session_result=None,
+        exit_report=_NO_EXIT_STEPS,
+        model=model,
+        effort=effort,
     )
 
     text = frame_text(summary, width=FRAME_WIDTH)
@@ -396,7 +430,10 @@ def test_summary_when_model_or_effort_in_force_does_show_labelled_row(
 
 def test_summary_when_no_labels_does_omit_model_and_effort_rows() -> None:
     summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=None, labels=SessionLabels()
+        make_supervision_result(),
+        log_path=_LOG_PATH,
+        session_result=None,
+        exit_report=_NO_EXIT_STEPS,
     )
 
     text = frame_text(summary, width=FRAME_WIDTH)
@@ -419,6 +456,7 @@ def test_summary_headline_when_guard_ended_does_show_stopped_by_guard_with_reaso
         ),
         log_path=_LOG_PATH,
         session_result=None,
+        exit_report=_NO_EXIT_STEPS,
     )
 
     headline = frame_text(summary, width=FRAME_WIDTH).splitlines()[0]
@@ -437,6 +475,7 @@ def test_summary_when_guard_ended_does_show_agent_row() -> None:
         log_path=_LOG_PATH,
         session_result=None,
         final_text="I was working on the optimization.",
+        exit_report=_NO_EXIT_STEPS,
     )
 
     text = frame_text(summary, width=FRAME_WIDTH)
@@ -502,6 +541,7 @@ def test_summary_when_stop_condition_or_hook_failure_ended_does_render_stopped_h
         log_path=_LOG_PATH,
         session_result=session_result,
         final_text="Some final text.",
+        exit_report=_NO_EXIT_STEPS,
     )
 
     assert frame_text(summary, width=FRAME_WIDTH).splitlines() == expected_lines

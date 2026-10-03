@@ -4,6 +4,9 @@
 :func:`finalize_tracing` ends them. While the run is active,
 :func:`create_run_span_observer` mirrors supervisor events onto the run span as
 OpenTelemetry span events.
+
+All ``opentelemetry`` imports live inside the functions so importing this module
+never pulls the SDK into ``sys.modules``.
 """
 
 from __future__ import annotations
@@ -12,38 +15,20 @@ import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from gymrat.supervisor.events import (
-    CapEvent,
-    CompactionEvent,
-    FollowUpEvent,
-    TurnEndEvent,
-    combine_observers,
-)
+from gymrat.supervisor.events import combine_observers
 from gymrat.telemetry.attributes import (
-    CAP_NAME,
-    EVENT_CAP,
-    EVENT_COMPACTION,
-    EVENT_FOLLOW_UP,
-    EVENT_TURN_END,
-    FOLLOW_UP_ACTION,
-    FOLLOW_UP_REASON,
-    GEN_AI_MODEL,
-    GEN_AI_PROVIDER,
     RUN_COST_USD,
     RUN_DURATION_MS,
-    RUN_EFFORT,
     RUN_END_REASON,
     RUN_ENDED_BY,
-    RUN_HEAD_SHA,
-    RUN_MAX_MINUTES,
-    RUN_MAX_USD,
     RUN_SPAN,
     SESSION_BRANCH,
     SESSION_ID,
     SESSION_SPAN,
-    TURN_BUDGET_EXHAUSTED,
-    TURN_ORIGIN,
-    TURN_SESSION_COST_USD,
+    SESSION_SPAN_KEY,
+    run_attributes,
+    run_event,
+    run_span_key,
 )
 
 if TYPE_CHECKING:
@@ -63,9 +48,8 @@ _log = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class TracingState:
-    """Mutable tracing context held across the session run."""
+    """The spans held open across the session run; both ``None`` while tracing is off."""
 
-    active: bool = False
     session_span: Span | None = None
     run_span: Span | None = None
 
@@ -104,61 +88,51 @@ def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the se
         A three-tuple of ``(prompt, observer, state)``.  When no tracing
         endpoint is configured, or the spans it opens carry no valid trace
         context (as when the SDK is disabled), the prompt and observer are
-        returned unchanged with an inactive state and no spans left open; when tracing is active
-        the prompt carries a ``traceparent`` and the observer fans out to
-        both the reporter and the tracing observer.
+        returned unchanged with an empty state and no spans left open; when
+        tracing is active the prompt carries a ``traceparent`` and the observer
+        fans out to both the reporter and the tracing observer.
     """
     from gymrat.telemetry.provider import configure_tracing, start_span  # noqa: PLC0415
 
-    state = TracingState()
     if not configure_tracing(session_id):
-        return prompt, reporter_observer, state
+        return prompt, reporter_observer, TracingState()
 
     from opentelemetry.trace import set_span_in_context  # noqa: PLC0415
 
     from gymrat.telemetry.ids import format_traceparent  # noqa: PLC0415
 
-    state.active = True
-    state.session_span = start_span(
+    session_span = start_span(
         SESSION_SPAN,
-        span_key="session",
+        span_key=SESSION_SPAN_KEY,
         attributes={
             SESSION_ID: session_id,
             SESSION_BRANCH: branch,
         },
     )
-
-    run_attrs: dict[str, object] = {
-        SESSION_ID: session_id,
-        RUN_HEAD_SHA: head_sha,
-        RUN_MAX_MINUTES: max_minutes,
-        GEN_AI_PROVIDER: "anthropic",
-    }
-    if max_usd is not None:
-        run_attrs[RUN_MAX_USD] = max_usd
-    if effort is not None:
-        run_attrs[RUN_EFFORT] = effort
-    if model is not None:
-        run_attrs[GEN_AI_MODEL] = model
-
-    session_ctx = set_span_in_context(state.session_span)
-    state.run_span = start_span(
+    run_span = start_span(
         RUN_SPAN,
-        span_key=f"run:{launch_at}",
-        attributes=run_attrs,
-        context=session_ctx,
+        span_key=run_span_key(launch_at),
+        attributes=run_attributes(
+            session_id=session_id,
+            head_sha=head_sha,
+            max_minutes=max_minutes,
+            max_usd=max_usd,
+            effort=effort,
+            model=model,
+        ),
+        context=set_span_in_context(session_span),
     )
 
     # A disabled SDK (OTEL_SDK_DISABLED=true) still configures a provider but
     # hands out non-recording spans with no trace context to propagate.
-    if not state.run_span.get_span_context().is_valid:
-        state.run_span.end()
-        state.session_span.end()
+    if not run_span.get_span_context().is_valid:
+        run_span.end()
+        session_span.end()
         return prompt, reporter_observer, TracingState()
 
-    prompt = replace(prompt, traceparent=format_traceparent(state.run_span))
-    observer = combine_observers(reporter_observer, create_run_span_observer(state.run_span))
-    return prompt, observer, state
+    prompt = replace(prompt, traceparent=format_traceparent(run_span))
+    observer = combine_observers(reporter_observer, create_run_span_observer(run_span))
+    return prompt, observer, TracingState(session_span=session_span, run_span=run_span)
 
 
 def finalize_tracing(
@@ -204,34 +178,11 @@ def create_run_span_observer(span: Span) -> SessionObserver:
 
     def observe(event: SessionEvent) -> None:
         try:
-            _mirror(span, event)
+            mirrored = run_event(event)
+            if mirrored is not None:
+                name, attributes = mirrored
+                span.add_event(name, attributes=attributes, timestamp=event.at)
         except Exception as exc:  # noqa: BLE001 — telemetry must never crash the session
             _log.warning("span event mirroring failed: %s", exc, exc_info=True)
 
     return observe
-
-
-def _mirror(span: Span, event: SessionEvent) -> None:
-    if isinstance(event, TurnEndEvent):
-        span.add_event(
-            EVENT_TURN_END,
-            attributes={
-                TURN_SESSION_COST_USD: event.cost_usd,
-                TURN_ORIGIN: event.origin,
-                TURN_BUDGET_EXHAUSTED: event.budget_exhausted,
-            },
-            timestamp=event.at,
-        )
-    elif isinstance(event, FollowUpEvent):
-        attrs: dict[str, str] = {FOLLOW_UP_ACTION: event.action}
-        if event.reason is not None:
-            attrs[FOLLOW_UP_REASON] = event.reason
-        span.add_event(EVENT_FOLLOW_UP, attributes=attrs, timestamp=event.at)
-    elif isinstance(event, CapEvent):
-        span.add_event(
-            EVENT_CAP,
-            attributes={CAP_NAME: event.cap},
-            timestamp=event.at,
-        )
-    elif isinstance(event, CompactionEvent):
-        span.add_event(EVENT_COMPACTION, timestamp=event.at)

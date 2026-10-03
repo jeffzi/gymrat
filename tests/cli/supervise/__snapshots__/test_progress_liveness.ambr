@@ -1,7 +1,7 @@
 # serializer version: 1
 # name: test_liveness_when_four_tools_finish_does_show_only_last_three
   '''
-  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
   │ time                                                                           4s  cap in 7h 59m │
   │ cost $0.00                                                                                       │
   │ loop   no session yet                                                                            │
@@ -14,7 +14,7 @@
 # ---
 # name: test_liveness_when_iterate_tool_has_sidecar_does_show_passes_bar
   '''
-  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
   │ time ━━━━                                                                  31m 1s  cap in 7h 28m │
   │ cost $0.00                                                                                       │
   │ loop   no session yet                                                                            │

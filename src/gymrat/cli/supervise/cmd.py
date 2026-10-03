@@ -38,7 +38,7 @@ from gymrat.cli.options import (
 from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.cli.supervise.preflight import doctor_gate, run_preflight, validate_experiment_worktree
 from gymrat.cli.supervise.progress import create_supervise_reporter
-from gymrat.cli.supervise.summary import SessionLabels, build_summary
+from gymrat.cli.supervise.summary import build_summary
 from gymrat.clock import now_ms, now_ns
 from gymrat.config.resolve import resolve_config
 from gymrat.config.types import CliFlags, Effort, ResolvedConfig, SuperviseConfig
@@ -256,7 +256,8 @@ def _report_result(
             log_path=ctx.log_path,
             session_result=session_result,
             final_text=final_text,
-            labels=SessionLabels(model=ctx.model, effort=ctx.effort),
+            model=ctx.model,
+            effort=ctx.effort,
             exit_report=exit_report,
         ),
         color=resolve_stream_color(ctx.color, sys.stdout),
@@ -342,31 +343,10 @@ def _supervised_session(ctx: _SessionContext, deadline_ms: float) -> SupervisedS
     )
 
 
-async def _supervise_then_release(
-    pending: Coroutine[object, object, SupervisionResult],
-    release_budget: Callable[[], None],
-) -> SupervisionResult:
-    """Await the supervisor, releasing the budget the moment it stops.
-
-    Args:
-        pending: The supervisor run.
-        release_budget: Removes the budget file and its termination cleanup.
-
-    Returns:
-        What the supervisor returned.
-
-    Raises:
-        Exception: Whatever the supervisor raised, unchanged.
-    """
-    try:
-        return await pending
-    finally:
-        release_budget()
-
-
-async def _supervise_and_exit_sequence(
+async def _supervise_and_exit_sequence(  # noqa: PLR0913 -- the run and everything the exit sequence shares with it
     reporter: SuperviseReporter,
     pending: Coroutine[object, object, SupervisionResult],
+    release_budget: Callable[[], None],
     *,
     ctx: _SessionContext,
     context: SupervisedSession,
@@ -374,14 +354,16 @@ async def _supervise_and_exit_sequence(
 ) -> tuple[SupervisionResult, ExitReport]:
     """Run the supervisor, then the exit sequence, inside one running loop.
 
-    The exit sequence runs only when the supervisor returned; its phases and
-    warnings go through the still-running reporter, and its decisions land in
-    the same event log and observer the supervisor wrote to.
+    The budget is released the moment the supervisor stops, so the exit
+    sequence never runs under a live budget. The exit sequence runs only when
+    the supervisor returned; its phases and warnings go through the
+    still-running reporter, and its decisions land in the same event log and
+    observer the supervisor wrote to.
 
     Args:
         reporter: The dashboard, already showing when the supervisor is awaited.
-        pending: The supervisor run, which releases the budget when it stops so
-            the exit sequence never runs under a live budget.
+        pending: The supervisor run.
+        release_budget: Removes the budget file and its termination cleanup.
         ctx: The session run's context.
         context: The supervised session the supervisor and exit sequence share.
         observer: The observer the supervisor was handed.
@@ -392,7 +374,10 @@ async def _supervise_and_exit_sequence(
     Raises:
         Exception: Whatever the supervisor raised, unchanged.
     """
-    result = await pending
+    try:
+        result = await pending
+    finally:
+        release_budget()
     exit_report = await run_exit_sequence(
         context,
         ended_by=result.ended_by,
@@ -429,7 +414,7 @@ def _run_session(ctx: _SessionContext) -> None:
     Args:
         ctx: Everything the run needs, assembled once the lock is held.
     """
-    from gymrat.cli.supervise.span_lifecycle import finalize_tracing, setup_tracing  # noqa: PLC0415
+    from gymrat.telemetry.run_spans import finalize_tracing, setup_tracing  # noqa: PLC0415
 
     driver = _create_driver(ctx.root)
     mode = resolve_render_mode()
@@ -468,16 +453,14 @@ def _run_session(ctx: _SessionContext) -> None:
                 result, exit_report = asyncio.run(
                     _supervise_and_exit_sequence(
                         reporter,
-                        _supervise_then_release(
-                            supervise(
-                                driver=driver,
-                                prompt=prompt,
-                                context=context,
-                                launch=ctx.launch,
-                                observer=observer,
-                            ),
-                            release_budget,
+                        supervise(
+                            driver=driver,
+                            prompt=prompt,
+                            context=context,
+                            launch=ctx.launch,
+                            observer=observer,
                         ),
+                        release_budget,
                         ctx=ctx,
                         context=context,
                         observer=observer,
@@ -493,7 +476,7 @@ def _run_session(ctx: _SessionContext) -> None:
                 exit_report=exit_report,
             )
         finally:
-            if tracing.active:
+            if tracing.run_span is not None:
                 finalize_tracing(tracing, result)
 
 

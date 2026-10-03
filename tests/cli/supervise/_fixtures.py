@@ -611,7 +611,6 @@ def make_reporter(
     root: str = "/tmp/repo",
     read_progress: Callable[[str], ProgressSnapshot | None] | None = None,
     plain_write: Callable[[str], None] | None = None,
-    label: str = "ecstatic-ts",
     session_id: str = "20260813-125044-34ec",
     branch: str = "gymrat/20260813-125044-34ec",
     color: bool | None = None,
@@ -639,7 +638,6 @@ def make_reporter(
         read_progress: Reads the iterate progress sidecar, or ``None`` for the
             standard reader.
         plain_write: Line writer for plain mode, or ``None`` for the standard writer.
-        label: Human label for the run, shown in the frame header.
         session_id: Session identifier propagated to the frame.
         branch: Git branch name shown in the frame header.
         color: Tri-state color override: ``True`` forces color, ``False``
@@ -668,7 +666,6 @@ def make_reporter(
         mode=mode,
         now=clock,
         read_session=read_session,
-        label=label,
         session_id=session_id,
         branch=branch,
         tz=tz,

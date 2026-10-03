@@ -403,11 +403,11 @@ def _stub_tracing(
 
 
 def _record_sdk_endpoint(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Stub tracing and record the endpoint the SDK reads when tracing is configured."""
+    """Stub tracing and record the endpoint tracing is configured with."""
     seen: list[str] = []
 
-    def fake_configure(*_a: object, **_kw: object) -> bool:
-        seen.append(os.environ[_ENDPOINT_ENV])
+    def fake_configure(_session_id: str, *, endpoint: str) -> bool:
+        seen.append(endpoint)
         return True
 
     _stub_tracing(monkeypatch, configure_tracing=fake_configure)

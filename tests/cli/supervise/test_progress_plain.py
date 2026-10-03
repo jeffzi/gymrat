@@ -21,8 +21,19 @@ from tests.cli.supervise._fixtures import (
     make_iteration,
     make_plain_reporter,
     make_read_session,
+    make_reporter,
 )
 from tests.session.records._fixtures import session_state
+
+
+def test_plain_when_no_writer_given_does_print_each_line_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+):
+    kit = make_reporter(mode="plain", max_minutes=60)
+
+    fire_launch(kit.reporter.observer, 1000)
+
+    assert capsys.readouterr().err == "caps 60m\n"
 
 
 def test_plain_when_launched_with_spend_cap_does_print_caps_with_dollars():

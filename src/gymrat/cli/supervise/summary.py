@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, assert_never
 
 from rich.text import Text
@@ -110,30 +109,6 @@ def _build_agent_row(final_text: str) -> Text:
     return _summary_row(label, Text(indented))
 
 
-def _completed_on_its_own(result: SupervisionResult) -> bool:
-    """Whether the session ended by itself, not by a cap trip or an error."""
-    return result.ended_by == "session" and result.outcome.reason != "error"
-
-
-def _resolve_agent_text(
-    session_result: ReadSessionResult | None, final_text: str | None
-) -> str | None:
-    """The session's stop message, falling back to the agent's last text block."""
-    stop_message = session_result.stop_message if session_result is not None else None
-    return stop_message or final_text
-
-
-@dataclass(frozen=True, slots=True)
-class SessionLabels:
-    """Optional model/effort labels shown in the closing summary."""
-
-    model: str | None = None
-    effort: Effort | None = None
-
-
-_NO_LABELS = SessionLabels()
-
-
 def _build_exit_rows(exit_report: ExitReport) -> list[Text]:
     """One ``exit`` row per step in order, then an alert-styled row for a sequence error."""
     rows = [_summary_row("exit", Text(step.text)) for step in exit_report.steps]
@@ -147,9 +122,10 @@ def build_summary(  # noqa: PLR0913 -- keyword-only run-end parts extend a 1-pos
     *,
     log_path: str,
     session_result: ReadSessionResult | None,
+    exit_report: ExitReport,
     final_text: str | None = None,
-    labels: SessionLabels = _NO_LABELS,
-    exit_report: ExitReport | None = None,
+    model: str | None = None,
+    effort: Effort | None = None,
 ) -> Text:
     """Build the closing summary ``gymrat supervise`` prints when a run ends.
 
@@ -169,33 +145,35 @@ def build_summary(  # noqa: PLR0913 -- keyword-only run-end parts extend a 1-pos
         session_result: The latest session read, supplying best-iteration and
             loop-progress content.  ``None`` when the session file was never
             created.
-        final_text: The agent's last text block, used for the agent row when
-            the session log does not end on a stop message.  ``None`` when the
-            agent produced no text.
-        labels: Model and effort labels, each shown as a labelled row when not
-            ``None``.
         exit_report: What the exit sequence did after the session ended: each
             step is shown verbatim as an ``exit`` row between the loop and log
             rows, in step order, and a sequence error follows as an
-            alert-styled ``exit`` row.  ``None`` renders no exit rows.
+            alert-styled ``exit`` row.
+        final_text: The agent's last text block, used for the agent row when
+            the session log does not end on a stop message.  ``None`` when the
+            agent produced no text.
+        model: The model name, shown as a labelled row when not ``None``.
+        effort: The effort level, shown as a labelled row when not ``None``.
 
     Returns:
         The assembled ``Text`` block for the closing summary.
     """
     rows = [_build_outcome_text(result)]
-    if _completed_on_its_own(result) or result.ended_by in ("guard", "stop-condition"):
-        agent_text = _resolve_agent_text(session_result, final_text)
+    # A session that ended by itself, not by a cap trip or an error.
+    completed = result.ended_by == "session" and result.outcome.reason != "error"
+    if completed or result.ended_by in ("guard", "stop-condition"):
+        stop_message = session_result.stop_message if session_result is not None else None
+        agent_text = stop_message or final_text
         if agent_text is not None:
             rows.append(_build_agent_row(agent_text))
-    if labels.model is not None:
-        rows.append(_summary_row("model", Text(labels.model)))
-    if labels.effort is not None:
-        rows.append(_summary_row("effort", Text(labels.effort)))
+    if model is not None:
+        rows.append(_summary_row("model", Text(model)))
+    if effort is not None:
+        rows.append(_summary_row("effort", Text(effort)))
     best_text = build_best_text(session_result)
     if best_text is not None:
         rows.append(_summary_row("best", best_text))
     rows.append(_summary_row("loop", build_loop_text(session_result, None)))
-    if exit_report is not None:
-        rows.extend(_build_exit_rows(exit_report))
+    rows.extend(_build_exit_rows(exit_report))
     rows.append(_summary_row("log", log_path_text(log_path)))
     return Text("\n").join(rows)

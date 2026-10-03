@@ -7,7 +7,6 @@ import warnings
 
 import pytest
 
-from gymrat.cli.supervise.span_lifecycle import create_run_span_observer
 from gymrat.supervisor.events import (
     CapEvent,
     CompactionEvent,
@@ -22,6 +21,7 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 from gymrat.telemetry.provider import _reset_for_tests, start_span
+from gymrat.telemetry.run_spans import create_run_span_observer
 from tests.supervisor._fixtures import make_launch
 from tests.telemetry._fixtures import memory_tracing
 
@@ -215,7 +215,7 @@ def test_create_run_span_observer_when_irrelevant_event_does_not_add_span_event(
 # Error suppression
 # ---------------------------------------------------------------------------
 
-_TRACING_LOGGER = "gymrat.cli.supervise.span_lifecycle"
+_TRACING_LOGGER = "gymrat.telemetry.run_spans"
 
 
 class _BrokenSpan:

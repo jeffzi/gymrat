@@ -78,7 +78,6 @@ def make_state(**changes: Any) -> ReporterState:
         max_minutes=60,
         max_usd=None,
         max_iterations=20,
-        label="ecstatic-ts",
         session_id="20260813-125044-34ec",
         branch="gymrat/20260813-125044-34ec",
         model=None,

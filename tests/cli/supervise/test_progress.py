@@ -171,11 +171,10 @@ def test_make_default_read_when_baseline_presence_varies_does_report_it(
 # ---------------------------------------------------------------------------
 
 
-def test_panel_title_when_launched_does_contain_label_session_and_branch(
+def test_panel_title_when_launched_does_contain_session_and_branch(
     snapshot: SnapshotAssertion,
 ):
     kit = make_reporter(
-        label="ecstatic-ts",
         session_id="20260813-125044-34ec",
         branch="gymrat/20260813-125044-34ec",
     )
@@ -187,25 +186,13 @@ def test_panel_title_when_launched_does_contain_label_session_and_branch(
 
 
 def test_panel_title_when_all_identity_empty_does_show_bare_supervise():
-    kit = make_reporter(label="", session_id="", branch="")
+    kit = make_reporter(session_id="", branch="")
     fire_launch(kit.reporter.observer, 1000)
 
     frame = render_frame(kit.reporter)
     title_line = frame.splitlines()[0]
 
     assert "supervise" in title_line
-    assert "session" not in title_line
-    assert "branch" not in title_line
-
-
-def test_panel_title_when_only_label_present_does_omit_session_and_branch():
-    kit = make_reporter(label="ecstatic-ts", session_id="", branch="")
-    fire_launch(kit.reporter.observer, 1000)
-
-    frame = render_frame(kit.reporter)
-    title_line = frame.splitlines()[0]
-
-    assert "supervise ecstatic-ts" in title_line
     assert "session" not in title_line
     assert "branch" not in title_line
 

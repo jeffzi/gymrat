@@ -220,7 +220,7 @@ def _build_liveness_text(
     *,
     tool_col: int,
     idle_warn_ms: int,
-) -> Text | None:
+) -> Text:
     match liveness:
         case Starting():
             return Text("starting", style=STYLE_PENDING)
@@ -256,26 +256,6 @@ def _build_finished_tool_line(tool: FinishedTool, tz: tzinfo | None, *, tool_col
     style = f"dim {STYLE_REGRESSED}" if is_error else STYLE_META
 
     return Text(line, style=style, no_wrap=True, overflow="ellipsis")
-
-
-def _build_iterate_nest(
-    sidecar: ProgressSnapshot | None,
-    now_ms: int,
-    tool_started_at: int,
-) -> str | None:
-    if sidecar is None:
-        return None
-    remaining = sidecar.passes_total - sidecar.passes_completed
-    if remaining > 0 and sidecar.last_pass_duration_ms > 0:
-        eta_ms = remaining * sidecar.last_pass_duration_ms
-        eta_text = format_eta(eta_ms)
-    else:
-        eta_text = ""
-    elapsed = format_duration(now_ms - tool_started_at)
-    text = f"passes {sidecar.passes_completed}/{sidecar.passes_total} · {elapsed}"
-    if eta_text:
-        text += f" · {eta_text}"
-    return text
 
 
 def _build_summary_table(state: ReporterState, elapsed_ms: int) -> Table:
@@ -339,10 +319,14 @@ def _build_iterate_nest_row(
     if not _is_iterate_tool(liveness):
         return None
     sidecar = read_progress(root)
-    nest_text = _build_iterate_nest(sidecar, now, liveness.since)
-    if nest_text is None:
+    if sidecar is None:
         return None
-    return Text(f"  {nest_text}", style=STYLE_META)
+    elapsed = format_duration(now - liveness.since)
+    text = f"  passes {sidecar.passes_completed}/{sidecar.passes_total} · {elapsed}"
+    remaining = sidecar.passes_total - sidecar.passes_completed
+    if remaining > 0 and sidecar.last_pass_duration_ms > 0:
+        text += f" · {format_eta(remaining * sidecar.last_pass_duration_ms)}"
+    return Text(text, style=STYLE_META)
 
 
 def _build_liveness_table(  # noqa: PLR0913 -- view knobs threaded to leaf renderers
@@ -356,15 +340,15 @@ def _build_liveness_table(  # noqa: PLR0913 -- view knobs threaded to leaf rende
 ) -> Table:
     liveness_table = Table.grid(padding=(0, 1))
     liveness_table.add_column()
-    liveness_text = _build_liveness_text(
-        state.liveness,
-        now,
-        tz,
-        tool_col=tool_col,
-        idle_warn_ms=idle_warn_ms,
+    liveness_table.add_row(
+        _build_liveness_text(
+            state.liveness,
+            now,
+            tz,
+            tool_col=tool_col,
+            idle_warn_ms=idle_warn_ms,
+        )
     )
-    if liveness_text is not None:
-        liveness_table.add_row(liveness_text)
 
     if isinstance(state.liveness, InFlight):
         nest_row = _build_iterate_nest_row(state.liveness, now, state.root, read_progress)
@@ -390,8 +374,6 @@ def _append_meta_field(text: Text, label: str, value: str) -> None:
 def _build_title(state: ReporterState) -> Text:
     title = Text()
     title.append("supervise", style=STYLE_LABEL)
-    if state.label:
-        title.append(f" {state.label}", style=STYLE_LABEL)
     if state.session_id:
         _append_meta_field(title, "session", state.session_id)
     if state.branch:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
+from gymrat.plural import pluralize
 from gymrat.report.format import format_percent_delta
 
 if TYPE_CHECKING:
@@ -64,7 +65,7 @@ def _iter_label(count: int, max_iterations: int | None) -> str:
     if max_iterations is not None:
         # The noun agrees with the cap, so the capped form stays plural at any count.
         return f"{count}/{max_iterations} iterations"
-    return f"{count} iteration" if count == 1 else f"{count} iterations"
+    return pluralize(count, "iteration")
 
 
 def _outcome_role(outcome: str) -> LoopStyle:

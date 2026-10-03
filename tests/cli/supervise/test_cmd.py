@@ -844,7 +844,7 @@ def _exploding_setup_tracing(*_args: object, **_kwargs: object) -> tuple[object,
             id="budget-init",
         ),
         pytest.param(
-            "gymrat.cli.supervise.span_lifecycle.setup_tracing",
+            "gymrat.telemetry.run_spans.setup_tracing",
             _exploding_setup_tracing,
             _TRACING_FAILURE,
             id="tracing-setup",

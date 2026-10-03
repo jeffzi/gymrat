@@ -29,7 +29,6 @@ _TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 _TRACES_PATH = "v1/traces"
 
 _session_id: str = ""
-_session_trace_id: int = 0
 _provider: TracerProvider | None = None
 _tracer: Tracer | None = None
 _export_failed: bool = False
@@ -59,7 +58,12 @@ def _traces_url(endpoint: str) -> str:
     return f"{endpoint}{separator}{_TRACES_PATH}"
 
 
-def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None = None) -> bool:
+def configure_tracing(
+    session_id: str,
+    *,
+    span_processor: SpanProcessor | None = None,
+    endpoint: str | None = None,
+) -> bool:
     """Configure a TracerProvider for the given session.
 
     Args:
@@ -67,6 +71,8 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
             IDs.
         span_processor: The span processor to install; a default OTLP
             batch processor is used when omitted.
+        endpoint: The OTLP endpoint to export to; ``None`` reads it from
+            ``OTEL_EXPORTER_OTLP_ENDPOINT``.
 
     Returns:
         Whether a tracer provider is now active (``False`` when no endpoint
@@ -77,7 +83,7 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
             or with a non-None *span_processor* when a provider is already
             configured (the processor would be silently discarded).
     """
-    global _provider, _tracer, _session_id, _session_trace_id  # noqa: PLW0603 — module singleton
+    global _provider, _tracer, _session_id  # noqa: PLW0603 — module singleton
 
     if _provider is not None:
         if session_id != _session_id:
@@ -94,7 +100,7 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
             raise ValueError(msg)
         return True
 
-    endpoint = otlp_endpoint(os.environ.get(ENDPOINT_ENV))
+    endpoint = otlp_endpoint(endpoint if endpoint is not None else os.environ.get(ENDPOINT_ENV))
     if endpoint is None:
         return False
 
@@ -105,14 +111,13 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
         return False
 
     _session_id = session_id
-    _session_trace_id = trace_id_of(session_id)
 
     resource = Resource.create({
         "service.name": "gymrat",
         "service.version": importlib.metadata.version("gymrat"),
     })
 
-    id_generator = _DeterministicIdGenerator(_session_trace_id)
+    id_generator = _DeterministicIdGenerator(trace_id_of(session_id))
     # pyrefly: ignore[bad-argument-type] -- IdGenerator protocol mismatch
     provider = _TracerProvider(resource=resource, id_generator=id_generator)
 
@@ -195,12 +200,11 @@ def _reset_for_tests() -> None:
         Exception: Whatever the provider's ``shutdown`` raises, propagated after
             the singleton has been cleared.
     """
-    global _provider, _tracer, _session_id, _session_trace_id, _export_failed  # noqa: PLW0603
+    global _provider, _tracer, _session_id, _export_failed  # noqa: PLW0603
     provider = _provider
     _provider = None
     _tracer = None
     _session_id = ""
-    _session_trace_id = 0
     _export_failed = False
     if provider is not None:
         with warnings.catch_warnings():

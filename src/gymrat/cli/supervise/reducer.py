@@ -89,7 +89,6 @@ class ReporterState:
         max_minutes: The run's wall-clock cap, in minutes.
         max_usd: The run's cost cap in USD, or ``None`` when uncapped.
         max_iterations: The run's iteration cap, or ``None`` when uncapped.
-        label: The run's display label.
         session_id: The supervised session's id.
         branch: The git branch the run is on.
         model: The model name the run is configured to use, or ``None`` when
@@ -125,7 +124,6 @@ class ReporterState:
     max_minutes: float
     max_usd: float | None = None
     max_iterations: int | None = None
-    label: str = ""
     session_id: str = ""
     branch: str = ""
     model: str | None = None
@@ -319,12 +317,9 @@ def _resolve_session_result(
 def _apply_session_refresh(
     state: ReporterState,
     ended: ReporterState,
-    event: ToolEndEvent,
     session_result: ReadSessionResult | None,
 ) -> ReporterState:
-    """Fold a fresh session read into *ended* when the event warrants it."""
-    if not wants_session_refresh(state, event):
-        return ended
+    """Fold the session read every tool end asks for into *ended*."""
     resolved = _resolve_session_result(state, session_result)
     return replace(
         ended,
@@ -338,7 +333,7 @@ def _tool_end(
 ) -> ReporterState:
     if event.parent_tool_use_id is not None:
         ended = _nested_tool_end(state, event)
-        return _apply_session_refresh(state, ended, event, session_result)
+        return _apply_session_refresh(state, ended, session_result)
 
     tracked = pair_value(state.in_flight_tools, event.tool_use_id)
     in_flight = _drop(state.in_flight_tools, event.tool_use_id)
@@ -366,7 +361,7 @@ def _tool_end(
         finished_tools=finished[-_MAX_FINISHED_TOOLS:],
         liveness=liveness,
     )
-    return _apply_session_refresh(state, ended, event, session_result)
+    return _apply_session_refresh(state, ended, session_result)
 
 
 def _thinking_update(state: ReporterState, event: ThinkingUpdateEvent) -> ReporterState:
@@ -419,7 +414,7 @@ def _follow_up_decision(state: ReporterState, event: FollowUpEvent) -> str:
     if event.action == "ended":
         label = f"ended {event.reason}" if event.reason else "ended"
     else:
-        label = _FOLLOW_UP_LABELS.get(event.action, event.action)
+        label = _FOLLOW_UP_LABELS[event.action]
     return f"turn {state.turn_count} ended · {label}"
 
 

@@ -322,11 +322,14 @@ def test_replay_session_when_supervisor_events_present_does_mirror_onto_run_span
 
     spans = _replay(session_log, sup_log)
     run_span = _span_by_name(spans, "gymrat.run")
-    event_names = [ev.name for ev in run_span.events]
-    assert "gymrat.turn_end" in event_names
-    assert "gymrat.follow_up" in event_names
-    assert "gymrat.cap" in event_names
-    assert "gymrat.compaction" in event_names
+    mirrored = {ev.name: dict(ev.attributes) for ev in run_span.events}
+    assert "gymrat.turn_end" in mirrored
+    assert mirrored["gymrat.follow_up"] == {
+        "gymrat.follow_up.action": "replied",
+        "gymrat.follow_up.reason": "continue",
+    }
+    assert mirrored["gymrat.cap"] == {"gymrat.cap.name": "wall-clock"}
+    assert mirrored["gymrat.compaction"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -381,31 +384,34 @@ def test_replay_session_when_command_span_created_does_use_command_attributes(
 
 
 @pytest.mark.parametrize(
-    ("exit_code", "expected_status"),
+    ("exit_code", "reason", "expected_status", "expected_description"),
     [
-        pytest.param(0, "OK", id="exit-0-ok"),
-        pytest.param(2, "ERROR", id="exit-2-error"),
-        pytest.param(1, "UNSET", id="exit-1-unset"),
+        pytest.param(0, None, "OK", None, id="exit-0-ok"),
+        pytest.param(2, "error", "ERROR", "error", id="exit-2-error-with-its-reason"),
+        pytest.param(1, "gating-block", "UNSET", None, id="exit-1-unset"),
     ],
 )
 def test_replay_session_when_command_exit_code_does_set_span_status(
     log_paths: tuple[str, str],
     exit_code: int,
+    reason: str | None,
     expected_status: str,
+    expected_description: str | None,
 ):
     session_log, sup_log = log_paths
     header = session_record(at=_T0)
-    cmd = _command("iterate", duration_ms=100, exit_code=exit_code)
+    cmd = _command("iterate", duration_ms=100, exit_code=exit_code, reason=reason)
     _write_session_log(session_log, [header, cmd])
     _write_standard_run(sup_log)
 
     spans = _replay(session_log, sup_log)
     cmd_span = _span_by_name(spans, "gymrat.command.iterate")
-    status_code = cmd_span.status.status_code
     from opentelemetry.trace import StatusCode
 
-    expected = getattr(StatusCode, expected_status)
-    assert status_code == expected
+    assert (cmd_span.status.status_code, cmd_span.status.description) == (
+        getattr(StatusCode, expected_status),
+        expected_description,
+    )
 
 
 def test_replay_session_when_command_has_traceparent_does_add_link(log_paths: tuple[str, str]):
@@ -452,6 +458,19 @@ def test_replay_session_when_command_outside_run_range_does_parent_under_session
     assert cmd_span.parent.span_id == session_span.context.span_id
 
 
+def test_replay_session_when_a_record_outlasts_every_run_does_end_the_session_span_at_it(
+    log_paths: tuple[str, str],
+):
+    session_log, sup_log = log_paths
+    cmd = _command("measure", at=_T5, duration_ms=100)
+    _write_session_log(session_log, [session_record(at=_T0), cmd])
+    _write_supervisor_log(sup_log, [_launch_event(at=_T1), _turn_end(at=_T2)])
+
+    spans = _replay(session_log, sup_log)
+
+    assert _span_by_name(spans, "gymrat.session").end_time == _T5
+
+
 def test_replay_session_when_command_present_does_delegate_to_command_span_inputs(
     log_paths: tuple[str, str],
     monkeypatch: pytest.MonkeyPatch,
@@ -472,6 +491,8 @@ def test_replay_session_when_command_present_does_delegate_to_command_span_input
         key="command:2",
         attributes=marker_attrs,
         link=None,
+        status="OK",
+        status_description=None,
     )
     mock_helper = create_autospec(command_span_inputs, return_value=fake_inputs)
     monkeypatch.setattr(replay_mod, "command_span_inputs", mock_helper, raising=False)

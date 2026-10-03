@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -103,10 +102,8 @@ def _export(session_log: str | None, endpoint: str | None) -> None:
     if endpoint is None:
         exit_with_error(f"No endpoint: pass --endpoint or set {_ENDPOINT_ENV}")
 
-    os.environ[_ENDPOINT_ENV] = endpoint
-
     try:
-        if not configure_tracing(session_id):
+        if not configure_tracing(session_id, endpoint=endpoint):
             exit_with_error(_SDK_MISSING)
     except ImportError:
         exit_with_error(_SDK_MISSING)

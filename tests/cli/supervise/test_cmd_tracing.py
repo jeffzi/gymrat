@@ -14,16 +14,17 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from gymrat.config.types import Effort
     from gymrat.supervisor.supervise import SupervisionResult
 
 import pytest
 from opentelemetry.trace import StatusCode
 
-from gymrat.cli.supervise import span_lifecycle
 from gymrat.config.types import SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
 from gymrat.supervisor.driver import SessionPrompt
+from gymrat.telemetry import run_spans
 from tests.cli.supervise._fixtures import make_supervision_result
 from tests.cli.supervise.test_cmd import (
     _CAP_MINUTES,
@@ -57,7 +58,7 @@ def _tracing_seams(
     result: SupervisionResult | None = None,
     raises: Exception | None = None,
     max_usd: str | None = None,
-    effort: str | None = None,
+    effort: Effort | None = None,
     model: str | None = None,
 ) -> _Seams:
     """Install seams and configure tracing-relevant flags for the helper.
@@ -66,8 +67,8 @@ def _tracing_seams(
     ``memory_tracing`` context manager.
     """
     cfg_kwargs: dict[str, Any] = {}
-    if model is not None:
-        cfg_kwargs["supervise"] = SuperviseConfig(model=model)
+    if model is not None or effort is not None:
+        cfg_kwargs["supervise"] = SuperviseConfig(model=model, effort=effort)
     return _install_seams(
         monkeypatch,
         result=result,
@@ -278,7 +279,7 @@ def test_supervise_when_tracing_enabled_and_model_set_does_set_provider_attribut
 ):
     from tests.telemetry._fixtures import memory_tracing
 
-    _tracing_seams(monkeypatch, model="opus")
+    _tracing_seams(monkeypatch, model="opus", effort="high")
 
     with memory_tracing(SESSION_ID) as exporter:
         result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
@@ -287,6 +288,7 @@ def test_supervise_when_tracing_enabled_and_model_set_does_set_provider_attribut
     spans = exporter.get_finished_spans()
     run_span = next(s for s in spans if s.name == "gymrat.run")
     assert run_span.attributes["gen_ai.request.model"] == "opus"  # pyrefly: ignore[unsupported-operation]
+    assert run_span.attributes["gymrat.run.effort"] == "high"  # pyrefly: ignore[unsupported-operation]
     assert run_span.attributes["gen_ai.provider.name"] == "anthropic"  # pyrefly: ignore[unsupported-operation]
 
 
@@ -366,7 +368,7 @@ def test_setup_tracing_when_sdk_disabled_and_endpoint_set_does_hold_no_span(
     prompt = make_prompt()
     observer = noop_observer()
 
-    traced = span_lifecycle.setup_tracing(
+    traced = run_spans.setup_tracing(
         session_id=SESSION_ID,
         branch=f"gymrat/{SESSION_ID}",
         launch_at=1,
@@ -379,7 +381,7 @@ def test_setup_tracing_when_sdk_disabled_and_endpoint_set_does_hold_no_span(
         reporter_observer=observer,
     )
 
-    assert traced == (prompt, observer, span_lifecycle.TracingState())
+    assert traced == (prompt, observer, run_spans.TracingState())
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +400,7 @@ def test_supervise_when_tracing_setup_raises_does_exit_two_naming_the_error(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _tracing_seams(monkeypatch)
-    monkeypatch.setattr(span_lifecycle, "setup_tracing", _exploding_setup_tracing)
+    monkeypatch.setattr(run_spans, "setup_tracing", _exploding_setup_tracing)
 
     result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
 
@@ -410,7 +412,7 @@ def test_supervise_when_tracing_setup_raises_does_remove_the_budget_file(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _tracing_seams(monkeypatch)
-    monkeypatch.setattr(span_lifecycle, "setup_tracing", _exploding_setup_tracing)
+    monkeypatch.setattr(run_spans, "setup_tracing", _exploding_setup_tracing)
 
     _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
 
@@ -422,7 +424,7 @@ def test_supervise_when_tracing_setup_raises_does_uninstall_every_termination_cl
 ):
     _tracing_seams(monkeypatch)
     registry = _track_cleanups(monkeypatch)
-    monkeypatch.setattr(span_lifecycle, "setup_tracing", _exploding_setup_tracing)
+    monkeypatch.setattr(run_spans, "setup_tracing", _exploding_setup_tracing)
 
     _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
 
