@@ -11,6 +11,7 @@ from gymrat.clock import now_ms, now_ns
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor.events import (
+    CapEvent,
     FollowUpEvent,
     LaunchEvent,
     SessionObserver,
@@ -28,10 +29,10 @@ if TYPE_CHECKING:
 from tests.session.records._fixtures import discard_record
 from tests.supervisor._fixtures import (
     InterruptEmitsEndDriver,
-    _cap_events,
     add_stop_async,
     collecting_observer,
     emit_turn_end,
+    events_of,
     follow_ups_with_action,
     make_context,
     make_launch,
@@ -117,7 +118,7 @@ async def test_supervise_when_wall_clock_fires_during_settle_window_does_call_en
     assert result.end_reason == "wall-clock"
     assert result.outcome.reason == "completed"
 
-    caps = _cap_events(probe.events)
+    caps = events_of(probe.events, CapEvent)
     assert len(caps) == 1
     assert caps[0].cap == "wall-clock"
     assert caps[0].action == "ending"
@@ -161,7 +162,7 @@ async def test_supervise_when_wall_clock_fires_after_reply_sent_does_call_interr
 
     assert result.ended_by == "wall-clock"
 
-    caps = _cap_events(probe.events)
+    caps = events_of(probe.events, CapEvent)
     assert len(caps) == 1
     assert caps[0].cap == "wall-clock"
     assert caps[0].action == "interrupting"
@@ -460,11 +461,11 @@ async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_
 
     assert result.ended_by == "wall-clock"
 
-    caps = _cap_events(probe.events)
+    caps = events_of(probe.events, CapEvent)
     assert len(caps) == 1
     assert caps[0].cap == "wall-clock"
 
     cap_idx = probe.events.index(caps[0])
     events_after_cap = probe.events[cap_idx + 1 :]
-    follow_ups_after = [e for e in events_after_cap if isinstance(e, FollowUpEvent)]
+    follow_ups_after = events_of(events_after_cap, FollowUpEvent)
     assert follow_ups_after == []

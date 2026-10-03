@@ -30,7 +30,7 @@ from tests.cli._budget import (
     set_origin,
 )
 from tests.cli._help import help_output
-from tests.cli._session import closed_stdout_error, closed_stdout_runner, disk_full_error
+from tests.cli._session import FailingStdoutRunner, closed_stdout_error, disk_full_error
 from tests.loop.iterate._fixtures import resolved_config
 
 runner = CliRunner()
@@ -307,7 +307,7 @@ def test_init_when_no_color_flag_does_suppress_ansi_in_summary():
 
 @pytest.mark.usefixtures("non_repo_cwd")
 def test_init_when_stdout_reader_closed_does_exit_zero_without_stderr():
-    result = closed_stdout_runner(closed_stdout_error()).invoke(
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["init", "--bench", "npm run bench"]
     )
 
@@ -316,7 +316,7 @@ def test_init_when_stdout_reader_closed_does_exit_zero_without_stderr():
 
 @pytest.mark.usefixtures("non_repo_cwd")
 def test_init_when_stdout_write_fails_otherwise_does_report_the_error():
-    result = closed_stdout_runner(disk_full_error()).invoke(
+    result = FailingStdoutRunner(disk_full_error()).invoke(
         app, ["init", "--bench", "npm run bench"]
     )
 

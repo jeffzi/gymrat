@@ -14,9 +14,8 @@ import os
 import subprocess
 import sys
 import time
-import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 from typer.testing import CliRunner, Result
@@ -24,27 +23,28 @@ from typer.testing import CliRunner, Result
 from gymrat.cli.app import app
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import record_to_wire
-from gymrat.supervisor.events import LaunchEvent, TurnEndEvent, to_json_line
 from tests._ansi import SGR_RE
 from tests.cli._help import help_output
-from tests.session.records._fixtures import AT, SESSION_ID, command_record, session_record
+from tests.session.records._fixtures import SESSION_ID, command_record, session_record
 from tests.telemetry._collector import otlp_collector
+from tests.telemetry._fixtures import (
+    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
+)
+from tests.telemetry._replay_logs import (
+    T0,
+    T1,
+    T2,
+    T3,
+    launch_event,
+    turn_end,
+    write_records_log,
+    write_supervisor_log,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
+    from collections.abc import Callable
 
 runner = CliRunner()
-
-
-@pytest.fixture(autouse=True)
-def _isolate_tracing_provider() -> Iterator[None]:
-    """Reset the telemetry provider singleton between tests."""
-    yield
-    from gymrat.telemetry.provider import _reset_for_tests
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        _reset_for_tests()
 
 
 def _output(result: Result) -> str:
@@ -52,59 +52,12 @@ def _output(result: Result) -> str:
     return result.stdout + result.stderr
 
 
-_HEAD_SHA = "a" * 40
-_ONE_SECOND_NS = 1_000_000_000
-_T0 = AT
-_T1 = _T0 + _ONE_SECOND_NS
-_T2 = _T1 + _ONE_SECOND_NS
-_T3 = _T2 + _ONE_SECOND_NS
-
 _ENDPOINT = "http://localhost:4318"
 _ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 _TIMEOUT_ENV = "OTEL_EXPORTER_OTLP_TIMEOUT"
 _TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 _SHORT_TIMEOUT_SECONDS = "0.5"
 _UNREACHABLE_ENDPOINT = "http://127.0.0.1:1"
-
-
-def _write_jsonl(path: str, lines: Iterable[str]) -> None:
-    with Path(path).open("w", encoding="utf-8") as fh:
-        fh.writelines(line + "\n" for line in lines)
-
-
-def _write_session_log(path: str, records: list[Any]) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    _write_jsonl(path, (json.dumps(record_to_wire(rec)) for rec in records))
-
-
-def _write_supervisor_log(path: str, events: list[Any]) -> None:
-    _write_jsonl(path, (to_json_line(ev) for ev in events))
-
-
-def _launch_event(
-    session_id: str = SESSION_ID,
-    at: int = _T0,
-) -> LaunchEvent:
-    return LaunchEvent(
-        at=at,
-        schema_version=1,
-        session_id=session_id,
-        head_sha=_HEAD_SHA,
-        dirty=False,
-        max_minutes=60.0,
-        runbook_path="/dev/null",
-        kickoff_summary="test",
-    )
-
-
-def _turn_end(at: int = _T3) -> TurnEndEvent:
-    return TurnEndEvent(
-        at=at,
-        text="done",
-        cost_usd=0.42,
-        origin="agent",
-        budget_exhausted=False,
-    )
 
 
 def _populate_session_dir(
@@ -119,23 +72,19 @@ def _populate_session_dir(
     an additional supervisor log with that session id is written.
     """
     session_log = session_jsonl_path(root)
-    header = session_record(session_id=session_id, at=_T0)
-    cmd = command_record(
-        name="measure", at=_T2, duration_ms=500, exit_code=0, reason=None, seq=None
-    )
-    _write_session_log(session_log, [header, cmd])
+    header = session_record(session_id=session_id, at=T0)
+    cmd = command_record(name="measure", at=T2, duration_ms=500, exit_code=0, reason=None, seq=None)
+    write_records_log(session_log, [header, cmd])
 
     sup_dir = str(Path(session_log).parent)
     sup_log = str(Path(sup_dir) / "supervisor-001.jsonl")
-    _write_supervisor_log(
-        sup_log, [_launch_event(session_id=session_id, at=_T1), _turn_end(at=_T3)]
-    )
+    write_supervisor_log(sup_log, [launch_event(session_id=session_id, at=T1), turn_end(at=T3)])
 
     if extra_supervisor_session_id is not None:
         other_log = str(Path(sup_dir) / "supervisor-002.jsonl")
-        _write_supervisor_log(
+        write_supervisor_log(
             other_log,
-            [_launch_event(session_id=extra_supervisor_session_id, at=_T1), _turn_end(at=_T3)],
+            [launch_event(session_id=extra_supervisor_session_id, at=T1), turn_end(at=T3)],
         )
 
     return session_log
@@ -327,7 +276,7 @@ def test_export_when_session_log_blank_does_exit_two_reporting_no_session(
             id="malformed-json",
         ),
         pytest.param(
-            json.dumps(record_to_wire(command_record(name="measure", at=_T0))).encode("utf-8")
+            json.dumps(record_to_wire(command_record(name="measure", at=T0))).encode("utf-8")
             + b"\n",
             (
                 "Expected session header at {path}:1, got a command record",
@@ -651,7 +600,7 @@ def test_export_when_supervisor_log_first_line_not_a_json_object_does_skip_it_si
 
 def _deny_read(path: Path) -> None:
     """Write a supervisor log for the session, then remove every permission on it."""
-    _write_supervisor_log(str(path), [_launch_event(), _turn_end()])
+    write_supervisor_log(str(path), [launch_event(), turn_end()])
     path.chmod(0o000)
 
 

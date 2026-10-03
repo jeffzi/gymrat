@@ -16,8 +16,6 @@ import re
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from gymrat.compare import CompareOptions
 
 import pytest
@@ -37,7 +35,7 @@ from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.warn import warn_to_stderr
 from tests.cli._budget import install_budget, install_tight_budget
-from tests.cli._session import last_command_record
+from tests.cli._session import last_command_record, open_session
 from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
@@ -62,12 +60,6 @@ def _resolved(bench: str = "sh bench.sh") -> ResolvedConfig:
         metrics={"decode/time": MetricEntry(direction="higher")},
         kinds={"memory": KindEntry(gating=False)},
     )
-
-
-@pytest.fixture
-def _in_non_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Run from a directory that is not a git repo, so the command benches lock-free."""
-    monkeypatch.chdir(tmp_path)
 
 
 def _patch_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult) -> None:
@@ -469,16 +461,11 @@ def test_compare_when_estimate_unknown_does_not_warn(
 # ---------------------------------------------------------------------------
 
 
-def _open_session(repo: str) -> None:
-    """Open a session in ``repo`` so the command trace has somewhere to write."""
-    write_session_log(repo, session_record())
-
-
 def test_compare_when_targets_labeled_does_record_the_labels_in_trace_args(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _open_session(repo)
+    open_session(repo)
     _stub_compare(monkeypatch)
 
     result = runner.invoke(app, ["compare", "before=main", "after=cand", "--bench", "sh bench.sh"])
@@ -492,7 +479,7 @@ def test_compare_when_success_does_record_trace_with_baseline_candidates_fail_on
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _open_session(repo)
+    open_session(repo)
     _stub_compare(monkeypatch)
 
     result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
@@ -513,7 +500,7 @@ def test_compare_when_config_overrides_given_does_include_them_in_trace_args(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _open_session(repo)
+    open_session(repo)
     _stub_compare(monkeypatch)
 
     result = runner.invoke(
@@ -551,7 +538,7 @@ def test_compare_when_multiple_candidates_does_record_all_in_trace_args(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _open_session(repo)
+    open_session(repo)
     _stub_compare(monkeypatch)
 
     result = runner.invoke(app, ["compare", "main", "cand1", "cand2", "--bench", "sh bench.sh"])
@@ -565,7 +552,7 @@ def test_compare_when_fail_on_trips_does_record_exit_one_with_gate_reason(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _open_session(repo)
+    open_session(repo)
     _stub_compare(monkeypatch, _regressed_result())
 
     result = runner.invoke(
@@ -582,7 +569,7 @@ def test_compare_when_fail_on_does_not_trip_does_record_trace_with_baseline_and_
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _open_session(repo)
+    open_session(repo)
     _stub_compare(monkeypatch)
 
     result = runner.invoke(

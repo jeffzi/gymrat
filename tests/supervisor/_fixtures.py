@@ -37,7 +37,6 @@ from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
-    CapEvent,
     DirtyInfo,
     FollowUpEvent,
     LaunchEvent,
@@ -75,10 +74,6 @@ def collecting_observer() -> ObserverProbe:
     """Return an observer that records each event it receives, and its list."""
     events: list[SessionEvent] = []
     return ObserverProbe(events, events.append)
-
-
-def _cap_events(events: list[SessionEvent]) -> list[CapEvent]:
-    return [event for event in events if isinstance(event, CapEvent)]
 
 
 def make_launch(
@@ -400,14 +395,9 @@ def make_context(
 # ---------------------------------------------------------------------------
 
 
-def follow_up_events(events: list[SessionEvent]) -> list[FollowUpEvent]:
-    """Return every ``FollowUpEvent`` in ``events``."""
-    return [e for e in events if isinstance(e, FollowUpEvent)]
-
-
 def follow_ups_with_action(events: list[SessionEvent], action: str) -> list[FollowUpEvent]:
     """Return every ``FollowUpEvent`` in ``events`` whose ``action`` matches."""
-    return [e for e in follow_up_events(events) if e.action == action]
+    return [e for e in events_of(events, FollowUpEvent) if e.action == action]
 
 
 def seed_session_log(root: str) -> None:

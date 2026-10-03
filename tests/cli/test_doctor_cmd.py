@@ -19,7 +19,7 @@ from gymrat.cli.app import app
 from gymrat.doctor import Check, CheckSection, GitEnvironment
 from gymrat.scaffold import SKILL_RELATIVE_PATH
 from tests.cli._help import help_output
-from tests.cli._session import closed_stdout_error, closed_stdout_runner
+from tests.cli._session import FailingStdoutRunner, closed_stdout_error
 from tests.doctor._fixtures import patch_common_seams
 
 runner = CliRunner()
@@ -187,7 +187,7 @@ def test_doctor_when_stdout_reader_closed_does_exit_zero_without_stderr(
 ):
     _patch_doctor(monkeypatch)
 
-    result = closed_stdout_runner(closed_stdout_error()).invoke(app, ["doctor", "--format", fmt])
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, ["doctor", "--format", fmt])
 
     assert (result.exit_code, result.stderr) == (0, "")
 

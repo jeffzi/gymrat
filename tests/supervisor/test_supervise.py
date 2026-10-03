@@ -20,11 +20,11 @@ from typing import override
 import pytest
 
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
-from gymrat.supervisor.events import SessionEvent, SessionObserver, TextDeltaEvent
+from gymrat.supervisor.events import CapEvent, SessionEvent, SessionObserver, TextDeltaEvent
 from gymrat.supervisor.supervise import supervise
 from tests.supervisor._fixtures import (
-    _cap_events,
     collecting_observer,
+    events_of,
     make_context,
     make_launch,
     make_prompt,
@@ -274,7 +274,7 @@ async def test_supervise_when_wall_clock_elapses_does_emit_single_wall_clock_cap
         observer=probe.observer,
     )
 
-    caps = _cap_events(probe.events)
+    caps = events_of(probe.events, CapEvent)
     assert len(caps) == 1
     assert caps[0].cap == "wall-clock"
     assert caps[0].action == "interrupting"
@@ -382,7 +382,7 @@ async def test_supervise_when_cost_reaches_max_usd_does_emit_single_spend_cap_ev
         observer=probe.observer,
     )
 
-    caps = _cap_events(probe.events)
+    caps = events_of(probe.events, CapEvent)
     assert len(caps) == 1
     assert caps[0].cap == "spend-cap"
     assert caps[0].action == "ending"
@@ -463,7 +463,7 @@ async def test_supervise_when_both_caps_could_fire_does_report_first_cap_only(
     )
 
     assert result.ended_by == "spend-cap"
-    assert len(_cap_events(probe.events)) == 1
+    assert len(events_of(probe.events, CapEvent)) == 1
 
 
 async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
@@ -483,7 +483,7 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
         observer=probe.observer,
     )
 
-    caps = _cap_events(probe.events)
+    caps = events_of(probe.events, CapEvent)
     assert result.ended_by == "spend-cap"
     assert len(caps) == 1
     assert caps[0].cap == "spend-cap"
@@ -615,7 +615,7 @@ async def test_supervise_when_outcome_rejects_does_propagate_rejection(tmp_path:
             observer=probe.observer,
         )
 
-    assert _cap_events(probe.events) == []
+    assert events_of(probe.events, CapEvent) == []
 
 
 # ---------------------------------------------------------------------------

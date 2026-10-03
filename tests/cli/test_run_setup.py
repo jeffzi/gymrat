@@ -17,7 +17,7 @@ from gymrat.cli.run_setup import (
     resolve_render_mode,
     run_with_signal_abort,
 )
-from tests._streams import FakeStream as _FakeStream
+from tests._streams import FakeStream
 
 
 class _StubReporter:
@@ -67,7 +67,7 @@ def test_resolve_render_mode_when_called_does_map_tty_to_strategy(
     expected: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=tty))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=tty))
 
     assert resolve_render_mode() == expected
 
@@ -75,7 +75,7 @@ def test_resolve_render_mode_when_called_does_map_tty_to_strategy(
 def test_resolve_render_mode_when_no_color_set_does_still_use_live(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
     monkeypatch.setenv("NO_COLOR", "1")
 
     assert resolve_render_mode() == "live"
@@ -89,7 +89,7 @@ def test_resolve_render_mode_when_no_color_set_does_still_use_live(
 def test_begin_run_when_tty_does_create_progress_reporter_with_live_mode(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
 
     captured: dict[str, object] = {}
     monkeypatch.setattr(
@@ -109,7 +109,7 @@ def test_begin_run_when_tty_does_create_progress_reporter_with_live_mode(
 def test_begin_run_when_non_tty_does_create_progress_reporter_with_plain_mode(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
 
     captured: dict[str, object] = {}
     monkeypatch.setattr(
@@ -127,7 +127,7 @@ def test_begin_run_when_non_tty_does_create_progress_reporter_with_plain_mode(
 def test_begin_run_does_return_progress_reporter(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
 
     result = begin_run(SharedFlags(bench="b", samples=1), target_count=1)
 

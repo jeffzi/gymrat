@@ -15,8 +15,7 @@ import asyncio
 import os
 import re
 import time
-import warnings
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,7 +52,7 @@ from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
 from tests._ansi import strip_ansi
 from tests._rich import CleanupRegistry, unwrap_panel
 from tests.cli._help import help_output
-from tests.cli._session import closed_stdout_error, closed_stdout_runner
+from tests.cli._session import FailingStdoutRunner, closed_stdout_error
 from tests.cli.supervise._fixtures import (
     fire_launch,
     make_supervision_result,
@@ -66,6 +65,9 @@ from tests.session.records._fixtures import (
     session_record,
 )
 from tests.supervisor._mock_driver import CostStep, create_mock_driver
+from tests.telemetry._fixtures import (
+    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
+)
 
 runner = CliRunner()
 
@@ -82,17 +84,6 @@ _BUDGET_FAILURE = "budget write failed"
 
 # The message the tracing-setup seam fails with when a test makes it explode.
 _TRACING_FAILURE = "tracing exporter unreachable"
-
-
-@pytest.fixture(autouse=True)
-def _isolate_tracing_provider() -> Iterator[None]:
-    """Reset the telemetry provider singleton so a leaked xdist worker instance can't bleed in."""
-    yield
-    from gymrat.telemetry.provider import _reset_for_tests
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        _reset_for_tests()
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +539,7 @@ def test_supervise_when_stdout_reader_closed_does_exit_zero_without_stderr(
     _install_seams(monkeypatch, config=replace(_config(), checks="npm test"))
     monkeypatch.setattr("gymrat.cli.supervise.cmd.resolve_render_mode", _live_mode)
 
-    result = closed_stdout_runner(closed_stdout_error()).invoke(
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["supervise", "optimize it", "--max-minutes", "10"]
     )
 
@@ -562,7 +553,7 @@ def test_supervise_when_stdout_reader_closed_and_preflight_fails_does_exit_two(
     monkeypatch.setattr("gymrat.cli.supervise.cmd.run_preflight", run_preflight)
     monkeypatch.setattr("gymrat.cli.supervise.cmd.resolve_render_mode", _live_mode)
 
-    result = closed_stdout_runner(closed_stdout_error()).invoke(
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["supervise", "optimize it", "--max-minutes", "10"]
     )
 

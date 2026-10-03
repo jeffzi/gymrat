@@ -29,9 +29,7 @@ from gymrat.cli.supervise.progress import (
 from gymrat.cli.supervise.types import IDLE_WARN_MS, ReadSessionResult
 from gymrat.eta import NS_PER_MS
 from gymrat.loop.start import start_session
-from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import BaselineRecord, IterationPrimary, IterationRecord
-from gymrat.session.store import append_record
 from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     CapAction,
@@ -57,50 +55,6 @@ from tests.session.records._fixtures import (
     iteration_record,
     session_state,
 )
-
-__all__ = [
-    "FRAME_WIDTH",
-    "LIVE_CLASS_PATH",
-    "Clock",
-    "PlainCapture",
-    "ReporterKit",
-    "baseline_record",
-    "cap_event",
-    "fire_cap",
-    "fire_compaction",
-    "fire_follow_up",
-    "fire_launch",
-    "fire_launch_and_bash_cycle",
-    "fire_launch_and_bash_start",
-    "fire_model_phase",
-    "fire_thinking_update",
-    "fire_tool_end",
-    "fire_tool_start",
-    "fire_turn_end",
-    "fire_usage_update",
-    "follow_up_event",
-    "launch_event",
-    "make_iteration",
-    "make_plain_reporter",
-    "make_read_session",
-    "make_reporter",
-    "make_supervision_result",
-    "model_phase_event",
-    "render_colored",
-    "render_colorless",
-    "render_frame",
-    "seed_session_with_baseline",
-    "seed_session_with_iteration",
-    "session_state_three_iterations",
-    "start_open_session",
-    "stop_built_reporters",
-    "thinking_event",
-    "tool_end_event",
-    "tool_start_event",
-    "turn_end_event",
-    "usage_event",
-]
-
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -141,35 +95,6 @@ def baseline_record(
 def start_open_session(repo: str) -> None:
     """Start a gymrat session so the experiment worktree and session log exist."""
     start_session(repo, "main", resolved_config())
-
-
-def seed_session_with_baseline(
-    repo: str, *, baseline_duration_ms: float, label: str = ".gymrat/worktrees/baseline"
-) -> None:
-    """Open a session and append a single baseline record with the given duration."""
-    start_open_session(repo)
-    log = session_jsonl_path(repo)
-    append_record(log, baseline_record(label=label, duration_ms=baseline_duration_ms))
-
-
-def seed_session_with_iteration(
-    repo: str,
-    *,
-    iteration_duration_ms: float,
-    include_baseline: bool = True,
-    label: str = ".gymrat/worktrees/baseline",
-) -> None:
-    """Seed a session whose iteration carries the given duration.
-
-    The seeded baseline (when included) gets no ``duration_ms`` of its own —
-    there is no parameter to set one — so any feasibility math a test exercises
-    is driven entirely by ``iteration_duration_ms``.
-    """
-    start_open_session(repo)
-    log = session_jsonl_path(repo)
-    if include_baseline:
-        append_record(log, baseline_record(label=label))
-    append_record(log, iteration_record(duration_ms=iteration_duration_ms))
 
 
 def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
@@ -694,52 +619,11 @@ def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> st
     return frame_text(reporter.frame(), width=width)
 
 
-# ---------------------------------------------------------------------------
-# Plain mode helpers
-# ---------------------------------------------------------------------------
-
-
-class PlainCapture(NamedTuple):
-    """A plain-mode reporter paired with a write recorder."""
-
-    kit: ReporterKit
-    writes: list[str]
-
-    @property
-    def reporter(self) -> SuperviseReporter:
-        return self.kit.reporter
-
-    @property
-    def observer(self) -> SessionObserver:
-        return self.kit.reporter.observer
-
-
-def make_plain_reporter(
-    *,
-    max_minutes: float = 60,
-    max_usd: float | None = None,
-    max_iterations: int | None = None,
-    read_session: Callable[[], ReadSessionResult] | None = None,
-    clock_start: int = 1000,
-    tz: tzinfo | None = UTC,
-) -> PlainCapture:
-    """Build a plain-mode reporter with a write-capturing callback.
-
-    Each milestone line the reporter emits is appended to the ``writes`` list.
-    The ``tz`` parameter defaults to ``UTC`` for stable assertions.
-    """
-    writes: list[str] = []
-    kit = make_reporter(
-        mode="plain",
-        max_minutes=max_minutes,
-        max_usd=max_usd,
-        max_iterations=max_iterations,
-        read_session=read_session,
-        clock_start=clock_start,
-        plain_write=writes.append,
-        tz=tz,
-    )
-    return PlainCapture(kit, writes)
+def line_after(frame: str, needle: str) -> str:
+    """Return the line immediately following the first line containing *needle*."""
+    lines = frame.splitlines()
+    idx = next(i for i, line in enumerate(lines) if needle in line)
+    return lines[idx + 1]
 
 
 def _render_sealed(

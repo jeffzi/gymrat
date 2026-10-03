@@ -21,18 +21,6 @@ from tests._process_helpers import run_with_closed_reader
 from tests._streams import FakeStream, RaisingStream
 
 
-class _FakeStderr(io.StringIO):
-    """A stderr stand-in whose TTY status the test controls."""
-
-    def __init__(self, *, tty: bool):
-        super().__init__()
-        self._tty = tty
-
-    @override
-    def isatty(self) -> bool:
-        return self._tty
-
-
 class _BadDescriptorStream(io.StringIO):
     """A stream whose descriptor is invalid, so redirecting it fails."""
 
@@ -137,7 +125,7 @@ def test_point_stream_at_devnull_when_redirect_fails_does_close_devnull_and_rais
 
 
 def test_stderr_console_does_write_to_stderr(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
 
     console = stderr_console()
 
@@ -174,7 +162,7 @@ def test_stderr_console_resolves_color_from_flag_env_and_tty(
 ):
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=tty))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=tty))
 
     console = stderr_console(color_flag=color_flag)
 
@@ -199,7 +187,7 @@ def test_stderr_console_when_columns_set_does_use_env_width(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("COLUMNS", columns)
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
 
     console = stderr_console(color_flag=False)
 
@@ -209,7 +197,7 @@ def test_stderr_console_when_columns_set_does_use_env_width(
 def test_stderr_console_when_columns_unset_does_use_terminal_width(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
 
     console = stderr_console(color_flag=False)
 
@@ -229,7 +217,7 @@ def test_stderr_console_when_columns_is_not_a_valid_integer_does_not_crash(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("COLUMNS", columns)
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
 
     console = stderr_console(color_flag=False)
 
@@ -244,7 +232,7 @@ def test_stderr_console_when_columns_is_not_a_valid_integer_does_not_crash(
 def test_stderr_console_when_colorless_does_strip_all_sgr_including_bold(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=True))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
 
     console = stderr_console(color_flag=False)
     with console.capture() as capture:

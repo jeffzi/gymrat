@@ -39,6 +39,7 @@ from tests.cli.supervise._fixtures import (
     fire_tool_end,
     fire_tool_start,
     fire_usage_update,
+    line_after,
     make_iteration,
     make_read_session,
     make_reporter,
@@ -73,13 +74,6 @@ def _render_content_colored(reporter: SuperviseReporter, *, width: int = FRAME_W
 def _lines_containing(output: str, needle: str) -> list[str]:
     """Return raw (styled) lines whose plain-text content contains *needle*."""
     return [line for line in output.splitlines() if needle in strip_sgr(line)]
-
-
-def _line_after(frame: str, needle: str) -> str:
-    """Return the line immediately following the first line containing *needle*."""
-    lines = frame.splitlines()
-    idx = next(i for i, line in enumerate(lines) if needle in line)
-    return lines[idx + 1]
 
 
 def _panel_title_text(frame: str) -> str:
@@ -507,7 +501,7 @@ def test_nested_tool_when_in_flight_does_render_arrow_line_under_parent():
     )
     kit.clock.now = 5000
 
-    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+    nested_line = line_after(render_frame(kit.reporter), "Bash")
 
     _assert_is_nested_line(nested_line)
     assert "Read" in nested_line
@@ -523,7 +517,7 @@ def test_nested_phase_when_thinking_does_render_arrow_line_with_thinking():
     fire_model_phase(observer, 2000, "thinking", parent_tool_use_id="bash-1")
     kit.clock.now = 4000
 
-    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+    nested_line = line_after(render_frame(kit.reporter), "Bash")
 
     _assert_is_nested_line(nested_line)
     assert "thinking" in nested_line
@@ -538,7 +532,7 @@ def test_nested_phase_when_responding_does_render_arrow_line_with_responding():
     fire_model_phase(observer, 2000, "responding", parent_tool_use_id="bash-1")
     kit.clock.now = 3000
 
-    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+    nested_line = line_after(render_frame(kit.reporter), "Bash")
 
     _assert_is_nested_line(nested_line)
     assert "responding" in nested_line
@@ -552,7 +546,7 @@ def test_nested_phase_when_composing_does_render_arrow_line_with_preparing():
     fire_model_phase(observer, 2000, "tool_input", tool_name="Edit", parent_tool_use_id="bash-1")
     kit.clock.now = 3000
 
-    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+    nested_line = line_after(render_frame(kit.reporter), "Bash")
 
     _assert_is_nested_line(nested_line)
     assert "preparing" in nested_line

@@ -7,13 +7,10 @@ from ``test_cmd`` and add ``memory_tracing`` from the telemetry test fixtures.
 
 from __future__ import annotations
 
-import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
     from gymrat.config.types import Effort
     from gymrat.supervisor.supervise import SupervisionResult
 
@@ -28,8 +25,10 @@ from gymrat.telemetry import run_spans
 from tests.cli.supervise._fixtures import make_supervision_result
 from tests.cli.supervise.test_cmd import (
     _CAP_MINUTES,
+    _TRACING_FAILURE,
     _config,
     _err_text,
+    _exploding_setup_tracing,
     _install_seams,
     _record_stdout_writes,
     _run,
@@ -38,18 +37,10 @@ from tests.cli.supervise.test_cmd import (
 )
 from tests.session.records._fixtures import SESSION_ID
 from tests.supervisor._fixtures import make_prompt, noop_observer
+from tests.telemetry._fixtures import (
+    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
+)
 from tests.telemetry._fixtures import memory_tracing
-
-
-@pytest.fixture(autouse=True)
-def _isolate_tracing_provider() -> Iterator[None]:
-    """Reset the telemetry provider singleton between tests."""
-    yield
-    from gymrat.telemetry.provider import _reset_for_tests
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        _reset_for_tests()
 
 
 def _tracing_seams(
@@ -387,13 +378,6 @@ def test_setup_tracing_when_sdk_disabled_and_endpoint_set_does_hold_no_span(
 # ---------------------------------------------------------------------------
 # tracing setup failure — the session unwinds what it already armed
 # ---------------------------------------------------------------------------
-
-_TRACING_FAILURE = "tracing exporter unreachable"
-
-
-def _exploding_setup_tracing(*_args: object, **_kwargs: object) -> tuple[object, ...]:
-    """Stand in for the tracing setup the session run performs, failing the way a bad exporter does."""
-    raise GymratError(_TRACING_FAILURE)
 
 
 def test_supervise_when_tracing_setup_raises_does_exit_two_naming_the_error(

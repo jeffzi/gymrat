@@ -34,12 +34,7 @@ from gymrat.session.paths import lockfile_path, session_jsonl_path
 from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
 from gymrat.session.store import append_record, read_records
 from tests._git import run_git
-from tests.cli.supervise._fixtures import (
-    baseline_record,
-    seed_session_with_baseline,
-    seed_session_with_iteration,
-    start_open_session,
-)
+from tests.cli.supervise._fixtures import baseline_record, start_open_session
 from tests.loop.iterate._fixtures import resolved_config
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import committed_keep, iteration_record, tear_final_line
@@ -53,6 +48,35 @@ _MODULE = "gymrat.cli.supervise.preflight"
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def seed_session_with_baseline(
+    repo: str, *, baseline_duration_ms: float, label: str = ".gymrat/worktrees/baseline"
+) -> None:
+    """Open a session and append a single baseline record with the given duration."""
+    start_open_session(repo)
+    log = session_jsonl_path(repo)
+    append_record(log, baseline_record(label=label, duration_ms=baseline_duration_ms))
+
+
+def seed_session_with_iteration(
+    repo: str,
+    *,
+    iteration_duration_ms: float,
+    include_baseline: bool = True,
+    label: str = ".gymrat/worktrees/baseline",
+) -> None:
+    """Seed a session whose iteration carries the given duration.
+
+    The seeded baseline (when included) gets no ``duration_ms`` of its own —
+    there is no parameter to set one — so any feasibility math a test exercises
+    is driven entirely by ``iteration_duration_ms``.
+    """
+    start_open_session(repo)
+    log = session_jsonl_path(repo)
+    if include_baseline:
+        append_record(log, baseline_record(label=label))
+    append_record(log, iteration_record(duration_ms=iteration_duration_ms))
 
 
 def _env() -> EnvironmentInfo:

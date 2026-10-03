@@ -33,22 +33,23 @@ from typer.testing import CliRunner
 from gymrat.cli import loop_cmds
 from gymrat.cli.app import app
 from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.loop.finalize import finalize_session
-from gymrat.loop.start import start_session
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
-from gymrat.session.records import KeepRecord, SessionRecord
-from gymrat.session.store import append_record, read_records
+from gymrat.session.records import KeepRecord
+from gymrat.session.store import read_records
 from tests._ansi import SGR_RE, strip_ansi
 from tests._cli import no_color_env
 from tests._process_helpers import run_with_closed_reader
 from tests.cli._budget import install_budget
 from tests.cli._help import help_output
 from tests.cli._session import (
+    FailingStdoutRunner,
+    ResolverRecorder,
     always_tty,
+    close_session_with_one_keep,
     closed_stdout_error,
-    closed_stdout_runner,
     last_command_record,
     never_tty,
+    open_session_with_one_keep,
     runner,
     write_config,
 )
@@ -58,7 +59,6 @@ from tests.loop._settle import (
     checks_fail,
     checks_pass,
     edit_experiment,
-    git,
     head_of,
     iteration,
     measured_rounds,
@@ -77,18 +77,6 @@ from tests.session.records._fixtures import (
 )
 
 
-class _ResolverRecorder:
-    """A stand-in for a config resolver recording ``(flags, base_dir)`` per call."""
-
-    def __init__(self, result: object) -> None:
-        self.result = result
-        self.calls: list[tuple[object, str | Path | None]] = []
-
-    def __call__(self, flags: object, base_dir: str | Path | None = None) -> object:
-        self.calls.append((flags, base_dir))
-        return self.result
-
-
 def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Patch ``with_repo_lock`` to record every command it locks, forwarding through."""
     lock_names: list[str] = []
@@ -105,28 +93,6 @@ def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     monkeypatch.setattr(loop_cmds, "with_repo_lock", recording_lock)
     return lock_names
-
-
-def _open_session_with_one_keep(root: str) -> SessionRecord:
-    """Open a session, commit and log one kept iteration, and return the session header."""
-    start_session(root, "main", resolved_config())
-    worktree = experiment_worktree_dir(root)
-    (Path(worktree) / "step.txt").write_text("cache the regex\n", encoding="utf-8")
-    git(["add", "-A"], worktree)
-    git(["commit", "-m", "cache the regex"], worktree)
-    commit = head_of(worktree)
-    append_record(session_jsonl_path(root), iteration_record(seq=1))
-    append_record(session_jsonl_path(root), committed_keep(1, commit=commit))
-    header = read_records(session_jsonl_path(root))[0]
-    assert isinstance(header, SessionRecord)
-    return header
-
-
-def _close_session_with_one_keep(root: str) -> str:
-    """Open a session with one kept commit, finalize it, and return its closed id."""
-    header = _open_session_with_one_keep(root)
-    finalize_session(root)
-    return header.session_id
 
 
 def _start_edited_session(root: str, **config: object) -> None:
@@ -187,7 +153,7 @@ def test_status_command_when_run_does_record_command_trace_with_exit_zero(repo: 
 
 
 def test_status_command_when_finalized_does_record_command_trace_with_exit_zero(repo: str):
-    _close_session_with_one_keep(repo)
+    close_session_with_one_keep(repo)
     write_config(repo)
 
     result = runner.invoke(app, ["status"])
@@ -250,7 +216,7 @@ def keep_ready_repo(repo: str, monkeypatch: pytest.MonkeyPatch) -> str:
     ],
 )
 def test_loop_command_when_stdout_reader_closed_does_exit_zero_without_stderr(command: list[str]):
-    result = closed_stdout_runner(closed_stdout_error()).invoke(app, command)
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, command)
 
     assert (result.exit_code, result.stderr) == (0, "")
 
@@ -258,7 +224,7 @@ def test_loop_command_when_stdout_reader_closed_does_exit_zero_without_stderr(co
 def test_status_command_when_run_inside_the_experiment_worktree_does_render_the_session(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    header = _open_session_with_one_keep(repo)
+    header = open_session_with_one_keep(repo)
     write_config(repo)
     monkeypatch.chdir(experiment_worktree_dir(repo))
 
@@ -485,7 +451,7 @@ def test_loop_command_when_run_from_subdirectory_does_resolve_config_at_repo_roo
     nested = Path(root) / "packages" / "core"
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
-    recorder = _ResolverRecorder(resolved_config())
+    recorder = ResolverRecorder(resolved_config())
     monkeypatch.setattr(f"gymrat.cli.loop_cmds.{resolver_name}", recorder)
 
     runner.invoke(app, args)
@@ -609,7 +575,7 @@ def test_keep_command_when_checks_fail_does_record_command_trace_with_checks_fai
 def test_keep_command_when_finalized_does_record_command_trace_with_exit_two(
     repo: str,
 ):
-    _close_session_with_one_keep(repo)
+    close_session_with_one_keep(repo)
     write_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep"])
@@ -774,7 +740,7 @@ def test_discard_command_when_force_does_record_force_true_in_args(
 def test_discard_command_when_finalized_does_record_command_trace_with_exit_two(
     repo: str,
 ):
-    _close_session_with_one_keep(repo)
+    close_session_with_one_keep(repo)
     write_config(repo)
 
     result = runner.invoke(app, ["discard"])

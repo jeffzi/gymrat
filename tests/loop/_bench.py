@@ -22,6 +22,8 @@ from pathlib import Path
 
 import tomli_w
 
+from gymrat.session.paths import experiment_worktree_dir
+
 #: The bench script every worktree runs.
 BENCH_FILE = "bench.py"
 
@@ -67,6 +69,11 @@ def bench_script(gate_file: str | None = None) -> str:
         'sys.stdout.write("METRIC latency=" + tuned + "\\n")',
     ]
     return "\n".join(lines) + "\n"
+
+
+def tune_experiment(repo: str, latency: int) -> None:
+    """Tune the experiment worktree to ``latency``, the edit an agent would make."""
+    (Path(experiment_worktree_dir(repo)) / TUNING_FILE).write_text(f"{latency}\n", encoding="utf-8")
 
 
 #: A rerun template that scopes the bench to the metric names it is given.

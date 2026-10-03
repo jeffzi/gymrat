@@ -16,13 +16,12 @@ from gymrat.command_run import CommandTrace, with_repo_lock
 from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.session.store import append_record, read_records
-from tests._command_run_fixtures import (
+from tests._command_run_fixtures import ok_body as _ok_body
+from tests._command_run_fixtures import seeded_session as _seeded_session
+from tests.session.records._fixtures import iteration_record
+from tests.telemetry._fixtures import (
     isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )
-from tests._command_run_fixtures import (
-    seeded_session as _seeded_session,
-)
-from tests.session.records._fixtures import iteration_record
 
 # ---------------------------------------------------------------------------
 # with_repo_lock — command span export (tracing enabled)
@@ -34,11 +33,6 @@ def _command_span(
 ) -> ReadableSpan:
     """Return the single finished span with the given name."""
     return next(s for s in exporter.get_finished_spans() if s.name == name)
-
-
-async def _ok_body(trace: CommandTrace) -> str:
-    """Trivial command body for tests that only inspect the exported span."""
-    return "ok"
 
 
 async def test_with_repo_lock_when_tracing_enabled_does_export_command_span(

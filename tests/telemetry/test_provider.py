@@ -4,44 +4,28 @@ from __future__ import annotations
 
 import importlib.metadata
 import sys
-import warnings
-from typing import TYPE_CHECKING, override
+from typing import override
 
 import pytest
 from opentelemetry.sdk.trace import SpanProcessor
 
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-
 from gymrat.telemetry.ids import span_id_of, trace_id_of
 from gymrat.telemetry.provider import (
-    _reset_for_tests,
     configure_tracing,
     export_failed,
     flush_tracing,
     start_span,
 )
 from tests.telemetry._collector import otlp_collector
+from tests.telemetry._fixtures import (
+    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
+)
 from tests.telemetry._fixtures import memory_tracing
+from tests.telemetry._fixtures import reset_provider_quietly as _reset_provider_quietly
 
 _TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 
 SESSION = "test-session-provider"
-
-
-def _reset_provider_quietly() -> None:
-    """Call ``_reset_for_tests`` with OTel's deprecation warnings suppressed."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        _reset_for_tests()
-
-
-@pytest.fixture(autouse=True)
-def _isolate_provider() -> Iterator[None]:
-    """Ensure every test starts and ends with no provider."""
-    _reset_provider_quietly()
-    yield
-    _reset_provider_quietly()
 
 
 # ---------------------------------------------------------------------------

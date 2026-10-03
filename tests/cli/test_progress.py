@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import sys
 from io import StringIO
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import pytest
 
+from gymrat.cli.iterate.progress import IterateRenderer
 from gymrat.cli.live_display import LIVE_REFRESH_PER_SECOND
 from gymrat.cli.progress import ProgressReporter
 from gymrat.progress_events import (
@@ -37,10 +38,6 @@ from tests._rich import (
     sealed_console,
 )
 from tests.cli._progress_helpers import (
-    build_iterate_renderer,
-    build_progress_reporter,
-)
-from tests.cli._progress_helpers import (
     ms_from_clock as _ms,
 )
 from tests.cli._progress_helpers import (
@@ -56,13 +53,73 @@ if TYPE_CHECKING:
     from rich.console import Console
     from syrupy.assertion import SnapshotAssertion
 
-    from tests.cli._progress_helpers import LiveRenderer
+    from gymrat.cli.live_display import ErasableLive
+    from gymrat.progress_events import ProgressEvent
 
-    RendererFactory = Callable[[Literal["live", "plain"], Console], LiveRenderer]
+    RendererFactory = Callable[[Literal["live", "plain"], Console], "LiveRenderer"]
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class LiveRenderer(Protocol):
+    """The surface both CLI progress renderers share, as the signal tests drive it."""
+
+    @property
+    def live(self) -> ErasableLive | None:
+        """The active live display, or ``None`` outside live mode or after ``stop()``."""
+        ...
+
+    def report(self, event: ProgressEvent) -> None:
+        """Fold ``event`` into the display."""
+        ...
+
+    def stop(self) -> None:
+        """Stop the renderer."""
+        ...
+
+
+def build_progress_reporter(mode: Literal["live", "plain"], console: Console) -> LiveRenderer:
+    """Build the measure/compare progress reporter on ``console``.
+
+    Args:
+        mode: ``"live"`` for a rich live display, ``"plain"`` for milestone lines.
+        console: The console to render to.
+
+    Returns:
+        A single-target reporter with a hand-advanced clock.
+    """
+    return ProgressReporter(
+        mode=mode,
+        console=console,
+        target_count=1,
+        sample_count=3,
+        clock=Clock(),
+        command="measure",
+    )
+
+
+def build_iterate_renderer(mode: Literal["live", "plain"], console: Console) -> LiveRenderer:
+    """Build the iterate progress renderer on ``console``.
+
+    Args:
+        mode: ``"live"`` for a rich live checklist, ``"plain"`` for milestone lines.
+        console: The console to render to.
+
+    Returns:
+        A renderer for iteration 1 with a hand-advanced clock.
+    """
+    return IterateRenderer(
+        mode=mode,
+        console=console,
+        seq=1,
+        session_id="test-session",
+        sample_count=5,
+        metric_count=3,
+        primary_metric="geomean",
+        clock=Clock(),
+    )
 
 
 _live_reporters: list[ProgressReporter] = []

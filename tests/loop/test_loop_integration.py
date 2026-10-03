@@ -44,7 +44,7 @@ from gymrat.session.records import (
 )
 from gymrat.session.store import append_record, read_records
 from tests._git import run_git as _run_git
-from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project
+from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project, tune_experiment
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import committed_keep, iteration_record
 
@@ -110,11 +110,6 @@ def _git(repo: str, *args: str) -> str:
     return _run_git(list(args), repo).strip()
 
 
-def _tune_experiment(repo: str, latency: int) -> None:
-    """Tune the experiment worktree to ``latency``, the edit an agent would make."""
-    (Path(experiment_worktree_dir(repo)) / TUNING_FILE).write_text(f"{latency}\n", encoding="utf-8")
-
-
 def _pick[R: SessionLogRecord](records: list[SessionLogRecord], record_type: type[R]) -> list[R]:
     """The records of one class, in file order, narrowed to that record's shape."""
     return [record for record in records if isinstance(record, record_type)]
@@ -140,13 +135,13 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
         _run_cli(repo, "start", "--baseline", "main").returncode,
         _run_cli(repo, "measure", "main", "--record").returncode,
     ]
-    _tune_experiment(repo, KEPT_LATENCY)
+    tune_experiment(repo, KEPT_LATENCY)
     exit_codes.append(_run_cli(repo, "iterate").returncode)
     exit_codes.append(_run_cli(repo, "keep", "-m", "tune latency to 90").returncode)
 
     status_report = _strip_ansi(_run_cli(repo, "status", "--no-color").stdout)
 
-    _tune_experiment(repo, DISCARDED_LATENCY)
+    tune_experiment(repo, DISCARDED_LATENCY)
     (Path(experiment_worktree_dir(repo)) / DISCARDED_FILE).write_text(
         f"{DISCARD_MARKER}\n", encoding="utf-8"
     )
@@ -225,7 +220,7 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
     commit_project(repo, samples=SAMPLES, gate_file=gate_file)
 
     assert _run_cli(repo, "start", "--baseline", "main").returncode == 0
-    _tune_experiment(repo, KEPT_LATENCY)
+    tune_experiment(repo, KEPT_LATENCY)
 
     lock_path = lockfile_path(repo)
     first = subprocess.Popen(  # noqa: S603

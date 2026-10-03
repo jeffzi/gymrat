@@ -40,6 +40,7 @@ from gymrat.session.records import (
 )
 from gymrat.session.store import append_record, read_records
 from gymrat.session.workspace import worktree_fingerprint
+from gymrat.supervisor.events import FollowUpEvent
 from gymrat.supervisor.exit_sequence import (
     ExitPhase,
     ExitReport,
@@ -73,7 +74,7 @@ from tests.session.records._fixtures import (
     stop_record,
     tear_final_line,
 )
-from tests.supervisor._fixtures import collecting_observer, follow_up_events, make_context
+from tests.supervisor._fixtures import collecting_observer, events_of, make_context
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -1004,7 +1005,7 @@ async def test_run_exit_sequence_when_a_step_is_decided_does_emit_it_as_a_follow
 
     run = await run_sequence(_context(repo))
 
-    emitted = follow_up_events(run.events)
+    emitted = events_of(run.events, FollowUpEvent)
     assert [(event.action, event.reason) for event in emitted] == [("ended", "nothing to settle")]
     assert emitted[0].at > 0
 
@@ -1016,7 +1017,7 @@ async def test_run_exit_sequence_when_the_lock_is_held_does_emit_the_skip_as_a_f
 
     run = await run_sequence(_context(repo), is_lock_held=HeldProbe())
 
-    assert [(event.action, event.reason) for event in follow_up_events(run.events)] == [
+    assert [(event.action, event.reason) for event in events_of(run.events, FollowUpEvent)] == [
         ("ended", SKIP_UNKNOWN)
     ]
 
@@ -1155,7 +1156,7 @@ async def test_run_exit_sequence_when_finalize_raises_does_keep_the_settled_step
         steps=(ExitStep(kind="settled", text="settled: kept iteration 1 (checks passed)"),),
         error=BOOM,
     )
-    assert [event.reason for event in follow_up_events(run.events)] == [
+    assert [event.reason for event in events_of(run.events, FollowUpEvent)] == [
         "settled: kept iteration 1 (checks passed)",
         FAILED_PREFIX + BOOM,
     ]
@@ -1181,7 +1182,7 @@ async def test_run_exit_sequence_when_a_step_raises_does_emit_one_closing_follow
 
     run = await run_sequence(_context(repo))
 
-    emitted = follow_up_events(run.events)
+    emitted = events_of(run.events, FollowUpEvent)
     assert run.report.error is not None
     assert [(event.action, event.reason) for event in emitted] == [
         ("ended", FAILED_PREFIX + run.report.error)
@@ -1202,7 +1203,9 @@ async def test_run_exit_sequence_when_a_later_step_raises_does_close_after_the_s
     assert run.report.error is not None
     assert BOOM in run.report.error
     assert run.report.steps == (kept, NOT_FINALIZED_STEP)
-    assert [(event.action, event.reason) for event in follow_up_events(observer.events)] == [
+    assert [
+        (event.action, event.reason) for event in events_of(observer.events, FollowUpEvent)
+    ] == [
         ("ended", kept.text),
         ("ended", FAILED_PREFIX + run.report.error),
     ]

@@ -29,6 +29,7 @@ from tests.cli.supervise._fixtures import (
     fire_tool_end,
     fire_tool_start,
     fire_turn_end,
+    line_after,
     make_reporter,
     render_frame,
 )
@@ -57,13 +58,6 @@ def _content_line(frame: str, needle: str) -> str:
     lines = _lines_containing(frame, needle)
     assert len(lines) == 1, f"expected exactly one line containing {needle!r}, got {lines}"
     return lines[0].split("│")[1].strip()
-
-
-def _line_after(frame: str, needle: str) -> str:
-    """Return the line immediately following the first line containing *needle*."""
-    lines = frame.splitlines()
-    idx = next(i for i, line in enumerate(lines) if needle in line)
-    return lines[idx + 1]
 
 
 # ---------------------------------------------------------------------------
@@ -623,7 +617,7 @@ def test_liveness_when_iterate_tool_has_sidecar_does_show_passes_nest():
     frame = render_frame(kit.reporter)
 
     assert "4/8" in frame
-    passes_line = _line_after(frame, "mcp__gymrat__iterate")
+    passes_line = line_after(frame, "mcp__gymrat__iterate")
     assert "passes" in passes_line
 
 

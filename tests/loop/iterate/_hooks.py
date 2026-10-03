@@ -138,10 +138,3 @@ def expected_hook_record(**overrides: Any) -> HookRecord:
     }
     fields.update(overrides)
     return HookRecord(**fields)
-
-
-__all__ = [
-    "HookScripts",
-    "expected_hook_record",
-    "labeled_lines",
-]

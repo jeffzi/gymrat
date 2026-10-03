@@ -22,13 +22,12 @@ directly and run everywhere.
 
 from __future__ import annotations
 
-import io
 import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
 
 if sys.platform != "win32":
     import pty
@@ -46,6 +45,7 @@ from gymrat.doctor import (
     render_doctor_report,
 )
 from tests._git import git as _git
+from tests._streams import FakeStream
 from tests.hardening._bench_helpers import drain as _drain
 from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
@@ -206,18 +206,6 @@ def test_measure_when_no_color_flag_does_not_leak_no_color_into_the_bench_env(
 # ---------------------------------------------------------------------------
 
 
-class _FakeStream(io.StringIO):
-    """A stdout/stderr stand-in whose TTY status the test controls."""
-
-    def __init__(self, *, tty: bool):
-        super().__init__()
-        self._tty = tty
-
-    @override
-    def isatty(self) -> bool:
-        return self._tty
-
-
 def _report_is_colored() -> bool:
     """Whether the report surface would emit color for the ambient environment.
 
@@ -227,7 +215,7 @@ def _report_is_colored() -> bool:
     shared helper (rather than ``render_lines``' own capture-console logic) means
     a change to the report surface's precedence fails this test.
     """
-    return resolve_stream_color(None, _FakeStream(tty=True))
+    return resolve_stream_color(None, FakeStream(tty=True))
 
 
 def _doctor_report_is_colored() -> bool:
@@ -242,7 +230,7 @@ def _doctor_report_is_colored() -> bool:
     report = create_doctor_report(
         env, [CheckSection(title="T", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
     )
-    color = resolve_stream_color(None, _FakeStream(tty=True))
+    color = resolve_stream_color(None, FakeStream(tty=True))
     return "\x1b[" in render_doctor_report(report, color=color)
 
 
@@ -293,7 +281,7 @@ def test_color_precedence_when_env_decides_does_agree_across_report_progress_and
     no_color: str | None,
     expected: bool,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
     # Pin TERM so the console factory's own terminal detection is capable of
     # color, leaving FORCE_COLOR/NO_COLOR as the only deciders under test.
     monkeypatch.setenv("TERM", "xterm-256color")
@@ -312,7 +300,7 @@ def test_color_precedence_when_env_decides_does_agree_across_report_progress_and
 def test_error_surface_when_force_color_is_falsy_off_a_tty_does_render_plain(
     monkeypatch: pytest.MonkeyPatch, force_color: str
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
     _apply_color_env(monkeypatch, force_color, None)
 
     assert "\x1b[" not in format_cli_error(ValueError("boom"))
@@ -321,7 +309,7 @@ def test_error_surface_when_force_color_is_falsy_off_a_tty_does_render_plain(
 def test_error_surface_when_force_color_is_truthy_off_a_tty_does_render_colored(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
     _apply_color_env(monkeypatch, "1", None)
 
     assert "\x1b[" in format_cli_error(ValueError("boom"))
@@ -330,7 +318,7 @@ def test_error_surface_when_force_color_is_truthy_off_a_tty_does_render_colored(
 def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
     _apply_color_env(monkeypatch, "1", None)
 
     assert resolve_render_mode() == "plain"
@@ -344,7 +332,7 @@ def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
 def test_error_surface_when_stderr_color_override_false_on_tty_does_strip_sgr(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
     monkeypatch.setenv("TERM", "xterm-256color")
     _apply_color_env(monkeypatch, None, None)
 
@@ -358,7 +346,7 @@ def test_error_surface_when_stderr_color_override_false_on_tty_does_strip_sgr(
 def test_progress_surface_when_colorless_does_strip_all_sgr_including_bold(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
     monkeypatch.setenv("TERM", "xterm-256color")
     _apply_color_env(monkeypatch, None, "1")
 

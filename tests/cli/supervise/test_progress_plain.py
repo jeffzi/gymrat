@@ -5,10 +5,14 @@ Tests assert on recorded milestone lines.
 
 from __future__ import annotations
 
+from datetime import UTC, tzinfo
+from typing import TYPE_CHECKING, NamedTuple
+
 import pytest
 
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
+    ReporterKit,
     _throwing_read,
     fire_cap,
     fire_compaction,
@@ -19,11 +23,60 @@ from tests.cli.supervise._fixtures import (
     fire_turn_end,
     fire_usage_update,
     make_iteration,
-    make_plain_reporter,
     make_read_session,
     make_reporter,
 )
 from tests.session.records._fixtures import session_state
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from gymrat.cli.supervise.progress import SuperviseReporter
+    from gymrat.cli.supervise.types import ReadSessionResult
+    from gymrat.supervisor.events import SessionObserver
+
+
+class PlainCapture(NamedTuple):
+    """A plain-mode reporter paired with a write recorder."""
+
+    kit: ReporterKit
+    writes: list[str]
+
+    @property
+    def reporter(self) -> SuperviseReporter:
+        return self.kit.reporter
+
+    @property
+    def observer(self) -> SessionObserver:
+        return self.kit.reporter.observer
+
+
+def make_plain_reporter(
+    *,
+    max_minutes: float = 60,
+    max_usd: float | None = None,
+    max_iterations: int | None = None,
+    read_session: Callable[[], ReadSessionResult] | None = None,
+    clock_start: int = 1000,
+    tz: tzinfo | None = UTC,
+) -> PlainCapture:
+    """Build a plain-mode reporter with a write-capturing callback.
+
+    Each milestone line the reporter emits is appended to the ``writes`` list.
+    The ``tz`` parameter defaults to ``UTC`` for stable assertions.
+    """
+    writes: list[str] = []
+    kit = make_reporter(
+        mode="plain",
+        max_minutes=max_minutes,
+        max_usd=max_usd,
+        max_iterations=max_iterations,
+        read_session=read_session,
+        clock_start=clock_start,
+        plain_write=writes.append,
+        tz=tz,
+    )
+    return PlainCapture(kit, writes)
 
 
 def test_plain_when_no_writer_given_does_print_each_line_to_stderr(

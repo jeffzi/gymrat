@@ -30,8 +30,7 @@ from gymrat.cli.exit import (
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from tests._process_helpers import run_with_closed_reader, run_with_failing_stdout
 from tests._rich import unwrap_panel
-from tests._streams import FakeStream as _FakeStream
-from tests._streams import RaisingStream
+from tests._streams import FakeStream, RaisingStream
 from tests.cli._help import help_output
 from tests.cli._session import CLOSED_STDOUT_ERRORS, runner, stub_measure
 
@@ -204,7 +203,7 @@ def test_color_flag_when_help_does_show_color_no_color_pair(command: tuple[str, 
 def test_format_cli_error_when_stderr_color_override_false_does_strip_all_sgr(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
     monkeypatch.setenv("TERM", "xterm-256color")
 
     set_color_override(False)
@@ -228,7 +227,7 @@ def test_format_cli_error_when_color_override_set_does_beat_the_color_env_vars(
     colored: bool,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=tty))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=tty))
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv(env_var, "1")
     set_color_override(override)

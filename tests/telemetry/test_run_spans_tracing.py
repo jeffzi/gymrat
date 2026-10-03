@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import warnings
 
 import pytest
 
@@ -20,20 +19,15 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
     UsageUpdateEvent,
 )
-from gymrat.telemetry.provider import _reset_for_tests, start_span
+from gymrat.telemetry.provider import start_span
 from gymrat.telemetry.run_spans import create_run_span_observer
 from tests.supervisor._fixtures import make_launch
+from tests.telemetry._fixtures import (
+    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
+)
 from tests.telemetry._fixtures import memory_tracing
 
 SESSION = "test-tracing-observer"
-
-
-@pytest.fixture(autouse=True)
-def _isolate_provider():
-    """Start each test with a clean tracing provider."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        _reset_for_tests()
 
 
 # ---------------------------------------------------------------------------

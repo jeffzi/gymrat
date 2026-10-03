@@ -31,8 +31,8 @@ from tests.cli._budget import (
     mark_tool_origin,
 )
 from tests.cli._session import (
+    FailingStdoutRunner,
     closed_stdout_error,
-    closed_stdout_runner,
     last_command_record,
     plain_lines,
     records_of,
@@ -747,7 +747,7 @@ def test_iterate_command_when_stop_and_format_json_and_stdout_closed_does_exit_o
 ):
     _wire_stopping_iterate(repo, monkeypatch)
 
-    result = closed_stdout_runner(closed_stdout_error()).invoke(
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["iterate", "--bench", "npm run bench", "--format", "json"]
     )
 
@@ -779,7 +779,7 @@ def test_iterate_command_when_stdout_reader_closed_does_exit_zero_without_stderr
 ):
     _wire_successful_iterate(repo, monkeypatch)
 
-    result = closed_stdout_runner(closed_stdout_error()).invoke(
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["iterate", "--bench", "npm run bench"]
     )
 

@@ -15,7 +15,6 @@ import json
 import os
 import re
 from collections.abc import Callable
-from pathlib import Path
 
 import pytest
 
@@ -32,11 +31,12 @@ from gymrat.session.store import append_record, read_records
 from tests._rich import unwrap_panel
 from tests.cli._budget import install_budget, install_tight_budget
 from tests.cli._session import (
+    FailingStdoutRunner,
     capture_measure,
     closed_stdout_error,
-    closed_stdout_runner,
     disk_full_error,
     last_command_record,
+    open_session,
     runner,
     stub_measure,
     stub_resolve,
@@ -48,13 +48,6 @@ from tests.session.records._fixtures import (
     session_record,
     write_session_log,
 )
-
-
-@pytest.fixture
-def _in_non_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Run from a directory that is not a git repo, so the command benches lock-free."""
-    monkeypatch.chdir(tmp_path)
-
 
 # ---------------------------------------------------------------------------
 # target defaulting
@@ -127,11 +120,6 @@ def test_measure_when_unsupported_option_given_does_exit_two(option: list[str]):
 # ---------------------------------------------------------------------------
 
 
-def _open_session(repo: str) -> None:
-    """Open a session in ``repo`` so a ``--record`` run has somewhere to write."""
-    write_session_log(repo, session_record())
-
-
 def _finalize_session(repo: str) -> None:
     """Open then close a session in ``repo``, leaving it finalized."""
     write_session_log(repo, session_record(), (finalize_record(),))
@@ -159,7 +147,7 @@ def test_measure_when_record_and_open_session_does_append_baseline_and_print_rep
     positional: str,
     label: str,
 ):
-    _open_session(record_repo)
+    open_session(record_repo)
     rounds: list[dict[str, float]] = [{"latency": 41}, {"latency": 43}]
     capture_measure(monkeypatch, create_measurement_result(label=label, rounds=rounds))
 
@@ -184,7 +172,7 @@ def test_measure_when_record_and_json_format_does_route_note_to_stderr(
     monkeypatch: pytest.MonkeyPatch,
     record_repo: str,
 ):
-    _open_session(record_repo)
+    open_session(record_repo)
     capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
 
     result = runner.invoke(
@@ -207,10 +195,10 @@ def test_measure_when_record_and_json_format_does_route_note_to_stderr(
 def test_measure_when_stdout_reader_closed_does_exit_zero_without_stderr(
     monkeypatch: pytest.MonkeyPatch, record_repo: str, extra_args: list[str]
 ):
-    _open_session(record_repo)
+    open_session(record_repo)
     capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
 
-    result = closed_stdout_runner(closed_stdout_error()).invoke(
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["measure", "main", "--bench", "sh bench.sh", *extra_args]
     )
 
@@ -223,7 +211,7 @@ def test_measure_when_stdout_write_fails_otherwise_does_report_the_error(
 ):
     stub_measure(monkeypatch)
 
-    result = closed_stdout_runner(disk_full_error()).invoke(
+    result = FailingStdoutRunner(disk_full_error()).invoke(
         app, ["measure", "main", "--bench", "sh bench.sh"]
     )
 
@@ -263,7 +251,7 @@ def test_measure_when_no_record_flag_does_leave_open_session_untouched(
     monkeypatch: pytest.MonkeyPatch,
     record_repo: str,
 ):
-    _open_session(record_repo)
+    open_session(record_repo)
     capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
@@ -285,7 +273,7 @@ def test_measure_when_record_does_write_duration_ms_to_baseline(
     monkeypatch: pytest.MonkeyPatch,
     record_repo: str,
 ):
-    _open_session(record_repo)
+    open_session(record_repo)
     capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
     ticks = iter([1_000.0, 1_500.0, 2_000.0, 2_500.0])
     monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
@@ -387,7 +375,7 @@ def test_measure_when_budget_tight_and_estimate_known_does_warn_on_stderr(
     monkeypatch: pytest.MonkeyPatch,
     record_repo: str,
 ):
-    _open_session(record_repo)
+    open_session(record_repo)
     capture_measure(monkeypatch)
     install_tight_budget(record_repo, monkeypatch)
     append_record(session_jsonl_path(record_repo), iteration_record(duration_ms=720_000))
@@ -402,7 +390,7 @@ def test_measure_when_estimate_unknown_does_not_warn(
     monkeypatch: pytest.MonkeyPatch,
     record_repo: str,
 ):
-    _open_session(record_repo)
+    open_session(record_repo)
     capture_measure(monkeypatch)
     install_tight_budget(record_repo, monkeypatch)
 
@@ -421,7 +409,7 @@ def test_measure_when_success_does_record_trace_with_target_and_record_false(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _open_session(repo)
+    open_session(repo)
     stub_measure(monkeypatch)
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
@@ -441,7 +429,7 @@ def test_measure_when_target_labeled_does_record_the_label_in_trace_args(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _open_session(repo)
+    open_session(repo)
     stub_measure(monkeypatch)
 
     result = runner.invoke(app, ["measure", "build=main", "--bench", "sh bench.sh"])
@@ -454,7 +442,7 @@ def test_measure_when_default_target_does_record_dot_in_trace_args(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _open_session(repo)
+    open_session(repo)
     stub_measure(monkeypatch)
 
     result = runner.invoke(app, ["measure", "--bench", "sh bench.sh"])
@@ -468,7 +456,7 @@ def test_measure_when_config_overrides_given_does_include_them_in_trace_args(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _open_session(repo)
+    open_session(repo)
     stub_measure(monkeypatch)
 
     result = runner.invoke(
@@ -505,7 +493,7 @@ def test_measure_when_record_success_does_record_trace_with_record_true(
     monkeypatch: pytest.MonkeyPatch,
     record_repo: str,
 ):
-    _open_session(record_repo)
+    open_session(record_repo)
     capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
@@ -539,7 +527,7 @@ def test_measure_when_bench_fails_does_record_trace_with_exit_two_error(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _open_session(repo)
+    open_session(repo)
     stub_resolve(monkeypatch)
 
     async def failing_measure(_options: MeasureOptions) -> MeasurementResult:

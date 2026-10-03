@@ -5,21 +5,13 @@ The module entry must behave identically to ``python -m gymrat.cli.app`` for
 """
 
 import importlib.metadata
-import os
 import subprocess
 import sys
 
 import pytest
 
 from tests._ansi import strip_ansi
-
-
-def _child_env() -> dict[str, str]:
-    """Child environment with color forced off for deterministic output."""
-    env = dict(os.environ)
-    env["NO_COLOR"] = "1"
-    env.pop("FORCE_COLOR", None)
-    return env
+from tests._cli import no_color_env
 
 
 def _normalize(text: str) -> str:
@@ -34,7 +26,7 @@ def _run_module(module: str, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
-        env=_child_env(),
+        env=no_color_env(),
     )
 
 

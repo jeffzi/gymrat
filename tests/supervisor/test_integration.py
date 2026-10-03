@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.paths import session_jsonl_path
 from gymrat.supervisor.supervise import supervise
-from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project
+from tests.loop._bench import BASELINE_LATENCY, commit_project, tune_experiment
 from tests.supervisor._fixtures import (
     collecting_observer,
     make_context,
@@ -65,11 +65,6 @@ def _run_gymrat(args: list[str], cwd: str) -> None:
         raise AssertionError(detail) from error
 
 
-def _tune_experiment(repo: str, latency: int) -> None:
-    """Tune the experiment worktree to ``latency``, the edit an agent would make."""
-    (Path(experiment_worktree_dir(repo)) / TUNING_FILE).write_text(f"{latency}\n", encoding="utf-8")
-
-
 # ---------------------------------------------------------------------------
 # a complete session driven through the real CLI
 # ---------------------------------------------------------------------------
@@ -86,7 +81,7 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
         _run_gymrat(["start", "--baseline", "main"], repo)
 
     async def iterate() -> None:
-        _tune_experiment(repo, TUNED_LATENCY)
+        tune_experiment(repo, TUNED_LATENCY)
         _run_gymrat(["iterate"], repo)
 
     async def keep() -> None:

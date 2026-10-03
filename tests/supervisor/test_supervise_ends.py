@@ -45,6 +45,7 @@ from tests.supervisor._fixtures import (
     InterruptEmitsEndDriver,
     collecting_observer,
     emit_turn_end,
+    events_of,
     follow_ups_with_action,
     make_context,
     make_launch,
@@ -766,7 +767,7 @@ async def test_supervise_when_spend_cap_reached_at_turn_end_with_condition_pendi
         root, driver, observer=probe.observer, is_lock_held=lock.is_held, max_usd=max_usd
     )
 
-    caps = [(event.cap, event.action) for event in probe.events if isinstance(event, CapEvent)]
+    caps = [(event.cap, event.action) for event in events_of(probe.events, CapEvent)]
     ended_reasons = [event.reason for event in follow_ups_with_action(probe.events, "ended")]
     assert result.ended_by == "spend-cap"
     assert result.end_reason == "spend-cap"

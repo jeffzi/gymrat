@@ -3,7 +3,8 @@
 Builders and stubs used by more than one ``tests/cli`` module: the loop-command
 repos and tty stand-ins, the session-log readers, and the ``measure`` seam
 stubs.  This is test-support code, not a test module: it carries no test
-functions or pytest fixtures of its own.
+functions.  Its fixtures (``stop_repo``, ``sync_repo`` and ``_in_non_repo``)
+are registered for the directory by ``tests/cli/conftest.py``.
 """
 
 import contextlib
@@ -19,33 +20,25 @@ import tomli_w
 from typer.testing import CliRunner
 
 from gymrat.config.types import ResolvedConfig
+from gymrat.loop.finalize import finalize_session
+from gymrat.loop.start import start_session
 from gymrat.measure import MeasureOptions
 from gymrat.report.types import MeasurementResult
-from gymrat.session.paths import session_jsonl_path
-from gymrat.session.records import CommandRecord
-from gymrat.session.store import read_records
+from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.records import CommandRecord, SessionRecord
+from gymrat.session.store import append_record, read_records
 from tests._ansi import SGR_RE
 from tests._streams import RaisingStream
+from tests.loop._probe import install_measure
+from tests.loop._settle import git, head_of, iteration, start_with
+from tests.loop.iterate._fixtures import resolved_config
 from tests.report._measurements import create_measurement_result
-
-__all__ = [
-    "CLOSED_STDOUT_ERRORS",
-    "always_tty",
-    "capture_measure",
-    "closed_stdout_error",
-    "closed_stdout_runner",
-    "disk_full_error",
-    "last_command_record",
-    "make_discard_repo",
-    "make_stop_repo",
-    "never_tty",
-    "plain_lines",
-    "records_of",
-    "runner",
-    "stub_measure",
-    "stub_resolve",
-    "write_config",
-]
+from tests.session.records._fixtures import (
+    committed_keep,
+    iteration_record,
+    session_record,
+    write_session_log,
+)
 
 runner = CliRunner()
 
@@ -74,8 +67,14 @@ def disk_full_error() -> OSError:
     return OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
 
 
-class _FailingStdoutRunner(CliRunner):
-    """A ``CliRunner`` whose isolated ``sys.stdout`` fails every write with ``error``."""
+class FailingStdoutRunner(CliRunner):
+    """A ``CliRunner`` whose isolated ``sys.stdout`` fails every write with ``error``.
+
+    The runner still captures stderr, so a test can check nothing was reported.
+
+    Args:
+        error: The exception every stdout write raises.
+    """
 
     def __init__(self, error: OSError) -> None:
         super().__init__()
@@ -94,18 +93,27 @@ class _FailingStdoutRunner(CliRunner):
                 sys.stdout = captured_stdout
 
 
-def closed_stdout_runner(error: OSError) -> CliRunner:
-    """Build a runner whose commands see every stdout write fail with ``error``.
+class ResolverRecorder:
+    """A stand-in for a config resolver recording ``(flags, base_dir)`` per call."""
 
-    The runner still captures stderr, so a test can check nothing was reported.
+    def __init__(self, result: object) -> None:
+        self.result = result
+        self.calls: list[tuple[object, str | Path | None]] = []
 
-    Args:
-        error: The exception every stdout write raises.
+    def __call__(self, flags: object, base_dir: str | Path | None = None) -> object:
+        self.calls.append((flags, base_dir))
+        return self.result
 
-    Returns:
-        A ``CliRunner`` whose isolated ``sys.stdout`` raises ``error`` on write.
-    """
-    return _FailingStdoutRunner(error)
+
+def stub_resolve_config(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> object:
+    """Pin what ``start`` reads by replacing its ``resolve_config`` with a fixed config."""
+    config = resolved_config(**overrides)
+
+    def fake(*_a: object, **_k: object) -> object:
+        return config
+
+    monkeypatch.setattr("gymrat.cli.session_cmds.resolve_config", fake)
+    return config
 
 
 def stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -142,15 +150,8 @@ def capture_measure(
     Returns:
         The options of every call, in order; empty if the seam was never reached.
     """
-    captured: list[MeasureOptions] = []
     handed_back = create_measurement_result() if result is None else result
-
-    async def fake_measure(options: MeasureOptions) -> MeasurementResult:
-        captured.append(options)
-        return handed_back
-
-    monkeypatch.setattr("gymrat.measure.measure", fake_measure)
-    return captured
+    return install_measure(monkeypatch, handed_back).calls
 
 
 def stub_measure(
@@ -178,25 +179,57 @@ def never_tty(_stream: object) -> bool:
 
 def make_discard_repo(repo: str) -> str:
     """Set up ``repo`` with an open session and one unsettled iteration to discard."""
-    from gymrat.loop.start import start_session
-    from gymrat.session.paths import session_jsonl_path
-    from gymrat.session.store import append_record
-    from tests.loop.iterate._fixtures import resolved_config
-    from tests.session.records._fixtures import iteration_record
-
     start_session(repo, "main", resolved_config())
     append_record(session_jsonl_path(repo), iteration_record(seq=1))
     return repo
 
 
-def make_stop_repo(repo: str) -> str:
-    """Set up ``repo`` with a settled, configured session ready for the stop command."""
-    from tests.loop._settle import iteration, start_with
-    from tests.session.records._fixtures import committed_keep
+@pytest.fixture
+def _in_non_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Run from a directory that is not a git repo, so the command benches lock-free."""
+    monkeypatch.chdir(tmp_path)
 
+
+def open_session(repo: str) -> None:
+    """Open a session in ``repo`` so a command has a session log to write to."""
+    write_session_log(repo, session_record())
+
+
+@pytest.fixture
+def stop_repo(repo: str) -> str:
+    """A repository with a settled, configured session ready for the stop command."""
     start_with(repo, (iteration(1), committed_keep(1)))
     write_config(repo)
     return repo
+
+
+@pytest.fixture
+def sync_repo(repo: str) -> str:
+    """A repository with an open session, ready for sync tests."""
+    start_session(repo, "main", resolved_config())
+    return repo
+
+
+def open_session_with_one_keep(root: str) -> SessionRecord:
+    """Open a session, commit and log one kept iteration, and return the session header."""
+    start_session(root, "main", resolved_config())
+    worktree = experiment_worktree_dir(root)
+    (Path(worktree) / "step.txt").write_text("cache the regex\n", encoding="utf-8")
+    git(["add", "-A"], worktree)
+    git(["commit", "-m", "cache the regex"], worktree)
+    commit = head_of(worktree)
+    append_record(session_jsonl_path(root), iteration_record(seq=1))
+    append_record(session_jsonl_path(root), committed_keep(1, commit=commit))
+    header = read_records(session_jsonl_path(root))[0]
+    assert isinstance(header, SessionRecord)
+    return header
+
+
+def close_session_with_one_keep(root: str) -> str:
+    """Open a session with one kept commit, finalize it, and return its closed id."""
+    header = open_session_with_one_keep(root)
+    finalize_session(root)
+    return header.session_id
 
 
 def last_command_record(root: str) -> CommandRecord:

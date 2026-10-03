@@ -16,87 +16,37 @@ import pytest
 
 from gymrat.cli import session_cmds
 from gymrat.cli.app import app
-from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import start_session
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import FinalizeRecord, SessionRecord, StopRecord
-from gymrat.session.store import append_record, read_records
+from gymrat.session.store import read_records
 from tests._ansi import SGR_RE, strip_ansi
 from tests.cli._budget import install_budget
 from tests.cli._session import (
+    FailingStdoutRunner,
+    ResolverRecorder,
+    close_session_with_one_keep,
     closed_stdout_error,
-    closed_stdout_runner,
     last_command_record,
-    make_stop_repo,
+    open_session_with_one_keep,
     runner,
+    stub_resolve_config,
     write_config,
 )
 from tests.loop._settle import (
-    git,
-    head_of,
     settling_record_of,
 )
 from tests.loop.iterate._fixtures import resolved_config
-from tests.session.records._fixtures import (
-    committed_keep,
-    iteration_record,
-)
-
-
-class _ResolverRecorder:
-    """A stand-in for a config resolver recording ``(flags, base_dir)`` per call."""
-
-    def __init__(self, result: object) -> None:
-        self.result = result
-        self.calls: list[tuple[object, str | Path | None]] = []
-
-    def __call__(self, flags: object, base_dir: str | Path | None = None) -> object:
-        self.calls.append((flags, base_dir))
-        return self.result
-
 
 # ---------------------------------------------------------------------------
 # the start command
 # ---------------------------------------------------------------------------
 
 
-def _stub_resolve_config(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> object:
-    """Pin what ``start`` reads by replacing its ``resolve_config`` with a fixed config."""
-    config = resolved_config(**overrides)
-
-    def fake(*_a: object, **_k: object) -> object:
-        return config
-
-    monkeypatch.setattr("gymrat.cli.session_cmds.resolve_config", fake)
-    return config
-
-
-def _open_session_with_one_keep(root: str) -> SessionRecord:
-    """Open a session, commit and log one kept iteration, and return the session header."""
-    start_session(root, "main", resolved_config())
-    worktree = experiment_worktree_dir(root)
-    (Path(worktree) / "step.txt").write_text("cache the regex\n", encoding="utf-8")
-    git(["add", "-A"], worktree)
-    git(["commit", "-m", "cache the regex"], worktree)
-    commit = head_of(worktree)
-    append_record(session_jsonl_path(root), iteration_record(seq=1))
-    append_record(session_jsonl_path(root), committed_keep(1, commit=commit))
-    header = read_records(session_jsonl_path(root))[0]
-    assert isinstance(header, SessionRecord)
-    return header
-
-
-def _close_session_with_one_keep(root: str) -> str:
-    """Open a session with one kept commit, finalize it, and return its closed id."""
-    header = _open_session_with_one_keep(root)
-    finalize_session(root)
-    return header.session_id
-
-
 def test_start_command_when_run_does_create_a_session_and_report_its_branch(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _stub_resolve_config(monkeypatch)
+    stub_resolve_config(monkeypatch)
 
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
@@ -109,8 +59,8 @@ def test_start_command_when_run_does_create_a_session_and_report_its_branch(
 def test_start_command_when_reopening_after_finalize_does_name_the_archived_session(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    closed_id = _close_session_with_one_keep(repo)
-    _stub_resolve_config(monkeypatch)
+    closed_id = close_session_with_one_keep(repo)
+    stub_resolve_config(monkeypatch)
 
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
@@ -125,7 +75,7 @@ def test_start_command_when_runbook_configured_does_include_a_runbook_row(
 ):
     if resumed:
         start_session(repo, "main", resolved_config())
-    _stub_resolve_config(monkeypatch, runbook=".claude/skills/ecstatic-bench/SKILL.md")
+    stub_resolve_config(monkeypatch, runbook=".claude/skills/ecstatic-bench/SKILL.md")
 
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
@@ -139,7 +89,7 @@ def test_start_command_when_runbook_configured_does_include_a_runbook_row(
 def test_start_command_when_runbook_absent_does_omit_the_runbook_row(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _stub_resolve_config(monkeypatch)
+    stub_resolve_config(monkeypatch)
 
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
@@ -150,7 +100,7 @@ def test_start_command_when_runbook_absent_does_omit_the_runbook_row(
 def test_start_command_when_run_does_record_command_trace_with_baseline_and_exit_zero(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _stub_resolve_config(monkeypatch)
+    stub_resolve_config(monkeypatch)
 
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
@@ -165,7 +115,7 @@ def test_start_command_when_run_does_record_command_trace_with_baseline_and_exit
 def test_start_command_when_config_overrides_given_does_record_them_in_args(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _stub_resolve_config(monkeypatch)
+    stub_resolve_config(monkeypatch)
 
     result = runner.invoke(
         app, ["start", "--baseline", "main", "--bench", "sh run.sh", "--samples", "5"]
@@ -185,7 +135,7 @@ def test_start_command_when_run_does_include_edit_here_line_with_sync_hint(
 ):
     if resumed:
         start_session(repo, "main", resolved_config())
-    _stub_resolve_config(monkeypatch)
+    stub_resolve_config(monkeypatch)
 
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
@@ -198,7 +148,7 @@ def test_start_command_when_run_does_include_edit_here_line_with_sync_hint(
 def test_start_command_when_no_baseline_does_default_to_head(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _stub_resolve_config(monkeypatch)
+    stub_resolve_config(monkeypatch)
 
     result = runner.invoke(app, ["start"])
 
@@ -210,7 +160,7 @@ def test_start_command_when_no_baseline_does_default_to_head(
 def test_start_command_when_positional_ref_given_does_exit_two_with_usage_error(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _stub_resolve_config(monkeypatch)
+    stub_resolve_config(monkeypatch)
 
     result = runner.invoke(app, ["start", "main"])
 
@@ -235,7 +185,7 @@ def test_start_command_help_does_show_baseline_option_with_help_string():
 
 def _session_with_one_keep(root: str) -> str:
     """Open a session with one kept commit on it, and return its branch."""
-    return _open_session_with_one_keep(root).branch
+    return open_session_with_one_keep(root).branch
 
 
 def test_finalize_command_documents_its_flags_and_default_branch_in_help():
@@ -309,7 +259,7 @@ def test_finalize_command_when_run_does_record_command_trace_with_branch_and_mes
 def test_finalize_command_when_finalized_does_record_command_trace_with_exit_two(
     repo: str,
 ):
-    _close_session_with_one_keep(repo)
+    close_session_with_one_keep(repo)
 
     result = runner.invoke(app, ["finalize"])
 
@@ -340,7 +290,7 @@ def test_start_command_when_run_from_subdirectory_does_resolve_config_at_repo_ro
     nested = Path(root) / "packages" / "core"
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
-    recorder = _ResolverRecorder(resolved_config())
+    recorder = ResolverRecorder(resolved_config())
     monkeypatch.setattr("gymrat.cli.session_cmds.resolve_config", recorder)
 
     runner.invoke(app, ["start", "--baseline", "main"])
@@ -354,13 +304,6 @@ def test_start_command_when_run_from_subdirectory_does_resolve_config_at_repo_ro
 # ---------------------------------------------------------------------------
 # the sync command
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def sync_repo(repo: str) -> str:
-    """A repository with an open session, ready for sync tests."""
-    start_session(repo, "main", resolved_config())
-    return repo
 
 
 def test_sync_command_when_registered_does_appear_in_the_app_commands():
@@ -421,7 +364,7 @@ def test_sync_command_when_run_does_take_the_repo_lock(
 def test_sync_command_when_finalized_does_record_command_trace_with_exit_two(
     repo: str,
 ):
-    _close_session_with_one_keep(repo)
+    close_session_with_one_keep(repo)
 
     result = runner.invoke(app, ["sync"])
 
@@ -470,7 +413,7 @@ def test_sync_command_when_no_budget_does_omit_time_left_line(
 def test_start_command_when_budget_active_does_end_text_with_time_left_line(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _stub_resolve_config(monkeypatch)
+    stub_resolve_config(monkeypatch)
     Path(repo, ".gymrat").mkdir(exist_ok=True)
     install_budget(repo, monkeypatch)
 
@@ -497,12 +440,6 @@ def test_finalize_command_when_budget_active_does_end_text_with_time_left_line(
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def stop_repo(repo: str) -> str:
-    """A repository with a settled, configured session ready for the stop command."""
-    return make_stop_repo(repo)
-
-
 def test_stop_command_when_message_given_does_print_stopped_and_append_a_stop_record(
     stop_repo: str,
 ):
@@ -521,7 +458,7 @@ def test_stop_command_when_message_given_does_print_stopped_and_append_a_stop_re
 @pytest.fixture
 def kept_repo(repo: str) -> str:
     """A configured repository whose open session has one kept commit, ready for any session command."""
-    _open_session_with_one_keep(repo)
+    open_session_with_one_keep(repo)
     write_config(repo)
     return repo
 
@@ -542,7 +479,7 @@ def kept_repo(repo: str) -> str:
 def test_session_command_when_stdout_reader_closed_does_exit_zero_without_stderr(
     command: list[str],
 ):
-    result = closed_stdout_runner(closed_stdout_error()).invoke(app, command)
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, command)
 
     assert (result.exit_code, result.stderr) == (0, "")
 
@@ -574,7 +511,7 @@ def test_stop_command_when_blank_message_does_exit_two_naming_the_option(
 def test_stop_command_when_finalized_does_record_command_trace_with_exit_two(
     repo: str,
 ):
-    _close_session_with_one_keep(repo)
+    close_session_with_one_keep(repo)
     write_config(repo)
 
     result = runner.invoke(app, ["stop", "-m", "done"])

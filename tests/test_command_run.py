@@ -26,17 +26,16 @@ from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
 from gymrat.session.records import CommandRecord
 from gymrat.session.schema import CommandReason
 from gymrat.session.store import append_record, read_records, recover_torn_tail, session_header
-from tests._command_run_fixtures import (
-    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
-)
-from tests._command_run_fixtures import (
-    seeded_session as _seeded_session,
-)
+from tests._command_run_fixtures import ok_body as _ok_body
+from tests._command_run_fixtures import seeded_session as _seeded_session
 from tests.session.records._fixtures import (
     iteration_record,
     session_record,
     tear_final_line,
     write_session_log,
+)
+from tests.telemetry._fixtures import (
+    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )
 
 
@@ -58,11 +57,6 @@ def _broken_append(path: str, record: object) -> None:
 def _broken_record(*_args: object, **_kwargs: object) -> None:
     msg = "record construction failed"
     raise ValueError(msg)
-
-
-async def _ok_body(trace: CommandTrace) -> str:
-    """Trivial command body for tests that only inspect recorded or exported side effects."""
-    return "ok"
 
 
 def _last_command_record() -> CommandRecord:

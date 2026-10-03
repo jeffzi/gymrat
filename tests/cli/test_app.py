@@ -25,8 +25,8 @@ from tests._ansi import SGR_RE, strip_ansi
 from tests._rich import unwrap_panel
 from tests.cli._help import help_output
 from tests.cli._session import (
+    FailingStdoutRunner,
     closed_stdout_error,
-    closed_stdout_runner,
     disk_full_error,
     write_config,
 )
@@ -83,13 +83,13 @@ def test_app_when_version_flag_does_print_package_version():
 
 
 def test_app_when_version_and_stdout_closed_does_exit_zero_without_stderr():
-    result = closed_stdout_runner(closed_stdout_error()).invoke(app, ["--version"])
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, ["--version"])
 
     assert (result.exit_code, result.stderr) == (0, "")
 
 
 def test_app_when_version_and_stdout_write_fails_otherwise_does_exit_two_with_error_on_stderr():
-    result = closed_stdout_runner(disk_full_error()).invoke(app, ["--version"])
+    result = FailingStdoutRunner(disk_full_error()).invoke(app, ["--version"])
 
     assert result.exit_code == TOOL_FAILURE_EXIT_CODE
     assert os.strerror(errno.ENOSPC) in unwrap_panel(result.stderr)

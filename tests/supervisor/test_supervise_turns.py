@@ -21,7 +21,12 @@ from gymrat.clock import now_ns
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor.driver import SessionOutcome
-from gymrat.supervisor.events import CompactionEvent, TextDeltaEvent
+from gymrat.supervisor.events import (
+    CapEvent,
+    CompactionEvent,
+    FollowUpEvent,
+    TextDeltaEvent,
+)
 from gymrat.supervisor.supervise import EndedBy, SupervisionResult, supervise
 from tests.conftest import hold_lock
 from tests.session.records._fixtures import (
@@ -29,11 +34,10 @@ from tests.session.records._fixtures import (
     stop_record,
 )
 from tests.supervisor._fixtures import (
-    _cap_events,
     add_stop_async,
     collecting_observer,
     emit_turn_end,
-    follow_up_events,
+    events_of,
     follow_ups_with_action,
     make_context,
     make_launch,
@@ -169,7 +173,7 @@ async def test_supervise_when_cost_exceeds_max_usd_at_turn_end_does_end_as_spend
     assert result.ended_by == "spend-cap"
     assert result.end_reason == "spend-cap"
 
-    caps = _cap_events(probe.events)
+    caps = events_of(probe.events, CapEvent)
     assert len(caps) == 1
     assert caps[0].cap == "spend-cap"
     assert caps[0].action == "ending"
@@ -386,7 +390,7 @@ async def test_supervise_when_real_lock_held_does_wait_then_reply_with_after_wai
         # probe.events is a plain list mutated by another coroutine — no
         # callback hook to wire an asyncio.Event to; polling is the only option.
         while not any(  # noqa: ASYNC110
-            e.action == "waiting" for e in follow_up_events(probe.events)
+            e.action == "waiting" for e in events_of(probe.events, FollowUpEvent)
         ):
             await asyncio.sleep(0.005)
         lock.release()
@@ -420,7 +424,7 @@ async def test_supervise_when_real_lock_held_does_wait_then_reply_with_after_wai
     assert released
     assert result.ended_by == "session"
 
-    follow_ups = follow_up_events(probe.events)
+    follow_ups = events_of(probe.events, FollowUpEvent)
     assert any(e.action == "waiting" for e in follow_ups)
     assert any(e.action == "replied" for e in follow_ups)
 
