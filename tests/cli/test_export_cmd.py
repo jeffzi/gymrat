@@ -24,6 +24,7 @@ from gymrat.cli.app import app
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import record_to_wire
 from tests._ansi import SGR_RE
+from tests._cli import unoptimized_env
 from tests.cli._help import help_output
 from tests.session.records._fixtures import SESSION_ID, command_record, session_record
 from tests.telemetry._collector import otlp_collector
@@ -95,12 +96,6 @@ def _populate_session_dir(
 # ---------------------------------------------------------------------------
 
 
-def _child_env() -> dict[str, str]:
-    env = dict(os.environ)
-    env.pop("PYTHONOPTIMIZE", None)  # cspell:disable-line
-    return env
-
-
 def test_export_when_app_imported_does_not_import_telemetry_provider_or_replay():
     probe = """
 import sys
@@ -120,7 +115,7 @@ if leaked:
         capture_output=True,
         text=True,
         check=False,
-        env=_child_env(),
+        env=unoptimized_env(),
     )
 
     assert result.returncode == 0, result.stderr

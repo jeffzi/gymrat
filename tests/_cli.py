@@ -18,6 +18,13 @@ def no_color_env() -> dict[str, str]:
     return env
 
 
+def unoptimized_env() -> dict[str, str]:
+    """A child environment with the optimize flag cleared, so the child's asserts and exits run."""
+    env = dict(os.environ)
+    env.pop("PYTHONOPTIMIZE", None)  # cspell:disable-line
+    return env
+
+
 def try_read_report(report_path: Path) -> dict[str, Any] | None:
     """Load the JSON report if it exists and is complete, else ``None``.
 

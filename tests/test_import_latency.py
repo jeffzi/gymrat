@@ -30,16 +30,10 @@ without it — including the traceparent helpers in ``gymrat.telemetry.ids`` and
 ``gymrat.telemetry.attributes`` — import it inside the functions that need it.
 """
 
-import os
 import subprocess
 import sys
 
-
-def _child_env() -> dict[str, str]:
-    """Child environment with the optimize flag cleared so the child exits explicitly."""
-    env = dict(os.environ)
-    env.pop("PYTHONOPTIMIZE", None)  # cspell:disable-line
-    return env
+from tests._cli import unoptimized_env
 
 
 def _run_probe(probe: str) -> subprocess.CompletedProcess[str]:
@@ -49,7 +43,7 @@ def _run_probe(probe: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
-        env=_child_env(),
+        env=unoptimized_env(),
     )
 
 
