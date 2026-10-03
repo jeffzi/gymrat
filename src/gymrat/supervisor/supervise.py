@@ -14,6 +14,7 @@ ended.
 import asyncio
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -79,13 +80,17 @@ _IN_FLIGHT_EXCLUSION = frozenset({
 """Event types that do NOT cancel a pending settle window or lock poll."""
 
 
-def _warn_on_task_failure(finished: asyncio.Task[None], context: str) -> None:
+def _warn_on_task_failure(finished: asyncio.Task[None], *, context: str) -> None:
     """Warn to stderr with ``context`` when ``finished`` raised; ignore cancellation."""
     if finished.cancelled():
         return
     error = finished.exception()
     if error is not None:
         warn_to_stderr(f"{context} failed: {error!s}")
+
+
+_warn_unhandled = partial(_warn_on_task_failure, context="background task")
+"""Done-callback that surfaces exceptions from fire-and-forget tasks."""
 
 
 def _fire_and_report_interrupt(session: DriverSession) -> asyncio.Task[None] | None:
@@ -108,17 +113,8 @@ def _fire_and_report_interrupt(session: DriverSession) -> asyncio.Task[None] | N
         return None
 
     task = asyncio.create_task(pending)
-
-    def _report(finished: asyncio.Task[None]) -> None:
-        _warn_on_task_failure(finished, "session interrupt")
-
-    task.add_done_callback(_report)
+    task.add_done_callback(partial(_warn_on_task_failure, context="session interrupt"))
     return task
-
-
-def _warn_unhandled(finished: asyncio.Task[None]) -> None:
-    """Done-callback that surfaces exceptions from fire-and-forget tasks."""
-    _warn_on_task_failure(finished, "background task")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -151,12 +147,9 @@ class _SuperviseConfig:
     driver: Driver
     prompt: SessionPrompt
     context: SupervisedSession
-    log_path: str | Path
     launch: LaunchEvent
-    max_usd: float | None
     observer: SessionObserver | None
     grace_ms: int
-    deadline_ms: float
     wall_clock_poll_ms: int
     settle_window_ms: int
     lock_poll_ms: int
@@ -169,7 +162,7 @@ class _Supervision:
     def __init__(self, config: _SuperviseConfig) -> None:
         self._config = config
         self._abort_event = asyncio.Event()
-        log_writer = create_event_log_writer(config.log_path)
+        log_writer = create_event_log_writer(config.context.log_path)
 
         observers: list[SessionObserver] = [self._event_router, log_writer]
         if config.observer is not None:
@@ -183,7 +176,6 @@ class _Supervision:
         self._grace_timer: asyncio.TimerHandle | None = None
         self._interrupt_task: asyncio.Task[None] | None = None
         self._session: DriverSession | None = None
-        self._pending_cap: CapType | None = None
 
         self._end_scan = EndConditionScan(
             config.context.config, session_jsonl_path(config.context.root)
@@ -306,7 +298,7 @@ class _Supervision:
         lock_held = self._config.is_lock_held()
 
         if (pending := self._end_scan.pending) is not None:
-            if spend_cap_reached(turn, self._config.max_usd):
+            if spend_cap_reached(turn, self._config.context.max_usd):
                 self._execute_decision(End(reason="spend-cap"), turn)
             elif lock_held:
                 self._wait_for_lock(turn)
@@ -323,8 +315,8 @@ class _Supervision:
             guards=self._guards,
             lock_held=lock_held,
             turn=turn,
-            max_usd=self._config.max_usd,
-            deadline_ms=self._config.deadline_ms,
+            max_usd=self._config.context.max_usd,
+            deadline_ms=self._config.context.deadline_ms,
             max_minutes=self._config.context.max_minutes,
             now_ms=now_ms(),
             after_wait=after_wait,
@@ -394,9 +386,6 @@ class _Supervision:
     def _trigger_cap(self, cap: CapType) -> None:
         if self._cap_fired:
             return
-        if self._session is None:
-            self._pending_cap = cap
-            return
         action: CapAction = "ending" if self._is_idle() else "interrupting"
         self._trigger_end(
             CapEvent(at=now_ns(), cap=cap, action=action), ended_by=cap, end_reason=cap
@@ -436,7 +425,7 @@ class _Supervision:
             )
 
     async def _run_wall_clock(self) -> None:
-        deadline = self._config.deadline_ms
+        deadline = self._config.context.deadline_ms
         poll_s = self._config.wall_clock_poll_ms / MS_PER_SECOND
         while now_ms() < deadline:  # noqa: ASYNC110 - wall-clock poll survives machine sleep
             await asyncio.sleep(poll_s)
@@ -451,8 +440,6 @@ class _Supervision:
             self._combined,
             self._abort_event,
         )
-        if self._pending_cap is not None:
-            self._trigger_cap(self._pending_cap)
 
         if not self._cap_fired:
             self._wall_task = asyncio.create_task(self._run_wall_clock())
@@ -482,8 +469,7 @@ class _Supervision:
                 cost_usd=outcome.cost_usd,
             )
         finally:
-            self._cancel("settle")
-            self._cancel("lock_poll")
+            self._cancel_pending()
             for handle in (self._wall_task, self._grace_timer, self._interrupt_task):
                 if handle is not None:
                     handle.cancel()
@@ -516,9 +502,6 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
     settle window to elapse, reads and folds the session log, probes the
     repository lock, and delegates to ``classify`` for the next action.
 
-    ``is_lock_held`` defaults to probing ``context.lock_path`` via filelock's
-    ``is_held``. Tests inject a callable to avoid filesystem contention.
-
     Args:
         driver: The agent driver that starts and sends messages to the session.
         prompt: The initial prompt and any system instructions.
@@ -542,25 +525,16 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
         Exception: Whatever the driver session's ``outcome`` raises, propagated
             after the wall-clock and grace timers are cancelled.
     """
-    if is_lock_held is None:
-        lock_path = Path(context.lock_path)
-
-        def is_lock_held() -> bool:
-            return is_held(lock_path)
-
     config = _SuperviseConfig(
         driver=driver,
         prompt=prompt,
         context=context,
-        log_path=context.log_path,
         launch=launch,
-        max_usd=context.max_usd,
         observer=observer,
         grace_ms=grace_ms,
-        deadline_ms=context.deadline_ms,
         wall_clock_poll_ms=wall_clock_poll_ms,
         settle_window_ms=settle_window_ms,
         lock_poll_ms=lock_poll_ms,
-        is_lock_held=is_lock_held,
+        is_lock_held=is_lock_held or partial(is_held, Path(context.lock_path)),
     )
     return await _Supervision(config).run()

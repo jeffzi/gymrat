@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -88,9 +89,6 @@ _NO_FINGERPRINT = "fingerprint unavailable"
 _BY_HAND = "keep or discard it by hand"
 
 
-type ExitStepKind = Literal["skipped", "settled", "left", "finalized", "refused", "nothing"]
-
-
 @dataclass(frozen=True, slots=True)
 class ExitStep:
     """One decision the sequence took, as the caller reports it.
@@ -100,26 +98,8 @@ class ExitStep:
         text: The summary wording, rendered verbatim.
     """
 
-    kind: ExitStepKind
+    kind: Literal["skipped", "settled", "left", "finalized", "refused", "nothing"]
     text: str
-
-
-@dataclass(frozen=True, slots=True)
-class ExitSinks:
-    """Everywhere a decision writes as it is taken.
-
-    Attributes:
-        record: Called with each step the moment it is decided, so the steps that
-            completed before a later one raises are still on the report.
-        warn: Where a keep's hint about a missing checks command goes, so it
-            never reaches stderr while a dashboard is live.
-        trace: The trace the repository-lock seam turns into the session log's
-            command record once the sequence settles.
-    """
-
-    record: Callable[[ExitStep], None]
-    warn: WarnSink
-    trace: CommandTrace
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,22 +131,6 @@ class ExitPhase:
     pid: int | None
 
 
-def _lock_probe(lock_path: str) -> Callable[[], bool]:
-    """A probe reporting whether another run holds the repository lock."""
-    path = Path(lock_path)
-
-    def probe() -> bool:
-        return is_held(path)
-
-    return probe
-
-
-def _waiting_phase(lock_path: str) -> ExitPhase:
-    """The waiting-lock phase, naming the holder when its record can be read."""
-    holder = read_holder(lock_path)
-    return ExitPhase(kind="waiting-lock", pid=None if holder is None else holder.pid)
-
-
 def _skip_step(lock_path: str, ended_by: EndedBy) -> ExitStep:
     """The single step a sequence that never got the lock reports."""
     holder = read_holder(lock_path)
@@ -191,24 +155,37 @@ def _emit_failure(log: SessionObserver, message: str) -> None:
         log(FollowUpEvent(at=now_ns(), action="ended", reason=_FAILED_TEXT.format(message=message)))
 
 
-async def _still_held(
-    probe: Callable[[], bool], *, started_ms: float, poll_ms: int, bound_ms: int
+async def _held_past_wait(
+    probe: Callable[[], bool],
+    lock_path: str,
+    progress: Callable[[ExitPhase], None],
+    *,
+    poll_ms: int,
+    bound_ms: int,
 ) -> bool:
-    """Poll a held lock until it frees or the wait bound elapses.
+    """Wait out a held lock until it frees or the wait bound elapses.
 
-    The bound is elapsed time since ``started_ms``, never a count of polls, so a
-    slow probe cannot stretch the wait past what the caller asked for. A bound of
-    zero returns without sleeping.
+    The bound is elapsed time since just before the first probe, never a count of
+    polls, so a slow probe cannot stretch the wait past what the caller asked
+    for. A bound of zero returns without sleeping.
 
     Args:
         probe: Reports whether the lock is still held.
-        started_ms: Monotonic reading from just before the first probe.
+        lock_path: The lock whose holder the waiting phase names, when its
+            record can be read.
+        progress: Called with the waiting phase once the first probe finds the
+            lock held.
         poll_ms: How long to wait between probes.
-        bound_ms: How long to keep probing, measured from ``started_ms``.
+        bound_ms: How long to keep probing, measured from the first probe.
 
     Returns:
         ``True`` when the lock was still held at the bound.
     """
+    started_ms = monotonic_ms()
+    if not probe():
+        return False
+    holder = read_holder(lock_path)
+    progress(ExitPhase(kind="waiting-lock", pid=None if holder is None else holder.pid))
     while monotonic_ms() - started_ms < bound_ms:
         await asyncio.sleep(poll_ms / MS_PER_SECOND)
         if not probe():
@@ -260,7 +237,7 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
     Returns:
         The steps the sequence took and the failure that ended it, if any.
     """
-    probe = _lock_probe(context.lock_path) if is_lock_held is None else is_lock_held
+    probe = is_lock_held or partial(is_held, Path(context.lock_path))
     bound_ms = (
         context.config.timeout_seconds * MS_PER_SECOND if lock_wait_ms is None else lock_wait_ms
     )
@@ -276,20 +253,21 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
         if state.finalized is not None:
             record(ExitStep(kind="nothing", text="session already finalized"))
             return
-        sinks = ExitSinks(record=record, warn=warn, trace=trace)
-        await decide_exit_steps(context, state, sinks, finalize=finalize)
+        # Each step is recorded the moment it is decided, so the steps that
+        # completed before a later decision raises are still on the report.
+        settled = await _decide_settle(context, state, warn=warn, trace=trace)
+        if settled is not None:
+            record(settled)
+        closed = _decide_finalize(context, settled, finalize=finalize)
+        if closed is not None:
+            record(closed)
         if not steps:
             record(ExitStep(kind="nothing", text="nothing to settle"))
 
-    started_ms = monotonic_ms()
     try:
-        held = probe()
-        if held:
-            progress(_waiting_phase(context.lock_path))
-            held = await _still_held(
-                probe, started_ms=started_ms, poll_ms=lock_poll_ms, bound_ms=bound_ms
-            )
-        if held:
+        if await _held_past_wait(
+            probe, context.lock_path, progress, poll_ms=lock_poll_ms, bound_ms=bound_ms
+        ):
             record(_skip_step(context.lock_path, ended_by))
         else:
             try:
@@ -303,39 +281,14 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
     return ExitReport(steps=tuple(steps))
 
 
-async def decide_exit_steps(
-    context: SupervisedSession,
-    state: SessionState,
-    sinks: ExitSinks,
-    *,
-    finalize: bool,
-) -> None:
-    """Record the settle and finalize steps ``state`` calls for, in decision order.
-
-    Args:
-        context: The supervised session whose repository is being settled.
-        state: The folded session log every decision reads.
-        sinks: Where the steps, the keep's warnings, and the command trace go.
-        finalize: Whether the session may be closed once nothing needs a person.
-    """
-    settled = await _decide_settle(context, state, sinks)
-    if settled is not None:
-        sinks.record(settled)
-    _decide_finalize(context, settled, sinks, finalize=finalize)
-
-
 def _decide_finalize(
-    context: SupervisedSession,
-    settled: ExitStep | None,
-    sinks: ExitSinks,
-    *,
-    finalize: bool,
-) -> None:
-    """Record the finalize step the settled session calls for, if it calls for one.
+    context: SupervisedSession, settled: ExitStep | None, *, finalize: bool
+) -> ExitStep | None:
+    """The finalize step the settled session calls for, if it calls for one.
 
     A session the finalize would refuse anyway — nothing kept, or something still
-    unsettled once the settle step has run — records no step at all, so neither a
-    refusal nor the ``--no-finalize`` note stands in for work that was never
+    unsettled once the settle step has run — calls for no step at all, so neither
+    a refusal nor the ``--no-finalize`` note stands in for work that was never
     going to close.
 
     Args:
@@ -343,30 +296,28 @@ def _decide_finalize(
         settled: What the settle decision did, or ``None`` when it did nothing. A
             ``left`` step means work still needs a person, so no finalize may
             close over it.
-        sinks: Where the step goes once it is decided.
         finalize: Whether the session may be closed once nothing needs a person.
+
+    Returns:
+        The step the session calls for, or ``None`` when it calls for none.
     """
     if settled is not None and settled.kind == "left":
-        return
+        return None
     after = fold_session(read_records(session_jsonl_path(context.root)))
     if after.keep_count == 0 or after.unsettled:
-        return
+        return None
     if not finalize:
-        sinks.record(ExitStep(kind="nothing", text="session left open (--no-finalize)"))
-        return
+        return ExitStep(kind="nothing", text="session left open (--no-finalize)")
     try:
         closed = finalize_session(context.root)
     except GymratError as refusal:
-        sinks.record(ExitStep(kind="refused", text=str(refusal)))
-        return
+        return ExitStep(kind="refused", text=str(refusal))
     short_sha = closed.record.commit[:SHORT_SHA_LENGTH]
-    sinks.record(
-        ExitStep(kind="finalized", text=f"finalized: {closed.record.branch} at {short_sha}")
-    )
+    return ExitStep(kind="finalized", text=f"finalized: {closed.record.branch} at {short_sha}")
 
 
 async def _decide_settle(
-    context: SupervisedSession, state: SessionState, sinks: ExitSinks
+    context: SupervisedSession, state: SessionState, *, warn: WarnSink, trace: CommandTrace
 ) -> ExitStep | None:
     """The one settle step the session calls for, if it calls for one.
 
@@ -376,7 +327,9 @@ async def _decide_settle(
     Args:
         context: The supervised session whose repository is being settled.
         state: The folded session log the decision reads.
-        sinks: Where the keep's warnings and the command trace go.
+        warn: Where a keep's hint about a missing checks command goes.
+        trace: The trace the repository-lock seam turns into the session log's
+            command record once the sequence settles.
 
     Returns:
         The step the session calls for, or ``None`` when it calls for none.
@@ -388,10 +341,12 @@ async def _decide_settle(
     experiment = session.worktrees.experiment
     iteration = state.last_iteration
     if iteration is not None and state.unsettled:
-        sinks.trace.seq = iteration.seq
-        return await _settle_iteration(context, iteration, sinks, experiment=experiment)
+        trace.seq = iteration.seq
+        return await _settle_iteration(
+            context, iteration, experiment=experiment, warn=warn, trace=trace
+        )
     if iteration is not None and state.ends_on_gating_block:
-        sinks.trace.seq = iteration.seq
+        trace.seq = iteration.seq
         return _settle_gating_block(context, iteration, experiment=experiment)
 
     unmeasured = changed_file_count(experiment, last_kept_position(state, session.baseline.sha))
@@ -406,15 +361,18 @@ async def _decide_settle(
 async def _settle_iteration(
     context: SupervisedSession,
     iteration: IterationRecord,
-    sinks: ExitSinks,
     *,
     experiment: str,
+    warn: WarnSink,
+    trace: CommandTrace,
 ) -> ExitStep:
     """Keep an improved iteration, discard one that did not improve, or leave it."""
     reason = _gate_reason(context.root, iteration, experiment=experiment)
     if iteration.outcome == "improved":
         if reason is None:
-            return await _keep_iteration(context, iteration, sinks, experiment=experiment)
+            return await _keep_iteration(
+                context, iteration, experiment=experiment, warn=warn, trace=trace
+            )
         return ExitStep(
             kind="left",
             text=(
@@ -436,9 +394,10 @@ async def _settle_iteration(
 async def _keep_iteration(
     context: SupervisedSession,
     iteration: IterationRecord,
-    sinks: ExitSinks,
     *,
     experiment: str,
+    warn: WarnSink,
+    trace: CommandTrace,
 ) -> ExitStep:
     """Commit the iteration the gate cleared, reporting what the keep made of it.
 
@@ -448,8 +407,9 @@ async def _keep_iteration(
     Args:
         context: The supervised session whose repository is being settled.
         iteration: The improved iteration standing in the experiment worktree.
-        sinks: Where the keep's warnings and its refusal go.
         experiment: The experiment worktree the keep commits.
+        warn: Where the keep's hint about a missing checks command goes.
+        trace: The command trace the keep's refusal is written to.
 
     Returns:
         The step naming what the keep committed, or what it refused to.
@@ -461,7 +421,7 @@ async def _keep_iteration(
     kept = await keep_session(
         context.root,
         context.config,
-        KeepOptions(message=f"supervised: iteration {iteration.seq}", warn=sinks.warn),
+        KeepOptions(message=f"supervised: iteration {iteration.seq}", warn=warn),
     )
     record = kept.record
     if record.status == "committed":
@@ -474,8 +434,8 @@ async def _keep_iteration(
             ),
         )
     if record.reason == "checks-failed":
-        sinks.trace.gate = True
-        sinks.trace.reason = record.reason
+        trace.gate = True
+        trace.reason = record.reason
         return ExitStep(
             kind="left",
             text=(
@@ -556,9 +516,9 @@ def _gate_reason(root: str, iteration: IterationRecord, *, experiment: str) -> s
         ):
             return f"{record.stage} hook failed"
 
-    if iteration.measured_tree is None:
-        return _NO_FINGERPRINT
-    standing = worktree_fingerprint(Path(experiment))
-    if standing is None:
+    if (
+        iteration.measured_tree is None
+        or (standing := worktree_fingerprint(Path(experiment))) is None
+    ):
         return _NO_FINGERPRINT
     return None if standing == iteration.measured_tree else _TREE_CHANGED

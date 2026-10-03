@@ -267,14 +267,10 @@ SessionEvent = (
 SessionObserver = Callable[[SessionEvent], None]
 """Receives :data:`SessionEvent`s as a session streams them."""
 
-_SessionEventAdapter: TypeAdapter[SessionEvent] = TypeAdapter(
+SESSION_EVENT_ADAPTER: TypeAdapter[SessionEvent] = TypeAdapter(
     Annotated[SessionEvent, Field(discriminator="type")]
 )
-
-
-def session_event_adapter() -> TypeAdapter[SessionEvent]:
-    """Expose the module-private ``TypeAdapter`` without making it public."""
-    return _SessionEventAdapter
+"""Validates a wire object into its :data:`SessionEvent` and renders the union's JSON Schema."""
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +357,7 @@ def event_from_wire(obj: object) -> SessionEvent | None:
     if obj.get("type") != "launch" and _SCHEMA_KEY in obj:
         return None
     try:
-        return session_event_adapter().validate_python(obj)
+        return SESSION_EVENT_ADAPTER.validate_python(obj)
     except ValidationError:
         return None
 

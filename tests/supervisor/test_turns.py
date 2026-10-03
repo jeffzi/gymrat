@@ -16,17 +16,16 @@ from gymrat.eta import format_duration
 
 if TYPE_CHECKING:
     from gymrat.session.records import SessionLogRecord
+from gymrat.supervisor.end_scan import EndCondition, detect_end_condition
 from gymrat.supervisor.turns import (
     CONSECUTIVE_DISCARD_LIMIT,
     FOLLOW_UP_CEILING,
     NO_PROGRESS_LIMIT,
     Decision,
     End,
-    EndCondition,
     GuardState,
     Reply,
     WaitForLock,
-    detect_end_condition,
 )
 from tests.session.records._fixtures import (
     command_record,

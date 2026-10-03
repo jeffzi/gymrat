@@ -357,11 +357,12 @@ async def test_supervise_when_cost_reaches_max_usd_does_report_spend_cap(
 ):
     driver = create_mock_driver([TurnEndStep(cost_usd=0.12)])
 
+    # The launch event carries no cap, so the context is the only place it can be read from.
     result = await supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
-        launch=make_launch(max_usd=0.1),
+        launch=make_launch(max_usd=None),
     )
 
     assert result.ended_by == "spend-cap"

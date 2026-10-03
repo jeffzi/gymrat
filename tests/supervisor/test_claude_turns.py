@@ -146,6 +146,18 @@ async def test_turn_when_second_turn_does_reset_text_accumulator():
     assert turn_ends[1].text == "turn two text"
 
 
+async def test_turn_when_second_turn_has_no_text_does_not_carry_the_first_turns_text():
+    messages = [
+        assistant(TextBlock(text="turn one text")),
+        result_message(total_cost_usd=0.01),
+        result_message(total_cost_usd=0.02),
+    ]
+    events = await _run_turns(messages, drain=7)
+
+    turn_ends = events_of(events, TurnEndEvent)
+    assert [turn.text for turn in turn_ends] == ["turn one text", ""]
+
+
 async def test_turn_when_subagent_text_present_does_ignore_subagent_text_in_turn_end():
     top_level_msg = assistant(TextBlock(text="top level"))
     subagent_msg = assistant(TextBlock(text="subagent output"), parent_tool_use_id="tu_sub")
@@ -458,8 +470,7 @@ async def test_stream_end_when_no_turn_end_does_settle_error():
     outcome = await run_outcome(client)
 
     assert outcome.reason == "error"
-    assert outcome.message is not None
-    assert "result" in outcome.message.lower()
+    assert outcome.message == "Agent stream ended without a result message"
 
 
 # ---------------------------------------------------------------------------

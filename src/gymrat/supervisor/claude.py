@@ -20,21 +20,22 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from gymrat.agent_env import TRACEPARENT_ENV
 from gymrat.clock import now_ns
-from gymrat.supervisor.claude_messages import (
-    MessageMapper,
-    detect_origin,
-    read_cost,
-    result_outcome_from,
-)
+from gymrat.supervisor.claude_messages import MessageMapper, detect_origin
 from gymrat.supervisor.driver import (
     Driver,
     DriverSession,
-    SessionObserver,
     SessionOutcome,
     SessionPrompt,
+    usable_cost,
 )
-from gymrat.supervisor.events import CompactionEvent, TurnEndEvent, UsageUpdateEvent
+from gymrat.supervisor.events import (
+    CompactionEvent,
+    SessionObserver,
+    TurnEndEvent,
+    UsageUpdateEvent,
+)
 from gymrat.supervisor.hooks import HooksFactory
 from gymrat.supervisor.tools import ToolsFactory
 
@@ -98,8 +99,8 @@ def _load_default_factory() -> ClientFactory:  # pragma: no cover - needs the pa
 
 
 def _traceparent_env(traceparent: str | None) -> dict[str, str]:
-    """The ``GYMRAT_TRACEPARENT`` env entry for *traceparent*, or empty when unset."""
-    return {} if traceparent is None else {"GYMRAT_TRACEPARENT": traceparent}
+    """The :data:`TRACEPARENT_ENV` entry for *traceparent*, or empty when unset."""
+    return {} if traceparent is None else {TRACEPARENT_ENV: traceparent}
 
 
 def _build_options(prompt: SessionPrompt) -> dict[str, object]:
@@ -188,7 +189,6 @@ class _ClaudeSession:
         self._abort_task: asyncio.Task[None] | None = None
         self._cost_usd = 0.0
         self._mapper = MessageMapper(observer, prompt.cwd)
-        self._had_turn_end: bool = False
         self._turn_end_count: int = 0
         self._stopped: SessionOutcome | None = None
         self._result_outcome: SessionOutcome | None = None
@@ -308,7 +308,7 @@ class _ClaudeSession:
             self._result_outcome
             or (
                 SessionOutcome(reason="completed", cost_usd=self._cost_usd)
-                if self._had_turn_end
+                if self._turn_end_count > 0
                 else SessionOutcome(
                     reason="error",
                     cost_usd=self._cost_usd,
@@ -358,11 +358,15 @@ class _ClaudeSession:
         """
         budget_exhausted = message.is_error and message.subtype == "error_max_budget_usd"
         settles = message.is_error and not budget_exhausted
-        cost = read_cost(message)
+        cost = usable_cost(message.total_cost_usd)
         if cost is not None:
             self._commit_cost(cost, settled=settles)
         if settles:
-            self._result_outcome = result_outcome_from(message, self._cost_usd)
+            self._result_outcome = SessionOutcome(
+                reason="error",
+                cost_usd=self._cost_usd,
+                message=message.result if message.result is not None else message.subtype,
+            )
             return
 
         self._observer(
@@ -374,9 +378,8 @@ class _ClaudeSession:
                 budget_exhausted=budget_exhausted,
             )
         )
-        self._had_turn_end = True
         self._turn_end_count += 1
-        self._mapper.reset_turn_text()
+        self._mapper.last_top_level_text = ""
 
     def _commit_cost(self, cost: float, *, settled: bool = False) -> None:
         """Set the running cost and notify observers.

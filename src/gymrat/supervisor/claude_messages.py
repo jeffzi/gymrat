@@ -10,12 +10,12 @@ module never loads the SDK.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from math import ceil
 from typing import TYPE_CHECKING, Literal
 
 from gymrat import clock
 from gymrat.clock import now_ns
-from gymrat.supervisor.driver import SessionOutcome, usable_cost
 from gymrat.supervisor.events import (
     ModelPhaseEvent,
     SessionObserver,
@@ -39,15 +39,13 @@ _THINKING_EMIT_CHARS = 200
 _ModelPhase = Literal["thinking", "responding", "tool_input", "turn_end"]
 
 
+@dataclass(slots=True)
 class _ThinkingStream:
     """Per-parent running state for streamed thinking deltas."""
 
-    __slots__ = ("chars_since_emit", "estimated_tokens", "text_len")
-
-    def __init__(self) -> None:
-        self.estimated_tokens: int = 0
-        self.chars_since_emit: int = 0
-        self.text_len: int = 0
+    estimated_tokens: int = 0
+    chars_since_emit: int = 0
+    text_len: int = 0
 
 
 def _stringify_result(content: object) -> str:
@@ -78,43 +76,21 @@ def detect_origin(message: ResultMessage) -> Literal["agent", "injected"]:
     return "injected"
 
 
-def result_outcome_from(message: ResultMessage, cost_usd: float) -> SessionOutcome:
-    """Classify a settled error result message.
-
-    Args:
-        message: The error result message.
-        cost_usd: Cumulative cost to record on the outcome.
-
-    Returns:
-        A ``SessionOutcome`` with ``reason="error"`` whose message is the
-        result text, or the subtype when the result has no text.
-    """
-    return SessionOutcome(
-        reason="error",
-        cost_usd=cost_usd,
-        message=message.result if message.result is not None else message.subtype,
-    )
-
-
-def read_cost(message: ResultMessage) -> float | None:
-    """Extract cumulative cost from a result message.
-
-    Args:
-        message: The result message to read.
-
-    Returns:
-        The cost as a float when it passes
-        :func:`~gymrat.supervisor.driver.usable_cost`, ``None`` otherwise.
-    """
-    return usable_cost(message.total_cost_usd)
-
-
 class MessageMapper:
     """Maps SDK messages to session events, owning the per-turn mapping state.
 
     Emits session events directly through the observer. Turn-text tracking
     and tool-call state live here; cost commitment and outcome settlement
     stay in the session.
+
+    Args:
+        observer: Receives every event the mapper emits.
+        supervised_root: The supervised repository root, for summarizing tool
+            inputs relative to it.
+
+    Attributes:
+        last_top_level_text: The most recent top-level text block from the
+            agent. The session clears it at each turn boundary.
     """
 
     def __init__(self, observer: SessionObserver, supervised_root: str) -> None:
@@ -123,16 +99,7 @@ class MessageMapper:
         self._thinking_streams: dict[str | None, _ThinkingStream] = {}
         self._tool_starts: dict[str, float] = {}
         self._tool_names: dict[str, str] = {}
-        self._last_top_level_text: str = ""
-
-    @property
-    def last_top_level_text(self) -> str:
-        """The most recent top-level text block from the agent."""
-        return self._last_top_level_text
-
-    def reset_turn_text(self) -> None:
-        """Clear accumulated turn text after a turn boundary."""
-        self._last_top_level_text = ""
+        self.last_top_level_text: str = ""
 
     def map_stream_event(self, event: dict[str, object], parent: str | None) -> None:
         """Dispatch a raw SDK stream event to the appropriate handler.
@@ -250,7 +217,7 @@ class MessageMapper:
 
     def _emit_text(self, text: str, parent: str | None) -> None:
         if parent is None:
-            self._last_top_level_text = text
+            self.last_top_level_text = text
         self._observer(TextDeltaEvent(at=now_ns(), chunk=text, parent_tool_use_id=parent))
 
     def _start_tool(

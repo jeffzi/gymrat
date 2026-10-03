@@ -763,6 +763,25 @@ async def test_run_exit_sequence_when_improved_but_the_gate_fails_does_name_the_
     )
 
 
+async def test_run_exit_sequence_when_the_standing_tree_has_no_fingerprint_does_leave_it_unsettled(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo)
+    _improved_iteration(repo)
+    checks_pass(monkeypatch)
+
+    def no_fingerprint(_worktree: Path) -> None:
+        return None
+
+    monkeypatch.setattr("gymrat.supervisor.exit_sequence.worktree_fingerprint", no_fingerprint)
+
+    run = await run_sequence(_context(repo, checks=CHECKS))
+
+    step = run.report.steps[0]
+    assert step.kind == "left"
+    assert "improved but fingerprint unavailable" in step.text
+
+
 async def test_run_exit_sequence_when_improved_but_the_gate_fails_does_neither_keep_nor_discard(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1023,6 +1042,11 @@ def _raising_progress(_phase: ExitPhase) -> None:
     raise RuntimeError(BOOM)
 
 
+def _raising_probe() -> bool:
+    """A lock probe that fails every time it is asked."""
+    raise RuntimeError(BOOM)
+
+
 class FailsOnNthEvent:
     """An observer that collects every event it is handed except the ``nth``, which it fails on."""
 
@@ -1083,6 +1107,58 @@ async def test_run_exit_sequence_when_a_sink_raises_during_the_wait_does_report_
 
     assert run.report.error is not None
     assert BOOM in run.report.error
+
+
+async def test_run_exit_sequence_when_the_lock_probe_raises_does_report_the_error(repo: str):
+    start_with(repo)
+
+    run = await run_sequence(_context(repo), is_lock_held=_raising_probe)
+
+    assert run.report == ExitReport(steps=(), error=BOOM)
+
+
+async def test_run_exit_sequence_when_the_first_probe_outlasts_the_bound_does_not_probe_again(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo)
+    now_ms = 0.0
+    calls = 0
+
+    def slow_probe() -> bool:
+        nonlocal now_ms, calls
+        calls += 1
+        now_ms += 100
+        return True
+
+    monkeypatch.setattr("gymrat.supervisor.exit_sequence.monotonic_ms", lambda: now_ms)
+
+    await run_sequence(_context(repo), lock_wait_ms=50, is_lock_held=slow_probe)
+
+    assert calls == 1
+
+
+async def test_run_exit_sequence_when_finalize_raises_does_keep_the_settled_step_on_the_report(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo)
+    _improved_iteration(repo)
+    checks_pass(monkeypatch)
+
+    def failing_finalize(_root: str) -> None:
+        raise RuntimeError(BOOM)
+
+    monkeypatch.setattr("gymrat.supervisor.exit_sequence.finalize_session", failing_finalize)
+
+    run = await run_sequence(_context(repo, checks=CHECKS), finalize=True)
+
+    assert run.report == ExitReport(
+        steps=(ExitStep(kind="settled", text="settled: kept iteration 1 (checks passed)"),),
+        error=BOOM,
+    )
+    assert [event.reason for event in follow_up_events(run.events)] == [
+        "settled: kept iteration 1 (checks passed)",
+        FAILED_PREFIX + BOOM,
+    ]
 
 
 async def test_run_exit_sequence_when_the_skip_event_raises_after_contention_does_report_the_error(

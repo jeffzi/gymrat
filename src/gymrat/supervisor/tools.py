@@ -9,6 +9,7 @@ import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from gymrat.agent_env import COMMAND_ORIGIN_ENV, TOOL_ORIGIN
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
 
 if TYPE_CHECKING:
@@ -27,12 +28,8 @@ _DOCUMENT_EXIT_CODES = frozenset({0, 1})
 _JSON_FORMAT_ARGS = ("--format", "json")
 
 
-def _error_result(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": text}], "is_error": True}
-
-
-def _ok_result(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": text}], "is_error": False}
+def _result(text: str, *, is_error: bool) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": text}], "is_error": is_error}
 
 
 def _is_json_document(outcome: ExecResult) -> bool:
@@ -64,7 +61,7 @@ class ToolHost:
         self,
         *,
         root: str,
-        abort: asyncio.Event | None,
+        abort: asyncio.Event,
         extra_env: Mapping[str, str],
         argv_prefix: Sequence[str] = (sys.executable, "-m", "gymrat"),
         _exec_fn: _ExecFn = exec_argv,
@@ -76,36 +73,23 @@ class ToolHost:
         self._exec_fn = _exec_fn
         self._busy = False
 
-    def _build_env(self) -> dict[str, str]:
-        # The origin marks the run as one the agent made through a tool, so the
-        # child can tell it apart from a command a person typed.
-        return {
-            **os.environ,
-            "NO_COLOR": "1",
-            "GYMRAT_COMMAND_ORIGIN": "tool",
-            **self._extra_env,
-        }
-
-    def _build_options(self) -> ExecOptions:
-        return ExecOptions(cwd=self._root, abort=self._abort, env=self._build_env())
-
     def _map_result(self, outcome: ExecResult | ExecTimeoutError, cmd: str) -> dict[str, Any]:
         if isinstance(outcome, ExecTimeoutError):
             text = outcome.stderr.strip() or f"gymrat {cmd} timed out"
-            return _error_result(text)
+            return _result(text, is_error=True)
 
         if outcome.exit_code == _USAGE_ERROR_EXIT_CODE:
             text = outcome.stderr.strip() or f"gymrat {cmd} exited 2 with no output"
-            return _error_result(text)
+            return _result(text, is_error=True)
 
         if _is_json_document(outcome):
-            return _ok_result(outcome.stdout)
+            return _result(outcome.stdout, is_error=False)
 
-        if self._abort is not None and self._abort.is_set():
-            return _error_result("killed by the supervisor")
+        if self._abort.is_set():
+            return _result("killed by the supervisor", is_error=True)
 
         text = outcome.stderr.strip() or outcome.stdout.strip() or f"gymrat {cmd} failed"
-        return _error_result(text)
+        return _result(text, is_error=True)
 
     async def _run_command(self, argv: list[str], cmd: str) -> dict[str, Any]:
         """Execute *argv* as a child process, serializing against concurrent calls.
@@ -119,10 +103,19 @@ class ToolHost:
             MCP tool result dict with ``content`` and ``is_error``.
         """
         if self._busy:
-            return _error_result("a gymrat command is already running")
+            return _result("a gymrat command is already running", is_error=True)
         self._busy = True
         try:
-            outcome = await self._exec_fn(argv, self._build_options())
+            # The origin marks the run as one the agent made through a tool, so the
+            # child can tell it apart from a command a person typed.
+            env = {
+                **os.environ,
+                "NO_COLOR": "1",
+                COMMAND_ORIGIN_ENV: TOOL_ORIGIN,
+                **self._extra_env,
+            }
+            options = ExecOptions(cwd=self._root, abort=self._abort, env=env)
+            outcome = await self._exec_fn(argv, options)
             return self._map_result(outcome, cmd)
         finally:
             self._busy = False
@@ -149,9 +142,7 @@ class ToolHost:
         # Every option precedes the separator: names come from the agent and may
         # look like flags, and only after ``--`` does the CLI read them as names.
         argv.append("--")
-        names = input_data.get("names")
-        if names:
-            argv.extend(names)
+        argv.extend(input_data.get("names") or ())
 
         return await self._run_command(argv, "probe")
 
@@ -221,41 +212,27 @@ def gymrat_tool_definitions(host: ToolHost) -> list[SdkMcpTool[dict[str, Any]]]:
     return [probe, iterate]
 
 
-def create_gymrat_tools(host: ToolHost) -> McpSdkServerConfig:
-    """Create an SDK MCP server config exposing the gymrat tools.
-
-    The ``claude_agent_sdk`` import lives here so the module never pulls in the
-    SDK at import time.
-
-    Args:
-        host: The tool host whose handlers back the tool definitions.
-
-    Returns:
-        An ``McpSdkServerConfig`` with ``name="gymrat"`` and ``type="sdk"``.
-    """
-    from claude_agent_sdk import (  # noqa: PLC0415 -- deferred to avoid import-time SDK load
-        create_sdk_mcp_server,
-    )
-
-    tools = gymrat_tool_definitions(host)
-    return create_sdk_mcp_server("gymrat", "0.1.0", tools)
-
-
 def gymrat_tools_factory(root: str) -> ToolsFactory:
     """Return a factory that builds the gymrat SDK server config on demand.
 
-    The returned callable accepts an abort event and an environment mapping,
-    constructs a :class:`ToolHost`, and wraps it in an ``McpSdkServerConfig``.
+    The ``claude_agent_sdk`` import happens when the returned callable runs, so
+    importing this module never loads the SDK.
 
     Args:
         root: Session root directory for the tool host.
 
     Returns:
-        A callable ``(abort, env) -> McpSdkServerConfig``.
+        A callable ``(abort, env)`` that constructs a :class:`ToolHost` and
+        returns an ``McpSdkServerConfig`` with ``name="gymrat"`` and
+        ``type="sdk"`` exposing its tools.
     """
 
     def factory(abort: asyncio.Event, env: Mapping[str, str]) -> McpSdkServerConfig:
+        from claude_agent_sdk import (  # noqa: PLC0415 -- deferred to avoid import-time SDK load
+            create_sdk_mcp_server,
+        )
+
         host = ToolHost(root=root, abort=abort, extra_env=env)
-        return create_gymrat_tools(host)
+        return create_sdk_mcp_server("gymrat", "0.1.0", gymrat_tool_definitions(host))
 
     return factory

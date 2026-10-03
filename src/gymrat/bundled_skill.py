@@ -13,30 +13,6 @@ from gymrat.errors import GymratError
 
 _PACKAGE = "gymrat"
 _SKILL_RELATIVE_PATH = "skills/gymrat/SKILL.md"
-_FRONTMATTER_DELIMITER = "---"
-
-
-def strip_frontmatter(text: str) -> str:
-    """Return ``text`` without its leading YAML frontmatter block.
-
-    The frontmatter is Claude Code activation metadata — a ``---`` line, YAML
-    fields whose values may fold across several lines, and a closing ``---``
-    line — so consumers that feed the skill to a model as plain instructions
-    drop it.
-
-    Args:
-        text: The skill file contents, possibly prefixed with a frontmatter
-            block.
-
-    Returns:
-        The text with its frontmatter block removed, or unchanged when it does
-        not open with a delimiter line or its block is never closed.
-    """
-    if not text.startswith(f"{_FRONTMATTER_DELIMITER}\n"):
-        return text
-
-    _, closing, body = text.partition(f"\n{_FRONTMATTER_DELIMITER}\n")
-    return body if closing else text
 
 
 def _skill_resource() -> Traversable:

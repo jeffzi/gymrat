@@ -180,7 +180,12 @@ _FILE_MATCHER = "|".join(_EDITING_TOOLS)
 _BASH_MATCHER = "Bash"
 
 
-def _decision(reason: str | None) -> HookJSONOutput:
+def _refuse_on_error(evaluate: Callable[[], str | None]) -> HookJSONOutput:
+    """Run a rule and map its verdict to the hook output, refusing when it raises."""
+    try:
+        reason = evaluate()
+    except Exception:  # noqa: BLE001 -- any failure refuses the call rather than letting it through
+        reason = _REFUSED_REASON
     if reason is None:
         return {}
     return {
@@ -190,15 +195,6 @@ def _decision(reason: str | None) -> HookJSONOutput:
             "permissionDecisionReason": reason,
         }
     }
-
-
-def _refuse_on_error(evaluate: Callable[[], str | None]) -> HookJSONOutput:
-    """Run a rule and turn any exception it raises into a refusal."""
-    try:
-        reason = evaluate()
-    except Exception:  # noqa: BLE001 -- any failure refuses the call rather than letting it through
-        reason = _REFUSED_REASON
-    return _decision(reason)
 
 
 def _file_callback(root: Path) -> HookCallback:

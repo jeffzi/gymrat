@@ -19,7 +19,7 @@ from pydantic import Field, TypeAdapter
 from gymrat.event_docs.asyncapi import READERS, render_asyncapi, render_asyncapi_yaml
 from gymrat.event_docs.reference import render_reference
 from gymrat.session.records import SessionLogRecord
-from gymrat.supervisor.events import session_event_adapter
+from gymrat.supervisor.events import SESSION_EVENT_ADAPTER
 
 _SESSION_LOG_TITLE = "gymrat session log record"
 _SESSION_LOG_ID = "https://github.com/jeffzi/gymrat/schemas/session-log.schema.json"
@@ -52,7 +52,7 @@ def render_json_schemas() -> tuple[dict[str, Any], dict[str, Any]]:
     """
     session_log = _stamp(_SessionLogAdapter.json_schema(), _SESSION_LOG_TITLE, _SESSION_LOG_ID)
     supervisor_log = _stamp(
-        session_event_adapter().json_schema(), _SUPERVISOR_LOG_TITLE, _SUPERVISOR_LOG_ID
+        SESSION_EVENT_ADAPTER.json_schema(), _SUPERVISOR_LOG_TITLE, _SUPERVISOR_LOG_ID
     )
     return session_log, supervisor_log
 

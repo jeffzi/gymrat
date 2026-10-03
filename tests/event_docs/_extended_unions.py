@@ -24,7 +24,7 @@ from typing import Annotated, Any, Literal, get_args
 from pydantic import BaseModel, Field, TypeAdapter
 
 from gymrat.session.records import SESSION_LOG_MODELS, SessionLogRecord
-from gymrat.supervisor.events import SessionEvent, session_event_adapter
+from gymrat.supervisor.events import SESSION_EVENT_ADAPTER, SessionEvent
 
 #: Wire type of the probe model appended to the extended union.
 PROBE_WIRE_TYPE = "probe"
@@ -61,7 +61,7 @@ def _extend(channel: str) -> None:
         extended = _with_probe(get_args(SessionEvent))
         _rebind(SessionEvent, extended)
         adapter = TypeAdapter(Annotated[extended, Field(discriminator="type")])
-        _rebind(session_event_adapter(), adapter)
+        _rebind(SESSION_EVENT_ADAPTER, adapter)
     else:
         msg = f"unknown channel {channel!r}"
         raise SystemExit(msg)

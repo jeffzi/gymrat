@@ -7,7 +7,7 @@ member, each discriminated on the ``type`` field.  The schemas carry
 where the model does, type ``at`` as integer, and produce the correct
 ``$id`` / title / ``$schema`` envelope.
 
-``session_event_adapter()`` exposes the pydantic ``TypeAdapter`` that
+``SESSION_EVENT_ADAPTER`` is the pydantic ``TypeAdapter`` that
 ``event_from_wire`` uses, so callers that need the adapter directly can
 get it without reaching for private state.
 """
@@ -15,7 +15,6 @@ get it without reaching for private state.
 from typing import Any, get_args
 
 import pytest
-from pydantic import TypeAdapter
 
 from gymrat.session.records import SessionLogRecord
 from gymrat.supervisor.events import SessionEvent
@@ -434,23 +433,14 @@ def test_render_json_schemas_when_called_does_not_restrict_tool_start_input_away
 
 
 # ---------------------------------------------------------------------------
-# session_event_adapter — public accessor and event_from_wire integration
+# SESSION_EVENT_ADAPTER — the adapter event_from_wire validates with
 # ---------------------------------------------------------------------------
 
 
-def test_session_event_adapter_when_called_does_return_type_adapter():
-    from gymrat.supervisor.events import session_event_adapter
+def test_session_event_adapter_when_given_wire_object_does_validate_compaction_event():
+    from gymrat.supervisor.events import SESSION_EVENT_ADAPTER, CompactionEvent
 
-    adapter = session_event_adapter()
-
-    assert isinstance(adapter, TypeAdapter)
-
-
-def test_session_event_adapter_when_called_does_validate_compaction_event():
-    from gymrat.supervisor.events import CompactionEvent, session_event_adapter
-
-    adapter = session_event_adapter()
-    result = adapter.validate_python({"type": "compaction", "at": 1})
+    result = SESSION_EVENT_ADAPTER.validate_python({"type": "compaction", "at": 1})
 
     assert isinstance(result, CompactionEvent)
 

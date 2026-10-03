@@ -2,18 +2,80 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.run import stop_condition
+from gymrat.session.records import HookRecord
 from gymrat.session.store import fold_session, read_records
-from gymrat.supervisor.turns import EndCondition, detect_end_condition
 
 if TYPE_CHECKING:
     from gymrat.config.types import BenchlessConfig
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
+    from gymrat.supervisor.supervise import EndedBy
+
+_STOP_MESSAGE_PREFIX = "Stop condition met:"
+
+
+@dataclass(frozen=True, slots=True)
+class EndCondition:
+    """A condition read off the session log that ends supervision."""
+
+    ended_by: EndedBy
+    reason: str
+
+
+def _hook_failure_reason(record: HookRecord) -> str:
+    failure = "timed out" if record.timed_out else f"exit {record.exit_code}"
+    stderr = "?" if record.stderr_bytes is None else record.stderr_bytes
+    return (
+        f"{record.stage} hook failed on iteration {record.seq}: {failure} "
+        f"(stdout {record.stdout_bytes} B, stderr {stderr} B)"
+    )
+
+
+def detect_end_condition(
+    config: BenchlessConfig,
+    records: list[SessionLogRecord],
+    state: SessionState,
+    *,
+    cursor: int | None,
+    check_stop: bool,
+) -> tuple[EndCondition | None, int]:
+    """Find the condition in the session log that ends supervision, if any.
+
+    A failed or timed-out hook record at or past *cursor* wins over a met stop
+    condition. Hooks are scanned from the cursor rather than the tail because
+    ``iterate`` appends a before-hook, the iteration, then an after-hook, so a
+    failed before-hook sits two records back.
+
+    Args:
+        config: The session's Benchless configuration, read for stop conditions.
+        records: The raw session log records, command records included.
+        state: The session state already folded from *records*.
+        cursor: The index of the first record not yet scanned for hook
+            failures, or ``None`` to scan no hook records.
+        check_stop: Whether a met stop condition is reported.
+
+    Returns:
+        The end condition, or ``None`` when nothing ends supervision, paired
+        with the cursor for the next call.
+    """
+    next_cursor = len(records)
+
+    if cursor is not None:
+        for record in records[cursor:]:
+            if isinstance(record, HookRecord) and (record.exit_code != 0 or record.timed_out):
+                return EndCondition("hook-failure", _hook_failure_reason(record)), next_cursor
+
+    if check_stop and (stop := stop_condition(config, state)) is not None:
+        reason = str(stop).removeprefix(_STOP_MESSAGE_PREFIX).strip()
+        return EndCondition("stop-condition", reason), next_cursor
+
+    return None, next_cursor
 
 
 def _log_size(path: str) -> int:

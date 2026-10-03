@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 import typer
 
 from gymrat import clock as _clock
+from gymrat.agent_env import COMMAND_ORIGIN_ENV, TOOL_ORIGIN, TRACEPARENT_ENV
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate.run import LoopStopError
@@ -38,7 +39,7 @@ from gymrat.warn import warn_to_stderr
 
 def command_origin() -> CommandOrigin:
     """The running command's origin: ``tool`` only when the supervisor says so, else ``cli``."""
-    return "tool" if os.environ.get("GYMRAT_COMMAND_ORIGIN") == "tool" else "cli"
+    return "tool" if os.environ.get(COMMAND_ORIGIN_ENV) == TOOL_ORIGIN else "cli"
 
 
 @dataclass(slots=True)
@@ -279,7 +280,7 @@ def _try_append_command_record(  # noqa: PLR0913 -- all six params are distinct 
             reason=reason,
             duration_ms=elapsed_ms,
             origin=command_origin(),
-            traceparent=os.environ.get("GYMRAT_TRACEPARENT") or os.environ.get("TRACEPARENT"),
+            traceparent=os.environ.get(TRACEPARENT_ENV) or os.environ.get("TRACEPARENT"),
             seq=trace.seq,
         )
         append_record(jsonl, record)
@@ -368,7 +369,7 @@ def _emit_command_span(  # noqa: PLR0913 -- keyword-only tracing context
     inputs = command_span_inputs(cmd_record, session_id=session_id, line_number=len(records))
 
     parent_ctx = None
-    gymrat_tp = os.environ.get("GYMRAT_TRACEPARENT")
+    gymrat_tp = os.environ.get(TRACEPARENT_ENV)
     if gymrat_tp:
         parent_span_ctx = parse_traceparent(gymrat_tp)
         if parent_span_ctx is not None:
