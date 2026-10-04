@@ -22,7 +22,6 @@ from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
 from gymrat.session.workspace import (
     BaselineRef,
     WorkspaceResult,
-    Worktrees,
     advance_baseline,
     commit_workspace,
     create_workspace,
@@ -105,10 +104,7 @@ def test_create_workspace_when_no_session_workspace_does_build_branch_worktrees_
     assert head_of(bl) == baseline_sha
     assert _checked_out_ref(bl) == "HEAD"
     assert ".gymrat/" in _exclude_path(repo).read_text(encoding="utf-8").split("\n")
-    assert result == WorkspaceResult(
-        branch=BRANCH,
-        worktrees=Worktrees(experiment=exp, baseline=bl),
-    )
+    assert result == WorkspaceResult(branch=BRANCH, worktrees=worktrees_at(repo))
 
 
 def test_create_workspace_when_branch_already_exists_does_raise_naming_branch_and_hint(
@@ -544,6 +540,21 @@ def test_advance_baseline_when_target_sha_given_does_land_the_baseline_detached_
     assert head_of(baseline_dir) == target
     assert _checked_out_ref(baseline_dir) == "HEAD"
     assert _checked_out_ref(experiment) == BRANCH
+
+
+def test_recreate_workspace_when_baseline_commit_unknown_does_raise_naming_the_check_command(
+    repo: str, baseline: BaselineRef
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    _git(["worktree", "remove", "--force", baseline_worktree_dir(repo)], repo)
+    unknown = "0" * 40
+
+    with pytest.raises(GymratError) as excinfo:
+        recreate_workspace(repo, BRANCH, unknown)
+
+    assert excinfo.value.hint == (
+        f"Check that {unknown} is a commit this repository has: git cat-file -t {unknown}"
+    )
 
 
 def test_advance_baseline_when_commit_unknown_does_raise_naming_the_check_command(
