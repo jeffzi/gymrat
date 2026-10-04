@@ -28,7 +28,7 @@ import textwrap
 from pathlib import Path
 from typing import Any, NamedTuple, get_args
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.session.paths import (
@@ -40,13 +40,12 @@ from gymrat.session.paths import (
 from gymrat.session.records import SESSION_LOG_ADAPTER, SESSION_LOG_MODELS, wire_type
 from gymrat.supervisor.events import SESSION_EVENT_ADAPTER, SessionEvent
 
-_SESSION_LOG_FILE = "./session-log.schema.json"
-_SUPERVISOR_LOG_FILE = "./supervisor-log.schema.json"
-
 SESSION_LOG_ADDRESS = f"{SESSION_DIR_NAME}/{SESSION_LOG_NAME}"
 SUPERVISOR_LOG_ADDRESS = f"{SESSION_DIR_NAME}/{supervisor_log_name('<ms>')}"
 
 _SCHEMA_FORMAT = "application/schema+json;version=draft-2020-12"
+_SCHEMA_BASE_URL = "https://github.com/jeffzi/gymrat/schemas/"
+_DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 _YAML_WIDTH = 100
 
 # ---------------------------------------------------------------------------
@@ -55,6 +54,52 @@ _YAML_WIDTH = 100
 
 #: Supervisor-log event models, in ``SessionEvent`` union order.
 SUPERVISOR_LOG_MODELS: tuple[type[BaseModel], ...] = get_args(SessionEvent)
+
+
+class _LogSpec(NamedTuple):
+    """One JSONL log the artifacts document.
+
+    Attributes:
+        channel: The AsyncAPI channel name, also the stem of the schema file.
+        heading: The log's section heading in the Markdown reference.
+        title: The JSON Schema ``title``.
+        address: Where the log lives, relative to the repository root.
+        models: The union members, in documentation order.
+        adapter: The adapter that renders the log's JSON Schema.
+    """
+
+    channel: str
+    heading: str
+    title: str
+    address: str
+    models: tuple[type[BaseModel], ...]
+    adapter: TypeAdapter[Any]
+
+    @property
+    def schema_file(self) -> str:
+        """The schema file name, relative to the ``schemas/`` directory."""
+        return f"{self.channel}.schema.json"
+
+
+#: The documented logs, session log first; every artifact lists them in this order.
+_LOGS: tuple[_LogSpec, _LogSpec] = (
+    _LogSpec(
+        channel="session-log",
+        heading="Session Log",
+        title="gymrat session log record",
+        address=SESSION_LOG_ADDRESS,
+        models=SESSION_LOG_MODELS,
+        adapter=SESSION_LOG_ADAPTER,
+    ),
+    _LogSpec(
+        channel="supervisor-log",
+        heading="Supervisor Log",
+        title="gymrat supervisor log event",
+        address=SUPERVISOR_LOG_ADDRESS,
+        models=SUPERVISOR_LOG_MODELS,
+        adapter=SESSION_EVENT_ADAPTER,
+    ),
+)
 
 
 class ReaderSpec(NamedTuple):
@@ -143,6 +188,15 @@ def wire_type_to_class_name(
     return {wire_type(model): model.__name__ for model in models}
 
 
+def _summary(class_name: str, schema_def: dict[str, Any], *, first_line_only: bool) -> str:
+    # A model with no docstring is summarized by its class name.
+    description = schema_def.get("description")
+    if not description:
+        return class_name
+    text = str(description)
+    return text.split("\n", maxsplit=1)[0] if first_line_only else text
+
+
 # ---------------------------------------------------------------------------
 # AsyncAPI component builders
 # ---------------------------------------------------------------------------
@@ -154,20 +208,19 @@ def _build_messages(
     schema_file: str,
 ) -> dict[str, object]:
     """Build ``components.messages`` entries for one schema's message types."""
-    messages: dict[str, object] = {}
-    for wire, class_name in wire_to_class.items():
-        messages[wire] = {
+    return {
+        wire: {
             "contentType": "application/json",
             "title": class_name,
-            # A model with no docstring is summarized by its class name.
-            "summary": defs[class_name].get("description", class_name).split("\n")[0],
+            "summary": _summary(class_name, defs[class_name], first_line_only=True),
             "payload": {
                 "schemaFormat": _SCHEMA_FORMAT,
-                "schema": {"$ref": f"{schema_file}#/$defs/{class_name}"},
+                "schema": {"$ref": f"./{schema_file}#/$defs/{class_name}"},
             },
             "traits": [{"$ref": "#/components/messageTraits/envelope"}],
         }
-    return messages
+        for wire, class_name in wire_to_class.items()
+    }
 
 
 def _build_channel(
@@ -208,23 +261,16 @@ def render_asyncapi(
         The AsyncAPI 3.0.0 document as a nested dict, ready for YAML
         serialization.
     """
-    session_log_schema, supervisor_log_schema = schemas
-    session_defs: dict[str, dict[str, Any]] = session_log_schema["$defs"]
-    supervisor_defs: dict[str, dict[str, Any]] = supervisor_log_schema["$defs"]
-
-    session_wire = wire_type_to_class_name(SESSION_LOG_MODELS)
-    supervisor_wire = wire_type_to_class_name(SUPERVISOR_LOG_MODELS)
-
-    session_messages = _build_messages(session_wire, session_defs, _SESSION_LOG_FILE)
-    supervisor_messages = _build_messages(supervisor_wire, supervisor_defs, _SUPERVISOR_LOG_FILE)
-
-    version = importlib.metadata.version("gymrat")
+    wire_maps = [wire_type_to_class_name(log.models) for log in _LOGS]
+    messages: dict[str, object] = {}
+    for log, schema, wire_to_class in zip(_LOGS, schemas, wire_maps, strict=True):
+        messages.update(_build_messages(wire_to_class, schema["$defs"], log.schema_file))
 
     return {
         "asyncapi": "3.0.0",
         "info": {
             "title": "gymrat logs",
-            "version": version,
+            "version": importlib.metadata.version("gymrat"),
             "description": (
                 "gymrat writes two append-only JSONL log files during a session: "
                 f"the session log ({SESSION_LOG_ADDRESS}) records high-level "
@@ -235,12 +281,12 @@ def render_asyncapi(
             ),
         },
         "channels": {
-            "session-log": _build_channel(session_wire, SESSION_LOG_ADDRESS),
-            "supervisor-log": _build_channel(supervisor_wire, SUPERVISOR_LOG_ADDRESS),
+            log.channel: _build_channel(wire_to_class, log.address)
+            for log, wire_to_class in zip(_LOGS, wire_maps, strict=True)
         },
         "operations": {name: _build_operation(reader) for name, reader in READERS.items()},
         "components": {
-            "messages": {**session_messages, **supervisor_messages},
+            "messages": messages,
             "messageTraits": {
                 "envelope": {
                     "description": (
@@ -301,19 +347,6 @@ _PROSE_WIDTH = 100
 # ---------------------------------------------------------------------------
 
 
-def _type_summary(
-    class_name: str,
-    schema_def: dict[str, Any],
-    wire_to_class: dict[str, str],
-) -> str:
-    description = schema_def.get("description")
-    if not description:
-        return class_name
-    if class_name in wire_to_class.values():
-        return str(description).split("\n")[0]
-    return str(description)
-
-
 def _ref_name(ref: str) -> str:
     return ref.rsplit("/", maxsplit=1)[-1]
 
@@ -347,8 +380,7 @@ def _render_type(prop: dict[str, Any]) -> str:
         return f"`{json.dumps(prop['const'])}`"
 
     if "enum" in prop:
-        values = prop["enum"]
-        return " \\| ".join(f"`{json.dumps(v)}`" for v in values)
+        return " \\| ".join(f"`{json.dumps(v)}`" for v in prop["enum"])
 
     if "anyOf" in prop:
         return " \\| ".join(_render_type(variant) for variant in prop["anyOf"])
@@ -410,26 +442,6 @@ def _build_field_table(
     return "\n".join(rows)
 
 
-def _nested_defs_for(
-    schema_def: dict[str, Any],
-    defs: dict[str, dict[str, Any]],
-    wire_to_class: dict[str, str],
-) -> list[str]:
-    """Return ``$defs`` entries that are nested objects, not union members."""
-    union_classes = set(wire_to_class.values())
-    props: dict[str, dict[str, Any]] = schema_def.get("properties", {})
-    candidate_refs = [
-        ref_name for field_schema in props.values() for ref_name in _collect_refs(field_schema)
-    ]
-
-    nested: list[str] = []
-    for ref_name in candidate_refs:
-        if ref_name in defs and ref_name not in union_classes and ref_name not in nested:
-            nested.append(ref_name)
-
-    return nested
-
-
 def _collect_refs(schema: dict[str, Any]) -> list[str]:
     """Collect all ``$ref`` target names from a property schema."""
     refs: list[str] = []
@@ -449,8 +461,9 @@ def _render_type_block(
     heading: str,
     class_name: str,
     defs: dict[str, dict[str, Any]],
-    wire_to_class: dict[str, str],
     rendered: set[str],
+    *,
+    first_line_only: bool,
 ) -> list[str]:
     """Build a heading/doc/table block, with nested subsections appended.
 
@@ -461,24 +474,30 @@ def _render_type_block(
         heading: The Markdown heading line, including its `#` prefix.
         class_name: The schema class to render.
         defs: All schema definitions, keyed by class name.
-        wire_to_class: Mapping from wire type to class name.
-        rendered: Class names already rendered as nested subsections; mutated
-            in place as nested subsections are appended.
+        rendered: Class names that get no nested subsection: the log's union
+            members and the nested objects already rendered. Mutated in place
+            as nested subsections are appended.
+        first_line_only: Whether the doc keeps only the first line of the
+            class description, as a union member's does.
 
     Returns:
         The heading, doc, and field-table lines, followed by any nested
         subsections.
     """
     schema_def = defs[class_name]
-    doc = _type_summary(class_name, schema_def, wire_to_class)
+    doc = _summary(class_name, schema_def, first_line_only=first_line_only)
     parts: list[str] = [heading, "", doc, "", _build_field_table(schema_def)]
-    for nested in _nested_defs_for(schema_def, defs, wire_to_class):
-        if nested not in rendered:
-            rendered.add(nested)
-            parts.append("")
-            parts.extend(
-                _render_type_block(f"#### `{nested}`", nested, defs, wire_to_class, rendered)
-            )
+    props: dict[str, dict[str, Any]] = schema_def.get("properties", {})
+    for field_schema in props.values():
+        for nested in _collect_refs(field_schema):
+            if nested in defs and nested not in rendered:
+                rendered.add(nested)
+                parts.append("")
+                parts.extend(
+                    _render_type_block(
+                        f"#### `{nested}`", nested, defs, rendered, first_line_only=False
+                    )
+                )
     return parts
 
 
@@ -487,19 +506,15 @@ def _render_type_block(
 # ---------------------------------------------------------------------------
 
 
-def _render_log_section(
-    heading: str,
-    models: tuple[type[BaseModel], ...],
-    defs: dict[str, dict[str, Any]],
-) -> str:
+def _render_log_section(log: _LogSpec, defs: dict[str, dict[str, Any]]) -> str:
     """Render a ## log section with ### subsections per wire type, in the models' order."""
-    wire_to_class = wire_type_to_class_name(models)
-    parts: list[str] = [f"## {heading}", ""]
-    rendered_nested: set[str] = set()
+    wire_to_class = wire_type_to_class_name(log.models)
+    parts: list[str] = [f"## {log.heading}", ""]
+    rendered: set[str] = set(wire_to_class.values())
 
     for wire, class_name in wire_to_class.items():
         block = _render_type_block(
-            f"### `{wire}`", class_name, defs, wire_to_class, rendered_nested
+            f"### `{wire}`", class_name, defs, rendered, first_line_only=True
         )
         parts.extend(block)
         parts.append("")
@@ -544,10 +559,6 @@ def render_reference(schemas: tuple[dict[str, Any], dict[str, Any]]) -> str:
     Returns:
         The rendered Markdown string with word-wrapped prose.
     """
-    session_log, supervisor_log = schemas
-    session_defs: dict[str, dict[str, Any]] = session_log.get("$defs", {})
-    supervisor_defs: dict[str, dict[str, Any]] = supervisor_log.get("$defs", {})
-
     sections: list[str] = [
         _BANNER,
         "",
@@ -555,8 +566,10 @@ def render_reference(schemas: tuple[dict[str, Any], dict[str, Any]]) -> str:
         "",
         _INTRO,
         "",
-        _render_log_section("Session Log", SESSION_LOG_MODELS, session_defs),
-        _render_log_section("Supervisor Log", SUPERVISOR_LOG_MODELS, supervisor_defs),
+        *(
+            _render_log_section(log, schema.get("$defs", {}))
+            for log, schema in zip(_LOGS, schemas, strict=True)
+        ),
         _render_readers_section(),
     ]
 
@@ -571,20 +584,13 @@ def render_reference(schemas: tuple[dict[str, Any], dict[str, Any]]) -> str:
 # JSON Schemas and the artifact set
 # ---------------------------------------------------------------------------
 
-_SESSION_LOG_TITLE = "gymrat session log record"
-_SESSION_LOG_ID = "https://github.com/jeffzi/gymrat/schemas/session-log.schema.json"
 
-_SUPERVISOR_LOG_TITLE = "gymrat supervisor log event"
-_SUPERVISOR_LOG_ID = "https://github.com/jeffzi/gymrat/schemas/supervisor-log.schema.json"
-
-_DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
-
-
-def _stamp(schema: dict[str, Any], title: str, schema_id: str) -> dict[str, Any]:
-    """Add draft, title, and ``$id`` metadata to a generated JSON Schema dict, in place."""
+def _json_schema(log: _LogSpec) -> dict[str, Any]:
+    """Render one log's JSON Schema with its draft, title, and ``$id`` metadata."""
+    schema = log.adapter.json_schema()
     schema["$schema"] = _DRAFT_2020_12
-    schema["title"] = title
-    schema["$id"] = schema_id
+    schema["title"] = log.title
+    schema["$id"] = f"{_SCHEMA_BASE_URL}{log.schema_file}"
     return schema
 
 
@@ -596,22 +602,18 @@ def render_json_schemas() -> tuple[dict[str, Any], dict[str, Any]]:
         schema first, the supervisor-log schema second, both JSON-serializable
         draft 2020-12 JSON Schema documents.
     """
-    session_log = _stamp(SESSION_LOG_ADAPTER.json_schema(), _SESSION_LOG_TITLE, _SESSION_LOG_ID)
-    supervisor_log = _stamp(
-        SESSION_EVENT_ADAPTER.json_schema(), _SUPERVISOR_LOG_TITLE, _SUPERVISOR_LOG_ID
-    )
+    session_log, supervisor_log = (_json_schema(log) for log in _LOGS)
     return session_log, supervisor_log
 
 
 def render_all() -> dict[str, str]:
     """Return a dict mapping repo-relative path to rendered text for each artifact."""
     schemas = render_json_schemas()
-    session_log, supervisor_log = (
-        json.dumps(schema, indent=2, sort_keys=True) + "\n" for schema in schemas
-    )
     return {
-        "schemas/session-log.schema.json": session_log,
-        "schemas/supervisor-log.schema.json": supervisor_log,
+        **{
+            f"schemas/{log.schema_file}": json.dumps(schema, indent=2, sort_keys=True) + "\n"
+            for log, schema in zip(_LOGS, schemas, strict=True)
+        },
         "schemas/asyncapi.yaml": render_asyncapi_yaml(render_asyncapi(schemas)),
         "docs/event-reference.md": render_reference(schemas),
     }

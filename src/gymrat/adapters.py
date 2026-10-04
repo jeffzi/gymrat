@@ -482,8 +482,6 @@ def _serialize_arg_value(value: object) -> str:
         return "true" if value else "false"
     if value is None:
         return "null"
-    if isinstance(value, str):
-        return value
     if isinstance(value, float) and math.isfinite(value) and value.is_integer():
         # JS String(5.0) is "5", not "5.0"; an int falls through to str() below.
         return str(int(value))

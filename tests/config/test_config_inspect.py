@@ -447,6 +447,27 @@ def test_inspect_config_when_integer_env_var_invalid_does_report_naming_var(
     assert has_problem(result.problems, rf"{env_var}.*positive integer")
 
 
+def test_inspect_config_when_every_field_env_var_invalid_does_report_each_in_field_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GYMRAT_BENCH", " ")
+    monkeypatch.setenv("GYMRAT_PREPARE", "")
+    monkeypatch.setenv("GYMRAT_ADAPTER", "")
+    monkeypatch.setenv("GYMRAT_SAMPLES", "0")
+    monkeypatch.setenv("GYMRAT_TIMEOUT", "0")
+
+    result = inspect_config(CliFlags())
+
+    assert result.problems == [
+        'Invalid value for GYMRAT_BENCH: expected a non-empty string, got " "',
+        'Invalid value for GYMRAT_PREPARE: expected a non-empty string, got ""',
+        'Invalid value for GYMRAT_ADAPTER: expected a non-empty string, got ""',
+        'Invalid value for GYMRAT_SAMPLES: expected a positive integer, got "0"',
+        'Invalid value for GYMRAT_TIMEOUT: expected a positive integer, got "0"',
+    ]
+
+
 @pytest.mark.parametrize(
     ("env_var", "cap"),
     [

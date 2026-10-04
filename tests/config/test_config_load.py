@@ -629,11 +629,31 @@ def test_validate_config_dict_when_optional_keys_explicitly_none_does_accept():
     assert result is None
 
 
-def test_validate_config_dict_when_schema_passes_but_filter_lacks_placeholder_does_raise():
-    config: dict[str, object] = {"bench": "npm run bench", "filter": "npm run bench"}
-
-    with pytest.raises(GymratError, match=r"^Invalid config value for filter: "):
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        pytest.param(
+            {"samples": "bad", "timeout_seconds": "bad", "filter": "npm run bench"},
+            'Invalid config value for samples: expected an integer, got "bad"',
+            id="schema",
+        ),
+        pytest.param(
+            {"filter": "npm run bench", "primary": "geomean", "stop": {"target_value": 1.5}},
+            (
+                "Invalid config value for filter: expected a string containing the {names} "
+                'placeholder, got "npm run bench"'
+            ),
+            id="loop-keys",
+        ),
+    ],
+)
+def test_validate_config_dict_when_several_problems_does_raise_the_first(
+    config: dict[str, object], message: str
+):
+    with pytest.raises(GymratError) as exc_info:
         validate_config_dict(config)
+
+    assert exc_info.value.args[0] == message
 
 
 def test_load_config_file_when_filter_empty_does_keep_empty_filter(tmp_path: Path):

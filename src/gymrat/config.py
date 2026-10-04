@@ -35,6 +35,7 @@ import json
 import os
 import stat
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal
@@ -169,19 +170,6 @@ def env_positive_int_result(env_var: str, maximum: int) -> EnvResult[int]:
     return EnvResult(value=value)
 
 
-#: Each ``GYMRAT_*`` string field's ``(CliFlags field, env var)`` association.
-_STRING_ENV_FIELDS: tuple[tuple[str, str], ...] = (
-    ("bench", "GYMRAT_BENCH"),
-    ("prepare", "GYMRAT_PREPARE"),
-    ("adapter", "GYMRAT_ADAPTER"),
-)
-
-#: Each ``GYMRAT_*`` numeric field's ``(CliFlags field, env var, maximum)`` association.
-_NUMBER_ENV_FIELDS: tuple[tuple[str, str, int], ...] = (
-    ("samples", "GYMRAT_SAMPLES", MAX_SAFE_INTEGER),
-    ("timeout", "GYMRAT_TIMEOUT", MAX_TIMEOUT_SECONDS),
-)
-
 # ---------------------------------------------------------------------------
 # Config types
 # ---------------------------------------------------------------------------
@@ -221,7 +209,7 @@ def _reject_line_break_keys(value: object) -> object:
 
 _NoLineBreakKeys = BeforeValidator(_reject_line_break_keys)
 _Str = Annotated[str, Strict()]
-_NonEmptyStr = Annotated[str, Strict(), Field(min_length=1, pattern=NON_BLANK_PATTERN)]
+_NonEmptyStr = Annotated[str, Strict(), Field(pattern=NON_BLANK_PATTERN)]
 _Bool = Annotated[bool, Strict()]
 _FiniteFloat = Annotated[float, Strict(), Field(allow_inf_nan=False)]
 # TOML writes ``5.0`` for a whole number as readily as ``5``; fold it before the strict check.
@@ -459,31 +447,12 @@ def _reason(exc: OSError | ValueError) -> str:
     return exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
 
 
-def _read_source(path: Path) -> tuple[str | None, str | None]:
-    """Read the config file, reporting a read failure as a problem rather than raising.
-
-    Decoding as ``utf-8-sig`` drops the byte-order mark Windows editors prepend,
-    which TOML parsing would otherwise reject.
-
-    Args:
-        path: Path to the config file to read.
-
-    Returns:
-        A ``(text, problem)`` pair: the file content and ``None`` on success,
-        ``(None, None)`` when the file is absent, or ``(None, message)`` on
-        read failure.
-    """
-    try:
-        text = path.read_text(encoding="utf-8-sig")
-    except FileNotFoundError:
-        return None, None
-    except (OSError, ValueError) as exc:
-        return None, f"Cannot read config file at {path}: {_reason(exc)}"
-    return text, None
-
-
 def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFileResult:
     """Load and validate a config file, collecting every problem.
+
+    A read failure is reported as a problem rather than raised. Decoding as
+    ``utf-8-sig`` drops the byte-order mark Windows editors prepend, which TOML
+    parsing would otherwise reject.
 
     Args:
         path: Path to the ``gymrat.toml`` file.
@@ -494,10 +463,9 @@ def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFi
         whether the file existed, and every validation problem found.
     """
     config_path = Path(path)
-    text, read_problem = _read_source(config_path)
-    if read_problem is not None:
-        return ConfigFileResult(config_file=None, exists=True, problems=[read_problem])
-    if text is None:
+    try:
+        text = config_path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
         if required:
             return ConfigFileResult(
                 config_file=None,
@@ -505,6 +473,9 @@ def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFi
                 problems=[f"Config file not found at {config_path}"],
             )
         return ConfigFileResult(config_file=ConfigFile(), exists=False, problems=[])
+    except (OSError, ValueError) as exc:
+        problem = f"Cannot read config file at {config_path}: {_reason(exc)}"
+        return ConfigFileResult(config_file=None, exists=True, problems=[problem])
 
     try:
         data = tomllib.loads(text)
@@ -667,10 +638,8 @@ def validate_config_dict(config: dict[str, object]) -> None:
         GymratError: On the first schema or cross-field validation problem.
     """
     config_file, problems = validate_config_file(config)
-    if problems:
-        raise GymratError(problems[0])
-    assert config_file is not None  # noqa: S101 -- no problems means the schema produced a config
-    problems = loop_key_problems(merge_config(CliFlags(), config_file))
+    if config_file is not None:
+        problems = loop_key_problems(merge_config(CliFlags(), config_file))
     if problems:
         raise GymratError(problems[0])
 
@@ -710,32 +679,35 @@ def _collect_env_flags(flags: CliFlags) -> tuple[CliFlags, list[str]]:
         filled from its env var, and any validation problems encountered.
     """
     problems: list[str] = []
-    strings: dict[str, str] = {}
-    for field_name, env_var in _STRING_ENV_FIELDS:
-        if getattr(flags, field_name) is None:
-            result = env_string_result(env_var)
-            if result.problem is not None:
-                problems.append(result.problem)
-            if result.value is not None:
-                strings[field_name] = result.value
-    numbers: dict[str, int] = {}
-    for field_name, env_var, maximum in _NUMBER_ENV_FIELDS:
-        if getattr(flags, field_name) is None:
-            result = env_positive_int_result(env_var, maximum)
-            if result.problem is not None:
-                problems.append(result.problem)
-            if result.value is not None:
-                numbers[field_name] = result.value
-    # Each dict holds a field only when its flag was unset, so the flag is the fallback.
+    # Keyword arguments evaluate left to right, which fixes the problem order.
     effective = replace(
         flags,
-        bench=strings.get("bench", flags.bench),
-        prepare=strings.get("prepare", flags.prepare),
-        adapter=strings.get("adapter", flags.adapter),
-        samples=numbers.get("samples", flags.samples),
-        timeout=numbers.get("timeout", flags.timeout),
+        bench=_flag_or_env(flags.bench, lambda: env_string_result("GYMRAT_BENCH"), problems),
+        prepare=_flag_or_env(flags.prepare, lambda: env_string_result("GYMRAT_PREPARE"), problems),
+        adapter=_flag_or_env(flags.adapter, lambda: env_string_result("GYMRAT_ADAPTER"), problems),
+        samples=_flag_or_env(
+            flags.samples,
+            lambda: env_positive_int_result("GYMRAT_SAMPLES", MAX_SAFE_INTEGER),
+            problems,
+        ),
+        timeout=_flag_or_env(
+            flags.timeout,
+            lambda: env_positive_int_result("GYMRAT_TIMEOUT", MAX_TIMEOUT_SECONDS),
+            problems,
+        ),
     )
     return effective, problems
+
+
+def _flag_or_env[T](
+    flag: T | None, read_env: Callable[[], EnvResult[T]], problems: list[str]
+) -> T | None:
+    if flag is not None:
+        return flag
+    result = read_env()
+    if result.problem is not None:
+        problems.append(result.problem)
+    return result.value
 
 
 def _resolve_config_source(

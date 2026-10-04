@@ -283,10 +283,11 @@ def test_compute_verdicts_when_zero_metric_value_does_report_zero_delta():
     assert result["metric"].delta == 0.0
 
 
-def test_compute_verdicts_when_baseline_median_zero_does_report_nan_delta():
+def test_compute_verdicts_when_baseline_median_zero_does_report_nan_delta_with_no_signal():
     result = run(samples(0.0), samples(5.0), METRIC_EXACT_LOWER)
 
     assert math.isnan(result["metric"].delta)
+    assert result["metric"].verdict == "no-signal"
 
 
 @pytest.mark.parametrize(

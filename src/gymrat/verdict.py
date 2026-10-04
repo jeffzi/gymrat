@@ -119,7 +119,7 @@ class _Noise:
     force_unstable: bool
 
 
-def _determine_verdict(delta: float, direction: Direction) -> Verdict:
+def _determine_verdict(delta: float, direction: Direction, *, has_signal: bool = True) -> Verdict:
     """Classify a delta as improved, regressed, or no-signal for a direction.
 
     A NaN delta (the ratio is undefined because the baseline median was 0) has no
@@ -129,18 +129,16 @@ def _determine_verdict(delta: float, direction: Direction) -> Verdict:
     Args:
         delta: The percentage delta between the two medians.
         direction: Which sign of delta counts as an improvement for this metric.
+        has_signal: Whether the delta cleared the statistical test; ``False``
+            reports no signal whatever the delta.
 
     Returns:
         The verdict for the given delta and direction.
     """
-    if delta == 0 or math.isnan(delta):
+    if not has_signal or delta == 0 or math.isnan(delta):
         return "no-signal"
 
     return "improved" if is_improvement(delta, direction) else "regressed"
-
-
-def _verdict_if_signal(delta: float, direction: Direction, *, has_signal: bool) -> Verdict:
-    return _determine_verdict(delta, direction) if has_signal else "no-signal"
 
 
 def _fraction_of_median(numerator: float, median: float, scale: float = 1.0) -> float | None:
@@ -253,7 +251,7 @@ def _compute_approximate_verdict(
     record: PermutationVerdict | BandVerdict
     if nonzero_n < PERMUTATION_MIN_N:
         has_signal = nonzero_n >= BAND_MIN_N and abs(delta) > noise.pct
-        verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
+        verdict = _determine_verdict(delta, meta.direction, has_signal=has_signal)
         record = BandVerdict(
             method="band",
             verdict=verdict,
@@ -266,7 +264,7 @@ def _compute_approximate_verdict(
     else:
         p = sign_flip_permutation_test(samples.left, samples.right)
         has_signal = p < PERMUTATION_P_THRESHOLD and abs(delta) > noise.resolution_pct
-        verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
+        verdict = _determine_verdict(delta, meta.direction, has_signal=has_signal)
         record = PermutationVerdict(
             method="permutation",
             verdict=verdict,

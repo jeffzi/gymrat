@@ -201,7 +201,7 @@ def count_nonzero_pairs(x: Sequence[float], y: Sequence[float]) -> int:
         How many of the paired positions hold values that differ
         (``x[i] != y[i]``).
     """
-    return sum(xi != yi for xi, yi in zip(x, y, strict=False))
+    return len(_partition_pairs(x, y)[1])
 
 
 def _median_delta(
