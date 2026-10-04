@@ -25,12 +25,6 @@ tasks:
       - sh: command -v uv
         msg: "uv is required — install: https://docs.astral.sh/uv/getting-started/installation/"
 
-  _require-dprint:
-    internal: true
-    preconditions:
-      - sh: command -v dprint
-        msg: "dprint is required — install: https://dprint.dev/install/"
-
   _sync:
     internal: true
     deps: [_require-uv]
@@ -62,7 +56,10 @@ tasks:
 
   check:
     desc: Run every pre-commit hook across the repo (fixing hooks rewrite files in place)
-    deps: [_sync, _require-dprint]
+    deps: [_sync]
+    preconditions:
+      - sh: command -v dprint
+        msg: "dprint is required — install: https://dprint.dev/install/"
     vars:
       GIT_FILES:
         sh: git ls-files --cached --others --exclude-standard
