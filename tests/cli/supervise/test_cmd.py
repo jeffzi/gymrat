@@ -60,6 +60,7 @@ from tests.cli.supervise._fixtures import (
     session_state_three_iterations,
 )
 from tests.conftest import hold_lock
+from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     empty_session_state,
     session_record,
@@ -162,17 +163,7 @@ def _config(
     supervise: SuperviseConfig | None = None,
 ) -> ResolvedConfig:
     """A resolved config the pre-flight returns and the kickoff/reporter read fields off of."""
-    return ResolvedConfig(
-        bench="npm run bench",
-        adapter="mitata",
-        samples=1,
-        timeout_seconds=60,
-        unstable_noise_pct=5.0,
-        primary="geomean",
-        runbook=runbook,
-        stop=stop,
-        supervise=supervise,
-    )
+    return resolved_config(runbook=runbook, stop=stop, supervise=supervise)
 
 
 def _make_start_result(root: str = "/repo", branch: str | None = None) -> StartResult:
