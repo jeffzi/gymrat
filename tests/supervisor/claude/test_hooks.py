@@ -1,7 +1,7 @@
 """Tests for the hooks-factory wiring in the Claude driver.
 
 The driver is exercised through an injected fake client (same pattern as
-``test_claude_tools.py``). A stub hooks factory replaces the real one so most
+``test_tools.py``). A stub hooks factory replaces the real one so most
 tests verify only the wiring: that the factory is called once per session start
 and its return value lands in the options dict under ``hooks``.
 """

@@ -3,7 +3,7 @@
 The reporter shows each exit phase as the liveness line and, when a follow-up
 ends while an exit phase is showing, records the exit step and re-reads the
 session so the closing summary describes the session as the sequence left it.
-Plain-mode phase lines live in ``test_progress_plain.py``.
+Plain-mode phase lines live in ``test_plain.py``.
 """
 
 from __future__ import annotations

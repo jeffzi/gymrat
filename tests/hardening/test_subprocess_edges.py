@@ -1,6 +1,6 @@
 """Hardening tests for the asyncio-subprocess edges of ``exec`` and the Claude driver.
 
-Where :mod:`tests.test_exec` pins the happy paths, these tests pin the ragged
+Where :mod:`tests.exec.test_exec` pins the happy paths, these tests pin the ragged
 edges that only surface with a real child process misbehaving:
 
 - aborting a run mid-read leaks no "Task ... was never retrieved" / "Task was

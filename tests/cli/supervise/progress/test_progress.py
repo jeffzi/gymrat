@@ -8,8 +8,8 @@ disk.
 
 **Live mode** tests render ``reporter.frame()`` through ``frame_text()`` from
 ``tests._rich`` at a fixed width, pinning frame content with syrupy snapshots.
-The liveness line's own behavior lives in ``test_progress_liveness.py``; plain
-mode tests live in ``test_progress_plain.py``.
+The liveness line's own behavior lives in ``test_liveness.py``; plain
+mode tests live in ``test_plain.py``.
 """
 
 from __future__ import annotations

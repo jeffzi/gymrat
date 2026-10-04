@@ -6,7 +6,7 @@ content/shape assertion: the table layout via :func:`table_region`, the
 assembled tail via the summary line(s), the highlights block, and the
 footer/worktree lines, plus ``styles_at`` on the colored markers. Highlight
 entries are compared with their internal padding collapsed — that padding is
-pinned exactly by ``test_render_verdicts`` — so these tests pin order and content
+pinned exactly by ``test_verdicts`` — so these tests pin order and content
 without re-pinning column widths a second time.
 
 A handful of representative layouts are also pinned byte for byte as golden
@@ -70,7 +70,7 @@ _HEADER = (
 def _normalized_highlights(report: str) -> list[str]:
     """The highlight block's lines with runs of whitespace collapsed to one space.
 
-    ``test_render_verdicts`` pins the exact padding; here the concern is order and
+    ``test_verdicts`` pins the exact padding; here the concern is order and
     content, so the alignment padding is folded away.
     """
     return [re.sub(r"\s+", " ", line.strip()) for line in highlight_lines(report)]
