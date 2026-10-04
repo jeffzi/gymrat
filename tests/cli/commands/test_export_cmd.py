@@ -478,7 +478,7 @@ def test_export_when_no_session_log_argument_does_use_repo_session_path(
     tmp_path: Path,
 ):
     _populate_session_dir(str(tmp_path))
-    monkeypatch.setattr("gymrat.cli.export_cmd.repo_root", lambda: str(tmp_path))
+    monkeypatch.setattr("gymrat.cli.commands.export.repo_root", lambda: str(tmp_path))
     monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
     _stub_tracing(monkeypatch)
 

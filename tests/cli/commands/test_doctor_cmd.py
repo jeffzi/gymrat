@@ -53,8 +53,8 @@ def _patch_doctor(
     def fake_json(_report: object) -> str:
         return '{"doctor": true}'
 
-    monkeypatch.setattr("gymrat.cli.doctor_cmd.render_doctor_report", fake_text)
-    monkeypatch.setattr("gymrat.cli.doctor_cmd.render_doctor_json", fake_json)
+    monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_report", fake_text)
+    monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_json", fake_json)
 
     return handles
 
@@ -140,7 +140,7 @@ def test_doctor_when_color_flag_given_does_hand_it_to_the_text_renderer(
         rendered_with.append(color)
         return "doctor text report"
 
-    monkeypatch.setattr("gymrat.cli.doctor_cmd.render_doctor_report", render)
+    monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_report", render)
 
     runner.invoke(app, ["doctor", option])
 

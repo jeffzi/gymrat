@@ -96,7 +96,7 @@ def _wire_keep(repo: str, monkeypatch: pytest.MonkeyPatch, keep_result: KeepResu
     """Wire ``keep`` with a config resolver and a recording keep_session stub."""
     start_session(repo, "main", resolved_config())
     append_record(session_jsonl_path(repo), iteration_record(seq=1))
-    monkeypatch.setattr("gymrat.cli.loop_cmds.keep_session", _KeepSessionRecorder(keep_result))
+    monkeypatch.setattr("gymrat.cli.commands.loop.keep_session", _KeepSessionRecorder(keep_result))
 
 
 def test_keep_command_when_format_json_and_committed_does_emit_structured_json(
@@ -225,9 +225,9 @@ def _make_unmeasured_discard_result() -> DiscardResult:
 def _wire_discard(monkeypatch: pytest.MonkeyPatch, discard_result: DiscardResult) -> None:
     """Wire ``discard`` with a recording discard_session stub and skip its TTY prompt."""
     monkeypatch.setattr(
-        "gymrat.cli.loop_cmds.discard_session", _DiscardSessionRecorder(discard_result)
+        "gymrat.cli.commands.loop.discard_session", _DiscardSessionRecorder(discard_result)
     )
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", never_tty)
+    monkeypatch.setattr("gymrat.cli.commands.loop.is_tty", never_tty)
 
 
 @pytest.fixture
@@ -265,7 +265,7 @@ def test_discard_command_when_format_json_does_emit_structured_json(
 def test_discard_command_when_format_text_does_produce_plain_report(
     discard_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", never_tty)
+    monkeypatch.setattr("gymrat.cli.commands.loop.is_tty", never_tty)
 
     result = runner.invoke(app, ["discard", "--force", "--format", "text"])
 

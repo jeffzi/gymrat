@@ -281,17 +281,17 @@ class _IterateSessionRaiser:
 
 
 def _install_renderer_factory(monkeypatch: pytest.MonkeyPatch) -> _RendererFactory:
-    """Replace ``IterateRenderer`` in the loop_cmds module with a recorder."""
+    """Replace ``IterateRenderer`` in the loop command module with a recorder."""
     factory = _RendererFactory()
-    monkeypatch.setattr("gymrat.cli.loop_cmds.IterateRenderer", factory)
+    monkeypatch.setattr("gymrat.cli.commands.loop.IterateRenderer", factory)
     return factory
 
 
 def _install_iterate_session(
     monkeypatch: pytest.MonkeyPatch, recorder: _IterateSessionRecorder | _IterateSessionRaiser
 ) -> None:
-    """Replace ``iterate_session`` in the loop_cmds module with a recorder or raiser."""
-    monkeypatch.setattr("gymrat.cli.loop_cmds.iterate_session", recorder)
+    """Replace ``iterate_session`` in the loop command module with a recorder or raiser."""
+    monkeypatch.setattr("gymrat.cli.commands.loop.iterate_session", recorder)
 
 
 def _make_iterate_result() -> IterateResult:
@@ -410,7 +410,7 @@ def test_iterate_command_when_run_does_register_progress_cleanup_for_termination
         captured_cleanups.append(cleanup)
         return real_install(cleanup)
 
-    monkeypatch.setattr("gymrat.cli.loop_cmds.install_termination_cleanup", capturing_install)
+    monkeypatch.setattr("gymrat.cli.commands.loop.install_termination_cleanup", capturing_install)
 
     progress_cleared_mid_run = False
 
@@ -438,7 +438,7 @@ def test_iterate_command_when_run_does_register_progress_cleanup_for_termination
         progress_cleared_mid_run = not progress.exists()  # noqa: ASYNC240 -- sync check in async test
         return _make_iterate_result()
 
-    monkeypatch.setattr("gymrat.cli.loop_cmds.iterate_session", check_cleanup)
+    monkeypatch.setattr("gymrat.cli.commands.loop.iterate_session", check_cleanup)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
@@ -508,7 +508,7 @@ def _install_spied_renderer(monkeypatch: pytest.MonkeyPatch) -> _RendererSpy:
             spy.warnings.append(message)
             super().warn(message)
 
-    monkeypatch.setattr("gymrat.cli.loop_cmds.IterateRenderer", _SpiedRenderer)
+    monkeypatch.setattr("gymrat.cli.commands.loop.IterateRenderer", _SpiedRenderer)
     return spy
 
 
@@ -518,13 +518,13 @@ def _wire_failing_subscriber(
     """Wire ``iterate`` with a sidecar raising ``messages`` and a spied real renderer."""
     write_session_log(repo, iterate_session_header(repo))
     spy = _install_spied_renderer(monkeypatch)
-    monkeypatch.setattr("gymrat.cli.loop_cmds.iterate_session", _EmittingIterateSession())
+    monkeypatch.setattr("gymrat.cli.commands.loop.iterate_session", _EmittingIterateSession())
     sidecar = _FailingSidecar(messages)
 
     def sidecar_writer(_root: str) -> _FailingSidecar:
         return sidecar
 
-    monkeypatch.setattr("gymrat.cli.loop_cmds.SidecarWriter", sidecar_writer)
+    monkeypatch.setattr("gymrat.cli.commands.loop.SidecarWriter", sidecar_writer)
     return spy
 
 
@@ -649,7 +649,7 @@ def test_iterate_command_when_plain_and_adapter_warns_does_print_it_once_on_stde
 ):
     write_session_log(repo, iterate_session_header(repo))
     bench_malformed_once(monkeypatch)
-    monkeypatch.setattr("gymrat.cli.loop_cmds.resolve_render_mode", lambda: "plain")
+    monkeypatch.setattr("gymrat.cli.commands.loop.resolve_render_mode", lambda: "plain")
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
@@ -667,8 +667,8 @@ def test_iterate_command_when_live_and_adapter_warns_does_leave_the_warning_on_s
     def fake_stderr_console(**_kwargs: object) -> object:
         return console
 
-    monkeypatch.setattr("gymrat.cli.loop_cmds.resolve_render_mode", lambda: "live")
-    monkeypatch.setattr("gymrat.cli.loop_cmds.stderr_console", fake_stderr_console)
+    monkeypatch.setattr("gymrat.cli.commands.loop.resolve_render_mode", lambda: "live")
+    monkeypatch.setattr("gymrat.cli.commands.loop.stderr_console", fake_stderr_console)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 

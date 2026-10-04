@@ -4,15 +4,14 @@ Each command is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
 suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 The seams mocked here mirror the engine suites' boundaries: for ``discard``'s
-prompt the ``is_tty`` check as the ``loop_cmds`` module imports it, with the
+prompt the ``is_tty`` check as the ``commands.loop`` module imports it, with the
 answer typed on the runner's stdin. The prompt's broken-stderr cases run the
 CLI in a child process, since only a real file descriptor can be closed or
 broken. Config resolution is exercised for real where a test lays down a
-``gymrat.toml`` and stubbed at the ``loop_cmds`` seam in the subdirectory case,
-where the test observes the directory a command resolves its config from.
+``gymrat.toml`` and stubbed at the ``commands.loop`` seam in the subdirectory
+case, where the test observes the directory a command resolves its config from.
 
-Iterate and JSON-contract tests live in ``test_loop_cmds_iterate`` and
-``test_loop_cmds_json``.
+Iterate and JSON-contract tests live in ``test_iterate`` and ``test_json``.
 
 Budget-line tests verify that loop commands append a time-left line to their
 text output when a live budget is present, and omit it otherwise.
@@ -226,8 +225,8 @@ _PROMPT_CHOICES = "[y/n] (n): "
 
 _TTY_DISCARD = (
     "import runpy, sys\n"
-    "from gymrat.cli import loop_cmds\n"
-    "loop_cmds.is_tty = lambda _stream: True\n"
+    "from gymrat.cli.commands import loop\n"
+    "loop.is_tty = lambda _stream: True\n"
     "sys.argv = ['gymrat', 'discard']\n"
     "runpy.run_module('gymrat.cli.app', run_name='__main__')\n"
 )
@@ -268,7 +267,7 @@ def narrow_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def tty_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the discard command believe stdin is a terminal."""
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", always_tty)
+    monkeypatch.setattr("gymrat.cli.commands.loop.is_tty", always_tty)
 
 
 def test_discard_command_when_help_requested_does_document_force():
@@ -371,7 +370,7 @@ def test_discard_command_when_force_or_stdin_not_tty_does_skip_the_prompt(
     args: list[str],
     is_tty_stub: Callable[[object], bool],
 ):
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", is_tty_stub)
+    monkeypatch.setattr("gymrat.cli.commands.loop.is_tty", is_tty_stub)
 
     result = runner.invoke(app, ["discard", *args], input="n\n")
 
@@ -434,7 +433,7 @@ def test_loop_command_when_run_from_subdirectory_does_resolve_config_at_repo_roo
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
     recorder = ResolverRecorder(resolved_config())
-    monkeypatch.setattr(f"gymrat.cli.loop_cmds.{resolver_name}", recorder)
+    monkeypatch.setattr(f"gymrat.cli.commands.loop.{resolver_name}", recorder)
 
     runner.invoke(app, args)
 

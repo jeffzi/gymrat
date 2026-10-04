@@ -15,8 +15,8 @@ import pytest
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
 from gymrat.session.store import append_record
 from tests.cli._session import make_discard_repo
+from tests.cli.commands.supervise.test_supervise import _err_text, _install_seams, _run
 from tests.cli.supervise._fixtures import start_open_session
-from tests.cli.supervise.test_cmd import _err_text, _install_seams, _run
 from tests.session.records._fixtures import committed_keep, finalize_record, iteration_record
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ def test_supervise_when_tree_dirty_and_allowed_does_route_warning_to_the_warn_si
 ):
     _install_seams(monkeypatch)
     sink: list[str] = []
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.warn_to_stderr", sink.append)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.warn_to_stderr", sink.append)
     (Path(repo) / "uncommitted.txt").write_text("dirty", encoding="utf-8")
 
     result = _run("optimize it", "--max-minutes", "10", "--allow-dirty")

@@ -2,7 +2,7 @@
 
 These tests verify session and run span export, attribute setting, observer
 combination, and the disabled-tracing path. They share the seam infrastructure
-from ``test_cmd`` and add ``memory_tracing`` from the telemetry test fixtures.
+from ``test_supervise`` and add ``memory_tracing`` from the telemetry test fixtures.
 """
 
 from __future__ import annotations
@@ -22,8 +22,7 @@ from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
 from gymrat.supervisor.driver import SessionPrompt
 from gymrat.telemetry import run_spans
-from tests.cli.supervise._fixtures import make_supervision_result
-from tests.cli.supervise.test_cmd import (
+from tests.cli.commands.supervise.test_supervise import (
     _CAP_MINUTES,
     _TRACING_FAILURE,
     _config,
@@ -35,6 +34,7 @@ from tests.cli.supervise.test_cmd import (
     _Seams,
     _track_cleanups,
 )
+from tests.cli.supervise._fixtures import make_supervision_result
 from tests.session.records._fixtures import SESSION_ID
 from tests.supervisor._fixtures import make_launch, make_prompt, noop_observer
 from tests.telemetry._fixtures import (

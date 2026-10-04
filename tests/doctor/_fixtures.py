@@ -2,7 +2,7 @@
 
 This is test-support code, not a test module: it carries no test functions of
 its own. Both ``tests/doctor/test_report.py`` (assembly-level) and
-``tests/cli/test_doctor_cmd.py`` (CLI-level) patch the config-inspection,
+``tests/cli/commands/test_doctor_cmd.py`` (CLI-level) patch the config-inspection,
 config-section, workflow-section, and bench-section seams on
 ``gymrat.doctor`` the same way; :func:`patch_common_seams` holds that
 shared body. Each call site still owns its own environment/git seams and its

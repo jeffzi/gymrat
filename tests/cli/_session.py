@@ -115,7 +115,7 @@ def stub_resolve_config(monkeypatch: pytest.MonkeyPatch, **overrides: object) ->
     def fake(*_a: object, **_k: object) -> object:
         return config
 
-    monkeypatch.setattr("gymrat.cli.session_cmds.resolve_config", fake)
+    monkeypatch.setattr("gymrat.cli.commands.session.resolve_config", fake)
     return config
 
 
@@ -134,7 +134,7 @@ def stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
             primary="time",
         )
 
-    monkeypatch.setattr("gymrat.cli.measure_cmd.resolve_config", fake)
+    monkeypatch.setattr("gymrat.cli.commands.measure.resolve_config", fake)
 
 
 def capture_measure(

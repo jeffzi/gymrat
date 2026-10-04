@@ -19,7 +19,7 @@ from collections.abc import Callable
 import pytest
 
 from gymrat.cli.app import app
-from gymrat.cli.measure_cmd import MeasureFlags
+from gymrat.cli.commands.measure import MeasureFlags
 from gymrat.cli.run_setup import SharedFlags
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.measure import MeasureOptions

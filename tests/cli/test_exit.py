@@ -248,7 +248,7 @@ def test_importing_cli_modules_does_not_pull_the_heavy_stack_or_command_bodies()
         "gymrat.cli.run_setup",
         "gymrat.cli.options",
         "gymrat.cli.progress",
-        "gymrat.cli.compare_cmd",
+        "gymrat.cli.commands.compare",
     )
 
     assert loaded_under(loaded, "scipy", "numpy") == []

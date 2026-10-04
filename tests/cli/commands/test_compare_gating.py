@@ -4,7 +4,7 @@ import io
 
 import pytest
 
-from gymrat.cli.compare_cmd import should_fail_gate, warn_empty_geomean_gates
+from gymrat.cli.commands.compare import should_fail_gate, warn_empty_geomean_gates
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from tests.report._comparisons import (
     create_candidate,

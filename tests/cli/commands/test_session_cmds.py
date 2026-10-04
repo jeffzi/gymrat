@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.cli import session_cmds
 from gymrat.cli.app import app
+from gymrat.cli.commands import session as session_commands
 from gymrat.loop.start import start_session
 from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import FinalizeRecord, StopRecord
@@ -42,7 +42,7 @@ from tests.session.records._fixtures import log_records, session_header_of
 def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Patch ``with_repo_lock`` to record every command it locks, forwarding through."""
     lock_names: list[str] = []
-    original_with_repo_lock = session_cmds.with_repo_lock
+    original_with_repo_lock = session_commands.with_repo_lock
 
     async def recording_lock[T](
         command: str,
@@ -53,7 +53,7 @@ def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         lock_names.append(command)
         return await original_with_repo_lock(command, body, args=args)
 
-    monkeypatch.setattr(session_cmds, "with_repo_lock", recording_lock)
+    monkeypatch.setattr(session_commands, "with_repo_lock", recording_lock)
     return lock_names
 
 
@@ -305,7 +305,7 @@ def test_start_command_when_run_from_subdirectory_does_resolve_config_at_repo_ro
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
     recorder = ResolverRecorder(resolved_config())
-    monkeypatch.setattr("gymrat.cli.session_cmds.resolve_config", recorder)
+    monkeypatch.setattr("gymrat.cli.commands.session.resolve_config", recorder)
 
     runner.invoke(app, ["start", "--baseline", "main"])
 

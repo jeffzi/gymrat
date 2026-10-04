@@ -1,6 +1,6 @@
 """Budget lifecycle tests for the ``gymrat supervise`` command.
 
-Shares its seam-installation harness with :mod:`tests.cli.supervise.test_cmd`,
+Shares its seam-installation harness with :mod:`tests.cli.commands.supervise.test_supervise`,
 which owns the ``CliRunner`` wiring these tests reuse.
 """
 
@@ -16,8 +16,7 @@ from gymrat.session.budget import Budget, clear_budget, read_budget, write_budge
 from gymrat.session.paths import budget_path, session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor.supervise import SupervisionResult
-from tests.cli.supervise._fixtures import make_supervision_result
-from tests.cli.supervise.test_cmd import (
+from tests.cli.commands.supervise.test_supervise import (
     _CAP_MINUTES,
     _CAP_MS,
     _err_text,
@@ -26,6 +25,7 @@ from tests.cli.supervise.test_cmd import (
     _run,
     _Seams,
 )
+from tests.cli.supervise._fixtures import make_supervision_result
 from tests.session.records._fixtures import baseline_record
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ def test_supervise_when_run_does_write_budget_before_supervise(
         seen_budgets.append(read_budget(repo, now_ms=now_ms()))
         return make_supervision_result()
 
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.supervise", probing_supervise)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise", probing_supervise)
 
     result = _run("optimize it", "--max-minutes", "10")
 
@@ -62,7 +62,7 @@ def test_supervise_when_run_does_write_budget_with_correct_deadline(
     def capturing_write(root: str, budget: Budget) -> None:
         captured_budgets.append(budget)
 
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.write_budget", capturing_write)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.write_budget", capturing_write)
     earliest_start_ms = now_ms()
 
     result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
@@ -105,8 +105,8 @@ def test_supervise_when_preflight_records_baseline_does_start_budget_no_earlier(
         })
         return _make_start_result(root)
 
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.run_preflight", fake_preflight_with_baseline)
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.write_budget", capturing_write)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", fake_preflight_with_baseline)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.write_budget", capturing_write)
 
     result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
 
@@ -140,7 +140,7 @@ def _record_budget_release(
             raise clear_error
 
     seams.install_cleanup.side_effect = fake_install
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.clear_budget", fake_clear)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.clear_budget", fake_clear)
     return events, installed
 
 
@@ -152,7 +152,7 @@ def _budget_uninstall_tag(
     Restores the real ``clear_budget`` so each candidate can be invoked against a
     probe budget file and identified by its effect, not its registration order.
     """
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.clear_budget", clear_budget)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.clear_budget", clear_budget)
     write_budget(repo, Budget(max_minutes=10, deadline_ms=600_000.0))
     for index, cleanup in enumerate(installed):
         cleanup()

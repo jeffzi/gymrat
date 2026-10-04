@@ -22,7 +22,7 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
-from gymrat.cli.compare_cmd import CompareFlags, _serialize_fail_on
+from gymrat.cli.commands.compare import CompareFlags, _serialize_fail_on
 from gymrat.config import CliFlags, KindEntry, MetricEntry, ResolvedConfig
 from gymrat.report.types import (
     ComparisonResult,
@@ -77,7 +77,7 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake(*_a: object, **_k: object) -> ResolvedConfig:
         return _resolved()
 
-    monkeypatch.setattr("gymrat.cli.compare_cmd.resolve_config", fake)
+    monkeypatch.setattr("gymrat.cli.commands.compare.resolve_config", fake)
 
 
 def _stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> None:
@@ -113,7 +113,7 @@ def test_compare_when_flags_given_does_feed_them_to_resolve_config(
         captured.append(flags)
         return _resolved()
 
-    monkeypatch.setattr("gymrat.cli.compare_cmd.resolve_config", spy_resolve)
+    monkeypatch.setattr("gymrat.cli.commands.compare.resolve_config", spy_resolve)
     _patch_compare(monkeypatch, create_comparison_result())
 
     result = runner.invoke(

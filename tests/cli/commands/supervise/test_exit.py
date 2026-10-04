@@ -3,7 +3,7 @@
 Every return of ``supervise()`` hands the session to the exit sequence before the
 reporter stops and the closing summary prints; the command's exit code then folds
 the driver outcome, the exit sequence's error, and how the run ended. Shares its
-seam-installation harness with :mod:`tests.cli.supervise.test_cmd`, whose fake
+seam-installation harness with :mod:`tests.cli.commands.supervise.test_supervise`, whose fake
 exit sequence records each call and lets a test act from inside it.
 """
 
@@ -30,18 +30,18 @@ from gymrat.telemetry import run_spans
 from gymrat.telemetry.run_spans import TracingState
 from tests._process_helpers import is_alive, wait_for_pid_file, wait_until_dead
 from tests._rich import unwrap_panel
-from tests.cli.supervise._fixtures import (
-    follow_up_event,
-    make_supervision_result,
-    session_state_three_iterations,
-)
-from tests.cli.supervise.test_cmd import (
+from tests.cli.commands.supervise.test_supervise import (
     _CAP_MINUTES,
     _CAP_MS,
     _err_text,
     _install_seams,
     _record_stdout_writes,
     _run,
+)
+from tests.cli.supervise._fixtures import (
+    follow_up_event,
+    make_supervision_result,
+    session_state_three_iterations,
 )
 
 _EXIT_ERROR = "finalize failed: disk full"
