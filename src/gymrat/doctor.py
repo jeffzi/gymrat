@@ -19,13 +19,14 @@ The text renderer styles each check with a status glyph, indents continuation
 lines and hints under it, and closes with a caveat note and a status summary.
 Color follows the project's :func:`render_lines` resolution — ``NO_COLOR`` /
 ``FORCE_COLOR`` and stdout's TTY status decide whether ANSI escapes appear. The
-JSON renderer serializes the report for machine consumption, keyed in snake_case.
+JSON renderer writes its document through :func:`gymrat.report.json_doc.render_document`,
+the serializer shared with the compare, measure, probe, and loop JSON documents, so the output
+is two-space-indented and carries no ANSI whatever the color settings.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
-import json
 import platform
 import re
 import shlex
@@ -49,6 +50,7 @@ from gymrat.config import (
 )
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError, try_git
+from gymrat.report.json_doc import render_document
 from gymrat.report.style import (
     format_hint,
     markup,
@@ -382,10 +384,6 @@ def render_doctor_report(report: DoctorReport, *, color: bool | None = None) -> 
     return render_lines(*lines, color=color)
 
 
-def _drop_none(fields: list[tuple[str, object]]) -> dict[str, object]:
-    return {key: value for key, value in fields if value is not None}
-
-
 def render_doctor_json(report: DoctorReport) -> str:
     """Serialize the report as JSON for machine consumption, keyed in snake_case.
 
@@ -393,13 +391,12 @@ def render_doctor_json(report: DoctorReport) -> str:
         report: The assembled doctor report.
 
     Returns:
-        The JSON document: fields in model declaration order followed by
-        ``has_failures``, with every field whose value is ``None`` omitted
-        rather than emitted as ``null``.
+        The two-space-indented JSON document: fields in model declaration
+        order followed by ``has_failures``, a check without a hint carrying
+        ``"hint": null``.
     """
-    document = asdict(report, dict_factory=_drop_none)
-    document["has_failures"] = report.has_failures
-    return json.dumps(document, ensure_ascii=False)
+    document: dict[str, object] = {**asdict(report), "has_failures": report.has_failures}
+    return render_document(document)
 
 
 # ---------------------------------------------------------------------------

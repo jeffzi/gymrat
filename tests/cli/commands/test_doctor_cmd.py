@@ -1,7 +1,8 @@
 """Tests for the ``gymrat doctor`` command wiring.
 
 These drive the assembled app through :class:`typer.testing.CliRunner` with the
-section builders, both renderers, and ``inspect_config`` replaced. They cover
+section builders, both renderers, and ``inspect_config`` replaced; the one test
+that reads the JSON document itself keeps the real JSON renderer. They cover
 registration and help, the exit-code contract, the JSON path, ``--no-color``,
 and a missing ``--config`` surfacing as a config failure rather than a crash.
 """
@@ -20,7 +21,7 @@ from gymrat.doctor import Check, CheckSection, GitEnvironment
 from gymrat.scaffold import SKILL_RELATIVE_PATH
 from tests.cli._help import help_output
 from tests.cli._session import FailingStdoutRunner, closed_stdout_error
-from tests.doctor._fixtures import patch_common_seams
+from tests.doctor._fixtures import fixed_section, patch_common_seams
 
 runner = CliRunner()
 
@@ -31,8 +32,12 @@ def _patch_doctor(
     config_failure: bool = False,
     bench_fail: bool = False,
     env_error: Exception | None = None,
+    stub_json: bool = True,
 ) -> SimpleNamespace:
-    """Replace every doctor seam and return the recorded bench calls."""
+    """Replace every doctor seam and return the recorded bench calls.
+
+    ``stub_json=False`` leaves the real JSON renderer in place.
+    """
     handles = patch_common_seams(
         monkeypatch,
         config_failure=config_failure,
@@ -54,7 +59,8 @@ def _patch_doctor(
         return '{"doctor": true}'
 
     monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_report", fake_text)
-    monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_json", fake_json)
+    if stub_json:
+        monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_json", fake_json)
 
     return handles
 
@@ -115,6 +121,30 @@ def test_doctor_when_format_json_does_write_only_the_json_line(monkeypatch: pyte
     assert result.exit_code == 0
     assert "doctor text report" not in result.stdout
     assert json.loads(result.stdout) == {"doctor": True}
+
+
+def test_doctor_when_format_json_does_write_indented_document_with_every_hint(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _patch_doctor(monkeypatch, stub_json=False)
+    monkeypatch.setattr(
+        "gymrat.doctor.build_workflow_section",
+        fixed_section(
+            "Workflow", [Check("skill file", "warn", "not installed", hint="run gymrat init")]
+        ),
+    )
+
+    result = runner.invoke(app, ["doctor", "--format", "json"])
+
+    document = json.loads(result.stdout)
+    hints = {
+        check["name"]: check["hint"]
+        for section in document["sections"]
+        for check in section["checks"]
+    }
+    assert result.exit_code == 0
+    assert result.stdout == json.dumps(document, indent=2) + "\n"
+    assert (hints["git"], hints["skill file"]) == (None, "run gymrat init")
 
 
 # ---------------------------------------------------------------------------

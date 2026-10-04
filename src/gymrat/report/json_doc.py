@@ -1,8 +1,10 @@
 """JSON report document builders for the compare, measure, probe, and loop commands.
 
 Each builder assembles a plain nested structure keyed in snake_case and
-serializes it with a two-space indent. None takes presentation options, so the
-output never carries ANSI, whatever the ambient environment forces.
+serializes it with a two-space indent through :func:`render_document`, which
+:func:`gymrat.doctor.render_doctor_json` also calls, so a change to its indent
+or null handling changes the doctor output too. No builder takes presentation
+options, so the output never carries ANSI, whatever the ambient environment forces.
 
 The contract is a JSON ``null`` for any non-finite float (matching JavaScript's
 ``JSON.stringify``), which ``pydantic_core.to_json`` provides through
@@ -88,7 +90,7 @@ def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None
         "per_candidate": _serialize_per_candidate(result),
         "worktrees": _serialize_worktrees(result),
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +118,7 @@ def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | No
         },
         "worktrees": _serialize_worktrees(result),
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +149,7 @@ def render_probe_json(result: ProbeResult, *, budget: BudgetSummary | None = Non
         "names": list(result.names),
         "metrics": {metric.name: _serialize_probe_metric(metric) for metric in result.metrics},
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def _serialize_probe_metric(metric: ProbeMetric) -> dict[str, object]:
@@ -290,17 +292,17 @@ def _serialize_worktrees(result: WorktreeCleanupOutcome) -> dict[str, object]:
 
 def render_iterate_json(result: IterateResult, *, budget: BudgetSummary | None = None) -> str:
     """Seq, outcome, primary summary, per-metric verdicts, and confirm results."""
-    return _render(_serialize_iteration(result.record), budget)
+    return render_document(_serialize_iteration(result.record), budget)
 
 
 def render_stop_json(*, at: int, message: str, budget: BudgetSummary | None = None) -> str:
     """Render a stop result as ``{"at": …, "message": …}`` with an optional budget."""
-    return _render({"at": at, "message": message}, budget)
+    return render_document({"at": at, "message": message}, budget)
 
 
 def render_iterate_stop_json(reason: str, *, budget: BudgetSummary | None = None) -> str:
     """Emitted instead of the normal iteration document when a stop condition fires."""
-    return _render({"stopped": True, "reason": reason}, budget)
+    return render_document({"stopped": True, "reason": reason}, budget)
 
 
 def render_keep_json(result: KeepResult, *, budget: BudgetSummary | None = None) -> str:
@@ -321,7 +323,7 @@ def render_keep_json(result: KeepResult, *, budget: BudgetSummary | None = None)
         "commit": record.commit,
         "message": record.message,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_discard_json(result: DiscardResult, *, budget: BudgetSummary | None = None) -> str:
@@ -338,7 +340,7 @@ def render_discard_json(result: DiscardResult, *, budget: BudgetSummary | None =
     record = result.record
     measured = record is not None
     seq = record.seq if record is not None else None
-    return _render({"seq": seq, "at": result.at, "measured": measured}, budget)
+    return render_document({"seq": seq, "at": result.at, "measured": measured}, budget)
 
 
 def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None) -> str:
@@ -354,7 +356,7 @@ def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None)
         "finalized": data.finalized,
         "stopped": data.stopped,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_start_json(
@@ -391,7 +393,7 @@ def render_start_json(
         "runbook": runbook,
         "archived": archived,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_finalize_json(
@@ -415,7 +417,7 @@ def render_finalize_json(
         "message": record.message,
         "at": record.at,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_sync_json(
@@ -433,7 +435,7 @@ def render_sync_json(
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {"files": list(result.files)}
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
@@ -476,7 +478,7 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
     }
 
 
-def _render(document: dict[str, object], budget: BudgetSummary | None) -> str:
+def render_document(document: dict[str, object], budget: BudgetSummary | None = None) -> str:
     """Insert the budget key when present, then serialize with a two-space indent.
 
     Every non-finite float serializes as ``null`` (see module docstring).
