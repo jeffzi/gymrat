@@ -7,8 +7,7 @@ the log. Holding the repository lock across the call is the caller's job — two
 concurrent sessions' bench runs would perturb each other's measurements.
 
 How a confirmation rerun rewrites the verdicts is
-:func:`gymrat.loop.iterate.confirm.apply_confirmation`'s contract, and how a
-degenerate delta is recorded is :func:`gymrat.loop.iterate.bench.recorded_delta`'s.
+:func:`gymrat.loop.iterate.confirm.apply_confirmation`'s contract.
 
 The loop header lands last, replacing the comparison table's own header, so the
 table opens on the loop's terms rather than on ``gymrat compare``'s.

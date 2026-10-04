@@ -102,6 +102,23 @@ def first_line(text: str) -> str:
     return text.split("\n", maxsplit=1)[0]
 
 
+def finite_or_none(value: float) -> float | None:
+    """Swap a float that is not a finite number for ``None``.
+
+    JSON serialization writes any non-finite float as ``null`` whatever the
+    writer intended. Making the substitution in memory keeps the value a caller
+    holds identical to the one read back from a serialized copy, and never lets
+    a number stand where there was no measurement.
+
+    Args:
+        value: The float to check, possibly ``NaN`` or infinite.
+
+    Returns:
+        ``value`` itself, or ``None`` when it is ``NaN`` or either infinity.
+    """
+    return value if math.isfinite(value) else None
+
+
 def limit_output(text: str) -> str:
     """Return at most ``_OUTPUT_LIMIT_BYTES`` bytes of ``text`` (UTF-8).
 

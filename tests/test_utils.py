@@ -7,6 +7,7 @@ the target is untouched, the temporary file is removed, and the ``OSError``
 propagates.
 """
 
+import math
 import os
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from gymrat.utils import (
     abbreviate_home,
     color_from_env,
     fan_out,
+    finite_or_none,
     format_clock,
     format_duration,
     format_eta,
@@ -54,6 +56,28 @@ def _error_with_streams(message: str, *, stdout: str | bytes, stderr: str | byte
     error.stdout = stdout  # type: ignore[attr-defined]
     error.stderr = stderr  # type: ignore[attr-defined]
     return error
+
+
+# ---------------------------------------------------------------------------
+# finite_or_none
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", [0.0, -0.5, 12.25, 1e300, -1e300])
+def test_finite_or_none_when_value_is_finite_does_return_it_unchanged(value: float):
+    assert finite_or_none(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(math.nan, id="not-a-number"),
+        pytest.param(math.inf, id="positive-infinity"),
+        pytest.param(-math.inf, id="negative-infinity"),
+    ],
+)
+def test_finite_or_none_when_value_is_not_finite_does_return_none(value: float):
+    assert finite_or_none(value) is None
 
 
 # ---------------------------------------------------------------------------

@@ -6,13 +6,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from gymrat.clock import now_ns
-from gymrat.loop.iterate.bench import Judged, recorded_delta
 from gymrat.model import ExactVerdict, MetricVerdict, PermutationVerdict, ResolvedMetricMeta
 from gymrat.report.loop import LoopPrimary, MetricPrimary
 from gymrat.session.records import Confirm, IterationPrimary, IterationRecord
 from gymrat.session.records import MetricVerdict as RecordMetricVerdict
+from gymrat.utils import finite_or_none
 
 if TYPE_CHECKING:
+    from gymrat.loop.iterate.bench import Judged
     from gymrat.loop.iterate.confirm import Confirmation
     from gymrat.session.schema import Outcome
 
@@ -57,7 +58,7 @@ def recorded_verdicts(
     recorded: dict[str, RecordMetricVerdict] = {}
     for name, verdict in verdicts.items():
         recorded[name] = RecordMetricVerdict(
-            delta_pct=recorded_delta(verdict.delta),
+            delta_pct=finite_or_none(verdict.delta),
             verdict=verdict.verdict,
             method=verdict.method,
             gating=metric_meta[name].gating,

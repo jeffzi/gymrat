@@ -8,7 +8,6 @@ the confirm module can re-use the same judge without a circular import.
 from __future__ import annotations
 
 import asyncio
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -31,6 +30,7 @@ from gymrat.sampling import (
 )
 from gymrat.session.records import PairedSamples, SessionRecord
 from gymrat.targets import InPlaceTarget
+from gymrat.utils import finite_or_none
 from gymrat.verdict import compute_geomean, compute_verdicts
 
 if TYPE_CHECKING:
@@ -257,39 +257,20 @@ def resolve_primary(
         The resolved primary — a :class:`GeomeanPrimary` or :class:`MetricPrimary`
         carrying the recorded delta. Its ``delta_pct`` is ``None`` when the named
         metric has no verdict, when no gating metric feeds the geomean, or when
-        the ratio is not finite.  A zero must never stand there: a zero is a
+        the ratio is not finite. A zero must never stand there: a zero is a
         measurement, and it would have the report, the log, and the keep commit
         all claim the run held its ground.
     """
     if primary == GEOMEAN_PRIMARY:
         gating = {name: meta for name, meta in metric_meta.items() if meta.gating}
         geomean = compute_geomean(verdicts, gating)
-        return GeomeanPrimary(delta_pct=None if geomean.n == 0 else recorded_delta(geomean.value))
+        return GeomeanPrimary(delta_pct=None if geomean.n == 0 else finite_or_none(geomean.value))
 
     measured = verdicts.get(primary)
     return MetricPrimary(
         name=primary,
-        delta_pct=None if measured is None else recorded_delta(measured.delta),
+        delta_pct=None if measured is None else finite_or_none(measured.delta),
     )
-
-
-def recorded_delta(delta: float) -> float | None:
-    """A delta in the form the log keeps it.
-
-    The engine answers a degenerate ratio — a baseline median of zero — with
-    ``NaN``, and a ratio that overflows past the largest float comes out as
-    positive or negative infinity. JSON serialization writes any non-finite float
-    as ``null`` whatever the writer intended. Making the substitution here keeps
-    the record a caller holds identical to the one read back off the log, and
-    never lets a zero stand where there was no measurement.
-
-    Args:
-        delta: The raw delta ratio, possibly ``NaN`` or infinite.
-
-    Returns:
-        The delta as a float, or ``None`` when the ratio is ``NaN`` or infinite.
-    """
-    return delta if math.isfinite(delta) else None
 
 
 def target_reached(

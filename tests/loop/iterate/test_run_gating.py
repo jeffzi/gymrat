@@ -659,6 +659,16 @@ async def test_iterate_session_when_delta_undefined_does_record_null_delta_and_k
     assert as_logged(last_iteration_of(repo)) == as_logged(result.record)
 
 
+async def test_iterate_session_when_named_primary_delta_undefined_does_record_primary_delta_null(
+    undefined_delta_repo: tuple[str, float],
+):
+    repo, _ = undefined_delta_repo
+
+    result = await iterate_session(repo, resolved_config(primary="total_ms"))
+
+    assert result.record.primary == IterationPrimary(kind="metric", name="total_ms", delta_pct=None)
+
+
 # ---------------------------------------------------------------------------
 # the named primary metric is one the bench never reported
 # ---------------------------------------------------------------------------

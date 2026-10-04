@@ -12,7 +12,6 @@ The sample count is the probe's own — short by default, since a probe answers
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,7 +22,7 @@ from gymrat.report.loop import baseline_medians
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.store import latest_baseline, require_open_session
 from gymrat.stats import percent_delta
-from gymrat.utils import warn_to_stderr
+from gymrat.utils import finite_or_none, warn_to_stderr
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -74,9 +73,9 @@ class ProbeMetric:
             metric, or ``None`` when that baseline never reported it.
         delta_pct: The signed percentage change from ``reference_median`` to
             ``median``, scaled by the reference's magnitude; ``0.0`` when both
-            are zero, and ``None`` when either is missing or only the reference
-            is zero. Positive means the probe measured a larger number, whatever
-            ``meta.direction`` makes of that.
+            are zero, and ``None`` when either is missing, only the reference is
+            zero, or the ratio is not finite. Positive means the probe measured a
+            larger number, whatever ``meta.direction`` makes of that.
         meta: The metric's resolved metadata, carrying the direction and unit a
             renderer needs to style the delta.
     """
@@ -114,8 +113,7 @@ def _delta_pct(median: float | None, reference: float | None) -> float | None:
     """The signed percentage change from ``reference`` to ``median``, when there is one."""
     if median is None or reference is None:
         return None
-    delta = percent_delta(reference, median)
-    return None if math.isnan(delta) else delta
+    return finite_or_none(percent_delta(reference, median))
 
 
 def _probe_bench(config: ResolvedConfig, names: tuple[str, ...]) -> str:
