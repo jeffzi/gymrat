@@ -28,7 +28,8 @@ from gymrat.cli.options import (
 )
 from gymrat.cli.shared import run_cli, write_stdout
 from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
-from gymrat.config import CliFlags, resolve_config
+from gymrat.config.resolve import resolve_config
+from gymrat.config.types import CliFlags
 from gymrat.loop.finalize import FinalizeOptions, FinalizeResult, finalize_session
 from gymrat.loop.start import StartResult, start_session
 from gymrat.loop.stop import StopResult, stop_session

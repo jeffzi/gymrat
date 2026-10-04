@@ -22,7 +22,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from gymrat.cli.app import app
-from gymrat.session import session_jsonl_path
+from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import record_to_wire
 from gymrat.supervisor.events import LaunchEvent, TurnEndEvent, to_json_line
 from tests._ansi import SGR_RE

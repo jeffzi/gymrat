@@ -11,18 +11,28 @@ The checks the pipeline applies beyond the file schema live here too:
 :func:`flag_problem` for blank flags, :func:`loop_key_problems` for cross-field
 rules, and :func:`runbook_problem` for the runbook path. :func:`validate_config_dict`
 runs the schema and the cross-field rules over an in-memory config.
+
+The file side of the pipeline lives here as well. :func:`load_config_file_collecting`
+reads and validates ``gymrat.toml``, collecting every problem, and
+:func:`load_config_file` raises the first one. :func:`validate_config_file` runs
+the frozen dataclasses from :mod:`gymrat.config.types`, which carry the
+validation annotations, through a pydantic ``TypeAdapter`` and words each failure
+as a gymrat problem string; :func:`invalid_value_message` is the one wording that
+translator and the cross-field checks share.
 """
 
 import dataclasses
 import json
 import os
 import stat
+import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from pydantic import TypeAdapter, ValidationError
+from pydantic_core import ErrorDetails
+
 from gymrat.config.env import NUMBER_ENV_FIELDS, STRING_ENV_FIELDS, env_string_result
-from gymrat.config.load import load_config_file_collecting
-from gymrat.config.schema import invalid_value_message, validate_config_file
 from gymrat.config.types import (
     CONFIG_DEFAULTS,
     CONFIG_FILENAME,
@@ -31,10 +41,209 @@ from gymrat.config.types import (
     BenchlessConfig,
     CliFlags,
     ConfigFile,
+    ConfigFileResult,
     ResolvedConfig,
 )
 from gymrat.errors import GymratError
+from gymrat.pydantic_errors import (
+    UNKNOWN_SHAPE_PHRASE,
+    VALUE_ERROR_PREFIX,
+    describe_key,
+    drop_prefix_errors,
+    phrase_for_error,
+)
 from gymrat.session.paths import repo_root
+
+# ---------------------------------------------------------------------------
+# Schema validation
+# ---------------------------------------------------------------------------
+
+
+_CONFIG_ADAPTER = TypeAdapter(ConfigFile)
+
+
+def invalid_value_message(field_name: str, expected_phrase: str, value: object) -> str:
+    """Word an invalid-value problem.
+
+    The single shape both the schema translator and the cross-field settlement
+    checks report.
+
+    Args:
+        field_name: Dotted name of the offending config field.
+        expected_phrase: Human-readable description of the expected shape.
+        value: The actual value that failed validation.
+
+    Returns:
+        A human-readable problem string naming the field, its expected shape,
+        and the actual value.
+    """
+    try:
+        got = json.dumps(value)
+    except TypeError:
+        got = repr(value)
+    return f"Invalid config value for {field_name}: expected {expected_phrase}, got {got}"
+
+
+def _message_for_error(error: ErrorDetails) -> str:
+    """Translate one pydantic error into a gymrat-worded problem string.
+
+    A custom validator (the line-break key guard) already knows why it refused
+    the value, so its own message is reported: a shape phrase would describe a
+    fault the value does not have.
+
+    Args:
+        error: The pydantic error detail to translate.
+
+    Returns:
+        The problem string describing the validation failure.
+    """
+    key = describe_key(tuple(str(part) for part in error["loc"]))
+    if error["type"] == "unexpected_keyword_argument":
+        return f"Unknown config key: {key}"
+    if error["type"] == "value_error":
+        detail = error["msg"].removeprefix(VALUE_ERROR_PREFIX)
+        return f"Invalid config value for {key}: {detail}"
+    phrase = phrase_for_error(error) or UNKNOWN_SHAPE_PHRASE
+    return invalid_value_message(key, phrase, error["input"])
+
+
+def validate_config_file(data: dict[str, object]) -> tuple[ConfigFile | None, list[str]]:
+    """Validate parsed config data into a :class:`ConfigFile`.
+
+    Never raises: validation failures are returned as a problem list, not
+    exceptions, so callers can collect and display all errors at once.
+
+    Args:
+        data: Raw config data, shaped like a parsed ``gymrat.toml``.
+
+    Returns:
+        A ``(config_file, problems)`` pair: the validated :class:`ConfigFile`
+        (``None`` on failure) and any validation problems.
+    """
+    try:
+        config_file = _CONFIG_ADAPTER.validate_python(data)
+    except ValidationError as exc:
+        return None, [_message_for_error(error) for error in drop_prefix_errors(exc.errors())]
+    return config_file, []
+
+
+# ---------------------------------------------------------------------------
+# File I/O
+# ---------------------------------------------------------------------------
+
+
+def _read_source(path: Path) -> tuple[str | None, str | None]:
+    """Read the config file, reporting a read failure as a problem rather than raising.
+
+    Decoding as ``utf-8-sig`` drops the byte-order mark Windows editors prepend,
+    which TOML parsing would otherwise reject.
+
+    Args:
+        path: Path to the config file to read.
+
+    Returns:
+        A ``(text, problem)`` pair: the file content and ``None`` on success,
+        ``(None, None)`` when the file is absent, or ``(None, message)`` on
+        read failure.
+    """
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return None, None
+    except (OSError, ValueError) as exc:
+        reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+        return None, f"Cannot read config file at {path}: {reason}"
+    return text, None
+
+
+# ---------------------------------------------------------------------------
+# Validation pipeline
+# ---------------------------------------------------------------------------
+
+
+def _validate_read(
+    text: str,
+    config_path: Path,
+) -> tuple[ConfigFile | None, list[str]]:
+    """Turn file content into a config or a problem list.
+
+    Shared by the collecting loader and the throwing loader: it never raises, so
+    each caller decides whether a non-empty problem list becomes an exception or
+    a returned result.
+
+    Args:
+        text: The raw config file content to parse.
+        config_path: Path to the config file, used to word parse-error messages.
+
+    Returns:
+        A ``(config_file, problems)`` pair: the parsed :class:`ConfigFile`
+        (``None`` on failure) and any validation problems found.
+    """
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return None, [f"Failed to parse config file at {config_path}: {exc}"]
+
+    return validate_config_file(data)
+
+
+# ---------------------------------------------------------------------------
+# Public loaders
+# ---------------------------------------------------------------------------
+
+
+def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFileResult:
+    """Load and validate a config file, collecting every problem.
+
+    Args:
+        path: Path to the ``gymrat.toml`` file.
+        required: When ``True``, an absent file is itself a reported problem.
+
+    Returns:
+        A :class:`ConfigFileResult` carrying the parsed config (when valid),
+        whether the file existed, and every validation problem found.
+    """
+    config_path = Path(path)
+    text, read_problem = _read_source(config_path)
+    if read_problem is not None:
+        return ConfigFileResult(config_file=None, exists=True, problems=[read_problem])
+    if text is None:
+        if required:
+            return ConfigFileResult(
+                config_file=None,
+                exists=False,
+                problems=[f"Config file not found at {config_path}"],
+            )
+        return ConfigFileResult(config_file=ConfigFile(), exists=False, problems=[])
+
+    config_file, problems = _validate_read(text, config_path)
+    return ConfigFileResult(config_file=config_file, exists=True, problems=problems)
+
+
+def load_config_file(path: str | Path, *, required: bool = False) -> ConfigFile:
+    """Load and validate a config file, raising on the first problem.
+
+    Args:
+        path: Path to the ``gymrat.toml`` file.
+        required: When ``True``, an absent file raises rather than returning an
+            empty config.
+
+    Returns:
+        The parsed :class:`ConfigFile`; an empty one when the file is absent and
+        not required.
+
+    Raises:
+        GymratError: On any read, parse, or validation problem.
+    """
+    result = load_config_file_collecting(path, required=required)
+    if result.problems:
+        raise GymratError(result.problems[0])
+    return result.config_file if result.config_file is not None else ConfigFile()
+
+
+# ---------------------------------------------------------------------------
+# Settlement pipeline
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)

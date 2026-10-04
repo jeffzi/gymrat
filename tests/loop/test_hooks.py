@@ -19,8 +19,9 @@ import pytest
 
 from gymrat.exec import FAILURE_EXIT_CODE, ExecOptions, ExecResult
 from gymrat.loop.hooks import run_hook
-from gymrat.session import IterationRecord, Worktrees, record_to_wire
+from gymrat.session.records import IterationRecord, record_to_wire
 from gymrat.session.schema import HookStage
+from gymrat.session.workspace import Worktrees
 from tests.loop._hooks import (
     HookScripts,
     expected_hook_record,

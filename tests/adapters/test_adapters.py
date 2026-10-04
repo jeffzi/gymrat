@@ -14,20 +14,6 @@ from gymrat.errors import GymratError
 # ---------------------------------------------------------------------------
 
 
-def test_adapters_package_when_imported_does_export_public_surface():
-    from gymrat import adapters
-
-    assert set(adapters.__all__) == {
-        "AdapterError",
-        "Adapter",
-        "MetricDefaults",
-        "get_adapter",
-        "ADAPTER_NAMES",
-        "metric_lines_adapter",
-        "mitata_adapter",
-    }
-
-
 def test_adapter_names_when_referenced_does_list_builtins_sorted():
     assert ADAPTER_NAMES == ("metric-lines", "mitata")
 

@@ -1,4 +1,5 @@
 import json
+import sys
 from collections.abc import Callable
 from dataclasses import fields
 from operator import attrgetter
@@ -7,18 +8,19 @@ from pathlib import Path
 import pytest
 import tomli_w
 
-from gymrat.config import (
-    MAX_SAFE_INTEGER,
-    MAX_TIMEOUT_SECONDS,
+from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
+from gymrat.config.resolve import (
+    load_config_file,
+    load_config_file_collecting,
+    validate_config_dict,
+)
+from gymrat.config.types import (
     ConfigFile,
     ConfigFileResult,
     HooksConfig,
     KindEntry,
     MetricEntry,
     StopConfig,
-    load_config_file,
-    load_config_file_collecting,
-    validate_config_dict,
 )
 from gymrat.errors import GymratError
 from tests.adapters._inputs import LINE_BREAKS
@@ -58,6 +60,10 @@ def _unknown_line_break_key_param(char: str) -> object:
     )
 
 
+#: Why reading a directory as the config file fails: the OS refuses it differently on Windows.
+DIRECTORY_READ_REASON = "Permission denied" if sys.platform == "win32" else "Is a directory"
+
+
 def load_error_message(config_path: Path) -> str:
     """Load a config file that must be rejected and return the error message.
 
@@ -92,7 +98,7 @@ def test_load_config_file_when_file_missing_and_required_does_raise_naming_path(
     with pytest.raises(GymratError) as exc:
         load_config_file(missing, required=True)
 
-    assert str(missing) in str(exc.value)
+    assert str(exc.value) == f"Config file not found at {missing}"
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +113,7 @@ def test_load_config_file_when_path_is_directory_does_raise_naming_path(
     with pytest.raises(GymratError) as exc:
         load_config_file(tmp_path, required=required)
 
-    assert str(tmp_path) in str(exc.value)
-    assert "Cannot read config file" in str(exc.value)
+    assert str(exc.value) == f"Cannot read config file at {tmp_path}: {DIRECTORY_READ_REASON}"
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +186,9 @@ def test_load_config_file_when_toml_invalid_does_raise_naming_path(tmp_path: Pat
 
     message = load_error_message(config_path)
 
-    assert str(config_path) in message
+    assert message == (
+        f"Failed to parse config file at {config_path}: Invalid value (at end of document)"
+    )
 
 
 def test_load_config_file_when_duplicate_key_does_raise_naming_path(tmp_path: Path):
@@ -189,7 +196,9 @@ def test_load_config_file_when_duplicate_key_does_raise_naming_path(tmp_path: Pa
 
     message = load_error_message(config_path)
 
-    assert str(config_path) in message
+    assert message == (
+        f"Failed to parse config file at {config_path}: Cannot overwrite a value (at end of document)"
+    )
 
 
 @pytest.mark.parametrize(
@@ -275,55 +284,62 @@ def test_load_config_file_when_empty_object_does_return_empty_config(tmp_path: P
 
 
 @pytest.mark.parametrize(
-    ("content", "key_path"),
+    ("content", "key_path", "got"),
     [
-        pytest.param({"metrics": "latency"}, "metrics", id="metrics-string"),
-        pytest.param({"metrics": {"latency": "lower"}}, "metrics.latency", id="metrics-entry"),
-        pytest.param({"metrics": {"": 5}}, 'metrics.""', id="metrics-entry-empty-key"),
-        pytest.param({"kinds": "memory"}, "kinds", id="kinds-string"),
-        pytest.param({"kinds": {"memory": False}}, "kinds.memory", id="kinds-entry"),
-        pytest.param({"hooks": "gymrat.hooks"}, "hooks", id="hooks-string"),
-        pytest.param({"supervise": "claude-sonnet"}, "supervise", id="supervise-string"),
+        pytest.param({"metrics": "latency"}, "metrics", '"latency"', id="metrics-string"),
+        pytest.param(
+            {"metrics": {"latency": "lower"}}, "metrics.latency", '"lower"', id="metrics-entry"
+        ),
+        pytest.param({"metrics": {"": 5}}, 'metrics.""', "5", id="metrics-entry-empty-key"),
+        pytest.param({"kinds": "memory"}, "kinds", '"memory"', id="kinds-string"),
+        pytest.param({"kinds": {"memory": False}}, "kinds.memory", "false", id="kinds-entry"),
+        pytest.param({"hooks": "gymrat.hooks"}, "hooks", '"gymrat.hooks"', id="hooks-string"),
+        pytest.param(
+            {"supervise": "claude-sonnet"}, "supervise", '"claude-sonnet"', id="supervise-string"
+        ),
     ],
 )
 def test_load_config_file_when_section_not_object_does_name_key_path_and_object(
-    tmp_path: Path, content: dict[str, object], key_path: str
+    tmp_path: Path, content: dict[str, object], key_path: str, got: str
 ):
     config_path = write_config(tmp_path, content)
 
     message = load_error_message(config_path)
 
-    assert message.startswith(f"Invalid config value for {key_path}: expected an object, got ")
+    assert message == f"Invalid config value for {key_path}: expected an object, got {got}"
 
 
 @pytest.mark.parametrize(
-    ("content", "key_path"),
+    ("content", "key_path", "got"),
     [
         pytest.param(
             {"metrics": {"latency": {"gating": "yes"}}},
             "metrics.latency.gating",
+            '"yes"',
             id="metrics-gating-string",
         ),
         pytest.param(
             {"metrics": {"latency": {"exact": 1}}},
             "metrics.latency.exact",
+            "1",
             id="metrics-exact-number",
         ),
         pytest.param(
             {"kinds": {"memory": {"gating": "yes"}}},
             "kinds.memory.gating",
+            '"yes"',
             id="kinds-gating-string",
         ),
     ],
 )
 def test_load_config_file_when_flag_non_boolean_does_name_key_path_and_boolean(
-    tmp_path: Path, content: dict[str, object], key_path: str
+    tmp_path: Path, content: dict[str, object], key_path: str, got: str
 ):
     config_path = write_config(tmp_path, content)
 
     message = load_error_message(config_path)
 
-    assert message.startswith(f"Invalid config value for {key_path}: expected a boolean, got ")
+    assert message == f"Invalid config value for {key_path}: expected a boolean, got {got}"
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +365,7 @@ def test_load_config_file_when_string_key_holds_non_string_does_name_key_and_str
 
     message = load_error_message(config_path)
 
-    assert message.startswith(f"Invalid config value for {key}: expected a string, got ")
+    assert message == f"Invalid config value for {key}: expected a string, got {json.dumps(value)}"
 
 
 # ---------------------------------------------------------------------------
@@ -569,10 +585,11 @@ def test_load_config_file_when_metrics_key_embeds_line_break_does_report_key_not
 
     message = load_error_message(config_path)
 
-    assert "metrics" in message
-    # The rejected value is an object; only its key is bad, so any phrasing
-    # that demands an object contradicts what the user wrote.
-    assert "object" not in message
+    # The rejected value is an object; only its key is bad, so the message names
+    # the key instead of demanding an object.
+    assert message == (
+        f"Invalid config value for metrics: key {json.dumps(smuggled)} must not embed a line break"
+    )
 
 
 @pytest.mark.parametrize(
@@ -716,7 +733,9 @@ def test_load_config_file_when_hooks_command_not_non_empty_string_does_name_stag
 
     message = load_error_message(config_path)
 
-    assert message.startswith(f"Invalid config value for hooks.{stage}: expected {phrase}, got ")
+    assert message == (
+        f"Invalid config value for hooks.{stage}: expected {phrase}, got {json.dumps(value)}"
+    )
 
 
 def test_load_config_file_when_hooks_has_unknown_key_does_name_dotted_path(tmp_path: Path):
@@ -894,9 +913,9 @@ def test_load_config_file_collecting_when_file_missing_and_required_does_report_
 
     result = load_config_file_collecting(missing, required=True)
 
-    assert result.config_file is None
-    assert result.exists is False
-    assert any(str(missing) in problem for problem in result.problems)
+    assert result == ConfigFileResult(
+        config_file=None, exists=False, problems=[f"Config file not found at {missing}"]
+    )
 
 
 def test_load_config_file_collecting_when_valid_does_report_config_and_no_problems(tmp_path: Path):
@@ -929,9 +948,11 @@ def test_load_config_file_collecting_when_path_is_directory_does_collect_read_fa
 ):
     result = load_config_file_collecting(tmp_path, required=False)
 
-    assert result.config_file is None
-    assert result.exists is True
-    assert any(f"Cannot read config file at {tmp_path}: " in problem for problem in result.problems)
+    assert result == ConfigFileResult(
+        config_file=None,
+        exists=True,
+        problems=[f"Cannot read config file at {tmp_path}: {DIRECTORY_READ_REASON}"],
+    )
 
 
 def test_load_config_file_collecting_when_value_is_toml_date_does_report_problem_not_crash(
@@ -941,10 +962,13 @@ def test_load_config_file_collecting_when_value_is_toml_date_does_report_problem
 
     result = load_config_file_collecting(config_path, required=False)
 
-    assert result.config_file is None
-    assert len(result.problems) >= 1
-    joined = "\n".join(result.problems)
-    assert "samples" in joined
+    assert result == ConfigFileResult(
+        config_file=None,
+        exists=True,
+        problems=[
+            "Invalid config value for samples: expected an integer, got datetime.date(1979, 5, 27)"
+        ],
+    )
 
 
 def test_load_config_file_collecting_when_file_is_utf16_does_report_read_failure(
@@ -955,5 +979,27 @@ def test_load_config_file_collecting_when_file_is_utf16_does_report_read_failure
 
     result = load_config_file_collecting(config_path, required=False)
 
-    assert result.config_file is None
-    assert any("Cannot read config file" in problem for problem in result.problems)
+    assert result == ConfigFileResult(
+        config_file=None,
+        exists=True,
+        problems=[
+            (
+                f"Cannot read config file at {config_path}: "
+                "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"
+            )
+        ],
+    )
+
+
+def test_load_config_file_collecting_when_toml_invalid_does_report_parse_problem(tmp_path: Path):
+    config_path = write_raw(tmp_path, "key = ")
+
+    result = load_config_file_collecting(config_path, required=False)
+
+    assert result == ConfigFileResult(
+        config_file=None,
+        exists=True,
+        problems=[
+            f"Failed to parse config file at {config_path}: Invalid value (at end of document)"
+        ],
+    )

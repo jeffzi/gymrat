@@ -10,9 +10,11 @@ from pathlib import Path
 import pytest
 
 from gymrat.cli.app import app
-from gymrat.loop.settle import DiscardResult, KeepResult
+from gymrat.loop.discard import DiscardResult
+from gymrat.loop.keep import KeepResult
 from gymrat.loop.start import start_session
-from gymrat.session import (
+from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.records import (
     DiscardRecord,
     FinalizeRecord,
     KeepChecks,
@@ -20,11 +22,8 @@ from gymrat.session import (
     SessionLogRecord,
     SessionRecord,
     StopRecord,
-    append_record,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
 )
+from gymrat.session.store import append_record, read_records
 from tests.cli._budget import install_budget
 from tests.cli._session import (
     make_discard_repo,
@@ -33,8 +32,7 @@ from tests.cli._session import (
     runner,
     write_config,
 )
-from tests.loop.iterate._fixtures import resolved_config
-from tests.loop.settle._fixtures import (
+from tests.loop._settle import (
     CHECKS,
     checks_pass,
     edit_experiment,
@@ -43,6 +41,7 @@ from tests.loop.settle._fixtures import (
     start_with,
     unimproved,
 )
+from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     AT,
     COMMIT,

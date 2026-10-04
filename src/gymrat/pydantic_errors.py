@@ -1,7 +1,7 @@
 """Shared helpers for translating pydantic ``ErrorDetails`` into gymrat-worded problems.
 
-Both the config-file schema (``config/schema.py``) and the session-log schema
-(``session/records/parse.py``) validate with pydantic and need to render the
+Both the config-file schema (``config/resolve.py``) and the session-log schema
+(``session/records.py``) validate with pydantic and need to render the
 same things from a pydantic ``ValidationError``: a dotted location string, a
 list pruned of parent errors whose only fault is that a child under them also
 failed, and the expected-shape phrase a pydantic error's ``type`` and ``ctx``

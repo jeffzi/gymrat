@@ -16,7 +16,6 @@ from unittest.mock import patch
 
 import pytest
 
-from gymrat.session import BaselineRecord, IterationRecord, SessionLogRecord
 from gymrat.session.budget import (
     Budget,
     DurationEstimate,
@@ -26,6 +25,7 @@ from gymrat.session.budget import (
     write_budget,
 )
 from gymrat.session.paths import budget_path
+from gymrat.session.records import BaselineRecord, IterationRecord, SessionLogRecord
 from tests.session.records._fixtures import iteration_record
 
 _FAR_FUTURE_DEADLINE_MS = 999_999_999.0

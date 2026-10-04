@@ -62,7 +62,7 @@ if TYPE_CHECKING:
         NestedActivity,
         ReadSessionResult,
     )
-    from gymrat.config import Effort
+    from gymrat.config.types import Effort
     from gymrat.supervisor.events import SessionEvent
     from gymrat.supervisor.exit_sequence import ExitPhase
 

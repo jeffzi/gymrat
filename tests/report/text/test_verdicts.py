@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.report.text import render_report
+from gymrat.report.text.render import render_report
 from gymrat.report.types import (
     CandidateMetric,
     GeomeanFailOn,

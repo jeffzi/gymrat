@@ -2,16 +2,14 @@ import dataclasses
 
 import pytest
 
-from gymrat.adapters.defaults import (
+from gymrat.adapters import (
     DEFAULT_GATING,
     DEFAULT_METRIC_KIND,
-    defaults_from_suffixes,
-)
-from gymrat.adapters.types import (
     Adapter,
     AdapterError,
     MetricDefaults,
     WarnSink,
+    defaults_from_suffixes,
     warn_to_stderr,
 )
 from gymrat.errors import GymratError

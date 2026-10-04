@@ -12,7 +12,7 @@ from typing import Any, NamedTuple, get_args
 from pydantic import BaseModel
 
 from gymrat.session.paths import SESSION_DIR_NAME, SESSION_LOG_NAME, supervisor_log_name
-from gymrat.session.records.models import SESSION_LOG_MODELS, wire_type
+from gymrat.session.records import SESSION_LOG_MODELS, wire_type
 from gymrat.supervisor.events import SessionEvent
 
 _SESSION_LOG_FILE = "./session-log.schema.json"

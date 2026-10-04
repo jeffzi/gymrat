@@ -2,16 +2,19 @@ import time
 
 import pytest
 
-from gymrat.session import Worktrees, parse_record, record_to_wire
 from gymrat.session.records import (
     BaselineRecord,
     FinalizeRecord,
     HookRecord,
     IterationRecord,
+    NonFiniteNumberError,
     SessionRecord,
     StopRecord,
+    decode_log_line,
+    parse_record,
+    record_to_wire,
 )
-from gymrat.session.records.parse import NonFiniteNumberError, decode_log_line
+from gymrat.session.workspace import Worktrees
 from tests.session.records._fixtures import session_record
 from tests.session.records._wire import (
     AT,

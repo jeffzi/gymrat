@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from gymrat.cli.supervise.preflight import doctor_gate, run_preflight
-from gymrat.config import ResolvedConfig, StopConfig
-from gymrat.doctor.checks import (
+from gymrat.config.types import ResolvedConfig, StopConfig
+from gymrat.doctor import (
     Check,
     CheckSection,
     DoctorReport,
@@ -28,16 +28,10 @@ from gymrat.errors import GymratError
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import StartResult, start_session
-from gymrat.session import (
-    BaselineRecord,
-    FinalizeRecord,
-    SessionRecord,
-    append_record,
-    read_records,
-    session_jsonl_path,
-)
 from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import lockfile_path
+from gymrat.session.paths import lockfile_path, session_jsonl_path
+from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
+from gymrat.session.store import append_record, read_records
 from tests._git import run_git
 from tests.cli.supervise._fixtures import (
     baseline_record,
@@ -48,6 +42,9 @@ from tests.cli.supervise._fixtures import (
 from tests.loop.iterate._fixtures import resolved_config
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import committed_keep, iteration_record, tear_final_line
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _MODULE = "gymrat.cli.supervise.preflight"
 
@@ -73,6 +70,18 @@ def _ok_report() -> DoctorReport:
     return create_doctor_report(
         _env(),
         [CheckSection(title="Environment", checks=[_ok_check()])],
+    )
+
+
+def _warning_report() -> DoctorReport:
+    return create_doctor_report(
+        _env(),
+        [
+            CheckSection(
+                title="Environment",
+                checks=[Check(name="skill", status="warn", detail="missing", hint="run init")],
+            )
+        ],
     )
 
 
@@ -181,10 +190,20 @@ def test_doctor_gate_when_check_fails_does_exit_two_with_report(
     assert "install git" in captured.err
 
 
-def test_doctor_gate_when_all_pass_does_not_print(
-    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    "make_report",
+    [
+        pytest.param(_ok_report, id="all-pass"),
+        pytest.param(_warning_report, id="warning-only"),
+    ],
+)
+def test_doctor_gate_when_nothing_fails_does_not_print(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    make_report: Callable[[], DoctorReport],
 ):
-    _install_doctor_seam(monkeypatch, report=_ok_report())
+    _install_doctor_seam(monkeypatch, report=make_report())
 
     doctor_gate(repo)
 

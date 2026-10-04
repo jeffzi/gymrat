@@ -30,26 +30,22 @@ from claude_agent_sdk import (
 )
 
 from gymrat.clock import now_ms, now_ns
-from gymrat.config import BenchlessConfig, Effort, StopConfig
+from gymrat.config.types import BenchlessConfig, Effort, StopConfig
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
-from gymrat.supervisor import (
-    Driver,
-    FollowUpEvent,
-    create_claude_driver,
-    supervise,
-)
+from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.context import SupervisedSession
-from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
+from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
     CapEvent,
     DirtyInfo,
+    FollowUpEvent,
     LaunchEvent,
     SessionEvent,
     SessionObserver,
     TurnEndEvent,
 )
-from gymrat.supervisor.supervise import SupervisionResult
+from gymrat.supervisor.supervise import SupervisionResult, supervise
 from tests.session.records._fixtures import (
     session_record,
     stop_record,

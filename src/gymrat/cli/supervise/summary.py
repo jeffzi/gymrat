@@ -27,9 +27,9 @@ from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import ReadSessionResult
-    from gymrat.config import Effort
-    from gymrat.supervisor import SupervisionResult
+    from gymrat.config.types import Effort
     from gymrat.supervisor.exit_sequence import ExitReport
+    from gymrat.supervisor.supervise import SupervisionResult
 
 _SUMMARY_LABEL_WIDTH = 6
 """The label column of the summary rows, wide enough for "agent"."""

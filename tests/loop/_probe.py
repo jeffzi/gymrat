@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from gymrat.session import BaselineRecord
+from gymrat.session.records import BaselineRecord
 from tests.report._inputs import create_measurement_result, measured_metric
 from tests.session.records._fixtures import AT
 

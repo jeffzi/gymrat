@@ -1,4 +1,4 @@
-"""Settle a measured edit: keep it into the baseline, or discard it.
+"""Keep a measured edit: commit it and advance the baseline worktree to it.
 
 A keep passes three gates — something measured, no standing gating regression,
 and the configured checks — and each gate that trips is *recorded* rather than
@@ -6,35 +6,41 @@ thrown. A blocked keep is history the agent and ``gymrat status`` can read back,
 which a raised error would leave nowhere. The caller turns a blocked record into
 an exit code; every other failure here is a :class:`GymratError`.
 
-Holding the repository lock across either call is the caller's job: the baseline
-worktree moves in the middle of a keep, and a concurrent iterate must not sample
-it mid-advance.
+The checks gate runs the configured checks command and shapes its output for the
+keep record; the gating gate decides from the session's verdicts whether a
+standing gating regression blocks the keep.
+
+Holding the repository lock across a keep is the caller's job: the baseline
+worktree moves in the middle of it, and a concurrent iterate must not sample it
+mid-advance.
 """
 
-from collections.abc import Callable
+from __future__ import annotations
+
+import sys
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from rich.markup import escape
 
 from gymrat.clock import now_ns
-from gymrat.config import BenchlessConfig
-from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.loop.settle.checks import (
-    ChecksRun,
-    gating_refusal,
-    has_standing_gating_regression,
-    run_checks,
+from gymrat.eta import MS_PER_SECOND
+from gymrat.exec import (
+    ExecOptions,
+    ExecTimeoutError,
+    exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
+from gymrat.git import SHORT_SHA_LENGTH
+from gymrat.loop.output_limit import limit_output
 from gymrat.model import Effect
 from gymrat.report.format import format_delta
-from gymrat.report.style import RENDER_WIDTH, format_hint, render_lines
+from gymrat.report.style import RENDER_WIDTH, color_from_env, format_hint, render_lines
 from gymrat.session.records import (
     BaselineRecord,
     IterationRecord,
     KeepChecks,
     KeepRecord,
 )
-from gymrat.session.schema import KeepReason
 from gymrat.session.store import append_record, last_kept_position, require_open_session
 from gymrat.session.workspace import (
     advance_baseline,
@@ -42,13 +48,212 @@ from gymrat.session.workspace import (
     is_worktree_dirty,
     worktree_head,
 )
-from gymrat.warn import WarnSink
+from gymrat.warn import WarnSink, warn_to_stderr
 
-__all__ = [
-    "KeepOptions",
-    "KeepResult",
-    "keep_session",
-]
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from gymrat.config.types import BenchlessConfig
+    from gymrat.session.records import MetricVerdict
+    from gymrat.session.schema import KeepReason
+
+
+# ---------------------------------------------------------------------------
+# checks and gating gates
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ChecksRun:
+    """What the checks command answered, once it has run."""
+
+    passed: bool
+    output: str
+    stdout_bytes: int
+    stderr_bytes: int
+
+
+def _stderr_color() -> bool:
+    """Whether the warning gymrat writes to stderr carries color.
+
+    :func:`color_from_env` owns the ``FORCE_COLOR`` / ``NO_COLOR`` precedence
+    every color surface shares; with neither declared, stderr's own TTY state
+    decides, so a warning piped into a file stays plain.
+
+    Returns:
+        Whether stderr output should carry ANSI color escapes.
+    """
+    declared = color_from_env()
+    return declared if declared is not None else sys.stderr.isatty()
+
+
+def _gate_off_warning(*, color: bool) -> str:
+    """The warning a keep emits when no checks command gates it.
+
+    Args:
+        color: Whether the hint line carries ANSI color escapes.
+
+    Returns:
+        The warning and its hint, without a trailing newline.
+    """
+    hint = render_lines(
+        format_hint(
+            "set `checks` in `gymrat.toml` to the command that must pass before an edit is kept."
+        ),
+        color=color,
+        width=RENDER_WIDTH,
+    )
+    return (
+        "Warning: no checks command is configured, so gymrat keep is committing "
+        f"with the gate off.\n{hint}"
+    )
+
+
+async def run_checks(
+    config: BenchlessConfig,
+    experiment_dir: str,
+    warn: WarnSink | None = None,
+    *,
+    color: bool | None = None,
+) -> ChecksRun | None:
+    """Run the configured checks in the experiment worktree.
+
+    A timeout counts as a failure with whatever the command managed to write: the
+    gate asks whether the tree is provably good, and a run that never finished has
+    not answered. Each stream is cut to the relay limit on its own, so a suite that
+    writes its failures to stderr is as readable as one that writes them to stdout.
+
+    Args:
+        config: The resolved config, carrying the checks command and timeout.
+        experiment_dir: The experiment worktree to run the checks command in.
+        warn: Where the gate-off warning goes, or ``None`` to write it to stderr.
+            A caller-supplied sink owns its own presentation — a CLI interleaving
+            the warning with a progress line, for one — so it is handed plain
+            text, while the stderr default keeps the color it renders with.
+        color: Whether the warning written to stderr carries color, or ``None``
+            to defer to ``FORCE_COLOR``, ``NO_COLOR`` and stderr's TTY state.
+
+    Returns:
+        What the command answered, or ``None`` when no checks are configured — in
+        which case the missing gate is warned about instead.
+    """
+    command = config.checks
+    if command is None:
+        if warn is None:
+            stderr_color = _stderr_color() if color is None else color
+            warn_to_stderr(_gate_off_warning(color=stderr_color))
+        else:
+            warn(_gate_off_warning(color=False))
+        return None
+
+    result = await exec(
+        command,
+        ExecOptions(cwd=experiment_dir, timeout_ms=config.timeout_seconds * MS_PER_SECOND),
+    )
+
+    if isinstance(result, ExecTimeoutError):
+        passed = False
+        lead = [f"{command} timed out after {result.timeout_ms}ms"]
+    else:
+        passed = result.exit_code == 0
+        lead: list[str] = []
+
+    output = "\n".join(
+        part
+        for part in (*lead, limit_output(result.stdout), limit_output(result.stderr))
+        if part.strip() != ""
+    )
+
+    return ChecksRun(
+        passed=passed,
+        output=output,
+        stdout_bytes=result.stdout_bytes,
+        stderr_bytes=result.stderr_bytes,
+    )
+
+
+def has_standing_gating_regression(iteration: IterationRecord) -> bool:
+    """Whether the iteration carries a regression the loop refuses to commit over.
+
+    Both halves are required: the outcome is what the agent was shown, and a gating
+    metric standing behind the regression is what makes it real. A noisy metric
+    earns that standing from the confirmation rerun — a regression the rerun would
+    not repeat leaves the iteration keepable. An exact metric is deterministic, so
+    the rerun skips it and its ``confirmed`` stays ``False``; gating on ``confirmed``
+    alone would let every exact regression through.
+
+    Silence earns the same standing as disagreement: a metric the rerun was asked
+    about and never reported back on lands in ``confirm.absent``, its ``confirmed``
+    still ``False`` because nothing re-measured it. The gate fails closed on those —
+    a rerun that cannot see the metric is not evidence the regression went away.
+
+    Args:
+        iteration: The iteration record to check for a standing gating regression.
+
+    Returns:
+        Whether the iteration carries a confirmed or exact gating regression.
+    """
+    if iteration.outcome != "regressed":
+        return False
+    if _unmeasured_gating_regressions(iteration):
+        return True
+    return any(
+        _is_gating_regression(metric) and (metric.confirmed or metric.method == "exact")
+        for metric in iteration.metrics.values()
+    )
+
+
+def _unmeasured_gating_regressions(iteration: IterationRecord) -> list[str]:
+    confirm = iteration.confirm
+    absent = set(confirm.absent) if confirm is not None and confirm.absent is not None else set()
+    return [
+        name
+        for name, metric in iteration.metrics.items()
+        if _is_gating_regression(metric) and name in absent
+    ]
+
+
+def _is_gating_regression(metric: MetricVerdict) -> bool:
+    return metric.gating and metric.verdict == "regressed"
+
+
+def gating_refusal(iteration: IterationRecord) -> str:
+    """How the refusal reads to the agent that has to act on it, as markup.
+
+    A regression the rerun stood behind needs no explaining beyond the number the
+    iteration already reported. One the rerun never re-measured does: the agent is
+    looking at a metric its own report called regressed and unconfirmed, and without
+    the missing measurement named, the block reads as gymrat contradicting itself.
+    The extra hint points at the likeliest cause — a filter template that narrows
+    the rerun to a subset the bench does not answer with.
+
+    Args:
+        iteration: The iteration record whose gating regression is refused.
+
+    Returns:
+        The refusal message as markup, including a hint for the agent.
+    """
+    refusal = f"Keep refused: iteration {iteration.seq} regressed a gating metric."
+    settle_hint = "fix the regression and run `iterate` again, or run `discard`"
+
+    unmeasured = _unmeasured_gating_regressions(iteration)
+    if not unmeasured:
+        return f"{refusal}\n{format_hint(f'{settle_hint}.')}"
+
+    named = "\n".join(
+        f"  {escape(name)}: not measured on the confirmation rerun, so the regression stands"
+        for name in unmeasured
+    )
+    reported = ", ".join(unmeasured)
+    return f"{refusal}\n{named}\n" + format_hint(
+        f"check that the filter template (or the bench itself) reports {reported}, "
+        f"then {settle_hint}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# keep
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,11 +267,16 @@ class KeepOptions:
             options keeps only what the loop measured as an improvement.
         warn: Sink for the checks gate's warnings. Defaults to ``None``, which
             leaves those warnings on stderr.
+        warn_color: Whether a warning left on stderr carries color. Defaults to
+            ``None``, which defers to ``FORCE_COLOR``, ``NO_COLOR`` and stderr's
+            TTY state. A ``warn`` sink always receives plain text, so it ignores
+            this.
     """
 
     message: str | None = None
     allow_unimproved: bool = False
     warn: WarnSink | None = None
+    warn_color: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +303,7 @@ class _KeepContext:
     iteration: IterationRecord
     message: str | None
     warn: WarnSink | None
+    warn_color: bool | None
 
 
 async def keep_session(
@@ -191,6 +402,7 @@ async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions)
         iteration=iteration,
         message=options.message,
         warn=options.warn,
+        warn_color=options.warn_color,
     )
 
     if not is_worktree_dirty(experiment_dir):
@@ -264,7 +476,9 @@ async def _gated_keep(context: _KeepContext, *, commit: Callable[[str], str]) ->
         GymratError: When ``commit``, the baseline advance, or the record append
             fails.
     """
-    checks = await run_checks(context.config, context.experiment_dir, context.warn)
+    checks = await run_checks(
+        context.config, context.experiment_dir, context.warn, color=context.warn_color
+    )
     if checks is not None and not checks.passed:
         return _checks_failed_keep(context.jsonl_path, context.iteration.seq, checks)
 

@@ -11,8 +11,8 @@ from gymrat.session.store import fold_session, read_records
 from gymrat.supervisor.turns import EndCondition, detect_end_condition
 
 if TYPE_CHECKING:
-    from gymrat.config import BenchlessConfig
-    from gymrat.session import SessionLogRecord
+    from gymrat.config.types import BenchlessConfig
+    from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
 
 

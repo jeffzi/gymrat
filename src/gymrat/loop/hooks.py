@@ -41,8 +41,9 @@ from gymrat.progress_events import (
     ProgressCallback,
     emit_progress,
 )
-from gymrat.session import HookRecord, IterationRecord, SessionRecord, append_record, record_to_wire
+from gymrat.session.records import HookRecord, IterationRecord, SessionRecord, record_to_wire
 from gymrat.session.schema import HookStage
+from gymrat.session.store import append_record
 
 #: How long a hook may run before it is killed. Long enough to build, short
 #: enough to notice.

@@ -27,22 +27,22 @@ from gymrat.report.loop import (
     format_status_stop,
 )
 from gymrat.report.style import RENDER_WIDTH, render_lines
-from gymrat.session import (
+from gymrat.session.records import (
     BaselineRecord,
     CommandRecord,
     DiscardRecord,
     IterationRecord,
     KeepRecord,
     StopRecord,
-    require_session,
 )
+from gymrat.session.store import require_session
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.config import BenchlessConfig
+    from gymrat.config.types import BenchlessConfig
     from gymrat.report.loop import SettleState
-    from gymrat.session import SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import Outcome
 
 

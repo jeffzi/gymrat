@@ -18,6 +18,9 @@ Three states accept a discard:
 
 A worktree that already matches the last kept position, with nothing measured, is
 refused — there is genuinely nothing to throw away.
+
+Holding the repository lock across a discard is the caller's job, as it is for a
+keep.
 """
 
 from __future__ import annotations

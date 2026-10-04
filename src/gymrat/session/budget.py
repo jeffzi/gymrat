@@ -18,7 +18,7 @@ from gymrat.atomic_write import write_text_atomic
 from gymrat.eta import MS_PER_SECOND, SECONDS_PER_MINUTE, format_duration
 from gymrat.session.lock import is_held
 from gymrat.session.paths import budget_path, supervise_lockfile_path
-from gymrat.session.records.models import BaselineRecord, IterationRecord, SessionLogRecord
+from gymrat.session.records import BaselineRecord, IterationRecord, SessionLogRecord
 
 _MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND
 

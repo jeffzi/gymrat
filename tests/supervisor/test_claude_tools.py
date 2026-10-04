@@ -9,7 +9,7 @@ and its return value lands in the options dict under ``mcp_servers``.
 import asyncio
 from collections.abc import Mapping
 
-from gymrat.supervisor import create_claude_driver
+from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.driver import SessionPrompt
 from tests.supervisor._fixtures import (
     FactoryProbe,

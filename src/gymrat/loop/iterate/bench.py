@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Literal
 
 from gymrat.adapters import get_adapter
 from gymrat.clock import monotonic_ms
-from gymrat.config import GEOMEAN_PRIMARY, ResolvedConfig
+from gymrat.config.types import GEOMEAN_PRIMARY, ResolvedConfig
 from gymrat.model import MetricVerdict, Observations, ResolvedMetricMeta
 from gymrat.progress_events import JudgeStarted, emit_progress
 from gymrat.report.loop import (
@@ -30,12 +30,12 @@ from gymrat.sampling import (
     collect_samples,
     resolve_metric_meta_from_samples,
 )
-from gymrat.session import PairedSamples, SessionRecord
+from gymrat.session.records import PairedSamples, SessionRecord
 from gymrat.targets import InPlaceTarget
 from gymrat.verdict import compute_geomean, compute_kind_aggregates, compute_verdicts
 
 if TYPE_CHECKING:
-    from gymrat.config import KindEntry
+    from gymrat.config.types import KindEntry
     from gymrat.loop.iterate.confirm import Confirmation
     from gymrat.loop.iterate.run import IterateOptions
     from gymrat.report.types import ComparisonResult, MetricComparisons
@@ -200,7 +200,8 @@ async def _measure(
     Args:
         session: The session whose baseline and experiment worktrees are benched.
         config: The resolved configuration supplying prepare, samples, and timeout.
-        options: The iterate options supplying the progress callback.
+        options: The iterate options supplying the progress callback and the
+            warning sink.
         bench: The bench command to run. A parameter because a confirmation rerun
             narrows the command while sampling the same pair of worktrees the same
             way.
@@ -222,6 +223,7 @@ async def _measure(
         samples=config.samples,
         timeout_seconds=config.timeout_seconds,
         on_progress=options.on_progress,
+        warn=options.warn,
     )
     adapter = get_adapter(config.adapter)
     abort = options.abort if options.abort is not None else asyncio.Event()

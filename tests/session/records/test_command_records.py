@@ -3,7 +3,8 @@ from typing import get_args
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.session import CommandReason, parse_record, record_to_wire
+from gymrat.session.records import parse_record, record_to_wire
+from gymrat.session.schema import CommandReason
 from tests.session.records._wire import (
     COMMAND_RECORD,
     COMMAND_RECORD_SUCCESS,
@@ -138,20 +139,3 @@ def test_command_reason_when_imported_does_accept_all_defined_values():
     actual = set(get_args(CommandReason))
 
     assert actual == set(COMMAND_REASONS)
-
-
-# ---------------------------------------------------------------------------
-# CommandRecord — exports
-# ---------------------------------------------------------------------------
-
-
-def test_command_record_when_imported_from_records_package_does_exist():
-    from gymrat.session.records import CommandRecord
-
-    assert CommandRecord is not None
-
-
-def test_command_reason_when_imported_from_session_package_does_exist():
-    from gymrat.session import CommandReason
-
-    assert CommandReason is not None

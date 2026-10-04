@@ -17,7 +17,7 @@ import pytest
 from rich.cells import cell_len
 
 from gymrat.model import ApproximateVerdict, Exclusion
-from gymrat.report.text import render_report
+from gymrat.report.text.render import render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
 from tests.report._inputs import (
     NWayCandidate,

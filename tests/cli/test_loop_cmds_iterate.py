@@ -16,17 +16,13 @@ import pytest
 from gymrat import signals
 from gymrat.cli.app import app
 from gymrat.cli.iterate.progress import IterateRenderer
-from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError
+from gymrat.loop.iterate.run import IterateOptions, IterateResult, LoopStopError
 from gymrat.progress_events import JudgeStarted, PrepareFinished, PrepareStarted, ProgressEvent
-from gymrat.session import (
-    CommandRecord,
-    Confirm,
-    PairedSamples,
-    read_records,
-    session_jsonl_path,
-)
-from gymrat.session.paths import progress_path
+from gymrat.session.paths import progress_path, session_jsonl_path
 from gymrat.session.progress_file import ProgressSnapshot, write_progress
+from gymrat.session.records import CommandRecord, Confirm, PairedSamples
+from gymrat.session.store import read_records
+from tests._rich import console_output, screen_lines, sealed_console
 from tests.cli._budget import (
     SUPERVISED_HINT,
     install_budget,
@@ -44,8 +40,10 @@ from tests.cli._session import (
     write_config,
 )
 from tests.loop.iterate._fixtures import (
+    MALFORMED_LINE_WARNING,
     CollectSamplesRecorder,
     baseline_rounds,
+    bench_malformed_once,
     improved_rounds,
     install_collect_samples,
     stub_samples,
@@ -483,11 +481,8 @@ class _RendererSpy:
     warnings: list[str] = field(default_factory=list)
 
 
-def _wire_failing_subscriber(
-    repo: str, monkeypatch: pytest.MonkeyPatch, messages: Sequence[str]
-) -> _RendererSpy:
-    """Wire ``iterate`` with a sidecar raising ``messages`` and a spied real renderer."""
-    write_session_log(repo, iterate_session_header(repo))
+def _install_spied_renderer(monkeypatch: pytest.MonkeyPatch) -> _RendererSpy:
+    """Replace ``IterateRenderer`` with the real renderer, spied on ``report`` and ``warn``."""
     spy = _RendererSpy()
 
     class _SpiedRenderer(IterateRenderer):
@@ -502,6 +497,15 @@ def _wire_failing_subscriber(
             super().warn(message)
 
     monkeypatch.setattr("gymrat.cli.loop_cmds.IterateRenderer", _SpiedRenderer)
+    return spy
+
+
+def _wire_failing_subscriber(
+    repo: str, monkeypatch: pytest.MonkeyPatch, messages: Sequence[str]
+) -> _RendererSpy:
+    """Wire ``iterate`` with a sidecar raising ``messages`` and a spied real renderer."""
+    write_session_log(repo, iterate_session_header(repo))
+    spy = _install_spied_renderer(monkeypatch)
     monkeypatch.setattr("gymrat.cli.loop_cmds.iterate_session", _EmittingIterateSession())
     sidecar = _FailingSidecar(messages)
 
@@ -605,6 +609,60 @@ def test_iterate_command_when_subscriber_raises_does_keep_the_report_and_exit_co
         "gymrat keep",
     ]
     assert last_command_record(repo).exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# the iterate command — a bench line the adapter cannot read
+# ---------------------------------------------------------------------------
+
+#: Rows of the terminal the live-mode test replays the dashboard into.
+_LIVE_SCREEN_HEIGHT = 40
+
+
+def test_iterate_command_when_adapter_warns_does_route_the_warning_through_the_renderer(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_session_log(repo, iterate_session_header(repo))
+    spy = _install_spied_renderer(monkeypatch)
+    bench_malformed_once(monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    assert spy.warnings == [MALFORMED_LINE_WARNING]
+
+
+def test_iterate_command_when_plain_and_adapter_warns_does_print_it_once_on_stderr(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_session_log(repo, iterate_session_header(repo))
+    bench_malformed_once(monkeypatch)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.resolve_render_mode", lambda: "plain")
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    lines = strip_ansi(result.stderr).splitlines()
+    assert [line for line in lines if "METRIC" in line] == [MALFORMED_LINE_WARNING]
+
+
+def test_iterate_command_when_live_and_adapter_warns_does_leave_the_warning_on_screen(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_session_log(repo, iterate_session_header(repo))
+    bench_malformed_once(monkeypatch)
+    console = sealed_console(height=_LIVE_SCREEN_HEIGHT)
+
+    def fake_stderr_console(**_kwargs: object) -> object:
+        return console
+
+    monkeypatch.setattr("gymrat.cli.loop_cmds.resolve_render_mode", lambda: "live")
+    monkeypatch.setattr("gymrat.cli.loop_cmds.stderr_console", fake_stderr_console)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    screen = screen_lines(console_output(console), height=_LIVE_SCREEN_HEIGHT)
+    assert result.exit_code == 0
+    assert screen == [MALFORMED_LINE_WARNING]
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from collections.abc import Callable
 import pytest
 from pydantic import ValidationError
 
-from gymrat.session.records.parse import decode_log_line
+from gymrat.session.records import decode_log_line
 from gymrat.supervisor.events import (
     CapEvent,
     CompactionEvent,

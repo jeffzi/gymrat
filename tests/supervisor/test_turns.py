@@ -11,11 +11,11 @@ from typing import TYPE_CHECKING, Literal
 
 import pytest
 
-from gymrat.config import StopConfig
+from gymrat.config.types import StopConfig
 from gymrat.eta import format_duration
 
 if TYPE_CHECKING:
-    from gymrat.session import SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
 from gymrat.supervisor.turns import (
     CONSECUTIVE_DISCARD_LIMIT,
     FOLLOW_UP_CEILING,

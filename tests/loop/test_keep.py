@@ -20,24 +20,21 @@ import pytest
 from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.loop.settle import KeepOptions, keep_session
-from gymrat.session import (
+from gymrat.loop.keep import KeepOptions, keep_session
+from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
+from gymrat.session.records import (
     BaselineRecord,
     Confirm,
     IterationPrimary,
     IterationRecord,
     KeepChecks,
     SessionLogRecord,
-    append_record,
-    baseline_worktree_dir,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
 )
 from gymrat.session.schema import Outcome
-from gymrat.session.store import latest_baseline
+from gymrat.session.store import append_record, latest_baseline, read_records
 from tests._ansi import SGR_RE, strip_ansi
-from tests.loop.settle._fixtures import (
+from tests._streams import FakeStream
+from tests.loop._settle import (
     CHECKS,
     CHECKS_STDERR,
     CHECKS_STDOUT,
@@ -899,17 +896,33 @@ async def test_keep_session_when_no_checks_configured_does_warn_on_stderr_withou
     assert "`" not in warning
 
 
-async def test_keep_session_when_no_checks_configured_and_color_forced_does_dim_the_hint(
-    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("variables", "tty", "expect_dim"),
+    [
+        pytest.param(["FORCE_COLOR"], False, True, id="force-color-without-tty"),
+        pytest.param(["NO_COLOR"], True, False, id="no-color-on-a-tty"),
+        pytest.param([], True, True, id="tty"),
+        pytest.param([], False, False, id="no-tty"),
+    ],
+)
+async def test_keep_session_when_no_checks_and_no_color_given_does_dim_hint_per_env_and_tty(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    variables: list[str],
+    tty: bool,
+    expect_dim: bool,
 ):
-    monkeypatch.setenv("FORCE_COLOR", "1")
+    for name in variables:
+        monkeypatch.setenv(name, "1")
+    stderr = FakeStream(tty=tty)
+    monkeypatch.setattr("sys.stderr", stderr)
     _edited_after_iteration(repo)
     install_exec(monkeypatch, UNUSED_EXEC)
 
     await keep_session(repo, checks_config(checks=None))
 
-    hint = capsys.readouterr().err.splitlines()[1]
-    assert hint.startswith("\x1b[2m")
+    hint = stderr.getvalue().splitlines()[1]
+    assert hint.startswith("\x1b[2m") is expect_dim
 
 
 async def test_keep_session_when_no_checks_and_warn_sink_does_send_plain_hint_to_the_sink(

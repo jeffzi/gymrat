@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
-    from gymrat.session import SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
 from gymrat.supervisor.turns import (
     CONSECUTIVE_DISCARD_LIMIT,
     NO_PROGRESS_LIMIT,

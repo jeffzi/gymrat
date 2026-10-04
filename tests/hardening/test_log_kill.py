@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.session import session_jsonl_path
+from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record, read_records
 from tests.session.records._fixtures import committed_keep, session_record
 
@@ -107,7 +107,7 @@ _TORN_TAIL_CHILD = """\
 import sys
 from pathlib import Path
 
-from gymrat.session import session_jsonl_path
+from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from tests.session.records._fixtures import committed_keep, session_record
 
@@ -129,7 +129,7 @@ _HARD_EXIT_CHILD = """\
 import os
 import sys
 
-from gymrat.session import session_jsonl_path
+from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from tests.session.records._fixtures import session_record
 
@@ -146,7 +146,7 @@ _RACE_CHILD = """\
 import os
 import sys
 
-from gymrat.session import session_jsonl_path
+from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from tests.session.records._fixtures import committed_keep
 

@@ -8,6 +8,7 @@ assertions check ``Live`` attributes directly.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import pytest
@@ -639,6 +640,35 @@ def test_frame_when_judge_finished_no_regressions_does_drop_confirm_and_show_ver
 
     assert result == snapshot
     renderer.stop()
+
+
+@pytest.mark.parametrize(
+    ("delta", "expected"),
+    [
+        pytest.param(2.2, "judged +2.2% on geomean", id="positive"),
+        pytest.param(-1.3, "judged -1.3% on geomean", id="negative"),
+        pytest.param(0.0, "judged 0.0% on geomean", id="zero"),
+        pytest.param(0.04, "judged 0.0% on geomean", id="positive-rounds-to-zero"),
+        pytest.param(-0.04, "judged 0.0% on geomean", id="negative-rounds-to-zero"),
+        pytest.param(None, "judged —", id="missing"),
+        pytest.param(math.nan, "judged —", id="nan"),
+        pytest.param(math.inf, "judged —", id="positive-infinity"),
+        pytest.param(-math.inf, "judged —", id="negative-infinity"),
+    ],
+)
+def test_frame_when_judge_finished_does_print_delta_like_the_report(
+    delta: float | None, expected: str
+):
+    _console, _clock, renderer = _live(sample_count=1)
+    renderer.report(
+        JudgeFinished(primary_delta_pct=delta, regressed=(), metric_count=3, at_ms=6000),
+    )
+
+    result = next(
+        line.strip() for line in frame_text(renderer.frame()).splitlines() if "judged" in line
+    )
+
+    assert result == f"✓ {expected} · no gating regression"
 
 
 def test_plain_when_judge_finished_with_regressions_does_print_count_and_names():

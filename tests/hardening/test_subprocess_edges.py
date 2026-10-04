@@ -38,9 +38,9 @@ from gymrat import exec as exec_mod
 from gymrat import signals
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.exec import exec as run_exec
-from gymrat.supervisor import create_claude_driver, create_stdio_driver
-from gymrat.supervisor.claude import ClaudeClient, ClientFactory
+from gymrat.supervisor.claude import ClaudeClient, ClientFactory, create_claude_driver
 from gymrat.supervisor.events import SessionEvent, UsageUpdateEvent
+from gymrat.supervisor.stdio import create_stdio_driver
 from tests._cli import try_read_report
 from tests._process_helpers import capture_spawns
 from tests.supervisor._fixtures import collecting_observer, make_prompt, result_message

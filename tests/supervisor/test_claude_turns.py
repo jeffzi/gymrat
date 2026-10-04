@@ -13,7 +13,7 @@ from typing import override
 import pytest
 from claude_agent_sdk import MessageOrigin, TextBlock
 
-from gymrat.supervisor import create_claude_driver
+from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.driver import DriverSession, SessionOutcome
 from gymrat.supervisor.events import (
     SessionEvent,

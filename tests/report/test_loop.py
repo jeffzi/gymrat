@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from gymrat.config import StopConfig
+from gymrat.config.types import StopConfig
 from gymrat.report.loop import (
     GeomeanPrimary,
     LoopPrimary,
@@ -45,7 +45,8 @@ from gymrat.report.loop import (
     format_verdict_block,
 )
 from gymrat.report.style import render_lines
-from gymrat.session import BaselineRecord, BaselineRef, Worktrees
+from gymrat.session.records import BaselineRecord
+from gymrat.session.workspace import BaselineRef, Worktrees
 from tests.report._inputs import permutation_metric, styles_at
 from tests.session.records._fixtures import SESSION_ID, finalize_record, session_record
 

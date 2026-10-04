@@ -25,10 +25,11 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 
-from gymrat.config import BenchlessConfig
+from gymrat.config.types import BenchlessConfig
 from gymrat.exec import ExecOptions, ExecResult
 from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.session import (
+from gymrat.session.paths import experiment_worktree_dir, lockfile_path, session_jsonl_path
+from gymrat.session.records import (
     CommandRecord,
     DiscardRecord,
     FinalizeRecord,
@@ -36,12 +37,8 @@ from gymrat.session import (
     KeepRecord,
     SessionLogRecord,
     SessionRecord,
-    append_record,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
 )
-from gymrat.session.paths import lockfile_path
+from gymrat.session.store import append_record, read_records
 from gymrat.session.workspace import worktree_fingerprint
 from gymrat.supervisor.exit_sequence import (
     ExitPhase,
@@ -50,7 +47,7 @@ from gymrat.supervisor.exit_sequence import (
     run_exit_sequence,
 )
 from tests.conftest import hold_lock
-from tests.loop.settle._fixtures import (
+from tests.loop._settle import (
     CHECKS,
     UNUSED_EXEC,
     checks_fail,
@@ -87,7 +84,7 @@ if TYPE_CHECKING:
     from gymrat.supervisor.context import SupervisedSession
     from gymrat.supervisor.events import SessionEvent, SessionObserver
     from gymrat.supervisor.supervise import EndedBy
-    from tests.loop.settle._fixtures import ExecRecorder
+    from tests.loop._settle import ExecRecorder
 
 #: The skip wording when the holder record cannot be read.
 SKIP_UNKNOWN = "exit sequence skipped: gymrat is still running (PID unknown)"
@@ -266,7 +263,7 @@ def _rewriting_checks(monkeypatch: pytest.MonkeyPatch, root: str) -> None:
         _write_text(str(Path(experiment_worktree_dir(root)) / "README.md"), "# reformatted\n")
         return ExecResult(stdout="", stderr="", exit_code=0, stdout_bytes=0, stderr_bytes=0)
 
-    monkeypatch.setattr("gymrat.loop.settle.checks.exec", run)
+    monkeypatch.setattr("gymrat.loop.keep.exec", run)
 
 
 def _stale_tree(root: str) -> None:

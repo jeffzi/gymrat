@@ -53,10 +53,12 @@ from gymrat.cli.shared import (
 )
 from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
-from gymrat.config import CliFlags, resolve_benchless_config, resolve_config
+from gymrat.config.resolve import resolve_benchless_config, resolve_config
+from gymrat.config.types import CliFlags
 from gymrat.errors import GATE_EXIT_CODE
-from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError, iterate_session
-from gymrat.loop.settle import DiscardResult, KeepOptions, KeepResult, discard_session, keep_session
+from gymrat.loop.discard import DiscardResult, discard_session
+from gymrat.loop.iterate.run import IterateOptions, IterateResult, LoopStopError, iterate_session
+from gymrat.loop.keep import KeepOptions, KeepResult, keep_session
 from gymrat.loop.status import status_data, status_session
 from gymrat.observers import fan_out
 from gymrat.report.json_doc import (
@@ -142,7 +144,7 @@ async def _iterate_body(
             lambda abort: iterate_session(
                 root,
                 resolved,
-                IterateOptions(abort=abort, on_progress=on_progress),
+                IterateOptions(abort=abort, on_progress=on_progress, warn=renderer.warn),
                 color=resolved_color,
             )
         )
@@ -250,7 +252,11 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
             keep_result = await keep_session(
                 root,
                 resolve_benchless_config(flags, root),
-                KeepOptions(message=message, allow_unimproved=allow_unimproved),
+                KeepOptions(
+                    message=message,
+                    allow_unimproved=allow_unimproved,
+                    warn_color=resolve_stream_color(color_override, sys.stderr),
+                ),
                 color=resolved_color,
             )
             trace.seq = keep_result.record.seq

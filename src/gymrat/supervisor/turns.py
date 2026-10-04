@@ -19,13 +19,13 @@ from typing import TYPE_CHECKING
 
 from gymrat.eta import format_duration
 from gymrat.loop.iterate.run import stop_condition
-from gymrat.session.records.models import CommandRecord, DiscardRecord, HookRecord, KeepRecord
+from gymrat.session.records import CommandRecord, DiscardRecord, HookRecord, KeepRecord
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from gymrat.config import BenchlessConfig
-    from gymrat.session import SessionLogRecord
+    from gymrat.config.types import BenchlessConfig
+    from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import TurnEndEvent
     from gymrat.supervisor.supervise import EndedBy

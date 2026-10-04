@@ -9,10 +9,12 @@ reproducible and testable without a console.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, assert_never
 
 from gymrat.eta import SamplingEta, format_duration
+from gymrat.model import Effect
 from gymrat.plural import pluralize
 from gymrat.progress_events import (
     ConfirmFinished,
@@ -28,6 +30,7 @@ from gymrat.progress_events import (
     PrepareStarted,
     ProgressEvent,
 )
+from gymrat.report.format import format_delta
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -37,6 +40,9 @@ TARGETS_PER_ROUND = 2
 
 REGRESSED_NAME_CAP = 3
 """How many regressed metric names the judge's lines spell out."""
+
+MISSING_DELTA = "—"
+"""What the judge's lines print in place of a missing or non-finite primary delta."""
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +483,26 @@ def plain_line(before: IterateState, after: IterateState, event: ProgressEvent) 
             return None
 
 
+def format_primary_delta(primary_delta_pct: float | None) -> str:
+    """Format the judge's primary delta the way the report prints it.
+
+    Both checklist modes print the delta through this, so the live row, the
+    plain line, and the report agree on sign and rounding.
+
+    Args:
+        primary_delta_pct: Percentage delta on the primary metric, or ``None``
+            when no delta is available.
+
+    Returns:
+        The report's signed percentage (``"+2.2%"``, an unsigned ``"0.0%"``
+        for a value that rounds to zero), or :data:`MISSING_DELTA` for a
+        missing or non-finite delta.
+    """
+    if primary_delta_pct is None or not math.isfinite(primary_delta_pct):
+        return MISSING_DELTA
+    return format_delta(Effect(value=primary_delta_pct, unit="percent"))
+
+
 def format_judge_plain(
     primary_delta_pct: float | None,
     regressed: Sequence[str],
@@ -486,7 +512,7 @@ def format_judge_plain(
 
     Args:
         primary_delta_pct: Percentage delta on the primary metric, or ``None``
-            when no delta is available (renders as ``"—"``).
+            when no delta is available. Rendered by :func:`format_primary_delta`.
         regressed: Names of regressed metrics. At most
             :data:`REGRESSED_NAME_CAP` names are spelled out; the rest are
             collapsed to ``"…"``.
@@ -497,7 +523,7 @@ def format_judge_plain(
         A ``" · "``-joined string of the delta, non-regressed count, and
         (when any regressed) their names.
     """
-    delta_str = f"{primary_delta_pct:+.1f}%" if primary_delta_pct is not None else "—"
+    delta_str = format_primary_delta(primary_delta_pct)
     handoff: list[str] = []
     if regressed:
         shown = ", ".join(regressed[:REGRESSED_NAME_CAP])

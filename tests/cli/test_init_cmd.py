@@ -20,8 +20,9 @@ from typer.testing import CliRunner
 from gymrat.cli.app import app
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from gymrat.loop.start import start_session
-from gymrat.session import experiment_worktree_dir, read_records, session_jsonl_path
 from gymrat.session.budget import write_budget
+from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.store import read_records
 from tests._ansi import strip_ansi
 from tests._rich import unwrap_panel
 from tests.cli._budget import (

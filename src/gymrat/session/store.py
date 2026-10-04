@@ -37,13 +37,14 @@ from gymrat.session.records import (
     HookRecord,
     IterationRecord,
     KeepRecord,
+    NonFiniteNumberError,
     SessionLogRecord,
     SessionRecord,
     StopRecord,
+    decode_log_line,
     parse_record,
+    record_to_json_line,
 )
-from gymrat.session.records.models import record_to_json_line
-from gymrat.session.records.parse import NonFiniteNumberError, decode_log_line
 from gymrat.session.schema import KeepReason
 
 __all__ = [

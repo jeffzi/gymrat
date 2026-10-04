@@ -9,12 +9,8 @@ from gymrat.clock import now_ns
 from gymrat.loop.iterate.bench import Judged, recorded_delta
 from gymrat.model import ExactVerdict, MetricVerdict, PermutationVerdict, ResolvedMetricMeta
 from gymrat.report.loop import LoopOutcome, LoopPrimary, MetricPrimary
-from gymrat.session import (
-    Confirm,
-    IterationPrimary,
-    IterationRecord,
-)
-from gymrat.session import MetricVerdict as RecordMetricVerdict
+from gymrat.session.records import Confirm, IterationPrimary, IterationRecord
+from gymrat.session.records import MetricVerdict as RecordMetricVerdict
 
 if TYPE_CHECKING:
     from gymrat.loop.iterate.confirm import Confirmation

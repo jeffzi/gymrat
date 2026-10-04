@@ -14,23 +14,20 @@ helper imported as ``tests.loop.iterate._fixtures``.
 
 from __future__ import annotations
 
+import itertools
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from gymrat.config import ResolvedConfig
+from gymrat.config.types import ResolvedConfig
 from gymrat.errors import GymratError
+from gymrat.exec import ExecResult
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
-from gymrat.session import (
-    IterationRecord,
-    SessionLogRecord,
-    SessionRecord,
-    Worktrees,
-    read_records,
-    record_to_wire,
-    session_jsonl_path,
-)
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord, record_to_wire
+from gymrat.session.store import read_records
+from gymrat.session.workspace import Worktrees
 from tests._ansi import SGR_RE
 from tests.session.records._fixtures import SESSION_ID
 from tests.session.records._fixtures import iteration_record as _iteration_record
@@ -38,6 +35,8 @@ from tests.session.records._fixtures import session_record as _session_record_de
 
 if TYPE_CHECKING:
     import pytest
+
+    from gymrat.exec import ExecOptions
 
 #: Ten rounds of a bench that stayed near 100.
 BASELINE_MS: list[float] = [100, 101, 99, 100, 102, 98, 100, 101, 99, 100]
@@ -260,3 +259,27 @@ def last_iteration_of(root: str) -> IterationRecord:
         f"expected an iteration record at the end of {session_jsonl_path(root)}"
     )
     return last
+
+
+#: What the metric-lines adapter says about the malformed line :func:`bench_malformed_once` prints.
+MALFORMED_LINE_WARNING = "Failed to parse METRIC line: METRIC foo=bar"
+
+
+def bench_malformed_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand in for the bench process: every run reports, the first one a malformed line too."""
+    run_indexes = itertools.count()
+
+    async def fake_exec(_command: str, _options: ExecOptions) -> ExecResult:
+        index = next(run_indexes)
+        stdout = f"METRIC total_ms={BASELINE_MS[index % len(BASELINE_MS)]}"
+        if index == 0:
+            stdout += "\nMETRIC foo=bar"
+        return ExecResult(
+            stdout=stdout,
+            stderr="",
+            exit_code=0,
+            stdout_bytes=len(stdout.encode()),
+            stderr_bytes=0,
+        )
+
+    monkeypatch.setattr("gymrat.sampling.exec", fake_exec)

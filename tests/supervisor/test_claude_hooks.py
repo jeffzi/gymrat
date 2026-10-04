@@ -15,8 +15,9 @@ import pytest
 from claude_agent_sdk import HookMatcher
 from claude_agent_sdk.types import HookEvent
 
-from gymrat.supervisor import HooksFactory, create_claude_driver, supervise_hooks_factory
+from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.driver import SessionOutcome
+from gymrat.supervisor.hooks import HooksFactory, supervise_hooks_factory
 from gymrat.supervisor.tools import ToolsFactory
 from tests.supervisor._fixtures import (
     FactoryProbe,

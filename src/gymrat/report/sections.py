@@ -20,7 +20,7 @@ from gymrat.verdict import infer_group
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from gymrat.config import KindEntry
+    from gymrat.config.types import KindEntry
     from gymrat.model import ResolvedMetricMeta
     from gymrat.report.types import CandidateComparison
     from gymrat.verdict import KindAggregate

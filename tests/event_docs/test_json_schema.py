@@ -27,7 +27,7 @@ from tests.event_docs._imports import modules_imported_by
 
 
 def _schemas() -> tuple[dict[str, Any], dict[str, Any]]:
-    from gymrat.event_docs.json_schema import render_json_schemas
+    from gymrat.event_docs import render_json_schemas
 
     return render_json_schemas()
 
@@ -530,9 +530,9 @@ def test_render_json_schemas_when_called_does_use_minimum_zero_for_opt_non_negat
 # ---------------------------------------------------------------------------
 
 
-def test_importing_json_schema_when_loaded_does_not_import_unexpected_modules():
+def test_importing_event_docs_when_loaded_does_not_import_unexpected_modules():
     unexpected = {"yaml", "jsonschema", "ruamel", "ruamel.yaml"}
 
-    leaked = unexpected & modules_imported_by("gymrat.event_docs.json_schema")
+    leaked = unexpected & modules_imported_by("gymrat.event_docs")
 
-    assert not leaked, f"importing json_schema pulled in unexpected modules: {leaked}"
+    assert not leaked, f"importing event_docs pulled in unexpected modules: {leaked}"

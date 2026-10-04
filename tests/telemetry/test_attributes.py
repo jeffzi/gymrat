@@ -15,8 +15,9 @@ from gymrat.session.records import (
     Confirm,
     FinalizeRecord,
     IterationPrimary,
+    PairedSamples,
+    SessionLogRecord,
 )
-from gymrat.session.records.models import PairedSamples, SessionLogRecord
 from gymrat.telemetry.attributes import (
     all_attribute_names,
     command_attributes,

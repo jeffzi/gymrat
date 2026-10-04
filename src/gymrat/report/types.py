@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from gymrat.config import KindEntry
+    from gymrat.config.types import KindEntry
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
     from gymrat.targets import WorktreeRemovalFailure
     from gymrat.verdict import KindAggregate

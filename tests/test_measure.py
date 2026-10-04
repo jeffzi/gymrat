@@ -17,7 +17,7 @@ import pytest
 
 from gymrat import measure as measure_mod
 from gymrat import sampling
-from gymrat.config import KindEntry, MetricEntry
+from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.errors import CommandError, GymratError
 from gymrat.measure import MeasureOptions, measure
 from gymrat.sampling import RunOptions, TargetSpec
@@ -28,7 +28,7 @@ from tests._pipeline import install_pipeline
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from gymrat.adapters.types import WarnSink
+    from gymrat.adapters import WarnSink
     from gymrat.progress_events import ProgressEvent
 
 

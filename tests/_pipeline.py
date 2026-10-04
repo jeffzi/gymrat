@@ -13,7 +13,7 @@ from types import ModuleType
 import pytest
 
 from gymrat import sampling
-from gymrat.adapters.types import Adapter
+from gymrat.adapters import Adapter
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
 from gymrat.targets import CleanupResult, InPlaceTarget, WorktreeInfo
 

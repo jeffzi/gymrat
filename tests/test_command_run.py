@@ -17,20 +17,15 @@ import typer
 from filelock import FileLock, Timeout
 
 from gymrat.command_run import CommandTrace, command_origin, config_trace_args, with_repo_lock
-from gymrat.config import CliFlags
+from gymrat.config.types import CliFlags
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
-from gymrat.loop.iterate import LoopStopError
-from gymrat.session import (
-    CommandRecord,
-    append_record,
-    read_records,
-    session_jsonl_path,
-)
+from gymrat.loop.iterate.run import LoopStopError
 from gymrat.session.lock import _os_lock_file, acquire_lock
-from gymrat.session.paths import lockfile_path, repo_root
+from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
+from gymrat.session.records import CommandRecord
 from gymrat.session.schema import CommandReason
-from gymrat.session.store import recover_torn_tail, session_header
+from gymrat.session.store import append_record, read_records, recover_torn_tail, session_header
 from tests._command_run_fixtures import (
     isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )

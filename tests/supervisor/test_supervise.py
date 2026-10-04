@@ -9,24 +9,19 @@ stay deterministic under ``pytest-randomly`` and ``pytest-xdist``.
 """
 
 import asyncio
-import importlib
 import itertools
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from typing import override
 
 import pytest
 
-from gymrat.supervisor import (
-    SessionOutcome,
-    TextDeltaEvent,
-    supervise,
-)
-from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
-from gymrat.supervisor.events import SessionEvent, SessionObserver
+from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
+from gymrat.supervisor.events import SessionEvent, SessionObserver, TextDeltaEvent
+from gymrat.supervisor.supervise import supervise
 from tests.supervisor._fixtures import (
     _cap_events,
     collecting_observer,
@@ -91,7 +86,16 @@ class _CountingSession(_DelegatingSession):
 
 
 class _ThrowingInterruptSession(_DelegatingSession):
-    """Raises synchronously from ``interrupt`` to exercise the grace fallback."""
+    """Raises from ``interrupt`` before any coroutine exists, to exercise the grace fallback."""
+
+    @override
+    def interrupt(self) -> Coroutine[object, object, None]:
+        message = "interrupt exploded"
+        raise RuntimeError(message)
+
+
+class _RejectingInterruptSession(_DelegatingSession):
+    """Hands back an ``interrupt`` coroutine that fails once the supervisor awaits it."""
 
     @override
     async def interrupt(self) -> None:
@@ -430,9 +434,7 @@ async def test_supervise_when_both_caps_could_fire_does_report_first_cap_only(
     probe = collecting_observer()
     deadline_ms = 60
     now_ms = _Box()
-    # The package re-exports ``supervise``, which shadows the module of the same name.
-    supervise_module = importlib.import_module("gymrat.supervisor.supervise")
-    monkeypatch.setattr(supervise_module, "now_ms", lambda: now_ms.value)
+    monkeypatch.setattr("gymrat.supervisor.supervise.now_ms", lambda: now_ms.value)
 
     async def _pass_deadline() -> None:
         now_ms.value = deadline_ms + 1
@@ -566,19 +568,38 @@ async def test_supervise_when_observer_raises_does_still_fire_spend_cap(tmp_path
     assert result.ended_by == "spend-cap"
 
 
-async def test_supervise_when_interrupt_throws_does_recover_via_grace(tmp_path: Path):
-    inner = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
-    driver = _WrapDriver(inner, _ThrowingInterruptSession)
+#: Far under the mock step's 60 s delay, so only the grace abort can end the run in time.
+_GRACE_RECOVERY_TIMEOUT_S = 5
 
-    result = await supervise(
-        driver,
-        make_prompt(),
-        context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
-        launch=make_launch(max_minutes=0.001),
-        grace_ms=50,
-    )
+
+@pytest.mark.parametrize(
+    "make_session",
+    [
+        pytest.param(_ThrowingInterruptSession, id="raises-synchronously"),
+        pytest.param(_RejectingInterruptSession, id="coroutine-fails"),
+    ],
+)
+async def test_supervise_when_interrupt_fails_does_warn_and_recover_via_grace(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    make_session: Callable[[DriverSession], DriverSession],
+):
+    inner = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
+    driver = _WrapDriver(inner, make_session)
+
+    async with asyncio.timeout(_GRACE_RECOVERY_TIMEOUT_S):
+        result = await supervise(
+            driver,
+            make_prompt(),
+            context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
+            launch=make_launch(max_minutes=0.001),
+            grace_ms=50,
+        )
+    await asyncio.sleep(0)
 
     assert result.ended_by == "wall-clock"
+    assert result.outcome.reason == "interrupted"
+    assert "session interrupt failed: interrupt exploded" in capsys.readouterr().err.splitlines()
 
 
 async def test_supervise_when_outcome_rejects_does_propagate_rejection(tmp_path: Path):
@@ -769,8 +790,7 @@ async def test_supervise_when_spawned_end_raises_does_warn_to_stderr(
     await asyncio.sleep(0)
 
     assert result.ended_by == "spend-cap"
-    captured = capsys.readouterr()
-    assert "end exploded" in captured.err
+    assert "background task failed: end exploded" in capsys.readouterr().err.splitlines()
 
 
 # ---------------------------------------------------------------------------

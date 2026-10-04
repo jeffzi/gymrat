@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.session import append_record
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.store import append_record
 from tests.cli._session import make_discard_repo
 from tests.cli.supervise._fixtures import start_open_session
 from tests.cli.supervise.test_cmd import _err_text, _install_seams, _run

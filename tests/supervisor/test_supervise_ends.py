@@ -24,10 +24,9 @@ from typing import TYPE_CHECKING, get_args
 import pytest
 
 from gymrat.clock import now_ms, now_ns
-from gymrat.config import BenchlessConfig, StopConfig
+from gymrat.config.types import BenchlessConfig, StopConfig
 from gymrat.session.paths import session_dir, session_jsonl_path
 from gymrat.session.store import append_record
-from gymrat.supervisor import supervise
 from gymrat.supervisor.events import (
     CapEvent,
     FollowUpEvent,
@@ -35,7 +34,7 @@ from gymrat.supervisor.events import (
     TextDeltaEvent,
     ToolEndEvent,
 )
-from gymrat.supervisor.supervise import EndedBy
+from gymrat.supervisor.supervise import EndedBy, supervise
 from tests.session.records._fixtures import (
     command_record,
     hook_record,
@@ -64,10 +63,10 @@ from tests.supervisor._mock_driver import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
-    from gymrat.session import SessionLogRecord
-    from gymrat.supervisor import Driver, SupervisionResult
-    from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
+    from gymrat.session.records import SessionLogRecord
+    from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
     from gymrat.supervisor.events import SessionObserver
+    from gymrat.supervisor.supervise import SupervisionResult
     from tests.supervisor._mock_driver import MockStep
 
 

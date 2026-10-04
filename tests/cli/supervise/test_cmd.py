@@ -16,7 +16,7 @@ import os
 import re
 import time
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,41 +32,40 @@ from gymrat.cli.supervise import cmd as supervise_cmd
 from gymrat.cli.supervise.preflight import run_preflight
 from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.cli.supervise.types import ReadSessionResult, SuperviseReporter
-from gymrat.config import Effort, ResolvedConfig, StopConfig, SuperviseConfig
+from gymrat.config.types import Effort, ResolvedConfig, StopConfig, SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.exec import kill_live_process_groups
 from gymrat.loop.start import StartResult
-from gymrat.session import Worktrees
 from gymrat.session.paths import (
     lockfile_path,
     supervise_lockfile_path,
 )
-from gymrat.session.workspace import ensure_git_exclude
+from gymrat.session.workspace import Worktrees, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
-from gymrat.supervisor import (
-    HooksFactory,
-    SessionPrompt,
-    SupervisionResult,
-    ToolsFactory,
-    create_claude_driver,
-    gymrat_tools_factory,
-    supervise_hooks_factory,
-)
+from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.context import SupervisedSession
+from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
+from gymrat.supervisor.hooks import HooksFactory, supervise_hooks_factory
+from gymrat.supervisor.supervise import SupervisionResult
+from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
 from tests._ansi import strip_ansi
 from tests._rich import unwrap_panel
+from tests.cli._help import help_output
 from tests.cli._session import closed_stdout_error, closed_stdout_runner
 from tests.cli.supervise._fixtures import (
     CleanupRegistry,
     empty_session_state,
+    fire_launch,
     make_supervision_result,
+    render_frame,
     session_state_three_iterations,
 )
 from tests.conftest import hold_lock
 from tests.session.records._fixtures import (
     session_record,
 )
+from tests.supervisor._mock_driver import CostStep, create_mock_driver
 
 runner = CliRunner()
 
@@ -184,13 +183,15 @@ def _config(
     )
 
 
-def _make_start_result(root: str = "/repo") -> StartResult:
-    """Build a ``StartResult`` carrying sensible defaults for the test harness."""
+def _make_start_result(root: str = "/repo", branch: str | None = None) -> StartResult:
+    """Build a ``StartResult`` carrying sensible defaults, its session on ``branch`` when given."""
+    overrides = {} if branch is None else {"branch": branch}
     rec = session_record(
         worktrees=Worktrees(
             experiment=f"{root}/.gymrat/worktrees/experiment",
             baseline=f"{root}/.gymrat/worktrees/baseline",
         ),
+        **overrides,
     )
     return StartResult(
         session=rec,
@@ -207,6 +208,7 @@ def _install_seams(
     session_result: ReadSessionResult | None = None,
     final_text: str | None = None,
     raises: Exception | None = None,
+    branch: str | None = None,
 ) -> _Seams:
     """Replace every seam ``supervise.cmd`` composes over, returning the recorders."""
     seams = _Seams()
@@ -230,7 +232,7 @@ def _install_seams(
             "max_minutes": max_minutes,
             "force": force,
         })
-        return _make_start_result(root)
+        return _make_start_result(root, branch)
 
     def fake_compose(
         cfg: object,
@@ -585,6 +587,20 @@ def test_supervise_when_run_does_pass_the_claude_driver_to_supervise(
     assert seams.supervise_calls[0]["driver"] is seams.driver
 
 
+def test_supervise_when_driver_session_completes_does_run_the_real_supervisor(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    commands_supervise = supervise_cmd.supervise
+    seams = _install_seams(monkeypatch)
+    seams.create_driver.return_value = create_mock_driver([CostStep(cost_usd=0.01)])
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.supervise", commands_supervise)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    assert seams.exit_calls[0]["ended_by"] == "session"
+
+
 def test_supervise_when_prompt_given_does_compose_kickoff_with_it(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -638,6 +654,74 @@ def test_supervise_when_max_minutes_fractional_does_forward_it_without_flooring_
 
     assert result.exit_code == 0
     assert seams.reporter_calls[0]["max_minutes"] == 5.5
+
+
+def _dashboard_title(reporter_kwargs: Mapping[str, Any]) -> str:
+    """Build the real dashboard from the arguments the command passed and return its title line."""
+    reporter = create_supervise_reporter(**reporter_kwargs)
+    try:
+        fire_launch(reporter.observer, 1000)
+        frame = render_frame(reporter)
+        return next(line for line in frame.splitlines() if line.startswith("╭"))
+    finally:
+        reporter.stop()
+
+
+def test_supervise_when_live_and_session_has_branch_does_show_it_in_the_dashboard_title(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch, branch="banana")
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.resolve_render_mode", _live_mode)
+
+    result = _run("optimize it", "--max-minutes", "10")
+    title = _dashboard_title(seams.reporter_calls[0])
+
+    assert result.exit_code == 0
+    assert "· branch banana" in title
+
+
+def test_supervise_when_live_and_session_has_no_branch_does_omit_it_from_the_dashboard_title(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch, branch="")
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.resolve_render_mode", _live_mode)
+
+    result = _run("optimize it", "--max-minutes", "10")
+    title = _dashboard_title(seams.reporter_calls[0])
+
+    assert result.exit_code == 0
+    assert "branch" not in title
+
+
+def _plain_mode() -> Literal["live", "plain"]:
+    """Stand in for ``resolve_render_mode`` so the run reports in plain mode."""
+    return "plain"
+
+
+def _plain_writes(reporter_kwargs: Mapping[str, Any]) -> list[str]:
+    """Build the real plain reporter from the command's arguments and return what launch prints."""
+    writes: list[str] = []
+    reporter = create_supervise_reporter(**reporter_kwargs, plain_write=writes.append)
+    try:
+        fire_launch(reporter.observer, 1000)
+    finally:
+        reporter.stop()
+    return writes
+
+
+def test_supervise_when_plain_and_session_has_branch_does_print_no_title(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch, branch="banana")
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.resolve_render_mode", _plain_mode)
+
+    result = _run("optimize it", "--max-minutes", "10")
+    writes = _plain_writes(seams.reporter_calls[0])
+
+    assert result.exit_code == 0
+    assert writes
+    assert not any("banana" in line for line in writes)
+    assert "banana" not in strip_ansi(result.stderr)
 
 
 def test_supervise_when_no_color_passed_does_still_run_supervise(
@@ -826,6 +910,29 @@ def test_supervise_when_help_does_describe_flags(repo: str):
     assert re.search(r"stop condition.*already met", flat, re.IGNORECASE)
     assert "--max-minutes" in text
     assert re.search(r"counted.*baseline.*recorded", flat, re.IGNORECASE)
+
+
+@pytest.mark.parametrize(
+    ("name", "metavar", "description"),
+    [
+        pytest.param("[PROMPT]", "<str>", "optimization prompt for the agent", id="prompt"),
+        pytest.param("--max-minutes", "<float>", "wall-clock cap in minutes", id="max-minutes"),
+        pytest.param("--max-usd", "<float>", "spend cap in USD", id="max-usd"),
+        pytest.param("--log", "<str>", "path for the JSONL event log", id="log"),
+        pytest.param("--model", "<str>", "model to use for the agent session", id="model"),
+        pytest.param("--effort", "<level>", "effort level", id="effort"),
+        pytest.param("--allow-dirty", "", "allow launching with uncommitted changes", id="dirty"),
+        pytest.param(
+            "--no-finalize", "", "leave the session open instead of finalizing it", id="finalize"
+        ),
+    ],
+)
+def test_supervise_when_help_does_list_each_flag_with_its_metavar_and_text(
+    name: str, metavar: str, description: str
+):
+    text = help_output("supervise")
+
+    assert re.search(rf"{re.escape(name)}\s+{re.escape(metavar)}\s*{re.escape(description)}", text)
 
 
 # ---------------------------------------------------------------------------

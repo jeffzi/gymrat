@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from gymrat.config import BenchlessConfig
+from gymrat.config.types import BenchlessConfig
 
 
 @dataclass(frozen=True, slots=True)
