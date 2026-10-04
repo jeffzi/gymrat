@@ -33,8 +33,7 @@ layers manage the virtualenv, file selection, and flags.
 
 - Never run `git commit --no-verify`, `git commit -n`, or anything else that skips the prek hooks —
   the hooks are the gate, not an obstacle.
-- Fix a failing check at its source. Never edit a test to make it pass; never widen a lint ignore to
-  silence a real finding.
+- Fix a failing check at its source. Never edit a test to make it pass.
 
 ## Linter and type-checker configuration
 
