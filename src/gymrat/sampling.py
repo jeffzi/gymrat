@@ -396,7 +396,21 @@ async def collect_samples(
         CommandError: A prepare or bench command timed out or exited non-zero.
     """
     timeout_ms = int(options.timeout_seconds * MS_PER_SECOND)
-    collected: list[list[dict[str, float]]] = [[] for _ in targets]
+    collected = [TargetSamples(ctx=ctx, samples=[]) for ctx in targets]
+
+    def emit_pass(
+        event: type[PassStarted] | type[PassFinished], round_number: int, ctx: TargetContext
+    ) -> None:
+        emit_progress(
+            options.on_progress,
+            event(
+                round=round_number,
+                total_rounds=options.samples,
+                target_count=len(targets),
+                label=ctx.label,
+                at_ms=options.clock(),
+            ),
+        )
 
     if options.prepare is not None:
         for ctx in targets:
@@ -409,36 +423,15 @@ async def collect_samples(
             )
 
     for round_number in range(1, options.samples + 1):
-        for ctx, records in zip(targets, collected, strict=True):
-            emit_progress(
-                options.on_progress,
-                PassStarted(
-                    round=round_number,
-                    total_rounds=options.samples,
-                    target_count=len(targets),
-                    label=ctx.label,
-                    at_ms=options.clock(),
-                ),
-            )
+        for target in collected:
+            emit_pass(PassStarted, round_number, target.ctx)
             stdout = await _run_command(
-                "bench", round_number, options.bench, ctx, timeout_ms, abort
+                "bench", round_number, options.bench, target.ctx, timeout_ms, abort
             )
-            emit_progress(
-                options.on_progress,
-                PassFinished(
-                    round=round_number,
-                    total_rounds=options.samples,
-                    target_count=len(targets),
-                    label=ctx.label,
-                    at_ms=options.clock(),
-                ),
-            )
-            records.append(adapter.parse(stdout, options.warn))
+            emit_pass(PassFinished, round_number, target.ctx)
+            target.samples.append(adapter.parse(stdout, options.warn))
 
-    return [
-        TargetSamples(ctx=ctx, samples=samples)
-        for ctx, samples in zip(targets, collected, strict=True)
-    ]
+    return collected
 
 
 async def _run_command(  # noqa: PLR0913, PLR0917 -- one parameter per command-execution axis
@@ -452,7 +445,7 @@ async def _run_command(  # noqa: PLR0913, PLR0917 -- one parameter per command-e
     """Run one command and return its stdout, or raise on failure."""
     result = await exec(command, ExecOptions(cwd=ctx.dir, timeout_ms=timeout_ms, abort=abort))
     if isinstance(result, ExecTimeoutError) or result.exit_code != 0:
-        raise to_command_error(phase, sample_index, command, ctx, result)
+        raise _to_command_error(phase, sample_index, command, ctx, result)
     return result.stdout
 
 
@@ -461,7 +454,7 @@ async def _run_command(  # noqa: PLR0913, PLR0917 -- one parameter per command-e
 # ---------------------------------------------------------------------------
 
 
-def to_command_error(
+def _to_command_error(
     phase: str,
     sample_index: int | None,
     command: str,
@@ -505,10 +498,7 @@ def to_command_error(
         outcome = _field("exit code", result.exit_code)
     header = f'{phase} command {outcome_label} ({position}"{ctx.label}"{sample})'
 
-    lines = [header, *location, _field("command", command), outcome]
-    lines.extend(
-        _captured_output(result.stdout, result.stdout_bytes, result.stderr, result.stderr_bytes)
-    )
+    lines = [header, *location, _field("command", command), outcome, *_captured_output(result)]
 
     return CommandError("\n".join(lines), hint=hint)
 
@@ -518,7 +508,7 @@ def _field(label: str, value: object) -> str:
     return f"  {(label + ':').ljust(_LABEL_WIDTH)}{value}"
 
 
-def _captured_output(stdout: str, stdout_bytes: int, stderr: str, stderr_bytes: int) -> list[str]:
+def _captured_output(result: ExecResult | ExecTimeoutError) -> list[str]:
     """Render the captured output of a failed command.
 
     A lone non-empty stream is emitted bare unless its captured text was
@@ -526,17 +516,15 @@ def _captured_output(stdout: str, stdout_bytes: int, stderr: str, stderr_bytes: 
     becomes a labeled entry annotated with the true byte total.
 
     Args:
-        stdout: The captured stdout text.
-        stdout_bytes: The true byte total of stdout before truncation.
-        stderr: The captured stderr text.
-        stderr_bytes: The true byte total of stderr before truncation.
+        result: The failed command's outcome, carrying each stream's captured
+            text and its true byte total before truncation.
 
     Returns:
         Lines of rendered output, ready for joining into the error message.
     """
     streams = [
-        ("stderr", stderr, stderr_bytes),
-        ("stdout", stdout, stdout_bytes),
+        ("stderr", result.stderr, result.stderr_bytes),
+        ("stdout", result.stdout, result.stdout_bytes),
     ]
     present = [(label, text, total) for label, text, total in streams if text]
 
@@ -620,11 +608,12 @@ def materialize_worktree(worktree: WorktreeInfo, repo_dir: str) -> None:
         worktree.created = Path(worktree.dir).exists()
 
 
-# What handing one worktree to git accomplished. ``deregistered`` and ``stale``
-# both describe a directory that vanished behind git's back; only ``stale`` may
-# leave an entry a prune must collect. ``untouched`` is a worktree git never put
-# on disk. A :class:`WorktreeRemovalFailure` is a directory git refused to remove.
-type _RemovalStatus = Literal["removed", "deregistered", "stale", "untouched"]
+# What handing one worktree to git accomplished. ``removed`` took a directory off
+# disk; ``stale`` is a vanished directory whose entry git would not clear, which a
+# prune must collect. ``None`` leaves nothing to count or sweep: a worktree git
+# never put on disk, or a vanished one whose entry git cleared. A
+# :class:`WorktreeRemovalFailure` is a directory git refused to remove.
+type _RemovalStatus = Literal["removed", "stale"] | None
 type _RemovalOutcome = _RemovalStatus | WorktreeRemovalFailure
 
 
@@ -646,7 +635,7 @@ def _remove_worktree(worktree: WorktreeInfo, repo_dir: str) -> _RemovalOutcome:
     """
     on_disk = Path(worktree.dir).exists()
     if not on_disk and not worktree.created:
-        return "untouched"
+        return None
 
     error = try_git(["worktree", "remove", "--force", worktree.dir], repo_dir)
     if error is not None:
@@ -656,10 +645,10 @@ def _remove_worktree(worktree: WorktreeInfo, repo_dir: str) -> _RemovalOutcome:
             return WorktreeRemovalFailure(dir=worktree.dir, error=error)
         return "stale"
 
-    # The entry is gone — clear the flag so a later sweep treats it as untouched
-    # rather than reclassifying it as stale.
+    # The entry is gone — clear the flag so a later sweep leaves it alone rather
+    # than reclassifying it as stale.
     worktree.created = False
-    return "removed" if on_disk else "deregistered"
+    return "removed" if on_disk else None
 
 
 def cleanup_worktrees(worktrees: Sequence[WorktreeInfo], repo_dir: str) -> CleanupResult:
@@ -702,33 +691,6 @@ def cleanup_worktrees(worktrees: Sequence[WorktreeInfo], repo_dir: str) -> Clean
     return CleanupResult(removed=removed, failures=tuple(failures), prune_error=prune_error)
 
 
-def resolve_dir(target: Target, repo_dir: str, worktrees: list[WorktreeInfo]) -> str:
-    """The directory a target runs in, materializing a worktree for a ref.
-
-    A ref is benchmarked from its own worktree. The planned worktree is appended
-    to ``worktrees`` before ``git worktree add`` runs, so a caller sweeping the
-    registry on termination can remove a directory a killed add left behind.
-
-    Args:
-        target: The target to locate.
-        repo_dir: The repository the worktree is added from.
-        worktrees: The live registry of claimed worktrees, appended to in place.
-
-    Returns:
-        The directory the benchmark runs in.
-
-    Raises:
-        GymratError: When the system temp directory cannot be resolved, or
-            ``git worktree add`` fails for the ref.
-    """
-    if isinstance(target, RefTarget):
-        worktree = plan_worktree(target)
-        worktrees.append(worktree)
-        materialize_worktree(worktree, repo_dir)
-        return worktree.dir
-    return target.dir
-
-
 def to_context(
     spec: TargetSpec,
     target: Target,
@@ -737,6 +699,10 @@ def to_context(
     position: Literal["old", "new"] | None = None,
 ) -> TargetContext:
     """Pair a resolved target with the directory it runs in and its display label.
+
+    A ref is benchmarked from its own worktree. The planned worktree is appended
+    to ``worktrees`` before ``git worktree add`` runs, so a caller sweeping the
+    registry on termination can remove a directory a killed add left behind.
 
     Args:
         spec: The target as the caller named it, carrying any explicit label.
@@ -753,9 +719,16 @@ def to_context(
         GymratError: When the system temp directory cannot be resolved, or
             ``git worktree add`` fails for a ref.
     """
+    if isinstance(target, RefTarget):
+        worktree = plan_worktree(target)
+        worktrees.append(worktree)
+        materialize_worktree(worktree, repo_dir)
+        directory = worktree.dir
+    else:
+        directory = target.dir
     return TargetContext(
         target=target,
-        dir=resolve_dir(target, repo_dir, worktrees),
+        dir=directory,
         label=resolve_label(spec.label, target),
         position=position,
     )
@@ -820,14 +793,14 @@ async def run_with_worktrees[M, R](
 
     uninstall = install_termination_cleanup(terminate)
     try:
-        try:
-            measurement = await phase(repo_dir, worktrees, abort)
-        except Exception as error:
-            cleanup = cleanup_worktrees(worktrees, repo_dir)
-            wrapped = _with_cleanup_failures(error, cleanup)
-            if wrapped is error:
-                raise
-            raise wrapped from error
+        measurement = await phase(repo_dir, worktrees, abort)
+    except Exception as error:
+        cleanup = cleanup_worktrees(worktrees, repo_dir)
+        wrapped = _with_cleanup_failures(error, cleanup)
+        if wrapped is error:
+            raise
+        raise wrapped from error
+    else:
         cleanup = cleanup_worktrees(worktrees, repo_dir)
         return build_result(measurement, cleanup)
     finally:

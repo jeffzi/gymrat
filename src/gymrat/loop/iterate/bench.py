@@ -31,7 +31,7 @@ from gymrat.sampling import (
 )
 from gymrat.session.records import PairedSamples, SessionRecord
 from gymrat.targets import InPlaceTarget
-from gymrat.verdict import compute_geomean, compute_kind_aggregates, compute_verdicts
+from gymrat.verdict import compute_geomean, compute_verdicts
 
 if TYPE_CHECKING:
     from gymrat.adapters import Adapter
@@ -113,7 +113,6 @@ def build_iteration_comparison(
         label=run.experiment.ctx.label,
         samples=run.experiment.samples,
         verdicts=run.verdicts,
-        kinds=compute_kind_aggregates(run.verdicts, run.metric_meta),
     )
     measurement = ComparisonMeasurement(
         baseline_label=run.baseline.ctx.label,

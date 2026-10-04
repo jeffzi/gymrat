@@ -38,7 +38,7 @@ from gymrat.sampling import (
 )
 from gymrat.targets import CleanupResult, WorktreeInfo, resolve_target
 from gymrat.utils import WarnSink
-from gymrat.verdict import KindAggregate, compute_kind_aggregates, compute_verdicts
+from gymrat.verdict import compute_kind_aggregates, compute_verdicts
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -69,7 +69,6 @@ class CandidateMeasurement:
     label: str
     samples: list[dict[str, float]]
     verdicts: dict[str, MetricVerdict]
-    kinds: list[KindAggregate]
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +81,7 @@ class ComparisonMeasurement:
     Attributes:
         baseline_label: Display label for the baseline target.
         baseline_samples: Per-round metric samples collected for the baseline.
-        candidates: Measured candidates, each with its own verdicts and kinds.
+        candidates: Measured candidates, each with its own verdicts.
         metric_meta: Resolved metric metadata keyed by metric name.
     """
 
@@ -148,7 +147,6 @@ def _measure_candidates(
                 label=candidate.ctx.label,
                 samples=candidate.samples,
                 verdicts=verdicts,
-                kinds=compute_kind_aggregates(verdicts, metric_meta),
             )
         )
     return measured
@@ -208,11 +206,15 @@ def build_comparison_result(
 
     return ComparisonResult(
         worktrees_removed=cleanup.removed,
-        worktrees_left_behind=tuple(cleanup.failures),
+        worktrees_left_behind=cleanup.failures,
         worktree_prune_error=cleanup.prune_error,
         baseline_label=measurement.baseline_label,
         candidates=tuple(
-            CandidateComparison(label=c.label, kinds=tuple(c.kinds)) for c in candidates
+            CandidateComparison(
+                label=c.label,
+                kinds=tuple(compute_kind_aggregates(c.verdicts, measurement.metric_meta)),
+            )
+            for c in candidates
         ),
         samples=samples,
         adapter=adapter,

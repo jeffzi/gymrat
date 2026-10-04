@@ -27,12 +27,13 @@ from gymrat.sampling import (
     RunOptions,
     SamplingOptions,
     TargetContext,
+    TargetSpec,
     collect_samples,
     compute_metric_stats,
     own_values,
-    resolve_dir,
     resolve_label,
     run_with_worktrees,
+    to_context,
 )
 from gymrat.targets import (
     CleanupResult,
@@ -585,6 +586,34 @@ async def test_collect_samples_when_bench_fails_does_render_captured_output(
     assert str(caught.value) == "\n".join(head + expected_tail)
 
 
+async def test_collect_samples_when_bench_times_out_does_render_both_captured_streams(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    patch_exec(
+        monkeypatch,
+        ExecTimeoutError(stdout="s", stderr="e", timeout_ms=1000, stdout_bytes=1, stderr_bytes=50),
+    )
+    targets = [
+        TargetContext(target=InPlaceTarget(dir="/work"), dir="/work", label="x"),
+    ]
+    options = SamplingOptions(bench="run", prepare=None, samples=1, timeout_seconds=1.0)
+
+    with pytest.raises(CommandError) as caught:
+        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+
+    expected = [
+        'bench command timed out ("x", sample 1)',
+        "  dir:       /work",
+        "  command:   run",
+        "  timeout:   1000ms",
+        "--- stderr (truncated, 50 bytes total) ---",
+        "e",
+        "--- stdout ---",
+        "s",
+    ]
+    assert str(caught.value) == "\n".join(expected)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
 async def test_collect_samples_when_driven_end_to_end_does_collect_parsed_metrics(tmp_path: Path):
     targets = [
@@ -764,20 +793,22 @@ def _dirty_result() -> CleanupResult:
 
 
 # ---------------------------------------------------------------------------
-# resolve_dir
+# to_context
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_dir_when_in_place_target_does_return_dir_and_leave_worktrees_untouched():
+def test_to_context_when_in_place_target_does_return_dir_and_leave_worktrees_untouched():
     worktrees: list[WorktreeInfo] = []
 
-    result = resolve_dir(InPlaceTarget(dir="/bench"), "/repo", worktrees)
+    result = to_context(
+        TargetSpec(label=None, target="/bench"), InPlaceTarget(dir="/bench"), "/repo", worktrees
+    )
 
-    assert result == "/bench"
+    assert result.dir == "/bench"
     assert worktrees == []
 
 
-def test_resolve_dir_when_ref_target_does_register_worktree_before_materialize(
+def test_to_context_when_ref_target_does_register_worktree_before_materialize(
     monkeypatch: pytest.MonkeyPatch,
 ):
     target = RefTarget(ref="feature", resolved_sha="deadbeef")
@@ -797,9 +828,9 @@ def test_resolve_dir_when_ref_target_does_register_worktree_before_materialize(
 
     monkeypatch.setattr(sampling, "materialize_worktree", _materialize)
 
-    result = resolve_dir(target, "/repo", worktrees)
+    result = to_context(TargetSpec(label=None, target="feature"), target, "/repo", worktrees)
 
-    assert result == "/tmp/gymrat-wt"
+    assert result.dir == "/tmp/gymrat-wt"
     assert worktrees == [stub]
     assert registered_before_materialize == [True]
     assert materialize_args == [(stub, "/repo")]
@@ -875,6 +906,46 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_clean_does_rerai
     assert caught.value is original
     assert len(sweeps) == 1
     assert recorder.events == ["install", "phase", "uninstall"]
+
+
+async def test_run_with_worktrees_when_phase_cancelled_does_skip_the_sweep_and_uninstall(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    recorder = _InstallRecorder()
+    monkeypatch.setattr(sampling, "install_termination_cleanup", recorder.install)
+    sweeps = _patch_cleanup(monkeypatch, _clean_result())
+
+    async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
+        recorder.events.append("phase")
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_with_worktrees(phase, lambda m, c: (m, c))
+
+    assert sweeps == []
+    assert recorder.events == ["install", "phase", "uninstall"]
+
+
+async def test_run_with_worktrees_when_build_result_raises_does_not_sweep_again(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    recorder = _InstallRecorder()
+    monkeypatch.setattr(sampling, "install_termination_cleanup", recorder.install)
+    sweeps = _patch_cleanup(monkeypatch, _clean_result())
+    broken = RuntimeError("report failed")
+
+    async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
+        return "measurement"
+
+    def build_result(_measurement: str, _cleanup: CleanupResult) -> str:
+        raise broken
+
+    with pytest.raises(RuntimeError) as caught:
+        await run_with_worktrees(phase, build_result)
+
+    assert caught.value is broken
+    assert len(sweeps) == 1
+    assert recorder.events == ["install", "uninstall"]
 
 
 async def test_run_with_worktrees_when_phase_raises_and_cleanup_dirty_does_wrap_preserving_subclass(

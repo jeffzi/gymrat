@@ -12,6 +12,7 @@ business. Worktree cleanup and signal handling belong to
 
 import asyncio
 from dataclasses import dataclass
+from functools import partial
 
 from gymrat.adapters import get_adapter
 from gymrat.model import ResolvedMetricMeta
@@ -58,10 +59,38 @@ class _Measurement:
     metric_meta: dict[str, ResolvedMetricMeta]
 
 
+async def _measure_phase(
+    options: MeasureOptions,
+    repo_dir: str,
+    worktrees: list[WorktreeInfo],
+    abort: asyncio.Event,
+) -> _Measurement:
+    """Resolve the target, sample it, and resolve its metric metadata."""
+    run = options.run
+    adapter = get_adapter(run.adapter)
+    target = resolve_target(options.target.target, repo_dir)
+
+    ctx = to_context(options.target, target, repo_dir, worktrees)
+
+    (collected,) = await collect_samples(adapter, [ctx], run.sampling, abort)
+
+    return _Measurement(
+        label=ctx.label,
+        samples=collected.samples,
+        metric_meta=resolve_metric_meta_from_samples(
+            [collected.samples],
+            run.config_metrics,
+            adapter,
+            run.config_kinds,
+        ),
+    )
+
+
 def _build_measurement_result(
     measurement: _Measurement,
-    options: MeasureOptions,
     cleanup: CleanupResult,
+    *,
+    options: MeasureOptions,
 ) -> MeasurementResult:
     """Assemble the rendered result from the measurement and the cleanup outcome."""
     run = options.run
@@ -74,7 +103,7 @@ def _build_measurement_result(
 
     return MeasurementResult(
         worktrees_removed=cleanup.removed,
-        worktrees_left_behind=tuple(cleanup.failures),
+        worktrees_left_behind=cleanup.failures,
         worktree_prune_error=cleanup.prune_error,
         label=measurement.label,
         samples=run.sampling.samples,
@@ -106,32 +135,7 @@ async def measure(options: MeasureOptions) -> MeasurementResult:
         CommandError: When a prepare or bench command times out or exits
             non-zero.
     """
-
-    async def phase(
-        repo_dir: str,
-        worktrees: list[WorktreeInfo],
-        abort: asyncio.Event,
-    ) -> _Measurement:
-        run = options.run
-        adapter = get_adapter(run.adapter)
-        target = resolve_target(options.target.target, repo_dir)
-
-        ctx = to_context(options.target, target, repo_dir, worktrees)
-
-        (collected,) = await collect_samples(adapter, [ctx], run.sampling, abort)
-
-        return _Measurement(
-            label=ctx.label,
-            samples=collected.samples,
-            metric_meta=resolve_metric_meta_from_samples(
-                [collected.samples],
-                run.config_metrics,
-                adapter,
-                run.config_kinds,
-            ),
-        )
-
     return await run_with_worktrees(
-        phase,
-        lambda measurement, cleanup: _build_measurement_result(measurement, options, cleanup),
+        partial(_measure_phase, options),
+        partial(_build_measurement_result, options=options),
     )

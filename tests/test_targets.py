@@ -18,7 +18,7 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.sampling import cleanup_worktrees, materialize_worktree, plan_worktree
-from gymrat.targets import InPlaceTarget, RefTarget, WorktreeInfo, resolve_target
+from gymrat.targets import CleanupResult, InPlaceTarget, RefTarget, WorktreeInfo, resolve_target
 from tests._git import head_of
 from tests._git import run_git as _run_git
 
@@ -488,11 +488,12 @@ def test_cleanup_worktrees_when_dir_gone_deregisters_only_that_worktree(
     worktree = _create_head_worktree(repo)
     shutil.rmtree(worktree.dir, ignore_errors=True)
 
-    cleanup_worktrees([worktree], repo)
+    result = cleanup_worktrees([worktree], repo)
 
     listed = list_worktree_dirs(repo)
     assert worktree.dir not in listed
     assert absent in listed
+    assert result == CleanupResult(removed=0, failures=(), prune_error=None)
 
 
 def test_cleanup_worktrees_when_removal_fails_reports_dir_with_git_error_text(

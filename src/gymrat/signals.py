@@ -52,6 +52,15 @@ TERMINATION_SIGNALS: frozenset[int] = frozenset(
     if (resolved := getattr(signal, name, None)) is not None
 )
 
+# POSIX-only seam for blocking signals. ``None`` on platforms without
+# ``pthread_sigmask`` (win32), where callers fall back to running unmasked.
+# Kept as a module-level reference so the fallback branch stays testable.
+# :mod:`gymrat.exec` imports this to unblock the same signals in a spawned
+# child, rather than re-resolving ``pthread_sigmask`` itself.
+pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
+    signal, "pthread_sigmask", None
+)
+
 # Live cleanups keyed by an opaque install token. A dict preserves insertion
 # order, which the handler relies on to run cleanups in install order; a set
 # would not.
@@ -233,16 +242,6 @@ def _ensure_handlers_installed() -> None:
         _installed_signals.add(signal_number)
 
 
-# POSIX-only seam for blocking signals. ``None`` on platforms without
-# ``pthread_sigmask`` (win32), where callers fall back to running unmasked.
-# Kept as a module-level reference so the fallback branch stays testable.
-# :mod:`gymrat.exec` imports this to unblock the same signals in a spawned
-# child, rather than re-resolving ``pthread_sigmask`` itself.
-pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
-    signal, "pthread_sigmask", None
-)
-
-
 @contextmanager
 def deferring_termination_signals() -> Generator[None]:
     """Defer termination signals for the duration of the wrapped call.
@@ -264,7 +263,7 @@ def deferring_termination_signals() -> Generator[None]:
     previous: list[int] | None = None
     try:
         _deferring = True
-        if pthread_sigmask is not None and TERMINATION_SIGNALS:
+        if pthread_sigmask is not None:
             previous = pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
         yield
     finally:

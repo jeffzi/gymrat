@@ -28,7 +28,7 @@ from gymrat.sampling import (
 )
 from gymrat.targets import CleanupResult, WorktreeRemovalFailure
 from gymrat.utils import warn_to_stderr
-from gymrat.verdict import compute_verdicts
+from gymrat.verdict import compute_kind_aggregates, compute_verdicts
 from tests._git import run_git as _git
 from tests._git import write_committed_bench
 from tests._pipeline import install_pipeline
@@ -89,10 +89,14 @@ async def test_compare_when_candidates_judged_does_use_shared_baseline(
     meta = resolve_metric_meta_from_samples(
         [baseline, cand_a, cand_b], None, get_adapter("metric-lines"), None
     )
-    expected_a = compute_verdicts(baseline, cand_a, meta)["x"]
-    expected_b = compute_verdicts(baseline, cand_b, meta)["x"]
-    assert result.metrics["x"].candidates[0].verdict == expected_a
-    assert result.metrics["x"].candidates[1].verdict == expected_b
+    verdicts_a = compute_verdicts(baseline, cand_a, meta)
+    verdicts_b = compute_verdicts(baseline, cand_b, meta)
+    assert result.metrics["x"].candidates[0].verdict == verdicts_a["x"]
+    assert result.metrics["x"].candidates[1].verdict == verdicts_b["x"]
+    assert [c.kinds for c in result.candidates] == [
+        tuple(compute_kind_aggregates(verdicts_a, meta)),
+        tuple(compute_kind_aggregates(verdicts_b, meta)),
+    ]
 
 
 async def test_compare_when_metric_on_one_side_only_does_include_union_in_order(

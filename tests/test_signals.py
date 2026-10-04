@@ -721,6 +721,20 @@ def test_reset_when_called_during_deferral_does_handle_next_signal_immediately(
     not hasattr(signal, "pthread_sigmask"),
     reason="Signal masking requires POSIX pthread_sigmask",
 )
+def test_deferring_termination_signals_when_entered_does_block_them_until_exit():
+    before = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+
+    with signals.deferring_termination_signals():
+        during = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+
+    assert during >= signals.TERMINATION_SIGNALS
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == before
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="Signal masking requires POSIX pthread_sigmask",
+)
 def test_deferring_termination_signals_when_mask_raises_does_not_strand_deferral(
     monkeypatch: pytest.MonkeyPatch,
 ):
