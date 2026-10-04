@@ -510,6 +510,7 @@ def test_read_records_when_complete_line_fails_to_decode_does_raise_naming_path_
         read_records(jsonl_path)
 
     assert f"{jsonl_path}:2" in str(excinfo.value)
+    assert excinfo.value.hint == "Line 2 contains invalid UTF-8 bytes."
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +542,7 @@ def test_read_session_header_when_log_absent_does_return_none(fresh_root: str):
         pytest.param(b"", id="an-empty-log"),
         pytest.param(b"\n" + SESSION_LINE, id="an-empty-first-line"),
         pytest.param(b"   \n", id="a-whitespace-only-first-line"),
+        pytest.param("　\n".encode(), id="a-non-ascii-whitespace-first-line"),
     ],
 )
 def test_read_session_header_when_first_line_blank_does_return_none(fresh_root: str, raw: bytes):

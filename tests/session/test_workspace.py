@@ -514,6 +514,20 @@ def test_advance_baseline_when_target_sha_given_does_land_the_baseline_detached_
     assert _checked_out_ref(experiment) == BRANCH
 
 
+def test_advance_baseline_when_commit_unknown_does_raise_naming_the_check_command(
+    repo: str, baseline: BaselineRef
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    unknown = "0" * 40
+
+    with pytest.raises(GymratError) as excinfo:
+        advance_baseline(baseline_worktree_dir(repo), unknown)
+
+    assert excinfo.value.hint == (
+        f"Check that {unknown} is a commit this repository has: git cat-file -t {unknown}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # worktree_fingerprint
 # ---------------------------------------------------------------------------

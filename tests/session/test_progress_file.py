@@ -3,7 +3,7 @@
 The sidecar carries a JSON snapshot that a dashboard or supervisor polls via
 ``read_progress``.  ``write_progress`` writes atomically so readers never see a
 partial file.  ``clear_progress`` removes the sidecar when the iteration exits.
-``create_sidecar_writer`` returns a callback that translates ``PassStarted`` /
+``SidecarWriter`` is a callback that translates ``PassStarted`` /
 ``PassFinished`` events into sidecar writes.
 """
 
@@ -27,8 +27,8 @@ from gymrat.session.paths import progress_path, session_dir
 from gymrat.session.progress_file import (
     STALENESS_BOUND_SECONDS,
     ProgressSnapshot,
+    SidecarWriter,
     clear_progress,
-    create_sidecar_writer,
     read_progress,
     write_progress,
 )
@@ -294,14 +294,14 @@ def test_progress_snapshot_when_constructed_does_be_frozen():
 
 
 # ---------------------------------------------------------------------------
-# create_sidecar_writer
+# SidecarWriter
 # ---------------------------------------------------------------------------
 
 
-def test_create_sidecar_writer_when_pass_started_does_write_snapshot_with_zero_completed(
+def test_sidecar_writer_when_pass_started_does_write_snapshot_with_zero_completed(
     root: str,
 ):
-    writer = create_sidecar_writer(root)
+    writer = SidecarWriter(root)
     event = PassStarted(
         round=1,
         total_rounds=5,
@@ -319,10 +319,10 @@ def test_create_sidecar_writer_when_pass_started_does_write_snapshot_with_zero_c
     assert snapshot.passes_total == 10
 
 
-def test_create_sidecar_writer_when_pass_finished_does_increment_completed_and_record_duration(
+def test_sidecar_writer_when_pass_finished_does_increment_completed_and_record_duration(
     root: str,
 ):
-    writer = create_sidecar_writer(root)
+    writer = SidecarWriter(root)
     writer(
         PassStarted(
             round=1,
@@ -362,21 +362,21 @@ def test_create_sidecar_writer_when_pass_finished_does_increment_completed_and_r
         ),
     ],
 )
-def test_create_sidecar_writer_when_non_pass_event_does_not_write(
+def test_sidecar_writer_when_non_pass_event_does_not_write(
     root: str,
     event: object,
 ):
-    writer = create_sidecar_writer(root)
+    writer = SidecarWriter(root)
 
     writer(event)  # type: ignore[arg-type]
 
     assert read_progress(root) is None
 
 
-def test_create_sidecar_writer_when_confirm_follows_measure_does_reset_passes_completed(
+def test_sidecar_writer_when_confirm_follows_measure_does_reset_passes_completed(
     root: str,
 ):
-    writer = create_sidecar_writer(root)
+    writer = SidecarWriter(root)
     # Complete all measure passes: 2 rounds * 1 target = 2 total
     writer(
         PassStarted(

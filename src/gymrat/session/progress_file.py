@@ -13,12 +13,7 @@ from pydantic import BaseModel, ConfigDict
 
 from gymrat import clock as _clock
 from gymrat.eta import MS_PER_SECOND
-from gymrat.progress_events import (
-    PassFinished,
-    PassStarted,
-    ProgressCallback,
-    ProgressEvent,
-)
+from gymrat.progress_events import PassFinished, PassStarted, ProgressEvent
 from gymrat.session.paths import progress_path
 from gymrat.session.sidecar import read_sidecar
 from gymrat.utils import write_text_atomic
@@ -94,11 +89,13 @@ def clear_progress(root: str) -> None:
 
 
 @dataclass(slots=True)
-class _SidecarWriter:
-    """Pass-event state accumulator that writes a sidecar snapshot per pass event.
+class SidecarWriter:
+    """A progress callback that writes a sidecar snapshot on each pass event.
 
-    A phase change resets ``passes_completed`` so each phase's progress is
-    counted from zero.
+    It accumulates state from ``PassStarted`` and ``PassFinished`` events and
+    writes a ``ProgressSnapshot`` under ``root`` on each; other event types are
+    ignored, with no write. A phase change resets ``passes_completed`` so each
+    phase's progress is counted from zero.
     """
 
     root: str
@@ -108,6 +105,11 @@ class _SidecarWriter:
     current_phase: str = ""
 
     def __call__(self, event: ProgressEvent) -> None:
+        """Fold ``event`` into the pass state and write a snapshot for a pass event.
+
+        Args:
+            event: The progress event the sampling engine emitted.
+        """
         if isinstance(event, PassStarted):
             self._enter_phase(event.phase)
             self.last_start_ms = event.at_ms
@@ -131,20 +133,3 @@ class _SidecarWriter:
         if phase != self.current_phase:
             self.passes_completed = 0
             self.current_phase = phase
-
-
-def create_sidecar_writer(root: str) -> ProgressCallback:
-    """Return a callback that writes sidecar snapshots on pass events.
-
-    The callback tracks accumulated state from ``PassStarted`` and
-    ``PassFinished`` events and writes a ``ProgressSnapshot`` on each.
-    Other event types are silently ignored (no write).
-
-    Args:
-        root: Repository root under which the progress sidecar is written.
-
-    Returns:
-        A callback that accumulates pass state and writes a snapshot on each
-        ``PassStarted`` or ``PassFinished`` event.
-    """
-    return _SidecarWriter(root)

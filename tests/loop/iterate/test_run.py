@@ -133,9 +133,8 @@ async def test_iterate_session_when_last_iteration_unsettled_does_refuse_naming_
     with pytest.raises(GymratError) as exc:
         await iterate_session(repo, resolved_config())
 
-    hint = exc.value.hint or ""
-    assert "gymrat keep" in hint
-    assert "gymrat discard" in hint
+    assert str(exc.value) == "Iteration 1 has not been settled"
+    assert exc.value.hint == "Run gymrat keep or gymrat discard before measuring the next edit."
     assert samples_mock.call_count == 0
 
 

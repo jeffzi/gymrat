@@ -236,7 +236,7 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
     Returns:
         The steps the sequence took and the failure that ended it, if any.
     """
-    probe = is_lock_held or partial(is_held, Path(context.lock_path))
+    probe = is_lock_held or partial(is_held, context.lock_path)
     bound_ms = (
         context.config.timeout_seconds * MS_PER_SECOND if lock_wait_ms is None else lock_wait_ms
     )

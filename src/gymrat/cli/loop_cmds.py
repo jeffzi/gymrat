@@ -60,7 +60,7 @@ from gymrat.report.json_doc import (
 )
 from gymrat.report.style import is_tty
 from gymrat.session.paths import repo_root
-from gymrat.session.progress_file import clear_progress, create_sidecar_writer
+from gymrat.session.progress_file import SidecarWriter, clear_progress
 from gymrat.session.store import require_open_session
 from gymrat.signals import install_termination_cleanup
 from gymrat.utils import fan_out
@@ -137,7 +137,7 @@ async def _iterate_body(
         has_before_hook=resolved.hooks is not None and resolved.hooks.before is not None,
         has_after_hook=resolved.hooks is not None and resolved.hooks.after is not None,
     )
-    sidecar_writer = create_sidecar_writer(root)
+    sidecar_writer = SidecarWriter(root)
     on_progress = fan_out(
         [renderer.report, sidecar_writer], _subscriber_failure_sink(renderer.warn)
     )

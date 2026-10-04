@@ -521,10 +521,10 @@ def _wire_failing_subscriber(
     monkeypatch.setattr("gymrat.cli.loop_cmds.iterate_session", _EmittingIterateSession())
     sidecar = _FailingSidecar(messages)
 
-    def create_sidecar_writer(_root: str) -> _FailingSidecar:
+    def sidecar_writer(_root: str) -> _FailingSidecar:
         return sidecar
 
-    monkeypatch.setattr("gymrat.cli.loop_cmds.create_sidecar_writer", create_sidecar_writer)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.SidecarWriter", sidecar_writer)
     return spy
 
 

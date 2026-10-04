@@ -32,9 +32,10 @@ from pathlib import Path
 from typing import NoReturn
 
 from filelock import FileLock, Timeout
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
 
 from gymrat.errors import GymratError
+from gymrat.session.sidecar import read_sidecar
 from gymrat.utils import warn_to_stderr
 
 __all__ = [
@@ -102,7 +103,7 @@ def _publish_lock_file(lock_path: str) -> str:
     return _os_lock_file(lock_path) + ".publish"
 
 
-def is_held(lock_path: Path) -> bool:
+def is_held(lock_path: str) -> bool:
     """Report whether another party holds the advisory lock at ``lock_path``.
 
     The probe acquires a non-blocking ``FileLock`` on the OS lock file
@@ -118,7 +119,7 @@ def is_held(lock_path: Path) -> bool:
     Returns:
         ``True`` when the lock is held by another party, ``False`` otherwise.
     """
-    probe = FileLock(_os_lock_file(str(lock_path)), timeout=0, preserve_lock_file=True)
+    probe = FileLock(_os_lock_file(lock_path), timeout=0, preserve_lock_file=True)
     try:
         probe.acquire()
     except Timeout:
@@ -145,10 +146,7 @@ def read_holder(lock_path: str) -> LockHolder | None:
         The recorded holder, or ``None`` when the file is absent, empty,
         truncated, or otherwise not a holder record.
     """
-    try:
-        return LockHolder.model_validate_json(Path(lock_path).read_bytes())
-    except (OSError, ValidationError):
-        return None
+    return read_sidecar(Path(lock_path), LockHolder)
 
 
 def _acquire_publish_lock(pub_lock_path: str) -> FileLock:

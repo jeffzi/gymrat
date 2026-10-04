@@ -15,7 +15,6 @@ import asyncio
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from functools import partial
-from pathlib import Path
 from typing import Literal
 
 from gymrat import clock
@@ -548,6 +547,6 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
         wall_clock_poll_ms=wall_clock_poll_ms,
         settle_window_ms=settle_window_ms,
         lock_poll_ms=lock_poll_ms,
-        is_lock_held=is_lock_held or partial(is_held, Path(context.lock_path)),
+        is_lock_held=is_lock_held or partial(is_held, context.lock_path),
     )
     return await _Supervision(config).run()

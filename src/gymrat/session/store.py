@@ -59,6 +59,7 @@ __all__ = [
     "recover_torn_tail",
     "require_open_session",
     "require_session",
+    "require_settled",
     "session_header",
 ]
 
@@ -105,6 +106,21 @@ class SessionState:
     ends_on_stop: bool
     #: The record that closed the session, absent while it is still open.
     finalized: FinalizeRecord | None
+
+
+def require_settled(state: SessionState, hint: str) -> None:
+    """Refuse when a measured edit is still waiting to be kept or discarded.
+
+    Args:
+        state: The folded session state to check.
+        hint: What the refusal tells the user to do next.
+
+    Raises:
+        GymratError: When an iteration is unsettled, with ``reason="unsettled"``.
+    """
+    if state.unsettled:
+        message = f"Iteration {state.last_seq} has not been settled"
+        raise GymratError(message, hint=hint, reason="unsettled")
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,16 +180,38 @@ def _decode_log_line_at(line: str, at: str, line_number: int) -> object:
         raise GymratError(message, hint=f"Line {line_number} is not a JSON object.") from error
 
 
-def _read_first_line(path: Path) -> str | None:
-    """The first line of ``path``, or ``None`` when the file does not exist."""
+def _decode_utf8_at(raw: bytes, at: str, line_number: int) -> str:
+    """Decode one session-log line, naming its location when it is not UTF-8.
+
+    Args:
+        raw: The line's bytes.
+        at: The ``path:line`` location the message names.
+        line_number: The 1-based line number the hint names.
+
+    Returns:
+        The decoded line.
+
+    Raises:
+        GymratError: When the bytes are not valid UTF-8.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        message = f"Corrupt session log at {at}"
+        raise GymratError(
+            message, hint=f"Line {line_number} contains invalid UTF-8 bytes."
+        ) from error
+
+
+def _read_first_line(path: Path) -> bytes | None:
+    """The raw bytes of the first line of ``path``, or ``None`` when the file does not exist."""
     # Binary read: a text-mode readline decodes a whole buffered chunk, so bytes
     # on later lines could fail the read of a first line that is itself valid.
     try:
         with path.open("rb") as handle:
-            raw = handle.readline()
+            return handle.readline()
     except FileNotFoundError:
         return None
-    return raw.decode("utf-8")
 
 
 def first_line_json(path: Path) -> dict[str, object] | None:
@@ -191,14 +229,12 @@ def first_line_json(path: Path) -> dict[str, object] | None:
         OSError: When the file exists but cannot be read, such as a directory
             or a file without read permission.
     """
-    try:
-        first_line = _read_first_line(path)
-    except UnicodeDecodeError:
-        return None
+    first_line = _read_first_line(path)
     if first_line is None:
         return None
     try:
-        parsed = decode_log_line(first_line)
+        # UnicodeDecodeError is a ValueError, so a non-UTF-8 line lands here too.
+        parsed = decode_log_line(first_line.decode("utf-8"))
     except ValueError:
         return None
     return parsed if isinstance(parsed, dict) else None
@@ -225,12 +261,12 @@ def read_session_header(jsonl_path: str) -> SessionRecord | None:
             or a file without read permission.
     """
     location = f"{jsonl_path}:1"
-    try:
-        first_line = _read_first_line(Path(jsonl_path))
-    except UnicodeDecodeError as error:
-        message = f"Corrupt session log at {location}"
-        raise GymratError(message, hint="Line 1 contains invalid UTF-8 bytes.") from error
-    if first_line is None or not first_line.strip():
+    raw = _read_first_line(Path(jsonl_path))
+    if raw is None:
+        return None
+    # Decode before the blank check: str.strip also drops non-ASCII whitespace.
+    first_line = _decode_utf8_at(raw, location, 1)
+    if not first_line.strip():
         return None
 
     value = _decode_log_line_at(first_line, location, 1)
@@ -447,14 +483,7 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
 
         at = f"{jsonl_path}:{index + 1}"
 
-        try:
-            line = raw_line.decode("utf-8")
-        except UnicodeDecodeError as error:
-            message = f"Corrupt session log at {at}"
-            raise GymratError(
-                message, hint=f"Line {index + 1} contains invalid UTF-8 bytes."
-            ) from error
-
+        line = _decode_utf8_at(raw_line, at, index + 1)
         value = _decode_log_line_at(line, at, index + 1)
 
         try:

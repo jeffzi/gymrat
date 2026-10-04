@@ -126,8 +126,8 @@ def test_stop_session_when_last_iteration_unsettled_does_refuse_naming_settle_hi
 
     error = capture_error(lambda: stop_session(repo, "done"))
 
-    assert error.hint is not None
-    assert _mentions_keep_or_discard(error.hint)
+    assert str(error) == "Iteration 1 has not been settled"
+    assert error.hint == "Run gymrat keep or gymrat discard before stopping."
     assert _record_count(repo) == before
 
 

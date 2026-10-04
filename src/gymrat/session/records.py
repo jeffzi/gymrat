@@ -92,10 +92,6 @@ def _coerce[T](cls: type[T]) -> Callable[[object], T]:
     return coerce
 
 
-_coerce_baseline_ref = _coerce(BaselineRef)
-_coerce_worktrees = _coerce(Worktrees)
-
-
 _RECORD_CONFIG = ConfigDict(
     strict=True,
     extra="forbid",
@@ -236,11 +232,11 @@ class SessionRecord(_RecordEnvelope):
     type: Literal["session"] = Field(description="Record type discriminator.")
     schema_version: Literal[1] = Field(alias="schema", description="Session log format version.")
     session_id: str = Field(description="Unique identifier for this session.")
-    baseline: Annotated[BaselineRef, BeforeValidator(_coerce_baseline_ref)] = Field(
+    baseline: Annotated[BaselineRef, BeforeValidator(_coerce(BaselineRef))] = Field(
         description="Git ref and SHA the baseline was taken from."
     )
     branch: str = Field(description="Git branch created for this session.")
-    worktrees: Annotated[Worktrees, BeforeValidator(_coerce_worktrees)] = Field(
+    worktrees: Annotated[Worktrees, BeforeValidator(_coerce(Worktrees))] = Field(
         description="Paths to the experiment and baseline worktrees."
     )
     config: SessionConfig = Field(
@@ -644,7 +640,7 @@ def parse_record(value: object) -> SessionLogRecord:
         errors = exc.errors()
         _raise_discriminator_error(errors, value)
         error = drop_prefix_errors(errors)[0]
-        raise GymratError(message_for_error(error, value)) from exc
+        raise GymratError(_message_for_error(error, value)) from exc
     finally:
         _wire_validation.reset(token)
 
@@ -808,7 +804,7 @@ def _data_path(
     return path
 
 
-def message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
+def _message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
     """Translate one pydantic error into a session-record problem string.
 
     Model-level validators (``type="value_error"``, empty ``loc``) carry their

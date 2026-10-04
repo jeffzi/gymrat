@@ -22,6 +22,7 @@ from gymrat.session.store import (
 )
 from gymrat.session.workspace import (
     dirty_file_count,
+    missing_commit_hint,
     remove_worktrees,
     run_git_step,
     worktree_head,
@@ -224,14 +225,11 @@ def _squash_onto_baseline(
         f"Check that the commit is still there: git cat-file -t {tree_source}",
     ).strip()
 
-    build_hint = (
-        f"Check that {baseline_sha} is a commit this repository has: git cat-file -t {baseline_sha}"
-    )
     return run_git_step(
         ["commit-tree", tree, "-p", baseline_sha, "-m", message],
         root,
         f"Cannot build the squash commit from {tree_source[:SHORT_SHA_LENGTH]} onto {baseline_sha}",
-        build_hint,
+        missing_commit_hint(baseline_sha),
     ).strip()
 
 

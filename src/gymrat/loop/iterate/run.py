@@ -87,7 +87,12 @@ from gymrat.report.types import ComparisonResult, ReportOptions, candidate_at
 from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
 from gymrat.session.records import HookRecord, record_to_wire
-from gymrat.session.store import SessionState, append_record, require_open_session
+from gymrat.session.store import (
+    SessionState,
+    append_record,
+    require_open_session,
+    require_settled,
+)
 from gymrat.utils import warn_to_stderr
 
 if TYPE_CHECKING:
@@ -251,13 +256,7 @@ def _guard_ready(
     config: ResolvedConfig, state: SessionState, root: str, records: Sequence[SessionLogRecord]
 ) -> None:
     """Refuse another iteration when the session is not ready for one."""
-    if state.unsettled:
-        message = f"Iteration {state.last_seq} has not been settled"
-        raise GymratError(
-            message,
-            hint="Run gymrat keep or gymrat discard before measuring the next edit.",
-            reason="unsettled",
-        )
+    require_settled(state, "Run gymrat keep or gymrat discard before measuring the next edit.")
     stop = stop_condition(config, state)
     if stop is not None:
         raise stop

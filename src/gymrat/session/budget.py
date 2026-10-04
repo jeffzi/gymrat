@@ -91,7 +91,7 @@ def read_budget(root: str, *, now_ms: float) -> Budget | None:
     if budget is None or now_ms >= budget.deadline_ms:
         return None
 
-    if not is_held(Path(supervise_lockfile_path(root))):
+    if not is_held(supervise_lockfile_path(root)):
         return None
 
     return budget
