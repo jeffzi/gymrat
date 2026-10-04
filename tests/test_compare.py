@@ -147,9 +147,7 @@ async def test_compare_when_a_round_is_one_sided_does_send_the_dropped_window_wa
 
     await compare(_options(warn=warnings.append))
 
-    assert warnings == [
-        "x: dropped 1 paired window(s) where the metric was measured on only one side"
-    ]
+    assert warnings == ["x: dropped 1 paired window where the metric was measured on only one side"]
 
 
 async def test_compare_when_metric_named_like_dict_method_does_treat_as_ordinary_key(

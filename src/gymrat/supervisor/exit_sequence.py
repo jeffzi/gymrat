@@ -48,7 +48,7 @@ from gymrat.session.records import HookRecord
 from gymrat.session.store import fold_session, last_kept_position, read_records
 from gymrat.session.workspace import changed_file_count, worktree_fingerprint
 from gymrat.supervisor.events import FollowUpEvent
-from gymrat.utils import MS_PER_SECOND
+from gymrat.utils import MS_PER_SECOND, pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -342,9 +342,10 @@ async def _decide_settle(
 
     unmeasured = changed_file_count(experiment, last_kept_position(state, session.baseline.sha))
     if unmeasured > 0:
+        counted = pluralize(unmeasured, "unmeasured edit")
         return ExitStep(
             kind="left",
-            text=f"left in worktree: {unmeasured} unmeasured edit(s) — measure or discard by hand",
+            text=f"left in worktree: {counted} — measure or discard by hand",
         )
     return None
 

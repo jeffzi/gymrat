@@ -56,7 +56,7 @@ from gymrat.stats import (
     percent_delta,
     sign_flip_permutation_test,
 )
-from gymrat.utils import WarnSink, warn_to_stderr
+from gymrat.utils import WarnSink, pluralize, warn_to_stderr
 
 __all__ = [
     "BAND_MIN_N",
@@ -345,7 +345,7 @@ def compute_verdicts(
 
         if paired.dropped > 0:
             warn(
-                f"{metric}: dropped {paired.dropped} paired window(s) "
+                f"{metric}: dropped {pluralize(paired.dropped, 'paired window')} "
                 "where the metric was measured on only one side",
             )
 

@@ -935,20 +935,37 @@ def test_compute_verdicts_when_bytes_zero_median_and_zero_spread_does_not_report
 # ---------------------------------------------------------------------------
 
 
-def test_compute_verdicts_when_verdict_produced_and_windows_dropped_does_warn_once():
+@pytest.mark.parametrize(
+    ("dropped", "expected"),
+    [
+        pytest.param(
+            1,
+            "metric: dropped 1 paired window where the metric was measured on only one side",
+            id="one-dropped",
+        ),
+        pytest.param(
+            2,
+            "metric: dropped 2 paired windows where the metric was measured on only one side",
+            id="two-dropped",
+        ),
+    ],
+)
+def test_compute_verdicts_when_verdict_produced_and_windows_dropped_does_warn_once(
+    dropped: int,
+    expected: str,
+):
+    one_sided: list[dict[str, float]] = [{"other": 1.0}] * dropped
     collected: list[str] = []
 
     result = run(
-        samples(100.0, 100.0, 90.0),
-        [{"metric": 95.0}, {"other": 1.0}, {"metric": 85.0}],
+        samples(100.0, *[100.0] * dropped, 90.0),
+        [{"metric": 95.0}, *one_sided, {"metric": 85.0}],
         METRIC_EXACT_LOWER,
         warn=collected.append,
     )
 
     assert "metric" in result
-    assert collected == [
-        "metric: dropped 1 paired window(s) where the metric was measured on only one side",
-    ]
+    assert collected == [expected]
 
 
 def test_compute_verdicts_when_metric_fully_one_sided_does_not_warn():
