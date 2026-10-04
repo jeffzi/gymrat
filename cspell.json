@@ -32,6 +32,7 @@
     "ESRCH",
     "excinfo",
     "execv",
+    "faulthandler",
     "fchmod",
     "filelock",
     "filterwarnings",

@@ -164,6 +164,11 @@ addopts = "--import-mode=importlib -n auto --cov --cov-report=term-missing"
 filterwarnings = ["error"]
 asyncio_mode = "auto"
 strict = true
+# A test stuck past this many seconds dumps every thread's stack and exits its
+# worker, so a hang fails the run instead of stalling it. It clears the slowest
+# test's failure-path waits (about 150 s), which keep their own messages.
+faulthandler_timeout = 180
+faulthandler_exit_on_timeout = true
 
 [tool.coverage.run]
 source = ["src"]

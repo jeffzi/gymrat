@@ -31,6 +31,7 @@ from tests.supervisor._fixtures import (
     make_prompt,
     read_log_lines,
     supervise_fast,
+    wait_for_event_or_task,
 )
 from tests.supervisor._mock_driver import (
     ActionStep,
@@ -278,7 +279,7 @@ async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(tmp_
         )
 
     task = asyncio.create_task(run())
-    await cap_seen.wait()
+    await wait_for_event_or_task(cap_seen, task)
     captured = wrapper.captured_abort
     assert captured is not None
 

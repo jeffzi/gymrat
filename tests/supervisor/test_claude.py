@@ -54,6 +54,7 @@ from tests.supervisor._fixtures import (
     run_with_messages,
     system_message,
     tool_results,
+    wait_for_event_or_task,
 )
 
 # ---------------------------------------------------------------------------
@@ -643,7 +644,7 @@ async def test_interrupt_when_called_between_messages_does_stop_before_next_mess
     probe = collecting_observer()
 
     session = driver.start(make_prompt(), probe.observer)
-    await first_seen.wait()
+    await wait_for_event_or_task(first_seen, session.outcome)
     await session.interrupt()
     gate.set()
     outcome = await session.outcome

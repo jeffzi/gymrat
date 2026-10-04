@@ -9,15 +9,19 @@ overridable defaults; ``read_log_lines`` parses a JSONL log into dicts;
 ``supervise_fast`` share the turn-loop test boilerplate. ``result_message``,
 ``system_message``, ``assistant``, ``tool_results``, and ``stream_event`` build
 the real ``claude-agent-sdk`` message dataclasses the Claude driver consumes.
+``wait_for_event_or_task`` waits on an event a background task should set,
+failing instead of hanging when the task settles first.
 """
 
 import asyncio
+import contextlib
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, override
 
+import pytest
 from claude_agent_sdk import (
     AssistantMessage,
     ContentBlock,
@@ -522,3 +526,23 @@ async def run_with_messages(messages: Sequence[object]) -> list[SessionEvent]:
 def events_of[T: SessionEvent](events: Sequence[SessionEvent], event_type: type[T]) -> list[T]:
     """The events of ``event_type`` in ``events``, in emission order."""
     return [e for e in events if isinstance(e, event_type)]
+
+
+async def wait_for_event_or_task(event: asyncio.Event, awaitable: Awaitable[object]) -> None:
+    """Wait until ``event`` is set, failing fast when ``awaitable`` settles first.
+
+    A task that settles before setting the event never will, so an unbounded
+    wait would hang the suite. Its exception is re-raised; a task that returned
+    instead fails the test naming what it returned, such as an error outcome.
+    A task or future passed in is never cancelled or consumed, so the test can
+    still await it afterwards.
+    """
+    task = asyncio.ensure_future(awaitable)
+    waiter = asyncio.ensure_future(event.wait())
+    await asyncio.wait({waiter, task}, return_when=asyncio.FIRST_COMPLETED)
+    if waiter.done():
+        return
+    waiter.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await waiter
+    pytest.fail(f"the task settled before the event was set: {task.result()!r}")
