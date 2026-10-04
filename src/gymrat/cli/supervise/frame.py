@@ -36,12 +36,11 @@ from gymrat.cli.supervise.types import (
     Thinking,
     Waiting,
 )
-from gymrat.eta import MS_PER_SECOND, format_duration, format_eta
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.report.format import format_percent_delta
 from gymrat.session.budget import minutes_to_ms
 from gymrat.supervisor.events import ITERATE_SUMMARY, ITERATE_TOOL
-from gymrat.utils import abbreviate_home
+from gymrat.utils import MS_PER_SECOND, abbreviate_home, format_duration, format_eta
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -21,8 +21,8 @@ from gymrat.cli.supervise.frame import (
     log_path_text,
 )
 from gymrat.cli.supervise.text import format_cost
-from gymrat.eta import format_duration
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
+from gymrat.utils import format_duration
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import ReadSessionResult

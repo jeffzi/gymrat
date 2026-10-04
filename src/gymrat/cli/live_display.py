@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING, Literal, override
 from rich.live import Live
 from rich.segment import Segment
 
-from gymrat.eta import format_timestamp
 from gymrat.signals import install_termination_cleanup, write_on_exit
+from gymrat.utils import format_timestamp
 
 if TYPE_CHECKING:
     from collections.abc import Callable

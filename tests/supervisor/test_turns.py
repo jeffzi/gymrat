@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Literal
 import pytest
 
 from gymrat.config import StopConfig
-from gymrat.eta import format_duration
+from gymrat.utils import format_duration
 
 if TYPE_CHECKING:
     from gymrat.session.records import SessionLogRecord

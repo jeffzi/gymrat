@@ -72,8 +72,7 @@ def test_stop_session_when_open_does_append_a_stop_record_and_return_a_report(
     assert isinstance(record.at, int)
     assert record.at > 0
     assert isinstance(result, StopResult)
-    assert "Stopped" in result.report
-    assert "switched to a different approach" in result.report
+    assert result.report == "Stopped: switched to a different approach"
 
 
 # ---------------------------------------------------------------------------

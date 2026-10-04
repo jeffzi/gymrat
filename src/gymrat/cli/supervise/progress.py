@@ -28,12 +28,11 @@ from gymrat.cli.supervise.reducer import (
 from gymrat.cli.supervise.text import exit_phase_text
 from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
 from gymrat.clock import now_ms
-from gymrat.eta import MS_PER_SECOND
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.progress_file import read_progress as _default_read_progress
 from gymrat.session.records import IterationRecord, KeepRecord, StopRecord
 from gymrat.session.store import fold_session, latest_baseline, read_records
-from gymrat.utils import warn_to_stderr
+from gymrat.utils import MS_PER_SECOND, warn_to_stderr
 
 if TYPE_CHECKING:
     from collections.abc import Callable

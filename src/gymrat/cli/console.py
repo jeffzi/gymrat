@@ -15,7 +15,7 @@ from typing import IO, override
 from rich.console import Console
 
 from gymrat.cli.style import CLI_THEME
-from gymrat.report.style import stream_color_from_env
+from gymrat.utils import stream_color_from_env
 
 # ---------------------------------------------------------------------------
 # Debug mode

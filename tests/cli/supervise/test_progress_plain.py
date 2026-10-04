@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 
-from gymrat.eta import NS_PER_MS
 from gymrat.supervisor.events import CompactionEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
+from gymrat.utils import NS_PER_MS
 from tests.cli.supervise._fixtures import (
     ReporterKit,
     _throwing_read,

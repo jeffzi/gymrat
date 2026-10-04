@@ -12,7 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, assert_never
 
-from gymrat.eta import SamplingEta, format_duration
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
@@ -28,7 +27,7 @@ from gymrat.progress_events import (
     ProgressEvent,
 )
 from gymrat.report.format import format_percent_delta
-from gymrat.utils import pluralize
+from gymrat.utils import SamplingEta, format_duration, pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

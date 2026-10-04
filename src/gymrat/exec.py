@@ -29,7 +29,6 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from gymrat.eta import MS_PER_SECOND
 from gymrat.process_group import (
     TERMINATE_GRACE_S,
     attach_process_group,
@@ -46,6 +45,7 @@ from gymrat.signals import (
     install_termination_escalation,
     pthread_sigmask,
 )
+from gymrat.utils import MS_PER_SECOND
 
 FAILURE_EXIT_CODE = 1
 """Exit code reported when a run fails without a positive child exit code."""

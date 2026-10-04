@@ -33,13 +33,13 @@ from gymrat.cli.supervise.types import (
     Thinking,
     Waiting,
 )
-from gymrat.eta import NS_PER_MS
 from gymrat.session.records import IterationPrimary
 from gymrat.supervisor.events import (
     CompactionEvent,
     TextDeltaEvent,
 )
 from gymrat.supervisor.exit_sequence import ExitPhase
+from gymrat.utils import NS_PER_MS
 from tests._imports import modules_imported_by
 from tests.cli.supervise._fixtures import (
     cap_event,

@@ -19,9 +19,9 @@ from gymrat.config import (
     is_positive_integer,
     parse_bounded_positive_int,
 )
-from gymrat.eta import SECONDS_PER_MINUTE
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
+from gymrat.utils import SECONDS_PER_MINUTE
 
 _POSITIVE_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 _POSITIVE_NUMBER_MESSAGE = "must be a positive number."

@@ -6,7 +6,7 @@
 
 import time
 
-from gymrat.eta import MS_PER_SECOND
+from gymrat.utils import MS_PER_SECOND
 
 
 def now_ns() -> int:

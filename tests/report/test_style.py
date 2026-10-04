@@ -20,7 +20,6 @@ from gymrat.report.style import (
     LABEL_DISPLAY_WIDTH,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
-    color_from_env,
     format_hint,
     highlight_inline_code,
     make_capture_console,
@@ -306,41 +305,6 @@ def test_format_hint_when_text_has_markup_metacharacters_does_render_them_litera
 
 def test_format_hint_when_code_spans_bracket_prose_does_paint_only_the_spans_blue():
     assert format_hint("`a` or `b`") == "[dim][blue]a[/blue] or [blue]b[/blue][/dim]"
-
-
-# ---------------------------------------------------------------------------
-# color_from_env
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("force_color", "no_color", "expected"),
-    [
-        pytest.param(None, None, None, id="neither-defers"),
-        pytest.param(None, "1", False, id="no-color"),
-        pytest.param(None, "", False, id="no-color-empty-still-present"),
-        pytest.param("1", None, True, id="force-color"),
-        pytest.param("1", "1", True, id="force-color-beats-no-color"),
-        pytest.param("0", None, False, id="force-color-zero"),
-        pytest.param("", None, False, id="force-color-empty"),
-        pytest.param("false", None, False, id="force-color-false"),
-        pytest.param("FALSE", None, False, id="force-color-false-uppercase"),
-    ],
-)
-def test_color_from_env_when_variables_vary_does_apply_the_shared_precedence(
-    monkeypatch: pytest.MonkeyPatch,
-    force_color: str | None,
-    no_color: str | None,
-    expected: bool | None,
-):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    if force_color is not None:
-        monkeypatch.setenv("FORCE_COLOR", force_color)
-    if no_color is not None:
-        monkeypatch.setenv("NO_COLOR", no_color)
-
-    assert color_from_env() is expected
 
 
 # ---------------------------------------------------------------------------

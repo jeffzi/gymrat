@@ -12,11 +12,10 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from gymrat import clock as _clock
-from gymrat.eta import MS_PER_SECOND
 from gymrat.progress_events import PassFinished, PassStarted, ProgressEvent
 from gymrat.session.paths import progress_path
 from gymrat.session.sidecar import read_sidecar
-from gymrat.utils import write_text_atomic
+from gymrat.utils import MS_PER_SECOND, write_text_atomic
 
 #: A reader discards files whose mtime is older than this many seconds.
 #: 600 s (10 min) is well above the longest single benchmark pass.

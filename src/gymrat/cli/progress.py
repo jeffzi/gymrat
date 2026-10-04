@@ -54,17 +54,17 @@ from gymrat.cli.style import (
     STYLE_TIMER_RUNNING,
     STYLE_VERB,
 )
-from gymrat.eta import (
-    MS_PER_SECOND,
-    SamplingEta,
-    format_clock,
-    format_duration,
-)
 from gymrat.progress_events import (
     PassFinished,
     PassStarted,
     PrepareFinished,
     PrepareStarted,
+)
+from gymrat.utils import (
+    MS_PER_SECOND,
+    SamplingEta,
+    format_clock,
+    format_duration,
 )
 
 

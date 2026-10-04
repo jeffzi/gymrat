@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
-from gymrat.eta import NS_PER_MS
 from gymrat.session.records import CommandRecord, SessionRecord, decode_log_line, parse_record
 from gymrat.supervisor.events import (
     LaunchEvent,
@@ -32,6 +31,7 @@ from gymrat.telemetry.attributes import (
 )
 from gymrat.telemetry.ids import parse_traceparent
 from gymrat.telemetry.provider import start_command_span, start_span
+from gymrat.utils import NS_PER_MS
 
 if TYPE_CHECKING:
     from opentelemetry.context import Context

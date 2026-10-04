@@ -46,7 +46,6 @@ from gymrat.cli.style import (
     STYLE_TIMER_DONE,
     STYLE_TIMER_RUNNING,
 )
-from gymrat.eta import MS_PER_SECOND, format_clock, format_duration
 from gymrat.metric_name import format_inline, parse
 from gymrat.progress_events import (
     ConfirmStarted,
@@ -54,6 +53,7 @@ from gymrat.progress_events import (
     PassStarted,
     ProgressEvent,
 )
+from gymrat.utils import MS_PER_SECOND, format_clock, format_duration
 
 if TYPE_CHECKING:
     from collections.abc import Callable

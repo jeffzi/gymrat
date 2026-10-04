@@ -67,7 +67,6 @@ from gymrat.loop.iterate.confirm import (
     is_gating_regression,
 )
 from gymrat.loop.iterate.record import IterationJudgment, build_iteration_record
-from gymrat.loop.output_limit import limit_output
 from gymrat.model import is_improvement
 from gymrat.progress_events import (
     HookFinished,
@@ -98,7 +97,7 @@ from gymrat.session.store import (
     require_open_session,
     require_settled,
 )
-from gymrat.utils import warn_to_stderr
+from gymrat.utils import limit_output, warn_to_stderr
 
 if TYPE_CHECKING:
     import asyncio

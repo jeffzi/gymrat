@@ -64,36 +64,3 @@ class GymratError(Exception):
 
 class CommandError(GymratError):
     """A subprocess command invoked by gymrat failed."""
-
-
-def stderr_text_of(error: object) -> str:
-    """The diagnostics a failed child process wrote to its output streams.
-
-    ``subprocess.CalledProcessError`` and ``TimeoutExpired`` attach the child's
-    captured output separately from the exception message, which carries
-    ``Command '...' returned non-zero exit status`` noise. Preferring the raw
-    stderr keeps git's own diagnostics — the text repository-lookup
-    classification keys on — instead of that wrapper noise.
-
-    Falls back to the captured stdout when stderr is blank: some tools explain
-    a failure on stdout instead (git's "nothing to commit", a commit hook's
-    rejection message), leaving stderr an empty or whitespace-only string. Only
-    when neither stream carries text does the argv-shaped ``str(error)`` stand
-    in.
-
-    Args:
-        error: The caught value.
-
-    Returns:
-        The trimmed stderr when it is present and non-blank, else the trimmed
-        stdout on the same terms, else the message.
-    """
-    for stream_name in ("stderr", "stdout"):
-        stream = getattr(error, stream_name, None)
-        if isinstance(stream, bytes):
-            # Captured streams are bytes unless the call ran in text mode; replace
-            # undecodable sequences so diagnostics never raise here.
-            stream = stream.decode("utf-8", errors="replace")
-        if isinstance(stream, str) and stream.strip():
-            return stream.strip()
-    return str(error)

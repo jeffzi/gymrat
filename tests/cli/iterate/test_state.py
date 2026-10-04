@@ -21,7 +21,6 @@ from gymrat.cli.iterate.state import (
     initial_state,
     plain_line,
 )
-from gymrat.eta import SamplingEta
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
@@ -33,6 +32,7 @@ from gymrat.progress_events import (
     PrepareFinished,
     PrepareStarted,
 )
+from gymrat.utils import SamplingEta
 from tests._imports import loaded_under, modules_imported_by
 from tests.cli._progress_helpers import (
     pass_finished as _pass_finished,

@@ -25,13 +25,14 @@ zero-width-joiner sequence from the character it modifies.
 from __future__ import annotations
 
 import io
-import os
 import re
 from typing import TYPE_CHECKING, Literal, cast
 
 from rich.cells import cell_len, split_graphemes
 from rich.console import Console
 from rich.markup import escape
+
+from gymrat.utils import color_from_env
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -282,7 +283,7 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
     - ``color=True`` forces ANSI even when ``NO_COLOR`` is set, by declaring the
       capture a terminal with color enabled.
     - ``color=False`` suppresses ANSI even when ``FORCE_COLOR`` is set.
-    - ``color=None`` defers to :func:`color_from_env`, which owns the
+    - ``color=None`` defers to :func:`gymrat.utils.color_from_env`, which owns the
       ``FORCE_COLOR``/``NO_COLOR`` precedence and the ways it differs from rich's
       own detection. With neither variable set, a captured buffer is not a TTY,
       so the output is plain.
@@ -327,49 +328,6 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
         no_color=False,
         soft_wrap=True,
     )
-
-
-def color_from_env() -> bool | None:
-    """The color preference the environment declares, or ``None`` to defer to the caller.
-
-    One precedence rule, shared by every color surface so they never disagree:
-    ``FORCE_COLOR`` (any value but ``0``/``false``/empty) forces color on even
-    when ``NO_COLOR`` is also present; ``FORCE_COLOR`` set to a rejected value
-    (``0``/``false``/empty) explicitly disables color — this must override
-    Rich's presence-based detection which treats any ``FORCE_COLOR`` as "on";
-    ``NO_COLOR`` (present, any value) then forces it off; with neither the
-    answer is ``None`` so the caller decides from the stream's own TTY state.
-
-    Returns:
-        ``True`` for forced color, ``False`` for suppressed color, or ``None``
-        when neither environment variable is set.
-    """
-    force_color = os.environ.get("FORCE_COLOR")
-    if force_color is not None:
-        return force_color.lower() not in {"", "0", "false"}
-    if "NO_COLOR" in os.environ:
-        return False
-    return None
-
-
-def is_tty(stream: object) -> bool:
-    """Whether ``stream`` reports itself as an interactive terminal."""
-    isatty = getattr(stream, "isatty", None)
-    return bool(isatty()) if callable(isatty) else False
-
-
-def stream_color_from_env(stream: object) -> bool:
-    """Whether ``stream`` carries color when no flag decides it.
-
-    Args:
-        stream: The output stream whose TTY status is the fallback.
-
-    Returns:
-        What :func:`color_from_env` declares, or the stream's own TTY status
-        when the environment declares nothing.
-    """
-    declared = color_from_env()
-    return declared if declared is not None else is_tty(stream)
 
 
 def render_lines(

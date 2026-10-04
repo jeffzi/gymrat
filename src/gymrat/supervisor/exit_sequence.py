@@ -38,7 +38,6 @@ from typing import TYPE_CHECKING, Literal
 from gymrat.clock import monotonic_ms, now_ns
 from gymrat.command_run import with_repo_lock
 from gymrat.errors import GymratError
-from gymrat.eta import MS_PER_SECOND
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.discard import discard_session
 from gymrat.loop.finalize import finalize_session
@@ -49,6 +48,7 @@ from gymrat.session.records import HookRecord
 from gymrat.session.store import fold_session, last_kept_position, read_records
 from gymrat.session.workspace import changed_file_count, worktree_fingerprint
 from gymrat.supervisor.events import FollowUpEvent
+from gymrat.utils import MS_PER_SECOND
 
 if TYPE_CHECKING:
     from collections.abc import Callable

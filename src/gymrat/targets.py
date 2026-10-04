@@ -12,8 +12,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from gymrat.errors import GymratError, stderr_text_of
+from gymrat.errors import GymratError
 from gymrat.git import run_git
+from gymrat.utils import stderr_text_of
 
 # Hint attached to every unresolvable target, naming the two readings gymrat
 # accepts for the input.

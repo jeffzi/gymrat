@@ -40,7 +40,6 @@ from gymrat.cli.supervise.types import (
     Thinking,
     Waiting,
 )
-from gymrat.eta import NS_PER_MS
 from gymrat.supervisor.events import (
     CapEvent,
     CompactionEvent,
@@ -54,6 +53,7 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
     UsageUpdateEvent,
 )
+from gymrat.utils import NS_PER_MS
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import (

@@ -17,7 +17,6 @@ from gymrat.cli.exit import write_stdout
 from gymrat.cli.options import OutputFormat
 from gymrat.cli.run_setup import SharedFlags
 from gymrat.errors import GymratError
-from gymrat.eta import MS_PER_SECOND, format_duration
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.types import ReportOptions
 from gymrat.session.budget import (
@@ -27,7 +26,7 @@ from gymrat.session.budget import (
 )
 from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.session.store import read_records
-from gymrat.utils import warn_to_stderr
+from gymrat.utils import MS_PER_SECOND, format_duration, warn_to_stderr
 
 
 def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:

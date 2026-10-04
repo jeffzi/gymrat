@@ -13,8 +13,9 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from gymrat.errors import GymratError, stderr_text_of
+from gymrat.errors import GymratError
 from gymrat.signals import deferring_termination_signals
+from gymrat.utils import stderr_text_of
 
 # How many leading characters of a commit SHA callers abbreviate it to.
 SHORT_SHA_LENGTH = 7

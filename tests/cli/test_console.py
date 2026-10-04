@@ -24,7 +24,6 @@ from gymrat.cli.console import (
     set_debug_mode,
     stderr_console,
 )
-from gymrat.report.style import is_tty
 from tests._imports import modules_imported_by
 from tests._process_helpers import run_with_closed_reader
 from tests._streams import FakeStream, RaisingStream
@@ -57,18 +56,6 @@ def test_importing_console_does_not_import_the_error_module():
 # ---------------------------------------------------------------------------
 # stream helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("stream", "expected"),
-    [
-        pytest.param(FakeStream(tty=True), True, id="tty"),
-        pytest.param(FakeStream(tty=False), False, id="non-tty"),
-        pytest.param(object(), False, id="no-isatty"),
-    ],
-)
-def test_is_tty_when_called_does_reflect_the_streams_isatty(stream: object, expected: bool):
-    assert is_tty(stream) is expected
 
 
 @pytest.mark.parametrize(

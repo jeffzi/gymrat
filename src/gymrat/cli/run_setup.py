@@ -15,8 +15,8 @@ from gymrat.cli import console
 from gymrat.cli.progress import ProgressReporter
 from gymrat.config import CliFlags
 from gymrat.exec import kill_live_process_groups
-from gymrat.report.style import is_tty
 from gymrat.signals import install_termination_cleanup
+from gymrat.utils import is_tty
 
 
 @dataclass(frozen=True, slots=True)

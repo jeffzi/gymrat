@@ -17,9 +17,9 @@ from dataclasses import dataclass, field
 from itertools import islice
 from typing import TYPE_CHECKING
 
-from gymrat.eta import format_duration
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.session.records import CommandRecord, DiscardRecord, KeepRecord
+from gymrat.utils import format_duration
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

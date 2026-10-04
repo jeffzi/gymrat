@@ -17,7 +17,6 @@ from pathlib import Path
 from gymrat import clock as _clock
 from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
-from gymrat.eta import MS_PER_SECOND, NS_PER_MS
 from gymrat.session.paths import archived_session_path, session_jsonl_path
 from gymrat.session.records import SessionConfig, SessionHooks, SessionRecord
 from gymrat.session.schema import SCHEMA_VERSION
@@ -30,6 +29,7 @@ from gymrat.session.store import (
 )
 from gymrat.session.workspace import BaselineRef, create_workspace, recreate_workspace
 from gymrat.targets import RefTarget, resolve_target
+from gymrat.utils import MS_PER_SECOND, NS_PER_MS
 
 # Ref the baseline is pinned to when the caller names none.
 DEFAULT_BASELINE_REF = "HEAD"

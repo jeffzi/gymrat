@@ -21,9 +21,9 @@ from dataclasses import dataclass
 
 from gymrat.clock import now_ns
 from gymrat.errors import GymratError
-from gymrat.report.loop import first_line
 from gymrat.session.records import StopRecord
 from gymrat.session.store import append_record, require_open_session, require_settled
+from gymrat.utils import first_line
 
 #: The hint a refusal points at whenever the fix is to settle the last iteration.
 _SETTLE_FIRST_HINT = "Run gymrat keep or gymrat discard before stopping."

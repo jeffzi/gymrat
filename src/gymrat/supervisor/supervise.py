@@ -21,7 +21,6 @@ from gymrat import clock
 from gymrat.clock import now_ms, now_ns
 from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
-from gymrat.eta import MS_PER_SECOND
 from gymrat.session.lock import is_held
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import fold_session, read_records
@@ -51,7 +50,7 @@ from gymrat.supervisor.turns import (
     outcome_record_count,
     spend_cap_reached,
 )
-from gymrat.utils import warn_to_stderr
+from gymrat.utils import MS_PER_SECOND, warn_to_stderr
 
 WALL_CLOCK_POLL_MS = 1000
 """Default interval (in milliseconds) for polling wall-clock time against the

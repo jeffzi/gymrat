@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, override
 
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from gymrat.telemetry.attributes import command_attributes
-from gymrat.telemetry.endpoint import ENDPOINT_ENV, otlp_endpoint
 from gymrat.telemetry.ids import parse_traceparent, span_id_of, trace_id_of
+from gymrat.utils import ENDPOINT_ENV, otlp_endpoint
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

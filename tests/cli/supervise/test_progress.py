@@ -21,9 +21,9 @@ import pytest
 
 from gymrat.cli.supervise.progress import read_live_session
 from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
-from gymrat.eta import NS_PER_MS
 from gymrat.session.records import IterationPrimary
 from gymrat.supervisor.events import CompactionEvent, TextDeltaEvent
+from gymrat.utils import NS_PER_MS
 from tests.cli.supervise._fixtures import (
     _throwing_read,
     cap_event,

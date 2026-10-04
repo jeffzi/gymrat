@@ -28,7 +28,6 @@ from gymrat.cli.supervise.progress import (
     create_supervise_reporter,
 )
 from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
-from gymrat.eta import NS_PER_MS
 from gymrat.loop.start import start_session
 from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
@@ -46,6 +45,7 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 from gymrat.supervisor.supervise import SupervisionResult
+from gymrat.utils import NS_PER_MS
 from tests._rich import frame_text
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (

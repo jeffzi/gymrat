@@ -31,7 +31,7 @@ from gymrat.report.display import GLYPHS
 from gymrat.report.format import format_percent_delta, format_value
 from gymrat.report.style import VARIANT_NAME_STYLE, format_hint, join_header_parts, markup
 from gymrat.report.text.render import paired_samples
-from gymrat.utils import pluralize
+from gymrat.utils import first_line, pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -491,11 +491,6 @@ def format_status_footer(summary: StatusSummary) -> list[str]:
     ])
     stop = _format_stop_state(summary)
     return [totals] if stop is None else [totals, stop]
-
-
-def first_line(message: str) -> str:
-    """The first line of a stop message, discarding the rest."""
-    return message.split("\n", maxsplit=1)[0]
 
 
 def format_status_stop(message: str) -> str:

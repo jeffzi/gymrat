@@ -24,16 +24,14 @@ from typing import TYPE_CHECKING
 from rich.markup import escape
 
 from gymrat.clock import now_ns
-from gymrat.eta import MS_PER_SECOND
 from gymrat.exec import (
     ExecOptions,
     ExecTimeoutError,
     exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
 from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.loop.output_limit import limit_output
 from gymrat.report.format import format_percent_delta
-from gymrat.report.style import format_hint, render_lines, stream_color_from_env
+from gymrat.report.style import format_hint, render_lines
 from gymrat.session.records import (
     BaselineRecord,
     IterationRecord,
@@ -47,7 +45,13 @@ from gymrat.session.workspace import (
     dirty_file_count,
     worktree_head,
 )
-from gymrat.utils import WarnSink, warn_to_stderr
+from gymrat.utils import (
+    MS_PER_SECOND,
+    WarnSink,
+    limit_output,
+    stream_color_from_env,
+    warn_to_stderr,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable

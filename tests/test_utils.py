@@ -8,16 +8,52 @@ propagates.
 """
 
 import os
+import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path, PureWindowsPath
 
 import pytest
 
-from gymrat.utils import abbreviate_home, fan_out, pluralize, warn_to_stderr, write_text_atomic
+from gymrat.utils import (
+    SamplingEta,
+    abbreviate_home,
+    color_from_env,
+    fan_out,
+    format_clock,
+    format_duration,
+    format_eta,
+    format_timestamp,
+    is_tty,
+    limit_output,
+    otlp_endpoint,
+    pluralize,
+    stderr_text_of,
+    stream_color_from_env,
+    warn_to_stderr,
+    write_text_atomic,
+)
+from tests._streams import FakeStream
 
 OLD_TEXT = "previous content\n"
 NEW_TEXT = "café ✓ new content\n"
+
+LIMIT_BYTES = 8192
+
+
+def _error_with_stderr(message: str, stderr: str | bytes) -> Exception:
+    """Build a plain exception carrying a ``stderr`` attribute for the helpers."""
+    error = Exception(message)
+    error.stderr = stderr  # type: ignore[attr-defined]
+    return error
+
+
+def _error_with_streams(message: str, *, stdout: str | bytes, stderr: str | bytes) -> Exception:
+    """Build a plain exception carrying both stream attributes for the helpers."""
+    error = Exception(message)
+    error.stdout = stdout  # type: ignore[attr-defined]
+    error.stderr = stderr  # type: ignore[attr-defined]
+    return error
 
 
 # ---------------------------------------------------------------------------
@@ -150,18 +186,6 @@ def test_pluralize_when_count_is_one_does_leave_noun_unchanged(noun: str):
 )
 def test_pluralize_when_count_is_not_one_does_use_the_plural_form(count: int, expected: str):
     assert pluralize(count, "pass") == expected
-
-
-@pytest.mark.parametrize(
-    ("count", "expected"),
-    [
-        pytest.param(1, "1 index", id="singular-keeps-noun"),
-        pytest.param(2, "2 indices", id="plural-takes-override"),
-        pytest.param(0, "0 indices", id="zero-takes-override"),
-    ],
-)
-def test_pluralize_when_plural_given_does_override_the_suffix_rules(count: int, expected: str):
-    assert pluralize(count, "index", "indices") == expected
 
 
 # ---------------------------------------------------------------------------
@@ -360,3 +384,425 @@ def test_write_text_atomic_when_write_fails_does_raise_and_leave_target_untouche
 
     assert target.read_text(encoding="utf-8") == OLD_TEXT
     assert _entries(target.parent) == ["state.json"]
+
+
+# ---------------------------------------------------------------------------
+# SamplingEta
+# ---------------------------------------------------------------------------
+
+
+def test_sampling_eta_when_given_only_a_total_does_start_with_no_samples() -> None:
+    eta = SamplingEta(total=10)
+
+    assert (eta.completed, eta.total_time_ms, eta.total) == (0, 0.0, 10)
+
+
+def test_sampling_eta_advanced_when_given_duration_does_return_incremented_copy() -> None:
+    eta = SamplingEta(total=4)
+
+    advanced = eta.advanced(100.0)
+
+    assert (advanced.completed, advanced.total_time_ms, advanced.total) == (1, 100.0, 4)
+    assert (eta.completed, eta.total_time_ms) == (0, 0.0)
+
+
+def test_sampling_eta_advanced_when_called_repeatedly_does_accumulate_samples() -> None:
+    eta = SamplingEta(total=4).advanced(100.0).advanced(300.0)
+
+    assert (eta.completed, eta.total_time_ms) == (2, 400.0)
+
+
+@pytest.mark.parametrize(
+    ("completed", "total_time_ms", "total", "expected"),
+    [
+        pytest.param(0, 0.0, 5, None, id="no-finished-pass"),
+        pytest.param(2, 300.0, 5, 450.0, id="average-times-remaining"),
+        pytest.param(5, 500.0, 5, None, id="nothing-remaining"),
+        pytest.param(6, 600.0, 5, None, id="completed-past-total"),
+    ],
+)
+def test_sampling_eta_eta_ms_when_given_state_does_return_expected_estimate(
+    completed: int, total_time_ms: float, total: int, expected: float | None
+) -> None:
+    eta = SamplingEta(completed=completed, total_time_ms=total_time_ms, total=total)
+
+    assert eta.eta_ms == expected
+
+
+# ---------------------------------------------------------------------------
+# format_duration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ms", "expected"),
+    [
+        (0, "0s"),
+        (999, "0s"),
+        (1000, "1s"),
+        (45_000, "45s"),
+        (59_999, "59s"),
+        (60_000, "1m 0s"),
+        (90_000, "1m 30s"),
+        (723_000, "12m 3s"),
+        (3_599_999, "59m 59s"),
+        (3_600_000, "1h 00m"),
+        (3_900_000, "1h 05m"),
+        (5_400_000, "1h 30m"),
+        (7_200_000, "2h 00m"),
+        pytest.param(36_000_000, "10h 00m", id="multi-digit-hours"),
+    ],
+)
+def test_format_duration_when_given_milliseconds_does_render_expected_duration(
+    ms: float, expected: str
+) -> None:
+    assert format_duration(ms) == expected
+
+
+@pytest.mark.parametrize(
+    ("ms", "expected"),
+    [
+        (-1, "0s"),
+        (-1000, "0s"),
+        (-999_999, "0s"),
+    ],
+)
+def test_format_duration_when_negative_input_does_render_zero(ms: float, expected: str) -> None:
+    assert format_duration(ms) == expected
+
+
+# ---------------------------------------------------------------------------
+# format_timestamp
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("at_ms", "run_start_ms"),
+    [
+        pytest.param(1_000, 1_000, id="zero-elapsed"),
+        pytest.param(999, 1_000, id="negative-elapsed-clamps-to-zero"),
+        pytest.param(0, 90_000, id="large-negative-elapsed-clamps-to-zero"),
+        pytest.param(90_000, None, id="unanchored-run"),
+    ],
+)
+def test_format_timestamp_when_elapsed_not_positive_does_render_zero_timestamp(
+    at_ms: float, run_start_ms: float | None
+) -> None:
+    assert format_timestamp(at_ms, run_start_ms) == "[00:00:00]"
+
+
+@pytest.mark.parametrize(
+    ("at_ms", "run_start_ms", "expected"),
+    [
+        pytest.param(91_000, 1_000, "[00:01:30]", id="ninety-seconds-elapsed"),
+        pytest.param(3_601_000, 1_000, "[01:00:00]", id="one-hour-elapsed"),
+        pytest.param(36_001_000, 1_000, "[10:00:00]", id="multi-digit-hours-elapsed"),
+    ],
+)
+def test_format_timestamp_when_positive_elapsed_does_render_elapsed_clock(
+    at_ms: float, run_start_ms: float, expected: str
+) -> None:
+    assert format_timestamp(at_ms, run_start_ms) == expected
+
+
+# ---------------------------------------------------------------------------
+# format_clock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ms", "expected"),
+    [
+        pytest.param(0, "00:00", id="zero"),
+        pytest.param(9_000, "00:09", id="sub-minute"),
+        pytest.param(9_999, "00:09", id="floors-partial-second"),
+        pytest.param(59_999, "00:59", id="last-second-before-minute-tier"),
+        pytest.param(465_000, "07:45", id="minutes"),
+        pytest.param(3_599_000, "59:59", id="last-second-before-hour-tier"),
+        pytest.param(3_600_000, "1:00:00", id="hour-tier-starts"),
+        pytest.param(4_065_000, "1:07:45", id="hour-tier"),
+        pytest.param(36_000_000, "10:00:00", id="multi-digit-hours"),
+        pytest.param(-1, "00:00", id="negative-clamps-to-zero"),
+        pytest.param(-90_000, "00:00", id="large-negative-clamps-to-zero"),
+    ],
+)
+def test_format_clock_when_given_milliseconds_does_render_expected_clock(
+    ms: float, expected: str
+) -> None:
+    assert format_clock(ms) == expected
+
+
+# ---------------------------------------------------------------------------
+# format_eta
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ms", "expected"),
+    [
+        (0, "~1s left"),
+        (500, "~1s left"),
+        (999, "~1s left"),
+        (1000, "~1s left"),
+        (48200, "~48s left"),
+        (59999, "~1m left"),
+        (60000, "~1m left"),
+        (130000, "~2m 10s left"),
+        (120000, "~2m left"),
+        (3599999, "~1h left"),
+        (3600000, "~1h left"),
+        (3900000, "~1h 05m left"),
+        (7200000, "~2h left"),
+        (7260000, "~2h 01m left"),
+    ],
+)
+def test_format_eta_when_given_milliseconds_does_render_expected_eta(
+    ms: float, expected: str
+) -> None:
+    assert format_eta(ms) == expected
+
+
+# ---------------------------------------------------------------------------
+# limit_output
+# ---------------------------------------------------------------------------
+
+
+def test_limit_output_when_within_budget_does_return_text_unchanged() -> None:
+    text = "a short line\nand another\n"
+
+    result = limit_output(text)
+
+    assert result == text
+
+
+def test_limit_output_when_multi_line_overrun_does_cut_to_last_whole_line() -> None:
+    line = "a" * 100
+    text = f"{line}\n" * 200
+    whole_lines = LIMIT_BYTES // len(f"{line}\n".encode())
+
+    result = limit_output(text)
+
+    expected = (f"{line}\n" * whole_lines).removesuffix("\n")
+    assert result == expected
+    assert len(result.encode("utf-8")) <= LIMIT_BYTES
+
+
+def test_limit_output_when_single_long_line_does_cut_to_last_whole_char() -> None:
+    text = "a" * 9000
+
+    result = limit_output(text)
+
+    assert result == "a" * LIMIT_BYTES
+
+
+def test_limit_output_when_only_newline_at_byte_zero_does_char_cut_not_empty() -> None:
+    text = "\n" + "a" * 9000
+
+    result = limit_output(text)
+
+    assert result == "\n" + "a" * (LIMIT_BYTES - 1)
+    assert result != ""
+    assert len(result.encode("utf-8")) <= LIMIT_BYTES
+
+
+def test_limit_output_when_cut_splits_multi_byte_char_does_not_emit_replacement() -> None:
+    text = "é" * 9000  # each "é" is 2 bytes in UTF-8
+
+    result = limit_output(text)
+
+    assert len(result.encode("utf-8")) <= LIMIT_BYTES
+    assert "�" not in result
+    assert result == "é" * (LIMIT_BYTES // 2)
+
+
+def test_limit_output_when_valid_utf8_within_budget_does_return_text_unchanged() -> None:
+    text = "café résumé naïve €42"  # cspell:disable-line
+
+    result = limit_output(text)
+
+    assert result == text
+
+
+@pytest.mark.parametrize(
+    ("char", "prefix"),
+    [
+        pytest.param("€", "", id="3-byte-euro"),
+        pytest.param("\U0001f389", "a", id="4-byte-emoji-with-ascii-prefix"),
+    ],
+)
+def test_limit_output_when_cut_splits_wide_char_does_drop_partial_bytes(
+    char: str,
+    prefix: str,
+) -> None:
+    char_size = len(char.encode("utf-8"))
+    prefix_size = len(prefix.encode("utf-8"))
+    remaining = LIMIT_BYTES - prefix_size
+    full_chars = remaining // char_size
+    text = prefix + char * 9000
+
+    result = limit_output(text)
+
+    assert result == prefix + char * full_chars
+    assert len(result.encode("utf-8")) <= LIMIT_BYTES
+    assert "�" not in result
+
+
+# ---------------------------------------------------------------------------
+# stderr_text_of
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        pytest.param("fatal: bad thing\n", id="str"),
+        pytest.param(b"fatal: bad thing\n", id="bytes"),
+    ],
+)
+def test_stderr_text_of_when_stderr_non_blank_does_prefer_it_over_message(stderr: str | bytes):
+    error = subprocess.CalledProcessError(1, ["git"], stderr=stderr)
+
+    assert stderr_text_of(error) == "fatal: bad thing"
+
+
+@pytest.mark.parametrize("stderr", ["", "   \n\t"])
+def test_stderr_text_of_when_stderr_blank_does_fall_back_to_message(stderr: str):
+    error = _error_with_stderr("real message", stderr)
+
+    assert stderr_text_of(error) == "real message"
+
+
+def test_stderr_text_of_when_stderr_absent_does_fall_back_to_message():
+    assert stderr_text_of(ValueError("plain message")) == "plain message"
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        pytest.param("hook rejected the commit\n", id="str"),
+        pytest.param(b"hook rejected the commit\n", id="bytes"),
+    ],
+)
+def test_stderr_text_of_when_stderr_blank_does_fall_back_to_stdout(stdout: str | bytes):
+    error = subprocess.CalledProcessError(1, ["git", "commit"], output=stdout, stderr="")
+
+    assert stderr_text_of(error) == "hook rejected the commit"
+
+
+def test_stderr_text_of_when_both_streams_non_blank_does_prefer_stderr():
+    error = subprocess.CalledProcessError(
+        1, ["git", "commit"], output="on stdout", stderr="on stderr"
+    )
+
+    assert stderr_text_of(error) == "on stderr"
+
+
+def test_stderr_text_of_when_both_streams_blank_does_fall_back_to_message():
+    error = _error_with_streams("real message", stdout="  \n\t", stderr="")
+
+    assert stderr_text_of(error) == "real message"
+
+
+# ---------------------------------------------------------------------------
+# color_from_env
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("force_color", "no_color", "expected"),
+    [
+        pytest.param(None, None, None, id="neither-defers"),
+        pytest.param(None, "1", False, id="no-color"),
+        pytest.param(None, "", False, id="no-color-empty-still-present"),
+        pytest.param("1", None, True, id="force-color"),
+        pytest.param("1", "1", True, id="force-color-beats-no-color"),
+        pytest.param("0", None, False, id="force-color-zero"),
+        pytest.param("", None, False, id="force-color-empty"),
+        pytest.param("false", None, False, id="force-color-false"),
+        pytest.param("FALSE", None, False, id="force-color-false-uppercase"),
+    ],
+)
+def test_color_from_env_when_variables_vary_does_apply_the_shared_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    force_color: str | None,
+    no_color: str | None,
+    expected: bool | None,
+):
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    if force_color is not None:
+        monkeypatch.setenv("FORCE_COLOR", force_color)
+    if no_color is not None:
+        monkeypatch.setenv("NO_COLOR", no_color)
+
+    assert color_from_env() is expected
+
+
+# ---------------------------------------------------------------------------
+# is_tty
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    [
+        pytest.param(FakeStream(tty=True), True, id="tty"),
+        pytest.param(FakeStream(tty=False), False, id="non-tty"),
+        pytest.param(object(), False, id="no-isatty"),
+    ],
+)
+def test_is_tty_when_called_does_reflect_the_streams_isatty(stream: object, expected: bool):
+    assert is_tty(stream) is expected
+
+
+# ---------------------------------------------------------------------------
+# stream_color_from_env
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("force_color", "no_color", "tty", "expected"),
+    [
+        pytest.param(None, None, True, True, id="tty-alone"),
+        pytest.param(None, None, False, False, id="redirect-alone"),
+        pytest.param("1", None, False, True, id="force-color-on-a-redirect"),
+        pytest.param("0", None, True, False, id="force-color-zero-on-a-tty"),
+        pytest.param(None, "1", True, False, id="no-color-on-a-tty"),
+    ],
+)
+def test_stream_color_from_env_when_environment_and_tty_vary_does_let_the_environment_win(
+    monkeypatch: pytest.MonkeyPatch,
+    force_color: str | None,
+    no_color: str | None,
+    tty: bool,
+    expected: bool,
+):
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    if force_color is not None:
+        monkeypatch.setenv("FORCE_COLOR", force_color)
+    if no_color is not None:
+        monkeypatch.setenv("NO_COLOR", no_color)
+
+    assert stream_color_from_env(FakeStream(tty=tty)) is expected
+
+
+# ---------------------------------------------------------------------------
+# otlp_endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param("http://localhost:4318", "http://localhost:4318", id="plain"),
+        pytest.param("  http://localhost:4318\n", "http://localhost:4318", id="padded"),
+        pytest.param("", None, id="empty"),
+        pytest.param("  \t", None, id="blank"),
+        pytest.param(None, None, id="unset"),
+    ],
+)
+def test_otlp_endpoint_when_given_a_raw_value_does_trim_it_or_report_none(
+    value: str | None, expected: str | None
+):
+    assert otlp_endpoint(value) == expected

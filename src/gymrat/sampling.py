@@ -37,8 +37,7 @@ from typing import Literal, Self
 from gymrat.adapters import DEFAULT_METRIC_KIND, Adapter
 from gymrat.clock import monotonic_ms
 from gymrat.config import KindEntry, MetricEntry, ResolvedConfig
-from gymrat.errors import CommandError, GymratError, stderr_text_of
-from gymrat.eta import MS_PER_SECOND
+from gymrat.errors import CommandError, GymratError
 from gymrat.exec import (
     ExecOptions,
     ExecResult,
@@ -66,7 +65,7 @@ from gymrat.targets import (
     WorktreeInfo,
     WorktreeRemovalFailure,
 )
-from gymrat.utils import WarnSink, warn_to_stderr
+from gymrat.utils import MS_PER_SECOND, WarnSink, stderr_text_of, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # sampling types
