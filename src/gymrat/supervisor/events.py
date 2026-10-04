@@ -45,7 +45,7 @@ SUMMARY_MAX_CHARS = 200
 ITERATE_TOOL = "mcp__gymrat__iterate"
 PROBE_TOOL = "mcp__gymrat__probe"
 
-# Input summary for an iterate call, shared with frame._is_iterate_tool's match
+# Input summary for an iterate call, shared with the dashboard frame's match
 # against a Bash-invoked `gymrat iterate`.
 ITERATE_SUMMARY = "gymrat iterate"
 

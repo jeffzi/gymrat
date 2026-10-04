@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.cli.supervise.progress import read_live_session
-from gymrat.cli.supervise.types import ReadSessionResult
+from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
 from gymrat.eta import NS_PER_MS
 from gymrat.session.records import IterationPrimary
 from gymrat.supervisor.events import CompactionEvent, TextDeltaEvent
@@ -114,14 +114,39 @@ def test_read_live_session_when_keeps_committed_does_report_the_best_committed_i
 
     result = _read_back(tmp_path, history)
 
-    assert (
-        result.best_delta_pct,
-        result.best_seq,
-        result.primary_label,
-        result.baseline_sha,
-        result.has_baseline,
-        result.stop_message,
-    ) == (-9.0, 2, primary_label, "a" * 40, False, None)
+    assert (result.best, result.baseline_sha, result.has_baseline, result.stop_message) == (
+        BestIteration(delta_pct=-9.0, seq=2, label=primary_label),
+        "a" * 40,
+        False,
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        pytest.param(
+            (
+                iteration_record(seq=1, primary=IterationPrimary(kind="geomean", delta_pct=-7.2)),
+                blocked_keep(1),
+            ),
+            id="no-committed-keep",
+        ),
+        pytest.param(
+            (
+                iteration_record(seq=1, primary=IterationPrimary(kind="geomean", delta_pct=None)),
+                committed_keep(1),
+            ),
+            id="committed-keep-without-a-delta",
+        ),
+    ],
+)
+def test_read_live_session_when_no_committed_keep_has_a_delta_does_report_no_best(
+    tmp_path: Path, history: tuple[SessionLogRecord, ...]
+):
+    result = _read_back(tmp_path, history)
+
+    assert result.best is None
 
 
 @pytest.mark.parametrize(
@@ -442,15 +467,14 @@ def test_best_when_kept_iteration_exists_does_show_the_best_row():
         read_session=make_read_session(
             state,
             has_baseline=True,
-            best_delta_pct=-6.8,
-            best_seq=3,
+            best=BestIteration(delta_pct=-6.8, seq=3, label="geomean"),
         ),
     )
     fire_launch_and_bash_cycle(kit.reporter.observer)
 
     frame = render_frame(kit.reporter)
 
-    assert "best" in frame
+    assert "best -6.8% geomean (iteration 3)" in frame
 
 
 # ---------------------------------------------------------------------------
@@ -469,9 +493,7 @@ def test_best_when_session_has_best_fields_does_show_delta_label_sha_and_iterati
         read_session=make_read_session(
             state,
             has_baseline=True,
-            best_delta_pct=-6.8,
-            best_seq=3,
-            primary_label="geomean",
+            best=BestIteration(delta_pct=-6.8, seq=3, label="geomean"),
             baseline_sha="2ec6e05abcdef1234567890abcdef1234567890a",
         ),
     )
@@ -497,9 +519,7 @@ def test_best_when_last_kept_differs_from_best_does_show_best_not_last():
         read_session=make_read_session(
             state,
             has_baseline=True,
-            best_delta_pct=-6.8,
-            best_seq=3,
-            primary_label="geomean",
+            best=BestIteration(delta_pct=-6.8, seq=3, label="geomean"),
             baseline_sha="abcdef1234567890abcdef1234567890abcdef12",
         ),
     )
@@ -576,9 +596,7 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
         read_session=make_read_session(
             state,
             has_baseline=True,
-            best_delta_pct=-6.8,
-            best_seq=3,
-            primary_label="geomean",
+            best=BestIteration(delta_pct=-6.8, seq=3, label="geomean"),
             baseline_sha="abc1234567890abcdef1234567890abcdef123456",
         ),
     )
@@ -712,8 +730,7 @@ def test_follow_up_when_replied_does_show_turn_count_and_replied():
 
     frame = render_frame(kit.reporter)
 
-    assert "turn 1 ended" in frame
-    assert "replied" in frame
+    assert "turns  turn 1 ended · replied" in frame
 
 
 def test_follow_up_when_waiting_does_show_turn_count_and_waiting_for_gymrat():

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.cli.supervise.summary import build_summary
+from gymrat.cli.supervise.types import BestIteration
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 from gymrat.supervisor.exit_sequence import ExitReport, ExitStep
 from tests._ansi import SGR_GREEN, SGR_RED, SGR_YELLOW, assert_has_sgr
@@ -51,9 +52,7 @@ def _session_result(*, with_best: bool) -> ReadSessionResult:
     return make_read_session(
         state,
         has_baseline=True,
-        best_delta_pct=-4.2,
-        best_seq=3,
-        primary_label="wall_time",
+        best=BestIteration(delta_pct=-4.2, seq=3, label="wall_time"),
         baseline_sha="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
     )()
 

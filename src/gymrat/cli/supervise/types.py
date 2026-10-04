@@ -15,23 +15,31 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
+class BestIteration:
+    """The committed-keep iteration with the best primary delta.
+
+    Attributes:
+        delta_pct: Its primary delta, in percent.
+        seq: Its sequence number.
+        label: Its primary: the metric name for a named-metric primary, else
+            the kind (``"geomean"``).
+    """
+
+    delta_pct: float
+    seq: int
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
 class ReadSessionResult:
     """The folded session state plus whether a baseline has been recorded.
 
     Attributes:
         state: The folded session state as of the last read.
         has_baseline: Whether a baseline record has been recorded for the session.
-        best_delta_pct: The best primary delta, in percent, among committed-keep
-            iterations. ``None`` when no keep has been committed.
-            ``read_live_session`` computes it from the session records;
-            injected test readers set it directly.
-        best_seq: The sequence number of the committed-keep iteration with the
-            best primary delta. ``None`` under the same condition as
-            ``best_delta_pct``, and set alongside it.
-        primary_label: The primary of the best committed-keep iteration: the
-            metric name for a named-metric primary, else the kind
-            (``"geomean"``). ``None`` under the same condition as
-            ``best_delta_pct``, and set alongside it.
+        best: The best committed-keep iteration. ``None`` when no keep has been
+            committed. ``read_live_session`` computes it from the session
+            records; injected test readers set it directly.
         baseline_sha: The commit the session started from, taken from the
             session record by ``read_live_session``. ``None`` before the session
             record has been written.
@@ -42,9 +50,7 @@ class ReadSessionResult:
 
     state: SessionState
     has_baseline: bool
-    best_delta_pct: float | None = None
-    best_seq: int | None = None
-    primary_label: str | None = None
+    best: BestIteration | None = None
     baseline_sha: str | None = None
     stop_message: str | None = None
 
@@ -91,14 +97,12 @@ class Composing:
 class Waiting:
     """No tool is running; ``since`` is the timestamp of the last observed activity.
 
-    The ``tool_*`` and ``result`` fields describe the last finished top-level tool.
-    All three are ``None`` when no tool has finished yet.
+    ``last_tool`` is the last finished top-level tool, ``None`` when no tool has
+    finished yet.
     """
 
     since: int
-    tool_name: str | None = None
-    tool_ended_at: int | None = None
-    result: str | None = None
+    last_tool: FinishedTool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,12 +131,12 @@ type Liveness = Starting | InFlight | Thinking | Responding | Composing | Waitin
 
 
 @dataclass(frozen=True, slots=True)
-class TrackedTool:
-    """A tool the reporter has seen start but not yet end."""
+class RunningTool:
+    """A top-level or nested subagent tool seen to start at ``since`` and not yet end."""
 
     tool_name: str
-    started_at: int
     input_summary: str
+    since: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,15 +151,6 @@ class FinishedTool:
 
 
 @dataclass(frozen=True, slots=True)
-class NestedTool:
-    """A nested subagent tool that is currently running."""
-
-    tool_name: str
-    input_summary: str
-    since: int
-
-
-@dataclass(frozen=True, slots=True)
 class NestedPhase:
     """A nested subagent model phase (thinking, responding, or tool_input)."""
 
@@ -164,5 +159,5 @@ class NestedPhase:
     tool_name: str | None = None
 
 
-type NestedActivity = NestedTool | NestedPhase
+type NestedActivity = RunningTool | NestedPhase
 """What a nested subagent is currently doing, keyed by its parent tool-use id."""

@@ -39,10 +39,7 @@ def format_cost(usd: float) -> str:
 
 def format_caps(max_minutes: float, max_usd: float | None) -> str:
     """Format "caps {minutes}m" alone, or with ", {cost}" appended when a spend cap is set."""
-    caps_parts = [f"{max_minutes:g}m"]
-    if max_usd is not None:
-        caps_parts.append(format_cost(max_usd))
-    return f"caps {', '.join(caps_parts)}"
+    return f"caps {max_minutes:g}m" + ("" if max_usd is None else f", {format_cost(max_usd)}")
 
 
 def exit_phase_text(phase: ExitPhase | Exiting) -> str:

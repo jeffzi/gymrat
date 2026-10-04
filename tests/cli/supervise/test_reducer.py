@@ -26,12 +26,11 @@ from gymrat.cli.supervise.types import (
     Exiting,
     FinishedTool,
     InFlight,
-    NestedTool,
     ReadSessionResult,
     Responding,
+    RunningTool,
     Starting,
     Thinking,
-    TrackedTool,
     Waiting,
 )
 from gymrat.eta import NS_PER_MS
@@ -216,7 +215,7 @@ def test_advance_when_top_level_tool_starts_does_track_it_and_go_in_flight():
     )
 
     assert dict(after.in_flight_tools) == {
-        "bash-1": TrackedTool(tool_name="Bash", started_at=2000, input_summary="npm test")
+        "bash-1": RunningTool(tool_name="Bash", input_summary="npm test", since=2000)
     }
     assert after.liveness == InFlight(
         tool_use_id="bash-1", tool_name="Bash", since=2000, input_summary="npm test"
@@ -240,7 +239,7 @@ def test_advance_when_nested_tool_starts_under_an_in_flight_parent_does_record_n
     )
 
     assert dict(after.nested) == {
-        "bash-1": NestedTool(tool_name="Read", input_summary="...", since=2000)
+        "bash-1": RunningTool(tool_name="Read", input_summary="...", since=2000)
     }
     assert after.liveness == before.liveness
     assert dict(after.in_flight_tools).keys() == {"bash-1"}
@@ -266,13 +265,12 @@ def test_advance_when_top_level_tool_ends_does_log_the_finished_tool_and_wait():
 
     after = advance(before, tool_end_event("Read", "read-1", 3000), None)
 
-    assert after.finished_tools == (
-        FinishedTool(
-            tool_name="Read", input_summary="...", duration_ms=1000, result="ok", ended_at=3000
-        ),
+    finished = FinishedTool(
+        tool_name="Read", input_summary="...", duration_ms=1000, result="ok", ended_at=3000
     )
+    assert after.finished_tools == (finished,)
     assert dict(after.in_flight_tools) == {}
-    assert after.liveness == Waiting(since=3000, tool_name="Read", tool_ended_at=3000, result="ok")
+    assert after.liveness == Waiting(since=3000, last_tool=finished)
 
 
 def test_advance_when_one_of_two_tools_ends_does_fall_back_to_the_remaining_tool():
@@ -360,6 +358,41 @@ def test_advance_when_nested_tool_ends_does_not_log_it_as_a_finished_tool():
     assert after.liveness == before.liveness
 
 
+def test_advance_when_nested_tool_ends_under_a_nested_phase_does_keep_the_phase():
+    before = advance(
+        bash_in_flight_state(),
+        tool_start_event("Read", "read-1", 2000, parent_tool_use_id="bash-1"),
+        None,
+    )
+    before = advance(before, model_phase_event(2200, "turn_end", parent_tool_use_id="bash-1"), None)
+    before = advance(
+        before, model_phase_event(2300, "responding", parent_tool_use_id="bash-1"), None
+    )
+
+    after = advance(
+        before, tool_end_event("Read", "read-1", 2500, parent_tool_use_id="bash-1"), None
+    )
+
+    assert (after.nested, after.nested_tool_ids) == (before.nested, ())
+
+
+@pytest.mark.parametrize(
+    "make_event",
+    [
+        pytest.param(lambda: turn_end_event(4000), id="turn-end"),
+        pytest.param(lambda: model_phase_event(4000, "turn_end"), id="turn-end-phase"),
+    ],
+)
+def test_advance_when_turn_ends_after_a_tool_finished_does_wait_on_that_tool(
+    make_event: Callable[[], SessionEvent],
+):
+    before = advance(started("Read", "read-1"), tool_end_event("Read", "read-1", 3000), None)
+
+    after = advance(before, make_event(), None)
+
+    assert after.liveness == Waiting(since=4000, last_tool=before.finished_tools[-1])
+
+
 # ---------------------------------------------------------------------------
 # advance — thinking and model phase
 # ---------------------------------------------------------------------------
@@ -444,6 +477,20 @@ def test_advance_when_nested_model_phase_arrives_does_record_it_under_the_parent
     assert set(dict(after.nested)) == {"bash-1"}
 
 
+def test_advance_when_nested_model_phase_arrives_during_a_nested_tool_does_keep_the_tool():
+    before = advance(
+        bash_in_flight_state(),
+        tool_start_event("Read", "read-1", 2000, parent_tool_use_id="bash-1"),
+        None,
+    )
+
+    after = advance(
+        before, model_phase_event(2500, "responding", parent_tool_use_id="bash-1"), None
+    )
+
+    assert after == before
+
+
 def test_advance_when_nested_thinking_update_arrives_does_not_change_state():
     before = bash_in_flight_state()
 
@@ -493,6 +540,7 @@ def test_advance_when_turn_ends_while_capped_does_count_it_but_stay_capped():
         pytest.param(
             "ended", "budget exhausted", "turn 1 ended · ended budget exhausted", id="ended"
         ),
+        pytest.param("ended", None, "turn 1 ended · ended", id="ended-without-reason"),
     ],
 )
 def test_advance_when_follow_up_arrives_does_record_the_turn_decision(

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.panel import Panel
 
-from gymrat.cli.supervise.types import ReadSessionResult
+from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._ansi import (
     SGR_BLUE,
@@ -34,6 +34,7 @@ from tests.cli.supervise._fixtures import (
     cap_event,
     fire_launch_and_bash_cycle,
     fire_launch_and_bash_start,
+    follow_up_event,
     launch_event,
     line_after,
     make_read_session,
@@ -45,6 +46,7 @@ from tests.cli.supervise._fixtures import (
     session_state_three_iterations,
     tool_end_event,
     tool_start_event,
+    turn_end_event,
     usage_event,
 )
 from tests.session.records._fixtures import make_iteration, session_state
@@ -163,6 +165,25 @@ def test_cost_when_rendered_with_color_does_emit_styling():
 
 
 # ---------------------------------------------------------------------------
+# summary row labels
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("label", ["loop", "best", "turns"])
+def test_summary_row_when_rendered_with_color_does_open_on_a_dim_label(label: str):
+    state = session_state_three_iterations(-3.2, "improved", seq=3)
+    best = BestIteration(delta_pct=-3.2, seq=3, label="geomean")
+    kit = make_reporter(read_session=make_read_session(state, has_baseline=True, best=best))
+    fire_launch_and_bash_cycle(kit.reporter.observer)
+    kit.reporter.observer(turn_end_event(4000))
+    kit.reporter.observer(follow_up_event(5000, action="replied"))
+
+    colored = _render_content_colored(kit.reporter)
+
+    assert [line for line in colored.splitlines() if line.startswith(f"\x1b[{SGR_DIM}m{label} ")]
+
+
+# ---------------------------------------------------------------------------
 # loop row styling
 # ---------------------------------------------------------------------------
 
@@ -216,6 +237,7 @@ def test_loop_outcome_when_rendered_with_color_does_emit_expected_styling(
     [
         pytest.param(-6.8, SGR_GREEN, id="negative-delta-green"),
         pytest.param(3.5, SGR_RED, id="positive-delta-red"),
+        pytest.param(0.0, SGR_RED, id="zero-delta-red"),
     ],
 )
 def test_best_delta_when_rendered_with_color_does_emit_sign_dependent_styling(
@@ -232,8 +254,7 @@ def test_best_delta_when_rendered_with_color_does_emit_sign_dependent_styling(
         read_session=make_read_session(
             state,
             has_baseline=True,
-            best_delta_pct=delta_pct,
-            best_seq=3,
+            best=BestIteration(delta_pct=delta_pct, seq=3, label="geomean"),
         ),
     )
     fire_launch_and_bash_cycle(kit.reporter.observer)

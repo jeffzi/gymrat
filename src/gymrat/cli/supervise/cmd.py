@@ -499,9 +499,7 @@ def _execute(options: Options) -> None:
         )
         head_sha = run_git(["rev-parse", "HEAD"], root).strip()
 
-        supervise_config = (
-            resolved.supervise if resolved.supervise is not None else SuperviseConfig()
-        )
+        supervise_config = resolved.supervise or SuperviseConfig()
         model = options.model if options.model is not None else supervise_config.model
         effort = options.effort if options.effort is not None else supervise_config.effort
 

@@ -164,6 +164,18 @@ def test_exit_phase_when_live_mode_does_repaint_live():
         assert live.refresh.call_count > painted
 
 
+def test_exit_phase_when_repeated_in_live_mode_does_not_repaint_live():
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        live = mock_live_cls.return_value
+        kit = make_reporter(mode="live")
+        kit.reporter.exit_phase(ExitPhase(kind="settling", pid=None))
+        painted = live.refresh.call_count
+
+        kit.reporter.exit_phase(ExitPhase(kind="settling", pid=None))
+
+        assert live.refresh.call_count == painted
+
+
 # ---------------------------------------------------------------------------
 # warn — live mode prints messages verbatim
 # ---------------------------------------------------------------------------

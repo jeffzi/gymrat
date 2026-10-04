@@ -26,7 +26,7 @@ from gymrat.cli.supervise.reducer import (
     wants_session_refresh,
 )
 from gymrat.cli.supervise.text import exit_phase_text
-from gymrat.cli.supervise.types import ReadSessionResult
+from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
 from gymrat.clock import now_ms
 from gymrat.eta import MS_PER_SECOND
 from gymrat.session.paths import session_jsonl_path
@@ -63,8 +63,8 @@ IDLE_WARN_MS = 30_000
 
 def _find_best_kept_iteration(
     records: list[SessionLogRecord], committed_seqs: set[int]
-) -> tuple[float | None, int | None, str | None]:
-    """Return ``(delta_pct, seq, primary_label)`` for the best committed keep."""
+) -> BestIteration | None:
+    """Return the committed keep with the best primary delta, if any has one."""
     candidates = [
         (r, delta)
         for r in records
@@ -73,10 +73,12 @@ def _find_best_kept_iteration(
         and (delta := r.primary.delta_pct) is not None
     ]
     if not candidates:
-        return None, None, None
+        return None
 
     best, best_delta = min(candidates, key=operator.itemgetter(1))
-    return best_delta, best.seq, best.primary.name or best.primary.kind
+    return BestIteration(
+        delta_pct=best_delta, seq=best.seq, label=best.primary.name or best.primary.kind
+    )
 
 
 def _find_stop_message(records: list[SessionLogRecord]) -> str | None:
@@ -101,14 +103,11 @@ def read_live_session(root: str) -> ReadSessionResult:
     committed_seqs = {
         r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"
     }
-    best_delta_pct, best_seq, primary_label = _find_best_kept_iteration(records, committed_seqs)
 
     return ReadSessionResult(
         state=state,
         has_baseline=has_baseline,
-        best_delta_pct=best_delta_pct,
-        best_seq=best_seq,
-        primary_label=primary_label,
+        best=_find_best_kept_iteration(records, committed_seqs),
         baseline_sha=state.session.baseline.sha if state.session is not None else None,
         stop_message=_find_stop_message(records) if state.ends_on_stop else None,
     )
@@ -253,19 +252,6 @@ class _LiveFrame:
         return self.last
 
 
-def render_live(ctx: ReporterCtx) -> None:
-    """Repaint the Live display now, building the frame once through its ``get_renderable``.
-
-    In plain mode, where no Live exists, this is a no-op.
-
-    Args:
-        ctx: The reporter shell supplying the Live instance and the state to
-            render.
-    """
-    if ctx.live is not None:
-        ctx.live.refresh()
-
-
 def _read_session(ctx: ReporterCtx) -> ReadSessionResult | None:
     try:
         return ctx.read_session_fn()
@@ -293,7 +279,7 @@ def handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
 
     if ctx.live is not None:
         if ctx.state is not before:
-            render_live(ctx)
+            ctx.live.refresh()
         return
     line = plain_line(before, ctx.state, event)
     if line is not None:
@@ -305,7 +291,8 @@ def _refresh_session(ctx: ReporterCtx) -> None:
     if session is None:
         return
     ctx.state = replace(ctx.state, session_result=session)
-    render_live(ctx)
+    if ctx.live is not None:
+        ctx.live.refresh()
 
 
 def _report_exit_phase(ctx: ReporterCtx, phase: ExitPhase) -> None:
@@ -316,7 +303,7 @@ def _report_exit_phase(ctx: ReporterCtx, phase: ExitPhase) -> None:
     if ctx.live is None:
         ctx.plain_write_fn(exit_phase_text(phase))
     else:
-        render_live(ctx)
+        ctx.live.refresh()
 
 
 def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter knob
@@ -437,12 +424,11 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         # stops the display when starting or writing the first paint fails.
         uninstall_erase = mount_live(live)
 
-    warn = ctx.warn_fn
     return SuperviseReporter(
         observer=lambda event: handle_event(ctx, event),
         stop=lambda: _stop(ctx, uninstall_erase),
         frame=lambda: _frame(ctx),
-        warn=warn,
+        warn=ctx.warn_fn,
         session_result=lambda: ctx.state.session_result,
         final_text=lambda: ctx.state.last_agent_text,
         exit_phase=lambda phase: _report_exit_phase(ctx, phase),

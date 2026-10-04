@@ -268,8 +268,10 @@ def _make_reporter_past_bash_end(
 @pytest.mark.parametrize(
     ("result", "expected_fragment"),
     [
-        pytest.param("ok", "(last tool: Bash at 00:00:03)", id="ok-tool"),
-        pytest.param("error", "(last tool: Bash ✗ at 00:00:03)", id="errored-tool"),
+        pytest.param("ok", "no output for 30s (last tool: Bash at 00:00:03)", id="ok-tool"),
+        pytest.param(
+            "error", "no output for 30s (last tool: Bash ✗ at 00:00:03)", id="errored-tool"
+        ),
     ],
 )
 def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
@@ -280,7 +282,6 @@ def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
 
     frame = render_frame(kit.reporter)
 
-    assert "no output" in frame
     assert expected_fragment in frame
 
 
@@ -637,7 +638,17 @@ def test_liveness_when_mcp_probe_tool_in_flight_does_show_summary_not_nest():
     assert "↳" not in frame
 
 
-def test_liveness_when_non_iterate_mcp_tool_in_flight_does_not_show_sidecar():
+@pytest.mark.parametrize(
+    ("tool_name", "input_summary"),
+    [
+        pytest.param("mcp__gymrat__probe", "gymrat probe a b", id="other-mcp-tool"),
+        pytest.param("Bash", "npm test", id="bash-running-something-else"),
+        pytest.param("Read", "notes on gymrat iterate", id="other-tool-naming-iterate"),
+    ],
+)
+def test_liveness_when_non_iterate_tool_in_flight_does_not_show_sidecar(
+    tool_name: str, input_summary: str
+):
     sidecar = ProgressSnapshot(
         passes_completed=4,
         passes_total=8,
@@ -650,9 +661,7 @@ def test_liveness_when_non_iterate_mcp_tool_in_flight_does_not_show_sidecar():
     kit = make_reporter(read_progress=fake_read_progress)
     kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    kit.reporter.observer(
-        tool_start_event("mcp__gymrat__probe", "mcp-2", 2000, input_summary="gymrat probe a b")
-    )
+    kit.reporter.observer(tool_start_event(tool_name, "tool-2", 2000, input_summary=input_summary))
     kit.clock.now = 5000
 
     frame = render_frame(kit.reporter)

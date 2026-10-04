@@ -27,7 +27,7 @@ from gymrat.cli.supervise.progress import (
     SuperviseReporter,
     create_supervise_reporter,
 )
-from gymrat.cli.supervise.types import ReadSessionResult
+from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
 from gymrat.eta import NS_PER_MS
 from gymrat.loop.start import start_session
 from gymrat.supervisor.driver import SessionOutcome
@@ -108,24 +108,20 @@ def make_read_session(
     state: SessionState,
     *,
     has_baseline: bool,
-    best_delta_pct: float | None = None,
-    best_seq: int | None = None,
-    primary_label: str | None = None,
+    best: BestIteration | None = None,
     baseline_sha: str | None = None,
     stop_message: str | None = None,
 ) -> Callable[[], ReadSessionResult]:
     """A ``read_session`` that always returns ``state`` and ``has_baseline``.
 
-    ``best_*`` / ``baseline_sha`` / ``stop_message`` default to ``None`` on
+    ``best`` / ``baseline_sha`` / ``stop_message`` default to ``None`` on
     ``ReadSessionResult`` itself, so callers that omit them still get a valid
     result.
     """
     result = ReadSessionResult(
         state=state,
         has_baseline=has_baseline,
-        best_delta_pct=best_delta_pct,
-        best_seq=best_seq,
-        primary_label=primary_label,
+        best=best,
         baseline_sha=baseline_sha,
         stop_message=stop_message,
     )

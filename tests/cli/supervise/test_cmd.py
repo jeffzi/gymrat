@@ -1029,13 +1029,14 @@ def test_supervise_when_effort_level_given_does_pass_it_unchanged_to_the_prompt(
             ("opus", None),
             id="no-model-flag-uses-config",
         ),
+        pytest.param((), None, (None, None), id="no-flags-no-section-leaves-both-unset"),
     ],
 )
 def test_supervise_when_run_does_resolve_model_and_effort_from_flag_or_config(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     flag_args: tuple[str, ...],
-    supervise_config: SuperviseConfig,
+    supervise_config: SuperviseConfig | None,
     expected: tuple[str | None, str | None],
 ):
     seams = _install_seams(monkeypatch, config=_config(supervise=supervise_config))

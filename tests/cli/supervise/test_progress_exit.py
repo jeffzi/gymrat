@@ -9,12 +9,14 @@ Plain-mode phase lines live in ``test_progress_plain.py``.
 from __future__ import annotations
 
 from typing import Literal
+from unittest.mock import patch
 
 import pytest
 
 from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
+    LIVE_CLASS_PATH,
     follow_up_event,
     launch_event,
     make_reporter,
@@ -143,3 +145,26 @@ def test_refresh_session_when_called_does_reread_the_session_and_warn_only_on_a_
 
     assert kit.reporter.session_result() == expected
     assert writes == expected_writes
+
+
+@pytest.mark.parametrize(
+    ("reread", "expected_repaints"),
+    [
+        pytest.param(_KEPT, 1, id="reread"),
+        pytest.param(None, 0, id="reread-fails"),
+    ],
+)
+def test_refresh_session_when_live_does_repaint_only_after_a_successful_reread(
+    reread: ReadSessionResult | None, expected_repaints: int
+):
+    reader = SwitchableRead(_EMPTY)
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        live = mock_live_cls.return_value
+        kit = make_reporter(mode="live", read_session=reader)
+        kit.reporter.observer(launch_event(1000))
+        painted = live.refresh.call_count
+        reader.result = reread
+
+        kit.reporter.refresh_session()
+
+        assert live.refresh.call_count - painted == expected_repaints
