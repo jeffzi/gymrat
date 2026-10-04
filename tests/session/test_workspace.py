@@ -458,6 +458,28 @@ def test_commit_workspace_when_nothing_to_commit_does_raise_gymrat_error_leaving
     assert head_of(experiment) == before
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the post-commit hook is a POSIX shell script")
+def test_commit_workspace_when_head_unreadable_after_commit_does_raise_the_worktree_head_error(
+    repo: str, baseline: BaselineRef
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    experiment = experiment_worktree_dir(repo)
+    (Path(experiment) / "new-file.txt").write_text("brand new\n", encoding="utf-8")
+    # The commit lands, then the hook leaves HEAD on a branch that does not exist.
+    hook_path = Path(repo) / ".git" / "hooks" / "post-commit"
+    hook_path.parent.mkdir(parents=True, exist_ok=True)
+    hook_path.write_text(
+        "#!/bin/sh\ngit symbolic-ref HEAD refs/heads/missing-branch\n", encoding="utf-8"
+    )
+    hook_path.chmod(0o755)
+
+    with pytest.raises(GymratError) as excinfo:
+        commit_workspace(experiment, "agent change")
+
+    assert str(excinfo.value).startswith(f"Cannot read the HEAD of the worktree at {experiment}: ")
+    assert excinfo.value.hint == "Inspect what is standing there with: git log -1"
+
+
 def test_revert_workspace_when_worktree_dirty_does_restore_head_and_drop_untracked_files(
     repo: str, baseline: BaselineRef
 ):
@@ -496,6 +518,16 @@ def test_worktree_head_when_worktree_on_branch_does_return_the_checked_out_sha(
     create_workspace(repo, SESSION_ID, baseline)
 
     assert worktree_head(experiment_worktree_dir(repo)) == baseline_sha
+
+
+def test_worktree_head_when_directory_is_not_a_repository_does_raise_naming_the_directory(
+    tmp_path: Path,
+):
+    with pytest.raises(GymratError) as excinfo:
+        worktree_head(str(tmp_path))
+
+    assert str(excinfo.value).startswith(f"Cannot read the HEAD of the worktree at {tmp_path}: ")
+    assert excinfo.value.hint == "Inspect what is standing there with: git log -1"
 
 
 def test_advance_baseline_when_target_sha_given_does_land_the_baseline_detached_at_it(

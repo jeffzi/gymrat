@@ -271,13 +271,13 @@ def read_session_header(jsonl_path: str) -> SessionRecord | None:
 
     value = _decode_log_line_at(first_line, location, 1)
 
-    record = parse_record(value)
+    return _require_session_header(parse_record(value), location)
+
+
+def _require_session_header(record: SessionLogRecord, at: str) -> SessionRecord:
     if not isinstance(record, SessionRecord):
-        message = f"Expected session header at {location}, got a {record.type} record"
-        raise GymratError(
-            message,
-            hint="Line 1 is not a session header. The session log is corrupt; start a new session.",
-        )
+        message = f"Expected session header at {at}, got a {record.type} record"
+        raise GymratError(message, hint="The session log is corrupt; start a new session.")
     return record
 
 
@@ -492,11 +492,8 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
             message = f"{error!s} (at {at})"
             raise GymratError(message, hint=error.hint) from error
 
-        if not records and record.type != "session":
-            message = f"Expected session header at {at}, got a {record.type} record"
-            raise GymratError(
-                message, hint="The session log is corrupt; start a new session."
-            ) from None
+        if not records:
+            record = _require_session_header(record, at)
         records.append(record)
 
     return records

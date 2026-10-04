@@ -405,6 +405,21 @@ def test_read_records_when_log_missing_does_read_as_no_session(fresh_root: str):
     assert read_records(jsonl_path) == []
 
 
+def test_read_records_when_log_is_empty_does_return_no_records(fresh_root: str):
+    jsonl_path = _jsonl_holding_bytes(fresh_root, b"")
+
+    assert read_records(jsonl_path) == []
+
+
+def test_read_records_when_first_line_is_not_json_does_raise_naming_line_one(fresh_root: str):
+    jsonl_path = _jsonl_holding(fresh_root, ["{", _line(SESSION)])
+
+    with pytest.raises(GymratError) as excinfo:
+        read_records(jsonl_path)
+
+    assert str(excinfo.value) == f"Invalid JSON at {jsonl_path}:1"
+
+
 def test_read_records_when_log_holds_appended_records_does_return_them_in_file_order(
     fresh_root: str,
 ):
@@ -474,7 +489,7 @@ def test_read_records_when_a_line_matches_no_schema_does_raise_naming_line_and_f
     assert re.search(r"\bmetrics\b", str(excinfo.value))
 
 
-def test_read_records_when_first_record_not_session_does_raise_naming_the_first_line(
+def test_read_records_when_first_record_not_session_does_raise_naming_its_type(
     fresh_root: str,
 ):
     jsonl_path = _jsonl_holding(fresh_root, [_line(ITERATION_1), _line(discard_record(1))])
@@ -482,8 +497,10 @@ def test_read_records_when_first_record_not_session_does_raise_naming_the_first_
     with pytest.raises(GymratError) as excinfo:
         read_records(jsonl_path)
 
-    assert f"{jsonl_path}:1" in str(excinfo.value)
-    assert re.search(r"session", str(excinfo.value), re.IGNORECASE)
+    assert (str(excinfo.value), excinfo.value.hint) == (
+        f"Expected session header at {jsonl_path}:1, got a iteration record",
+        "The session log is corrupt; start a new session.",
+    )
 
 
 def test_read_records_when_final_line_unterminated_does_skip_it(fresh_root: str):
@@ -598,11 +615,25 @@ def test_read_session_header_when_first_record_not_session_does_raise_naming_its
     with pytest.raises(GymratError) as excinfo:
         read_session_header(jsonl_path)
 
-    assert str(excinfo.value) == (
-        f"Expected session header at {jsonl_path}:1, got a iteration record"
+    assert (str(excinfo.value), excinfo.value.hint) == (
+        f"Expected session header at {jsonl_path}:1, got a iteration record",
+        "The session log is corrupt; start a new session.",
     )
-    assert excinfo.value.hint == (
-        "Line 1 is not a session header. The session log is corrupt; start a new session."
+
+
+def test_read_session_header_when_first_record_not_session_does_raise_as_read_records_does(
+    fresh_root: str,
+):
+    jsonl_path = _jsonl_holding(fresh_root, [_line(ITERATION_1), _line(SESSION)])
+    with pytest.raises(GymratError) as read_records_error:
+        read_records(jsonl_path)
+
+    with pytest.raises(GymratError) as excinfo:
+        read_session_header(jsonl_path)
+
+    assert (str(excinfo.value), excinfo.value.hint) == (
+        str(read_records_error.value),
+        read_records_error.value.hint,
     )
 
 

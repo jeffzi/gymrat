@@ -251,15 +251,6 @@ def test_export_when_session_log_blank_does_exit_two_reporting_no_session(
             id="malformed-json",
         ),
         pytest.param(
-            json.dumps(record_to_wire(command_record(name="measure", at=T0))).encode("utf-8")
-            + b"\n",
-            (
-                "Expected session header at {path}:1, got a command record",
-                "Line 1 is not a session header. The session log is corrupt; start a new session.",
-            ),
-            id="non-session-record",
-        ),
-        pytest.param(
             b"\xff\xff\n",
             ("Corrupt session log at {path}:1", "Line 1 contains invalid UTF-8 bytes."),
             id="undecodable-bytes",
@@ -283,6 +274,27 @@ def test_export_when_first_line_corrupt_does_exit_two_naming_line(
     assert result.exit_code == 2
     expected = [fragment.format(path=session_log) for fragment in expected_fragments]
     assert [fragment for fragment in expected if fragment not in output] == []
+
+
+def test_export_when_first_record_not_session_does_exit_two_naming_its_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
+    session_log = session_jsonl_path(str(tmp_path))
+    command_line = json.dumps(record_to_wire(command_record(name="measure", at=T0)))
+    Path(session_log).parent.mkdir(parents=True, exist_ok=True)
+    Path(session_log).write_text(f"{command_line}\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["export", session_log])
+
+    assert (result.exit_code, _output(result).splitlines()) == (
+        2,
+        [
+            f"Error: Expected session header at {session_log}:1, got a command record",
+            "The session log is corrupt; start a new session.",
+        ],
+    )
 
 
 @pytest.mark.skipif(

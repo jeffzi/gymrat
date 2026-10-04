@@ -284,7 +284,7 @@ def commit_workspace(experiment_dir: str, message: str) -> str:
 
     Raises:
         GymratError: When git refuses to stage or to commit — a worktree with
-            nothing to commit included.
+            nothing to commit included — or to read the HEAD afterwards.
     """
     run_git_step(
         ["add", "-A"],
@@ -298,12 +298,7 @@ def commit_workspace(experiment_dir: str, message: str) -> str:
         f"Cannot commit the experiment worktree at {experiment_dir}",
         INSPECT_STATUS_HINT,
     )
-    return run_git_step(
-        ["rev-parse", "HEAD"],
-        experiment_dir,
-        f"Cannot read the commit just made in {experiment_dir}",
-        "Inspect the branch with: git log -1",
-    ).strip()
+    return worktree_head(experiment_dir)
 
 
 def revert_workspace(experiment_dir: str, *, target: str) -> None:
