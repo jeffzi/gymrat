@@ -40,19 +40,12 @@ if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
     from gymrat.report.display import DisplayClass
     from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
-    from gymrat.session.schema import KeepReason
+    from gymrat.session.schema import KeepReason, Outcome
     from gymrat.session.workspace import BaselineRef
 
 # ---------------------------------------------------------------------------
-# Outcome and primary-figure types
+# Primary-figure types
 # ---------------------------------------------------------------------------
-
-#: What an iteration amounted to.
-#:
-#: Narrower than a metric verdict: an iteration has no ``unstable`` of its own,
-#: because a primary figure too noisy to read is one that reported nothing, which
-#: is what ``no-signal`` already says.
-LoopOutcome = Literal["improved", "regressed", "no-signal"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,9 +114,6 @@ class RerunConfirmation:
 # Constants
 # ---------------------------------------------------------------------------
 
-#: The candidate an iteration measures: the experiment, judged against the baseline.
-EXPERIMENT_INDEX = 0
-
 #: What the loop's header says it compared, fixed for every iteration. The two
 #: targets wear the style the table heads its columns with, so the header names
 #: them the way the columns below it do.
@@ -137,7 +127,7 @@ _TARGET_REACHED = "target reached — keep it"
 #: How each outcome's word is painted: emboldened whatever it says, and colored
 #: only where there is a direction to report. A no-signal iteration is neither
 #: good nor bad, so it wears no color rather than a hedged one.
-_OUTCOME_STYLES: dict[LoopOutcome, str] = {
+_OUTCOME_STYLES: dict[Outcome, str] = {
     "improved": "bold green",
     "regressed": "bold red",
     "no-signal": "bold",
@@ -192,7 +182,7 @@ def _format_rerun_line(rerun: RerunConfirmation) -> str:
 
 def format_verdict_block(
     *,
-    outcome: LoopOutcome,
+    outcome: Outcome,
     primary: LoopPrimary,
     next_step: str,
     reruns: Sequence[RerunConfirmation] = (),
@@ -254,7 +244,7 @@ class SettleKept:
     """
 
     commit: str | None = None
-    outcome: LoopOutcome | None = None
+    outcome: Outcome | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,7 +290,7 @@ class StatusIteration:
 
     seq: int
     delta_pct: float | None
-    outcome: LoopOutcome
+    outcome: Outcome
     settle: SettleState
 
 
@@ -328,7 +318,7 @@ class StatusSummary:
 #:
 #: A no-signal iteration takes the table's within-noise glyph: both say the same
 #: thing — the figure moved by nothing the run can stand behind.
-OUTCOME_GLYPHS: dict[LoopOutcome, DisplayClass] = {
+OUTCOME_GLYPHS: dict[Outcome, DisplayClass] = {
     "improved": "improved",
     "regressed": "regressed",
     "no-signal": "within-noise",

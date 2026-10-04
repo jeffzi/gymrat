@@ -24,9 +24,7 @@ duplicate name) are skipped. It raises :class:`AdapterError`, aborting the whole
 parse, when the output yields no usable metric or a metric name with more than one
 ``#``.
 
-Both derive name-based metric defaults from one suffix table. Config resolution
-reads the fallback kind declared beside that table instead of re-declaring it,
-so the two cannot drift apart.
+Both derive name-based metric defaults from one suffix table.
 
 The set of adapters is fixed at import time: nothing registers an adapter at
 runtime, so :func:`get_adapter` is a lookup in a closed mapping rather than a
@@ -141,13 +139,6 @@ _METRIC_SUFFIXES: Final[tuple[tuple[str, MetricUnit, str], ...]] = (
     ("#heap", "bytes", "memory"),
 )
 """Suffix→(unit, kind) table walked by :func:`defaults_from_suffixes`; first match wins."""
-
-DEFAULT_METRIC_KIND: Final[str] = "other"
-"""The kind a metric falls under when its adapter reports none.
-
-Consumed by config resolution as the fallback kind for a metric whose
-adapter defaults carry no kind.
-"""
 
 
 def defaults_from_suffixes(metric_name: str) -> MetricDefaults:

@@ -6,7 +6,6 @@ The parsers turn raw flag and positional text into typed values, raising
 it carries an identical surface.
 """
 
-import math
 import re
 from enum import StrEnum
 from typing import Annotated
@@ -21,10 +20,7 @@ from gymrat.config import (
 )
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
-from gymrat.utils import SECONDS_PER_MINUTE
 
-_POSITIVE_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
-_POSITIVE_NUMBER_MESSAGE = "must be a positive number."
 _GEOMEAN_CONDITION_RE = re.compile(r"geomean:(-?\d+(?:\.\d+)?)")
 
 
@@ -153,48 +149,6 @@ def parse_timeout(value: str) -> int:
     return parse_positive_int(value, MAX_TIMEOUT_SECONDS)
 
 
-def parse_positive_number(value: str) -> float:
-    """Parse a strictly positive finite decimal.
-
-    Args:
-        value: The raw flag value.
-
-    Returns:
-        The parsed number.
-
-    Raises:
-        typer.BadParameter: When the value is negative, zero, not finite, or has
-            trailing garbage.
-    """
-    if _POSITIVE_NUMBER_RE.fullmatch(value) is None:
-        raise typer.BadParameter(_POSITIVE_NUMBER_MESSAGE)
-    parsed = float(value)
-    if parsed <= 0 or not math.isfinite(parsed):
-        raise typer.BadParameter(_POSITIVE_NUMBER_MESSAGE)
-    return parsed
-
-
-def parse_max_minutes(value: str) -> float:
-    """Parse a positive number of minutes bounded by the 32-bit timer ceiling.
-
-    Args:
-        value: The raw flag value.
-
-    Returns:
-        The parsed number of minutes.
-
-    Raises:
-        typer.BadParameter: When the value is not a positive number, or is above
-            the ceiling.
-    """
-    parsed = parse_positive_number(value)
-    max_minutes = MAX_TIMEOUT_SECONDS // SECONDS_PER_MINUTE
-    if parsed > max_minutes:
-        message = f"must be at most {max_minutes} minutes."
-        raise typer.BadParameter(message)
-    return parsed
-
-
 def parse_fail_on(value: str) -> FailOnCondition:
     """Parse a fail-on condition: ``regressed`` or ``geomean:<number>``.
 
@@ -292,5 +246,3 @@ BaselineOption = Annotated[
 
 Ignored when a session is resumed.
 """
-ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
-"""--force/-f: skip the confirmation prompt."""

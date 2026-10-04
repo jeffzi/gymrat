@@ -3,12 +3,12 @@ import dataclasses
 import pytest
 
 from gymrat.adapters import (
-    DEFAULT_METRIC_KIND,
     AdapterError,
     MetricDefaults,
     defaults_from_suffixes,
 )
 from gymrat.errors import GymratError
+from gymrat.sampling import DEFAULT_METRIC_KIND
 
 # ---------------------------------------------------------------------------
 # AdapterError

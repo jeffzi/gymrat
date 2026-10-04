@@ -23,11 +23,13 @@ from gymrat.progress_events import (
 )
 from gymrat.report.text.render import format_cleanup_failures
 from gymrat.sampling import (
+    CleanupResult,
     MetricStats,
     RunOptions,
     SamplingOptions,
     TargetContext,
     TargetSpec,
+    WorktreeInfo,
     collect_samples,
     compute_metric_stats,
     own_values,
@@ -35,13 +37,7 @@ from gymrat.sampling import (
     run_with_worktrees,
     to_context,
 )
-from gymrat.targets import (
-    CleanupResult,
-    InPlaceTarget,
-    RefTarget,
-    WorktreeInfo,
-    WorktreeRemovalFailure,
-)
+from gymrat.targets import InPlaceTarget, RefTarget, WorktreeRemovalFailure
 from tests._exec_fixtures import expected_result
 from tests._process_helpers import fake_install
 

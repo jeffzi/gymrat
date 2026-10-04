@@ -52,7 +52,8 @@ from tests.session.records._fixtures import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from gymrat.report.loop import LoopOutcome, RerunAnswer, SettleState
+    from gymrat.report.loop import RerunAnswer, SettleState
+    from gymrat.session.schema import Outcome
 
 
 def _geomean_primary(delta_pct: float = -4.2) -> GeomeanPrimary:
@@ -110,7 +111,7 @@ def test_format_loop_header_when_colored_does_dim_each_separator():
     ],
 )
 def test_format_verdict_block_when_given_outcome_does_state_primary_delta_and_verdict(
-    outcome: LoopOutcome, word: str
+    outcome: Outcome, word: str
 ):
     block = format_verdict_block(
         outcome=outcome, primary=_geomean_primary(), next_step="gymrat keep"
@@ -137,7 +138,7 @@ def test_format_verdict_block_when_given_next_step_does_close_the_block_with_it(
     ],
 )
 def test_format_verdict_block_when_colored_does_paint_the_verdict_word(
-    outcome: LoopOutcome, word: str, color_code: str | None
+    outcome: Outcome, word: str, color_code: str | None
 ):
     block = format_verdict_block(
         outcome=outcome, primary=_geomean_primary(), next_step="gymrat keep"
@@ -279,7 +280,7 @@ def test_format_status_iteration_when_given_settle_does_state_it(
     ],
 )
 def test_format_status_iteration_when_given_outcome_does_mark_it_with_glyph(
-    outcome: LoopOutcome, glyph: str
+    outcome: Outcome, glyph: str
 ):
     entry = replace(_status_iteration(SettleUnsettled()), outcome=outcome)
 
@@ -302,7 +303,7 @@ def test_format_status_iteration_when_delta_unmeasured_does_state_no_percentage(
     ],
 )
 def test_format_status_iteration_when_colored_does_paint_the_glyph(
-    outcome: LoopOutcome, glyph: str, color_code: str
+    outcome: Outcome, glyph: str, color_code: str
 ):
     entry = replace(_status_iteration(SettleUnsettled()), outcome=outcome)
 

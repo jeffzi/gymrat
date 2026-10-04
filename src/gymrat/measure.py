@@ -18,8 +18,10 @@ from gymrat.adapters import get_adapter
 from gymrat.model import ResolvedMetricMeta
 from gymrat.report.types import MeasurementResult, MetricMeasurement
 from gymrat.sampling import (
+    CleanupResult,
     RunOptions,
     TargetSpec,
+    WorktreeInfo,
     collect_samples,
     compute_metric_stats,
     own_values,
@@ -27,7 +29,7 @@ from gymrat.sampling import (
     run_with_worktrees,
     to_context,
 )
-from gymrat.targets import CleanupResult, WorktreeInfo, resolve_target
+from gymrat.targets import resolve_target
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

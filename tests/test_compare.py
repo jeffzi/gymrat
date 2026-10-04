@@ -21,12 +21,13 @@ from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
 from gymrat.sampling import (
+    CleanupResult,
     RunOptions,
     SamplingOptions,
     TargetSpec,
     resolve_metric_meta_from_samples,
 )
-from gymrat.targets import CleanupResult, WorktreeRemovalFailure
+from gymrat.targets import WorktreeRemovalFailure
 from gymrat.utils import warn_to_stderr
 from gymrat.verdict import compute_kind_aggregates, compute_verdicts
 from tests._git import run_git as _git

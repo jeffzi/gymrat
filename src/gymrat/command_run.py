@@ -8,7 +8,7 @@ Wraps a command body in the single-flight lock, then appends a
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -22,7 +22,6 @@ import typer
 
 from gymrat import clock as _clock
 from gymrat.agent_env import COMMAND_ORIGIN_ENV, TOOL_ORIGIN, TRACEPARENT_ENV
-from gymrat.config import CliFlags
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate.run import LoopStopError
@@ -65,28 +64,6 @@ class CommandTrace:
     seq: int | None = None
     gate: bool = False
     reason: CommandReason | None = None
-
-
-def config_trace_args(flags: CliFlags, **extra: object) -> dict[str, object]:
-    """Trace ``args`` entries for the config-resolving flags every command shares.
-
-    Every command that resolves a config carries the same overrides into its
-    command record's ``args``; this reads them off ``flags`` once, dropping
-    ``None`` values so an override the caller left at its default never appears
-    in the record.
-
-    Args:
-        flags: The CLI flags to read config overrides from. Only the fields
-            ``CliFlags`` itself declares are read, so a subclass's own fields
-            stay out.
-        **extra: The command's own entries, placed after the config overrides
-            and dropped when ``None`` like them.
-
-    Returns:
-        A dict of non-``None`` flag names to their values.
-    """
-    overrides = {flag.name: getattr(flags, flag.name) for flag in fields(CliFlags)}
-    return {key: value for key, value in (overrides | extra).items() if value is not None}
 
 
 # ---------------------------------------------------------------------------

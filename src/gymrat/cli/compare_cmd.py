@@ -35,8 +35,8 @@ from gymrat.cli.options import (
     parse_fail_on,
 )
 from gymrat.cli.run_setup import SharedFlags, begin_run
-from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
-from gymrat.config import resolve_config
+from gymrat.command_run import CommandTrace, with_repo_lock
+from gymrat.config import config_trace_args, resolve_config
 from gymrat.errors import GATE_EXIT_CODE
 from gymrat.report.json_doc import render_json
 from gymrat.report.tally import count_verdicts

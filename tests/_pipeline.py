@@ -14,8 +14,14 @@ import pytest
 
 from gymrat import sampling
 from gymrat.adapters import Adapter
-from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
-from gymrat.targets import CleanupResult, InPlaceTarget, WorktreeInfo
+from gymrat.sampling import (
+    CleanupResult,
+    SamplingOptions,
+    TargetContext,
+    TargetSamples,
+    WorktreeInfo,
+)
+from gymrat.targets import InPlaceTarget
 from tests._process_helpers import fake_install
 
 CLEAN_RESULT = CleanupResult(removed=0, failures=(), prune_error=None)

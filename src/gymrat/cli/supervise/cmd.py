@@ -10,6 +10,8 @@ The agent SDK is imported lazily inside the driver so ``gymrat --help`` stays fa
 from __future__ import annotations
 
 import asyncio
+import math
+import re
 import sys
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -28,19 +30,24 @@ if TYPE_CHECKING:
 
 from gymrat.cli.console import apply_command_flags, resolve_stream_color
 from gymrat.cli.exit import exit_with_error, run_guarded, write_and_flush, write_stdout
-from gymrat.cli.options import (
+from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BaselineOption,
     ColorOption,
     DebugOption,
-    parse_max_minutes,
-    parse_positive_number,
 )
 from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.cli.supervise.preflight import doctor_gate, run_preflight, validate_experiment_worktree
 from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.cli.supervise.summary import build_summary
 from gymrat.clock import now_ms, now_ns
-from gymrat.config import CliFlags, Effort, ResolvedConfig, SuperviseConfig, resolve_config
+from gymrat.config import (
+    MAX_TIMEOUT_SECONDS,
+    CliFlags,
+    Effort,
+    ResolvedConfig,
+    SuperviseConfig,
+    resolve_config,
+)
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.exec import kill_live_process_groups
 from gymrat.git import run_git
@@ -76,11 +83,57 @@ from gymrat.supervisor.hooks import supervise_hooks_factory
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
 from gymrat.supervisor.supervise import SupervisedSession, supervise
 from gymrat.supervisor.tools import gymrat_tools_factory
-from gymrat.utils import abbreviate_home, pluralize, warn_to_stderr
+from gymrat.utils import SECONDS_PER_MINUTE, abbreviate_home, pluralize, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Flag surface
 # ---------------------------------------------------------------------------
+
+_POSITIVE_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+_POSITIVE_NUMBER_MESSAGE = "must be a positive number."
+
+
+def parse_positive_number(value: str) -> float:
+    """Parse a strictly positive finite decimal.
+
+    Args:
+        value: The raw flag value.
+
+    Returns:
+        The parsed number.
+
+    Raises:
+        typer.BadParameter: When the value is negative, zero, not finite, or has
+            trailing garbage.
+    """
+    if _POSITIVE_NUMBER_RE.fullmatch(value) is None:
+        raise typer.BadParameter(_POSITIVE_NUMBER_MESSAGE)
+    parsed = float(value)
+    if parsed <= 0 or not math.isfinite(parsed):
+        raise typer.BadParameter(_POSITIVE_NUMBER_MESSAGE)
+    return parsed
+
+
+def parse_max_minutes(value: str) -> float:
+    """Parse a positive number of minutes bounded by the 32-bit timer ceiling.
+
+    Args:
+        value: The raw flag value.
+
+    Returns:
+        The parsed number of minutes.
+
+    Raises:
+        typer.BadParameter: When the value is not a positive number, or is above
+            the ceiling.
+    """
+    parsed = parse_positive_number(value)
+    max_minutes = MAX_TIMEOUT_SECONDS // SECONDS_PER_MINUTE
+    if parsed > max_minutes:
+        message = f"must be at most {max_minutes} minutes."
+        raise typer.BadParameter(message)
+    return parsed
+
 
 PromptArgument = Annotated[
     str | None,

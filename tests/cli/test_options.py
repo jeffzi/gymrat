@@ -11,12 +11,8 @@ import pytest
 import typer
 
 from gymrat.cli.app import app
-from gymrat.cli.options import (
-    parse_fail_on,
-    parse_max_minutes,
-    parse_positional,
-    parse_positive_number,
-)
+from gymrat.cli.options import parse_fail_on, parse_positional
+from gymrat.cli.supervise.cmd import parse_max_minutes, parse_positive_number
 from gymrat.config import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec

@@ -17,12 +17,12 @@ from gymrat.clock import monotonic_ms
 from gymrat.config import GEOMEAN_PRIMARY, ResolvedConfig
 from gymrat.progress_events import JudgeStarted, emit_progress
 from gymrat.report.loop import (
-    EXPERIMENT_INDEX,
     GeomeanPrimary,
     LoopPrimary,
     MetricPrimary,
 )
 from gymrat.sampling import (
+    CleanupResult,
     RunOptions,
     TargetContext,
     TargetSamples,
@@ -40,6 +40,9 @@ if TYPE_CHECKING:
     from gymrat.loop.iterate.run import IterateOptions
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
     from gymrat.report.types import ComparisonResult, MetricComparisons
+
+#: The candidate an iteration measures: the experiment, judged against the baseline.
+EXPERIMENT_INDEX = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +110,6 @@ def build_iteration_comparison(
         ComparisonMeasurement,
         build_comparison_result,
     )
-    from gymrat.targets import CleanupResult  # noqa: PLC0415 -- same deferral as above
 
     candidate = CandidateMeasurement(
         label=run.experiment.ctx.label,

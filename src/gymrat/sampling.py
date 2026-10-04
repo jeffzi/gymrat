@@ -32,9 +32,9 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Self
+from typing import Final, Literal, Self
 
-from gymrat.adapters import DEFAULT_METRIC_KIND, Adapter
+from gymrat.adapters import Adapter
 from gymrat.clock import monotonic_ms
 from gymrat.config import KindEntry, MetricEntry, ResolvedConfig
 from gymrat.errors import CommandError, GymratError
@@ -58,14 +58,11 @@ from gymrat.progress_events import (
 from gymrat.report.text.render import format_cleanup_failures
 from gymrat.signals import install_termination_cleanup
 from gymrat.stats import compute_half_range
-from gymrat.targets import (
-    CleanupResult,
-    RefTarget,
-    Target,
-    WorktreeInfo,
-    WorktreeRemovalFailure,
-)
+from gymrat.targets import RefTarget, Target, WorktreeRemovalFailure
 from gymrat.utils import MS_PER_SECOND, WarnSink, stderr_text_of, warn_to_stderr
+
+DEFAULT_METRIC_KIND: Final[str] = "other"
+"""The kind a metric falls under when its adapter reports none."""
 
 # ---------------------------------------------------------------------------
 # sampling types
@@ -546,6 +543,49 @@ def _labeled(label: str, text: str, total: int) -> list[str]:
 # ---------------------------------------------------------------------------
 # Target resolution and worktrees
 # ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class WorktreeInfo:
+    """A worktree directory this process claimed for a ref, pinned to a SHA.
+
+    The directory need not exist: :func:`plan_worktree` reserves the path before
+    any git runs, and :func:`materialize_worktree` can fail after creating it.
+    Cleanup treats an absent directory as nothing to do rather than as an error.
+
+    Attributes:
+        dir: The path the worktree will live at (may not yet exist on disk).
+        sha: The commit the worktree is checked out at.
+        created: Whether ``git worktree add`` ever put this directory on disk.
+            :func:`plan_worktree` starts it ``False`` and
+            :func:`materialize_worktree` raises it once the add leaves something
+            behind, which is what lets cleanup tell a worktree that was never
+            created from one that was created and has since vanished — only the
+            latter can leave a registry entry behind to clear. It is cleared
+            again on a successful removal.
+    """
+
+    dir: str
+    sha: str
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupResult:
+    """Outcome of a worktree cleanup sweep.
+
+    Attributes:
+        removed: Worktrees this call took off disk.
+        failures: Worktrees left on disk, one entry each.
+        prune_error: Why the repo-wide ``git worktree prune`` sweep failed, or
+            ``None`` if it succeeded or never ran. Prune runs once per call, not
+            once per worktree, so it gets its own slot rather than a synthetic
+            entry in ``failures``.
+    """
+
+    removed: int
+    failures: tuple[WorktreeRemovalFailure, ...]
+    prune_error: str | None
 
 
 def plan_worktree(ref: RefTarget) -> WorktreeInfo:

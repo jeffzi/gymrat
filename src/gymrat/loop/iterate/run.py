@@ -53,6 +53,7 @@ from gymrat.exec import (
     exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
 from gymrat.loop.iterate.bench import (
+    EXPERIMENT_INDEX,
     IterationContext,
     Judged,
     bench_and_judge,
@@ -76,9 +77,7 @@ from gymrat.progress_events import (
     emit_progress,
 )
 from gymrat.report.loop import (
-    EXPERIMENT_INDEX,
     GeomeanPrimary,
-    LoopOutcome,
     LoopPrimary,
     RerunAnswer,
     RerunConfirmation,
@@ -107,7 +106,7 @@ if TYPE_CHECKING:
     from gymrat.progress_events import ProgressCallback
     from gymrat.report.types import MetricComparisons
     from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord
-    from gymrat.session.schema import CommandReason, HookStage
+    from gymrat.session.schema import CommandReason, HookStage, Outcome
     from gymrat.utils import WarnSink
 
 __all__ = [
@@ -191,7 +190,7 @@ def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
     return is_improvement(primary.delta_pct, metric.meta.direction)
 
 
-def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> LoopOutcome:
+def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> Outcome:
     """What an iteration amounted to, read off its metrics and its primary figure.
 
     A gating regression settles it whatever the primary did: the run is judged on
@@ -633,7 +632,7 @@ def stop_condition(config: BenchlessConfig, state: SessionState) -> LoopStopErro
     return LoopStopError(f"Stop condition met: {reason}", hint=_STOP_HINT)
 
 
-_NEXT_STEPS: dict[LoopOutcome, str] = {
+_NEXT_STEPS: dict[Outcome, str] = {
     "improved": "`gymrat keep`",
     "regressed": "fix or run `gymrat discard`",
     "no-signal": "`gymrat keep` or `gymrat discard`",

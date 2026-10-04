@@ -33,7 +33,6 @@ from gymrat.cli.options import (
     ColorOption,
     ConfigOption,
     DebugOption,
-    ForceOption,
     FormatOption,
     OutputFormat,
     PrepareOption,
@@ -42,8 +41,8 @@ from gymrat.cli.options import (
 )
 from gymrat.cli.run_setup import resolve_render_mode, run_with_signal_abort
 from gymrat.cli.supervised import guard_supervised_origin
-from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
-from gymrat.config import CliFlags, resolve_benchless_config, resolve_config
+from gymrat.command_run import CommandTrace, with_repo_lock
+from gymrat.config import CliFlags, config_trace_args, resolve_benchless_config, resolve_config
 from gymrat.errors import GATE_EXIT_CODE
 from gymrat.loop.discard import DiscardResult, discard_session
 from gymrat.loop.iterate.run import IterateOptions, IterateResult, LoopStopError, iterate_session
@@ -77,6 +76,8 @@ _AllowUnimprovedOption = Annotated[
         help="keep the edit even when the iteration was not improved",
     ),
 ]
+ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
+"""--force/-f: skip the confirmation prompt."""
 
 # ---------------------------------------------------------------------------
 # Iterate

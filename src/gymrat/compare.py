@@ -26,9 +26,11 @@ from gymrat.report.types import (
     MetricComparison,
 )
 from gymrat.sampling import (
+    CleanupResult,
     RunOptions,
     TargetSamples,
     TargetSpec,
+    WorktreeInfo,
     collect_samples,
     compute_metric_stats,
     own_values,
@@ -36,7 +38,7 @@ from gymrat.sampling import (
     run_with_worktrees,
     to_context,
 )
-from gymrat.targets import CleanupResult, WorktreeInfo, resolve_target
+from gymrat.targets import resolve_target
 from gymrat.utils import WarnSink
 from gymrat.verdict import compute_kind_aggregates, compute_verdicts
 

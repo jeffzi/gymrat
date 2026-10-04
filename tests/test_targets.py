@@ -17,8 +17,14 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.sampling import cleanup_worktrees, materialize_worktree, plan_worktree
-from gymrat.targets import CleanupResult, InPlaceTarget, RefTarget, WorktreeInfo, resolve_target
+from gymrat.sampling import (
+    CleanupResult,
+    WorktreeInfo,
+    cleanup_worktrees,
+    materialize_worktree,
+    plan_worktree,
+)
+from gymrat.targets import InPlaceTarget, RefTarget, resolve_target
 from tests._git import head_of
 from tests._git import run_git as _run_git
 

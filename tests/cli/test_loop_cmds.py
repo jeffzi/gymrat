@@ -272,7 +272,11 @@ def tty_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_discard_command_when_help_requested_does_document_force():
-    assert "--force" in help_output("discard")
+    out = help_output("discard")
+
+    flag_line = next(line for line in out.splitlines() if "--force" in line)
+    assert "-f" in flag_line.replace("--force", "")
+    assert "skip the confirmation prompt" in flag_line
 
 
 @pytest.mark.usefixtures("narrow_terminal", "tty_stdin")

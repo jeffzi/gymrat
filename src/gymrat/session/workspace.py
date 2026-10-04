@@ -17,11 +17,12 @@ from typing import Annotated
 from pydantic import Field
 
 from gymrat.errors import GymratError
-from gymrat.git import SHORT_SHA_LENGTH, git_common_dir, run_git, try_git
+from gymrat.git import SHORT_SHA_LENGTH, run_git, try_git
 from gymrat.session.paths import (
     SESSION_DIR_NAME,
     baseline_worktree_dir,
     experiment_worktree_dir,
+    git_common_dir,
 )
 from gymrat.utils import stderr_text_of
 

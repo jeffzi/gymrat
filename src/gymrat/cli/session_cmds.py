@@ -26,8 +26,8 @@ from gymrat.cli.options import (
     SamplesOption,
     TimeoutOption,
 )
-from gymrat.command_run import CommandTrace, config_trace_args, with_repo_lock
-from gymrat.config import CliFlags, resolve_config
+from gymrat.command_run import CommandTrace, with_repo_lock
+from gymrat.config import CliFlags, config_trace_args, resolve_config
 from gymrat.loop.finalize import FinalizeOptions, FinalizeResult, finalize_session
 from gymrat.loop.start import StartResult, start_session
 from gymrat.loop.stop import StopResult, stop_session

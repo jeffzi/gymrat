@@ -19,8 +19,14 @@ from gymrat import sampling
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import CommandError, GymratError
 from gymrat.measure import MeasureOptions, measure
-from gymrat.sampling import RunOptions, SamplingOptions, TargetSpec
-from gymrat.targets import CleanupResult, WorktreeInfo, WorktreeRemovalFailure
+from gymrat.sampling import (
+    CleanupResult,
+    RunOptions,
+    SamplingOptions,
+    TargetSpec,
+    WorktreeInfo,
+)
+from gymrat.targets import WorktreeRemovalFailure
 from gymrat.utils import warn_to_stderr
 from tests._git import EMIT_ONE_BENCH, write_committed_bench
 from tests._pipeline import install_pipeline

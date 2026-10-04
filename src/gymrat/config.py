@@ -314,6 +314,28 @@ class CliFlags:
     config: str | None = None
 
 
+def config_trace_args(flags: CliFlags, **extra: object) -> dict[str, object]:
+    """Trace ``args`` entries for the config-resolving flags every command shares.
+
+    Every command that resolves a config carries the same overrides into its
+    command record's ``args``; this reads them off ``flags`` once, dropping
+    ``None`` values so an override the caller left at its default never appears
+    in the record.
+
+    Args:
+        flags: The CLI flags to read config overrides from. Only the fields
+            ``CliFlags`` itself declares are read, so a subclass's own fields
+            stay out.
+        **extra: The command's own entries, placed after the config overrides
+            and dropped when ``None`` like them.
+
+    Returns:
+        A dict of non-``None`` flag names to their values.
+    """
+    overrides = {flag.name: getattr(flags, flag.name) for flag in dataclasses.fields(CliFlags)}
+    return {key: value for key, value in (overrides | extra).items() if value is not None}
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BenchlessConfig:
     """A settled configuration for a command that runs no benchmark.
