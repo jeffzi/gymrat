@@ -47,6 +47,23 @@ async def test_stream_when_thinking_delta_short_does_flush_only_on_block_stop():
     assert [(u.delta, u.estimated_tokens) for u in updates] == [(0, 0), (25, 25)]
 
 
+async def test_stream_when_second_thinking_block_starts_does_report_the_running_estimate():
+    messages = [
+        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
+        stream_event({
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": "a" * 100},
+        }),
+        stream_event({"type": "content_block_stop"}),
+        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
+    ]
+
+    events = await run_with_messages(messages)
+
+    updates = events_of(events, ThinkingUpdateEvent)
+    assert [(u.delta, u.estimated_tokens) for u in updates] == [(0, 0), (25, 25), (0, 25)]
+
+
 async def test_stream_when_thinking_delta_crosses_throttle_does_emit_mid_block():
     messages = [
         stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),

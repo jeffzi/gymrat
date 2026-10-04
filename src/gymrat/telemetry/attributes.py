@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
-from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from gymrat.session.records import (
     CommandRecord,
     IterationRecord,
@@ -13,14 +11,12 @@ from gymrat.session.records import (
     _SequencedEnvelope,
 )
 from gymrat.supervisor.events import CapEvent, CompactionEvent, FollowUpEvent, TurnEndEvent
-from gymrat.telemetry.ids import parse_traceparent
 
 if TYPE_CHECKING:
-    from opentelemetry.trace import SpanContext
+    from gymrat.supervisor.events import LaunchEvent, SessionEvent
 
-    from gymrat.supervisor.events import SessionEvent
-
-type _Attrs = dict[str, str | int | float | bool]
+type Attrs = dict[str, str | int | float | bool]
+"""The flat attribute dict a span or span event carries."""
 
 _SCALAR_TYPES = (str, int, float, bool)
 
@@ -85,44 +81,32 @@ def run_span_key(launch_at: int) -> str:
     return f"run:{launch_at}"
 
 
-def run_attributes(  # noqa: PLR0913 -- one parameter per launch fact the run span carries
-    *,
-    session_id: str,
-    head_sha: str,
-    max_minutes: float,
-    max_usd: float | None,
-    effort: str | None,
-    model: str | None,
-) -> _Attrs:
+def run_attributes(launch: LaunchEvent) -> Attrs:
     """Build the attributes a run span starts with.
 
     Args:
-        session_id: The session the run belongs to.
-        head_sha: The HEAD commit the run launched from.
-        max_minutes: The run's wall-clock cap.
-        max_usd: The run's spend cap, left out when ``None``.
-        effort: The agent effort level, left out when ``None``.
-        model: The model name, left out when ``None``.
+        launch: The launch event of the run; its spend cap, effort and model
+            are left out when ``None``.
 
     Returns:
         The flat attribute dict for the run span.
     """
-    attrs: _Attrs = {
-        SESSION_ID: session_id,
-        RUN_HEAD_SHA: head_sha,
-        RUN_MAX_MINUTES: max_minutes,
+    attrs: Attrs = {
+        SESSION_ID: launch.session_id,
+        RUN_HEAD_SHA: launch.head_sha,
+        RUN_MAX_MINUTES: launch.max_minutes,
         GEN_AI_PROVIDER: "anthropic",
     }
-    if max_usd is not None:
-        attrs[RUN_MAX_USD] = max_usd
-    if effort is not None:
-        attrs[RUN_EFFORT] = effort
-    if model is not None:
-        attrs[GEN_AI_MODEL] = model
+    if launch.max_usd is not None:
+        attrs[RUN_MAX_USD] = launch.max_usd
+    if launch.effort is not None:
+        attrs[RUN_EFFORT] = launch.effort
+    if launch.model is not None:
+        attrs[GEN_AI_MODEL] = launch.model
     return attrs
 
 
-def run_event(event: SessionEvent) -> tuple[str, _Attrs] | None:
+def run_event(event: SessionEvent) -> tuple[str, Attrs] | None:
     """Map a supervisor event to the span event a run span mirrors it as.
 
     Args:
@@ -139,7 +123,7 @@ def run_event(event: SessionEvent) -> tuple[str, _Attrs] | None:
             TURN_BUDGET_EXHAUSTED: event.budget_exhausted,
         }
     if isinstance(event, FollowUpEvent):
-        attrs: _Attrs = {FOLLOW_UP_ACTION: event.action}
+        attrs: Attrs = {FOLLOW_UP_ACTION: event.action}
         if event.reason is not None:
             attrs[FOLLOW_UP_REASON] = event.reason
         return EVENT_FOLLOW_UP, attrs
@@ -150,63 +134,15 @@ def run_event(event: SessionEvent) -> tuple[str, _Attrs] | None:
     return None
 
 
-@dataclass(frozen=True, slots=True)
-class CommandSpanInputs:
-    """Pre-computed span inputs shared by live and replay command-span emitters.
-
-    Attributes:
-        name: The span name.
-        key: The key the span's deterministic id is derived from.
-        attributes: The span's attributes.
-        link: The span context the command was launched under, when it recorded one.
-        status: The name of the OpenTelemetry status code the span ends with,
-            or ``None`` to leave the status unset (a gate trip is not an error).
-        status_description: The reason an ``ERROR`` status carries, when the
-            record has one.
-    """
-
-    name: str
-    key: str
-    attributes: _Attrs
-    link: SpanContext | None
-    status: Literal["OK", "ERROR"] | None
-    status_description: str | None
-
-
-def command_span_inputs(
-    record: CommandRecord, *, session_id: str, line_number: int
-) -> CommandSpanInputs:
-    """Build the span name, key, attributes, link, and status for a command record.
-
-    Args:
-        record: The command record the span stands for.
-        session_id: The session the command ran in.
-        line_number: The record's line in the session log, which keys the span id.
-
-    Returns:
-        The inputs both the live and the replayed command span are built from.
-    """
-    link = parse_traceparent(record.traceparent) if record.traceparent else None
-    failed = record.exit_code == TOOL_FAILURE_EXIT_CODE
-    return CommandSpanInputs(
-        name=f"gymrat.command.{record.name}",
-        key=f"command:{line_number}",
-        attributes=command_attributes(record, session_id),
-        link=link,
-        status="OK" if record.exit_code == 0 else "ERROR" if failed else None,
-        status_description=record.reason if failed else None,
-    )
-
-
-def _add_seq(attrs: _Attrs, record: _SequencedEnvelope) -> None:
+def _add_seq(attrs: Attrs, record: _SequencedEnvelope) -> None:
     """Add the iteration sequence number, when the record carries one."""
     if record.seq is not None:
         attrs[ITERATION_SEQ] = record.seq
 
 
-def command_attributes(record: CommandRecord, session_id: str) -> _Attrs:
+def command_attributes(record: CommandRecord, session_id: str) -> Attrs:
     """Map a ``CommandRecord`` to a flat attribute dict for a command span."""
-    attrs: _Attrs = {
+    attrs: Attrs = {
         SESSION_ID: session_id,
         COMMAND_NAME: record.name,
         COMMAND_EXIT_CODE: record.exit_code,
@@ -221,11 +157,11 @@ def command_attributes(record: CommandRecord, session_id: str) -> _Attrs:
     return attrs
 
 
-def record_event(record: SessionLogRecord) -> tuple[str, _Attrs]:
+def record_event(record: SessionLogRecord) -> tuple[str, Attrs]:
     """Map a non-command session log record to ``(event_name, attributes)``."""
     record_type: str = record.type
     name = f"gymrat.{record_type}"
-    attrs: _Attrs = {}
+    attrs: Attrs = {}
 
     if isinstance(record, _SequencedEnvelope):
         _add_seq(attrs, record)
@@ -240,7 +176,7 @@ def record_event(record: SessionLogRecord) -> tuple[str, _Attrs]:
     return name, attrs
 
 
-def _add_scalar_fields(attrs: _Attrs, record_type: str, record: SessionLogRecord) -> None:
+def _add_scalar_fields(attrs: Attrs, record_type: str, record: SessionLogRecord) -> None:
     """Add scalar top-level fields from a non-iteration record under ``gymrat.<type>.<field>``."""
     for field_name, value in record:
         if field_name in _SKIPPED_FIELD_NAMES:

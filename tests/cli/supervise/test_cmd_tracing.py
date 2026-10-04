@@ -36,7 +36,7 @@ from tests.cli.supervise.test_cmd import (
     _track_cleanups,
 )
 from tests.session.records._fixtures import SESSION_ID
-from tests.supervisor._fixtures import make_prompt, noop_observer
+from tests.supervisor._fixtures import make_launch, make_prompt, noop_observer
 from tests.telemetry._fixtures import (
     isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )
@@ -249,7 +249,7 @@ def test_supervise_when_tracing_enabled_and_max_usd_given_does_set_run_attribute
     assert run_span.attributes["gymrat.run.max_usd"] == 5.0  # pyrefly: ignore[unsupported-operation]
 
 
-def test_supervise_when_tracing_enabled_and_no_max_usd_does_omit_attribute(
+def test_supervise_when_tracing_enabled_and_no_cap_model_or_effort_does_omit_their_attributes(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     from tests.telemetry._fixtures import memory_tracing
@@ -262,7 +262,8 @@ def test_supervise_when_tracing_enabled_and_no_max_usd_does_omit_attribute(
     assert result.exit_code == 0
     spans = exporter.get_finished_spans()
     run_span = next(s for s in spans if s.name == "gymrat.run")
-    assert "gymrat.run.max_usd" not in run_span.attributes  # pyrefly: ignore[not-iterable]
+    optional = {"gymrat.run.max_usd", "gymrat.run.effort", "gen_ai.request.model"}
+    assert optional.intersection(run_span.attributes or {}) == set()
 
 
 def test_supervise_when_tracing_enabled_and_model_set_does_set_provider_attributes(
@@ -360,14 +361,8 @@ def test_setup_tracing_when_sdk_disabled_and_endpoint_set_does_hold_no_span(
     observer = noop_observer()
 
     traced = run_spans.setup_tracing(
-        session_id=SESSION_ID,
+        make_launch(at=1, head_sha="a" * 40, max_minutes=_CAP_MINUTES, session_id=SESSION_ID),
         branch=f"gymrat/{SESSION_ID}",
-        launch_at=1,
-        head_sha="a" * 40,
-        max_minutes=_CAP_MINUTES,
-        max_usd=None,
-        effort=None,
-        model=None,
         prompt=prompt,
         reporter_observer=observer,
     )

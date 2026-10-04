@@ -112,6 +112,22 @@ async def test_probe_when_no_names_given_does_build_minimal_argv(
     assert list(argv) == ["gym", "rat", "probe", "--format", "json", "--"]
 
 
+@pytest.mark.parametrize(
+    ("input_data", "expected_args"),
+    [
+        pytest.param({"samples": 6}, ["--samples", "6", "--format", "json", "--"], id="samples"),
+        pytest.param({"names": ["a", "b"]}, ["--format", "json", "--", "a", "b"], id="names"),
+    ],
+)
+async def test_probe_when_only_samples_or_names_given_does_place_them_around_the_format_flag(
+    host: ToolHost, fake_exec: AsyncMock, input_data: dict[str, Any], expected_args: list[str]
+) -> None:
+    await host.probe(input_data)
+
+    argv = fake_exec.call_args[0][0]
+    assert list(argv) == ["gym", "rat", "probe", *expected_args]
+
+
 async def test_iterate_when_called_does_build_correct_argv(
     host: ToolHost, fake_exec: AsyncMock
 ) -> None:

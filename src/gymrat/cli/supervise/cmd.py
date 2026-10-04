@@ -417,14 +417,8 @@ def _run_session(ctx: _SessionContext) -> None:
             write_and_flush(sys.stderr, f"log: {abbreviate_home(ctx.log_path)}\n")
 
         prompt, observer, tracing = setup_tracing(
-            session_id=launch.session_id,
+            launch,
             branch=ctx.branch,
-            launch_at=launch.at,
-            head_sha=launch.head_sha,
-            max_minutes=launch.max_minutes,
-            max_usd=launch.max_usd,
-            effort=launch.effort,
-            model=launch.model,
             prompt=ctx.session_prompt(),
             reporter_observer=reporter.observer,
         )

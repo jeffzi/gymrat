@@ -24,7 +24,7 @@ from gymrat.telemetry.attributes import (
     RUN_SPAN,
     SESSION_SPAN,
     SESSION_SPAN_KEY,
-    command_span_inputs,
+    Attrs,
     record_event,
     run_attributes,
     run_event,
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-type _EventTuple = tuple[str, dict[str, str | int | float | bool], int]
+type _EventTuple = tuple[str, Attrs, int]
 type _NumberedRecord = tuple[int, SessionLogRecord]
 type _RunSpan = tuple[_ParsedRun, Span]
 
@@ -181,13 +181,11 @@ def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay co
     """Create one command span, drain pending events onto it, and close it."""
     from opentelemetry import trace  # noqa: PLC0415
 
-    parent_span = _find_parent_run(rec.at, run_spans)
-    if parent_span is None and rec.traceparent:
-        parent_span = _find_parent_by_traceparent(rec.traceparent, run_spans)
-
     cmd_span = start_command_span(
-        command_span_inputs(rec, session_id=session_id, line_number=line_number),
-        context=trace.set_span_in_context(parent_span or session_span),
+        rec,
+        session_id=session_id,
+        line_number=line_number,
+        context=trace.set_span_in_context(_find_parent_run(rec, run_spans) or session_span),
         start_time=rec.at - rec.duration_ms * NS_PER_MS,
     )
 
@@ -206,14 +204,7 @@ class _ParsedRun:
         self.launch_at = launch.at
         self.last_at = launch.at
         self.cost_usd: float | None = None
-        self.attributes = run_attributes(
-            session_id=launch.session_id,
-            head_sha=launch.head_sha,
-            max_minutes=launch.max_minutes,
-            max_usd=launch.max_usd,
-            effort=launch.effort,
-            model=launch.model,
-        )
+        self.attributes = run_attributes(launch)
         self.events: list[_EventTuple] = []
 
 
@@ -328,21 +319,26 @@ def _collect_run_event(run: _ParsedRun, event: SessionEvent) -> None:
         run.events.append((name, attributes, event.at))
 
 
-def _find_parent_run(at: int, run_spans: list[_RunSpan]) -> Span | None:
-    """Find the span of the run whose time range contains ``at``."""
+def _find_parent_run(rec: CommandRecord, run_spans: list[_RunSpan]) -> Span | None:
+    """Find the span of the run a command ran under.
+
+    Args:
+        rec: The command record.
+        run_spans: The supervisor runs, each with its span.
+
+    Returns:
+        The span of the run whose time range contains the command; failing
+        that, the run span the command's recorded traceparent links to; else
+        ``None``.
+    """
     for run, span in run_spans:
-        if run.launch_at <= at <= run.last_at:
+        if run.launch_at <= rec.at <= run.last_at:
             return span
-    return None
-
-
-def _find_parent_by_traceparent(traceparent: str, run_spans: list[_RunSpan]) -> Span | None:
-    """Find the run span whose span ID matches the traceparent's span ID."""
-    ctx = parse_traceparent(traceparent)
-    if ctx is None:
+    link = parse_traceparent(rec.traceparent) if rec.traceparent else None
+    if link is None:
         return None
     for _run, span in run_spans:
-        if span.get_span_context().span_id == ctx.span_id:
+        if span.get_span_context().span_id == link.span_id:
             return span
     return None
 

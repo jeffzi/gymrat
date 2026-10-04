@@ -22,6 +22,7 @@ import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -664,6 +665,26 @@ async def test_run_exit_sequence_when_the_checks_rewrite_the_tree_does_note_it_o
     assert run.report.steps[0] == ExitStep(
         kind="settled",
         text="settled: kept iteration 1 (checks passed); tree changed during checks",
+    )
+
+
+async def test_run_exit_sequence_when_the_kept_tree_has_no_fingerprint_does_add_no_note(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo)
+    _improved_iteration(repo)
+    checks_pass(monkeypatch)
+    measured = worktree_fingerprint(Path(experiment_worktree_dir(repo)))
+    # The gate reads the standing tree first; only the read after the keep fails.
+    monkeypatch.setattr(
+        "gymrat.supervisor.exit_sequence.worktree_fingerprint",
+        create_autospec(worktree_fingerprint, side_effect=[measured, None]),
+    )
+
+    run = await run_sequence(_context(repo, checks=CHECKS))
+
+    assert run.report.steps[0] == ExitStep(
+        kind="settled", text="settled: kept iteration 1 (checks passed)"
     )
 
 

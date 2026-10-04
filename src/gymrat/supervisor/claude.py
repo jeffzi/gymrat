@@ -216,14 +216,7 @@ class MessageMapper:
         if block_type == "thinking":
             self._emit_phase("thinking", parent)
             stream = self._thinking_streams.setdefault(parent, _ThinkingStream())
-            self._observer(
-                ThinkingUpdateEvent(
-                    at=now_ns(),
-                    estimated_tokens=stream.estimated_tokens,
-                    delta=0,
-                    parent_tool_use_id=parent,
-                )
-            )
+            self._emit_thinking(stream, parent, delta=0)
         elif block_type == "text":
             self._emit_phase("responding", parent)
         elif block_type == "tool_use":
@@ -237,6 +230,9 @@ class MessageMapper:
         delta = new_estimate - stream.estimated_tokens
         stream.estimated_tokens = new_estimate
         stream.chars_since_emit = 0
+        self._emit_thinking(stream, parent, delta=delta)
+
+    def _emit_thinking(self, stream: _ThinkingStream, parent: str | None, *, delta: int) -> None:
         self._observer(
             ThinkingUpdateEvent(
                 at=now_ns(),

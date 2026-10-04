@@ -90,13 +90,16 @@ class ToolHost:
         text = outcome.stderr.strip() or outcome.stdout.strip() or f"gymrat {cmd} failed"
         return _result(text, is_error=True)
 
-    async def _run_command(self, argv: list[str], cmd: str) -> dict[str, Any]:
-        """Execute *argv* as a child process, serializing against concurrent calls.
+    async def _run_command(
+        self, cmd: str, options: Sequence[str] = (), tail: Sequence[str] = ()
+    ) -> dict[str, Any]:
+        """Run ``gymrat <cmd>`` as a child process, serializing against concurrent calls.
 
         Args:
-            argv: Full argument vector for the child process.
-            cmd: Subcommand name used in error messages (``"probe"`` or
-                ``"iterate"``).
+            cmd: Subcommand to run (``"probe"`` or ``"iterate"``), also named
+                in error messages.
+            options: Flags placed before the JSON format flag.
+            tail: Arguments placed after the JSON format flag.
 
         Returns:
             MCP tool result dict with ``content`` and ``is_error``.
@@ -104,6 +107,7 @@ class ToolHost:
         if self._busy:
             return _result("a gymrat command is already running", is_error=True)
         self._busy = True
+        argv = [*self._prefix, cmd, *options, *_JSON_FORMAT_ARGS, *tail]
         try:
             # The origin marks the run as one the agent made through a tool, so the
             # child can tell it apart from a command a person typed.
@@ -113,8 +117,8 @@ class ToolHost:
                 COMMAND_ORIGIN_ENV: TOOL_ORIGIN,
                 **self._extra_env,
             }
-            options = ExecOptions(cwd=self._root, abort=self._abort, env=env)
-            outcome = await self._exec_fn(argv, options)
+            exec_options = ExecOptions(cwd=self._root, abort=self._abort, env=env)
+            outcome = await self._exec_fn(argv, exec_options)
             return self._map_result(outcome, cmd)
         finally:
             self._busy = False
@@ -130,20 +134,14 @@ class ToolHost:
         Returns:
             MCP tool result dict with ``content`` and ``is_error``.
         """
-        argv: list[str] = [*self._prefix, "probe"]
-
         samples = input_data.get("samples")
-        if samples is not None:
-            argv.extend(["--samples", str(samples)])
-
-        argv.extend(_JSON_FORMAT_ARGS)
+        options = () if samples is None else ("--samples", str(samples))
 
         # Every option precedes the separator: names come from the agent and may
         # look like flags, and only after ``--`` does the CLI read them as names.
-        argv.append("--")
-        argv.extend(input_data.get("names") or ())
-
-        return await self._run_command(argv, "probe")
+        return await self._run_command(
+            "probe", options, tail=("--", *(input_data.get("names") or ()))
+        )
 
     async def iterate(self, _input_data: dict[str, Any]) -> dict[str, Any]:
         """Run ``gymrat iterate`` to advance the optimization loop.
@@ -154,9 +152,7 @@ class ToolHost:
         Returns:
             MCP tool result dict with ``content`` and ``is_error``.
         """
-        argv = [*self._prefix, "iterate", *_JSON_FORMAT_ARGS]
-
-        return await self._run_command(argv, "iterate")
+        return await self._run_command("iterate")
 
 
 def gymrat_tool_definitions(host: ToolHost) -> list[SdkMcpTool[dict[str, Any]]]:

@@ -6,7 +6,6 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
-from unittest.mock import create_autospec
 
 import pytest
 
@@ -113,7 +112,7 @@ def _spans_by_prefix(spans: tuple[Any, ...] | list[Any], prefix: str) -> list[An
     return [s for s in spans if s.name.startswith(prefix)]
 
 
-def _span_signature(span: Any) -> tuple[str, int, int, int | None, str, tuple[str, ...]]:
+def _span_signature(span: Any) -> tuple[Any, ...]:
     parent_span_id = span.parent.span_id if span.parent else None
     event_names = tuple(sorted(ev.name for ev in span.events))
     status_name = span.status.status_code.name
@@ -124,6 +123,8 @@ def _span_signature(span: Any) -> tuple[str, int, int, int | None, str, tuple[st
         parent_span_id,
         status_name,
         event_names,
+        dict(span.attributes),
+        tuple(link.context.span_id for link in span.links),
     )
 
 
@@ -362,17 +363,29 @@ def test_replay_session_when_command_exit_code_does_set_span_status(
     )
 
 
-def test_replay_session_when_command_has_traceparent_does_add_link(log_paths: tuple[str, str]):
+@pytest.mark.parametrize(
+    ("traceparent", "expected_links"),
+    [
+        pytest.param(
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            [0xB7AD6B7169203331],
+            id="valid",
+        ),
+        pytest.param("not-valid", [], id="malformed"),
+    ],
+)
+def test_replay_session_when_command_has_traceparent_does_link_only_a_valid_one(
+    log_paths: tuple[str, str], traceparent: str, expected_links: list[int]
+):
     session_log, sup_log = log_paths
     header = session_record(at=T0)
-    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
     cmd = _command("measure", traceparent=traceparent)
     write_records_log(session_log, [header, cmd])
     _write_standard_run(sup_log)
 
     spans = _replay(session_log, sup_log)
     cmd_span = _span_by_name(spans, "gymrat.command.measure")
-    assert len(cmd_span.links) == 1
+    assert [link.context.span_id for link in cmd_span.links] == expected_links
 
 
 def test_replay_session_when_command_in_run_range_does_parent_under_run(log_paths: tuple[str, str]):
@@ -406,6 +419,49 @@ def test_replay_session_when_command_outside_run_range_does_parent_under_session
     assert cmd_span.parent.span_id == session_span.context.span_id
 
 
+def _traceparent_of(span_key: str) -> str:
+    """The traceparent a command records when it ran under the span keyed ``span_key``."""
+    return f"00-{trace_id_of(SESSION_ID):032x}-{span_id_of(SESSION_ID, span_key):016x}-01"
+
+
+@pytest.mark.parametrize(
+    ("linked_span_key", "expected_parent"),
+    [
+        pytest.param(f"run:{T1}", "gymrat.run", id="links-to-the-run"),
+        pytest.param("run:0", "gymrat.session", id="links-to-no-run"),
+    ],
+)
+def test_replay_session_when_command_outside_run_range_has_traceparent_does_parent_by_its_link(
+    log_paths: tuple[str, str], linked_span_key: str, expected_parent: str
+):
+    session_log, sup_log = log_paths
+    cmd = _command("measure", at=T5, duration_ms=100, traceparent=_traceparent_of(linked_span_key))
+    write_records_log(session_log, [session_record(at=T0), cmd])
+    write_supervisor_log(sup_log, [launch_event(at=T1), turn_end(at=T2)])
+
+    spans = _replay(session_log, sup_log)
+
+    cmd_span = _span_by_name(spans, "gymrat.command.measure")
+    assert cmd_span.parent.span_id == _span_by_name(spans, expected_parent).context.span_id
+
+
+def test_replay_session_when_command_in_one_run_links_to_another_does_parent_under_its_time_range(
+    log_paths: tuple[str, str], tmp_path: Path
+):
+    session_log, first_log = log_paths
+    second_log = str(tmp_path / "second.jsonl")
+    cmd = _command("measure", at=T2, duration_ms=100, traceparent=_traceparent_of(f"run:{T4}"))
+    write_records_log(session_log, [session_record(at=T0), cmd])
+    write_supervisor_log(first_log, [launch_event(at=T1), turn_end(at=T3)])
+    write_supervisor_log(second_log, [launch_event(at=T4), turn_end(at=T5)])
+
+    with memory_tracing(SESSION_ID) as exporter:
+        replay_session(session_log, [first_log, second_log])
+
+    cmd_span = _span_by_name(exporter.get_finished_spans(), "gymrat.command.measure")
+    assert cmd_span.parent.span_id == span_id_of(SESSION_ID, f"run:{T1}")
+
+
 def test_replay_session_when_a_record_outlasts_every_run_does_end_the_session_span_at_it(
     log_paths: tuple[str, str],
 ):
@@ -417,43 +473,6 @@ def test_replay_session_when_a_record_outlasts_every_run_does_end_the_session_sp
     spans = _replay(session_log, sup_log)
 
     assert _span_by_name(spans, "gymrat.session").end_time == T5
-
-
-def test_replay_session_when_command_present_does_delegate_to_command_span_inputs(
-    log_paths: tuple[str, str],
-    monkeypatch: pytest.MonkeyPatch,
-):
-    from gymrat.telemetry import replay as replay_mod
-    from gymrat.telemetry.attributes import CommandSpanInputs, command_span_inputs
-
-    session_log, sup_log = log_paths
-    _write_measure_command_run(session_log, sup_log)
-
-    marker_attrs: dict[str, str | int | float | bool] = {
-        "gymrat.session.id": SESSION_ID,
-        "gymrat.command.name": "measure",
-        "test.injected": "via-helper",
-    }
-    fake_inputs = CommandSpanInputs(
-        name="gymrat.command.measure",
-        key="command:2",
-        attributes=marker_attrs,
-        link=None,
-        status="OK",
-        status_description=None,
-    )
-    mock_helper = create_autospec(command_span_inputs, return_value=fake_inputs)
-    monkeypatch.setattr(replay_mod, "command_span_inputs", mock_helper, raising=False)
-
-    spans = _replay(session_log, sup_log)
-    cmd_span = _span_by_name(spans, "gymrat.command.measure")
-
-    assert cmd_span.attributes["test.injected"] == "via-helper"
-
-    mock_helper.assert_called_once()
-    _, call_kwargs = mock_helper.call_args
-    assert call_kwargs["session_id"] == SESSION_ID
-    assert call_kwargs["line_number"] == 2
 
 
 # ---------------------------------------------------------------------------

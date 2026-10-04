@@ -187,7 +187,9 @@ def test_supervise_when_exit_sequence_logs_an_event_does_hand_it_to_the_observer
     seams = _install_seams(monkeypatch)
     run_observed: list[object] = []
 
-    def tracing_with_its_own_observer(*, prompt: object, **_kwargs: object) -> tuple[object, ...]:
+    def tracing_with_its_own_observer(
+        _launch: object, *, prompt: object, **_kwargs: object
+    ) -> tuple[object, ...]:
         return prompt, run_observed.append, TracingState()
 
     monkeypatch.setattr(run_spans, "setup_tracing", tracing_with_its_own_observer)

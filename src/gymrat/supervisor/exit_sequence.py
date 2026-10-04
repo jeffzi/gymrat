@@ -137,23 +137,6 @@ def _skip_step(lock_path: str, ended_by: EndedBy) -> ExitStep:
     return ExitStep(kind="skipped", text=text + (_CAP_NOTE if ended_by in _CAP_ENDS else ""))
 
 
-def _emit_failure(log: SessionObserver, message: str) -> None:
-    """Emit the event closing a failed sequence, tolerating an observer that is down.
-
-    Goes straight to ``log`` rather than through the step recorder, because a step
-    would render as a second summary row next to the ``exit  error`` one the report
-    already produces.
-
-    Args:
-        log: Observer the closing ``FollowUpEvent`` is emitted to.
-        message: The failure the event's reason names.
-    """
-    # The emit is the last act of the error boundary: an observer that raises here
-    # would turn the boundary back into the raise it exists to prevent.
-    with contextlib.suppress(Exception):
-        log(FollowUpEvent(at=now_ns(), action="ended", reason=_FAILED_TEXT.format(message=message)))
-
-
 async def _held_past_wait(
     probe: Callable[[], bool],
     lock_path: str,
@@ -275,7 +258,16 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
                 record(_skip_step(context.lock_path, ended_by))
     except Exception as error:  # noqa: BLE001 -- the report is the caller's error channel
         message = str(error)
-        _emit_failure(log, message)
+        # Straight to ``log``, not through the step recorder: a step would render
+        # as a second summary row next to the ``exit  error`` one the report
+        # already produces. The emit is the last act of the error boundary, so an
+        # observer that raises here must not turn it back into a raise.
+        with contextlib.suppress(Exception):
+            log(
+                FollowUpEvent(
+                    at=now_ns(), action="ended", reason=_FAILED_TEXT.format(message=message)
+                )
+            )
         return ExitReport(steps=tuple(steps), error=message)
     return ExitReport(steps=tuple(steps))
 
@@ -425,12 +417,14 @@ async def _keep_iteration(
     record = kept.record
     if record.status == "committed":
         checks = "checks passed" if record.checks.configured else "checks not configured"
+        # The checks command runs before the keep stages, so a formatter or a
+        # lockfile rewrite legitimately commits a tree nobody measured, exactly as
+        # a manual keep does.
+        kept_tree = worktree_fingerprint(Path(experiment))
+        rewritten = kept_tree is not None and kept_tree != iteration.measured_tree
+        note = "; tree changed during checks" if rewritten else ""
         return ExitStep(
-            kind="settled",
-            text=(
-                f"settled: kept iteration {iteration.seq} ({checks})"
-                f"{_rewritten_note(iteration, experiment=experiment)}"
-            ),
+            kind="settled", text=f"settled: kept iteration {iteration.seq} ({checks}){note}"
         )
     if record.reason == "checks-failed":
         trace.gate = True
@@ -448,26 +442,6 @@ async def _keep_iteration(
         )
     message = f"Keep of iteration {iteration.seq} was blocked: {record.reason}."
     raise GymratError(message, hint="Keep or discard the iteration by hand.", reason=record.reason)
-
-
-def _rewritten_note(iteration: IterationRecord, *, experiment: str) -> str:
-    """What to add to a kept step when the commit carries a tree nobody measured.
-
-    The checks command runs before the keep stages, so a formatter or a lockfile
-    rewrite legitimately commits a tree that differs from the measured one,
-    exactly as a manual keep does.
-
-    Args:
-        iteration: The iteration the keep committed.
-        experiment: The experiment worktree the keep left at the kept commit.
-
-    Returns:
-        The note, or the empty string when the kept tree is the measured one.
-    """
-    kept_tree = worktree_fingerprint(Path(experiment))
-    if kept_tree is None or kept_tree == iteration.measured_tree:
-        return ""
-    return "; tree changed during checks"
 
 
 def _settle_gating_block(

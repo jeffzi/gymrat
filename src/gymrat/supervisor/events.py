@@ -443,26 +443,26 @@ def create_event_log_writer(log_path: str | Path) -> SessionObserver:
 _WHITESPACE_RUN = re.compile(r"\s+")
 
 
-def summarize(text: str, max_chars: int = SUMMARY_MAX_CHARS) -> str:
+def summarize(text: str) -> str:
     """Produce a compact, single-line summary of ``text``.
 
     Whitespace runs collapse to single spaces and the ends are trimmed. When the
-    collapsed text fits within ``max_chars`` code points it is returned as-is;
-    otherwise it is cut on a code-point boundary and suffixed with a bare ``…``.
+    collapsed text fits within ``SUMMARY_MAX_CHARS`` code points it is returned
+    as-is; otherwise it is cut on a code-point boundary and suffixed with a bare
+    ``…``.
 
     Args:
         text: The text to collapse and possibly truncate.
-        max_chars: The code-point budget before truncation kicks in.
 
     Returns:
         The collapsed and possibly truncated single-line summary.
     """
     collapsed = _WHITESPACE_RUN.sub(" ", text).strip()
 
-    if len(collapsed) <= max_chars:
+    if len(collapsed) <= SUMMARY_MAX_CHARS:
         return collapsed
 
-    return f"{collapsed[:max_chars]}…"
+    return f"{collapsed[:SUMMARY_MAX_CHARS]}…"
 
 
 # ---------------------------------------------------------------------------

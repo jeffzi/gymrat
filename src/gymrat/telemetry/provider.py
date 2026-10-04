@@ -14,8 +14,10 @@ import warnings
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, override
 
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE
+from gymrat.telemetry.attributes import command_attributes
 from gymrat.telemetry.endpoint import ENDPOINT_ENV, otlp_endpoint
-from gymrat.telemetry.ids import span_id_of, trace_id_of
+from gymrat.telemetry.ids import parse_traceparent, span_id_of, trace_id_of
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -25,7 +27,7 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
     from opentelemetry.trace import Span, Tracer
 
-    from gymrat.telemetry.attributes import CommandSpanInputs
+    from gymrat.session.records import CommandRecord
 
 _TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 _TRACES_PATH = "v1/traces"
@@ -154,14 +156,26 @@ def start_span(name: str, *, span_key: str | None = None, **kwargs: object) -> S
             _queued_span_id.reset(token)
 
 
-def start_command_span(inputs: CommandSpanInputs, *, context: Context, start_time: int) -> Span:
-    """Start a command span from its pre-computed inputs.
+def start_command_span(
+    record: CommandRecord,
+    *,
+    session_id: str,
+    line_number: int,
+    context: Context,
+    start_time: int,
+) -> Span:
+    """Start the span a command record stands for.
 
     Shared by the live and the replay emitters, so both give a command the same
-    link and status.
+    name, id, attributes, link and status. The span links to the span context
+    the command was launched under, when it recorded one. An exit code of 0
+    ends ``OK`` and a tool failure ends ``ERROR`` with the record's reason; a
+    gate trip is not an error and leaves the status unset.
 
     Args:
-        inputs: The span's name, key, attributes, link, and status.
+        record: The command record the span stands for.
+        session_id: The session the command ran in.
+        line_number: The record's line in the session log, which keys the span id.
         context: The parent context the span starts under.
         start_time: When the command started, in nanoseconds since the epoch.
 
@@ -171,16 +185,19 @@ def start_command_span(inputs: CommandSpanInputs, *, context: Context, start_tim
     """
     from opentelemetry.trace import Link, Status, StatusCode  # noqa: PLC0415
 
+    link = parse_traceparent(record.traceparent) if record.traceparent else None
     span = start_span(
-        inputs.name,
-        span_key=inputs.key,
+        f"gymrat.command.{record.name}",
+        span_key=f"command:{line_number}",
         context=context,
-        links=[Link(inputs.link)] if inputs.link is not None else None,
-        attributes=inputs.attributes,
+        links=[Link(link)] if link is not None else None,
+        attributes=command_attributes(record, session_id),
         start_time=start_time,
     )
-    if inputs.status is not None:
-        span.set_status(Status(StatusCode[inputs.status], description=inputs.status_description))
+    if record.exit_code == 0:
+        span.set_status(Status(StatusCode.OK))
+    elif record.exit_code == TOOL_FAILURE_EXIT_CODE:
+        span.set_status(Status(StatusCode.ERROR, description=record.reason))
     return span
 
 

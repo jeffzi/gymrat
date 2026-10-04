@@ -20,7 +20,6 @@ from gymrat.session.records import (
 )
 from gymrat.telemetry.attributes import (
     command_attributes,
-    command_span_inputs,
     record_event,
 )
 from tests.session.records._fixtures import (
@@ -395,63 +394,6 @@ def test_record_event_when_called_does_produce_valid_attribute_names():
     for record in records:
         _name, attrs = record_event(record)
         _assert_valid_attribute_names(attrs)
-
-
-# ---------------------------------------------------------------------------
-# command_span_inputs — shared span-building helper
-# ---------------------------------------------------------------------------
-
-
-def test_command_span_inputs_when_called_does_return_span_name():
-    record = command_record(name="measure")
-
-    result = command_span_inputs(record, session_id=SESSION_ID, line_number=3)
-
-    assert result.name == "gymrat.command.measure"
-
-
-def test_command_span_inputs_when_called_does_return_span_key():
-    record = command_record(name="measure")
-
-    result = command_span_inputs(record, session_id=SESSION_ID, line_number=5)
-
-    assert result.key == "command:5"
-
-
-def test_command_span_inputs_when_called_does_return_attributes_from_command_attributes():
-    record = command_record(name="iterate", args={"samples": 10}, exit_code=0)
-
-    result = command_span_inputs(record, session_id=SESSION_ID, line_number=2)
-
-    assert result.attributes["gymrat.session.id"] == SESSION_ID
-    assert result.attributes["gymrat.command.name"] == "iterate"
-    assert result.attributes["gymrat.command.exit_code"] == 0
-    assert result.attributes["gymrat.command.args.samples"] == 10
-
-
-def test_command_span_inputs_when_traceparent_present_does_return_link():
-    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
-    record = command_record(name="measure", traceparent=traceparent)
-
-    result = command_span_inputs(record, session_id=SESSION_ID, line_number=2)
-
-    assert result.link is not None
-    assert result.link.span_id == 0xB7AD6B7169203331
-
-
-@pytest.mark.parametrize(
-    "traceparent",
-    [None, "not-valid"],
-    ids=["absent", "malformed"],
-)
-def test_command_span_inputs_when_traceparent_missing_or_malformed_does_return_none_link(
-    traceparent: str | None,
-):
-    record = command_record(name="measure", traceparent=traceparent)
-
-    result = command_span_inputs(record, session_id=SESSION_ID, line_number=2)
-
-    assert result.link is None
 
 
 # ---------------------------------------------------------------------------

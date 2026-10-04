@@ -32,6 +32,7 @@ from gymrat.supervisor.events import (
     SessionEvent,
     TextDeltaEvent,
     ToolEndEvent,
+    UsageUpdateEvent,
 )
 from gymrat.supervisor.supervise import EndedBy, supervise
 from tests.session.records._fixtures import (
@@ -44,6 +45,7 @@ from tests.session.records._fixtures import (
 from tests.supervisor._fixtures import (
     DelegatingSession,
     InterruptEmitsEndDriver,
+    add_stop_async,
     collecting_observer,
     default_benchless_config,
     emit_turn_end,
@@ -423,12 +425,22 @@ async def test_supervise_when_grown_log_fails_to_read_at_tool_end_does_end_with_
     async def append_garbage() -> None:
         _append_log_bytes(root, b"not valid json\n")
 
-    driver = create_mock_driver([ActionStep(action=append_garbage), _tool_end()])
+    driver = create_mock_driver([
+        EmitStep(emit=UsageUpdateEvent(at=now_ns(), cost_usd=0.25)),
+        ActionStep(action=append_garbage),
+        _tool_end(),
+    ])
 
     result = await _supervise(root, driver)
 
-    assert result.outcome.reason == "error"
-    assert result.outcome.message == f"Invalid JSON at {session_jsonl_path(root)}:2"
+    message = f"Invalid JSON at {session_jsonl_path(root)}:2"
+    assert (
+        result.ended_by,
+        result.end_reason,
+        result.outcome.reason,
+        result.outcome.cost_usd,
+        result.outcome.message,
+    ) == ("session", message, "error", 0.25, message)
 
 
 async def test_supervise_when_launch_read_fails_does_scan_hooks_only_after_first_clean_read(
@@ -807,6 +819,35 @@ class _SlowEndDriver:
         abort: asyncio.Event | None = None,
     ) -> DriverSession:
         return _SlowEndSession(self._inner.start(prompt, observer, abort), self._delay_ms)
+
+
+async def test_supervise_when_wall_clock_passes_after_spend_cap_fired_does_emit_one_cap(root: str):
+    probe = collecting_observer()
+    driver = _SlowEndDriver(create_mock_driver([TurnEndStep(cost_usd=5.0)]), delay_ms=300)
+
+    result = await _supervise(
+        root, driver, observer=probe.observer, max_usd=1.0, deadline_ms=now_ms() + 100
+    )
+
+    caps = [(cap.cap, cap.action) for cap in events_of(probe.events, CapEvent)]
+    assert (result.ended_by, caps) == ("spend-cap", [("spend-cap", "ending")])
+
+
+async def test_supervise_when_usage_update_arrives_during_lock_poll_does_keep_polling(root: str):
+    probe = collecting_observer()
+    lock = _LockSwitch(held=True)
+    driver = create_mock_driver([
+        emit_turn_end(),
+        EmitStep(emit=UsageUpdateEvent(at=now_ns(), cost_usd=0.02), delay_ms=5),
+        ActionStep(action=lock.release, delay_ms=5),
+        ActionStep(action=lambda: add_stop_async(root), delay_ms=50),
+        TurnEndStep(cost_usd=0.01, origin="agent"),
+    ])
+
+    await _supervise(root, driver, observer=probe.observer, is_lock_held=lock.is_held)
+
+    actions = [event.action for event in events_of(probe.events, FollowUpEvent)]
+    assert actions == ["waiting", "replied", "ended"]
 
 
 async def test_supervise_when_cap_ends_session_during_settle_window_does_not_reply(root: str):

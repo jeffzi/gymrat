@@ -315,11 +315,7 @@ def _emit_command_span(
         set_span_in_context,
     )
 
-    from gymrat.telemetry.attributes import (  # noqa: PLC0415
-        SESSION_SPAN_KEY,
-        command_span_inputs,
-        record_event,
-    )
+    from gymrat.telemetry.attributes import SESSION_SPAN_KEY, record_event  # noqa: PLC0415
     from gymrat.telemetry.ids import (  # noqa: PLC0415
         parse_traceparent,
         span_id_of,
@@ -334,8 +330,6 @@ def _emit_command_span(
     cmd_record = records[-1]
     if not isinstance(cmd_record, CommandRecord):
         return
-
-    inputs = command_span_inputs(cmd_record, session_id=session_id, line_number=len(records))
 
     parent_ctx = None
     gymrat_tp = os.environ.get(TRACEPARENT_ENV)
@@ -353,7 +347,13 @@ def _emit_command_span(
         )
         parent_ctx = set_span_in_context(NonRecordingSpan(session_span_ctx))
 
-    with start_command_span(inputs, context=parent_ctx, start_time=start_ns) as span:
+    with start_command_span(
+        cmd_record,
+        session_id=session_id,
+        line_number=len(records),
+        context=parent_ctx,
+        start_time=start_ns,
+    ) as span:
         # Outcome records appended by the body (between pre-body count and command record)
         for record in records[pre_body_lines:-1]:
             event_name, event_attrs = record_event(record)

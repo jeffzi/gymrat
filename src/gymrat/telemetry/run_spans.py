@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from opentelemetry.trace import Span
 
     from gymrat.supervisor.driver import SessionPrompt
-    from gymrat.supervisor.events import SessionEvent, SessionObserver
+    from gymrat.supervisor.events import LaunchEvent, SessionEvent, SessionObserver
     from gymrat.supervisor.supervise import SupervisionResult
 
 _log = logging.getLogger(__name__)
@@ -54,31 +54,20 @@ class TracingState:
     run_span: Span | None = None
 
 
-def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the session run
+def setup_tracing(
+    launch: LaunchEvent,
     *,
-    session_id: str,
     branch: str,
-    launch_at: int,
-    head_sha: str,
-    max_minutes: float,
-    max_usd: float | None,
-    effort: str | None,
-    model: str | None,
     prompt: SessionPrompt,
     reporter_observer: SessionObserver,
 ) -> tuple[SessionPrompt, SessionObserver, TracingState]:
     """Configure tracing and open session/run spans when the endpoint is set.
 
     Args:
-        session_id: Unique session identifier set as a span attribute.
+        launch: The run's launch event: its session id goes on both spans, its
+            timestamp keys the run span, and its HEAD commit, caps, effort and
+            model go on the run span.
         branch: Git branch name recorded on the session span.
-        launch_at: Monotonic timestamp (ms) of the session launch, used as the
-            run span key.
-        head_sha: HEAD commit SHA recorded on the run span.
-        max_minutes: Wall-clock cap recorded on the run span.
-        max_usd: Spend cap recorded on the run span, or ``None`` when uncapped.
-        effort: Agent effort level, or ``None`` when unset.
-        model: Model name, or ``None`` when unset.
         prompt: The session prompt; a ``traceparent`` is injected when tracing
             activates.
         reporter_observer: The reporter's event observer, combined with the
@@ -94,7 +83,7 @@ def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the se
     """
     from gymrat.telemetry.provider import configure_tracing, start_span  # noqa: PLC0415
 
-    if not configure_tracing(session_id):
+    if not configure_tracing(launch.session_id):
         return prompt, reporter_observer, TracingState()
 
     from opentelemetry.trace import set_span_in_context  # noqa: PLC0415
@@ -105,21 +94,14 @@ def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the se
         SESSION_SPAN,
         span_key=SESSION_SPAN_KEY,
         attributes={
-            SESSION_ID: session_id,
+            SESSION_ID: launch.session_id,
             SESSION_BRANCH: branch,
         },
     )
     run_span = start_span(
         RUN_SPAN,
-        span_key=run_span_key(launch_at),
-        attributes=run_attributes(
-            session_id=session_id,
-            head_sha=head_sha,
-            max_minutes=max_minutes,
-            max_usd=max_usd,
-            effort=effort,
-            model=model,
-        ),
+        span_key=run_span_key(launch.at),
+        attributes=run_attributes(launch),
         context=set_span_in_context(session_span),
     )
 

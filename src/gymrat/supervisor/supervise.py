@@ -68,15 +68,12 @@ waiting for another process to release it."""
 EndedBy = Literal["session", "wall-clock", "spend-cap", "guard", "stop-condition", "hook-failure"]
 """How a supervised run ended. See ``SupervisionResult.ended_by`` for the meaning of each member."""
 
-_IN_FLIGHT_EXCLUSION = frozenset({
-    "usage_update",
-    "cap",
-    "launch",
-    "follow_up",
-    "turn_end",
-    "compaction",
-})
-"""Event types that do NOT cancel a pending settle window or lock poll."""
+_IN_FLIGHT_EXCLUSION = frozenset({"cap", "launch", "follow_up", "compaction"})
+"""Event types that do NOT cancel a pending settle window or lock poll.
+
+Usage updates and turn ends never reach the check: the event router handles
+both before it.
+"""
 
 
 def _warn_on_task_failure(finished: asyncio.Task[None], *, context: str) -> None:
@@ -252,7 +249,7 @@ class _Supervision:
 
     def _fire_pending_end(self) -> None:
         pending = self._end_scan.pending
-        if pending is None or self._session is None:
+        if pending is None:
             return
         self._trigger_end(
             FollowUpEvent(at=now_ns(), action="ended", reason=pending.reason),
@@ -398,8 +395,6 @@ class _Supervision:
         return bool(self._tasks)
 
     def _trigger_cap(self, cap: CapType) -> None:
-        if self._cap_fired:
-            return
         action: CapAction = "ending" if self._is_idle() else "interrupting"
         self._trigger_end(
             CapEvent(at=now_ns(), cap=cap, action=action), ended_by=cap, end_reason=cap
@@ -463,15 +458,8 @@ class _Supervision:
             duration_ms = int(clock.monotonic_ms() - start_time)
 
             if self._end_reason is not None and self._ended_by == "session":
-                return SupervisionResult(
-                    outcome=SessionOutcome(
-                        reason="error",
-                        cost_usd=self._last_cost_usd,
-                        message=self._end_reason,
-                    ),
-                    ended_by="session",
-                    end_reason=self._end_reason,
-                    duration_ms=duration_ms,
+                outcome = SessionOutcome(
+                    reason="error", cost_usd=self._last_cost_usd, message=self._end_reason
                 )
 
             return SupervisionResult(

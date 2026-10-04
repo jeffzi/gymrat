@@ -62,27 +62,28 @@ class GuardState:
         self.last_record_count = self.initial_record_count
 
 
-class Decision:
-    """Base type for classifier outcomes."""
-
-
 @dataclass(frozen=True, slots=True)
-class End(Decision):
+class End:
     """The session should end for the given reason."""
 
     reason: str
 
 
 @dataclass(frozen=True, slots=True)
-class Reply(Decision):
+class Reply:
     """Send a follow-up message with the given text."""
 
     text: str
 
 
 @dataclass(frozen=True, slots=True)
-class WaitForLock(Decision):
+class WaitForLock:
     """Another process holds the lock; wait without updating counters."""
+
+
+# A plain assignment, not a ``type`` statement: ``isinstance`` rejects a type alias.
+Decision = End | Reply | WaitForLock
+"""A classifier outcome."""
 
 
 def _outcome_records(records: list[SessionLogRecord]) -> Iterator[SessionLogRecord]:

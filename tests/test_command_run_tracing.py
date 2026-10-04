@@ -1,9 +1,9 @@
 """Command-span export tests for :mod:`gymrat.command_run`.
 
 These cover the spans ``with_repo_lock`` emits when tracing is enabled: span
-identity, attributes, status, events, trace-context parenting and linking, the
-flush before return, and the delegation to ``command_span_inputs``. They share
-the session-seeding helpers with ``test_command_run``.
+identity, attributes, status, events, trace-context parenting and linking, and
+the flush before return. They share the session-seeding helpers with
+``test_command_run``.
 """
 
 import pytest
@@ -242,6 +242,22 @@ async def test_with_repo_lock_when_traceparent_valid_does_add_link(
     assert command_span.links[0].context.span_id == 0x1112131415161718
 
 
+async def test_with_repo_lock_when_traceparent_absent_does_not_add_link(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from tests.telemetry._fixtures import memory_tracing
+
+    header = _seeded_session(repo)
+    monkeypatch.delenv("TRACEPARENT", raising=False)
+
+    with memory_tracing(header.session_id) as exporter:
+        await with_repo_lock("measure", _ok_body)
+
+    command_span = _command_span(exporter)
+    assert len(command_span.links) == 0
+
+
 async def test_with_repo_lock_when_traceparent_malformed_does_not_add_link(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -330,40 +346,3 @@ async def test_with_repo_lock_when_endpoint_whitespace_only_does_export_nothing(
         await with_repo_lock("measure", _ok_body)
 
     assert collector.received == []
-
-
-# ---------------------------------------------------------------------------
-# with_repo_lock — command_span_inputs delegation
-# ---------------------------------------------------------------------------
-
-
-async def test_with_repo_lock_when_tracing_enabled_does_delegate_to_command_span_inputs(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    from gymrat.telemetry.attributes import command_span_inputs as real_command_span_inputs
-    from tests.telemetry._fixtures import memory_tracing
-
-    header = _seeded_session(repo)
-
-    calls: list[dict[str, object]] = []
-
-    def spy(record: object, *, session_id: str, line_number: int) -> object:
-        calls.append({
-            "name": getattr(record, "name", None),
-            "session_id": session_id,
-            "line_number": line_number,
-        })
-        return real_command_span_inputs(record, session_id=session_id, line_number=line_number)  # type: ignore[arg-type]
-
-    monkeypatch.setattr("gymrat.telemetry.attributes.command_span_inputs", spy)
-
-    with memory_tracing(header.session_id) as exporter:
-        await with_repo_lock("measure", _ok_body, args={"samples": 5})
-
-    assert len(calls) == 1
-    assert calls[0]["name"] == "measure"
-    assert calls[0]["session_id"] == header.session_id
-
-    command_span = _command_span(exporter)
-    assert command_span is not None

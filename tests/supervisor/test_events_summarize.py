@@ -1,7 +1,7 @@
 """Behavioral tests for the one-line summaries of event text and tool input.
 
 ``summarize`` collapses text and truncates it with a bare ellipsis at
-``SUMMARY_MAX_CHARS`` by default; ``summarize_input`` summarizes a tool's
+``SUMMARY_MAX_CHARS``; ``summarize_input`` summarizes a tool's
 input by its JSON form, extracting the one field a known tool is identified by
 (a file path, a command, an agent type, a skill, or gymrat's own MCP tools).
 """
@@ -21,20 +21,6 @@ from gymrat.supervisor.events import (
 from tests.supervisor._fixtures import NotJsonEncodable
 
 # ---------------------------------------------------------------------------
-# SUMMARY_MAX_CHARS
-# ---------------------------------------------------------------------------
-
-
-def test_summarize_when_called_without_max_chars_does_truncate_to_summary_max_chars():
-    overflow = 50
-    text = "a" * (SUMMARY_MAX_CHARS + overflow)
-
-    result = summarize(text)
-
-    assert result == "a" * SUMMARY_MAX_CHARS + "…"
-
-
-# ---------------------------------------------------------------------------
 # summarize
 # ---------------------------------------------------------------------------
 
@@ -46,45 +32,46 @@ def test_summarize_when_called_without_max_chars_does_truncate_to_summary_max_ch
         pytest.param("hello   world", "hello world", id="internal-whitespace-collapsed"),
         pytest.param("  trimmed  ", "trimmed", id="leading-trailing-trimmed"),
         pytest.param("line1\nline2\nline3", "line1 line2 line3", id="newlines-collapsed"),
+        pytest.param("a" * SUMMARY_MAX_CHARS, "a" * SUMMARY_MAX_CHARS, id="exactly-at-budget"),
     ],
 )
 def test_summarize_when_within_budget_does_return_collapsed_text(text: str, expected: str):
-    assert summarize(text, 100) == expected
+    assert summarize(text) == expected
 
 
 def test_summarize_when_over_budget_does_truncate_with_bare_ellipsis():
     overflow = 250
-    max_chars = 50
 
-    result = summarize("a" * (max_chars + overflow), max_chars)
+    result = summarize("a" * (SUMMARY_MAX_CHARS + overflow))
 
-    assert result == "a" * max_chars + "…"
+    assert result == "a" * SUMMARY_MAX_CHARS + "…"
 
 
 def test_summarize_when_multiline_over_budget_does_truncate_with_bare_ellipsis():
-    result = summarize("line1\nline2\nline3\nline4", 20)
+    lines = ["line"] * SUMMARY_MAX_CHARS
 
-    assert result == "line1 line2 line3 li…"
+    result = summarize("\n".join(lines))
+
+    assert result == " ".join(lines)[:SUMMARY_MAX_CHARS] + "…"
 
 
 @pytest.mark.parametrize(
-    ("text", "max_chars", "expected"),
+    ("text", "expected"),
     [
         pytest.param(
-            "\U0001f3af" * 8,
-            5,
-            "\U0001f3af\U0001f3af\U0001f3af\U0001f3af\U0001f3af…",
+            "\U0001f3af" * (SUMMARY_MAX_CHARS + 3),
+            "\U0001f3af" * SUMMARY_MAX_CHARS + "…",
             id="all-emoji",
         ),
-        pytest.param(  # cspell:disable-next-line
-            "ab\U0001f3af\U0001f3afcd\U0001f3af", 3, "ab\U0001f3af…", id="mixed-width"
+        pytest.param(
+            "ab" + "\U0001f3af" * SUMMARY_MAX_CHARS,
+            "ab" + "\U0001f3af" * (SUMMARY_MAX_CHARS - 2) + "…",
+            id="mixed-width",
         ),
     ],
 )
-def test_summarize_when_truncating_does_split_on_code_point_boundaries(
-    text: str, max_chars: int, expected: str
-):
-    assert summarize(text, max_chars) == expected
+def test_summarize_when_truncating_does_split_on_code_point_boundaries(text: str, expected: str):
+    assert summarize(text) == expected
 
 
 # ---------------------------------------------------------------------------
