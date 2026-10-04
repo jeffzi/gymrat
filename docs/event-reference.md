@@ -306,7 +306,6 @@ Emitted when the driver observes updated cumulative cost.
 | `type` | `"usage_update"` | required | Event type discriminator. |
 | `at` | integer | required | Nanoseconds since the Unix epoch when the event was created. |
 | `cost_usd` | number | required | Cumulative session cost in US dollars. |
-| `settled` | boolean | optional | Whether the session has already settled. |
 
 ### `cap`
 

@@ -480,7 +480,7 @@ class _ClaudeSession:
         if self._stopped is not None or self._result_outcome is not None:
             return
         self._stopped = SessionOutcome(reason="completed", cost_usd=self._cost_usd)
-        self._commit_cost(self._cost_usd, settled=True)
+        self._commit_cost(self._cost_usd)
         if self._client is not None:
             await _disconnect_quietly(self._client)
 
@@ -612,7 +612,7 @@ class _ClaudeSession:
         settles = message.is_error and not budget_exhausted
         cost = usable_cost(message.total_cost_usd)
         if cost is not None:
-            self._commit_cost(cost, settled=settles)
+            self._commit_cost(cost)
         if settles:
             self._result_outcome = SessionOutcome(
                 reason="error",
@@ -633,7 +633,7 @@ class _ClaudeSession:
         self._turn_end_count += 1
         self._mapper.last_top_level_text = ""
 
-    def _commit_cost(self, cost: float, *, settled: bool = False) -> None:
+    def _commit_cost(self, cost: float) -> None:
         """Set the running cost and notify observers.
 
         Commits before notifying: a spend-cap callback reads ``self._cost_usd``
@@ -641,11 +641,9 @@ class _ClaudeSession:
 
         Args:
             cost: The running cost in USD.
-            settled: Whether a result message settled the session on its own, so a
-                spend-cap observer does not mistake it for a live cap crossing.
         """
         self._cost_usd = cost
-        self._observer(UsageUpdateEvent(at=now_ns(), cost_usd=self._cost_usd, settled=settled))
+        self._observer(UsageUpdateEvent(at=now_ns(), cost_usd=self._cost_usd))
 
 
 class _ClaudeDriver:

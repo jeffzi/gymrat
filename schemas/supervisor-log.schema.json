@@ -502,7 +502,7 @@
       "type": "object"
     },
     "UsageUpdateEvent": {
-      "description": "Emitted when the driver observes updated cumulative cost.\n\n``settled`` marks a usage update carried by a result message that has\nalready settled the session on its own; a spend-cap observer must not\ntreat it as a live crossing of the cap, since the session is ending\nregardless. Always written to the wire (``\"settled\": false`` on an\nunsettled update).",
+      "description": "Emitted when the driver observes updated cumulative cost.",
       "properties": {
         "at": {
           "description": "Nanoseconds since the Unix epoch when the event was created.",
@@ -513,12 +513,6 @@
           "description": "Cumulative session cost in US dollars.",
           "title": "Cost Usd",
           "type": "number"
-        },
-        "settled": {
-          "default": false,
-          "description": "Whether the session has already settled.",
-          "title": "Settled",
-          "type": "boolean"
         },
         "type": {
           "const": "usage_update",

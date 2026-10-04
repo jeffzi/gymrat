@@ -42,8 +42,8 @@ def test_create_event_log_writer_when_observing_events_does_append_one_line_each
     writer(event2)
 
     assert read_log_lines(log_path) == [
-        {"type": "usage_update", "at": 1_000_000_000_000, "cost_usd": 0.01, "settled": False},
-        {"type": "usage_update", "at": 2_000_000_000_000, "cost_usd": 0.02, "settled": False},
+        {"type": "usage_update", "at": 1_000_000_000_000, "cost_usd": 0.01},
+        {"type": "usage_update", "at": 2_000_000_000_000, "cost_usd": 0.02},
     ]
 
 
@@ -56,7 +56,7 @@ def test_create_event_log_writer_when_parent_missing_does_create_tree_on_first_w
     writer(UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01))
 
     assert read_log_lines(log_path) == [
-        {"type": "usage_update", "at": 1_000_000_000_000, "cost_usd": 0.01, "settled": False},
+        {"type": "usage_update", "at": 1_000_000_000_000, "cost_usd": 0.01},
     ]
 
 
@@ -105,7 +105,7 @@ def test_create_event_log_writer_when_wrapped_in_combine_observers_does_write_on
     combined(UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01))
 
     assert read_log_lines(log_path) == [
-        {"type": "usage_update", "at": 1_000_000_000_000, "cost_usd": 0.01, "settled": False},
+        {"type": "usage_update", "at": 1_000_000_000_000, "cost_usd": 0.01},
     ]
 
 
@@ -127,7 +127,7 @@ def test_create_event_log_writer_when_parent_removed_after_first_write_does_recr
     writer(UsageUpdateEvent(at=2_000_000_000_000, cost_usd=0.02))
 
     assert read_log_lines(log_path) == [
-        {"type": "usage_update", "at": 2_000_000_000_000, "cost_usd": 0.02, "settled": False},
+        {"type": "usage_update", "at": 2_000_000_000_000, "cost_usd": 0.02},
     ]
 
 

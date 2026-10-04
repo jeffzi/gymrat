@@ -196,14 +196,12 @@ async def test_turn_when_result_carries_origin_does_report_turn_origin(
 # ---------------------------------------------------------------------------
 
 
-async def test_turn_when_result_has_cost_does_emit_unsettled_usage_update():
+async def test_turn_when_result_has_cost_does_emit_usage_update():
     result = result_message(total_cost_usd=0.10)
     events = await _run_turns([result])
 
     usage_updates = events_of(events, UsageUpdateEvent)
-    unsettled = [u for u in usage_updates if not u.settled]
-    assert len(unsettled) >= 1
-    assert unsettled[0].cost_usd == 0.10
+    assert [u.cost_usd for u in usage_updates] == [0.10, 0.10]
 
 
 async def test_turn_when_result_has_cost_does_carry_cost_on_turn_end():
@@ -214,7 +212,7 @@ async def test_turn_when_result_has_cost_does_carry_cost_on_turn_end():
     assert turn_ends[0].cost_usd == 0.10
 
 
-async def test_turn_when_two_results_with_rising_cost_does_emit_two_unsettled_updates_and_turn_ends():
+async def test_turn_when_two_results_with_rising_cost_does_emit_an_update_and_turn_end_per_result():
     messages = [
         result_message(total_cost_usd=0.05),
         result_message(total_cost_usd=0.15),
@@ -222,10 +220,7 @@ async def test_turn_when_two_results_with_rising_cost_does_emit_two_unsettled_up
     events = await _run_turns(messages, drain=5)
 
     usage_updates = events_of(events, UsageUpdateEvent)
-    unsettled = [u for u in usage_updates if not u.settled]
-    assert len(unsettled) == 2
-    assert unsettled[0].cost_usd == 0.05
-    assert unsettled[1].cost_usd == 0.15
+    assert [u.cost_usd for u in usage_updates] == [0.05, 0.15, 0.15]
 
     turn_ends = events_of(events, TurnEndEvent)
     assert len(turn_ends) == 2
@@ -388,7 +383,7 @@ async def test_end_when_called_does_settle_completed():
     assert outcome.cost_usd == 0.20
 
 
-async def test_end_when_called_does_emit_settled_usage_update():
+async def test_end_when_called_does_emit_usage_update_with_final_cost():
     result = result_message(total_cost_usd=0.20)
     client = FakeClient([result])
     probe = collecting_observer()
@@ -399,9 +394,7 @@ async def test_end_when_called_does_emit_settled_usage_update():
     await _settle(session)
 
     usage_updates = events_of(probe.events, UsageUpdateEvent)
-    settled = [u for u in usage_updates if u.settled]
-    assert len(settled) == 1
-    assert settled[0].cost_usd == 0.20
+    assert [u.cost_usd for u in usage_updates] == [0.20, 0.20]
 
 
 async def test_end_when_called_does_disconnect_client():
@@ -426,14 +419,11 @@ async def test_end_when_called_after_interrupt_does_preserve_interrupted():
     outcome = await _settle(session)
 
     assert outcome.reason == "interrupted"
-
-    usage_updates = events_of(probe.events, UsageUpdateEvent)
-    settled = [u for u in usage_updates if u.settled]
-    assert settled == []
+    assert events_of(probe.events, UsageUpdateEvent) == []
 
 
 async def test_end_when_called_on_settled_session_does_noop():
-    result = result_message(subtype="error", is_error=True, result="fatal")
+    result = result_message(subtype="error", is_error=True, result="fatal", total_cost_usd=0.10)
     client = FakeClient([result])
     probe = collecting_observer()
     driver = create_claude_driver(client_factory=FactoryProbe(client))
@@ -442,11 +432,11 @@ async def test_end_when_called_on_settled_session_does_noop():
     outcome = await _outcome(session)
     assert outcome.reason == "error"
 
+    events_before_end = list(probe.events)
+
     await session.end()
 
-    usage_updates = events_of(probe.events, UsageUpdateEvent)
-    settled = [u for u in usage_updates if u.settled]
-    assert settled == []
+    assert probe.events == events_before_end
 
 
 # ---------------------------------------------------------------------------

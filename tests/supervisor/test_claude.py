@@ -791,7 +791,7 @@ async def test_result_when_is_error_with_cost_does_settle_as_final_result_not_tu
 
     updates = events_of(probe.events, UsageUpdateEvent)
     assert (outcome.reason, outcome.cost_usd) == ("error", 0.2)
-    assert [(update.cost_usd, update.settled) for update in updates] == [(0.2, True)]
+    assert [update.cost_usd for update in updates] == [0.2]
     assert events_of(probe.events, TurnEndEvent) == []
 
 

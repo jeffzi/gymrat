@@ -134,19 +134,11 @@ class TextDeltaEvent(_EventModel):
 
 
 class UsageUpdateEvent(_EventModel):
-    """Emitted when the driver observes updated cumulative cost.
-
-    ``settled`` marks a usage update carried by a result message that has
-    already settled the session on its own; a spend-cap observer must not
-    treat it as a live crossing of the cap, since the session is ending
-    regardless. Always written to the wire (``"settled": false`` on an
-    unsettled update).
-    """
+    """Emitted when the driver observes updated cumulative cost."""
 
     type: Literal["usage_update"] = Field("usage_update", description="Event type discriminator.")
     at: _At
     cost_usd: FiniteFloat = Field(description="Cumulative session cost in US dollars.")
-    settled: bool = Field(default=False, description="Whether the session has already settled.")
 
 
 CapType = Literal["wall-clock", "spend-cap"]

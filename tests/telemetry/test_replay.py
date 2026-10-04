@@ -243,11 +243,25 @@ def test_replay_session_when_usage_update_in_supervisor_does_set_cost_usd(
 ):
     session_log, sup_log = log_paths
     header = session_record(at=T0)
-    usage = UsageUpdateEvent(at=T3, cost_usd=1.23, settled=True)
+    usage = UsageUpdateEvent(at=T3, cost_usd=1.23)
     write_records_log(session_log, [header])
     write_supervisor_log(sup_log, [launch_event(at=T1), usage])
 
     spans = _replay(session_log, sup_log)
+    run_span = _span_by_name(spans, "gymrat.run")
+    assert run_span.attributes["gymrat.run.cost_usd"] == pytest.approx(1.23)
+
+
+def test_replay_session_when_usage_update_line_has_settled_does_set_cost_usd(
+    log_paths: tuple[str, str],
+):
+    session_log, sup_log = log_paths
+    usage = {"type": "usage_update", "at": T3, "cost_usd": 1.23, "settled": True}
+    write_records_log(session_log, [session_record(at=T0)])
+    write_lines(sup_log, [to_json_line(launch_event(at=T1)), json.dumps(usage)])
+
+    spans = _replay(session_log, sup_log)
+
     run_span = _span_by_name(spans, "gymrat.run")
     assert run_span.attributes["gymrat.run.cost_usd"] == pytest.approx(1.23)
 

@@ -457,6 +457,7 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
     assert len(caps) == 1
     assert caps[0].cap == "spend-cap"
     assert caps[0].action == "ending"
+    assert result.outcome.cost_usd == 5.0
 
 
 # ---------------------------------------------------------------------------

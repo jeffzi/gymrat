@@ -204,7 +204,7 @@ JSON_CASES = [
     ),
     pytest.param(
         _USAGE_UPDATE,
-        {"type": "usage_update", "at": 6_000_000_000, "cost_usd": 0.01, "settled": False},
+        {"type": "usage_update", "at": 6_000_000_000, "cost_usd": 0.01},
         id="usage_update",
     ),
     pytest.param(
@@ -285,7 +285,7 @@ def test_to_json_line_when_serializing_does_use_snake_case_keys(
         ),
         pytest.param(
             UsageUpdateEvent(at=6_000_000_000, cost_usd=1e-7),
-            '{"type":"usage_update","at":6000000000,"cost_usd":1e-7,"settled":false}',
+            '{"type":"usage_update","at":6000000000,"cost_usd":1e-7}',
             id="float-exponent-without-leading-zero",
         ),
         pytest.param(
@@ -337,22 +337,6 @@ def test_to_json_line_when_tool_start_input_is_none_does_keep_input_key():
 
     assert "input" in parsed
     assert parsed["input"] is None
-
-
-def test_to_json_line_when_usage_update_unsettled_does_still_write_settled_false():
-    event = UsageUpdateEvent(at=6_000_000_000, cost_usd=0.01, settled=False)
-
-    parsed = json.loads(to_json_line(event))
-
-    assert parsed["settled"] is False
-
-
-def test_to_json_line_when_usage_update_settled_does_write_settled_true():
-    event = UsageUpdateEvent(at=6_000_000_000, cost_usd=0.01, settled=True)
-
-    parsed = json.loads(to_json_line(event))
-
-    assert parsed["settled"] is True
 
 
 #: The wire form of a no-optionals ``LaunchEvent``, shared between the
@@ -498,6 +482,17 @@ def test_event_from_wire_when_tool_start_input_is_none_does_round_trip():
     )
 
     assert event_from_wire(json.loads(to_json_line(event))) == event
+
+
+@pytest.mark.parametrize("settled", [True, False])
+def test_event_from_wire_when_usage_update_line_has_settled_does_parse_with_same_cost(
+    settled: bool,
+):
+    obj = {"type": "usage_update", "at": 6_000_000_000, "cost_usd": 0.01, "settled": settled}
+
+    event = event_from_wire(obj)
+
+    assert event == UsageUpdateEvent(at=6_000_000_000, cost_usd=0.01)
 
 
 @pytest.mark.parametrize(
