@@ -8,23 +8,21 @@ the confirm module can re-use the same judge without a circular import.
 from __future__ import annotations
 
 import asyncio
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from gymrat.adapters import get_adapter
 from gymrat.clock import monotonic_ms
-from gymrat.config.types import GEOMEAN_PRIMARY, ResolvedConfig
-from gymrat.model import MetricVerdict, Observations, ResolvedMetricMeta
+from gymrat.config import GEOMEAN_PRIMARY, ResolvedConfig
 from gymrat.progress_events import JudgeStarted, emit_progress
 from gymrat.report.loop import (
-    EXPERIMENT_INDEX,
     GeomeanPrimary,
     LoopPrimary,
     MetricPrimary,
 )
 from gymrat.sampling import (
-    SamplingOptions,
+    CleanupResult,
+    RunOptions,
     TargetContext,
     TargetSamples,
     collect_samples,
@@ -32,13 +30,19 @@ from gymrat.sampling import (
 )
 from gymrat.session.records import PairedSamples, SessionRecord
 from gymrat.targets import InPlaceTarget
-from gymrat.verdict import compute_geomean, compute_kind_aggregates, compute_verdicts
+from gymrat.utils import finite_or_none
+from gymrat.verdict import compute_geomean, compute_verdicts
 
 if TYPE_CHECKING:
-    from gymrat.config.types import KindEntry
+    from gymrat.adapters import Adapter
+    from gymrat.config import KindEntry
     from gymrat.loop.iterate.confirm import Confirmation
     from gymrat.loop.iterate.run import IterateOptions
+    from gymrat.model import MetricVerdict, ResolvedMetricMeta
     from gymrat.report.types import ComparisonResult, MetricComparisons
+
+#: The candidate an iteration measures: the experiment, judged against the baseline.
+EXPERIMENT_INDEX = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,34 +56,36 @@ class IterationContext:
 
 
 @dataclass(frozen=True, slots=True)
-class _BenchRun:
-    """One bench-and-judge pass: both sides' samples, the verdicts, and the metric metadata."""
-
-    baseline: TargetSamples
-    experiment: TargetSamples
-    metric_meta: dict[str, ResolvedMetricMeta]
-    verdicts: dict[str, MetricVerdict]
-    samples: PairedSamples
-
-
-@dataclass(frozen=True, slots=True)
 class BenchRunOutputs:
-    """One bench run's measurement outputs, shared by the record and the report."""
+    """One bench-and-judge pass: both sides' samples, the verdicts, and the metric metadata.
+
+    Attributes:
+        baseline: The baseline worktree's samples.
+        experiment: The experiment worktree's samples.
+        verdicts: The verdict computed for each measured metric, by name.
+        metric_meta: The resolved metadata for each measured metric, by name.
+        samples: Both sides' rounds in the form the log stores them.
+    """
 
     baseline: TargetSamples
     experiment: TargetSamples
     verdicts: dict[str, MetricVerdict]
     metric_meta: dict[str, ResolvedMetricMeta]
+    samples: PairedSamples
 
 
 @dataclass(frozen=True, slots=True)
 class Judged:
-    """The first run, judged and confirmed: the outputs, the comparison, and the rerun."""
+    """The first run, judged and confirmed: the outputs, the comparison, and the rerun.
+
+    ``primary`` is resolved from the first run's verdicts. The rerun only demotes
+    a regression to ``no-signal``, and neither word moves the primary's delta.
+    """
 
     run: BenchRunOutputs
     result: ComparisonResult
     confirmation: Confirmation | None
-    samples: PairedSamples
+    primary: LoopPrimary
 
 
 def build_iteration_comparison(
@@ -101,25 +107,27 @@ def build_iteration_comparison(
     """
     from gymrat.compare import (  # noqa: PLC0415 -- deferred to keep compare out of the CLI import chain
         CandidateMeasurement,
+        ComparisonMeasurement,
         build_comparison_result,
     )
-    from gymrat.targets import CleanupResult  # noqa: PLC0415 -- same deferral as above
 
     candidate = CandidateMeasurement(
         label=run.experiment.ctx.label,
         samples=run.experiment.samples,
         verdicts=run.verdicts,
-        kinds=compute_kind_aggregates(run.verdicts, run.metric_meta),
+    )
+    measurement = ComparisonMeasurement(
+        baseline_label=run.baseline.ctx.label,
+        baseline_samples=run.baseline.samples,
+        candidates=[candidate],
+        metric_meta=run.metric_meta,
     )
     return build_comparison_result(
-        run.baseline.ctx.label,
-        run.baseline.samples,
-        [candidate],
-        run.metric_meta,
+        measurement,
+        CleanupResult(removed=0, failures=(), prune_error=None),
         samples=min(len(run.baseline.samples), len(run.experiment.samples)),
         adapter=adapter,
         config_kinds=config_kinds,
-        cleanup=CleanupResult(removed=0, failures=(), prune_error=None),
     )
 
 
@@ -129,7 +137,7 @@ async def bench_and_judge(
     metric_meta: dict[str, ResolvedMetricMeta] | None = None,
     *,
     announce_judging: bool = False,
-) -> _BenchRun:
+) -> BenchRunOutputs:
     """Bench a session's worktrees and judge the resulting samples, in one call.
 
     Args:
@@ -151,13 +159,14 @@ async def bench_and_judge(
         and computed verdicts.
 
     Raises:
+        GymratError: When the configured adapter is unknown; nothing is sampled.
         CommandError: When a prepare or bench command times out or exits
             non-zero.
     """
-    baseline, experiment = await _measure(ctx.session, ctx.config, ctx.options, bench)
+    adapter = get_adapter(ctx.config.adapter)
+    baseline, experiment = await _measure(ctx, adapter, bench)
     if announce_judging:
         emit_progress(ctx.options.on_progress, JudgeStarted(at_ms=monotonic_ms()))
-    adapter = get_adapter(ctx.config.adapter)
     resolved_meta = (
         metric_meta
         if metric_meta is not None
@@ -169,16 +178,16 @@ async def bench_and_judge(
         )
     )
     verdicts = compute_verdicts(
-        Observations.from_rounds(baseline.samples),
-        Observations.from_rounds(experiment.samples),
+        baseline.samples,
+        experiment.samples,
         resolved_meta,
         unstable_noise_pct=ctx.config.unstable_noise_pct,
     )
-    return _BenchRun(
+    return BenchRunOutputs(
         baseline=baseline,
         experiment=experiment,
-        metric_meta=resolved_meta,
         verdicts=verdicts,
+        metric_meta=resolved_meta,
         samples=PairedSamples(
             experiment=tuple(experiment.samples), baseline=tuple(baseline.samples)
         ),
@@ -186,10 +195,7 @@ async def bench_and_judge(
 
 
 async def _measure(
-    session: SessionRecord,
-    config: ResolvedConfig,
-    options: IterateOptions,
-    bench: str,
+    ctx: IterationContext, adapter: Adapter, bench: str
 ) -> tuple[TargetSamples, TargetSamples]:
     """Bench both of the session's worktrees, baseline first.
 
@@ -198,10 +204,11 @@ async def _measure(
     plain comparison would.
 
     Args:
-        session: The session whose baseline and experiment worktrees are benched.
-        config: The resolved configuration supplying prepare, samples, and timeout.
-        options: The iterate options supplying the progress callback and the
+        ctx: The iteration context: the session whose baseline and experiment
+            worktrees are benched, the configuration supplying prepare, samples,
+            and timeout, and the options supplying the progress callback and the
             warning sink.
+        adapter: Parses a bench run's stdout into a metric record.
         bench: The bench command to run. A parameter because a confirmation rerun
             narrows the command while sampling the same pair of worktrees the same
             way.
@@ -213,19 +220,15 @@ async def _measure(
         CommandError: When a prepare or bench command times out or exits
             non-zero.
     """
+    worktrees = ctx.session.worktrees
+    options = ctx.options
     contexts: list[TargetContext] = [
-        _worktree_context(session.worktrees.baseline, "baseline", "old"),
-        _worktree_context(session.worktrees.experiment, "experiment", "new"),
+        _worktree_context(worktrees.baseline, "baseline", "old"),
+        _worktree_context(worktrees.experiment, "experiment", "new"),
     ]
-    sampling_options = SamplingOptions(
-        bench=bench,
-        prepare=config.prepare,
-        samples=config.samples,
-        timeout_seconds=config.timeout_seconds,
-        on_progress=options.on_progress,
-        warn=options.warn,
-    )
-    adapter = get_adapter(config.adapter)
+    sampling_options = RunOptions.from_config(
+        ctx.config, bench=bench, on_progress=options.on_progress, warn=options.warn
+    ).sampling
     abort = options.abort if options.abort is not None else asyncio.Event()
     baseline, experiment = await collect_samples(adapter, contexts, sampling_options, abort)
     return baseline, experiment
@@ -254,39 +257,20 @@ def resolve_primary(
         The resolved primary — a :class:`GeomeanPrimary` or :class:`MetricPrimary`
         carrying the recorded delta. Its ``delta_pct`` is ``None`` when the named
         metric has no verdict, when no gating metric feeds the geomean, or when
-        the ratio is not finite.  A zero must never stand there: a zero is a
+        the ratio is not finite. A zero must never stand there: a zero is a
         measurement, and it would have the report, the log, and the keep commit
         all claim the run held its ground.
     """
     if primary == GEOMEAN_PRIMARY:
         gating = {name: meta for name, meta in metric_meta.items() if meta.gating}
         geomean = compute_geomean(verdicts, gating)
-        return GeomeanPrimary(delta_pct=None if geomean.n == 0 else recorded_delta(geomean.value))
+        return GeomeanPrimary(delta_pct=None if geomean.n == 0 else finite_or_none(geomean.value))
 
     measured = verdicts.get(primary)
     return MetricPrimary(
         name=primary,
-        delta_pct=None if measured is None else recorded_delta(measured.delta.value),
+        delta_pct=None if measured is None else finite_or_none(measured.delta),
     )
-
-
-def recorded_delta(delta: float) -> float | None:
-    """A delta in the form the log keeps it.
-
-    The engine answers a degenerate ratio — a baseline median of zero — with
-    ``NaN``, and a ratio that overflows past the largest float comes out as
-    positive or negative infinity. JSON serialization writes any non-finite float
-    as ``null`` whatever the writer intended. Making the substitution here keeps
-    the record a caller holds identical to the one read back off the log, and
-    never lets a zero stand where there was no measurement.
-
-    Args:
-        delta: The raw delta ratio, possibly ``NaN`` or infinite.
-
-    Returns:
-        The delta as a float, or ``None`` when the ratio is ``NaN`` or infinite.
-    """
-    return delta if math.isfinite(delta) else None
 
 
 def target_reached(

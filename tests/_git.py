@@ -1,10 +1,14 @@
-"""Shared git subprocess helpers for test fixtures and test modules."""
+"""Shared git helpers for test fixtures and test modules."""
 
 import subprocess
+from pathlib import Path
+
+#: A bench script that reports one metric line and exits cleanly.
+EMIT_ONE_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
 
 
 def run_git(args: list[str], cwd: str) -> str:
-    """Run git in ``cwd`` for fixture setup, returning stdout and failing loudly."""
+    """Run git in ``cwd``, returning its stripped stdout and failing loudly on error."""
     result = subprocess.run(  # noqa: S603
         ["git", *args],  # noqa: S607
         cwd=cwd,
@@ -12,15 +16,16 @@ def run_git(args: list[str], cwd: str) -> str:
         capture_output=True,
         text=True,
     )
-    return result.stdout
+    return result.stdout.strip()
 
 
-def git(repo: str, *args: str) -> None:
-    """Run a git command in ``repo``, discarding output and failing loudly."""
-    subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+def head_of(worktree: str) -> str:
+    """The commit ``worktree`` currently has checked out."""
+    return run_git(["rev-parse", "HEAD"], worktree)
+
+
+def write_committed_bench(repo: str, script: str, *, message: str = "add bench") -> None:
+    """Drop ``script`` as ``bench.sh`` and commit it so every ref can run it."""
+    (Path(repo) / "bench.sh").write_text(script, encoding="utf-8")
+    run_git(["add", "bench.sh"], repo)
+    run_git(["commit", "-m", message], repo)

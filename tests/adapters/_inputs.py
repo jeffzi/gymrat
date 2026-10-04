@@ -49,6 +49,3 @@ LINE_BREAKS = (
 def build_stdout(benchmarks: list[Any]) -> str:
     """Serialize ``benchmarks`` into the mitata stdout JSON envelope."""
     return json.dumps({"benchmarks": benchmarks})
-
-
-__all__ = ["build_stdout"]

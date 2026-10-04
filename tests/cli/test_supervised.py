@@ -24,7 +24,7 @@ from tests.cli._budget import (
 from tests.conftest import hold_lock
 
 #: A budget whose deadline is already in the past, so every liveness check against it answers false.
-EXPIRED_BUDGET = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=1.0)
+EXPIRED_BUDGET = Budget(max_minutes=30, deadline_ms=1.0)
 
 
 @pytest.fixture

@@ -43,10 +43,11 @@ from gymrat.session.records import (
     SessionRecord,
 )
 from gymrat.session.store import append_record, read_records
-from tests._git import run_git as _run_git
-from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project
+from tests._git import head_of
+from tests._git import run_git as _git
+from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project, tune_experiment
 from tests.loop.iterate._fixtures import resolved_config
-from tests.session.records._fixtures import committed_keep, iteration_record
+from tests.session.records._fixtures import committed_keep, iteration_record, log_records
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees and gating")
 
@@ -105,16 +106,6 @@ def _lock_holder_pid(lock_path: str) -> int | None:
     return pid if isinstance(pid, int) else None
 
 
-def _git(repo: str, *args: str) -> str:
-    """Run git in ``repo`` for test setup and inspection, returning trimmed stdout."""
-    return _run_git(list(args), repo).strip()
-
-
-def _tune_experiment(repo: str, latency: int) -> None:
-    """Tune the experiment worktree to ``latency``, the edit an agent would make."""
-    (Path(experiment_worktree_dir(repo)) / TUNING_FILE).write_text(f"{latency}\n", encoding="utf-8")
-
-
 def _pick[R: SessionLogRecord](records: list[SessionLogRecord], record_type: type[R]) -> list[R]:
     """The records of one class, in file order, narrowed to that record's shape."""
     return [record for record in records if isinstance(record, record_type)]
@@ -140,20 +131,20 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
         _run_cli(repo, "start", "--baseline", "main").returncode,
         _run_cli(repo, "measure", "main", "--record").returncode,
     ]
-    _tune_experiment(repo, KEPT_LATENCY)
+    tune_experiment(repo, KEPT_LATENCY)
     exit_codes.append(_run_cli(repo, "iterate").returncode)
     exit_codes.append(_run_cli(repo, "keep", "-m", "tune latency to 90").returncode)
 
     status_report = _strip_ansi(_run_cli(repo, "status", "--no-color").stdout)
 
-    _tune_experiment(repo, DISCARDED_LATENCY)
+    tune_experiment(repo, DISCARDED_LATENCY)
     (Path(experiment_worktree_dir(repo)) / DISCARDED_FILE).write_text(
         f"{DISCARD_MARKER}\n", encoding="utf-8"
     )
     exit_codes.append(_run_cli(repo, "iterate").returncode)
     exit_codes.append(_run_cli(repo, "discard").returncode)
 
-    records = read_records(session_jsonl_path(repo))
+    records = log_records(repo)
     session = _pick(records, SessionRecord)[0]
     keep = _pick(records, KeepRecord)[0]
     branch = session.branch
@@ -200,13 +191,13 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     assert f"baseline main · latency {BASELINE_LATENCY}" in lines
     assert re.search(rf"^iteration 1 · .* · kept {kept_commit[:7]}$", status_report, re.MULTILINE)
 
-    assert _git(repo, "status", "--porcelain") == ""
+    assert _git(["status", "--porcelain"], repo) == ""
 
-    assert _git(repo, "log", "--format=%H", f"main..{branch}").split("\n") == [kept_commit]
-    assert _git(repo, "show", f"{branch}:{TUNING_FILE}") == str(KEPT_LATENCY)
+    assert _git(["log", "--format=%H", f"main..{branch}"], repo).split("\n") == [kept_commit]
+    assert _git(["show", f"{branch}:{TUNING_FILE}"], repo) == str(KEPT_LATENCY)
 
     worktree = Path(experiment_worktree_dir(repo))
-    assert DISCARD_MARKER not in _git(repo, "log", "--all", "-p")
+    assert DISCARD_MARKER not in _git(["log", "--all", "-p"], repo)
     assert not (worktree / DISCARDED_FILE).exists()
     assert (worktree / TUNING_FILE).read_text(encoding="utf-8").strip() == str(KEPT_LATENCY)
 
@@ -225,7 +216,7 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
     commit_project(repo, samples=SAMPLES, gate_file=gate_file)
 
     assert _run_cli(repo, "start", "--baseline", "main").returncode == 0
-    _tune_experiment(repo, KEPT_LATENCY)
+    tune_experiment(repo, KEPT_LATENCY)
 
     lock_path = lockfile_path(repo)
     first = subprocess.Popen(  # noqa: S603
@@ -258,7 +249,7 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
 
     assert second.returncode == 2, second.stderr
     assert first.returncode == 0, first_stderr or first_stdout
-    assert len(_pick(read_records(session_jsonl_path(repo)), IterationRecord)) == 1
+    assert len(_pick(log_records(repo), IterationRecord)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -277,19 +268,19 @@ def test_loop_when_restarted_after_a_finalize_without_worktree_does_open_fresh(
 
     worktree = experiment_worktree_dir(repo)
     (Path(worktree) / TUNING_FILE).write_text(f"{KEPT_LATENCY}\n", encoding="utf-8")
-    _git(worktree, "add", "-A")
-    _git(worktree, "commit", "-m", "tune latency to 90")
+    _git(["add", "-A"], worktree)
+    _git(["commit", "-m", "tune latency to 90"], worktree)
     append_record(session_jsonl_path(repo), iteration_record(seq=1))
     append_record(
         session_jsonl_path(repo),
-        committed_keep(1, commit=_git(worktree, "rev-parse", "HEAD")),
+        committed_keep(1, commit=head_of(worktree)),
     )
 
     # The directory goes before finalize does, so ``git worktree remove`` finds
     # nothing to take and git keeps its entry for the path.
     shutil.rmtree(worktree)
     finalize_session(repo)
-    closed_log = read_records(session_jsonl_path(repo))
+    closed_log = log_records(repo)
 
     restarted = start_session(repo, "main", resolved_config())
 

@@ -1,17 +1,20 @@
 """Session event vocabulary and the helpers that render and fan them out.
 
-A session emits a fixed set of twelve events to any number of
+A session emits a fixed set of eleven events to any number of
 :data:`SessionObserver` callbacks. Each event is a frozen pydantic model that
 inherits ``_EventModel`` — carrying a per-event ``Literal`` ``type``
 discriminator and ``at: int`` (nanoseconds since epoch) — together forming
 the :data:`SessionEvent` union.
 
 :func:`to_json_line` renders an event to a single compact JSON line with
-snake_case keys, leaving unset optional fields off — the shared wire form the
-event log and the stdio driver both write. :func:`summarize` and
+snake_case keys, leaving unset optional fields off — the wire form the event
+log writes. :func:`summarize` and
 :func:`summarize_input` produce the compact, single-line summaries carried on
 tool events.
 :func:`combine_observers` fans one event out to several observers in order.
+:func:`create_event_log_writer` returns the observer that appends each event to
+the event log in that wire form, and :func:`probe_event_log_path` checks the log
+is writable before a session starts.
 """
 
 import json
@@ -20,15 +23,16 @@ import os
 import re
 import warnings
 from collections.abc import Callable
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, TypeAdapter, ValidationError
 from pydantic.json_schema import SkipJsonSchema
 from pydantic_core import PydanticSerializationError
 
-from gymrat.config.types import Effort
-from gymrat.display_path import abbreviate_home
-from gymrat.observers import fan_out
+from gymrat.config import Effort
+from gymrat.errors import GymratError
+from gymrat.utils import abbreviate_home, fan_out
 
 # ---------------------------------------------------------------------------
 # Event vocabulary
@@ -41,7 +45,7 @@ SUMMARY_MAX_CHARS = 200
 ITERATE_TOOL = "mcp__gymrat__iterate"
 PROBE_TOOL = "mcp__gymrat__probe"
 
-# Input summary for an iterate call, shared with frame._is_iterate_tool's match
+# Input summary for an iterate call, shared with the dashboard frame's match
 # against a Bash-invoked `gymrat iterate`.
 ITERATE_SUMMARY = "gymrat iterate"
 
@@ -61,6 +65,11 @@ _OMIT_NONE = Field(exclude_if=_is_none)
 _OptStr = Annotated[str | SkipJsonSchema[None], _OMIT_NONE]
 _OptFloat = Annotated[FiniteFloat | SkipJsonSchema[None], _OMIT_NONE]
 _OptEffort = Annotated[Effort | SkipJsonSchema[None], _OMIT_NONE]
+
+# The creation timestamp every event carries.
+_At = Annotated[
+    int, Field(description="Nanoseconds since the Unix epoch when the event was created.")
+]
 
 # Description shared by every `parent_tool_use_id` field below.
 _PARENT_TOOL_USE_ID_DESCRIPTION = "Tool use ID of the enclosing tool call, if any."
@@ -84,7 +93,7 @@ class ThinkingUpdateEvent(_EventModel):
     type: Literal["thinking_update"] = Field(
         "thinking_update", description="Event type discriminator."
     )
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     estimated_tokens: int = Field(description="Cumulative estimated thinking tokens so far.")
     delta: int = Field(description="Token count change since the last thinking update.")
     parent_tool_use_id: _OptStr = Field(default=None, description=_PARENT_TOOL_USE_ID_DESCRIPTION)
@@ -94,7 +103,7 @@ class ToolStartEvent(_EventModel):
     """Emitted when the model invokes a tool."""
 
     type: Literal["tool_start"] = Field("tool_start", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     tool_use_id: str = Field(description="Unique identifier for this tool invocation.")
     tool_name: str = Field(description="Name of the tool being invoked.")
     input: object = Field(description="Raw input passed to the tool.")
@@ -102,20 +111,11 @@ class ToolStartEvent(_EventModel):
     parent_tool_use_id: _OptStr = Field(default=None, description=_PARENT_TOOL_USE_ID_DESCRIPTION)
 
 
-class ToolProgressEvent(_EventModel):
-    """Emitted periodically while a long-running tool call is still in flight."""
-
-    type: Literal["tool_progress"] = Field("tool_progress", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
-    tool_use_id: str = Field(description="Unique identifier of the in-flight tool invocation.")
-    elapsed_ms: int = Field(description="Milliseconds elapsed since the tool call started.")
-
-
 class ToolEndEvent(_EventModel):
     """Emitted when a tool call completes and its result is available."""
 
     type: Literal["tool_end"] = Field("tool_end", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     tool_use_id: str = Field(description="Unique identifier of the completed tool invocation.")
     tool_name: str = Field(description="Name of the tool that completed.")
     duration_ms: int = Field(description="Wall-clock milliseconds the tool call took.")
@@ -128,25 +128,17 @@ class TextDeltaEvent(_EventModel):
     """Emitted for each chunk of assistant text as it streams in."""
 
     type: Literal["text_delta"] = Field("text_delta", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     chunk: str = Field(description="Text chunk streamed from the assistant.")
     parent_tool_use_id: _OptStr = Field(default=None, description=_PARENT_TOOL_USE_ID_DESCRIPTION)
 
 
 class UsageUpdateEvent(_EventModel):
-    """Emitted when the driver observes updated cumulative cost.
-
-    ``settled`` marks a usage update carried by a result message that has
-    already settled the session on its own; a spend-cap observer must not
-    treat it as a live crossing of the cap, since the session is ending
-    regardless. Always written to the wire (``"settled": false`` on an
-    unsettled update).
-    """
+    """Emitted when the driver observes updated cumulative cost."""
 
     type: Literal["usage_update"] = Field("usage_update", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     cost_usd: FiniteFloat = Field(description="Cumulative session cost in US dollars.")
-    settled: bool = Field(default=False, description="Whether the session has already settled.")
 
 
 CapType = Literal["wall-clock", "spend-cap"]
@@ -160,7 +152,7 @@ class CapEvent(_EventModel):
     """Emitted when a supervision cap (wall-clock or spend) fires."""
 
     type: Literal["cap"] = Field("cap", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     cap: CapType = Field(description="Which supervision cap fired.")
     action: CapAction = Field(
         description=(
@@ -169,14 +161,16 @@ class CapEvent(_EventModel):
     )
 
 
+ModelPhase = Literal["thinking", "responding", "tool_input", "turn_end"]
+"""The processing phases a turn moves through."""
+
+
 class ModelPhaseEvent(_EventModel):
     """Emitted when the model transitions between processing phases within a turn."""
 
     type: Literal["model_phase"] = Field("model_phase", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
-    phase: Literal["thinking", "responding", "tool_input", "turn_end"] = Field(
-        description="Model processing phase the turn entered."
-    )
+    at: _At
+    phase: ModelPhase = Field(description="Model processing phase the turn entered.")
     tool_name: _OptStr = Field(default=None, description="Tool name when the phase is tool_input.")
     parent_tool_use_id: _OptStr = Field(default=None, description=_PARENT_TOOL_USE_ID_DESCRIPTION)
 
@@ -189,7 +183,7 @@ class LaunchEvent(_EventModel):
     """
 
     type: Literal["launch"] = Field("launch", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     schema_version: Literal[1] = Field(alias="schema", description="Supervisor log format version.")
     session_id: str = Field(description="Unique identifier for this session.")
 
@@ -209,7 +203,7 @@ class TurnEndEvent(_EventModel):
     """Emitted when the agent finishes a conversational turn."""
 
     type: Literal["turn_end"] = Field("turn_end", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     text: str = Field(description="Full text the agent produced in this turn.")
     cost_usd: FiniteFloat = Field(
         description="Cumulative session cost in US dollars when the turn ended."
@@ -228,7 +222,7 @@ class FollowUpEvent(_EventModel):
     """
 
     type: Literal["follow_up"] = Field("follow_up", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
     action: Literal["replied", "waiting", "ended"] = Field(
         description="Supervisor action taken after the turn."
     )
@@ -240,13 +234,12 @@ class CompactionEvent(_EventModel):
     """Emitted when the agent SDK reports a context compaction boundary."""
 
     type: Literal["compaction"] = Field("compaction", description="Event type discriminator.")
-    at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
+    at: _At
 
 
 SessionEvent = (
     ThinkingUpdateEvent
     | ToolStartEvent
-    | ToolProgressEvent
     | ToolEndEvent
     | TextDeltaEvent
     | UsageUpdateEvent
@@ -262,14 +255,10 @@ SessionEvent = (
 SessionObserver = Callable[[SessionEvent], None]
 """Receives :data:`SessionEvent`s as a session streams them."""
 
-_SessionEventAdapter: TypeAdapter[SessionEvent] = TypeAdapter(
+SESSION_EVENT_ADAPTER: TypeAdapter[SessionEvent] = TypeAdapter(
     Annotated[SessionEvent, Field(discriminator="type")]
 )
-
-
-def session_event_adapter() -> TypeAdapter[SessionEvent]:
-    """Expose the module-private ``TypeAdapter`` without making it public."""
-    return _SessionEventAdapter
+"""Validates a wire object into its :data:`SessionEvent` and renders the union's JSON Schema."""
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +345,7 @@ def event_from_wire(obj: object) -> SessionEvent | None:
     if obj.get("type") != "launch" and _SCHEMA_KEY in obj:
         return None
     try:
-        return session_event_adapter().validate_python(obj)
+        return SESSION_EVENT_ADAPTER.validate_python(obj)
     except ValidationError:
         return None
 
@@ -383,32 +372,89 @@ def _warn_observer_failure(error: Exception) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Event log
+# ---------------------------------------------------------------------------
+
+
+def probe_event_log_path(log_path: str | Path) -> None:
+    """Verify ``log_path`` is writable before a session starts.
+
+    Attempts to create the parent directory and open the file for appending.
+    Raises :class:`GymratError` naming the path when the filesystem rejects the
+    operation, so the command can fail up front rather than after the session.
+
+    Args:
+        log_path: The event log path to verify.
+
+    Raises:
+        GymratError: When the path or its parent directory is not writable.
+    """
+    path = Path(log_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8"):
+            pass
+    except OSError as error:
+        message = f"Event log path is not writable: {path}"
+        raise GymratError(message) from error
+
+
+def create_event_log_writer(log_path: str | Path) -> SessionObserver:
+    """Return a :data:`SessionObserver` that appends each event to ``log_path``.
+
+    Each event is one JSON line ending in a bare line feed on every platform,
+    as in the session log; Windows never gets a carriage return added. The
+    parent directory is created (recursively) on the first write if it does not
+    already exist. A write failure surfaces as a :class:`GymratError` naming the
+    log path, chaining the underlying OS error as its cause.
+
+    Args:
+        log_path: The event log path to append to.
+
+    Returns:
+        An observer callback that appends each event as a JSON line.
+    """
+    path = Path(log_path)
+
+    def write(event: SessionEvent) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8", newline="\n") as log:
+                log.write(to_json_line(event) + "\n")
+        except OSError as error:
+            message = f"Failed to write event log: {path}"
+            raise GymratError(message) from error
+
+    return write
+
+
+# ---------------------------------------------------------------------------
 # summarize
 # ---------------------------------------------------------------------------
 
 _WHITESPACE_RUN = re.compile(r"\s+")
 
 
-def summarize(text: str, max_chars: int = SUMMARY_MAX_CHARS) -> str:
+def summarize(text: str) -> str:
     """Produce a compact, single-line summary of ``text``.
 
     Whitespace runs collapse to single spaces and the ends are trimmed. When the
-    collapsed text fits within ``max_chars`` code points it is returned as-is;
-    otherwise it is cut on a code-point boundary and suffixed with a bare ``…``.
+    collapsed text fits within ``SUMMARY_MAX_CHARS`` code points it is returned
+    as-is; otherwise it is cut on a code-point boundary and suffixed with a bare
+    ``…``.
 
     Args:
         text: The text to collapse and possibly truncate.
-        max_chars: The code-point budget before truncation kicks in.
 
     Returns:
         The collapsed and possibly truncated single-line summary.
     """
     collapsed = _WHITESPACE_RUN.sub(" ", text).strip()
 
-    if len(collapsed) <= max_chars:
+    if len(collapsed) <= SUMMARY_MAX_CHARS:
         return collapsed
 
-    return f"{collapsed[:max_chars]}…"
+    return f"{collapsed[:SUMMARY_MAX_CHARS]}…"
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +502,6 @@ def _render_path(path: str, supervised_root: str | None) -> str:
 
 def summarize_input(
     value: object,
-    max_chars: int = SUMMARY_MAX_CHARS,
     *,
     tool_name: str | None = None,
     supervised_root: str | None = None,
@@ -472,7 +517,6 @@ def summarize_input(
 
     Args:
         value: The raw tool-call input to summarize.
-        max_chars: The code-point budget before truncation kicks in.
         tool_name: The tool identifier, used to pick a field-specific extractor.
         supervised_root: The root a file-path summary should render relative to.
 
@@ -482,13 +526,13 @@ def summarize_input(
     if isinstance(value, dict) and tool_name is not None:
         extracted = _extract_tool_summary(value, tool_name, supervised_root)
         if extracted is not None:
-            return summarize(extracted, max_chars)
+            return summarize(extracted)
 
     try:
         encoded = json.dumps(value, separators=_COMPACT_JSON_SEPARATORS)
     except (TypeError, ValueError):
-        return summarize(str(value), max_chars)
-    return summarize(encoded, max_chars)
+        return summarize(str(value))
+    return summarize(encoded)
 
 
 def _extract_tool_summary(

@@ -11,29 +11,28 @@ from typing import TYPE_CHECKING, Literal
 
 import pytest
 
-from gymrat.config.types import StopConfig
-from gymrat.eta import format_duration
+from gymrat.config import StopConfig
+from gymrat.utils import format_duration
 
 if TYPE_CHECKING:
     from gymrat.session.records import SessionLogRecord
+from gymrat.supervisor.end_scan import EndCondition, detect_end_condition
 from gymrat.supervisor.turns import (
     CONSECUTIVE_DISCARD_LIMIT,
     FOLLOW_UP_CEILING,
     NO_PROGRESS_LIMIT,
     Decision,
     End,
-    EndCondition,
     GuardState,
     Reply,
     WaitForLock,
-    detect_end_condition,
 )
-from tests.cli.supervise._fixtures import session_state
 from tests.session.records._fixtures import (
     command_record,
     finalize_record,
     hook_record,
     iteration_record,
+    session_state,
     stop_record,
 )
 from tests.supervisor._fixtures import default_benchless_config
@@ -433,10 +432,7 @@ def test_detect_end_condition_when_stop_condition_met_does_report_stop_condition
 
     result = detect_end_condition(config, records, state, cursor=cursor, check_stop=True)
 
-    assert result == (
-        EndCondition(ended_by="stop-condition", reason="max iterations (2 of 2)"),
-        2,
-    )
+    assert result == EndCondition(ended_by="stop-condition", reason="max iterations (2 of 2)")
 
 
 def test_detect_end_condition_when_state_is_met_but_records_are_not_does_use_state():
@@ -445,10 +441,16 @@ def test_detect_end_condition_when_state_is_met_but_records_are_not_does_use_sta
 
     result = detect_end_condition(config, [], state, cursor=0, check_stop=True)
 
-    assert result == (
-        EndCondition(ended_by="stop-condition", reason="max iterations (2 of 2)"),
-        0,
-    )
+    assert result == EndCondition(ended_by="stop-condition", reason="max iterations (2 of 2)")
+
+
+def test_detect_end_condition_when_target_reached_and_kept_does_report_stop_condition():
+    config = default_benchless_config(stop=StopConfig(target_value=1.5))
+    state = session_state(iteration_count=1, target_reached_and_kept=True)
+
+    result = detect_end_condition(config, [], state, cursor=0, check_stop=True)
+
+    assert result == EndCondition(ended_by="stop-condition", reason="target reached and kept")
 
 
 def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_nothing():
@@ -458,7 +460,7 @@ def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_not
 
     result = detect_end_condition(config, records, state, cursor=0, check_stop=False)
 
-    assert result == (None, 2)
+    assert result is None
 
 
 @pytest.mark.parametrize(
@@ -499,7 +501,7 @@ def test_detect_end_condition_when_hook_failed_after_cursor_does_report_hook_fai
         default_benchless_config(), records, session_state(), cursor=0, check_stop=True
     )
 
-    assert result == (EndCondition(ended_by="hook-failure", reason=reason), len(records))
+    assert result == EndCondition(ended_by="hook-failure", reason=reason)
 
 
 @pytest.mark.parametrize(
@@ -529,7 +531,7 @@ def test_detect_end_condition_when_no_failure_in_scan_and_no_stop_does_report_no
         default_benchless_config(), records, session_state(), cursor=cursor, check_stop=True
     )
 
-    assert result == (None, len(records))
+    assert result is None
 
 
 def test_detect_end_condition_when_hook_failed_and_stop_met_does_report_hook_failure():
@@ -542,10 +544,7 @@ def test_detect_end_condition_when_hook_failed_and_stop_met_does_report_hook_fai
 
     result = detect_end_condition(config, records, state, cursor=0, check_stop=True)
 
-    assert result == (
-        EndCondition(
-            ended_by="hook-failure",
-            reason="after hook failed on iteration 1: exit 2 (stdout 80 B, stderr 0 B)",
-        ),
-        2,
+    assert result == EndCondition(
+        ended_by="hook-failure",
+        reason="after hook failed on iteration 1: exit 2 (stdout 80 B, stderr 0 B)",
     )

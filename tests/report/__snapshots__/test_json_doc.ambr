@@ -2,7 +2,7 @@
 # name: test_render_json_document_when_rendered_does_match_its_golden[compare]
   list([
     '{',
-    '  "schema_version": 2,',
+    '  "schema_version": 1,',
     '  "baseline": "main",',
     '  "candidates": [',
     '    "perf/faster-decode"',

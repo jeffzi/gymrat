@@ -31,8 +31,10 @@ from gymrat.session.records import (
     SessionLogRecord,
 )
 from gymrat.session.schema import Outcome
-from gymrat.session.store import append_record, latest_baseline, read_records
+from gymrat.session.store import append_record, latest_baseline
 from tests._ansi import SGR_RE, strip_ansi
+from tests._exec_fixtures import expected_result
+from tests._git import head_of, run_git
 from tests._streams import FakeStream
 from tests.loop._settle import (
     CHECKS,
@@ -52,16 +54,9 @@ from tests.loop._settle import (
     confirmed_regression,
     edit_experiment,
     failed_checks,
-    gating_block,
-    git,
-    head_of,
     install_exec,
-    iteration,
     measured_rounds,
     metric,
-    not_improved_block,
-    nothing_measured_block,
-    nothing_to_commit_block,
     posix_only,
     settling_record_of,
     start_with,
@@ -70,14 +65,12 @@ from tests.loop._settle import (
     unimproved,
     unmeasured_regression,
 )
-from tests.session.records._fixtures import blocked_keep, committed_keep
-
-
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str]) -> str:
-    """A fresh scratch git repository for one settle test."""
-    return create_scratch_repo()
-
+from tests.session.records._fixtures import (
+    blocked_keep,
+    committed_keep,
+    iteration_record,
+    log_records,
+)
 
 # ---------------------------------------------------------------------------
 # keep_session preconditions and checks
@@ -100,7 +93,7 @@ async def test_keep_session_when_no_session_does_refuse_pointing_at_start(
 async def test_keep_session_when_checks_pass_does_run_them_in_experiment_under_timeout(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     recorder = checks_pass(monkeypatch)
 
@@ -114,7 +107,7 @@ async def test_keep_session_when_checks_pass_does_run_them_in_experiment_under_t
 async def test_keep_session_when_checks_pass_does_commit_tracked_and_untracked_changes(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
     worktree = experiment_worktree_dir(repo)
@@ -123,13 +116,13 @@ async def test_keep_session_when_checks_pass_does_commit_tracked_and_untracked_c
     await keep_session(repo, checks_config())
 
     assert status_of(worktree) == ""
-    assert git(["rev-parse", "HEAD~1"], worktree) == before
+    assert run_git(["rev-parse", "HEAD~1"], worktree) == before
 
 
 async def test_keep_session_when_checks_pass_does_append_committed_keep_with_commit_and_message(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
 
@@ -148,7 +141,7 @@ async def test_keep_session_when_checks_pass_does_append_committed_keep_with_com
 async def test_keep_session_when_checks_pass_does_advance_baseline_to_kept_commit_detached(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
 
@@ -156,13 +149,13 @@ async def test_keep_session_when_checks_pass_does_advance_baseline_to_kept_commi
 
     baseline = baseline_worktree_dir(repo)
     assert head_of(baseline) == result.record.commit
-    assert git(["rev-parse", "--abbrev-ref", "HEAD"], baseline) == "HEAD"
+    assert run_git(["rev-parse", "--abbrev-ref", "HEAD"], baseline) == "HEAD"
 
 
 async def test_keep_session_when_checks_pass_does_report_the_commit_it_made(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
 
@@ -174,13 +167,13 @@ async def test_keep_session_when_checks_pass_does_report_the_commit_it_made(
 async def test_keep_session_when_no_message_given_does_generate_one_naming_iteration_and_delta(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
 
     result = await keep_session(repo, checks_config())
 
-    subject = git(["log", "-1", "--format=%s"], experiment_worktree_dir(repo))
+    subject = run_git(["log", "-1", "--format=%s"], experiment_worktree_dir(repo))
     assert "iteration 1" in (result.record.message or "")
     assert "-7.2" in (result.record.message or "")
     assert subject == result.record.message
@@ -195,7 +188,7 @@ async def test_keep_session_when_primary_delta_undefined_does_generate_message_t
 
     result = await keep_session(repo, checks_config(), KeepOptions(allow_unimproved=True))
 
-    subject = git(["log", "-1", "--format=%s"], experiment_worktree_dir(repo))
+    subject = run_git(["log", "-1", "--format=%s"], experiment_worktree_dir(repo))
     assert result.record.message == "iteration 1: geomean delta undefined"
     assert subject == result.record.message
 
@@ -203,7 +196,7 @@ async def test_keep_session_when_primary_delta_undefined_does_generate_message_t
 async def test_keep_session_when_no_checks_configured_does_keep_and_record_gate_off(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     recorder = install_exec(monkeypatch, UNUSED_EXEC)
 
@@ -222,7 +215,7 @@ async def test_keep_session_when_no_checks_configured_does_keep_and_record_gate_
 async def test_keep_session_when_checks_fail_does_append_blocked_keep(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_fail(monkeypatch)
 
@@ -238,7 +231,7 @@ async def test_keep_session_when_checks_fail_does_append_blocked_keep(
 async def test_keep_session_when_checks_fail_does_report_both_streams(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_fail(monkeypatch)
 
@@ -251,7 +244,7 @@ async def test_keep_session_when_checks_fail_does_report_both_streams(
 async def test_keep_session_when_checks_fail_does_leave_experiment_uncommitted(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_fail(monkeypatch)
     worktree = experiment_worktree_dir(repo)
@@ -266,7 +259,7 @@ async def test_keep_session_when_checks_fail_does_leave_experiment_uncommitted(
 async def test_keep_session_when_checks_time_out_does_block_like_a_failure(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     install_exec(
         monkeypatch,
@@ -289,18 +282,9 @@ async def test_keep_session_when_checks_time_out_does_block_like_a_failure(
 async def test_keep_session_when_output_over_relay_budget_does_cut_report_but_record_true_counts(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
-    install_exec(
-        monkeypatch,
-        ExecResult(
-            stdout=LONG_STDOUT,
-            stderr=LONG_STDERR,
-            exit_code=1,
-            stdout_bytes=len(LONG_STDOUT.encode()),
-            stderr_bytes=len(LONG_STDERR.encode()),
-        ),
-    )
+    install_exec(monkeypatch, expected_result(LONG_STDOUT, LONG_STDERR, exit_code=1))
 
     result = await keep_session(repo, checks_config())
 
@@ -319,7 +303,7 @@ async def test_keep_session_when_output_exceeded_exec_cap_does_record_pre_cap_by
 ):
     pre_cap_stdout_bytes = 200_000
     pre_cap_stderr_bytes = 150_000
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     install_exec(
         monkeypatch,
@@ -356,7 +340,10 @@ async def test_keep_session_when_gating_regression_confirmed_does_block_before_c
 
     assert recorder.calls == []
     assert status_of(experiment_worktree_dir(repo)) != ""
-    assert_settling_record(result.record, gating_block(1))
+    assert_settling_record(
+        result.record,
+        blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+    )
 
 
 async def test_keep_session_when_gating_regression_confirmed_does_not_claim_unmeasured(
@@ -378,8 +365,8 @@ async def test_keep_session_when_log_predates_absent_field_does_block_on_confirm
     start_with(
         repo,
         (
-            iteration(
-                1,
+            iteration_record(
+                seq=1,
                 metrics={"total_ms": metric(delta_pct=9.4, verdict="regressed", confirmed=True)},
                 primary=IterationPrimary(kind="geomean", delta_pct=9.4),
                 outcome="regressed",
@@ -403,8 +390,8 @@ async def test_keep_session_when_rerun_did_not_confirm_regression_does_keep(
     start_with(
         repo,
         (
-            iteration(
-                1,
+            iteration_record(
+                seq=1,
                 metrics={"total_ms": metric(delta_pct=9.4, verdict="regressed")},
                 outcome="no-signal",
             ),
@@ -424,8 +411,8 @@ async def test_keep_session_when_gating_exact_metric_regressed_does_block_though
     start_with(
         repo,
         (
-            iteration(
-                1,
+            iteration_record(
+                seq=1,
                 metrics={"total_ms": metric(delta_pct=9.4, verdict="regressed", method="exact")},
                 primary=IterationPrimary(kind="geomean", delta_pct=9.4),
                 outcome="regressed",
@@ -438,7 +425,10 @@ async def test_keep_session_when_gating_exact_metric_regressed_does_block_though
     result = await keep_session(repo, checks_config())
 
     assert recorder.calls == []
-    assert_settling_record(result.record, gating_block(1))
+    assert_settling_record(
+        result.record,
+        blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+    )
 
 
 async def test_keep_session_when_rerun_never_measured_regression_does_block_before_checks(
@@ -451,7 +441,10 @@ async def test_keep_session_when_rerun_never_measured_regression_does_block_befo
     result = await keep_session(repo, checks_config())
 
     assert recorder.calls == []
-    assert_settling_record(result.record, gating_block(1))
+    assert_settling_record(
+        result.record,
+        blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+    )
 
 
 async def test_keep_session_when_rerun_never_measured_regression_does_name_metric_and_filter(
@@ -488,8 +481,8 @@ async def test_keep_session_when_rerun_measured_regression_away_does_keep(
     start_with(
         repo,
         (
-            iteration(
-                1,
+            iteration_record(
+                seq=1,
                 metrics={"total_ms": metric(delta_pct=9.4, verdict="no-signal")},
                 outcome="no-signal",
                 confirm=confirm,
@@ -529,7 +522,9 @@ async def test_keep_session_when_outcome_not_improved_does_block_before_checks(
     result = await keep_session(repo, checks_config())
 
     assert recorder.calls == []
-    assert_settling_record(result.record, not_improved_block(1))
+    assert_settling_record(
+        result.record, blocked_keep(1, reason="not-improved", checks=KeepChecks(configured=True))
+    )
     assert settling_record_of(repo) == result.record
     assert head_of(worktree) == experiment_before
     assert status_of(worktree) != ""
@@ -543,7 +538,7 @@ async def test_keep_session_when_outcome_not_improved_does_block_before_checks(
     [
         pytest.param(unimproved(1, "no-signal"), id="no-signal"),
         pytest.param(unimproved(1, "regressed"), id="regressed"),
-        pytest.param(iteration(1), id="improved"),
+        pytest.param(iteration_record(seq=1), id="improved"),
     ],
 )
 async def test_keep_session_when_allow_unimproved_does_run_checks_and_commit(
@@ -574,7 +569,7 @@ async def test_keep_session_when_override_follows_a_not_improved_refusal_does_co
 
     result = await keep_session(repo, checks_config(), KeepOptions(allow_unimproved=True))
 
-    keeps = [record for record in read_records(session_jsonl_path(repo)) if record.type == "keep"]
+    keeps = [record for record in log_records(repo) if record.type == "keep"]
     assert [(record.status, record.reason) for record in keeps] == [
         ("blocked", "not-improved"),
         ("committed", None),
@@ -591,7 +586,7 @@ async def test_keep_session_when_override_follows_a_not_improved_refusal_does_co
 async def test_keep_session_when_baseline_cannot_advance_does_write_no_keep_record(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
     # Sabotage the baseline so git commands inside it fail: overwrite the .git
@@ -611,7 +606,7 @@ async def test_keep_session_when_baseline_cannot_advance_does_write_no_keep_reco
 async def test_keep_session_when_commit_landed_but_advance_failed_does_recover_on_retry(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
     worktree = experiment_worktree_dir(repo)
@@ -639,7 +634,7 @@ async def test_keep_session_when_commit_landed_but_advance_failed_does_recover_o
 async def test_keep_session_when_clean_and_ahead_does_keep_standing_commit_on_passing_checks(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     committed = commit_experiment_directly(repo)
     recorder = checks_pass(monkeypatch)
@@ -658,7 +653,7 @@ async def test_keep_session_when_clean_and_ahead_does_keep_standing_commit_on_pa
 async def test_keep_session_when_clean_and_ahead_does_refuse_standing_commit_on_failing_checks(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     commit_experiment_directly(repo)
     checks_fail(monkeypatch)
@@ -679,7 +674,7 @@ async def test_keep_session_when_clean_and_ahead_does_refuse_standing_commit_on_
 async def test_keep_session_when_clean_and_ahead_and_no_checks_does_keep_standing_commit_unchecked(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     committed = commit_experiment_directly(repo)
     recorder = install_exec(monkeypatch, UNUSED_EXEC)
@@ -696,34 +691,42 @@ async def test_keep_session_when_head_matches_baseline_does_append_nothing_to_co
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     # The iteration measured something but the agent made no changes.
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     recorder = checks_pass(monkeypatch)
 
     result = await keep_session(repo, checks_config())
 
     assert recorder.calls == []
-    assert_settling_record(result.record, nothing_to_commit_block(1))
+    assert_settling_record(
+        result.record,
+        blocked_keep(1, reason="nothing-to-commit", checks=KeepChecks(configured=True)),
+    )
 
 
 async def test_keep_session_when_nothing_new_after_prior_keep_does_append_nothing_to_commit(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
     await keep_session(repo, checks_config())
-    append_record(session_jsonl_path(repo), iteration(2))
+    append_record(session_jsonl_path(repo), iteration_record(seq=2))
 
     result = await keep_session(repo, checks_config())
 
-    assert_settling_record(result.record, nothing_to_commit_block(2))
+    assert_settling_record(
+        result.record,
+        blocked_keep(2, reason="nothing-to-commit", checks=KeepChecks(configured=True)),
+    )
 
 
 @pytest.mark.parametrize(
     ("history", "seq"),
     [
         pytest.param((), 1, id="no-iteration-ever-recorded"),
-        pytest.param((iteration(1), committed_keep(1)), 2, id="last-iteration-already-kept"),
+        pytest.param(
+            (iteration_record(seq=1), committed_keep(1)), 2, id="last-iteration-already-kept"
+        ),
     ],
 )
 async def test_keep_session_when_nothing_measured_does_refuse_with_nothing_measured_keep(
@@ -736,7 +739,10 @@ async def test_keep_session_when_nothing_measured_does_refuse_with_nothing_measu
     result = await keep_session(repo, checks_config())
 
     assert recorder.calls == []
-    assert_settling_record(result.record, nothing_measured_block(seq))
+    assert_settling_record(
+        result.record,
+        blocked_keep(seq, reason="nothing-measured", checks=KeepChecks(configured=True)),
+    )
 
 
 async def test_keep_session_when_second_refusal_does_number_past_the_first(
@@ -751,7 +757,7 @@ async def test_keep_session_when_second_refusal_does_number_past_the_first(
 
     # A consumer walking the raw log sees two distinct records, not one number
     # written twice.
-    keeps = [record for record in read_records(session_jsonl_path(repo)) if record.type == "keep"]
+    keeps = [record for record in log_records(repo) if record.type == "keep"]
     assert [record.seq for record in keeps] == [1, 2]
     assert result.record.seq == 2
 
@@ -774,12 +780,12 @@ def _nothing_measured(repo: str) -> None:
 
 def _nothing_to_commit(repo: str) -> None:
     """A measured iteration the agent left the experiment untouched under."""
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
 
 
 def _edited_after_iteration(repo: str) -> None:
     """The ordinary keep shape: one measured iteration and an edit to commit."""
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
 
 
@@ -870,12 +876,7 @@ async def test_keep_session_when_checks_output_holds_markup_metacharacters_does_
 ):
     _edited_after_iteration(repo)
     noisy = "FAIL [i] parse_config"
-    install_exec(
-        monkeypatch,
-        ExecResult(
-            stdout=noisy, stderr="", exit_code=1, stdout_bytes=len(noisy.encode()), stderr_bytes=0
-        ),
-    )
+    install_exec(monkeypatch, expected_result(noisy, exit_code=1))
 
     result = await keep_session(repo, checks_config(), color=True)
 
@@ -957,7 +958,7 @@ async def test_keep_session_when_committed_does_append_the_kept_samples_as_a_bas
 
     await keep_session(repo, checks_config())
 
-    records = read_records(session_jsonl_path(repo))
+    records = log_records(repo)
     baseline = records[-1]
     assert [record.type for record in records[-2:]] == ["keep", "baseline"]
     assert isinstance(baseline, BaselineRecord)
@@ -989,4 +990,4 @@ async def test_keep_session_when_refusing_does_append_no_baseline(
     result = await keep_session(repo, checks_config())
 
     assert result.record.status == "blocked"
-    assert latest_baseline(read_records(session_jsonl_path(repo))) is None
+    assert latest_baseline(log_records(repo)) is None

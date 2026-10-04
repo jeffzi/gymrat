@@ -34,11 +34,10 @@ from gymrat.cli.supervise.types import (
     FinishedTool,
     InFlight,
     NestedPhase,
-    NestedTool,
     Responding,
+    RunningTool,
     Starting,
     Thinking,
-    TrackedTool,
     Waiting,
 )
 from gymrat.supervisor.events import (
@@ -50,11 +49,11 @@ from gymrat.supervisor.events import (
     TextDeltaEvent,
     ThinkingUpdateEvent,
     ToolEndEvent,
-    ToolProgressEvent,
     ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
 )
+from gymrat.utils import NS_PER_MS
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import (
@@ -62,20 +61,16 @@ if TYPE_CHECKING:
         NestedActivity,
         ReadSessionResult,
     )
-    from gymrat.config.types import Effort
+    from gymrat.config import Effort
     from gymrat.supervisor.events import SessionEvent
     from gymrat.supervisor.exit_sequence import ExitPhase
 
-_NS_PER_MS = 1_000_000
-
 _MAX_FINISHED_TOOLS = 3
-
-_FOLLOW_UP_LABELS: dict[str, str] = {"replied": "replied", "waiting": "waiting for gymrat"}
 
 
 def _ms(at_ns: int) -> int:
     """Convert an event's nanosecond timestamp to whole milliseconds."""
-    return at_ns // _NS_PER_MS
+    return at_ns // NS_PER_MS
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -90,7 +85,6 @@ class ReporterState:
         max_minutes: The run's wall-clock cap, in minutes.
         max_usd: The run's cost cap in USD, or ``None`` when uncapped.
         max_iterations: The run's iteration cap, or ``None`` when uncapped.
-        label: The run's display label.
         session_id: The supervised session's id.
         branch: The git branch the run is on.
         model: The model name the run is configured to use, or ``None`` when
@@ -98,7 +92,7 @@ class ReporterState:
         effort: The configured reasoning effort, or ``None`` when unset.
         log_path: Path to the session log file.
         in_flight_tools: Top-level tools seen started but not yet ended, as
-            ``(tool_use_id, TrackedTool)`` pairs.
+            ``(tool_use_id, RunningTool)`` pairs.
         finished_tools: The last :data:`_MAX_FINISHED_TOOLS` top-level tools
             that have ended, oldest first.
         launch_timestamp: Milliseconds timestamp of the launch event, or
@@ -126,14 +120,13 @@ class ReporterState:
     max_minutes: float
     max_usd: float | None = None
     max_iterations: int | None = None
-    label: str = ""
     session_id: str = ""
     branch: str = ""
     model: str | None = None
     effort: Effort | None = None
     log_path: str = ""
 
-    in_flight_tools: tuple[tuple[str, TrackedTool], ...] = ()
+    in_flight_tools: tuple[tuple[str, RunningTool], ...] = ()
     finished_tools: tuple[FinishedTool, ...] = ()
     launch_timestamp: int | None = None
     cost_usd: float | None = None
@@ -188,12 +181,10 @@ def wants_session_refresh(state: ReporterState, event: SessionEvent) -> bool:
         session.
     """
     match event:
-        case LaunchEvent():
+        case LaunchEvent() | ToolEndEvent():
             return True
         case FollowUpEvent(action="ended"):
             return isinstance(state.liveness, Exiting)
-        case ToolEndEvent():
-            return True
         case _:
             return False
 
@@ -204,19 +195,13 @@ def wants_session_refresh(state: ReporterState, event: SessionEvent) -> bool:
 
 
 def _waiting_from_last_tool(finished: tuple[FinishedTool, ...], timestamp: int) -> Waiting:
-    last = finished[-1] if finished else None
-    return Waiting(
-        since=timestamp,
-        tool_name=last.tool_name if last is not None else None,
-        tool_ended_at=last.ended_at if last is not None else None,
-        result=last.result if last is not None else None,
-    )
+    return Waiting(since=timestamp, last_tool=finished[-1] if finished else None)
 
 
 def _next_liveness_after_tool_end(
     liveness: Liveness,
-    remaining: tuple[tuple[str, TrackedTool], ...],
-    event: ToolEndEvent,
+    remaining: tuple[tuple[str, RunningTool], ...],
+    ended: FinishedTool,
 ) -> Capped | InFlight | Waiting:
     if isinstance(liveness, Capped):
         return liveness
@@ -225,16 +210,10 @@ def _next_liveness_after_tool_end(
         return InFlight(
             tool_use_id=tool_id,
             tool_name=tracked.tool_name,
-            since=tracked.started_at,
+            since=tracked.since,
             input_summary=tracked.input_summary,
         )
-    ended_at_ms = _ms(event.at)
-    return Waiting(
-        since=ended_at_ms,
-        tool_name=event.tool_name,
-        tool_ended_at=ended_at_ms,
-        result=event.result,
-    )
+    return Waiting(since=ended.ended_at, last_tool=ended)
 
 
 def _phase_liveness(state: ReporterState, event: ModelPhaseEvent, at_ms: int) -> Liveness:
@@ -267,7 +246,7 @@ def _tool_start(state: ReporterState, event: ToolStartEvent) -> ReporterState:
         nested = _set(
             state.nested,
             parent_id,
-            NestedTool(tool_name=event.tool_name, input_summary=event.input_summary, since=at_ms),
+            RunningTool(tool_name=event.tool_name, input_summary=event.input_summary, since=at_ms),
         )
         return replace(
             state,
@@ -278,7 +257,7 @@ def _tool_start(state: ReporterState, event: ToolStartEvent) -> ReporterState:
     in_flight = _set(
         state.in_flight_tools,
         event.tool_use_id,
-        TrackedTool(tool_name=event.tool_name, started_at=at_ms, input_summary=event.input_summary),
+        RunningTool(tool_name=event.tool_name, input_summary=event.input_summary, since=at_ms),
     )
     liveness = state.liveness
     if not isinstance(liveness, Capped):
@@ -296,7 +275,7 @@ def _nested_tool_end(state: ReporterState, event: ToolEndEvent) -> ReporterState
     if parent_id is None:
         return state
     nested = state.nested
-    if isinstance(pair_value(nested, parent_id), NestedTool):
+    if isinstance(pair_value(nested, parent_id), RunningTool):
         nested = _drop(nested, parent_id)
     return replace(
         state, nested=nested, nested_tool_ids=_drop(state.nested_tool_ids, event.tool_use_id)
@@ -320,12 +299,9 @@ def _resolve_session_result(
 def _apply_session_refresh(
     state: ReporterState,
     ended: ReporterState,
-    event: ToolEndEvent,
     session_result: ReadSessionResult | None,
 ) -> ReporterState:
-    """Fold a fresh session read into *ended* when the event warrants it."""
-    if not wants_session_refresh(state, event):
-        return ended
+    """Fold the session read every tool end asks for into *ended*."""
     resolved = _resolve_session_result(state, session_result)
     return replace(
         ended,
@@ -339,23 +315,20 @@ def _tool_end(
 ) -> ReporterState:
     if event.parent_tool_use_id is not None:
         ended = _nested_tool_end(state, event)
-        return _apply_session_refresh(state, ended, event, session_result)
+        return _apply_session_refresh(state, ended, session_result)
 
     tracked = pair_value(state.in_flight_tools, event.tool_use_id)
     in_flight = _drop(state.in_flight_tools, event.tool_use_id)
-    finished = (
-        *state.finished_tools,
-        FinishedTool(
-            tool_name=tracked.tool_name if tracked is not None else event.tool_name,
-            input_summary=tracked.input_summary if tracked is not None else "",
-            duration_ms=event.duration_ms,
-            result=event.result,
-            ended_at=_ms(event.at),
-        ),
+    finished = FinishedTool(
+        tool_name=tracked.tool_name if tracked is not None else event.tool_name,
+        input_summary=tracked.input_summary if tracked is not None else "",
+        duration_ms=event.duration_ms,
+        result=event.result,
+        ended_at=_ms(event.at),
     )
     liveness = state.liveness
     if tracked is not None:
-        liveness = _next_liveness_after_tool_end(state.liveness, in_flight, event)
+        liveness = _next_liveness_after_tool_end(state.liveness, in_flight, finished)
 
     ended = replace(
         state,
@@ -364,10 +337,10 @@ def _tool_end(
         nested_tool_ids=tuple(
             (name, parent) for name, parent in state.nested_tool_ids if parent != event.tool_use_id
         ),
-        finished_tools=finished[-_MAX_FINISHED_TOOLS:],
+        finished_tools=(*state.finished_tools, finished)[-_MAX_FINISHED_TOOLS:],
         liveness=liveness,
     )
-    return _apply_session_refresh(state, ended, event, session_result)
+    return _apply_session_refresh(state, ended, session_result)
 
 
 def _thinking_update(state: ReporterState, event: ThinkingUpdateEvent) -> ReporterState:
@@ -386,7 +359,7 @@ def _nested_model_phase(
         return state
     if event.phase == "turn_end":
         return replace(state, nested=_drop(state.nested, parent_id))
-    if isinstance(pair_value(state.nested, parent_id), NestedTool):
+    if isinstance(pair_value(state.nested, parent_id), RunningTool):
         return state
     tool_name = event.tool_name if event.phase == "tool_input" else None
     phase = NestedPhase(phase=event.phase, since=at_ms, tool_name=tool_name)
@@ -419,8 +392,10 @@ def _follow_up_decision(state: ReporterState, event: FollowUpEvent) -> str:
         return f"exit · {event.reason}" if event.reason else "exit"
     if event.action == "ended":
         label = f"ended {event.reason}" if event.reason else "ended"
+    elif event.action == "replied":
+        label = "replied"
     else:
-        label = _FOLLOW_UP_LABELS.get(event.action, event.action)
+        label = "waiting for gymrat"
     return f"turn {state.turn_count} ended · {label}"
 
 
@@ -471,7 +446,7 @@ def advance(  # noqa: C901 -- flat match over the event union
             advanced = _tool_start(state, event)
         case ToolEndEvent():
             advanced = _tool_end(state, event, session)
-        case ToolProgressEvent() | TextDeltaEvent():
+        case TextDeltaEvent():
             advanced = state
         case ThinkingUpdateEvent():
             advanced = _thinking_update(state, event)

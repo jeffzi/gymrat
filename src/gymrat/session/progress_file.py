@@ -6,29 +6,23 @@ write.  Staleness detection lets readers discard orphaned files left by a
 crashed iteration.
 """
 
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import ConfigDict, TypeAdapter, ValidationError, with_config
+from pydantic import BaseModel, ConfigDict
 
-from gymrat.atomic_write import write_text_atomic
-from gymrat.progress_events import (
-    PassFinished,
-    PassStarted,
-    ProgressCallback,
-    ProgressEvent,
-)
+from gymrat import clock as _clock
+from gymrat.progress_events import PassFinished, PassStarted, ProgressEvent
 from gymrat.session.paths import progress_path
+from gymrat.session.sidecar import read_sidecar
+from gymrat.utils import MS_PER_SECOND, write_text_atomic
 
 #: A reader discards files whose mtime is older than this many seconds.
 #: 600 s (10 min) is well above the longest single benchmark pass.
 STALENESS_BOUND_SECONDS: int = 600
 
 
-@with_config(ConfigDict(strict=True, extra="forbid"))
-@dataclass(frozen=True, slots=True)
-class ProgressSnapshot:
+class ProgressSnapshot(BaseModel):
     """Point-in-time progress state serialized to the sidecar.
 
     The dashboard computes ETAs from ``passes_completed`` / ``passes_total``
@@ -43,12 +37,11 @@ class ProgressSnapshot:
             pass, in milliseconds.
     """
 
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
     passes_completed: int
     passes_total: int
     last_pass_duration_ms: float
-
-
-_SNAPSHOT_ADAPTER: TypeAdapter[ProgressSnapshot] = TypeAdapter(ProgressSnapshot)
 
 
 def write_progress(root: str, snapshot: ProgressSnapshot) -> None:
@@ -61,8 +54,7 @@ def write_progress(root: str, snapshot: ProgressSnapshot) -> None:
         root: Repository root under which the progress sidecar lives.
         snapshot: The progress state to write.
     """
-    text = _SNAPSHOT_ADAPTER.dump_json(snapshot).decode("utf-8")
-    write_text_atomic(Path(progress_path(root)), text)
+    write_text_atomic(Path(progress_path(root)), snapshot.model_dump_json())
 
 
 def read_progress(root: str) -> ProgressSnapshot | None:
@@ -83,13 +75,11 @@ def read_progress(root: str) -> ProgressSnapshot | None:
     except OSError:
         return None
 
-    if time.time() - stat.st_mtime > STALENESS_BOUND_SECONDS:
+    age_ms = _clock.now_ms() - stat.st_mtime * MS_PER_SECOND
+    if age_ms > STALENESS_BOUND_SECONDS * MS_PER_SECOND:
         return None
 
-    try:
-        return _SNAPSHOT_ADAPTER.validate_json(path.read_text(encoding="utf-8"))
-    except (ValidationError, OSError, UnicodeDecodeError):
-        return None
+    return read_sidecar(path, ProgressSnapshot)
 
 
 def clear_progress(root: str) -> None:
@@ -98,11 +88,13 @@ def clear_progress(root: str) -> None:
 
 
 @dataclass(slots=True)
-class _SidecarWriter:
-    """Pass-event state accumulator that writes a sidecar snapshot per pass event.
+class SidecarWriter:
+    """A progress callback that writes a sidecar snapshot on each pass event.
 
-    A phase change resets ``passes_completed`` so each phase's progress is
-    counted from zero.
+    It accumulates state from ``PassStarted`` and ``PassFinished`` events and
+    writes a ``ProgressSnapshot`` under ``root`` on each; other event types are
+    ignored, with no write. A phase change resets ``passes_completed`` so each
+    phase's progress is counted from zero.
     """
 
     root: str
@@ -112,6 +104,11 @@ class _SidecarWriter:
     current_phase: str = ""
 
     def __call__(self, event: ProgressEvent) -> None:
+        """Fold ``event`` into the pass state and write a snapshot for a pass event.
+
+        Args:
+            event: The progress event the sampling engine emitted.
+        """
         if isinstance(event, PassStarted):
             self._enter_phase(event.phase)
             self.last_start_ms = event.at_ms
@@ -135,20 +132,3 @@ class _SidecarWriter:
         if phase != self.current_phase:
             self.passes_completed = 0
             self.current_phase = phase
-
-
-def create_sidecar_writer(root: str) -> ProgressCallback:
-    """Return a callback that writes sidecar snapshots on pass events.
-
-    The callback tracks accumulated state from ``PassStarted`` and
-    ``PassFinished`` events and writes a ``ProgressSnapshot`` on each.
-    Other event types are silently ignored (no write).
-
-    Args:
-        root: Repository root under which the progress sidecar is written.
-
-    Returns:
-        A callback that accumulates pass state and writes a snapshot on each
-        ``PassStarted`` or ``PassFinished`` event.
-    """
-    return _SidecarWriter(root)

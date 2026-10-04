@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from gymrat.supervisor.driver import usable_cost
+from gymrat.supervisor.claude import usable_cost
 
 
 @pytest.mark.parametrize(

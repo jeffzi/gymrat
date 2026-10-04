@@ -22,13 +22,12 @@ directly and run everywhere.
 
 from __future__ import annotations
 
-import io
 import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
 
 if sys.platform != "win32":
     import pty
@@ -36,7 +35,8 @@ if sys.platform != "win32":
 import pytest
 
 from gymrat.cli.console import resolve_stream_color, set_color_override, stderr_console
-from gymrat.cli.shared import format_cli_error, resolve_render_mode
+from gymrat.cli.exit import format_cli_error
+from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.doctor import (
     Check,
     CheckSection,
@@ -44,17 +44,17 @@ from gymrat.doctor import (
     create_doctor_report,
     render_doctor_report,
 )
-from tests._git import git as _git
+from tests._git import EMIT_ONE_BENCH
+from tests._git import run_git as _git
+from tests._git import write_committed_bench as _write_committed_bench
+from tests._streams import FakeStream
 from tests.hardening._bench_helpers import drain as _drain
-from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 from tests._ansi import strip_ansi
 from tests._cli import ENTRY as _ENTRY
-
-_METRIC_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
 
 # A bench that records the ``NO_COLOR`` its own environment carries. The parent
 # starts with ``NO_COLOR`` unset, so a leak would show up here as ``[1]``.
@@ -124,7 +124,7 @@ def test_measure_report_when_stdout_is_a_real_tty_does_render_styled(
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, _METRIC_BENCH)
+    _write_committed_bench(repo, EMIT_ONE_BENCH)
 
     output = _run_report_on_pty(["measure", "--bench", "sh bench.sh", "--samples", "1"], repo)
 
@@ -137,9 +137,9 @@ def test_compare_report_when_stdout_is_a_real_tty_does_render_styled(
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, _METRIC_BENCH)
-    _git(repo, "switch", "-c", "candidate")
-    _git(repo, "switch", "main")
+    _write_committed_bench(repo, EMIT_ONE_BENCH)
+    _git(["switch", "-c", "candidate"], repo)
+    _git(["switch", "main"], repo)
 
     output = _run_report_on_pty(
         ["compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
@@ -155,7 +155,7 @@ def test_measure_report_when_stdout_is_redirected_does_render_plain(
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, _METRIC_BENCH)
+    _write_committed_bench(repo, EMIT_ONE_BENCH)
 
     result = subprocess.run(  # noqa: S603
         [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "1"],
@@ -205,18 +205,6 @@ def test_measure_when_no_color_flag_does_not_leak_no_color_into_the_bench_env(
 # ---------------------------------------------------------------------------
 
 
-class _FakeStream(io.StringIO):
-    """A stdout/stderr stand-in whose TTY status the test controls."""
-
-    def __init__(self, *, tty: bool):
-        super().__init__()
-        self._tty = tty
-
-    @override
-    def isatty(self) -> bool:
-        return self._tty
-
-
 def _report_is_colored() -> bool:
     """Whether the report surface would emit color for the ambient environment.
 
@@ -226,7 +214,7 @@ def _report_is_colored() -> bool:
     shared helper (rather than ``render_lines``' own capture-console logic) means
     a change to the report surface's precedence fails this test.
     """
-    return resolve_stream_color(None, _FakeStream(tty=True))
+    return resolve_stream_color(None, FakeStream(tty=True))
 
 
 def _doctor_report_is_colored() -> bool:
@@ -241,7 +229,7 @@ def _doctor_report_is_colored() -> bool:
     report = create_doctor_report(
         env, [CheckSection(title="T", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
     )
-    color = resolve_stream_color(None, _FakeStream(tty=True))
+    color = resolve_stream_color(None, FakeStream(tty=True))
     return "\x1b[" in render_doctor_report(report, color=color)
 
 
@@ -292,7 +280,7 @@ def test_color_precedence_when_env_decides_does_agree_across_report_progress_and
     no_color: str | None,
     expected: bool,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
     # Pin TERM so the console factory's own terminal detection is capable of
     # color, leaving FORCE_COLOR/NO_COLOR as the only deciders under test.
     monkeypatch.setenv("TERM", "xterm-256color")
@@ -311,7 +299,7 @@ def test_color_precedence_when_env_decides_does_agree_across_report_progress_and
 def test_error_surface_when_force_color_is_falsy_off_a_tty_does_render_plain(
     monkeypatch: pytest.MonkeyPatch, force_color: str
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
     _apply_color_env(monkeypatch, force_color, None)
 
     assert "\x1b[" not in format_cli_error(ValueError("boom"))
@@ -320,7 +308,7 @@ def test_error_surface_when_force_color_is_falsy_off_a_tty_does_render_plain(
 def test_error_surface_when_force_color_is_truthy_off_a_tty_does_render_colored(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
     _apply_color_env(monkeypatch, "1", None)
 
     assert "\x1b[" in format_cli_error(ValueError("boom"))
@@ -329,7 +317,7 @@ def test_error_surface_when_force_color_is_truthy_off_a_tty_does_render_colored(
 def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
     _apply_color_env(monkeypatch, "1", None)
 
     assert resolve_render_mode() == "plain"
@@ -343,7 +331,7 @@ def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
 def test_error_surface_when_stderr_color_override_false_on_tty_does_strip_sgr(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
     monkeypatch.setenv("TERM", "xterm-256color")
     _apply_color_env(monkeypatch, None, None)
 
@@ -357,7 +345,7 @@ def test_error_surface_when_stderr_color_override_false_on_tty_does_strip_sgr(
 def test_progress_surface_when_colorless_does_strip_all_sgr_including_bold(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
     monkeypatch.setenv("TERM", "xterm-256color")
     _apply_color_env(monkeypatch, None, "1")
 

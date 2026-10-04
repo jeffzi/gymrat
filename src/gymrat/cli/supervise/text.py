@@ -9,11 +9,10 @@ from ever disagreeing about what the summary says.  Segments carry a style
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
-from gymrat.model import Effect
-from gymrat.report.format import format_delta
+from gymrat.report.format import format_percent_delta
+from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import Exiting, ReadSessionResult
@@ -40,10 +39,7 @@ def format_cost(usd: float) -> str:
 
 def format_caps(max_minutes: float, max_usd: float | None) -> str:
     """Format "caps {minutes}m" alone, or with ", {cost}" appended when a spend cap is set."""
-    caps_parts = [f"{max_minutes:g}m"]
-    if max_usd is not None:
-        caps_parts.append(format_cost(max_usd))
-    return f"caps {', '.join(caps_parts)}"
+    return f"caps {max_minutes:g}m" + ("" if max_usd is None else f", {format_cost(max_usd)}")
 
 
 def exit_phase_text(phase: ExitPhase | Exiting) -> str:
@@ -66,7 +62,7 @@ def _iter_label(count: int, max_iterations: int | None) -> str:
     if max_iterations is not None:
         # The noun agrees with the cap, so the capped form stays plural at any count.
         return f"{count}/{max_iterations} iterations"
-    return f"{count} iteration" if count == 1 else f"{count} iterations"
+    return pluralize(count, "iteration")
 
 
 def _outcome_role(outcome: str) -> LoopStyle:
@@ -80,10 +76,7 @@ def _outcome_role(outcome: str) -> LoopStyle:
 def _last_iteration_segments(
     delta_pct: float | None, outcome: str, *, unsettled: bool
 ) -> list[LoopSegment]:
-    if delta_pct is None or not math.isfinite(delta_pct):
-        delta = "—"
-    else:
-        delta = format_delta(Effect(value=delta_pct, unit="percent"))
+    delta = format_percent_delta(delta_pct, missing="—")
     role = _outcome_role(outcome)
     segments = [
         LoopSegment(" · last ", "plain"),

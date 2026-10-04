@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from gymrat.model import Effect, MetricUnit, MetricVerdict
+    from gymrat.model import MetricUnit, MetricVerdict
     from gymrat.report.types import CandidateMetric, MetricComparison
 
 
@@ -91,51 +91,29 @@ def format_value(value: float, unit: MetricUnit | None = None) -> str:
     return _scale_tier(value, _TIER_MAP[unit])
 
 
-def format_delta(effect: Effect) -> str:
-    """A signed percentage, or nothing when the effect is not a finite number.
+def format_percent_delta(value: float | None, *, missing: str = "") -> str:
+    """A signed percentage, or a placeholder when there is no finite delta to state.
 
     A delta that rounds to zero prints as an unsigned ``0.0%``: at display
     precision there is no direction to report, so ``-0.0%`` would claim one.
 
     Args:
-        effect: The effect to render. Its ``value`` carries the number and its
-            ``unit`` the scale (percent today).
+        value: The percentage delta, such as ``2.2`` for ``+2.2%``, or ``None``
+            when none was measured.
+        missing: What to print for a missing or non-finite delta.
 
     Returns:
         A signed percentage such as ``"+2.2%"``, an unsigned ``"0.0%"`` for a
-        value that rounds to zero, or ``""`` when the value is not finite
-        (``NaN`` or either infinity).
+        value that rounds to zero, or ``missing`` when the value is ``None`` or
+        not finite (``NaN`` or either infinity).
     """
-    value = effect.value
-    if not math.isfinite(value):
-        return ""
+    if value is None or not math.isfinite(value):
+        return missing
     magnitude = f"{abs(value):.1f}"
     if magnitude == "0.0":
         return "0.0%"
     sign = "+" if value > 0 else "-"
     return f"{sign}{magnitude}%"
-
-
-def is_improvement(effect: Effect) -> bool:
-    """Whether an effect's move counts as an improvement, keyed on its unit.
-
-    This is the single place the sign-of-improvement rule lives, so a caller
-    judging a direction-aware metric combines this with the metric's own
-    direction rather than re-deriving the sign.
-
-    For a ``"percent"`` delta the default is lower-is-better: a strictly negative
-    value improves. A value of exactly zero does not — at rest a figure moved in
-    no direction to call good.
-
-    Args:
-        effect: The effect to judge; its ``unit`` selects the rule.
-
-    Returns:
-        ``True`` when the effect's value is an improvement for its unit.
-    """
-    if effect.unit == "percent":
-        return effect.value < 0
-    assert_never(effect.unit)
 
 
 PLUS_MINUS = "±"
@@ -209,7 +187,7 @@ def candidate_cell_parts(
 
 def format_verdict_delta(verdict: MetricVerdict) -> str:
     """The delta cell: the word ``unstable`` for a verdict too noisy to trust, else the delta."""
-    return "unstable" if verdict.verdict == "unstable" else format_delta(verdict.delta)
+    return "unstable" if verdict.verdict == "unstable" else format_percent_delta(verdict.delta)
 
 
 # ---------------------------------------------------------------------------
@@ -220,11 +198,6 @@ def format_verdict_delta(verdict: MetricVerdict) -> str:
 def format_noise_band_value(noise_pct: float) -> str:
     """A noise band's figure, without the sign it is stated behind."""
     return f"{noise_pct:.1f}%"
-
-
-def _format_noise_band(noise_pct: float) -> str:
-    """A metric's noise band as the ``±N%`` the rows and highlights share."""
-    return f"{PLUS_MINUS}{format_noise_band_value(noise_pct)}"
 
 
 def format_pair_count(n: int) -> str:
@@ -260,4 +233,4 @@ def format_evidence(
     if verdict.noise_pct > _RELATIVE_SPREAD_CAP_PCT and baseline_median is not None:
         noise = format_value(verdict.noise_abs, unit)
         return f"{PLUS_MINUS}{noise} noise on a {format_value(baseline_median, unit)} median"
-    return f"noise {_format_noise_band(verdict.noise_pct)}"
+    return f"noise {PLUS_MINUS}{format_noise_band_value(verdict.noise_pct)}"

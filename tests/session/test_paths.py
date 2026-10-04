@@ -16,12 +16,14 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
+from gymrat.git import NotAGitRepositoryError
 from gymrat.session.paths import (
     SESSION_LOG_NAME,
     archived_session_path,
     baseline_worktree_dir,
     budget_path,
     experiment_worktree_dir,
+    git_common_dir,
     lockfile_path,
     repo_root,
     session_dir,
@@ -90,6 +92,41 @@ def _add_worktree(repo: str, relative: str) -> str:
     directory.parent.mkdir(parents=True, exist_ok=True)
     run_git(["worktree", "add", "--detach", str(directory), "HEAD"], repo)
     return str(directory)
+
+
+# ---------------------------------------------------------------------------
+# git_common_dir
+# ---------------------------------------------------------------------------
+
+
+def test_git_common_dir_when_called_at_the_main_checkout_does_return_its_git_directory(
+    create_scratch_repo: Callable[[], str],
+):
+    repo = create_scratch_repo()
+
+    common = git_common_dir(repo)
+
+    assert Path(common).resolve() == Path(repo, ".git").resolve()
+
+
+def test_git_common_dir_when_called_in_a_linked_worktree_does_return_the_owners_git_directory(
+    create_scratch_repo: Callable[[], str],
+):
+    repo = create_scratch_repo()
+    worktree = _add_worktree(repo, "linked")
+
+    common = git_common_dir(worktree)
+
+    assert Path(common).resolve() == Path(repo, ".git").resolve()
+
+
+def test_git_common_dir_when_directory_not_in_repo_does_raise_not_a_git_repository(
+    tmp_path: Path,
+):
+    with pytest.raises(NotAGitRepositoryError) as raised:
+        git_common_dir(str(tmp_path))
+
+    assert isinstance(raised.value.__cause__, subprocess.CalledProcessError)
 
 
 # Where a session command's working directory can sit inside a worktree gymrat

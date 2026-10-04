@@ -2,27 +2,21 @@
 
 from __future__ import annotations
 
-import functools
-import types
-import typing
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from gymrat.session.records import (
-    SESSION_LOG_MODELS,
     CommandRecord,
     IterationRecord,
     SessionLogRecord,
-    SessionRecord,
     _SequencedEnvelope,
-    wire_type,
 )
-from gymrat.telemetry.ids import parse_traceparent
+from gymrat.supervisor.events import CapEvent, CompactionEvent, FollowUpEvent, TurnEndEvent
 
 if TYPE_CHECKING:
-    from opentelemetry.trace import SpanContext
+    from gymrat.supervisor.events import LaunchEvent, SessionEvent
 
-type _Attrs = dict[str, str | int | float | bool]
+type Attrs = dict[str, str | int | float | bool]
+"""The flat attribute dict a span or span event carries."""
 
 _SCALAR_TYPES = (str, int, float, bool)
 
@@ -70,43 +64,8 @@ EVENT_FOLLOW_UP = "gymrat.follow_up"
 EVENT_CAP = "gymrat.cap"
 EVENT_COMPACTION = "gymrat.compaction"
 
-# ---------------------------------------------------------------------------
-# Namespace sets for all_attribute_names()
-# ---------------------------------------------------------------------------
-
-_SESSION_ATTRS = frozenset({SESSION_ID, SESSION_BRANCH})
-
-_COMMAND_ATTRS = frozenset({
-    COMMAND_NAME,
-    COMMAND_EXIT_CODE,
-    COMMAND_DURATION_MS,
-    COMMAND_REASON,
-    COMMAND_ARGS_PREFIX,
-})
-
-_RUN_ATTRS = frozenset({
-    RUN_HEAD_SHA,
-    RUN_MAX_MINUTES,
-    RUN_MAX_USD,
-    RUN_EFFORT,
-    RUN_COST_USD,
-    RUN_ENDED_BY,
-    RUN_END_REASON,
-    RUN_DURATION_MS,
-})
-
-_TURN_AND_EVENT_ATTRS = frozenset({
-    TURN_SESSION_COST_USD,
-    TURN_ORIGIN,
-    TURN_BUDGET_EXHAUSTED,
-    FOLLOW_UP_ACTION,
-    FOLLOW_UP_REASON,
-    CAP_NAME,
-})
-
-_GEN_AI_ATTRS = frozenset({GEN_AI_MODEL, GEN_AI_PROVIDER})
-
-_ITERATION_ATTRS = frozenset({ITERATION_SEQ, ITERATION_OUTCOME, ITERATION_DELTA_PCT})
+SESSION_SPAN_KEY = "session"
+"""The key the session span's deterministic id is derived from."""
 
 # Record fields carried by the envelope, not mapped to a `gymrat.<type>.<field>` attribute.
 _SKIPPED_FIELD_NAMES = frozenset({"at", "seq", "type"})
@@ -117,96 +76,73 @@ def _record_attr_name(record_type: str, field_name: str) -> str:
     return f"gymrat.{record_type}.{field_name}"
 
 
-def _is_scalar_or_literal(annotation: object) -> bool:
-    """True when ``annotation`` is a bare scalar type or a ``Literal[...]``."""
-    return annotation in _SCALAR_TYPES or typing.get_origin(annotation) is typing.Literal
+def run_span_key(launch_at: int) -> str:
+    """The key a run span's deterministic id is derived from."""
+    return f"run:{launch_at}"
 
 
-def _is_scalar_type(annotation: object) -> bool:
-    """True when ``annotation`` resolves to a scalar OTel attribute type."""
-    if _is_scalar_or_literal(annotation):
-        return True
-    if typing.get_origin(annotation) in {typing.Union, types.UnionType}:
-        return all(_is_scalar_or_none(arg) for arg in typing.get_args(annotation))
-    return False
+def run_attributes(launch: LaunchEvent) -> Attrs:
+    """Build the attributes a run span starts with.
 
-
-def _is_scalar_or_none(annotation: object) -> bool:
-    """True when ``annotation`` is a scalar type, NoneType, a Literal, or Annotated wrapping one."""
-    if typing.get_origin(annotation) is typing.Annotated:
-        inner = typing.get_args(annotation)
-        if inner:
-            annotation = inner[0]
-    return _is_scalar_or_literal(annotation) or annotation is type(None)
-
-
-@functools.cache
-def all_attribute_names() -> frozenset[str]:
-    """Return every attribute name the telemetry layer can emit.
-
-    The set includes fixed constants for session, run, turn, follow-up, cap,
-    and command spans, derived ``gymrat.<type>.<field>`` names from record
-    models other than session, iteration, and command — those are covered
-    by the fixed constants above and are excluded here — iteration names,
-    ``gen_ai.*`` names, and the ``gymrat.command.args`` pattern placeholder.
+    Args:
+        launch: The launch event of the run; its spend cap, effort and model
+            are left out when ``None``.
 
     Returns:
-        A frozenset of dotted attribute name strings.
+        The flat attribute dict for the run span.
     """
-    record_derived: set[str] = set()
-    for record_cls in SESSION_LOG_MODELS:
-        if record_cls in (SessionRecord, IterationRecord, CommandRecord):
-            continue
-        record_type = wire_type(record_cls)
-        for field_name, field_info in record_cls.model_fields.items():
-            if field_name in _SKIPPED_FIELD_NAMES:
-                continue
-            if _is_scalar_type(field_info.annotation):
-                record_derived.add(_record_attr_name(record_type, field_name))
-
-    return (
-        _SESSION_ATTRS
-        | _COMMAND_ATTRS
-        | _RUN_ATTRS
-        | _TURN_AND_EVENT_ATTRS
-        | _GEN_AI_ATTRS
-        | _ITERATION_ATTRS
-        | frozenset(record_derived)
-    )
+    attrs: Attrs = {
+        SESSION_ID: launch.session_id,
+        RUN_HEAD_SHA: launch.head_sha,
+        RUN_MAX_MINUTES: launch.max_minutes,
+        GEN_AI_PROVIDER: "anthropic",
+    }
+    if launch.max_usd is not None:
+        attrs[RUN_MAX_USD] = launch.max_usd
+    if launch.effort is not None:
+        attrs[RUN_EFFORT] = launch.effort
+    if launch.model is not None:
+        attrs[GEN_AI_MODEL] = launch.model
+    return attrs
 
 
-@dataclass(frozen=True, slots=True)
-class CommandSpanInputs:
-    """Pre-computed span inputs shared by live and replay command-span emitters."""
+def run_event(event: SessionEvent) -> tuple[str, Attrs] | None:
+    """Map a supervisor event to the span event a run span mirrors it as.
 
-    name: str
-    key: str
-    attributes: _Attrs
-    link: SpanContext | None
+    Args:
+        event: The supervisor event.
+
+    Returns:
+        The span event's name and attributes, or ``None`` for an event the run
+        span does not mirror.
+    """
+    if isinstance(event, TurnEndEvent):
+        return EVENT_TURN_END, {
+            TURN_SESSION_COST_USD: event.cost_usd,
+            TURN_ORIGIN: event.origin,
+            TURN_BUDGET_EXHAUSTED: event.budget_exhausted,
+        }
+    if isinstance(event, FollowUpEvent):
+        attrs: Attrs = {FOLLOW_UP_ACTION: event.action}
+        if event.reason is not None:
+            attrs[FOLLOW_UP_REASON] = event.reason
+        return EVENT_FOLLOW_UP, attrs
+    if isinstance(event, CapEvent):
+        return EVENT_CAP, {CAP_NAME: event.cap}
+    if isinstance(event, CompactionEvent):
+        return EVENT_COMPACTION, {}
+    return None
 
 
-def command_span_inputs(
-    record: CommandRecord, *, session_id: str, line_number: int
-) -> CommandSpanInputs:
-    """Build the span name, key, attributes, and link for a command record."""
-    link = parse_traceparent(record.traceparent) if record.traceparent else None
-    return CommandSpanInputs(
-        name=f"gymrat.command.{record.name}",
-        key=f"command:{line_number}",
-        attributes=command_attributes(record, session_id),
-        link=link,
-    )
-
-
-def _add_seq(attrs: _Attrs, record: _SequencedEnvelope) -> None:
+def _add_seq(attrs: Attrs, record: _SequencedEnvelope) -> None:
     """Add the iteration sequence number, when the record carries one."""
     if record.seq is not None:
         attrs[ITERATION_SEQ] = record.seq
 
 
-def command_attributes(record: CommandRecord, session_id: str) -> _Attrs:
+def command_attributes(record: CommandRecord, session_id: str) -> Attrs:
     """Map a ``CommandRecord`` to a flat attribute dict for a command span."""
-    attrs: _Attrs = {
+    attrs: Attrs = {
         SESSION_ID: session_id,
         COMMAND_NAME: record.name,
         COMMAND_EXIT_CODE: record.exit_code,
@@ -221,11 +157,11 @@ def command_attributes(record: CommandRecord, session_id: str) -> _Attrs:
     return attrs
 
 
-def record_event(record: SessionLogRecord) -> tuple[str, _Attrs]:
+def record_event(record: SessionLogRecord) -> tuple[str, Attrs]:
     """Map a non-command session log record to ``(event_name, attributes)``."""
     record_type: str = record.type
     name = f"gymrat.{record_type}"
-    attrs: _Attrs = {}
+    attrs: Attrs = {}
 
     if isinstance(record, _SequencedEnvelope):
         _add_seq(attrs, record)
@@ -240,7 +176,7 @@ def record_event(record: SessionLogRecord) -> tuple[str, _Attrs]:
     return name, attrs
 
 
-def _add_scalar_fields(attrs: _Attrs, record_type: str, record: SessionLogRecord) -> None:
+def _add_scalar_fields(attrs: Attrs, record_type: str, record: SessionLogRecord) -> None:
     """Add scalar top-level fields from a non-iteration record under ``gymrat.<type>.<field>``."""
     for field_name, value in record:
         if field_name in _SKIPPED_FIELD_NAMES:

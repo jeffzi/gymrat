@@ -1,7 +1,7 @@
 """Behavioral tests for the session budget file (write / read / clear / remaining).
 
-A budget is a frozen dataclass with ``version``, ``started_at_ms``,
-``max_minutes``, and ``deadline_ms``.  ``write_budget`` writes atomically via
+A budget is a frozen pydantic model with ``max_minutes`` and ``deadline_ms``, and
+the file carries exactly those two keys.  ``write_budget`` writes atomically via
 temp-file-and-replace so a concurrent reader never sees a partial file.
 ``read_budget`` returns the budget only when the file parses, the deadline has
 not passed, and the supervise lock for that root is held; otherwise it returns
@@ -25,18 +25,10 @@ from gymrat.session.budget import (
     write_budget,
 )
 from gymrat.session.paths import budget_path
-from gymrat.session.records import BaselineRecord, IterationRecord, SessionLogRecord
-from tests.session.records._fixtures import iteration_record
+from gymrat.session.records import SessionLogRecord
+from tests.session.records._fixtures import baseline_record, iteration_record
 
 _FAR_FUTURE_DEADLINE_MS = 999_999_999.0
-
-
-@pytest.fixture
-def root(tmp_path: Path) -> str:
-    """A fake repo root with the .gymrat session directory pre-created."""
-    session = tmp_path / ".gymrat"
-    session.mkdir()
-    return str(tmp_path)
 
 
 def _budget_file(root: str) -> Path:
@@ -51,7 +43,6 @@ def _read_json(root: str) -> dict[str, object]:
 def _make_budget(**overrides: object) -> Budget:
     """Build a Budget with sensible defaults, overridable per-field."""
     defaults: dict[str, object] = {
-        "started_at_ms": 1000.0,
         "max_minutes": 30,
         "deadline_ms": 1_800_000.0,
     }
@@ -62,8 +53,6 @@ def _make_budget(**overrides: object) -> Budget:
 def _budget_json(**overrides: object) -> str:
     """Serialize a budget JSON payload with sensible defaults, overridable per-field."""
     defaults: dict[str, object] = {
-        "version": 1,
-        "started_at_ms": 1000.0,
         "max_minutes": 30,
         "deadline_ms": _FAR_FUTURE_DEADLINE_MS,
     }
@@ -99,24 +88,18 @@ def test_remaining_ms_when_called_does_return_clamped_difference(
 # ---------------------------------------------------------------------------
 
 
-def test_write_budget_when_called_does_create_readable_json_file(root: str):
+def test_write_budget_when_called_does_write_only_the_cap_and_the_deadline(root: str):
     budget = _make_budget()
 
     write_budget(root, budget)
 
-    raw = _read_json(root)
-    assert raw["version"] == 1
-    assert raw["started_at_ms"] == 1000.0
-    assert raw["max_minutes"] == 30
-    assert raw["deadline_ms"] == 1_800_000.0
+    assert _read_json(root) == {"max_minutes": 30, "deadline_ms": 1_800_000.0}
 
 
 def test_write_budget_when_called_does_write_compact_json_bytes(root: str):
     write_budget(root, _make_budget())
 
-    assert _budget_file(root).read_bytes() == (
-        b'{"started_at_ms":1000.0,"max_minutes":30.0,"deadline_ms":1800000.0,"version":1}'
-    )
+    assert _budget_file(root).read_bytes() == b'{"max_minutes":30.0,"deadline_ms":1800000.0}'
 
 
 def test_write_budget_when_called_twice_does_overwrite_previous(root: str):
@@ -153,12 +136,8 @@ def test_read_budget_when_file_exists_and_lock_held_and_deadline_ahead_does_retu
         pytest.param(json.dumps(42), id="number-not-object"),
         pytest.param(_budget_json(deadline_ms="soon"), id="deadline-string"),
         pytest.param(_budget_json(deadline_ms=None), id="deadline-null"),
-        pytest.param(_budget_json(started_at_ms="early"), id="started-at-string"),
         pytest.param(_budget_json(max_minutes="long"), id="max-minutes-string"),
         pytest.param(_budget_json(deadline_ms=True), id="deadline-bool"),
-        pytest.param(_budget_json(version=True), id="version-bool"),
-        pytest.param(_budget_json(version=1.0), id="version-float"),
-        pytest.param(_budget_json(version=2), id="version-newer"),
         pytest.param(_budget_json(extra=1), id="unexpected-field"),
     ],
 )
@@ -174,15 +153,22 @@ def test_read_budget_when_file_unreadable_or_invalid_does_return_none(
     assert result is None
 
 
-def test_read_budget_when_version_missing_does_return_version_one_budget(root: str):
-    raw = json.loads(_budget_json())
-    del raw["version"]
-    _budget_file(root).write_text(json.dumps(raw), encoding="utf-8")
+def test_read_budget_when_file_is_not_utf8_does_return_none(root: str):
+    _budget_file(root).write_bytes(b"\xff\xfe not text")
 
     with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
         result = read_budget(root, now_ms=0.0)
 
-    assert result == _make_budget(deadline_ms=_FAR_FUTURE_DEADLINE_MS)
+    assert result is None
+
+
+def test_read_budget_when_path_cannot_be_read_does_return_none(root: str):
+    _budget_file(root).mkdir()
+
+    with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
+        result = read_budget(root, now_ms=0.0)
+
+    assert result is None
 
 
 def test_read_budget_when_deadline_passed_does_return_none(root: str):
@@ -225,63 +211,55 @@ def test_clear_budget_when_file_absent_does_not_raise(root: str):
 # ---------------------------------------------------------------------------
 
 
-def _baseline(duration_ms: float | None = None) -> BaselineRecord:
-    """A baseline record with only the fields ``estimate_iterate_duration`` inspects."""
-    return BaselineRecord(
-        type="baseline",
-        at=1_786_198_530_000_000_000,
-        label="main",
-        samples=({"total_ms": 15200},),
-        duration_ms=duration_ms,
-    )
-
-
-def _iteration(duration_ms: float | None = None, *, seq: int = 1) -> IterationRecord:
-    """An iteration record with only the fields ``estimate_iterate_duration`` inspects."""
-    return iteration_record(seq=seq, duration_ms=duration_ms)
-
-
 @pytest.mark.parametrize(
     ("records", "expected"),
     [
         pytest.param([], None, id="no-records"),
-        pytest.param([_baseline(), _iteration()], None, id="no-durations"),
+        pytest.param([baseline_record(), iteration_record()], None, id="no-durations"),
         pytest.param(
-            [_baseline(), _iteration(duration_ms=840_000)],
+            [baseline_record(), iteration_record(duration_ms=840_000)],
             DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
             id="iteration-has-duration",
         ),
         pytest.param(
-            [_baseline(duration_ms=420_000), _iteration()],
+            [baseline_record(duration_ms=420_000), iteration_record()],
             DurationEstimate(duration_ms=840_000, source="baseline", source_duration_ms=420_000),
             id="only-baseline-has-duration-doubles-it",
         ),
         pytest.param(
-            [_baseline(duration_ms=420_000), _iteration(duration_ms=900_000)],
+            [baseline_record(duration_ms=420_000), iteration_record(duration_ms=900_000)],
             DurationEstimate(duration_ms=900_000, source="iteration", source_duration_ms=900_000),
             id="both-have-durations-prefers-iteration",
         ),
         pytest.param(
             [
-                _baseline(),
-                _iteration(duration_ms=600_000, seq=1),
-                _iteration(duration_ms=840_000, seq=2),
+                baseline_record(),
+                iteration_record(duration_ms=600_000, seq=1),
+                iteration_record(duration_ms=840_000, seq=2),
             ],
             DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
             id="multiple-iterations-uses-newest",
         ),
         pytest.param(
-            [_baseline(), _iteration(duration_ms=600_000, seq=1), _iteration(seq=2)],
+            [
+                baseline_record(),
+                iteration_record(duration_ms=600_000, seq=1),
+                iteration_record(seq=2),
+            ],
             DurationEstimate(duration_ms=600_000, source="iteration", source_duration_ms=600_000),
             id="newest-iteration-lacks-duration-uses-earlier",
         ),
         pytest.param(
-            [_baseline(duration_ms=420_000), _iteration(duration_ms=840_000), _baseline()],
+            [
+                baseline_record(duration_ms=420_000),
+                iteration_record(duration_ms=840_000),
+                baseline_record(),
+            ],
             DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
             id="a-keep-appended-baseline-times-nothing-and-is-skipped",
         ),
         pytest.param(
-            [_baseline(duration_ms=420_000), _baseline()],
+            [baseline_record(duration_ms=420_000), baseline_record()],
             DurationEstimate(duration_ms=840_000, source="baseline", source_duration_ms=420_000),
             id="newest-baseline-lacks-duration-uses-earlier",
         ),

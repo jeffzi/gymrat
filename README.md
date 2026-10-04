@@ -290,10 +290,7 @@ it measures, so anything the hook changes afterwards goes unrecorded.
 `compare`, `measure`, `probe`, `doctor`, and the session commands (`start`, `iterate`, `keep`,
 `discard`, `status`, `stop`, `sync`, `finalize`) accept `--format json` for structured output.
 `init`, `export`, and `supervise` are text-only. Text output is for humans and may change between
-releases.
-
-Log records use snake_case keys, `at` timestamps are integer nanoseconds since the Unix epoch,
-and the schema is additive-only from the first published release.
+releases; the log schema is additive-only from the first published release.
 
 The session and supervisor log formats are documented in the
 [event reference](https://github.com/jeffzi/gymrat/blob/main/docs/event-reference.md), with JSON

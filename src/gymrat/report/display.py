@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, assert_never
 
-from gymrat.model import PERMUTATION_FLOORS
+from gymrat.model import PERMUTATION_MIN_N
 
 if TYPE_CHECKING:
     from gymrat.model import MetricVerdict
-
-MIN_PERMUTATION_N = PERMUTATION_FLOORS.min_n
 
 type DisplayClass = Literal[
     "improved",
@@ -33,14 +31,14 @@ def display_class(verdict: MetricVerdict) -> DisplayClass:
     """Which display class a verdict reads as.
 
     Any non-exact verdict whose pair count sits below
-    :data:`MIN_PERMUTATION_N` reads ``inconclusive``: the sample is too
+    :data:`~gymrat.model.PERMUTATION_MIN_N` reads ``inconclusive``: the sample is too
     small for a statistical verdict — band or permutation — to be trusted.
     Exact verdicts are decided on paired medians, so no statistical minimum
     applies to them.
 
     A band verdict with enough pairs for the permutation test reads
     ``identical`` only when every one of them tied (``usable_n == 0``);
-    anywhere ``usable_n`` sits between zero and :data:`MIN_PERMUTATION_N`
+    anywhere ``usable_n`` sits between zero and that floor
     some pairs did differ, so that reads ``within-noise``. An exact
     no-signal always reads ``within-noise``.
 
@@ -50,7 +48,7 @@ def display_class(verdict: MetricVerdict) -> DisplayClass:
     Returns:
         The display class the verdict presents as in the report.
     """
-    if verdict.method != "exact" and verdict.n < MIN_PERMUTATION_N:
+    if verdict.method != "exact" and verdict.n < PERMUTATION_MIN_N:
         return "inconclusive"
     if verdict.verdict != "no-signal":
         return verdict.verdict
@@ -63,11 +61,11 @@ def _no_signal_class(verdict: MetricVerdict) -> DisplayClass:
             return "identical" if verdict.usable_n == 0 else "within-noise"
         case "permutation" | "exact":
             return "within-noise"
-        case _ as unreachable:  # pragma: no cover — exhaustive match over VerdictMethod
+        case _ as unreachable:  # pragma: no cover — exhaustive match over MetricVerdict.method
             assert_never(unreachable)
 
 
-_GLYPHS: dict[DisplayClass, str] = {
+GLYPHS: dict[DisplayClass, str] = {
     "improved": "✓",
     "regressed": "✗",
     "unstable": "≈",
@@ -75,26 +73,10 @@ _GLYPHS: dict[DisplayClass, str] = {
     "within-noise": "~",
     "inconclusive": "?",
 }
+"""The glyph each display class is drawn with in the report's rows and legend."""
 
 
-def get_glyph(shown: DisplayClass) -> str:
-    """The glyph a display class is drawn with in the report's rows and legend."""
-    return _GLYPHS[shown]
-
-
-def shown_class(verdict: MetricVerdict | None) -> DisplayClass | None:
-    """:func:`display_class`, or ``None`` when there is no verdict to show one for."""
-    return None if verdict is None else display_class(verdict)
-
-
-VERDICT_GLOSSES: dict[DisplayClass, str] = {
-    "improved": "improved",
-    "regressed": "regressed",
-    "unstable": "unstable",
-    "identical": "identical",
-    "within-noise": "within noise",
-    "inconclusive": "inconclusive",
-}
+VERDICT_GLOSSES: dict[DisplayClass, str] = {cls: cls.replace("-", " ") for cls in GLYPHS}
 
 QUIET_VERDICTS: frozenset[DisplayClass] = frozenset({
     "within-noise",

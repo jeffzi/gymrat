@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.model import Effect, Exclusion, MetricUnit, PermutationVerdict
+from gymrat.model import Exclusion, MetricUnit, PermutationVerdict
 from gymrat.report.json_doc import (
     BudgetSummary,
     render_json,
@@ -30,27 +30,26 @@ from gymrat.report.types import (
 )
 from gymrat.targets import WorktreeRemovalFailure
 from gymrat.verdict import GroupAggregate, KindAggregate
-from tests.report._inputs import (
+from tests.report._comparisons import (
     NWayCandidate,
-    band_metric,
     create_candidate,
     create_comparison_result,
-    create_measurement_result,
     exact_metric,
-    geomean_of,
     kind_metric,
-    measured_metric,
     metric_meta,
     n_way_metric,
     other_kind,
     permutation_metric,
-    permutation_verdict,
-    probe_metric,
-    probe_result,
     single_sample_result,
-    two_kind_measurement,
     two_kind_result,
 )
+from tests.report._measurements import (
+    create_measurement_result,
+    measured_metric,
+    two_kind_measurement,
+)
+from tests.report._probes import probe_metric, probe_result
+from tests.report._verdicts import band_metric, geomean_of, permutation_verdict
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -121,7 +120,7 @@ def _two_kind_with_exclusions() -> ComparisonResult:
 # ---------------------------------------------------------------------------
 
 
-def test_render_json_when_single_candidate_does_produce_schema_version_2_shape():
+def test_render_json_when_single_candidate_does_produce_schema_version_1_shape():
     result = create_comparison_result(
         baseline_label="main",
         candidates=[create_candidate(label="experiment")],
@@ -132,7 +131,7 @@ def test_render_json_when_single_candidate_does_produce_schema_version_2_shape()
 
     doc = json.loads(render_json(result))
 
-    assert doc["schema_version"] == 2
+    assert doc["schema_version"] == 1
     assert doc["baseline"] == "main"
     assert doc["candidates"] == ["experiment"]
     assert doc["samples"] == 10
@@ -484,7 +483,7 @@ def test_render_json_when_baseline_unmeasured_does_render_null_baseline_fields()
                     p=0.01,
                     noise_pct=2.5,
                     noise_abs=3.5,
-                    delta=Effect(value=-5, unit="percent"),
+                    delta=-5,
                     n=10,
                 ),
             ),
@@ -518,15 +517,38 @@ def test_render_json_when_candidate_has_no_metric_data_does_render_all_nulls():
 
     beta = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][1]
 
-    assert beta["label"] == "beta"
-    assert beta["median"] is None
-    assert beta["spread_pct"] is None
-    assert beta["verdict"] is None
-    assert beta["method"] is None
-    assert beta["delta"] is None
-    assert beta["noise_pct"] is None
-    assert beta["p"] is None
-    assert beta["band"] is None
+    assert list(beta.items()) == list(_UNMEASURED_ROW.items())
+
+
+#: A candidate row with no measurement behind it, in the key order the document writes.
+_UNMEASURED_ROW: dict[str, object] = {
+    "label": "beta",
+    "median": None,
+    "spread_pct": None,
+    "verdict": None,
+    "method": None,
+    "delta": None,
+    "noise_pct": None,
+    "p": None,
+    "band": None,
+}
+
+
+def test_render_json_when_metric_has_fewer_slices_than_candidates_does_render_an_empty_row():
+    metric = MetricComparison(
+        baseline_median=100.0,
+        baseline_spread=1.0,
+        candidates=(_paired_candidate(),),
+        meta=metric_meta("decode/time", unit="ns"),
+    )
+    result = create_comparison_result(
+        candidates=[create_candidate(label="alpha"), create_candidate(label="beta")],
+        metrics={"decode/time": metric},
+    )
+
+    beta = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][1]
+
+    assert beta == _UNMEASURED_ROW
 
 
 def test_render_json_when_candidate_measured_but_unpaired_does_keep_measurements():
@@ -687,7 +709,7 @@ def test_render_measure_json_when_top_level_keys_does_order_them_canonically():
 
 
 def test_render_measure_json_when_grouped_metric_does_carry_contract_derived_group():
-    # infer_group derives the group from the metric name key, not short_name:
+    # The group derives from the metric name key, not short_name:
     # "entity/alive_check#time" → group "entity"; short_name "alive_check"
     # would yield None.
     result = create_measurement_result(
@@ -834,7 +856,7 @@ def test_render_probe_json_when_rendered_does_use_schema_version_1_shape():
     ("result", "scoped", "names", "samples"),
     [
         pytest.param(
-            probe_result(scoped=True, names=("total_ms", "decode"), samples=3),
+            probe_result(names=("total_ms", "decode"), samples=3),
             True,
             ["total_ms", "decode"],
             3,
@@ -843,7 +865,7 @@ def test_render_probe_json_when_rendered_does_use_schema_version_1_shape():
         pytest.param(probe_result(), False, [], 6, id="unscoped"),
     ],
 )
-def test_render_probe_json_when_scope_varies_does_report_the_scope_and_names(
+def test_render_probe_json_when_names_vary_does_report_the_scope_and_names(
     result: ProbeResult, scoped: bool, names: list[str], samples: int
 ):
     doc = json.loads(render_probe_json(result))
@@ -923,7 +945,7 @@ def test_render_probe_json_when_budget_varies_does_reflect_the_budget_key(
     if budget is None:
         assert "budget" not in doc
     else:
-        assert doc["budget"] == {"cap_minutes": 30, "remaining_seconds": 900}
+        assert list(doc["budget"].items()) == [("cap_minutes", 30), ("remaining_seconds", 900)]
 
 
 # ---------------------------------------------------------------------------

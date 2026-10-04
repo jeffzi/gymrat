@@ -26,15 +26,14 @@ layers manage the virtualenv, file selection, and flags.
   blanks, comments, and docstrings — matching what the `check-max-lines` hook enforces.
 - `task schemas` — regenerate `schemas/` and `docs/event-reference.md` from the pydantic record and
   event models. Run it after any change to a model field or docstring and commit the output; the
-  drift test in `tests/event_docs/test_drift.py` fails on stale artifacts.
+  drift test in `tests/event_docs/test_event_docs_drift.py` fails on stale artifacts.
 - `task clean` — remove build artifacts, caches, and virtualenvs.
 
 ## Git hygiene
 
 - Never run `git commit --no-verify`, `git commit -n`, or anything else that skips the prek hooks —
   the hooks are the gate, not an obstacle.
-- Fix a failing check at its source. Never edit a test to make it pass; never widen a lint ignore to
-  silence a real finding.
+- Fix a failing check at its source. Never edit a test to make it pass.
 
 ## Linter and type-checker configuration
 
@@ -46,25 +45,87 @@ directive with a reason — not in the shared config. When the same inline direc
 for the same rule, that is a signal the rule may deserve a config-level ignore — propose it to the
 user and wait for explicit approval; never promote a suppression into config on your own.
 
-## Module size
+## Module layout
 
-`check-max-lines` caps a file at 500 code lines and a function at 60. The cap signals a file with
-more than one concern; it is not a budget.
+A line-count check caps a file's code lines and a function's. The cap marks a file that holds more
+than one concern; it is not a budget. These rules decide where code lives. They are applied to the
+letter: a reason that is not written here is not a reason. The numbers and names they refer to are
+listed under Project facts.
 
-- **New code lives in its caller's module**, unless two or more modules import it today, or it is a
-  distinct concern of 50+ code lines — then it gets one flat module named after the concern.
-  "Reusable later", "keeps the caller small" and "matches the existing small modules" are not
-  reasons: the tiny modules and packages already in `src/` are debt, not precedent.
-- **No packages of small modules** behind a re-exporting `__init__.py`. A package is justified only
-  when the flat module would exceed the cap; planned features don't count.
-- **One import path per name.** Import a name from the module that defines it. A package
-  `__init__.py` re-exports nothing, and a module's `__all__` lists only names it defines.
-- **At the cap, move one whole concern** — the code least tied to the rest that changes together for
-  one reason — into a module named for what it does (never "helpers", "utils", "misc"): a new
-  module, or an existing one you have read that already owns that concern. A module carved off its
-  only importer owns nothing; never add to it. Never move just enough to pass, and never compress
-  code. One concern, one move: the file should land at 450 or below, and if it doesn't, pick a
-  different, larger concern — never top up the move with other code.
+A module's **importers** are the project modules that import it in any form: at module level,
+inside a function, or under `TYPE_CHECKING`. Tests, `__main__.py` and `__init__.py` are not
+importers. To **fold** a module is to move all of it into another module and delete the file.
+
+**Registration is not use.** A module that only registers another (a command, a handler, a plugin)
+and never calls it is neither its user nor its home, and does not count among its importers. A
+module that nothing but its registrar imports is a module of its own at any size; one that other
+modules also import is placed by those importers alone.
+
+The **generic-helpers module** holds code that passes this admission test: it imports no project
+module, names no project type, imports the standard library only, and would make sense pasted
+unchanged into an unrelated repository.
+
+1. **New code goes in the module that uses it.** One user: that module. No new file until rule 2
+   or rule 6 calls for one.
+2. **Shared code goes to its home.** When two or more modules use it, the first of these that
+   applies:
+   - It passes the admission test: the generic-helpers module.
+   - One of its importers is already imported by every other importer: that importer is the home,
+     because nobody loads the code without loading it. The home must use the code at runtime, and
+     the fold must not turn another module's `TYPE_CHECKING` import of the home into a runtime
+     import.
+   - It is a rule about one project type (a predicate, a constructor, a conversion) and every user
+     already imports the module that defines the type: beside the type. Code that merely mentions
+     the type does not qualify.
+   - Otherwise: a module of its own, named for what it does, whatever its size.
+3. **A module that has a home folds into it.** A module with one importer folds into that
+   importer. A shared module that passes the admission test folds into the generic-helpers module.
+   Any other shared module whose importers satisfy the second test in rule 2 folds into that
+   home. When several modules could fold into the same target and not all fit, fold the smallest
+   first and stop before the first that does not fit. A module nothing in the project imports (a
+   console-script target, a `python -m` target) stands.
+4. **Only three things block a fold**, and each one can be checked:
+   - **Size.** The target would land above the fold limit, summing the code lines of every file
+     that goes into it. The fold limit sits below the cap so that a fold is not undone by the next
+     edit. A file may grow past the fold limit afterwards; only the cap forces a move.
+   - **Layer.** Code stays in the layer its subject belongs to, even when every caller is in
+     another layer. A module whose only importer is in another layer stands in its own. The
+     generic-helpers module belongs to no layer.
+   - **Seam.** A seam test would fail after the fold. A seam without a test is a preference: write
+     the test first if the property matters.
+
+   None of these block a fold: "it is a distinct concern", "it is pure logic", "it is easier to
+   test alone", "it is one of several alike", "reusable later", "keeps the importer small",
+   "matches the existing small modules". Small modules already in the tree are debt, not
+   precedent: report one that has a home and no block, and fold it when asked.
+5. **Never pool.** Merging two modules when neither imports the other is pooling, whatever the
+   file count gained. A module's name says what everything in it does; a name that fits only
+   because it is wide (`helpers`, `common`, `shared`, `core`, `misc`) marks a pool. The
+   generic-helpers module is the one exemption from both sentences: the admission test, not its
+   name, decides what belongs in it, and it obeys the cap like any file. Asked to consolidate,
+   apply rule 3 until nothing more folds and report every other module with the block or the lack
+   of a home that keeps it.
+6. **At the cap, move one whole concern**: the code least tied to the rest that changes together
+   for one reason. It goes to a new module named for what it does, or to an existing module you
+   have read that already owns that concern. The file must land at or below the fold limit; if it
+   does not, pick a different, larger concern. Never move just enough to pass, never top up the
+   move with unrelated code, and never compress code to fit. The module carved out stands for as
+   long as folding it back would exceed the fold limit.
+7. **A package is a directory of modules that each stand under these rules.** Its `__init__.py`
+   holds no code beyond a docstring. When folding leaves a package with one module, the package
+   becomes that module.
+8. **One import path per name.** Import a name from the module that defines it. An `__init__.py`
+   re-exports nothing, and a module's `__all__` lists only names it defines.
+
+### Project facts
+
+- **Cap:** `check-max-lines` allows 500 code lines per file and 60 per function.
+- **Fold limit:** 450 code lines.
+- **Layers:** `cli/` holds code about the command line itself: flag parsing, exit routing,
+  terminal display, the wiring and guarding of commands. Everything else is outside it.
+- **Seam test:** a test that starts a fresh interpreter and asserts which modules are, or are not,
+  in `sys.modules`.
+- **Generic-helpers module:** `utils.py`.
 
 ## Docstrings
 

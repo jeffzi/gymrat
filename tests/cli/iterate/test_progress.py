@@ -227,6 +227,18 @@ def test_frame_when_before_hook_running_does_show_spinner(
     renderer.stop()
 
 
+def test_frame_when_worktree_preparing_does_name_its_target(
+    snapshot: SnapshotAssertion,
+):
+    _console, _clock, renderer = _live()
+
+    renderer.report(PrepareStarted(label="baseline", at_ms=0))
+    result = frame_text(renderer.frame())
+
+    assert result == snapshot
+    renderer.stop()
+
+
 def test_frame_when_both_worktrees_prepared_does_show_elapsed(
     snapshot: SnapshotAssertion,
 ):
@@ -777,6 +789,53 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
     assert f"4/4 · {expected_fragment}" in result
     assert "estimating time left" not in result
     renderer.stop()
+
+
+# ---------------------------------------------------------------------------
+# Zero-width console
+# ---------------------------------------------------------------------------
+
+
+def test_live_when_console_width_zero_does_render_as_plain():
+    console, clock, renderer = _live(width=0)
+
+    renderer.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
+    renderer.stop()
+
+    assert renderer.live is None
+    assert "\x1b[" not in console_output(console)
+
+
+# ---------------------------------------------------------------------------
+# Compact mode -- sampling passes
+# ---------------------------------------------------------------------------
+
+
+def test_frame_when_compact_pass_finished_does_advance_the_bar_and_show_an_eta():
+    _console, clock, renderer = _live(height=10, sample_count=5)
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    _report_full_pass(renderer, clock, 1, 5, label="A", duration_s=2)
+
+    renderer.report(_pass_started(2, 5, target_count=1, label="B", at_ms=_ms(clock)))
+
+    result = frame_text(renderer.frame())
+    assert result.endswith(" 10% · B · 00:02/00:20")
+
+
+def test_frame_when_compact_confirm_started_does_restart_the_count_and_the_eta():
+    _console, clock, renderer = _live(height=10, sample_count=1, metric_count=3)
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    _report_full_pass(renderer, clock, 1, 1, duration_s=5)
+    renderer.report(
+        JudgeFinished(
+            primary_delta_pct=-2.5, regressed=("latency",), metric_count=3, at_ms=_ms(clock)
+        )
+    )
+
+    renderer.report(ConfirmStarted(filtered_metrics=("latency",), at_ms=_ms(clock)))
+
+    result = frame_text(renderer.frame())
+    assert result.split()[1:] == ["confirming", "0%", "00:00/00:00"]
 
 
 # ---------------------------------------------------------------------------

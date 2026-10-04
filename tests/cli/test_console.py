@@ -8,28 +8,25 @@ shared module back in.
 import errno
 import io
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import override
 
 import pytest
 
-from gymrat.cli.console import is_broken_pipe, is_tty, point_stream_at_devnull, stderr_console
+from gymrat.cli.console import (
+    apply_command_flags,
+    is_broken_pipe,
+    is_debug_mode,
+    point_stream_at_devnull,
+    resolve_stream_color,
+    set_color_override,
+    set_debug_mode,
+    stderr_console,
+)
+from tests._imports import modules_imported_by
 from tests._process_helpers import run_with_closed_reader
 from tests._streams import FakeStream, RaisingStream
-
-
-class _FakeStderr(io.StringIO):
-    """A stderr stand-in whose TTY status the test controls."""
-
-    def __init__(self, *, tty: bool):
-        super().__init__()
-        self._tty = tty
-
-    @override
-    def isatty(self) -> bool:
-        return self._tty
 
 
 class _BadDescriptorStream(io.StringIO):
@@ -50,38 +47,15 @@ def _open_descriptors() -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_importing_console_does_not_import_the_shared_cli_module():
-    probe = """
-import sys
-import gymrat.cli.console
-assert 'gymrat.cli.shared' not in sys.modules, 'console import pulled gymrat.cli.shared'
-"""
+def test_importing_console_does_not_import_the_error_module():
+    loaded = modules_imported_by("gymrat.cli.console")
 
-    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [sys.executable, "-c", probe],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
+    assert "gymrat.cli.exit" not in loaded
 
 
 # ---------------------------------------------------------------------------
 # stream helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("stream", "expected"),
-    [
-        pytest.param(FakeStream(tty=True), True, id="tty"),
-        pytest.param(FakeStream(tty=False), False, id="non-tty"),
-        pytest.param(object(), False, id="no-isatty"),
-    ],
-)
-def test_is_tty_when_called_does_reflect_the_streams_isatty(stream: object, expected: bool):
-    assert is_tty(stream) is expected
 
 
 @pytest.mark.parametrize(
@@ -136,7 +110,7 @@ def test_point_stream_at_devnull_when_redirect_fails_does_close_devnull_and_rais
 
 
 def test_stderr_console_does_write_to_stderr(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
 
     console = stderr_console()
 
@@ -173,11 +147,42 @@ def test_stderr_console_resolves_color_from_flag_env_and_tty(
 ):
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=tty))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=tty))
 
     console = stderr_console(color_flag=color_flag)
 
     assert console.no_color is expected_no_color
+
+
+@pytest.mark.parametrize(
+    ("color", "env", "expected_no_color"),
+    [
+        pytest.param(True, "NO_COLOR", False, id="color-flag-outranks-no-color-env"),
+        pytest.param(False, "FORCE_COLOR", True, id="no-color-flag-outranks-force-color-env"),
+    ],
+)
+def test_stderr_console_when_command_color_flag_installed_does_follow_it(
+    color: bool, env: str, expected_no_color: bool, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv(env, "1")
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
+    apply_command_flags(debug=False, color=color)
+
+    console = stderr_console()
+
+    assert console.no_color is expected_no_color
+
+
+def test_apply_command_flags_when_command_gives_no_flags_does_keep_the_root_flags(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+    set_color_override(True)
+    set_debug_mode(True)
+
+    apply_command_flags(debug=False, color=None)
+
+    assert (is_debug_mode(), resolve_stream_color(None, FakeStream(tty=False))) == (True, True)
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +203,7 @@ def test_stderr_console_when_columns_set_does_use_env_width(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("COLUMNS", columns)
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
 
     console = stderr_console(color_flag=False)
 
@@ -208,7 +213,7 @@ def test_stderr_console_when_columns_set_does_use_env_width(
 def test_stderr_console_when_columns_unset_does_use_terminal_width(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
 
     console = stderr_console(color_flag=False)
 
@@ -228,7 +233,7 @@ def test_stderr_console_when_columns_is_not_a_valid_integer_does_not_crash(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("COLUMNS", columns)
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=False))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
 
     console = stderr_console(color_flag=False)
 
@@ -243,7 +248,7 @@ def test_stderr_console_when_columns_is_not_a_valid_integer_does_not_crash(
 def test_stderr_console_when_colorless_does_strip_all_sgr_including_bold(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=True))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
 
     console = stderr_console(color_flag=False)
     with console.capture() as capture:

@@ -17,39 +17,36 @@ carried.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config.types import BenchlessConfig, StopConfig
-from gymrat.errors import GymratError, hint_of
+from gymrat.config import StopConfig
+from gymrat.errors import GymratError
 from gymrat.loop.status import status_session
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
-    BaselineRecord,
-    IterationPrimary,
-    IterationRecord,
     KeepChecks,
-    KeepRecord,
     SessionLogRecord,
     SessionRecord,
 )
-from gymrat.session.workspace import BaselineRef, Worktrees
+from gymrat.session.workspace import BaselineRef
 from tests._ansi import SGR_RE
+from tests._config import benchless_config as _config
 from tests.session.records._fixtures import (
-    AT,
     SESSION_ID,
+    baseline_record,
     blocked_keep,
     command_record,
     committed_keep,
     discard_record,
     finalize_record,
     hook_record,
-    iteration_record,
+    make_iteration,
     session_record,
     stop_record,
+    worktrees_at,
     write_session_log,
 )
 
@@ -80,57 +77,16 @@ def _body_lines(report: str) -> list[str]:
     return _report_lines(report)[_HEADER_LINE_COUNT:]
 
 
-def _worktrees(root: str) -> Worktrees:
-    """The worktree paths a session under ``root`` records."""
-    base = Path(root) / ".gymrat" / "worktrees"
-    return Worktrees(experiment=str(base / "experiment"), baseline=str(base / "baseline"))
-
-
 def _session(root: str) -> SessionRecord:
     """The session header ``start`` writes for ``root``."""
     return session_record(
         baseline=BaselineRef(ref="main", sha=_BASELINE_SHA),
-        worktrees=_worktrees(root),
+        worktrees=worktrees_at(root),
     )
-
-
-def _config(**overrides: Any) -> BenchlessConfig:
-    """A benchless run configuration; ``status`` never benches, so it needs no bench command."""
-    default = BenchlessConfig(
-        adapter="metric-lines",
-        samples=10,
-        timeout_seconds=1800,
-        unstable_noise_pct=200.0,
-        primary="geomean",
-    )
-    return replace(default, **overrides) if overrides else default
-
-
-def _iteration(seq: int, delta_pct: float, outcome: Outcome) -> IterationRecord:
-    """A measured iteration numbered ``seq``, reading as ``outcome`` on a ``delta_pct`` primary."""
-    return iteration_record(
-        seq=seq,
-        primary=IterationPrimary(kind="geomean", delta_pct=delta_pct),
-        outcome=outcome,
-    )
-
-
-def _nothing_measured_keep(seq: int) -> KeepRecord:
-    """``keep`` writes a blocked record when nothing has been measured since the last settle.
-
-    The number it carries belongs to an iteration that does not exist yet, and
-    may never — ``keep`` numbers the record past every iteration on file.
-    """
-    return blocked_keep(seq, reason="nothing-measured", checks=KeepChecks(configured=True))
 
 
 # A recorded baseline measurement of ``main``.
-_BASELINE = BaselineRecord(
-    type="baseline",
-    at=AT,
-    label="main",
-    samples=({"total_ms": 15200}, {"total_ms": 15184}),
-)
+_BASELINE = baseline_record(samples=({"total_ms": 15200}, {"total_ms": 15184}))
 
 # A hook run around the first iteration — history ``status`` has no line for.
 _HOOK = hook_record()
@@ -145,13 +101,13 @@ def four_iterations() -> tuple[SessionLogRecord, ...]:
     return (
         _BASELINE,
         _HOOK,
-        _iteration(1, -7.2, "improved"),
+        make_iteration(-7.2, "improved"),
         committed_keep(1, commit=_KEEP_COMMIT),
-        _iteration(2, 9.4, "regressed"),
+        make_iteration(9.4, "regressed", seq=2),
         discard_record(2),
-        _iteration(3, -3.1, "improved"),
+        make_iteration(-3.1, "improved", seq=3),
         blocked_keep(3),
-        _iteration(4, 0.1, "no-signal"),
+        make_iteration(0.1, "no-signal", seq=4),
     )
 
 
@@ -164,7 +120,7 @@ def test_status_session_when_no_session_does_refuse_pointing_at_start(tmp_path: 
     with pytest.raises(GymratError) as exc:
         status_session(str(tmp_path), _config())
 
-    assert "gymrat start" in (hint_of(exc.value) or "")
+    assert "gymrat start" in (exc.value.hint or "")
 
 
 def test_status_session_when_a_log_line_is_not_json_does_surface_the_store_error_with_path_and_line(
@@ -197,8 +153,8 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
     assert _report_lines(report) == [
         f"session {SESSION_ID} · baseline main@a1b2c3d · adapter metric-lines",
         f"branch gymrat/{SESSION_ID}",
-        f"experiment worktree {_worktrees(root).experiment}",
-        f"baseline worktree {_worktrees(root).baseline}",
+        f"experiment worktree {worktrees_at(root).experiment}",
+        f"baseline worktree {worktrees_at(root).baseline}",
         "baseline main · total_ms 15192",
         "iteration 1 · ✓ -7.2% · kept b1b2b3b",
         "iteration 2 · ✗ +9.4% · discarded",
@@ -214,7 +170,7 @@ def test_status_session_when_finalized_does_close_the_report_under_the_totals(tm
         root,
         _session(root),
         (
-            _iteration(1, -7.2, "improved"),
+            make_iteration(-7.2, "improved"),
             committed_keep(1, commit=_KEEP_COMMIT),
             finalize_record(),
         ),
@@ -234,7 +190,7 @@ def test_status_session_when_final_line_torn_does_render_from_the_complete_recor
     write_session_log(
         root,
         _session(root),
-        (_iteration(1, -7.2, "improved"), committed_keep(1, commit=_KEEP_COMMIT)),
+        (make_iteration(-7.2, "improved"), committed_keep(1, commit=_KEEP_COMMIT)),
     )
     with Path(session_jsonl_path(root)).open("a", encoding="utf-8") as handle:
         handle.write('{"type":"itera')  # cspell:disable-line
@@ -260,10 +216,10 @@ def test_status_session_when_nothing_measured_keep_took_a_later_number_does_read
         root,
         _session(root),
         (
-            _iteration(1, -7.2, "improved"),
+            make_iteration(-7.2, "improved"),
             committed_keep(1, commit=_KEEP_COMMIT),
-            _nothing_measured_keep(2),
-            _iteration(2, -3.1, "improved"),
+            blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+            make_iteration(-3.1, "improved", seq=2),
         ),
     )
 
@@ -285,9 +241,9 @@ def test_status_session_when_no_iteration_followed_a_nothing_measured_keep_does_
         root,
         _session(root),
         (
-            _iteration(1, -7.2, "improved"),
+            make_iteration(-7.2, "improved"),
             committed_keep(1, commit=_KEEP_COMMIT),
-            _nothing_measured_keep(2),
+            blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
         ),
     )
 
@@ -308,7 +264,7 @@ def test_status_session_when_a_gating_block_was_superseded_by_a_discard_does_ren
         root,
         _session(root),
         (
-            _iteration(1, 9.4, "regressed"),
+            make_iteration(9.4, "regressed"),
             blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
             discard_record(2),
         ),
@@ -347,7 +303,7 @@ def test_status_session_when_an_unimproved_iteration_was_kept_does_name_the_outc
     write_session_log(
         root,
         _session(root),
-        (_iteration(1, delta_pct, outcome), committed_keep(1, commit=_KEEP_COMMIT)),
+        (make_iteration(delta_pct, outcome), committed_keep(1, commit=_KEEP_COMMIT)),
     )
 
     report = status_session(root, _config())
@@ -363,7 +319,7 @@ def test_status_session_when_a_not_improved_keep_was_later_resettled_does_render
         root,
         _session(root),
         (
-            _iteration(1, 0.1, "no-signal"),
+            make_iteration(0.1, "no-signal"),
             blocked_keep(1, reason="not-improved", checks=KeepChecks(configured=True)),
             committed_keep(1, commit=_KEEP_COMMIT),
         ),
@@ -386,7 +342,7 @@ def test_status_session_when_a_checks_failed_keep_was_later_resettled_does_rende
         root,
         _session(root),
         (
-            _iteration(1, -7.2, "improved"),
+            make_iteration(-7.2, "improved"),
             blocked_keep(1, reason="checks-failed"),
             committed_keep(1, commit=_KEEP_COMMIT),
         ),
@@ -446,7 +402,7 @@ def test_status_session_when_log_has_stop_record_does_render_stopped_line_in_fil
         root,
         _session(root),
         (
-            _iteration(1, -7.2, "improved"),
+            make_iteration(-7.2, "improved"),
             committed_keep(1, commit=_KEEP_COMMIT),
             stop_record(message="target reached\ncleaning up"),
         ),

@@ -1,7 +1,6 @@
 """Behavioral tests for hierarchical kind/group aggregation.
 
-Drives behavior through the public ``compute_kind_aggregates`` and
-``infer_group`` API. Bucketing order, per-kind grouping, and the per-subset
+Drives behavior through the public ``compute_kind_aggregates`` API. Bucketing order, per-kind grouping, and the per-subset
 exclusion taxonomy are all exercised here.
 """
 
@@ -16,11 +15,7 @@ from gymrat.model import (
     GeomeanResult,
     MetricVerdict,
 )
-from gymrat.verdict import (
-    KindAggregate,
-    compute_kind_aggregates,
-    infer_group,
-)
+from gymrat.verdict import KindAggregate, compute_kind_aggregates
 from tests.verdict._inputs import (
     MetricSpec,
     build_inputs,
@@ -61,27 +56,6 @@ def mixed_gating_kind() -> list[MetricSpec]:
         MetricSpec(name="decode/time#time", short_name="decode.time", gating=True, delta=-10.0),
         MetricSpec(name="decode/alloc#time", short_name="decode.alloc", gating=False, delta=-5.0),
     ]
-
-
-# ---------------------------------------------------------------------------
-# infer_group
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("name", "expected"),
-    [
-        pytest.param("node/access.get_1field#time", "node", id="two-segment-path"),
-        pytest.param("node/access/get_1field#time", "node/access", id="three-segment-path"),
-        pytest.param("fib#time", None, id="one-segment-no-group"),
-        pytest.param("fib", None, id="one-segment-no-kind"),
-    ],
-)
-def test_infer_group_when_given_metric_name_does_return_path_minus_last_segment(
-    name: str,
-    expected: str | None,
-):
-    assert infer_group(name) == expected
 
 
 # ---------------------------------------------------------------------------

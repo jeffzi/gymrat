@@ -13,21 +13,21 @@ from typing import Annotated
 
 import typer
 
-from gymrat.cli.compare_cmd import compare
-from gymrat.cli.console import set_color_override, set_debug_mode
-from gymrat.cli.doctor_cmd import doctor_command
-from gymrat.cli.export_cmd import export_command
-from gymrat.cli.init_cmd import init_command
-from gymrat.cli.loop_cmds import discard, iterate, keep, status
-from gymrat.cli.measure_cmd import measure
+from gymrat.cli.commands.compare import compare
+from gymrat.cli.commands.doctor import doctor_command
+from gymrat.cli.commands.export import export_command
+from gymrat.cli.commands.init import init_command
+from gymrat.cli.commands.loop import discard, iterate, keep, status
+from gymrat.cli.commands.measure import measure
+from gymrat.cli.commands.probe import probe
+from gymrat.cli.commands.session import finalize, start, stop, sync
+from gymrat.cli.commands.supervise import supervise_command
+from gymrat.cli.console import apply_color_override, set_debug_mode
+from gymrat.cli.exit import BUGS_URL, exit_with_error, write_stdout
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     ColorOption,
     DebugOption,
 )
-from gymrat.cli.probe_cmd import probe
-from gymrat.cli.session_cmds import finalize, start, stop, sync
-from gymrat.cli.shared import BUGS_URL, exit_with_error, write_stdout
-from gymrat.cli.supervise.cmd import supervise_command
 from gymrat.report.style import format_hint
 
 _DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
@@ -121,8 +121,7 @@ def _root(
 ) -> None:
     """Route the shared ``--debug`` and ``--color`` flags."""
     _ = version  # consumed eagerly by its callback; declared so --version is a root option
-    if color is not None:
-        set_color_override(color)
+    apply_color_override(color)
     set_debug_mode(debug)
 
 

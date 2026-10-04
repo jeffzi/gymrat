@@ -281,4 +281,4 @@ def test_supervise_hooks_factory_when_source_scanned_is_called_only_by_supervise
         if re.search(r"(?<!def )\bsupervise_hooks_factory\(", path.read_text(encoding="utf-8"))
     }
 
-    assert callers == {"cli/supervise/cmd.py"}
+    assert callers == {"cli/commands/supervise.py"}

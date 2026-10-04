@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import re
 
+from gymrat.report.style import render_lines
 from tests._ansi import SGR_RE, strip_ansi
 
+# A width wide enough that no report fragment ever soft-wraps.
+_RENDER_WIDTH = 200
 # The column separator every rendered table row is split on.
 _SEPARATOR = "│"
 # A trailing run of SGR escapes with nothing but escapes between them and the end.
@@ -17,6 +20,24 @@ _BORDER = re.compile(r"^[─┬]+$")
 # A line dimmed end to end: opens with SGR 2 and closes with a reset. Rich closes
 # a dim span with a full reset (SGR 0) rather than the incremental dim-off SGR 22.
 DIMMED_LINE = re.compile(r"^\x1b\[2m.*\x1b\[0m$")
+
+
+def render_plain(*markup: str) -> str:
+    """The rich ``markup`` rendered with color off, one line per argument."""
+    return render_lines(*markup, color=False, width=_RENDER_WIDTH)
+
+
+def render_colored(*markup: str) -> str:
+    """The rich ``markup`` rendered with color on, one line per argument."""
+    return render_lines(*markup, color=True, width=_RENDER_WIDTH)
+
+
+def sgr_codes(text: str) -> set[str]:
+    """Every SGR parameter code present in ``text``, resets left out."""
+    codes: set[str] = set()
+    for escape in SGR_RE.finditer(text):
+        codes.update(param for param in escape.group(1).split(";") if param not in {"", "0"})
+    return codes
 
 
 def table_rows(report: str) -> list[str]:

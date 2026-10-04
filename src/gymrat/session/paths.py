@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from gymrat.git import git_common_dir, repository_lookup_error, run_git
+from gymrat.git import repository_lookup_error, run_git
 
 SESSION_DIR_NAME = ".gymrat"
 SESSION_LOG_NAME = "session.jsonl"
@@ -19,6 +19,30 @@ WORKTREES_DIR_NAME = "worktrees"
 
 # First 12 hex chars of a sha256 gives a short, collision-resistant lock name.
 _DIGEST_HEX_LENGTH = 12
+
+
+def _rev_parse(flag: str, directory: str) -> str:
+    """The path ``git rev-parse <flag>`` prints for ``directory``, trimmed.
+
+    Args:
+        flag: The ``rev-parse`` option naming the path to look up.
+        directory: Directory the lookup runs from.
+
+    Returns:
+        The path as git printed it, without surrounding whitespace.
+
+    Raises:
+        GymratError: When ``directory`` is outside any repository (a
+            :class:`~gymrat.git.NotAGitRepositoryError`) or git otherwise
+            declines to answer.
+    """
+    try:
+        return run_git(["rev-parse", flag], directory).strip()
+    except (subprocess.SubprocessError, OSError) as error:
+        # Bound first: ruff's DOC501 reads ``raise <call>()`` as raising the
+        # callee's name and would demand it in ``Raises:``.
+        err = repository_lookup_error(directory, error)
+        raise err from error
 
 
 def _toplevel(directory: str) -> str:
@@ -35,14 +59,34 @@ def _toplevel(directory: str) -> str:
             :class:`~gymrat.git.NotAGitRepositoryError`) or git otherwise
             declines to answer.
     """
-    try:
-        printed = run_git(["rev-parse", "--show-toplevel"], directory).strip()
-    except (subprocess.SubprocessError, OSError) as error:
-        err = repository_lookup_error(directory, error)
-        raise err from error
     # git reports forward slashes on every platform; normalizing here is what
     # lets a root compare and hash identically to a native path.
-    return str(Path(printed))
+    return str(Path(_rev_parse("--show-toplevel", directory)))
+
+
+def git_common_dir(root: str) -> str:
+    """Absolute path of the shared git directory backing ``root``.
+
+    Everything a repository shares across its worktrees — ``info/exclude``, the
+    object store, the worktree registry — lives in the common directory, so a
+    linked worktree, whose ``.git`` is a file pointing elsewhere, reaches the
+    same files the main checkout uses.
+
+    Args:
+        root: Directory the lookup runs from. Any directory inside the
+            repository answers with the same common directory.
+
+    Returns:
+        The resolved absolute path. git prints the path relative to the working
+        directory when it sits inside it, hence the resolve against ``root``.
+
+    Raises:
+        GymratError: When ``root`` is not inside a git repository, or git
+            otherwise declines to answer.
+    """
+    # An absolute path git prints (a linked worktree's common dir) stands on its
+    # own; a relative one (``.git`` in the main checkout) resolves against root.
+    return str(Path(root, _rev_parse("--git-common-dir", root)))
 
 
 def _names_a_gymrat_worktree(toplevel: Path) -> bool:

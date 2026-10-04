@@ -25,13 +25,14 @@ zero-width-joiner sequence from the character it modifies.
 from __future__ import annotations
 
 import io
-import os
 import re
 from typing import TYPE_CHECKING, Literal, cast
 
 from rich.cells import cell_len, split_graphemes
 from rich.console import Console
 from rich.markup import escape
+
+from gymrat.utils import color_from_env
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -229,9 +230,13 @@ def highlight_inline_code(text: str) -> str:
     """
 
     def style_span(match: re.Match[str]) -> str:
-        return f"[blue]{escape(match.group(1))}[/blue]"
+        return _code_span(match.group(1))
 
     return _INLINE_CODE_PATTERN.sub(style_span, text)
+
+
+def _code_span(code: str) -> str:
+    return f"[blue]{escape(code)}[/blue]"
 
 
 def format_hint(text: str) -> str:
@@ -244,9 +249,8 @@ def format_hint(text: str) -> str:
 
     Prose outside the code spans is escaped here rather than by the caller, so a
     hint naming a metric such as ``[i]`` renders it literally instead of having
-    rich parse it as a style tag. The spans are escaped by
-    :func:`highlight_inline_code`, so escaping the prose separately is what keeps
-    both from being escaped twice.
+    rich parse it as a style tag. The spans are escaped on their own, so
+    escaping the prose separately is what keeps both from being escaped twice.
 
     Args:
         text: The bare hint sentence, which may contain ``` `...` ``` spans.
@@ -254,13 +258,11 @@ def format_hint(text: str) -> str:
     Returns:
         Rich markup for the hint line, for :func:`render_lines` to resolve.
     """
-    parts: list[str] = []
-    position = 0
-    for span in _INLINE_CODE_PATTERN.finditer(text):
-        parts.append(escape(text[position : span.start()]))
-        parts.append(highlight_inline_code(span.group(0)))
-        position = span.end()
-    parts.append(escape(text[position:]))
+    # Splitting on a pattern with one capture group alternates prose and code.
+    parts = [
+        _code_span(piece) if index % 2 else escape(piece)
+        for index, piece in enumerate(_INLINE_CODE_PATTERN.split(text))
+    ]
     return f"[dim]{''.join(parts)}[/dim]"
 
 
@@ -281,7 +283,7 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
     - ``color=True`` forces ANSI even when ``NO_COLOR`` is set, by declaring the
       capture a terminal with color enabled.
     - ``color=False`` suppresses ANSI even when ``FORCE_COLOR`` is set.
-    - ``color=None`` defers to :func:`color_from_env`, which owns the
+    - ``color=None`` defers to :func:`gymrat.utils.color_from_env`, which owns the
       ``FORCE_COLOR``/``NO_COLOR`` precedence and the ways it differs from rich's
       own detection. With neither variable set, a captured buffer is not a TTY,
       so the output is plain.
@@ -326,46 +328,6 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
         no_color=False,
         soft_wrap=True,
     )
-
-
-def _force_color_env() -> bool:
-    """Whether ``FORCE_COLOR`` in the environment asks for color, without mutating it.
-
-    ``FORCE_COLOR`` wins over ``NO_COLOR`` when both are set:
-    any value other than ``0``, ``false`` or the empty string enables color. Only
-    the ``color=None`` branch consults this; an explicit choice never does.
-
-    Returns:
-        Whether ``FORCE_COLOR`` is present and set to an enabling value.
-    """
-    value = os.environ.get("FORCE_COLOR")
-    if value is None:
-        return False
-    return value.lower() not in {"", "0", "false"}
-
-
-def color_from_env() -> bool | None:
-    """The color preference the environment declares, or ``None`` to defer to the caller.
-
-    One precedence rule, shared by every color surface so they never disagree:
-    ``FORCE_COLOR`` (any value but ``0``/``false``/empty) forces color on even
-    when ``NO_COLOR`` is also present; ``FORCE_COLOR`` set to a rejected value
-    (``0``/``false``/empty) explicitly disables color — this must override
-    Rich's presence-based detection which treats any ``FORCE_COLOR`` as "on";
-    ``NO_COLOR`` (present, any value) then forces it off; with neither the
-    answer is ``None`` so the caller decides from the stream's own TTY state.
-
-    Returns:
-        ``True`` for forced color, ``False`` for suppressed color, or ``None``
-        when neither environment variable is set.
-    """
-    if _force_color_env():
-        return True
-    if os.environ.get("FORCE_COLOR") is not None:
-        return False
-    if "NO_COLOR" in os.environ:
-        return False
-    return None
 
 
 def render_lines(

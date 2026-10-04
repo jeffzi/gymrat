@@ -9,17 +9,16 @@ sync only reveals its behavior against real worktrees and real dirty files.
 import shutil
 import stat
 import sys
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from gymrat.config.types import ResolvedConfig
-from gymrat.errors import GymratError, hint_of
+from gymrat.config import ResolvedConfig
+from gymrat.errors import GymratError
 from gymrat.loop.start import start_session
 from gymrat.loop.sync import SyncResult, sync_to_experiment
 from gymrat.session.paths import experiment_worktree_dir
-from tests._git import git as run_git
+from tests._git import run_git
 
 CONFIG = ResolvedConfig(
     bench="echo ok",
@@ -29,12 +28,6 @@ CONFIG = ResolvedConfig(
     unstable_noise_pct=200.0,
     primary="geomean",
 )
-
-
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str]) -> str:
-    """A fresh scratch repository with no open session."""
-    return create_scratch_repo()
 
 
 @pytest.fixture
@@ -130,7 +123,7 @@ def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_refuse_
         sync_to_experiment(session)
 
     assert "README.md" in str(excinfo.value)
-    hint = hint_of(excinfo.value) or ""
+    hint = excinfo.value.hint or ""
     assert "settle" in hint.lower() or "revert" in hint.lower()
     assert (Path(experiment) / "README.md").read_text(encoding="utf-8") == "# Experiment change\n"
 
@@ -159,7 +152,7 @@ def test_sync_to_experiment_when_no_session_does_raise_pointing_at_start(
     with pytest.raises(GymratError) as excinfo:
         sync_to_experiment(repo)
 
-    assert "gymrat start" in (hint_of(excinfo.value) or "")
+    assert "gymrat start" in (excinfo.value.hint or "")
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +164,7 @@ def test_sync_to_experiment_when_filename_contains_non_ascii_does_sync_real_path
     session: str,
 ):
     # core.quotePath=true C-quotes non-ASCII names; sync must use the real path.
-    run_git(session, "config", "core.quotePath", "true")
+    run_git(["config", "core.quotePath", "true"], session)
     non_ascii_name = "été.txt"  # ete with accents
     (Path(session) / non_ascii_name).write_text("summer\n", encoding="utf-8")
 
@@ -190,7 +183,7 @@ def test_sync_to_experiment_when_filename_contains_non_ascii_does_sync_real_path
 def test_sync_to_experiment_when_file_renamed_does_remove_old_path_from_experiment(
     session: str,
 ):
-    run_git(session, "mv", "README.md", "GUIDE.md")
+    run_git(["mv", "README.md", "GUIDE.md"], session)
 
     result = sync_to_experiment(session)
 
@@ -267,7 +260,10 @@ def test_sync_to_experiment_when_experiment_worktree_missing_does_raise_gymrat_e
     with pytest.raises(GymratError) as excinfo:
         sync_to_experiment(session)
 
-    assert hint_of(excinfo.value) is not None
+    assert str(excinfo.value).startswith("Cannot read experiment worktree: ")
+    assert excinfo.value.hint == (
+        "The experiment worktree may have been deleted. Run 'gymrat start' to begin a new session."
+    )
 
 
 def test_sync_to_experiment_when_git_status_fails_does_raise_gymrat_error(
@@ -277,8 +273,11 @@ def test_sync_to_experiment_when_git_status_fails_does_raise_gymrat_error(
     index.write_bytes(b"corrupt")
     (Path(session) / "change.txt").write_text("trigger\n", encoding="utf-8")
 
-    with pytest.raises(GymratError):
+    with pytest.raises(GymratError) as excinfo:
         sync_to_experiment(session)
+
+    assert str(excinfo.value).startswith("Cannot read dirty files: ")
+    assert excinfo.value.hint == "Check that the repository is not corrupt."
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +297,7 @@ def test_sync_to_experiment_when_source_is_directory_does_report_expected_file_a
         sync_to_experiment(session)
 
     assert "README.md" in str(excinfo.value)
-    hint = hint_of(excinfo.value) or ""
+    hint = excinfo.value.hint or ""
     assert "submodule" in hint
 
 
@@ -310,7 +309,7 @@ def test_sync_to_experiment_when_source_is_directory_does_report_expected_file_a
 def test_sync_to_experiment_when_file_deleted_does_remove_from_experiment(
     session: str,
 ):
-    run_git(session, "rm", "README.md")
+    run_git(["rm", "README.md"], session)
 
     sync_to_experiment(session)
 
@@ -323,8 +322,8 @@ def test_sync_to_experiment_when_mixed_status_types_does_sync_all(
 ):
     (Path(session) / "README.md").write_text("# Changed\n", encoding="utf-8")
     (Path(session) / "added.py").write_text("x = 1\n", encoding="utf-8")
-    run_git(session, "add", ".")
-    run_git(session, "mv", "README.md", "GUIDE.md")
+    run_git(["add", "."], session)
+    run_git(["mv", "README.md", "GUIDE.md"], session)
 
     result = sync_to_experiment(session)
 

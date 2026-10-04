@@ -9,7 +9,8 @@ A module-level value that the generators read and that was derived from a union 
 runs holds the original members, so it must be rebound here too, or the generators miss the probe:
 
 - ``SESSION_LOG_MODELS``, the session-log member tuple, is rebound to the extended union's members.
-- The supervisor event adapter is rebound to one built from the extended event union.
+- The session-log adapter and the supervisor event adapter are each rebound to one built from
+  the extended union.
 
 The substitution happens before ``gymrat.event_docs`` is first imported, so the generators see
 the extended union exactly as they would see a model added to the union's source.
@@ -23,8 +24,8 @@ from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from gymrat.session.records import SESSION_LOG_MODELS, SessionLogRecord
-from gymrat.supervisor.events import SessionEvent, session_event_adapter
+from gymrat.session.records import SESSION_LOG_ADAPTER, SESSION_LOG_MODELS, SessionLogRecord
+from gymrat.supervisor.events import SESSION_EVENT_ADAPTER, SessionEvent
 
 #: Wire type of the probe model appended to the extended union.
 PROBE_WIRE_TYPE = "probe"
@@ -57,11 +58,13 @@ def _extend(channel: str) -> None:
     if channel == "session-log":
         _rebind(SessionLogRecord, _ExtendedLogRecord)
         _rebind(SESSION_LOG_MODELS, get_args(_ExtendedLogRecord))
+        adapter = TypeAdapter(Annotated[_ExtendedLogRecord, Field(discriminator="type")])
+        _rebind(SESSION_LOG_ADAPTER, adapter)
     elif channel == "supervisor-log":
         extended = _with_probe(get_args(SessionEvent))
         _rebind(SessionEvent, extended)
         adapter = TypeAdapter(Annotated[extended, Field(discriminator="type")])
-        _rebind(session_event_adapter(), adapter)
+        _rebind(SESSION_EVENT_ADAPTER, adapter)
     else:
         msg = f"unknown channel {channel!r}"
         raise SystemExit(msg)

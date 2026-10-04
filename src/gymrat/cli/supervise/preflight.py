@@ -5,7 +5,7 @@ warning, the session open/resume under the repository lock, the
 stop-condition refusal, the baseline measurement, and the feasibility check.
 The module raises :class:`GymratError` for refusals and lets the command's
 boundary route them to exit 2, except the doctor gate, which renders its own
-report to stderr and exits with code 2 directly.
+report to stderr and leaves with code 2 itself.
 """
 
 from __future__ import annotations
@@ -14,17 +14,19 @@ import asyncio
 import sys
 from typing import TYPE_CHECKING
 
+import typer
+
 from gymrat.cli.console import resolve_stream_color
-from gymrat.cli.shared import SharedFlags, begin_run, run_options_of, write_and_flush, write_stdout
-from gymrat.config.types import CliFlags, ResolvedConfig
+from gymrat.cli.exit import write_and_flush, write_stdout
+from gymrat.cli.run_setup import SharedFlags, begin_run
+from gymrat.config import CliFlags, ResolvedConfig
 from gymrat.doctor import build_doctor_report, render_doctor_report
-from gymrat.errors import GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.baseline import measure_baseline
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import start_session
-from gymrat.plural import pluralize
 from gymrat.report.loop import format_start_summary
-from gymrat.sampling import TargetSpec
+from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.budget import (
     estimate_iterate_duration,
     minutes_to_ms,
@@ -46,7 +48,7 @@ from gymrat.session.store import (
     recover_torn_tail,
 )
 from gymrat.session.workspace import changed_file_count
-from gymrat.warn import warn_to_stderr
+from gymrat.utils import pluralize, warn_to_stderr
 
 if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
@@ -91,7 +93,8 @@ def run_preflight(
         GymratError: When a stop condition is met (without ``force``) or the
             feasibility check refuses.
     """
-    _checks_warning(config)
+    if config.checks is None:
+        warn_to_stderr("warning: checks is not configured — keep will commit with the gate off")
     release = acquire_lock(lockfile_path(root), "supervise")
     try:
         recover_torn_tail(session_jsonl_path(root))
@@ -107,13 +110,16 @@ def run_preflight(
 def doctor_gate(root: str, *, color: bool | None = None) -> None:
     """Run the four doctor sections and refuse to launch if any check fails.
 
-    On a failure the rendered doctor report goes to stderr and the process exits
-    with code 2 before anything else runs.
+    On a failure the rendered doctor report goes to stderr before anything else
+    runs.
 
     Args:
         root: The repository root path.
         color: The explicit color choice for the report, or ``None`` to defer to
             the environment and TTY detection.
+
+    Raises:
+        typer.Exit: With the tool-failure code when a doctor check fails.
     """
     report = build_doctor_report(CliFlags(), root)
     if not report.has_failures:
@@ -121,12 +127,7 @@ def doctor_gate(root: str, *, color: bool | None = None) -> None:
     resolved_color = resolve_stream_color(color, sys.stderr)
     rendered = render_doctor_report(report, color=resolved_color)
     write_and_flush(sys.stderr, rendered + "\n")
-    sys.exit(2)
-
-
-def _checks_warning(config: ResolvedConfig) -> None:
-    if config.checks is None:
-        warn_to_stderr("warning: checks is not configured — keep will commit with the gate off")
+    raise typer.Exit(TOOL_FAILURE_EXIT_CODE)
 
 
 def _session_step(
@@ -197,7 +198,9 @@ def _baseline_step(
     target = TargetSpec(label=_BASELINE_LABEL, target=worktree_dir)
     progress = begin_run(SharedFlags(), 1, command="supervise")
     try:
-        run_options = run_options_of(config, progress)
+        run_options = RunOptions.from_config(
+            config, on_progress=progress.report, warn=progress.warn
+        )
         _result, record = asyncio.run(measure_baseline(target, run_options))
         append_record(session_jsonl_path(root), record)
     finally:

@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from gymrat.adapters import Adapter, AdapterError, MetricDefaults, mitata_adapter
+from gymrat.adapters import AdapterError, MetricDefaults, mitata_adapter
 from gymrat.model import MetricUnit
 from tests.adapters._inputs import LINE_BREAKS, build_stdout
 
@@ -17,10 +17,6 @@ _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mitata.json"
 
 def test_mitata_adapter_when_inspected_does_expose_name():
     assert mitata_adapter.name == "mitata"
-
-
-def test_mitata_adapter_when_checked_does_satisfy_adapter_protocol():
-    assert isinstance(mitata_adapter, Adapter)
 
 
 # ---------------------------------------------------------------------------

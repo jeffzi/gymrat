@@ -12,9 +12,7 @@ from pathlib import Path
 
 from gymrat.clock import now_ns
 from gymrat.errors import GymratError
-from gymrat.git import try_git
-from gymrat.plural import pluralize
-from gymrat.report.loop import SHORT_SHA_LENGTH
+from gymrat.git import SHORT_SHA_LENGTH, try_git
 from gymrat.session.records import FinalizeRecord, KeepRecord, SessionLogRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
@@ -23,11 +21,13 @@ from gymrat.session.store import (
     require_open_session,
 )
 from gymrat.session.workspace import (
-    is_worktree_dirty,
+    dirty_file_count,
+    missing_commit_hint,
     remove_worktrees,
     run_git_step,
     worktree_head,
 )
+from gymrat.utils import pluralize
 
 #: The hint a refusal points at whenever the fix is to settle the last iteration.
 _SETTLE_FIRST_HINT = "Run gymrat keep or gymrat discard before closing the session."
@@ -90,7 +90,7 @@ def _validate_finalize(
             f"Finalize refused: iteration {state.last_seq} has been neither kept nor discarded."
         )
         raise GymratError(message, hint=_SETTLE_FIRST_HINT, reason="unsettled")
-    if is_worktree_dirty(session.worktrees.experiment):
+    if dirty_file_count(session.worktrees.experiment) > 0:
         message = (
             f"Finalize refused: the experiment worktree at {session.worktrees.experiment} "
             "carries uncommitted work."
@@ -225,14 +225,11 @@ def _squash_onto_baseline(
         f"Check that the commit is still there: git cat-file -t {tree_source}",
     ).strip()
 
-    build_hint = (
-        f"Check that {baseline_sha} is a commit this repository has: git cat-file -t {baseline_sha}"
-    )
     return run_git_step(
         ["commit-tree", tree, "-p", baseline_sha, "-m", message],
         root,
         f"Cannot build the squash commit from {tree_source[:SHORT_SHA_LENGTH]} onto {baseline_sha}",
-        build_hint,
+        missing_commit_hint(baseline_sha),
     ).strip()
 
 

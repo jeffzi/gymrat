@@ -15,7 +15,7 @@ from gymrat.session.records import (
     record_to_wire,
 )
 from gymrat.session.workspace import Worktrees
-from tests.session.records._fixtures import session_record
+from tests.session.records._fixtures import baseline_record, session_record
 from tests.session.records._wire import (
     AT,
     BASELINE_RECORD,
@@ -351,12 +351,7 @@ def test_record_to_wire_when_called_does_produce_snake_case_wire():
 
 
 def test_record_to_wire_when_seq_none_does_omit_seq_from_wire():
-    record = BaselineRecord(
-        type="baseline",
-        at=AT,
-        label="main",
-        samples=({"total_ms": 15200},),
-    )
+    record = baseline_record()
 
     wire = record_to_wire(record)
 

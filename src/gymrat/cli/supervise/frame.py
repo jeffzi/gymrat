@@ -30,19 +30,17 @@ from gymrat.cli.supervise.types import (
     Composing,
     Exiting,
     InFlight,
-    NestedTool,
     Responding,
+    RunningTool,
     Starting,
     Thinking,
     Waiting,
 )
-from gymrat.display_path import abbreviate_home
-from gymrat.eta import MS_PER_SECOND, format_duration, format_eta
-from gymrat.model import Effect
-from gymrat.report.format import format_delta
-from gymrat.report.loop import SHORT_SHA_LENGTH
+from gymrat.git import SHORT_SHA_LENGTH
+from gymrat.report.format import format_percent_delta
 from gymrat.session.budget import minutes_to_ms
 from gymrat.supervisor.events import ITERATE_SUMMARY, ITERATE_TOOL
+from gymrat.utils import MS_PER_SECOND, abbreviate_home, format_duration, format_eta
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -54,9 +52,8 @@ if TYPE_CHECKING:
     from gymrat.cli.supervise.types import (
         FinishedTool,
         Liveness,
-        NestedPhase,
+        NestedActivity,
         ReadSessionResult,
-        TrackedTool,
     )
     from gymrat.session.progress_file import ProgressSnapshot
 
@@ -82,33 +79,21 @@ _LOOP_STYLES: dict[LoopStyle, str | None] = {
 # ---------------------------------------------------------------------------
 
 
-def _format_time_label(elapsed_ms: int, max_minutes: float) -> str:
-    max_ms = minutes_to_ms(max_minutes)
-    remaining_ms = max(0, max_ms - elapsed_ms)
-    elapsed = format_duration(elapsed_ms)
-    remaining = format_duration(remaining_ms)
-    return (
-        f"[{STYLE_RUNNING}]{elapsed}[/{STYLE_RUNNING}]"
-        f"  [{STYLE_META}]cap in {remaining}[/{STYLE_META}]"
-    )
-
-
-def _is_iterate_tool(tool: TrackedTool | InFlight) -> bool:
-    if tool.tool_name == ITERATE_TOOL:
-        return True
-    return tool.tool_name == "Bash" and ITERATE_SUMMARY in tool.input_summary
-
-
 def _format_wall_clock(epoch_ms: int, tz: tzinfo | None) -> str:
     return datetime.fromtimestamp(epoch_ms / MS_PER_SECOND, tz).strftime("%H:%M:%S")
 
 
 def _build_time_bar(elapsed_ms: int, max_minutes: float) -> RenderableType:
     max_ms = minutes_to_ms(max_minutes)
+    elapsed = format_duration(elapsed_ms)
+    remaining = format_duration(max(0, max_ms - elapsed_ms))
     progress = Progress(
         TextColumn("time"),
         BarColumn(bar_width=None),
-        TextColumn(_format_time_label(elapsed_ms, max_minutes)),
+        TextColumn(
+            f"[{STYLE_RUNNING}]{elapsed}[/{STYLE_RUNNING}]"
+            f"  [{STYLE_META}]cap in {remaining}[/{STYLE_META}]"
+        ),
         auto_refresh=False,
         expand=True,
     )
@@ -167,21 +152,19 @@ def build_best_text(session_result: ReadSessionResult | None) -> Text | None:
     Returns:
         The styled ``Text``, or ``None`` when no best iteration exists.
     """
-    if session_result is None:
+    if session_result is None or session_result.best is None:
         return None
-    if session_result.best_delta_pct is None or session_result.best_seq is None:
-        return None
-    delta = format_delta(Effect(value=session_result.best_delta_pct, unit="percent"))
-    delta_style = STYLE_DONE if session_result.best_delta_pct < 0 else STYLE_REGRESSED
+    best = session_result.best
+    delta = format_percent_delta(best.delta_pct)
+    delta_style = STYLE_DONE if best.delta_pct < 0 else STYLE_REGRESSED
     text = Text()
     text.append(delta, style=delta_style)
-    if session_result.primary_label is not None:
-        text.append(f" {session_result.primary_label}")
+    text.append(f" {best.label}")
     if session_result.baseline_sha is not None:
         text.append(
             f" vs baseline {session_result.baseline_sha[:SHORT_SHA_LENGTH]}", style=STYLE_META
         )
-    text.append(f" (iteration {session_result.best_seq})", style=STYLE_META)
+    text.append(f" (iteration {best.seq})", style=STYLE_META)
     return text
 
 
@@ -197,12 +180,12 @@ def _build_waiting_text(
     if ago < idle_warn_ms:
         return Text(f"  waiting  {format_duration(ago)}", style=STYLE_PENDING)
     idle = f"no output for {format_duration(ago)}"
-    if waiting.tool_name is None:
+    last = waiting.last_tool
+    if last is None:
         return Text(idle, style=STYLE_ALERT)
-    clock_ms = waiting.tool_ended_at if waiting.tool_ended_at is not None else waiting.since
-    clock = _format_wall_clock(clock_ms, tz)
-    mark = f" {GLYPH_ERROR}" if waiting.result == "error" else ""
-    label = f"(last tool: {waiting.tool_name}{mark} at {clock})"
+    clock = _format_wall_clock(last.ended_at, tz)
+    mark = f" {GLYPH_ERROR}" if last.result == "error" else ""
+    label = f"(last tool: {last.tool_name}{mark} at {clock})"
     return Text(f"{idle} {label}", style=STYLE_ALERT)
 
 
@@ -221,7 +204,7 @@ def _build_liveness_text(
     *,
     tool_col: int,
     idle_warn_ms: int,
-) -> Text | None:
+) -> Text:
     match liveness:
         case Starting():
             return Text("starting", style=STYLE_PENDING)
@@ -259,24 +242,11 @@ def _build_finished_tool_line(tool: FinishedTool, tz: tzinfo | None, *, tool_col
     return Text(line, style=style, no_wrap=True, overflow="ellipsis")
 
 
-def _build_iterate_nest(
-    sidecar: ProgressSnapshot | None,
-    now_ms: int,
-    tool_started_at: int,
-) -> str | None:
-    if sidecar is None:
-        return None
-    remaining = sidecar.passes_total - sidecar.passes_completed
-    if remaining > 0 and sidecar.last_pass_duration_ms > 0:
-        eta_ms = remaining * sidecar.last_pass_duration_ms
-        eta_text = format_eta(eta_ms)
-    else:
-        eta_text = ""
-    elapsed = format_duration(now_ms - tool_started_at)
-    text = f"passes {sidecar.passes_completed}/{sidecar.passes_total} · {elapsed}"
-    if eta_text:
-        text += f" · {eta_text}"
-    return text
+def _meta_row(label: str, content: Text | str) -> Text:
+    """A summary row: a dim label followed by content that keeps its own styles."""
+    row = Text(label, style=STYLE_META)
+    row.append(content)
+    return row
 
 
 def _build_summary_table(state: ReporterState, elapsed_ms: int) -> Table:
@@ -284,21 +254,15 @@ def _build_summary_table(state: ReporterState, elapsed_ms: int) -> Table:
     summary.add_column()
     summary.add_row(_build_time_bar(elapsed_ms, state.max_minutes))
     summary.add_row(_build_cost_text(state.cost_usd, state.max_usd))
-
-    loop_row = Text("loop   ", style=STYLE_META)
-    loop_row.append_text(build_loop_text(state.session_result, state.max_iterations))
-    summary.add_row(loop_row)
+    loop_text = build_loop_text(state.session_result, state.max_iterations)
+    summary.add_row(_meta_row("loop   ", loop_text))
 
     best_text = build_best_text(state.session_result)
     if best_text is not None:
-        best_row = Text("best ", style=STYLE_META)
-        best_row.append_text(best_text)
-        summary.add_row(best_row)
+        summary.add_row(_meta_row("best ", best_text))
 
     if state.last_decision is not None:
-        turns_row = Text("turns  ", style=STYLE_META)
-        turns_row.append(state.last_decision)
-        summary.add_row(turns_row)
+        summary.add_row(_meta_row("turns  ", state.last_decision))
 
     return summary
 
@@ -312,10 +276,10 @@ def _tool_name_column_width(state: ReporterState) -> int:
     return max(_MIN_TOOL_NAME_WIDTH, min(raw, _MAX_TOOL_NAME_WIDTH))
 
 
-def _build_nested_activity_line(activity: NestedTool | NestedPhase, now: int) -> Text:
+def _build_nested_activity_line(activity: NestedActivity, now: int) -> Text:
     """Build a dim ``↳`` line for nested subagent activity."""
     elapsed = format_duration(now - activity.since)
-    if isinstance(activity, NestedTool):
+    if isinstance(activity, RunningTool):
         content = f"    ↳ {activity.tool_name} {activity.input_summary}  {elapsed}"
     else:
         match activity.phase:
@@ -337,13 +301,20 @@ def _build_iterate_nest_row(
     read_progress: Callable[[str], ProgressSnapshot | None],
 ) -> Text | None:
     """The iterate-progress row for an in-flight ``gymrat iterate`` call, or ``None``."""
-    if not _is_iterate_tool(liveness):
+    is_iterate = liveness.tool_name == ITERATE_TOOL or (
+        liveness.tool_name == "Bash" and ITERATE_SUMMARY in liveness.input_summary
+    )
+    if not is_iterate:
         return None
     sidecar = read_progress(root)
-    nest_text = _build_iterate_nest(sidecar, now, liveness.since)
-    if nest_text is None:
+    if sidecar is None:
         return None
-    return Text(f"  {nest_text}", style=STYLE_META)
+    elapsed = format_duration(now - liveness.since)
+    text = f"  passes {sidecar.passes_completed}/{sidecar.passes_total} · {elapsed}"
+    remaining = sidecar.passes_total - sidecar.passes_completed
+    if remaining > 0 and sidecar.last_pass_duration_ms > 0:
+        text += f" · {format_eta(remaining * sidecar.last_pass_duration_ms)}"
+    return Text(text, style=STYLE_META)
 
 
 def _build_liveness_table(  # noqa: PLR0913 -- view knobs threaded to leaf renderers
@@ -357,15 +328,15 @@ def _build_liveness_table(  # noqa: PLR0913 -- view knobs threaded to leaf rende
 ) -> Table:
     liveness_table = Table.grid(padding=(0, 1))
     liveness_table.add_column()
-    liveness_text = _build_liveness_text(
-        state.liveness,
-        now,
-        tz,
-        tool_col=tool_col,
-        idle_warn_ms=idle_warn_ms,
+    liveness_table.add_row(
+        _build_liveness_text(
+            state.liveness,
+            now,
+            tz,
+            tool_col=tool_col,
+            idle_warn_ms=idle_warn_ms,
+        )
     )
-    if liveness_text is not None:
-        liveness_table.add_row(liveness_text)
 
     if isinstance(state.liveness, InFlight):
         nest_row = _build_iterate_nest_row(state.liveness, now, state.root, read_progress)
@@ -391,8 +362,6 @@ def _append_meta_field(text: Text, label: str, value: str) -> None:
 def _build_title(state: ReporterState) -> Text:
     title = Text()
     title.append("supervise", style=STYLE_LABEL)
-    if state.label:
-        title.append(f" {state.label}", style=STYLE_LABEL)
     if state.session_id:
         _append_meta_field(title, "session", state.session_id)
     if state.branch:

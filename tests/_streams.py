@@ -3,8 +3,6 @@
 import io
 from typing import override
 
-__all__ = ["FakeStream", "RaisingStream", "RecordingStream"]
-
 
 class FakeStream(io.StringIO):
     """A stdout/stderr stand-in whose TTY status the test controls."""

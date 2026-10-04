@@ -18,12 +18,12 @@ import pytest
 from gymrat.session.paths import lockfile_path, repo_root
 from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
-from tests._git import git as _git
+from tests._git import EMIT_ONE_BENCH, write_committed_bench
+from tests._git import run_git as _git
 from tests.conftest import hold_lock
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 
-_EMIT_ONE = "#!/bin/sh\necho 'METRIC x=1'\n"
 _SLOW_BENCH = "#!/bin/sh\nsleep 5\necho 'METRIC x=1'\n"
 
 
@@ -33,7 +33,7 @@ _SLOW_BENCH = "#!/bin/sh\nsleep 5\necho 'METRIC x=1'\n"
 
 
 def test_cli_when_outside_repo_does_measure_lock_free(tmp_path: Path):
-    (tmp_path / "bench.sh").write_text(_EMIT_ONE, encoding="utf-8")
+    (tmp_path / "bench.sh").write_text(EMIT_ONE_BENCH, encoding="utf-8")
 
     result = subprocess.run(  # noqa: S603
         [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "2"],
@@ -59,9 +59,7 @@ def test_cli_when_rival_lock_held_does_exit_two_naming_holder_without_benching(
     list_worktree_dirs: Callable[..., list[str]],
 ):
     repo = create_scratch_repo()
-    (Path(repo) / "bench.sh").write_text(_EMIT_ONE, encoding="utf-8")
-    _git(repo, "add", "bench.sh")
-    _git(repo, "commit", "-m", "add bench")
+    write_committed_bench(repo, EMIT_ONE_BENCH)
     lock_path = lockfile_path(repo_root(repo))
     blocker = hold_lock(
         lock_path,
@@ -127,11 +125,9 @@ def test_cli_when_signalled_mid_run_does_exit_128_plus_signal_number_and_sweep_w
     wait_for_worktrees: Callable[..., list[str]],
 ):
     repo = create_scratch_repo()
-    (Path(repo) / "bench.sh").write_text(_SLOW_BENCH, encoding="utf-8")
-    _git(repo, "add", "bench.sh")
-    _git(repo, "commit", "-m", "slow bench")
-    _git(repo, "switch", "-c", "candidate")
-    _git(repo, "switch", "main")
+    write_committed_bench(repo, _SLOW_BENCH, message="slow bench")
+    _git(["switch", "-c", "candidate"], repo)
+    _git(["switch", "main"], repo)
 
     proc = subprocess.Popen(  # noqa: S603
         [*_ENTRY, "compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],

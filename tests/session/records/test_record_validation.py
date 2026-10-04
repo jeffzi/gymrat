@@ -477,6 +477,11 @@ _COMMAND_REASONS = (
             id="baseline-ref-not-string",
         ),
         pytest.param(
+            patching(SESSION_RECORD, {"worktrees": {"experiment": 7, "baseline": "b"}}),
+            "worktrees.experiment: expected a string, got 7",
+            id="worktrees-experiment-not-string",
+        ),
+        pytest.param(
             patching(SESSION_RECORD, {"config": config_with(samples=10.5)}),
             "config.samples: expected an integer, got 10.5",
             id="samples-fractional",

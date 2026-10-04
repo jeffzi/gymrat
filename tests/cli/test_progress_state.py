@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from gymrat.cli.progress_state import ProgressState, advance, plain_line
+from gymrat.cli.progress import ProgressState, advance, plain_line
 from gymrat.progress_events import (
     HookStarted,
     PrepareFinished,

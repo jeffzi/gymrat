@@ -10,35 +10,30 @@ from __future__ import annotations
 
 import sys
 from io import StringIO
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import pytest
 
+from gymrat.cli.iterate.progress import IterateRenderer
+from gymrat.cli.live_display import LIVE_REFRESH_PER_SECOND
 from gymrat.cli.progress import ProgressReporter
-from gymrat.cli.style import LIVE_REFRESH_PER_SECOND
 from gymrat.progress_events import (
     HookStarted,
     PrepareFinished,
     PrepareStarted,
 )
 from gymrat.signals import install_termination_cleanup
+from tests._process_helpers import InterruptedTerminal, ProcessExit, fake_install
 from tests._rich import (
     HIDE_CURSOR,
     KEPT_LINE,
     TERMINATION_SIGNAL,
     Clock,
-    InterruptedTerminal,
-    ProcessExit,
     console_output,
     cursor_hidden,
-    fake_install,
     frame_text,
     screen_lines,
     sealed_console,
-)
-from tests.cli._progress_helpers import (
-    build_iterate_renderer,
-    build_progress_reporter,
 )
 from tests.cli._progress_helpers import (
     ms_from_clock as _ms,
@@ -56,13 +51,73 @@ if TYPE_CHECKING:
     from rich.console import Console
     from syrupy.assertion import SnapshotAssertion
 
-    from tests.cli._progress_helpers import LiveRenderer
+    from gymrat.cli.live_display import ErasableLive
+    from gymrat.progress_events import ProgressEvent
 
-    RendererFactory = Callable[[Literal["live", "plain"], Console], LiveRenderer]
+    RendererFactory = Callable[[Literal["live", "plain"], Console], "LiveRenderer"]
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class LiveRenderer(Protocol):
+    """The surface both CLI progress renderers share, as the signal tests drive it."""
+
+    @property
+    def live(self) -> ErasableLive | None:
+        """The active live display, or ``None`` outside live mode or after ``stop()``."""
+        ...
+
+    def report(self, event: ProgressEvent) -> None:
+        """Fold ``event`` into the display."""
+        ...
+
+    def stop(self) -> None:
+        """Stop the renderer."""
+        ...
+
+
+def build_progress_reporter(mode: Literal["live", "plain"], console: Console) -> LiveRenderer:
+    """Build the measure/compare progress reporter on ``console``.
+
+    Args:
+        mode: ``"live"`` for a rich live display, ``"plain"`` for milestone lines.
+        console: The console to render to.
+
+    Returns:
+        A single-target reporter with a hand-advanced clock.
+    """
+    return ProgressReporter(
+        mode=mode,
+        console=console,
+        target_count=1,
+        sample_count=3,
+        clock=Clock(),
+        command="measure",
+    )
+
+
+def build_iterate_renderer(mode: Literal["live", "plain"], console: Console) -> LiveRenderer:
+    """Build the iterate progress renderer on ``console``.
+
+    Args:
+        mode: ``"live"`` for a rich live checklist, ``"plain"`` for milestone lines.
+        console: The console to render to.
+
+    Returns:
+        A renderer for iteration 1 with a hand-advanced clock.
+    """
+    return IterateRenderer(
+        mode=mode,
+        console=console,
+        seq=1,
+        session_id="test-session",
+        sample_count=5,
+        metric_count=3,
+        primary_metric="geomean",
+        clock=Clock(),
+    )
 
 
 _live_reporters: list[ProgressReporter] = []
@@ -364,9 +419,9 @@ def test_warn_when_plain_mode_does_print_the_message_verbatim_on_its_own_line():
 def test_live_mode_when_created_does_register_termination_cleanup_once(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    registered: list[object] = []
+    registered: list[Callable[[], None]] = []
     monkeypatch.setattr(
-        "gymrat.cli.style.install_termination_cleanup",
+        "gymrat.cli.live_display.install_termination_cleanup",
         fake_install(registered),
     )
 
@@ -379,9 +434,9 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
 def test_plain_mode_when_created_does_not_register_termination_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    registered: list[object] = []
+    registered: list[Callable[[], None]] = []
     monkeypatch.setattr(
-        "gymrat.cli.style.install_termination_cleanup",
+        "gymrat.cli.live_display.install_termination_cleanup",
         fake_install(registered),
     )
 
@@ -476,6 +531,16 @@ def test_live_renderer_when_console_width_zero_does_render_as_plain():
     assert "\x1b[" not in output
 
 
+def test_plain_renderer_when_label_looks_like_markup_does_print_it_verbatim():
+    console, _clock, reporter = _reporter("plain")
+
+    reporter.report(PrepareStarted(label="[bold]bench[/bold]", at_ms=0))
+    reporter.report(PrepareFinished(label="[bold]bench[/bold]", at_ms=1000))
+    reporter.stop()
+
+    assert "[00:00:01] prepared [bold]bench[/bold] (1s)" in console_output(console)
+
+
 def test_reporter_when_non_relevant_event_does_silently_ignore():
     console, _clock, reporter = _reporter("plain")
 
@@ -551,6 +616,21 @@ def test_signal_when_live_display_just_hid_the_cursor_does_restore_the_screen(
         build_renderer("live", console)
 
     assert (screen_lines(terminal.at_exit), cursor_hidden(terminal.at_exit)) == ([KEPT_LINE], False)
+
+
+def test_stop_when_signal_already_erased_the_display_does_write_nothing(
+    build_renderer: RendererFactory,
+):
+    console = sealed_console()
+    renderer = build_renderer("live", console)
+    renderer.report(PrepareStarted(label="bench", at_ms=0))
+    assert renderer.live is not None
+    renderer.live.erase_for_exit()
+    before = console_output(console)
+
+    renderer.stop()
+
+    assert console_output(console) == before
 
 
 def test_signal_when_live_renderer_stopped_does_write_nothing(

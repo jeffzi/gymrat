@@ -14,9 +14,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+import typer
 
 from gymrat.cli.supervise.preflight import doctor_gate, run_preflight
-from gymrat.config.types import ResolvedConfig, StopConfig
+from gymrat.config import ResolvedConfig, StopConfig
 from gymrat.doctor import (
     Check,
     CheckSection,
@@ -24,24 +25,26 @@ from gymrat.doctor import (
     EnvironmentInfo,
     create_doctor_report,
 )
-from gymrat.errors import GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import StartResult, start_session
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, session_jsonl_path
-from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
-from gymrat.session.store import append_record, read_records
-from tests._git import run_git
-from tests.cli.supervise._fixtures import (
-    baseline_record,
-    seed_session_with_baseline,
-    seed_session_with_iteration,
-    start_open_session,
-)
+from gymrat.session.records import BaselineRecord, FinalizeRecord
+from gymrat.session.store import append_record
+from tests._git import head_of, run_git
+from tests.cli.supervise._fixtures import start_open_session
 from tests.loop.iterate._fixtures import resolved_config
 from tests.report._measurements import create_measurement_result
-from tests.session.records._fixtures import committed_keep, iteration_record, tear_final_line
+from tests.session.records._fixtures import (
+    baseline_record,
+    committed_keep,
+    iteration_record,
+    log_records,
+    session_header_of,
+    tear_final_line,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -52,6 +55,35 @@ _MODULE = "gymrat.cli.supervise.preflight"
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def seed_session_with_baseline(
+    repo: str, *, baseline_duration_ms: float, label: str = ".gymrat/worktrees/baseline"
+) -> None:
+    """Open a session and append a single baseline record with the given duration."""
+    start_open_session(repo)
+    log = session_jsonl_path(repo)
+    append_record(log, baseline_record(label=label, duration_ms=baseline_duration_ms))
+
+
+def seed_session_with_iteration(
+    repo: str,
+    *,
+    iteration_duration_ms: float,
+    include_baseline: bool = True,
+    label: str = ".gymrat/worktrees/baseline",
+) -> None:
+    """Seed a session whose iteration carries the given duration.
+
+    The seeded baseline (when included) gets no ``duration_ms`` of its own —
+    there is no parameter to set one — so any feasibility math a test exercises
+    is driven entirely by ``iteration_duration_ms``.
+    """
+    start_open_session(repo)
+    log = session_jsonl_path(repo)
+    if include_baseline:
+        append_record(log, baseline_record(label=label))
+    append_record(log, iteration_record(duration_ms=iteration_duration_ms))
 
 
 def _env() -> EnvironmentInfo:
@@ -125,12 +157,6 @@ def _probe_lock(lock_path: str) -> str | None:
         return None
 
 
-def _assert_lock_released(repo: str) -> None:
-    """Verify the repo lock is free by acquiring and immediately releasing it."""
-    release = acquire_lock(lockfile_path(repo), "probe")
-    release()
-
-
 # ---------------------------------------------------------------------------
 # seam installation
 # ---------------------------------------------------------------------------
@@ -182,10 +208,10 @@ def test_doctor_gate_when_check_fails_does_exit_two_with_report(
 ):
     _install_doctor_seam(monkeypatch, report=_failing_report())
 
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(typer.Exit) as exc:
         doctor_gate(repo)
 
-    assert exc.value.code == 2
+    assert exc.value.exit_code == TOOL_FAILURE_EXIT_CODE
     captured = capsys.readouterr()
     assert "install git" in captured.err
 
@@ -254,10 +280,7 @@ def test_preflight_when_no_session_does_open_and_print_summary_to_stdout(
     result = _run_preflight(repo)
 
     captured = capsys.readouterr()
-    records = read_records(session_jsonl_path(repo))
-    header = records[0]
-    assert isinstance(header, SessionRecord)
-    assert header.branch in captured.out
+    assert session_header_of(repo).branch in captured.out
     assert result.state.session is not None
 
 
@@ -295,7 +318,7 @@ def test_preflight_when_finalized_session_does_archive_and_open_fresh(
 
     run_git(["add", "README.md"], str(worktree))
     run_git(["commit", "-m", "edit"], str(worktree))
-    commit = run_git(["rev-parse", "HEAD"], str(worktree)).strip()
+    commit = head_of(str(worktree))
     append_record(session_jsonl_path(repo), iteration_record(seq=1))
     append_record(session_jsonl_path(repo), committed_keep(1, commit=commit))
     finalize_session(repo)
@@ -376,9 +399,8 @@ def test_preflight_when_log_has_torn_tail_does_truncate_before_session_opens(
 
     _run_preflight(repo)
 
-    records = read_records(log_path)
-    assert isinstance(records[0], SessionRecord)
-    baseline_records = [r for r in records if isinstance(r, BaselineRecord)]
+    session_header_of(repo)
+    baseline_records = [r for r in log_records(repo) if isinstance(r, BaselineRecord)]
     assert len(baseline_records) == 1
 
 
@@ -470,7 +492,7 @@ def test_preflight_when_no_baseline_record_does_measure_and_append(
 
     assert len(measure_calls) == 1
     assert measure_calls[0]["target"].label == ".gymrat/worktrees/baseline"
-    records = read_records(session_jsonl_path(repo))
+    records = log_records(repo)
     baseline_records = [r for r in records if isinstance(r, BaselineRecord)]
     assert len(baseline_records) == 1
     assert baseline_records[0].duration_ms is not None
@@ -542,7 +564,7 @@ def test_preflight_when_infeasible_does_leave_session_open(repo: str):
     with pytest.raises(GymratError):
         _run_preflight(repo, max_minutes=30)
 
-    records = read_records(session_jsonl_path(repo))
+    records = log_records(repo)
     assert not any(isinstance(r, FinalizeRecord) for r in records)
 
 
@@ -584,7 +606,7 @@ def test_doctor_gate_when_color_true_does_produce_ansi_on_stderr(
 ):
     _install_doctor_seam(monkeypatch, report=_failing_report())
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(typer.Exit):
         doctor_gate(repo, color=True)
 
     captured = capsys.readouterr()

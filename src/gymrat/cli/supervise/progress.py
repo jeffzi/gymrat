@@ -9,14 +9,14 @@ asks for it, replaces the state, and renders the result.
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import operator
-import sys
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from gymrat.cli.console import stderr_console
-from gymrat.cli.style import ErasableLive, mount_live
+from gymrat.cli.live_display import ErasableLive, mount_live
 from gymrat.cli.supervise.frame import build_frame
 from gymrat.cli.supervise.reducer import (
     ReporterState,
@@ -26,40 +26,33 @@ from gymrat.cli.supervise.reducer import (
     wants_session_refresh,
 )
 from gymrat.cli.supervise.text import exit_phase_text
-from gymrat.cli.supervise.types import (
-    IDLE_WARN_MS,
-    ReadSessionResult,
-    ReporterCtx,
-    SuperviseReporter,
-)
+from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
 from gymrat.clock import now_ms
-from gymrat.eta import MS_PER_SECOND
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.progress_file import read_progress as _default_read_progress
-from gymrat.session.records import (
-    IterationRecord,
-    KeepRecord,
-    SessionRecord,
-    StopRecord,
-)
+from gymrat.session.records import IterationRecord, KeepRecord, StopRecord
 from gymrat.session.store import fold_session, latest_baseline, read_records
+from gymrat.utils import MS_PER_SECOND, warn_to_stderr
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import tzinfo
 
-    from rich.console import Console, RenderableType
+    from rich.console import RenderableType
 
-    from gymrat.config.types import Effort
+    from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.records import SessionLogRecord
-    from gymrat.supervisor.events import SessionEvent
+    from gymrat.supervisor.events import SessionEvent, SessionObserver
     from gymrat.supervisor.exit_sequence import ExitPhase
 
 _logger = logging.getLogger(__name__)
 
 REFRESH_MS = 1000
 """Default Live dashboard refresh interval in milliseconds."""
+
+IDLE_WARN_MS = 30_000
+"""After 30 seconds of no tool activity, the liveness line escalates to alert styling."""
 
 
 # ---------------------------------------------------------------------------
@@ -69,8 +62,8 @@ REFRESH_MS = 1000
 
 def _find_best_kept_iteration(
     records: list[SessionLogRecord], committed_seqs: set[int]
-) -> tuple[float | None, int | None, str | None]:
-    """Return ``(delta_pct, seq, primary_label)`` for the best committed keep."""
+) -> BestIteration | None:
+    """Return the committed keep with the best primary delta, if any has one."""
     candidates = [
         (r, delta)
         for r in records
@@ -79,14 +72,12 @@ def _find_best_kept_iteration(
         and (delta := r.primary.delta_pct) is not None
     ]
     if not candidates:
-        return None, None, None
+        return None
 
     best, best_delta = min(candidates, key=operator.itemgetter(1))
-    return best_delta, best.seq, best.primary.name or best.primary.kind
-
-
-def _find_baseline_sha(records: list[SessionLogRecord]) -> str | None:
-    return next((r.baseline.sha for r in records if isinstance(r, SessionRecord)), None)
+    return BestIteration(
+        delta_pct=best_delta, seq=best.seq, label=best.primary.name or best.primary.kind
+    )
 
 
 def _find_stop_message(records: list[SessionLogRecord]) -> str | None:
@@ -94,39 +85,92 @@ def _find_stop_message(records: list[SessionLogRecord]) -> str | None:
     return next((r.message for r in reversed(records) if isinstance(r, StopRecord)), None)
 
 
-def make_default_read(root: str) -> Callable[[], ReadSessionResult]:
-    """Build a session-reader closure that folds the live session log at ``root``."""
+def read_live_session(root: str) -> ReadSessionResult:
+    """Read and fold the live session log at ``root``.
 
-    def _read() -> ReadSessionResult:
-        records = read_records(session_jsonl_path(root))
-        state = fold_session(records)
-        has_baseline = latest_baseline(records) is not None
+    Args:
+        root: The repository root whose session log to read.
 
-        committed_seqs = {
-            r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"
-        }
-        best_delta_pct, best_seq, primary_label = _find_best_kept_iteration(records, committed_seqs)
+    Returns:
+        The folded session with its baseline presence, best kept iteration, and
+        trailing stop message.
+    """
+    records = read_records(session_jsonl_path(root))
+    state = fold_session(records)
+    has_baseline = latest_baseline(records) is not None
 
-        return ReadSessionResult(
-            state=state,
-            has_baseline=has_baseline,
-            best_delta_pct=best_delta_pct,
-            best_seq=best_seq,
-            primary_label=primary_label,
-            baseline_sha=_find_baseline_sha(records),
-            stop_message=_find_stop_message(records) if state.ends_on_stop else None,
-        )
+    committed_seqs = {
+        r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"
+    }
 
-    return _read
+    return ReadSessionResult(
+        state=state,
+        has_baseline=has_baseline,
+        best=_find_best_kept_iteration(records, committed_seqs),
+        baseline_sha=state.session.baseline.sha if state.session is not None else None,
+        stop_message=_find_stop_message(records) if state.ends_on_stop else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reporter shell
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class ReporterCtx:
+    """The terminal, clock, and I/O handles the reporter shell owns.
+
+    Everything the dashboard renders lives in ``state``, which the shell
+    replaces after each event.  Only the shell writes to this object; the
+    reducer never sees it.
+    """
+
+    state: ReporterState
+    now: Callable[[], int]
+    read_session_fn: Callable[[], ReadSessionResult]
+    read_progress_fn: Callable[[str], ProgressSnapshot | None]
+    plain_write_fn: Callable[[str], None]
+    warn_fn: Callable[[str], None]
+    live: ErasableLive | None
+    tz: tzinfo | None
+    idle_warn_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class SuperviseReporter:
+    """The observer/stop/frame/warn surface that drives the supervise progress display.
+
+    ``session_result`` hands back the session state as of the last re-read, which
+    is what the closing summary reports once the display has stopped.
+
+    Live mode's display and its refresh timer run from construction until
+    ``stop``, and for that span a termination signal erases the display: its
+    cleanup is installed at construction and uninstalled by ``stop``.
+
+    ``exit_phase`` shows the run-end exit sequence's current phase: live mode
+    repaints the frame, plain mode writes the phase line once per phase change.
+
+    ``refresh_session`` re-reads the session so ``session_result`` reflects
+    writes that no event announced, such as an exit-sequence step that failed after
+    writing to the session log. A successful re-read writes no plain line; a
+    failed read keeps the previous result and warns, as the event-driven
+    re-read does.
+    """
+
+    observer: SessionObserver
+    stop: Callable[[], None]
+    frame: Callable[[], RenderableType]
+    warn: Callable[[str], None]
+    session_result: Callable[[], ReadSessionResult | None]
+    final_text: Callable[[], str | None]
+    exit_phase: Callable[[ExitPhase], None]
+    refresh_session: Callable[[], None]
 
 
 # ---------------------------------------------------------------------------
 # Reporter factory
 # ---------------------------------------------------------------------------
-
-
-def _stderr_write(text: str) -> None:
-    sys.stderr.write(f"{text}\n")
 
 
 def _stop_live(live: ErasableLive | None) -> None:
@@ -152,51 +196,6 @@ def _stop(ctx: ReporterCtx, uninstall_erase: Callable[[], None]) -> None:
     # erase rows that Live.stop() has already cleared, or the output above them.
     uninstall_erase()
     _stop_live(ctx.live)
-
-
-def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
-    *,
-    root: str,
-    max_minutes: float,
-    max_usd: float | None,
-    max_iterations: int | None,
-    is_plain: bool,
-    now: Callable[[], int],
-    read_session: Callable[[], ReadSessionResult],
-    read_progress: Callable[[str], ProgressSnapshot | None],
-    plain_write: Callable[[str], None],
-    label: str,
-    session_id: str,
-    branch: str,
-    tz: tzinfo | None,
-    log_path: str,
-    model: str | None,
-    effort: Effort | None,
-    idle_warn_ms: int,
-) -> ReporterCtx:
-    return ReporterCtx(
-        state=ReporterState(
-            root=root,
-            max_minutes=max_minutes,
-            max_usd=max_usd,
-            max_iterations=max_iterations,
-            label=label,
-            session_id=session_id,
-            branch=branch,
-            model=model,
-            effort=effort,
-            log_path=log_path,
-        ),
-        now=now,
-        read_session_fn=read_session,
-        read_progress_fn=read_progress,
-        plain_write_fn=plain_write,
-        warn_fn=plain_write,
-        live=None,
-        tz=tz,
-        is_plain=is_plain,
-        idle_warn_ms=idle_warn_ms,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -252,20 +251,6 @@ class _LiveFrame:
         return self.last
 
 
-def render_live(ctx: ReporterCtx) -> None:
-    """Repaint the Live display now, building the frame once through its ``get_renderable``.
-
-    In plain mode or when no Live exists, this is a no-op.
-
-    Args:
-        ctx: The reporter shell supplying the Live instance and the state to
-            render.
-    """
-    if ctx.is_plain or ctx.live is None:
-        return
-    ctx.live.refresh()
-
-
 def _read_session(ctx: ReporterCtx) -> ReadSessionResult | None:
     try:
         return ctx.read_session_fn()
@@ -291,9 +276,9 @@ def handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
     before = ctx.state
     ctx.state = advance(before, event, session)
 
-    if not ctx.is_plain:
+    if ctx.live is not None:
         if ctx.state is not before:
-            render_live(ctx)
+            ctx.live.refresh()
         return
     line = plain_line(before, ctx.state, event)
     if line is not None:
@@ -305,7 +290,8 @@ def _refresh_session(ctx: ReporterCtx) -> None:
     if session is None:
         return
     ctx.state = replace(ctx.state, session_result=session)
-    render_live(ctx)
+    if ctx.live is not None:
+        ctx.live.refresh()
 
 
 def _report_exit_phase(ctx: ReporterCtx, phase: ExitPhase) -> None:
@@ -313,19 +299,10 @@ def _report_exit_phase(ctx: ReporterCtx, phase: ExitPhase) -> None:
     ctx.state = exit_phase(before, phase, ctx.now())
     if ctx.state is before:
         return
-    if ctx.is_plain:
+    if ctx.live is None:
         ctx.plain_write_fn(exit_phase_text(phase))
     else:
-        render_live(ctx)
-
-
-def _console_warn(console: Console) -> Callable[[str], None]:
-    def warn(message: str) -> None:
-        # Messages carry arbitrary text (paths, command output); markup would
-        # swallow anything in square brackets.
-        console.print(message, markup=False)
-
-    return warn
+        ctx.live.refresh()
 
 
 def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter knob
@@ -338,7 +315,6 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     log_path: str = "",
     now: Callable[[], int] | None = None,
     read_session: Callable[[], ReadSessionResult] | None = None,
-    label: str = "",
     session_id: str = "",
     branch: str = "",
     plain_write: Callable[[str], None] | None = None,
@@ -378,8 +354,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         now: Wall-clock source returning epoch milliseconds.  Defaults to
             :func:`~gymrat.clock.now_ms`; override in tests.
         read_session: Callable that reads the current session state.  Defaults to
-            :func:`make_default_read`; override in tests.
-        label: Human label for the run, shown in the frame header.
+            :func:`read_live_session`; override in tests.
         session_id: Session identifier propagated to the frame.
         branch: Git branch name shown in the frame header.
         plain_write: Line writer for plain mode, called once per line without a
@@ -399,32 +374,40 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     Returns:
         A fully wired reporter whose callbacks drive the dashboard lifecycle.
     """
-    ctx = _new_ctx(
-        root=root,
-        max_minutes=max_minutes,
-        max_usd=max_usd,
-        max_iterations=max_iterations,
-        is_plain=mode == "plain",
+    if plain_write is None:
+        plain_write = warn_to_stderr
+    ctx = ReporterCtx(
+        state=ReporterState(
+            root=root,
+            max_minutes=max_minutes,
+            max_usd=max_usd,
+            max_iterations=max_iterations,
+            session_id=session_id,
+            branch=branch,
+            model=model,
+            effort=effort,
+            log_path=log_path,
+        ),
         now=now if now is not None else now_ms,
-        read_session=read_session if read_session is not None else make_default_read(root),
-        read_progress=read_progress if read_progress is not None else _default_read_progress,
-        plain_write=plain_write if plain_write is not None else _stderr_write,
-        label=label,
-        session_id=session_id,
-        branch=branch,
+        read_session_fn=(
+            read_session if read_session is not None else functools.partial(read_live_session, root)
+        ),
+        read_progress_fn=read_progress if read_progress is not None else _default_read_progress,
+        plain_write_fn=plain_write,
+        warn_fn=plain_write,
+        live=None,
         tz=tz,
-        log_path=log_path,
-        model=model,
-        effort=effort,
         idle_warn_ms=idle_warn_ms,
     )
 
     uninstall_erase: Callable[[], None] = _nothing_installed
-    if not ctx.is_plain:
+    if mode == "live":
         console = stderr_console(color_flag=color)
         # Set before the display exists: rich builds a frame while it is being
         # set up, and a failure then must already reach the dashboard's channel.
-        ctx.warn_fn = _console_warn(console)
+        # Messages carry arbitrary text (paths, command output); markup would
+        # swallow anything in square brackets.
+        ctx.warn_fn = functools.partial(console.print, markup=False)
         live = ErasableLive(
             console=console,
             auto_refresh=True,
@@ -440,12 +423,11 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         # stops the display when starting or writing the first paint fails.
         uninstall_erase = mount_live(live)
 
-    warn = ctx.warn_fn
     return SuperviseReporter(
         observer=lambda event: handle_event(ctx, event),
         stop=lambda: _stop(ctx, uninstall_erase),
         frame=lambda: _frame(ctx),
-        warn=warn,
+        warn=ctx.warn_fn,
         session_result=lambda: ctx.state.session_result,
         final_text=lambda: ctx.state.last_agent_text,
         exit_phase=lambda phase: _report_exit_phase(ctx, phase),

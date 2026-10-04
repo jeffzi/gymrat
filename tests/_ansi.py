@@ -27,6 +27,21 @@ def strip_sgr(text: str) -> str:
     return SGR_RE.sub("", text)
 
 
+def normalize(text: str) -> str:
+    """Strip ANSI codes then collapse whitespace, so a reflowed block matches."""
+    return " ".join(strip_ansi(text).split())
+
+
+def sgr_params(text: str) -> str:
+    """The SGR parameter list of the last SGR escape in ``text`` (e.g. ``"2;34"``).
+
+    Asserts which attributes a styled span carries without pinning the exact
+    escape bytes rich emits.
+    """
+    match = list(SGR_RE.finditer(text))[-1]
+    return match.group(1)
+
+
 def has_sgr(text: str, code: int) -> bool:
     """True when ``text`` contains an ANSI SGR sequence with parameter ``code``."""
     target = str(code)

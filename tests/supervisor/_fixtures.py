@@ -1,8 +1,7 @@
 """Shared builders and probes for the supervisor event tests.
 
-These helpers are reused by later supervisor suites (the event log and the
-stdio driver), so they live in one module rather than being duplicated per
-test file. ``collecting_observer`` hands back an appending observer paired with
+These helpers are reused across the supervisor suites, so they live in one
+module rather than being duplicated per test file. ``collecting_observer`` hands back an appending observer paired with
 the list it fills; ``make_launch`` builds a fully-populated ``LaunchEvent`` from
 overridable defaults; ``read_log_lines`` parses a JSONL log into dicts;
 ``NotJsonEncodable`` is a value ``json.dumps`` cannot encode.
@@ -10,14 +9,19 @@ overridable defaults; ``read_log_lines`` parses a JSONL log into dicts;
 ``supervise_fast`` share the turn-loop test boilerplate. ``result_message``,
 ``system_message``, ``assistant``, ``tool_results``, and ``stream_event`` build
 the real ``claude-agent-sdk`` message dataclasses the Claude driver consumes.
+``wait_for_event_or_task`` waits on an event a background task should set,
+failing instead of hanging when the task settles first.
 """
 
 import asyncio
+import contextlib
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
-from typing import Literal, NamedTuple, override
+from typing import Any, Literal, NamedTuple, override
 
+import pytest
 from claude_agent_sdk import (
     AssistantMessage,
     ContentBlock,
@@ -30,14 +34,12 @@ from claude_agent_sdk import (
 )
 
 from gymrat.clock import now_ms, now_ns
-from gymrat.config.types import BenchlessConfig, Effort, StopConfig
+from gymrat.config import BenchlessConfig, Effort
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor.claude import create_claude_driver
-from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
-    CapEvent,
     DirtyInfo,
     FollowUpEvent,
     LaunchEvent,
@@ -45,7 +47,7 @@ from gymrat.supervisor.events import (
     SessionObserver,
     TurnEndEvent,
 )
-from gymrat.supervisor.supervise import SupervisionResult, supervise
+from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult, supervise
 from tests.session.records._fixtures import (
     session_record,
     stop_record,
@@ -75,10 +77,6 @@ def collecting_observer() -> ObserverProbe:
     """Return an observer that records each event it receives, and its list."""
     events: list[SessionEvent] = []
     return ObserverProbe(events, events.append)
-
-
-def _cap_events(events: list[SessionEvent]) -> list[CapEvent]:
-    return [event for event in events if isinstance(event, CapEvent)]
 
 
 def make_launch(
@@ -154,7 +152,28 @@ def noop_observer() -> SessionObserver:
 # ---------------------------------------------------------------------------
 
 
-class _InterruptEmitsEndSession:
+class DelegatingSession:
+    """Let subclasses override one method while inheriting the rest."""
+
+    def __init__(self, inner: DriverSession) -> None:
+        self._inner = inner
+
+    @property
+    def outcome(self) -> Awaitable[SessionOutcome]:
+        """Forward the inner session's outcome."""
+        return self._inner.outcome
+
+    async def interrupt(self) -> None:
+        await self._inner.interrupt()
+
+    async def send(self, text: str) -> None:
+        await self._inner.send(text)
+
+    async def end(self) -> None:
+        await self._inner.end()
+
+
+class _InterruptEmitsEndSession(DelegatingSession):
     """A session whose ``interrupt`` also emits a ``TurnEndEvent`` to the observer.
 
     Models a driver that, on ``interrupt()``, pushes one more agent
@@ -163,14 +182,10 @@ class _InterruptEmitsEndSession:
     """
 
     def __init__(self, inner: DriverSession, observer: SessionObserver) -> None:
-        self._inner = inner
+        super().__init__(inner)
         self._observer = observer
 
-    @property
-    def outcome(self) -> Awaitable[SessionOutcome]:
-        """Forward the inner session's outcome."""
-        return self._inner.outcome
-
+    @override
     async def interrupt(self) -> None:
         await self._inner.interrupt()
         self._observer(
@@ -182,12 +197,6 @@ class _InterruptEmitsEndSession:
                 budget_exhausted=False,
             )
         )
-
-    async def send(self, text: str) -> None:
-        await self._inner.send(text)
-
-    async def end(self) -> None:
-        await self._inner.end()
 
 
 class InterruptEmitsEndDriver:
@@ -347,24 +356,25 @@ class FactoryProbe:
         return self._client
 
 
-def default_benchless_config(*, stop: StopConfig | None = None) -> BenchlessConfig:
+def default_benchless_config(**overrides: Any) -> BenchlessConfig:
     """A minimal ``BenchlessConfig`` for tests that need a context but not a real config.
 
     Args:
-        stop: The stop conditions the config carries, or ``None`` for none.
+        **overrides: ``BenchlessConfig`` fields to set in place of the defaults,
+            such as ``stop``, ``runbook``, ``checks`` or ``timeout_seconds``.
 
     Returns:
-        A config with neutral sampling defaults and no runbook.
+        A config with neutral sampling defaults, no runbook and no stop
+        conditions, except where ``overrides`` says otherwise.
     """
-    return BenchlessConfig(
+    default = BenchlessConfig(
         adapter="mitata",
         samples=1,
         timeout_seconds=60,
         unstable_noise_pct=5.0,
         primary="geomean",
-        runbook=None,
-        stop=stop,
     )
+    return replace(default, **overrides)
 
 
 def make_context(
@@ -400,14 +410,9 @@ def make_context(
 # ---------------------------------------------------------------------------
 
 
-def follow_up_events(events: list[SessionEvent]) -> list[FollowUpEvent]:
-    """Return every ``FollowUpEvent`` in ``events``."""
-    return [e for e in events if isinstance(e, FollowUpEvent)]
-
-
 def follow_ups_with_action(events: list[SessionEvent], action: str) -> list[FollowUpEvent]:
     """Return every ``FollowUpEvent`` in ``events`` whose ``action`` matches."""
-    return [e for e in follow_up_events(events) if e.action == action]
+    return [e for e in events_of(events, FollowUpEvent) if e.action == action]
 
 
 def seed_session_log(root: str) -> None:
@@ -521,3 +526,23 @@ async def run_with_messages(messages: Sequence[object]) -> list[SessionEvent]:
 def events_of[T: SessionEvent](events: Sequence[SessionEvent], event_type: type[T]) -> list[T]:
     """The events of ``event_type`` in ``events``, in emission order."""
     return [e for e in events if isinstance(e, event_type)]
+
+
+async def wait_for_event_or_task(event: asyncio.Event, awaitable: Awaitable[object]) -> None:
+    """Wait until ``event`` is set, failing fast when ``awaitable`` settles first.
+
+    A task that settles before setting the event never will, so an unbounded
+    wait would hang the suite. Its exception is re-raised; a task that returned
+    instead fails the test naming what it returned, such as an error outcome.
+    A task or future passed in is never cancelled or consumed, so the test can
+    still await it afterwards.
+    """
+    task = asyncio.ensure_future(awaitable)
+    waiter = asyncio.ensure_future(event.wait())
+    await asyncio.wait({waiter, task}, return_when=asyncio.FIRST_COMPLETED)
+    if waiter.done():
+        return
+    waiter.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await waiter
+    pytest.fail(f"the task settled before the event was set: {task.result()!r}")

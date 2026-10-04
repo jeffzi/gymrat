@@ -8,6 +8,7 @@ reveal their behavior against real worktrees, and the assertions read commit SHA
 straight out of the worktrees git laid down.
 """
 
+import itertools
 import json
 import re
 import shutil
@@ -18,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from gymrat.clock import now_ns
-from gymrat.config.types import HooksConfig, ResolvedConfig, StopConfig
+from gymrat.config import HooksConfig, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.start import StartResult, start_session
 from gymrat.session.paths import (
@@ -27,11 +28,19 @@ from gymrat.session.paths import (
     experiment_worktree_dir,
     session_jsonl_path,
 )
-from gymrat.session.records import SessionConfig, SessionHooks, SessionRecord
+from gymrat.session.records import SessionConfig, SessionHooks
 from gymrat.session.store import append_record, fold_session, read_records
-from gymrat.session.workspace import BaselineRef, Worktrees, remove_worktrees
-from tests._git import run_git
-from tests.session.records._fixtures import committed_keep, finalize_record, iteration_record
+from gymrat.session.workspace import BaselineRef, remove_worktrees
+from tests._git import head_of
+from tests._git import run_git as _git
+from tests.session.records._fixtures import (
+    committed_keep,
+    finalize_record,
+    iteration_record,
+    log_records,
+    session_header_of,
+    worktrees_at,
+)
 
 SESSION_ID_PATTERN = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 BRANCH_PATTERN = re.compile(r"^gymrat/\d{8}-\d{6}-[0-9a-f]{4}$")
@@ -89,20 +98,6 @@ CONFIG_SNAPSHOT = SessionConfig(
 )
 
 
-def _git(args: list[str], cwd: str) -> str:
-    """Run git in ``cwd`` for test setup and assertions, returning trimmed stdout."""
-    return run_git(args, cwd).strip()
-
-
-def _session_header_of(root: str) -> SessionRecord:
-    """The session header ``root``'s log opens with, failing when there is none."""
-    records = read_records(session_jsonl_path(root))
-    assert records, f"expected a session header in {session_jsonl_path(root)}"
-    first = records[0]
-    assert isinstance(first, SessionRecord)
-    return first
-
-
 def _commit_in_experiment(root: str, message: str) -> str:
     """Commit an edit on the session branch from the experiment worktree, returning its SHA.
 
@@ -113,7 +108,7 @@ def _commit_in_experiment(root: str, message: str) -> str:
     (Path(worktree) / "README.md").write_text(f"# {message}\n", encoding="utf-8")
     _git(["add", "README.md"], worktree)
     _git(["commit", "-m", message], worktree)
-    return _git(["rev-parse", "HEAD"], worktree)
+    return head_of(worktree)
 
 
 def _close_session_with_one_keep(root: str) -> str:
@@ -124,7 +119,7 @@ def _close_session_with_one_keep(root: str) -> str:
     appending a finalize record, so the next ``start_session`` meets a settled,
     closed session.
     """
-    header = _session_header_of(root)
+    header = session_header_of(root)
     commit = _commit_in_experiment(root, "cache the regex")
     jsonl = session_jsonl_path(root)
     append_record(jsonl, iteration_record(seq=1))
@@ -135,15 +130,9 @@ def _close_session_with_one_keep(root: str) -> str:
 
 
 @pytest.fixture
-def repo(create_scratch_repo: Callable[[], str]) -> str:
-    """A fresh scratch repository for one start_session test."""
-    return create_scratch_repo()
-
-
-@pytest.fixture
 def head_sha(repo: str) -> str:
     """The commit SHA ``repo`` starts at."""
-    return _git(["rev-parse", "HEAD"], repo)
+    return head_of(repo)
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +145,8 @@ def test_start_session_when_no_session_yet_does_write_header_naming_baseline_bra
 ):
     start_session(repo, "main", CONFIG)
 
-    header = _session_header_of(repo)
-    assert read_records(session_jsonl_path(repo)) == [header]
+    header = session_header_of(repo)
+    assert log_records(repo) == [header]
     assert header.type == "session"
     assert header.schema_version == 1
     assert SESSION_ID_PATTERN.match(header.session_id)
@@ -165,10 +154,7 @@ def test_start_session_when_no_session_yet_does_write_header_naming_baseline_bra
     assert header.at > 0
     assert header.baseline == BaselineRef(ref="main", sha=head_sha)
     assert BRANCH_PATTERN.match(header.branch)
-    assert header.worktrees == Worktrees(
-        experiment=experiment_worktree_dir(repo),
-        baseline=baseline_worktree_dir(repo),
-    )
+    assert header.worktrees == worktrees_at(repo)
     assert header.config == CONFIG_SNAPSHOT
 
 
@@ -177,9 +163,25 @@ def test_start_session_when_new_does_stamp_at_within_now_ns_bracket(repo: str):
 
     start_session(repo, "main", CONFIG)
 
-    header = _session_header_of(repo)
+    header = session_header_of(repo)
     after = now_ns()
     assert before <= header.at <= after
+
+
+def test_start_session_when_new_does_mint_the_session_id_from_the_instant_the_header_stamps(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    # 2024-03-05T06:07:08.9Z in epoch nanoseconds, then a day later on every further read.
+    instant_ns = 1_709_618_828_900_000_000
+    day_ns = 86_400_000_000_000
+    reads = itertools.count(instant_ns, day_ns)
+    monkeypatch.setattr("gymrat.clock.now_ns", lambda: next(reads))
+
+    start_session(repo, "main", CONFIG)
+
+    header = session_header_of(repo)
+    assert header.at == instant_ns
+    assert header.session_id.startswith("20240305-060708-")
 
 
 def test_start_session_when_new_does_write_no_created_at_or_schema_version_on_disk(repo: str):
@@ -199,7 +201,7 @@ def test_start_session_when_no_hooks_configured_does_leave_hooks_out_of_the_conf
 ):
     start_session(repo, "main", CONFIG_WITHOUT_HOOKS)
 
-    header = _session_header_of(repo)
+    header = session_header_of(repo)
     assert header.config.hooks is None
     assert header.config == CONFIG_SNAPSHOT_WITHOUT_HOOKS
 
@@ -220,7 +222,7 @@ def test_start_session_when_new_does_check_out_the_experiment_and_baseline_workt
 def test_start_session_when_new_does_return_the_recorded_session_with_no_history(repo: str):
     result = start_session(repo, "main", CONFIG)
 
-    header = _session_header_of(repo)
+    header = session_header_of(repo)
     assert result == StartResult(
         session=header,
         state=fold_session([header]),
@@ -253,7 +255,7 @@ def test_start_session_when_session_on_disk_does_resume_returning_counts_without
     assert result.resumed is True
     assert result.state.iteration_count == 1
     assert result.state.keep_count == 1
-    assert len(read_records(jsonl)) == 3
+    assert len(log_records(repo)) == 3
 
 
 def test_start_session_when_experiment_worktree_missing_does_put_it_back(repo: str):
@@ -275,7 +277,7 @@ def test_start_session_when_finalized_does_move_the_closed_log_aside_under_its_s
 ):
     start_session(repo, "main", CONFIG)
     closed = _close_session_with_one_keep(repo)
-    closed_log = read_records(session_jsonl_path(repo))
+    closed_log = log_records(repo)
 
     start_session(repo, "main", CONFIG)
 
@@ -293,7 +295,7 @@ def test_start_session_when_finalized_does_open_a_fresh_session_in_the_vacated_l
     assert result.resumed is False
     assert result.state.finalized is None
     assert result.session.session_id != closed
-    assert read_records(session_jsonl_path(repo)) == [result.session]
+    assert log_records(repo) == [result.session]
 
 
 def test_start_session_when_finalized_does_check_out_both_worktrees_at_the_pinned_baseline(
@@ -304,8 +306,8 @@ def test_start_session_when_finalized_does_check_out_both_worktrees_at_the_pinne
 
     start_session(repo, "main", CONFIG)
 
-    assert _git(["rev-parse", "HEAD"], experiment_worktree_dir(repo)) == head_sha
-    assert _git(["rev-parse", "HEAD"], baseline_worktree_dir(repo)) == head_sha
+    assert head_of(experiment_worktree_dir(repo)) == head_sha
+    assert head_of(baseline_worktree_dir(repo)) == head_sha
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
@@ -314,7 +316,7 @@ def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_clo
 ):
     start_session(repo, "main", CONFIG)
     closed = _close_session_with_one_keep(repo)
-    closed_log = read_records(session_jsonl_path(repo))
+    closed_log = log_records(repo)
     kill_git_during_worktree_add(repo)
 
     with pytest.raises(GymratError) as excinfo:
@@ -322,8 +324,34 @@ def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_clo
 
     # The rollback's own failure never speaks for the start's.
     assert re.search(r"cannot create the experiment worktree", str(excinfo.value), re.IGNORECASE)
-    assert read_records(session_jsonl_path(repo)) == closed_log
+    assert log_records(repo) == closed_log
     assert not Path(archived_session_path(repo, closed)).exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
+def test_start_session_when_putting_the_closed_log_back_fails_does_raise_the_start_failure(
+    repo: str,
+    kill_git_during_worktree_add: Callable[[str], None],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    start_session(repo, "main", CONFIG)
+    closed = _close_session_with_one_keep(repo)
+    kill_git_during_worktree_add(repo)
+    jsonl = Path(session_jsonl_path(repo))
+    rename = Path.rename
+
+    def refuse_rename_back(self: Path, target: str | Path) -> Path:
+        if Path(target) == jsonl:
+            raise PermissionError(13, "Permission denied")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", refuse_rename_back)
+
+    with pytest.raises(GymratError) as excinfo:
+        start_session(repo, "main", CONFIG)
+
+    assert re.search(r"cannot create the experiment worktree", str(excinfo.value), re.IGNORECASE)
+    assert Path(archived_session_path(repo, closed)).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +371,7 @@ def test_start_session_when_baseline_worktree_missing_does_put_it_back_at_the_la
 
     start_session(repo, "main", CONFIG)
 
-    assert _git(["rev-parse", "HEAD"], baseline_worktree_dir(repo)) == kept
+    assert head_of(baseline_worktree_dir(repo)) == kept
 
 
 def test_start_session_when_baseline_worktree_missing_and_nothing_kept_does_put_it_back_at_pinned_sha(
@@ -355,7 +383,7 @@ def test_start_session_when_baseline_worktree_missing_and_nothing_kept_does_put_
 
     start_session(repo, "main", CONFIG)
 
-    assert _git(["rev-parse", "HEAD"], baseline_worktree_dir(repo)) == head_sha
+    assert head_of(baseline_worktree_dir(repo)) == head_sha
 
 
 # ---------------------------------------------------------------------------
@@ -381,5 +409,10 @@ def test_start_session_when_baseline_ref_is_a_directory_does_raise_naming_the_re
     with pytest.raises(GymratError) as excinfo:
         start_session(repo, target_dir, CONFIG)
 
-    assert target_dir in str(excinfo.value)
+    assert str(excinfo.value) == (
+        f"Cannot start a session at '{target_dir}': it names a directory, not a git ref"
+    )
+    assert excinfo.value.hint == (
+        "Pass a branch, tag, or commit the session's baseline is pinned to."
+    )
     assert not Path(session_jsonl_path(repo)).exists()

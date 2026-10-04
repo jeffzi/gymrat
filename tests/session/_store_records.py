@@ -6,6 +6,7 @@ from tests.session.records._fixtures import (
     AT,
     COMMIT,
     Worktrees,
+    baseline_record,
     finalize_record,
     hook_record,
     iteration_record,
@@ -20,19 +21,13 @@ SESSION: SessionRecord = session_record(
     worktrees=Worktrees(experiment="/repo/.gymrat/experiment", baseline="/repo/.gymrat/baseline")
 )
 
-BASELINE: BaselineRecord = BaselineRecord(
-    type="baseline",
-    at=AT,
-    label="main",
-    samples=({"total_ms": 15200}, {"total_ms": 15184}),
-)
+BASELINE: BaselineRecord = baseline_record(samples=({"total_ms": 15200}, {"total_ms": 15184}))
 
 _KEPT_EXPERIMENT_SAMPLES = ({"total_ms": 14100}, {"total_ms": 14088})
 
 # The baseline a keep appends from the samples the kept iteration already
 # measured: labelled with the kept commit's short sha and timing nothing.
-KEPT_BASELINE: BaselineRecord = BaselineRecord(
-    type="baseline",
+KEPT_BASELINE: BaselineRecord = baseline_record(
     at=AT + 5_000,
     label=COMMIT[:SHORT_SHA_LENGTH],
     samples=_KEPT_EXPERIMENT_SAMPLES,

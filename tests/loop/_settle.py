@@ -9,14 +9,14 @@ The module is name-prefixed with ``_`` so pytest never collects it: it is a
 helper imported as ``tests.loop._settle``.
 """
 
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from gymrat.config.types import HooksConfig, KindEntry, MetricEntry, ResolvedConfig, StopConfig
+from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.loop.start import start_session
@@ -35,80 +35,31 @@ from gymrat.session.records import (
     SessionLogRecord,
 )
 from gymrat.session.schema import Outcome
-from gymrat.session.store import append_record, read_records
-from tests.session.records._fixtures import blocked_keep, iteration_record
+from gymrat.session.store import append_record
+from tests._exec_fixtures import expected_result
+from tests._git import head_of, run_git
+from tests.loop.iterate._fixtures import resolved_config
+from tests.session.records._fixtures import iteration_record, log_records
 
 CHECKS = "npm test"
 CHECKS_STDOUT = "3 tests failed"
 CHECKS_STDERR = "AssertionError: expected 2 to be 3"
 
 
-def checks_config(
-    *,
-    bench: str = "sh bench.sh",
-    prepare: str | None = None,
-    adapter: str = "metric-lines",
-    samples: int = 10,
-    timeout_seconds: int = 1800,
-    unstable_noise_pct: float = 2.0,
-    primary: str = "geomean",
-    checks: str | None = CHECKS,
-    metrics: dict[str, MetricEntry] | None = None,
-    kinds: dict[str, KindEntry] | None = None,
-    runbook: str | None = None,
-    filter: str | None = None,  # noqa: A002
-    stop: StopConfig | None = None,
-    hooks: HooksConfig | None = None,
-) -> ResolvedConfig:
+def checks_config(**overrides: Any) -> ResolvedConfig:
     """A resolved config defaulted to the checks command every settle test exercises.
 
-    ``timeout_seconds`` is 1800 so the run timeout the settle passes to ``exec``
-    is 1_800_000 ms, the value the tests assert on. Pass ``checks=None`` to model
-    a run with the gate switched off.
+    ``timeout_seconds`` stays at 1800 so the run timeout the settle passes to
+    ``exec`` is 1_800_000 ms, the value the tests assert on. Pass ``checks=None``
+    to model a run with the gate switched off.
     """
-    return ResolvedConfig(
-        bench=bench,
-        prepare=prepare,
-        adapter=adapter,
-        samples=samples,
-        timeout_seconds=timeout_seconds,
-        unstable_noise_pct=unstable_noise_pct,
-        primary=primary,
-        checks=checks,
-        metrics=metrics,
-        kinds=kinds,
-        runbook=runbook,
-        filter=filter,
-        stop=stop,
-        hooks=hooks,
-    )
-
-
-def git(args: list[str], cwd: str) -> str:
-    """Run git in ``cwd`` and return its stripped stdout, failing loudly on error."""
-    result = subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
-def head_of(worktree: str) -> str:
-    """The commit ``worktree`` currently has checked out."""
-    return git(["rev-parse", "HEAD"], worktree)
+    defaults: dict[str, Any] = {"bench": "sh bench.sh", "unstable_noise_pct": 2.0, "checks": CHECKS}
+    return resolved_config(**(defaults | overrides))
 
 
 def status_of(worktree: str) -> str:
     """The porcelain status of ``worktree`` — empty when nothing is uncommitted."""
-    return git(["status", "--porcelain"], worktree)
-
-
-def iteration(seq: int, **overrides: object) -> IterationRecord:
-    """A measured iteration numbered ``seq``, improved unless a test says otherwise."""
-    return iteration_record(seq=seq, **overrides)
+    return run_git(["status", "--porcelain"], worktree)
 
 
 def start_with(repo_dir: str, history: tuple[SessionLogRecord, ...] = ()) -> None:
@@ -153,30 +104,12 @@ def install_exec(
 
 def checks_pass(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
     """Answer the checks command with a clean run."""
-    return install_exec(
-        monkeypatch,
-        ExecResult(
-            stdout="10 passed",
-            stderr="",
-            exit_code=0,
-            stdout_bytes=len(b"10 passed"),
-            stderr_bytes=0,
-        ),
-    )
+    return install_exec(monkeypatch, expected_result("10 passed"))
 
 
 def checks_fail(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
     """Answer the checks command with a failing run that wrote to both streams."""
-    return install_exec(
-        monkeypatch,
-        ExecResult(
-            stdout=CHECKS_STDOUT,
-            stderr=CHECKS_STDERR,
-            exit_code=1,
-            stdout_bytes=len(CHECKS_STDOUT.encode()),
-            stderr_bytes=len(CHECKS_STDERR.encode()),
-        ),
-    )
+    return install_exec(monkeypatch, expected_result(CHECKS_STDOUT, CHECKS_STDERR, exit_code=1))
 
 
 def settling_record_of(root: str) -> SessionLogRecord:
@@ -186,7 +119,7 @@ def settling_record_of(root: str) -> SessionLogRecord:
     bookkeeping that trails the settlement, so both are skipped: a caller asking
     for the settling record wants the keep, discard, stop, or finalize itself.
     """
-    records = read_records(session_jsonl_path(root))
+    records = log_records(root)
     for record in reversed(records):
         if not isinstance(record, CommandRecord | BaselineRecord):
             return record
@@ -209,7 +142,7 @@ def capture_error(action: Callable[[], object]) -> GymratError:
 TIMEOUT_MS = 1_800_000
 
 #: A result the no-checks path must never reach; installed only to prove exec stayed unused.
-UNUSED_EXEC = ExecResult(stdout="", stderr="", exit_code=0, stdout_bytes=0, stderr_bytes=0)
+UNUSED_EXEC = expected_result()
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only .git pointer sabotage")
 
@@ -231,8 +164,8 @@ KEPT_MEDIANS_LINE = "total_ms 14200 · alloc_bytes 2048"
 
 def measured_rounds(seq: int) -> IterationRecord:
     """An improved iteration numbered ``seq`` measured over ``KEPT_ROUNDS``."""
-    return iteration(
-        seq,
+    return iteration_record(
+        seq=seq,
         samples=PairedSamples(
             experiment=KEPT_ROUNDS,
             baseline=({"total_ms": 15_200, "alloc_bytes": 2_400},),
@@ -257,8 +190,8 @@ def metric(**overrides: object) -> MetricVerdict:
 
 def undefined_delta(seq: int) -> IterationRecord:
     """An iteration numbered ``seq`` whose deltas a zero baseline median left undefined."""
-    return iteration(
-        seq,
+    return iteration_record(
+        seq=seq,
         metrics={"total_ms": metric(delta_pct=None, verdict="no-signal")},
         primary=IterationPrimary(kind="geomean", delta_pct=None),
         outcome="no-signal",
@@ -267,8 +200,8 @@ def undefined_delta(seq: int) -> IterationRecord:
 
 def confirmed_regression(seq: int) -> IterationRecord:
     """An iteration whose gating metric regressed and stayed regressed on the rerun."""
-    return iteration(
-        seq,
+    return iteration_record(
+        seq=seq,
         metrics={"total_ms": metric(delta_pct=9.4, verdict="regressed", confirmed=True)},
         primary=IterationPrimary(kind="geomean", delta_pct=9.4),
         outcome="regressed",
@@ -283,8 +216,8 @@ def unimproved(seq: int, outcome: Outcome) -> IterationRecord:
     """
     no_signal = outcome == "no-signal"
     delta_pct = 0.1 if no_signal else 9.4
-    return iteration(
-        seq,
+    return iteration_record(
+        seq=seq,
         metrics={"total_ms": metric(delta_pct=delta_pct, verdict=outcome)},
         primary=IterationPrimary(kind="geomean", delta_pct=delta_pct),
         outcome=outcome,
@@ -293,8 +226,8 @@ def unimproved(seq: int, outcome: Outcome) -> IterationRecord:
 
 def unmeasured_regression(seq: int) -> IterationRecord:
     """An iteration whose gating ``alloc_bytes`` regressed then went missing from the rerun."""
-    return iteration(
-        seq,
+    return iteration_record(
+        seq=seq,
         metrics={
             "total_ms": metric(),
             "alloc_bytes": metric(delta_pct=9.4, verdict="regressed"),
@@ -308,26 +241,6 @@ def unmeasured_regression(seq: int) -> IterationRecord:
             samples=RERUN_SAMPLES,
         ),
     )
-
-
-def gating_block(seq: int) -> KeepRecord:
-    """The keep a gating regression refused, numbered with the iteration it refused."""
-    return blocked_keep(seq, reason="gating-regression", checks=KeepChecks(configured=True))
-
-
-def not_improved_block(seq: int) -> KeepRecord:
-    """The keep the outcome gate refused, numbered with the iteration it refused."""
-    return blocked_keep(seq, reason="not-improved", checks=KeepChecks(configured=True))
-
-
-def nothing_to_commit_block(seq: int) -> KeepRecord:
-    """The keep blocked because the experiment worktree had nothing to commit."""
-    return blocked_keep(seq, reason="nothing-to-commit", checks=KeepChecks(configured=True))
-
-
-def nothing_measured_block(seq: int) -> KeepRecord:
-    """The keep refusing because nothing has been measured since the last settle."""
-    return blocked_keep(seq, reason="nothing-measured", checks=KeepChecks(configured=True))
 
 
 def failed_checks(stdout: str, stderr: str) -> KeepChecks:
@@ -370,6 +283,6 @@ def assert_settling_record(
 def commit_experiment_directly(repo: str) -> str:
     """Commit the experiment worktree outside a keep, returning the standing commit."""
     worktree = experiment_worktree_dir(repo)
-    git(["add", "-A"], worktree)
-    git(["commit", "-m", "committed outside the keep"], worktree)
+    run_git(["add", "-A"], worktree)
+    run_git(["commit", "-m", "committed outside the keep"], worktree)
     return head_of(worktree)

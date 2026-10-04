@@ -12,14 +12,12 @@ import pytest
 from gymrat.model import (
     BandVerdict,
     Direction,
-    Effect,
     ExactVerdict,
     Exclusion,
     ExclusionReason,
     GeomeanResult,
     MetricMeta,
     MetricVerdict,
-    Observations,
 )
 from gymrat.verdict import compute_geomean, compute_verdicts
 from tests.verdict._inputs import (
@@ -50,7 +48,7 @@ def gating_verdicts_with_noise(
             verdicts[key] = ExactVerdict(
                 method="exact",
                 verdict="improved",
-                delta=Effect(value=-50.0, unit="percent"),
+                delta=-50.0,
                 n=4,
             )
         else:
@@ -60,7 +58,7 @@ def gating_verdicts_with_noise(
                 usable_n=4,
                 noise_pct=noise_pct,
                 noise_abs=noise_pct / 2,
-                delta=Effect(value=-50.0, unit="percent"),
+                delta=-50.0,
                 n=4,
             )
         metric_meta[key] = MetricMeta(
@@ -273,7 +271,7 @@ def test_compute_geomean_when_unstable_delta_nan_does_report_unstable_over_undef
                     usable_n=4,
                     noise_pct=300.0,
                     noise_abs=30.0,
-                    delta=Effect(value=math.nan, unit="percent"),
+                    delta=math.nan,
                     n=4,
                 ),
             ),
@@ -315,8 +313,8 @@ def test_compute_geomean_when_metrics_carry_noise_does_propagate_band(
 
 
 def test_compute_geomean_when_byte_metric_does_carry_quantization_noise():
-    left = Observations.from_rounds(create_samples(2, 4.0))
-    right = Observations.from_rounds(create_samples(2, 3.0))
+    left = create_samples(2, 4.0)
+    right = create_samples(2, 3.0)
     verdicts = compute_verdicts(left, right, METRIC_BYTES_LOWER, warn=noop_warn)
 
     result = compute_geomean(verdicts, METRIC_BYTES_LOWER)
@@ -338,7 +336,7 @@ def test_compute_geomean_when_metric_excluded_does_leave_its_noise_out_of_band()
                     usable_n=4,
                     noise_pct=4.0,
                     noise_abs=2.0,
-                    delta=Effect(value=-50.0, unit="percent"),
+                    delta=-50.0,
                     n=4,
                 ),
             ),

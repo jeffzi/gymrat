@@ -12,7 +12,6 @@ The sample count is the probe's own — short by default, since a probe answers
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,14 +22,15 @@ from gymrat.report.loop import baseline_medians
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.store import latest_baseline, require_open_session
 from gymrat.stats import percent_delta
+from gymrat.utils import finite_or_none, warn_to_stderr
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.config.types import ResolvedConfig
+    from gymrat.config import ResolvedConfig
     from gymrat.model import ResolvedMetricMeta
     from gymrat.progress_events import ProgressCallback
-    from gymrat.warn import WarnSink
+    from gymrat.utils import WarnSink
 
 #: Rounds a probe runs when the caller names no count of its own.
 PROBE_DEFAULT_SAMPLES = 6
@@ -50,13 +50,13 @@ class ProbeOptions:
             :data:`PROBE_DEFAULT_SAMPLES`. The configured ``samples`` is never
             used — it sizes an iteration's verdict, which a probe does not reach.
         on_progress: Sink for the run's progress events, or ``None`` to drop them.
-        warn: Sink for warnings the adapter raises, or ``None`` to drop them.
+        warn: Sink for warnings the adapter raises.
     """
 
     names: Sequence[str] = ()
     samples: int | None = None
     on_progress: ProgressCallback | None = None
-    warn: WarnSink | None = None
+    warn: WarnSink = warn_to_stderr
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,9 +73,9 @@ class ProbeMetric:
             metric, or ``None`` when that baseline never reported it.
         delta_pct: The signed percentage change from ``reference_median`` to
             ``median``, scaled by the reference's magnitude; ``0.0`` when both
-            are zero, and ``None`` when either is missing or only the reference
-            is zero. Positive means the probe measured a larger number, whatever
-            ``meta.direction`` makes of that.
+            are zero, and ``None`` when either is missing, only the reference is
+            zero, or the ratio is not finite. Positive means the probe measured a
+            larger number, whatever ``meta.direction`` makes of that.
         meta: The metric's resolved metadata, carrying the direction and unit a
             renderer needs to style the delta.
     """
@@ -98,15 +98,14 @@ class ProbeResult:
             :data:`PROBE_DEFAULT_SAMPLES`.
         adapter: The bench-output adapter the run parsed with.
         metrics: One entry per metric the run reported, in report order.
-        scoped: Whether the bench was narrowed to ``names``.
-        names: The metric names the bench was narrowed to, in the order given.
+        names: The metric names the bench was narrowed to, in the order given;
+            empty when the whole bench ran.
     """
 
     label: str
     samples: int
     adapter: str
     metrics: tuple[ProbeMetric, ...]
-    scoped: bool
     names: tuple[str, ...]
 
 
@@ -114,8 +113,7 @@ def _delta_pct(median: float | None, reference: float | None) -> float | None:
     """The signed percentage change from ``reference`` to ``median``, when there is one."""
     if median is None or reference is None:
         return None
-    delta = percent_delta(reference, median)
-    return None if math.isnan(delta) else delta
+    return finite_or_none(percent_delta(reference, median))
 
 
 def _probe_bench(config: ResolvedConfig, names: tuple[str, ...]) -> str:
@@ -135,9 +133,7 @@ def _probe_bench(config: ResolvedConfig, names: tuple[str, ...]) -> str:
             — silently benching everything would answer a different question
             than the one asked.
     """
-    if not names:
-        return config.bench
-    if config.filter is None:
+    if names and config.filter is None:
         message = "filter is not configured — set filter in gymrat.toml to scope a probe"
         raise GymratError(message, reason="no-filter")
     return scoped_bench(config, names)
@@ -180,16 +176,8 @@ async def probe_session(
         )
 
     samples = PROBE_DEFAULT_SAMPLES if options.samples is None else options.samples
-    run_options = RunOptions(
-        bench=bench,
-        prepare=config.prepare,
-        adapter=config.adapter,
-        samples=samples,
-        timeout_seconds=config.timeout_seconds,
-        config_metrics=config.metrics,
-        config_kinds=config.kinds,
-        on_progress=options.on_progress,
-        warn=options.warn,
+    run_options = RunOptions.from_config(
+        config, samples=samples, bench=bench, on_progress=options.on_progress, warn=options.warn
     )
     target = TargetSpec(label=EXPERIMENT_LABEL, target=required.session.worktrees.experiment)
     result, _ = await measure_baseline(target, run_options)
@@ -213,6 +201,5 @@ async def probe_session(
         samples=samples,
         adapter=config.adapter,
         metrics=tuple(metrics),
-        scoped=bool(names),
         names=names,
     )

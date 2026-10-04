@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 import pytest
 
-from gymrat.config.types import CliFlags
+from gymrat.config import CliFlags
 from gymrat.doctor import (
     Check,
     DoctorReport,
