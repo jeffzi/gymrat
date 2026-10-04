@@ -15,10 +15,10 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from gymrat.command_run import CommandTrace, with_repo_lock
 from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root, session_jsonl_path
-from gymrat.session.store import append_record, read_records
+from gymrat.session.store import append_record
 from tests._command_run_fixtures import ok_body as _ok_body
 from tests._command_run_fixtures import seeded_session as _seeded_session
-from tests.session.records._fixtures import iteration_record
+from tests.session.records._fixtures import iteration_record, log_records
 from tests.telemetry._fixtures import (
     isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )
@@ -64,7 +64,7 @@ async def test_with_repo_lock_when_tracing_enabled_does_use_deterministic_span_i
         await with_repo_lock("measure", _ok_body)
 
     command_span = _command_span(exporter)
-    records = read_records(session_jsonl_path(repo_root()))
+    records = log_records(repo_root())
     cmd_line = len(records)
     assert command_span.context.span_id == span_id_of(header.session_id, f"command:{cmd_line}")  # pyrefly: ignore[missing-attribute]
 

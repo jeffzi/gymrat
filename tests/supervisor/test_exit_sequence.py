@@ -25,8 +25,6 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 
-from gymrat.config import BenchlessConfig
-from gymrat.exec import ExecOptions, ExecResult
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.session.paths import experiment_worktree_dir, lockfile_path, session_jsonl_path
 from gymrat.session.records import (
@@ -37,9 +35,7 @@ from gymrat.session.records import (
     KeepChecks,
     KeepRecord,
     SessionLogRecord,
-    SessionRecord,
 )
-from gymrat.session.store import read_records
 from gymrat.session.workspace import worktree_fingerprint
 from gymrat.supervisor.events import FollowUpEvent
 from gymrat.supervisor.exit_sequence import (
@@ -48,6 +44,7 @@ from gymrat.supervisor.exit_sequence import (
     ExitStep,
     run_exit_sequence,
 )
+from tests._exec_fixtures import expected_result
 from tests._git import run_git
 from tests.conftest import hold_lock
 from tests.loop._settle import (
@@ -73,16 +70,24 @@ from tests.session.records._fixtures import (
     finalize_record,
     hook_record,
     iteration_record,
+    log_records,
+    session_header_of,
     stop_record,
     tear_final_line,
 )
-from tests.supervisor._fixtures import collecting_observer, events_of, make_context
+from tests.supervisor._fixtures import (
+    collecting_observer,
+    default_benchless_config,
+    events_of,
+    make_context,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from filelock import FileLock
 
+    from gymrat.exec import ExecOptions, ExecResult
     from gymrat.session.schema import Outcome
     from gymrat.supervisor.events import SessionEvent, SessionObserver
     from gymrat.supervisor.supervise import EndedBy, SupervisedSession
@@ -126,20 +131,6 @@ class HeldProbe:
         return True
 
 
-def _benchless_config(timeout_seconds: int, checks: str | None) -> BenchlessConfig:
-    """A minimal config whose ``timeout_seconds`` sets the default lock-wait bound."""
-    return BenchlessConfig(
-        adapter="mitata",
-        samples=1,
-        timeout_seconds=timeout_seconds,
-        unstable_noise_pct=5.0,
-        primary="geomean",
-        checks=checks,
-        runbook=None,
-        stop=None,
-    )
-
-
 def _context(
     root: str, *, timeout_seconds: int = 60, checks: str | None = None
 ) -> SupervisedSession:
@@ -148,7 +139,7 @@ def _context(
         root=root,
         lock_path=lockfile_path(root),
         log_path=str(Path(root) / ".gymrat" / "supervisor.jsonl"),
-        config=_benchless_config(timeout_seconds, checks),
+        config=default_benchless_config(timeout_seconds=timeout_seconds, checks=checks),
     )
 
 
@@ -221,12 +212,12 @@ def _make_log_unreadable(root: str) -> str:
 
 def _command_records(root: str) -> list[CommandRecord]:
     """Every command record the session log holds."""
-    return [r for r in read_records(session_jsonl_path(root)) if isinstance(r, CommandRecord)]
+    return [r for r in log_records(root) if isinstance(r, CommandRecord)]
 
 
 def _settling_records(root: str) -> list[KeepRecord | DiscardRecord]:
     """Every keep and discard the session log holds."""
-    records = read_records(session_jsonl_path(root))
+    records = log_records(root)
     return [r for r in records if isinstance(r, KeepRecord | DiscardRecord)]
 
 
@@ -256,7 +247,7 @@ def _rewriting_checks(monkeypatch: pytest.MonkeyPatch, root: str) -> None:
 
     async def run(_command: str, _options: ExecOptions) -> ExecResult:
         _write_text(str(Path(experiment_worktree_dir(root)) / "README.md"), "# reformatted\n")
-        return ExecResult(stdout="", stderr="", exit_code=0, stdout_bytes=0, stderr_bytes=0)
+        return expected_result()
 
     monkeypatch.setattr("gymrat.loop.keep.exec", run)
 
@@ -309,16 +300,9 @@ def _keep_iteration(root: str, seq: int) -> None:
     append_records(root, iteration_record(seq=seq), committed_keep(seq, commit=commit))
 
 
-def _session_branch(root: str) -> str:
-    """The branch the open session's header names."""
-    header = read_records(session_jsonl_path(root))[0]
-    assert isinstance(header, SessionRecord), f"expected a header in {session_jsonl_path(root)}"
-    return header.branch
-
-
 def _finalize_record(root: str) -> FinalizeRecord:
     """The record closing the session, failing when the log holds none."""
-    for record in reversed(read_records(session_jsonl_path(root))):
+    for record in reversed(log_records(root)):
         if isinstance(record, FinalizeRecord):
             return record
     msg = f"expected a finalize record in {session_jsonl_path(root)}"
@@ -945,7 +929,7 @@ async def test_run_exit_sequence_when_finalize_refuses_does_record_the_refusal_n
     start_with(repo)
     _improved_iteration(repo)
     checks_pass(monkeypatch)
-    taken = f"{_session_branch(repo)}-final"
+    taken = f"{session_header_of(repo).branch}-final"
     run_git(["branch", taken], repo)
 
     run = await run_sequence(_context(repo, checks=CHECKS), finalize=True)

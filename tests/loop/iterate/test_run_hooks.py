@@ -24,6 +24,7 @@ from gymrat.loop.iterate.run import run_hook
 from gymrat.session.records import IterationRecord, record_to_wire
 from gymrat.session.schema import HookStage
 from gymrat.session.workspace import Worktrees
+from tests._exec_fixtures import expected_result
 from tests.loop.iterate._hooks import HookScripts, expected_hook_record
 from tests.session.records._fixtures import SESSION_ID, iteration_record, session_record
 
@@ -396,7 +397,7 @@ async def test_run_hook_when_invoked_does_run_under_the_default_timeout(
 
     async def recording_exec(command: str, options: ExecOptions) -> ExecResult:
         handed.append(options)
-        return ExecResult(stdout="", stderr="", exit_code=0, stdout_bytes=0, stderr_bytes=0)
+        return expected_result()
 
     monkeypatch.setattr("gymrat.loop.iterate.run.exec", recording_exec)
 

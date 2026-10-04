@@ -30,19 +30,21 @@ import pytest
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.events import TextDeltaEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
+from tests._process_helpers import (
+    CleanupRegistry,
+    InterruptedTerminal,
+    ProcessExit,
+    track_mounted_cleanups,
+)
 from tests._rich import (
     HIDE_CURSOR,
     KEPT_LINE,
     TERMINATION_SIGNAL,
     WARNING_LINE,
-    CleanupRegistry,
-    InterruptedTerminal,
-    ProcessExit,
     cursor_hidden,
     frame_text,
     screen_lines,
     sealed_console,
-    track_mounted_cleanups,
 )
 from tests.cli.supervise._fixtures import (
     FRAME_WIDTH,

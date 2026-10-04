@@ -45,6 +45,7 @@ from tests.supervisor._fixtures import (
     DelegatingSession,
     InterruptEmitsEndDriver,
     collecting_observer,
+    default_benchless_config,
     emit_turn_end,
     events_of,
     follow_ups_with_action,
@@ -119,18 +120,6 @@ def session_dir_access(root: str) -> Iterator[_SessionDirAccess]:
     access = _SessionDirAccess(Path(session_dir(root)))
     yield access
     access.allow()
-
-
-def _config(stop: StopConfig | None = None) -> BenchlessConfig:
-    return BenchlessConfig(
-        adapter="mitata",
-        samples=1,
-        timeout_seconds=60,
-        unstable_noise_pct=5.0,
-        primary="geomean",
-        runbook=None,
-        stop=stop,
-    )
 
 
 def _events_path(root: str) -> str:
@@ -346,7 +335,7 @@ async def test_supervise_when_condition_lands_before_tool_end_does_end_run_after
         _blocked_step(),
     ])
 
-    result = await _supervise(root, driver, config=_config(case.stop))
+    result = await _supervise(root, driver, config=default_benchless_config(stop=case.stop))
 
     markers = _event_log_markers(root)
     ended = _ended_markers(markers)
@@ -405,7 +394,7 @@ async def test_supervise_when_nothing_new_ends_run_at_tool_end_does_complete_as_
     append_records(root, *seeded)
     driver = create_mock_driver([_append(root, *appended), _tool_end()])
 
-    result = await _supervise(root, driver, config=_config(stop))
+    result = await _supervise(root, driver, config=default_benchless_config(stop=stop))
 
     assert result.ended_by == "session"
     assert result.outcome.reason == "completed"
@@ -516,7 +505,9 @@ async def test_supervise_when_first_clean_scan_finds_stop_condition_met_does_com
         _tool_end(),
     ])
 
-    result = await _supervise(root, driver, config=_config(StopConfig(max_iterations=1)))
+    result = await _supervise(
+        root, driver, config=default_benchless_config(stop=StopConfig(max_iterations=1))
+    )
 
     assert result.ended_by == "session"
     assert result.outcome.reason == "completed"
@@ -537,7 +528,9 @@ async def test_supervise_when_stop_condition_met_after_first_clean_scan_does_end
         _blocked_step(),
     ])
 
-    result = await _supervise(root, driver, config=_config(StopConfig(max_iterations=1)))
+    result = await _supervise(
+        root, driver, config=default_benchless_config(stop=StopConfig(max_iterations=1))
+    )
 
     assert result.ended_by == "stop-condition"
     assert result.end_reason == "max iterations (1 of 1)"
@@ -571,7 +564,9 @@ async def test_supervise_when_condition_lands_after_last_tool_end_does_end_at_tu
     probe = collecting_observer()
     driver = create_mock_driver([_tool_end(), _append(root, appended), TurnEndStep()])
 
-    result = await _supervise(root, driver, config=_config(stop), observer=probe.observer)
+    result = await _supervise(
+        root, driver, config=default_benchless_config(stop=stop), observer=probe.observer
+    )
 
     assert result.ended_by == ended_by
     assert result.end_reason == reason

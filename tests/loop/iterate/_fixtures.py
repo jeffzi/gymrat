@@ -22,20 +22,19 @@ from typing import TYPE_CHECKING, Any
 
 from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
-from gymrat.exec import ExecResult
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord, record_to_wire
-from gymrat.session.store import read_records
 from gymrat.session.workspace import Worktrees
 from tests._ansi import SGR_RE
-from tests.session.records._fixtures import SESSION_ID
+from tests._exec_fixtures import expected_result
+from tests.session.records._fixtures import SESSION_ID, log_records
 from tests.session.records._fixtures import session_record as _session_record_defaults
 
 if TYPE_CHECKING:
     import pytest
 
-    from gymrat.exec import ExecOptions
+    from gymrat.exec import ExecOptions, ExecResult
 
 #: Ten rounds of a bench that stayed near 100.
 BASELINE_MS: list[float] = [100, 101, 99, 100, 102, 98, 100, 101, 99, 100]
@@ -253,7 +252,7 @@ def as_logged(value: SessionLogRecord) -> object:
 
 def last_iteration_of(root: str) -> IterationRecord:
     """The iteration record ``root``'s log ends on, failing when it ends on something else."""
-    records = read_records(session_jsonl_path(root))
+    records = log_records(root)
     last = records[-1] if records else None
     assert isinstance(last, IterationRecord), (
         f"expected an iteration record at the end of {session_jsonl_path(root)}"
@@ -274,12 +273,6 @@ def bench_malformed_once(monkeypatch: pytest.MonkeyPatch) -> None:
         stdout = f"METRIC total_ms={BASELINE_MS[index % len(BASELINE_MS)]}"
         if index == 0:
             stdout += "\nMETRIC foo=bar"
-        return ExecResult(
-            stdout=stdout,
-            stderr="",
-            exit_code=0,
-            stdout_bytes=len(stdout.encode()),
-            stderr_bytes=0,
-        )
+        return expected_result(stdout)
 
     monkeypatch.setattr("gymrat.sampling.exec", fake_exec)

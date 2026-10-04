@@ -18,10 +18,9 @@ from gymrat.cli.app import app
 from gymrat.cli.iterate.progress import IterateRenderer
 from gymrat.loop.iterate.run import IterateOptions, IterateResult, LoopStopError
 from gymrat.progress_events import JudgeStarted, PrepareFinished, PrepareStarted, ProgressEvent
-from gymrat.session.paths import progress_path, session_jsonl_path
+from gymrat.session.paths import progress_path
 from gymrat.session.progress_file import ProgressSnapshot, write_progress
 from gymrat.session.records import CommandRecord, Confirm, PairedSamples
-from gymrat.session.store import read_records
 from tests._ansi import strip_ansi
 from tests._rich import console_output, screen_lines, sealed_console
 from tests.cli._budget import (
@@ -54,6 +53,7 @@ from tests.session.records._fixtures import (
     committed_keep,
     finalize_record,
     iteration_record,
+    log_records,
     write_session_log,
 )
 
@@ -76,9 +76,7 @@ def test_iterate_command_when_run_does_measure_the_repo_and_report_on_stdout(
     assert lines[0] == "iteration 1 · experiment vs baseline · 10 paired samples"
     assert lines[-1] == "gymrat keep"
 
-    non_command = [
-        r for r in read_records(session_jsonl_path(repo)) if not isinstance(r, CommandRecord)
-    ]
+    non_command = [r for r in log_records(repo) if not isinstance(r, CommandRecord)]
     assert len(non_command) == 2
 
 

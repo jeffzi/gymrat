@@ -9,8 +9,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Literal, overload
+from collections.abc import Callable, Iterable
+from io import StringIO
+from typing import TYPE_CHECKING, Any, Literal, overload, override
 
 from gymrat import exec as gymrat_exec
 
@@ -363,6 +364,122 @@ def killpg_warnings(recorded: "pytest.WarningsRecorder") -> list[str]:
 def refuse_resume(_pid: int) -> bool:
     """Stand in for a host that cannot resume the suspended child."""
     return False
+
+
+def fake_install(
+    registered: list[Callable[[], None]],
+) -> Callable[[Callable[[], None]], Callable[[], None]]:
+    """A fake ``install_termination_cleanup`` that records each cleanup it is handed.
+
+    Args:
+        registered: The list each installed cleanup is appended to, so a test
+            can call one directly to drive the termination path without a
+            real signal.
+
+    Returns:
+        An installer whose uninstall callable does nothing.
+    """
+
+    def install(cleanup: Callable[[], None]) -> Callable[[], None]:
+        registered.append(cleanup)
+        return lambda: None
+
+    return install
+
+
+class CleanupRegistry:
+    """The termination cleanups installed through a patched seam and not yet uninstalled.
+
+    ``install_termination_cleanup`` hands back an uninstall callable, so recording
+    both halves gives the live set at any moment: read it from inside a seam to see
+    what is armed, and read it afterwards to see what was left behind.
+    """
+
+    def __init__(self) -> None:
+        self._live: list[Callable[[], None]] = []
+
+    def install(self, cleanup: Callable[[], None]) -> Callable[[], None]:
+        """Record *cleanup* as armed.
+
+        Args:
+            cleanup: The termination cleanup being installed.
+
+        Returns:
+            A callable that removes *cleanup* from the armed set.
+        """
+        self._live.append(cleanup)
+
+        def uninstall() -> None:
+            self._live = [live for live in self._live if live is not cleanup]
+
+        return uninstall
+
+    def live(self) -> list[Callable[[], None]]:
+        """Return the cleanups installed and not yet uninstalled, in install order."""
+        return list(self._live)
+
+
+def track_mounted_cleanups(monkeypatch: "pytest.MonkeyPatch") -> CleanupRegistry:
+    """Swap the cleanup installer ``mount_live`` uses for a registry a test can read.
+
+    Args:
+        monkeypatch: The fixture that installs the swap.
+
+    Returns:
+        The registry recording every erase cleanup a display mounts.
+    """
+    registry = CleanupRegistry()
+    monkeypatch.setattr("gymrat.cli.live_display.install_termination_cleanup", registry.install)
+    return registry
+
+
+class ProcessExit(BaseException):
+    """Stands in for the ``os._exit`` that ends the process once a signal is handled."""
+
+
+class InterruptedTerminal(StringIO):
+    """A terminal file that runs a signal handler at one chosen write, then exits.
+
+    ``interrupt_write`` arms it for the next write whose text contains *marker*.
+    The handler runs in place of that write, or right after the text lands when
+    *lands* is true. ``at_exit`` then keeps what reached the terminal, and the
+    write raises ``ProcessExit`` where the real process would end, so nothing
+    written while the exception unwinds counts.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.at_exit = ""
+        self._handler: Callable[[], object] | None = None
+        self._marker = ""
+        self._lands = False
+
+    def interrupt_write(
+        self, handler: Callable[[], object], *, marker: str = "", lands: bool = False
+    ) -> None:
+        """Arm the terminal to run *handler* at the next matching write.
+
+        Args:
+            handler: Runs in place of the matching write, or right after its text
+                lands when *lands* is true.
+            marker: Text the write must contain to trigger the handler; the empty
+                string matches every write.
+            lands: Whether the write's text reaches the terminal before the
+                handler runs.
+        """
+        self._handler, self._marker, self._lands = handler, marker, lands
+
+    @override
+    def write(self, text: str) -> int:
+        handler = self._handler
+        if handler is None or self._marker not in text:
+            return super().write(text)
+        self._handler = None
+        if self._lands:
+            super().write(text)
+        handler()
+        self.at_exit = self.getvalue()
+        raise ProcessExit
 
 
 def record_registry_sweep(monkeypatch: "pytest.MonkeyPatch") -> list[int]:

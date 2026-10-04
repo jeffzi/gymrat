@@ -40,7 +40,7 @@ from gymrat.session.paths import (
     lockfile_path,
     supervise_lockfile_path,
 )
-from gymrat.session.workspace import Worktrees, ensure_git_exclude
+from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.driver import SessionPrompt
@@ -49,7 +49,8 @@ from gymrat.supervisor.hooks import HooksFactory, supervise_hooks_factory
 from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult
 from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
 from tests._ansi import strip_ansi
-from tests._rich import CleanupRegistry, unwrap_panel
+from tests._process_helpers import CleanupRegistry
+from tests._rich import unwrap_panel
 from tests.cli._help import help_output
 from tests.cli._session import FailingStdoutRunner, closed_stdout_error
 from tests.cli.supervise._fixtures import (
@@ -62,6 +63,7 @@ from tests.conftest import hold_lock
 from tests.session.records._fixtures import (
     empty_session_state,
     session_record,
+    worktrees_at,
 )
 from tests.supervisor._mock_driver import CostStep, create_mock_driver
 from tests.telemetry._fixtures import (
@@ -177,10 +179,7 @@ def _make_start_result(root: str = "/repo", branch: str | None = None) -> StartR
     """Build a ``StartResult`` carrying sensible defaults, its session on ``branch`` when given."""
     overrides = {} if branch is None else {"branch": branch}
     rec = session_record(
-        worktrees=Worktrees(
-            experiment=f"{root}/.gymrat/worktrees/experiment",
-            baseline=f"{root}/.gymrat/worktrees/baseline",
-        ),
+        worktrees=worktrees_at(root),
         **overrides,
     )
     return StartResult(

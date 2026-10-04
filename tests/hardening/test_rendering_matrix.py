@@ -44,18 +44,17 @@ from gymrat.doctor import (
     create_doctor_report,
     render_doctor_report,
 )
+from tests._git import EMIT_ONE_BENCH
 from tests._git import run_git as _git
+from tests._git import write_committed_bench as _write_committed_bench
 from tests._streams import FakeStream
 from tests.hardening._bench_helpers import drain as _drain
-from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 from tests._ansi import strip_ansi
 from tests._cli import ENTRY as _ENTRY
-
-_METRIC_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
 
 # A bench that records the ``NO_COLOR`` its own environment carries. The parent
 # starts with ``NO_COLOR`` unset, so a leak would show up here as ``[1]``.
@@ -125,7 +124,7 @@ def test_measure_report_when_stdout_is_a_real_tty_does_render_styled(
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, _METRIC_BENCH)
+    _write_committed_bench(repo, EMIT_ONE_BENCH)
 
     output = _run_report_on_pty(["measure", "--bench", "sh bench.sh", "--samples", "1"], repo)
 
@@ -138,7 +137,7 @@ def test_compare_report_when_stdout_is_a_real_tty_does_render_styled(
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, _METRIC_BENCH)
+    _write_committed_bench(repo, EMIT_ONE_BENCH)
     _git(["switch", "-c", "candidate"], repo)
     _git(["switch", "main"], repo)
 
@@ -156,7 +155,7 @@ def test_measure_report_when_stdout_is_redirected_does_render_plain(
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, _METRIC_BENCH)
+    _write_committed_bench(repo, EMIT_ONE_BENCH)
 
     result = subprocess.run(  # noqa: S603
         [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "1"],

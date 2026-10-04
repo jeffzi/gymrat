@@ -40,7 +40,9 @@ if sys.platform != "win32":
 
 from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
+from tests._git import EMIT_ONE_BENCH
 from tests._git import run_git as _git
+from tests._git import write_committed_bench as _write_committed_bench
 from tests._process_helpers import read_pid_file as _read_pid_file
 from tests._process_helpers import (
     wait_for_pid_file_blocking as _wait_for_pid_file_blocking,
@@ -50,7 +52,6 @@ from tests._process_helpers import (
 )
 from tests._rich import screen_lines
 from tests.hardening._bench_helpers import drain as _drain
-from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 
@@ -76,8 +77,6 @@ echo $! > grandchild.pid
 echo 'METRIC x=1'
 wait
 """
-
-_FAST_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
 
 
 @pytest.fixture
@@ -172,7 +171,7 @@ def test_measure_when_prior_run_hard_killed_does_take_over_stale_lock_on_rerun(
     _wait_until_dead_blocking(bench_pid, timeout_s=_SETTLE_TIMEOUT_S)
     # The lock left behind above is now stale; the rerun below must take it over.
 
-    (Path(repo) / "bench.sh").write_text(_FAST_BENCH, encoding="utf-8")
+    (Path(repo) / "bench.sh").write_text(EMIT_ONE_BENCH, encoding="utf-8")
     rerun = subprocess.run(  # noqa: S603
         [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "2"],
         cwd=repo,

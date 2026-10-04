@@ -10,7 +10,6 @@ and trace tests live in ``tests/test_command_run.py``.
 import errno
 import io
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -28,6 +27,7 @@ from gymrat.cli.exit import (
     write_stdout,
 )
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
+from tests._imports import loaded_under, modules_imported_by
 from tests._process_helpers import run_with_closed_reader, run_with_failing_stdout
 from tests._rich import unwrap_panel
 from tests._streams import FakeStream, RaisingStream
@@ -243,31 +243,16 @@ def test_format_cli_error_when_color_override_set_does_beat_the_color_env_vars(
 
 
 def test_importing_cli_modules_does_not_pull_the_heavy_stack_or_command_bodies():
-    probe = """
-import sys
-import gymrat.cli.exit
-import gymrat.cli.run_setup
-import gymrat.cli.options
-import gymrat.cli.progress
-import gymrat.cli.compare_cmd
-heavy = sorted(
-    name
-    for name in sys.modules
-    if name in {'scipy', 'numpy'} or name.startswith(('scipy.', 'numpy.'))
-)
-bodies = [name for name in ('gymrat.compare', 'gymrat.measure') if name in sys.modules]
-assert not heavy, f'cli import pulled heavy modules: {heavy}'
-assert not bodies, f'cli import pulled command bodies: {bodies}'
-"""
-
-    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [sys.executable, "-c", probe],
-        capture_output=True,
-        text=True,
-        check=False,
+    loaded = modules_imported_by(
+        "gymrat.cli.exit",
+        "gymrat.cli.run_setup",
+        "gymrat.cli.options",
+        "gymrat.cli.progress",
+        "gymrat.cli.compare_cmd",
     )
 
-    assert result.returncode == 0, result.stderr
+    assert loaded_under(loaded, "scipy", "numpy") == []
+    assert loaded_under(loaded, "gymrat.compare", "gymrat.measure") == []
 
 
 # ---------------------------------------------------------------------------

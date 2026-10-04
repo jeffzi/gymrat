@@ -9,8 +9,6 @@ deterministic without a clock.
 from __future__ import annotations
 
 import math
-import subprocess
-import sys
 from dataclasses import FrozenInstanceError
 from typing import TYPE_CHECKING
 
@@ -35,6 +33,7 @@ from gymrat.progress_events import (
     PrepareFinished,
     PrepareStarted,
 )
+from tests._imports import loaded_under, modules_imported_by
 from tests.cli._progress_helpers import (
     pass_finished as _pass_finished,
 )
@@ -92,20 +91,9 @@ _LAST_PASS_FINISHED = _pass_finished(1, 1, target_count=2, label="experiment", a
 
 
 def test_state_module_when_imported_in_a_fresh_interpreter_does_not_load_rich():
-    probe = """
-import sys
-import gymrat.cli.iterate.state
-loaded = sorted(name for name in sys.modules if name == "rich" or name.startswith("rich."))
-if loaded:
-    print(f"importing the iterate state model pulled in rich: {loaded}", file=sys.stderr)
-    sys.exit(1)
-"""
+    loaded = modules_imported_by("gymrat.cli.iterate.state")
 
-    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
-    )
-
-    assert result.returncode == 0, result.stderr
+    assert loaded_under(loaded, "rich") == []
 
 
 @pytest.mark.parametrize(

@@ -17,11 +17,10 @@ from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
     follow_up_event,
     launch_event,
-    make_iteration,
     make_reporter,
     render_frame,
 )
-from tests.session.records._fixtures import empty_session_state, session_state
+from tests.session.records._fixtures import empty_session_state, make_iteration, session_state
 
 
 class SwitchableRead:

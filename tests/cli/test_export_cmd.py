@@ -11,7 +11,6 @@ from __future__ import annotations
 import errno
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -24,7 +23,7 @@ from gymrat.cli.app import app
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import record_to_wire
 from tests._ansi import SGR_RE
-from tests._cli import unoptimized_env
+from tests._imports import loaded_under, modules_imported_by
 from tests.cli._help import help_output
 from tests.session.records._fixtures import SESSION_ID, command_record, session_record
 from tests.telemetry._collector import otlp_collector
@@ -97,28 +96,9 @@ def _populate_session_dir(
 
 
 def test_export_when_app_imported_does_not_import_telemetry_provider_or_replay():
-    probe = """
-import sys
-from gymrat.cli.app import app
-leaked = sorted(
-    name
-    for name in sys.modules
-    if name in {'gymrat.telemetry.provider', 'gymrat.telemetry.replay'}
-)
-if leaked:
-    print(f'app import pulled telemetry modules: {leaked}', file=sys.stderr)
-    sys.exit(1)
-"""
+    loaded = modules_imported_by("gymrat.cli.app")
 
-    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [sys.executable, "-c", probe],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=unoptimized_env(),
-    )
-
-    assert result.returncode == 0, result.stderr
+    assert loaded_under(loaded, "gymrat.telemetry.provider", "gymrat.telemetry.replay") == []
 
 
 # ---------------------------------------------------------------------------

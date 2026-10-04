@@ -8,7 +8,6 @@ shared module back in.
 import errno
 import io
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import override
@@ -17,6 +16,7 @@ import pytest
 
 from gymrat.cli.console import is_broken_pipe, point_stream_at_devnull, stderr_console
 from gymrat.report.style import is_tty
+from tests._imports import modules_imported_by
 from tests._process_helpers import run_with_closed_reader
 from tests._streams import FakeStream, RaisingStream
 
@@ -40,20 +40,9 @@ def _open_descriptors() -> set[str]:
 
 
 def test_importing_console_does_not_import_the_error_module():
-    probe = """
-import sys
-import gymrat.cli.console
-assert 'gymrat.cli.exit' not in sys.modules, 'console import pulled gymrat.cli.exit'
-"""
+    loaded = modules_imported_by("gymrat.cli.console")
 
-    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [sys.executable, "-c", probe],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
+    assert "gymrat.cli.exit" not in loaded
 
 
 # ---------------------------------------------------------------------------

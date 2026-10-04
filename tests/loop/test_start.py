@@ -30,10 +30,17 @@ from gymrat.session.paths import (
 )
 from gymrat.session.records import SessionConfig, SessionHooks
 from gymrat.session.store import append_record, fold_session, read_records
-from gymrat.session.workspace import BaselineRef, Worktrees, remove_worktrees
+from gymrat.session.workspace import BaselineRef, remove_worktrees
+from tests._git import head_of
 from tests._git import run_git as _git
-from tests.loop._settle import session_header_of
-from tests.session.records._fixtures import committed_keep, finalize_record, iteration_record
+from tests.session.records._fixtures import (
+    committed_keep,
+    finalize_record,
+    iteration_record,
+    log_records,
+    session_header_of,
+    worktrees_at,
+)
 
 SESSION_ID_PATTERN = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 BRANCH_PATTERN = re.compile(r"^gymrat/\d{8}-\d{6}-[0-9a-f]{4}$")
@@ -101,7 +108,7 @@ def _commit_in_experiment(root: str, message: str) -> str:
     (Path(worktree) / "README.md").write_text(f"# {message}\n", encoding="utf-8")
     _git(["add", "README.md"], worktree)
     _git(["commit", "-m", message], worktree)
-    return _git(["rev-parse", "HEAD"], worktree)
+    return head_of(worktree)
 
 
 def _close_session_with_one_keep(root: str) -> str:
@@ -125,7 +132,7 @@ def _close_session_with_one_keep(root: str) -> str:
 @pytest.fixture
 def head_sha(repo: str) -> str:
     """The commit SHA ``repo`` starts at."""
-    return _git(["rev-parse", "HEAD"], repo)
+    return head_of(repo)
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +146,7 @@ def test_start_session_when_no_session_yet_does_write_header_naming_baseline_bra
     start_session(repo, "main", CONFIG)
 
     header = session_header_of(repo)
-    assert read_records(session_jsonl_path(repo)) == [header]
+    assert log_records(repo) == [header]
     assert header.type == "session"
     assert header.schema_version == 1
     assert SESSION_ID_PATTERN.match(header.session_id)
@@ -147,10 +154,7 @@ def test_start_session_when_no_session_yet_does_write_header_naming_baseline_bra
     assert header.at > 0
     assert header.baseline == BaselineRef(ref="main", sha=head_sha)
     assert BRANCH_PATTERN.match(header.branch)
-    assert header.worktrees == Worktrees(
-        experiment=experiment_worktree_dir(repo),
-        baseline=baseline_worktree_dir(repo),
-    )
+    assert header.worktrees == worktrees_at(repo)
     assert header.config == CONFIG_SNAPSHOT
 
 
@@ -251,7 +255,7 @@ def test_start_session_when_session_on_disk_does_resume_returning_counts_without
     assert result.resumed is True
     assert result.state.iteration_count == 1
     assert result.state.keep_count == 1
-    assert len(read_records(jsonl)) == 3
+    assert len(log_records(repo)) == 3
 
 
 def test_start_session_when_experiment_worktree_missing_does_put_it_back(repo: str):
@@ -273,7 +277,7 @@ def test_start_session_when_finalized_does_move_the_closed_log_aside_under_its_s
 ):
     start_session(repo, "main", CONFIG)
     closed = _close_session_with_one_keep(repo)
-    closed_log = read_records(session_jsonl_path(repo))
+    closed_log = log_records(repo)
 
     start_session(repo, "main", CONFIG)
 
@@ -291,7 +295,7 @@ def test_start_session_when_finalized_does_open_a_fresh_session_in_the_vacated_l
     assert result.resumed is False
     assert result.state.finalized is None
     assert result.session.session_id != closed
-    assert read_records(session_jsonl_path(repo)) == [result.session]
+    assert log_records(repo) == [result.session]
 
 
 def test_start_session_when_finalized_does_check_out_both_worktrees_at_the_pinned_baseline(
@@ -302,8 +306,8 @@ def test_start_session_when_finalized_does_check_out_both_worktrees_at_the_pinne
 
     start_session(repo, "main", CONFIG)
 
-    assert _git(["rev-parse", "HEAD"], experiment_worktree_dir(repo)) == head_sha
-    assert _git(["rev-parse", "HEAD"], baseline_worktree_dir(repo)) == head_sha
+    assert head_of(experiment_worktree_dir(repo)) == head_sha
+    assert head_of(baseline_worktree_dir(repo)) == head_sha
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
@@ -312,7 +316,7 @@ def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_clo
 ):
     start_session(repo, "main", CONFIG)
     closed = _close_session_with_one_keep(repo)
-    closed_log = read_records(session_jsonl_path(repo))
+    closed_log = log_records(repo)
     kill_git_during_worktree_add(repo)
 
     with pytest.raises(GymratError) as excinfo:
@@ -320,7 +324,7 @@ def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_clo
 
     # The rollback's own failure never speaks for the start's.
     assert re.search(r"cannot create the experiment worktree", str(excinfo.value), re.IGNORECASE)
-    assert read_records(session_jsonl_path(repo)) == closed_log
+    assert log_records(repo) == closed_log
     assert not Path(archived_session_path(repo, closed)).exists()
 
 
@@ -341,7 +345,7 @@ def test_start_session_when_baseline_worktree_missing_does_put_it_back_at_the_la
 
     start_session(repo, "main", CONFIG)
 
-    assert _git(["rev-parse", "HEAD"], baseline_worktree_dir(repo)) == kept
+    assert head_of(baseline_worktree_dir(repo)) == kept
 
 
 def test_start_session_when_baseline_worktree_missing_and_nothing_kept_does_put_it_back_at_pinned_sha(
@@ -353,7 +357,7 @@ def test_start_session_when_baseline_worktree_missing_and_nothing_kept_does_put_
 
     start_session(repo, "main", CONFIG)
 
-    assert _git(["rev-parse", "HEAD"], baseline_worktree_dir(repo)) == head_sha
+    assert head_of(baseline_worktree_dir(repo)) == head_sha
 
 
 # ---------------------------------------------------------------------------

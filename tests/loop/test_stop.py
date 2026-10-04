@@ -18,12 +18,11 @@ from gymrat.loop.finalize import finalize_session
 from gymrat.loop.stop import StopResult, stop_session
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import KeepChecks, SessionLogRecord, StopRecord
-from gymrat.session.store import append_record, read_records
-from tests._git import run_git
+from gymrat.session.store import append_record
+from tests._git import head_of, run_git
 from tests.loop._settle import (
     capture_error,
     confirmed_regression,
-    head_of,
     settling_record_of,
     start_with,
 )
@@ -31,6 +30,7 @@ from tests.session.records._fixtures import (
     blocked_keep,
     committed_keep,
     iteration_record,
+    log_records,
     stop_record,
 )
 
@@ -44,7 +44,7 @@ def _mentions_keep_or_discard(hint: str) -> bool:
 
 def _record_count(repo: str) -> int:
     """How many records the session log at ``repo`` currently holds."""
-    return len(read_records(session_jsonl_path(repo)))
+    return len(log_records(repo))
 
 
 # ---------------------------------------------------------------------------

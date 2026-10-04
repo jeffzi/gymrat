@@ -7,33 +7,17 @@ dataclass, so a builder's status/detail/hint output is asserted directly.
 
 import pytest
 
-from gymrat.config import BenchlessConfig, ConfigInspection, StopConfig
+from gymrat.config import ConfigInspection, StopConfig
 from gymrat.doctor import (
     Check,
     CheckSection,
-    EnvironmentInfo,
     build_config_section,
     build_environment_section,
     build_workflow_section,
     create_doctor_report,
 )
-
-
-def _env() -> EnvironmentInfo:
-    return EnvironmentInfo(gymrat_version="0.5.0", python_version="3.13.0", platform="darwin")
-
-
-def _config(**overrides: object) -> BenchlessConfig:
-    """A fully defaulted benchless config, overridable per test."""
-    base: dict[str, object] = {
-        "adapter": "metric-lines",
-        "samples": 10,
-        "timeout_seconds": 1800,
-        "unstable_noise_pct": 200,
-        "primary": "geomean",
-    }
-    base.update(overrides)
-    return BenchlessConfig(**base)  # pyrefly: ignore
+from tests._config import benchless_config as _config
+from tests.doctor._fixtures import environment_info as _env
 
 
 def _inspection(**overrides: object) -> ConfigInspection:

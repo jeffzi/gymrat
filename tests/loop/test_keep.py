@@ -31,9 +31,10 @@ from gymrat.session.records import (
     SessionLogRecord,
 )
 from gymrat.session.schema import Outcome
-from gymrat.session.store import append_record, latest_baseline, read_records
+from gymrat.session.store import append_record, latest_baseline
 from tests._ansi import SGR_RE, strip_ansi
-from tests._git import run_git
+from tests._exec_fixtures import expected_result
+from tests._git import head_of, run_git
 from tests._streams import FakeStream
 from tests.loop._settle import (
     CHECKS,
@@ -53,7 +54,6 @@ from tests.loop._settle import (
     confirmed_regression,
     edit_experiment,
     failed_checks,
-    head_of,
     install_exec,
     measured_rounds,
     metric,
@@ -65,7 +65,12 @@ from tests.loop._settle import (
     unimproved,
     unmeasured_regression,
 )
-from tests.session.records._fixtures import blocked_keep, committed_keep, iteration_record
+from tests.session.records._fixtures import (
+    blocked_keep,
+    committed_keep,
+    iteration_record,
+    log_records,
+)
 
 # ---------------------------------------------------------------------------
 # keep_session preconditions and checks
@@ -279,16 +284,7 @@ async def test_keep_session_when_output_over_relay_budget_does_cut_report_but_re
 ):
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
-    install_exec(
-        monkeypatch,
-        ExecResult(
-            stdout=LONG_STDOUT,
-            stderr=LONG_STDERR,
-            exit_code=1,
-            stdout_bytes=len(LONG_STDOUT.encode()),
-            stderr_bytes=len(LONG_STDERR.encode()),
-        ),
-    )
+    install_exec(monkeypatch, expected_result(LONG_STDOUT, LONG_STDERR, exit_code=1))
 
     result = await keep_session(repo, checks_config())
 
@@ -573,7 +569,7 @@ async def test_keep_session_when_override_follows_a_not_improved_refusal_does_co
 
     result = await keep_session(repo, checks_config(), KeepOptions(allow_unimproved=True))
 
-    keeps = [record for record in read_records(session_jsonl_path(repo)) if record.type == "keep"]
+    keeps = [record for record in log_records(repo) if record.type == "keep"]
     assert [(record.status, record.reason) for record in keeps] == [
         ("blocked", "not-improved"),
         ("committed", None),
@@ -761,7 +757,7 @@ async def test_keep_session_when_second_refusal_does_number_past_the_first(
 
     # A consumer walking the raw log sees two distinct records, not one number
     # written twice.
-    keeps = [record for record in read_records(session_jsonl_path(repo)) if record.type == "keep"]
+    keeps = [record for record in log_records(repo) if record.type == "keep"]
     assert [record.seq for record in keeps] == [1, 2]
     assert result.record.seq == 2
 
@@ -880,12 +876,7 @@ async def test_keep_session_when_checks_output_holds_markup_metacharacters_does_
 ):
     _edited_after_iteration(repo)
     noisy = "FAIL [i] parse_config"
-    install_exec(
-        monkeypatch,
-        ExecResult(
-            stdout=noisy, stderr="", exit_code=1, stdout_bytes=len(noisy.encode()), stderr_bytes=0
-        ),
-    )
+    install_exec(monkeypatch, expected_result(noisy, exit_code=1))
 
     result = await keep_session(repo, checks_config(), color=True)
 
@@ -967,7 +958,7 @@ async def test_keep_session_when_committed_does_append_the_kept_samples_as_a_bas
 
     await keep_session(repo, checks_config())
 
-    records = read_records(session_jsonl_path(repo))
+    records = log_records(repo)
     baseline = records[-1]
     assert [record.type for record in records[-2:]] == ["keep", "baseline"]
     assert isinstance(baseline, BaselineRecord)
@@ -999,4 +990,4 @@ async def test_keep_session_when_refusing_does_append_no_baseline(
     result = await keep_session(repo, checks_config())
 
     assert result.record.status == "blocked"
-    assert latest_baseline(read_records(session_jsonl_path(repo))) is None
+    assert latest_baseline(log_records(repo)) is None

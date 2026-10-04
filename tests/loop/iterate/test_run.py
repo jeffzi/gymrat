@@ -37,9 +37,7 @@ from gymrat.progress_events import (
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
 from gymrat.session import workspace as _workspace
 from gymrat.session.budget import Budget
-from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import PairedSamples
-from gymrat.session.store import read_records
 from gymrat.targets import InPlaceTarget
 from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,
@@ -67,6 +65,7 @@ from tests.session.records._fixtures import (
     discard_record,
     finalize_record,
     iteration_record,
+    log_records,
     write_session_log,
 )
 
@@ -181,7 +180,7 @@ async def test_iterate_session_when_max_iterations_reached_does_refuse_without_m
     assert "max iterations" in str(exc.value)
     assert "2" in str(exc.value)
     assert samples_mock.call_count == 0
-    assert len(read_records(session_jsonl_path(repo))) == 5
+    assert len(log_records(repo)) == 5
 
 
 async def test_iterate_session_when_target_kept_does_refuse_without_measuring(
@@ -197,7 +196,7 @@ async def test_iterate_session_when_target_kept_does_refuse_without_measuring(
 
     assert "target reached" in str(exc.value)
     assert samples_mock.call_count == 0
-    assert len(read_records(session_jsonl_path(repo))) == 3
+    assert len(log_records(repo)) == 3
 
 
 async def test_iterate_session_when_target_iteration_discarded_does_measure_again(

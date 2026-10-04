@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from gymrat.session.paths import session_jsonl_path
+from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import (
     BaselineRecord,
     CommandRecord,
@@ -33,7 +33,7 @@ from gymrat.session.records import (
     SessionRecord,
     StopRecord,
 )
-from gymrat.session.store import SessionState, append_record
+from gymrat.session.store import SessionState, append_record, read_records
 from gymrat.session.workspace import BaselineRef, Worktrees
 
 #: The instant every fixture record in this file was written at (nanoseconds since epoch).
@@ -60,6 +60,11 @@ def tear_final_line(path: str | Path) -> None:
     """Append ``TORN_PREFIX`` so the log ends on an unterminated final line."""
     with Path(path).open("ab") as handle:
         handle.write(TORN_PREFIX)
+
+
+def worktrees_at(root: str) -> Worktrees:
+    """The worktree pair a session started under ``root`` records."""
+    return Worktrees(experiment=experiment_worktree_dir(root), baseline=baseline_worktree_dir(root))
 
 
 def session_record(**overrides: Any) -> SessionRecord:
@@ -125,6 +130,15 @@ def iteration_record(**overrides: Any) -> IterationRecord:
         target_reached=False,
     )
     return _overridden(default, overrides)
+
+
+def make_iteration(delta_pct: float | None, outcome: str, seq: int = 1) -> IterationRecord:
+    """An iteration whose only reader-visible fields are its primary delta and outcome."""
+    return iteration_record(
+        seq=seq,
+        primary=IterationPrimary(kind="geomean", delta_pct=delta_pct),
+        outcome=outcome,
+    )
 
 
 def committed_keep(seq: int, **overrides: Any) -> KeepRecord:
@@ -258,3 +272,17 @@ def append_records(root: str, *records: SessionLogRecord) -> None:
     jsonl_path = session_jsonl_path(root)
     for record in records:
         append_record(jsonl_path, record)
+
+
+def log_records(root: str) -> list[SessionLogRecord]:
+    """Every record the session JSONL log under ``root`` currently holds."""
+    return read_records(session_jsonl_path(root))
+
+
+def session_header_of(root: str) -> SessionRecord:
+    """The session header ``root``'s log opens with, failing when there is none."""
+    records = log_records(root)
+    assert records, f"expected a session header in {session_jsonl_path(root)}"
+    first = records[0]
+    assert isinstance(first, SessionRecord), f"expected a header in {session_jsonl_path(root)}"
+    return first

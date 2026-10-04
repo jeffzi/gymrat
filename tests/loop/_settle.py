@@ -33,13 +33,13 @@ from gymrat.session.records import (
     MetricVerdict,
     PairedSamples,
     SessionLogRecord,
-    SessionRecord,
 )
 from gymrat.session.schema import Outcome
-from gymrat.session.store import append_record, read_records
-from tests._git import run_git
+from gymrat.session.store import append_record
+from tests._exec_fixtures import expected_result
+from tests._git import head_of, run_git
 from tests.loop.iterate._fixtures import resolved_config
-from tests.session.records._fixtures import iteration_record
+from tests.session.records._fixtures import iteration_record, log_records
 
 CHECKS = "npm test"
 CHECKS_STDOUT = "3 tests failed"
@@ -55,20 +55,6 @@ def checks_config(**overrides: Any) -> ResolvedConfig:
     """
     defaults: dict[str, Any] = {"bench": "sh bench.sh", "unstable_noise_pct": 2.0, "checks": CHECKS}
     return resolved_config(**(defaults | overrides))
-
-
-def session_header_of(root: str) -> SessionRecord:
-    """The session header ``root``'s log opens with, failing when there is none."""
-    records = read_records(session_jsonl_path(root))
-    assert records, f"expected a session header in {session_jsonl_path(root)}"
-    first = records[0]
-    assert isinstance(first, SessionRecord)
-    return first
-
-
-def head_of(worktree: str) -> str:
-    """The commit ``worktree`` currently has checked out."""
-    return run_git(["rev-parse", "HEAD"], worktree)
 
 
 def status_of(worktree: str) -> str:
@@ -118,30 +104,12 @@ def install_exec(
 
 def checks_pass(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
     """Answer the checks command with a clean run."""
-    return install_exec(
-        monkeypatch,
-        ExecResult(
-            stdout="10 passed",
-            stderr="",
-            exit_code=0,
-            stdout_bytes=len(b"10 passed"),
-            stderr_bytes=0,
-        ),
-    )
+    return install_exec(monkeypatch, expected_result("10 passed"))
 
 
 def checks_fail(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
     """Answer the checks command with a failing run that wrote to both streams."""
-    return install_exec(
-        monkeypatch,
-        ExecResult(
-            stdout=CHECKS_STDOUT,
-            stderr=CHECKS_STDERR,
-            exit_code=1,
-            stdout_bytes=len(CHECKS_STDOUT.encode()),
-            stderr_bytes=len(CHECKS_STDERR.encode()),
-        ),
-    )
+    return install_exec(monkeypatch, expected_result(CHECKS_STDOUT, CHECKS_STDERR, exit_code=1))
 
 
 def settling_record_of(root: str) -> SessionLogRecord:
@@ -151,7 +119,7 @@ def settling_record_of(root: str) -> SessionLogRecord:
     bookkeeping that trails the settlement, so both are skipped: a caller asking
     for the settling record wants the keep, discard, stop, or finalize itself.
     """
-    records = read_records(session_jsonl_path(root))
+    records = log_records(root)
     for record in reversed(records):
         if not isinstance(record, CommandRecord | BaselineRecord):
             return record
@@ -174,7 +142,7 @@ def capture_error(action: Callable[[], object]) -> GymratError:
 TIMEOUT_MS = 1_800_000
 
 #: A result the no-checks path must never reach; installed only to prove exec stayed unused.
-UNUSED_EXEC = ExecResult(stdout="", stderr="", exit_code=0, stdout_bytes=0, stderr_bytes=0)
+UNUSED_EXEC = expected_result()
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only .git pointer sabotage")
 

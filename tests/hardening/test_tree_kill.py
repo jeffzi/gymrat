@@ -44,6 +44,7 @@ from gymrat.exec import (
     release_contained,
     spawn_contained,
 )
+from tests._exec_fixtures import expected_result
 from tests._process_helpers import (
     SLEEPER_ARGV,
     capture_spawns,
@@ -492,7 +493,7 @@ async def test_exec_argv_when_aborted_and_child_ignores_graceful_signal_does_kil
     abort.set()
 
     result = await asyncio.wait_for(task, _SETTLE_TIMEOUT_S)
-    assert result == ExecResult(stdout="", stderr="", exit_code=1, stdout_bytes=0, stderr_bytes=0)
+    assert result == expected_result(exit_code=1)
     assert loop.time() - started < _GRACE_BOUND_S
 
 

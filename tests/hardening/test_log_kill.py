@@ -30,7 +30,7 @@ import pytest
 
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record, read_records
-from tests.session.records._fixtures import committed_keep, session_record
+from tests.session.records._fixtures import committed_keep, log_records, session_record
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only signals and named pipes"
@@ -248,7 +248,7 @@ def test_append_record_when_process_hard_exits_right_after_return_does_keep_the_
     _, stderr = child.communicate(timeout=30)
 
     assert child.returncode == 0, stderr
-    assert read_records(session_jsonl_path(root)) == [session_record()]
+    assert log_records(root) == [session_record()]
 
 
 # ---------------------------------------------------------------------------

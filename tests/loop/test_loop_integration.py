@@ -43,10 +43,11 @@ from gymrat.session.records import (
     SessionRecord,
 )
 from gymrat.session.store import append_record, read_records
+from tests._git import head_of
 from tests._git import run_git as _git
 from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project, tune_experiment
 from tests.loop.iterate._fixtures import resolved_config
-from tests.session.records._fixtures import committed_keep, iteration_record
+from tests.session.records._fixtures import committed_keep, iteration_record, log_records
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees and gating")
 
@@ -143,7 +144,7 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     exit_codes.append(_run_cli(repo, "iterate").returncode)
     exit_codes.append(_run_cli(repo, "discard").returncode)
 
-    records = read_records(session_jsonl_path(repo))
+    records = log_records(repo)
     session = _pick(records, SessionRecord)[0]
     keep = _pick(records, KeepRecord)[0]
     branch = session.branch
@@ -248,7 +249,7 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
 
     assert second.returncode == 2, second.stderr
     assert first.returncode == 0, first_stderr or first_stdout
-    assert len(_pick(read_records(session_jsonl_path(repo)), IterationRecord)) == 1
+    assert len(_pick(log_records(repo), IterationRecord)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -272,14 +273,14 @@ def test_loop_when_restarted_after_a_finalize_without_worktree_does_open_fresh(
     append_record(session_jsonl_path(repo), iteration_record(seq=1))
     append_record(
         session_jsonl_path(repo),
-        committed_keep(1, commit=_git(["rev-parse", "HEAD"], worktree)),
+        committed_keep(1, commit=head_of(worktree)),
     )
 
     # The directory goes before finalize does, so ``git worktree remove`` finds
     # nothing to take and git keeps its entry for the path.
     shutil.rmtree(worktree)
     finalize_session(repo)
-    closed_log = read_records(session_jsonl_path(repo))
+    closed_log = log_records(repo)
 
     restarted = start_session(repo, "main", resolved_config())
 

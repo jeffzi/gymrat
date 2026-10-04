@@ -32,11 +32,11 @@ from typer.testing import CliRunner
 
 from gymrat.cli.app import app
 from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import KeepRecord
-from gymrat.session.store import read_records
 from tests._ansi import SGR_RE, strip_ansi
 from tests._cli import no_color_env
+from tests._git import head_of
 from tests._process_helpers import run_with_closed_reader
 from tests.cli._budget import install_budget
 from tests.cli._help import help_output
@@ -58,7 +58,6 @@ from tests.loop._settle import (
     checks_fail,
     checks_pass,
     edit_experiment,
-    head_of,
     measured_rounds,
     settling_record_of,
     start_with,
@@ -70,6 +69,7 @@ from tests.session.records._fixtures import (
     SESSION_ID,
     committed_keep,
     iteration_record,
+    log_records,
     session_record,
     write_session_log,
 )
@@ -237,9 +237,7 @@ _TTY_DISCARD = (
 def _discard_state(repo: str) -> tuple[bool, bool]:
     """Whether the experiment edit is still present, and whether a discard was logged."""
     edit_present = status_of(experiment_worktree_dir(repo)) != ""
-    discard_logged = any(
-        record.type == "discard" for record in read_records(session_jsonl_path(repo))
-    )
+    discard_logged = any(record.type == "discard" for record in log_records(repo))
     return edit_present, discard_logged
 
 

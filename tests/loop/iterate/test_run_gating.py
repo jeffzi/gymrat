@@ -32,7 +32,6 @@ from gymrat.session.records import (
     PairedSamples,
 )
 from gymrat.session.store import append_record as append_session_record
-from gymrat.session.store import read_records
 from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,
     BASELINE_MS,
@@ -57,6 +56,7 @@ from tests.session.records._fixtures import (
     SESSION_ID,
     committed_keep,
     iteration_record,
+    log_records,
     write_session_log,
 )
 
@@ -249,7 +249,7 @@ async def test_iterate_session_when_rerun_bench_fails_does_fail_and_record_nothi
         await iterate_session(open_repo, resolved)
 
     assert str(exc.value) == "bench command failed"
-    assert len(read_records(session_jsonl_path(open_repo))) == 1
+    assert len(log_records(open_repo)) == 1
 
 
 # The filter command reaches a POSIX shell, which is what decides where one
@@ -802,11 +802,7 @@ def _payload_of(experiment_dir: str, stage: str) -> object:
 
 def _hook_records(root: str) -> list[HookRecord]:
     """Every hook record the session log holds, oldest first."""
-    return [
-        record
-        for record in read_records(session_jsonl_path(root))
-        if isinstance(record, HookRecord)
-    ]
+    return [record for record in log_records(root) if isinstance(record, HookRecord)]
 
 
 @pytest.fixture
@@ -830,7 +826,7 @@ async def test_iterate_session_when_hooks_configured_does_fire_before_then_after
 
     await iterate_session(repo, config)
 
-    records = read_records(session_jsonl_path(repo))
+    records = log_records(repo)
     assert [record.type for record in records] == [
         "session",
         "iteration",
@@ -856,11 +852,7 @@ async def test_iterate_session_when_hooks_configured_does_stamp_after_at_no_less
 
     await iterate_session(repo, config)
 
-    hook_records = [
-        record
-        for record in read_records(session_jsonl_path(repo))
-        if isinstance(record, HookRecord)
-    ]
+    hook_records = [record for record in log_records(repo) if isinstance(record, HookRecord)]
     assert len(hook_records) == 2
     before_record, after_record = hook_records
     assert isinstance(before_record.at, int)

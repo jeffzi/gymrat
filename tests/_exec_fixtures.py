@@ -1,4 +1,4 @@
-"""Helpers the ``exec`` test modules share: live-group isolation, expected results, spawn waits."""
+"""Helpers for tests of and around ``exec``: live-group isolation, results, spawn waits."""
 
 import asyncio
 from pathlib import Path
@@ -15,8 +15,8 @@ def isolate_live_groups(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(exec_mod, "_live_process_groups", set())
 
 
-def expected_result(stdout: str, stderr: str, exit_code: int) -> ExecResult:
-    """Build an expected ``ExecResult`` with byte counts derived from the strings."""
+def expected_result(stdout: str = "", stderr: str = "", exit_code: int = 0) -> ExecResult:
+    """Build an ``ExecResult`` with byte counts derived from the strings."""
     return ExecResult(
         stdout=stdout,
         stderr=stderr,

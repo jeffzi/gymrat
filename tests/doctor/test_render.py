@@ -15,30 +15,20 @@ from gymrat.doctor import (
     Check,
     CheckSection,
     DoctorReport,
-    EnvironmentInfo,
     create_doctor_report,
     render_doctor_json,
     render_doctor_report,
 )
 from tests._ansi import strip_ansi
+from tests.doctor._fixtures import environment_info
 
 
 def lines(output: str) -> list[str]:
     return strip_ansi(output).split("\n")
 
 
-def _env(**overrides: object) -> EnvironmentInfo:
-    base: dict[str, object] = {
-        "gymrat_version": "0.5.0",
-        "python_version": "3.13.0",
-        "platform": "darwin",
-    }
-    base.update(overrides)
-    return EnvironmentInfo(**base)  # pyrefly: ignore
-
-
 def _report(sections: list[CheckSection], **env_overrides: object) -> DoctorReport:
-    return create_doctor_report(_env(**env_overrides), sections)
+    return create_doctor_report(environment_info(**env_overrides), sections)
 
 
 # ---------------------------------------------------------------------------

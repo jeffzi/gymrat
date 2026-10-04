@@ -34,7 +34,9 @@ from gymrat.session.workspace import (
     worktree_fingerprint,
     worktree_head,
 )
+from tests._git import head_of
 from tests._git import run_git as _git
+from tests.session.records._fixtures import worktrees_at
 
 SESSION_ID = "20260808-141530-a3f2"
 BRANCH = f"gymrat/{SESSION_ID}"
@@ -67,14 +69,6 @@ def _both_worktrees_exist(root: str) -> bool:
     )
 
 
-def _worktrees(root: str) -> Worktrees:
-    """The two worktree paths ``create_workspace`` laid down in ``root``."""
-    return Worktrees(
-        experiment=experiment_worktree_dir(root),
-        baseline=baseline_worktree_dir(root),
-    )
-
-
 def _edit_worktree(worktree: str, edit: str | None) -> None:
     """Write agent-edit content to ``edit`` in ``worktree``, or leave it clean when ``None``."""
     if edit is not None:
@@ -84,7 +78,7 @@ def _edit_worktree(worktree: str, edit: str | None) -> None:
 @pytest.fixture
 def baseline_sha(repo: str) -> str:
     """The HEAD commit SHA of the scratch repo's initial commit."""
-    return _git(["rev-parse", "HEAD"], repo)
+    return head_of(repo)
 
 
 @pytest.fixture
@@ -108,7 +102,7 @@ def test_create_workspace_when_no_session_workspace_does_build_branch_worktrees_
     assert _git(["rev-parse", BRANCH], repo) == baseline_sha
     assert Path(exp).exists()
     assert _checked_out_ref(exp) == BRANCH
-    assert _git(["rev-parse", "HEAD"], bl) == baseline_sha
+    assert head_of(bl) == baseline_sha
     assert _checked_out_ref(bl) == "HEAD"
     assert ".gymrat/" in _exclude_path(repo).read_text(encoding="utf-8").split("\n")
     assert result == WorkspaceResult(
@@ -160,7 +154,7 @@ def test_create_workspace_when_registry_entries_are_stale_does_check_out_over_th
     result = create_workspace(repo, NEXT_SESSION_ID, baseline)
 
     assert _checked_out_ref(result.worktrees.experiment) == NEXT_BRANCH
-    assert _git(["rev-parse", "HEAD"], result.worktrees.baseline) == baseline_sha
+    assert head_of(result.worktrees.baseline) == baseline_sha
 
 
 def test_create_workspace_when_registry_stale_does_leave_a_live_worktree_registered(
@@ -273,7 +267,7 @@ def test_remove_worktrees_when_both_on_disk_does_remove_them_without_warning(
 ):
     create_workspace(repo, SESSION_ID, baseline)
 
-    warnings = remove_worktrees(repo, _worktrees(repo))
+    warnings = remove_worktrees(repo, worktrees_at(repo))
 
     assert warnings == []
     assert not Path(experiment_worktree_dir(repo)).exists()
@@ -287,7 +281,7 @@ def test_remove_worktrees_when_one_directory_already_gone_does_remove_the_other_
     create_workspace(repo, SESSION_ID, baseline)
     shutil.rmtree(experiment_worktree_dir(repo))
 
-    warnings = remove_worktrees(repo, _worktrees(repo))
+    warnings = remove_worktrees(repo, worktrees_at(repo))
 
     assert warnings == []
     assert not Path(baseline_worktree_dir(repo)).exists()
@@ -304,7 +298,7 @@ def test_remove_worktrees_when_one_gone_does_deregister_by_name_only(
     absent = register_absent_worktree(repo)
     shutil.rmtree(experiment_worktree_dir(repo))
 
-    remove_worktrees(repo, _worktrees(repo))
+    remove_worktrees(repo, worktrees_at(repo))
 
     listed = list_worktree_dirs(repo)
     assert experiment_worktree_dir(repo) not in listed
@@ -318,7 +312,7 @@ def test_remove_worktrees_when_git_refuses_does_warn_naming_it_and_remove_the_ot
     # git declines a locked worktree unless --force is passed twice.
     _git(["worktree", "lock", experiment_worktree_dir(repo)], repo)
 
-    warnings = remove_worktrees(repo, _worktrees(repo))
+    warnings = remove_worktrees(repo, worktrees_at(repo))
 
     assert len(warnings) == 1
     assert experiment_worktree_dir(repo) in warnings[0]
@@ -409,7 +403,7 @@ def test_recreate_workspace_when_baseline_gone_does_put_it_back_detached_at_sha(
     recreate_workspace(repo, BRANCH, baseline_sha)
 
     worktree = baseline_worktree_dir(repo)
-    assert _git(["rev-parse", "HEAD"], worktree) == baseline_sha
+    assert head_of(worktree) == baseline_sha
     assert _checked_out_ref(worktree) == "HEAD"
 
 
@@ -438,12 +432,12 @@ def test_commit_workspace_when_changes_staged_and_untracked_does_commit_and_retu
     experiment = experiment_worktree_dir(repo)
     (Path(experiment) / "README.md").write_text("# edited by the agent\n", encoding="utf-8")
     (Path(experiment) / "new-file.txt").write_text("brand new\n", encoding="utf-8")
-    before = _git(["rev-parse", "HEAD"], experiment)
+    before = head_of(experiment)
 
     sha = commit_workspace(experiment, "agent change")
 
     assert sha != before
-    assert sha == _git(["rev-parse", "HEAD"], experiment)
+    assert sha == head_of(experiment)
     committed = _git(["show", "--name-only", "--format=", "HEAD"], experiment).split("\n")
     assert "README.md" in committed
     assert "new-file.txt" in committed
@@ -454,14 +448,14 @@ def test_commit_workspace_when_nothing_to_commit_does_raise_gymrat_error_leaving
 ):
     create_workspace(repo, SESSION_ID, baseline)
     experiment = experiment_worktree_dir(repo)
-    before = _git(["rev-parse", "HEAD"], experiment)
+    before = head_of(experiment)
 
     with pytest.raises(GymratError) as excinfo:
         commit_workspace(experiment, "no-op")
 
     # The wrapper surfaces git's failure as "<step message>: <diagnostic>".
     assert ": " in str(excinfo.value)
-    assert _git(["rev-parse", "HEAD"], experiment) == before
+    assert head_of(experiment) == before
 
 
 def test_revert_workspace_when_worktree_dirty_does_restore_head_and_drop_untracked_files(
@@ -483,15 +477,15 @@ def test_revert_workspace_when_target_sha_given_does_reset_head_and_tree_to_that
 ):
     create_workspace(repo, SESSION_ID, baseline)
     experiment = experiment_worktree_dir(repo)
-    original = _git(["rev-parse", "HEAD"], experiment)
+    original = head_of(experiment)
     (Path(experiment) / "step.txt").write_text("agent change\n", encoding="utf-8")
     _git(["add", "-A"], experiment)
     _git(["commit", "-m", "agent step"], experiment)
-    assert _git(["rev-parse", "HEAD"], experiment) != original
+    assert head_of(experiment) != original
 
     revert_workspace(experiment, target=original)
 
-    assert _git(["rev-parse", "HEAD"], experiment) == original
+    assert head_of(experiment) == original
     assert not (Path(experiment) / "step.txt").exists()
     assert _git(["status", "--porcelain"], experiment) == ""
 
@@ -515,7 +509,7 @@ def test_advance_baseline_when_target_sha_given_does_land_the_baseline_detached_
 
     advance_baseline(baseline_dir, target)
 
-    assert _git(["rev-parse", "HEAD"], baseline_dir) == target
+    assert head_of(baseline_dir) == target
     assert _checked_out_ref(baseline_dir) == "HEAD"
     assert _checked_out_ref(experiment) == BRANCH
 

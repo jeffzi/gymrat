@@ -25,14 +25,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from gymrat.config import BenchlessConfig
 from gymrat.event_docs import READERS
 from gymrat.loop.status import status_session
 from gymrat.session.records import SessionLogRecord, SessionRecord
 from gymrat.session.store import fold_session
-from gymrat.session.workspace import BaselineRef, Worktrees
 from gymrat.supervisor.events import SessionEvent
 from gymrat.supervisor.turns import outcome_record_count
+from tests._config import benchless_config
 from tests.event_docs._extended_unions import PROBE_WIRE_TYPE, ProbeModel
 from tests.session.records._fixtures import (
     baseline_record,
@@ -44,6 +43,7 @@ from tests.session.records._fixtures import (
     iteration_record,
     session_record,
     stop_record,
+    worktrees_at,
     write_session_log,
 )
 
@@ -298,27 +298,8 @@ def test_render_all_when_union_gains_model_does_document_it_in_every_generated_d
 _BASELINE = baseline_record()
 
 
-def _config() -> BenchlessConfig:
-    """A benchless config for the status renderer."""
-    return BenchlessConfig(
-        adapter="metric-lines",
-        samples=10,
-        timeout_seconds=1800,
-        unstable_noise_pct=200.0,
-        primary="geomean",
-    )
-
-
-def _worktrees(root: str) -> Worktrees:
-    base = Path(root) / ".gymrat" / "worktrees"
-    return Worktrees(experiment=str(base / "experiment"), baseline=str(base / "baseline"))
-
-
 def _session_at_root(root: str) -> SessionRecord:
-    return session_record(
-        baseline=BaselineRef(ref="main", sha="a" * 40),
-        worktrees=_worktrees(root),
-    )
+    return session_record(worktrees=worktrees_at(root))
 
 
 def _fold_session_types() -> set[str]:
@@ -390,8 +371,8 @@ def _status_history_types(tmp_path: Path) -> set[str]:
         write_session_log(root_without, session, without_history)
         write_session_log(root_with, session, with_history)
 
-        without_output = status_session(root_without, _config())
-        with_output = status_session(root_with, _config())
+        without_output = status_session(root_without, benchless_config())
+        with_output = status_session(root_with, benchless_config())
         if with_output != without_output:
             types.add(wire_type)
 

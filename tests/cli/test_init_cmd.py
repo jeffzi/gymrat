@@ -22,7 +22,6 @@ from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from gymrat.loop.start import start_session
 from gymrat.session.budget import write_budget
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
-from gymrat.session.store import read_records
 from tests._ansi import strip_ansi
 from tests._rich import unwrap_panel
 from tests.cli._budget import (
@@ -32,6 +31,7 @@ from tests.cli._budget import (
 from tests.cli._help import help_output
 from tests.cli._session import FailingStdoutRunner, closed_stdout_error, disk_full_error
 from tests.loop.iterate._fixtures import resolved_config
+from tests.session.records._fixtures import log_records
 
 runner = CliRunner()
 
@@ -432,7 +432,7 @@ def test_init_when_run_from_experiment_worktree_during_live_run_does_refuse(
     live_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_session(live_repo, "main", resolved_config())
-    records_before = read_records(session_jsonl_path(live_repo))
+    records_before = log_records(live_repo)
     worktree = experiment_worktree_dir(live_repo)
     monkeypatch.chdir(worktree)
 
@@ -442,7 +442,7 @@ def test_init_when_run_from_experiment_worktree_during_live_run_does_refuse(
     assert LIVE_REFUSAL in result.stderr
     assert _written_artifacts(live_repo) == []
     assert _written_artifacts(worktree) == []
-    assert read_records(session_jsonl_path(live_repo)) == records_before
+    assert log_records(live_repo) == records_before
 
 
 def test_init_when_budget_left_behind_without_supervise_lock_does_scaffold(repo: str):

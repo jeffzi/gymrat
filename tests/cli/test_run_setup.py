@@ -17,6 +17,7 @@ from gymrat.cli.run_setup import (
     resolve_render_mode,
     run_with_signal_abort,
 )
+from tests._process_helpers import fake_install
 from tests._streams import FakeStream
 
 
@@ -144,12 +145,7 @@ async def test_run_with_signal_abort_when_cleanup_invoked_kills_groups_before_se
 ):
     captured_cleanup: list[Callable[[], None]] = []
     captured_abort: list[asyncio.Event] = []
-
-    def _install(cleanup: Callable[[], None]) -> Callable[[], None]:
-        captured_cleanup.append(cleanup)
-        return lambda: None
-
-    monkeypatch.setattr(run_setup, "install_termination_cleanup", _install)
+    monkeypatch.setattr(run_setup, "install_termination_cleanup", fake_install(captured_cleanup))
 
     observed: dict[str, bool] = {}
 

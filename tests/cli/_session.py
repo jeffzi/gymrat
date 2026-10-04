@@ -26,17 +26,19 @@ from gymrat.measure import MeasureOptions
 from gymrat.report.types import MeasurementResult
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import CommandRecord, SessionRecord
-from gymrat.session.store import append_record, read_records
+from gymrat.session.store import append_record
 from tests._ansi import SGR_RE
-from tests._git import run_git
+from tests._git import head_of, run_git
 from tests._streams import RaisingStream
 from tests.loop._probe import install_measure
-from tests.loop._settle import head_of, start_with
+from tests.loop._settle import start_with
 from tests.loop.iterate._fixtures import resolved_config
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     committed_keep,
     iteration_record,
+    log_records,
+    session_header_of,
     session_record,
     write_session_log,
 )
@@ -221,9 +223,7 @@ def open_session_with_one_keep(root: str) -> SessionRecord:
     commit = head_of(worktree)
     append_record(session_jsonl_path(root), iteration_record(seq=1))
     append_record(session_jsonl_path(root), committed_keep(1, commit=commit))
-    header = read_records(session_jsonl_path(root))[0]
-    assert isinstance(header, SessionRecord)
-    return header
+    return session_header_of(root)
 
 
 def close_session_with_one_keep(root: str) -> str:
@@ -238,7 +238,7 @@ def last_command_record(root: str) -> CommandRecord:
 
     Raises ``AssertionError`` when the log contains no command record.
     """
-    records = read_records(session_jsonl_path(root))
+    records = log_records(root)
     for record in reversed(records):
         if isinstance(record, CommandRecord):
             return record
@@ -248,11 +248,7 @@ def last_command_record(root: str) -> CommandRecord:
 
 def records_of(repo: str, *, commands: bool) -> list[object]:
     """The session-log records that are (or are not) command traces."""
-    return [
-        r
-        for r in read_records(session_jsonl_path(repo))
-        if isinstance(r, CommandRecord) is commands
-    ]
+    return [r for r in log_records(repo) if isinstance(r, CommandRecord) is commands]
 
 
 def write_config(root: str, **extra: object) -> None:

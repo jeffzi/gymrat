@@ -30,7 +30,6 @@ from gymrat.cli.supervise.progress import (
 from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.eta import NS_PER_MS
 from gymrat.loop.start import start_session
-from gymrat.session.records import IterationPrimary, IterationRecord
 from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     CapAction,
@@ -51,9 +50,10 @@ from tests._rich import frame_text
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     empty_session_state,
-    iteration_record,
+    make_iteration,
     session_state,
 )
+from tests.supervisor._fixtures import make_launch
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -88,15 +88,6 @@ def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
     than hard-coding a clock time.
     """
     return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).astimezone().strftime("%H:%M:%S")
-
-
-def make_iteration(delta_pct: float | None, outcome: str, seq: int = 1) -> IterationRecord:
-    """An iteration whose only reporter-visible fields are its delta and outcome."""
-    return iteration_record(
-        seq=seq,
-        primary=IterationPrimary(kind="geomean", delta_pct=delta_pct),
-        outcome=outcome,
-    )
 
 
 def session_state_three_iterations(delta_pct: float, outcome: str, *, seq: int = 1) -> SessionState:
@@ -199,17 +190,8 @@ def launch_event(
     ``at=at_ms * NS_PER_MS`` (nanoseconds) so the dashboard's ingestion
     boundary (``event.at // 1_000_000``) recovers the same millisecond value.
     """
-    return LaunchEvent(
-        at=at_ms * NS_PER_MS,
-        schema_version=1,
-        head_sha="abc123",
-        dirty=False,
-        max_minutes=max_minutes,
-        max_usd=max_usd,
-        model=None,
-        runbook_path="/path/to/runbook.md",
-        kickoff_summary="test kickoff",
-        session_id="20260813-125044-34ec",
+    return make_launch(
+        at=at_ms * NS_PER_MS, head_sha="abc123", max_minutes=max_minutes, max_usd=max_usd
     )
 
 

@@ -18,13 +18,12 @@ from tests._ansi import SGR_GREEN, SGR_RED, SGR_YELLOW, assert_has_sgr
 from tests._rich import frame_text
 from tests.cli.supervise._fixtures import (
     FRAME_WIDTH,
-    make_iteration,
     make_read_session,
     make_supervision_result,
     render_colored,
     session_state_three_iterations,
 )
-from tests.session.records._fixtures import session_state
+from tests.session.records._fixtures import make_iteration, session_state
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import ReadSessionResult

@@ -19,6 +19,7 @@ import pytest
 from gymrat.errors import GymratError
 from gymrat.sampling import cleanup_worktrees, materialize_worktree, plan_worktree
 from gymrat.targets import InPlaceTarget, RefTarget, WorktreeInfo, resolve_target
+from tests._git import head_of
 from tests._git import run_git as _run_git
 
 # A sha no repository holds, so ``git worktree add`` rejects it outright.
@@ -39,10 +40,6 @@ skip_on_windows_or_root = pytest.mark.skipif(
 )
 
 
-def _get_head_sha(repo_dir: str) -> str:
-    return _run_git(["rev-parse", "HEAD"], repo_dir)
-
-
 def _plan_and_attempt_materialize(target: RefTarget, repo_dir: str) -> tuple[WorktreeInfo, bool]:
     """Plan a worktree and materialize it, reporting failure instead of raising."""
     worktree = plan_worktree(target)
@@ -54,7 +51,7 @@ def _plan_and_attempt_materialize(target: RefTarget, repo_dir: str) -> tuple[Wor
 
 
 def _create_head_worktree(repo_dir: str) -> WorktreeInfo:
-    sha = _get_head_sha(repo_dir)
+    sha = head_of(repo_dir)
     worktree = plan_worktree(RefTarget(ref=sha, resolved_sha=sha))
     materialize_worktree(worktree, repo_dir)
     return worktree
@@ -66,7 +63,7 @@ def _leave_interrupted_worktree(repo_dir: str) -> WorktreeInfo:
     Raises rather than returning a half-arranged fixture, so a git version that
     cleaned up despite the kill fails the test that asked for this state.
     """
-    sha = _get_head_sha(repo_dir)
+    sha = head_of(repo_dir)
     worktree, failed = _plan_and_attempt_materialize(RefTarget(ref=sha, resolved_sha=sha), repo_dir)
     if failed and Path(worktree.dir).exists():
         return worktree
@@ -169,7 +166,7 @@ def test_resolve_target_when_input_is_valid_git_ref_does_return_ref_target(
     create_scratch_repo: Callable[[], str], ref_kind: str
 ):
     repo = create_scratch_repo()
-    sha = _get_head_sha(repo)
+    sha = head_of(repo)
     if ref_kind == "commit-sha":
         ref = sha
     elif ref_kind == "head":
@@ -207,7 +204,7 @@ def test_resolve_target_when_input_is_existing_file_does_fall_through_to_ref(
     create_scratch_repo: Callable[[], str], ref: str
 ):
     repo = create_scratch_repo()
-    sha = _get_head_sha(repo)
+    sha = head_of(repo)
     _run_git(["branch", ref], repo)
     (Path(repo) / "myfile").write_text("not a directory\n")
     original_cwd = Path.cwd()
@@ -337,7 +334,7 @@ def test_materialize_worktree_when_given_planned_worktree_does_check_out_ref_fil
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    sha = _get_head_sha(repo)
+    sha = head_of(repo)
     worktree = plan_worktree(RefTarget(ref=sha, resolved_sha=sha))
 
     materialize_worktree(worktree, repo)
@@ -367,7 +364,7 @@ def test_materialize_worktree_when_add_interrupted_does_set_created_from_disk_st
 ):
     repo = create_scratch_repo()
     kill_git_during_worktree_add(repo)
-    sha = _get_head_sha(repo)
+    sha = head_of(repo)
     worktree = plan_worktree(RefTarget(ref=sha, resolved_sha=sha))
 
     with contextlib.suppress(GymratError):

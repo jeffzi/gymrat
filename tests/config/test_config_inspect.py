@@ -12,6 +12,7 @@ from gymrat.config import (
     StopConfig,
     inspect_config,
 )
+from tests._config import benchless_config
 from tests.config._toml import write_config, write_raw
 
 # ---------------------------------------------------------------------------
@@ -21,13 +22,7 @@ from tests.config._toml import write_config, write_raw
 # The fully defaulted settled config: what inspect_config yields when neither
 # flags nor a config file supply any value. bench lives on ConfigInspection, not
 # on the settled BenchlessConfig, so it never appears here.
-DEFAULT_CONFIG = BenchlessConfig(
-    adapter="metric-lines",
-    samples=10,
-    timeout_seconds=1800,
-    unstable_noise_pct=200,
-    primary="geomean",
-)
+DEFAULT_CONFIG = benchless_config()
 
 # Full loop configuration exercised as a config-file body; every loop key must
 # survive into the settled config unchanged.

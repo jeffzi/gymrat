@@ -41,6 +41,7 @@ from gymrat.supervisor.events import (
     TextDeltaEvent,
 )
 from gymrat.supervisor.exit_sequence import ExitPhase
+from tests._imports import modules_imported_by
 from tests.cli.supervise._fixtures import (
     cap_event,
     follow_up_event,
@@ -52,7 +53,6 @@ from tests.cli.supervise._fixtures import (
     turn_end_event,
     usage_event,
 )
-from tests.event_docs._imports import modules_imported_by
 from tests.session.records._fixtures import empty_session_state, iteration_record
 
 if TYPE_CHECKING:

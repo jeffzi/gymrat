@@ -27,7 +27,7 @@ from gymrat.report.types import MeasurementResult
 from gymrat.sampling import TargetSpec
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import BaselineRecord, CommandRecord
-from gymrat.session.store import append_record, read_records
+from gymrat.session.store import append_record
 from tests._rich import unwrap_panel
 from tests.cli._budget import install_budget, install_tight_budget
 from tests.cli._session import (
@@ -45,6 +45,7 @@ from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     finalize_record,
     iteration_record,
+    log_records,
     session_record,
     write_session_log,
 )
@@ -154,9 +155,7 @@ def test_measure_when_record_and_open_session_does_append_baseline_and_print_rep
     result = runner.invoke(app, ["measure", positional, "--bench", "sh bench.sh", "--record"])
 
     assert result.exit_code == 0
-    baselines = [
-        r for r in read_records(session_jsonl_path(record_repo)) if isinstance(r, BaselineRecord)
-    ]
+    baselines = [r for r in log_records(record_repo) if isinstance(r, BaselineRecord)]
     assert len(baselines) == 1
     recorded = baselines[0]
     assert recorded.type == "baseline"
@@ -257,9 +256,7 @@ def test_measure_when_no_record_flag_does_leave_open_session_untouched(
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
 
     assert result.exit_code == 0
-    non_command = [
-        r for r in read_records(session_jsonl_path(record_repo)) if not isinstance(r, CommandRecord)
-    ]
+    non_command = [r for r in log_records(record_repo) if not isinstance(r, CommandRecord)]
     assert non_command == [session_record()]
     assert "recorded to session" not in result.stdout
 
@@ -281,9 +278,7 @@ def test_measure_when_record_does_write_duration_ms_to_baseline(
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
 
     assert result.exit_code == 0
-    baselines = [
-        r for r in read_records(session_jsonl_path(record_repo)) if isinstance(r, BaselineRecord)
-    ]
+    baselines = [r for r in log_records(record_repo) if isinstance(r, BaselineRecord)]
     assert len(baselines) == 1
     assert baselines[0].duration_ms == 500
 

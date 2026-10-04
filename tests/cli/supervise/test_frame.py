@@ -36,7 +36,6 @@ from tests.cli.supervise._fixtures import (
     fire_launch_and_bash_start,
     launch_event,
     line_after,
-    make_iteration,
     make_read_session,
     make_reporter,
     model_phase_event,
@@ -48,7 +47,7 @@ from tests.cli.supervise._fixtures import (
     tool_start_event,
     usage_event,
 )
-from tests.session.records._fixtures import session_state
+from tests.session.records._fixtures import make_iteration, session_state
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.progress import SuperviseReporter

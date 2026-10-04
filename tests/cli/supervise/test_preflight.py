@@ -31,9 +31,9 @@ from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import StartResult, start_session
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, session_jsonl_path
-from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
-from gymrat.session.store import append_record, read_records
-from tests._git import run_git
+from gymrat.session.records import BaselineRecord, FinalizeRecord
+from gymrat.session.store import append_record
+from tests._git import head_of, run_git
 from tests.cli.supervise._fixtures import start_open_session
 from tests.loop.iterate._fixtures import resolved_config
 from tests.report._measurements import create_measurement_result
@@ -41,6 +41,8 @@ from tests.session.records._fixtures import (
     baseline_record,
     committed_keep,
     iteration_record,
+    log_records,
+    session_header_of,
     tear_final_line,
 )
 
@@ -278,10 +280,7 @@ def test_preflight_when_no_session_does_open_and_print_summary_to_stdout(
     result = _run_preflight(repo)
 
     captured = capsys.readouterr()
-    records = read_records(session_jsonl_path(repo))
-    header = records[0]
-    assert isinstance(header, SessionRecord)
-    assert header.branch in captured.out
+    assert session_header_of(repo).branch in captured.out
     assert result.state.session is not None
 
 
@@ -319,7 +318,7 @@ def test_preflight_when_finalized_session_does_archive_and_open_fresh(
 
     run_git(["add", "README.md"], str(worktree))
     run_git(["commit", "-m", "edit"], str(worktree))
-    commit = run_git(["rev-parse", "HEAD"], str(worktree))
+    commit = head_of(str(worktree))
     append_record(session_jsonl_path(repo), iteration_record(seq=1))
     append_record(session_jsonl_path(repo), committed_keep(1, commit=commit))
     finalize_session(repo)
@@ -400,9 +399,8 @@ def test_preflight_when_log_has_torn_tail_does_truncate_before_session_opens(
 
     _run_preflight(repo)
 
-    records = read_records(log_path)
-    assert isinstance(records[0], SessionRecord)
-    baseline_records = [r for r in records if isinstance(r, BaselineRecord)]
+    session_header_of(repo)
+    baseline_records = [r for r in log_records(repo) if isinstance(r, BaselineRecord)]
     assert len(baseline_records) == 1
 
 
@@ -494,7 +492,7 @@ def test_preflight_when_no_baseline_record_does_measure_and_append(
 
     assert len(measure_calls) == 1
     assert measure_calls[0]["target"].label == ".gymrat/worktrees/baseline"
-    records = read_records(session_jsonl_path(repo))
+    records = log_records(repo)
     baseline_records = [r for r in records if isinstance(r, BaselineRecord)]
     assert len(baseline_records) == 1
     assert baseline_records[0].duration_ms is not None
@@ -566,7 +564,7 @@ def test_preflight_when_infeasible_does_leave_session_open(repo: str):
     with pytest.raises(GymratError):
         _run_preflight(repo, max_minutes=30)
 
-    records = read_records(session_jsonl_path(repo))
+    records = log_records(repo)
     assert not any(isinstance(r, FinalizeRecord) for r in records)
 
 

@@ -7,7 +7,7 @@ import pytest
 
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.event_docs import main
-from tests.event_docs._imports import modules_imported_by
+from tests._imports import loaded_under, modules_imported_by
 
 # ---------------------------------------------------------------------------
 # Entry point isolation
@@ -17,10 +17,7 @@ from tests.event_docs._imports import modules_imported_by
 def test_import_event_docs_when_loaded_does_not_import_the_cli_package():
     loaded = modules_imported_by("gymrat.event_docs")
 
-    cli_modules = sorted(
-        name for name in loaded if name == "gymrat.cli" or name.startswith("gymrat.cli.")
-    )
-    assert cli_modules == []
+    assert loaded_under(loaded, "gymrat.cli") == []
 
 
 # ---------------------------------------------------------------------------

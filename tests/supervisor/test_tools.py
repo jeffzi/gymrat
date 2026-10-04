@@ -28,22 +28,12 @@ from gymrat.exec import (
     kill_live_process_groups,
 )
 from gymrat.supervisor.tools import ToolHost, gymrat_tool_definitions, gymrat_tools_factory
+from tests._exec_fixtures import expected_result
 from tests._process_helpers import is_alive
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_result(stdout: str = "", stderr: str = "", exit_code: int = 0) -> ExecResult:
-    """Build an ``ExecResult`` with byte counts derived from the strings."""
-    return ExecResult(
-        stdout=stdout,
-        stderr=stderr,
-        exit_code=exit_code,
-        stdout_bytes=len(stdout.encode()),
-        stderr_bytes=len(stderr.encode()),
-    )
 
 
 def _text_of(result: dict[str, Any]) -> str:
@@ -89,7 +79,7 @@ def _mock_host(
 @pytest.fixture
 def fake_exec() -> AsyncMock:
     """An ``exec_argv`` replacement that records calls and returns a canned result."""
-    return AsyncMock(return_value=_make_result(stdout='{"ok": true}'))
+    return AsyncMock(return_value=expected_result(stdout='{"ok": true}'))
 
 
 @pytest.fixture
@@ -325,7 +315,7 @@ async def test_probe_when_json_object_padded_with_whitespace_does_return_documen
     exit_code: int,
 ) -> None:
     stdout = '\n  {"ok": true}\n'
-    fake_exec.return_value = _make_result(stdout=stdout, exit_code=exit_code)
+    fake_exec.return_value = expected_result(stdout=stdout, exit_code=exit_code)
     host = _mock_host(tmp_path, fake_exec)
 
     result = await host.probe({})
@@ -347,7 +337,9 @@ async def test_probe_when_stdout_is_not_a_document_does_return_stderr_error(
     stdout: str,
     exit_code: int,
 ) -> None:
-    fake_exec.return_value = _make_result(stdout=stdout, stderr="broken run", exit_code=exit_code)
+    fake_exec.return_value = expected_result(
+        stdout=stdout, stderr="broken run", exit_code=exit_code
+    )
     host = _mock_host(tmp_path, fake_exec)
 
     result = await host.probe({})
@@ -360,7 +352,7 @@ async def test_probe_when_invalid_json_and_no_stderr_does_return_stdout_error(
     tmp_path: pathlib.Path,
     fake_exec: AsyncMock,
 ) -> None:
-    fake_exec.return_value = _make_result(stdout='{"kind": "probe", ', exit_code=0)
+    fake_exec.return_value = expected_result(stdout='{"kind": "probe", ', exit_code=0)
     host = _mock_host(tmp_path, fake_exec)
 
     result = await host.probe({})
@@ -400,7 +392,7 @@ async def test_iterate_when_no_output_and_no_abort_does_return_failed_message(
     tmp_path: pathlib.Path,
     fake_exec: AsyncMock,
 ) -> None:
-    fake_exec.return_value = _make_result(exit_code=3)
+    fake_exec.return_value = expected_result(exit_code=3)
     host = _mock_host(tmp_path, fake_exec)
 
     result = await host.iterate({})
@@ -504,7 +496,7 @@ async def test_probe_when_concurrent_refused_does_not_leave_host_busy(
         call_count += 1
         if call_count == 1:
             return await blocker
-        return _make_result(stdout='{"ok": true}')
+        return expected_result(stdout='{"ok": true}')
 
     fake_exec.side_effect = counting_exec
 
@@ -513,7 +505,7 @@ async def test_probe_when_concurrent_refused_does_not_leave_host_busy(
     refused = await host.iterate({})
     _assert_busy(refused)
 
-    blocker.set_result(_make_result(stdout='{"ok": true}'))
+    blocker.set_result(expected_result(stdout='{"ok": true}'))
     await first
 
     fake_exec.side_effect = None

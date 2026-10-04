@@ -14,6 +14,7 @@ from typing import Any
 from gymrat.session.records import record_to_wire
 from gymrat.supervisor.events import LaunchEvent, TurnEndEvent, to_json_line
 from tests.session.records._fixtures import AT, SESSION_ID
+from tests.supervisor._fixtures import make_launch
 
 _ONE_SECOND_NS = 1_000_000_000
 
@@ -51,12 +52,10 @@ def launch_event(
     **kwargs: Any,
 ) -> LaunchEvent:
     """Build the launch event that opens a supervisor log."""
-    return LaunchEvent(
+    return make_launch(
         at=at,
-        schema_version=1,
         session_id=session_id,
         head_sha=head_sha,
-        dirty=False,
         max_minutes=60.0,
         runbook_path="/dev/null",
         kickoff_summary="test",

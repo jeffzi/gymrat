@@ -17,9 +17,8 @@ import pytest
 from gymrat.cli import session_cmds
 from gymrat.cli.app import app
 from gymrat.loop.start import start_session
-from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
-from gymrat.session.records import FinalizeRecord, SessionRecord, StopRecord
-from gymrat.session.store import read_records
+from gymrat.session.paths import experiment_worktree_dir
+from gymrat.session.records import FinalizeRecord, StopRecord
 from tests._ansi import SGR_RE, strip_ansi
 from tests.cli._budget import install_budget
 from tests.cli._session import (
@@ -37,6 +36,7 @@ from tests.loop._settle import (
     settling_record_of,
 )
 from tests.loop.iterate._fixtures import resolved_config
+from tests.session.records._fixtures import log_records, session_header_of
 
 
 def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -70,9 +70,7 @@ def test_start_command_when_run_does_create_a_session_and_report_its_branch(
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
     assert result.exit_code == 0
-    header = read_records(session_jsonl_path(repo))[0]
-    assert isinstance(header, SessionRecord)
-    assert header.branch in result.stdout
+    assert session_header_of(repo).branch in result.stdout
 
 
 def test_start_command_when_reopening_after_finalize_does_name_the_archived_session(
@@ -172,8 +170,7 @@ def test_start_command_when_no_baseline_does_default_to_head(
     result = runner.invoke(app, ["start"])
 
     assert result.exit_code == 0
-    header = read_records(session_jsonl_path(repo))[0]
-    assert isinstance(header, SessionRecord)
+    session_header_of(repo)
 
 
 def test_start_command_when_positional_ref_given_does_exit_two_with_usage_error(
@@ -454,7 +451,7 @@ def test_stop_command_when_message_given_does_print_stopped_and_append_a_stop_re
     text = strip_ansi(result.stdout)
     assert "Stopped" in text
     assert "switched to a different approach" in text
-    records = read_records(session_jsonl_path(stop_repo))
+    records = log_records(stop_repo)
     stop_records = [r for r in records if isinstance(r, StopRecord)]
     assert len(stop_records) == 1
     assert stop_records[0].message == "switched to a different approach"

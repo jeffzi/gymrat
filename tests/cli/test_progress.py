@@ -23,16 +23,14 @@ from gymrat.progress_events import (
     PrepareStarted,
 )
 from gymrat.signals import install_termination_cleanup
+from tests._process_helpers import InterruptedTerminal, ProcessExit, fake_install
 from tests._rich import (
     HIDE_CURSOR,
     KEPT_LINE,
     TERMINATION_SIGNAL,
     Clock,
-    InterruptedTerminal,
-    ProcessExit,
     console_output,
     cursor_hidden,
-    fake_install,
     frame_text,
     screen_lines,
     sealed_console,
@@ -421,7 +419,7 @@ def test_warn_when_plain_mode_does_print_the_message_verbatim_on_its_own_line():
 def test_live_mode_when_created_does_register_termination_cleanup_once(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    registered: list[object] = []
+    registered: list[Callable[[], None]] = []
     monkeypatch.setattr(
         "gymrat.cli.live_display.install_termination_cleanup",
         fake_install(registered),
@@ -436,7 +434,7 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
 def test_plain_mode_when_created_does_not_register_termination_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    registered: list[object] = []
+    registered: list[Callable[[], None]] = []
     monkeypatch.setattr(
         "gymrat.cli.live_display.install_termination_cleanup",
         fake_install(registered),

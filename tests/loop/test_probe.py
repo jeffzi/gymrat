@@ -27,8 +27,7 @@ from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, probe_session
 from gymrat.report.text.probe import render_probe_report
 from gymrat.report.types import MetricMeasurement, ReportOptions
 from gymrat.sampling import TargetSpec
-from gymrat.session.paths import experiment_worktree_dir, progress_path, session_jsonl_path
-from gymrat.session.store import read_records
+from gymrat.session.paths import experiment_worktree_dir, progress_path
 from tests.loop._probe import (
     BASELINE_SAMPLES,
     install_measure,
@@ -39,11 +38,10 @@ from tests.loop._settle import checks_config, start_with
 from tests.report._assertions import line_containing, styles_at
 from tests.report._comparisons import metric_meta
 from tests.report._measurements import measured_metric
-from tests.session.records._fixtures import baseline_record, finalize_record
+from tests.session.records._fixtures import baseline_record, finalize_record, log_records
 
 if TYPE_CHECKING:
     from gymrat.model import Direction
-    from gymrat.session.records import SessionLogRecord
 
 #: The rerun template a consumer configures when their bench can be narrowed.
 FILTER = "npm run bench -- --filter {names}"
@@ -59,11 +57,6 @@ SAMPLE_COUNTS = [
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-def records_of(root: str) -> list[SessionLogRecord]:
-    """Every record the session log at ``root`` currently holds."""
-    return read_records(session_jsonl_path(root))
 
 
 # ---------------------------------------------------------------------------
@@ -368,10 +361,10 @@ async def test_probe_session_when_run_completes_does_not_touch_the_session_log_o
     config = checks_config(
         hooks=HooksConfig(before="npm run warm-cache", after="npm run cool-down")
     )
-    before = records_of(repo)
+    before = log_records(repo)
     install_measure(monkeypatch, measurement())
 
     await probe_session(repo, config, ProbeOptions())
 
-    assert records_of(repo) == before
+    assert log_records(repo) == before
     assert not Path(progress_path(repo)).exists()  # noqa: ASYNC240 -- sync check in async test

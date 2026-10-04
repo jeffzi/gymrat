@@ -7,8 +7,6 @@ the CLI package.
 """
 
 import contextlib
-import subprocess
-import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -25,11 +23,13 @@ from gymrat.session.lock import _os_lock_file, acquire_lock
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
 from gymrat.session.records import CommandRecord
 from gymrat.session.schema import CommandReason
-from gymrat.session.store import append_record, read_records, recover_torn_tail, session_header
+from gymrat.session.store import append_record, recover_torn_tail, session_header
 from tests._command_run_fixtures import ok_body as _ok_body
 from tests._command_run_fixtures import seeded_session as _seeded_session
+from tests._imports import loaded_under, modules_imported_by
 from tests.session.records._fixtures import (
     iteration_record,
+    log_records,
     session_record,
     tear_final_line,
     write_session_log,
@@ -61,9 +61,7 @@ def _broken_record(*_args: object, **_kwargs: object) -> None:
 
 def _last_command_record() -> CommandRecord:
     """Read the current session log and return its last record, asserted to be a command."""
-    jsonl_path = session_jsonl_path(repo_root())
-    records = read_records(jsonl_path)
-    cmd = records[-1]
+    cmd = log_records(repo_root())[-1]
     assert isinstance(cmd, CommandRecord)
     return cmd
 
@@ -259,7 +257,7 @@ async def test_with_repo_lock_when_session_log_torn_does_repair_it_before_runnin
 
     assert result == "ran"
     assert seen["log"] == intact_log
-    records = read_records(str(jsonl_path))
+    records = log_records(repo_root())
     assert records[0] == header
     assert records[1] == iteration
     assert isinstance(records[-1], CommandRecord)
@@ -962,11 +960,11 @@ async def test_with_repo_lock_when_root_given_does_append_command_record_to_that
 
     await with_repo_lock("measure", _ok_body, args={"samples": 5}, root=target_repo)
 
-    cmd = read_records(session_jsonl_path(target_repo))[-1]
+    cmd = log_records(target_repo)[-1]
     assert isinstance(cmd, CommandRecord)
     assert cmd.name == "measure"
     assert cmd.args == {"samples": 5}
-    assert read_records(session_jsonl_path(cwd_repo)) == [cwd_header]
+    assert log_records(cwd_repo) == [cwd_header]
 
 
 async def test_with_repo_lock_when_root_is_not_a_repository_does_still_hold_its_lock(
@@ -1016,21 +1014,6 @@ async def test_with_repo_lock_when_root_given_and_git_fails_otherwise_does_still
     ],
 )
 def test_importing_module_when_fresh_interpreter_does_not_load_the_cli_package(module: str):
-    probe = f"""
-import importlib
-import sys
-importlib.import_module({module!r})
-cli = sorted(name for name in sys.modules if name == 'gymrat.cli' or name.startswith('gymrat.cli.'))
-if cli:
-    print(f'importing {module} loaded CLI modules: {{cli}}', file=sys.stderr)
-    sys.exit(1)
-"""
+    loaded = modules_imported_by(module)
 
-    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [sys.executable, "-c", probe],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
+    assert loaded_under(loaded, "gymrat.cli") == []

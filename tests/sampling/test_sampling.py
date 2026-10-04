@@ -41,6 +41,8 @@ from gymrat.targets import (
     WorktreeInfo,
     WorktreeRemovalFailure,
 )
+from tests._exec_fixtures import expected_result
+from tests._process_helpers import fake_install
 
 REF_HINT = (
     "the worktree only contains files tracked at this ref; "
@@ -50,24 +52,12 @@ REF_HINT = (
 
 def make_success(stdout: str = "METRIC x=1") -> ExecResult:
     """Build a zero-exit result carrying ``stdout`` on the standard stream."""
-    return ExecResult(
-        stdout=stdout,
-        stderr="",
-        exit_code=0,
-        stdout_bytes=len(stdout.encode()),
-        stderr_bytes=0,
-    )
+    return expected_result(stdout)
 
 
 def make_failure(stdout: str = "", stderr: str = "boom") -> ExecResult:
     """Build an exit-code-1 result with byte counts computed from the given text."""
-    return ExecResult(
-        stdout=stdout,
-        stderr=stderr,
-        exit_code=1,
-        stdout_bytes=len(stdout.encode()),
-        stderr_bytes=len(stderr.encode()),
-    )
+    return expected_result(stdout, stderr, exit_code=1)
 
 
 def patch_exec(
@@ -745,27 +735,6 @@ class _InstallRecorder:
         return uninstall
 
 
-def _capturing_install(
-    captured: dict[str, Callable[[], None]],
-) -> Callable[[Callable[[], None]], Callable[[], None]]:
-    """Build an install seam that records the registered cleanup into ``captured``.
-
-    Args:
-        captured: Dict that receives the registered cleanup under the
-            ``"cleanup"`` key.
-
-    Returns:
-        A no-op uninstall, so a test can invoke ``captured["cleanup"]``
-        directly to drive the termination path without a real signal.
-    """
-
-    def install(cleanup: Callable[[], None]) -> Callable[[], None]:
-        captured["cleanup"] = cleanup
-        return lambda: None
-
-    return install
-
-
 def _patch_cleanup(
     monkeypatch: pytest.MonkeyPatch, result: CleanupResult
 ) -> list[tuple[list[WorktreeInfo], str]]:
@@ -963,14 +932,14 @@ async def test_run_with_worktrees_when_other_error_raised_and_cleanup_dirty_does
 async def test_run_with_worktrees_when_termination_cleanup_invoked_does_abort_run_and_sweep(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    captured: dict[str, Callable[[], None]] = {}
-    monkeypatch.setattr(sampling, "install_termination_cleanup", _capturing_install(captured))
+    captured: list[Callable[[], None]] = []
+    monkeypatch.setattr(sampling, "install_termination_cleanup", fake_install(captured))
     sweeps = _patch_cleanup(monkeypatch, _clean_result())
     observed: dict[str, object] = {}
 
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
         before = len(sweeps)
-        captured["cleanup"]()
+        captured[0]()
         observed["swept_by_cleanup"] = len(sweeps) - before
         observed["aborted"] = abort.is_set()
         return "measurement"
@@ -985,8 +954,8 @@ async def test_run_with_worktrees_when_termination_cleanup_invoked_does_kill_gro
     monkeypatch: pytest.MonkeyPatch,
 ):
     order: list[str] = []
-    captured: dict[str, Callable[[], None]] = {}
-    monkeypatch.setattr(sampling, "install_termination_cleanup", _capturing_install(captured))
+    captured: list[Callable[[], None]] = []
+    monkeypatch.setattr(sampling, "install_termination_cleanup", fake_install(captured))
     monkeypatch.setattr(sampling, "kill_live_process_groups", lambda: order.append("kill"))
 
     def _cleanup(worktrees: list[WorktreeInfo], repo_dir: str) -> CleanupResult:
@@ -996,7 +965,7 @@ async def test_run_with_worktrees_when_termination_cleanup_invoked_does_kill_gro
     monkeypatch.setattr(sampling, "cleanup_worktrees", _cleanup)
 
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
-        captured["cleanup"]()
+        captured[0]()
         return "measurement"
 
     await run_with_worktrees(phase, lambda m, c: (m, c))

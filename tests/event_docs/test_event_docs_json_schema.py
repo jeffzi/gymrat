@@ -18,7 +18,7 @@ import pytest
 
 from gymrat.session.records import SessionLogRecord
 from gymrat.supervisor.events import SessionEvent
-from tests.event_docs._imports import modules_imported_by
+from tests._imports import modules_imported_by
 
 # ---------------------------------------------------------------------------
 # render_json_schemas — envelope and structure

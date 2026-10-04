@@ -19,7 +19,6 @@ from tests.cli.supervise._fixtures import (
     cap_event,
     follow_up_event,
     launch_event,
-    make_iteration,
     make_read_session,
     make_reporter,
     tool_end_event,
@@ -27,7 +26,7 @@ from tests.cli.supervise._fixtures import (
     turn_end_event,
     usage_event,
 )
-from tests.session.records._fixtures import session_state
+from tests.session.records._fixtures import make_iteration, session_state
 
 if TYPE_CHECKING:
     from collections.abc import Callable

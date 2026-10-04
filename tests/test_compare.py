@@ -10,7 +10,6 @@ drive real scratch repos and shell bench scripts through the full pipeline.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -31,6 +30,7 @@ from gymrat.targets import CleanupResult, WorktreeRemovalFailure
 from gymrat.utils import warn_to_stderr
 from gymrat.verdict import compute_verdicts
 from tests._git import run_git as _git
+from tests._git import write_committed_bench
 from tests._pipeline import install_pipeline
 
 if TYPE_CHECKING:
@@ -290,9 +290,9 @@ _posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only she
 
 
 def _commit_bench(repo: str, value: int) -> None:
-    (Path(repo) / "bench.sh").write_text(f"#!/bin/sh\necho 'METRIC x={value}'\n", encoding="utf-8")
-    _git(["add", "bench.sh"], repo)
-    _git(["commit", "-m", f"bench emits {value}"], repo)
+    write_committed_bench(
+        repo, f"#!/bin/sh\necho 'METRIC x={value}'\n", message=f"bench emits {value}"
+    )
 
 
 def _e2e_options(baseline: str, candidate: str) -> CompareOptions:

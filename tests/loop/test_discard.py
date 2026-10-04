@@ -19,8 +19,8 @@ from gymrat.loop.discard import discard_session
 from gymrat.loop.keep import keep_session
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import KeepChecks, SessionLogRecord
-from gymrat.session.store import append_record, read_records
-from tests._git import run_git
+from gymrat.session.store import append_record
+from tests._git import head_of, run_git
 from tests.loop._settle import (
     assert_settling_record,
     checks_config,
@@ -28,7 +28,6 @@ from tests.loop._settle import (
     commit_experiment_directly,
     confirmed_regression,
     edit_experiment,
-    head_of,
     settling_record_of,
     start_with,
     status_of,
@@ -40,6 +39,7 @@ from tests.session.records._fixtures import (
     committed_keep,
     discard_record,
     iteration_record,
+    log_records,
 )
 
 # ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ def test_discard_session_when_gating_block_stands_does_number_discard_past_it(re
     # iteration has used yet, leaving the block in history.
     assert result.record is not None
     assert_settling_record(result.record, discard_record(2))
-    tail = read_records(session_jsonl_path(repo))[-2:]
+    tail = log_records(repo)[-2:]
     assert tail == [
         blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
         result.record,
@@ -216,7 +216,7 @@ async def test_discard_session_when_keep_retried_after_block_does_append_after_t
 
     result = discard_session(repo)
 
-    tail = read_records(session_jsonl_path(repo))[-2:]
+    tail = log_records(repo)[-2:]
     assert tail[0].type == "keep"
     assert tail[0].status == "blocked"
     assert tail[0].reason == "nothing-measured"
@@ -303,7 +303,7 @@ def test_discard_session_when_nothing_measured_and_dirty_does_revert_and_return_
 ):
     start_with(repo, history)
     edit_experiment(repo)
-    records_before = len(read_records(session_jsonl_path(repo)))
+    records_before = len(log_records(repo))
     baseline_sha = head_of(baseline_worktree_dir(repo))
 
     result = discard_session(repo)
@@ -312,7 +312,7 @@ def test_discard_session_when_nothing_measured_and_dirty_does_revert_and_return_
     assert (Path(worktree) / "README.md").read_text(encoding="utf-8") == "# Test Repo\n"
     assert not (Path(worktree) / "scratch.txt").exists()
     assert status_of(worktree) == ""
-    assert len(read_records(session_jsonl_path(repo))) == records_before
+    assert len(log_records(repo)) == records_before
     assert result.record is None
     assert isinstance(result.at, int)
     assert result.at > 0
@@ -350,14 +350,14 @@ def test_discard_session_when_nothing_measured_and_clean_does_refuse(
     repo: str, history: tuple[SessionLogRecord, ...]
 ):
     start_with(repo, history)
-    before = len(read_records(session_jsonl_path(repo)))
+    before = len(log_records(repo))
 
     with pytest.raises(GymratError) as excinfo:
         discard_session(repo)
 
     assert "Discard refused" in str(excinfo.value)
     assert excinfo.value.hint == "Run iterate to measure an edit before settling it."
-    assert len(read_records(session_jsonl_path(repo))) == before
+    assert len(log_records(repo)) == before
 
 
 def test_discard_session_when_nothing_measured_and_clean_does_carry_nothing_to_discard_reason(

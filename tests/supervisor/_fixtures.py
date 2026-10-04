@@ -14,8 +14,9 @@ the real ``claude-agent-sdk`` message dataclasses the Claude driver consumes.
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
-from typing import Literal, NamedTuple, override
+from typing import Any, Literal, NamedTuple, override
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -29,7 +30,7 @@ from claude_agent_sdk import (
 )
 
 from gymrat.clock import now_ms, now_ns
-from gymrat.config import BenchlessConfig, Effort, StopConfig
+from gymrat.config import BenchlessConfig, Effort
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor.claude import create_claude_driver
@@ -351,24 +352,25 @@ class FactoryProbe:
         return self._client
 
 
-def default_benchless_config(*, stop: StopConfig | None = None) -> BenchlessConfig:
+def default_benchless_config(**overrides: Any) -> BenchlessConfig:
     """A minimal ``BenchlessConfig`` for tests that need a context but not a real config.
 
     Args:
-        stop: The stop conditions the config carries, or ``None`` for none.
+        **overrides: ``BenchlessConfig`` fields to set in place of the defaults,
+            such as ``stop``, ``runbook``, ``checks`` or ``timeout_seconds``.
 
     Returns:
-        A config with neutral sampling defaults and no runbook.
+        A config with neutral sampling defaults, no runbook and no stop
+        conditions, except where ``overrides`` says otherwise.
     """
-    return BenchlessConfig(
+    default = BenchlessConfig(
         adapter="mitata",
         samples=1,
         timeout_seconds=60,
         unstable_noise_pct=5.0,
         primary="geomean",
-        runbook=None,
-        stop=stop,
     )
+    return replace(default, **overrides)
 
 
 def make_context(
