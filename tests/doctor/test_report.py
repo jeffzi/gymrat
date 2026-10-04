@@ -3,7 +3,7 @@
 The report assembly (``build_doctor_report``) coordinates the section builders,
 config inspection, and git environment probe to produce a ``DoctorReport``.
 These tests patch the section builders and ``inspect_config`` at their
-``gymrat.doctor.report`` import targets and verify the assembly contract:
+``gymrat.doctor`` import targets and verify the assembly contract:
 
 - Sections are collected in the correct order.
 - Config problems and adapter flags are forwarded to the bench section.
@@ -22,12 +22,18 @@ if TYPE_CHECKING:
 
 import pytest
 
-from gymrat.config import CliFlags
-from gymrat.doctor.checks import Check, DoctorReport, EnvironmentInfo
-from gymrat.doctor.report import GitEnvironment, build_doctor_report, detect_git_environment
+from gymrat.config.types import CliFlags
+from gymrat.doctor import (
+    Check,
+    DoctorReport,
+    EnvironmentInfo,
+    GitEnvironment,
+    build_doctor_report,
+    detect_git_environment,
+)
 from tests.doctor._fixtures import fixed_section, patch_common_seams
 
-_MODULE = "gymrat.doctor.report"
+_MODULE = "gymrat.doctor"
 
 
 def _flags(**overrides: object) -> CliFlags:
@@ -200,3 +206,45 @@ def test_detect_git_environment_when_root_unresolvable_does_report_error(
     assert result.git_available is True
     assert result.repo_root_dir is None
     assert result.git_error is not None
+
+
+# ---------------------------------------------------------------------------
+# config inspection — real gymrat.toml
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("toml", "expected"),
+    [
+        pytest.param(
+            "samples = 0\n",
+            Check(
+                name="config",
+                status="fail",
+                detail="Invalid config value for samples: expected a number at or above 1, got 0",
+            ),
+            id="invalid-value",
+        ),
+        pytest.param(
+            None,
+            Check(
+                name="config",
+                status="ok",
+                detail="No config file found; operating with defaults only",
+            ),
+            id="no-file",
+        ),
+    ],
+)
+def test_build_doctor_report_when_config_read_for_real_does_report_its_findings(
+    tmp_path: Path, toml: str | None, expected: Check
+):
+    if toml is not None:
+        (tmp_path / "gymrat.toml").write_text(toml, encoding="utf-8")
+
+    report = build_doctor_report(_flags(), str(tmp_path))
+
+    config_section = next(
+        section for section in report.sections if section.title == "Configuration"
+    )
+    assert config_section.checks == [expected]

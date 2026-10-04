@@ -6,9 +6,15 @@ from pathlib import Path
 import pytest
 import tomli_w
 
-from gymrat.config import (
-    MAX_SAFE_INTEGER,
-    MAX_TIMEOUT_SECONDS,
+from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
+from gymrat.config.resolve import (
+    flag_problem,
+    inspect_config,
+    resolve_benchless_config,
+    resolve_config,
+    runbook_problem,
+)
+from gymrat.config.types import (
     BenchlessConfig,
     CliFlags,
     HooksConfig,
@@ -17,12 +23,6 @@ from gymrat.config import (
     ResolvedConfig,
     StopConfig,
     SuperviseConfig,
-    flag_problem,
-    inspect_config,
-    loop_key_problems,
-    resolve_benchless_config,
-    resolve_config,
-    runbook_problem,
 )
 from gymrat.errors import GymratError
 
@@ -954,20 +954,6 @@ def test_resolve_config_when_supervise_table_present_does_expose_model_and_effor
 # ---------------------------------------------------------------------------
 # problem helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "helper",
-    [
-        pytest.param(flag_problem, id="flag_problem"),
-        pytest.param(loop_key_problems, id="loop_key_problems"),
-        pytest.param(runbook_problem, id="runbook_problem"),
-    ],
-)
-def test_problem_helper_when_imported_from_config_does_live_in_resolve_module(
-    helper: Callable[..., object],
-):
-    assert helper.__module__ == "gymrat.config.resolve"
 
 
 @pytest.mark.parametrize(

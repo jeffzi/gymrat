@@ -23,8 +23,8 @@ from gymrat.cli import budget_report
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.report.json_doc import BudgetSummary
-from gymrat.session import IterationRecord
 from gymrat.session.budget import Budget
+from gymrat.session.records import IterationRecord
 from tests.session.records._fixtures import iteration_record
 
 #: The last full measurement took 48 minutes, so 24 minutes per side.

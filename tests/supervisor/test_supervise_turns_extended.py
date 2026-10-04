@@ -10,21 +10,20 @@ import pytest
 from gymrat.clock import now_ms, now_ns
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
-from gymrat.supervisor import (
-    Driver,
+from gymrat.supervisor.events import (
     FollowUpEvent,
     LaunchEvent,
     SessionObserver,
-    SessionPrompt,
-    SupervisedSession,
     TextDeltaEvent,
     ToolStartEvent,
     UsageUpdateEvent,
-    supervise,
 )
+from gymrat.supervisor.supervise import supervise
 from gymrat.supervisor.turns import CONSECUTIVE_DISCARD_LIMIT
 
 if TYPE_CHECKING:
+    from gymrat.supervisor.context import SupervisedSession
+    from gymrat.supervisor.driver import Driver, SessionPrompt
     from gymrat.supervisor.supervise import SupervisionResult
 from tests.session.records._fixtures import discard_record
 from tests.supervisor._fixtures import (
@@ -256,6 +255,30 @@ async def test_supervise_when_in_flight_event_during_settle_does_cancel_settle(
 
     session = driver.sessions[0]
     assert len(sent_texts(session)) == 0
+
+
+async def test_supervise_when_settle_cancelled_does_not_warn_or_log_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
+):
+    root = str(tmp_path / "repo")
+    seed_session_log(root)
+    driver = create_mock_driver([
+        emit_turn_end(),
+        EmitStep(emit=TextDeltaEvent(at=now_ns(), chunk="hello"), delay_ms=5),
+        ActionStep(action=lambda: add_stop_async(root)),
+        TurnEndStep(cost_usd=0.01, origin="agent"),
+    ])
+
+    await supervise_fast(
+        driver,
+        make_prompt(cwd=root),
+        context=make_context(root=root, log_path=str(tmp_path / "events.jsonl")),
+        launch=make_launch(),
+        settle_window_ms=50,
+    )
+
+    assert "failed" not in capsys.readouterr().err
+    assert [record for record in caplog.records if record.name == "asyncio"] == []
 
 
 async def test_supervise_when_usage_update_during_settle_does_not_cancel_settle(

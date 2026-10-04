@@ -41,9 +41,10 @@ from gymrat.cli.shared import (
     write_stdout,
 )
 from gymrat.command_run import config_trace_args, with_repo_lock
-from gymrat.config import resolve_config
+from gymrat.config.resolve import resolve_config
 from gymrat.loop.baseline import measure_baseline
-from gymrat.report import render_measure_json, render_measure_report
+from gymrat.report.json_doc import render_measure_json
+from gymrat.report.text.render import render_measure_report
 from gymrat.report.types import MeasurementResult, ReportOptions
 from gymrat.sampling import TargetSpec
 from gymrat.session.paths import repo_root

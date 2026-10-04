@@ -1,0 +1,41 @@
+# serializer version: 1
+# name: test_render_measure_report_when_rendered_does_match_its_golden[colored]
+  list([
+    '\x1b[1mgymrat measure\x1b[0m \x1b[2m·\x1b[0m \x1b[1;4mmain\x1b[0m \x1b[2m·\x1b[0m 10 samples \x1b[2m·\x1b[0m adapter: mitata',
+    '',
+    '─────────────────┬─────────────',
+    '\x1b[1mtime\x1b[0m             │ \x1b[1;4mmain\x1b[0m',
+    '─────────────────┼─────────────',
+    '\x1b[1;34mentity\x1b[0m           │',
+    '  alive_check    │ 100ns ± 1%',
+    '  spawn          │ 104ns ± 1%',
+    '',
+    'warmup           │ 100ns ± 1%',
+    '',
+    '\x1b[2minformational — gating off (config: kinds.memory.gating = false)\x1b[0m',
+    '─────────────────┬─────────────',
+    '\x1b[1mmemory\x1b[0m           │ \x1b[1;4mmain\x1b[0m',
+    '─────────────────┼─────────────',
+    'encode           │   93B ± 1%',
+  ])
+# ---
+# name: test_render_measure_report_when_rendered_does_match_its_golden[plain]
+  list([
+    'gymrat measure · main · 10 samples · adapter: mitata',
+    '',
+    '─────────────────┬─────────────',
+    'time             │ main',
+    '─────────────────┼─────────────',
+    'entity           │',
+    '  alive_check    │ 100ns ± 1%',
+    '  spawn          │ 104ns ± 1%',
+    '',
+    'warmup           │ 100ns ± 1%',
+    '',
+    'informational — gating off (config: kinds.memory.gating = false)',
+    '─────────────────┬─────────────',
+    'memory           │ main',
+    '─────────────────┼─────────────',
+    'encode           │   93B ± 1%',
+  ])
+# ---

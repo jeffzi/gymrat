@@ -8,7 +8,7 @@ import typing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from gymrat.session.records.models import (
+from gymrat.session.records import (
     SESSION_LOG_MODELS,
     CommandRecord,
     IterationRecord,

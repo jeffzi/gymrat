@@ -17,9 +17,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.model import Effect, Exclusion, MetricUnit, PermutationVerdict
-from gymrat.report import render_json, render_measure_json, render_probe_json
 from gymrat.report.json_doc import (
     BudgetSummary,
+    render_json,
+    render_measure_json,
+    render_probe_json,
 )
 from gymrat.report.types import (
     CandidateMetric,
@@ -47,9 +49,14 @@ from tests.report._inputs import (
     probe_result,
     single_sample_result,
     two_kind_measurement,
+    two_kind_result,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from syrupy.assertion import SnapshotAssertion
+
     from gymrat.loop.probe import ProbeResult
 
 _ANSI_ESCAPE = re.compile("\x1b\\[")
@@ -931,3 +938,35 @@ def test_render_probe_json_when_environment_forces_color_does_emit_no_ansi(
     result = probe_result(metrics=[probe_metric("decode/time", unit="ns")])
 
     assert not _ANSI_ESCAPE.search(render_probe_json(result))
+
+
+# ---------------------------------------------------------------------------
+# whole documents — golden
+# ---------------------------------------------------------------------------
+
+
+def _golden_probe_json() -> str:
+    return render_probe_json(
+        probe_result(
+            metrics=[
+                probe_metric("total_ns", unit="ns", kind="time"),
+                probe_metric("cold_start_ns", reference_median=None, delta_pct=None),
+            ]
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "render",
+    [
+        pytest.param(lambda: render_json(two_kind_result()), id="compare"),
+        pytest.param(lambda: render_measure_json(two_kind_measurement()), id="measure"),
+        pytest.param(_golden_probe_json, id="probe"),
+    ],
+)
+def test_render_json_document_when_rendered_does_match_its_golden(
+    render: Callable[[], str], snapshot: SnapshotAssertion
+):
+    document = render()
+
+    assert document.split("\n") == snapshot

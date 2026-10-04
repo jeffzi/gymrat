@@ -13,8 +13,7 @@ from typing import Annotated
 
 import typer
 
-from gymrat.config import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
-from gymrat.config.env import is_positive_integer
+from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS, is_positive_integer
 from gymrat.eta import SECONDS_PER_MINUTE
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec

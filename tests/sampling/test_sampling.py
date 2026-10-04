@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from gymrat import sampling
-from gymrat.adapters.metric_lines import metric_lines_adapter
+from gymrat.adapters import metric_lines_adapter
 from gymrat.errors import CommandError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.progress_events import (
@@ -20,7 +20,7 @@ from gymrat.progress_events import (
     PrepareStarted,
     ProgressEvent,
 )
-from gymrat.report.text import format_cleanup_failures
+from gymrat.report.text.render import format_cleanup_failures
 from gymrat.sampling import (
     MetricStats,
     RunOptions,

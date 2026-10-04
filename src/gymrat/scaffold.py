@@ -22,7 +22,8 @@ from typing import Literal
 
 from gymrat.atomic_write import write_text_atomic
 from gymrat.bundled_skill import read_bundled_skill
-from gymrat.config import CONFIG_FILENAME, validate_config_dict
+from gymrat.config.resolve import validate_config_dict
+from gymrat.config.types import CONFIG_FILENAME
 from gymrat.errors import GymratError
 
 #: Path, relative to the project root, where init writes and doctor checks for the skill.

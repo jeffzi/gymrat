@@ -16,16 +16,12 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.loop.settle import discard_session, keep_session
-from gymrat.session import (
-    SessionLogRecord,
-    append_record,
-    baseline_worktree_dir,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
-)
-from tests.loop.settle._fixtures import (
+from gymrat.loop.discard import discard_session
+from gymrat.loop.keep import keep_session
+from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
+from gymrat.session.records import SessionLogRecord
+from gymrat.session.store import append_record, read_records
+from tests.loop._settle import (
     assert_settling_record,
     checks_config,
     checks_pass,

@@ -1,7 +1,7 @@
 """Read ``GYMRAT_*`` environment variables into ``CliFlags``-shaped overrides.
 
 Each reader returns an :class:`EnvResult` rather than raising, so the caller in
-:mod:`gymrat.config` decides whether a problem throws (the CLI path) or is
+:mod:`gymrat.config.resolve` decides whether a problem throws (the CLI path) or is
 collected. An unset variable yields an empty result so the next source in the
 precedence chain -- config file, then built-in default -- can supply the value.
 """

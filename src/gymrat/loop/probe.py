@@ -27,7 +27,7 @@ from gymrat.stats import percent_delta
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.config import ResolvedConfig
+    from gymrat.config.types import ResolvedConfig
     from gymrat.model import ResolvedMetricMeta
     from gymrat.progress_events import ProgressCallback
     from gymrat.warn import WarnSink

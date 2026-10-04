@@ -26,7 +26,7 @@ from typer.testing import CliRunner
 
 from gymrat.cli.app import app
 from gymrat.cli.compare_cmd import _serialize_fail_on
-from gymrat.config import CliFlags, KindEntry, MetricEntry, ResolvedConfig
+from gymrat.config.types import CliFlags, KindEntry, MetricEntry, ResolvedConfig
 from gymrat.report.types import (
     ComparisonResult,
     FailOnCondition,
@@ -34,7 +34,8 @@ from gymrat.report.types import (
     RegressedFailOn,
 )
 from gymrat.sampling import RunOptions
-from gymrat.session import append_record, session_jsonl_path
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.store import append_record
 from tests.cli._budget import install_budget, install_tight_budget
 from tests.cli._session import last_command_record
 from tests.report._comparisons import other_kind

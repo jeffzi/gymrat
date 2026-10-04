@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.model import Exclusion
-from gymrat.report.text import render_measure_report, render_report
+from gymrat.report.text.render import render_measure_report, render_report
 from gymrat.report.types import MeasurementResult, ReportOptions
 from gymrat.targets import WorktreeRemovalFailure
 from tests._ansi import SGR_RE

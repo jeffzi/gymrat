@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.config import Effort
+    from gymrat.config.types import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.store import SessionState
     from gymrat.supervisor.supervise import EndedBy
@@ -24,14 +24,10 @@ from gymrat.cli.style import CLI_THEME
 from gymrat.cli.supervise.progress import REFRESH_MS, create_supervise_reporter
 from gymrat.cli.supervise.types import IDLE_WARN_MS, ReadSessionResult, SuperviseReporter
 from gymrat.loop.start import start_session
-from gymrat.session import (
-    BaselineRecord,
-    IterationPrimary,
-    IterationRecord,
-    append_record,
-    session_jsonl_path,
-)
-from gymrat.supervisor import SessionOutcome, SupervisionResult
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import BaselineRecord, IterationPrimary, IterationRecord
+from gymrat.session.store import append_record
+from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     CapAction,
     CapEvent,
@@ -47,6 +43,7 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
     UsageUpdateEvent,
 )
+from gymrat.supervisor.supervise import SupervisionResult
 from tests._rich import CleanupRegistry, frame_text
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (

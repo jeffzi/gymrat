@@ -1,10 +1,8 @@
 import dataclasses
-from pathlib import Path
 from typing import assert_never
 
 import pytest
 
-import gymrat.model
 from gymrat.model import (
     BAND_FLOORS,
     DEFAULT_UNSTABLE_NOISE_PCT,
@@ -26,54 +24,6 @@ from gymrat.model import (
     Verdict,
     VerdictMethod,
 )
-
-# ---------------------------------------------------------------------------
-# Module layout
-# ---------------------------------------------------------------------------
-
-
-def test_model_when_imported_does_load_from_single_flat_module_file():
-    module_file = Path(gymrat.model.__file__)
-
-    assert (module_file.parent.name, module_file.name) == ("gymrat", "model.py")
-
-
-_PUBLIC_NAMES = frozenset({
-    "BAND_FLOORS",
-    "DEFAULT_UNSTABLE_NOISE_PCT",
-    "NOISE_FLOOR_PCT",
-    "NOISE_K",
-    "PERMUTATION_FLOORS",
-    "ApproximateVerdict",
-    "BandVerdict",
-    "Direction",
-    "Effect",
-    "EffectUnit",
-    "ExactVerdict",
-    "Exclusion",
-    "ExclusionReason",
-    "GeomeanResult",
-    "MethodFloors",
-    "MetricMeta",
-    "MetricUnit",
-    "MetricVerdict",
-    "Observations",
-    "PairResult",
-    "PairingKey",
-    "PermutationVerdict",
-    "Repeat",
-    "ResolvedMetricMeta",
-    "Verdict",
-    "VerdictMethod",
-    "pair_metric",
-})
-
-
-def test_model_when_public_names_resolved_does_export_every_shared_type():
-    exported = {name: getattr(gymrat.model, name) for name in gymrat.model.__all__}
-
-    assert exported.keys() == _PUBLIC_NAMES
-
 
 # ---------------------------------------------------------------------------
 # Effect

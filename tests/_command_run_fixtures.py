@@ -11,7 +11,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from gymrat.session import SessionRecord
+from gymrat.session.records import SessionRecord
 from tests.session.records._fixtures import session_record, write_session_log
 
 __all__ = [

@@ -13,7 +13,12 @@ from typing import TYPE_CHECKING
 
 from rich.text import Text
 
-from gymrat.cli.iterate.state import REGRESSED_NAME_CAP, JudgeDetail
+from gymrat.cli.iterate.state import (
+    MISSING_DELTA,
+    REGRESSED_NAME_CAP,
+    JudgeDetail,
+    format_primary_delta,
+)
 from gymrat.cli.style import (
     GLYPH_ALERT,
     GLYPH_DONE,
@@ -160,14 +165,14 @@ def build_judge_detail(detail: JudgeDetail) -> Text:
     Args:
         detail: The judge's verdict. At most :data:`REGRESSED_NAME_CAP`
             regressed names are spelled out; the rest are collapsed to ``"…"``.
-            A ``None`` delta renders as ``"—"``.
+            The delta renders through :func:`format_primary_delta`; the
+            primary metric's name is shown only beside a printable delta.
 
     Returns:
         A styled ``Text`` for the judge row's detail.
     """
-    delta_pct = detail.primary_delta_pct
-    delta_str = f"{delta_pct:+.1f}%" if delta_pct is not None else "—"
-    primary = f"{delta_str} on {detail.primary_metric}" if delta_pct is not None else delta_str
+    delta_str = format_primary_delta(detail.primary_delta_pct)
+    primary = delta_str if delta_str == MISSING_DELTA else f"{delta_str} on {detail.primary_metric}"
     regressed = detail.regressed_names
 
     text = Text()

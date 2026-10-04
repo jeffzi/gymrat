@@ -57,13 +57,14 @@ more than one concern; it is not a budget.
   reasons: the tiny modules and packages already in `src/` are debt, not precedent.
 - **No packages of small modules** behind a re-exporting `__init__.py`. A package is justified only
   when the flat module would exceed the cap; planned features don't count.
+- **One import path per name.** Import a name from the module that defines it. A package
+  `__init__.py` re-exports nothing, and a module's `__all__` lists only names it defines.
 - **At the cap, move one whole concern** — the code least tied to the rest that changes together for
   one reason — into a module named for what it does (never "helpers", "utils", "misc"): a new
   module, or an existing one you have read that already owns that concern. A module carved off its
-  only importer, such as `supervisor/tasks.py`, owns nothing; never add to it. Never move just
-  enough to pass, and never compress code. One concern, one move: the file should land at 450 or
-  below, and if it doesn't, pick a different, larger concern — never top up the move with other
-  code.
+  only importer owns nothing; never add to it. Never move just enough to pass, and never compress
+  code. One concern, one move: the file should land at 450 or below, and if it doesn't, pick a
+  different, larger concern — never top up the move with other code.
 
 ## Docstrings
 

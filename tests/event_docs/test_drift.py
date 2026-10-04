@@ -25,17 +25,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from gymrat.config import BenchlessConfig
+from gymrat.config.types import BenchlessConfig
 from gymrat.event_docs.asyncapi import READERS
 from gymrat.loop.status import status_session
-from gymrat.session import (
-    BaselineRecord,
-    BaselineRef,
-    SessionLogRecord,
-    SessionRecord,
-    Worktrees,
-    fold_session,
-)
+from gymrat.session.records import BaselineRecord, SessionLogRecord, SessionRecord
+from gymrat.session.store import fold_session
+from gymrat.session.workspace import BaselineRef, Worktrees
 from gymrat.supervisor.events import SessionEvent
 from gymrat.supervisor.turns import outcome_record_count
 from tests.event_docs._extended_unions import PROBE_WIRE_TYPE, ProbeModel

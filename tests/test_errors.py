@@ -8,7 +8,7 @@ from gymrat.errors import (
     hint_of,
     stderr_text_of,
 )
-from gymrat.loop.iterate import BudgetExceededError, LoopStopError
+from gymrat.loop.iterate.run import BudgetExceededError, LoopStopError
 
 
 def _error_with_stderr(message: str, stderr: str | bytes) -> Exception:

@@ -20,13 +20,9 @@ from typing import TYPE_CHECKING
 from gymrat.clock import now_ns
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
-from gymrat.supervisor import (
-    SessionOutcome,
-    TextDeltaEvent,
-    supervise,
-)
-from gymrat.supervisor.events import CompactionEvent
-from gymrat.supervisor.supervise import EndedBy, SupervisionResult
+from gymrat.supervisor.driver import SessionOutcome
+from gymrat.supervisor.events import CompactionEvent, TextDeltaEvent
+from gymrat.supervisor.supervise import EndedBy, SupervisionResult, supervise
 from tests.conftest import hold_lock
 from tests.session.records._fixtures import (
     command_record,

@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.config import ResolvedConfig
+from gymrat.config.types import ResolvedConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.loop.start import start_session
 from gymrat.loop.sync import SyncResult, sync_to_experiment
-from gymrat.session import experiment_worktree_dir
+from gymrat.session.paths import experiment_worktree_dir
 from tests._git import git as run_git
 
 CONFIG = ResolvedConfig(

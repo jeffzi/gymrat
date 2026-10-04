@@ -14,9 +14,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config import HooksConfig, MetricEntry, StopConfig
+from gymrat.config.types import HooksConfig, MetricEntry, StopConfig
 from gymrat.errors import GymratError, hint_of
-from gymrat.loop.iterate import BudgetExceededError, IterateOptions, LoopStopError, iterate_session
+from gymrat.loop.iterate.run import (
+    BudgetExceededError,
+    IterateOptions,
+    LoopStopError,
+    iterate_session,
+)
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
@@ -30,21 +35,21 @@ from gymrat.progress_events import (
     ProgressEvent,
 )
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
-from gymrat.session import (
-    PairedSamples,
-    read_records,
-    session_jsonl_path,
-)
 from gymrat.session import workspace as _workspace
 from gymrat.session.budget import Budget
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import PairedSamples
+from gymrat.session.store import read_records
 from gymrat.targets import InPlaceTarget
 from tests.loop._hooks import HookScripts
 from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,
     BASELINE_MS,
+    MALFORMED_LINE_WARNING,
     PairedRun,
     as_logged,
     baseline_rounds,
+    bench_malformed_once,
     improved_rounds,
     install_collect_samples,
     iteration,
@@ -68,6 +73,8 @@ from tests.session.records._fixtures import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+
+    from syrupy.assertion import SnapshotAssertion
 
     from tests.loop.iterate._fixtures import CollectSamplesRecorder
 
@@ -343,6 +350,14 @@ async def test_iterate_session_when_target_met_does_state_it_above_the_next_step
     )
 
     assert trimmed_report_lines(result.report)[-2] == "target reached — keep it"
+
+
+async def test_iterate_session_when_measured_does_render_the_report_golden(
+    settled: str, samples_mock: CollectSamplesRecorder, snapshot: SnapshotAssertion
+):
+    result = await iterate_session(settled, resolved_config(primary="total_ms"))
+
+    assert result.report.split("\n") == snapshot
 
 
 @pytest.mark.parametrize(
@@ -943,3 +958,32 @@ async def test_iterate_session_when_stop_condition_met_does_report_stop_before_b
         await iterate_session(repo, config)
 
     assert not isinstance(exc.value, BudgetExceededError)
+
+
+# ---------------------------------------------------------------------------
+# adapter warnings: a bench line the adapter cannot read
+# ---------------------------------------------------------------------------
+
+
+async def test_iterate_session_when_warn_sink_given_does_route_adapter_warnings_to_it(
+    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    write_session_log(repo, session_record(repo))
+    bench_malformed_once(monkeypatch)
+    warnings: list[str] = []
+
+    await iterate_session(repo, resolved_config(), options=IterateOptions(warn=warnings.append))
+
+    assert warnings == [MALFORMED_LINE_WARNING]
+    assert MALFORMED_LINE_WARNING not in capsys.readouterr().err
+
+
+async def test_iterate_session_when_no_warn_sink_does_print_adapter_warnings_on_stderr(
+    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    write_session_log(repo, session_record(repo))
+    bench_malformed_once(monkeypatch)
+
+    await iterate_session(repo, resolved_config())
+
+    assert MALFORMED_LINE_WARNING in capsys.readouterr().err.splitlines()

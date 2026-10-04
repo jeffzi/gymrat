@@ -20,15 +20,15 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config import HooksConfig, KindEntry, MetricEntry
+from gymrat.config.types import HooksConfig, KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.confirm import scoped_bench
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, probe_session
 from gymrat.report.text.probe import render_probe_report
 from gymrat.report.types import MetricMeasurement, ReportOptions
 from gymrat.sampling import TargetSpec
-from gymrat.session import experiment_worktree_dir, read_records, session_jsonl_path
-from gymrat.session.paths import progress_path
+from gymrat.session.paths import experiment_worktree_dir, progress_path, session_jsonl_path
+from gymrat.session.store import read_records
 from tests.loop._probe import (
     BASELINE_SAMPLES,
     baseline_of,
@@ -36,7 +36,7 @@ from tests.loop._probe import (
     measurement,
     only_call,
 )
-from tests.loop.settle._fixtures import checks_config, start_with
+from tests.loop._settle import checks_config, start_with
 from tests.report._inputs import line_containing, measured_metric, metric_meta, styles_at
 from tests.session.records._fixtures import finalize_record
 
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.model import Direction
-    from gymrat.session import SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
 
 #: The rerun template a consumer configures when their bench can be narrowed.
 FILTER = "npm run bench -- --filter {names}"

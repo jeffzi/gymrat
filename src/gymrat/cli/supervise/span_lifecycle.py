@@ -49,8 +49,9 @@ from gymrat.telemetry.attributes import (
 if TYPE_CHECKING:
     from opentelemetry.trace import Span
 
-    from gymrat.supervisor import SessionPrompt, SupervisionResult
+    from gymrat.supervisor.driver import SessionPrompt
     from gymrat.supervisor.events import SessionEvent, SessionObserver
+    from gymrat.supervisor.supervise import SupervisionResult
 
 _log = logging.getLogger(__name__)
 

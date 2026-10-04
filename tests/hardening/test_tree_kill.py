@@ -37,8 +37,8 @@ import pytest
 from gymrat import exec as gymrat_exec
 from gymrat import process_group
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
-from gymrat.supervisor import create_stdio_driver
 from gymrat.supervisor.driver import SessionOutcome
+from gymrat.supervisor.stdio import create_stdio_driver
 from tests._process_helpers import (
     SLEEPER_ARGV,
     capture_spawns,

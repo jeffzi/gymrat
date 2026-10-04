@@ -32,22 +32,18 @@ from gymrat.plural import pluralize
 from gymrat.report.display import get_glyph
 from gymrat.report.format import format_delta, format_value, is_improvement
 from gymrat.report.style import VARIANT_NAME_STYLE, format_hint, markup
-from gymrat.report.text import paired_samples
+from gymrat.report.text.render import paired_samples
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.config import StopConfig
+    from gymrat.config.types import StopConfig
     from gymrat.loop.start import StartResult
     from gymrat.report.display import DisplayClass
     from gymrat.report.types import MetricComparison, MetricComparisons
-    from gymrat.session import (
-        BaselineRecord,
-        BaselineRef,
-        FinalizeRecord,
-        SessionRecord,
-    )
+    from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
     from gymrat.session.schema import KeepReason
+    from gymrat.session.workspace import BaselineRef
 
 # ---------------------------------------------------------------------------
 # Outcome and primary-figure types

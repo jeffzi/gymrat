@@ -15,14 +15,8 @@ from rich.markup import escape
 from gymrat.report.format import format_metric_cell_parts
 from gymrat.report.sections import plan_sections
 from gymrat.report.style import VARIANT_NAME_STYLE, markup
-from gymrat.report.table import (
-    build_cell_dispatcher,
-    group_metric_cell,
-    header_metric_cell,
-    indented_section_label,
-    plan_table_skeleton,
-    render_body,
-)
+from gymrat.report.table.markup import group_metric_cell, header_metric_cell, indented_section_label
+from gymrat.report.table.render import build_cell_dispatcher, plan_table_skeleton, render_body
 
 if TYPE_CHECKING:
     from gymrat.report.format import MetricCellParts

@@ -16,15 +16,14 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError, hint_of
-from gymrat.session import (
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import (
     BaselineRecord,
     IterationPrimary,
     IterationRecord,
     MetricVerdict,
     PairedSamples,
     SessionLogRecord,
-    recover_torn_tail,
-    session_jsonl_path,
 )
 from gymrat.session.store import (
     RequiredSession,
@@ -33,6 +32,7 @@ from gymrat.session.store import (
     latest_baseline,
     read_records,
     read_session_header,
+    recover_torn_tail,
     require_open_session,
     require_session,
     session_header,

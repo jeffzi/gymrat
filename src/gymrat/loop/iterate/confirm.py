@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from gymrat.clock import monotonic_ms
-from gymrat.config import FILTER_PLACEHOLDER
+from gymrat.config.types import FILTER_PLACEHOLDER
 from gymrat.loop.iterate.bench import IterationContext, bench_and_judge
 from gymrat.progress_events import (
     ConfirmFinished,
@@ -28,9 +28,9 @@ from gymrat.progress_events import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.config import ResolvedConfig
+    from gymrat.config.types import ResolvedConfig
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
-    from gymrat.session import PairedSamples
+    from gymrat.session.records import PairedSamples
 
 
 @dataclass(frozen=True, slots=True)

@@ -25,12 +25,14 @@ from typer.testing import CliRunner
 from gymrat.cli.app import app
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES
 from gymrat.progress_events import PrepareFinished, PrepareStarted
-from gymrat.session import (
-    append_record,
+from gymrat.session.paths import (
     experiment_worktree_dir,
+    lockfile_path,
+    progress_path,
+    repo_root,
     session_jsonl_path,
 )
-from gymrat.session.paths import lockfile_path, progress_path, repo_root
+from gymrat.session.store import append_record
 from tests._ansi import strip_ansi
 from tests._cli import ENTRY, no_color_env
 from tests._git import git
@@ -52,7 +54,7 @@ from tests.cli._session import (
 )
 from tests.conftest import hold_lock
 from tests.loop._probe import MeasureRecorder, baseline_of, install_measure, measurement, only_call
-from tests.loop.settle._fixtures import start_with
+from tests.loop._settle import start_with
 from tests.session.records._fixtures import finalize_record, iteration_record
 
 runner = CliRunner()

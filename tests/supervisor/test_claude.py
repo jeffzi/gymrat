@@ -27,7 +27,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-from gymrat.supervisor import create_claude_driver
+from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
     CompactionEvent,

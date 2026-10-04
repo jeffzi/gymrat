@@ -8,6 +8,7 @@ deterministic without a clock.
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError
@@ -333,3 +334,28 @@ def test_plain_line_when_non_milestone_event_does_return_none(
     result = plain_line(before, advance(before, event), event)
 
     assert result is None
+
+
+@pytest.mark.parametrize(
+    ("delta", "expected"),
+    [
+        pytest.param(2.2, "+2.2%", id="positive"),
+        pytest.param(-1.3, "-1.3%", id="negative"),
+        pytest.param(0.0, "0.0%", id="zero"),
+        pytest.param(0.04, "0.0%", id="positive-rounds-to-zero"),
+        pytest.param(-0.04, "0.0%", id="negative-rounds-to-zero"),
+        pytest.param(None, "—", id="missing"),
+        pytest.param(math.nan, "—", id="nan"),
+        pytest.param(math.inf, "—", id="positive-infinity"),
+        pytest.param(-math.inf, "—", id="negative-infinity"),
+    ],
+)
+def test_plain_line_when_judge_finished_does_print_delta_like_the_report(
+    delta: float | None, expected: str
+):
+    before = _state()
+    event = JudgeFinished(primary_delta_pct=delta, regressed=(), metric_count=3, at_ms=6000)
+
+    result = plain_line(before, advance(before, event), event)
+
+    assert result == f"judge {expected} · 3 improve/noise"

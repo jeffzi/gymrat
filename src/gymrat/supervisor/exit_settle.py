@@ -21,8 +21,9 @@ from typing import TYPE_CHECKING, Literal
 
 from gymrat.errors import GymratError
 from gymrat.git import SHORT_SHA_LENGTH
+from gymrat.loop.discard import discard_session
 from gymrat.loop.finalize import finalize_session
-from gymrat.loop.settle import KeepOptions, discard_session, keep_session
+from gymrat.loop.keep import KeepOptions, keep_session
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import HookRecord
 from gymrat.session.store import fold_session, last_kept_position, read_records

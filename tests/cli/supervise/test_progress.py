@@ -21,7 +21,7 @@ import pytest
 
 from gymrat.cli.supervise.progress import make_default_read
 from gymrat.cli.supervise.types import ReadSessionResult
-from gymrat.session.records.models import BaselineRecord, IterationPrimary
+from gymrat.session.records import BaselineRecord, IterationPrimary
 from gymrat.supervisor.events import TextDeltaEvent
 from tests.cli.supervise._fixtures import (
     _throwing_read,
@@ -164,12 +164,6 @@ def test_make_default_read_when_baseline_presence_varies_does_report_it(
     result = _read_back(tmp_path, history)
 
     assert result.has_baseline is has_baseline
-
-
-def test_make_default_read_when_imported_does_live_in_the_progress_module():
-    module = make_default_read.__module__
-
-    assert module == "gymrat.cli.supervise.progress"
 
 
 # ---------------------------------------------------------------------------
@@ -356,10 +350,21 @@ def test_loop_when_max_iterations_absent_does_omit_the_denominator():
     assert re.search(r"\d+/\d+ iterations", frame) is None
 
 
-def test_loop_when_last_delta_is_none_does_render_em_dash():
+@pytest.mark.parametrize(
+    "delta_pct",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param(float("nan"), id="undefined-arithmetic"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_loop_when_last_delta_is_missing_or_non_finite_does_render_em_dash(
+    delta_pct: float | None,
+):
     state = session_state(
         iteration_count=1,
-        last_iteration=make_iteration(None, "no-signal"),
+        last_iteration=make_iteration(delta_pct, "no-signal"),
     )
     kit = make_reporter(
         read_session=make_read_session(state, has_baseline=True),
@@ -368,8 +373,31 @@ def test_loop_when_last_delta_is_none_does_render_em_dash():
 
     frame = render_frame(kit.reporter)
 
-    assert "—" in frame
-    assert "no-signal" in frame
+    assert "last — no-signal" in frame
+
+
+@pytest.mark.parametrize(
+    ("delta_pct", "outcome", "expected_segment"),
+    [
+        pytest.param(2.2, "regressed", "last +2.2% regressed", id="signed-regression"),
+        pytest.param(-0.04, "neutral", "last 0.0% neutral", id="rounds-to-zero-unsigned"),
+    ],
+)
+def test_loop_when_last_delta_is_finite_does_render_formatted_delta(
+    delta_pct: float, outcome: str, expected_segment: str
+):
+    state = session_state(
+        iteration_count=1,
+        last_iteration=make_iteration(delta_pct, outcome),
+    )
+    kit = make_reporter(
+        read_session=make_read_session(state, has_baseline=True),
+    )
+    fire_launch_and_bash_cycle(kit.reporter.observer)
+
+    frame = render_frame(kit.reporter)
+
+    assert expected_segment in frame
 
 
 def test_loop_when_unsettled_does_append_unsettled():

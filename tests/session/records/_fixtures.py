@@ -15,8 +15,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from gymrat.session import (
-    BaselineRef,
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.records import (
     CommandRecord,
     DiscardRecord,
     FinalizeRecord,
@@ -31,10 +31,9 @@ from gymrat.session import (
     SessionLogRecord,
     SessionRecord,
     StopRecord,
-    Worktrees,
-    session_jsonl_path,
 )
 from gymrat.session.store import SessionState, append_record
+from gymrat.session.workspace import BaselineRef, Worktrees
 
 #: The instant every fixture record in this file was written at (nanoseconds since epoch).
 AT = 1_786_198_530_000_000_000

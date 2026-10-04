@@ -4,8 +4,7 @@ from typing import Any
 
 import pytest
 
-from gymrat.adapters.mitata import mitata_adapter
-from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults
+from gymrat.adapters import Adapter, AdapterError, MetricDefaults, mitata_adapter
 from gymrat.model import MetricUnit
 from tests.adapters._inputs import LINE_BREAKS, build_stdout
 

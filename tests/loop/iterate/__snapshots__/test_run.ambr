@@ -1,0 +1,21 @@
+# serializer version: 1
+# name: test_iterate_session_when_measured_does_render_the_report_golden
+  list([
+    'iteration 2 · experiment vs baseline · 10 paired samples',
+    'metric                     │ baseline     │ experiment   │ vs baseline',
+    '───────────────────────────┼──────────────┼──────────────┼─────────────────',
+    'total_ms                   │  100 ± 2%    │  90 ± 2%     │ ✓  -10.0%  ±3.0%',
+    'alloc_bytes                │ 1000 ± 2%    │ 800 ± 2%     │ ✓  -20.0%  ±3.0%',
+    '───────────────────────────┼──────────────┼──────────────┼─────────────────',
+    'geomean (2 stable metrics) │              │              │    -15.1%  ±2.1%',
+    '',
+    '✓ 2 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise   ? 0 inconclusive',
+    '',
+    'highlights',
+    '  ✓ alloc_bytes  -20.0%',
+    '  ✓ total_ms     -10.0%',
+    '',
+    'primary: -10.0% · verdict: IMPROVED',
+    'gymrat keep',
+  ])
+# ---

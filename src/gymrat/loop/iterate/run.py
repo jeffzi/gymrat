@@ -49,35 +49,30 @@ from gymrat.report.loop import (
     format_verdict_block,
 )
 from gymrat.report.style import RENDER_WIDTH, render_lines
-from gymrat.report.text import render_report
+from gymrat.report.text.render import render_report
 from gymrat.report.types import ComparisonResult, ReportOptions
-from gymrat.session import (
-    IterationRecord,
-    SessionState,
-    append_record,
-    require_open_session,
-)
 from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
+from gymrat.session.store import SessionState, append_record, require_open_session
 from gymrat.warn import warn_to_stderr
 
 if TYPE_CHECKING:
     import asyncio
     from collections.abc import Sequence
 
-    from gymrat.config import BenchlessConfig, ResolvedConfig
+    from gymrat.config.types import BenchlessConfig, ResolvedConfig
     from gymrat.progress_events import ProgressCallback
-    from gymrat.session import SessionLogRecord
+    from gymrat.session.records import IterationRecord, SessionLogRecord
     from gymrat.session.schema import CommandReason
+    from gymrat.warn import WarnSink
 
 __all__ = [
-    "BenchRunOutputs",
     "BudgetExceededError",
     "IterateOptions",
     "IterateResult",
     "LoopStopError",
-    "build_iteration_comparison",
     "iterate_session",
+    "stop_condition",
 ]
 
 
@@ -91,10 +86,13 @@ class IterateOptions:
             plus hook, judge, confirm, and record events from the loop itself.
         abort: Setting it kills the in-flight bench command. When ``None``, a
             fresh event is used and nothing can interrupt the run.
+        warn: Where the adapter reports bench output it could not read. When
+            ``None``, the adapter writes the warning to stderr.
     """
 
     on_progress: ProgressCallback | None = None
     abort: asyncio.Event | None = None
+    warn: WarnSink | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +180,8 @@ async def iterate_session(
     Args:
         root: The repository whose open session is measured.
         config: The resolved run configuration.
-        options: Progress and abort hooks; a fresh set is used when ``None``.
+        options: Progress, abort, and warning hooks; a fresh set is used when
+            ``None``.
         color: Explicit color choice for the iteration report — ``True``
             forces ANSI, ``False`` suppresses it, ``None`` defers to the
             environment and TTY.

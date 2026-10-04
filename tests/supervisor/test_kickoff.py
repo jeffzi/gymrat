@@ -9,10 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.config import BenchlessConfig
+from gymrat.config.types import BenchlessConfig
 from gymrat.errors import GymratError
-from gymrat.supervisor import compose_kickoff
-from gymrat.supervisor.kickoff import KickoffResult
+from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
 
 # The heading the packaged SKILL.md opens its body with; proves the real
 # bundled skill text made it into the append.

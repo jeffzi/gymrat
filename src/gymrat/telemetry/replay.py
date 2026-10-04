@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gymrat.errors import GymratError
-from gymrat.session.records.models import CommandRecord, SessionRecord
-from gymrat.session.records.parse import decode_log_line, parse_record
+from gymrat.session.records import CommandRecord, SessionRecord, decode_log_line, parse_record
 from gymrat.supervisor.events import (
     CapEvent,
     CompactionEvent,
@@ -53,7 +52,7 @@ if TYPE_CHECKING:
     from opentelemetry.context import Context
     from opentelemetry.trace import Span
 
-    from gymrat.session.records.models import SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
     from gymrat.supervisor.events import SessionEvent
 
 logger = logging.getLogger(__name__)

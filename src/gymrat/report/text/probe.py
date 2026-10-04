@@ -29,18 +29,20 @@ from gymrat.report.style import (
     render_lines,
     truncate_labels,
 )
-from gymrat.report.table import (
+from gymrat.report.table.markup import (
     VALUE_COLUMN_MIN,
     VERDICT_COLUMN_MIN,
-    build_cell_dispatcher,
-    compute_column_width,
     group_metric_cell,
     header_metric_cell,
     indented_section_label,
     join_value_cell,
+    value_widths,
+)
+from gymrat.report.table.render import (
+    build_cell_dispatcher,
+    compute_column_width,
     plan_table_skeleton,
     render_body,
-    value_widths,
 )
 from gymrat.report.types import ReportOptions
 
