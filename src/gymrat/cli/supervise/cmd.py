@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from gymrat.supervisor.events import SessionObserver
     from gymrat.supervisor.supervise import SupervisionResult
 
-from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
+from gymrat.cli.console import apply_command_flags, resolve_stream_color
 from gymrat.cli.exit import exit_with_error, run_guarded, write_and_flush, write_stdout
 from gymrat.cli.options import (
     BaselineOption,
@@ -550,8 +550,7 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
     debug: DebugOption = False,
 ) -> None:
     """Run a supervised agent session with wall-clock and spend caps."""
-    apply_debug(debug)
-    apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
     options = Options(
         prompt=prompt,
         max_minutes=max_minutes,

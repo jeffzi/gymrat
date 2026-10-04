@@ -20,8 +20,7 @@ from rich.text import Text
 from gymrat import clock as _clock
 from gymrat.cli.budget_report import budget_snapshot, write_budget_report
 from gymrat.cli.console import (
-    apply_color_override,
-    apply_debug,
+    apply_command_flags,
     is_debug_mode,
     resolve_stream_color,
     stderr_console,
@@ -108,7 +107,6 @@ async def _iterate_body(
     trace: CommandTrace,
     flags: CliFlags,
     *,
-    color: bool | None,
     verbose: bool,
     resolved_color: bool,
 ) -> IterateResult:
@@ -118,7 +116,7 @@ async def _iterate_body(
     required = require_open_session(root, "iterate")
 
     mode = resolve_render_mode()
-    console = stderr_console(color_flag=color)
+    console = stderr_console()
     seq = required.state.last_seq + 1
     # Pre-set to the unsettled seq so refusals carry it; success overwrites below.
     trace.seq = required.state.last_seq
@@ -173,11 +171,10 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
-    apply_debug(debug)
-    color_override = apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
 
     use_json = output_format == OutputFormat.json
-    resolved_color = resolve_stream_color(color_override, sys.stdout)
+    resolved_color = resolve_stream_color(None, sys.stdout)
     flags = CliFlags(
         bench=bench,
         prepare=prepare,
@@ -195,7 +192,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             result = await with_repo_lock(
                 "iterate",
                 lambda trace: _iterate_body(
-                    trace, flags, color=color, verbose=verbose, resolved_color=resolved_color
+                    trace, flags, verbose=verbose, resolved_color=resolved_color
                 ),
                 args=iterate_args,
             )
@@ -236,18 +233,14 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
     debug: DebugOption = False,
 ) -> None:
     """Commit the session's measured edit once its checks pass."""
-    apply_debug(debug)
-    color_override = apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
 
     use_json = output_format == OutputFormat.json
-    resolved_color = resolve_stream_color(color_override, sys.stdout)
+    resolved_color = resolve_stream_color(None, sys.stdout)
     flags = CliFlags(config=config, timeout=timeout)
 
-    keep_args: dict[str, object] = config_trace_args(flags)
-    if message is not None:
-        keep_args["message"] = message
-    if allow_unimproved:
-        keep_args["allow_unimproved"] = True
+    # A false flag stays out of the record, as an unset one does.
+    keep_args = config_trace_args(flags, message=message, allow_unimproved=allow_unimproved or None)
 
     async def run() -> None:
         async def body(trace: CommandTrace) -> KeepResult:
@@ -258,7 +251,7 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
                 KeepOptions(
                     message=message,
                     allow_unimproved=allow_unimproved,
-                    warn_color=resolve_stream_color(color_override, sys.stderr),
+                    warn_color=resolve_stream_color(None, sys.stderr),
                 ),
                 color=resolved_color,
             )
@@ -287,12 +280,12 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
 # ---------------------------------------------------------------------------
 
 
-def _confirm_discard(worktree: str, *, color: bool | None) -> bool:
+def _confirm_discard(worktree: str) -> bool:
     # A Text question skips markup and emoji parsing, so the path prints as typed.
     question = Text(
         f"discard will revert uncommitted changes in {worktree}.\nProceed?", style="prompt"
     )
-    console = stderr_console(color_flag=color)
+    console = stderr_console()
     # Soft wrap hands line breaking to the terminal; rich would otherwise split or
     # crop a path longer than the console width.
     console.soft_wrap = True
@@ -310,8 +303,7 @@ def discard(
     debug: DebugOption = False,
 ) -> None:
     """Revert the session's experiment worktree to its last commit."""
-    apply_debug(debug)
-    apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
 
     use_json = output_format == OutputFormat.json
 
@@ -325,7 +317,7 @@ def discard(
             # consent to act on — and no stream to report the decline on.
             if sys.stderr is None:
                 raise typer.Exit(GATE_EXIT_CODE)
-            if not _confirm_discard(required.session.worktrees.experiment, color=color):
+            if not _confirm_discard(required.session.worktrees.experiment):
                 write_and_flush(sys.stderr, "discard cancelled\n")
                 raise typer.Exit(GATE_EXIT_CODE)
 
@@ -359,11 +351,10 @@ def status(
     debug: DebugOption = False,
 ) -> None:
     """Show this repository's session history, read from its log."""
-    apply_debug(debug)
-    color_override = apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
 
     use_json = output_format == OutputFormat.json
-    resolved_color = resolve_stream_color(color_override, sys.stdout)
+    resolved_color = resolve_stream_color(None, sys.stdout)
     flags = CliFlags(config=config)
 
     async def run() -> None:

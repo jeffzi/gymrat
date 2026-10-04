@@ -136,6 +136,24 @@ def test_probe_command_when_supported_option_given_does_complete(option: list[st
     assert result.exit_code == 0
 
 
+@pytest.mark.parametrize(
+    ("option", "env", "styled"),
+    [
+        pytest.param("--color", "NO_COLOR", True, id="color-flag-outranks-no-color-env"),
+        pytest.param("--no-color", "FORCE_COLOR", False, id="no-color-flag-outranks-force-color"),
+    ],
+)
+@pytest.mark.usefixtures("probe_repo", "measure")
+def test_probe_command_when_color_flag_given_does_style_the_stdout_report_to_match(
+    option: str, env: str, styled: bool, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv(env, "1")
+
+    result = runner.invoke(app, ["probe", option])
+
+    assert ("\x1b[" in result.stdout) is styled
+
+
 # ---------------------------------------------------------------------------
 # what gets benched
 # ---------------------------------------------------------------------------

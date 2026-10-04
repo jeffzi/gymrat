@@ -13,8 +13,8 @@ from pathlib import Path
 import typer
 
 from gymrat.cli.budget_report import wants_json
-from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
-from gymrat.cli.exit import run_cli, write_stdout
+from gymrat.cli.console import apply_command_flags, resolve_stream_color
+from gymrat.cli.exit import run_guarded, write_stdout
 from gymrat.cli.options import (
     AdapterOption,
     BenchOption,
@@ -49,8 +49,7 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
     debug: DebugOption = False,
 ) -> None:
     """Run all doctor checks and exit ``GATE_EXIT_CODE`` if any check fails."""
-    apply_debug(debug)
-    color_override = apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
     flags = SharedFlags(
         bench=bench,
         prepare=prepare,
@@ -58,21 +57,20 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
         samples=samples,
         timeout=timeout,
         config=config,
-        color=color,
         format=output_format.value,
     )
 
-    async def run() -> None:
+    def run() -> None:
         report = build_doctor_report(flags, cwd=str(Path.cwd()))
 
         if wants_json(flags):
             output = render_doctor_json(report)
         else:
-            resolved_color = resolve_stream_color(color_override, sys.stdout)
+            resolved_color = resolve_stream_color(None, sys.stdout)
             output = render_doctor_report(report, color=resolved_color)
         write_stdout(output + "\n")
 
         if report.has_failures:
             raise typer.Exit(GATE_EXIT_CODE)
 
-    run_cli(run)
+    run_guarded(run)

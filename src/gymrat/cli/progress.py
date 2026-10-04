@@ -59,7 +59,6 @@ from gymrat.eta import (
     SamplingEta,
     format_clock,
     format_duration,
-    format_timestamp,
 )
 from gymrat.progress_events import (
     PassFinished,
@@ -406,17 +405,13 @@ class ProgressReporter(LiveDisplayMixin):
         self._target_labels = target_labels or []
         self._state = ProgressState.start(target_count=target_count, sample_count=sample_count)
 
-        # Read only by ``report``; ``__init__`` branches on the local so the
-        # live/plain split stays in exactly one place.
-        is_live = mode == "live" and console.width > 0
-        self._is_live = is_live
         self._clock_column: _ClockColumn | None = None
         self._prepare_progress: Progress | None = None
         self._pass_progress: Progress | None = None
         self._prepare_task_id: TaskID | None = None
         self._pass_task_id: TaskID | None = None
 
-        if is_live:
+        if self._resolve_live(mode):
             self._init_live(console, clock)
 
     def _init_live(self, console: Console, clock: Callable[[], float] | None) -> None:
@@ -486,8 +481,7 @@ class ProgressReporter(LiveDisplayMixin):
 
         line = plain_line(before, after, event)
         if line is not None:
-            ts = format_timestamp(event.at_ms, after.run_start_ms)
-            self._console.print(f"{ts} {line}", highlight=False, markup=False)
+            self._print_milestone(line, event.at_ms, after.run_start_ms)
 
     def _sync_live(self, state: ProgressState) -> None:
         self._sync_prepare_row(state)

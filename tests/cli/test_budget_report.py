@@ -21,11 +21,12 @@ from typing import Literal
 import pytest
 
 from gymrat.cli import budget_report
+from gymrat.cli.console import apply_command_flags
 from gymrat.cli.run_setup import SharedFlags
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.report.json_doc import BudgetSummary
-from gymrat.report.types import ReportOptions
+from gymrat.report.types import DEFAULT_REPORT_OPTIONS, ReportOptions
 from gymrat.session.budget import Budget
 from gymrat.session.records import IterationRecord
 from tests.session.records._fixtures import iteration_record
@@ -96,6 +97,33 @@ def _emit(output_format: Literal["text", "json"]) -> None:
         text=_render_text,
         json=_render_result_json,
     )
+
+
+@pytest.mark.parametrize(
+    ("color", "env", "expected"),
+    [
+        pytest.param(True, "NO_COLOR", True, id="color-flag-outranks-no-color-env"),
+        pytest.param(False, "FORCE_COLOR", False, id="no-color-flag-outranks-force-color-env"),
+    ],
+)
+def test_emit_report_when_command_color_flag_installed_does_hand_it_to_the_text_renderer(
+    color: bool, env: str, expected: bool, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv(env, "1")
+    not_a_repo = _raise(NotAGitRepositoryError("not a git repository"))
+    monkeypatch.setattr("gymrat.cli.budget_report.repo_root", not_a_repo)
+    apply_command_flags(debug=False, color=color)
+    rendered_with: list[bool | None] = []
+
+    def render(result: str, options: ReportOptions) -> str:
+        rendered_with.append(options.color)
+        return result
+
+    budget_report.emit_report(
+        "report", SharedFlags(), DEFAULT_REPORT_OPTIONS, text=render, json=_render_result_json
+    )
+
+    assert rendered_with == [expected]
 
 
 @pytest.mark.parametrize(

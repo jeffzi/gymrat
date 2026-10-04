@@ -46,7 +46,7 @@ from gymrat.cli.style import (
     STYLE_TIMER_DONE,
     STYLE_TIMER_RUNNING,
 )
-from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
+from gymrat.eta import MS_PER_SECOND, format_clock, format_duration
 from gymrat.metric_name import format_inline, parse
 from gymrat.progress_events import (
     ConfirmStarted,
@@ -279,22 +279,18 @@ class IterateRenderer(LiveDisplayMixin):
             has_after_hook=has_after_hook,
         )
 
-        self._is_live = mode == "live" and console.width > 0
-
         self._spinners: dict[str, Spinner] = {}
         self._pass_view = _PhaseView()
         self._confirm_view = _PhaseView()
+        # The single bar a short terminal shows in place of the checklist.
+        self._compact_view = _PhaseView()
 
-        self._compact_progress: Progress | None = None
-        self._compact_clock_col: _ClockColumn | None = None
-        self._compact_task_id: TaskID | None = None
-
-        if self._is_live:
+        if self._resolve_live(mode):
             self._init_live()
 
     def _init_live(self) -> None:
         if self._console.height < COMPACT_HEIGHT_THRESHOLD:
-            self._compact_progress, self._compact_clock_col = compact_progress(
+            self._compact_view.bar, self._compact_view.clock_col = compact_progress(
                 self._console, clock=self._clock
             )
         else:
@@ -313,8 +309,8 @@ class IterateRenderer(LiveDisplayMixin):
 
     def frame(self) -> RenderableType:
         """Return the renderable the live display paints from."""
-        if self._compact_progress is not None:
-            return self._compact_progress
+        if self._compact_view.bar is not None:
+            return self._compact_view.bar
 
         rows: list[RenderableType] = [self._header_text()]
         for node in self._state.nodes.all_nodes:
@@ -387,8 +383,7 @@ class IterateRenderer(LiveDisplayMixin):
         if not self._is_live:
             line = plain_line(before, self._state, event)
             if line is not None:
-                ts = format_timestamp(event.at_ms, self._state.run_start_ms)
-                self._console.print(f"{ts} {line}", highlight=False, markup=False)
+                self._print_milestone(line, event.at_ms, self._state.run_start_ms)
             return
 
         self._sync_live(event)
@@ -410,17 +405,16 @@ class IterateRenderer(LiveDisplayMixin):
         is_confirm = event.phase == "confirm"
         completed = self._counters(is_confirm=is_confirm).eta.completed
 
-        if self._compact_progress is not None:
-            if self._compact_task_id is None:
-                self._compact_task_id = self._compact_progress.add_task(
+        compact = self._compact_view
+        if compact.bar is not None:
+            if compact.task_id is None:
+                compact.task_id = compact.bar.add_task(
                     "sampling", total=self._state.total, target=event.label
                 )
             elif is_confirm:
-                self._compact_progress.update(self._compact_task_id, target=event.label)
+                compact.bar.update(compact.task_id, target=event.label)
             else:
-                self._compact_progress.update(
-                    self._compact_task_id, target=event.label, completed=completed
-                )
+                compact.bar.update(compact.task_id, target=event.label, completed=completed)
             return
 
         view = self._confirm_view if is_confirm else self._pass_view
@@ -443,16 +437,17 @@ class IterateRenderer(LiveDisplayMixin):
         eta_ms = counters.eta.eta_ms
         if eta_ms is not None:
             view = self._confirm_view if is_confirm else self._pass_view
-            for column in (view.clock_col, self._compact_clock_col):
+            for column in (view.clock_col, self._compact_view.clock_col):
                 if column is not None:
                     column.set_eta(eta_ms)
 
         self._advance_bar(is_confirm=is_confirm, completed=counters.eta.completed)
 
     def _advance_bar(self, *, is_confirm: bool, completed: int) -> None:
-        if self._compact_progress is not None:
-            if self._compact_task_id is not None:
-                self._compact_progress.update(self._compact_task_id, completed=completed)
+        compact = self._compact_view
+        if compact.bar is not None:
+            if compact.task_id is not None:
+                compact.bar.update(compact.task_id, completed=completed)
             return
         view = self._confirm_view if is_confirm else self._pass_view
         if view.bar is not None and view.task_id is not None:
@@ -460,14 +455,13 @@ class IterateRenderer(LiveDisplayMixin):
 
     def _start_confirm_task(self) -> None:
         """Swap the compact bar over to the confirm run, or open the confirm row's bar."""
-        if self._compact_progress is not None:
-            if self._compact_task_id is not None:
-                self._compact_progress.remove_task(self._compact_task_id)
-            self._compact_task_id = self._compact_progress.add_task(
-                "confirming", total=self._state.total
-            )
-            if self._compact_clock_col is not None:
-                self._compact_clock_col.set_eta(0)
+        compact = self._compact_view
+        if compact.bar is not None:
+            if compact.task_id is not None:
+                compact.bar.remove_task(compact.task_id)
+            compact.task_id = compact.bar.add_task("confirming", total=self._state.total)
+            if compact.clock_col is not None:
+                compact.clock_col.set_eta(0)
             return
 
         if self._confirm_view.bar is not None and self._confirm_view.task_id is None:

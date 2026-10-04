@@ -8,7 +8,7 @@ from typing import Annotated
 
 import typer
 
-from gymrat.cli.console import apply_color_override, apply_debug
+from gymrat.cli.console import apply_command_flags
 from gymrat.cli.exit import exit_with_error, run_guarded, write_and_flush
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     ColorOption,
@@ -66,8 +66,7 @@ def export_command(
     debug: DebugOption = False,  # noqa: FBT002 -- 1:1 pass-through of the --debug flag
 ) -> None:
     """Export a finished session's spans to an OpenTelemetry collector."""
-    apply_debug(debug)
-    apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
 
     run_guarded(lambda: _export(session_log, endpoint))
 

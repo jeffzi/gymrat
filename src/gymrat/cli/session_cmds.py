@@ -11,7 +11,7 @@ from typing import Annotated
 import typer
 
 from gymrat.cli.budget_report import write_budget_report
-from gymrat.cli.console import apply_color_override, apply_debug
+from gymrat.cli.console import apply_command_flags
 from gymrat.cli.exit import run_cli
 from gymrat.cli.options import (
     AdapterOption,
@@ -61,8 +61,7 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
     debug: DebugOption = False,
 ) -> None:
     """Create or resume this repository's optimization session."""
-    apply_debug(debug)
-    apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
 
     flags = CliFlags(
         bench=bench,
@@ -73,9 +72,7 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
         config=config,
     )
 
-    start_args: dict[str, object] = config_trace_args(flags)
-    if baseline is not None:
-        start_args["baseline"] = baseline
+    start_args = config_trace_args(flags, baseline=baseline)
 
     use_json = output_format == OutputFormat.json
 
@@ -119,8 +116,7 @@ def finalize(
     debug: DebugOption = False,
 ) -> None:
     """Collapse the session's kept iterations into one commit and close it."""
-    apply_debug(debug)
-    apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
 
     finalize_args: dict[str, object] = {}
     if branch is not None:
@@ -164,8 +160,7 @@ def stop(
     debug: DebugOption = False,
 ) -> None:
     """Record a stop in the session log without reverting or committing."""
-    apply_debug(debug)
-    apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
     if not message.strip():
         msg = "message must not be empty"
         raise typer.BadParameter(msg)
@@ -203,8 +198,7 @@ def sync(
     debug: DebugOption = False,
 ) -> None:
     """Sync uncommitted main-tree changes into the experiment worktree."""
-    apply_debug(debug)
-    apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
 
     use_json = output_format == OutputFormat.json
 

@@ -179,5 +179,4 @@ def test_shared_flags_when_built_does_carry_config_set_plus_defaults():
 
     assert flags.bench == "my-bench"
     assert flags.samples == 5
-    assert flags.color is None
     assert flags.format == "text"

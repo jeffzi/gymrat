@@ -531,6 +531,16 @@ def test_live_renderer_when_console_width_zero_does_render_as_plain():
     assert "\x1b[" not in output
 
 
+def test_plain_renderer_when_label_looks_like_markup_does_print_it_verbatim():
+    console, _clock, reporter = _reporter("plain")
+
+    reporter.report(PrepareStarted(label="[bold]bench[/bold]", at_ms=0))
+    reporter.report(PrepareFinished(label="[bold]bench[/bold]", at_ms=1000))
+    reporter.stop()
+
+    assert "[00:00:01] prepared [bold]bench[/bold] (1s)" in console_output(console)
+
+
 def test_reporter_when_non_relevant_event_does_silently_ignore():
     console, _clock, reporter = _reporter("plain")
 

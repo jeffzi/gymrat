@@ -293,11 +293,25 @@ def test_init_when_colored_does_dim_the_doctor_pointer(monkeypatch: pytest.Monke
 
 
 @pytest.mark.usefixtures("non_repo_cwd")
-def test_init_when_no_color_flag_does_suppress_ansi_in_summary():
+def test_init_when_no_color_flag_does_suppress_ansi_in_summary(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
     result = runner.invoke(app, ["init", "--bench", "npm run bench", "--no-color"])
 
     assert result.exit_code == 0
     assert "\x1b[" not in result.stdout
+
+
+@pytest.mark.usefixtures("non_repo_cwd")
+def test_init_when_color_flag_does_style_the_summary_despite_no_color_env(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    result = runner.invoke(app, ["init", "--bench", "npm run bench", "--color"])
+
+    assert result.exit_code == 0
+    assert "\x1b[" in result.stdout
 
 
 # ---------------------------------------------------------------------------

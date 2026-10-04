@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Annotated, assert_never
 import typer
 
 from gymrat.cli.budget_report import emit_report, warn_duration_over_budget
-from gymrat.cli.console import apply_color_override, apply_debug
+from gymrat.cli.console import apply_command_flags
 from gymrat.cli.exit import run_cli
 from gymrat.cli.options import (
     AdapterOption,
@@ -46,7 +46,6 @@ from gymrat.report.types import (
     ComparisonResult,
     FailOnCondition,
     GeomeanFailOn,
-    MetricComparisons,
     RegressedFailOn,
     ReportOptions,
 )
@@ -108,11 +107,6 @@ def _serialize_fail_on(conditions: tuple[FailOnCondition, ...]) -> str:
     return ",".join(parts)
 
 
-def _gating_metrics(metrics: MetricComparisons) -> MetricComparisons:
-    """The gating subset of ``metrics`` — the only metrics a gate may judge."""
-    return {name: metric for name, metric in metrics.items() if metric.meta.gating}
-
-
 def _gated_geomeans_of(candidate: CandidateComparison) -> list[GeomeanResult]:
     """The gated geomean of every kind that gates, one entry per such kind."""
     return [kind.gated_geomean for kind in candidate.kinds if kind.gated_geomean is not None]
@@ -131,7 +125,8 @@ def should_fail_gate(conditions: tuple[FailOnCondition, ...], result: Comparison
     if not conditions:
         return False
 
-    gating = _gating_metrics(result.metrics)
+    # Only gating metrics may be judged by a gate.
+    gating = {name: metric for name, metric in result.metrics.items() if metric.meta.gating}
 
     for condition in conditions:
         match condition:
@@ -228,8 +223,7 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Run each candidate against the baseline and exit non-zero when --fail-on fires."""
-    apply_debug(debug)
-    color_override = apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
     flags = CompareFlags(
         bench=bench,
         prepare=prepare,
@@ -237,7 +231,6 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         samples=samples,
         timeout=timeout,
         config=config,
-        color=color,
         format=output_format.value,
         verbose=verbose,
         fail_on=tuple(fail_on) if fail_on is not None else (),
@@ -264,7 +257,7 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         emit_report(
             result,
             flags,
-            ReportOptions(verbose=flags.verbose, color=color_override, fail_on=flags.fail_on),
+            ReportOptions(verbose=flags.verbose, fail_on=flags.fail_on),
             text=render_report,
             json=render_json,
         )

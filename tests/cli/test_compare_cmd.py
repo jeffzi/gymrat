@@ -684,4 +684,3 @@ def test_compare_flags_when_built_does_add_verbose_and_fail_on():
 
     assert flags.verbose is True
     assert flags.fail_on == (RegressedFailOn(),)
-    assert flags.color is None

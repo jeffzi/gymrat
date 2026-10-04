@@ -118,8 +118,8 @@ def set_color_override(override: bool | None) -> None:  # noqa: FBT001 -- 1:1 se
     _ColorState.override = override
 
 
-def apply_color_override(color: bool | None) -> bool | None:  # noqa: FBT001 -- 1:1 pass-through of the --color/--no-color flag
-    """Install a subcommand's color override and return it for report rendering.
+def apply_color_override(color: bool | None) -> None:  # noqa: FBT001 -- 1:1 pass-through of the --color/--no-color flag
+    """Install a subcommand's color override for every color surface.
 
     Only writes when ``color`` is not ``None`` so a subcommand that declares no
     local ``--color`` flag does not erase a root flag already applied by
@@ -127,13 +127,25 @@ def apply_color_override(color: bool | None) -> bool | None:  # noqa: FBT001 -- 
 
     Args:
         color: The subcommand's ``--color``/``--no-color`` flag, or ``None`` when neither was given.
-
-    Returns:
-        The color override as passed in.
     """
     if color is not None:
         set_color_override(color)
-    return color
+
+
+def apply_command_flags(*, debug: bool, color: bool | None) -> None:
+    """Install a command's own ``--debug`` and ``--color`` / ``--no-color`` flags.
+
+    Neither undoes a root flag: debug mode is only ever switched on, and a
+    command given no color flag leaves the override alone. Once installed, a
+    ``None`` override passed to :func:`resolve_stream_color` or
+    :func:`stderr_console` resolves to the command's flag.
+
+    Args:
+        debug: The command's own ``--debug`` flag.
+        color: The command's ``--color``/``--no-color`` flag, or ``None`` when neither was given.
+    """
+    apply_debug(debug)
+    apply_color_override(color)
 
 
 def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa: FBT001 -- the resolved --color/--no-color preference, never a bare literal

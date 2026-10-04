@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Literal, override
 
 from rich.live import Live
 from rich.segment import Segment
 
+from gymrat.eta import format_timestamp
 from gymrat.signals import install_termination_cleanup, write_on_exit
 
 if TYPE_CHECKING:
@@ -274,14 +275,34 @@ class LiveDisplayMixin:
 
     Both renderers own the ``Console`` they render to, an ``ErasableLive``
     display (``None`` in plain mode) and a ``_stopped`` guard that makes
-    ``stop()`` run once. Mixing this in keeps the refresh, warning, and stop
-    bookkeeping identical without giving the two renderers a shared base class.
+    ``stop()`` run once. Mixing this in keeps the live-mode check, the plain
+    milestone line, and the refresh, warning, and stop bookkeeping identical
+    without giving the two renderers a shared base class.
     """
 
     _console: Console
+    _is_live: bool = False
     _live: ErasableLive | None = None
     _uninstall_erase: Callable[[], None] | None = None
     _stopped: bool = False
+
+    def _resolve_live(self, mode: Literal["live", "plain"]) -> bool:
+        """Record whether the renderer paints a live display.
+
+        Args:
+            mode: The render mode the caller asked for.
+
+        Returns:
+            ``True`` for live mode on a console wide enough to hold a frame; a
+            zero-width console renders plain whatever the mode.
+        """
+        self._is_live = mode == "live" and self._console.width > 0
+        return self._is_live
+
+    def _print_milestone(self, line: str, at_ms: float, run_start_ms: float | None) -> None:
+        """Print a plain-mode milestone line behind its run-relative timestamp."""
+        timestamp = format_timestamp(at_ms, run_start_ms)
+        self._console.print(f"{timestamp} {line}", highlight=False, markup=False)
 
     def _mount_live(self, *, transient: bool, get_renderable: Callable[[], RenderableType]) -> None:
         live = ErasableLive(

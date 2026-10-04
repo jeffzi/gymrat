@@ -141,9 +141,7 @@ def test_start_command_when_config_overrides_given_does_record_them_in_args(
     assert result.exit_code == 0
     cmd = last_command_record(repo)
     assert cmd.name == "start"
-    assert cmd.args["baseline"] == "main"
-    assert cmd.args["bench"] == "sh run.sh"
-    assert cmd.args["samples"] == 5
+    assert list(cmd.args.items()) == [("bench", "sh run.sh"), ("samples", 5), ("baseline", "main")]
 
 
 @pytest.mark.parametrize("resumed", [False, True])

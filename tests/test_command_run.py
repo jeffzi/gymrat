@@ -14,6 +14,7 @@ import pytest
 import typer
 from filelock import FileLock, Timeout
 
+from gymrat.cli.run_setup import SharedFlags
 from gymrat.command_run import CommandTrace, command_origin, config_trace_args, with_repo_lock
 from gymrat.config import CliFlags
 from gymrat.errors import GymratError
@@ -137,6 +138,9 @@ def test_command_origin_when_env_varies_does_answer_tool_only_for_exact_tool(
             id="all-set",
         ),
         pytest.param(CliFlags(samples=0, timeout=0), {"samples": 0, "timeout": 0}, id="zero-kept"),
+        pytest.param(
+            SharedFlags(samples=5, format="json"), {"samples": 5}, id="subclass-fields-left-out"
+        ),
     ],
 )
 def test_config_trace_args_when_flags_vary_does_keep_only_the_set_overrides(
@@ -147,24 +151,38 @@ def test_config_trace_args_when_flags_vary_does_keep_only_the_set_overrides(
     assert args == expected
 
 
+def test_config_trace_args_when_given_extras_does_append_the_set_ones_in_order():
+    flags = CliFlags(
+        bench="sh bench.sh",
+        prepare="make",
+        adapter="mitata",
+        samples=5,
+        timeout=30,
+        config="gymrat.toml",
+    )
+
+    args = config_trace_args(flags, baseline="main", message=None, allow_unimproved=True)
+
+    assert list(args.items())[-2:] == [("baseline", "main"), ("allow_unimproved", True)]
+    assert list(args)[:6] == ["bench", "prepare", "adapter", "samples", "timeout", "config"]
+
+
 # ---------------------------------------------------------------------------
 # CommandTrace dataclass
 # ---------------------------------------------------------------------------
 
 
-def test_command_trace_when_default_does_carry_empty_args_and_none_fields():
+def test_command_trace_when_default_does_carry_none_fields():
     trace = CommandTrace()
 
-    assert trace.args == {}
     assert trace.seq is None
     assert trace.gate is False
     assert trace.reason is None
 
 
-def test_command_trace_when_constructed_with_args_does_carry_them():
-    trace = CommandTrace(args={"samples": 10}, seq=3, gate=True, reason="stop-condition")
+def test_command_trace_when_constructed_with_fields_does_carry_them():
+    trace = CommandTrace(seq=3, gate=True, reason="stop-condition")
 
-    assert trace.args == {"samples": 10}
     assert trace.seq == 3
     assert trace.gate is True
     assert trace.reason == "stop-condition"
@@ -323,42 +341,16 @@ async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_runnin
 
 
 # ---------------------------------------------------------------------------
-# with_repo_lock — command trace passing
-# ---------------------------------------------------------------------------
-
-
-async def test_with_repo_lock_when_body_runs_does_pass_command_trace_with_args(
-    repo: str,
-):
-    received: list[CommandTrace] = []
-
-    async def body(trace: CommandTrace) -> str:
-        received.append(trace)
-        return "ok"
-
-    await with_repo_lock("measure", body, args={"samples": 5})
-
-    assert len(received) == 1
-    assert received[0].args == {"samples": 5}
-
-
-async def test_with_repo_lock_when_args_is_none_does_pass_empty_dict(
-    repo: str,
-):
-    received: list[CommandTrace] = []
-
-    async def body(trace: CommandTrace) -> str:
-        received.append(trace)
-        return "ok"
-
-    await with_repo_lock("measure", body)
-
-    assert received[0].args == {}
-
-
-# ---------------------------------------------------------------------------
 # with_repo_lock — command record appending
 # ---------------------------------------------------------------------------
+
+
+async def test_with_repo_lock_when_args_is_none_does_record_empty_args(repo: str):
+    _seeded_session(repo)
+
+    await with_repo_lock("measure", _ok_body)
+
+    assert _last_command_record().args == {}
 
 
 async def test_with_repo_lock_when_body_succeeds_does_append_command_record_with_exit_zero(
@@ -566,6 +558,20 @@ async def test_with_repo_lock_when_body_sets_seq_does_record_it(
 
     cmd = _last_command_record()
     assert cmd.seq == 7
+
+
+async def test_with_repo_lock_when_body_sets_seq_then_raises_does_record_it(repo: str):
+    _seeded_session(repo)
+
+    async def body(trace: CommandTrace) -> str:
+        trace.seq = 7
+        msg = "boom"
+        raise GymratError(msg)
+
+    with pytest.raises(GymratError):
+        await with_repo_lock("iterate", body)
+
+    assert _last_command_record().seq == 7
 
 
 @pytest.mark.parametrize(

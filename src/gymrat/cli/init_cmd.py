@@ -19,7 +19,7 @@ from typing import Annotated
 import typer
 from rich.markup import escape
 
-from gymrat.cli.console import apply_color_override, apply_debug, resolve_stream_color
+from gymrat.cli.console import apply_command_flags, resolve_stream_color
 from gymrat.cli.exit import exit_with_error, run_guarded, write_stdout
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BenchOption,
@@ -69,10 +69,9 @@ def init_command(
     debug: DebugOption = False,
 ) -> None:
     """Scaffold a gymrat.toml, skill file, and runbook."""
-    apply_debug(debug)
-    color_override = apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
 
-    resolved_color = resolve_stream_color(color_override, sys.stdout)
+    resolved_color = resolve_stream_color(None, sys.stdout)
 
     base_dir = find_implicit_base()
     # init has no tool form, so a live run refuses it whatever the origin.

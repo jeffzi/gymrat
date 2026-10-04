@@ -122,6 +122,31 @@ def test_doctor_when_format_json_does_write_only_the_json_line(monkeypatch: pyte
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("option", "env", "expected"),
+    [
+        pytest.param("--color", "NO_COLOR", True, id="color-flag-outranks-no-color-env"),
+        pytest.param("--no-color", "FORCE_COLOR", False, id="no-color-flag-outranks-force-color"),
+    ],
+)
+def test_doctor_when_color_flag_given_does_hand_it_to_the_text_renderer(
+    option: str, env: str, expected: bool, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv(env, "1")
+    _patch_doctor(monkeypatch)
+    rendered_with: list[bool] = []
+
+    def render(_report: object, *, color: bool) -> str:
+        rendered_with.append(color)
+        return "doctor text report"
+
+    monkeypatch.setattr("gymrat.cli.doctor_cmd.render_doctor_report", render)
+
+    runner.invoke(app, ["doctor", option])
+
+    assert rendered_with == [expected]
+
+
 def test_doctor_when_no_color_flag_does_not_mutate_color_env(monkeypatch: pytest.MonkeyPatch):
     _patch_doctor(monkeypatch)
 

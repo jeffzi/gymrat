@@ -14,7 +14,16 @@ from typing import override
 
 import pytest
 
-from gymrat.cli.console import is_broken_pipe, point_stream_at_devnull, stderr_console
+from gymrat.cli.console import (
+    apply_command_flags,
+    is_broken_pipe,
+    is_debug_mode,
+    point_stream_at_devnull,
+    resolve_stream_color,
+    set_color_override,
+    set_debug_mode,
+    stderr_console,
+)
 from gymrat.report.style import is_tty
 from tests._imports import modules_imported_by
 from tests._process_helpers import run_with_closed_reader
@@ -156,6 +165,37 @@ def test_stderr_console_resolves_color_from_flag_env_and_tty(
     console = stderr_console(color_flag=color_flag)
 
     assert console.no_color is expected_no_color
+
+
+@pytest.mark.parametrize(
+    ("color", "env", "expected_no_color"),
+    [
+        pytest.param(True, "NO_COLOR", False, id="color-flag-outranks-no-color-env"),
+        pytest.param(False, "FORCE_COLOR", True, id="no-color-flag-outranks-force-color-env"),
+    ],
+)
+def test_stderr_console_when_command_color_flag_installed_does_follow_it(
+    color: bool, env: str, expected_no_color: bool, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv(env, "1")
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
+    apply_command_flags(debug=False, color=color)
+
+    console = stderr_console()
+
+    assert console.no_color is expected_no_color
+
+
+def test_apply_command_flags_when_command_gives_no_flags_does_keep_the_root_flags(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+    set_color_override(True)
+    set_debug_mode(True)
+
+    apply_command_flags(debug=False, color=None)
+
+    assert (is_debug_mode(), resolve_stream_color(None, FakeStream(tty=False))) == (True, True)
 
 
 # ---------------------------------------------------------------------------

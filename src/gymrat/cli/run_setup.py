@@ -23,7 +23,6 @@ from gymrat.signals import install_termination_cleanup
 class SharedFlags(CliFlags):
     """The flags every command carries: the config set plus how the report prints."""
 
-    color: bool | None = None
     format: Literal["text", "json"] = "text"
 
 
@@ -47,11 +46,10 @@ def begin_run(
     command: str | None = None,
     target_labels: list[str] | None = None,
 ) -> ProgressReporter:
-    """Build the progress reporter a run prints through, sized and colored per the flags.
+    """Build the progress reporter a run prints through, sized per the flags.
 
     Args:
-        flags: The command's flags; ``color`` styles the stderr console and
-            ``samples`` sizes the progress display.
+        flags: The command's flags; ``samples`` sizes the progress display.
         target_count: How many targets the run measures.
         command: The command name the reporter labels its output with.
         target_labels: The display label of each target, in run order.
@@ -61,7 +59,7 @@ def begin_run(
         stderr's TTY status selects.
     """
     mode = resolve_render_mode()
-    progress_console = console.stderr_console(color_flag=flags.color)
+    progress_console = console.stderr_console()
     return ProgressReporter(
         mode,
         progress_console,

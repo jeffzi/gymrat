@@ -14,7 +14,7 @@ from typing import Annotated
 import typer
 
 from gymrat.cli.budget_report import emit_report, wants_json, warn_duration_over_budget
-from gymrat.cli.console import apply_color_override, apply_debug
+from gymrat.cli.console import apply_command_flags
 from gymrat.cli.exit import run_cli, write_and_flush, write_stdout
 from gymrat.cli.options import (
     AdapterOption,
@@ -35,7 +35,7 @@ from gymrat.config import resolve_config
 from gymrat.loop.baseline import measure_baseline
 from gymrat.report.json_doc import render_measure_json
 from gymrat.report.text.render import render_measure_report
-from gymrat.report.types import MeasurementResult, ReportOptions
+from gymrat.report.types import DEFAULT_REPORT_OPTIONS, MeasurementResult
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.paths import repo_root
 from gymrat.session.store import RequiredSession, append_record, require_open_session
@@ -113,8 +113,7 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Measure one revision or directory on its own, with nothing to compare it to."""
-    apply_debug(debug)
-    color_override = apply_color_override(color)
+    apply_command_flags(debug=debug, color=color)
     resolved_target = target if target is not None else TargetSpec(label=None, target=".")
     flags = MeasureFlags(
         bench=bench,
@@ -123,7 +122,6 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         samples=samples,
         timeout=timeout,
         config=config,
-        color=color,
         format=output_format.value,
         record=record,
     )
@@ -143,7 +141,7 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         emit_report(
             outcome.result,
             flags,
-            ReportOptions(color=color_override),
+            DEFAULT_REPORT_OPTIONS,
             text=render_measure_report,
             json=render_measure_json,
         )
