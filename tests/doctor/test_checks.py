@@ -120,29 +120,41 @@ def test_build_environment_section_has_title_environment():
 def test_build_environment_section_when_git_available_does_produce_ok_git_check():
     section = build_environment_section(git_available=True, inside_git_repo=True)
 
-    assert _find(section, "git").status == "ok"
+    assert _find(section, "git") == Check(
+        name="git", status="ok", detail="git is available on PATH"
+    )
 
 
 def test_build_environment_section_when_git_missing_does_fail_with_install_hint():
     section = build_environment_section(git_available=False, inside_git_repo=False)
 
-    git = _find(section, "git")
-    assert git.status == "fail"
-    assert git.hint == "Install git: https://git-scm.com/downloads"
+    assert _find(section, "git") == Check(
+        name="git",
+        status="fail",
+        detail="git is not available on PATH",
+        hint="Install git: https://git-scm.com/downloads",
+    )
 
 
 def test_build_environment_section_when_inside_repo_does_produce_ok_repository_check():
     section = build_environment_section(git_available=True, inside_git_repo=True)
 
-    assert _find(section, "git repository").status == "ok"
+    assert _find(section, "git repository") == Check(
+        name="git repository",
+        status="ok",
+        detail="current directory is inside a git repository",
+    )
 
 
 def test_build_environment_section_when_outside_repo_does_warn_with_compare_hint():
     section = build_environment_section(git_available=True, inside_git_repo=False)
 
-    repo = _find(section, "git repository")
-    assert repo.status == "warn"
-    assert repo.hint == "The compare command resolves refs against a git repository"
+    assert _find(section, "git repository") == Check(
+        name="git repository",
+        status="warn",
+        detail="current directory is not inside a git repository",
+        hint="The compare command resolves refs against a git repository",
+    )
 
 
 def test_build_environment_section_when_git_error_given_does_warn_naming_the_error():
@@ -179,19 +191,21 @@ def test_build_config_section_has_title_configuration():
 def test_build_config_section_when_clean_does_produce_single_ok_naming_the_path():
     section = build_config_section(_inspection(config_path="/my/project/gymrat.json", problems=[]))
 
-    assert len(section.checks) == 1
-    check = section.checks[0]
-    assert check.status == "ok"
-    assert "/my/project/gymrat.json" in check.detail
+    assert section.checks == [
+        Check(name="config", status="ok", detail="Config file loaded: /my/project/gymrat.json")
+    ]
 
 
 def test_build_config_section_when_no_config_file_does_produce_single_ok_defaults_only():
     section = build_config_section(_inspection(config_path=None, config=None, problems=[]))
 
-    assert len(section.checks) == 1
-    check = section.checks[0]
-    assert check.status == "ok"
-    assert "defaults" in check.detail.lower()
+    assert section.checks == [
+        Check(
+            name="config",
+            status="ok",
+            detail="No config file found; operating with defaults only",
+        )
+    ]
 
 
 def test_build_config_section_when_problems_present_does_produce_one_fail_per_problem_verbatim():
@@ -219,11 +233,9 @@ def test_build_workflow_section_has_title_workflow():
 def test_build_workflow_section_when_problems_present_does_return_single_ok_skip_check():
     section = build_workflow_section(_config(), config_has_problems=True, skill_file_exists=True)
 
-    assert len(section.checks) == 1
-    check = section.checks[0]
-    assert check.name == "workflow"
-    assert check.status == "ok"
-    assert "fix config" in check.detail.lower()
+    assert section.checks == [
+        Check(name="workflow", status="ok", detail="Skipped — fix config errors first")
+    ]
 
 
 def test_build_workflow_section_when_problems_present_does_omit_individual_workflow_checks():
@@ -236,17 +248,20 @@ def test_build_workflow_section_when_problems_present_does_omit_individual_workf
 def test_build_workflow_section_when_skill_file_present_does_produce_ok_skill_check():
     section = build_workflow_section(_config(), config_has_problems=False, skill_file_exists=True)
 
-    assert _find(section, "skill file").status == "ok"
+    assert _find(section, "skill file") == Check(
+        name="skill file", status="ok", detail="Skill file is installed"
+    )
 
 
 def test_build_workflow_section_when_skill_file_missing_does_warn_with_init_only_hint():
     section = build_workflow_section(_config(), config_has_problems=False, skill_file_exists=False)
 
-    skill = _find(section, "skill file")
-    assert skill.status == "warn"
-    assert skill.hint is not None
-    assert "gymrat init" in skill.hint
-    assert "npx" not in skill.hint
+    assert _find(section, "skill file") == Check(
+        name="skill file",
+        status="warn",
+        detail="No skill file — Claude Code agents won't have gymrat's workflow instructions",
+        hint="Run `gymrat init` to scaffold the project.",
+    )
 
 
 def test_build_workflow_section_when_checks_set_does_produce_ok_echoing_value():
@@ -254,42 +269,40 @@ def test_build_workflow_section_when_checks_set_does_produce_ok_echoing_value():
         _config(checks="npm test"), config_has_problems=False, skill_file_exists=True
     )
 
-    checks = _find(section, "checks")
-    assert checks.status == "ok"
-    assert "npm test" in checks.detail
+    assert _find(section, "checks") == Check(name="checks", status="ok", detail="checks: npm test")
 
 
 def test_build_workflow_section_when_checks_unset_does_warn_about_keep_gating():
     section = build_workflow_section(_config(), config_has_problems=False, skill_file_exists=True)
 
-    checks = _find(section, "checks")
-    assert checks.status == "warn"
-    assert "keep" in (checks.hint or "").lower()
-
-
-def test_build_workflow_section_when_stop_has_max_iterations_does_produce_ok_echoing_it():
-    section = build_workflow_section(
-        _config(stop=StopConfig(max_iterations=20)),
-        config_has_problems=False,
-        skill_file_exists=True,
+    assert _find(section, "checks") == Check(
+        name="checks",
+        status="warn",
+        detail="checks is not configured",
+        hint="Without checks, keep cannot gate commits",
     )
 
-    stop = _find(section, "stop")
-    assert stop.status == "ok"
-    assert "20" in stop.detail
 
-
-def test_build_workflow_section_when_stop_has_both_keys_does_render_both_in_detail():
+@pytest.mark.parametrize(
+    ("stop", "detail"),
+    [
+        pytest.param(StopConfig(target_value=1.5), "stop: target_value: 1.5", id="target-only"),
+        pytest.param(StopConfig(max_iterations=20), "stop: max_iterations: 20", id="max-only"),
+        pytest.param(
+            StopConfig(target_value=1.5, max_iterations=20),
+            "stop: target_value: 1.5, max_iterations: 20",
+            id="both",
+        ),
+    ],
+)
+def test_build_workflow_section_when_stop_set_does_produce_ok_echoing_its_keys(
+    stop: StopConfig, detail: str
+):
     section = build_workflow_section(
-        _config(stop=StopConfig(target_value=1.5, max_iterations=20)),
-        config_has_problems=False,
-        skill_file_exists=True,
+        _config(stop=stop), config_has_problems=False, skill_file_exists=True
     )
 
-    stop = _find(section, "stop")
-    assert stop.status == "ok"
-    assert "1.5" in stop.detail
-    assert "20" in stop.detail
+    assert _find(section, "stop") == Check(name="stop", status="ok", detail=detail)
 
 
 @pytest.mark.parametrize(
@@ -304,9 +317,12 @@ def test_build_workflow_section_when_stop_absent_or_empty_does_warn(stop: StopCo
         _config(stop=stop), config_has_problems=False, skill_file_exists=True
     )
 
-    check = _find(section, "stop")
-    assert check.status == "warn"
-    assert check.hint is not None
+    assert _find(section, "stop") == Check(
+        name="stop",
+        status="warn",
+        detail="stop is not configured",
+        hint="Without stop, a session has no finish line",
+    )
 
 
 def test_build_workflow_section_when_runbook_set_does_produce_ok_echoing_path():
@@ -314,16 +330,20 @@ def test_build_workflow_section_when_runbook_set_does_produce_ok_echoing_path():
         _config(runbook="./RUNBOOK.md"), config_has_problems=False, skill_file_exists=True
     )
 
-    runbook = _find(section, "runbook")
-    assert runbook.status == "ok"
-    assert "./RUNBOOK.md" in runbook.detail
+    assert _find(section, "runbook") == Check(
+        name="runbook", status="ok", detail="runbook: ./RUNBOOK.md"
+    )
 
 
 def test_build_workflow_section_when_runbook_unset_does_warn_about_supervise():
     section = build_workflow_section(_config(), config_has_problems=False, skill_file_exists=True)
 
-    runbook = _find(section, "runbook")
-    assert runbook.status == "warn"
-    assert runbook.hint is not None
-    assert "supervise" in runbook.hint.lower()
-    assert "gymrat init" in runbook.hint
+    assert _find(section, "runbook") == Check(
+        name="runbook",
+        status="warn",
+        detail="runbook is not configured",
+        hint=(
+            "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml. "
+            "Without one, supervise has no instructions to follow."
+        ),
+    )

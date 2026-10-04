@@ -156,7 +156,7 @@ _RERUN_PHRASES: dict[RerunAnswer, tuple[str, str]] = {
 def _format_primary_delta(delta_pct: float | None) -> str:
     if delta_pct is None:
         return ""
-    return f" {format_percent_delta(delta_pct, missing='')}"
+    return f" {format_percent_delta(delta_pct)}"
 
 
 # ---------------------------------------------------------------------------

@@ -136,33 +136,28 @@ def build_environment_section(
     *, git_available: bool, inside_git_repo: bool, git_error: str | None = None
 ) -> CheckSection:
     """FAIL when git is absent from PATH; WARN outside a repo or when the root won't resolve."""
-    checks: list[Check] = []
-
-    checks.append(
-        Check(name="git", status="ok", detail="git is available on PATH")
-        if git_available
-        else Check(
-            name="git",
-            status="fail",
-            detail="git is not available on PATH",
-            hint="Install git: https://git-scm.com/downloads",
-        )
-    )
-
-    checks.append(
-        Check(
-            name="git repository",
-            status="ok",
-            detail="current directory is inside a git repository",
-        )
-        if inside_git_repo
-        else Check(
-            name="git repository",
-            status="warn",
-            detail="current directory is not inside a git repository",
-            hint="The compare command resolves refs against a git repository",
-        )
-    )
+    checks = [
+        _presence_check(
+            Check(
+                name="git",
+                status="fail",
+                detail="git is not available on PATH",
+                hint="Install git: https://git-scm.com/downloads",
+            ),
+            present=git_available,
+            ok_detail="git is available on PATH",
+        ),
+        _presence_check(
+            Check(
+                name="git repository",
+                status="warn",
+                detail="current directory is not inside a git repository",
+                hint="The compare command resolves refs against a git repository",
+            ),
+            present=inside_git_repo,
+            ok_detail="current directory is inside a git repository",
+        ),
+    ]
 
     if git_error is not None:
         checks.append(
@@ -185,23 +180,28 @@ def build_config_section(inspection: ConfigInspection) -> CheckSection:
         checks = [
             Check(name="config", status="fail", detail=problem) for problem in inspection.problems
         ]
-    elif inspection.config_path is None:
-        detail = "No config file found; operating with defaults only"
-        checks = [Check(name="config", status="ok", detail=detail)]
     else:
-        detail = f"Config file loaded: {inspection.config_path}"
+        detail = (
+            "No config file found; operating with defaults only"
+            if inspection.config_path is None
+            else f"Config file loaded: {inspection.config_path}"
+        )
         checks = [Check(name="config", status="ok", detail=detail)]
 
     return CheckSection(title="Configuration", checks=checks)
 
 
-_SKILL_MISSING_HINT = "Run `gymrat init` to scaffold the project."
-_CHECKS_MISSING_HINT = "Without checks, keep cannot gate commits"
-_STOP_MISSING_HINT = "Without stop, a session has no finish line"
-_RUNBOOK_MISSING_HINT = (
-    "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml. "
-    "Without one, supervise has no instructions to follow."
-)
+def _presence_check(missing: Check, *, present: bool, ok_detail: str) -> Check:
+    """``missing`` when the piece it checks is absent, else an OK check of the same name."""
+    return Check(name=missing.name, status="ok", detail=ok_detail) if present else missing
+
+
+def _skipped_section(title: str, check_name: str) -> CheckSection:
+    """The placeholder a section collapses to when config errors leave nothing to check."""
+    return CheckSection(
+        title=title,
+        checks=[Check(name=check_name, status="ok", detail="Skipped — fix config errors first")],
+    )
 
 
 def build_workflow_section(
@@ -221,69 +221,66 @@ def build_workflow_section(
         The assembled workflow check section.
     """
     if config_has_problems:
-        return CheckSection(
-            title=_WORKFLOW_SECTION_TITLE,
-            checks=[
-                Check(
-                    name=_WORKFLOW_SKIP_CHECK_NAME,
-                    status="ok",
-                    detail="Skipped — fix config errors first",
-                )
-            ],
-        )
+        return _skipped_section(_WORKFLOW_SECTION_TITLE, _WORKFLOW_SKIP_CHECK_NAME)
 
-    checks: list[Check] = []
-
-    checks.append(
-        Check(name="skill file", status="ok", detail="Skill file is installed")
-        if skill_file_exists
-        else Check(
-            name="skill file",
-            status="warn",
-            detail="No skill file — Claude Code agents won't have gymrat's workflow instructions",
-            hint=_SKILL_MISSING_HINT,
-        )
-    )
-
-    checks.append(
-        Check(name="checks", status="ok", detail=f"checks: {config.checks}")
-        if config.checks is not None
-        else Check(
-            name="checks",
-            status="warn",
-            detail="checks is not configured",
-            hint=_CHECKS_MISSING_HINT,
-        )
-    )
-
-    checks.append(_build_stop_check(config.stop))
-
-    checks.append(
-        Check(name="runbook", status="ok", detail=f"runbook: {config.runbook}")
-        if config.runbook is not None
-        else Check(
-            name="runbook",
-            status="warn",
-            detail="runbook is not configured",
-            hint=_RUNBOOK_MISSING_HINT,
-        )
-    )
+    checks = [
+        _presence_check(
+            Check(
+                name="skill file",
+                status="warn",
+                detail=(
+                    "No skill file — Claude Code agents won't have gymrat's workflow instructions"
+                ),
+                hint="Run `gymrat init` to scaffold the project.",
+            ),
+            present=skill_file_exists,
+            ok_detail="Skill file is installed",
+        ),
+        _presence_check(
+            Check(
+                name="checks",
+                status="warn",
+                detail="checks is not configured",
+                hint="Without checks, keep cannot gate commits",
+            ),
+            present=config.checks is not None,
+            ok_detail=f"checks: {config.checks}",
+        ),
+        _build_stop_check(config.stop),
+        _presence_check(
+            Check(
+                name="runbook",
+                status="warn",
+                detail="runbook is not configured",
+                hint=(
+                    "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml. "
+                    "Without one, supervise has no instructions to follow."
+                ),
+            ),
+            present=config.runbook is not None,
+            ok_detail=f"runbook: {config.runbook}",
+        ),
+    ]
 
     return CheckSection(title=_WORKFLOW_SECTION_TITLE, checks=checks)
 
 
 def _build_stop_check(stop: StopConfig | None) -> Check:
     """OK echoing whichever stop keys are set; WARN when stop is absent or empty."""
-    if stop is not None and (stop.target_value is not None or stop.max_iterations is not None):
-        parts: list[str] = []
+    parts: list[str] = []
+    if stop is not None:
         if stop.target_value is not None:
             parts.append(f"target_value: {stop.target_value}")
         if stop.max_iterations is not None:
             parts.append(f"max_iterations: {stop.max_iterations}")
+    if parts:
         return Check(name="stop", status="ok", detail=f"stop: {', '.join(parts)}")
 
     return Check(
-        name="stop", status="warn", detail="stop is not configured", hint=_STOP_MISSING_HINT
+        name="stop",
+        status="warn",
+        detail="stop is not configured",
+        hint="Without stop, a session has no finish line",
     )
 
 
@@ -410,7 +407,6 @@ def render_doctor_json(report: DoctorReport) -> str:
 # ---------------------------------------------------------------------------
 
 
-_NO_BENCH_HINT = 'Set the bench command with --bench or the "bench" config key'
 _BENCH_TITLE = "Bench"
 _SHELL_OPERATOR_RE = re.compile(r"[;&|(){}<>]")
 
@@ -488,10 +484,7 @@ def build_bench_section(
         The assembled bench check section.
     """
     if config_problems and bench is None:
-        return CheckSection(
-            title=_BENCH_TITLE,
-            checks=[Check(name="bench", status="ok", detail="Skipped — fix config errors first")],
-        )
+        return _skipped_section(_BENCH_TITLE, "bench")
 
     try:
         get_adapter(adapter)
@@ -508,7 +501,7 @@ def build_bench_section(
                 name="bench",
                 status="fail",
                 detail="No bench command configured",
-                hint=_NO_BENCH_HINT,
+                hint='Set the bench command with --bench or the "bench" config key',
             )
         )
         return CheckSection(title=_BENCH_TITLE, checks=checks)

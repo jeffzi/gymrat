@@ -22,7 +22,7 @@ from gymrat.report.style import (
     VERDICT_STYLES,
     join_header_parts,
     markup,
-    render_markup_line,
+    render_lines,
     truncate_labels,
 )
 from gymrat.report.table.markup import (
@@ -41,17 +41,13 @@ from gymrat.report.table.render import (
     plan_table_skeleton,
     render_body,
 )
-from gymrat.report.types import ReportOptions
+from gymrat.report.types import DEFAULT_REPORT_OPTIONS, ReportOptions
 from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from gymrat.loop.probe import ProbeMetric, ProbeResult
     from gymrat.model import Direction
     from gymrat.report.format import MetricCellParts
-
-# The default presentation flags: detect color, no header override. Immutable, so
-# one shared instance is safe as a default argument.
-_DEFAULT_OPTIONS = ReportOptions()
 
 # The header the column of baseline medians carries.
 _REFERENCE_COLUMN_HEADER = "baseline"
@@ -183,7 +179,9 @@ def _render_probe_table(result: ProbeResult, label: str, *, color: bool | None) 
     return render_body(skeleton.body, widths, to_cells, color=color)
 
 
-def render_probe_report(result: ProbeResult, options: ReportOptions = _DEFAULT_OPTIONS) -> str:
+def render_probe_report(
+    result: ProbeResult, options: ReportOptions = DEFAULT_REPORT_OPTIONS
+) -> str:
     """Render a probe as the run header followed by the probe table.
 
     Args:
@@ -196,5 +194,5 @@ def render_probe_report(result: ProbeResult, options: ReportOptions = _DEFAULT_O
     """
     color = options.color
     label = truncate_labels([result.label])[0]
-    header = render_markup_line(_probe_header(result, label), color=color)
+    header = render_lines(_probe_header(result, label), color=color)
     return "\n".join([header, *_render_probe_table(result, label, color=color)])

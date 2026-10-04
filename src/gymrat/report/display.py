@@ -76,14 +76,7 @@ GLYPHS: dict[DisplayClass, str] = {
 """The glyph each display class is drawn with in the report's rows and legend."""
 
 
-VERDICT_GLOSSES: dict[DisplayClass, str] = {
-    "improved": "improved",
-    "regressed": "regressed",
-    "unstable": "unstable",
-    "identical": "identical",
-    "within-noise": "within noise",
-    "inconclusive": "inconclusive",
-}
+VERDICT_GLOSSES: dict[DisplayClass, str] = {cls: cls.replace("-", " ") for cls in GLYPHS}
 
 QUIET_VERDICTS: frozenset[DisplayClass] = frozenset({
     "within-noise",

@@ -302,6 +302,34 @@ def test_scaffold_when_runbook_path_is_a_directory_does_raise_and_not_write_conf
     assert not (tmp_path / "gymrat.toml").exists()
 
 
+def test_scaffold_when_every_artifact_path_is_a_directory_does_raise_naming_each_in_write_order(
+    tmp_path: Path,
+):
+    for relative in ("gymrat.toml", "gymrat-runbook.md", ".claude/skills/gymrat/SKILL.md"):
+        (tmp_path / relative).mkdir(parents=True)
+
+    with pytest.raises(GymratError) as caught:
+        scaffold(str(tmp_path), ScaffoldRequest())
+
+    assert str(caught.value) == (
+        "Blocked path: gymrat.toml, gymrat-runbook.md, .claude/skills/gymrat/SKILL.md"
+    )
+
+
+def test_scaffold_when_skipped_artifact_paths_are_directories_does_write_the_config(
+    tmp_path: Path,
+):
+    (tmp_path / "gymrat-runbook.md").mkdir()
+    (tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
+
+    result = scaffold(
+        str(tmp_path),
+        ScaffoldRequest(bench="npm run bench", runbook=False, install_skill=False),
+    )
+
+    assert result.config.status == "created"
+
+
 def test_scaffold_when_config_path_cannot_be_checked_does_raise_naming_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

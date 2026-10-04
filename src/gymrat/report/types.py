@@ -229,8 +229,16 @@ class ReportOptions:
             renderer — ``iterate`` — names itself.
     """
 
-    verbose: bool | None = None
+    verbose: bool = False
     color: bool | None = None
-    fail_on: tuple[FailOnCondition, ...] | None = None
+    fail_on: tuple[FailOnCondition, ...] = ()
     header: str | None = None
     command: str = "compare"
+
+
+DEFAULT_REPORT_OPTIONS = ReportOptions()
+"""The options a renderer uses when its caller passes none.
+
+Detect color, no header override. Immutable, so one shared instance is safe as a
+default argument.
+"""

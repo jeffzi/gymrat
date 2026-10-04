@@ -32,7 +32,6 @@ from typing import TYPE_CHECKING, Literal, cast
 from rich.cells import cell_len, split_graphemes
 from rich.console import Console
 from rich.markup import escape
-from rich.text import Text
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -411,17 +410,3 @@ def render_lines(
     if lines and lines[-1] == "":
         lines.pop()
     return "\n".join(line.rstrip() for line in lines)
-
-
-def render_markup_line(text: str, *, color: bool | None) -> str:
-    """Resolve one markup line to text, kept whole however long it is.
-
-    Args:
-        text: The rich-markup line to resolve.
-        color: The explicit color choice, or ``None`` to defer to the
-            environment and TTY detection.
-
-    Returns:
-        The rendered line.
-    """
-    return render_lines(Text.from_markup(text), color=color)

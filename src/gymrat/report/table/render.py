@@ -26,7 +26,7 @@ from rich.cells import cell_len
 from rich.table import Table
 from rich.text import Text
 
-from gymrat.report.style import markup, render_lines, render_markup_line
+from gymrat.report.style import SCOPE_SEPARATOR, markup, render_lines
 from gymrat.report.table.markup import (
     METRIC_COLUMN_HEADER,
     METRIC_COLUMN_MIN,
@@ -147,8 +147,18 @@ def _section_metrics[Metric](section: SectionPlan[Metric]) -> list[Metric]:
 def _plan_blocks[Metric, Cell](
     section: SectionPlan[Metric],
     rows: AggregateRows[Metric, Cell] | None,
+    group_label: Callable[[str], str],
 ) -> list[BodyLine[Metric, Cell]]:
-    """The lines one section's blocks produce: groups, standalone metrics, sub-geomeans."""
+    """The lines one section's blocks produce: groups, standalone metrics, sub-geomeans.
+
+    Args:
+        section: The section whose blocks to lay out.
+        rows: The aggregate-row builders, or ``None`` to draw no per-group aggregate.
+        group_label: Turns a group's name into the label its group line shows.
+
+    Returns:
+        The block lines, in draw order.
+    """
     lines: list[BodyLine[Metric, Cell]] = []
     for index, block in enumerate(section.blocks):
         previous = section.blocks[index - 1] if index > 0 else None
@@ -161,7 +171,7 @@ def _plan_blocks[Metric, Cell](
             lines.append(MetricLine(row=block.metric))
             continue
 
-        lines.append(GroupLine(label=block.group))
+        lines.append(GroupLine(label=group_label(block.group)))
         lines.extend(MetricLine(row=metric) for metric in block.metrics)
         if rows is not None:
             lines.append(rows.group(section.kind, block.group, block.metrics))
@@ -198,7 +208,7 @@ def plan_body[Metric, Cell](
         lines.append(BorderLine())
         lines.append(HeaderLine(title=section.kind))
         lines.append(RuleLine())
-        lines.extend(_plan_blocks(section, rows))
+        lines.extend(_plan_blocks(section, rows, lambda group: group))
         if rows is not None:
             lines.append(RuleLine())
             lines.append(rows.kind(section.kind, _section_metrics(section)))
@@ -223,12 +233,8 @@ def _plan_flat_body[Metric, Cell](
         isinstance(block, GroupBlock) and len(block.metrics) > 1 for block in section.blocks
     ):
         # Flat layout shows one closing aggregate; suppress per-group aggregates.
-        block_lines = _plan_blocks(section, None)
         kind = section.kind
-        for i, line in enumerate(block_lines):
-            if isinstance(line, GroupLine):
-                block_lines[i] = GroupLine(label=f"{line.label} · {kind}")
-        body.extend(block_lines)
+        body.extend(_plan_blocks(section, None, lambda group: f"{group} {SCOPE_SEPARATOR} {kind}"))
     else:
         body.extend(MetricLine(row=row) for row in layout.ordered)
     if rows is not None:
@@ -555,7 +561,7 @@ def render_body[Metric, Cell](
         elif isinstance(line, BorderLine):
             out.append(_horizontal(widths, "┬"))
         elif isinstance(line, TitleLine):
-            out.extend(render_markup_line(line.text, color=color).split("\n"))
+            out.extend(render_lines(line.text, color=color).split("\n"))
         else:
             assert_never(line)
 

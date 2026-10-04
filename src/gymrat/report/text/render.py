@@ -45,7 +45,6 @@ from gymrat.report.style import (
     join_header_parts,
     markup,
     render_lines,
-    render_markup_line,
     truncate_labels,
 )
 from gymrat.report.table.markup import (
@@ -60,7 +59,7 @@ from gymrat.report.table.render import build_cell_dispatcher, plan_table_skeleto
 from gymrat.report.tally import verdict_summary_parts
 from gymrat.report.text.multi import render_comparison_table
 from gymrat.report.text.single import render_table
-from gymrat.report.types import GeomeanFailOn, ReportOptions
+from gymrat.report.types import DEFAULT_REPORT_OPTIONS, GeomeanFailOn, ReportOptions
 from gymrat.report.types import candidate_at as _candidate_at
 from gymrat.utils import pluralize
 
@@ -78,10 +77,6 @@ if TYPE_CHECKING:
         MetricComparisons,
     )
     from gymrat.targets import WorktreeRemovalFailure
-
-# The default presentation flags: detect color, no header override. Immutable, so
-# one shared instance is safe as a default argument.
-_DEFAULT_OPTIONS = ReportOptions()
 
 # Gap between the longest highlighted metric name and the delta that follows it.
 _HIGHLIGHT_NAME_GUTTER = 2
@@ -444,38 +439,38 @@ class _FooterData:
     ties: list[int]
 
 
-def _classify_verdict(verdict: MetricVerdict, data: _FooterData) -> None:
-    """Sort one verdict's pair count into the footer cause it belongs to.
+def _collect_footer_data(metrics: MetricComparisons) -> _FooterData:
+    """Sort every verdict's pair count into the cause it belongs to, in one pass.
 
     The method union is discriminated exhaustively: exact verdicts contribute
     nothing to the footer by decision, an explicit arm rather than a fall-through
     a new method could slip past unnoticed.
 
     Args:
-        verdict: The verdict to classify.
-        data: The footer tallies, updated in place.
+        metrics: The comparisons whose verdicts to sort.
+
+    Returns:
+        The pair counts, grouped by footer cause.
     """
-    match verdict.method:
-        case "permutation":
-            data.permutation.append(verdict.n)
-        case "band":
-            if verdict.n < PERMUTATION_MIN_N:
-                data.shortage.append(verdict.n)
-            else:
-                data.ties.append(verdict.usable_n)
-        case "exact":
-            return
-        case _ as unreachable:  # pragma: no cover — exhaustive match over MetricVerdict.method
-            assert_never(unreachable)
-
-
-def _collect_footer_data(metrics: MetricComparisons) -> _FooterData:
-    """Sort every verdict's pair count into the cause it belongs to, in one pass."""
     data = _FooterData(permutation=[], shortage=[], ties=[])
     for metric in metrics.values():
         for candidate in metric.candidates:
-            if candidate.verdict is not None:
-                _classify_verdict(candidate.verdict, data)
+            verdict = candidate.verdict
+            if verdict is None:
+                continue
+            match verdict.method:
+                case "permutation":
+                    data.permutation.append(verdict.n)
+                case "band":
+                    if verdict.n < PERMUTATION_MIN_N:
+                        data.shortage.append(verdict.n)
+                    else:
+                        data.ties.append(verdict.usable_n)
+                case "exact":
+                    pass
+                # Unreachable: the match over MetricVerdict.method is exhaustive.
+                case _ as unreachable:  # pragma: no cover
+                    assert_never(unreachable)
     return data
 
 
@@ -689,7 +684,7 @@ def render_measure_table(
 # ---------------------------------------------------------------------------
 
 
-def render_report(result: ComparisonResult, options: ReportOptions = _DEFAULT_OPTIONS) -> str:
+def render_report(result: ComparisonResult, options: ReportOptions = DEFAULT_REPORT_OPTIONS) -> str:
     """Render a full comparison report.
 
     The report is the run header, the comparison table (single- or
@@ -710,12 +705,11 @@ def render_report(result: ComparisonResult, options: ReportOptions = _DEFAULT_OP
     """
     color = options.color
     display = with_display_labels(result)
-    conditions = options.fail_on or ()
 
     if options.header is not None:
         lines = [options.header]
     else:
-        lines = [render_markup_line(_compare_header(display), color=color)]
+        lines = [render_lines(_compare_header(display), color=color)]
 
     if len(display.candidates) > 1:
         lines.extend(render_comparison_table(display, color=color))
@@ -726,7 +720,7 @@ def render_report(result: ComparisonResult, options: ReportOptions = _DEFAULT_OP
         lines.append("")
         lines.extend(_render_block([_render_summary(display.metrics, 0)], color=color))
 
-    highlights = _render_highlights(display, conditions)
+    highlights = _render_highlights(display, options.fail_on)
     if highlights:
         lines.append("")
         lines.extend(_render_block(highlights, color=color))
@@ -734,7 +728,7 @@ def render_report(result: ComparisonResult, options: ReportOptions = _DEFAULT_OP
     footer = [
         *footer_lines(
             display.metrics,
-            verbose=bool(options.verbose),
+            verbose=options.verbose,
             command=options.command,
             samples=display.samples,
         ),
@@ -749,7 +743,7 @@ def render_report(result: ComparisonResult, options: ReportOptions = _DEFAULT_OP
 
 def render_measure_report(
     result: MeasurementResult,
-    options: ReportOptions = _DEFAULT_OPTIONS,
+    options: ReportOptions = DEFAULT_REPORT_OPTIONS,
 ) -> str:
     """Render a single-target measurement report.
 
@@ -774,7 +768,7 @@ def render_measure_report(
         f"adapter: {escape(result.adapter)}",
     ])
 
-    lines = [render_markup_line(header, color=color)]
+    lines = [render_lines(header, color=color)]
     lines.extend(render_measure_table(result, label, color=color))
 
     footer = _render_worktree_footer(result)

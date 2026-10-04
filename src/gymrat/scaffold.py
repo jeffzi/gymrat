@@ -1,11 +1,9 @@
 """Write the gymrat config, runbook stub, and skill file for ``init``.
 
 A ``ScaffoldRequest`` carries the three user choices (bench command, runbook
-flag, skill-install flag). The config is serialized as hand-written TOML —
-``json.dumps`` escapes the bench string, which round-trips through any TOML
-parser because every JSON basic-string escape is valid TOML. Validation and
-the bundled-skill read run before any file is written, so a broken install
-leaves nothing behind.
+flag, skill-install flag). The config is serialized as hand-written TOML.
+Validation and the bundled-skill read run before any file is written, so a
+broken install leaves nothing behind.
 
 The scaffold is re-runnable: an existing ``gymrat.toml`` is left byte-identical
 and reported as ``exists``, while the runbook and skill are still filled in.
@@ -157,34 +155,32 @@ def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
     return ScaffoldArtifact(path=CONFIG_FILENAME, status="created")
 
 
-def _path_blocked(base_dir: Path, relative: str) -> bool:
-    """True when a non-regular file occupies ``relative``.
+def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
+    """The requested artifact paths a non-regular file occupies.
 
     Symlinks (including dangling ones) are always blocked — writing through a
     symlink would place the content at a location the user did not choose.
     Directories are blocked because they cannot be opened as regular files.
 
     Args:
-        base_dir: The base directory ``relative`` is resolved against.
-        relative: The path, relative to ``base_dir``, to check.
+        base_dir: The base directory the artifact paths are resolved against.
+        request: The user choices that decide which artifacts are written.
 
     Returns:
-        ``True`` when a symlink, directory, or other non-regular file exists at
-        the path.
+        Each requested path holding a symlink, directory, or other non-regular
+        file, in write order.
     """
-    full = base_dir / relative
-    return full.is_symlink() or (full.exists() and not full.is_file())
-
-
-def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
-    blocked: list[str] = []
-    if _path_blocked(base_dir, CONFIG_FILENAME):
-        blocked.append(CONFIG_FILENAME)
-    if request.runbook and _path_blocked(base_dir, DEFAULT_RUNBOOK_PATH):
-        blocked.append(DEFAULT_RUNBOOK_PATH)
-    if request.install_skill and _path_blocked(base_dir, SKILL_RELATIVE_PATH):
-        blocked.append(SKILL_RELATIVE_PATH)
-    return blocked
+    requested = [
+        (CONFIG_FILENAME, True),
+        (DEFAULT_RUNBOOK_PATH, request.runbook),
+        (SKILL_RELATIVE_PATH, request.install_skill),
+    ]
+    return [
+        relative
+        for relative, wanted in requested
+        if wanted
+        and ((full := base_dir / relative).is_symlink() or (full.exists() and not full.is_file()))
+    ]
 
 
 def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
