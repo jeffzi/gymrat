@@ -498,6 +498,17 @@ sleep 120
 """A bench that records its own pid, emits one metric, then blocks past any test."""
 
 
+def _wait_or_dump_stacks(proc: subprocess.Popen[str], timeout_s: float) -> None:
+    # The child runs with PYTHONFAULTHANDLER set, so SIGABRT makes it dump every
+    # thread's stack: where a process that outlived its signal is parked.
+    try:
+        proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        proc.send_signal(signal.SIGABRT)
+        _, stacks = proc.communicate(timeout=30)
+        pytest.fail(f"gymrat still running {timeout_s:g} s after the signal; threads:\n{stacks}")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 @pytest.mark.parametrize(
     ("signal_number", "expected_code"),
@@ -525,7 +536,7 @@ def test_probe_command_when_signalled_mid_bench_does_kill_the_bench_and_exit_128
     proc = subprocess.Popen(  # noqa: S603
         [*ENTRY, "probe"],
         cwd=repo,
-        env=no_color_env(),
+        env={**no_color_env(), "PYTHONFAULTHANDLER": "1"},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -535,7 +546,7 @@ def test_probe_command_when_signalled_mid_bench_does_kill_the_bench_and_exit_128
             Path(experiment_worktree_dir(repo), "bench.pid"), timeout_s=60.0
         )
         proc.send_signal(signal_number)
-        proc.communicate(timeout=60)
+        _wait_or_dump_stacks(proc, timeout_s=60)
     finally:
         if proc.poll() is None:
             proc.kill()

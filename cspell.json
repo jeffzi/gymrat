@@ -89,6 +89,7 @@
     "SETMASK",
     "setpgid",
     "setrlimit",
+    "SIGABRT",
     "sigmask",
     "strerror",
     "SYSTEMROOT",
