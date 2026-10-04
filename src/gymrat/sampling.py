@@ -26,15 +26,18 @@ and exact.
 import asyncio
 import math
 import statistics
+import subprocess
+import tempfile
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal, Self
 
-from gymrat.adapters import DEFAULT_GATING, DEFAULT_METRIC_KIND, Adapter
+from gymrat.adapters import Adapter
 from gymrat.clock import monotonic_ms
-from gymrat.config.types import KindEntry, MetricEntry
-from gymrat.errors import CommandError, GymratError, hint_of
+from gymrat.config import KindEntry, MetricEntry, ResolvedConfig
+from gymrat.errors import CommandError, GymratError
 from gymrat.exec import (
     ExecOptions,
     ExecResult,
@@ -42,6 +45,7 @@ from gymrat.exec import (
     exec,  # noqa: A004 -- names the subprocess executor `exec`
     kill_live_process_groups,
 )
+from gymrat.git import run_git, try_git
 from gymrat.model import ResolvedMetricMeta
 from gymrat.progress_events import (
     PassFinished,
@@ -54,16 +58,11 @@ from gymrat.progress_events import (
 from gymrat.report.text.render import format_cleanup_failures
 from gymrat.signals import install_termination_cleanup
 from gymrat.stats import compute_half_range
-from gymrat.targets import (
-    CleanupResult,
-    RefTarget,
-    Target,
-    WorktreeInfo,
-    cleanup_worktrees,
-    materialize_worktree,
-    plan_worktree,
-)
-from gymrat.warn import WarnSink
+from gymrat.targets import RefTarget, Target, WorktreeRemovalFailure
+from gymrat.utils import MS_PER_SECOND, WarnSink, stderr_text_of, warn_to_stderr
+
+DEFAULT_METRIC_KIND: Final[str] = "other"
+"""The kind a metric falls under when its adapter reports none."""
 
 # ---------------------------------------------------------------------------
 # sampling types
@@ -83,6 +82,11 @@ class TargetSpec:
 
     label: str | None
     target: str
+
+    @property
+    def display_label(self) -> str:
+        """The label to show before the target is resolved: the explicit one, else the target."""
+        return self.label or self.target
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,8 +130,7 @@ class SamplingOptions:
         samples: The number of rounds.
         timeout_seconds: Per-command wall-clock budget, in seconds.
         on_progress: Invoked with each progress event, or ``None`` for silence.
-        warn: Where an adapter sends complaints about output it could not read,
-            or ``None`` to use the adapter's own default.
+        warn: Where an adapter sends complaints about output it could not read.
         clock: A source of monotonic millisecond timestamps for event stamping.
             Defaults to :func:`~gymrat.clock.monotonic_ms`.
     """
@@ -137,7 +140,7 @@ class SamplingOptions:
     samples: int
     timeout_seconds: float
     on_progress: ProgressCallback | None = None
-    warn: WarnSink | None = None
+    warn: WarnSink = warn_to_stderr
     clock: Callable[[], float] = monotonic_ms
 
 
@@ -145,50 +148,59 @@ class SamplingOptions:
 class RunOptions:
     """The run settings a comparison and a measurement both take.
 
-    Beyond the sampling fields :class:`SamplingOptions` reads, this adds the
-    three inputs a caller needs to turn raw samples into a report: which adapter
-    parses the bench output, and the per-metric and per-kind config overrides
-    that settle each metric's metadata.
+    Beyond the settings the collector reads, this adds the three inputs a caller
+    needs to turn raw samples into a report: which adapter parses the bench
+    output, and the per-metric and per-kind config overrides that settle each
+    metric's metadata.
 
     Attributes:
-        bench: The command run once per target per round.
-        prepare: A command run once per target before sampling, or ``None``.
+        sampling: The bench and prepare commands, round count, timeout, and
+            sinks the collector runs under.
         adapter: Which output format ``bench`` writes, by adapter name.
-        samples: The number of rounds.
-        timeout_seconds: Per-command wall-clock budget, in seconds.
         config_metrics: Per-metric overrides from config, or ``None``.
         config_kinds: Per-kind overrides from config, or ``None``.
-        on_progress: Invoked with each progress event, or ``None`` for silence.
-        warn: Where an adapter sends complaints about unreadable output, or
-            ``None`` to use the adapter's own default.
     """
 
-    bench: str
-    prepare: str | None
+    sampling: SamplingOptions
     adapter: str
-    samples: int
-    timeout_seconds: float
     config_metrics: dict[str, MetricEntry] | None
     config_kinds: dict[str, KindEntry] | None
-    on_progress: ProgressCallback | None = None
-    warn: WarnSink | None = None
 
-    def sampling(self) -> SamplingOptions:
-        """The sampling settings this run hands the collector.
+    @classmethod
+    def from_config(
+        cls,
+        config: ResolvedConfig,
+        *,
+        samples: int | None = None,
+        bench: str | None = None,
+        on_progress: ProgressCallback | None = None,
+        warn: WarnSink = warn_to_stderr,
+    ) -> Self:
+        """Copy the run settings out of a resolved configuration.
 
-        The collector's clock is left at its default.
+        Args:
+            config: The resolved configuration to read.
+            samples: The number of rounds, or ``None`` for the configured count.
+            bench: The command to run, or ``None`` for the configured one.
+            on_progress: Invoked with each progress event, or ``None`` for
+                silence.
+            warn: Where an adapter sends complaints about unreadable output.
 
         Returns:
-            The bench and prepare commands, round count, timeout, and hooks of
-            this run.
+            The run settings, with the collector's clock left at its default.
         """
-        return SamplingOptions(
-            bench=self.bench,
-            prepare=self.prepare,
-            samples=self.samples,
-            timeout_seconds=self.timeout_seconds,
-            on_progress=self.on_progress,
-            warn=self.warn,
+        return cls(
+            sampling=SamplingOptions(
+                bench=config.bench if bench is None else bench,
+                prepare=config.prepare,
+                samples=config.samples if samples is None else samples,
+                timeout_seconds=config.timeout_seconds,
+                on_progress=on_progress,
+                warn=warn,
+            ),
+            adapter=config.adapter,
+            config_metrics=config.metrics,
+            config_kinds=config.kinds,
         )
 
 
@@ -211,6 +223,9 @@ class MetricStats:
 # metric metadata
 # ---------------------------------------------------------------------------
 
+_DEFAULT_GATING = True
+"""Whether a metric gates when neither a ``metrics`` entry nor a ``kinds`` entry names it."""
+
 
 def _resolve_one_metric(
     name: str,
@@ -224,7 +239,7 @@ def _resolve_one_metric(
         entry.direction if entry is not None and entry.direction is not None else defaults.direction
     )
 
-    gating = DEFAULT_GATING
+    gating = _DEFAULT_GATING
     if entry is not None and entry.gating is not None:
         gating = entry.gating
     elif config_kinds is not None:
@@ -243,44 +258,6 @@ def _resolve_one_metric(
         kind=kind,
         short_name=short_name,
     )
-
-
-def resolve_metric_meta(
-    metric_names: Sequence[str],
-    config_metrics: dict[str, MetricEntry] | None,
-    adapter: Adapter,
-    config_kinds: dict[str, KindEntry] | None = None,
-) -> dict[str, ResolvedMetricMeta]:
-    """Resolve each metric's display metadata from adapter defaults and config overrides.
-
-    For every name in ``metric_names`` (preserving input order), the adapter's
-    per-metric defaults are the base; a matching ``config_metrics`` entry overrides
-    direction, gating, and exact, and a ``config_kinds`` entry for the resolved kind
-    supplies gating when the metric entry does not. A per-metric gating override wins
-    over its kind's gating.
-
-    Args:
-        metric_names: Metric names to resolve, in the order they should appear
-            in the result.
-        config_metrics: Per-metric overrides from the config file, keyed by
-            metric name, or ``None`` if none are configured.
-        adapter: Adapter supplying each metric's defaults.
-        config_kinds: Per-kind gating overrides from the config file, keyed by
-            kind name, or ``None`` if none are configured.
-
-    Returns:
-        An ordered mapping from metric name to its resolved
-        :class:`ResolvedMetricMeta`.
-    """
-    return {
-        name: _resolve_one_metric(
-            name,
-            config_metrics.get(name) if config_metrics is not None else None,
-            adapter,
-            config_kinds,
-        )
-        for name in metric_names
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -328,29 +305,11 @@ def own_values(samples: Sequence[dict[str, float]], name: str) -> list[float]:
     return [record[name] for record in samples if name in record]
 
 
-def paired_or_own_values(
-    paired: Sequence[float],
-    samples: Sequence[dict[str, float]],
-    name: str,
-) -> list[float]:
-    """Prefer already-paired values, falling back to a side's own values.
-
-    Args:
-        paired: Values paired across sides; used as-is when non-empty.
-        samples: One metric record per round, used only for the fallback.
-        name: The metric to extract when falling back.
-
-    Returns:
-        ``paired`` when it holds any values, otherwise ``own_values(samples, name)``.
-    """
-    return list(paired) or own_values(samples, name)
-
-
 def resolve_metric_meta_from_samples(
     sample_sets: Sequence[list[dict[str, float]]],
     config_metrics: dict[str, MetricEntry] | None,
     adapter: Adapter,
-    config_kinds: dict[str, KindEntry] | None = None,
+    config_kinds: dict[str, KindEntry] | None,
 ) -> dict[str, ResolvedMetricMeta]:
     """Collect every metric name across the sample sets and resolve its metadata.
 
@@ -358,11 +317,18 @@ def resolve_metric_meta_from_samples(
     samples, so the resolved metadata — and every report drawn from it — reads in
     the order the run first reported each metric.
 
+    The adapter's per-metric defaults are the base; a matching ``config_metrics``
+    entry overrides direction, gating, and exact, and a ``config_kinds`` entry
+    for the resolved kind supplies gating when the metric entry does not. A
+    per-metric gating override wins over its kind's gating.
+
     Args:
         sample_sets: One list of per-round metric records per target.
-        config_metrics: Per-metric overrides from config, or ``None``.
+        config_metrics: Per-metric overrides from config, keyed by metric name,
+            or ``None``.
         adapter: The adapter whose defaults seed each metric's metadata.
-        config_kinds: Per-kind overrides from config, or ``None``.
+        config_kinds: Per-kind gating overrides from config, keyed by kind name,
+            or ``None``.
 
     Returns:
         The resolved metadata for each metric, keyed by metric name.
@@ -376,7 +342,15 @@ def resolve_metric_meta_from_samples(
         message = "No metrics found in benchmark output"
         raise GymratError(message)
 
-    return resolve_metric_meta(list(names), config_metrics, adapter, config_kinds)
+    return {
+        name: _resolve_one_metric(
+            name,
+            config_metrics.get(name) if config_metrics is not None else None,
+            adapter,
+            config_kinds,
+        )
+        for name in names
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -389,69 +363,6 @@ _REF_HINT = (
     "untracked, gitignored, or not-yet-committed files are absent"
 )
 _LABEL_WIDTH = 11
-
-# ---------------------------------------------------------------------------
-# Sampling schedule
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class _Schedule:
-    """The fixed inputs shared by the prepare and bench loops."""
-
-    targets: Sequence[TargetContext]
-    options: SamplingOptions
-    timeout_ms: int
-    abort: asyncio.Event
-
-
-async def _run_prepare(schedule: _Schedule) -> None:
-    """Run the prepare command once per target before any bench run."""
-    options = schedule.options
-    prepare = options.prepare
-    if prepare is None:
-        return
-    for ctx in schedule.targets:
-        emit_progress(options.on_progress, PrepareStarted(label=ctx.label, at_ms=options.clock()))
-        await _run_command("prepare", None, prepare, ctx, schedule.timeout_ms, schedule.abort)
-        emit_progress(options.on_progress, PrepareFinished(label=ctx.label, at_ms=options.clock()))
-
-
-async def _run_one_pass(
-    round_index: int,
-    schedule: _Schedule,
-    collected: list[list[dict[str, float]]],
-    adapter: Adapter,
-) -> None:
-    """Run one bench round across all targets, appending parsed records."""
-    round_number = round_index + 1
-    options = schedule.options
-    target_count = len(schedule.targets)
-    for target_index, ctx in enumerate(schedule.targets):
-        emit_progress(
-            options.on_progress,
-            PassStarted(
-                round=round_number,
-                total_rounds=options.samples,
-                target_count=target_count,
-                label=ctx.label,
-                at_ms=options.clock(),
-            ),
-        )
-        stdout = await _run_command(
-            "bench", round_number, options.bench, ctx, schedule.timeout_ms, schedule.abort
-        )
-        emit_progress(
-            options.on_progress,
-            PassFinished(
-                round=round_number,
-                total_rounds=options.samples,
-                target_count=target_count,
-                label=ctx.label,
-                at_ms=options.clock(),
-            ),
-        )
-        collected[target_index].append(_parse(adapter, stdout, options.warn))
 
 
 async def collect_samples(
@@ -480,23 +391,43 @@ async def collect_samples(
     Raises:
         CommandError: A prepare or bench command timed out or exited non-zero.
     """
-    schedule = _Schedule(
-        targets=targets,
-        options=options,
-        timeout_ms=int(options.timeout_seconds * 1000),
-        abort=abort,
-    )
-    collected: list[list[dict[str, float]]] = [[] for _ in targets]
+    timeout_ms = int(options.timeout_seconds * MS_PER_SECOND)
+    collected = [TargetSamples(ctx=ctx, samples=[]) for ctx in targets]
 
-    await _run_prepare(schedule)
+    def emit_pass(
+        event: type[PassStarted] | type[PassFinished], round_number: int, ctx: TargetContext
+    ) -> None:
+        emit_progress(
+            options.on_progress,
+            event(
+                round=round_number,
+                total_rounds=options.samples,
+                target_count=len(targets),
+                label=ctx.label,
+                at_ms=options.clock(),
+            ),
+        )
 
-    for round_index in range(options.samples):
-        await _run_one_pass(round_index, schedule, collected, adapter)
+    if options.prepare is not None:
+        for ctx in targets:
+            emit_progress(
+                options.on_progress, PrepareStarted(label=ctx.label, at_ms=options.clock())
+            )
+            await _run_command("prepare", None, options.prepare, ctx, timeout_ms, abort)
+            emit_progress(
+                options.on_progress, PrepareFinished(label=ctx.label, at_ms=options.clock())
+            )
 
-    return [
-        TargetSamples(ctx=ctx, samples=samples)
-        for ctx, samples in zip(targets, collected, strict=True)
-    ]
+    for round_number in range(1, options.samples + 1):
+        for target in collected:
+            emit_pass(PassStarted, round_number, target.ctx)
+            stdout = await _run_command(
+                "bench", round_number, options.bench, target.ctx, timeout_ms, abort
+            )
+            emit_pass(PassFinished, round_number, target.ctx)
+            target.samples.append(adapter.parse(stdout, options.warn))
+
+    return collected
 
 
 async def _run_command(  # noqa: PLR0913, PLR0917 -- one parameter per command-execution axis
@@ -510,14 +441,8 @@ async def _run_command(  # noqa: PLR0913, PLR0917 -- one parameter per command-e
     """Run one command and return its stdout, or raise on failure."""
     result = await exec(command, ExecOptions(cwd=ctx.dir, timeout_ms=timeout_ms, abort=abort))
     if isinstance(result, ExecTimeoutError) or result.exit_code != 0:
-        raise to_command_error(phase, sample_index, command, ctx, result, timeout_ms)
+        raise _to_command_error(phase, sample_index, command, ctx, result)
     return result.stdout
-
-
-def _parse(adapter: Adapter, stdout: str, warn: WarnSink | None) -> dict[str, float]:
-    if warn is None:
-        return adapter.parse(stdout)
-    return adapter.parse(stdout, warn)
 
 
 # ---------------------------------------------------------------------------
@@ -525,13 +450,12 @@ def _parse(adapter: Adapter, stdout: str, warn: WarnSink | None) -> dict[str, fl
 # ---------------------------------------------------------------------------
 
 
-def to_command_error(  # noqa: PLR0913, PLR0917 -- one field per failure axis
+def _to_command_error(
     phase: str,
     sample_index: int | None,
     command: str,
     ctx: TargetContext,
     result: ExecResult | ExecTimeoutError,
-    request_timeout_ms: int,
 ) -> CommandError:
     """Map a command failure to a target-specific :class:`CommandError`.
 
@@ -548,20 +472,10 @@ def to_command_error(  # noqa: PLR0913, PLR0917 -- one field per failure axis
             location lines.
         result: The execution outcome, either a failed ``ExecResult`` or a
             timeout.
-        request_timeout_ms: The configured timeout, used when ``result`` did
-            not time out.
 
     Returns:
         The formatted command error with target-specific location context.
     """
-    timed_out = isinstance(result, ExecTimeoutError)
-    if timed_out:
-        timeout_ms = result.timeout_ms
-        exit_code: int | None = None
-    else:
-        timeout_ms = request_timeout_ms
-        exit_code = result.exit_code
-
     target = ctx.target
     if isinstance(target, RefTarget):
         location = [_field("ref", target.ref), _field("worktree", ctx.dir)]
@@ -572,17 +486,15 @@ def to_command_error(  # noqa: PLR0913, PLR0917 -- one field per failure axis
 
     position = f"{ctx.position}, " if ctx.position is not None else ""
     sample = f", sample {sample_index}" if sample_index is not None else ""
-    outcome_label = "timed out" if timed_out else "failed"
+    if isinstance(result, ExecTimeoutError):
+        outcome_label = "timed out"
+        outcome = _field("timeout", f"{result.timeout_ms}ms")
+    else:
+        outcome_label = "failed"
+        outcome = _field("exit code", result.exit_code)
     header = f'{phase} command {outcome_label} ({position}"{ctx.label}"{sample})'
 
-    lines = [header, *location, _field("command", command)]
-    if timed_out:
-        lines.append(_field("timeout", f"{timeout_ms}ms"))
-    else:
-        lines.append(_field("exit code", exit_code))
-    lines.extend(
-        _captured_output(result.stdout, result.stdout_bytes, result.stderr, result.stderr_bytes)
-    )
+    lines = [header, *location, _field("command", command), outcome, *_captured_output(result)]
 
     return CommandError("\n".join(lines), hint=hint)
 
@@ -592,7 +504,7 @@ def _field(label: str, value: object) -> str:
     return f"  {(label + ':').ljust(_LABEL_WIDTH)}{value}"
 
 
-def _captured_output(stdout: str, stdout_bytes: int, stderr: str, stderr_bytes: int) -> list[str]:
+def _captured_output(result: ExecResult | ExecTimeoutError) -> list[str]:
     """Render the captured output of a failed command.
 
     A lone non-empty stream is emitted bare unless its captured text was
@@ -600,26 +512,20 @@ def _captured_output(stdout: str, stdout_bytes: int, stderr: str, stderr_bytes: 
     becomes a labeled entry annotated with the true byte total.
 
     Args:
-        stdout: The captured stdout text.
-        stdout_bytes: The true byte total of stdout before truncation.
-        stderr: The captured stderr text.
-        stderr_bytes: The true byte total of stderr before truncation.
+        result: The failed command's outcome, carrying each stream's captured
+            text and its true byte total before truncation.
 
     Returns:
         Lines of rendered output, ready for joining into the error message.
     """
     streams = [
-        ("stderr", stderr, stderr_bytes),
-        ("stdout", stdout, stdout_bytes),
+        ("stderr", result.stderr, result.stderr_bytes),
+        ("stdout", result.stdout, result.stdout_bytes),
     ]
     present = [(label, text, total) for label, text, total in streams if text]
 
-    if len(present) == 1:
-        label, text, total = present[0]
-        if not _is_truncated(text, total):
-            return [text]
-        return _labeled(label, text, total)
-
+    if len(present) == 1 and not _is_truncated(*present[0][1:]):
+        return [present[0][1]]
     return [line for entry in present for line in _labeled(*entry)]
 
 
@@ -639,31 +545,232 @@ def _labeled(label: str, text: str, total: int) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def resolve_dir(target: Target, repo_dir: str, worktrees: list[WorktreeInfo]) -> str:
-    """The directory a target runs in, materializing a worktree for a ref.
+@dataclass(slots=True)
+class WorktreeInfo:
+    """A worktree directory this process claimed for a ref, pinned to a SHA.
+
+    The directory need not exist: :func:`plan_worktree` reserves the path before
+    any git runs, and :func:`materialize_worktree` can fail after creating it.
+    Cleanup treats an absent directory as nothing to do rather than as an error.
+
+    Attributes:
+        dir: The path the worktree will live at (may not yet exist on disk).
+        sha: The commit the worktree is checked out at.
+        created: Whether ``git worktree add`` ever put this directory on disk.
+            :func:`plan_worktree` starts it ``False`` and
+            :func:`materialize_worktree` raises it once the add leaves something
+            behind, which is what lets cleanup tell a worktree that was never
+            created from one that was created and has since vanished — only the
+            latter can leave a registry entry behind to clear. It is cleared
+            again on a successful removal.
+    """
+
+    dir: str
+    sha: str
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupResult:
+    """Outcome of a worktree cleanup sweep.
+
+    Attributes:
+        removed: Worktrees this call took off disk.
+        failures: Worktrees left on disk, one entry each.
+        prune_error: Why the repo-wide ``git worktree prune`` sweep failed, or
+            ``None`` if it succeeded or never ran. Prune runs once per call, not
+            once per worktree, so it gets its own slot rather than a synthetic
+            entry in ``failures``.
+    """
+
+    removed: int
+    failures: tuple[WorktreeRemovalFailure, ...]
+    prune_error: str | None
+
+
+def plan_worktree(ref: RefTarget) -> WorktreeInfo:
+    """Choose where a ref target's worktree will live, without touching disk.
+
+    Deciding the path up front is what lets a caller register the directory for
+    cleanup before git can create it: ``git worktree add`` can be killed once the
+    worktree is on disk but before it returns, and cleanup only sweeps paths
+    something already names.
+
+    Args:
+        ref: The ref target whose commit the worktree will be pinned to.
+
+    Returns:
+        A planned :class:`WorktreeInfo` whose directory does not yet exist.
+
+    Raises:
+        GymratError: When the system temp directory cannot be resolved.
+    """
+    tmp_base = tempfile.gettempdir()
+    try:
+        resolved_base = str(Path(tmp_base).resolve(strict=True))
+    except OSError as error:
+        message = f"Cannot resolve temp directory '{tmp_base}': {stderr_text_of(error)}"
+        raise GymratError(message) from error
+
+    return WorktreeInfo(
+        dir=str(Path(resolved_base) / f"gymrat-wt-{uuid.uuid4()}"),
+        sha=ref.resolved_sha,
+        created=False,
+    )
+
+
+def materialize_worktree(worktree: WorktreeInfo, repo_dir: str) -> None:
+    """Check a planned worktree out into its directory, detached at its SHA.
+
+    Records on ``worktree`` whether anything reached disk, so cleanup can tell a
+    worktree that was never created from one that was.
+
+    Args:
+        worktree: The planned worktree to check out; mutated in place so
+            ``created`` reflects what landed on disk.
+        repo_dir: The repository the worktree is added to.
+
+    Raises:
+        GymratError: When ``git worktree add`` fails — the planned directory may
+            exist anyway, so callers must still hand it to
+            :func:`cleanup_worktrees`.
+    """
+    try:
+        run_git(["worktree", "add", "--detach", worktree.dir, worktree.sha], repo_dir)
+    except subprocess.CalledProcessError as error:
+        message = f"git worktree add failed for {worktree.sha}: {stderr_text_of(error)}"
+        raise GymratError(message) from error
+    finally:
+        # git registers the worktree before the command returns, and the add can
+        # be killed in between, so what landed on disk — not whether git exited
+        # zero — is what says a registry entry may exist.
+        worktree.created = Path(worktree.dir).exists()
+
+
+# What handing one worktree to git accomplished. ``removed`` took a directory off
+# disk; ``stale`` is a vanished directory whose entry git would not clear, which a
+# prune must collect. ``None`` leaves nothing to count or sweep: a worktree git
+# never put on disk, or a vanished one whose entry git cleared. A
+# :class:`WorktreeRemovalFailure` is a directory git refused to remove.
+type _RemovalStatus = Literal["removed", "stale"] | None
+type _RemovalOutcome = _RemovalStatus | WorktreeRemovalFailure
+
+
+def _remove_worktree(worktree: WorktreeInfo, repo_dir: str) -> _RemovalOutcome:
+    """Take one worktree off disk, or clear the entry left behind if it is gone.
+
+    The removal names the worktree's own path instead of sweeping the
+    repository, because git clears the entry of a directory that vanished behind
+    its back only when asked for that path — which leaves a worktree of the
+    user's own that is merely temporarily absent registered.
+
+    Args:
+        worktree: The worktree to remove.
+        repo_dir: The repository the worktree belongs to.
+
+    Returns:
+        The removal status or a :class:`WorktreeRemovalFailure` when git
+        refused.
+    """
+    on_disk = Path(worktree.dir).exists()
+    if not on_disk and not worktree.created:
+        return None
+
+    error = try_git(["worktree", "remove", "--force", worktree.dir], repo_dir)
+    if error is not None:
+        # Nothing stands for the user to clear by hand when the directory is
+        # already gone, so a refusal there is a reason to sweep, not to report.
+        if on_disk:
+            return WorktreeRemovalFailure(dir=worktree.dir, error=error)
+        return "stale"
+
+    # The entry is gone — clear the flag so a later sweep leaves it alone rather
+    # than reclassifying it as stale.
+    worktree.created = False
+    return "removed" if on_disk else None
+
+
+def cleanup_worktrees(worktrees: Sequence[WorktreeInfo], repo_dir: str) -> CleanupResult:
+    """Remove each of ``worktrees`` git has anything for.
+
+    Never raises: callers invoke this while already handling a failed run, so a
+    throw here would replace the error the user actually needs to see.
+    Everything that went wrong lands in the returned result instead.
+
+    Args:
+        worktrees: The worktrees to sweep.
+        repo_dir: The repository the removals and prune run against.
+
+    Returns:
+        A :class:`CleanupResult` counting removals, listing failures, and
+        carrying any prune-sweep error.
+    """
+    failures: list[WorktreeRemovalFailure] = []
+    removed = 0
+    # A worktree git may still list without a directory backing it: gone before
+    # the sweep reached it, or still there because its removal failed.
+    may_have_stale_entry = False
+
+    for worktree in worktrees:
+        outcome = _remove_worktree(worktree, repo_dir)
+        if isinstance(outcome, WorktreeRemovalFailure):
+            failures.append(outcome)
+        elif outcome == "removed":
+            removed += 1
+        elif outcome == "stale":
+            may_have_stale_entry = True
+
+    # Prune only when a targeted removal failed and may have left an entry with
+    # no directory behind it. Naming each worktree already clears its own entry,
+    # so an all-success sweep — or one with nothing to ask git for, in a repo_dir
+    # that may not even be a git repo — has nothing to collect. Pruning anyway
+    # would deregister worktrees of the user's own that are only temporarily
+    # absent: an unmounted volume, a directory moved aside.
+    prune_error = try_git(["worktree", "prune"], repo_dir) if may_have_stale_entry else None
+    return CleanupResult(removed=removed, failures=tuple(failures), prune_error=prune_error)
+
+
+def to_context(
+    spec: TargetSpec,
+    target: Target,
+    repo_dir: str,
+    worktrees: list[WorktreeInfo],
+    position: Literal["old", "new"] | None = None,
+) -> TargetContext:
+    """Pair a resolved target with the directory it runs in and its display label.
 
     A ref is benchmarked from its own worktree. The planned worktree is appended
     to ``worktrees`` before ``git worktree add`` runs, so a caller sweeping the
     registry on termination can remove a directory a killed add left behind.
 
     Args:
-        target: The target to locate.
-        repo_dir: The repository the worktree is added from.
+        spec: The target as the caller named it, carrying any explicit label.
+        target: What ``spec`` resolved to.
+        repo_dir: The repository a ref's worktree is added from.
         worktrees: The live registry of claimed worktrees, appended to in place.
+        position: Which side of a comparison the target occupies, or ``None``
+            when the run is not a two-sided comparison.
 
     Returns:
-        The directory the benchmark runs in.
+        The context the target is sampled under.
 
     Raises:
         GymratError: When the system temp directory cannot be resolved, or
-            ``git worktree add`` fails for the ref.
+            ``git worktree add`` fails for a ref.
     """
     if isinstance(target, RefTarget):
         worktree = plan_worktree(target)
         worktrees.append(worktree)
         materialize_worktree(worktree, repo_dir)
-        return worktree.dir
-    return target.dir
+        directory = worktree.dir
+    else:
+        directory = target.dir
+    return TargetContext(
+        target=target,
+        dir=directory,
+        label=resolve_label(spec.label, target),
+        position=position,
+    )
 
 
 def resolve_label(explicit: str | None, target: Target) -> str:
@@ -725,14 +832,14 @@ async def run_with_worktrees[M, R](
 
     uninstall = install_termination_cleanup(terminate)
     try:
-        try:
-            measurement = await phase(repo_dir, worktrees, abort)
-        except Exception as error:
-            cleanup = cleanup_worktrees(worktrees, repo_dir)
-            wrapped = _with_cleanup_failures(error, cleanup)
-            if wrapped is error:
-                raise
-            raise wrapped from error
+        measurement = await phase(repo_dir, worktrees, abort)
+    except Exception as error:
+        cleanup = cleanup_worktrees(worktrees, repo_dir)
+        wrapped = _with_cleanup_failures(error, cleanup)
+        if wrapped is error:
+            raise
+        raise wrapped from error
+    else:
         cleanup = cleanup_worktrees(worktrees, repo_dir)
         return build_result(measurement, cleanup)
     finally:
@@ -766,7 +873,5 @@ def _with_cleanup_failures(error: Exception, cleanup: CleanupResult) -> Exceptio
 
     combined = "\n".join([str(error), "", "cleanup did not finish:", *details])
     if isinstance(error, GymratError):
-        wrapped: Exception = type(error)(combined, hint=hint_of(error))
-    else:
-        wrapped = Exception(combined)
-    return wrapped
+        return type(error)(combined, hint=error.hint)
+    return Exception(combined)

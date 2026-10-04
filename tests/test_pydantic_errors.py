@@ -31,7 +31,6 @@ class _Pair:
         pytest.param(_Pair, 1, "an object", id="dataclass-type"),
         pytest.param(list[int], "banana", "an array", id="list-type"),
         pytest.param(tuple[int, ...], "banana", "an array", id="tuple-type"),
-        pytest.param(Annotated[int, Field(gt=0)], 0, "a number greater than 0", id="greater-than"),
         pytest.param(
             Annotated[int, Field(ge=1)], 0, "a number at or above 1", id="greater-than-equal"
         ),
@@ -48,12 +47,16 @@ class _Pair:
             "a non-empty string",
             id="blank-string",
         ),
-        pytest.param(Annotated[str, Field(min_length=2)], "a", None, id="longer-min-length"),
-        pytest.param(Annotated[str, Field(max_length=1)], "ab", None, id="unmapped-type"),
+        pytest.param(
+            Annotated[str, Field(min_length=2)], "a", "a valid value", id="longer-min-length"
+        ),
+        pytest.param(
+            Annotated[str, Field(max_length=1)], "ab", "a valid value", id="unmapped-type"
+        ),
     ],
 )
 def test_phrase_for_error_when_validation_fails_does_phrase_expected_shape(
-    annotation: object, value: object, expected: str | None
+    annotation: object, value: object, expected: str
 ):
     with pytest.raises(ValidationError) as exc:
         TypeAdapter(annotation).validate_python(value)

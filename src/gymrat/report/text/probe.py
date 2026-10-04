@@ -14,14 +14,10 @@ from typing import TYPE_CHECKING
 
 from rich.cells import cell_len
 from rich.markup import escape
-from rich.text import Text
 
-from gymrat.model import Effect
-from gymrat.plural import pluralize
-from gymrat.report.format import format_delta, format_metric_cell_parts, is_improvement
-from gymrat.report.sections import plan_sections
+from gymrat.model import is_improvement
+from gymrat.report.format import format_metric_cell_parts, format_percent_delta
 from gymrat.report.style import (
-    RENDER_WIDTH,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
     join_header_parts,
@@ -36,6 +32,7 @@ from gymrat.report.table.markup import (
     header_metric_cell,
     indented_section_label,
     join_value_cell,
+    plan_sections,
     value_widths,
 )
 from gymrat.report.table.render import (
@@ -44,16 +41,13 @@ from gymrat.report.table.render import (
     plan_table_skeleton,
     render_body,
 )
-from gymrat.report.types import ReportOptions
+from gymrat.report.types import DEFAULT_REPORT_OPTIONS, ReportOptions
+from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from gymrat.loop.probe import ProbeMetric, ProbeResult
     from gymrat.model import Direction
     from gymrat.report.format import MetricCellParts
-
-# The default presentation flags: detect color, no header override. Immutable, so
-# one shared instance is safe as a default argument.
-_DEFAULT_OPTIONS = ReportOptions()
 
 # The header the column of baseline medians carries.
 _REFERENCE_COLUMN_HEADER = "baseline"
@@ -87,7 +81,7 @@ def _delta_style(delta: str, delta_pct: float | None, direction: Direction) -> s
     """The style a rendered delta wears, or ``None`` where it points nowhere.
 
     Args:
-        delta: The delta as :func:`~gymrat.report.format.format_delta` rendered
+        delta: The delta as :func:`~gymrat.report.format.format_percent_delta` rendered
             it, so the paint agrees with the digits on screen.
         delta_pct: The signed percentage behind that text, or ``None`` when the
             probe has no delta to state.
@@ -99,11 +93,7 @@ def _delta_style(delta: str, delta_pct: float | None, direction: Direction) -> s
     """
     if delta_pct is None or delta in _UNPAINTED_DELTAS:
         return None
-    # `is_improvement` reads a percentage as lower-is-better; a higher-is-better
-    # metric improves on the opposite sign, so the two agree exactly when the
-    # metric is itself lower-is-better.
-    improved = is_improvement(Effect(value=delta_pct, unit="percent"))
-    return VERDICT_STYLES["improved" if improved == (direction == "lower") else "regressed"]
+    return VERDICT_STYLES["improved" if is_improvement(delta_pct, direction) else "regressed"]
 
 
 def _probe_row(name: str, group: str | None, metric: ProbeMetric) -> _ProbeRow:
@@ -113,7 +103,7 @@ def _probe_row(name: str, group: str | None, metric: ProbeMetric) -> _ProbeRow:
     elif metric.delta_pct is None:
         delta = ""
     else:
-        delta = format_delta(Effect(value=metric.delta_pct, unit="percent"))
+        delta = format_percent_delta(metric.delta_pct)
     return _ProbeRow(
         name=name,
         label=indented_section_label(metric.meta.short_name, group),
@@ -132,7 +122,7 @@ def _probe_header(result: ProbeResult, label: str) -> str:
         escape(pluralize(result.samples, "sample")),
         f"adapter: {escape(result.adapter)}",
     ]
-    if result.scoped:
+    if result.names:
         parts.append(f"scoped: {escape(', '.join(result.names))}")
     return join_header_parts(parts)
 
@@ -189,7 +179,9 @@ def _render_probe_table(result: ProbeResult, label: str, *, color: bool | None) 
     return render_body(skeleton.body, widths, to_cells, color=color)
 
 
-def render_probe_report(result: ProbeResult, options: ReportOptions = _DEFAULT_OPTIONS) -> str:
+def render_probe_report(
+    result: ProbeResult, options: ReportOptions = DEFAULT_REPORT_OPTIONS
+) -> str:
     """Render a probe as the run header followed by the probe table.
 
     Args:
@@ -202,7 +194,5 @@ def render_probe_report(result: ProbeResult, options: ReportOptions = _DEFAULT_O
     """
     color = options.color
     label = truncate_labels([result.label])[0]
-    header = render_lines(
-        Text.from_markup(_probe_header(result, label)), color=color, width=RENDER_WIDTH
-    )
+    header = render_lines(_probe_header(result, label), color=color)
     return "\n".join([header, *_render_probe_table(result, label, color=color)])

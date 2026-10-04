@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from gymrat.config.types import KindEntry
+from gymrat.config import KindEntry
 from gymrat.model import (
     ApproximateVerdict,
     BandVerdict,
@@ -24,7 +24,6 @@ from gymrat.report.types import (
 )
 from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._verdicts import (
-    _percent,
     band_metric,
     geomean_of,
 )
@@ -158,7 +157,7 @@ def permutation_metric(
                     p=p,
                     noise_pct=noise_pct,
                     noise_abs=noise_abs,
-                    delta=_percent(delta),
+                    delta=delta,
                     n=n,
                 ),
             ),
@@ -198,7 +197,7 @@ def exact_metric(
                 verdict=ExactVerdict(
                     method="exact",
                     verdict=verdict,
-                    delta=_percent(delta),
+                    delta=delta,
                     n=n,
                 ),
             ),
@@ -238,7 +237,7 @@ def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricComparison:
                     p=0.01,
                     noise_pct=2.5,
                     noise_abs=3.5,
-                    delta=_percent(candidate.delta),
+                    delta=candidate.delta,
                     n=10,
                 ),
             )
@@ -276,7 +275,7 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
                 p=0.002,
                 noise_pct=2.5,
                 noise_abs=2.5,
-                delta=_percent(-10),
+                delta=-10,
                 n=10,
             ),
         ),
@@ -289,7 +288,7 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
                 p=0.002,
                 noise_pct=2.5,
                 noise_abs=2.5,
-                delta=_percent(4),
+                delta=4,
                 n=10,
             ),
         ),
@@ -306,7 +305,7 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
                     usable_n=3,
                     noise_pct=30,
                     noise_abs=30,
-                    delta=_percent(50),
+                    delta=50,
                     n=10,
                 ),
             )
@@ -442,6 +441,50 @@ def two_kind_result() -> ComparisonResult:
 def without_gated_geomean(kind: KindAggregate) -> KindAggregate:
     """The kind with its gated geomean cleared, as a non-gating kind carries."""
     return replace(kind, gated_geomean=None)
+
+
+def grouped_flat_result() -> ComparisonResult:
+    """Single ``time`` kind: ``entity`` group (2 members) + ungrouped ``warmup``."""
+    geomean = geomean_of(-3.2, 3)
+    return create_comparison_result(
+        metrics={
+            "entity/alive_check#time": kind_metric(
+                kind="time",
+                short_name="entity.alive_check",
+                verdict="improved",
+                delta=-10,
+            ),
+            "entity/spawn#time": kind_metric(
+                kind="time",
+                short_name="entity.spawn",
+                verdict="regressed",
+                delta=4,
+            ),
+            "warmup#time": kind_metric(
+                kind="time",
+                short_name="warmup",
+                verdict="no-signal",
+                delta=0.3,
+            ),
+        },
+        candidates=[
+            create_candidate(
+                kinds=[
+                    KindAggregate(
+                        kind="time",
+                        geomean=geomean,
+                        groups=(
+                            GroupAggregate(
+                                group="entity",
+                                geomean=geomean_of(-3.1, 2),
+                            ),
+                        ),
+                        gated_geomean=geomean,
+                    )
+                ]
+            )
+        ],
+    )
 
 
 def grouped_comparison() -> ComparisonResult:

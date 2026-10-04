@@ -6,8 +6,7 @@ level, as a lightweight type alias.
 
 ``compute_half_range`` treats empty input as a programming error — callers are
 expected to have samples — and raises a plain :class:`ValueError` rather than a
-domain error.  ``combine_geomean`` accepts empty input and returns all-zero
-fields.
+domain error.  ``combine_geomean`` accepts empty input and returns zeros.
 
 ``sign_flip_permutation_test`` is an exact sign-flip permutation test over
 index-paired samples. It pairs ``x`` and ``y`` positionally over the shorter
@@ -23,19 +22,13 @@ imported inside that function, so importing this module never pulls them in.
 
 import math
 import statistics
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Literal
 
 from gymrat.model import Direction
 
 __all__ = [
-    "PERMUTATION_SEED",
     "RESAMPLE_BUDGET",
-    "GeomeanCombination",
-    "RatioExclusion",
-    "RatioOutcome",
-    "SignificanceResult",
     "combine_geomean",
     "compute_half_range",
     "count_nonzero_pairs",
@@ -47,45 +40,6 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Descriptive statistics
 # ---------------------------------------------------------------------------
-
-type RatioExclusion = Literal["undefined-ratio", "infinite-rho"]
-"""Why a percent delta could not be normalized into a usable ratio rho."""
-
-
-@dataclass(frozen=True, slots=True)
-class RatioOutcome:
-    """A normalized ratio rho, or the reason it was excluded.
-
-    Exactly one of two states holds. A usable rho has ``rho`` set and ``reason``
-    ``None``; an exclusion has ``rho`` ``None`` and ``reason`` naming the cause.
-    A caller distinguishes them by testing ``rho is not None``.
-
-    Attributes:
-        rho: The usable ratio, or ``None`` when the delta was excluded.
-        reason: The exclusion cause, or ``None`` when ``rho`` is usable.
-    """
-
-    rho: float | None
-    reason: RatioExclusion | None
-
-
-@dataclass(frozen=True, slots=True)
-class GeomeanCombination:
-    """The geometric-mean combination of a set of included entries.
-
-    This is a pure math result local to this module — not the richer
-    :class:`gymrat.model.GeomeanResult`.
-
-    Attributes:
-        value: The combined percent change, ``(exp(mean(ln rho)) - 1) * 100``.
-        n: The number of entries combined.
-        band: The quadrature-combined noise band,
-            ``sqrt(sum(noise_pct**2)) / n``.
-    """
-
-    value: float
-    n: int
-    band: float
 
 
 def compute_half_range(values: Sequence[float]) -> float:
@@ -134,7 +88,9 @@ def percent_delta(reference: float, value: float) -> float:
     return (value - reference) / abs(reference) * 100
 
 
-def normalize_ratio(delta: float, direction: Direction) -> RatioOutcome:
+def normalize_ratio(
+    delta: float, direction: Direction
+) -> float | Literal["undefined-ratio", "infinite-rho"]:
     """Normalize a percent ``delta`` into a ratio rho for the given direction.
 
     For ``"lower"``, ``rho = 1 + delta / 100``. For ``"higher"``,
@@ -146,44 +102,40 @@ def normalize_ratio(delta: float, direction: Direction) -> RatioOutcome:
         direction: Whether a lower or higher raw value is the improvement.
 
     Returns:
-        A :class:`RatioOutcome` carrying a usable rho, or ``"undefined-ratio"``
-        when ``delta`` is NaN, or ``"infinite-rho"`` when the resulting rho is
-        non-positive or non-finite.
+        The usable rho, or ``"undefined-ratio"`` when ``delta`` is NaN, or
+        ``"infinite-rho"`` when the resulting rho is non-positive or non-finite.
     """
     if math.isnan(delta):
-        return RatioOutcome(rho=None, reason="undefined-ratio")
-    factor = 1.0 + delta / 100.0
-    rho = factor
+        return "undefined-ratio"
+    rho = 1.0 + delta / 100.0
     if direction == "higher":
         # A zero factor would divide by zero; route it to the infinite-rho
         # exclusion below instead of raising.
-        rho = 1.0 / factor if factor != 0.0 else math.inf
+        rho = 1.0 / rho if rho != 0.0 else math.inf
     if rho <= 0.0 or not math.isfinite(rho):
-        return RatioOutcome(rho=None, reason="infinite-rho")
-    return RatioOutcome(rho=rho, reason=None)
+        return "infinite-rho"
+    return rho
 
 
-def combine_geomean(entries: Sequence[tuple[float, float]]) -> GeomeanCombination:
+def combine_geomean(entries: Sequence[tuple[float, float]]) -> tuple[float, float]:
     """Combine included ``(rho, noise_pct)`` entries via the geometric mean.
-
-    The combined value is the geometric mean of the ratios expressed as a
-    percent change; the band combines per-entry noise in quadrature.
 
     Args:
         entries: The included entries, each a ``(rho, noise_pct)`` pair. Every
             ``rho`` must be strictly positive.
 
     Returns:
-        A :class:`GeomeanCombination`. Empty input yields all-zero fields; a
-        single entry yields that rho as a percent change with its own noise as
-        the band.
+        A ``(value, band)`` pair: the geometric mean of the ratios as a percent
+        change, ``(exp(mean(ln rho)) - 1) * 100``, and the per-entry noise
+        combined in quadrature, ``sqrt(sum(noise_pct**2)) / n``. Empty input
+        yields two zeros; a single entry yields that rho as a percent change
+        with its own noise as the band.
     """
-    n = len(entries)
-    if n == 0:
-        return GeomeanCombination(value=0.0, n=0, band=0.0)
+    if not entries:
+        return 0.0, 0.0
     value = (statistics.geometric_mean(rho for rho, _ in entries) - 1.0) * 100.0
-    band = math.hypot(*(noise_pct for _, noise_pct in entries)) / n
-    return GeomeanCombination(value=value, n=n, band=band)
+    band = math.hypot(*(noise_pct for _, noise_pct in entries)) / len(entries)
+    return value, band
 
 
 # ---------------------------------------------------------------------------
@@ -207,25 +159,9 @@ PERMUTATION_SEED = 12345
 """Fixed RNG seed for the Monte Carlo path, making sampled p-values reproducible."""
 
 
-@dataclass(frozen=True, slots=True)
-class SignificanceResult:
-    """The outcome of a paired significance test.
-
-    Attributes:
-        p: The two-sided p-value, always within ``[0.0, 1.0]``.
-        n: The number of paired entries whose two values differ.  Tied
-            pairs (equal values) are held fixed on both sides — they
-            contribute to medians under every rearrangement but are not
-            sign-flipped.
-    """
-
-    p: float
-    n: int
-
-
 def _partition_pairs(
     x: Sequence[float], y: Sequence[float]
-) -> tuple[list[float], list[float], list[float], list[float]]:
+) -> tuple[list[float], list[float], list[float]]:
     """Separate tied (equal values) and differing pairs, paired over the shorter input.
 
     Args:
@@ -233,23 +169,22 @@ def _partition_pairs(
         y: The second value of each pair.
 
     Returns:
-        A tuple ``(tied_x, tied_y, diff_x, diff_y)`` partitioning the pairs.
+        A tuple ``(tied, diff_x, diff_y)`` partitioning the pairs. A tied pair
+        holds one value on both sides, so it is listed once.
     """
-    tied_x: list[float] = []
-    tied_y: list[float] = []
+    tied: list[float] = []
     diff_x: list[float] = []
     diff_y: list[float] = []
     for xi, yi in zip(x, y, strict=False):
         if xi == yi:
-            tied_x.append(xi)
-            tied_y.append(yi)
+            tied.append(xi)
         else:
             diff_x.append(xi)
             diff_y.append(yi)
-    return tied_x, tied_y, diff_x, diff_y
+    return tied, diff_x, diff_y
 
 
-def count_nonzero_pairs(x: Sequence[float], y: Sequence[float]) -> tuple[int, int]:
+def count_nonzero_pairs(x: Sequence[float], y: Sequence[float]) -> int:
     """Pair ``x`` and ``y`` positionally over the shorter input and count differing pairs.
 
     Shared by every paired significance test: each pairs ``x[i]`` with ``y[i]``
@@ -263,60 +198,28 @@ def count_nonzero_pairs(x: Sequence[float], y: Sequence[float]) -> tuple[int, in
         y: The second sample, paired positionally with ``x``.
 
     Returns:
-        A ``(m, n)`` pair: ``m`` is the number of positions paired (the shorter
-        input's length), and ``n`` is how many of those pairs have values that
-        differ (``x[i] != y[i]``).
+        How many of the paired positions hold values that differ
+        (``x[i] != y[i]``).
     """
-    tied_x, _, diff_x, _ = _partition_pairs(x, y)
-    return len(tied_x) + len(diff_x), len(diff_x)
+    return len(_partition_pairs(x, y)[1])
 
 
 def _median_delta(
-    tied_x: list[float],
-    tied_y: list[float],
+    tied: list[float],
     baseline: Sequence[float],
     candidate: Sequence[float],
 ) -> float:
     return percent_delta(
-        statistics.median(tied_x + list(baseline)), statistics.median(tied_y + list(candidate))
+        statistics.median(tied + list(baseline)), statistics.median(tied + list(candidate))
     )
 
 
-def _make_statistic(
-    tied_x: list[float],
-    tied_y: list[float],
-    observed: float,
-) -> Callable[[Sequence[float], Sequence[float]], float]:
-    """Build the test statistic closure for scipy's permutation_test.
-
-    An undefined delta (a zero baseline median) becomes infinity signed like
-    ``observed``, so scipy's null tally counts it on the correct tail.
-
-    Args:
-        tied_x: Baseline values of the tied (equal-value) pairs, held fixed.
-        tied_y: Candidate values of the tied (equal-value) pairs, held fixed.
-        observed: The delta the samples produced in their original order.
-
-    Returns:
-        The statistic scipy evaluates on each rearrangement of the differing pairs.
-    """
-
-    def statistic(baseline: Sequence[float], candidate: Sequence[float]) -> float:
-        delta = _median_delta(tied_x, tied_y, baseline, candidate)
-        if math.isnan(delta):
-            return math.copysign(math.inf, observed)
-        return delta
-
-    return statistic
-
-
-def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> SignificanceResult:
+def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> float:
     """Run a two-sided sign-flip permutation test on index-paired samples.
 
     The inputs are paired positionally over the shorter of the two: ``x[i]`` is
     compared with ``y[i]`` for ``i < min(len(x), len(y))``, and trailing entries
-    of the longer input are ignored. The reported ``n`` counts only pairs whose
-    two values differ.
+    of the longer input are ignored.
 
     Tied pairs (equal values) are held fixed on both sides: they contribute
     to the median under every rearrangement but are never sign-flipped, so the
@@ -335,29 +238,35 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> Signif
         y: The candidate sample, paired positionally with ``x``.
 
     Returns:
-        The p-value and the count of differing pairs used.
+        The two-sided p-value, always within ``[0.0, 1.0]``; ``1.0`` when fewer
+        than two pairs differ or the observed delta is not finite.
     """
-    tied_x, tied_y, diff_x, diff_y = _partition_pairs(x, y)
-    n = len(diff_x)
-    if n < _MIN_PAIRS:
-        return SignificanceResult(p=1.0, n=n)
+    tied, diff_x, diff_y = _partition_pairs(x, y)
+    if len(diff_x) < _MIN_PAIRS:
+        return 1.0
 
-    observed = _median_delta(tied_x, tied_y, diff_x, diff_y)
+    observed = _median_delta(tied, diff_x, diff_y)
     if not math.isfinite(observed):
-        return SignificanceResult(p=1.0, n=n)
+        return 1.0
 
     # Lazy import: tests/test_import_latency.py guards the package's startup cost.
     import numpy as np  # noqa: PLC0415
     from scipy.stats import permutation_test  # noqa: PLC0415
 
+    def statistic(baseline: Sequence[float], candidate: Sequence[float]) -> float:
+        delta = _median_delta(tied, baseline, candidate)
+        # An undefined delta (a zero baseline median) becomes infinity signed like
+        # `observed`, so scipy's null tally counts it on the correct tail.
+        return math.copysign(math.inf, observed) if math.isnan(delta) else delta
+
     # scipy enumerates all 2**n sign flips itself whenever they fit the budget.
     result = permutation_test(
         (diff_x, diff_y),
-        _make_statistic(tied_x, tied_y, observed),
+        statistic,
         permutation_type="samples",
         alternative="two-sided",
         vectorized=False,
         n_resamples=RESAMPLE_BUDGET,
         rng=np.random.default_rng(PERMUTATION_SEED),
     )
-    return SignificanceResult(p=float(result.pvalue), n=n)
+    return float(result.pvalue)

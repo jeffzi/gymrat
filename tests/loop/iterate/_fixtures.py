@@ -20,23 +20,21 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from gymrat.config.types import ResolvedConfig
+from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
-from gymrat.exec import ExecResult
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord, record_to_wire
-from gymrat.session.store import read_records
 from gymrat.session.workspace import Worktrees
 from tests._ansi import SGR_RE
-from tests.session.records._fixtures import SESSION_ID
-from tests.session.records._fixtures import iteration_record as _iteration_record
+from tests._exec_fixtures import expected_result
+from tests.session.records._fixtures import SESSION_ID, log_records
 from tests.session.records._fixtures import session_record as _session_record_defaults
 
 if TYPE_CHECKING:
     import pytest
 
-    from gymrat.exec import ExecOptions
+    from gymrat.exec import ExecOptions, ExecResult
 
 #: Ten rounds of a bench that stayed near 100.
 BASELINE_MS: list[float] = [100, 101, 99, 100, 102, 98, 100, 101, 99, 100]
@@ -86,11 +84,6 @@ def session_record(root: str) -> SessionRecord:
             baseline=str(Path(root) / "side-baseline"),
         ),
     )
-
-
-def iteration(seq: int) -> IterationRecord:
-    """A measured iteration numbered ``seq``, settled by nobody."""
-    return _iteration_record(seq=seq)
 
 
 def resolved_config(**overrides: Any) -> ResolvedConfig:
@@ -171,6 +164,19 @@ def install_collect_samples(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRe
     return recorder
 
 
+def _samples_by_dir(
+    targets: list[TargetContext], by_dir: dict[str, list[dict[str, float]]], stub: str
+) -> list[TargetSamples]:
+    """Answer each target with the rounds ``by_dir`` holds for its worktree directory."""
+    collected: list[TargetSamples] = []
+    for ctx in targets:
+        if ctx.dir not in by_dir:
+            message = f"{stub}: unrecognized worktree dir {ctx.dir}"
+            raise AssertionError(message)
+        collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
+    return collected
+
+
 def stub_samples(
     mock: CollectSamplesRecorder,
     root: str,
@@ -182,13 +188,7 @@ def stub_samples(
     by_dir = {worktrees.experiment: experiment, worktrees.baseline: baseline}
 
     def answer(targets: list[TargetContext]) -> list[TargetSamples]:
-        collected: list[TargetSamples] = []
-        for ctx in targets:
-            if ctx.dir not in by_dir:
-                message = f"stub_samples: unrecognized worktree dir {ctx.dir}"
-                raise AssertionError(message)
-            collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
-        return collected
+        return _samples_by_dir(targets, by_dir, "stub_samples")
 
     mock._answer = answer
 
@@ -217,13 +217,7 @@ def stub_runs(
         if isinstance(run, GymratError):
             raise run
         by_dir = {worktrees.experiment: run.experiment, worktrees.baseline: run.baseline}
-        collected: list[TargetSamples] = []
-        for ctx in targets:
-            if ctx.dir not in by_dir:
-                message = f"stub_runs: unrecognized worktree dir {ctx.dir}"
-                raise AssertionError(message)
-            collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
-        return collected
+        return _samples_by_dir(targets, by_dir, "stub_runs")
 
     mock._answer = answer
 
@@ -242,6 +236,11 @@ def trimmed_report_lines(report: str) -> list[str]:
     return [SGR_RE.sub("", line).strip() for line in report.split("\n")]
 
 
+def plain_report(report: str) -> str:
+    """The report stripped of color, as a terminal's visible text would read."""
+    return "\n".join(trimmed_report_lines(report))
+
+
 def as_logged(value: SessionLogRecord) -> object:
     """``value`` after the round trip through the wire the session log puts it through.
 
@@ -253,7 +252,7 @@ def as_logged(value: SessionLogRecord) -> object:
 
 def last_iteration_of(root: str) -> IterationRecord:
     """The iteration record ``root``'s log ends on, failing when it ends on something else."""
-    records = read_records(session_jsonl_path(root))
+    records = log_records(root)
     last = records[-1] if records else None
     assert isinstance(last, IterationRecord), (
         f"expected an iteration record at the end of {session_jsonl_path(root)}"
@@ -274,12 +273,6 @@ def bench_malformed_once(monkeypatch: pytest.MonkeyPatch) -> None:
         stdout = f"METRIC total_ms={BASELINE_MS[index % len(BASELINE_MS)]}"
         if index == 0:
             stdout += "\nMETRIC foo=bar"
-        return ExecResult(
-            stdout=stdout,
-            stderr="",
-            exit_code=0,
-            stdout_bytes=len(stdout.encode()),
-            stderr_bytes=0,
-        )
+        return expected_result(stdout)
 
     monkeypatch.setattr("gymrat.sampling.exec", fake_exec)

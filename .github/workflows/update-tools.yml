@@ -23,12 +23,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          python-version: "3.14"
       - name: Upgrade dependencies
-        run: |
-          uv lock --upgrade
-          uv sync
+        run: uv lock --upgrade
       - uses: ./.github/actions/setup-dprint # zizmor: ignore[self-repository] — actionlint rejects $/
       - name: Bump hook revs and dprint plugins
         run: |

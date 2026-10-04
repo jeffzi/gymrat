@@ -10,24 +10,17 @@ any condition fails the budget is treated as absent.
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
 
-from gymrat.atomic_write import write_text_atomic
-from gymrat.eta import MS_PER_SECOND, SECONDS_PER_MINUTE, format_duration
 from gymrat.session.lock import is_held
 from gymrat.session.paths import budget_path, supervise_lockfile_path
 from gymrat.session.records import BaselineRecord, IterationRecord, SessionLogRecord
+from gymrat.session.sidecar import read_sidecar
+from gymrat.utils import MS_PER_SECOND, SECONDS_PER_MINUTE, write_text_atomic
 
 _MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND
-
-
-def _require_exact_int(value: object) -> object:
-    if type(value) is not int:
-        msg = "version must be an integer"
-        raise ValueError(msg)
-    return value
 
 
 def minutes_to_ms(minutes: float) -> int:
@@ -49,24 +42,17 @@ class Budget(BaseModel):
     """Immutable snapshot of a session time budget.
 
     Validation is strict: a time field must be a real number, with ``bool``
-    rejected, ``version`` must be exactly the integer ``1``, and unknown fields
-    are refused.
+    rejected, and unknown fields are refused.
 
     Attributes:
-        started_at_ms: Epoch milliseconds when the budget was created.
         max_minutes: Total minutes the session may run.
         deadline_ms: Epoch milliseconds at which the budget expires.
-        version: Schema version for forward compatibility.
     """
 
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
 
-    started_at_ms: float
     max_minutes: float
     deadline_ms: float
-    # Literal validation matches by equality even under strict mode, so ``true``
-    # and ``1.0`` would pass as version 1 without the exact-int guard.
-    version: Annotated[Literal[1], BeforeValidator(_require_exact_int)] = 1
 
     def remaining_ms(self, now_ms: float) -> float:
         """Milliseconds left until the deadline, clamped at zero."""
@@ -96,20 +82,15 @@ def read_budget(root: str, *, now_ms: float) -> Budget | None:
 
     Returns:
         The validated budget, or ``None`` when the file is absent, contains
-        invalid JSON, is not an object with the expected numeric fields, has
-        an unrecognized version, its deadline has passed, or the supervise
-        lock for *root* is not held.
+        invalid JSON, is not an object with exactly the expected numeric
+        fields, its deadline has passed, or the supervise lock for *root* is
+        not held.
     """
-    path = Path(budget_path(root))
-    try:
-        budget = Budget.model_validate_json(path.read_text(encoding="utf-8"))
-    except (ValidationError, OSError, UnicodeDecodeError):
+    budget = read_sidecar(Path(budget_path(root)), Budget)
+    if budget is None or now_ms >= budget.deadline_ms:
         return None
 
-    if now_ms >= budget.deadline_ms:
-        return None
-
-    if not is_held(Path(supervise_lockfile_path(root))):
+    if not is_held(supervise_lockfile_path(root)):
         return None
 
     return budget
@@ -173,9 +154,3 @@ def estimate_iterate_duration(
             )
 
     return None
-
-
-def format_budget_trailer(budget: Budget, current_ms: float) -> str:
-    """The ``12m 34s left of 30m`` trailer a report appends when a budget is active."""
-    remaining = budget.remaining_ms(current_ms)
-    return f"{format_duration(remaining)} left of {budget.max_minutes:g}m"

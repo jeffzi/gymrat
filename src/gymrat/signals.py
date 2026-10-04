@@ -41,19 +41,24 @@ from contextlib import contextmanager
 from types import FrameType
 from typing import NoReturn, TextIO
 
-# Termination signals gymrat installs cleanup for, in the order the handler is
-# wired up. SIGHUP is POSIX-only and absent on win32, so each name is resolved
-# defensively.
-_TERMINATION_SIGNAL_NAMES = ("SIGINT", "SIGTERM", "SIGHUP")
-
-# The same signals resolved to their numbers, dropping any the platform does not
-# define. This is the canonical set: :mod:`gymrat.git` imports it to block
-# exactly these signals across a git subprocess call, so a signal cannot fire
-# this module's cleanup while a ``git worktree add`` is only half-materialized.
+# Termination signals gymrat installs cleanup for. SIGHUP is POSIX-only and
+# absent on win32, so each name is resolved defensively and any the platform
+# does not define is dropped. This is the canonical set: :mod:`gymrat.exec`
+# imports it to unblock exactly these signals in a spawned child, reversing the
+# mask the parent holds across the spawn.
 TERMINATION_SIGNALS: frozenset[int] = frozenset(
     resolved
-    for name in _TERMINATION_SIGNAL_NAMES
+    for name in ("SIGINT", "SIGTERM", "SIGHUP")
     if (resolved := getattr(signal, name, None)) is not None
+)
+
+# POSIX-only seam for blocking signals. ``None`` on platforms without
+# ``pthread_sigmask`` (win32), where callers fall back to running unmasked.
+# Kept as a module-level reference so the fallback branch stays testable.
+# :mod:`gymrat.exec` imports this to unblock the same signals in a spawned
+# child, rather than re-resolving ``pthread_sigmask`` itself.
+pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
+    signal, "pthread_sigmask", None
 )
 
 # Live cleanups keyed by an opaque install token. A dict preserves insertion
@@ -237,16 +242,6 @@ def _ensure_handlers_installed() -> None:
         _installed_signals.add(signal_number)
 
 
-# POSIX-only seam for blocking signals. ``None`` on platforms without
-# ``pthread_sigmask`` (win32), where callers fall back to running unmasked.
-# Kept as a module-level reference so the fallback branch stays testable.
-# :mod:`gymrat.git` imports this to block the same signals across a git
-# subprocess call, rather than re-resolving ``pthread_sigmask`` itself.
-pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
-    signal, "pthread_sigmask", None
-)
-
-
 @contextmanager
 def deferring_termination_signals() -> Generator[None]:
     """Defer termination signals for the duration of the wrapped call.
@@ -268,7 +263,7 @@ def deferring_termination_signals() -> Generator[None]:
     previous: list[int] | None = None
     try:
         _deferring = True
-        if pthread_sigmask is not None and TERMINATION_SIGNALS:
+        if pthread_sigmask is not None:
             previous = pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
         yield
     finally:

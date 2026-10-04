@@ -16,11 +16,10 @@ Two entry points bridge the two forms:
   omitted, except ``delta_pct`` (on a metric verdict and on an iteration's
   primary), which is always present and serializes ``None`` as JSON ``null``.
 
-Around them sit the line-level halves of the codec. Inbound, a log line goes to
-a wire value through :func:`decode_log_line`, which refuses non-finite numbers,
-and then to a typed model through :func:`parse_record`. Outbound,
-:func:`record_to_json_line` renders a model as the compact JSON line the store
-writes.
+Inbound, a log line goes to a wire value through :func:`decode_log_line`, which
+refuses non-finite numbers, and then to a typed model through
+:func:`parse_record`. Outbound, the store renders a model as a compact JSON line
+with ``model_dump_json(exclude_none=True)``.
 """
 
 import json
@@ -46,7 +45,6 @@ from pydantic_core import ErrorDetails
 
 from gymrat.errors import GymratError
 from gymrat.pydantic_errors import (
-    UNKNOWN_SHAPE_PHRASE,
     VALUE_ERROR_PREFIX,
     coerce_integer,
     describe_key,
@@ -70,15 +68,8 @@ from gymrat.session.workspace import BaselineRef, Worktrees
 # Validation and coercion helpers
 # ---------------------------------------------------------------------------
 
-#: Metric name to measured value for one sample round.
-type SampleRound = dict[str, float | int]
 
-
-_BaselineRefAdapter = TypeAdapter(BaselineRef)
-_WorktreesAdapter = TypeAdapter(Worktrees)
-
-
-def _coerce[T](cls: type[T], adapter: TypeAdapter[T]) -> Callable[[object], T]:
+def _coerce[T](cls: type[T]) -> Callable[[object], T]:
     """Build a validator that coerces a dict into ``cls`` via lax-mode validation.
 
     Strict mode rejects dict-to-dataclass coercion, so the returned validator
@@ -87,11 +78,11 @@ def _coerce[T](cls: type[T], adapter: TypeAdapter[T]) -> Callable[[object], T]:
 
     Args:
         cls: The dataclass type to coerce values into.
-        adapter: The ``TypeAdapter`` used to validate and construct ``cls``.
 
     Returns:
         A before-validator callable that coerces dicts into ``cls``.
     """
+    adapter = TypeAdapter(cls)
 
     def coerce(value: object) -> T:
         if isinstance(value, cls):
@@ -99,10 +90,6 @@ def _coerce[T](cls: type[T], adapter: TypeAdapter[T]) -> Callable[[object], T]:
         return adapter.validate_python(value)
 
     return coerce
-
-
-_coerce_baseline_ref = _coerce(BaselineRef, _BaselineRefAdapter)
-_coerce_worktrees = _coerce(Worktrees, _WorktreesAdapter)
 
 
 _RECORD_CONFIG = ConfigDict(
@@ -160,8 +147,6 @@ _OptNumber = Annotated[
     _not_null(_Number),
     WithJsonSchema({"type": "number"}),
 ]
-
-_DeltaPct = _Number | None
 
 _PositiveInt = Annotated[int, Field(ge=1), BeforeValidator(coerce_integer)]
 _NonNegativeInt = Annotated[int, Field(ge=0), BeforeValidator(coerce_integer)]
@@ -247,11 +232,11 @@ class SessionRecord(_RecordEnvelope):
     type: Literal["session"] = Field(description="Record type discriminator.")
     schema_version: Literal[1] = Field(alias="schema", description="Session log format version.")
     session_id: str = Field(description="Unique identifier for this session.")
-    baseline: Annotated[BaselineRef, BeforeValidator(_coerce_baseline_ref)] = Field(
+    baseline: Annotated[BaselineRef, BeforeValidator(_coerce(BaselineRef))] = Field(
         description="Git ref and SHA the baseline was taken from."
     )
     branch: str = Field(description="Git branch created for this session.")
-    worktrees: Annotated[Worktrees, BeforeValidator(_coerce_worktrees)] = Field(
+    worktrees: Annotated[Worktrees, BeforeValidator(_coerce(Worktrees))] = Field(
         description="Paths to the experiment and baseline worktrees."
     )
     config: SessionConfig = Field(
@@ -287,7 +272,7 @@ class _DeltaPctSerializer(BaseModel):
 
     model_config = _RECORD_CONFIG
 
-    delta_pct: _DeltaPct = Field(
+    delta_pct: _Number | None = Field(
         description="Percentage change from baseline, or null when undefined."
     )
 
@@ -456,6 +441,11 @@ class HookRecord(_SequencedEnvelope):
     )
     timed_out: bool = Field(description="Whether the hook command exceeded its timeout.")
 
+    @property
+    def failed(self) -> bool:
+        """Whether the hook timed out or exited non-zero."""
+        return self.timed_out or self.exit_code != 0
+
 
 # ---------------------------------------------------------------------------
 # Terminal records
@@ -575,27 +565,15 @@ def record_to_wire(record: SessionLogRecord) -> dict[str, object]:
     return record.model_dump(mode="json", exclude_none=True)
 
 
-def record_to_json_line(record: SessionLogRecord) -> str:
-    """Render a session-log model as the compact JSON line the store writes.
-
-    Optional fields whose value is ``None`` are omitted, matching
-    :func:`record_to_wire`. Pydantic writes non-finite floats as ``null``.
-
-    Args:
-        record: The parsed session-log model to render.
-
-    Returns:
-        The record's compact JSON, without a trailing newline.
-    """
-    return record.model_dump_json(exclude_none=True)
-
-
 # ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
 
 
-_SessionLogUnion = TypeAdapter(Annotated[SessionLogRecord, Field(discriminator="type")])
+SESSION_LOG_ADAPTER: TypeAdapter[SessionLogRecord] = TypeAdapter(
+    Annotated[SessionLogRecord, Field(discriminator="type")]
+)
+"""Validates a wire object into its session-log record and renders the union's JSON Schema."""
 
 
 class NonFiniteNumberError(ValueError):
@@ -657,18 +635,14 @@ def parse_record(value: object) -> SessionLogRecord:
         raise GymratError(message)
     token = _wire_validation.set(True)
     try:
-        return _SessionLogUnion.validate_python(value)
+        return SESSION_LOG_ADAPTER.validate_python(value)
     except ValidationError as exc:
         errors = exc.errors()
         _raise_discriminator_error(errors, value)
         error = drop_prefix_errors(errors)[0]
-        raise GymratError(message_for_error(error, value)) from exc
+        raise GymratError(_message_for_error(error, value)) from exc
     finally:
         _wire_validation.reset(token)
-
-
-def _known_types() -> list[str]:
-    return [wire_type(member) for member in SESSION_LOG_MODELS]
 
 
 def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, object]) -> None:
@@ -692,7 +666,7 @@ def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, obje
     type_value = value.get("type")
     tag_missing = error_type == "union_tag_not_found" and type_value is None and "type" not in value
     rendered = "undefined" if tag_missing else json.dumps(type_value)
-    hint = "Expected one of: " + ", ".join(_known_types()) + "."
+    hint = "Expected one of: " + ", ".join(wire_type(member) for member in SESSION_LOG_MODELS) + "."
     message = f"Unknown session record type: {rendered}"
     raise GymratError(message, hint=hint)
 
@@ -830,7 +804,7 @@ def _data_path(
     return path
 
 
-def message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
+def _message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
     """Translate one pydantic error into a session-record problem string.
 
     Model-level validators (``type="value_error"``, empty ``loc``) carry their
@@ -852,7 +826,7 @@ def message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
     path = _data_path(
         _strip_type_prefix(error["loc"], record_type), record, error["input"], missing=missing
     )
-    key = describe_key(tuple(str(part) for part in path))
+    key = describe_key(path)
     if missing:
         return f"Missing session record key: {key}"
     if error["type"] == "extra_forbidden":
@@ -863,6 +837,6 @@ def message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
         msg = error["msg"].removeprefix(VALUE_ERROR_PREFIX)
         separator = ": " if key else ""
         return f"Invalid session record: {key}{separator}{msg}"
-    phrase = phrase_for_error(error) or UNKNOWN_SHAPE_PHRASE
+    phrase = phrase_for_error(error)
     got = json.dumps(error["input"])
     return f"Invalid session record value for {key}: expected {phrase}, got {got}"

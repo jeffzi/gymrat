@@ -19,14 +19,12 @@ from gymrat.session.records import (
     SessionLogRecord,
 )
 from gymrat.telemetry.attributes import (
-    all_attribute_names,
     command_attributes,
-    command_span_inputs,
     record_event,
 )
 from tests.session.records._fixtures import (
-    AT,
     SESSION_ID,
+    baseline_record,
     blocked_keep,
     command_record,
     committed_keep,
@@ -36,6 +34,7 @@ from tests.session.records._fixtures import (
     iteration_record,
     stop_record,
 )
+from tests.telemetry._attribute_names import all_attribute_names
 
 _ATTR_NAME_RE = re.compile(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$")
 
@@ -43,12 +42,6 @@ _ATTR_NAME_RE = re.compile(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$")
 def _assert_valid_attribute_names(keys: Iterable[str]) -> None:
     for key in keys:
         assert _ATTR_NAME_RE.match(key), f"bad attribute name: {key!r}"
-
-
-def _baseline_record(**overrides: object) -> BaselineRecord:
-    """A baseline record labeled ``"initial"`` unless ``label`` is overridden."""
-    default = BaselineRecord(type="baseline", at=AT, label="initial", samples=({"total_ms": 100},))
-    return default.model_copy(update=overrides) if overrides else default
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +277,7 @@ def test_record_event_when_keep_reason_none_does_omit_key():
 
 
 def test_record_event_when_baseline_does_map_label():
-    record = _baseline_record()
+    record = baseline_record(label="initial")
 
     _name, attrs = record_event(record)
 
@@ -344,7 +337,7 @@ def test_record_event_when_stop_has_no_seq_does_omit_iteration_seq():
 def test_record_event_when_baseline_does_not_carry_seq_field_does_omit_iteration_seq():
     assert "seq" not in BaselineRecord.model_fields
 
-    record = _baseline_record(label="main")
+    record = baseline_record(label="main")
 
     _name, attrs = record_event(record)
 
@@ -372,7 +365,7 @@ def test_record_event_when_called_does_never_produce_complex_values():
         hook_record(),
         stop_record(),
         committed_keep(1),
-        _baseline_record(),
+        baseline_record(),
         discard_record(2),
         finalize_record(branch="gymrat/test-final"),
     ]
@@ -401,63 +394,6 @@ def test_record_event_when_called_does_produce_valid_attribute_names():
     for record in records:
         _name, attrs = record_event(record)
         _assert_valid_attribute_names(attrs)
-
-
-# ---------------------------------------------------------------------------
-# command_span_inputs — shared span-building helper
-# ---------------------------------------------------------------------------
-
-
-def test_command_span_inputs_when_called_does_return_span_name():
-    record = command_record(name="measure")
-
-    result = command_span_inputs(record, session_id=SESSION_ID, line_number=3)
-
-    assert result.name == "gymrat.command.measure"
-
-
-def test_command_span_inputs_when_called_does_return_span_key():
-    record = command_record(name="measure")
-
-    result = command_span_inputs(record, session_id=SESSION_ID, line_number=5)
-
-    assert result.key == "command:5"
-
-
-def test_command_span_inputs_when_called_does_return_attributes_from_command_attributes():
-    record = command_record(name="iterate", args={"samples": 10}, exit_code=0)
-
-    result = command_span_inputs(record, session_id=SESSION_ID, line_number=2)
-
-    assert result.attributes["gymrat.session.id"] == SESSION_ID
-    assert result.attributes["gymrat.command.name"] == "iterate"
-    assert result.attributes["gymrat.command.exit_code"] == 0
-    assert result.attributes["gymrat.command.args.samples"] == 10
-
-
-def test_command_span_inputs_when_traceparent_present_does_return_link():
-    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
-    record = command_record(name="measure", traceparent=traceparent)
-
-    result = command_span_inputs(record, session_id=SESSION_ID, line_number=2)
-
-    assert result.link is not None
-    assert result.link.span_id == 0xB7AD6B7169203331
-
-
-@pytest.mark.parametrize(
-    "traceparent",
-    [None, "not-valid"],
-    ids=["absent", "malformed"],
-)
-def test_command_span_inputs_when_traceparent_missing_or_malformed_does_return_none_link(
-    traceparent: str | None,
-):
-    record = command_record(name="measure", traceparent=traceparent)
-
-    result = command_span_inputs(record, session_id=SESSION_ID, line_number=2)
-
-    assert result.link is None
 
 
 # ---------------------------------------------------------------------------
@@ -562,7 +498,7 @@ def test_all_attribute_names_when_called_does_produce_valid_attribute_names():
 @pytest.mark.parametrize(
     "record",
     [
-        pytest.param(_baseline_record(duration_ms=42), id="baseline"),
+        pytest.param(baseline_record(duration_ms=42), id="baseline"),
         pytest.param(
             iteration_record(
                 duration_ms=500,

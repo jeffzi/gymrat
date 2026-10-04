@@ -13,10 +13,10 @@ serializer's concern, not this contract's.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from gymrat.config.types import KindEntry
+    from gymrat.config import KindEntry
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
     from gymrat.targets import WorktreeRemovalFailure
     from gymrat.verdict import KindAggregate
@@ -180,8 +180,6 @@ class MeasurementResult(WorktreeCleanupOutcome):
 class RegressedFailOn:
     """A ``--fail-on`` condition that trips on any regression."""
 
-    kind: Literal["regressed"] = "regressed"
-
 
 @dataclass(frozen=True, slots=True)
 class GeomeanFailOn:
@@ -192,7 +190,6 @@ class GeomeanFailOn:
     """
 
     pct: float
-    kind: Literal["geomean"] = "geomean"
 
 
 def candidate_at(metric: MetricComparison, index: int) -> CandidateMetric | None:
@@ -232,8 +229,16 @@ class ReportOptions:
             renderer — ``iterate`` — names itself.
     """
 
-    verbose: bool | None = None
+    verbose: bool = False
     color: bool | None = None
-    fail_on: tuple[FailOnCondition, ...] | None = None
+    fail_on: tuple[FailOnCondition, ...] = ()
     header: str | None = None
     command: str = "compare"
+
+
+DEFAULT_REPORT_OPTIONS = ReportOptions()
+"""The options a renderer uses when its caller passes none.
+
+Detect color, no header override. Immutable, so one shared instance is safe as a
+default argument.
+"""

@@ -3,16 +3,12 @@ import dataclasses
 import pytest
 
 from gymrat.adapters import (
-    DEFAULT_GATING,
-    DEFAULT_METRIC_KIND,
-    Adapter,
     AdapterError,
     MetricDefaults,
-    WarnSink,
     defaults_from_suffixes,
-    warn_to_stderr,
 )
 from gymrat.errors import GymratError
+from gymrat.sampling import DEFAULT_METRIC_KIND
 
 # ---------------------------------------------------------------------------
 # AdapterError
@@ -84,40 +80,6 @@ def test_metric_defaults_when_fields_differ_does_compare_unequal():
 
 
 # ---------------------------------------------------------------------------
-# Adapter protocol
-# ---------------------------------------------------------------------------
-
-
-class _StructuralAdapter:
-    """Satisfies ``Adapter`` structurally without inheriting from it."""
-
-    name = "structural"
-
-    def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
-        return {}
-
-    def defaults(self, metric_name: str) -> MetricDefaults:
-        return MetricDefaults(direction="lower")
-
-
-class _MissingParse:
-    """Lacks ``parse``, so it does not satisfy the ``Adapter`` protocol."""
-
-    name = "incomplete"
-
-    def defaults(self, metric_name: str) -> MetricDefaults:
-        return MetricDefaults(direction="lower")
-
-
-def test_adapter_when_object_has_all_members_does_satisfy_protocol_without_inheriting():
-    assert isinstance(_StructuralAdapter(), Adapter)
-
-
-def test_adapter_when_object_missing_parse_does_not_satisfy_protocol():
-    assert not isinstance(_MissingParse(), Adapter)
-
-
-# ---------------------------------------------------------------------------
 # defaults_from_suffixes
 # ---------------------------------------------------------------------------
 
@@ -163,7 +125,3 @@ def test_defaults_from_suffixes_when_given_metric_name_does_return_expected_defa
 
 def test_default_metric_kind_when_referenced_does_equal_other():
     assert DEFAULT_METRIC_KIND == "other"
-
-
-def test_default_gating_when_referenced_does_equal_true():
-    assert DEFAULT_GATING is True

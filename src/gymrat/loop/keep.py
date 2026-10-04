@@ -24,17 +24,14 @@ from typing import TYPE_CHECKING
 from rich.markup import escape
 
 from gymrat.clock import now_ns
-from gymrat.eta import MS_PER_SECOND
 from gymrat.exec import (
     ExecOptions,
     ExecTimeoutError,
     exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
 from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.loop.output_limit import limit_output
-from gymrat.model import Effect
-from gymrat.report.format import format_delta
-from gymrat.report.style import RENDER_WIDTH, color_from_env, format_hint, render_lines
+from gymrat.report.format import format_percent_delta
+from gymrat.report.style import format_hint, render_lines
 from gymrat.session.records import (
     BaselineRecord,
     IterationRecord,
@@ -45,15 +42,21 @@ from gymrat.session.store import append_record, last_kept_position, require_open
 from gymrat.session.workspace import (
     advance_baseline,
     commit_workspace,
-    is_worktree_dirty,
+    dirty_file_count,
     worktree_head,
 )
-from gymrat.warn import WarnSink, warn_to_stderr
+from gymrat.utils import (
+    MS_PER_SECOND,
+    WarnSink,
+    limit_output,
+    stream_color_from_env,
+    warn_to_stderr,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.config.types import BenchlessConfig
+    from gymrat.config import BenchlessConfig
     from gymrat.session.records import MetricVerdict
     from gymrat.session.schema import KeepReason
 
@@ -73,20 +76,6 @@ class ChecksRun:
     stderr_bytes: int
 
 
-def _stderr_color() -> bool:
-    """Whether the warning gymrat writes to stderr carries color.
-
-    :func:`color_from_env` owns the ``FORCE_COLOR`` / ``NO_COLOR`` precedence
-    every color surface shares; with neither declared, stderr's own TTY state
-    decides, so a warning piped into a file stays plain.
-
-    Returns:
-        Whether stderr output should carry ANSI color escapes.
-    """
-    declared = color_from_env()
-    return declared if declared is not None else sys.stderr.isatty()
-
-
 def _gate_off_warning(*, color: bool) -> str:
     """The warning a keep emits when no checks command gates it.
 
@@ -101,7 +90,6 @@ def _gate_off_warning(*, color: bool) -> str:
             "set `checks` in `gymrat.toml` to the command that must pass before an edit is kept."
         ),
         color=color,
-        width=RENDER_WIDTH,
     )
     return (
         "Warning: no checks command is configured, so gymrat keep is committing "
@@ -140,7 +128,7 @@ async def run_checks(
     command = config.checks
     if command is None:
         if warn is None:
-            stderr_color = _stderr_color() if color is None else color
+            stderr_color = stream_color_from_env(sys.stderr) if color is None else color
             warn_to_stderr(_gate_off_warning(color=stderr_color))
         else:
             warn(_gate_off_warning(color=False))
@@ -301,9 +289,7 @@ class _KeepContext:
     experiment_dir: str
     baseline_dir: str
     iteration: IterationRecord
-    message: str | None
-    warn: WarnSink | None
-    warn_color: bool | None
+    options: KeepOptions
 
 
 async def keep_session(
@@ -330,7 +316,7 @@ async def keep_session(
             commit the worktree or to advance the baseline.
     """
     settled = await _settle_keep(root, config, options or KeepOptions())
-    return replace(settled, report=render_lines(settled.report, color=color, width=RENDER_WIDTH))
+    return replace(settled, report=render_lines(settled.report, color=color))
 
 
 async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions) -> KeepResult:
@@ -400,12 +386,10 @@ async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions)
         experiment_dir=experiment_dir,
         baseline_dir=session.worktrees.baseline,
         iteration=iteration,
-        message=options.message,
-        warn=options.warn,
-        warn_color=options.warn_color,
+        options=options,
     )
 
-    if not is_worktree_dirty(experiment_dir):
+    if dirty_file_count(experiment_dir) == 0:
         return await _keep_clean_worktree(
             context, baseline_position=last_kept_position(state, session.baseline.sha)
         )
@@ -476,47 +460,41 @@ async def _gated_keep(context: _KeepContext, *, commit: Callable[[str], str]) ->
         GymratError: When ``commit``, the baseline advance, or the record append
             fails.
     """
+    options = context.options
     checks = await run_checks(
-        context.config, context.experiment_dir, context.warn, color=context.warn_color
+        context.config, context.experiment_dir, options.warn, color=options.warn_color
     )
     if checks is not None and not checks.passed:
-        return _checks_failed_keep(context.jsonl_path, context.iteration.seq, checks)
+        return _blocked_keep(
+            jsonl_path=context.jsonl_path,
+            seq=context.iteration.seq,
+            reason="checks-failed",
+            checks=KeepChecks(
+                configured=True,
+                passed=False,
+                stdout_bytes=checks.stdout_bytes,
+                stderr_bytes=checks.stderr_bytes,
+            ),
+            report=(
+                f"Keep refused: the checks command failed.\n\n{escape(checks.output)}\n"
+                + format_hint("fix the failures and run `keep` again.")
+            ),
+        )
 
     resolved_message = (
-        context.message if context.message is not None else _generated_message(context.iteration)
+        options.message if options.message is not None else _generated_message(context.iteration)
     )
 
     return _commit_keep(
         context,
         commit=commit(resolved_message),
         message=resolved_message,
-        checks=_passed_checks_field(checks),
-    )
-
-
-def _checks_failed_keep(jsonl_path: str, seq: int, checks: ChecksRun) -> KeepResult:
-    """Record the refusal a failing checks run earns, phrased for the agent."""
-    return _blocked_keep(
-        jsonl_path=jsonl_path,
-        seq=seq,
-        reason="checks-failed",
-        checks=KeepChecks(
-            configured=True,
-            passed=False,
-            stdout_bytes=checks.stdout_bytes,
-            stderr_bytes=checks.stderr_bytes,
-        ),
-        report=(
-            f"Keep refused: the checks command failed.\n\n{escape(checks.output)}\n"
-            + format_hint("fix the failures and run `keep` again.")
+        checks=(
+            KeepChecks(configured=False)
+            if checks is None
+            else KeepChecks(configured=True, passed=True)
         ),
     )
-
-
-def _passed_checks_field(checks: ChecksRun | None) -> KeepChecks:
-    if checks is None:
-        return KeepChecks(configured=False)
-    return KeepChecks(configured=True, passed=True)
 
 
 def _commit_keep(
@@ -584,8 +562,6 @@ def _blocked_keep(
 def _generated_message(iteration: IterationRecord) -> str:
     primary = iteration.primary
     moved = (
-        "delta undefined"
-        if primary.delta_pct is None
-        else format_delta(Effect(value=primary.delta_pct, unit="percent"))
+        "delta undefined" if primary.delta_pct is None else format_percent_delta(primary.delta_pct)
     )
     return f"iteration {iteration.seq}: {primary.name or primary.kind} {moved}"

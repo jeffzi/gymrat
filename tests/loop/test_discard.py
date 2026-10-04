@@ -10,7 +10,6 @@ safe under ``pytest-xdist`` / ``pytest-randomly``. Every git operation is real.
 """
 
 import re
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -19,8 +18,9 @@ from gymrat.errors import GymratError
 from gymrat.loop.discard import discard_session
 from gymrat.loop.keep import keep_session
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
-from gymrat.session.records import SessionLogRecord
-from gymrat.session.store import append_record, read_records
+from gymrat.session.records import KeepChecks, SessionLogRecord
+from gymrat.session.store import append_record
+from tests._git import head_of, run_git
 from tests.loop._settle import (
     assert_settling_record,
     checks_config,
@@ -28,25 +28,19 @@ from tests.loop._settle import (
     commit_experiment_directly,
     confirmed_regression,
     edit_experiment,
-    gating_block,
-    git,
-    head_of,
-    iteration,
-    nothing_measured_block,
     settling_record_of,
     start_with,
     status_of,
     undefined_delta,
     unmeasured_regression,
 )
-from tests.session.records._fixtures import committed_keep, discard_record
-
-
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str]) -> str:
-    """A fresh scratch git repository for one settle test."""
-    return create_scratch_repo()
-
+from tests.session.records._fixtures import (
+    blocked_keep,
+    committed_keep,
+    discard_record,
+    iteration_record,
+    log_records,
+)
 
 # ---------------------------------------------------------------------------
 # discard_session
@@ -62,7 +56,7 @@ def test_discard_session_when_no_session_does_refuse_pointing_at_start(repo: str
 
 
 def test_discard_session_when_unsettled_edit_does_throw_away_tracked_and_untracked(repo: str):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
 
     discard_session(repo)
@@ -74,7 +68,7 @@ def test_discard_session_when_unsettled_edit_does_throw_away_tracked_and_untrack
 
 
 def test_discard_session_when_unsettled_edit_does_append_discard_naming_iteration(repo: str):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
 
     result = discard_session(repo)
@@ -96,7 +90,7 @@ def test_discard_session_when_primary_delta_undefined_does_record_discard(repo: 
 
 
 def test_discard_session_when_worktree_clean_does_record_discard_anyway(repo: str):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
 
     result = discard_session(repo)
 
@@ -104,7 +98,13 @@ def test_discard_session_when_worktree_clean_does_record_discard_anyway(repo: st
 
 
 def test_discard_session_when_gating_block_stands_does_throw_away_the_edit(repo: str):
-    start_with(repo, (confirmed_regression(1), gating_block(1)))
+    start_with(
+        repo,
+        (
+            confirmed_regression(1),
+            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+        ),
+    )
     edit_experiment(repo)
 
     discard_session(repo)
@@ -116,7 +116,13 @@ def test_discard_session_when_gating_block_stands_does_throw_away_the_edit(repo:
 
 
 def test_discard_session_when_gating_block_stands_does_number_discard_past_it(repo: str):
-    start_with(repo, (confirmed_regression(1), gating_block(1)))
+    start_with(
+        repo,
+        (
+            confirmed_regression(1),
+            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+        ),
+    )
     edit_experiment(repo)
 
     result = discard_session(repo)
@@ -125,14 +131,23 @@ def test_discard_session_when_gating_block_stands_does_number_discard_past_it(re
     # iteration has used yet, leaving the block in history.
     assert result.record is not None
     assert_settling_record(result.record, discard_record(2))
-    tail = read_records(session_jsonl_path(repo))[-2:]
-    assert tail == [gating_block(1), result.record]
+    tail = log_records(repo)[-2:]
+    assert tail == [
+        blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+        result.record,
+    ]
 
 
 def test_discard_session_when_unmeasured_regression_block_stands_does_number_discard_past_it(
     repo: str,
 ):
-    start_with(repo, (unmeasured_regression(1), gating_block(1)))
+    start_with(
+        repo,
+        (
+            unmeasured_regression(1),
+            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+        ),
+    )
     edit_experiment(repo)
 
     result = discard_session(repo)
@@ -145,7 +160,14 @@ def test_discard_session_when_unmeasured_regression_block_stands_does_number_dis
 def test_discard_session_when_gating_block_then_nothing_measured_keep_does_report_reverted_iteration(
     repo: str,
 ):
-    start_with(repo, (confirmed_regression(1), gating_block(1), nothing_measured_block(2)))
+    start_with(
+        repo,
+        (
+            confirmed_regression(1),
+            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+            blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+        ),
+    )
     edit_experiment(repo)
 
     result = discard_session(repo)
@@ -159,7 +181,13 @@ def test_discard_session_when_gating_block_then_nothing_measured_keep_does_repor
 async def test_discard_session_when_keep_retried_after_block_does_throw_away_standing_edit(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (confirmed_regression(1), gating_block(1)))
+    start_with(
+        repo,
+        (
+            confirmed_regression(1),
+            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+        ),
+    )
     edit_experiment(repo)
     checks_pass(monkeypatch)
     await keep_session(repo, checks_config())
@@ -175,14 +203,20 @@ async def test_discard_session_when_keep_retried_after_block_does_throw_away_sta
 async def test_discard_session_when_keep_retried_after_block_does_append_after_the_refusal(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (confirmed_regression(1), gating_block(1)))
+    start_with(
+        repo,
+        (
+            confirmed_regression(1),
+            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+        ),
+    )
     edit_experiment(repo)
     checks_pass(monkeypatch)
     await keep_session(repo, checks_config())
 
     result = discard_session(repo)
 
-    tail = read_records(session_jsonl_path(repo))[-2:]
+    tail = log_records(repo)[-2:]
     assert tail[0].type == "keep"
     assert tail[0].status == "blocked"
     assert tail[0].reason == "nothing-measured"
@@ -197,7 +231,7 @@ async def test_discard_session_when_keep_retried_after_block_does_append_after_t
 def test_discard_session_when_nothing_kept_and_agent_committed_does_reset_to_baseline_sha(
     repo: str,
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     commit_experiment_directly(repo)
     worktree = experiment_worktree_dir(repo)
@@ -213,17 +247,17 @@ def test_discard_session_when_nothing_kept_and_agent_committed_does_reset_to_bas
 async def test_discard_session_when_keep_committed_then_agent_committed_does_reset_to_kept_commit(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
     keep_result = await keep_session(repo, checks_config())
     kept_commit = keep_result.record.commit
 
     worktree = experiment_worktree_dir(repo)
-    append_record(session_jsonl_path(repo), iteration(2))
+    append_record(session_jsonl_path(repo), iteration_record(seq=2))
     (Path(worktree) / "post-keep.txt").write_text("after keep\n", encoding="utf-8")
-    git(["add", "-A"], worktree)
-    git(["commit", "-m", "agent commit after keep"], worktree)
+    run_git(["add", "-A"], worktree)
+    run_git(["commit", "-m", "agent commit after keep"], worktree)
     assert head_of(worktree) != kept_commit
 
     discard_session(repo)
@@ -235,7 +269,7 @@ async def test_discard_session_when_keep_committed_then_agent_committed_does_res
 def test_discard_session_when_resetting_does_report_the_commit_it_landed_on(
     repo: str,
 ):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     commit_experiment_directly(repo)
 
@@ -251,9 +285,13 @@ def test_discard_session_when_resetting_does_report_the_commit_it_landed_on(
 
 NOTHING_MEASURED_HISTORIES = [
     pytest.param((), id="no-iteration-ever-recorded"),
-    pytest.param((iteration(1), committed_keep(1)), id="last-iteration-already-kept"),
+    pytest.param((iteration_record(seq=1), committed_keep(1)), id="last-iteration-already-kept"),
     pytest.param(
-        (confirmed_regression(1), gating_block(1), discard_record(2)),
+        (
+            confirmed_regression(1),
+            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+            discard_record(2),
+        ),
         id="gating-block-already-discarded",
     ),
 ]
@@ -265,7 +303,7 @@ def test_discard_session_when_nothing_measured_and_dirty_does_revert_and_return_
 ):
     start_with(repo, history)
     edit_experiment(repo)
-    records_before = len(read_records(session_jsonl_path(repo)))
+    records_before = len(log_records(repo))
     baseline_sha = head_of(baseline_worktree_dir(repo))
 
     result = discard_session(repo)
@@ -274,7 +312,7 @@ def test_discard_session_when_nothing_measured_and_dirty_does_revert_and_return_
     assert (Path(worktree) / "README.md").read_text(encoding="utf-8") == "# Test Repo\n"
     assert not (Path(worktree) / "scratch.txt").exists()
     assert status_of(worktree) == ""
-    assert len(read_records(session_jsonl_path(repo))) == records_before
+    assert len(log_records(repo)) == records_before
     assert result.record is None
     assert isinstance(result.at, int)
     assert result.at > 0
@@ -312,14 +350,14 @@ def test_discard_session_when_nothing_measured_and_clean_does_refuse(
     repo: str, history: tuple[SessionLogRecord, ...]
 ):
     start_with(repo, history)
-    before = len(read_records(session_jsonl_path(repo)))
+    before = len(log_records(repo))
 
     with pytest.raises(GymratError) as excinfo:
         discard_session(repo)
 
     assert "Discard refused" in str(excinfo.value)
     assert excinfo.value.hint == "Run iterate to measure an edit before settling it."
-    assert len(read_records(session_jsonl_path(repo))) == before
+    assert len(log_records(repo)) == before
 
 
 def test_discard_session_when_nothing_measured_and_clean_does_carry_nothing_to_discard_reason(
@@ -334,7 +372,7 @@ def test_discard_session_when_nothing_measured_and_clean_does_carry_nothing_to_d
 
 
 def test_discard_session_when_session_id_mismatches_does_carry_stale_session_reason(repo: str):
-    start_with(repo, (iteration(1),))
+    start_with(repo, (iteration_record(seq=1),))
 
     with pytest.raises(GymratError) as excinfo:
         discard_session(repo, expected_session_id="wrong-id")

@@ -2,18 +2,74 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gymrat.errors import GymratError
-from gymrat.loop.iterate.run import stop_condition
+from gymrat.loop.iterate.run import stop_reason
+from gymrat.session.records import HookRecord
 from gymrat.session.store import fold_session, read_records
-from gymrat.supervisor.turns import EndCondition, detect_end_condition
 
 if TYPE_CHECKING:
-    from gymrat.config.types import BenchlessConfig
+    from gymrat.config import BenchlessConfig
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
+    from gymrat.supervisor.supervise import EndedBy
+
+
+@dataclass(frozen=True, slots=True)
+class EndCondition:
+    """A condition read off the session log that ends supervision."""
+
+    ended_by: EndedBy
+    reason: str
+
+
+def _hook_failure_reason(record: HookRecord) -> str:
+    failure = "timed out" if record.timed_out else f"exit {record.exit_code}"
+    stderr = "?" if record.stderr_bytes is None else record.stderr_bytes
+    return (
+        f"{record.stage} hook failed on iteration {record.seq}: {failure} "
+        f"(stdout {record.stdout_bytes} B, stderr {stderr} B)"
+    )
+
+
+def detect_end_condition(
+    config: BenchlessConfig,
+    records: list[SessionLogRecord],
+    state: SessionState,
+    *,
+    cursor: int | None,
+    check_stop: bool,
+) -> EndCondition | None:
+    """Find the condition in the session log that ends supervision, if any.
+
+    A failed or timed-out hook record at or past *cursor* wins over a met stop
+    condition. Hooks are scanned from the cursor rather than the tail because
+    ``iterate`` appends a before-hook, the iteration, then an after-hook, so a
+    failed before-hook sits two records back.
+
+    Args:
+        config: The session's Benchless configuration, read for stop conditions.
+        records: The raw session log records, command records included.
+        state: The session state already folded from *records*.
+        cursor: The index of the first record not yet scanned for hook
+            failures, or ``None`` to scan no hook records.
+        check_stop: Whether a met stop condition is reported.
+
+    Returns:
+        The end condition, or ``None`` when nothing ends supervision.
+    """
+    if cursor is not None:
+        for record in records[cursor:]:
+            if isinstance(record, HookRecord) and record.failed:
+                return EndCondition("hook-failure", _hook_failure_reason(record))
+
+    if check_stop and (reason := stop_reason(config, state)) is not None:
+        return EndCondition("stop-condition", reason)
+
+    return None
 
 
 def _log_size(path: str) -> int:
@@ -109,14 +165,16 @@ class EndConditionScan:
             return
         if self._cursor is None:
             self._arm_stop_check(state)
-        self.pending, self._cursor = detect_end_condition(
+        self.pending = detect_end_condition(
             self._config,
             records,
             state,
             cursor=self._cursor,
             check_stop=self._check_stop,
         )
+        # Every record has now been scanned for hook failures, whatever was found.
+        self._cursor = len(records)
 
     def _arm_stop_check(self, state: SessionState) -> None:
         """Arm stop-condition detection unless ``state`` already satisfies one."""
-        self._check_stop = stop_condition(self._config, state) is None
+        self._check_stop = stop_reason(self._config, state) is None

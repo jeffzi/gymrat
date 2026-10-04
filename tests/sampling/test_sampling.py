@@ -11,6 +11,7 @@ import pytest
 
 from gymrat import sampling
 from gymrat.adapters import metric_lines_adapter
+from gymrat.config import KindEntry, MetricEntry, ResolvedConfig
 from gymrat.errors import CommandError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.progress_events import (
@@ -22,25 +23,23 @@ from gymrat.progress_events import (
 )
 from gymrat.report.text.render import format_cleanup_failures
 from gymrat.sampling import (
+    CleanupResult,
     MetricStats,
     RunOptions,
     SamplingOptions,
     TargetContext,
+    TargetSpec,
+    WorktreeInfo,
     collect_samples,
     compute_metric_stats,
     own_values,
-    paired_or_own_values,
-    resolve_dir,
     resolve_label,
     run_with_worktrees,
+    to_context,
 )
-from gymrat.targets import (
-    CleanupResult,
-    InPlaceTarget,
-    RefTarget,
-    WorktreeInfo,
-    WorktreeRemovalFailure,
-)
+from gymrat.targets import InPlaceTarget, RefTarget, WorktreeRemovalFailure
+from tests._exec_fixtures import expected_result
+from tests._process_helpers import fake_install
 
 REF_HINT = (
     "the worktree only contains files tracked at this ref; "
@@ -50,24 +49,12 @@ REF_HINT = (
 
 def make_success(stdout: str = "METRIC x=1") -> ExecResult:
     """Build a zero-exit result carrying ``stdout`` on the standard stream."""
-    return ExecResult(
-        stdout=stdout,
-        stderr="",
-        exit_code=0,
-        stdout_bytes=len(stdout.encode()),
-        stderr_bytes=0,
-    )
+    return expected_result(stdout)
 
 
 def make_failure(stdout: str = "", stderr: str = "boom") -> ExecResult:
     """Build an exit-code-1 result with byte counts computed from the given text."""
-    return ExecResult(
-        stdout=stdout,
-        stderr=stderr,
-        exit_code=1,
-        stdout_bytes=len(stdout.encode()),
-        stderr_bytes=len(stderr.encode()),
-    )
+    return expected_result(stdout, stderr, exit_code=1)
 
 
 def patch_exec(
@@ -367,6 +354,30 @@ async def test_collect_samples_when_warn_sink_given_does_pass_it_through_to_pars
     assert warnings == ["Failed to parse METRIC line: METRIC foo=bar"]
 
 
+async def test_collect_samples_when_bench_output_unreadable_does_warn_after_the_pass_finished(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    patch_exec(monkeypatch, make_success("METRIC foo=bar\nMETRIC x=1"))
+    log: list[object] = []
+    options = SamplingOptions(
+        bench="run",
+        prepare=None,
+        samples=1,
+        timeout_seconds=1.0,
+        on_progress=log.append,
+        warn=log.append,
+        clock=lambda: 0.0,
+    )
+
+    await collect_samples(metric_lines_adapter, one_in_place_target(), options, asyncio.Event())
+
+    assert log == [
+        PassStarted(round=1, total_rounds=1, target_count=1, label="old", at_ms=0.0),
+        PassFinished(round=1, total_rounds=1, target_count=1, label="old", at_ms=0.0),
+        "Failed to parse METRIC line: METRIC foo=bar",
+    ]
+
+
 async def test_collect_samples_when_prepare_fails_does_stop_before_any_bench(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -571,6 +582,34 @@ async def test_collect_samples_when_bench_fails_does_render_captured_output(
     assert str(caught.value) == "\n".join(head + expected_tail)
 
 
+async def test_collect_samples_when_bench_times_out_does_render_both_captured_streams(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    patch_exec(
+        monkeypatch,
+        ExecTimeoutError(stdout="s", stderr="e", timeout_ms=1000, stdout_bytes=1, stderr_bytes=50),
+    )
+    targets = [
+        TargetContext(target=InPlaceTarget(dir="/work"), dir="/work", label="x"),
+    ]
+    options = SamplingOptions(bench="run", prepare=None, samples=1, timeout_seconds=1.0)
+
+    with pytest.raises(CommandError) as caught:
+        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+
+    expected = [
+        'bench command timed out ("x", sample 1)',
+        "  dir:       /work",
+        "  command:   run",
+        "  timeout:   1000ms",
+        "--- stderr (truncated, 50 bytes total) ---",
+        "e",
+        "--- stdout ---",
+        "s",
+    ]
+    assert str(caught.value) == "\n".join(expected)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
 async def test_collect_samples_when_driven_end_to_end_does_collect_parsed_metrics(tmp_path: Path):
     targets = [
@@ -651,48 +690,54 @@ def test_own_values_when_rounds_missing_metric_does_skip_them():
     assert own_values(samples, "x") == [1.0, 3.0]
 
 
-def test_paired_or_own_values_when_paired_non_empty_does_return_paired():
-    samples = [{"x": 1.0}, {"x": 3.0}]
-
-    assert paired_or_own_values([7.0, 8.0], samples, "x") == [7.0, 8.0]
-
-
-def test_paired_or_own_values_when_paired_empty_does_fall_back_to_own_values():
-    samples = [{"x": 1.0}, {"x": 3.0}]
-
-    assert paired_or_own_values([], samples, "x") == [1.0, 3.0]
-
-
 # ---------------------------------------------------------------------------
-# RunOptions.sampling
+# RunOptions.from_config
 # ---------------------------------------------------------------------------
 
 
-def test_run_options_sampling_when_called_does_carry_the_run_settings_and_default_clock():
+def _resolved_config() -> ResolvedConfig:
+    """A resolved configuration with every run setting away from its default."""
+    return ResolvedConfig(
+        bench="run",
+        prepare="prep",
+        adapter="mitata",
+        samples=7,
+        timeout_seconds=25,
+        unstable_noise_pct=5.0,
+        primary="geomean",
+        metrics={"decode/time": MetricEntry(direction="higher")},
+        kinds={"memory": KindEntry(gating=False)},
+    )
+
+
+def test_run_options_from_config_when_called_does_copy_the_run_settings_and_default_clock():
     events: list[ProgressEvent] = []
     warnings: list[str] = []
-    run = RunOptions(
-        bench="run",
-        prepare="prep",
-        adapter="metric-lines",
-        samples=7,
-        timeout_seconds=2.5,
-        config_metrics=None,
-        config_kinds=None,
-        on_progress=events.append,
-        warn=warnings.append,
-    )
+    config = _resolved_config()
 
-    options = run.sampling()
+    run = RunOptions.from_config(config, on_progress=events.append, warn=warnings.append)
 
-    assert options == SamplingOptions(
-        bench="run",
-        prepare="prep",
-        samples=7,
-        timeout_seconds=2.5,
-        on_progress=run.on_progress,
-        warn=run.warn,
+    assert run == RunOptions(
+        sampling=SamplingOptions(
+            bench="run",
+            prepare="prep",
+            samples=7,
+            timeout_seconds=25,
+            on_progress=run.sampling.on_progress,
+            warn=run.sampling.warn,
+        ),
+        adapter="mitata",
+        config_metrics=config.metrics,
+        config_kinds=config.kinds,
     )
+    run.sampling.warn("unreadable line")
+    assert warnings == ["unreadable line"]
+
+
+def test_run_options_from_config_when_bench_and_samples_given_does_override_the_configured_ones():
+    run = RunOptions.from_config(_resolved_config(), samples=3, bench="run --filter a")
+
+    assert (run.sampling.bench, run.sampling.samples) == ("run --filter a", 3)
 
 
 # ---------------------------------------------------------------------------
@@ -713,27 +758,6 @@ class _InstallRecorder:
             self.events.append("uninstall")
 
         return uninstall
-
-
-def _capturing_install(
-    captured: dict[str, Callable[[], None]],
-) -> Callable[[Callable[[], None]], Callable[[], None]]:
-    """Build an install seam that records the registered cleanup into ``captured``.
-
-    Args:
-        captured: Dict that receives the registered cleanup under the
-            ``"cleanup"`` key.
-
-    Returns:
-        A no-op uninstall, so a test can invoke ``captured["cleanup"]``
-        directly to drive the termination path without a real signal.
-    """
-
-    def install(cleanup: Callable[[], None]) -> Callable[[], None]:
-        captured["cleanup"] = cleanup
-        return lambda: None
-
-    return install
 
 
 def _patch_cleanup(
@@ -765,20 +789,22 @@ def _dirty_result() -> CleanupResult:
 
 
 # ---------------------------------------------------------------------------
-# resolve_dir
+# to_context
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_dir_when_in_place_target_does_return_dir_and_leave_worktrees_untouched():
+def test_to_context_when_in_place_target_does_return_dir_and_leave_worktrees_untouched():
     worktrees: list[WorktreeInfo] = []
 
-    result = resolve_dir(InPlaceTarget(dir="/bench"), "/repo", worktrees)
+    result = to_context(
+        TargetSpec(label=None, target="/bench"), InPlaceTarget(dir="/bench"), "/repo", worktrees
+    )
 
-    assert result == "/bench"
+    assert result.dir == "/bench"
     assert worktrees == []
 
 
-def test_resolve_dir_when_ref_target_does_register_worktree_before_materialize(
+def test_to_context_when_ref_target_does_register_worktree_before_materialize(
     monkeypatch: pytest.MonkeyPatch,
 ):
     target = RefTarget(ref="feature", resolved_sha="deadbeef")
@@ -798,9 +824,9 @@ def test_resolve_dir_when_ref_target_does_register_worktree_before_materialize(
 
     monkeypatch.setattr(sampling, "materialize_worktree", _materialize)
 
-    result = resolve_dir(target, "/repo", worktrees)
+    result = to_context(TargetSpec(label=None, target="feature"), target, "/repo", worktrees)
 
-    assert result == "/tmp/gymrat-wt"
+    assert result.dir == "/tmp/gymrat-wt"
     assert worktrees == [stub]
     assert registered_before_materialize == [True]
     assert materialize_args == [(stub, "/repo")]
@@ -878,6 +904,46 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_clean_does_rerai
     assert recorder.events == ["install", "phase", "uninstall"]
 
 
+async def test_run_with_worktrees_when_phase_cancelled_does_skip_the_sweep_and_uninstall(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    recorder = _InstallRecorder()
+    monkeypatch.setattr(sampling, "install_termination_cleanup", recorder.install)
+    sweeps = _patch_cleanup(monkeypatch, _clean_result())
+
+    async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
+        recorder.events.append("phase")
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_with_worktrees(phase, lambda m, c: (m, c))
+
+    assert sweeps == []
+    assert recorder.events == ["install", "phase", "uninstall"]
+
+
+async def test_run_with_worktrees_when_build_result_raises_does_not_sweep_again(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    recorder = _InstallRecorder()
+    monkeypatch.setattr(sampling, "install_termination_cleanup", recorder.install)
+    sweeps = _patch_cleanup(monkeypatch, _clean_result())
+    broken = RuntimeError("report failed")
+
+    async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
+        return "measurement"
+
+    def build_result(_measurement: str, _cleanup: CleanupResult) -> str:
+        raise broken
+
+    with pytest.raises(RuntimeError) as caught:
+        await run_with_worktrees(phase, build_result)
+
+    assert caught.value is broken
+    assert len(sweeps) == 1
+    assert recorder.events == ["install", "uninstall"]
+
+
 async def test_run_with_worktrees_when_phase_raises_and_cleanup_dirty_does_wrap_preserving_subclass(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -905,17 +971,42 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_dirty_does_wrap_
     assert caught.value.__cause__ is original
 
 
+async def test_run_with_worktrees_when_other_error_raised_and_cleanup_dirty_does_wrap_as_exception(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(sampling, "install_termination_cleanup", _InstallRecorder().install)
+    cleanup = _dirty_result()
+    _patch_cleanup(monkeypatch, cleanup)
+    original = RuntimeError("adapter exploded")
+
+    async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
+        raise original
+
+    with pytest.raises(Exception, match="adapter exploded") as caught:
+        await run_with_worktrees(phase, lambda m, c: (m, c))
+
+    details = format_cleanup_failures(cleanup.failures, cleanup.prune_error)
+    assert type(caught.value) is Exception
+    assert str(caught.value) == "\n".join([
+        "adapter exploded",
+        "",
+        "cleanup did not finish:",
+        *details,
+    ])
+    assert caught.value.__cause__ is original
+
+
 async def test_run_with_worktrees_when_termination_cleanup_invoked_does_abort_run_and_sweep(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    captured: dict[str, Callable[[], None]] = {}
-    monkeypatch.setattr(sampling, "install_termination_cleanup", _capturing_install(captured))
+    captured: list[Callable[[], None]] = []
+    monkeypatch.setattr(sampling, "install_termination_cleanup", fake_install(captured))
     sweeps = _patch_cleanup(monkeypatch, _clean_result())
     observed: dict[str, object] = {}
 
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
         before = len(sweeps)
-        captured["cleanup"]()
+        captured[0]()
         observed["swept_by_cleanup"] = len(sweeps) - before
         observed["aborted"] = abort.is_set()
         return "measurement"
@@ -930,8 +1021,8 @@ async def test_run_with_worktrees_when_termination_cleanup_invoked_does_kill_gro
     monkeypatch: pytest.MonkeyPatch,
 ):
     order: list[str] = []
-    captured: dict[str, Callable[[], None]] = {}
-    monkeypatch.setattr(sampling, "install_termination_cleanup", _capturing_install(captured))
+    captured: list[Callable[[], None]] = []
+    monkeypatch.setattr(sampling, "install_termination_cleanup", fake_install(captured))
     monkeypatch.setattr(sampling, "kill_live_process_groups", lambda: order.append("kill"))
 
     def _cleanup(worktrees: list[WorktreeInfo], repo_dir: str) -> CleanupResult:
@@ -941,7 +1032,7 @@ async def test_run_with_worktrees_when_termination_cleanup_invoked_does_kill_gro
     monkeypatch.setattr(sampling, "cleanup_worktrees", _cleanup)
 
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
-        captured["cleanup"]()
+        captured[0]()
         return "measurement"
 
     await run_with_worktrees(phase, lambda m, c: (m, c))

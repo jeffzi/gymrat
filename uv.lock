@@ -569,11 +569,10 @@ otel = [
 [package.dev-dependencies]
 dev = [
     { name = "diff-cover" },
+    { name = "gymrat", extra = ["otel"] },
     { name = "hypothesis" },
     { name = "jsonschema" },
     { name = "mcp" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-sdk" },
     { name = "prek" },
     { name = "pyrefly" },
     { name = "pyte" },
@@ -607,11 +606,10 @@ provides-extras = ["otel"]
 [package.metadata.requires-dev]
 dev = [
     { name = "diff-cover", specifier = ">=10.5,<11" },
+    { name = "gymrat", extras = ["otel"] },
     { name = "hypothesis", specifier = ">=6.167,<7" },
     { name = "jsonschema", specifier = ">=4.24,<5" },
     { name = "mcp", specifier = ">=2.1,<3" },
-    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.44,<2" },
-    { name = "opentelemetry-sdk", specifier = ">=1.44,<2" },
     { name = "prek", specifier = ">=0.5.0,<0.6" },
     { name = "pyrefly", specifier = ">=1.2,<2" },
     { name = "pyte", specifier = ">=0.8.2,<0.9" },

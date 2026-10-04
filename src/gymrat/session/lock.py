@@ -27,16 +27,25 @@ import contextlib
 import os
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
 from filelock import FileLock, Timeout
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
 
-from gymrat.clock import now_iso
 from gymrat.errors import GymratError
+from gymrat.session.sidecar import read_sidecar
+from gymrat.utils import warn_to_stderr
 
-__all__ = ["LockContentionError", "LockHolder", "acquire_lock", "is_held", "read_holder"]
+__all__ = [
+    "LockContentionError",
+    "LockHolder",
+    "acquire_lock",
+    "is_held",
+    "now_iso",
+    "read_holder",
+]
 
 type ReleaseLock = Callable[[], None]
 """Gives up an acquired lock. Calling it more than once is harmless."""
@@ -77,6 +86,11 @@ class LockHolder(BaseModel):
     at: str
 
 
+def now_iso() -> str:
+    """The current UTC time as ISO-8601 with millisecond precision and a ``Z`` suffix."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 class LockContentionError(GymratError):
     """Another run already holds the single-flight repository lock."""
 
@@ -89,12 +103,7 @@ def _publish_lock_file(lock_path: str) -> str:
     return _os_lock_file(lock_path) + ".publish"
 
 
-def _non_blocking_lock(os_lock_path: str) -> FileLock:
-    """A ``FileLock`` that fails immediately on contention instead of blocking."""
-    return FileLock(os_lock_path, timeout=0, preserve_lock_file=True)
-
-
-def is_held(lock_path: Path) -> bool:
+def is_held(lock_path: str) -> bool:
     """Report whether another party holds the advisory lock at ``lock_path``.
 
     The probe acquires a non-blocking ``FileLock`` on the OS lock file
@@ -110,8 +119,7 @@ def is_held(lock_path: Path) -> bool:
     Returns:
         ``True`` when the lock is held by another party, ``False`` otherwise.
     """
-    os_lock_path = _os_lock_file(str(lock_path))
-    probe = _non_blocking_lock(os_lock_path)
+    probe = FileLock(_os_lock_file(lock_path), timeout=0, preserve_lock_file=True)
     try:
         probe.acquire()
     except Timeout:
@@ -138,33 +146,34 @@ def read_holder(lock_path: str) -> LockHolder | None:
         The recorded holder, or ``None`` when the file is absent, empty,
         truncated, or otherwise not a holder record.
     """
-    try:
-        return LockHolder.model_validate_json(Path(lock_path).read_bytes())
-    except (OSError, ValidationError):
-        return None
+    return read_sidecar(Path(lock_path), LockHolder)
 
 
-def _acquire_publish_lock(pub_lock_path: str) -> tuple[FileLock, bool]:
+def _acquire_publish_lock(pub_lock_path: str) -> FileLock:
     """Best-effort acquire of the publish lock.
 
-    Returns the lock object and whether acquisition succeeded. A timeout is not
-    an error — the caller proceeds without the publish lock in that case.
+    A timeout is not an error — the caller proceeds without the publish lock in
+    that case, and reads ``is_locked`` off the returned lock to know whether it
+    has one to release.
 
     Args:
         pub_lock_path: Path to the publish lock file to acquire.
 
     Returns:
-        A ``(lock, acquired)`` pair: the lock object and whether it was taken.
+        The publish lock, acquired when the wait succeeded.
+
+    Raises:
+        GymratError: When the publish lock file cannot be opened due to
+            permissions.
     """
     pub_lock = FileLock(pub_lock_path, timeout=_PUBLISH_LOCK_TIMEOUT, preserve_lock_file=True)
     try:
         pub_lock.acquire()
     except Timeout:
-        return pub_lock, False
+        pass
     except PermissionError as error:
         _raise_permission_error(pub_lock_path, error)
-    else:
-        return pub_lock, True
+    return pub_lock
 
 
 def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
@@ -222,7 +231,7 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
     os_lock_path = _os_lock_file(lock_path)
     pub_lock_path = _publish_lock_file(lock_path)
 
-    pub_lock, has_pub_lock = _acquire_publish_lock(pub_lock_path)
+    pub_lock = _acquire_publish_lock(pub_lock_path)
     try:
         lock = _acquire_os_lock(lock_path, os_lock_path)
 
@@ -234,15 +243,14 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
         with contextlib.suppress(OSError):
             holder.chmod(_WORLD_WRITABLE_MODE)
     finally:
-        if has_pub_lock:
+        if pub_lock.is_locked:
             pub_lock.release()
 
     def release() -> None:
         try:
             lock.release()
         except Exception as error:  # noqa: BLE001 — intentional catch-all: release must never raise
-            text = f"Warning: failed to release lock at {lock_path}: {error!s}\n"
-            sys.stderr.write(text)
+            warn_to_stderr(f"Warning: failed to release lock at {lock_path}: {error!s}")
 
     return release
 

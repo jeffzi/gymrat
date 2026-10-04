@@ -7,7 +7,6 @@ that would be overwritten, the sync refuses — no partial application.
 """
 
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
@@ -15,10 +14,10 @@ from typing import TYPE_CHECKING, NoReturn
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-from gymrat.errors import GymratError, stderr_text_of
-from gymrat.git import run_git
+from gymrat.errors import GymratError
 from gymrat.session.paths import SESSION_DIR_NAME, experiment_worktree_dir
 from gymrat.session.store import require_open_session
+from gymrat.session.workspace import run_git_step
 
 # ``git status -z`` prefixes each entry with two status characters and a space
 # (``XY<space>``), then the NUL-delimited path. Rename/copy entries (``R`` or
@@ -50,7 +49,7 @@ class _DirtyEntry:
     old_path: str | None
 
 
-def _dirty_entries(directory: str) -> list[_DirtyEntry]:
+def _dirty_entries(directory: str, error_message: str, hint: str) -> list[_DirtyEntry]:
     """Parse ``git status -z`` into structured entries.
 
     NUL-delimited output avoids the C-quoting that ``--porcelain`` applies to
@@ -59,11 +58,16 @@ def _dirty_entries(directory: str) -> list[_DirtyEntry]:
 
     Args:
         directory: The worktree to run ``git status`` in.
+        error_message: What the error says failed when git cannot read the status.
+        hint: What the error tells the user to do then.
 
     Returns:
         The list of dirty entries parsed from git status output.
+
+    Raises:
+        GymratError: When git cannot read the status of ``directory``.
     """
-    raw = run_git(["status", "-z", "--untracked-files=all"], directory)
+    raw = run_git_step(["status", "-z", "--untracked-files=all"], directory, error_message, hint)
     entries: list[_DirtyEntry] = []
     fields: Iterator[str] = iter(raw.split("\0"))
     for field in fields:
@@ -82,15 +86,6 @@ def _exclude_session_dir(entries: list[_DirtyEntry]) -> list[_DirtyEntry]:
     """Drop any entry rooted under the session directory."""
     prefix = f"{SESSION_DIR_NAME}/"
     return [e for e in entries if not e.path.startswith(prefix) and e.path != SESSION_DIR_NAME]
-
-
-def _read_dirty_entries(directory: str, error_message: str, hint: str) -> list[_DirtyEntry]:
-    """``_dirty_entries(directory)``, wrapping a read failure as a ``GymratError``."""
-    try:
-        return _dirty_entries(directory)
-    except (subprocess.CalledProcessError, OSError) as exc:
-        msg = f"{error_message}: {stderr_text_of(exc)}"
-        raise GymratError(msg, hint=hint) from exc
 
 
 def _copy_entry(src: Path, dst: Path) -> None:
@@ -127,16 +122,14 @@ def sync_to_experiment(root: str) -> SyncResult:
     experiment = experiment_worktree_dir(root)
 
     main_entries = _exclude_session_dir(
-        _read_dirty_entries(
-            root, "Cannot read dirty files", "Check that the repository is not corrupt."
-        )
+        _dirty_entries(root, "Cannot read dirty files", "Check that the repository is not corrupt.")
     )
     if not main_entries:
         return SyncResult(files=())
 
     main_paths = {e.path for e in main_entries}
 
-    experiment_entries = _read_dirty_entries(
+    experiment_entries = _dirty_entries(
         experiment,
         "Cannot read experiment worktree",
         "The experiment worktree may have been deleted. Run 'gymrat start' to begin a new session.",

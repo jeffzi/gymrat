@@ -1,8 +1,10 @@
 """JSON report document builders for the compare, measure, probe, and loop commands.
 
 Each builder assembles a plain nested structure keyed in snake_case and
-serializes it with a two-space indent. None takes presentation options, so the
-output never carries ANSI, whatever the ambient environment forces.
+serializes it with a two-space indent through :func:`render_document`, which
+:func:`gymrat.doctor.render_doctor_json` also calls, so a change to its indent
+or null handling changes the doctor output too. No builder takes presentation
+options, so the output never carries ANSI, whatever the ambient environment forces.
 
 The contract is a JSON ``null`` for any non-finite float (matching JavaScript's
 ``JSON.stringify``), which ``pydantic_core.to_json`` provides through
@@ -16,10 +18,10 @@ from typing import TYPE_CHECKING, assert_never
 
 from pydantic_core import to_json
 
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import BandVerdict, ExactVerdict, PermutationVerdict
 from gymrat.report.tally import count_verdicts
-from gymrat.report.types import CandidateMetric
-from gymrat.verdict import infer_group
+from gymrat.report.types import CandidateMetric, candidate_at
 
 if TYPE_CHECKING:
     from gymrat.loop.discard import DiscardResult
@@ -42,9 +44,7 @@ if TYPE_CHECKING:
     from gymrat.session.records import IterationRecord
     from gymrat.verdict import KindAggregate
 
-_COMPARE_SCHEMA_VERSION = 2
-_MEASURE_SCHEMA_VERSION = 1
-_PROBE_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +78,7 @@ def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {
-        "schema_version": _COMPARE_SCHEMA_VERSION,
+        "schema_version": _SCHEMA_VERSION,
         "baseline": result.baseline_label,
         "candidates": [candidate.label for candidate in result.candidates],
         "samples": result.samples,
@@ -90,7 +90,7 @@ def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None
         "per_candidate": _serialize_per_candidate(result),
         "worktrees": _serialize_worktrees(result),
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +109,7 @@ def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | No
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {
-        "schema_version": _MEASURE_SCHEMA_VERSION,
+        "schema_version": _SCHEMA_VERSION,
         "label": result.label,
         "samples": result.samples,
         "adapter": result.adapter,
@@ -118,7 +118,7 @@ def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | No
         },
         "worktrees": _serialize_worktrees(result),
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 # ---------------------------------------------------------------------------
@@ -141,15 +141,15 @@ def render_probe_json(result: ProbeResult, *, budget: BudgetSummary | None = Non
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {
-        "schema_version": _PROBE_SCHEMA_VERSION,
+        "schema_version": _SCHEMA_VERSION,
         "label": result.label,
         "samples": result.samples,
         "adapter": result.adapter,
-        "scoped": result.scoped,
+        "scoped": bool(result.names),
         "names": list(result.names),
         "metrics": {metric.name: _serialize_probe_metric(metric) for metric in result.metrics},
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def _serialize_probe_metric(metric: ProbeMetric) -> dict[str, object]:
@@ -170,10 +170,7 @@ def _serialize_metric(
     """One metric's meta, baseline, and positional per-candidate rows."""
     empty = CandidateMetric()
     rows = [
-        _candidate_row(
-            candidate.label,
-            metric.candidates[index] if index < len(metric.candidates) else empty,
-        )
+        _candidate_row(candidate.label, candidate_at(metric, index) or empty)
         for index, candidate in enumerate(candidates)
     ]
     return {
@@ -181,7 +178,7 @@ def _serialize_metric(
         "direction": metric.meta.direction,
         "gating": metric.meta.gating,
         "kind": metric.meta.kind,
-        "group": infer_group(name),
+        "group": parse_metric_name(name).group,
         "baseline": {"median": metric.baseline_median, "spread_pct": metric.baseline_spread},
         "candidates": rows,
     }
@@ -211,14 +208,7 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
         The verdict fields as a flat dict suitable for merging into a row.
     """
     if verdict is None:
-        return {
-            "verdict": None,
-            "method": None,
-            "delta": None,
-            "noise_pct": None,
-            "p": None,
-            "band": None,
-        }
+        return dict.fromkeys(("verdict", "method", "delta", "noise_pct", "p", "band"))
     noise_pct: float | None = None
     p: float | None = None
     band: float | None = None
@@ -236,7 +226,7 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
     return {
         "verdict": verdict.verdict,
         "method": verdict.method,
-        "delta": verdict.delta.value,
+        "delta": verdict.delta,
         "noise_pct": noise_pct,
         "p": p,
         "band": band,
@@ -279,7 +269,7 @@ def _serialize_measure_metric(name: str, metric: MetricMeasurement) -> dict[str,
         "gating": metric.meta.gating,
         "exact": metric.meta.exact,
         "kind": metric.meta.kind,
-        "group": infer_group(name),
+        "group": parse_metric_name(name).group,
     }
 
 
@@ -302,17 +292,17 @@ def _serialize_worktrees(result: WorktreeCleanupOutcome) -> dict[str, object]:
 
 def render_iterate_json(result: IterateResult, *, budget: BudgetSummary | None = None) -> str:
     """Seq, outcome, primary summary, per-metric verdicts, and confirm results."""
-    return _render(_serialize_iteration(result.record), budget)
+    return render_document(_serialize_iteration(result.record), budget)
 
 
 def render_stop_json(*, at: int, message: str, budget: BudgetSummary | None = None) -> str:
     """Render a stop result as ``{"at": …, "message": …}`` with an optional budget."""
-    return _render({"at": at, "message": message}, budget)
+    return render_document({"at": at, "message": message}, budget)
 
 
 def render_iterate_stop_json(reason: str, *, budget: BudgetSummary | None = None) -> str:
     """Emitted instead of the normal iteration document when a stop condition fires."""
-    return _render({"stopped": True, "reason": reason}, budget)
+    return render_document({"stopped": True, "reason": reason}, budget)
 
 
 def render_keep_json(result: KeepResult, *, budget: BudgetSummary | None = None) -> str:
@@ -333,7 +323,7 @@ def render_keep_json(result: KeepResult, *, budget: BudgetSummary | None = None)
         "commit": record.commit,
         "message": record.message,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_discard_json(result: DiscardResult, *, budget: BudgetSummary | None = None) -> str:
@@ -350,7 +340,7 @@ def render_discard_json(result: DiscardResult, *, budget: BudgetSummary | None =
     record = result.record
     measured = record is not None
     seq = record.seq if record is not None else None
-    return _render({"seq": seq, "at": result.at, "measured": measured}, budget)
+    return render_document({"seq": seq, "at": result.at, "measured": measured}, budget)
 
 
 def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None) -> str:
@@ -366,7 +356,7 @@ def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None)
         "finalized": data.finalized,
         "stopped": data.stopped,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_start_json(
@@ -403,7 +393,7 @@ def render_start_json(
         "runbook": runbook,
         "archived": archived,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_finalize_json(
@@ -427,7 +417,7 @@ def render_finalize_json(
         "message": record.message,
         "at": record.at,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_sync_json(
@@ -445,7 +435,7 @@ def render_sync_json(
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {"files": list(result.files)}
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
@@ -488,7 +478,7 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
     }
 
 
-def _render(document: dict[str, object], budget: BudgetSummary | None) -> str:
+def render_document(document: dict[str, object], budget: BudgetSummary | None = None) -> str:
     """Insert the budget key when present, then serialize with a two-space indent.
 
     Every non-finite float serializes as ``null`` (see module docstring).
@@ -502,8 +492,5 @@ def _render(document: dict[str, object], budget: BudgetSummary | None) -> str:
         The pretty-printed JSON string.
     """
     if budget is not None:
-        document["budget"] = {
-            "cap_minutes": budget.cap_minutes,
-            "remaining_seconds": budget.remaining_seconds,
-        }
+        document["budget"] = asdict(budget)
     return to_json(document, indent=2, inf_nan_mode="null").decode()

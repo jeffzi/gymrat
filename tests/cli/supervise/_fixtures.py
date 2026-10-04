@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.config.types import Effort
+    from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.store import SessionState
     from gymrat.supervisor.supervise import EndedBy
@@ -21,18 +21,19 @@ if TYPE_CHECKING:
 from rich.console import Console, RenderableType
 
 from gymrat.cli.style import CLI_THEME
-from gymrat.cli.supervise.progress import REFRESH_MS, create_supervise_reporter
-from gymrat.cli.supervise.types import IDLE_WARN_MS, ReadSessionResult, SuperviseReporter
+from gymrat.cli.supervise.progress import (
+    IDLE_WARN_MS,
+    REFRESH_MS,
+    SuperviseReporter,
+    create_supervise_reporter,
+)
+from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
 from gymrat.loop.start import start_session
-from gymrat.session.paths import session_jsonl_path
-from gymrat.session.records import BaselineRecord, IterationPrimary, IterationRecord
-from gymrat.session.store import append_record
 from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     CapAction,
     CapEvent,
     CapType,
-    CompactionEvent,
     FollowUpEvent,
     LaunchEvent,
     ModelPhaseEvent,
@@ -44,63 +45,15 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 from gymrat.supervisor.supervise import SupervisionResult
-from tests._rich import CleanupRegistry, frame_text
+from gymrat.utils import NS_PER_MS
+from tests._rich import frame_text
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
-    AT,
     empty_session_state,
-    finalize_record,
-    iteration_record,
+    make_iteration,
     session_state,
 )
-
-__all__ = [
-    "FRAME_WIDTH",
-    "LIVE_CLASS_PATH",
-    "CleanupRegistry",
-    "Clock",
-    "PlainCapture",
-    "ReporterKit",
-    "baseline_record",
-    "cap_event",
-    "empty_session_state",
-    "finalize_record",
-    "fire_cap",
-    "fire_compaction",
-    "fire_follow_up",
-    "fire_launch",
-    "fire_launch_and_bash_cycle",
-    "fire_launch_and_bash_start",
-    "fire_model_phase",
-    "fire_thinking_update",
-    "fire_tool_end",
-    "fire_tool_start",
-    "fire_turn_end",
-    "fire_usage_update",
-    "follow_up_event",
-    "launch_event",
-    "make_iteration",
-    "make_plain_reporter",
-    "make_read_session",
-    "make_reporter",
-    "make_supervision_result",
-    "model_phase_event",
-    "render_colored",
-    "render_colorless",
-    "render_frame",
-    "seed_session_with_baseline",
-    "seed_session_with_iteration",
-    "session_state",
-    "session_state_three_iterations",
-    "start_open_session",
-    "stop_built_reporters",
-    "thinking_event",
-    "tool_end_event",
-    "tool_start_event",
-    "turn_end_event",
-    "usage_event",
-]
-
+from tests.supervisor._fixtures import make_launch
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -122,54 +75,9 @@ class Clock:
 # ---------------------------------------------------------------------------
 
 
-def baseline_record(
-    *,
-    label: str = ".gymrat/worktrees/baseline",
-    duration_ms: float | None = None,
-    at: int = AT,
-) -> BaselineRecord:
-    """A baseline record with an optional wall-clock duration."""
-    return BaselineRecord(
-        type="baseline",
-        at=at,
-        label=label,
-        samples=({"total_ms": 15200},),
-        duration_ms=duration_ms,
-    )
-
-
 def start_open_session(repo: str) -> None:
     """Start a gymrat session so the experiment worktree and session log exist."""
     start_session(repo, "main", resolved_config())
-
-
-def seed_session_with_baseline(
-    repo: str, *, baseline_duration_ms: float, label: str = ".gymrat/worktrees/baseline"
-) -> None:
-    """Open a session and append a single baseline record with the given duration."""
-    start_open_session(repo)
-    log = session_jsonl_path(repo)
-    append_record(log, baseline_record(label=label, duration_ms=baseline_duration_ms))
-
-
-def seed_session_with_iteration(
-    repo: str,
-    *,
-    iteration_duration_ms: float,
-    include_baseline: bool = True,
-    label: str = ".gymrat/worktrees/baseline",
-) -> None:
-    """Seed a session whose iteration carries the given duration.
-
-    The seeded baseline (when included) gets no ``duration_ms`` of its own —
-    there is no parameter to set one — so any feasibility math a test exercises
-    is driven entirely by ``iteration_duration_ms``.
-    """
-    start_open_session(repo)
-    log = session_jsonl_path(repo)
-    if include_baseline:
-        append_record(log, baseline_record(label=label))
-    append_record(log, iteration_record(duration_ms=iteration_duration_ms))
 
 
 def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
@@ -180,15 +88,6 @@ def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
     than hard-coding a clock time.
     """
     return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).astimezone().strftime("%H:%M:%S")
-
-
-def make_iteration(delta_pct: float | None, outcome: str, seq: int = 1) -> IterationRecord:
-    """An iteration whose only reporter-visible fields are its delta and outcome."""
-    return iteration_record(
-        seq=seq,
-        primary=IterationPrimary(kind="geomean", delta_pct=delta_pct),
-        outcome=outcome,
-    )
 
 
 def session_state_three_iterations(delta_pct: float, outcome: str, *, seq: int = 1) -> SessionState:
@@ -209,24 +108,20 @@ def make_read_session(
     state: SessionState,
     *,
     has_baseline: bool,
-    best_delta_pct: float | None = None,
-    best_seq: int | None = None,
-    primary_label: str | None = None,
+    best: BestIteration | None = None,
     baseline_sha: str | None = None,
     stop_message: str | None = None,
 ) -> Callable[[], ReadSessionResult]:
     """A ``read_session`` that always returns ``state`` and ``has_baseline``.
 
-    ``best_*`` / ``baseline_sha`` / ``stop_message`` default to ``None`` on
+    ``best`` / ``baseline_sha`` / ``stop_message`` default to ``None`` on
     ``ReadSessionResult`` itself, so callers that omit them still get a valid
     result.
     """
     result = ReadSessionResult(
         state=state,
         has_baseline=has_baseline,
-        best_delta_pct=best_delta_pct,
-        best_seq=best_seq,
-        primary_label=primary_label,
+        best=best,
         baseline_sha=baseline_sha,
         stop_message=stop_message,
     )
@@ -261,7 +156,6 @@ def make_supervision_result(
         outcome=outcome,
         ended_by=ended_by,
         duration_ms=duration_ms,
-        cost_usd=cost_usd,
         end_reason=end_reason,
     )
 
@@ -275,13 +169,9 @@ def _throwing_read() -> ReadSessionResult:
 # Event firers
 # ---------------------------------------------------------------------------
 
-# Default timestamp for fire_tool_start; fire_tool_end's default duration_ms
-# is computed against it so the two stay in sync.
+# Default timestamp of a tool start; a tool end's default duration is measured
+# from it, so the two stay in sync.
 _DEFAULT_TOOL_START_TS = 2000
-
-# Converts an event firer's `at_ms` (milliseconds) to the `at` field's
-# nanosecond-since-epoch unit.
-_NS_PER_MS = 1_000_000
 
 
 def launch_event(
@@ -290,35 +180,15 @@ def launch_event(
     max_minutes: float = 60,
     max_usd: float | None = None,
 ) -> LaunchEvent:
-    """A ``LaunchEvent`` stamped at *at_ms* milliseconds, with sensible cap and model defaults."""
-    return LaunchEvent(
-        at=at_ms * _NS_PER_MS,
-        schema_version=1,
-        head_sha="abc123",
-        dirty=False,
-        max_minutes=max_minutes,
-        max_usd=max_usd,
-        model=None,
-        runbook_path="/path/to/runbook.md",
-        kickoff_summary="test kickoff",
-        session_id="20260813-125044-34ec",
-    )
-
-
-def fire_launch(
-    observer: SessionObserver,
-    at_ms: int = 1000,
-    *,
-    max_minutes: float = 60,
-    max_usd: float | None = None,
-) -> None:
-    """Publish a ``LaunchEvent`` with sensible defaults for cap and model fields.
+    """A ``LaunchEvent`` stamped at *at_ms* milliseconds, with sensible cap and model defaults.
 
     ``at_ms`` is in the test's millisecond vocabulary; the event is stamped
-    ``at=at_ms * _NS_PER_MS`` (nanoseconds) so the dashboard's ingestion
+    ``at=at_ms * NS_PER_MS`` (nanoseconds) so the dashboard's ingestion
     boundary (``event.at // 1_000_000``) recovers the same millisecond value.
     """
-    observer(launch_event(at_ms, max_minutes=max_minutes, max_usd=max_usd))
+    return make_launch(
+        at=at_ms * NS_PER_MS, head_sha="abc123", max_minutes=max_minutes, max_usd=max_usd
+    )
 
 
 def tool_start_event(
@@ -331,33 +201,12 @@ def tool_start_event(
 ) -> ToolStartEvent:
     """A ``ToolStartEvent`` for *tool_name* stamped at *at_ms* milliseconds."""
     return ToolStartEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         tool_use_id=tool_use_id,
         tool_name=tool_name,
         input={},
         input_summary=input_summary,
         parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def fire_tool_start(
-    observer: SessionObserver,
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = _DEFAULT_TOOL_START_TS,
-    *,
-    input_summary: str = "...",
-    parent_tool_use_id: str | None = None,
-) -> None:
-    """Publish a ``ToolStartEvent`` at the default start timestamp used by ``fire_tool_end``."""
-    observer(
-        tool_start_event(
-            tool_name,
-            tool_use_id,
-            at_ms,
-            input_summary=input_summary,
-            parent_tool_use_id=parent_tool_use_id,
-        )
     )
 
 
@@ -373,7 +222,7 @@ def tool_end_event(
 ) -> ToolEndEvent:
     """A ``ToolEndEvent`` whose duration is measured from *started_at_ms*."""
     return ToolEndEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         tool_use_id=tool_use_id,
         tool_name=tool_name,
         duration_ms=at_ms - started_at_ms,
@@ -383,58 +232,14 @@ def tool_end_event(
     )
 
 
-def fire_tool_end(
-    observer: SessionObserver,
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = 3000,
-    *,
-    result: str = "ok",
-    result_summary: str = "ok",
-    parent_tool_use_id: str | None = None,
-) -> None:
-    """Publish a ``ToolEndEvent`` with duration measured from the default start timestamp."""
-    observer(
-        tool_end_event(
-            tool_name,
-            tool_use_id,
-            at_ms,
-            result=result,
-            result_summary=result_summary,
-            parent_tool_use_id=parent_tool_use_id,
-        )
-    )
-
-
 def usage_event(cost_usd: float, at_ms: int = 4000) -> UsageUpdateEvent:
     """A ``UsageUpdateEvent`` carrying the given cumulative cost."""
-    return UsageUpdateEvent(at=at_ms * _NS_PER_MS, cost_usd=cost_usd)
-
-
-def fire_usage_update(observer: SessionObserver, cost_usd: float, at_ms: int = 4000) -> None:
-    """Publish a ``UsageUpdateEvent`` carrying the given cumulative cost."""
-    observer(usage_event(cost_usd, at_ms))
+    return UsageUpdateEvent(at=at_ms * NS_PER_MS, cost_usd=cost_usd)
 
 
 def cap_event(cap: CapType, at_ms: int = 5000, *, action: CapAction = "interrupting") -> CapEvent:
     """A ``CapEvent`` signaling that *cap* has fired."""
-    return CapEvent(at=at_ms * _NS_PER_MS, cap=cap, action=action)
-
-
-def fire_cap(
-    observer: SessionObserver,
-    cap: CapType,
-    at_ms: int = 5000,
-    *,
-    action: CapAction = "interrupting",
-) -> None:
-    """Publish a ``CapEvent`` signaling that the given cap has fired."""
-    observer(cap_event(cap, at_ms, action=action))
-
-
-def fire_compaction(observer: SessionObserver, at_ms: int = 5000) -> None:
-    """Publish a ``CompactionEvent`` marking a context-window compaction."""
-    observer(CompactionEvent(at=at_ms * _NS_PER_MS))
+    return CapEvent(at=at_ms * NS_PER_MS, cap=cap, action=action)
 
 
 def model_phase_event(
@@ -446,24 +251,10 @@ def model_phase_event(
 ) -> ModelPhaseEvent:
     """A ``ModelPhaseEvent``; *parent_tool_use_id* scopes it to a nested tool."""
     return ModelPhaseEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         phase=phase,  # type: ignore[arg-type]
         tool_name=tool_name,
         parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def fire_model_phase(
-    observer: SessionObserver,
-    at_ms: int,
-    phase: str,
-    *,
-    tool_name: str | None = None,
-    parent_tool_use_id: str | None = None,
-) -> None:
-    """Publish a ``ModelPhaseEvent``; ``tool_name``/``parent_tool_use_id`` scope it to a nested tool."""
-    observer(
-        model_phase_event(at_ms, phase, tool_name=tool_name, parent_tool_use_id=parent_tool_use_id)
     )
 
 
@@ -476,29 +267,10 @@ def thinking_event(
 ) -> ThinkingUpdateEvent:
     """A ``ThinkingUpdateEvent`` carrying the given cumulative token estimate."""
     return ThinkingUpdateEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         estimated_tokens=estimated_tokens,
         delta=delta,
         parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def fire_thinking_update(
-    observer: SessionObserver,
-    at_ms: int,
-    *,
-    estimated_tokens: int = 100,
-    delta: int = 10,
-    parent_tool_use_id: str | None = None,
-) -> None:
-    """Publish a ``ThinkingUpdateEvent`` with the given token estimate and delta."""
-    observer(
-        thinking_event(
-            at_ms,
-            estimated_tokens=estimated_tokens,
-            delta=delta,
-            parent_tool_use_id=parent_tool_use_id,
-        )
     )
 
 
@@ -512,28 +284,11 @@ def turn_end_event(
 ) -> TurnEndEvent:
     """A ``TurnEndEvent`` attributed to *origin*."""
     return TurnEndEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         text=text,
         cost_usd=cost_usd,
         origin=origin,
         budget_exhausted=budget_exhausted,
-    )
-
-
-def fire_turn_end(
-    observer: SessionObserver,
-    at_ms: int = 5000,
-    *,
-    text: str = "Turn summary.",
-    cost_usd: float = 0.01,
-    origin: Literal["agent", "injected"] = "agent",
-    budget_exhausted: bool = False,
-) -> None:
-    """Publish a ``TurnEndEvent``; ``budget_exhausted`` gates the cap-triggered path."""
-    observer(
-        turn_end_event(
-            at_ms, text=text, cost_usd=cost_usd, origin=origin, budget_exhausted=budget_exhausted
-        )
     )
 
 
@@ -545,19 +300,7 @@ def follow_up_event(
     text: str | None = None,
 ) -> FollowUpEvent:
     """A ``FollowUpEvent`` carrying the supervisor's decision for the turn."""
-    return FollowUpEvent(at=at_ms * _NS_PER_MS, action=action, reason=reason, text=text)
-
-
-def fire_follow_up(
-    observer: SessionObserver,
-    at_ms: int = 6000,
-    *,
-    action: Literal["replied", "waiting", "ended"] = "replied",
-    reason: str | None = None,
-    text: str | None = None,
-) -> None:
-    """Publish a ``FollowUpEvent`` with the given follow-up action."""
-    observer(follow_up_event(at_ms, action=action, reason=reason, text=text))
+    return FollowUpEvent(at=at_ms * NS_PER_MS, action=action, reason=reason, text=text)
 
 
 def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
@@ -565,9 +308,9 @@ def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
 
     The Bash end triggers the reporter's session re-read.
     """
-    fire_launch(observer, 1000)
-    fire_tool_start(observer, "Bash", "bash-1", 2000)
-    fire_tool_end(observer, "Bash", "bash-1", 3000)
+    observer(launch_event(1000))
+    observer(tool_start_event("Bash", "bash-1", 2000))
+    observer(tool_end_event("Bash", "bash-1", 3000))
 
 
 def fire_launch_and_bash_start(observer: SessionObserver) -> None:
@@ -577,8 +320,8 @@ def fire_launch_and_bash_start(observer: SessionObserver) -> None:
     event on top of the still-running Bash call and assert whether it takes
     effect or is ignored.
     """
-    fire_launch(observer, 1000)
-    fire_tool_start(observer, "Bash", "bash-1", 1500)
+    observer(launch_event(1000))
+    observer(tool_start_event("Bash", "bash-1", 1500))
 
 
 # ---------------------------------------------------------------------------
@@ -615,7 +358,6 @@ def make_reporter(
     root: str = "/tmp/repo",
     read_progress: Callable[[str], ProgressSnapshot | None] | None = None,
     plain_write: Callable[[str], None] | None = None,
-    label: str = "ecstatic-ts",
     session_id: str = "20260813-125044-34ec",
     branch: str = "gymrat/20260813-125044-34ec",
     color: bool | None = None,
@@ -643,7 +385,6 @@ def make_reporter(
         read_progress: Reads the iterate progress sidecar, or ``None`` for the
             standard reader.
         plain_write: Line writer for plain mode, or ``None`` for the standard writer.
-        label: Human label for the run, shown in the frame header.
         session_id: Session identifier propagated to the frame.
         branch: Git branch name shown in the frame header.
         color: Tri-state color override: ``True`` forces color, ``False``
@@ -672,7 +413,6 @@ def make_reporter(
         mode=mode,
         now=clock,
         read_session=read_session,
-        label=label,
         session_id=session_id,
         branch=branch,
         tz=tz,
@@ -701,52 +441,11 @@ def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> st
     return frame_text(reporter.frame(), width=width)
 
 
-# ---------------------------------------------------------------------------
-# Plain mode helpers
-# ---------------------------------------------------------------------------
-
-
-class PlainCapture(NamedTuple):
-    """A plain-mode reporter paired with a write recorder."""
-
-    kit: ReporterKit
-    writes: list[str]
-
-    @property
-    def reporter(self) -> SuperviseReporter:
-        return self.kit.reporter
-
-    @property
-    def observer(self) -> SessionObserver:
-        return self.kit.reporter.observer
-
-
-def make_plain_reporter(
-    *,
-    max_minutes: float = 60,
-    max_usd: float | None = None,
-    max_iterations: int | None = None,
-    read_session: Callable[[], ReadSessionResult] | None = None,
-    clock_start: int = 1000,
-    tz: tzinfo | None = UTC,
-) -> PlainCapture:
-    """Build a plain-mode reporter with a write-capturing callback.
-
-    Each milestone line the reporter emits is appended to the ``writes`` list.
-    The ``tz`` parameter defaults to ``UTC`` for stable assertions.
-    """
-    writes: list[str] = []
-    kit = make_reporter(
-        mode="plain",
-        max_minutes=max_minutes,
-        max_usd=max_usd,
-        max_iterations=max_iterations,
-        read_session=read_session,
-        clock_start=clock_start,
-        plain_write=writes.append,
-        tz=tz,
-    )
-    return PlainCapture(kit, writes)
+def line_after(frame: str, needle: str) -> str:
+    """Return the line immediately following the first line containing *needle*."""
+    lines = frame.splitlines()
+    idx = next(i for i, line in enumerate(lines) if needle in line)
+    return lines[idx + 1]
 
 
 def _render_sealed(

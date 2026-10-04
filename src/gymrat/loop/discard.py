@@ -29,9 +29,7 @@ from dataclasses import dataclass
 
 from gymrat.clock import now_ns
 from gymrat.errors import GymratError
-from gymrat.git import try_git
-from gymrat.plural import pluralize
-from gymrat.report.loop import SHORT_SHA_LENGTH
+from gymrat.git import SHORT_SHA_LENGTH, try_git
 from gymrat.session.records import DiscardRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
@@ -44,6 +42,7 @@ from gymrat.session.workspace import (
     revert_workspace,
     worktree_head,
 )
+from gymrat.utils import pluralize
 
 
 @dataclass(frozen=True, slots=True)

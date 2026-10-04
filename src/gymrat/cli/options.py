@@ -6,20 +6,21 @@ The parsers turn raw flag and positional text into typed values, raising
 it carries an identical surface.
 """
 
-import math
 import re
 from enum import StrEnum
 from typing import Annotated
 
 import typer
 
-from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS, is_positive_integer
-from gymrat.eta import SECONDS_PER_MINUTE
+from gymrat.config import (
+    MAX_SAFE_INTEGER,
+    MAX_TIMEOUT_SECONDS,
+    is_positive_integer,
+    parse_bounded_positive_int,
+)
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
 
-_POSITIVE_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
-_POSITIVE_NUMBER_MESSAGE = "must be a positive number."
 _GEOMEAN_CONDITION_RE = re.compile(r"geomean:(-?\d+(?:\.\d+)?)")
 
 
@@ -94,8 +95,8 @@ class PositionalParamType:
 def parse_positive_int(value: str, maximum: int) -> int:
     """Parse a positive integer flag bounded by ``maximum``.
 
-    The value must satisfy :func:`~gymrat.config.env.is_positive_integer`, the
-    rule the matching ``GYMRAT_*`` env var applies too.
+    The value goes through :func:`~gymrat.config.parse_bounded_positive_int`,
+    the rule the matching ``GYMRAT_*`` env var applies too.
 
     Args:
         value: The raw flag value.
@@ -111,13 +112,11 @@ def parse_positive_int(value: str, maximum: int) -> int:
     if not is_positive_integer(value):
         message = "must be a positive integer."
         raise typer.BadParameter(message)
-    # More significant digits than ``maximum`` means above it; comparing lengths
-    # first keeps ``int`` away from a run past the interpreter's conversion limit.
-    digits = value.lstrip("0")
-    if len(digits) > len(str(maximum)) or int(digits) > maximum:
+    parsed = parse_bounded_positive_int(value, maximum)
+    if parsed is None:
         message = f"must be at most {maximum}."
         raise typer.BadParameter(message)
-    return int(digits)
+    return parsed
 
 
 def parse_samples(value: str) -> int:
@@ -148,48 +147,6 @@ def parse_timeout(value: str) -> int:
         typer.BadParameter: When the value is not a positive integer within the ceiling.
     """
     return parse_positive_int(value, MAX_TIMEOUT_SECONDS)
-
-
-def parse_positive_number(value: str) -> float:
-    """Parse a strictly positive finite decimal.
-
-    Args:
-        value: The raw flag value.
-
-    Returns:
-        The parsed number.
-
-    Raises:
-        typer.BadParameter: When the value is negative, zero, not finite, or has
-            trailing garbage.
-    """
-    if _POSITIVE_NUMBER_RE.fullmatch(value) is None:
-        raise typer.BadParameter(_POSITIVE_NUMBER_MESSAGE)
-    parsed = float(value)
-    if parsed <= 0 or not math.isfinite(parsed):
-        raise typer.BadParameter(_POSITIVE_NUMBER_MESSAGE)
-    return parsed
-
-
-def parse_max_minutes(value: str) -> float:
-    """Parse a positive number of minutes bounded by the 32-bit timer ceiling.
-
-    Args:
-        value: The raw flag value.
-
-    Returns:
-        The parsed number of minutes.
-
-    Raises:
-        typer.BadParameter: When the value is not a positive number, or is above
-            the ceiling.
-    """
-    parsed = parse_positive_number(value)
-    max_minutes = MAX_TIMEOUT_SECONDS // SECONDS_PER_MINUTE
-    if parsed > max_minutes:
-        message = f"must be at most {max_minutes} minutes."
-        raise typer.BadParameter(message)
-    return parsed
 
 
 def parse_fail_on(value: str) -> FailOnCondition:
@@ -274,16 +231,6 @@ FormatOption = Annotated[OutputFormat, typer.Option("--format", help="output for
 """--format: output format, an :class:`OutputFormat` choice."""
 DebugOption = Annotated[bool, typer.Option("--debug", "-d", help="show stack traces on errors")]
 """--debug/-d: show stack traces on errors."""
-RecordOption = Annotated[
-    bool,
-    typer.Option("--record", "-r", help="append the run to the session log as a baseline"),
-]
-"""--record/-r: append the run to the session log as a baseline."""
-BranchOption = Annotated[
-    str | None,
-    typer.Option("--branch", help="branch to point at the squash commit (default: <branch>-final)"),
-]
-"""--branch: branch to point at the squash commit; None uses ``<branch>-final``."""
 BaselineOption = Annotated[
     str | None,
     typer.Option(
@@ -299,17 +246,3 @@ BaselineOption = Annotated[
 
 Ignored when a session is resumed.
 """
-ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
-"""--force/-f: skip the confirmation prompt."""
-AllowUnimprovedOption = Annotated[
-    bool,
-    typer.Option(
-        "--allow-unimproved",
-        help="keep the edit even when the iteration was not improved",
-    ),
-]
-"""--allow-unimproved: keep the edit even when the iteration was not improved."""
-VerboseOption = Annotated[
-    bool, typer.Option("--verbose", "-v", help="keep the progress tree visible after the run")
-]
-"""--verbose/-v: keep the progress tree visible after the run."""

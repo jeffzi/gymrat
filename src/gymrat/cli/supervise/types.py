@@ -1,7 +1,7 @@
 """Types for the supervise progress display.
 
-The session read result, the reporter surface, the liveness states and tool
-records the reducer tracks, and the context the reporter shell owns.
+The session read result and the liveness states and tool records the reducer
+tracks.
 """
 
 from __future__ import annotations
@@ -10,20 +10,24 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from datetime import tzinfo
-
-    from rich.console import RenderableType
-
-    from gymrat.cli.style import ErasableLive
-    from gymrat.cli.supervise.reducer import ReporterState
-    from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.store import SessionState
-    from gymrat.supervisor.events import CapAction, CapType, SessionObserver
-    from gymrat.supervisor.exit_sequence import ExitPhase
+    from gymrat.supervisor.events import CapAction, CapType
 
-IDLE_WARN_MS = 30_000
-"""After 30 seconds of no tool activity, the liveness line escalates to alert styling."""
+
+@dataclass(frozen=True, slots=True)
+class BestIteration:
+    """The committed-keep iteration with the best primary delta.
+
+    Attributes:
+        delta_pct: Its primary delta, in percent.
+        seq: Its sequence number.
+        label: Its primary: the metric name for a named-metric primary, else
+            the kind (``"geomean"``).
+    """
+
+    delta_pct: float
+    seq: int
+    label: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,19 +37,11 @@ class ReadSessionResult:
     Attributes:
         state: The folded session state as of the last read.
         has_baseline: Whether a baseline record has been recorded for the session.
-        best_delta_pct: The best primary delta, in percent, among committed-keep
-            iterations. ``None`` when no keep has been committed.
-            ``make_default_read`` computes it from the session records;
-            injected test readers set it directly.
-        best_seq: The sequence number of the committed-keep iteration with the
-            best primary delta. ``None`` under the same condition as
-            ``best_delta_pct``, and set alongside it.
-        primary_label: The primary of the best committed-keep iteration: the
-            metric name for a named-metric primary, else the kind
-            (``"geomean"``). ``None`` under the same condition as
-            ``best_delta_pct``, and set alongside it.
+        best: The best committed-keep iteration. ``None`` when no keep has been
+            committed. ``read_live_session`` computes it from the session
+            records; injected test readers set it directly.
         baseline_sha: The commit the session started from, taken from the
-            session record by ``make_default_read``. ``None`` before the session
+            session record by ``read_live_session``. ``None`` before the session
             record has been written.
         stop_message: The newest stop record's message. Holds a value only
             while the folded log ends on a stop; ``None`` once any iteration,
@@ -54,42 +50,9 @@ class ReadSessionResult:
 
     state: SessionState
     has_baseline: bool
-    best_delta_pct: float | None = None
-    best_seq: int | None = None
-    primary_label: str | None = None
+    best: BestIteration | None = None
     baseline_sha: str | None = None
     stop_message: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SuperviseReporter:
-    """The observer/stop/frame/warn surface that drives the supervise progress display.
-
-    ``session_result`` hands back the session state as of the last re-read, which
-    is what the closing summary reports once the display has stopped.
-
-    Live mode's display and its refresh timer run from construction until
-    ``stop``, and for that span a termination signal erases the display: its
-    cleanup is installed at construction and uninstalled by ``stop``.
-
-    ``exit_phase`` shows the run-end exit sequence's current phase: live mode
-    repaints the frame, plain mode writes the phase line once per phase change.
-
-    ``refresh_session`` re-reads the session so ``session_result`` reflects
-    writes that no event announced, such as an exit-sequence step that failed after
-    writing to the session log. A successful re-read writes no plain line; a
-    failed read keeps the previous result and warns, as the event-driven
-    re-read does.
-    """
-
-    observer: SessionObserver
-    stop: Callable[[], None]
-    frame: Callable[[], RenderableType]
-    warn: Callable[[str], None]
-    session_result: Callable[[], ReadSessionResult | None]
-    final_text: Callable[[], str | None]
-    exit_phase: Callable[[ExitPhase], None]
-    refresh_session: Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,14 +97,12 @@ class Composing:
 class Waiting:
     """No tool is running; ``since`` is the timestamp of the last observed activity.
 
-    The ``tool_*`` and ``result`` fields describe the last finished top-level tool.
-    All three are ``None`` when no tool has finished yet.
+    ``last_tool`` is the last finished top-level tool, ``None`` when no tool has
+    finished yet.
     """
 
     since: int
-    tool_name: str | None = None
-    tool_ended_at: int | None = None
-    result: str | None = None
+    last_tool: FinishedTool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,12 +131,12 @@ type Liveness = Starting | InFlight | Thinking | Responding | Composing | Waitin
 
 
 @dataclass(frozen=True, slots=True)
-class TrackedTool:
-    """A tool the reporter has seen start but not yet end."""
+class RunningTool:
+    """A top-level or nested subagent tool seen to start at ``since`` and not yet end."""
 
     tool_name: str
-    started_at: int
     input_summary: str
+    since: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,15 +151,6 @@ class FinishedTool:
 
 
 @dataclass(frozen=True, slots=True)
-class NestedTool:
-    """A nested subagent tool that is currently running."""
-
-    tool_name: str
-    input_summary: str
-    since: int
-
-
-@dataclass(frozen=True, slots=True)
 class NestedPhase:
     """A nested subagent model phase (thinking, responding, or tool_input)."""
 
@@ -207,26 +159,5 @@ class NestedPhase:
     tool_name: str | None = None
 
 
-type NestedActivity = NestedTool | NestedPhase
+type NestedActivity = RunningTool | NestedPhase
 """What a nested subagent is currently doing, keyed by its parent tool-use id."""
-
-
-@dataclass(slots=True)
-class ReporterCtx:
-    """The terminal, clock, and I/O handles the reporter shell owns.
-
-    Everything the dashboard renders lives in ``state``, which the shell
-    replaces after each event.  Only the shell writes to this object; the
-    reducer never sees it.
-    """
-
-    state: ReporterState
-    now: Callable[[], int]
-    read_session_fn: Callable[[], ReadSessionResult]
-    read_progress_fn: Callable[[str], ProgressSnapshot | None]
-    plain_write_fn: Callable[[str], None]
-    warn_fn: Callable[[str], None]
-    live: ErasableLive | None
-    tz: tzinfo | None
-    is_plain: bool
-    idle_warn_ms: int

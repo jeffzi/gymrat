@@ -6,7 +6,7 @@ assembly without spawning processes or creating worktrees.
 """
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from types import ModuleType
 
@@ -14,8 +14,15 @@ import pytest
 
 from gymrat import sampling
 from gymrat.adapters import Adapter
-from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
-from gymrat.targets import CleanupResult, InPlaceTarget, WorktreeInfo
+from gymrat.sampling import (
+    CleanupResult,
+    SamplingOptions,
+    TargetContext,
+    TargetSamples,
+    WorktreeInfo,
+)
+from gymrat.targets import InPlaceTarget
+from tests._process_helpers import fake_install
 
 CLEAN_RESULT = CleanupResult(removed=0, failures=(), prune_error=None)
 
@@ -61,14 +68,11 @@ def install_pipeline(
             TargetSamples(ctx=ctx, samples=sample_sets[index]) for index, ctx in enumerate(contexts)
         ]
 
-    def fake_install(cleanup_cb: Callable[[], None]) -> Callable[[], None]:
-        return lambda: None
-
     def fake_cleanup_worktrees(worktrees: Sequence[WorktreeInfo], repo_dir: str) -> CleanupResult:
         return cleanup
 
     monkeypatch.setattr(orchestrator, "resolve_target", fake_resolve_target)
     monkeypatch.setattr(orchestrator, "collect_samples", fake_collect)
-    monkeypatch.setattr(sampling, "install_termination_cleanup", fake_install)
+    monkeypatch.setattr(sampling, "install_termination_cleanup", fake_install([]))
     monkeypatch.setattr(sampling, "cleanup_worktrees", fake_cleanup_worktrees)
     return captured

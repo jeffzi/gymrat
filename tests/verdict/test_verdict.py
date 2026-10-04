@@ -12,16 +12,13 @@ import pytest
 
 from gymrat.model import (
     BandVerdict,
-    Effect,
     ExactVerdict,
-    MethodFloors,
     MetricMeta,
     MetricVerdict,
-    Observations,
     PermutationVerdict,
 )
+from gymrat.utils import WarnSink
 from gymrat.verdict import compute_verdicts
-from gymrat.warn import WarnSink
 from tests.verdict._inputs import METRIC_BYTES_LOWER, create_samples, noop_warn
 
 # ---------------------------------------------------------------------------
@@ -49,12 +46,12 @@ def run(
     warn: WarnSink | None = None,
 ) -> dict[str, MetricVerdict]:
     """Pair two round lists and compute verdicts, defaulting warn and noise to test-friendly values."""
-    left = Observations.from_rounds(samples_a)
-    right = Observations.from_rounds(samples_b)
     sink = noop_warn if warn is None else warn
     if unstable_noise_pct is None:
-        return compute_verdicts(left, right, meta, warn=sink)
-    return compute_verdicts(left, right, meta, unstable_noise_pct=unstable_noise_pct, warn=sink)
+        return compute_verdicts(samples_a, samples_b, meta, warn=sink)
+    return compute_verdicts(
+        samples_a, samples_b, meta, unstable_noise_pct=unstable_noise_pct, warn=sink
+    )
 
 
 def samples(*values: float) -> list[dict[str, float]]:
@@ -98,7 +95,7 @@ def test_compute_verdicts_when_exact_does_carry_only_verdict_method_delta_and_n(
     assert result["metric"] == ExactVerdict(
         method="exact",
         verdict="improved",
-        delta=Effect(value=-5.0, unit="percent"),
+        delta=-5.0,
         n=1,
     )
 
@@ -111,8 +108,7 @@ def test_compute_verdicts_when_exact_does_carry_only_verdict_method_delta_and_n(
 def test_compute_verdicts_when_medians_differ_does_report_percentage_delta():
     result = run(samples(100.0), samples(110.0), METRIC_EXACT_LOWER)
 
-    assert result["metric"].delta.value == pytest.approx(10.0, abs=1e-5)
-    assert result["metric"].delta.unit == "percent"
+    assert result["metric"].delta == pytest.approx(10.0, abs=1e-5)
 
 
 def test_compute_verdicts_when_multiple_rounds_does_compute_delta_from_medians():
@@ -122,7 +118,7 @@ def test_compute_verdicts_when_multiple_rounds_does_compute_delta_from_medians()
         METRIC_EXACT_LOWER,
     )
 
-    assert result["metric"].delta.value == pytest.approx(-5.0, abs=1e-5)
+    assert result["metric"].delta == pytest.approx(-5.0, abs=1e-5)
 
 
 def test_compute_verdicts_when_no_signal_does_still_report_delta():
@@ -130,7 +126,7 @@ def test_compute_verdicts_when_no_signal_does_still_report_delta():
 
     verdict = result["metric"]
     assert verdict.verdict == "no-signal"
-    assert verdict.delta.value == 0.0
+    assert verdict.delta == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +159,7 @@ def test_compute_verdicts_when_exact_does_classify_by_direction(
 
     verdict = result["metric"]
     assert verdict.verdict == expected_verdict
-    assert verdict.delta.value == pytest.approx(expected_delta, abs=1e-5)
+    assert verdict.delta == pytest.approx(expected_delta, abs=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +228,7 @@ def test_compute_verdicts_when_metric_named_like_a_dunder_does_keep_verdict():
             ExactVerdict(
                 method="exact",
                 verdict="improved",
-                delta=Effect(value=-5.0, unit="percent"),
+                delta=-5.0,
                 n=1,
             ),
         ),
@@ -284,13 +280,14 @@ def test_compute_verdicts_when_metrics_differ_in_exactness_does_respect_per_metr
 def test_compute_verdicts_when_zero_metric_value_does_report_zero_delta():
     result = run(samples(0.0), samples(0.0), METRIC_EXACT_LOWER)
 
-    assert result["metric"].delta.value == 0.0
+    assert result["metric"].delta == 0.0
 
 
-def test_compute_verdicts_when_baseline_median_zero_does_report_nan_delta():
+def test_compute_verdicts_when_baseline_median_zero_does_report_nan_delta_with_no_signal():
     result = run(samples(0.0), samples(5.0), METRIC_EXACT_LOWER)
 
-    assert math.isnan(result["metric"].delta.value)
+    assert math.isnan(result["metric"].delta)
+    assert result["metric"].verdict == "no-signal"
 
 
 @pytest.mark.parametrize(
@@ -309,7 +306,7 @@ def test_compute_verdicts_when_negative_median_moves_does_sign_delta_by_movement
     result = run(samples(median_a), samples(median_b), METRIC_EXACT_LOWER)
 
     verdict = result["metric"]
-    assert verdict.delta.value == pytest.approx(expected_delta, abs=1e-5)
+    assert verdict.delta == pytest.approx(expected_delta, abs=1e-5)
     assert verdict.verdict == expected_verdict
 
 
@@ -318,7 +315,7 @@ def test_compute_verdicts_when_many_windows_does_pair_all():
 
     verdict = result["metric"]
     assert verdict.n == 100
-    assert verdict.delta.value == pytest.approx(-5.0, abs=1e-5)
+    assert verdict.delta == pytest.approx(-5.0, abs=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -330,18 +327,6 @@ def test_compute_verdicts_when_non_exact_and_six_pairs_does_use_permutation():
     result = run(create_samples(6, 100.0), create_samples(6, 95.0), METRIC_APPROX_LOWER)
 
     assert result["metric"].method == "permutation"
-
-
-def test_compute_verdicts_when_permutation_threshold_unset_does_raise_value_error(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr(
-        "gymrat.verdict.PERMUTATION_FLOORS",
-        MethodFloors(method="permutation", min_n=6, p_threshold=None),
-    )
-
-    with pytest.raises(ValueError, match="p_threshold must be set"):
-        run(create_samples(6, 100.0), create_samples(6, 95.0), METRIC_APPROX_LOWER)
 
 
 def test_compute_verdicts_when_permutation_p_not_significant_does_no_signal():
@@ -358,7 +343,7 @@ def test_compute_verdicts_when_permutation_delta_nan_does_no_signal():
     result = run(create_samples(6, 0.0), create_samples(6, 5.0), METRIC_APPROX_LOWER)
 
     verdict = get_permutation(result)
-    assert math.isnan(verdict.delta.value)
+    assert math.isnan(verdict.delta)
     assert verdict.p == pytest.approx(1.0)
     assert verdict.verdict == "no-signal"
 
@@ -377,7 +362,7 @@ def test_compute_verdicts_when_permutation_delta_zero_does_no_signal(meta: dict[
     result = run(samples_a, samples_b, meta)
 
     verdict = get_permutation(result)
-    assert verdict.delta.value == 0.0
+    assert verdict.delta == 0.0
     assert verdict.p == pytest.approx(1.0)
     assert verdict.verdict == "no-signal"
 
@@ -393,7 +378,7 @@ def test_compute_verdicts_when_permutation_delta_below_band_does_no_signal():
 
     verdict = get_permutation(result)
     assert verdict.p == pytest.approx(0.5)
-    assert verdict.delta.value == pytest.approx(-5.0, abs=1e-5)
+    assert verdict.delta == pytest.approx(-5.0, abs=1e-5)
     assert verdict.noise_pct == pytest.approx(30.0, abs=1e-5)
     assert verdict.verdict == "no-signal"
 
@@ -669,7 +654,7 @@ def test_compute_verdicts_when_byte_move_is_one_byte_does_no_signal_on_band(pair
     result = run(create_samples(pairs, 4.0), create_samples(pairs, 3.0), METRIC_BYTES_LOWER)
 
     verdict = get_band(result)
-    assert verdict.delta.value == pytest.approx(-25.0, abs=1e-5)
+    assert verdict.delta == pytest.approx(-25.0, abs=1e-5)
     assert verdict.noise_pct == pytest.approx(100 / 3, abs=1e-5)
     assert verdict.verdict == "no-signal"
 
@@ -688,7 +673,7 @@ def test_compute_verdicts_when_byte_move_is_one_byte_does_no_signal_on_permutati
 
     verdict = get_permutation(result)
     assert verdict.p < 0.05
-    assert verdict.delta.value == pytest.approx(-25.0, abs=1e-5)
+    assert verdict.delta == pytest.approx(-25.0, abs=1e-5)
     assert verdict.noise_pct == pytest.approx(100 / 3, abs=1e-5)
     assert verdict.verdict == "no-signal"
 
@@ -707,7 +692,7 @@ def test_compute_verdicts_when_byte_move_clears_floor_does_signal(
     result = run(_BYTE_CLEARS_A, _BYTE_CLEARS_B, meta)
 
     verdict = get_permutation(result)
-    assert verdict.delta.value == pytest.approx(-25.0, abs=1e-5)
+    assert verdict.delta == pytest.approx(-25.0, abs=1e-5)
     assert verdict.noise_pct == pytest.approx(16.0, abs=1e-5)
     assert verdict.verdict == expected
 
@@ -950,20 +935,37 @@ def test_compute_verdicts_when_bytes_zero_median_and_zero_spread_does_not_report
 # ---------------------------------------------------------------------------
 
 
-def test_compute_verdicts_when_verdict_produced_and_windows_dropped_does_warn_once():
+@pytest.mark.parametrize(
+    ("dropped", "expected"),
+    [
+        pytest.param(
+            1,
+            "metric: dropped 1 paired window where the metric was measured on only one side",
+            id="one-dropped",
+        ),
+        pytest.param(
+            2,
+            "metric: dropped 2 paired windows where the metric was measured on only one side",
+            id="two-dropped",
+        ),
+    ],
+)
+def test_compute_verdicts_when_verdict_produced_and_windows_dropped_does_warn_once(
+    dropped: int,
+    expected: str,
+):
+    one_sided: list[dict[str, float]] = [{"other": 1.0}] * dropped
     collected: list[str] = []
 
     result = run(
-        samples(100.0, 100.0, 90.0),
-        [{"metric": 95.0}, {"other": 1.0}, {"metric": 85.0}],
+        samples(100.0, *[100.0] * dropped, 90.0),
+        [{"metric": 95.0}, *one_sided, {"metric": 85.0}],
         METRIC_EXACT_LOWER,
         warn=collected.append,
     )
 
     assert "metric" in result
-    assert collected == [
-        "metric: dropped 1 paired window(s) where the metric was measured on only one side",
-    ]
+    assert collected == [expected]
 
 
 def test_compute_verdicts_when_metric_fully_one_sided_does_not_warn():

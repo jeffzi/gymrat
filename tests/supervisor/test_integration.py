@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.paths import lockfile_path, session_jsonl_path
 from gymrat.supervisor.supervise import supervise
-from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project
+from tests.loop._bench import BASELINE_LATENCY, commit_project, tune_experiment
 from tests.supervisor._fixtures import (
     collecting_observer,
     make_context,
@@ -65,11 +65,6 @@ def _run_gymrat(args: list[str], cwd: str) -> None:
         raise AssertionError(detail) from error
 
 
-def _tune_experiment(repo: str, latency: int) -> None:
-    """Tune the experiment worktree to ``latency``, the edit an agent would make."""
-    (Path(experiment_worktree_dir(repo)) / TUNING_FILE).write_text(f"{latency}\n", encoding="utf-8")
-
-
 # ---------------------------------------------------------------------------
 # a complete session driven through the real CLI
 # ---------------------------------------------------------------------------
@@ -86,7 +81,7 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
         _run_gymrat(["start", "--baseline", "main"], repo)
 
     async def iterate() -> None:
-        _tune_experiment(repo, TUNED_LATENCY)
+        tune_experiment(repo, TUNED_LATENCY)
         _run_gymrat(["iterate"], repo)
 
     async def keep() -> None:
@@ -110,7 +105,9 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
     result = await supervise(
         driver=driver,
         prompt=make_prompt(cwd=repo),
-        context=make_context(max_minutes=30, log_path=str(log_path)),
+        context=make_context(
+            root=repo, lock_path=lockfile_path(repo), max_minutes=30, log_path=str(log_path)
+        ),
         launch=make_launch(),
     )
 
@@ -120,7 +117,7 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
 
     assert result.ended_by == "session"
     assert result.outcome.reason == "completed"
-    assert result.cost_usd == 0.42
+    assert result.outcome.cost_usd == 0.42
 
     log_lines = read_log_lines(log_path)
     assert log_lines[0]["type"] == "launch"
@@ -141,6 +138,7 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
 async def test_supervise_when_wall_clock_caps_a_long_session_does_report_wall_clock(
     tmp_path: Path,
 ):
+    root = str(tmp_path)
     probe = collecting_observer()
     # A single step delayed far past the cap, so the wall-clock cap always wins.
     driver = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
@@ -148,8 +146,10 @@ async def test_supervise_when_wall_clock_caps_a_long_session_does_report_wall_cl
 
     result = await supervise(
         driver=driver,
-        prompt=make_prompt(cwd=str(tmp_path)),
-        context=make_context(max_minutes=0.001, log_path=str(log_path)),
+        prompt=make_prompt(cwd=root),
+        context=make_context(
+            root=root, lock_path=lockfile_path(root), max_minutes=0.001, log_path=str(log_path)
+        ),
         launch=make_launch(max_minutes=0.001),
         observer=probe.observer,
         grace_ms=50,

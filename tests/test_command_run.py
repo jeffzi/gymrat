@@ -7,8 +7,6 @@ the CLI package.
 """
 
 import contextlib
-import subprocess
-import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -16,8 +14,9 @@ import pytest
 import typer
 from filelock import FileLock, Timeout
 
-from gymrat.command_run import CommandTrace, command_origin, config_trace_args, with_repo_lock
-from gymrat.config.types import CliFlags
+from gymrat.cli.run_setup import SharedFlags
+from gymrat.command_run import CommandTrace, command_origin, with_repo_lock
+from gymrat.config import CliFlags, config_trace_args
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate.run import LoopStopError
@@ -25,18 +24,19 @@ from gymrat.session.lock import _os_lock_file, acquire_lock
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
 from gymrat.session.records import CommandRecord
 from gymrat.session.schema import CommandReason
-from gymrat.session.store import append_record, read_records, recover_torn_tail, session_header
-from tests._command_run_fixtures import (
-    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
-)
-from tests._command_run_fixtures import (
-    seeded_session as _seeded_session,
-)
+from gymrat.session.store import append_record, recover_torn_tail, session_header
+from tests._command_run_fixtures import ok_body as _ok_body
+from tests._command_run_fixtures import seeded_session as _seeded_session
+from tests._imports import loaded_under, modules_imported_by
 from tests.session.records._fixtures import (
     iteration_record,
+    log_records,
     session_record,
     tear_final_line,
     write_session_log,
+)
+from tests.telemetry._fixtures import (
+    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )
 
 
@@ -60,16 +60,9 @@ def _broken_record(*_args: object, **_kwargs: object) -> None:
     raise ValueError(msg)
 
 
-async def _ok_body(trace: CommandTrace) -> str:
-    """Trivial command body for tests that only inspect recorded or exported side effects."""
-    return "ok"
-
-
 def _last_command_record() -> CommandRecord:
     """Read the current session log and return its last record, asserted to be a command."""
-    jsonl_path = session_jsonl_path(repo_root())
-    records = read_records(jsonl_path)
-    cmd = records[-1]
+    cmd = log_records(repo_root())[-1]
     assert isinstance(cmd, CommandRecord)
     return cmd
 
@@ -145,6 +138,9 @@ def test_command_origin_when_env_varies_does_answer_tool_only_for_exact_tool(
             id="all-set",
         ),
         pytest.param(CliFlags(samples=0, timeout=0), {"samples": 0, "timeout": 0}, id="zero-kept"),
+        pytest.param(
+            SharedFlags(samples=5, format="json"), {"samples": 5}, id="subclass-fields-left-out"
+        ),
     ],
 )
 def test_config_trace_args_when_flags_vary_does_keep_only_the_set_overrides(
@@ -155,24 +151,38 @@ def test_config_trace_args_when_flags_vary_does_keep_only_the_set_overrides(
     assert args == expected
 
 
+def test_config_trace_args_when_given_extras_does_append_the_set_ones_in_order():
+    flags = CliFlags(
+        bench="sh bench.sh",
+        prepare="make",
+        adapter="mitata",
+        samples=5,
+        timeout=30,
+        config="gymrat.toml",
+    )
+
+    args = config_trace_args(flags, baseline="main", message=None, allow_unimproved=True)
+
+    assert list(args.items())[-2:] == [("baseline", "main"), ("allow_unimproved", True)]
+    assert list(args)[:6] == ["bench", "prepare", "adapter", "samples", "timeout", "config"]
+
+
 # ---------------------------------------------------------------------------
 # CommandTrace dataclass
 # ---------------------------------------------------------------------------
 
 
-def test_command_trace_when_default_does_carry_empty_args_and_none_fields():
+def test_command_trace_when_default_does_carry_none_fields():
     trace = CommandTrace()
 
-    assert trace.args == {}
     assert trace.seq is None
     assert trace.gate is False
     assert trace.reason is None
 
 
-def test_command_trace_when_constructed_with_args_does_carry_them():
-    trace = CommandTrace(args={"samples": 10}, seq=3, gate=True, reason="stop-condition")
+def test_command_trace_when_constructed_with_fields_does_carry_them():
+    trace = CommandTrace(seq=3, gate=True, reason="stop-condition")
 
-    assert trace.args == {"samples": 10}
     assert trace.seq == 3
     assert trace.gate is True
     assert trace.reason == "stop-condition"
@@ -265,7 +275,7 @@ async def test_with_repo_lock_when_session_log_torn_does_repair_it_before_runnin
 
     assert result == "ran"
     assert seen["log"] == intact_log
-    records = read_records(str(jsonl_path))
+    records = log_records(repo_root())
     assert records[0] == header
     assert records[1] == iteration
     assert isinstance(records[-1], CommandRecord)
@@ -331,42 +341,16 @@ async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_runnin
 
 
 # ---------------------------------------------------------------------------
-# with_repo_lock — command trace passing
-# ---------------------------------------------------------------------------
-
-
-async def test_with_repo_lock_when_body_runs_does_pass_command_trace_with_args(
-    repo: str,
-):
-    received: list[CommandTrace] = []
-
-    async def body(trace: CommandTrace) -> str:
-        received.append(trace)
-        return "ok"
-
-    await with_repo_lock("measure", body, args={"samples": 5})
-
-    assert len(received) == 1
-    assert received[0].args == {"samples": 5}
-
-
-async def test_with_repo_lock_when_args_is_none_does_pass_empty_dict(
-    repo: str,
-):
-    received: list[CommandTrace] = []
-
-    async def body(trace: CommandTrace) -> str:
-        received.append(trace)
-        return "ok"
-
-    await with_repo_lock("measure", body)
-
-    assert received[0].args == {}
-
-
-# ---------------------------------------------------------------------------
 # with_repo_lock — command record appending
 # ---------------------------------------------------------------------------
+
+
+async def test_with_repo_lock_when_args_is_none_does_record_empty_args(repo: str):
+    _seeded_session(repo)
+
+    await with_repo_lock("measure", _ok_body)
+
+    assert _last_command_record().args == {}
 
 
 async def test_with_repo_lock_when_body_succeeds_does_append_command_record_with_exit_zero(
@@ -574,6 +558,20 @@ async def test_with_repo_lock_when_body_sets_seq_does_record_it(
 
     cmd = _last_command_record()
     assert cmd.seq == 7
+
+
+async def test_with_repo_lock_when_body_sets_seq_then_raises_does_record_it(repo: str):
+    _seeded_session(repo)
+
+    async def body(trace: CommandTrace) -> str:
+        trace.seq = 7
+        msg = "boom"
+        raise GymratError(msg)
+
+    with pytest.raises(GymratError):
+        await with_repo_lock("iterate", body)
+
+    assert _last_command_record().seq == 7
 
 
 @pytest.mark.parametrize(
@@ -858,9 +856,10 @@ async def test_with_repo_lock_when_record_construction_raises_does_release_lock(
     assert released, "release() was never called"
 
 
-async def test_with_repo_lock_when_span_emission_raises_does_release_lock(
+async def test_with_repo_lock_when_span_emission_raises_does_warn_and_release_lock(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ):
     header = _seeded_session(repo)
     released: list[bool] = []
@@ -884,6 +883,7 @@ async def test_with_repo_lock_when_span_emission_raises_does_release_lock(
 
     assert span_called, "_emit_command_span was not reached"
     assert released, "release() was never called"
+    assert capsys.readouterr().err == "failed to emit command span: span export failed\n"
 
 
 # ---------------------------------------------------------------------------
@@ -966,11 +966,11 @@ async def test_with_repo_lock_when_root_given_does_append_command_record_to_that
 
     await with_repo_lock("measure", _ok_body, args={"samples": 5}, root=target_repo)
 
-    cmd = read_records(session_jsonl_path(target_repo))[-1]
+    cmd = log_records(target_repo)[-1]
     assert isinstance(cmd, CommandRecord)
     assert cmd.name == "measure"
     assert cmd.args == {"samples": 5}
-    assert read_records(session_jsonl_path(cwd_repo)) == [cwd_header]
+    assert log_records(cwd_repo) == [cwd_header]
 
 
 async def test_with_repo_lock_when_root_is_not_a_repository_does_still_hold_its_lock(
@@ -1017,25 +1017,9 @@ async def test_with_repo_lock_when_root_given_and_git_fails_otherwise_does_still
     [
         pytest.param("gymrat.command_run", id="command-run"),
         pytest.param("gymrat.supervisor.exit_sequence", id="exit-sequence"),
-        pytest.param("gymrat.supervisor.exit_settle", id="exit-settle"),
     ],
 )
 def test_importing_module_when_fresh_interpreter_does_not_load_the_cli_package(module: str):
-    probe = f"""
-import importlib
-import sys
-importlib.import_module({module!r})
-cli = sorted(name for name in sys.modules if name == 'gymrat.cli' or name.startswith('gymrat.cli.'))
-if cli:
-    print(f'importing {module} loaded CLI modules: {{cli}}', file=sys.stderr)
-    sys.exit(1)
-"""
+    loaded = modules_imported_by(module)
 
-    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [sys.executable, "-c", probe],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
+    assert loaded_under(loaded, "gymrat.cli") == []

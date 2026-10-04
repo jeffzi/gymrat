@@ -6,14 +6,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from gymrat.clock import now_ns
-from gymrat.loop.iterate.bench import Judged, recorded_delta
 from gymrat.model import ExactVerdict, MetricVerdict, PermutationVerdict, ResolvedMetricMeta
-from gymrat.report.loop import LoopOutcome, LoopPrimary, MetricPrimary
+from gymrat.report.loop import LoopPrimary, MetricPrimary
 from gymrat.session.records import Confirm, IterationPrimary, IterationRecord
 from gymrat.session.records import MetricVerdict as RecordMetricVerdict
+from gymrat.utils import finite_or_none
 
 if TYPE_CHECKING:
+    from gymrat.loop.iterate.bench import Judged
     from gymrat.loop.iterate.confirm import Confirmation
+    from gymrat.session.schema import Outcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +30,7 @@ class IterationJudgment:
         reached_target: Whether the run met its declared target.
     """
 
-    outcome: LoopOutcome
+    outcome: Outcome
     primary: LoopPrimary
     confirmation: Confirmation | None
     reached_target: bool
@@ -55,12 +57,11 @@ def recorded_verdicts(
     """
     recorded: dict[str, RecordMetricVerdict] = {}
     for name, verdict in verdicts.items():
-        meta = metric_meta.get(name)
         recorded[name] = RecordMetricVerdict(
-            delta_pct=recorded_delta(verdict.delta.value),
+            delta_pct=finite_or_none(verdict.delta),
             verdict=verdict.verdict,
             method=verdict.method,
-            gating=meta.gating if meta is not None else True,
+            gating=metric_meta[name].gating,
             confirmed=name in confirmation.confirmed if confirmation is not None else False,
             p=verdict.p if isinstance(verdict, PermutationVerdict) else None,
             noise_pct=None if isinstance(verdict, ExactVerdict) else verdict.noise_pct,
@@ -108,7 +109,7 @@ def build_iteration_record(
         type="iteration",
         seq=seq,
         at=now_ns(),
-        samples=judged.samples,
+        samples=judged.run.samples,
         metrics=recorded_verdicts(judged.run.verdicts, judged.run.metric_meta, confirmation),
         primary=IterationPrimary(
             kind=primary.kind,

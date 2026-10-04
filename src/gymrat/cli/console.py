@@ -3,7 +3,7 @@
 This module owns the process-wide ``--debug`` and ``--color`` / ``--no-color``
 state every command reads, the stream classification the output paths share,
 and the stderr ``Console`` factory built on top of them. It sits below
-:mod:`gymrat.cli.shared` and must never import it.
+:mod:`gymrat.cli.exit` and must never import it.
 """
 
 import errno
@@ -15,7 +15,7 @@ from typing import IO, override
 from rich.console import Console
 
 from gymrat.cli.style import CLI_THEME
-from gymrat.report.style import color_from_env
+from gymrat.utils import stream_color_from_env
 
 # ---------------------------------------------------------------------------
 # Debug mode
@@ -55,12 +55,6 @@ def apply_debug(debug: bool) -> None:  # noqa: FBT001 -- 1:1 pass-through of a c
 # ---------------------------------------------------------------------------
 # Stream helpers
 # ---------------------------------------------------------------------------
-
-
-def is_tty(stream: object) -> bool:
-    """Whether ``stream`` reports itself as an interactive terminal."""
-    isatty = getattr(stream, "isatty", None)
-    return bool(isatty()) if callable(isatty) else False
 
 
 def is_broken_pipe(error: BaseException) -> bool:
@@ -124,8 +118,8 @@ def set_color_override(override: bool | None) -> None:  # noqa: FBT001 -- 1:1 se
     _ColorState.override = override
 
 
-def apply_color_override(color: bool | None) -> bool | None:  # noqa: FBT001 -- 1:1 pass-through of the --color/--no-color flag
-    """Install a subcommand's color override and return it for report rendering.
+def apply_color_override(color: bool | None) -> None:  # noqa: FBT001 -- 1:1 pass-through of the --color/--no-color flag
+    """Install a subcommand's color override for every color surface.
 
     Only writes when ``color`` is not ``None`` so a subcommand that declares no
     local ``--color`` flag does not erase a root flag already applied by
@@ -133,13 +127,25 @@ def apply_color_override(color: bool | None) -> bool | None:  # noqa: FBT001 -- 
 
     Args:
         color: The subcommand's ``--color``/``--no-color`` flag, or ``None`` when neither was given.
-
-    Returns:
-        The color override as passed in.
     """
     if color is not None:
         set_color_override(color)
-    return color
+
+
+def apply_command_flags(*, debug: bool, color: bool | None) -> None:
+    """Install a command's own ``--debug`` and ``--color`` / ``--no-color`` flags.
+
+    Neither undoes a root flag: debug mode is only ever switched on, and a
+    command given no color flag leaves the override alone. Once installed, a
+    ``None`` override passed to :func:`resolve_stream_color` or
+    :func:`stderr_console` resolves to the command's flag.
+
+    Args:
+        debug: The command's own ``--debug`` flag.
+        color: The command's ``--color``/``--no-color`` flag, or ``None`` when neither was given.
+    """
+    apply_debug(debug)
+    apply_color_override(color)
 
 
 def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa: FBT001 -- the resolved --color/--no-color preference, never a bare literal
@@ -163,10 +169,7 @@ def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa
         return override
     if _ColorState.override is not None:
         return _ColorState.override
-    from_env = color_from_env()
-    if from_env is not None:
-        return from_env
-    return is_tty(stream)
+    return stream_color_from_env(stream)
 
 
 # ---------------------------------------------------------------------------

@@ -29,24 +29,23 @@ from dataclasses import dataclass, replace
 
 from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import (
-    BAND_FLOORS,
     DEFAULT_UNSTABLE_NOISE_PCT,
     NOISE_FLOOR_PCT,
-    NOISE_K,
-    PERMUTATION_FLOORS,
+    PERMUTATION_MIN_N,
+    PERMUTATION_P_THRESHOLD,
     BandVerdict,
     Direction,
-    Effect,
     ExactVerdict,
     Exclusion,
     GeomeanResult,
     MetricMeta,
     MetricUnit,
     MetricVerdict,
-    Observations,
     PermutationVerdict,
+    Repeat,
     ResolvedMetricMeta,
     Verdict,
+    is_improvement,
     pair_metric,
 )
 from gymrat.stats import (
@@ -57,15 +56,16 @@ from gymrat.stats import (
     percent_delta,
     sign_flip_permutation_test,
 )
-from gymrat.warn import WarnSink, warn_to_stderr
+from gymrat.utils import WarnSink, pluralize, warn_to_stderr
 
 __all__ = [
+    "BAND_MIN_N",
+    "NOISE_K",
     "GroupAggregate",
     "KindAggregate",
     "compute_geomean",
     "compute_kind_aggregates",
     "compute_verdicts",
-    "infer_group",
 ]
 
 # ---------------------------------------------------------------------------
@@ -75,6 +75,12 @@ __all__ = [
 ONE_BYTE_PCT = 100.0
 """One byte expressed as a percentage of a one-byte median: what a whole-byte metric
 cannot measure below."""
+
+BAND_MIN_N = 2
+"""Minimum count of differing pairs the band method requires."""
+
+NOISE_K = 1.5
+"""Multiplier applied to the noise floor when deriving the instability band."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,15 +109,17 @@ class _Noise:
             resolution rather than by its observed scatter; ``0`` for a unit that
             is not quantized. A delta no larger than this is a step of
             quantization, not a measured move.
+        force_unstable: Whether a side scattered around a median too close to
+            zero to express its noise as a percentage, which understates ``pct``.
     """
 
     pct: float
     abs: float
     resolution_pct: float
-    force_unstable: bool = False
+    force_unstable: bool
 
 
-def _determine_verdict(delta: float, direction: Direction) -> Verdict:
+def _determine_verdict(delta: float, direction: Direction, *, has_signal: bool = True) -> Verdict:
     """Classify a delta as improved, regressed, or no-signal for a direction.
 
     A NaN delta (the ratio is undefined because the baseline median was 0) has no
@@ -121,19 +129,16 @@ def _determine_verdict(delta: float, direction: Direction) -> Verdict:
     Args:
         delta: The percentage delta between the two medians.
         direction: Which sign of delta counts as an improvement for this metric.
+        has_signal: Whether the delta cleared the statistical test; ``False``
+            reports no signal whatever the delta.
 
     Returns:
         The verdict for the given delta and direction.
     """
-    if delta == 0 or math.isnan(delta):
+    if not has_signal or delta == 0 or math.isnan(delta):
         return "no-signal"
 
-    improved = delta < 0 if direction == "lower" else delta > 0
-    return "improved" if improved else "regressed"
-
-
-def _verdict_if_signal(delta: float, direction: Direction, *, has_signal: bool) -> Verdict:
-    return _determine_verdict(delta, direction) if has_signal else "no-signal"
+    return "improved" if is_improvement(delta, direction) else "regressed"
 
 
 def _fraction_of_median(numerator: float, median: float, scale: float = 1.0) -> float | None:
@@ -221,7 +226,7 @@ def _compute_approximate_verdict(
     """Decide a non-exact verdict, applying the unstable override.
 
     Uses the sign-flip permutation test when at least
-    :attr:`PERMUTATION_FLOORS.min_n` pairs differ by a non-zero amount; the
+    :data:`~gymrat.model.PERMUTATION_MIN_N` pairs differ by a non-zero amount; the
     noise band otherwise. Tied pairs contribute no sign to flip, so a long but
     mostly identical run falls back to the band just as a short one does.
 
@@ -238,42 +243,35 @@ def _compute_approximate_verdict(
 
     Returns:
         A permutation or band verdict record for the metric.
-
-    Raises:
-        ValueError: When ``PERMUTATION_FLOORS.p_threshold`` is ``None``.
     """
-    _, nonzero_n = count_nonzero_pairs(samples.left, samples.right)
+    nonzero_n = count_nonzero_pairs(samples.left, samples.right)
     noise = _compute_noise(samples, meta.unit)
     n = len(samples.left)
-    effect = Effect(value=delta, unit="percent")
 
     record: PermutationVerdict | BandVerdict
-    if nonzero_n < PERMUTATION_FLOORS.min_n:
-        has_signal = nonzero_n >= BAND_FLOORS.min_n and abs(delta) > noise.pct
-        verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
+    if nonzero_n < PERMUTATION_MIN_N:
+        has_signal = nonzero_n >= BAND_MIN_N and abs(delta) > noise.pct
+        verdict = _determine_verdict(delta, meta.direction, has_signal=has_signal)
         record = BandVerdict(
             method="band",
             verdict=verdict,
             usable_n=nonzero_n,
             noise_pct=noise.pct,
             noise_abs=noise.abs,
-            delta=effect,
+            delta=delta,
             n=n,
         )
     else:
-        result = sign_flip_permutation_test(samples.left, samples.right)
-        if PERMUTATION_FLOORS.p_threshold is None:
-            msg = "PERMUTATION_FLOORS.p_threshold must be set"
-            raise ValueError(msg)
-        has_signal = result.p < PERMUTATION_FLOORS.p_threshold and abs(delta) > noise.resolution_pct
-        verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
+        p = sign_flip_permutation_test(samples.left, samples.right)
+        has_signal = p < PERMUTATION_P_THRESHOLD and abs(delta) > noise.resolution_pct
+        verdict = _determine_verdict(delta, meta.direction, has_signal=has_signal)
         record = PermutationVerdict(
             method="permutation",
             verdict=verdict,
-            p=result.p,
+            p=p,
             noise_pct=noise.pct,
             noise_abs=noise.abs,
-            delta=effect,
+            delta=delta,
             n=n,
         )
 
@@ -286,14 +284,14 @@ def _compute_approximate_verdict(
 
 
 def compute_verdicts(
-    left: Observations,
-    right: Observations,
+    left: Sequence[Repeat],
+    right: Sequence[Repeat],
     metric_meta: Mapping[str, MetricMeta],
     *,
     unstable_noise_pct: float = DEFAULT_UNSTABLE_NOISE_PCT,
     warn: WarnSink = warn_to_stderr,
 ) -> dict[str, MetricVerdict]:
-    """Compute per-metric verdicts across two observation sets.
+    """Compute per-metric verdicts across two sides' per-round samples.
 
     Values of each metric are paired by round; windows where either side is
     missing the metric are dropped. A metric present on only one side across
@@ -306,8 +304,8 @@ def compute_verdicts(
     the windows that did pair.
 
     Args:
-        left: Baseline observations.
-        right: Candidate observations.
+        left: Baseline repeats, one per round.
+        right: Candidate repeats, one per round.
         metric_meta: Per-metric metadata, iterated in insertion order.
         unstable_noise_pct: Noise band width, in percent, above which a non-exact
             metric is reported unstable. Compared strictly, so a metric sitting
@@ -317,10 +315,6 @@ def compute_verdicts(
     Returns:
         A mapping from metric name to verdict, holding only metrics that produced
         one.
-
-    Raises:
-        ValueError: When ``PERMUTATION_FLOORS.p_threshold`` is ``None`` and a
-            metric falls onto the permutation path.
     """
     result: dict[str, MetricVerdict] = {}
 
@@ -343,7 +337,7 @@ def compute_verdicts(
             result[metric] = ExactVerdict(
                 method="exact",
                 verdict=_determine_verdict(delta, meta.direction),
-                delta=Effect(value=delta, unit="percent"),
+                delta=delta,
                 n=len(paired.left),
             )
         else:
@@ -351,7 +345,7 @@ def compute_verdicts(
 
         if paired.dropped > 0:
             warn(
-                f"{metric}: dropped {paired.dropped} paired window(s) "
+                f"{metric}: dropped {pluralize(paired.dropped, 'paired window')} "
                 "where the metric was measured on only one side",
             )
 
@@ -402,31 +396,21 @@ def compute_geomean(
             exclusions.append(Exclusion(metric=name, reason="unstable"))
             continue
 
-        outcome = normalize_ratio(verdict.delta.value, meta.direction)
-        if outcome.reason is not None:
-            exclusions.append(Exclusion(metric=name, reason=outcome.reason))
+        rho = normalize_ratio(verdict.delta, meta.direction)
+        if isinstance(rho, str):
+            exclusions.append(Exclusion(metric=name, reason=rho))
             continue
 
-        rho = outcome.rho
-        assert rho is not None  # noqa: S101 -- reason is None, so normalize_ratio guarantees a rho
         noise_pct = 0.0 if verdict.method == "exact" else verdict.noise_pct
         entries.append((rho, noise_pct))
 
-    combination = combine_geomean(entries)
-    return GeomeanResult(
-        value=combination.value,
-        n=combination.n,
-        band=combination.band,
-        excluded=tuple(exclusions),
-    )
+    value, band = combine_geomean(entries)
+    return GeomeanResult(value=value, n=len(entries), band=band, excluded=tuple(exclusions))
 
 
 # ---------------------------------------------------------------------------
 # Hierarchical aggregation by kind and group
 # ---------------------------------------------------------------------------
-
-type MetricEntry = tuple[str, ResolvedMetricMeta]
-"""A metric name paired with the metadata resolved for it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,28 +454,8 @@ class KindAggregate:
 class _KindBucket:
     """A kind's metrics, and the groups their short names sort them into."""
 
-    metrics: list[MetricEntry]
-    groups: dict[str, list[MetricEntry]]
-
-
-def infer_group(name: str) -> str | None:
-    """The group a metric belongs to, derived from its name's path segments.
-
-    Parses ``name`` through :func:`gymrat.metric_name.parse` and returns the
-    path prefix (all segments but the last, joined with ``/``). Single-segment
-    paths have no group.
-
-    Exposed so a renderer laying out group blocks sorts its rows by the same rule
-    the aggregates were computed under — a second rule would put a metric in one
-    group and its geomean in another.
-
-    Args:
-        name: The metric name to derive the group from.
-
-    Returns:
-        The ``/``-joined group prefix, or ``None`` for single-segment names.
-    """
-    return parse_metric_name(name).group
+    metrics: dict[str, ResolvedMetricMeta]
+    groups: dict[str, dict[str, ResolvedMetricMeta]]
 
 
 def _bucket_by_kind(
@@ -500,16 +464,12 @@ def _bucket_by_kind(
     buckets: dict[str, _KindBucket] = {}
 
     for name, meta in metric_meta.items():
-        bucket = buckets.setdefault(meta.kind, _KindBucket(metrics=[], groups={}))
+        bucket = buckets.setdefault(meta.kind, _KindBucket(metrics={}, groups={}))
+        bucket.metrics[name] = meta
 
-        entry: MetricEntry = (name, meta)
-        bucket.metrics.append(entry)
-
-        group = infer_group(name)
-        if group is None:
-            continue
-
-        bucket.groups.setdefault(group, []).append(entry)
+        group = parse_metric_name(name).group
+        if group is not None:
+            bucket.groups.setdefault(group, {})[name] = meta
 
     return buckets
 
@@ -545,16 +505,16 @@ def compute_kind_aggregates(
     aggregates: list[KindAggregate] = []
 
     for kind, bucket in _bucket_by_kind(metric_meta).items():
-        gating = [entry for entry in bucket.metrics if entry[1].gating]
+        gating = {name: meta for name, meta in bucket.metrics.items() if meta.gating}
         aggregates.append(
             KindAggregate(
                 kind=kind,
-                geomean=compute_geomean(verdicts, dict(bucket.metrics)),
+                geomean=compute_geomean(verdicts, bucket.metrics),
                 groups=tuple(
-                    GroupAggregate(group=group, geomean=compute_geomean(verdicts, dict(members)))
+                    GroupAggregate(group=group, geomean=compute_geomean(verdicts, members))
                     for group, members in bucket.groups.items()
                 ),
-                gated_geomean=compute_geomean(verdicts, dict(gating)) if gating else None,
+                gated_geomean=compute_geomean(verdicts, gating) if gating else None,
             ),
         )
 

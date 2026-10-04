@@ -1,34 +1,14 @@
-"""Shared session-seeding and tracing-isolation fixtures for the ``command_run`` tests.
+"""Shared session seeding and command body for the ``command_run`` tests.
 
 ``test_command_run.py`` and ``test_command_run_tracing.py`` both exercise
 ``gymrat.command_run.with_repo_lock`` and need the same starting point: a
-session log seeded with a header record, and a telemetry provider reset between
-tests. Both modules import from here instead of duplicating the definitions.
+session log seeded with a header record, and a command body that does nothing.
+Both modules import from here instead of duplicating the definitions.
 """
 
-import warnings
-from collections.abc import Iterator
-
-import pytest
-
+from gymrat.command_run import CommandTrace
 from gymrat.session.records import SessionRecord
 from tests.session.records._fixtures import session_record, write_session_log
-
-__all__ = [
-    "isolate_tracing_provider",
-    "seeded_session",
-]
-
-
-@pytest.fixture(autouse=True)
-def isolate_tracing_provider() -> Iterator[None]:
-    """Reset the telemetry provider singleton between tests."""
-    yield
-    from gymrat.telemetry.provider import _reset_for_tests
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        _reset_for_tests()
 
 
 def seeded_session(repo: str) -> SessionRecord:
@@ -36,3 +16,8 @@ def seeded_session(repo: str) -> SessionRecord:
     header = session_record()
     write_session_log(repo, header)
     return header
+
+
+async def ok_body(trace: CommandTrace) -> str:
+    """Trivial command body for tests that only inspect what the command leaves behind."""
+    return "ok"

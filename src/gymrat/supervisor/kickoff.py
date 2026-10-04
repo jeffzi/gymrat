@@ -9,8 +9,8 @@ the system-prompt append and settles the opening kickoff message.
 from dataclasses import dataclass
 from pathlib import Path
 
-from gymrat.bundled_skill import read_bundled_skill, strip_frontmatter
-from gymrat.config.types import BenchlessConfig
+from gymrat.bundled_skill import read_bundled_skill
+from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
 
 DEFAULT_KICKOFF = (
@@ -45,6 +45,30 @@ _TOOLS = (
     "foreground and returns the command's JSON document."
 )
 """Which actions reach gymrat as in-process tools and which stay Bash commands."""
+
+_FRONTMATTER_DELIMITER = "---"
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Return ``text`` without its leading YAML frontmatter block.
+
+    The frontmatter is Claude Code activation metadata — a ``---`` line, YAML
+    fields whose values may fold across several lines, and a closing ``---``
+    line — so the skill reaches the model as plain instructions without it.
+
+    Args:
+        text: The skill file contents, possibly prefixed with a frontmatter
+            block.
+
+    Returns:
+        The text with its frontmatter block removed, or unchanged when it does
+        not open with a delimiter line or its block is never closed.
+    """
+    if not text.startswith(f"{_FRONTMATTER_DELIMITER}\n"):
+        return text
+
+    _, closing, body = text.partition(f"\n{_FRONTMATTER_DELIMITER}\n")
+    return body if closing else text
 
 
 def _read_runbook(path: str) -> str:
@@ -100,7 +124,7 @@ def compose_kickoff(
         GymratError: When the bundled skill cannot be read, when no runbook is
             configured, or when the configured runbook file cannot be read.
     """
-    skill_content = strip_frontmatter(read_bundled_skill())
+    skill_content = _strip_frontmatter(read_bundled_skill())
 
     if config.runbook is None:
         message = "No runbook configured — set `runbook` in gymrat.toml."

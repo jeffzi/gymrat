@@ -27,28 +27,13 @@ from gymrat.exec import (
     _live_process_groups,
     kill_live_process_groups,
 )
-from gymrat.supervisor.tools import (
-    ToolHost,
-    create_gymrat_tools,
-    gymrat_tool_definitions,
-    gymrat_tools_factory,
-)
+from gymrat.supervisor.tools import ToolHost, gymrat_tool_definitions, gymrat_tools_factory
+from tests._exec_fixtures import expected_result
 from tests._process_helpers import is_alive
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_result(stdout: str = "", stderr: str = "", exit_code: int = 0) -> ExecResult:
-    """Build an ``ExecResult`` with byte counts derived from the strings."""
-    return ExecResult(
-        stdout=stdout,
-        stderr=stderr,
-        exit_code=exit_code,
-        stdout_bytes=len(stdout.encode()),
-        stderr_bytes=len(stderr.encode()),
-    )
 
 
 def _text_of(result: dict[str, Any]) -> str:
@@ -63,7 +48,7 @@ def _real_host(
     """Build a ToolHost with a real subprocess prefix (no mock)."""
     return ToolHost(
         root=str(tmp_path),
-        abort=abort,
+        abort=abort or asyncio.Event(),
         extra_env={},
         argv_prefix=[sys.executable, "-c", script],
     )
@@ -79,7 +64,7 @@ def _mock_host(
     """Build a ToolHost wired to *fake_exec* with a single-token argv prefix."""
     return ToolHost(
         root=str(tmp_path),
-        abort=abort,
+        abort=abort or asyncio.Event(),
         extra_env=extra_env or {},
         argv_prefix=["gym"],
         _exec_fn=fake_exec,
@@ -94,7 +79,7 @@ def _mock_host(
 @pytest.fixture
 def fake_exec() -> AsyncMock:
     """An ``exec_argv`` replacement that records calls and returns a canned result."""
-    return AsyncMock(return_value=_make_result(stdout='{"ok": true}'))
+    return AsyncMock(return_value=expected_result(stdout='{"ok": true}'))
 
 
 @pytest.fixture
@@ -102,7 +87,7 @@ def host(tmp_path: pathlib.Path, fake_exec: AsyncMock) -> ToolHost:
     """A ToolHost wired to the fake executor, with a trivial prefix."""
     return ToolHost(
         root=str(tmp_path),
-        abort=None,
+        abort=asyncio.Event(),
         extra_env={},
         argv_prefix=["gym", "rat"],
         _exec_fn=fake_exec,
@@ -114,13 +99,33 @@ def host(tmp_path: pathlib.Path, fake_exec: AsyncMock) -> ToolHost:
 # ---------------------------------------------------------------------------
 
 
-async def test_probe_when_empty_input_does_build_minimal_argv(
-    host: ToolHost, fake_exec: AsyncMock
+@pytest.mark.parametrize(
+    "input_data",
+    [pytest.param({}, id="no-names"), pytest.param({"names": []}, id="empty-names")],
+)
+async def test_probe_when_no_names_given_does_build_minimal_argv(
+    host: ToolHost, fake_exec: AsyncMock, input_data: dict[str, Any]
 ) -> None:
-    await host.probe({})
+    await host.probe(input_data)
 
     argv = fake_exec.call_args[0][0]
     assert list(argv) == ["gym", "rat", "probe", "--format", "json", "--"]
+
+
+@pytest.mark.parametrize(
+    ("input_data", "expected_args"),
+    [
+        pytest.param({"samples": 6}, ["--samples", "6", "--format", "json", "--"], id="samples"),
+        pytest.param({"names": ["a", "b"]}, ["--format", "json", "--", "a", "b"], id="names"),
+    ],
+)
+async def test_probe_when_only_samples_or_names_given_does_place_them_around_the_format_flag(
+    host: ToolHost, fake_exec: AsyncMock, input_data: dict[str, Any], expected_args: list[str]
+) -> None:
+    await host.probe(input_data)
+
+    argv = fake_exec.call_args[0][0]
+    assert list(argv) == ["gym", "rat", "probe", *expected_args]
 
 
 async def test_iterate_when_called_does_build_correct_argv(
@@ -166,6 +171,18 @@ async def test_probe_when_called_does_set_env_with_tool_origin_no_color_and_extr
     assert opts.env["NO_COLOR"] == "1"
     assert opts.env["GYMRAT_TRACEPARENT"] == "00-abc-def-01"
     assert opts.env.get("PATH") == os.environ.get("PATH")
+
+
+async def test_probe_when_extra_env_names_a_fixed_variable_does_let_extra_env_win(
+    tmp_path: pathlib.Path, fake_exec: AsyncMock
+) -> None:
+    host = _mock_host(tmp_path, fake_exec, extra_env={"NO_COLOR": "0"})
+
+    await host.probe({})
+
+    opts: ExecOptions = fake_exec.call_args[0][1]
+    assert opts.env is not None
+    assert opts.env["NO_COLOR"] == "0"
 
 
 async def test_probe_when_called_does_pass_abort_event(
@@ -293,7 +310,9 @@ async def test_probe_when_child_fails_without_document_does_return_failure_text(
 
 async def test_probe_when_spawn_fails_does_return_spawn_error(tmp_path: pathlib.Path) -> None:
     missing = tmp_path / "missing-executable"
-    host = ToolHost(root=str(tmp_path), abort=None, extra_env={}, argv_prefix=[str(missing)])
+    host = ToolHost(
+        root=str(tmp_path), abort=asyncio.Event(), extra_env={}, argv_prefix=[str(missing)]
+    )
     with pytest.raises(FileNotFoundError) as spawn_failure:
         await asyncio.create_subprocess_exec(str(missing))
 
@@ -312,7 +331,7 @@ async def test_probe_when_json_object_padded_with_whitespace_does_return_documen
     exit_code: int,
 ) -> None:
     stdout = '\n  {"ok": true}\n'
-    fake_exec.return_value = _make_result(stdout=stdout, exit_code=exit_code)
+    fake_exec.return_value = expected_result(stdout=stdout, exit_code=exit_code)
     host = _mock_host(tmp_path, fake_exec)
 
     result = await host.probe({})
@@ -334,7 +353,9 @@ async def test_probe_when_stdout_is_not_a_document_does_return_stderr_error(
     stdout: str,
     exit_code: int,
 ) -> None:
-    fake_exec.return_value = _make_result(stdout=stdout, stderr="broken run", exit_code=exit_code)
+    fake_exec.return_value = expected_result(
+        stdout=stdout, stderr="broken run", exit_code=exit_code
+    )
     host = _mock_host(tmp_path, fake_exec)
 
     result = await host.probe({})
@@ -347,7 +368,7 @@ async def test_probe_when_invalid_json_and_no_stderr_does_return_stdout_error(
     tmp_path: pathlib.Path,
     fake_exec: AsyncMock,
 ) -> None:
-    fake_exec.return_value = _make_result(stdout='{"kind": "probe", ', exit_code=0)
+    fake_exec.return_value = expected_result(stdout='{"kind": "probe", ', exit_code=0)
     host = _mock_host(tmp_path, fake_exec)
 
     result = await host.probe({})
@@ -387,7 +408,7 @@ async def test_iterate_when_no_output_and_no_abort_does_return_failed_message(
     tmp_path: pathlib.Path,
     fake_exec: AsyncMock,
 ) -> None:
-    fake_exec.return_value = _make_result(exit_code=3)
+    fake_exec.return_value = expected_result(exit_code=3)
     host = _mock_host(tmp_path, fake_exec)
 
     result = await host.iterate({})
@@ -491,7 +512,7 @@ async def test_probe_when_concurrent_refused_does_not_leave_host_busy(
         call_count += 1
         if call_count == 1:
             return await blocker
-        return _make_result(stdout='{"ok": true}')
+        return expected_result(stdout='{"ok": true}')
 
     fake_exec.side_effect = counting_exec
 
@@ -500,7 +521,7 @@ async def test_probe_when_concurrent_refused_does_not_leave_host_busy(
     refused = await host.iterate({})
     _assert_busy(refused)
 
-    blocker.set_result(_make_result(stdout='{"ok": true}'))
+    blocker.set_result(expected_result(stdout='{"ok": true}'))
     await first
 
     fake_exec.side_effect = None
@@ -630,15 +651,6 @@ async def test_probe_when_child_writes_large_stderr_and_json_stdout_does_return_
 # ---------------------------------------------------------------------------
 
 
-async def test_create_gymrat_tools_when_called_does_return_sdk_config_named_gymrat(
-    host: ToolHost,
-) -> None:
-    config: dict[str, Any] = create_gymrat_tools(host)  # type: ignore[assignment]  # McpSdkServerConfig is a TypedDict
-
-    assert config["type"] == "sdk"
-    assert config["name"] == "gymrat"
-
-
 async def test_gymrat_tool_definitions_when_called_does_return_probe_and_iterate(
     host: ToolHost,
 ) -> None:
@@ -690,12 +702,22 @@ async def test_gymrat_tool_definitions_when_called_does_set_iterate_description_
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def sdk_config(host: ToolHost, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The SDK server config the factory builds, with its tool host replaced by ``host``."""
+
+    def _given_host(**_kwargs: object) -> ToolHost:
+        return host
+
+    monkeypatch.setattr("gymrat.supervisor.tools.ToolHost", _given_host)
+    return gymrat_tools_factory("unused-root")(asyncio.Event(), {})  # type: ignore[return-value]  # McpSdkServerConfig is a TypedDict
+
+
 async def _call_via_sdk(
-    host: ToolHost, tool_name: str, arguments: dict[str, Any]
+    sdk_config: dict[str, Any], tool_name: str, arguments: dict[str, Any]
 ) -> CallToolResult:
-    """Call *tool_name* through an in-memory MCP client on the SDK server built around *host*."""
-    config = create_gymrat_tools(host)
-    async with Client(config["instance"]) as client:
+    """Call *tool_name* through an in-memory MCP client on the SDK server."""
+    async with Client(sdk_config["instance"]) as client:
         return await client.call_tool(tool_name, arguments)
 
 
@@ -723,13 +745,13 @@ async def _call_via_sdk(
     ],
 )
 async def test_sdk_server_when_valid_arguments_given_does_run_child_with_expected_argv(
-    host: ToolHost,
+    sdk_config: dict[str, Any],
     fake_exec: AsyncMock,
     tool_name: str,
     arguments: dict[str, Any],
     expected_argv: list[str],
 ) -> None:
-    result = await _call_via_sdk(host, tool_name, arguments)
+    result = await _call_via_sdk(sdk_config, tool_name, arguments)
 
     assert result.is_error is False
     assert list(fake_exec.call_args[0][0]) == expected_argv
@@ -745,12 +767,12 @@ async def test_sdk_server_when_valid_arguments_given_does_run_child_with_expecte
     ],
 )
 async def test_sdk_server_when_invalid_arguments_given_does_reject_before_running_child(
-    host: ToolHost,
+    sdk_config: dict[str, Any],
     fake_exec: AsyncMock,
     tool_name: str,
     arguments: dict[str, Any],
 ) -> None:
-    result = await _call_via_sdk(host, tool_name, arguments)
+    result = await _call_via_sdk(sdk_config, tool_name, arguments)
 
     assert result.is_error is True
     fake_exec.assert_not_called()
@@ -827,7 +849,7 @@ async def test_probe_when_real_cli_given_names_and_samples_does_return_scoped_js
     from tests.loop._bench import FILTER_TEMPLATE
 
     repo = _started_repo(create_scratch_repo, filter_template=FILTER_TEMPLATE)
-    host = ToolHost(root=repo, abort=None, extra_env={})
+    host = ToolHost(root=repo, abort=asyncio.Event(), extra_env={})
 
     result = await host.probe({"names": ["latency"], "samples": 2})
 
@@ -871,7 +893,7 @@ async def test_probe_when_real_cli_given_option_like_names_does_return_the_cli_r
     _scoped_config_path(repo).write_text(
         config_text(samples=2, filter_template=FILTER_TEMPLATE), encoding="utf-8"
     )
-    host = ToolHost(root=repo, abort=None, extra_env={})
+    host = ToolHost(root=repo, abort=asyncio.Event(), extra_env={})
 
     result = await host.probe({"names": names_of(repo)})
 
@@ -890,7 +912,7 @@ async def test_iterate_when_real_cli_on_scratch_repo_does_return_json_document(
     repo = create_scratch_repo()
     commit_project(repo, samples=5)
     _run_gymrat_cli(["start", "--baseline", "main"], repo)
-    host = ToolHost(root=repo, abort=None, extra_env={})
+    host = ToolHost(root=repo, abort=asyncio.Event(), extra_env={})
 
     result = await host.iterate({})
 

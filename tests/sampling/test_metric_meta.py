@@ -1,14 +1,26 @@
-"""Tests for :func:`gymrat.sampling.resolve_metric_meta`: adapter defaults, then kind, then metric."""
+"""Tests for metric-meta resolution: adapter defaults, then kind, then metric."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import pytest
 
 from gymrat.adapters import Adapter, MetricDefaults
-from gymrat.config.types import KindEntry, MetricEntry
-from gymrat.model import Direction, MetricUnit, ResolvedMetricMeta
-from gymrat.sampling import resolve_metric_meta
-from gymrat.warn import WarnSink, warn_to_stderr
+from gymrat.config import KindEntry, MetricEntry
+from gymrat.model import ResolvedMetricMeta
+from gymrat.sampling import resolve_metric_meta_from_samples
+from gymrat.utils import WarnSink, warn_to_stderr
+from tests.report._comparisons import metric_meta
+
+
+def resolve(
+    names: Sequence[str],
+    config_metrics: dict[str, MetricEntry] | None,
+    adapter: Adapter,
+    config_kinds: dict[str, KindEntry] | None = None,
+) -> dict[str, ResolvedMetricMeta]:
+    """Resolve the metadata of one round that reported every name in ``names``, in order."""
+    samples = [[dict.fromkeys(names, 1.0)]]
+    return resolve_metric_meta_from_samples(samples, config_metrics, adapter, config_kinds)
 
 
 def make_adapter(
@@ -28,26 +40,6 @@ def make_adapter(
     return MockAdapter()
 
 
-def metric_meta(
-    short_name: str,
-    *,
-    direction: Direction = "lower",
-    gating: bool = True,
-    exact: bool = False,
-    unit: MetricUnit | None = None,
-    kind: str = "other",
-) -> ResolvedMetricMeta:
-    """A resolved meta defaulting to a lower-is-better, gating, non-exact "other" metric."""
-    return ResolvedMetricMeta(
-        direction=direction,
-        gating=gating,
-        exact=exact,
-        unit=unit,
-        kind=kind,
-        short_name=short_name,
-    )
-
-
 # ---------------------------------------------------------------------------
 # resolve_metric_meta — adapter defaults
 # ---------------------------------------------------------------------------
@@ -56,7 +48,7 @@ def metric_meta(
 def test_resolve_metric_meta_when_config_metrics_none_does_default_gating_exact_kind_short_name():
     adapter = make_adapter()
 
-    result = resolve_metric_meta(["response-time"], None, adapter)
+    result = resolve(["response-time"], None, adapter)
 
     assert result == {"response-time": metric_meta("response-time")}
 
@@ -64,7 +56,7 @@ def test_resolve_metric_meta_when_config_metrics_none_does_default_gating_exact_
 def test_resolve_metric_meta_when_adapter_returns_unit_does_carry_unit():
     adapter = make_adapter(lambda _name: MetricDefaults(direction="lower", unit="ns"))
 
-    result = resolve_metric_meta(["response-time"], None, adapter)
+    result = resolve(["response-time"], None, adapter)
 
     assert result == {"response-time": metric_meta("response-time", unit="ns")}
 
@@ -74,7 +66,7 @@ def test_resolve_metric_meta_when_adapter_reports_kind_and_short_name_does_carry
         lambda _name: MetricDefaults(direction="lower", kind="memory", short_name="heap")
     )
 
-    result = resolve_metric_meta(["bench-a/heap"], None, adapter)
+    result = resolve(["bench-a/heap"], None, adapter)
 
     assert result == {"bench-a/heap": metric_meta("heap", kind="memory")}
 
@@ -113,7 +105,7 @@ def test_resolve_metric_meta_when_config_sets_single_field_does_override(
     adapter = make_adapter()
     config_metrics = {metric_name: entry}
 
-    result = resolve_metric_meta([metric_name], config_metrics, adapter)
+    result = resolve([metric_name], config_metrics, adapter)
 
     assert result == {metric_name: expected}
 
@@ -122,7 +114,7 @@ def test_resolve_metric_meta_when_config_sets_only_gating_does_keep_direction_an
     adapter = make_adapter(lambda _name: MetricDefaults(direction="lower", unit="bytes"))
     config_metrics = {"memory-usage": MetricEntry(gating=False)}
 
-    result = resolve_metric_meta(["memory-usage"], config_metrics, adapter)
+    result = resolve(["memory-usage"], config_metrics, adapter)
 
     assert result == {"memory-usage": metric_meta("memory-usage", unit="bytes", gating=False)}
 
@@ -146,7 +138,7 @@ def test_resolve_metric_meta_when_multiple_names_does_resolve_each_in_order():
         "throughput": MetricEntry(exact=True),
     }
 
-    result = resolve_metric_meta(["response-time", "throughput"], config_metrics, adapter)
+    result = resolve(["response-time", "throughput"], config_metrics, adapter)
 
     assert list(result) == ["response-time", "throughput"]
     assert result == {
@@ -162,7 +154,7 @@ def test_resolve_metric_meta_when_config_has_unused_entries_does_ignore_them():
         "unused": MetricEntry(gating=True, exact=True),
     }
 
-    result = resolve_metric_meta(["response-time"], config_metrics, adapter)
+    result = resolve(["response-time"], config_metrics, adapter)
 
     assert result == {"response-time": metric_meta("response-time", gating=False)}
 
@@ -181,7 +173,7 @@ def test_resolve_metric_meta_when_kind_sets_gating_does_apply_only_to_matching_k
     adapter = make_adapter(defaults_fn)
     config_kinds = {"memory": KindEntry(gating=False)}
 
-    result = resolve_metric_meta(["bench-a/heap", "bench-a/time"], None, adapter, config_kinds)
+    result = resolve(["bench-a/heap", "bench-a/time"], None, adapter, config_kinds)
 
     assert result == {
         "bench-a/heap": metric_meta("heap", gating=False, kind="memory"),
@@ -195,7 +187,7 @@ def test_resolve_metric_meta_when_kind_entry_matches_no_metric_does_ignore_it():
     )
     config_kinds = {"io": KindEntry(gating=False)}
 
-    result = resolve_metric_meta(["bench-a/heap"], None, adapter, config_kinds)
+    result = resolve(["bench-a/heap"], None, adapter, config_kinds)
 
     assert result == {"bench-a/heap": metric_meta("heap", kind="memory")}
 
@@ -209,9 +201,7 @@ def test_resolve_metric_meta_when_metric_and_kind_disagree_does_let_metric_win()
     config_metrics = {"bench-a/heap": MetricEntry(gating=True)}
     config_kinds = {"memory": KindEntry(gating=False)}
 
-    result = resolve_metric_meta(
-        ["bench-a/heap", "bench-a/rss"], config_metrics, adapter, config_kinds
-    )
+    result = resolve(["bench-a/heap", "bench-a/rss"], config_metrics, adapter, config_kinds)
 
     assert result == {
         "bench-a/heap": metric_meta("heap", kind="memory"),
@@ -255,6 +245,6 @@ def test_resolve_metric_meta_when_metric_leaves_gating_unset_does_take_it_from_k
         lambda _name: MetricDefaults(direction="lower", kind=adapter_kind, short_name="heap")
     )
 
-    result = resolve_metric_meta(["bench-a/heap"], config_metrics, adapter, config_kinds)
+    result = resolve(["bench-a/heap"], config_metrics, adapter, config_kinds)
 
     assert result == {"bench-a/heap": expected}

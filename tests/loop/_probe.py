@@ -10,9 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from gymrat.session.records import BaselineRecord
-from tests.report._inputs import create_measurement_result, measured_metric
-from tests.session.records._fixtures import AT
+from tests.report._measurements import create_measurement_result, measured_metric
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -25,11 +23,6 @@ if TYPE_CHECKING:
 
 #: The rounds the recorded baseline reports, whose ``total_ms`` median is 100.
 BASELINE_SAMPLES: tuple[dict[str, float], ...] = ({"total_ms": 98.0}, {"total_ms": 102.0})
-
-
-def baseline_of(samples: tuple[dict[str, float], ...] = BASELINE_SAMPLES) -> BaselineRecord:
-    """A recorded baseline of the experiment worktree over ``samples``."""
-    return BaselineRecord(type="baseline", at=AT, label="experiment", samples=samples)
 
 
 def measurement(
@@ -64,7 +57,7 @@ class MeasureRecorder:
 
     async def __call__(self, options: MeasureOptions) -> MeasurementResult:
         self.calls.append(options)
-        on_progress = options.run.on_progress
+        on_progress = options.run.sampling.on_progress
         if on_progress is not None:
             for event in self.progress:
                 on_progress(event)

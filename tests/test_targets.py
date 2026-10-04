@@ -17,15 +17,15 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.targets import (
-    InPlaceTarget,
-    RefTarget,
+from gymrat.sampling import (
+    CleanupResult,
     WorktreeInfo,
     cleanup_worktrees,
     materialize_worktree,
     plan_worktree,
-    resolve_target,
 )
+from gymrat.targets import InPlaceTarget, RefTarget, resolve_target
+from tests._git import head_of
 from tests._git import run_git as _run_git
 
 # A sha no repository holds, so ``git worktree add`` rejects it outright.
@@ -46,10 +46,6 @@ skip_on_windows_or_root = pytest.mark.skipif(
 )
 
 
-def _get_head_sha(repo_dir: str) -> str:
-    return _run_git(["rev-parse", "HEAD"], repo_dir).strip()
-
-
 def _plan_and_attempt_materialize(target: RefTarget, repo_dir: str) -> tuple[WorktreeInfo, bool]:
     """Plan a worktree and materialize it, reporting failure instead of raising."""
     worktree = plan_worktree(target)
@@ -61,7 +57,7 @@ def _plan_and_attempt_materialize(target: RefTarget, repo_dir: str) -> tuple[Wor
 
 
 def _create_head_worktree(repo_dir: str) -> WorktreeInfo:
-    sha = _get_head_sha(repo_dir)
+    sha = head_of(repo_dir)
     worktree = plan_worktree(RefTarget(ref=sha, resolved_sha=sha))
     materialize_worktree(worktree, repo_dir)
     return worktree
@@ -73,7 +69,7 @@ def _leave_interrupted_worktree(repo_dir: str) -> WorktreeInfo:
     Raises rather than returning a half-arranged fixture, so a git version that
     cleaned up despite the kill fails the test that asked for this state.
     """
-    sha = _get_head_sha(repo_dir)
+    sha = head_of(repo_dir)
     worktree, failed = _plan_and_attempt_materialize(RefTarget(ref=sha, resolved_sha=sha), repo_dir)
     if failed and Path(worktree.dir).exists():
         return worktree
@@ -176,7 +172,7 @@ def test_resolve_target_when_input_is_valid_git_ref_does_return_ref_target(
     create_scratch_repo: Callable[[], str], ref_kind: str
 ):
     repo = create_scratch_repo()
-    sha = _get_head_sha(repo)
+    sha = head_of(repo)
     if ref_kind == "commit-sha":
         ref = sha
     elif ref_kind == "head":
@@ -203,24 +199,31 @@ def test_resolve_target_when_input_is_existing_dir_matching_a_ref_does_prefer_di
     assert result == InPlaceTarget(dir=os.path.realpath(shared_dir))
 
 
+@pytest.mark.parametrize(
+    "ref",
+    [
+        pytest.param("myfile", id="file-itself"),
+        pytest.param("myfile/typo", id="path-under-file"),
+    ],
+)
 def test_resolve_target_when_input_is_existing_file_does_fall_through_to_ref(
-    create_scratch_repo: Callable[[], str],
+    create_scratch_repo: Callable[[], str], ref: str
 ):
     repo = create_scratch_repo()
-    sha = _get_head_sha(repo)
-    _run_git(["branch", "myfile"], repo)
+    sha = head_of(repo)
+    _run_git(["branch", ref], repo)
     (Path(repo) / "myfile").write_text("not a directory\n")
     original_cwd = Path.cwd()
 
     try:
-        # The input names an existing regular file relative to the process cwd;
-        # a non-directory must fall through to ref resolution, not resolve
-        # in place and not raise.
+        # The input names an existing regular file relative to the process cwd,
+        # or a path underneath one; neither is a directory, so both must fall
+        # through to ref resolution, not resolve in place and not raise.
         os.chdir(repo)
 
-        result = resolve_target("myfile", repo)
+        result = resolve_target(ref, repo)
 
-        assert result == RefTarget(ref="myfile", resolved_sha=sha)
+        assert result == RefTarget(ref=ref, resolved_sha=sha)
     finally:
         os.chdir(original_cwd)
 
@@ -255,7 +258,7 @@ def test_resolve_target_when_input_is_non_commit_object_sha_does_reject(
     create_scratch_repo: Callable[[], str], rev: str
 ):
     repo = create_scratch_repo()
-    sha = _run_git(["rev-parse", rev], repo).strip()
+    sha = _run_git(["rev-parse", rev], repo)
 
     with pytest.raises(GymratError, match=r"Cannot resolve target"):
         resolve_target(sha, repo)
@@ -337,7 +340,7 @@ def test_materialize_worktree_when_given_planned_worktree_does_check_out_ref_fil
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    sha = _get_head_sha(repo)
+    sha = head_of(repo)
     worktree = plan_worktree(RefTarget(ref=sha, resolved_sha=sha))
 
     materialize_worktree(worktree, repo)
@@ -367,7 +370,7 @@ def test_materialize_worktree_when_add_interrupted_does_set_created_from_disk_st
 ):
     repo = create_scratch_repo()
     kill_git_during_worktree_add(repo)
-    sha = _get_head_sha(repo)
+    sha = head_of(repo)
     worktree = plan_worktree(RefTarget(ref=sha, resolved_sha=sha))
 
     with contextlib.suppress(GymratError):
@@ -491,11 +494,12 @@ def test_cleanup_worktrees_when_dir_gone_deregisters_only_that_worktree(
     worktree = _create_head_worktree(repo)
     shutil.rmtree(worktree.dir, ignore_errors=True)
 
-    cleanup_worktrees([worktree], repo)
+    result = cleanup_worktrees([worktree], repo)
 
     listed = list_worktree_dirs(repo)
     assert worktree.dir not in listed
     assert absent in listed
+    assert result == CleanupResult(removed=0, failures=(), prune_error=None)
 
 
 def test_cleanup_worktrees_when_removal_fails_reports_dir_with_git_error_text(

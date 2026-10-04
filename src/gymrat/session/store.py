@@ -21,13 +21,13 @@ must not already be finalized.
 import math
 import os
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import assert_never
 
 from pydantic_core import PydanticSerializationError
 
-from gymrat.errors import GymratError, hint_of
+from gymrat.errors import GymratError
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     BaselineRecord,
@@ -43,7 +43,6 @@ from gymrat.session.records import (
     StopRecord,
     decode_log_line,
     parse_record,
-    record_to_json_line,
 )
 from gymrat.session.schema import KeepReason
 
@@ -60,6 +59,7 @@ __all__ = [
     "recover_torn_tail",
     "require_open_session",
     "require_session",
+    "require_settled",
     "session_header",
 ]
 
@@ -106,6 +106,21 @@ class SessionState:
     ends_on_stop: bool
     #: The record that closed the session, absent while it is still open.
     finalized: FinalizeRecord | None
+
+
+def require_settled(state: SessionState, hint: str) -> None:
+    """Refuse when a measured edit is still waiting to be kept or discarded.
+
+    Args:
+        state: The folded session state to check.
+        hint: What the refusal tells the user to do next.
+
+    Raises:
+        GymratError: When an iteration is unsettled, with ``reason="unsettled"``.
+    """
+    if state.unsettled:
+        message = f"Iteration {state.last_seq} has not been settled"
+        raise GymratError(message, hint=hint, reason="unsettled")
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,16 +180,38 @@ def _decode_log_line_at(line: str, at: str, line_number: int) -> object:
         raise GymratError(message, hint=f"Line {line_number} is not a JSON object.") from error
 
 
-def _read_first_line(path: Path) -> str | None:
-    """The first line of ``path``, or ``None`` when the file does not exist."""
+def _decode_utf8_at(raw: bytes, at: str, line_number: int) -> str:
+    """Decode one session-log line, naming its location when it is not UTF-8.
+
+    Args:
+        raw: The line's bytes.
+        at: The ``path:line`` location the message names.
+        line_number: The 1-based line number the hint names.
+
+    Returns:
+        The decoded line.
+
+    Raises:
+        GymratError: When the bytes are not valid UTF-8.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        message = f"Corrupt session log at {at}"
+        raise GymratError(
+            message, hint=f"Line {line_number} contains invalid UTF-8 bytes."
+        ) from error
+
+
+def _read_first_line(path: Path) -> bytes | None:
+    """The raw bytes of the first line of ``path``, or ``None`` when the file does not exist."""
     # Binary read: a text-mode readline decodes a whole buffered chunk, so bytes
     # on later lines could fail the read of a first line that is itself valid.
     try:
         with path.open("rb") as handle:
-            raw = handle.readline()
+            return handle.readline()
     except FileNotFoundError:
         return None
-    return raw.decode("utf-8")
 
 
 def first_line_json(path: Path) -> dict[str, object] | None:
@@ -192,14 +229,12 @@ def first_line_json(path: Path) -> dict[str, object] | None:
         OSError: When the file exists but cannot be read, such as a directory
             or a file without read permission.
     """
-    try:
-        first_line = _read_first_line(path)
-    except UnicodeDecodeError:
-        return None
+    first_line = _read_first_line(path)
     if first_line is None:
         return None
     try:
-        parsed = decode_log_line(first_line)
+        # UnicodeDecodeError is a ValueError, so a non-UTF-8 line lands here too.
+        parsed = decode_log_line(first_line.decode("utf-8"))
     except ValueError:
         return None
     return parsed if isinstance(parsed, dict) else None
@@ -226,23 +261,23 @@ def read_session_header(jsonl_path: str) -> SessionRecord | None:
             or a file without read permission.
     """
     location = f"{jsonl_path}:1"
-    try:
-        first_line = _read_first_line(Path(jsonl_path))
-    except UnicodeDecodeError as error:
-        message = f"Corrupt session log at {location}"
-        raise GymratError(message, hint="Line 1 contains invalid UTF-8 bytes.") from error
-    if first_line is None or not first_line.strip():
+    raw = _read_first_line(Path(jsonl_path))
+    if raw is None:
+        return None
+    # Decode before the blank check: str.strip also drops non-ASCII whitespace.
+    first_line = _decode_utf8_at(raw, location, 1)
+    if not first_line.strip():
         return None
 
     value = _decode_log_line_at(first_line, location, 1)
 
-    record = parse_record(value)
+    return _require_session_header(parse_record(value), location)
+
+
+def _require_session_header(record: SessionLogRecord, at: str) -> SessionRecord:
     if not isinstance(record, SessionRecord):
-        message = f"Expected session header at {location}, got a {record.type} record"
-        raise GymratError(
-            message,
-            hint="Line 1 is not a session header. The session log is corrupt; start a new session.",
-        )
+        message = f"Expected session header at {at}, got a {record.type} record"
+        raise GymratError(message, hint="The session log is corrupt; start a new session.")
     return record
 
 
@@ -316,7 +351,7 @@ def _serialize_record(record: SessionLogRecord) -> str:
         GymratError: When the record does not survive the JSON round trip.
     """
     try:
-        line = record_to_json_line(record)
+        line = record.model_dump_json(exclude_none=True)
     except PydanticSerializationError as error:
         hint = _NOT_UTF8_HINT if _any_leaf(record, _is_lone_surrogate_text) else _NOT_JSON_HINT
         raise GymratError(_refusal(record, error), hint=hint) from error
@@ -448,27 +483,17 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
 
         at = f"{jsonl_path}:{index + 1}"
 
-        try:
-            line = raw_line.decode("utf-8")
-        except UnicodeDecodeError as error:
-            message = f"Corrupt session log at {at}"
-            raise GymratError(
-                message, hint=f"Line {index + 1} contains invalid UTF-8 bytes."
-            ) from error
-
+        line = _decode_utf8_at(raw_line, at, index + 1)
         value = _decode_log_line_at(line, at, index + 1)
 
         try:
             record = parse_record(value)
         except GymratError as error:
             message = f"{error!s} (at {at})"
-            raise GymratError(message, hint=hint_of(error)) from error
+            raise GymratError(message, hint=error.hint) from error
 
-        if not records and record.type != "session":
-            message = f"Expected session header at {at}, got a {record.type} record"
-            raise GymratError(
-                message, hint="The session log is corrupt; start a new session."
-            ) from None
+        if not records:
+            record = _require_session_header(record, at)
         records.append(record)
 
     return records
@@ -499,18 +524,18 @@ class _FoldState:
     ``SessionState`` the rest of the codebase consumes.
     """
 
-    session: SessionRecord | None
-    iteration_count: int
-    last_iteration: IterationRecord | None
-    unsettled: bool
-    keep_count: int
-    discard_count: int
-    target_reached_and_kept: bool
-    last_seq: int
-    last_kept_commit: str | None
-    ends_on_gating_block: bool
-    ends_on_stop: bool
-    finalized: FinalizeRecord | None
+    session: SessionRecord | None = None
+    iteration_count: int = 0
+    last_iteration: IterationRecord | None = None
+    unsettled: bool = False
+    keep_count: int = 0
+    discard_count: int = 0
+    target_reached_and_kept: bool = False
+    last_seq: int = 0
+    last_kept_commit: str | None = None
+    ends_on_gating_block: bool = False
+    ends_on_stop: bool = False
+    finalized: FinalizeRecord | None = None
 
 
 def _clear_ends_on_flags(acc: _FoldState) -> None:
@@ -586,20 +611,7 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
     Returns:
         The accumulated session state.
     """
-    acc = _FoldState(
-        session=None,
-        iteration_count=0,
-        last_iteration=None,
-        unsettled=False,
-        keep_count=0,
-        discard_count=0,
-        target_reached_and_kept=False,
-        last_seq=0,
-        last_kept_commit=None,
-        ends_on_gating_block=False,
-        ends_on_stop=False,
-        finalized=None,
-    )
+    acc = _FoldState()
     target_reached: dict[int, bool] = {}
 
     for record in records:
@@ -623,20 +635,7 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
             case _ as unreachable:
                 assert_never(unreachable)
 
-    return SessionState(
-        session=acc.session,
-        iteration_count=acc.iteration_count,
-        last_iteration=acc.last_iteration,
-        unsettled=acc.unsettled,
-        keep_count=acc.keep_count,
-        discard_count=acc.discard_count,
-        target_reached_and_kept=acc.target_reached_and_kept,
-        last_seq=acc.last_seq,
-        last_kept_commit=acc.last_kept_commit,
-        ends_on_gating_block=acc.ends_on_gating_block,
-        ends_on_stop=acc.ends_on_stop,
-        finalized=acc.finalized,
-    )
+    return SessionState(**{field.name: getattr(acc, field.name) for field in fields(SessionState)})
 
 
 def require_session(root: str, verb: str) -> RequiredSession:

@@ -10,43 +10,28 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from gymrat.errors import GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.session.records import CommandRecord, SessionRecord, decode_log_line, parse_record
 from gymrat.supervisor.events import (
-    CapEvent,
-    CompactionEvent,
-    FollowUpEvent,
     LaunchEvent,
     TurnEndEvent,
     UsageUpdateEvent,
     event_from_wire,
 )
 from gymrat.telemetry.attributes import (
-    CAP_NAME,
-    EVENT_CAP,
-    EVENT_COMPACTION,
-    EVENT_FOLLOW_UP,
-    EVENT_TURN_END,
-    FOLLOW_UP_ACTION,
-    FOLLOW_UP_REASON,
-    GEN_AI_MODEL,
-    GEN_AI_PROVIDER,
     RUN_COST_USD,
-    RUN_EFFORT,
-    RUN_HEAD_SHA,
-    RUN_MAX_MINUTES,
-    RUN_MAX_USD,
     RUN_SPAN,
-    SESSION_ID,
     SESSION_SPAN,
-    TURN_BUDGET_EXHAUSTED,
-    TURN_ORIGIN,
-    TURN_SESSION_COST_USD,
-    command_span_inputs,
+    SESSION_SPAN_KEY,
+    Attrs,
     record_event,
+    run_attributes,
+    run_event,
+    run_span_key,
 )
 from gymrat.telemetry.ids import parse_traceparent
-from gymrat.telemetry.provider import start_span
+from gymrat.telemetry.provider import start_command_span, start_span
+from gymrat.utils import NS_PER_MS
 
 if TYPE_CHECKING:
     from opentelemetry.context import Context
@@ -57,12 +42,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-type _EventTuple = tuple[str, dict[str, str | int | float | bool], int]
+type _EventTuple = tuple[str, Attrs, int]
 type _NumberedRecord = tuple[int, SessionLogRecord]
+type _RunSpan = tuple[_ParsedRun, Span]
 
 _UNKNOWN_COMMAND_NAME = "unknown"
-_EXIT_CODE_ERROR = 2  # CLI exit-code convention: 2 = error
-_NS_PER_MS = 1_000_000
 
 
 def replay_session(
@@ -89,26 +73,29 @@ def replay_session(
         return 0
 
     session_id = first_record.session_id
-    runs = _parse_supervisor_logs(supervisor_logs, session_id)
+    runs = [
+        run
+        for log_path in supervisor_logs
+        if (run := _parse_one_supervisor_log(log_path, session_id)) is not None
+    ]
 
-    latest_at = first_record.at
-    for _lineno, rec in numbered_records:
-        latest_at = max(latest_at, rec.at)
-    for run in runs:
-        latest_at = max(latest_at, run.last_at)
+    latest_at = max([
+        *(rec.at for _lineno, rec in numbered_records),
+        *(run.last_at for run in runs),
+    ])
 
     session_span = start_span(
         SESSION_SPAN,
-        span_key="session",
+        span_key=SESSION_SPAN_KEY,
         start_time=first_record.at,
     )
     session_ctx = trace.set_span_in_context(session_span)
 
-    run_infos = _create_run_spans(runs, session_ctx)
-    cmd_count = _create_command_spans(numbered_records, session_id, session_span, run_infos)
+    run_spans = [(run, _create_run_span(run, session_ctx)) for run in runs]
+    cmd_count = _create_command_spans(numbered_records, session_id, session_span, run_spans)
 
     session_span.end(end_time=latest_at)
-    return 1 + len(run_infos) + cmd_count
+    return 1 + len(run_spans) + cmd_count
 
 
 def _add_events(span: Span, events: list[_EventTuple]) -> None:
@@ -117,36 +104,30 @@ def _add_events(span: Span, events: list[_EventTuple]) -> None:
         span.add_event(ev_name, attributes=ev_attrs, timestamp=ev_at)
 
 
-def _create_run_spans(
-    runs: list[_ParsedRun],
-    session_ctx: Context,
-) -> list[_RunInfo]:
-    """Open and close one ``gymrat.run`` span per parsed supervisor run."""
-    run_infos: list[_RunInfo] = []
-    for run in runs:
-        run_span = start_span(
-            RUN_SPAN,
-            span_key=f"run:{run.launch_at}",
-            start_time=run.launch_at,
-            context=session_ctx,
-            attributes=run.attributes,
-        )
+def _create_run_span(run: _ParsedRun, session_ctx: Context) -> Span:
+    """Open and close the ``gymrat.run`` span of one parsed supervisor run."""
+    run_span = start_span(
+        RUN_SPAN,
+        span_key=run_span_key(run.launch_at),
+        start_time=run.launch_at,
+        context=session_ctx,
+        attributes=run.attributes,
+    )
 
-        _add_events(run_span, run.events)
+    _add_events(run_span, run.events)
 
-        if run.cost_usd is not None:
-            run_span.set_attribute(RUN_COST_USD, run.cost_usd)
+    if run.cost_usd is not None:
+        run_span.set_attribute(RUN_COST_USD, run.cost_usd)
 
-        run_span.end(end_time=run.last_at)
-        run_infos.append(_RunInfo(run.launch_at, run.last_at, run_span))
-    return run_infos
+    run_span.end(end_time=run.last_at)
+    return run_span
 
 
 def _create_command_spans(
     numbered_records: list[_NumberedRecord],
     session_id: str,
     session_span: Span,
-    run_infos: list[_RunInfo],
+    run_spans: list[_RunSpan],
 ) -> int:
     """Create ``gymrat.command.*`` spans and attach inter-command records as events.
 
@@ -158,7 +139,7 @@ def _create_command_spans(
         numbered_records: The session's records with their log line numbers.
         session_id: The session the spans belong to.
         session_span: The span that records outside every command attach to.
-        run_infos: The supervisor runs' time ranges and spans.
+        run_spans: The supervisor runs, each with its span.
 
     Returns:
         The number of command spans created.
@@ -179,7 +160,7 @@ def _create_command_spans(
                 seen_command = True
             cmd_count += 1
             _emit_command_span(
-                rec, line_number, session_id, session_span, run_infos, pending_events
+                rec, line_number, session_id, session_span, run_spans, pending_events
             )
         else:
             ev_name, ev_attrs = record_event(rec)
@@ -194,58 +175,24 @@ def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay co
     line_number: int,
     session_id: str,
     session_span: Span,
-    run_infos: list[_RunInfo],
+    run_spans: list[_RunSpan],
     pending_events: list[_EventTuple],
 ) -> None:
     """Create one command span, drain pending events onto it, and close it."""
     from opentelemetry import trace  # noqa: PLC0415
-    from opentelemetry.trace import Link  # noqa: PLC0415
 
-    parent_run = _find_parent_run(rec.at, run_infos)
-    if parent_run is None and rec.traceparent:
-        parent_run = _find_parent_by_traceparent(rec.traceparent, run_infos)
-    parent_span = parent_run.span if parent_run is not None else session_span
-    parent_ctx = trace.set_span_in_context(parent_span)
-
-    inputs = command_span_inputs(rec, session_id=session_id, line_number=line_number)
-    links = [Link(inputs.link)] if inputs.link is not None else None
-
-    start_ns = rec.at - rec.duration_ms * _NS_PER_MS
-    cmd_span = start_span(
-        inputs.name,
-        span_key=inputs.key,
-        start_time=start_ns,
-        context=parent_ctx,
-        attributes=inputs.attributes,
-        links=links,
+    cmd_span = start_command_span(
+        rec,
+        session_id=session_id,
+        line_number=line_number,
+        context=trace.set_span_in_context(_find_parent_run(rec, run_spans) or session_span),
+        start_time=rec.at - rec.duration_ms * NS_PER_MS,
     )
-
-    _set_command_status(cmd_span, rec.exit_code)
 
     _add_events(cmd_span, pending_events)
     pending_events.clear()
 
     cmd_span.end(end_time=rec.at)
-
-
-def _set_command_status(span: Span, exit_code: int) -> None:
-    from opentelemetry.trace import StatusCode  # noqa: PLC0415
-
-    if exit_code == 0:
-        span.set_status(StatusCode.OK)
-    elif exit_code == _EXIT_CODE_ERROR:
-        span.set_status(StatusCode.ERROR)
-
-
-class _RunInfo:
-    """Time range and span handle for one supervisor run."""
-
-    __slots__ = ("end", "span", "start")
-
-    def __init__(self, start: int, end: int, span: Span) -> None:
-        self.start = start
-        self.end = end
-        self.span = span
 
 
 class _ParsedRun:
@@ -257,21 +204,7 @@ class _ParsedRun:
         self.launch_at = launch.at
         self.last_at = launch.at
         self.cost_usd: float | None = None
-
-        attrs: dict[str, str | int | float | bool] = {
-            SESSION_ID: launch.session_id,
-            RUN_HEAD_SHA: launch.head_sha,
-            RUN_MAX_MINUTES: launch.max_minutes,
-            GEN_AI_PROVIDER: "anthropic",
-        }
-        if launch.max_usd is not None:
-            attrs[RUN_MAX_USD] = launch.max_usd
-        if launch.effort is not None:
-            attrs[RUN_EFFORT] = launch.effort
-        if launch.model is not None:
-            attrs[GEN_AI_MODEL] = launch.model
-        self.attributes = attrs
-
+        self.attributes = run_attributes(launch)
         self.events: list[_EventTuple] = []
 
 
@@ -340,24 +273,9 @@ def _construct_command(data: dict[str, object]) -> CommandRecord:
     filled.setdefault("args", {})
     filled.setdefault("name", _UNKNOWN_COMMAND_NAME)
     filled.setdefault("duration_ms", 0)
-    filled.setdefault("exit_code", _EXIT_CODE_ERROR)
+    filled.setdefault("exit_code", TOOL_FAILURE_EXIT_CODE)
     # pyrefly: ignore[bad-argument-type] -- dict[str, object] is the wire dict shape
     return CommandRecord.model_construct(**filled)
-
-
-def _parse_supervisor_logs(
-    supervisor_logs: list[str],
-    session_id: str,
-) -> list[_ParsedRun]:
-    """Parse supervisor JSONL logs into _ParsedRun objects for matching sessions."""
-    runs: list[_ParsedRun] = []
-
-    for log_path in supervisor_logs:
-        run = _parse_one_supervisor_log(log_path, session_id)
-        if run is not None:
-            runs.append(run)
-
-    return runs
 
 
 def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | None:
@@ -392,51 +310,36 @@ def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | No
 
 
 def _collect_run_event(run: _ParsedRun, event: SessionEvent) -> None:
-    """Classify a supervisor event and append it to a parsed run."""
-    if isinstance(event, TurnEndEvent):
+    """Record the cost an event reports and the span event it is mirrored as."""
+    if isinstance(event, TurnEndEvent | UsageUpdateEvent):
         run.cost_usd = event.cost_usd
-        run.events.append((
-            EVENT_TURN_END,
-            {
-                TURN_SESSION_COST_USD: event.cost_usd,
-                TURN_ORIGIN: event.origin,
-                TURN_BUDGET_EXHAUSTED: event.budget_exhausted,
-            },
-            event.at,
-        ))
-    elif isinstance(event, UsageUpdateEvent):
-        run.cost_usd = event.cost_usd
-    elif isinstance(event, FollowUpEvent):
-        attrs: dict[str, str | int | float | bool] = {FOLLOW_UP_ACTION: event.action}
-        if event.reason is not None:
-            attrs[FOLLOW_UP_REASON] = event.reason
-        run.events.append((EVENT_FOLLOW_UP, attrs, event.at))
-    elif isinstance(event, CapEvent):
-        run.events.append((
-            EVENT_CAP,
-            {CAP_NAME: event.cap},
-            event.at,
-        ))
-    elif isinstance(event, CompactionEvent):
-        run.events.append((EVENT_COMPACTION, {}, event.at))
+    mirrored = run_event(event)
+    if mirrored is not None:
+        name, attributes = mirrored
+        run.events.append((name, attributes, event.at))
 
 
-def _find_parent_run(at: int, run_infos: list[_RunInfo]) -> _RunInfo | None:
-    """Find the run span whose time range contains ``at``."""
-    for run in run_infos:
-        if run.start <= at <= run.end:
-            return run
-    return None
+def _find_parent_run(rec: CommandRecord, run_spans: list[_RunSpan]) -> Span | None:
+    """Find the span of the run a command ran under.
 
+    Args:
+        rec: The command record.
+        run_spans: The supervisor runs, each with its span.
 
-def _find_parent_by_traceparent(traceparent: str, run_infos: list[_RunInfo]) -> _RunInfo | None:
-    """Find the run span whose span ID matches the traceparent's span ID."""
-    ctx = parse_traceparent(traceparent)
-    if ctx is None:
+    Returns:
+        The span of the run whose time range contains the command; failing
+        that, the run span the command's recorded traceparent links to; else
+        ``None``.
+    """
+    for run, span in run_spans:
+        if run.launch_at <= rec.at <= run.last_at:
+            return span
+    link = parse_traceparent(rec.traceparent) if rec.traceparent else None
+    if link is None:
         return None
-    for run in run_infos:
-        if run.span.get_span_context().span_id == ctx.span_id:
-            return run
+    for _run, span in run_spans:
+        if span.get_span_context().span_id == link.span_id:
+            return span
     return None
 
 

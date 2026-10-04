@@ -5,7 +5,7 @@ the suite is order-independent and safe under ``pytest-xdist`` /
 ``pytest-randomly``. Nothing is mocked: the module under test is file I/O, and
 only real bytes on disk reveal the torn-tail recovery and the refusal to log a
 record that would not read back. The fold state machine has its own tests in
-``test_fold_session.py``.
+``test_store_fold.py``.
 """
 
 import json
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.errors import GymratError, hint_of
+from gymrat.errors import GymratError
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     BaselineRecord,
@@ -277,7 +277,7 @@ def test_append_record_when_record_unreadable_does_raise_naming_its_cause_and_le
         append_record(jsonl_path, record)
 
     assert re.search(rf"\b{record_type}\b", str(excinfo.value))
-    assert hint_of(excinfo.value) == hint
+    assert excinfo.value.hint == hint
     assert Path(jsonl_path).read_bytes() == before
 
 
@@ -405,6 +405,21 @@ def test_read_records_when_log_missing_does_read_as_no_session(fresh_root: str):
     assert read_records(jsonl_path) == []
 
 
+def test_read_records_when_log_is_empty_does_return_no_records(fresh_root: str):
+    jsonl_path = _jsonl_holding_bytes(fresh_root, b"")
+
+    assert read_records(jsonl_path) == []
+
+
+def test_read_records_when_first_line_is_not_json_does_raise_naming_line_one(fresh_root: str):
+    jsonl_path = _jsonl_holding(fresh_root, ["{", _line(SESSION)])
+
+    with pytest.raises(GymratError) as excinfo:
+        read_records(jsonl_path)
+
+    assert str(excinfo.value) == f"Invalid JSON at {jsonl_path}:1"
+
+
 def test_read_records_when_log_holds_appended_records_does_return_them_in_file_order(
     fresh_root: str,
 ):
@@ -457,7 +472,7 @@ def test_read_records_when_a_line_is_not_json_does_raise_naming_the_line_and_its
         read_records(jsonl_path)
 
     assert str(excinfo.value) == f"Invalid JSON at {jsonl_path}:2"
-    assert hint_of(excinfo.value) == hint
+    assert excinfo.value.hint == hint
 
 
 def test_read_records_when_a_line_matches_no_schema_does_raise_naming_line_and_field(
@@ -474,7 +489,7 @@ def test_read_records_when_a_line_matches_no_schema_does_raise_naming_line_and_f
     assert re.search(r"\bmetrics\b", str(excinfo.value))
 
 
-def test_read_records_when_first_record_not_session_does_raise_naming_the_first_line(
+def test_read_records_when_first_record_not_session_does_raise_naming_its_type(
     fresh_root: str,
 ):
     jsonl_path = _jsonl_holding(fresh_root, [_line(ITERATION_1), _line(discard_record(1))])
@@ -482,8 +497,10 @@ def test_read_records_when_first_record_not_session_does_raise_naming_the_first_
     with pytest.raises(GymratError) as excinfo:
         read_records(jsonl_path)
 
-    assert f"{jsonl_path}:1" in str(excinfo.value)
-    assert re.search(r"session", str(excinfo.value), re.IGNORECASE)
+    assert (str(excinfo.value), excinfo.value.hint) == (
+        f"Expected session header at {jsonl_path}:1, got a iteration record",
+        "The session log is corrupt; start a new session.",
+    )
 
 
 def test_read_records_when_final_line_unterminated_does_skip_it(fresh_root: str):
@@ -510,6 +527,7 @@ def test_read_records_when_complete_line_fails_to_decode_does_raise_naming_path_
         read_records(jsonl_path)
 
     assert f"{jsonl_path}:2" in str(excinfo.value)
+    assert excinfo.value.hint == "Line 2 contains invalid UTF-8 bytes."
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +559,7 @@ def test_read_session_header_when_log_absent_does_return_none(fresh_root: str):
         pytest.param(b"", id="an-empty-log"),
         pytest.param(b"\n" + SESSION_LINE, id="an-empty-first-line"),
         pytest.param(b"   \n", id="a-whitespace-only-first-line"),
+        pytest.param("　\n".encode(), id="a-non-ascii-whitespace-first-line"),
     ],
 )
 def test_read_session_header_when_first_line_blank_does_return_none(fresh_root: str, raw: bytes):
@@ -558,7 +577,7 @@ def test_read_session_header_when_first_line_not_json_does_raise_naming_the_firs
         read_session_header(jsonl_path)
 
     assert str(excinfo.value) == f"Invalid JSON at {jsonl_path}:1"
-    assert hint_of(excinfo.value) == "Line 1 is not a JSON object."
+    assert excinfo.value.hint == "Line 1 is not a JSON object."
 
 
 @pytest.mark.parametrize(
@@ -582,7 +601,7 @@ def test_read_session_header_when_first_line_holds_a_non_finite_number_does_hint
     with pytest.raises(GymratError) as excinfo:
         read_session_header(jsonl_path)
 
-    assert (str(excinfo.value), hint_of(excinfo.value)) == (
+    assert (str(excinfo.value), excinfo.value.hint) == (
         f"Invalid JSON at {jsonl_path}:1",
         f"Line 1 holds a number the session log never stores: {cause}.",
     )
@@ -596,11 +615,25 @@ def test_read_session_header_when_first_record_not_session_does_raise_naming_its
     with pytest.raises(GymratError) as excinfo:
         read_session_header(jsonl_path)
 
-    assert str(excinfo.value) == (
-        f"Expected session header at {jsonl_path}:1, got a iteration record"
+    assert (str(excinfo.value), excinfo.value.hint) == (
+        f"Expected session header at {jsonl_path}:1, got a iteration record",
+        "The session log is corrupt; start a new session.",
     )
-    assert hint_of(excinfo.value) == (
-        "Line 1 is not a session header. The session log is corrupt; start a new session."
+
+
+def test_read_session_header_when_first_record_not_session_does_raise_as_read_records_does(
+    fresh_root: str,
+):
+    jsonl_path = _jsonl_holding(fresh_root, [_line(ITERATION_1), _line(SESSION)])
+    with pytest.raises(GymratError) as read_records_error:
+        read_records(jsonl_path)
+
+    with pytest.raises(GymratError) as excinfo:
+        read_session_header(jsonl_path)
+
+    assert (str(excinfo.value), excinfo.value.hint) == (
+        str(read_records_error.value),
+        read_records_error.value.hint,
     )
 
 
@@ -615,7 +648,7 @@ def test_read_session_header_when_first_line_undecodable_does_raise_as_read_reco
         read_session_header(jsonl_path)
 
     assert str(excinfo.value) == f"Corrupt session log at {jsonl_path}:1"
-    assert hint_of(excinfo.value) == hint_of(read_records_error.value)
+    assert excinfo.value.hint == read_records_error.value.hint
 
 
 # ---------------------------------------------------------------------------
@@ -736,7 +769,7 @@ def test_require_session_when_no_session_opened_does_raise_naming_root_and_verb(
         require_session(fresh_root, verb)
 
     assert fresh_root in str(excinfo.value)
-    assert hint_of(excinfo.value) == f"Run gymrat start to open one before {verb}."
+    assert excinfo.value.hint == f"Run gymrat start to open one before {verb}."
 
 
 def test_require_session_when_no_session_opened_does_carry_no_session_reason(fresh_root: str):
@@ -780,7 +813,7 @@ def test_require_open_session_when_session_finalized_does_raise_naming_the_close
         require_open_session(fresh_root, "measuring an edit")
 
     assert SESSION.session_id in str(excinfo.value)
-    assert "gymrat start" in (hint_of(excinfo.value) or "")
+    assert "gymrat start" in (excinfo.value.hint or "")
 
 
 def test_require_open_session_when_session_finalized_does_carry_finalized_reason(

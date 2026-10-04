@@ -228,6 +228,16 @@
   ✓ recorded unsettled suggested — checks (npm run check && npm test) run at gymrat keep
   '''
 # ---
+# name: test_frame_when_worktree_preparing_does_name_its_target
+  '''
+  iterate #1 · session test-session · 0s elapsed
+  ⠋ preparing · baseline
+  ○ passes
+  ○ judge (3 metrics · geomean primary)
+  ○ confirm (only if a gating metric regresses)
+  ○ record
+  '''
+# ---
 # name: test_plain_when_confirm_finished_does_print_timestamped_line
   '[00:00:05] confirm 0/2 · regressions reproduced'
 # ---

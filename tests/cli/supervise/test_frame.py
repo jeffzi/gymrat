@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.panel import Panel
 
-from gymrat.cli.supervise.types import ReadSessionResult
+from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._ansi import (
     SGR_BLUE,
@@ -31,27 +31,29 @@ from tests.cli.supervise._fixtures import (
     FRAME_WIDTH,
     IDLE_WARN_MS,
     ReporterKit,
-    fire_cap,
-    fire_launch,
+    cap_event,
     fire_launch_and_bash_cycle,
     fire_launch_and_bash_start,
-    fire_model_phase,
-    fire_tool_end,
-    fire_tool_start,
-    fire_usage_update,
-    make_iteration,
+    follow_up_event,
+    launch_event,
+    line_after,
     make_read_session,
     make_reporter,
+    model_phase_event,
     render_colored,
     render_colorless,
     render_frame,
-    session_state,
     session_state_three_iterations,
+    tool_end_event,
+    tool_start_event,
+    turn_end_event,
+    usage_event,
 )
+from tests.session.records._fixtures import make_iteration, session_state
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.types import SuperviseReporter
-    from gymrat.config.types import Effort
+    from gymrat.cli.supervise.progress import SuperviseReporter
+    from gymrat.config import Effort
 
 
 # ---------------------------------------------------------------------------
@@ -75,13 +77,6 @@ def _lines_containing(output: str, needle: str) -> list[str]:
     return [line for line in output.splitlines() if needle in strip_sgr(line)]
 
 
-def _line_after(frame: str, needle: str) -> str:
-    """Return the line immediately following the first line containing *needle*."""
-    lines = frame.splitlines()
-    idx = next(i for i, line in enumerate(lines) if needle in line)
-    return lines[idx + 1]
-
-
 def _panel_title_text(frame: str) -> str:
     """The panel's title text, with the top border's box-drawing chars stripped."""
     return frame.splitlines()[0].strip("╭╮─ ")
@@ -94,11 +89,11 @@ def _assert_is_nested_line(line: str) -> None:
 
 def _fire_waiting_bash_cycle(kit: ReporterKit, *, above_threshold: bool = False) -> None:
     """Launch, then run a Bash start/end cycle, optionally idling past the warn threshold."""
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000))
     kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000)
+    kit.reporter.observer(tool_end_event("Bash", "bash-1", 3000))
     if above_threshold:
         kit.clock.now = 3000 + IDLE_WARN_MS + 1
 
@@ -110,7 +105,7 @@ def _fire_waiting_bash_cycle(kit: ReporterKit, *, above_threshold: bool = False)
 
 def test_build_frame_panel_when_launched_does_have_nondefault_border_style():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     panel = kit.reporter.frame()
 
@@ -123,9 +118,9 @@ def test_build_frame_panel_when_launched_does_have_nondefault_border_style():
 # ---------------------------------------------------------------------------
 
 
-def test_panel_title_when_label_present_does_style_supervise_and_label_with_label_style():
-    kit = make_reporter(label="ecstatic-ts", session_id="", branch="")
-    fire_launch(kit.reporter.observer, 1000)
+def test_panel_title_when_rendered_does_style_supervise_with_label_style():
+    kit = make_reporter(session_id="", branch="")
+    kit.reporter.observer(launch_event(1000))
 
     panel = kit.reporter.frame()
     assert isinstance(panel, Panel)
@@ -138,11 +133,10 @@ def test_panel_title_when_label_present_does_style_supervise_and_label_with_labe
 
 def test_panel_title_when_connector_present_does_dim_the_connector_word():
     kit = make_reporter(
-        label="",
         session_id="20260813-125044-34ec",
         branch="gymrat/20260813-125044-34ec",
     )
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     panel = kit.reporter.frame()
     assert isinstance(panel, Panel)
@@ -159,15 +153,34 @@ def test_panel_title_when_connector_present_does_dim_the_connector_word():
 
 def test_cost_when_rendered_with_color_does_emit_styling():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_usage_update(kit.reporter.observer, 4.12, 2000)
+    kit.reporter.observer(usage_event(4.12, 2000))
 
     colored = _render_content_colored(kit.reporter)
     cost_lines = _lines_containing(colored, "cost")
 
     assert cost_lines
     assert any("\x1b[" in line for line in cost_lines)
+
+
+# ---------------------------------------------------------------------------
+# summary row labels
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("label", ["loop", "best", "turns"])
+def test_summary_row_when_rendered_with_color_does_open_on_a_dim_label(label: str):
+    state = session_state_three_iterations(-3.2, "improved", seq=3)
+    best = BestIteration(delta_pct=-3.2, seq=3, label="geomean")
+    kit = make_reporter(read_session=make_read_session(state, has_baseline=True, best=best))
+    fire_launch_and_bash_cycle(kit.reporter.observer)
+    kit.reporter.observer(turn_end_event(4000))
+    kit.reporter.observer(follow_up_event(5000, action="replied"))
+
+    colored = _render_content_colored(kit.reporter)
+
+    assert [line for line in colored.splitlines() if line.startswith(f"\x1b[{SGR_DIM}m{label} ")]
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +237,7 @@ def test_loop_outcome_when_rendered_with_color_does_emit_expected_styling(
     [
         pytest.param(-6.8, SGR_GREEN, id="negative-delta-green"),
         pytest.param(3.5, SGR_RED, id="positive-delta-red"),
+        pytest.param(0.0, SGR_RED, id="zero-delta-red"),
     ],
 )
 def test_best_delta_when_rendered_with_color_does_emit_sign_dependent_styling(
@@ -240,8 +254,7 @@ def test_best_delta_when_rendered_with_color_does_emit_sign_dependent_styling(
         read_session=make_read_session(
             state,
             has_baseline=True,
-            best_delta_pct=delta_pct,
-            best_seq=3,
+            best=BestIteration(delta_pct=delta_pct, seq=3, label="geomean"),
         ),
     )
     fire_launch_and_bash_cycle(kit.reporter.observer)
@@ -259,7 +272,7 @@ def test_best_delta_when_rendered_with_color_does_emit_sign_dependent_styling(
 
 def test_liveness_starting_when_rendered_with_color_does_emit_dim_styling():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     colored = _render_content_colored(kit.reporter)
     starting_lines = _lines_containing(colored, "starting")
@@ -269,9 +282,9 @@ def test_liveness_starting_when_rendered_with_color_does_emit_dim_styling():
 
 def test_liveness_inflight_when_rendered_with_color_does_not_emit_special_styling():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
     kit.clock.now = 7000
 
     colored = _render_content_colored(kit.reporter)
@@ -285,10 +298,10 @@ def test_liveness_inflight_when_rendered_with_color_does_not_emit_special_stylin
 
 def test_liveness_inflight_when_rendered_does_match_finished_tool_column_layout():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
     kit.clock.now = 7000
 
     plain = render_frame(kit.reporter)
@@ -305,8 +318,8 @@ def test_liveness_inflight_when_rendered_does_match_finished_tool_column_layout(
 
 def test_liveness_responding_when_rendered_with_color_does_emit_dim_styling():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
-    fire_model_phase(kit.reporter.observer, 2000, "responding")
+    kit.reporter.observer(launch_event(1000))
+    kit.reporter.observer(model_phase_event(2000, "responding"))
 
     colored = _render_content_colored(kit.reporter)
     responding_lines = _lines_containing(colored, "responding")
@@ -316,8 +329,8 @@ def test_liveness_responding_when_rendered_with_color_does_emit_dim_styling():
 
 def test_liveness_composing_when_rendered_with_color_does_emit_dim_styling():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
-    fire_model_phase(kit.reporter.observer, 2000, "tool_input", tool_name="Edit")
+    kit.reporter.observer(launch_event(1000))
+    kit.reporter.observer(model_phase_event(2000, "tool_input", tool_name="Edit"))
 
     colored = _render_content_colored(kit.reporter)
     preparing_lines = _lines_containing(colored, "preparing")
@@ -361,11 +374,11 @@ def _fire_liveness_scenario(kit: ReporterKit, scenario: str) -> None:
     if scenario in {"waiting", "no-output"}:
         _fire_waiting_bash_cycle(kit, above_threshold=scenario == "no-output")
         return
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     if scenario == "composing":
-        fire_model_phase(kit.reporter.observer, 2000, "tool_input", tool_name="Edit")
+        kit.reporter.observer(model_phase_event(2000, "tool_input", tool_name="Edit"))
     else:
-        fire_model_phase(kit.reporter.observer, 2000, "responding")
+        kit.reporter.observer(model_phase_event(2000, "responding"))
 
 
 @_LIVENESS_SCENARIOS
@@ -396,7 +409,7 @@ def test_liveness_exiting_when_rendered_with_color_does_emit_dim_styling(
     phase: ExitPhase, needle: str
 ):
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.reporter.exit_phase(phase)
 
     colored = _render_content_colored(kit.reporter)
@@ -407,8 +420,8 @@ def test_liveness_exiting_when_rendered_with_color_does_emit_dim_styling(
 
 def test_liveness_capped_when_rendered_with_color_does_emit_yellow_styling():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
-    fire_cap(kit.reporter.observer, "wall-clock")
+    kit.reporter.observer(launch_event(1000))
+    kit.reporter.observer(cap_event("wall-clock"))
 
     colored = _render_content_colored(kit.reporter)
     cap_lines = _lines_containing(colored, "interrupting")
@@ -423,22 +436,22 @@ def test_liveness_capped_when_rendered_with_color_does_emit_yellow_styling():
 
 def test_finished_tools_when_three_completed_does_render_newest_first():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
 
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Read", "read-1", 2000, input_summary="oldest.ts")
+    kit.reporter.observer(tool_start_event("Read", "read-1", 2000, input_summary="oldest.ts"))
     kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Read", "read-1", 3000)
+    kit.reporter.observer(tool_end_event("Read", "read-1", 3000))
 
     kit.clock.now = 4000
-    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 4000, input_summary="middle.ts")
+    kit.reporter.observer(tool_start_event("Edit", "edit-1", 4000, input_summary="middle.ts"))
     kit.clock.now = 5000
-    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 5000)
+    kit.reporter.observer(tool_end_event("Edit", "edit-1", 5000))
 
     kit.clock.now = 6000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 6000, input_summary="newest.ts")
+    kit.reporter.observer(tool_start_event("Bash", "bash-1", 6000, input_summary="newest.ts"))
     kit.clock.now = 7000
-    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 7000)
+    kit.reporter.observer(tool_end_event("Bash", "bash-1", 7000))
 
     plain = render_frame(kit.reporter)
     tool_lines = [
@@ -461,11 +474,13 @@ def test_finished_tools_when_three_completed_does_render_newest_first():
 
 def test_finished_tool_line_does_emit_dim_styling():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    kit.reporter.observer(
+        tool_start_event("Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    )
     kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 3000)
+    kit.reporter.observer(tool_end_event("Edit", "edit-1", 3000))
 
     colored = _render_content_colored(kit.reporter)
     finished_lines = _lines_containing(colored, "archetype")
@@ -475,11 +490,13 @@ def test_finished_tool_line_does_emit_dim_styling():
 
 def test_finished_tool_line_when_failed_does_emit_dim_red_styling():
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    kit.reporter.observer(
+        tool_start_event("Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    )
     kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 3000, result="error")
+    kit.reporter.observer(tool_end_event("Edit", "edit-1", 3000, result="error"))
 
     colored = _render_content_colored(kit.reporter)
     edit_lines = _lines_containing(colored, "Edit")
@@ -498,17 +515,18 @@ def test_nested_tool_when_in_flight_does_render_arrow_line_under_parent():
     observer = kit.reporter.observer
     fire_launch_and_bash_start(observer)
     kit.clock.now = 2000
-    fire_tool_start(
-        observer,
-        "Read",
-        "nested-read-1",
-        2000,
-        parent_tool_use_id="bash-1",
-        input_summary="src/config.ts",
+    observer(
+        tool_start_event(
+            "Read",
+            "nested-read-1",
+            2000,
+            parent_tool_use_id="bash-1",
+            input_summary="src/config.ts",
+        )
     )
     kit.clock.now = 5000
 
-    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+    nested_line = line_after(render_frame(kit.reporter), "Bash")
 
     _assert_is_nested_line(nested_line)
     assert "Read" in nested_line
@@ -521,10 +539,10 @@ def test_nested_phase_when_thinking_does_render_arrow_line_with_thinking():
     observer = kit.reporter.observer
     fire_launch_and_bash_start(observer)
     kit.clock.now = 2000
-    fire_model_phase(observer, 2000, "thinking", parent_tool_use_id="bash-1")
+    observer(model_phase_event(2000, "thinking", parent_tool_use_id="bash-1"))
     kit.clock.now = 4000
 
-    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+    nested_line = line_after(render_frame(kit.reporter), "Bash")
 
     _assert_is_nested_line(nested_line)
     assert "thinking" in nested_line
@@ -536,10 +554,10 @@ def test_nested_phase_when_responding_does_render_arrow_line_with_responding():
     observer = kit.reporter.observer
     fire_launch_and_bash_start(observer)
     kit.clock.now = 2000
-    fire_model_phase(observer, 2000, "responding", parent_tool_use_id="bash-1")
+    observer(model_phase_event(2000, "responding", parent_tool_use_id="bash-1"))
     kit.clock.now = 3000
 
-    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+    nested_line = line_after(render_frame(kit.reporter), "Bash")
 
     _assert_is_nested_line(nested_line)
     assert "responding" in nested_line
@@ -550,10 +568,10 @@ def test_nested_phase_when_composing_does_render_arrow_line_with_preparing():
     observer = kit.reporter.observer
     fire_launch_and_bash_start(observer)
     kit.clock.now = 2000
-    fire_model_phase(observer, 2000, "tool_input", tool_name="Edit", parent_tool_use_id="bash-1")
+    observer(model_phase_event(2000, "tool_input", tool_name="Edit", parent_tool_use_id="bash-1"))
     kit.clock.now = 3000
 
-    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+    nested_line = line_after(render_frame(kit.reporter), "Bash")
 
     _assert_is_nested_line(nested_line)
     assert "preparing" in nested_line
@@ -563,9 +581,9 @@ def test_nested_phase_when_composing_does_render_arrow_line_with_preparing():
 def test_nested_when_no_activity_does_not_render_arrow_line():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
+    observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
     kit.clock.now = 5000
 
     frame = render_frame(kit.reporter)
@@ -579,13 +597,14 @@ def test_nested_tool_when_rendered_with_color_does_emit_dim_styling():
     observer = kit.reporter.observer
     fire_launch_and_bash_start(observer)
     kit.clock.now = 2000
-    fire_tool_start(
-        observer,
-        "Read",
-        "nested-read-1",
-        2000,
-        parent_tool_use_id="bash-1",
-        input_summary="src/config.ts",
+    observer(
+        tool_start_event(
+            "Read",
+            "nested-read-1",
+            2000,
+            parent_tool_use_id="bash-1",
+            input_summary="src/config.ts",
+        )
     )
     kit.clock.now = 5000
 
@@ -603,18 +622,19 @@ def test_nested_tool_when_rendered_with_color_does_emit_dim_styling():
 def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_width():
     kit = make_reporter()
     observer = kit.reporter.observer
-    fire_launch(observer, 1000)
+    observer(launch_event(1000))
 
     kit.clock.now = 2000
-    fire_tool_start(observer, "Bash", "bash-1", 2000, input_summary="run tests")
+    observer(tool_start_event("Bash", "bash-1", 2000, input_summary="run tests"))
     kit.clock.now = 2500
-    fire_tool_start(
-        observer,
-        "LongNestedToolName",
-        "nested-1",
-        2500,
-        parent_tool_use_id="bash-1",
-        input_summary="something",
+    observer(
+        tool_start_event(
+            "LongNestedToolName",
+            "nested-1",
+            2500,
+            parent_tool_use_id="bash-1",
+            input_summary="something",
+        )
     )
     kit.clock.now = 3000
 
@@ -633,22 +653,17 @@ def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_widt
 @pytest.mark.parametrize(
     ("model", "effort", "expected_title"),
     [
-        pytest.param("opus", None, "supervise ecstatic-ts · model opus", id="model-only"),
-        pytest.param(None, "high", "supervise ecstatic-ts · effort high", id="effort-only"),
-        pytest.param(
-            "opus",
-            "max",
-            "supervise ecstatic-ts · model opus · effort max",
-            id="model-and-effort",
-        ),
-        pytest.param(None, None, "supervise ecstatic-ts", id="neither"),
+        pytest.param("opus", None, "supervise · model opus", id="model-only"),
+        pytest.param(None, "high", "supervise · effort high", id="effort-only"),
+        pytest.param("opus", "max", "supervise · model opus · effort max", id="model-and-effort"),
+        pytest.param(None, None, "supervise", id="neither"),
     ],
 )
 def test_panel_title_when_model_or_effort_in_force_does_show_labelled_value(
     model: str | None, effort: Effort | None, expected_title: str
 ) -> None:
-    kit = make_reporter(label="ecstatic-ts", session_id="", branch="", model=model, effort=effort)
-    fire_launch(kit.reporter.observer, 1000)
+    kit = make_reporter(session_id="", branch="", model=model, effort=effort)
+    kit.reporter.observer(launch_event(1000))
 
     frame = render_frame(kit.reporter)
 
@@ -684,26 +699,21 @@ def test_nested_tool_end_when_session_changes_does_reflect_new_state_in_frame():
     )
     observer = kit.reporter.observer
 
-    fire_launch(observer, 1000)
+    observer(launch_event(1000))
     kit.clock.now = 2000
-    fire_tool_start(observer, "Bash", "agent-1", 2000, input_summary="run agent")
+    observer(tool_start_event("Bash", "agent-1", 2000, input_summary="run agent"))
     kit.clock.now = 3000
-    fire_tool_start(
-        observer,
-        "Read",
-        "nested-read-1",
-        3000,
-        parent_tool_use_id="agent-1",
-        input_summary="src/config.ts",
+    observer(
+        tool_start_event(
+            "Read",
+            "nested-read-1",
+            3000,
+            parent_tool_use_id="agent-1",
+            input_summary="src/config.ts",
+        )
     )
     kit.clock.now = 4000
-    fire_tool_end(
-        observer,
-        "Read",
-        "nested-read-1",
-        4000,
-        parent_tool_use_id="agent-1",
-    )
+    observer(tool_end_event("Read", "nested-read-1", 4000, parent_tool_use_id="agent-1"))
 
     frame = render_frame(kit.reporter)
 

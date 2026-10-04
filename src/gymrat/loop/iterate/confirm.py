@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from gymrat.clock import monotonic_ms
-from gymrat.config.types import FILTER_PLACEHOLDER
+from gymrat.config import FILTER_PLACEHOLDER
 from gymrat.loop.iterate.bench import IterationContext, bench_and_judge
 from gymrat.progress_events import (
     ConfirmFinished,
@@ -28,7 +28,7 @@ from gymrat.progress_events import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.config.types import ResolvedConfig
+    from gymrat.config import ResolvedConfig
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
     from gymrat.session.records import PairedSamples
 
@@ -68,9 +68,22 @@ def with_confirm_phase(ctx: IterationContext) -> IterationContext:
     return replace(ctx, options=replace(ctx.options, on_progress=wrapper))
 
 
+def is_gating_regression(meta: ResolvedMetricMeta, verdict: MetricVerdict | None) -> bool:
+    """Whether ``meta``'s metric gates the run and ``verdict`` calls it regressed.
+
+    Args:
+        meta: The metric's resolved metadata.
+        verdict: The metric's verdict, or ``None`` when it has none.
+
+    Returns:
+        ``True`` for a gating metric whose verdict is ``regressed``.
+    """
+    return meta.gating and verdict is not None and verdict.verdict == "regressed"
+
+
 def _needs_confirmation(meta: ResolvedMetricMeta, verdict: MetricVerdict | None) -> bool:
     """Whether ``meta``'s metric is a gating, non-exact regression the first run found."""
-    return meta.gating and not meta.exact and verdict is not None and verdict.verdict == "regressed"
+    return not meta.exact and is_gating_regression(meta, verdict)
 
 
 async def confirm_regressions(
@@ -96,18 +109,17 @@ async def confirm_regressions(
         GymratError: When the rerun's bench command fails — an iteration nobody
             could confirm is not recorded.
     """
-    filtered = [
+    filtered = tuple(
         name for name, meta in metric_meta.items() if _needs_confirmation(meta, verdicts.get(name))
-    ]
+    )
     if not filtered:
         return None
 
-    filtered_tuple = tuple(filtered)
     bench = scoped_bench(ctx.config, filtered)
     emit_progress(
         ctx.options.on_progress,
         ConfirmStarted(
-            filtered_metrics=None if ctx.config.filter is None else filtered_tuple,
+            filtered_metrics=None if ctx.config.filter is None else filtered,
             at_ms=monotonic_ms(),
         ),
     )
@@ -117,7 +129,7 @@ async def confirm_regressions(
     confirmed = frozenset(
         name
         for name in filtered
-        if (verdict := rerun.verdicts.get(name)) is not None and verdict.verdict == "regressed"
+        if is_gating_regression(metric_meta[name], rerun.verdicts.get(name))
     )
     absent = frozenset(name for name in filtered if rerun.verdicts.get(name) is None)
 
@@ -127,7 +139,7 @@ async def confirm_regressions(
     )
 
     return Confirmation(
-        filtered=filtered_tuple,
+        filtered=filtered,
         samples=rerun.samples,
         confirmed=confirmed,
         absent=absent,

@@ -32,14 +32,9 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.targets import (
-    RefTarget,
-    cleanup_worktrees,
-    materialize_worktree,
-    plan_worktree,
-)
+from gymrat.sampling import cleanup_worktrees, materialize_worktree, plan_worktree
+from gymrat.targets import RefTarget
 from tests._cli import no_color_env as _env
-from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
 # A sha no repository holds, so planning never needs a real commit to build a path.
 UNKNOWN_SHA = "0" * 40
@@ -55,13 +50,8 @@ skip_on_windows_or_root = pytest.mark.skipif(
 )
 
 from tests._cli import ENTRY as _ENTRY
+from tests._git import EMIT_ONE_BENCH, head_of, write_committed_bench
 from tests._git import run_git as _run_git
-
-_FAST_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
-
-
-def _get_head_sha(repo_dir: str) -> str:
-    return _run_git(["rev-parse", "HEAD"], repo_dir).strip()
 
 
 def _point_temp_base_at(monkeypatch: pytest.MonkeyPatch, real_base: Path, shape: str) -> None:
@@ -96,7 +86,7 @@ def test_materialize_worktree_when_temp_dir_read_only_does_fail_naming_dir_witho
     tmp_path: Path,
 ):
     repo = create_scratch_repo()
-    sha = _get_head_sha(repo)
+    sha = head_of(repo)
     read_only_base = tmp_path / "read-only-base"
     read_only_base.mkdir()
     read_only_base.chmod(0o500)
@@ -148,7 +138,7 @@ def test_cleanup_worktrees_when_temp_dir_symlink_or_trailing_slash_does_sweep_wi
     shape: str,
 ):
     repo = create_scratch_repo()
-    sha = _get_head_sha(repo)
+    sha = head_of(repo)
     real_base = tmp_path / "real-base"
     real_base.mkdir()
     _point_temp_base_at(monkeypatch, real_base, shape)
@@ -175,7 +165,7 @@ def test_compare_when_stranded_worktree_dir_preexists_does_not_sweep_or_corrupt_
     tmp_path: Path,
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, _FAST_BENCH)
+    write_committed_bench(repo, EMIT_ONE_BENCH)
     _run_git(["switch", "-c", "candidate"], repo)
     _run_git(["switch", "main"], repo)
     controlled_base = tmp_path / "controlled-base"

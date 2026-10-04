@@ -1,15 +1,10 @@
-"""Hardening tests for the asyncio-subprocess edges of ``exec`` and the drivers.
+"""Hardening tests for the asyncio-subprocess edges of ``exec`` and the Claude driver.
 
-Where :mod:`tests.test_exec` and :mod:`tests.supervisor.test_stdio` pin the happy
-paths, these tests pin the ragged edges that only surface with a real child
-process misbehaving:
+Where :mod:`tests.exec.test_exec` pins the happy paths, these tests pin the ragged
+edges that only surface with a real child process misbehaving:
 
-- a subprocess-driver child that emits one oversized, unterminated stdout line
-  settles a clean error outcome instead of letting a read-limit overrun escape,
-- subprocess-driver teardown returns within a bound even when the child ignores
-  the group kill, rather than blocking forever on ``proc.wait()``,
 - aborting a run mid-read leaks no "Task ... was never retrieved" / "Task was
-  destroyed but it is pending" diagnostics from either driver or ``exec``,
+  destroyed but it is pending" diagnostics from the driver or ``exec``,
 - a grandchild that holds stdio open makes ``exec`` wait indefinitely by design,
   with a timeout as the documented escape that still captures late output.
 
@@ -22,7 +17,6 @@ order-independent under ``pytest-xdist`` and ``pytest-randomly``.
 import asyncio
 import contextlib
 import gc
-import json
 import os
 import signal
 import sys
@@ -30,7 +24,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
-from typing import Any, override
+from typing import override
 
 import pytest
 
@@ -40,16 +34,12 @@ from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.exec import exec as run_exec
 from gymrat.supervisor.claude import ClaudeClient, ClientFactory, create_claude_driver
 from gymrat.supervisor.events import SessionEvent, UsageUpdateEvent
-from gymrat.supervisor.stdio import create_stdio_driver
-from tests._cli import try_read_report
 from tests._process_helpers import capture_spawns
 from tests.supervisor._fixtures import collecting_observer, make_prompt, result_message
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only process groups for tree-kill"
 )
-
-_DOUBLE = str(Path(__file__).resolve().parents[1] / "supervisor" / "_stdio_double.py")
 
 # The two asyncio diagnostics that mark a task the code forgot to await or
 # retrieve; both route through the loop's exception handler.
@@ -77,15 +67,6 @@ async def _poll_until[T](
         if loop.time() > deadline:
             raise TimeoutError(timeout_message)
         await asyncio.sleep(0.02)
-
-
-async def read_report(report_path: Path, timeout_s: float = 5.0) -> dict[str, Any]:
-    """Poll until ``report_path`` holds a complete JSON report, then return it."""
-    return await _poll_until(
-        lambda: try_read_report(report_path),
-        timeout_s=timeout_s,
-        timeout_message=f"report never appeared at {report_path}",
-    )
 
 
 def file_exists(path: Path) -> bool:
@@ -206,10 +187,6 @@ def claude_factory(client: ScriptedClaudeClient) -> ClientFactory:
     return factory
 
 
-def ignore_kill(*_args: object, **_kwargs: object) -> None:
-    """Stand in for the group kill so a child outlives teardown."""
-
-
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
@@ -221,9 +198,7 @@ async def reap_children(processes: list[asyncio.subprocess.Process]) -> None:
     Reaping with ``proc.wait()`` while the loop still runs lets asyncio finalize
     the child's transport in-loop, so no orphaned transport lingers for a later
     test's forced garbage collection to finalize against a closed loop (which
-    would surface as a warning about an exception that cannot propagate). The kill uses the real
-    ``os.killpg`` directly, so a test that neutralized the driver's own kill
-    still gets its child torn down here.
+    would surface as a warning about an exception that cannot propagate).
     """
     for proc in processes:
         if proc.returncode is None and proc.pid:
@@ -231,22 +206,6 @@ async def reap_children(processes: list[asyncio.subprocess.Process]) -> None:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         with contextlib.suppress(TimeoutError, ProcessLookupError):
             await asyncio.wait_for(proc.wait(), 5)
-
-
-@pytest.fixture
-async def stdio_children(
-    monkeypatch: pytest.MonkeyPatch,
-) -> AsyncIterator[list[asyncio.subprocess.Process]]:
-    """Record every child the stdio driver spawns and reap any survivor in-loop.
-
-    The driver spawns through ``asyncio.create_subprocess_exec``; wrapping that
-    attribute captures the real ``Process`` while leaving the spawn real, so a
-    child left running by a deliberately hobbled kill never outlives the test.
-    """
-    processes = capture_spawns(monkeypatch, "create_subprocess_exec")
-    yield processes
-
-    await reap_children(processes)
 
 
 @pytest.fixture
@@ -258,65 +217,6 @@ async def exec_children(
     yield processes
 
     await reap_children(processes)
-
-
-# ---------------------------------------------------------------------------
-# an oversized unterminated line settles error, not an escaping overrun
-# ---------------------------------------------------------------------------
-
-
-async def test_stdio_driver_when_child_emits_oversized_unterminated_line_does_settle_error(
-    tmp_path: Path,
-    stdio_children: list[asyncio.subprocess.Process],
-) -> None:
-    # Well past any sane per-line read limit, with no newline, so the reader's
-    # limit overruns instead of ever yielding a line.
-    oversized_bytes = 12_000_000
-    argv = [
-        sys.executable,
-        "-c",
-        f"import sys; sys.stdout.write('x' * {oversized_bytes})",
-    ]
-    session = create_stdio_driver(argv).start(
-        make_prompt(cwd=str(tmp_path)), collecting_observer().observer
-    )
-
-    outcome = await asyncio.wait_for(session.outcome, 10)
-
-    assert outcome.reason == "error"
-    assert outcome.message
-
-
-# ---------------------------------------------------------------------------
-# teardown is bounded even when the child ignores the group kill
-# ---------------------------------------------------------------------------
-
-
-async def test_stdio_driver_when_child_survives_kill_does_bound_teardown_and_settle(
-    tmp_path: Path,
-    stdio_children: list[asyncio.subprocess.Process],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Neutralize the group kill so the child outlives teardown, standing in for a
-    # process stuck in an uninterruptible state that a real kill cannot reap.
-    monkeypatch.setattr("gymrat.supervisor.stdio.kill_process_group", ignore_kill)
-    # The child sends its terminal outcome line, then lingers instead of exiting.
-    program = (
-        "import json, sys, time\n"
-        "sys.stdout.write(json.dumps("
-        "{'type': 'outcome', 'reason': 'completed', 'cost_usd': 0.0}) + '\\n')\n"
-        "sys.stdout.flush()\n"
-        "time.sleep(120)\n"
-    )
-    argv = [sys.executable, "-c", program]
-    session = create_stdio_driver(argv).start(
-        make_prompt(cwd=str(tmp_path)), collecting_observer().observer
-    )
-
-    with pytest.warns(RuntimeWarning, match="did not exit"):
-        outcome = await asyncio.wait_for(session.outcome, 10)
-
-    assert outcome.reason == "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -377,44 +277,6 @@ async def test_claude_driver_when_abort_fires_mid_read_does_not_leak_task_diagno
     outcome = await asyncio.wait_for(session.outcome, 10)
     del session, driver, client
     gc.collect()
-
-    assert outcome.reason == "interrupted"
-    assert task_leak_messages(records) == []
-
-
-async def test_stdio_driver_when_aborted_mid_read_does_not_leak_task_diagnostics(
-    tmp_path: Path,
-    stdio_children: list[asyncio.subprocess.Process],
-) -> None:
-    records = install_task_leak_recorder()
-    report = tmp_path / "child-processes.json"
-    config = {
-        "mode": "sleep_forever",
-        "report_path": str(report),
-        "lines": [
-            {
-                "json": {
-                    "type": "usage_update",
-                    "at": 1_000_000_000,
-                    "cost_usd": 0.4,
-                    "settled": False,
-                }
-            }
-        ],
-    }
-    argv = [sys.executable, _DOUBLE, json.dumps(config)]
-    abort = asyncio.Event()
-    session = create_stdio_driver(argv).start(
-        make_prompt(cwd=str(tmp_path)), collecting_observer().observer, abort
-    )
-    await read_report(report)
-
-    abort.set()
-    outcome = await asyncio.wait_for(session.outcome, 10)
-    # No forced collection here: the driver awaits its cancelled reader and abort
-    # tasks in teardown, so nothing is left waiting to be retrieved, and forcing a collection
-    # would only finalize the child's subprocess transport as loop noise.
-    await asyncio.sleep(0)
 
     assert outcome.reason == "interrupted"
     assert task_leak_messages(records) == []

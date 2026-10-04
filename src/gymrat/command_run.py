@@ -8,28 +8,33 @@ Wraps a command body in the single-flight lock, then appends a
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from gymrat.config.types import CliFlags
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import CommandOrigin, CommandReason
 
 import typer
 
 from gymrat import clock as _clock
+from gymrat.agent_env import COMMAND_ORIGIN_ENV, TOOL_ORIGIN, TRACEPARENT_ENV
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate.run import LoopStopError
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
 from gymrat.session.records import CommandRecord
-from gymrat.session.store import append_record, recover_torn_tail, session_header
-from gymrat.warn import warn_to_stderr
+from gymrat.session.store import (
+    append_record,
+    read_records,
+    recover_torn_tail,
+    session_header,
+)
+from gymrat.utils import ENDPOINT_ENV, otlp_endpoint, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Trace bookkeeping
@@ -38,7 +43,7 @@ from gymrat.warn import warn_to_stderr
 
 def command_origin() -> CommandOrigin:
     """The running command's origin: ``tool`` only when the supervisor says so, else ``cli``."""
-    return "tool" if os.environ.get("GYMRAT_COMMAND_ORIGIN") == "tool" else "cli"
+    return "tool" if os.environ.get(COMMAND_ORIGIN_ENV) == TOOL_ORIGIN else "cli"
 
 
 @dataclass(slots=True)
@@ -50,44 +55,15 @@ class CommandTrace:
     they carry no meaning to the seam beyond the exit-code / reason mapping.
 
     Attributes:
-        args: Extra trace arguments the body contributes to the command record.
         seq: Sequence number the seam reads after the body settles.
         gate: Whether the body's outcome gates the exit code, read by the seam
             after the body settles.
         reason: The command reason the seam reads after the body settles.
     """
 
-    args: dict[str, object] = field(default_factory=dict)
     seq: int | None = None
     gate: bool = False
     reason: CommandReason | None = None
-
-
-def config_trace_args(flags: CliFlags) -> dict[str, object]:
-    """Trace ``args`` entries for the config-resolving flags every command shares.
-
-    Every command that resolves a config carries the same six overrides into its
-    trace's ``args``; this reads them off ``flags`` once, dropping ``None`` values
-    so an override the caller left at its default never appears in the record.
-
-    Args:
-        flags: The CLI flags to read config overrides from.
-
-    Returns:
-        A dict of non-``None`` flag names to their values.
-    """
-    return {
-        k: v
-        for k, v in (
-            ("bench", flags.bench),
-            ("prepare", flags.prepare),
-            ("adapter", flags.adapter),
-            ("samples", flags.samples),
-            ("timeout", flags.timeout),
-            ("config", flags.config),
-        )
-        if v is not None
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +146,7 @@ async def with_repo_lock[T](
             taken, or a record is written.
         Exception: Whatever ``body`` raises, propagated unchanged.
     """
-    trace = CommandTrace(args=args if args is not None else {})
+    trace = CommandTrace()
     start = _clock.monotonic_ms()
 
     if root is None:
@@ -197,18 +173,25 @@ async def with_repo_lock[T](
         elapsed_ms = int(_clock.monotonic_ms() - start)
         exit_code, reason = _resolve_exit(trace, caught)
         try:
-            _record_command_outcome(
-                root=root,
+            _try_append_command_record(
+                jsonl=jsonl,
                 command=command,
-                trace=trace,
+                args=args if args is not None else {},
+                seq=trace.seq,
                 exit_code=exit_code,
                 reason=reason,
                 elapsed_ms=elapsed_ms,
-                tracing_active=tracing_active,
-                session_id=session_id,
-                start_ns=start_ns,
-                pre_body_lines=pre_body_lines,
             )
+            if tracing_active:
+                try:
+                    _emit_command_span(
+                        jsonl=jsonl,
+                        session_id=session_id,
+                        start_ns=start_ns,
+                        pre_body_lines=pre_body_lines,
+                    )
+                except Exception as span_error:  # noqa: BLE001 -- must not mask the command outcome
+                    warn_to_stderr(f"failed to emit command span: {span_error}")
         finally:
             release()
     return result
@@ -219,53 +202,17 @@ async def with_repo_lock[T](
 # ---------------------------------------------------------------------------
 
 
-def _record_command_outcome(  # noqa: PLR0913 -- all params are distinct concerns of the command outcome
+def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct concern of the command record
     *,
-    root: str,
+    jsonl: str,
     command: str,
-    trace: CommandTrace,
-    exit_code: Literal[0, 1, 2],
-    reason: CommandReason | None,
-    elapsed_ms: int,
-    tracing_active: bool,
-    session_id: str,
-    start_ns: int,
-    pre_body_lines: int,
-) -> None:
-    """Append the command record and, when tracing is active, emit its span."""
-    _try_append_command_record(
-        root=root,
-        command=command,
-        trace=trace,
-        exit_code=exit_code,
-        reason=reason,
-        elapsed_ms=elapsed_ms,
-    )
-    if tracing_active:
-        try:
-            _emit_command_span(
-                root=root,
-                exit_code=exit_code,
-                reason=reason,
-                session_id=session_id,
-                start_ns=start_ns,
-                pre_body_lines=pre_body_lines,
-            )
-        except Exception as span_error:  # noqa: BLE001 -- must not mask the command outcome
-            warn_to_stderr(f"failed to emit command span: {span_error}")
-
-
-def _try_append_command_record(  # noqa: PLR0913 -- all six params are distinct concerns of the command record
-    *,
-    root: str,
-    command: str,
-    trace: CommandTrace,
+    args: dict[str, object],
+    seq: int | None,
     exit_code: Literal[0, 1, 2],
     reason: CommandReason | None,
     elapsed_ms: int,
 ) -> None:
     """Append a :class:`CommandRecord` when the session log exists and is non-empty."""
-    jsonl = session_jsonl_path(root)
     if _jsonl_is_empty(jsonl):
         return
 
@@ -274,13 +221,13 @@ def _try_append_command_record(  # noqa: PLR0913 -- all six params are distinct 
             type="command",
             at=_clock.now_ns(),
             name=command,
-            args=trace.args,
+            args=args,
             exit_code=exit_code,
             reason=reason,
             duration_ms=elapsed_ms,
             origin=command_origin(),
-            traceparent=os.environ.get("GYMRAT_TRACEPARENT") or os.environ.get("TRACEPARENT"),
-            seq=trace.seq,
+            traceparent=os.environ.get(TRACEPARENT_ENV) or os.environ.get("TRACEPARENT"),
+            seq=seq,
         )
         append_record(jsonl, record)
     except Exception as error:  # noqa: BLE001 -- construction or IO failure must not mask the command outcome
@@ -293,12 +240,6 @@ def _try_append_command_record(  # noqa: PLR0913 -- all six params are distinct 
 
 
 def _maybe_configure_tracing(root: str, jsonl: str) -> tuple[str, bool]:
-    from gymrat.telemetry.provider import (  # noqa: PLC0415
-        ENDPOINT_ENV,
-        configure_tracing,
-        otlp_endpoint,
-    )
-
     if otlp_endpoint(os.environ.get(ENDPOINT_ENV)) is None:
         return "", False
     if _jsonl_is_empty(jsonl):
@@ -306,6 +247,8 @@ def _maybe_configure_tracing(root: str, jsonl: str) -> tuple[str, bool]:
     header = session_header(root)
     if header is None:
         return "", False
+
+    from gymrat.telemetry.provider import configure_tracing  # noqa: PLC0415
 
     active = configure_tracing(header.session_id)
     return header.session_id, active
@@ -328,35 +271,29 @@ def _count_lines(jsonl_path: str) -> int:
     return data.count(b"\n")
 
 
-def _emit_command_span(  # noqa: PLR0913 -- keyword-only tracing context
+def _emit_command_span(
     *,
-    root: str,
-    exit_code: Literal[0, 1, 2],
-    reason: CommandReason | None,
+    jsonl: str,
     session_id: str,
     start_ns: int,
     pre_body_lines: int,
 ) -> None:
     """Create a retroactive command span with events, attributes, and links."""
     from opentelemetry.trace import (  # noqa: PLC0415
-        Link,
         NonRecordingSpan,
         SpanContext,
-        Status,
-        StatusCode,
         TraceFlags,
         set_span_in_context,
     )
 
-    from gymrat.telemetry.attributes import command_span_inputs, record_event  # noqa: PLC0415
+    from gymrat.telemetry.attributes import SESSION_SPAN_KEY, record_event  # noqa: PLC0415
     from gymrat.telemetry.ids import (  # noqa: PLC0415
         parse_traceparent,
         span_id_of,
         trace_id_of,
     )
-    from gymrat.telemetry.provider import flush_tracing, start_span  # noqa: PLC0415
+    from gymrat.telemetry.provider import flush_tracing, start_command_span  # noqa: PLC0415
 
-    jsonl = session_jsonl_path(root)
     records = _safe_read_records(jsonl)
     if not records:
         return
@@ -365,10 +302,8 @@ def _emit_command_span(  # noqa: PLR0913 -- keyword-only tracing context
     if not isinstance(cmd_record, CommandRecord):
         return
 
-    inputs = command_span_inputs(cmd_record, session_id=session_id, line_number=len(records))
-
     parent_ctx = None
-    gymrat_tp = os.environ.get("GYMRAT_TRACEPARENT")
+    gymrat_tp = os.environ.get(TRACEPARENT_ENV)
     if gymrat_tp:
         parent_span_ctx = parse_traceparent(gymrat_tp)
         if parent_span_ctx is not None:
@@ -377,20 +312,17 @@ def _emit_command_span(  # noqa: PLR0913 -- keyword-only tracing context
     if parent_ctx is None:
         session_span_ctx = SpanContext(
             trace_id=trace_id_of(session_id),
-            span_id=span_id_of(session_id, "session"),
+            span_id=span_id_of(session_id, SESSION_SPAN_KEY),
             is_remote=False,
             trace_flags=TraceFlags(TraceFlags.SAMPLED),
         )
         parent_ctx = set_span_in_context(NonRecordingSpan(session_span_ctx))
 
-    links = [Link(inputs.link)] if inputs.link is not None else None
-
-    with start_span(
-        inputs.name,
-        span_key=inputs.key,
+    with start_command_span(
+        cmd_record,
+        session_id=session_id,
+        line_number=len(records),
         context=parent_ctx,
-        links=links,
-        attributes=inputs.attributes,
         start_time=start_ns,
     ) as span:
         # Outcome records appended by the body (between pre-body count and command record)
@@ -398,18 +330,11 @@ def _emit_command_span(  # noqa: PLR0913 -- keyword-only tracing context
             event_name, event_attrs = record_event(record)
             span.add_event(event_name, attributes=event_attrs, timestamp=record.at)
 
-        if exit_code == 0:
-            span.set_status(Status(StatusCode.OK))
-        elif exit_code == TOOL_FAILURE_EXIT_CODE:
-            span.set_status(Status(StatusCode.ERROR, description=reason))
-
     flush_tracing()
 
 
 def _safe_read_records(jsonl_path: str) -> list[SessionLogRecord]:
     """Read records from the session log, returning empty on failure."""
-    from gymrat.session.store import read_records  # noqa: PLC0415
-
     try:
         return read_records(jsonl_path)
     except GymratError:

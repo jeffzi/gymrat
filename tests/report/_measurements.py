@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from gymrat.config.types import KindEntry
+from gymrat.config import KindEntry
 from gymrat.report.types import (
     MeasurementResult,
     MetricMeasurement,

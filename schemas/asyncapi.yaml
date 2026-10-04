@@ -35,8 +35,6 @@ channels:
         $ref: '#/components/messages/thinking_update'
       tool_start:
         $ref: '#/components/messages/tool_start'
-      tool_progress:
-        $ref: '#/components/messages/tool_progress'
       tool_end:
         $ref: '#/components/messages/tool_end'
       text_delta:
@@ -100,7 +98,6 @@ operations:
     - $ref: '#/channels/supervisor-log/messages/launch'
     - $ref: '#/channels/supervisor-log/messages/thinking_update'
     - $ref: '#/channels/supervisor-log/messages/tool_start'
-    - $ref: '#/channels/supervisor-log/messages/tool_progress'
     - $ref: '#/channels/supervisor-log/messages/tool_end'
     - $ref: '#/channels/supervisor-log/messages/text_delta'
     - $ref: '#/channels/supervisor-log/messages/usage_update'
@@ -219,16 +216,6 @@ components:
         schemaFormat: application/schema+json;version=draft-2020-12
         schema:
           $ref: ./supervisor-log.schema.json#/$defs/ToolStartEvent
-      traits:
-      - $ref: '#/components/messageTraits/envelope'
-    tool_progress:
-      contentType: application/json
-      title: ToolProgressEvent
-      summary: Emitted periodically while a long-running tool call is still in flight.
-      payload:
-        schemaFormat: application/schema+json;version=draft-2020-12
-        schema:
-          $ref: ./supervisor-log.schema.json#/$defs/ToolProgressEvent
       traits:
       - $ref: '#/components/messageTraits/envelope'
     tool_end:

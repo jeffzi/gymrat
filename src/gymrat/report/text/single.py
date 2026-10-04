@@ -16,51 +16,43 @@ from typing import TYPE_CHECKING
 from rich.cells import cell_len
 from rich.text import Text
 
-from gymrat.report.display import QUIET_VERDICTS, display_class, shown_class
+from gymrat.report.display import QUIET_VERDICTS
 from gymrat.report.format import baseline_cell_parts, candidate_cell_parts
-from gymrat.report.geomean_label import (
-    NO_GEOMEAN_FIGURE,
-    NO_STABLE_METRICS,
-    geomean_label,
-    geomean_parts,
-    geomean_value_style,
-    scoped_geomean_label,
-)
-from gymrat.report.sections import (
-    flat_geomean_of,
-    group_geomean_of,
-    kind_geomean_of,
-    plan_sections,
-)
 from gymrat.report.style import VERDICT_STYLES
 from gymrat.report.table.markup import (
+    NO_GEOMEAN_FIGURE,
+    NO_STABLE_METRICS,
     VALUE_COLUMN_MIN,
     VERDICT_COLUMN_MIN,
     VerdictParts,
     aggregate_label_cell,
+    flat_geomean_of,
+    geomean_label,
+    geomean_parts,
+    geomean_value_style,
+    group_geomean_of,
     group_metric_cell,
     header_metric_cell,
     indented_section_label,
     join_value_cell,
+    kind_geomean_of,
+    plan_sections,
+    scoped_geomean_label,
+    shown_verdict,
     value_widths,
     variant_name_cell,
     verdict_cell,
-    verdict_parts,
     verdict_widths,
 )
 from gymrat.report.table.render import (
     AggregateLine,
-    AggregateRow,
     AggregateRows,
-    GroupLine,
-    HeaderLine,
-    MetricLine,
+    build_cell_dispatcher,
     compute_column_width,
     is_grouped,
     metric_column_width,
     plan_body,
     render_body,
-    row_name_cell,
     section_annotation,
 )
 from gymrat.report.types import candidate_at
@@ -68,11 +60,11 @@ from gymrat.report.types import candidate_at
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.model import GeomeanResult, MetricVerdict
+    from gymrat.model import GeomeanResult
     from gymrat.report.display import DisplayClass
     from gymrat.report.format import MetricCellParts
-    from gymrat.report.table.markup import VerdictWidths
-    from gymrat.report.table.render import BodyLine, TableCell
+    from gymrat.report.table.markup import ShownVerdict, VerdictWidths
+    from gymrat.report.table.render import BodyLine
     from gymrat.report.types import CandidateComparison, ComparisonResult, MetricComparison
 
 # The glyph slot a geomean figure fills — a blank, since the row states a mean,
@@ -83,18 +75,6 @@ type _MetricCells = tuple[Text, Text, Text, Text]
 
 
 @dataclass(frozen=True, slots=True)
-class _MeasuredVerdict:
-    """A metric's verdict and the pre-split parts that render it.
-
-    Bundled so the two are always present together — a None
-    ``_MeasuredRow.verdict`` means both are absent, never one without the other.
-    """
-
-    metric_verdict: MetricVerdict
-    parts: VerdictParts
-
-
-@dataclass(frozen=True, slots=True)
 class _MeasuredRow:
     """One metric row's figures and the verdict between them, pre-split for padding."""
 
@@ -102,7 +82,7 @@ class _MeasuredRow:
     label: str
     baseline: MetricCellParts
     candidate: MetricCellParts
-    verdict: _MeasuredVerdict | None
+    verdict: ShownVerdict | None
     gating: bool
 
 
@@ -143,37 +123,26 @@ def _geomean_cell(
 
 def _measured_outcomes(rows: Sequence[_MeasuredRow]) -> list[DisplayClass | None]:
     """The display class of each row's verdict, for vetoing a geomean's color."""
-    return [
-        shown_class(row.verdict.metric_verdict) if row.verdict is not None else None for row in rows
-    ]
+    return [row.verdict.outcome if row.verdict is not None else None for row in rows]
 
 
-def render_table(
-    result: ComparisonResult,
-    candidate: CandidateComparison,
-    candidate_index: int,
-    *,
-    color: bool | None,
-) -> list[str]:
+def render_table(result: ComparisonResult, *, color: bool | None) -> list[str]:
     """Render a two-revision comparison table (one baseline vs. one candidate).
 
     Args:
-        result: The comparison to draw.
-        candidate: The candidate column's run-level aggregates.
-        candidate_index: The candidate's position in each metric's slices.
+        result: The comparison to draw; its first candidate is the one shown.
         color: The explicit color choice, or ``None`` to defer to the environment.
 
     Returns:
         The rendered table lines.
     """
+    candidate = result.candidates[0]
     baseline = result.baseline_label
     headers = ("metric", baseline, candidate.label, f"vs {baseline}")
 
     layout = plan_sections(
         result.metrics,
-        lambda name, group, metric: _build_row(
-            metric, name, group, candidate_index, result.samples
-        ),
+        lambda name, group, metric: _build_row(metric, name, group, result.samples),
     )
     baseline_fields = value_widths([row.baseline for row in layout.ordered])
     candidate_fields = value_widths([row.candidate for row in layout.ordered])
@@ -194,7 +163,7 @@ def render_table(
 
     def metric_cells(row: _MeasuredRow) -> _MetricCells:
         return (
-            Text(row_name_cell(row, grouped=grouped)),
+            Text(row.label if grouped else row.name),
             Text(join_value_cell(row.baseline, baseline_fields)),
             Text(join_value_cell(row.candidate, candidate_fields)),
             _metric_verdict_cell(row, verdict_fields),
@@ -208,8 +177,25 @@ def render_table(
         headers, list(cells_by_name.values()), body, list(aggregate_cells.values())
     )
 
-    def to_cells(line: BodyLine[_MeasuredRow, _AggregateCell]) -> tuple[TableCell, ...]:
-        return _to_cells(line, headers, cells_by_name, aggregate_cells)
+    def cells_of(row: _MeasuredRow) -> _MetricCells:
+        return cells_by_name[row.name]
+
+    to_cells = build_cell_dispatcher(
+        header=lambda title: (
+            header_metric_cell(title),
+            variant_name_cell(headers[1]),
+            variant_name_cell(headers[2]),
+            Text.assemble("vs ", variant_name_cell(headers[1])),
+        ),
+        group=lambda label: (group_metric_cell(label), "", "", ""),
+        metric=cells_of,
+        aggregate=lambda line: (
+            aggregate_label_cell(line.label),
+            "",
+            "",
+            aggregate_cells[line.cell],
+        ),
+    )
 
     return render_body(body, widths, to_cells, color=color)
 
@@ -218,18 +204,11 @@ def _build_row(
     metric: MetricComparison,
     name: str,
     group: str | None,
-    candidate_index: int,
     samples: int,
 ) -> _MeasuredRow:
     """Split one metric into the fields a comparison row pads."""
-    side = candidate_at(metric, candidate_index)
-    metric_verdict = side.verdict if side is not None else None
-    verdict: _MeasuredVerdict | None = None
-    if metric_verdict is not None:
-        verdict = _MeasuredVerdict(
-            metric_verdict=metric_verdict,
-            parts=verdict_parts(metric_verdict, samples, with_band=True),
-        )
+    side = candidate_at(metric, 0)
+    verdict = shown_verdict(side.verdict if side is not None else None, samples, with_band=True)
     return _MeasuredRow(
         name=name,
         label=indented_section_label(metric.meta.short_name, group),
@@ -247,8 +226,8 @@ def _aggregate_rows(
 
     def scoped(
         scope: str, geomean: GeomeanResult, rows: Sequence[_MeasuredRow]
-    ) -> AggregateRow[_AggregateCell]:
-        return AggregateRow(
+    ) -> AggregateLine[_AggregateCell]:
+        return AggregateLine(
             label=scoped_geomean_label(scope, geomean),
             cell=_geomean_cell(geomean, _measured_outcomes(rows)),
         )
@@ -265,11 +244,11 @@ def _aggregate_rows(
 def _flat_aggregate(
     candidate: CandidateComparison,
     rows: Sequence[_MeasuredRow],
-) -> AggregateRow[_AggregateCell]:
+) -> AggregateLine[_AggregateCell]:
     """The single geomean a flat table closes on, over the run's gating metrics."""
     geomean = flat_geomean_of(candidate)
     gating = [row for row in rows if row.gating]
-    return AggregateRow(
+    return AggregateLine(
         label=geomean_label(geomean.n),
         cell=_geomean_cell(geomean, _measured_outcomes(gating)),
     )
@@ -299,40 +278,11 @@ def _column_widths(
     ]
 
 
-def _to_cells(
-    line: BodyLine[_MeasuredRow, _AggregateCell],
-    headers: tuple[str, str, str, str],
-    cells_by_name: dict[str, _MetricCells],
-    aggregate_cells: dict[_AggregateCell, Text],
-) -> tuple[TableCell, ...]:
-    """The cells one content row renders to."""
-    if isinstance(line, HeaderLine):
-        return (
-            header_metric_cell(line.title),
-            variant_name_cell(headers[1]),
-            variant_name_cell(headers[2]),
-            Text.assemble("vs ", variant_name_cell(headers[1])),
-        )
-    if isinstance(line, GroupLine):
-        return (group_metric_cell(line.label), "", "", "")
-    if isinstance(line, MetricLine):
-        return cells_by_name[line.row.name]
-    if isinstance(line, AggregateLine):
-        return (
-            aggregate_label_cell(line.label),
-            "",
-            "",
-            aggregate_cells[line.cell],
-        )
-    msg = f"unexpected body line {line!r}"
-    raise AssertionError(msg)
-
-
 def _metric_verdict_cell(row: _MeasuredRow, verdict_fields: VerdictWidths) -> Text:
     """One metric row's verdict cell: its glyph in the verdict color, the band dimmed."""
     if row.verdict is None:
         return Text()
-    outcome = display_class(row.verdict.metric_verdict)
+    outcome = row.verdict.outcome
     quiet = outcome in QUIET_VERDICTS
     return verdict_cell(
         row.verdict.parts,

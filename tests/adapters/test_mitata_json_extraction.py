@@ -10,50 +10,27 @@ import json
 
 import pytest
 
-from gymrat.adapters import AdapterError, find_json_candidates, mitata_adapter
+from gymrat.adapters import AdapterError, mitata_adapter
 from tests.adapters._inputs import build_stdout
 
 # ---------------------------------------------------------------------------
-# find_json_candidates
+# braces and quotes inside the payload's own strings
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("text", "expected"),
+    "alias",
     [
-        pytest.param('{"key": "value"}', ['{"key": "value"}'], id="single-object"),
-        pytest.param('{"a": 1} some text {"b": 2}', ['{"a": 1}', '{"b": 2}'], id="two-top-level"),
-        pytest.param(
-            '{"key": "value with {braces} inside"}',
-            ['{"key": "value with {braces} inside"}'],
-            id="braces-in-string",
-        ),
-        pytest.param(
-            r'{"key": "value with \"escaped\" quotes and {braces}"}',
-            [r'{"key": "value with \"escaped\" quotes and {braces}"}'],
-            id="escaped-quotes",
-        ),
-        pytest.param(
-            '{"outer": {"inner": {"deep": 1}}}',
-            ['{"outer": {"inner": {"deep": 1}}}'],
-            id="nested-braces",
-        ),
-        pytest.param("no braces here at all", [], id="no-braces"),
-        pytest.param("prefix { incomplete", [], id="unbalanced"),
-        pytest.param(
-            'weight: 5" tall\n{"benchmarks": []}', ['{"benchmarks": []}'], id="stray-quote-outside"
-        ),
-        pytest.param(
-            'cpu: {model}\n{"benchmarks": []}\nfooter: {info}',
-            ['{"benchmarks": []}'],
-            id="non-json-braces-around-payload",
-        ),
+        pytest.param("value with {braces} inside", id="braces-in-string"),
+        pytest.param('value with "escaped" quotes and {braces}', id="escaped-quotes"),
     ],
 )
-def test_find_json_candidates_when_scanning_does_return_valid_json_objects(
-    text: str, expected: list[str]
+def test_parse_when_a_payload_string_carries_braces_or_quotes_does_read_the_whole_object(
+    alias: str,
 ):
-    assert find_json_candidates(text) == expected
+    payload = build_stdout([{"alias": alias, "runs": [{"args": {}, "stats": {"p50": 42}}]}])
+
+    assert mitata_adapter.parse(payload) == {f"{alias}#time": 42}
 
 
 # ---------------------------------------------------------------------------
@@ -114,9 +91,11 @@ def test_parse_when_unbalanced_brace_precedes_json_does_still_find_payload():
 
 
 def test_parse_when_pathological_nesting_does_raise_adapter_error_not_recursion_error():
-    stdout = "{" * 5000
+    # A bare run of ``{`` is refused at the first key without descending, so the
+    # depth comes from arrays under one key; one ``{`` keeps it to one attempt.
+    stdout = '{"a":' + "[" * 500_000
 
-    with pytest.raises(AdapterError, match=r"^Failed to parse JSON:"):
+    with pytest.raises(AdapterError, match=r"^Failed to parse JSON: Exceeded maximum recursion"):
         mitata_adapter.parse(stdout)
 
 

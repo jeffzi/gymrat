@@ -14,40 +14,30 @@ import warnings
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, override
 
-from gymrat.telemetry.ids import span_id_of, trace_id_of
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE
+from gymrat.telemetry.attributes import command_attributes
+from gymrat.telemetry.ids import parse_traceparent, span_id_of, trace_id_of
+from gymrat.utils import ENDPOINT_ENV, otlp_endpoint
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from opentelemetry.context import Context
     from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
     from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
     from opentelemetry.trace import Span, Tracer
 
-ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
-"""Environment variable every tracing entry point reads the OTLP endpoint from."""
+    from gymrat.session.records import CommandRecord
+
 _TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 _TRACES_PATH = "v1/traces"
 
 _session_id: str = ""
-_session_trace_id: int = 0
 _provider: TracerProvider | None = None
 _tracer: Tracer | None = None
 _export_failed: bool = False
 
 _queued_span_id: ContextVar[int | None] = ContextVar("_queued_span_id", default=None)
-
-
-def otlp_endpoint(value: str | None) -> str | None:
-    """Apply the endpoint rule shared by command tracing, the provider, and ``export``.
-
-    Args:
-        value: A raw endpoint, from ``--endpoint`` or ``OTEL_EXPORTER_OTLP_ENDPOINT``.
-
-    Returns:
-        The endpoint with surrounding whitespace trimmed, or ``None`` when
-        nothing is left, which means "no endpoint".
-    """
-    return (value or "").strip() or None
 
 
 def _traces_url(endpoint: str) -> str:
@@ -59,7 +49,12 @@ def _traces_url(endpoint: str) -> str:
     return f"{endpoint}{separator}{_TRACES_PATH}"
 
 
-def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None = None) -> bool:
+def configure_tracing(
+    session_id: str,
+    *,
+    span_processor: SpanProcessor | None = None,
+    endpoint: str | None = None,
+) -> bool:
     """Configure a TracerProvider for the given session.
 
     Args:
@@ -67,6 +62,8 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
             IDs.
         span_processor: The span processor to install; a default OTLP
             batch processor is used when omitted.
+        endpoint: The OTLP endpoint to export to; ``None`` reads it from
+            ``OTEL_EXPORTER_OTLP_ENDPOINT``.
 
     Returns:
         Whether a tracer provider is now active (``False`` when no endpoint
@@ -77,7 +74,7 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
             or with a non-None *span_processor* when a provider is already
             configured (the processor would be silently discarded).
     """
-    global _provider, _tracer, _session_id, _session_trace_id  # noqa: PLW0603 — module singleton
+    global _provider, _tracer, _session_id  # noqa: PLW0603 — module singleton
 
     if _provider is not None:
         if session_id != _session_id:
@@ -94,7 +91,7 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
             raise ValueError(msg)
         return True
 
-    endpoint = otlp_endpoint(os.environ.get(ENDPOINT_ENV))
+    endpoint = otlp_endpoint(endpoint if endpoint is not None else os.environ.get(ENDPOINT_ENV))
     if endpoint is None:
         return False
 
@@ -105,14 +102,13 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
         return False
 
     _session_id = session_id
-    _session_trace_id = trace_id_of(session_id)
 
     resource = Resource.create({
         "service.name": "gymrat",
         "service.version": importlib.metadata.version("gymrat"),
     })
 
-    id_generator = _DeterministicIdGenerator(_session_trace_id)
+    id_generator = _DeterministicIdGenerator(trace_id_of(session_id))
     # pyrefly: ignore[bad-argument-type] -- IdGenerator protocol mismatch
     provider = _TracerProvider(resource=resource, id_generator=id_generator)
 
@@ -160,6 +156,51 @@ def start_span(name: str, *, span_key: str | None = None, **kwargs: object) -> S
             _queued_span_id.reset(token)
 
 
+def start_command_span(
+    record: CommandRecord,
+    *,
+    session_id: str,
+    line_number: int,
+    context: Context,
+    start_time: int,
+) -> Span:
+    """Start the span a command record stands for.
+
+    Shared by the live and the replay emitters, so both give a command the same
+    name, id, attributes, link and status. The span links to the span context
+    the command was launched under, when it recorded one. An exit code of 0
+    ends ``OK`` and a tool failure ends ``ERROR`` with the record's reason; a
+    gate trip is not an error and leaves the status unset.
+
+    Args:
+        record: The command record the span stands for.
+        session_id: The session the command ran in.
+        line_number: The record's line in the session log, which keys the span id.
+        context: The parent context the span starts under.
+        start_time: When the command started, in nanoseconds since the epoch.
+
+    Returns:
+        The started span, linked and with its status set, or ``INVALID_SPAN``
+        when no tracer is configured.
+    """
+    from opentelemetry.trace import Link, Status, StatusCode  # noqa: PLC0415
+
+    link = parse_traceparent(record.traceparent) if record.traceparent else None
+    span = start_span(
+        f"gymrat.command.{record.name}",
+        span_key=f"command:{line_number}",
+        context=context,
+        links=[Link(link)] if link is not None else None,
+        attributes=command_attributes(record, session_id),
+        start_time=start_time,
+    )
+    if record.exit_code == 0:
+        span.set_status(Status(StatusCode.OK))
+    elif record.exit_code == TOOL_FAILURE_EXIT_CODE:
+        span.set_status(Status(StatusCode.ERROR, description=record.reason))
+    return span
+
+
 def flush_tracing() -> None:
     """Force-flush the provider if one exists; no-op otherwise.
 
@@ -195,12 +236,11 @@ def _reset_for_tests() -> None:
         Exception: Whatever the provider's ``shutdown`` raises, propagated after
             the singleton has been cleared.
     """
-    global _provider, _tracer, _session_id, _session_trace_id, _export_failed  # noqa: PLW0603
+    global _provider, _tracer, _session_id, _export_failed  # noqa: PLW0603
     provider = _provider
     _provider = None
     _tracer = None
     _session_id = ""
-    _session_trace_id = 0
     _export_failed = False
     if provider is not None:
         with warnings.catch_warnings():

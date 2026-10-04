@@ -15,30 +15,20 @@ from gymrat.doctor import (
     Check,
     CheckSection,
     DoctorReport,
-    EnvironmentInfo,
     create_doctor_report,
     render_doctor_json,
     render_doctor_report,
 )
 from tests._ansi import strip_ansi
+from tests.doctor._fixtures import environment_info
 
 
 def lines(output: str) -> list[str]:
     return strip_ansi(output).split("\n")
 
 
-def _env(**overrides: object) -> EnvironmentInfo:
-    base: dict[str, object] = {
-        "gymrat_version": "0.5.0",
-        "python_version": "3.13.0",
-        "platform": "darwin",
-    }
-    base.update(overrides)
-    return EnvironmentInfo(**base)  # pyrefly: ignore
-
-
 def _report(sections: list[CheckSection], **env_overrides: object) -> DoctorReport:
-    return create_doctor_report(_env(**env_overrides), sections)
+    return create_doctor_report(environment_info(**env_overrides), sections)
 
 
 # ---------------------------------------------------------------------------
@@ -186,9 +176,7 @@ def test_render_doctor_report_when_mixed_statuses_does_report_all_three_counts()
 
     output = strip_ansi(render_doctor_report(report))
 
-    assert "2 ok" in output
-    assert "1 warning" in output
-    assert "1 failure" in output
+    assert "2 ok · 1 warning · 1 failure" in output
 
 
 def test_render_doctor_report_when_multiple_per_status_does_pluralize_counts():
@@ -329,7 +317,7 @@ def test_render_doctor_json_when_only_warnings_does_count_them_without_failing()
             {
                 "title": "Environment",
                 "checks": [
-                    {"name": "git", "status": "ok", "detail": "git 2.45.0"},
+                    {"name": "git", "status": "ok", "detail": "git 2.45.0", "hint": None},
                     {
                         "name": "skill",
                         "status": "warn",
@@ -346,7 +334,17 @@ def test_render_doctor_json_when_only_warnings_does_count_them_without_failing()
     }
 
 
-def test_render_doctor_json_when_rendered_does_emit_full_document():
+def test_render_doctor_json_when_detail_holds_non_ascii_does_write_it_unescaped():
+    report = _report([
+        CheckSection(title="Config", checks=[Check("config", "warn", "Skipped — fix it first")])
+    ])
+
+    output = render_doctor_json(report)
+
+    assert '"detail": "Skipped — fix it first"' in output
+
+
+def test_render_doctor_json_when_rendered_does_emit_two_space_indented_document():
     report = _report(
         [
             CheckSection(
@@ -360,44 +358,37 @@ def test_render_doctor_json_when_rendered_does_emit_full_document():
         gymrat_version="1.0.0",
     )
 
-    parsed = json.loads(render_doctor_json(report))
+    output = render_doctor_json(report)
 
-    assert parsed == {
-        "environment": {
-            "gymrat_version": "1.0.0",
-            "python_version": "3.13.0",
-            "platform": "darwin",
-        },
-        "sections": [
-            {
-                "title": "Environment",
-                "checks": [
-                    {"name": "git", "status": "ok", "detail": "available"},
-                    {
-                        "name": "repo",
-                        "status": "fail",
-                        "detail": "not in repo",
-                        "hint": "run inside repo",
-                    },
-                ],
-            }
-        ],
-        "ok_count": 1,
-        "warn_count": 0,
-        "fail_count": 1,
-        "has_failures": True,
-    }
-    section = parsed["sections"][0]
-    plain_check, hinted_check = section["checks"]
-    assert list(parsed) == [
-        "environment",
-        "sections",
-        "ok_count",
-        "warn_count",
-        "fail_count",
-        "has_failures",
+    assert output.split("\n") == [
+        "{",
+        '  "environment": {',
+        '    "gymrat_version": "1.0.0",',
+        '    "python_version": "3.13.0",',
+        '    "platform": "darwin"',
+        "  },",
+        '  "sections": [',
+        "    {",
+        '      "title": "Environment",',
+        '      "checks": [',
+        "        {",
+        '          "name": "git",',
+        '          "status": "ok",',
+        '          "detail": "available",',
+        '          "hint": null',
+        "        },",
+        "        {",
+        '          "name": "repo",',
+        '          "status": "fail",',
+        '          "detail": "not in repo",',
+        '          "hint": "run inside repo"',
+        "        }",
+        "      ]",
+        "    }",
+        "  ],",
+        '  "ok_count": 1,',
+        '  "warn_count": 0,',
+        '  "fail_count": 1,',
+        '  "has_failures": true',
+        "}",
     ]
-    assert list(parsed["environment"]) == ["gymrat_version", "python_version", "platform"]
-    assert list(section) == ["title", "checks"]
-    assert list(plain_check) == ["name", "status", "detail"]
-    assert list(hinted_check) == ["name", "status", "detail", "hint"]

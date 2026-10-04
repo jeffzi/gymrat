@@ -10,26 +10,32 @@ target resolution, worktree lifecycle, and ``sh`` subprocesses whose stdout the
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
 from gymrat import measure as measure_mod
 from gymrat import sampling
-from gymrat.config.types import KindEntry, MetricEntry
+from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import CommandError, GymratError
 from gymrat.measure import MeasureOptions, measure
-from gymrat.sampling import RunOptions, TargetSpec
-from gymrat.targets import CleanupResult, WorktreeInfo, WorktreeRemovalFailure
-from tests._git import git as _git
+from gymrat.sampling import (
+    CleanupResult,
+    RunOptions,
+    SamplingOptions,
+    TargetSpec,
+    WorktreeInfo,
+)
+from gymrat.targets import WorktreeRemovalFailure
+from gymrat.utils import warn_to_stderr
+from tests._git import EMIT_ONE_BENCH, write_committed_bench
 from tests._pipeline import install_pipeline
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from gymrat.adapters import WarnSink
     from gymrat.progress_events import ProgressEvent
+    from gymrat.utils import WarnSink
 
 
 def _options(
@@ -37,22 +43,24 @@ def _options(
     target: str = "main",
     spec: TargetSpec | None = None,
     on_progress: Callable[[ProgressEvent], None] | None = None,
-    warn: WarnSink | None = None,
+    warn: WarnSink = warn_to_stderr,
     config_metrics: dict[str, MetricEntry] | None = None,
     config_kinds: dict[str, KindEntry] | None = None,
 ) -> MeasureOptions:
     resolved_spec = spec if spec is not None else TargetSpec(label=None, target=target)
     return MeasureOptions(
         run=RunOptions(
-            bench="run",
-            prepare="prep",
+            sampling=SamplingOptions(
+                bench="run",
+                prepare="prep",
+                samples=3,
+                timeout_seconds=1.0,
+                on_progress=on_progress,
+                warn=warn,
+            ),
             adapter="metric-lines",
-            samples=3,
-            timeout_seconds=1.0,
             config_metrics=config_metrics,
             config_kinds=config_kinds,
-            on_progress=on_progress,
-            warn=warn,
         ),
         target=resolved_spec,
     )
@@ -71,6 +79,17 @@ async def test_measure_when_target_benched_does_report_metric_median_and_spread(
     assert result.samples == 3
     assert result.adapter == "metric-lines"
     assert result.label == "main"
+
+
+async def test_measure_when_target_sampled_does_give_it_no_comparison_position(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured = install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}]])
+
+    await measure(_options(target="main"))
+
+    assert captured.contexts is not None
+    assert [ctx.position for ctx in captured.contexts] == [None]
 
 
 async def test_measure_when_explicit_label_given_does_use_it(monkeypatch: pytest.MonkeyPatch):
@@ -174,24 +193,16 @@ async def test_measure_when_config_overrides_given_does_apply_them_to_the_result
 
 _posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
 
-_EMIT_ONE = "#!/bin/sh\necho 'METRIC x=1'\n"
 _FAIL = "#!/bin/sh\nexit 1\n"
-
-
-def _commit_bench(repo: str, script: str) -> None:
-    (Path(repo) / "bench.sh").write_text(script, encoding="utf-8")
-    _git(repo, "add", "bench.sh")
-    _git(repo, "commit", "-m", "add bench")
 
 
 def _e2e_options(target: str) -> MeasureOptions:
     return MeasureOptions(
         run=RunOptions(
-            bench="sh bench.sh",
-            prepare=None,
+            sampling=SamplingOptions(
+                bench="sh bench.sh", prepare=None, samples=2, timeout_seconds=30.0
+            ),
             adapter="metric-lines",
-            samples=2,
-            timeout_seconds=30.0,
             config_metrics=None,
             config_kinds=None,
         ),
@@ -207,7 +218,7 @@ async def test_measure_when_in_place_target_does_bench_without_worktree(
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo = create_scratch_repo()
-    target_dir = create_in_place_target_dir(repo, "bench", _EMIT_ONE)
+    target_dir = create_in_place_target_dir(repo, "bench", EMIT_ONE_BENCH)
     monkeypatch.chdir(repo)
 
     result = await measure(_e2e_options(target_dir))
@@ -224,7 +235,7 @@ async def test_measure_when_ref_target_does_bench_in_worktree_and_sweep(
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo = create_scratch_repo()
-    _commit_bench(repo, _EMIT_ONE)
+    write_committed_bench(repo, EMIT_ONE_BENCH)
     monkeypatch.chdir(repo)
 
     result = await measure(_e2e_options("HEAD"))
@@ -241,7 +252,7 @@ async def test_measure_when_bench_fails_does_reject_and_remove_worktrees(
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo = create_scratch_repo()
-    _commit_bench(repo, _FAIL)
+    write_committed_bench(repo, _FAIL)
     monkeypatch.chdir(repo)
 
     with pytest.raises(CommandError):
@@ -256,7 +267,7 @@ async def test_measure_when_bench_fails_and_worktree_unremovable_does_name_stran
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo = create_scratch_repo()
-    _commit_bench(repo, _FAIL)
+    write_committed_bench(repo, _FAIL)
     monkeypatch.chdir(repo)
     dirty = CleanupResult(
         removed=0,

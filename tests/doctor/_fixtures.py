@@ -2,7 +2,7 @@
 
 This is test-support code, not a test module: it carries no test functions of
 its own. Both ``tests/doctor/test_report.py`` (assembly-level) and
-``tests/cli/test_doctor_cmd.py`` (CLI-level) patch the config-inspection,
+``tests/cli/commands/test_doctor_cmd.py`` (CLI-level) patch the config-inspection,
 config-section, workflow-section, and bench-section seams on
 ``gymrat.doctor`` the same way; :func:`patch_common_seams` holds that
 shared body. Each call site still owns its own environment/git seams and its
@@ -11,29 +11,26 @@ own ``problems`` wording, since those diverge between the two test files.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     import pytest
 
-from gymrat.config.resolve import ConfigInspection
-from gymrat.config.types import BenchlessConfig
-from gymrat.doctor import Check, CheckSection
+from gymrat.config import ConfigInspection
+from gymrat.doctor import Check, CheckSection, EnvironmentInfo
+from tests._config import benchless_config
 
 _MODULE = "gymrat.doctor"
 
 
-def sample_config() -> BenchlessConfig:
-    return BenchlessConfig(
-        adapter="metric-lines",
-        samples=10,
-        timeout_seconds=1800,
-        unstable_noise_pct=200,
-        primary="geomean",
-    )
+def environment_info(**overrides: Any) -> EnvironmentInfo:
+    """The version and platform context a doctor report opens with, any field overridable."""
+    default = EnvironmentInfo(gymrat_version="0.5.0", python_version="3.13.0", platform="darwin")
+    return replace(default, **overrides)
 
 
 def fixed_section(title: str, checks: list[Check]) -> Callable[..., CheckSection]:
@@ -56,7 +53,7 @@ def patch_common_seams(
     inspection = ConfigInspection(
         config_path="/missing/gymrat.json" if config_failure else "/project/gymrat.json",
         problems=problems,
-        config=None if config_failure else sample_config(),
+        config=None if config_failure else benchless_config(),
         bench="node bench.js",
     )
 

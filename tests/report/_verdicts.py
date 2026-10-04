@@ -9,7 +9,6 @@ from gymrat.model import (
     ApproximateVerdict,
     BandVerdict,
     Direction,
-    Effect,
     ExactVerdict,
     Exclusion,
     GeomeanResult,
@@ -25,11 +24,6 @@ from gymrat.report.types import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-
-def _percent(value: float) -> Effect:
-    """A percentage effect — the only unit the model's deltas carry today."""
-    return Effect(value=value, unit="percent")
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +47,7 @@ def band_verdict(
         usable_n=usable_n,
         noise_pct=noise_pct,
         noise_abs=noise_abs,
-        delta=_percent(delta),
+        delta=delta,
         n=n,
     )
 
@@ -74,7 +68,7 @@ def permutation_verdict(
         p=p,
         noise_pct=noise_pct,
         noise_abs=noise_abs,
-        delta=_percent(delta),
+        delta=delta,
         n=n,
     )
 
@@ -89,7 +83,7 @@ def exact_verdict(
     return ExactVerdict(
         method="exact",
         verdict=verdict,
-        delta=_percent(delta),
+        delta=delta,
         n=n,
     )
 
@@ -140,7 +134,7 @@ def band_metric(
                     usable_n=resolved_usable,
                     noise_pct=noise_pct,
                     noise_abs=3.5,
-                    delta=_percent(delta),
+                    delta=delta,
                     n=n,
                 ),
             ),
@@ -187,7 +181,7 @@ def metric_for(
                     p=0.01,
                     noise_pct=candidate.noise_pct,
                     noise_abs=candidate.noise_pct,
-                    delta=_percent(candidate.delta),
+                    delta=candidate.delta,
                     n=10,
                 ),
             )

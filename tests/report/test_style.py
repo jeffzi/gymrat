@@ -27,27 +27,10 @@ from gymrat.report.style import (
     shorten_label,
     truncate_labels,
 )
+from tests._ansi import sgr_params
+from tests.report._assertions import render_colored, render_plain
 
 _WIDTH = 80
-
-
-def _sgr_params(text: str) -> str:
-    """The SGR parameter list of the last ANSI escape in ``text`` (e.g. ``"4;33"``).
-
-    Used to assert which attributes a styled span carries without pinning the
-    exact escape bytes rich emits.
-    """
-    start = text.rindex("\x1b[")
-    end = text.index("m", start)
-    return text[start + 2 : end]
-
-
-def _plain(renderable: str) -> str:
-    return render_lines(renderable, color=False, width=_WIDTH)
-
-
-def _colored(renderable: str) -> str:
-    return render_lines(renderable, color=True, width=_WIDTH)
 
 
 # ---------------------------------------------------------------------------
@@ -239,20 +222,20 @@ def test_highlight_inline_code_when_span_present_does_strip_backticks_and_keep_c
 
 
 def test_highlight_inline_code_when_colored_does_paint_the_span_blue():
-    styled = _colored(highlight_inline_code("Run `gymrat doctor` to verify."))
+    styled = render_colored(highlight_inline_code("Run `gymrat doctor` to verify."))
 
-    assert "34" in _sgr_params(styled[: styled.index("gymrat doctor")])
+    assert "34" in sgr_params(styled[: styled.index("gymrat doctor")])
     assert "`" not in styled
 
 
 def test_highlight_inline_code_when_suppressed_does_render_bare_content():
-    plain = _plain(highlight_inline_code("Run `gymrat doctor` to verify."))
+    plain = render_plain(highlight_inline_code("Run `gymrat doctor` to verify."))
 
     assert plain == "Run gymrat doctor to verify."
 
 
 def test_highlight_inline_code_when_multiple_spans_does_render_each_bare():
-    plain = _plain(highlight_inline_code("Use `gymrat compare` or `gymrat measure`."))
+    plain = render_plain(highlight_inline_code("Use `gymrat compare` or `gymrat measure`."))
 
     assert plain == "Use gymrat compare or gymrat measure."
 
@@ -271,11 +254,11 @@ def test_highlight_inline_code_when_no_backticks_does_return_unchanged():
     ],
 )
 def test_highlight_inline_code_when_rendered_plain_does_yield_content(text: str, expected: str):
-    assert _plain(highlight_inline_code(text)) == expected
+    assert render_plain(highlight_inline_code(text)) == expected
 
 
 def test_highlight_inline_code_when_content_has_markup_metacharacters_does_render_literally():
-    plain = _plain(highlight_inline_code("Metric `[i]` counts."))
+    plain = render_plain(highlight_inline_code("Metric `[i]` counts."))
 
     assert plain == "Metric [i] counts."
 
@@ -288,20 +271,20 @@ _HINT = "run `gymrat doctor` first"
 
 
 def test_format_hint_when_rendered_plain_does_yield_the_bare_sentence():
-    assert _plain(format_hint(_HINT)) == "run gymrat doctor first"
+    assert render_plain(format_hint(_HINT)) == "run gymrat doctor first"
 
 
 def test_format_hint_when_colored_does_dim_the_whole_line():
-    styled = _colored(format_hint(_HINT))
+    styled = render_colored(format_hint(_HINT))
 
     assert styled.startswith("\x1b[2m")
     assert styled.endswith("\x1b[0m")
 
 
 def test_format_hint_when_colored_does_paint_the_inline_code_blue():
-    styled = _colored(format_hint(_HINT))
+    styled = render_colored(format_hint(_HINT))
 
-    assert "34" in _sgr_params(styled[: styled.index("gymrat doctor")])
+    assert "34" in sgr_params(styled[: styled.index("gymrat doctor")])
 
 
 @pytest.mark.parametrize(
@@ -309,12 +292,19 @@ def test_format_hint_when_colored_does_paint_the_inline_code_blue():
     [
         pytest.param("counts [i] rounds", "counts [i] rounds", id="prose"),
         pytest.param("counts `[i]` rounds", "counts [i] rounds", id="inline-code"),
+        pytest.param("`gymrat keep` settles it", "gymrat keep settles it", id="code-first"),
+        pytest.param("then run `gymrat keep`", "then run gymrat keep", id="code-last"),
+        pytest.param("`up``on`", "upon", id="adjacent-code"),
     ],
 )
 def test_format_hint_when_text_has_markup_metacharacters_does_render_them_literally(
     text: str, expected: str
 ):
-    assert _plain(format_hint(text)) == expected
+    assert render_plain(format_hint(text)) == expected
+
+
+def test_format_hint_when_code_spans_bracket_prose_does_paint_only_the_spans_blue():
+    assert format_hint("`a` or `b`") == "[dim][blue]a[/blue] or [blue]b[/blue][/dim]"
 
 
 # ---------------------------------------------------------------------------

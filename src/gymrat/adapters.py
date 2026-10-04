@@ -19,14 +19,12 @@ An adapter turns a bench harness's stdout into gymrat's metric map. Two ship:
 Every adapter satisfies the :class:`Adapter` contract. :class:`MetricDefaults` is
 what an adapter knows about a metric from its name alone. An adapter sends a
 complaint about each part of the output it cannot read cleanly to a
-:data:`~gymrat.warn.WarnSink`; most such parts (a line, a run, a benchmark, a
+:data:`~gymrat.utils.WarnSink`; most such parts (a line, a run, a benchmark, a
 duplicate name) are skipped. It raises :class:`AdapterError`, aborting the whole
 parse, when the output yields no usable metric or a metric name with more than one
 ``#``.
 
-Both derive name-based metric defaults from one suffix table. Config resolution
-reads the fallback kind and gating default declared beside that table instead of
-re-declaring them, so the two cannot drift apart.
+Both derive name-based metric defaults from one suffix table.
 
 The set of adapters is fixed at import time: nothing registers an adapter at
 runtime, so :func:`get_adapter` is a lookup in a closed mapping rather than a
@@ -41,7 +39,7 @@ import math
 import re
 import statistics
 from dataclasses import dataclass
-from typing import Annotated, Final, Protocol, runtime_checkable
+from typing import Annotated, Final, Protocol
 
 from pydantic import (
     BaseModel,
@@ -55,13 +53,8 @@ from pydantic import (
 from gymrat.errors import GymratError
 from gymrat.metric_name import LINE_TERMINATORS
 from gymrat.model import Direction, MetricUnit
-from gymrat.pydantic_errors import (
-    UNKNOWN_SHAPE_PHRASE,
-    describe_key,
-    drop_prefix_errors,
-    phrase_for_error,
-)
-from gymrat.warn import WarnSink, warn_to_stderr
+from gymrat.pydantic_errors import describe_key, drop_prefix_errors, phrase_for_error
+from gymrat.utils import WarnSink, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # adapter contract
@@ -102,7 +95,6 @@ class MetricDefaults:
     short_name: str | None = None
 
 
-@runtime_checkable
 class Adapter(Protocol):
     """Turns a benchmark harness's stdout into gymrat's metric map.
 
@@ -147,20 +139,6 @@ _METRIC_SUFFIXES: Final[tuple[tuple[str, MetricUnit, str], ...]] = (
     ("#heap", "bytes", "memory"),
 )
 """Suffix→(unit, kind) table walked by :func:`defaults_from_suffixes`; first match wins."""
-
-DEFAULT_METRIC_KIND: Final[str] = "other"
-"""The kind a metric falls under when its adapter reports none.
-
-Consumed by config resolution as the fallback kind for a metric whose
-adapter defaults carry no kind.
-"""
-
-DEFAULT_GATING: Final[bool] = True
-"""Whether a metric gates when nothing names it.
-
-Consumed by config resolution: the gating value applied when neither a
-``metrics`` entry nor a ``kinds`` entry names the metric.
-"""
 
 
 def defaults_from_suffixes(metric_name: str) -> MetricDefaults:
@@ -258,10 +236,7 @@ class _MetricLinesAdapter:
     """Adapter that reads ``METRIC name=value`` lines from a bench script's stdout."""
 
     name = "metric-lines"
-
-    def defaults(self, metric_name: str) -> MetricDefaults:
-        """Return name-derived defaults for ``metric_name`` via suffix matching."""
-        return defaults_from_suffixes(metric_name)
+    defaults = staticmethod(defaults_from_suffixes)
 
     def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
         """Parse ``METRIC`` lines from ``stdout`` into a median-per-name metric map.
@@ -343,125 +318,88 @@ metric_lines_adapter = _MetricLinesAdapter()
 _JSON_DECODER = json.JSONDecoder()
 
 
-def _scan_json_objects(text: str) -> tuple[list[str], str | None]:
+def _scan_json_objects(text: str) -> tuple[list[dict[str, object]], str | None]:
     """Scan ``text`` for JSON objects in a single pass.
 
-    Each ``{`` in ``text`` is tried via ``raw_decode``.  Successes become
-    candidates; the failure spanning the most remaining text is captured so
-    ``_extract_json`` can surface an actionable diagnostic without a second scan.
+    Each ``{`` in ``text`` is tried via ``raw_decode``, so unbalanced braces and
+    banner text like ``cpu: {model}`` are rejected by the JSON decoder itself.
+    Successes become candidates; the first failure is captured so
+    ``_extract_benchmarks`` can surface an actionable diagnostic without a second
+    scan.
 
     Args:
         text: The bench output to scan.
 
     Returns:
-        A ``(candidates, longest_failure)`` pair: valid JSON text slices, and the
-        error message from the longest failed attempt (or ``None``).
+        A ``(candidates, first_failure)`` pair: the objects that parsed, and the
+        error message from the first failed attempt (or ``None``).
     """
-    candidates: list[str] = []
-    longest: tuple[int, str] | None = None
-    length = len(text)
+    candidates: list[dict[str, object]] = []
+    first_failure: str | None = None
     pos = text.find("{")
-    while pos != -1 and pos < length:
+    while pos != -1:
         try:
-            _, end = _JSON_DECODER.raw_decode(text, pos)
+            # Every attempt starts at a ``{``, so a successful raw_decode can only
+            # have produced a JSON object — no non-dict shape check is needed.
+            parsed, end = _JSON_DECODER.raw_decode(text, pos)
         except (json.JSONDecodeError, RecursionError) as exc:
-            remaining = length - pos
-            reason = (
-                str(exc)
-                if isinstance(exc, json.JSONDecodeError)
-                else f"Exceeded maximum recursion depth while parsing at position {pos}"
-            )
-            if longest is None or remaining > longest[0]:
-                longest = (remaining, reason)
+            if first_failure is None:
+                first_failure = (
+                    str(exc)
+                    if isinstance(exc, json.JSONDecodeError)
+                    else f"Exceeded maximum recursion depth while parsing at position {pos}"
+                )
             pos = text.find("{", pos + 1)
             continue
-        candidates.append(text[pos:end])
+        candidates.append(parsed)
         pos = text.find("{", end)
-    return candidates, longest[1] if longest is not None else None
+    return candidates, first_failure
 
 
-def find_json_candidates(text: str) -> list[str]:
-    """Scan ``text`` for valid JSON objects using :meth:`json.JSONDecoder.raw_decode`.
+def _extract_benchmarks(stdout: str) -> list[object]:
+    """Find mitata's ``benchmarks`` array using :func:`_scan_json_objects`.
 
-    For each ``{`` in ``text``, attempts a full JSON parse starting at that
-    position. Unbalanced braces and banner text like ``cpu: {model}`` are
-    rejected by the JSON decoder itself, so no hand-rolled brace-balancing
-    scanner is needed.
-
-    Args:
-        text: The raw text to scan for JSON objects.
-
-    Returns:
-        Original text slices of the objects that parsed; positions that fail
-        are skipped.
-    """
-    candidates, _ = _scan_json_objects(text)
-    return candidates
-
-
-def _extract_json(stdout: str) -> dict[str, object]:
-    """Find mitata's JSON object using :func:`_scan_json_objects`.
-
-    Candidates from :func:`_scan_json_objects` are already valid JSON (parsed
-    via ``raw_decode``). A candidate carrying a ``benchmarks`` list wins over any
-    earlier record that does not — a decoy object printed before mitata's own
-    output must not shadow the real payload.
+    A candidate carrying a ``benchmarks`` list wins over any earlier record that
+    does not — a decoy object printed before mitata's own output must not shadow
+    the real payload.
 
     When no candidate has a ``benchmarks`` list but a decode failure exists
-    alongside a non-benchmarks record, the failure diagnostic takes priority
-    over returning the record — the real payload was likely truncated or
-    malformed, and the parse error is more actionable than a generic "missing
-    benchmarks array" from the caller.
+    alongside a non-benchmarks record, the failure diagnostic takes priority —
+    the real payload was likely truncated or malformed, and the parse error is
+    more actionable than a generic "missing benchmarks array".
 
     When :func:`_scan_json_objects` returns no candidates, every ``{`` in
     ``stdout`` failed to start a valid JSON object. The diagnostic names the
-    failure of the longest attempt — the ``{`` spanning the most remaining text
-    is most likely to be the real payload.
+    failure of the first attempt — the ``{`` spanning the most remaining text is
+    most likely to be the real payload.
 
     Args:
         stdout: The bench command's captured stdout.
 
     Returns:
-        The parsed JSON object carrying a ``benchmarks`` list, or, when no
-        decode failed, the first dict-shaped record as a fallback.
+        The non-empty ``benchmarks`` list of the first JSON object carrying one.
 
     Raises:
-        AdapterError: When no usable JSON object is found, or the most
-            promising candidate failed to parse.
+        AdapterError: When no JSON object is found, the most promising candidate
+            failed to parse, or the ``benchmarks`` array is missing or empty.
     """
-    candidates, longest_failure = _scan_json_objects(stdout)
+    candidates, first_failure = _scan_json_objects(stdout)
 
-    first_record: dict[str, object] | None = None
     for candidate in candidates:
-        # Every candidate starts at a ``{``, so a successful raw_decode can only
-        # have produced a JSON object — no non-dict shape check is needed.
-        parsed: dict[str, object] = json.loads(candidate)
-        if isinstance(parsed.get("benchmarks"), list):
-            return parsed
-        if first_record is None:
-            first_record = parsed
+        benchmarks = candidate.get("benchmarks")
+        if isinstance(benchmarks, list):
+            if not benchmarks:
+                msg = "benchmarks array is empty"
+                raise AdapterError(msg)
+            return benchmarks
 
-    if first_record is not None:
-        if longest_failure is not None:
-            msg = f"Failed to parse JSON: {longest_failure}"
-            raise AdapterError(msg)
-        return first_record
-    if longest_failure is not None:
-        msg = f"Failed to parse JSON: {longest_failure}"
-        raise AdapterError(msg)
-    msg = "No JSON object found in stdout"
-    raise AdapterError(msg)
-
-
-def _parse_benchmarks(json_obj: dict[str, object]) -> list[object]:
-    benchmarks = json_obj.get("benchmarks")
-    if not isinstance(benchmarks, list):
+    if first_failure is not None:
+        msg = f"Failed to parse JSON: {first_failure}"
+    elif candidates:
         msg = "JSON missing benchmarks array"
-        raise AdapterError(msg)
-    if not benchmarks:
-        msg = "benchmarks array is empty"
-        raise AdapterError(msg)
-    return benchmarks
+    else:
+        msg = "No JSON object found in stdout"
+    raise AdapterError(msg)
 
 
 def _record_metric(metrics: dict[str, float], name: str, value: float, warn: WarnSink) -> None:
@@ -535,8 +473,6 @@ def _serialize_arg_value(value: object) -> str:
         return "true" if value else "false"
     if value is None:
         return "null"
-    if isinstance(value, str):
-        return value
     if isinstance(value, float) and math.isfinite(value) and value.is_integer():
         # JS String(5.0) is "5", not "5.0"; an int falls through to str() below.
         return str(int(value))
@@ -645,10 +581,10 @@ def _first_problem(exc: ValidationError, prefix: tuple[str, ...] = ()) -> str:
         The text that follows the skipped entry's name in the warning.
     """
     error = drop_prefix_errors(exc.errors())[0]
-    key = describe_key((*prefix, *(str(part) for part in error["loc"])))
+    key = describe_key((*prefix, *error["loc"]))
     if error["type"] == "missing":
         return f" with missing {key}"
-    return _invalid_value_tail(key, phrase_for_error(error) or UNKNOWN_SHAPE_PHRASE, error["input"])
+    return _invalid_value_tail(key, phrase_for_error(error), error["input"])
 
 
 def _warn_skip(warn: WarnSink, subject: str, tail: str) -> None:
@@ -758,10 +694,7 @@ class _MitataAdapter:
     """Adapter for bench scripts that print the JSON ``mitata --json`` writes."""
 
     name = "mitata"
-
-    def defaults(self, metric_name: str) -> MetricDefaults:
-        """Return name-derived defaults for ``metric_name`` via suffix matching."""
-        return defaults_from_suffixes(metric_name)
+    defaults = staticmethod(defaults_from_suffixes)
 
     def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
         """Parse mitata's JSON output into a metric map.
@@ -791,10 +724,8 @@ class _MitataAdapter:
                 ``benchmarks`` array is missing or empty, a substituted metric
                 prefix contains ``#``, or no run yields a usable metric.
         """
-        json_obj = _extract_json(stdout)
-        benchmarks = _parse_benchmarks(json_obj)
         metrics: dict[str, float] = {}
-        for benchmark in benchmarks:
+        for benchmark in _extract_benchmarks(stdout):
             _extract_benchmark_metrics(benchmark, metrics, warn)
 
         if not metrics:
@@ -818,9 +749,6 @@ _ADAPTERS: dict[str, Adapter] = {
     mitata_adapter.name: mitata_adapter,
 }
 
-ADAPTER_NAMES: tuple[str, ...] = tuple(sorted(_ADAPTERS))
-"""The built-in adapter names, sorted, for display and error hints."""
-
 
 def get_adapter(name: str) -> Adapter:
     """Return the built-in adapter registered under ``name``.
@@ -839,5 +767,5 @@ def get_adapter(name: str) -> Adapter:
         return _ADAPTERS[name]
     except KeyError:
         msg = f'Unknown adapter: "{name}".'
-        hint = f"valid adapters are: {', '.join(ADAPTER_NAMES)}"
+        hint = f"valid adapters are: {', '.join(sorted(_ADAPTERS))}"
         raise GymratError(msg, hint=hint) from None

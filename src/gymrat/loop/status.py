@@ -26,10 +26,9 @@ from gymrat.report.loop import (
     format_status_settle,
     format_status_stop,
 )
-from gymrat.report.style import RENDER_WIDTH, render_lines
+from gymrat.report.style import render_lines
 from gymrat.session.records import (
     BaselineRecord,
-    CommandRecord,
     DiscardRecord,
     IterationRecord,
     KeepRecord,
@@ -40,7 +39,7 @@ from gymrat.session.store import require_session
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.config.types import BenchlessConfig
+    from gymrat.config import BenchlessConfig
     from gymrat.report.loop import SettleState
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import Outcome
@@ -184,8 +183,6 @@ def _history_lines(records: Sequence[SessionLogRecord]) -> list[str]:
     settled = _settle_states(records)
     history: list[str] = []
     for position, record in enumerate(records):
-        if isinstance(record, CommandRecord):
-            continue
         if isinstance(record, BaselineRecord):
             history.append(format_status_baseline(record))
         elif isinstance(record, IterationRecord):
@@ -257,7 +254,7 @@ def status_session(root: str, config: BenchlessConfig, *, color: bool | None = N
     if state.finalized is not None:
         lines.append(format_status_finalized(state.finalized))
 
-    return render_lines(*lines, color=color, width=RENDER_WIDTH)
+    return render_lines(*lines, color=color)
 
 
 @dataclass(frozen=True, slots=True)

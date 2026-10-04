@@ -19,13 +19,14 @@ The text renderer styles each check with a status glyph, indents continuation
 lines and hints under it, and closes with a caveat note and a status summary.
 Color follows the project's :func:`render_lines` resolution — ``NO_COLOR`` /
 ``FORCE_COLOR`` and stdout's TTY status decide whether ANSI escapes appear. The
-JSON renderer serializes the report for machine consumption, keyed in snake_case.
+JSON renderer writes its document through :func:`gymrat.report.json_doc.render_document`,
+the serializer shared with the compare, measure, probe, and loop JSON documents, so the output
+is two-space-indented and carries no ANSI whatever the color settings.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
-import json
 import platform
 import re
 import shlex
@@ -39,13 +40,18 @@ from typing import Literal
 from rich.markup import escape
 
 from gymrat.adapters import get_adapter
-from gymrat.config.resolve import ConfigInspection, inspect_config
-from gymrat.config.types import CONFIG_DEFAULTS, BenchlessConfig, CliFlags, StopConfig
-from gymrat.errors import GymratError, hint_of
+from gymrat.config import (
+    CONFIG_DEFAULTS,
+    BenchlessConfig,
+    CliFlags,
+    ConfigInspection,
+    StopConfig,
+    inspect_config,
+)
+from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError, try_git
-from gymrat.plural import pluralize
+from gymrat.report.json_doc import render_document
 from gymrat.report.style import (
-    RENDER_WIDTH,
     format_hint,
     markup,
     render_lines,
@@ -61,11 +67,11 @@ from gymrat.session.paths import repo_root
 CheckStatus = Literal["ok", "warn", "fail"]
 """The outcome severity of a single diagnostic check."""
 
-WORKFLOW_SECTION_TITLE = "Workflow"
-"""The title shared between the workflow section builder and the renderer's skip detector."""
+_WORKFLOW_SECTION_TITLE = "Workflow"
 
-WORKFLOW_SKIP_CHECK_NAME = "workflow"
-"""The synthetic check name emitted when config errors collapse the workflow section."""
+# The synthetic check name emitted when config errors collapse the workflow
+# section; the renderer detects the skip by it.
+_WORKFLOW_SKIP_CHECK_NAME = "workflow"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,14 +117,6 @@ class DoctorReport:
         return self.fail_count > 0
 
 
-def _ok(name: str, detail: str) -> Check:
-    return Check(name=name, status="ok", detail=detail)
-
-
-def _issue(name: str, status: CheckStatus, detail: str, hint: str) -> Check:
-    return Check(name=name, status=status, detail=detail, hint=hint)
-
-
 def create_doctor_report(
     environment: EnvironmentInfo, sections: list[CheckSection]
 ) -> DoctorReport:
@@ -140,37 +138,38 @@ def build_environment_section(
     *, git_available: bool, inside_git_repo: bool, git_error: str | None = None
 ) -> CheckSection:
     """FAIL when git is absent from PATH; WARN outside a repo or when the root won't resolve."""
-    checks: list[Check] = []
-
-    checks.append(
-        _ok("git", "git is available on PATH")
-        if git_available
-        else _issue(
-            "git",
-            "fail",
-            "git is not available on PATH",
-            "Install git: https://git-scm.com/downloads",
-        )
-    )
-
-    checks.append(
-        _ok("git repository", "current directory is inside a git repository")
-        if inside_git_repo
-        else _issue(
-            "git repository",
-            "warn",
-            "current directory is not inside a git repository",
-            "The compare command resolves refs against a git repository",
-        )
-    )
+    checks = [
+        _presence_check(
+            Check(
+                name="git",
+                status="fail",
+                detail="git is not available on PATH",
+                hint="Install git: https://git-scm.com/downloads",
+            ),
+            present=git_available,
+            ok_detail="git is available on PATH",
+        ),
+        _presence_check(
+            Check(
+                name="git repository",
+                status="warn",
+                detail="current directory is not inside a git repository",
+                hint="The compare command resolves refs against a git repository",
+            ),
+            present=inside_git_repo,
+            ok_detail="current directory is inside a git repository",
+        ),
+    ]
 
     if git_error is not None:
         checks.append(
-            _issue(
-                "git repository root",
-                "warn",
-                f"could not determine the repository root: {git_error}",
-                "Falling back to the current directory; commands may operate on the wrong path",
+            Check(
+                name="git repository root",
+                status="warn",
+                detail=f"could not determine the repository root: {git_error}",
+                hint=(
+                    "Falling back to the current directory; commands may operate on the wrong path"
+                ),
             )
         )
 
@@ -183,21 +182,28 @@ def build_config_section(inspection: ConfigInspection) -> CheckSection:
         checks = [
             Check(name="config", status="fail", detail=problem) for problem in inspection.problems
         ]
-    elif inspection.config_path is None:
-        checks = [_ok("config", "No config file found; operating with defaults only")]
     else:
-        checks = [_ok("config", f"Config file loaded: {inspection.config_path}")]
+        detail = (
+            "No config file found; operating with defaults only"
+            if inspection.config_path is None
+            else f"Config file loaded: {inspection.config_path}"
+        )
+        checks = [Check(name="config", status="ok", detail=detail)]
 
     return CheckSection(title="Configuration", checks=checks)
 
 
-_SKILL_MISSING_HINT = "Run `gymrat init` to scaffold the project."
-_CHECKS_MISSING_HINT = "Without checks, keep cannot gate commits"
-_STOP_MISSING_HINT = "Without stop, a session has no finish line"
-_RUNBOOK_MISSING_HINT = (
-    "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml. "
-    "Without one, supervise has no instructions to follow."
-)
+def _presence_check(missing: Check, *, present: bool, ok_detail: str) -> Check:
+    """``missing`` when the piece it checks is absent, else an OK check of the same name."""
+    return Check(name=missing.name, status="ok", detail=ok_detail) if present else missing
+
+
+def _skipped_section(title: str, check_name: str) -> CheckSection:
+    """The placeholder a section collapses to when config errors leave nothing to check."""
+    return CheckSection(
+        title=title,
+        checks=[Check(name=check_name, status="ok", detail="Skipped — fix config errors first")],
+    )
 
 
 def build_workflow_section(
@@ -217,52 +223,67 @@ def build_workflow_section(
         The assembled workflow check section.
     """
     if config_has_problems:
-        return CheckSection(
-            title=WORKFLOW_SECTION_TITLE,
-            checks=[_ok(WORKFLOW_SKIP_CHECK_NAME, "Skipped — fix config errors first")],
-        )
+        return _skipped_section(_WORKFLOW_SECTION_TITLE, _WORKFLOW_SKIP_CHECK_NAME)
 
-    checks: list[Check] = []
+    checks = [
+        _presence_check(
+            Check(
+                name="skill file",
+                status="warn",
+                detail=(
+                    "No skill file — Claude Code agents won't have gymrat's workflow instructions"
+                ),
+                hint="Run `gymrat init` to scaffold the project.",
+            ),
+            present=skill_file_exists,
+            ok_detail="Skill file is installed",
+        ),
+        _presence_check(
+            Check(
+                name="checks",
+                status="warn",
+                detail="checks is not configured",
+                hint="Without checks, keep cannot gate commits",
+            ),
+            present=config.checks is not None,
+            ok_detail=f"checks: {config.checks}",
+        ),
+        _build_stop_check(config.stop),
+        _presence_check(
+            Check(
+                name="runbook",
+                status="warn",
+                detail="runbook is not configured",
+                hint=(
+                    "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml. "
+                    "Without one, supervise has no instructions to follow."
+                ),
+            ),
+            present=config.runbook is not None,
+            ok_detail=f"runbook: {config.runbook}",
+        ),
+    ]
 
-    checks.append(
-        _ok("skill file", "Skill file is installed")
-        if skill_file_exists
-        else _issue(
-            "skill file",
-            "warn",
-            "No skill file — Claude Code agents won't have gymrat's workflow instructions",
-            _SKILL_MISSING_HINT,
-        )
-    )
-
-    checks.append(
-        _ok("checks", f"checks: {config.checks}")
-        if config.checks is not None
-        else _issue("checks", "warn", "checks is not configured", _CHECKS_MISSING_HINT)
-    )
-
-    checks.append(_build_stop_check(config.stop))
-
-    checks.append(
-        _ok("runbook", f"runbook: {config.runbook}")
-        if config.runbook is not None
-        else _issue("runbook", "warn", "runbook is not configured", _RUNBOOK_MISSING_HINT)
-    )
-
-    return CheckSection(title=WORKFLOW_SECTION_TITLE, checks=checks)
+    return CheckSection(title=_WORKFLOW_SECTION_TITLE, checks=checks)
 
 
 def _build_stop_check(stop: StopConfig | None) -> Check:
     """OK echoing whichever stop keys are set; WARN when stop is absent or empty."""
-    if stop is not None and (stop.target_value is not None or stop.max_iterations is not None):
-        parts: list[str] = []
+    parts: list[str] = []
+    if stop is not None:
         if stop.target_value is not None:
             parts.append(f"target_value: {stop.target_value}")
         if stop.max_iterations is not None:
             parts.append(f"max_iterations: {stop.max_iterations}")
-        return _ok("stop", f"stop: {', '.join(parts)}")
+    if parts:
+        return Check(name="stop", status="ok", detail=f"stop: {', '.join(parts)}")
 
-    return _issue("stop", "warn", "stop is not configured", _STOP_MISSING_HINT)
+    return Check(
+        name="stop",
+        status="warn",
+        detail="stop is not configured",
+        hint="Without stop, a session has no finish line",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -297,15 +318,13 @@ def _workflow_was_skipped(report: DoctorReport) -> bool:
         report: The doctor report whose workflow section is checked.
 
     Returns:
-        ``True`` when the workflow section contains only the skip placeholder.
+        ``True`` when the report carries the skip placeholder.
     """
-    workflow = next(
-        (section for section in report.sections if section.title == WORKFLOW_SECTION_TITLE),
-        None,
+    return any(
+        check.name == _WORKFLOW_SKIP_CHECK_NAME
+        for section in report.sections
+        for check in section.checks
     )
-    if workflow is None or not workflow.checks:
-        return False
-    return all(check.name == WORKFLOW_SKIP_CHECK_NAME for check in workflow.checks)
 
 
 def _header_line(report: DoctorReport) -> str:
@@ -348,25 +367,21 @@ def render_doctor_report(report: DoctorReport, *, color: bool | None = None) -> 
     lines.append(markup(note, "dim"))
     lines.append("")
 
-    segments: list[tuple[int, str, str | None, CheckStatus]] = [
-        (report.ok_count, "ok", "ok", "ok"),
-        (report.warn_count, "warning", None, "warn"),
-        (report.fail_count, "failure", None, "fail"),
+    segments: list[tuple[int, tuple[str, str], CheckStatus]] = [
+        (report.ok_count, ("ok", "ok"), "ok"),
+        (report.warn_count, ("warning", "warnings"), "warn"),
+        (report.fail_count, ("failure", "failures"), "fail"),
     ]
     parts: list[str] = []
-    for count, noun, plural, status in segments:
+    for count, (singular, plural), status in segments:
         if count == 0:
             continue
-        word = pluralize(count, noun, plural).split(" ", 1)[1]
+        word = singular if count == 1 else plural
         colored_count = markup(str(count), _STATUS_STYLES[status])
         parts.append(f"{colored_count} {escape(word)}")
     lines.append(" · ".join(parts))
 
-    return render_lines(*lines, color=color, width=RENDER_WIDTH)
-
-
-def _drop_none(fields: list[tuple[str, object]]) -> dict[str, object]:
-    return {key: value for key, value in fields if value is not None}
+    return render_lines(*lines, color=color)
 
 
 def render_doctor_json(report: DoctorReport) -> str:
@@ -376,13 +391,12 @@ def render_doctor_json(report: DoctorReport) -> str:
         report: The assembled doctor report.
 
     Returns:
-        The JSON document: fields in model declaration order followed by
-        ``has_failures``, with every field whose value is ``None`` omitted
-        rather than emitted as ``null``.
+        The two-space-indented JSON document: fields in model declaration
+        order followed by ``has_failures``, a check without a hint carrying
+        ``"hint": null``.
     """
-    document = asdict(report, dict_factory=_drop_none)
-    document["has_failures"] = report.has_failures
-    return json.dumps(document, ensure_ascii=False)
+    document: dict[str, object] = {**asdict(report), "has_failures": report.has_failures}
+    return render_document(document)
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +404,6 @@ def render_doctor_json(report: DoctorReport) -> str:
 # ---------------------------------------------------------------------------
 
 
-_NO_BENCH_HINT = 'Set the bench command with --bench or the "bench" config key'
 _BENCH_TITLE = "Bench"
 _SHELL_OPERATOR_RE = re.compile(r"[;&|(){}<>]")
 
@@ -447,11 +460,7 @@ def _first_command_word(bench: str) -> str | None:
     except ValueError:
         return None
 
-    for token in tokens:
-        if "=" in token:
-            continue
-        return token
-    return None
+    return next((token for token in tokens if "=" not in token), None)
 
 
 def build_bench_section(
@@ -472,17 +481,14 @@ def build_bench_section(
         The assembled bench check section.
     """
     if config_problems and bench is None:
-        return CheckSection(
-            title=_BENCH_TITLE,
-            checks=[Check(name="bench", status="ok", detail="Skipped — fix config errors first")],
-        )
+        return _skipped_section(_BENCH_TITLE, "bench")
 
     try:
         get_adapter(adapter)
     except GymratError as error:
         return CheckSection(
             title=_BENCH_TITLE,
-            checks=[Check(name="adapter", status="fail", detail=str(error), hint=hint_of(error))],
+            checks=[Check(name="adapter", status="fail", detail=str(error), hint=error.hint)],
         )
     checks: list[Check] = [Check(name="adapter", status="ok", detail=f"adapter: {adapter}")]
 
@@ -492,7 +498,7 @@ def build_bench_section(
                 name="bench",
                 status="fail",
                 detail="No bench command configured",
-                hint=_NO_BENCH_HINT,
+                hint='Set the bench command with --bench or the "bench" config key',
             )
         )
         return CheckSection(title=_BENCH_TITLE, checks=checks)
@@ -501,41 +507,16 @@ def build_bench_section(
 
     executable = _first_command_word(bench)
     if executable is not None:
-        if shutil.which(executable) is not None:
-            checks.append(
-                Check(name="executable", status="ok", detail=f"{executable} is available on PATH")
+        found = shutil.which(executable) is not None
+        checks.append(
+            Check(
+                name="executable",
+                status="ok" if found else "warn",
+                detail=f"{executable} {'is available' if found else 'was not found'} on PATH",
             )
-        else:
-            checks.append(
-                Check(
-                    name="executable",
-                    status="warn",
-                    detail=f"{executable} was not found on PATH",
-                )
-            )
+        )
 
     return CheckSection(title=_BENCH_TITLE, checks=checks)
-
-
-def _defaults_as_benchless() -> BenchlessConfig:
-    """A benchless config carrying only the settled defaults.
-
-    Stands in whenever config inspection yields no config: either the config
-    has problems, in which case the workflow section collapses to a skip check,
-    or no config file exists, in which case the unset ``checks``, ``stop``, and
-    ``runbook`` surface as workflow warnings and ``adapter`` feeds the bench
-    section.
-
-    Returns:
-        A :class:`BenchlessConfig` populated from :data:`CONFIG_DEFAULTS`.
-    """
-    return BenchlessConfig(
-        adapter=CONFIG_DEFAULTS.adapter,
-        samples=CONFIG_DEFAULTS.samples,
-        timeout_seconds=CONFIG_DEFAULTS.timeout_seconds,
-        unstable_noise_pct=CONFIG_DEFAULTS.unstable_noise_pct,
-        primary=CONFIG_DEFAULTS.primary,
-    )
 
 
 def _environment_info() -> EnvironmentInfo:
@@ -549,9 +530,9 @@ def _environment_info() -> EnvironmentInfo:
 def build_doctor_report(flags: CliFlags, cwd: str) -> DoctorReport:
     """Coordinate the git probe, config inspection, and section builders into a single report.
 
-    Falls back to config defaults for the workflow and bench sections whenever
-    config inspection yields no config — on config problems or when no config
-    file exists.
+    Config inspection yields no config only when it found problems. The config
+    defaults then stand in so the bench section still has an adapter to name;
+    the workflow section collapses to its skip check.
 
     Args:
         flags: The command-line overrides to apply during config inspection.
@@ -572,7 +553,7 @@ def build_doctor_report(flags: CliFlags, cwd: str) -> DoctorReport:
         git_error=git_env.git_error,
     )
     config_section = build_config_section(inspection)
-    resolved = inspection.config or _defaults_as_benchless()
+    resolved = inspection.config or CONFIG_DEFAULTS
     workflow_section = build_workflow_section(
         resolved,
         config_has_problems=bool(inspection.problems),

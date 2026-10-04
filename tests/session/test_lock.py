@@ -31,6 +31,7 @@ from gymrat.session.lock import (
     _publish_lock_file,
     acquire_lock,
     is_held,
+    now_iso,
     read_holder,
 )
 from tests.conftest import hold_lock
@@ -183,6 +184,12 @@ def held_briefly(lock_path: str) -> Generator[None]:
 # ---------------------------------------------------------------------------
 # acquire + holder metadata
 # ---------------------------------------------------------------------------
+
+
+def test_now_iso_when_called_does_render_millisecond_utc_timestamp():
+    result = now_iso()
+
+    assert AT_PATTERN.match(result)
 
 
 def test_acquire_lock_when_free_does_stamp_compact_holder_json():
@@ -470,7 +477,7 @@ def test_is_held_when_lock_active_does_return_true():
     blocker = hold_lock(lock_path)
 
     try:
-        result = is_held(Path(lock_path))
+        result = is_held(lock_path)
 
         assert result is True
     finally:
@@ -482,7 +489,7 @@ def test_is_held_when_lock_released_does_return_false():
     blocker = hold_lock(lock_path)
     blocker.release()
 
-    result = is_held(Path(lock_path))
+    result = is_held(lock_path)
 
     assert result is False
 
@@ -491,7 +498,7 @@ def test_is_held_when_lock_never_existed_does_return_false():
     lock_path = fresh_lock_path()
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
 
-    result = is_held(Path(lock_path))
+    result = is_held(lock_path)
 
     assert result is False
 
@@ -501,7 +508,7 @@ def test_is_held_when_called_from_holding_process_does_return_true():
     release = acquire_lock(lock_path, "compare")
 
     try:
-        result = is_held(Path(lock_path))
+        result = is_held(lock_path)
 
         assert result is True
     finally:
@@ -516,7 +523,7 @@ def test_is_held_when_probed_does_preserve_lock_file():
     lock.acquire()
 
     try:
-        is_held(Path(lock_path))
+        is_held(lock_path)
 
         assert Path(os_lock_path).exists()
     finally:
@@ -529,7 +536,7 @@ def test_is_held_when_probed_does_not_read_or_write_holder_record():
     blocker = hold_lock(lock_path, holder=holder)
 
     try:
-        is_held(Path(lock_path))
+        is_held(lock_path)
 
         assert read_holder_json(lock_path) == holder
     finally:
@@ -543,7 +550,7 @@ def test_is_held_when_permission_error_does_return_false(
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
     refuse_open(monkeypatch, _os_lock_file(lock_path))
 
-    result = is_held(Path(lock_path))
+    result = is_held(lock_path)
 
     assert result is False
 
@@ -601,6 +608,15 @@ def test_read_holder_when_record_unreadable_does_return_none(content: bytes | No
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
     if content is not None:
         Path(lock_path).write_bytes(content)
+
+    holder = read_holder(lock_path)
+
+    assert holder is None
+
+
+def test_read_holder_when_record_path_is_a_directory_does_return_none():
+    lock_path = fresh_lock_path()
+    Path(lock_path).mkdir(parents=True)
 
     holder = read_holder(lock_path)
 

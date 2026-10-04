@@ -28,16 +28,16 @@ class PrepareFinished:
 
 
 @dataclass(frozen=True, slots=True)
-class PassStarted:
-    """Emitted before a bench command runs for one round against a target.
+class _PassEvent:
+    """The fields every pass event carries.
 
     Attributes:
         round: 1-based round number.
         total_rounds: Total number of rounds in the schedule.
         target_count: Number of targets in the schedule.
         label: The target's display label.
-        phase: Whether this pass is a measurement or confirmation run.
         at_ms: Monotonic millisecond timestamp from the emitter's clock.
+        phase: Whether the pass is a measurement or confirmation run.
     """
 
     round: int
@@ -49,24 +49,13 @@ class PassStarted:
 
 
 @dataclass(frozen=True, slots=True)
-class PassFinished:
-    """Emitted after a bench command completes for one round against a target.
+class PassStarted(_PassEvent):
+    """Emitted before a bench command runs for one round against a target."""
 
-    Attributes:
-        round: 1-based round number.
-        total_rounds: Total number of rounds in the schedule.
-        target_count: Number of targets in the schedule.
-        label: The target's display label.
-        phase: Whether this pass was a measurement or confirmation run.
-        at_ms: Monotonic millisecond timestamp from the emitter's clock.
-    """
 
-    round: int
-    total_rounds: int
-    target_count: int
-    label: str
-    at_ms: float
-    phase: Literal["measure", "confirm"] = "measure"
+@dataclass(frozen=True, slots=True)
+class PassFinished(_PassEvent):
+    """Emitted after a bench command completes for one round against a target."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -17,8 +17,8 @@ from pathlib import Path
 import pytest
 
 import gymrat.scaffold as scaffold_module
-from gymrat.config.resolve import load_config_file
-from gymrat.errors import GymratError, hint_of
+from gymrat.config import load_config_file_collecting
+from gymrat.errors import GymratError
 from gymrat.scaffold import (
     SKILL_RELATIVE_PATH,
     ScaffoldArtifact,
@@ -60,7 +60,10 @@ def test_scaffold_when_defaults_does_write_bench_and_runbook(tmp_path: Path):
 def test_scaffold_when_defaults_does_reload_through_config_loader(tmp_path: Path):
     scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
-    config = load_config_file(tmp_path / "gymrat.toml")
+    loaded = load_config_file_collecting(tmp_path / "gymrat.toml", required=True)
+    config = loaded.config_file
+    assert loaded.problems == []
+    assert config is not None
     assert config.bench == "npm run bench"
     assert config.runbook == "gymrat-runbook.md"
 
@@ -299,6 +302,34 @@ def test_scaffold_when_runbook_path_is_a_directory_does_raise_and_not_write_conf
     assert not (tmp_path / "gymrat.toml").exists()
 
 
+def test_scaffold_when_every_artifact_path_is_a_directory_does_raise_naming_each_in_write_order(
+    tmp_path: Path,
+):
+    for relative in ("gymrat.toml", "gymrat-runbook.md", ".claude/skills/gymrat/SKILL.md"):
+        (tmp_path / relative).mkdir(parents=True)
+
+    with pytest.raises(GymratError) as caught:
+        scaffold(str(tmp_path), ScaffoldRequest())
+
+    assert str(caught.value) == (
+        "Blocked path: gymrat.toml, gymrat-runbook.md, .claude/skills/gymrat/SKILL.md"
+    )
+
+
+def test_scaffold_when_skipped_artifact_paths_are_directories_does_write_the_config(
+    tmp_path: Path,
+):
+    (tmp_path / "gymrat-runbook.md").mkdir()
+    (tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
+
+    result = scaffold(
+        str(tmp_path),
+        ScaffoldRequest(bench="npm run bench", runbook=False, install_skill=False),
+    )
+
+    assert result.config.status == "created"
+
+
 def test_scaffold_when_config_path_cannot_be_checked_does_raise_naming_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -458,7 +489,43 @@ def test_scaffold_when_filesystem_error_does_include_hint(
 
     # The report-a-bug footer must never appear for a filesystem error.
     assert str(exc_info.value) == f"Cannot write gymrat.toml in {tmp_path}"
-    assert hint_of(exc_info.value) == "Read-only file system"
+    assert exc_info.value.hint == "Read-only file system"
+
+
+def _fail_runbook_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make writing the runbook stub fail the way a full disk would."""
+    original_write_text = Path.write_text
+
+    def write_text_that_fails_on_runbook(self: Path, *args: object, **kwargs: object) -> int:
+        if self.name == "gymrat-runbook.md":
+            msg = "No space left on device"
+            raise OSError(msg)
+        return original_write_text(self, *args, **kwargs)  # pyrefly: ignore[bad-argument-type]  # forwards whatever the caller passed
+
+    monkeypatch.setattr(Path, "write_text", write_text_that_fails_on_runbook)
+
+
+def test_scaffold_when_runbook_write_fails_does_raise_naming_the_artifact_with_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _fail_runbook_write(monkeypatch)
+
+    with pytest.raises(GymratError) as exc_info:
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+    assert str(exc_info.value) == f"Cannot write gymrat-runbook.md in {tmp_path}"
+    assert exc_info.value.hint == "No space left on device"
+
+
+def test_scaffold_when_runbook_write_fails_does_remove_the_config_it_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _fail_runbook_write(monkeypatch)
+
+    with pytest.raises(GymratError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+    assert not (tmp_path / "gymrat.toml").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -488,11 +555,11 @@ def test_scaffold_when_rollback_unlink_fails_does_propagate_original_error(
     # The runbook write fails after the config is written, so the except-block
     # tries to unlink the config; that unlink also raises, and the original
     # error must still propagate.
-    def exploding_write_runbook(*args: object, **kwargs: object) -> None:
+    def exploding_write_artifact(*args: object, **kwargs: object) -> None:
         msg = "runbook write failed"
         raise GymratError(msg)
 
-    monkeypatch.setattr(scaffold_module, "_write_runbook", exploding_write_runbook)
+    monkeypatch.setattr(scaffold_module, "_write_artifact", exploding_write_artifact)
 
     original_unlink = Path.unlink
 
