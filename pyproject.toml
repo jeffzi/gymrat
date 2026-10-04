@@ -49,9 +49,8 @@ dev = [
   "diff-cover>=10.5,<11",
   "hypothesis>=6.167,<7",
   "jsonschema>=4.24,<5",
+  "gymrat[otel]",
   "mcp>=2.1,<3",
-  "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
-  "opentelemetry-sdk>=1.44,<2",
   "prek>=0.5.0,<0.6",
   "pyrefly>=1.2,<2",
   "pyte>=0.8.2,<0.9",
@@ -89,7 +88,6 @@ python-version = "3.12"
 search-path = ["src", "."]
 
 [tool.ruff]
-target-version = "py312"
 line-length = 100
 preview = true
 
@@ -108,18 +106,14 @@ ignore = [
   # --- Style preferences ---
   "COM812", # trailing comma (handled by formatter)
   "CPY001", # missing copyright notice (not wanted on every file)
-  "G004", # logging f-string (acceptable for modern Python)
-  "ISC001", # single-line implicit string concat (conflicts with formatter)
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/*" = [
-  "D101", # missing docstring in public class
   "DOC", # docstring section checks (fixtures and helpers)
   "D102", # missing docstring in public method
   "D103", # missing docstring in public function
   "E402", # module import not at top of file
-  "ANN001", # missing type annotation for function argument
   "ANN003", # missing type annotation for **kwargs
   "ANN201", # missing return type for public function
   "ANN202", # missing return type for private function
@@ -134,11 +128,8 @@ ignore = [
   "PLC0415", # import outside top-level (local test imports)
   "PLR0913", # too many arguments (fixture/builder options mirror TS option objects)
   "PLR2004", # magic value in comparison (assert x == 42)
-  "PT012", # pytest.raises block with multiple statements
   "RUF043", # pytest.raises(match) ambiguous pattern
   "S101", # use of assert
-  "S105", # hardcoded password string
-  "S106", # hardcoded password argument
   "S108", # hardcoded temp file path
   "SIM117", # nested with statements (raises + patch)
   "SLF001", # private member access

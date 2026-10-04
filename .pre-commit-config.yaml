@@ -16,7 +16,6 @@ repos:
       - id: end-of-file-fixer
       - id: fix-byte-order-marker
       - id: mixed-line-ending
-        args: [--fix=auto]
       - id: trailing-whitespace
 
   # Python hooks from pre-commit-hooks (not in prek builtin)
