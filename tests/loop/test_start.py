@@ -328,6 +328,32 @@ def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_clo
     assert not Path(archived_session_path(repo, closed)).exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
+def test_start_session_when_putting_the_closed_log_back_fails_does_raise_the_start_failure(
+    repo: str,
+    kill_git_during_worktree_add: Callable[[str], None],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    start_session(repo, "main", CONFIG)
+    closed = _close_session_with_one_keep(repo)
+    kill_git_during_worktree_add(repo)
+    jsonl = Path(session_jsonl_path(repo))
+    rename = Path.rename
+
+    def refuse_rename_back(self: Path, target: str | Path) -> Path:
+        if Path(target) == jsonl:
+            raise PermissionError(13, "Permission denied")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", refuse_rename_back)
+
+    with pytest.raises(GymratError) as excinfo:
+        start_session(repo, "main", CONFIG)
+
+    assert re.search(r"cannot create the experiment worktree", str(excinfo.value), re.IGNORECASE)
+    assert Path(archived_session_path(repo, closed)).exists()
+
+
 # ---------------------------------------------------------------------------
 # when the baseline worktree went missing
 # ---------------------------------------------------------------------------

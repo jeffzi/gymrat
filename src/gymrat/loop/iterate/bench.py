@@ -73,11 +73,16 @@ class BenchRunOutputs:
 
 @dataclass(frozen=True, slots=True)
 class Judged:
-    """The first run, judged and confirmed: the outputs, the comparison, and the rerun."""
+    """The first run, judged and confirmed: the outputs, the comparison, and the rerun.
+
+    ``primary`` is resolved from the first run's verdicts. The rerun only demotes
+    a regression to ``no-signal``, and neither word moves the primary's delta.
+    """
 
     run: BenchRunOutputs
     result: ComparisonResult
     confirmation: Confirmation | None
+    primary: LoopPrimary
 
 
 def build_iteration_comparison(

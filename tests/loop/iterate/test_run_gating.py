@@ -20,7 +20,8 @@ import pytest
 
 from gymrat.config import HooksConfig, MetricEntry, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
-from gymrat.loop.iterate.run import derive_outcome, iterate_session
+from gymrat.loop.iterate.run import IterateOptions, derive_outcome, iterate_session
+from gymrat.progress_events import JudgeFinished, ProgressEvent
 from gymrat.report.loop import GeomeanPrimary, MetricPrimary
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
@@ -235,6 +236,7 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
     _assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="no-signal", confirmed=False
     )
+    assert result.record.primary.delta_pct == pytest.approx(10, abs=1e-6)
     assert result.record.outcome == "no-signal"
     assert "total_ms: regression not confirmed on rerun" in trimmed_report_lines(result.report)
 
@@ -432,6 +434,20 @@ async def test_iterate_session_when_metric_is_exact_does_gate_on_the_first_run_a
     assert total.p is None
     assert total.noise_pct is None
     assert result.record.outcome == "regressed"
+
+
+async def test_iterate_session_when_exact_and_non_gating_metrics_regress_does_announce_the_gating_one(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    stub_samples(samples_mock, open_repo, _regressed_rounds(), baseline_rounds())
+    resolved = resolved_config(
+        metrics={"total_ms": MetricEntry(exact=True), "alloc_bytes": MetricEntry(gating=False)}
+    )
+    events: list[ProgressEvent] = []
+
+    await iterate_session(open_repo, resolved, options=IterateOptions(on_progress=events.append))
+
+    assert [e.regressed for e in events if isinstance(e, JudgeFinished)] == [("total_ms",)]
 
 
 async def test_iterate_session_when_metric_is_exact_does_leave_it_out_of_the_filter_list(

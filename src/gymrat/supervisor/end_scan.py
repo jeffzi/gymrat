@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gymrat.errors import GymratError
-from gymrat.loop.iterate.run import stop_condition
+from gymrat.loop.iterate.run import stop_reason
 from gymrat.session.records import HookRecord
 from gymrat.session.store import fold_session, read_records
 
@@ -16,8 +16,6 @@ if TYPE_CHECKING:
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
     from gymrat.supervisor.supervise import EndedBy
-
-_STOP_MESSAGE_PREFIX = "Stop condition met:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,8 +66,7 @@ def detect_end_condition(
             if isinstance(record, HookRecord) and record.failed:
                 return EndCondition("hook-failure", _hook_failure_reason(record))
 
-    if check_stop and (stop := stop_condition(config, state)) is not None:
-        reason = str(stop).removeprefix(_STOP_MESSAGE_PREFIX).strip()
+    if check_stop and (reason := stop_reason(config, state)) is not None:
         return EndCondition("stop-condition", reason)
 
     return None
@@ -180,4 +177,4 @@ class EndConditionScan:
 
     def _arm_stop_check(self, state: SessionState) -> None:
         """Arm stop-condition detection unless ``state`` already satisfies one."""
-        self._check_stop = stop_condition(self._config, state) is None
+        self._check_stop = stop_reason(self._config, state) is None

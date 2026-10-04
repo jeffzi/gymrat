@@ -68,9 +68,22 @@ def with_confirm_phase(ctx: IterationContext) -> IterationContext:
     return replace(ctx, options=replace(ctx.options, on_progress=wrapper))
 
 
+def is_gating_regression(meta: ResolvedMetricMeta, verdict: MetricVerdict | None) -> bool:
+    """Whether ``meta``'s metric gates the run and ``verdict`` calls it regressed.
+
+    Args:
+        meta: The metric's resolved metadata.
+        verdict: The metric's verdict, or ``None`` when it has none.
+
+    Returns:
+        ``True`` for a gating metric whose verdict is ``regressed``.
+    """
+    return meta.gating and verdict is not None and verdict.verdict == "regressed"
+
+
 def _needs_confirmation(meta: ResolvedMetricMeta, verdict: MetricVerdict | None) -> bool:
     """Whether ``meta``'s metric is a gating, non-exact regression the first run found."""
-    return meta.gating and not meta.exact and verdict is not None and verdict.verdict == "regressed"
+    return not meta.exact and is_gating_regression(meta, verdict)
 
 
 async def confirm_regressions(
@@ -116,7 +129,7 @@ async def confirm_regressions(
     confirmed = frozenset(
         name
         for name in filtered
-        if (verdict := rerun.verdicts.get(name)) is not None and verdict.verdict == "regressed"
+        if is_gating_regression(metric_meta[name], rerun.verdicts.get(name))
     )
     absent = frozenset(name for name in filtered if rerun.verdicts.get(name) is None)
 

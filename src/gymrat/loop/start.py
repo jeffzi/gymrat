@@ -88,7 +88,11 @@ def start_session(root: str, ref: str | None, config: ResolvedConfig) -> StartRe
         try:
             created = _create_session(root, jsonl_path, baseline_ref, config)
         except BaseException:
-            _restore_archived_log(archived_path, jsonl_path)
+            # Best-effort: the failure being re-raised is what broke the start, and
+            # a rename that cannot run must not speak in its place. The closed
+            # session's records stay on disk under its own id either way.
+            with contextlib.suppress(OSError):
+                Path(archived_path).rename(jsonl_path)
             raise
         return replace(created, archived=session.session_id, archived_path=archived_path)
 
@@ -98,22 +102,6 @@ def start_session(root: str, ref: str | None, config: ResolvedConfig) -> StartRe
     # already no-ops when both worktrees stand, so no on-disk check is needed here.
     recreate_workspace(root, session.branch, last_kept_position(state, session.baseline.sha))
     return StartResult(session=session, state=state, resumed=True)
-
-
-def _restore_archived_log(archived_path: str, jsonl_path: str) -> None:
-    """Move a closed session's log back from the archive after a start that failed.
-
-    Best-effort: the caller is re-raising the failure that broke the start, and a
-    rename that cannot run must not speak in its place — the closed session's
-    records are still on disk under its own id either way.
-
-    Args:
-        archived_path: Where the archive moved the closed session's log.
-        jsonl_path: Where the log lives while its session is open.
-    """
-    # Swallowed by contract — see above.
-    with contextlib.suppress(OSError):
-        Path(archived_path).rename(jsonl_path)
 
 
 def _create_session(root: str, jsonl_path: str, ref: str, config: ResolvedConfig) -> StartResult:

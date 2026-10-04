@@ -176,8 +176,7 @@ async def test_iterate_session_when_max_iterations_reached_does_refuse_without_m
     with pytest.raises(LoopStopError) as exc:
         await iterate_session(repo, resolved_config(stop=StopConfig(max_iterations=2)))
 
-    assert "max iterations" in str(exc.value)
-    assert "2" in str(exc.value)
+    assert str(exc.value) == "Stop condition met: max iterations (2 of 2)"
     assert samples_mock.call_count == 0
     assert len(log_records(repo)) == 5
 
@@ -193,7 +192,7 @@ async def test_iterate_session_when_target_kept_does_refuse_without_measuring(
             repo, resolved_config(primary="total_ms", stop=StopConfig(target_value=95))
         )
 
-    assert "target reached" in str(exc.value)
+    assert str(exc.value) == "Stop condition met: target reached and kept"
     assert samples_mock.call_count == 0
     assert len(log_records(repo)) == 3
 

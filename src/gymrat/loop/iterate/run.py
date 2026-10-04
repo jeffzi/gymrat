@@ -60,7 +60,12 @@ from gymrat.loop.iterate.bench import (
     resolve_primary,
     target_reached,
 )
-from gymrat.loop.iterate.confirm import Confirmation, apply_confirmation, confirm_regressions
+from gymrat.loop.iterate.confirm import (
+    Confirmation,
+    apply_confirmation,
+    confirm_regressions,
+    is_gating_regression,
+)
 from gymrat.loop.iterate.record import IterationJudgment, build_iteration_record
 from gymrat.loop.output_limit import limit_output
 from gymrat.model import is_improvement
@@ -116,6 +121,7 @@ __all__ = [
     "iterate_session",
     "run_hook",
     "stop_condition",
+    "stop_reason",
 ]
 
 
@@ -155,8 +161,7 @@ def _has_gating_regression(metrics: MetricComparisons) -> bool:
     """Whether any metric the run is gated on came back regressed for the experiment."""
     for metric in metrics.values():
         experiment = candidate_at(metric, EXPERIMENT_INDEX)
-        verdict = None if experiment is None else experiment.verdict
-        if metric.meta.gating and verdict is not None and verdict.verdict == "regressed":
+        if is_gating_regression(metric.meta, None if experiment is None else experiment.verdict):
             return True
     return False
 
@@ -211,21 +216,12 @@ def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> LoopOutc
 
 
 def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
-    """Resolve the primary, derive the outcome, and bundle the judgment."""
-    primary = resolve_primary(config.primary, judged.run.verdicts, judged.run.metric_meta)
+    """Derive the outcome and bundle the judgment."""
     return IterationJudgment(
-        outcome=derive_outcome(judged.result.metrics, primary),
-        primary=primary,
+        outcome=derive_outcome(judged.result.metrics, judged.primary),
+        primary=judged.primary,
         confirmation=judged.confirmation,
-        reached_target=target_reached(config, primary, judged.result.metrics),
-    )
-
-
-def _append_iteration(ctx: IterationContext, record: IterationRecord) -> None:
-    append_record(ctx.jsonl_path, record)
-    emit_progress(
-        ctx.options.on_progress,
-        IterationRecorded(seq=record.seq, outcome=record.outcome, at_ms=monotonic_ms()),
+        reached_target=target_reached(config, judged.primary, judged.result.metrics),
     )
 
 
@@ -321,7 +317,11 @@ async def iterate_session(
     record = build_iteration_record(
         judged, seq, judgment, duration_ms=duration_ms, measured_tree=measured_tree
     )
-    _append_iteration(ctx, record)
+    append_record(ctx.jsonl_path, record)
+    emit_progress(
+        ctx.options.on_progress,
+        IterationRecorded(seq=record.seq, outcome=record.outcome, at_ms=monotonic_ms()),
+    )
 
     after_report = await _hook_stage(
         ctx,
@@ -531,7 +531,7 @@ async def _measure_and_judge(ctx: IterationContext) -> Judged:
     regressed_names = tuple(
         name
         for name, meta in first.metric_meta.items()
-        if meta.gating and (v := first.verdicts.get(name)) is not None and v.verdict == "regressed"
+        if is_gating_regression(meta, first.verdicts.get(name))
     )
     emit_progress(
         ctx.options.on_progress,
@@ -549,6 +549,7 @@ async def _measure_and_judge(ctx: IterationContext) -> Judged:
         run=run,
         result=build_iteration_comparison(run, ctx.config.adapter, ctx.config.kinds),
         confirmation=confirmation,
+        primary=primary,
     )
 
 
@@ -589,8 +590,8 @@ class BudgetExceededError(LoopStopError):
         super().__init__(*args, hint=hint, reason=reason)
 
 
-def stop_condition(config: BenchlessConfig, state: SessionState) -> LoopStopError | None:
-    """The configured stop condition this session has already met, if any.
+def stop_reason(config: BenchlessConfig, state: SessionState) -> str | None:
+    """Which configured stop condition this session has already met, if any.
 
     Read off the folded log alone, so it settles before a bench command runs: an
     iteration measured past the end of the loop is one the agent would have to
@@ -603,22 +604,34 @@ def stop_condition(config: BenchlessConfig, state: SessionState) -> LoopStopErro
             whether the target has been reached and kept.
 
     Returns:
-        The stop error describing which condition fired, or ``None`` when no
-        condition is met yet.
+        The condition that fired, such as ``max iterations (3 of 3)``, or
+        ``None`` when no condition is met yet.
     """
     stop = config.stop
     if stop is None:
         return None
-
     if stop.max_iterations is not None and state.iteration_count >= stop.max_iterations:
-        message = (
-            f"Stop condition met: max iterations ({state.iteration_count} of {stop.max_iterations})"
-        )
-        return LoopStopError(message, hint=_STOP_HINT)
-
+        return f"max iterations ({state.iteration_count} of {stop.max_iterations})"
     if stop.target_value is not None and state.target_reached_and_kept:
-        return LoopStopError("Stop condition met: target reached and kept", hint=_STOP_HINT)
+        return "target reached and kept"
     return None
+
+
+def stop_condition(config: BenchlessConfig, state: SessionState) -> LoopStopError | None:
+    """The refusal for a configured stop condition this session has already met.
+
+    Args:
+        config: The resolved config, carrying the configured stop conditions.
+        state: The session's folded state.
+
+    Returns:
+        The stop error naming the condition :func:`stop_reason` reports, or
+        ``None`` when no condition is met yet.
+    """
+    reason = stop_reason(config, state)
+    if reason is None:
+        return None
+    return LoopStopError(f"Stop condition met: {reason}", hint=_STOP_HINT)
 
 
 _NEXT_STEPS: dict[LoopOutcome, str] = {

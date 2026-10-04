@@ -444,6 +444,15 @@ def test_detect_end_condition_when_state_is_met_but_records_are_not_does_use_sta
     assert result == EndCondition(ended_by="stop-condition", reason="max iterations (2 of 2)")
 
 
+def test_detect_end_condition_when_target_reached_and_kept_does_report_stop_condition():
+    config = default_benchless_config(stop=StopConfig(target_value=1.5))
+    state = session_state(iteration_count=1, target_reached_and_kept=True)
+
+    result = detect_end_condition(config, [], state, cursor=0, check_stop=True)
+
+    assert result == EndCondition(ended_by="stop-condition", reason="target reached and kept")
+
+
 def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_nothing():
     config = default_benchless_config(stop=StopConfig(max_iterations=2))
     state = session_state(iteration_count=2)

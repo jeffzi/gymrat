@@ -260,7 +260,10 @@ def test_sync_to_experiment_when_experiment_worktree_missing_does_raise_gymrat_e
     with pytest.raises(GymratError) as excinfo:
         sync_to_experiment(session)
 
-    assert excinfo.value.hint is not None
+    assert str(excinfo.value).startswith("Cannot read experiment worktree: ")
+    assert excinfo.value.hint == (
+        "The experiment worktree may have been deleted. Run 'gymrat start' to begin a new session."
+    )
 
 
 def test_sync_to_experiment_when_git_status_fails_does_raise_gymrat_error(
@@ -270,8 +273,11 @@ def test_sync_to_experiment_when_git_status_fails_does_raise_gymrat_error(
     index.write_bytes(b"corrupt")
     (Path(session) / "change.txt").write_text("trigger\n", encoding="utf-8")
 
-    with pytest.raises(GymratError):
+    with pytest.raises(GymratError) as excinfo:
         sync_to_experiment(session)
+
+    assert str(excinfo.value).startswith("Cannot read dirty files: ")
+    assert excinfo.value.hint == "Check that the repository is not corrupt."
 
 
 # ---------------------------------------------------------------------------
