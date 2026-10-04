@@ -357,6 +357,20 @@ def test_finalize_when_committed_keeps_exist_does_move_neither_checkout_nor_sess
     assert _git(["rev-parse", session_branch], kept_repo) == session_head
 
 
+def test_finalize_when_baseline_commit_unknown_does_raise_naming_the_check_command(kept_repo: str):
+    unknown = "0" * 40
+    pinned = session_header_of(kept_repo).baseline.sha
+    log = Path(session_jsonl_path(kept_repo))
+    header, rest = log.read_text(encoding="utf-8").split("\n", 1)
+    log.write_text(f"{header.replace(pinned, unknown)}\n{rest}", encoding="utf-8")
+
+    error = capture_error(lambda: finalize_session(kept_repo))
+
+    assert error.hint == (
+        f"Check that {unknown} is a commit this repository has: git cat-file -t {unknown}"
+    )
+
+
 def test_finalize_when_committed_keeps_exist_does_append_a_finalize_record_naming_branch_and_squash_commit(
     kept_repo: str, final_branch: str
 ):
