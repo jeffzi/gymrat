@@ -91,14 +91,6 @@ _NESTING_DEPTH = _read_nesting_depth()
 Read once because the environment a process starts with is fixed.
 """
 
-_CREATE_SUSPENDED: int = 0x4 if sys.platform == "win32" else 0
-"""Win32 ``CREATE_SUSPENDED``: the child exists but runs nothing until resumed.
-
-Zero on POSIX, where ``creationflags`` is rejected outright. The platform is
-read once, when this module is imported, because the flags a spawn accepts are
-fixed by the interpreter's own host and cannot change under a running process.
-"""
-
 _live_process_groups: set[int] = set()
 """Process-group leader PIDs of the children :func:`spawn_contained` started and still holds.
 
@@ -341,26 +333,6 @@ async def _terminate_and_reap(
         kill_process_group(proc.pid)
 
 
-async def _terminate_reap_and_drain(
-    proc: asyncio.subprocess.Process,
-    stdout_task: asyncio.Task[None],
-    stderr_task: asyncio.Task[None],
-) -> None:
-    """Terminate and reap the child, then await the readers it just fed EOF.
-
-    Both settle paths that abandon the normal wait -- a reader error and a
-    timeout/abort -- need the same sequence: stop and reap first, then let the
-    readers, unblocked by the pipe close, finish before the outcome is built.
-
-    Args:
-        proc: The child to terminate and reap.
-        stdout_task: The reader draining the child's stdout.
-        stderr_task: The reader draining the child's stderr.
-    """
-    await _terminate_and_reap(proc, readers=(stdout_task, stderr_task))
-    await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-
-
 def _close_pipes(proc: asyncio.subprocess.Process) -> None:
     """Close the child's stdio pipes so a surviving descendant cannot grow buffers.
 
@@ -482,14 +454,16 @@ def _containment_kwargs() -> dict[str, Any]:
     Returns:
         The keyword arguments :func:`spawn_contained` adds to every spawn.
     """
-    posix = sys.platform != "win32"
-    kwargs: dict[str, Any] = {
-        "start_new_session": posix,
-        "preexec_fn": _child_reset_signal_mask if posix else None,
-    }
-    if _CREATE_SUSPENDED:
-        kwargs["creationflags"] = _CREATE_SUSPENDED
-    return kwargs
+    if sys.platform == "win32":
+        # CREATE_SUSPENDED: the child exists but runs nothing until resumed.
+        # POSIX rejects ``creationflags`` outright, so only win32 passes it.
+        create_suspended = 0x4
+        return {
+            "start_new_session": False,
+            "preexec_fn": None,
+            "creationflags": create_suspended,
+        }
+    return {"start_new_session": True, "preexec_fn": _child_reset_signal_mask}
 
 
 def release_contained(pid: int) -> None:
@@ -504,15 +478,6 @@ def release_contained(pid: int) -> None:
     """
     _live_process_groups.discard(pid)
     release_process_group(pid)
-
-
-async def _kill_and_reap_leader(proc: asyncio.subprocess.Process) -> None:
-    """Kill and reap the child alone, for when signaling its whole group failed."""
-    with contextlib.suppress(ProcessLookupError):
-        proc.kill()
-    _close_pipes(proc)
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(proc.wait(), _CANCEL_REAP_TIMEOUT_S)
 
 
 async def _discard_failed_spawn(proc: asyncio.subprocess.Process) -> None:
@@ -535,7 +500,12 @@ async def _discard_failed_spawn(proc: asyncio.subprocess.Process) -> None:
     try:
         await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
     except Exception:
-        await _kill_and_reap_leader(proc)
+        # Signaling the whole group failed, so kill and reap the child alone.
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        _close_pipes(proc)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(proc.wait(), _CANCEL_REAP_TIMEOUT_S)
         raise
     finally:
         release_contained(proc.pid)
@@ -663,12 +633,12 @@ async def _settle(
             return_when=asyncio.FIRST_COMPLETED,
         )
 
-        if normal_task in done:
-            reader_error = normal_task.exception()
-            if reader_error is not None:
-                await _terminate_reap_and_drain(proc, stdout_task, stderr_task)
-                stderr_buf.append_failure(str(reader_error))
-                return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
+        # Read off ``done`` as the wait returned it, never ``normal_task.done()``
+        # later: the teardown below closes the pipes, so the normal wait can
+        # finish during it, and an abort or timeout would then be misreported as
+        # a normal completion.
+        reader_error = normal_task.exception() if normal_task in done else None
+        if normal_task in done and reader_error is None:
             # A signal kill surfaces as a negative return code, and a child whose
             # status has not been collected yet as None; both collapse to the
             # failure code rather than leaking a negative or missing value.
@@ -677,19 +647,24 @@ async def _settle(
                 returncode = FAILURE_EXIT_CODE
             return _build_result(stdout_buf, stderr_buf, returncode)
 
-        await _terminate_reap_and_drain(proc, stdout_task, stderr_task)
-        if abort_task is not None and abort_task in done:
+        # Every other path abandons the normal wait: stop and reap first, then
+        # let the readers, unblocked by the pipe close, finish before the outcome
+        # is built.
+        await _terminate_and_reap(proc, readers=(stdout_task, stderr_task))
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        if reader_error is not None:
+            stderr_buf.append_failure(str(reader_error))
             return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
-        if options.timeout_ms is not None:
-            return ExecTimeoutError(
-                stdout_buf.text,
-                stderr_buf.text,
-                options.timeout_ms,
-                stdout_buf.byte_count,
-                stderr_buf.byte_count,
-            )
-        msg = "exec settled without a normal, abort, or timeout outcome"
-        raise RuntimeError(msg)
+        if abort_task in done:
+            return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
+        assert options.timeout_ms is not None  # noqa: S101 -- only a timeout ends the wait with nothing done
+        return ExecTimeoutError(
+            stdout_buf.text,
+            stderr_buf.text,
+            options.timeout_ms,
+            stdout_buf.byte_count,
+            stderr_buf.byte_count,
+        )
     finally:
         await _cancel_all([stdout_task, stderr_task, stdin_task, *waiters])
 

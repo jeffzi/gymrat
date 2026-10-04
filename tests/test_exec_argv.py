@@ -347,12 +347,37 @@ async def test_exec_argv_when_timeout_exceeded_does_capture_partial_output(
     )
 
     assert isinstance(result, ExecTimeoutError)
-    assert "line 1" in result.stdout
+    assert (result.stdout, result.stdout_bytes, result.stderr_bytes) == (
+        "line 1\n",
+        len(b"line 1\n"),
+        0,
+    )
 
 
 # ---------------------------------------------------------------------------
 # abort
 # ---------------------------------------------------------------------------
+
+
+async def test_exec_argv_when_aborted_child_exits_zero_on_request_does_settle_as_failed_result(
+    tmp_path: Path,
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    abort = asyncio.Event()
+    pid_file = tmp_path / "child.pid"
+    script = (
+        "import os, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); "
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()) + '\\n'); "
+        "time.sleep(30)"
+    )
+    task = asyncio.create_task(exec_argv([sys.executable, "-c", script], make_opts(abort=abort)))
+    await wait_for_pid_file(pid_file)
+
+    abort.set()
+
+    result = await asyncio.wait_for(task, 5)
+    assert result == expected_result("", "", 1)
 
 
 async def test_exec_argv_when_aborted_mid_run_does_settle_as_failed_result(
@@ -885,6 +910,23 @@ async def test_exec_argv_when_spawned_does_give_child_nesting_depth_one_deeper(
         "GYMRAT_TEST_MARKER": child_env.get("GYMRAT_TEST_MARKER"),
         "GYMRAT_NESTING_DEPTH": child_env.get("GYMRAT_NESTING_DEPTH"),
     } == {"GYMRAT_TEST_MARKER": expected_marker, "GYMRAT_NESTING_DEPTH": "3"}
+
+
+# ---------------------------------------------------------------------------
+# child session (POSIX)
+# ---------------------------------------------------------------------------
+
+
+async def test_exec_argv_when_child_spawned_does_make_it_lead_its_own_session(
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    result = await exec_argv(
+        [sys.executable, "-c", "import os; print(os.getsid(0) == os.getpid())"],
+        make_opts(),
+    )
+
+    assert isinstance(result, ExecResult)
+    assert result.stdout == "True\n"
 
 
 # ---------------------------------------------------------------------------

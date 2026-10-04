@@ -991,10 +991,11 @@ def bind_group_seams(
 def win32_exec(monkeypatch: pytest.MonkeyPatch, group: types.ModuleType) -> types.ModuleType:
     """Load a private copy of ``gymrat.exec`` with its win32 creation flags bound.
 
-    The flags a child is created with are decided when the module is imported,
-    so a POSIX run reaches the win32 ones only by executing the module source
-    again with the platform faked — which ``win32_process_group`` has already
-    done for its caller. The copy's process-group seams are rebound to
+    The flags a child is created with are decided by the platform at each spawn,
+    and the process-group seams by the platform at import, so a POSIX run
+    reaches the win32 ones only by executing the module source again with the
+    platform faked — which ``win32_process_group`` has already done for its
+    caller, and which stays faked for the rest of the test. The copy's process-group seams are rebound to
     ``group``, the faked-win32 copy of the job code.
 
     The copy asks for its children suspended, and the faked win32 layer resumes
@@ -1133,6 +1134,24 @@ async def test_exec_argv_when_spawning_on_win32_does_suspend_the_child_until_it_
         "the child was created running, so it acts before containment lands"
     )
     assert jobs.resumed == [steps[2][1]], "the contained child was left suspended"
+
+
+async def test_exec_argv_when_spawning_on_win32_does_not_ask_for_a_posix_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = win32_exec(monkeypatch, win32_process_group(monkeypatch, FakeJobs()))
+    spawn = asyncio.create_subprocess_exec
+    asked: list[tuple[object, object]] = []
+
+    async def record_spawn(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        asked.append((kwargs.get("start_new_session"), kwargs.get("preexec_fn")))
+        return await spawn(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", record_spawn)
+
+    await module.exec_argv([sys.executable, "-c", "pass"], module.ExecOptions(cwd=str(tmp_path)))
+
+    assert asked == [(False, None)]
 
 
 # ---------------------------------------------------------------------------

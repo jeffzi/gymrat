@@ -42,6 +42,7 @@
     "geomeans",
     "geteuid",
     "getpgid",
+    "getsid",
     "getpid",
     "getppid",
     "gpgsign",

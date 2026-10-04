@@ -12,6 +12,7 @@ exist on win32.
 import asyncio
 import errno
 import itertools
+import signal
 import sys
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
@@ -209,6 +210,29 @@ async def test_spawn_contained_when_containment_and_teardown_both_raise_does_rai
         "the child left behind by the failed spawn was never reaped"
     )
     assert exec_mod._live_process_groups == set()
+
+
+@pytest.fixture
+def sigterm_ignored() -> Iterator[None]:
+    """Ignore SIGTERM in this process, so a child spawned meanwhile inherits ignoring it."""
+    previous = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    yield
+    signal.signal(signal.SIGTERM, previous)
+
+
+@pytest.mark.usefixtures("sigterm_ignored")
+async def test_spawn_contained_when_group_kill_raises_on_a_child_ignoring_the_request_does_kill_it(
+    spawned_by_either_runner: list[list[asyncio.subprocess.Process]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(exec_mod, "resume_process_group", refuse_resume)
+    _fail_group_kill(monkeypatch)
+
+    with pytest.raises(exec_mod.SpawnError):
+        await _spawn_contained_sleeper()
+
+    (child,) = itertools.chain.from_iterable(spawned_by_either_runner)
+    assert child.returncode == -signal.SIGKILL
 
 
 @TEARDOWN_FAILURES
