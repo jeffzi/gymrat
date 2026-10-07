@@ -111,6 +111,7 @@
     "tomli",
     "truecolor",
     "typer",
+    "tzset",
     "unitless",
     "unparseable",
     "usefixtures",

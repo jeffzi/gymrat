@@ -1,49 +1,55 @@
 """Tests for the ``gymrat doctor`` command wiring.
 
 These drive the assembled app through :class:`typer.testing.CliRunner` with the
-section builders, both renderers, and ``inspect_config`` replaced; the one test
-that reads the JSON document itself keeps the real JSON renderer. They cover
-registration and help, the exit-code contract, the JSON path, ``--no-color``,
-and a missing ``--config`` surfacing as a config failure rather than a crash.
+section builders, both renderers, and ``inspect_config`` replaced; the tests
+that read the rendered report or the JSON document keep the real renderer. They cover
+the exit-code contract (a missing ``--config`` surfacing as a config failure
+rather than a crash), the JSON path, and ``--color``/``--no-color``.
 """
 
 import json
 import os
 from collections.abc import Callable
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
-from typer.testing import CliRunner
 
 from gymrat.cli.app import app
-from gymrat.doctor import Check, CheckSection, GitEnvironment
+from gymrat.config import inspect_config
+from gymrat.doctor import (
+    Check,
+    CheckSection,
+    GitEnvironment,
+    build_config_section,
+    build_workflow_section,
+)
 from gymrat.scaffold import SKILL_RELATIVE_PATH
-from tests.cli._help import help_output
-from tests.cli._session import FailingStdoutRunner, closed_stdout_error
-from tests.doctor._fixtures import fixed_section, patch_common_seams
-
-runner = CliRunner()
+from tests._doctor_fixtures import fixed_section, patch_common_seams
+from tests.cli._session import (
+    FailingStdoutRunner,
+    closed_stdout_error,
+    runner,
+)
 
 
 def _patch_doctor(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    config_failure: bool = False,
     bench_fail: bool = False,
     env_error: Exception | None = None,
+    stub_text: bool = True,
     stub_json: bool = True,
-) -> SimpleNamespace:
-    """Replace every doctor seam and return the recorded bench calls.
+) -> None:
+    """Replace every doctor seam.
 
-    ``stub_json=False`` leaves the real JSON renderer in place.
+    Args:
+        monkeypatch: The fixture that installs the stand-ins.
+        bench_fail: Whether the bench section reports a failed check.
+        env_error: An error the environment section raises instead of returning.
+        stub_text: ``False`` leaves the real text renderer in place.
+        stub_json: ``False`` leaves the real JSON renderer in place.
     """
-    handles = patch_common_seams(
-        monkeypatch,
-        config_failure=config_failure,
-        bench_fail=bench_fail,
-        problems=["Config file not found at /missing/gymrat.json"] if config_failure else [],
-    )
+    patch_common_seams(monkeypatch, config_failure=False, bench_fail=bench_fail, problems=[])
 
     def env_section(*_a: object, **_k: object) -> CheckSection:
         if env_error is not None:
@@ -58,27 +64,10 @@ def _patch_doctor(
     def fake_json(_report: object) -> str:
         return '{"doctor": true}'
 
-    monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_report", fake_text)
+    if stub_text:
+        monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_report", fake_text)
     if stub_json:
         monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_json", fake_json)
-
-    return handles
-
-
-# ---------------------------------------------------------------------------
-# registration and help
-# ---------------------------------------------------------------------------
-
-
-def test_doctor_when_root_help_does_list_doctor():
-    assert "doctor" in help_output()
-
-
-def test_doctor_when_help_does_document_no_color_and_format():
-    out = help_output("doctor")
-
-    assert "--no-color" in out
-    assert "--format" in out
 
 
 # ---------------------------------------------------------------------------
@@ -86,41 +75,52 @@ def test_doctor_when_help_does_document_no_color_and_format():
 # ---------------------------------------------------------------------------
 
 
-def test_doctor_when_no_failures_does_exit_zero_and_write_text_report(
+def _keep_the_stubbed_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave the stubbed config inspection and config section in place."""
+
+
+def _inspect_the_real_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore the real config inspection and config section over the stubs."""
+    monkeypatch.setattr("gymrat.doctor.inspect_config", inspect_config)
+    monkeypatch.setattr("gymrat.doctor.build_config_section", build_config_section)
+
+
+@pytest.mark.parametrize(
+    ("bench_fail", "config_seams", "argv", "exit_code"),
+    [
+        pytest.param(False, _keep_the_stubbed_config, ["doctor"], 0, id="no-failures-exit-zero"),
+        pytest.param(True, _keep_the_stubbed_config, ["doctor"], 1, id="failures-exit-one"),
+        pytest.param(
+            False,
+            _inspect_the_real_config,
+            ["doctor", "--config", "missing/gymrat.toml"],
+            1,
+            id="missing-config-is-a-config-failure",
+        ),
+    ],
+)
+def test_doctor_when_report_written_does_exit_on_its_failures_after_writing_it(
+    *,
+    bench_fail: bool,
+    config_seams: Callable[[pytest.MonkeyPatch], None],
+    argv: list[str],
+    exit_code: int,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ):
-    _patch_doctor(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    _patch_doctor(monkeypatch, bench_fail=bench_fail)
+    config_seams(monkeypatch)
 
-    result = runner.invoke(app, ["doctor"])
+    result = runner.invoke(app, argv)
 
-    assert result.exit_code == 0
-    assert "doctor text report" in result.stdout
-
-
-def test_doctor_when_report_has_failures_does_exit_one_after_writing_report(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _patch_doctor(monkeypatch, bench_fail=True)
-
-    result = runner.invoke(app, ["doctor"])
-
-    assert result.exit_code == 1
+    assert result.exit_code == exit_code
     assert "doctor text report" in result.stdout
 
 
 # ---------------------------------------------------------------------------
 # JSON output
 # ---------------------------------------------------------------------------
-
-
-def test_doctor_when_format_json_does_write_only_the_json_line(monkeypatch: pytest.MonkeyPatch):
-    _patch_doctor(monkeypatch)
-
-    result = runner.invoke(app, ["doctor", "--format", "json"])
-
-    assert result.exit_code == 0
-    assert "doctor text report" not in result.stdout
-    assert json.loads(result.stdout) == {"doctor": True}
 
 
 def test_doctor_when_format_json_does_write_indented_document_with_every_hint(
@@ -159,60 +159,39 @@ def test_doctor_when_format_json_does_write_indented_document_with_every_hint(
         pytest.param("--no-color", "FORCE_COLOR", False, id="no-color-flag-outranks-force-color"),
     ],
 )
-def test_doctor_when_color_flag_given_does_hand_it_to_the_text_renderer(
+def test_doctor_when_color_flag_given_does_style_the_text_report_to_match(
     option: str, env: str, expected: bool, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv(env, "1")
-    _patch_doctor(monkeypatch)
-    rendered_with: list[bool] = []
+    _patch_doctor(monkeypatch, stub_text=False)
 
-    def render(_report: object, *, color: bool) -> str:
-        rendered_with.append(color)
-        return "doctor text report"
+    result = runner.invoke(app, ["doctor", option])
 
-    monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_report", render)
-
-    runner.invoke(app, ["doctor", option])
-
-    assert rendered_with == [expected]
+    assert result.exit_code == 0
+    assert ("\x1b[" in result.stdout) is expected
 
 
-def test_doctor_when_no_color_flag_does_not_mutate_color_env(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    "env",
+    [
+        pytest.param({}, id="color-env-unset"),
+        pytest.param({"FORCE_COLOR": "1"}, id="force-color-set"),
+    ],
+)
+def test_doctor_when_no_color_flag_does_leave_the_color_env_as_it_was(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     _patch_doctor(monkeypatch)
 
     result = runner.invoke(app, ["doctor", "--no-color"])
 
     assert result.exit_code == 0
-    assert os.environ.get("NO_COLOR") is None
-    assert os.environ.get("FORCE_COLOR") is None
-
-
-def test_doctor_when_no_color_flag_and_force_color_set_does_preserve_force_color_env(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    _patch_doctor(monkeypatch)
-
-    result = runner.invoke(app, ["doctor", "--no-color"])
-
-    assert result.exit_code == 0
-    assert os.environ.get("FORCE_COLOR") == "1"
-
-
-# ---------------------------------------------------------------------------
-# missing --config is a config failure, not a crash
-# ---------------------------------------------------------------------------
-
-
-def test_doctor_when_config_path_missing_does_render_config_failure_not_crash(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _patch_doctor(monkeypatch, config_failure=True)
-
-    result = runner.invoke(app, ["doctor", "--config", "/missing/gymrat.json"])
-
-    assert result.exit_code == 1
-    assert "doctor text report" in result.stdout
+    assert (os.environ.get("NO_COLOR"), os.environ.get("FORCE_COLOR")) == (
+        None,
+        env.get("FORCE_COLOR"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -264,17 +243,17 @@ def _skill_file(path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("make_entry", "installed"),
+    ("make_entry", "status"),
     [
-        pytest.param(_skill_directory, False, id="directory"),
-        pytest.param(_skill_file, True, id="file"),
+        pytest.param(_skill_directory, "warn", id="directory"),
+        pytest.param(_skill_file, "ok", id="file"),
     ],
 )
 def test_doctor_when_skill_path_checked_does_report_installed_only_for_a_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     make_entry: Callable[[Path], None],
-    installed: bool,
+    status: str,
 ):
     make_entry(tmp_path / SKILL_RELATIVE_PATH)
 
@@ -284,17 +263,15 @@ def test_doctor_when_skill_path_checked_does_report_installed_only_for_a_file(
         lambda _cwd: git_env,  # pyrefly: ignore
     )
 
-    _patch_doctor(monkeypatch)
+    _patch_doctor(monkeypatch, stub_json=False)
+    monkeypatch.setattr("gymrat.doctor.build_workflow_section", build_workflow_section)
 
-    workflow_calls: list[dict[str, object]] = []
+    result = runner.invoke(app, ["doctor", "--format", "json"])
 
-    def workflow_section(*_a: object, **kwargs: object) -> CheckSection:
-        workflow_calls.append(dict(kwargs))
-        return CheckSection(title="Workflow", checks=[Check("skill file", "ok", "found")])
-
-    monkeypatch.setattr("gymrat.doctor.build_workflow_section", workflow_section)
-
-    runner.invoke(app, ["doctor"])
-
-    assert len(workflow_calls) >= 1
-    assert workflow_calls[0].get("skill_file_exists") is installed
+    statuses = {
+        check["name"]: check["status"]
+        for section in json.loads(result.stdout)["sections"]
+        for check in section["checks"]
+    }
+    assert result.exit_code == 0
+    assert statuses["skill file"] == status

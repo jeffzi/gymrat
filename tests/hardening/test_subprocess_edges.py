@@ -5,8 +5,8 @@ edges that only surface with a real child process misbehaving:
 
 - aborting a run mid-read leaks no "Task ... was never retrieved" / "Task was
   destroyed but it is pending" diagnostics from the driver or ``exec``,
-- a grandchild that holds stdio open makes ``exec`` wait indefinitely by design,
-  with a timeout as the documented escape that still captures late output.
+- a termination signal landing between spawn and registration still kills the
+  child's group.
 
 The module is POSIX-only: the abort paths rely on process-group tree-kill and
 the fixtures reap any group a child leaves behind so nothing is orphaned. Every
@@ -22,20 +22,27 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import override
+from typing import Any
 
 import pytest
 
 from gymrat import exec as exec_mod
 from gymrat import signals
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
+from gymrat.exec import ExecOptions, ExecTimeoutError
 from gymrat.exec import exec as run_exec
-from gymrat.supervisor.claude import ClaudeClient, ClientFactory, create_claude_driver
-from gymrat.supervisor.events import SessionEvent, UsageUpdateEvent
-from tests._process_helpers import capture_spawns
-from tests.supervisor._fixtures import collecting_observer, make_prompt, result_message
+from gymrat.supervisor.claude import create_claude_driver
+from gymrat.supervisor.events import SessionEvent, SessionObserver, UsageUpdateEvent
+from tests._exec_fixtures import recorded_spawns
+from tests.supervisor._fixtures import (
+    FactoryProbe,
+    FakeClient,
+    FiniteClient,
+    collecting_observer,
+    make_prompt,
+    result_message,
+)
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only process groups for tree-kill"
@@ -75,24 +82,6 @@ async def wait_for_file(path: Path, timeout_s: float = 5.0) -> None:
         await asyncio.sleep(0.02)
 
 
-def make_fifo(path: Path) -> None:
-    """Create a named pipe (sync helper to keep the blocking call out of async)."""
-    os.mkfifo(path)
-
-
-def release_fifo(path: Path) -> None:
-    """Unblock a reader waiting on ``path`` by opening it for writing and sending a line.
-
-    Opening the write end returns as soon as the child's read end is open, which
-    it already is, so this never blocks. Sync so the async test body stays clean.
-    """
-    fd = os.open(str(path), os.O_WRONLY)
-    try:
-        os.write(fd, b"\n")
-    finally:
-        os.close(fd)
-
-
 def install_task_leak_recorder() -> list[dict[str, object]]:
     """Route the running loop's exception handler into a list and return it.
 
@@ -117,88 +106,9 @@ def task_leak_messages(records: list[dict[str, object]]) -> list[str]:
     return [msg for msg in messages if any(marker in msg for marker in _LEAK_MARKERS)]
 
 
-class ScriptedClaudeClient:
-    """A minimal stand-in for the SDK streaming client the Claude driver drives.
-
-    The stream ends naturally after all scripted messages are yielded.  Tests
-    that need the stream to block (e.g. for abort handling) use
-    :class:`BlockingClaudeClient` instead.
-    """
-
-    def __init__(self, messages: list[object]) -> None:
-        self.messages = messages
-        self.disconnect_count = 0
-
-    async def connect(self) -> None:
-        return None
-
-    async def query(self, prompt: str) -> None:
-        return None
-
-    async def receive_messages(self) -> AsyncIterator[object]:
-        for message in self.messages:
-            await asyncio.sleep(0)
-            yield message
-
-    async def interrupt(self) -> None:
-        return None
-
-    async def disconnect(self) -> None:
-        self.disconnect_count += 1
-
-
-class BlockingClaudeClient(ScriptedClaudeClient):
-    """Like :class:`ScriptedClaudeClient` but blocks after the script.
-
-    The stream blocks on a gate until ``disconnect`` releases it, mirroring
-    the real SDK whose iterator never terminates on its own.
-    """
-
-    def __init__(self, messages: list[object]) -> None:
-        super().__init__(messages)
-        self._released = asyncio.Event()
-
-    @override
-    async def receive_messages(self) -> AsyncIterator[object]:
-        for message in self.messages:
-            await asyncio.sleep(0)
-            yield message
-        await self._released.wait()
-
-    @override
-    async def disconnect(self) -> None:
-        self.disconnect_count += 1
-        self._released.set()
-
-
-def claude_factory(client: ScriptedClaudeClient) -> ClientFactory:
-    """A client factory that hands the Claude driver ``client`` for any options."""
-
-    def factory(_options: Mapping[str, object]) -> ClaudeClient:
-        return client
-
-    return factory
-
-
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
-
-
-async def reap_children(processes: list[asyncio.subprocess.Process]) -> None:
-    """Kill any survivor's group and reap it within the loop.
-
-    Reaping with ``proc.wait()`` while the loop still runs lets asyncio finalize
-    the child's transport in-loop, so no orphaned transport lingers for a later
-    test's forced garbage collection to finalize against a closed loop (which
-    would surface as a warning about an exception that cannot propagate).
-    """
-    for proc in processes:
-        if proc.returncode is None and proc.pid:
-            with contextlib.suppress(OSError):
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        with contextlib.suppress(TimeoutError, ProcessLookupError):
-            await asyncio.wait_for(proc.wait(), 5)
 
 
 @pytest.fixture
@@ -206,10 +116,8 @@ async def exec_children(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[list[asyncio.subprocess.Process]]:
     """Record every child ``exec`` spawns and reap any survivor in-loop on teardown."""
-    processes = capture_spawns(monkeypatch, "create_subprocess_shell")
-    yield processes
-
-    await reap_children(processes)
+    async with recorded_spawns(monkeypatch) as processes:
+        yield processes
 
 
 # ---------------------------------------------------------------------------
@@ -239,81 +147,57 @@ async def test_exec_when_aborted_mid_read_does_not_leak_task_diagnostics(
     assert exec_children  # the abort ran through a real spawned child
 
 
-async def test_claude_driver_when_abort_unused_and_settles_does_not_leak_task_diagnostics() -> None:
-    records = install_task_leak_recorder()
-    client = ScriptedClaudeClient([result_message(total_cost_usd=0.05)])
-    driver = create_claude_driver(client_factory=claude_factory(client))
-    abort = asyncio.Event()  # provided but never fired: the watch task must be cleaned up
-
-    session = driver.start(make_prompt(), collecting_observer().observer, abort)
-    outcome = await asyncio.wait_for(session.outcome, 10)
-    del session, driver, client
-    gc.collect()
-
-    assert outcome.reason == "completed"
-    assert task_leak_messages(records) == []
+def _never_abort(_abort: asyncio.Event) -> SessionObserver:
+    """An observer that leaves the abort unfired, so its watch task must be cleaned up."""
+    return collecting_observer().observer
 
 
-async def test_claude_driver_when_abort_fires_mid_read_does_not_leak_task_diagnostics() -> None:
-    records = install_task_leak_recorder()
-    # The stream hangs after the cost update, so the abort is what unblocks it:
-    # the watch task starts, fires, then teardown cancels it on the settle path.
-    client = BlockingClaudeClient([result_message(total_cost_usd=0.1)])
-    driver = create_claude_driver(client_factory=claude_factory(client))
-    abort = asyncio.Event()
+def _abort_on_usage(abort: asyncio.Event) -> SessionObserver:
+    """An observer that fires the abort on the first cost update, mid-read."""
 
     def observer(event: SessionEvent) -> None:
         if isinstance(event, UsageUpdateEvent):
             abort.set()
 
-    session = driver.start(make_prompt(), observer, abort)
+    return observer
+
+
+@pytest.mark.parametrize(
+    ("make_client", "observer_for", "reason"),
+    [
+        pytest.param(
+            lambda: FiniteClient([result_message(total_cost_usd=0.05)]),
+            _never_abort,
+            "completed",
+            id="abort-unused-and-settles",
+        ),
+        pytest.param(
+            # The stream hangs after the cost update, so the abort is what unblocks it:
+            # the watch task starts, fires, then teardown cancels it on the settle path.
+            lambda: FakeClient([result_message(total_cost_usd=0.1)]),
+            _abort_on_usage,
+            "interrupted",
+            id="abort-fires-mid-read",
+        ),
+    ],
+)
+async def test_claude_driver_when_session_settles_does_not_leak_task_diagnostics(
+    make_client: Callable[[], FakeClient],
+    observer_for: Callable[[asyncio.Event], SessionObserver],
+    reason: str,
+) -> None:
+    records = install_task_leak_recorder()
+    client = make_client()
+    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    abort = asyncio.Event()
+
+    session = driver.start(make_prompt(), observer_for(abort), abort)
     outcome = await asyncio.wait_for(session.outcome, 10)
     del session, driver, client
     gc.collect()
 
-    assert outcome.reason == "interrupted"
+    assert outcome.reason == reason
     assert task_leak_messages(records) == []
-
-
-# ---------------------------------------------------------------------------
-# a grandchild holding stdio open makes exec wait indefinitely by design
-# ---------------------------------------------------------------------------
-
-
-async def test_exec_when_grandchild_holds_stdout_open_with_timeout_does_capture_late_output(
-    tmp_path: Path,
-    exec_children: list[asyncio.subprocess.Process],
-) -> None:
-    # The child shell writes its metric late, then holds the pipe open past the
-    # timeout; the escape hatch fires while the late output is already captured.
-    command = "( sleep 0.3; echo METRIC; sleep 30 ) &"
-
-    result = await run_exec(command, ExecOptions(cwd=str(tmp_path), timeout_ms=2000))
-
-    assert isinstance(result, ExecTimeoutError)
-    assert result.timeout_ms == 2000
-    assert "METRIC" in result.stdout
-
-
-async def test_exec_when_grandchild_holds_stdout_open_without_timeout_does_wait_until_released(
-    tmp_path: Path,
-    exec_children: list[asyncio.subprocess.Process],
-) -> None:
-    fifo = tmp_path / "release.fifo"
-    make_fifo(fifo)
-    # The background child shell inherits the stdout pipe and blocks opening the
-    # fifo, so exec never sees EOF until the fifo is released.
-    command = f"( read line < '{fifo}'; echo METRIC ) &"
-    task = asyncio.create_task(run_exec(command, ExecOptions(cwd=str(tmp_path))))
-    await asyncio.sleep(0.5)
-
-    open_ended = not task.done()
-    release_fifo(fifo)
-    result = await asyncio.wait_for(task, 10)
-
-    assert open_ended, "exec returned before the grandchild released stdout"
-    assert isinstance(result, ExecResult)
-    assert "METRIC" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -334,8 +218,8 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     spawned: list[asyncio.subprocess.Process] = []
     spawn_barrier = threading.Event()
 
-    async def slow_spawn(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
-        proc = await real_spawn(*args, **kwargs)  # type: ignore[arg-type]
+    async def slow_spawn(command: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        proc = await real_spawn(command, **kwargs)
         spawned.append(proc)
         spawn_barrier.set()
         await asyncio.sleep(1.0)
@@ -345,10 +229,11 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
 
     # Prevent the handler from actually terminating the process.
     exit_record: dict[str, object] = {}
-    monkeypatch.setattr(signals, "_exit_process", lambda code: exit_record.update(code=code))  # pyrefly: ignore
 
-    # Keep the live-groups registry clean for this test.
-    monkeypatch.setattr(exec_mod, "_live_process_groups", set())
+    def record_exit(code: int) -> None:
+        exit_record["code"] = code
+
+    monkeypatch.setattr(signals, "exit_process", record_exit)
 
     uninstall = signals.install_termination_cleanup(exec_mod.kill_live_process_groups)
 

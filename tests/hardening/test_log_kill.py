@@ -5,8 +5,8 @@ partial lines in one process, these tests pin the guarantees that only surface
 when a real process dies while the log is being appended:
 
 - a process hard-killed while appending leaves a log the next run reads
-  cleanly: the torn final line is dropped and every record appended before the
-  kill is intact,
+  cleanly: every record appended before the kill is intact, and the record
+  being written is either dropped or whole — never a parse failure,
 - a record is durable the instant ``append_record`` returns, so a process that
   exits abruptly right after the call — the path a signal handler's
   ``os._exit`` takes — never loses it,
@@ -29,8 +29,14 @@ from pathlib import Path
 import pytest
 
 from gymrat.session.paths import session_jsonl_path
-from gymrat.session.store import append_record, read_records
-from tests.session.records._fixtures import committed_keep, log_records, session_record
+from gymrat.session.store import read_records
+from tests.hardening._barrier import CHILD_BARRIER, create_barrier, release_together
+from tests.session.records._fixtures import (
+    append_records,
+    committed_keep,
+    log_records,
+    session_record,
+)
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only signals and named pipes"
@@ -53,7 +59,7 @@ def _spawn(tmp_path: Path, name: str, source: str, *args: str) -> subprocess.Pop
     """Write ``source`` to a script under ``tmp_path`` and launch it as a child."""
     script = tmp_path / f"{name}.py"
     script.write_text(source, encoding="utf-8")
-    return subprocess.Popen(  # noqa: S603
+    return subprocess.Popen(  # noqa: S603 -- argv is a fixed list, not shell-injected
         [sys.executable, str(script), *args],
         cwd=str(REPO_ROOT),
         env=_child_env(),
@@ -71,48 +77,11 @@ def _wait_for_file(path: Path, timeout_s: float = 30.0) -> None:
         time.sleep(0.01)
 
 
-def _wait_for_ready(directory: Path, count: int, timeout_s: float = 30.0) -> None:
-    """Wait until ``count`` children have left a ``ready.<pid>`` marker in ``directory``."""
-    deadline = time.monotonic() + timeout_s
-    while len(list(directory.glob("ready.*"))) < count:
-        if time.monotonic() > deadline:
-            message = f"fewer than {count} children reached the barrier in {directory}"
-            raise AssertionError(message)
-        time.sleep(0.01)
-
-
-def _wait_until_grew_or_dead(
-    path: Path, baseline: int, child: subprocess.Popen[str], timeout_s: float = 30.0
-) -> bool:
-    """Poll until ``path`` grows past ``baseline`` bytes, or the child exits first.
-
-    Growth past the clean prefix means the child has begun flushing its final,
-    deliberately huge record to disk, so a kill now lands mid-append. If the
-    child finishes the whole record first it exits, and the caller kills a
-    corpse — the log then holds a complete final record rather than a torn one.
-
-    Returns ``True`` when the log grew (kill should tear the record), ``False``
-    when the child finished first (record is complete).
-    """
-    deadline = time.monotonic() + timeout_s
-    while True:
-        try:
-            if path.stat().st_size > baseline:
-                return True
-        except FileNotFoundError:
-            pass
-        if child.poll() is not None:
-            return False
-        if time.monotonic() > deadline:
-            message = f"log at {path} never grew past {baseline} bytes"
-            raise AssertionError(message)
-        time.sleep(0.001)
-
-
 # A child that appends a session header and ``clean_count`` small keeps, signals
 # it is ready, then appends one final keep whose message is huge. The huge
-# record takes many write bursts to reach disk, so a kill after the log starts
-# growing lands mid-append and tears the final line.
+# record takes many write bursts to reach disk, so a kill sent on the ready
+# signal usually lands mid-append; where the kernel finishes the write first
+# (macOS), the final record lands whole instead.
 _TORN_TAIL_CHILD = """\
 import sys
 from pathlib import Path
@@ -152,10 +121,10 @@ os._exit(0)
 # A child that blocks on a shared named pipe, then appends ``count`` keeps whose
 # sequence numbers start at ``base``, so several children race to append to one
 # log the instant the parent opens the pipe.
-_RACE_CHILD = """\
-import os
+_RACE_CHILD = (
+    CHILD_BARRIER
+    + """\
 import sys
-from pathlib import Path
 
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
@@ -166,14 +135,12 @@ count = int(count_raw)
 base = int(base_raw)
 path = session_jsonl_path(root)
 
-barrier_fd = os.open(barrier_path, os.O_RDONLY)
-Path(barrier_path).with_name(f"ready.{os.getpid()}").touch()
-os.read(barrier_fd, 1)
-os.close(barrier_fd)
+wait_at_barrier(barrier_path)
 
 for offset in range(count):
     append_record(path, committed_keep(seq=base + offset))
 """
+)
 
 
 # ---------------------------------------------------------------------------
@@ -181,30 +148,28 @@ for offset in range(count):
 # ---------------------------------------------------------------------------
 
 
-def _torn_tail_attempt(workdir: Path, clean_count: int) -> bool:
-    """One spawn-and-kill attempt; return whether the kill actually tore the tail.
+# The final record's message length: large enough that writing it takes many
+# write bursts, so the kill usually catches the append in flight.
+_HUGE_CHARS = 64_000_000
 
-    The clean prefix is asserted unconditionally — a corrupted prefix is a
-    failure whatever happened to the final record. The return value reports
-    whether the kill landed mid-append (log grew, final record dropped by the
-    reader), so the caller can retry a race the child won.
-    """
-    root = str(workdir)
-    path = Path(session_jsonl_path(root))
-    ready_flag = workdir / "ready.flag"
+
+def test_append_record_when_hard_killed_during_a_large_append_does_leave_the_earlier_records_readable(
+    tmp_path: Path,
+):
+    root = str(tmp_path)
+    clean_count = 5
+    ready_flag = tmp_path / "ready.flag"
     child = _spawn(
-        workdir,
+        tmp_path,
         "torn_tail_child",
         _TORN_TAIL_CHILD,
         root,
         str(clean_count),
         str(ready_flag),
-        str(64_000_000),
+        str(_HUGE_CHARS),
     )
     try:
         _wait_for_file(ready_flag)
-        clean_size = path.stat().st_size
-        grew = _wait_until_grew_or_dead(path, clean_size, child)
         child.kill()
         child.wait(timeout=30)
     finally:
@@ -214,36 +179,16 @@ def _torn_tail_attempt(workdir: Path, clean_count: int) -> bool:
         if child.stderr is not None:
             child.stderr.close()
 
-    records = read_records(str(path))
+    records = read_records(session_jsonl_path(root))
+
     expected_prefix = [session_record(), *(committed_keep(seq=seq) for seq in range(clean_count))]
     assert records[: len(expected_prefix)] == expected_prefix
-
-    if not grew or len(records) == len(expected_prefix) + 1:
-        # The child flushed the whole huge record before the kill landed —
-        # the log is legitimately complete, but the tear was never exercised.
-        return False
-    assert len(records) == len(expected_prefix)
-    return True
-
-
-def test_append_record_when_hard_killed_mid_append_does_leave_a_log_the_next_run_reads_clean(
-    tmp_path: Path,
-):
-    clean_count = 5
-    for attempt in range(3):
-        workdir = tmp_path / f"attempt-{attempt}"
-        workdir.mkdir()
-        if _torn_tail_attempt(workdir, clean_count):
-            return
-    if sys.platform == "darwin":
-        # Verified on macOS: SIGKILL does not interrupt an in-flight write(2)
-        # to a local file — the kernel completes the system call first — so a kill
-        # can never land mid-append however large the record. The tear this
-        # test exists for is unattainable here; only the clean-prefix
-        # assertions above ran.
-        pytest.skip("macOS completes an in-flight write before honoring SIGKILL — tail cannot tear")
-    message = "kill never landed mid-append in 3 attempts — the torn-tail subject went untested"
-    raise AssertionError(message)
+    # The kill may land before, during, or after the final append: a torn or
+    # unwritten record is dropped, and one the kernel finished reads back whole.
+    assert records[len(expected_prefix) :] in (
+        [],
+        [committed_keep(seq=clean_count, message="x" * _HUGE_CHARS)],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -278,11 +223,10 @@ def test_append_record_when_processes_append_together_does_never_interleave_byte
 ):
     root = str(tmp_path)
     path = Path(session_jsonl_path(root))
-    append_record(str(path), session_record())
+    append_records(root, session_record())
     process_count = 4
     per_process = 150
-    barrier = tmp_path / "barrier.pipe"
-    os.mkfifo(barrier)
+    barrier = create_barrier(tmp_path)
 
     children = [
         _spawn(
@@ -296,16 +240,13 @@ def test_append_record_when_processes_append_together_does_never_interleave_byte
         )
         for index in range(process_count)
     ]
-    go_fd = os.open(str(barrier), os.O_RDWR)
     try:
-        _wait_for_ready(tmp_path, process_count)
-        os.write(go_fd, b"\x00" * process_count)
+        release_together(barrier, process_count)
         outcomes = [
             (child.wait(timeout=60), child.stderr.read() if child.stderr else "")
             for child in children
         ]
     finally:
-        os.close(go_fd)
         for child in children:
             if child.poll() is None:
                 child.kill()

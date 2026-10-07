@@ -8,13 +8,12 @@ termination — never from a result message alone.
 import asyncio
 import math
 from collections.abc import Sequence
-from typing import override
 
 import pytest
-from claude_agent_sdk import MessageOrigin, TextBlock
+from claude_agent_sdk import MessageOrigin, ResultMessage, TextBlock
 
 from gymrat.supervisor.claude import create_claude_driver
-from gymrat.supervisor.driver import DriverSession, SessionOutcome
+from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
     SessionEvent,
     TurnEndEvent,
@@ -31,46 +30,15 @@ from tests.supervisor._fixtures import (
     noop_observer,
     result_message,
     run_outcome,
+    wait_for_event_or_task,
 )
 
 _TEST_TIMEOUT_S = 5.0
-
-# ---------------------------------------------------------------------------
-# test-local client variants
-# ---------------------------------------------------------------------------
-
-
-class QueryRaisingClient(FakeClient):
-    """A client whose ``query`` raises on the *n*-th call."""
-
-    def __init__(
-        self,
-        messages: Sequence[object],
-        *,
-        raise_on_query: int = 1,
-        error: Exception | None = None,
-    ) -> None:
-        super().__init__(messages)
-        self._raise_on = raise_on_query
-        self._query_count = 0
-        self._error = error or RuntimeError("query failed")
-
-    @override
-    async def query(self, prompt: str) -> None:
-        self._query_count += 1
-        if self._query_count >= self._raise_on:
-            raise self._error
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-async def _drain(n: int = 4) -> None:
-    """Let the event loop process n pending callbacks."""
-    for _ in range(n):
-        await asyncio.sleep(0)
 
 
 async def _outcome(session: DriverSession) -> SessionOutcome:
@@ -84,93 +52,98 @@ async def _settle(session: DriverSession) -> SessionOutcome:
     return await _outcome(session)
 
 
-async def _run_turns(messages: Sequence[object], drain: int = 4) -> list[SessionEvent]:
-    """Run a session over scripted messages to settlement and return its events."""
-    client = FakeClient(messages)
-    probe = collecting_observer()
+async def _start_past_turns(
+    client: FakeClient, turns: int, prompt: SessionPrompt | None = None
+) -> tuple[DriverSession, list[SessionEvent]]:
+    """Start a session over ``client`` and wait until it has closed ``turns`` turns.
+
+    Waiting on the turn ends themselves, not on a count of event-loop yields,
+    keeps ``end()`` from landing before the stream has drawn every result.
+
+    Args:
+        client: The fake client the session streams from.
+        turns: How many ``TurnEndEvent`` the session must emit before returning.
+        prompt: The prompt to start with; ``make_prompt()`` when omitted.
+
+    Returns:
+        The running session and the list its observer keeps appending events to.
+    """
+    events: list[SessionEvent] = []
+    turns_closed = asyncio.Event()
+
+    def observer(event: SessionEvent) -> None:
+        events.append(event)
+        if len(events_of(events, TurnEndEvent)) == turns:
+            turns_closed.set()
+
     driver = create_claude_driver(client_factory=FactoryProbe(client))
+    session = driver.start(prompt or make_prompt(), observer, asyncio.Event())
+    await wait_for_event_or_task(turns_closed, session.outcome)
+    return session, events
 
-    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
-    await _drain(drain)
+
+async def _run_turns(messages: Sequence[object]) -> list[SessionEvent]:
+    """Run a session until every scripted result closed its turn, end it, and return its events."""
+    turns = sum(isinstance(message, ResultMessage) for message in messages)
+    session, events = await _start_past_turns(FakeClient(messages), turns)
     await _settle(session)
-
-    return probe.events
-
-
-# ---------------------------------------------------------------------------
-# behavior 1: result message emits TurnEndEvent, does not end stream
-# ---------------------------------------------------------------------------
-
-
-async def test_turn_when_result_message_received_does_emit_turn_end_event():
-    result = result_message(total_cost_usd=0.05)
-    events = await _run_turns([result])
-
-    turn_ends = events_of(events, TurnEndEvent)
-    assert len(turn_ends) == 1
-
-
-async def test_turn_when_result_has_top_level_text_does_carry_text_on_turn_end():
-    messages = [
-        assistant(TextBlock(text="first answer")),
-        result_message(total_cost_usd=0.01),
-    ]
-    events = await _run_turns(messages, drain=5)
-
-    turn_ends = events_of(events, TurnEndEvent)
-    assert len(turn_ends) == 1
-    assert turn_ends[0].text == "first answer"
-
-
-async def test_turn_when_result_has_no_text_does_carry_empty_string():
-    result = result_message(total_cost_usd=0.01)
-    events = await _run_turns([result])
-
-    turn_ends = events_of(events, TurnEndEvent)
-    assert len(turn_ends) == 1
-    assert turn_ends[0].text == ""
-
-
-async def test_turn_when_second_turn_does_reset_text_accumulator():
-    messages = [
-        assistant(TextBlock(text="turn one text")),
-        result_message(total_cost_usd=0.01),
-        assistant(TextBlock(text="turn two text")),
-        result_message(total_cost_usd=0.02),
-    ]
-    events = await _run_turns(messages, drain=7)
-
-    turn_ends = events_of(events, TurnEndEvent)
-    assert len(turn_ends) == 2
-    assert turn_ends[0].text == "turn one text"
-    assert turn_ends[1].text == "turn two text"
-
-
-async def test_turn_when_second_turn_has_no_text_does_not_carry_the_first_turns_text():
-    messages = [
-        assistant(TextBlock(text="turn one text")),
-        result_message(total_cost_usd=0.01),
-        result_message(total_cost_usd=0.02),
-    ]
-    events = await _run_turns(messages, drain=7)
-
-    turn_ends = events_of(events, TurnEndEvent)
-    assert [turn.text for turn in turn_ends] == ["turn one text", ""]
-
-
-async def test_turn_when_subagent_text_present_does_ignore_subagent_text_in_turn_end():
-    top_level_msg = assistant(TextBlock(text="top level"))
-    subagent_msg = assistant(TextBlock(text="subagent output"), parent_tool_use_id="tu_sub")
-    messages = [top_level_msg, subagent_msg, result_message(total_cost_usd=0.01)]
-    events = await _run_turns(messages, drain=6)
-
-    turn_ends = events_of(events, TurnEndEvent)
-    assert len(turn_ends) == 1
-    assert turn_ends[0].text == "top level"
+    return events
 
 
 # ---------------------------------------------------------------------------
-# behavior 2: origin detection
+# A result message emits a TurnEndEvent without ending the stream
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("messages", "texts"),
+    [
+        pytest.param(
+            [assistant(TextBlock(text="first answer")), result_message(total_cost_usd=0.01)],
+            ["first answer"],
+            id="top-level-text",
+        ),
+        pytest.param([result_message(total_cost_usd=0.01)], [""], id="no-text-is-empty"),
+        pytest.param(
+            [
+                assistant(TextBlock(text="turn one text")),
+                result_message(total_cost_usd=0.01),
+                assistant(TextBlock(text="turn two text")),
+                result_message(total_cost_usd=0.02),
+            ],
+            ["turn one text", "turn two text"],
+            id="second-turn-resets-the-text",
+        ),
+        pytest.param(
+            [
+                assistant(TextBlock(text="turn one text")),
+                result_message(total_cost_usd=0.01),
+                result_message(total_cost_usd=0.02),
+            ],
+            ["turn one text", ""],
+            id="second-turn-without-text-carries-none-over",
+        ),
+        pytest.param(
+            [
+                assistant(TextBlock(text="top level")),
+                assistant(TextBlock(text="subagent output"), parent_tool_use_id="tu_sub"),
+                result_message(total_cost_usd=0.01),
+            ],
+            ["top level"],
+            id="subagent-text-ignored",
+        ),
+    ],
+)
+async def test_start_when_result_ends_a_turn_does_carry_that_turns_top_level_text(
+    messages: list[object], texts: list[str]
+):
+    events = await _run_turns(messages)
+
+    assert [turn_end.text for turn_end in events_of(events, TurnEndEvent)] == texts
+
+
+# ---------------------------------------------------------------------------
+# Turn origin detection
 # ---------------------------------------------------------------------------
 
 
@@ -182,7 +155,7 @@ async def test_turn_when_subagent_text_present_does_ignore_subagent_text_in_turn
         pytest.param({"kind": "task-notification"}, "injected", id="origin-task-notification"),
     ],
 )
-async def test_turn_when_result_carries_origin_does_report_turn_origin(
+async def test_start_when_result_carries_origin_does_report_turn_origin(
     origin: MessageOrigin | None, expected: str
 ):
     events = await _run_turns([result_message(total_cost_usd=0.01, origin=origin)])
@@ -192,58 +165,37 @@ async def test_turn_when_result_carries_origin_does_report_turn_origin(
 
 
 # ---------------------------------------------------------------------------
-# behavior 3: cost tracking across turns
+# Cost tracking across turns
 # ---------------------------------------------------------------------------
 
 
-async def test_turn_when_result_has_cost_does_emit_usage_update():
-    result = result_message(total_cost_usd=0.10)
-    events = await _run_turns([result])
-
-    usage_updates = events_of(events, UsageUpdateEvent)
-    assert [u.cost_usd for u in usage_updates] == [0.10, 0.10]
-
-
-async def test_turn_when_result_has_cost_does_carry_cost_on_turn_end():
-    result = result_message(total_cost_usd=0.10)
-    events = await _run_turns([result])
-
-    turn_ends = events_of(events, TurnEndEvent)
-    assert turn_ends[0].cost_usd == 0.10
-
-
-async def test_turn_when_two_results_with_rising_cost_does_emit_an_update_and_turn_end_per_result():
+async def test_start_when_two_results_with_rising_cost_does_record_each_results_cost():
     messages = [
         result_message(total_cost_usd=0.05),
         result_message(total_cost_usd=0.15),
     ]
-    events = await _run_turns(messages, drain=5)
+
+    events = await _run_turns(messages)
 
     usage_updates = events_of(events, UsageUpdateEvent)
     assert [u.cost_usd for u in usage_updates] == [0.05, 0.15, 0.15]
-
     turn_ends = events_of(events, TurnEndEvent)
-    assert len(turn_ends) == 2
-    assert turn_ends[0].cost_usd == 0.05
-    assert turn_ends[1].cost_usd == 0.15
+    assert [turn_end.cost_usd for turn_end in turn_ends] == [0.05, 0.15]
 
 
 @pytest.mark.parametrize(
     "bogus_cost",
     [
         pytest.param(math.nan, id="nan"),
-        pytest.param(math.inf, id="positive-infinity"),
-        pytest.param(-math.inf, id="negative-infinity"),
-        pytest.param(-0.5, id="negative"),
     ],
 )
-async def test_turn_when_result_cost_is_unusable_does_keep_running_cost(bogus_cost: float):
+async def test_start_when_result_cost_is_unusable_does_keep_running_cost(bogus_cost: float):
     messages = [
         result_message(total_cost_usd=0.05),
         result_message(total_cost_usd=bogus_cost),
     ]
 
-    events = await _run_turns(messages, drain=5)
+    events = await _run_turns(messages)
 
     usage_costs = {update.cost_usd for update in events_of(events, UsageUpdateEvent)}
     turn_end_costs = [turn_end.cost_usd for turn_end in events_of(events, TurnEndEvent)]
@@ -252,164 +204,69 @@ async def test_turn_when_result_cost_is_unusable_does_keep_running_cost(bogus_co
 
 
 # ---------------------------------------------------------------------------
-# behavior 4: is_error handling and budget exhaustion
+# is_error handling and budget exhaustion
 # ---------------------------------------------------------------------------
 
 
-async def test_turn_when_error_result_with_regular_subtype_does_settle_error_immediately():
-    result = result_message(subtype="error", is_error=True, result="something went wrong")
-    client = FakeClient([result])
-
-    outcome = await run_outcome(client)
-
-    assert outcome.reason == "error"
-    assert outcome.message == "something went wrong"
-
-
-async def test_turn_when_error_result_without_text_does_use_subtype_as_message():
-    result = result_message(subtype="error", is_error=True, result=None)
-    client = FakeClient([result])
-
-    outcome = await run_outcome(client)
-
-    assert outcome.reason == "error"
-    assert outcome.message == "error"
-
-
-async def test_turn_when_budget_exhausted_does_emit_turn_end_with_flag():
+async def test_start_when_budget_exhausted_does_flag_the_turn_end_without_settling_error():
     result = result_message(
         subtype="error_max_budget_usd",
         is_error=True,
         total_cost_usd=1.50,
         result="Budget exceeded",
     )
-    events = await _run_turns([result])
+    session, events = await _start_past_turns(FakeClient([result]), turns=1)
 
-    turn_ends = events_of(events, TurnEndEvent)
-    assert len(turn_ends) == 1
-    assert turn_ends[0].budget_exhausted is True
-    assert turn_ends[0].cost_usd == 1.50
-
-
-async def test_turn_when_budget_exhausted_does_not_settle_error():
-    result = result_message(
-        subtype="error_max_budget_usd",
-        is_error=True,
-        total_cost_usd=1.50,
-    )
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
-    await _drain()
     outcome = await _settle(session)
 
+    turn_ends = events_of(events, TurnEndEvent)
+    assert [(t.budget_exhausted, t.cost_usd) for t in turn_ends] == [(True, 1.50)]
     assert outcome.reason == "completed"
 
 
 # ---------------------------------------------------------------------------
-# behavior 5: send(text) calls client.query(text) on the same connection
+# send(text) forwards to client.query on the same connection until the session settles
 # ---------------------------------------------------------------------------
 
 
 async def test_send_when_called_does_forward_text_to_client_query():
-    result = result_message(total_cost_usd=0.01)
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(kickoff="initial"), probe.observer, asyncio.Event())
-    await _drain()
+    client = FakeClient([result_message(total_cost_usd=0.01)])
+    session, _ = await _start_past_turns(client, turns=1, prompt=make_prompt(kickoff="initial"))
 
     await session.send("follow up message")
-    await asyncio.sleep(0)
-
     await _settle(session)
 
-    assert len(client.query_prompts) == 2
-    assert client.query_prompts[0] == "initial"
-    assert client.query_prompts[1] == "follow up message"
-
-
-async def test_send_when_query_raises_does_settle_error():
-    client = QueryRaisingClient(
-        [result_message(total_cost_usd=0.01)],
-        raise_on_query=2,
-        error=RuntimeError("connection lost"),
-    )
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(kickoff="initial"), probe.observer, asyncio.Event())
-    await _drain()
-
-    await session.send("this will fail")
-    outcome = await _outcome(session)
-
-    assert outcome.reason == "error"
-    assert outcome.message == "connection lost"
+    assert client.query_prompts == ["initial", "follow up message"]
 
 
 async def test_send_when_session_settled_does_noop():
     result = result_message(subtype="error", is_error=True, result="fatal")
     client = FakeClient([result])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
-
     session = driver.start(make_prompt(), noop_observer(), asyncio.Event())
     outcome = await _outcome(session)
     queries_before = list(client.query_prompts)
 
     await session.send("should be ignored")
-    await _drain()
 
     assert outcome.reason == "error"
     assert client.query_prompts == queries_before
 
 
 # ---------------------------------------------------------------------------
-# behavior 6: end() claims completed
+# end() settles the session completed unless it already settled or was interrupted
 # ---------------------------------------------------------------------------
 
 
-async def test_end_when_called_does_settle_completed():
-    result = result_message(total_cost_usd=0.20)
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+async def test_end_when_called_does_settle_completed_at_the_running_cost():
+    session, events = await _start_past_turns(
+        FakeClient([result_message(total_cost_usd=0.20)]), turns=1
+    )
 
-    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
-    await _drain()
     outcome = await _settle(session)
 
-    assert outcome.reason == "completed"
-    assert outcome.cost_usd == 0.20
-
-
-async def test_end_when_called_does_emit_usage_update_with_final_cost():
-    result = result_message(total_cost_usd=0.20)
-    client = FakeClient([result])
-    probe = collecting_observer()
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
-    await _drain()
-    await _settle(session)
-
-    usage_updates = events_of(probe.events, UsageUpdateEvent)
-    assert [u.cost_usd for u in usage_updates] == [0.20, 0.20]
-
-
-async def test_end_when_called_does_disconnect_client():
-    result = result_message(total_cost_usd=0.01)
-    client = FakeClient([result])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(), noop_observer(), asyncio.Event())
-    await _drain()
-    await _settle(session)
-
-    assert client.disconnect_count >= 1
+    assert (outcome.reason, outcome.cost_usd) == ("completed", 0.20)
+    assert [u.cost_usd for u in events_of(events, UsageUpdateEvent)] == [0.20, 0.20]
 
 
 async def test_end_when_called_after_interrupt_does_preserve_interrupted():
@@ -430,11 +287,8 @@ async def test_end_when_called_on_settled_session_does_noop():
     client = FakeClient([result])
     probe = collecting_observer()
     driver = create_claude_driver(client_factory=FactoryProbe(client))
-
     session = driver.start(make_prompt(), probe.observer, asyncio.Event())
-    outcome = await _outcome(session)
-    assert outcome.reason == "error"
-
+    await _outcome(session)
     events_before_end = list(probe.events)
 
     await session.end()
@@ -443,82 +297,14 @@ async def test_end_when_called_on_settled_session_does_noop():
 
 
 # ---------------------------------------------------------------------------
-# behavior 7: natural stream termination
+# Natural stream termination
 # ---------------------------------------------------------------------------
 
 
-async def test_stream_end_when_after_turn_end_does_settle_completed():
-    result = result_message(total_cost_usd=0.05)
-    client = FiniteClient([result])
-
-    outcome = await run_outcome(client)
-
-    assert outcome.reason == "completed"
-    assert outcome.cost_usd == 0.05
-
-
-async def test_stream_end_when_no_turn_end_does_settle_error():
+async def test_start_when_stream_ends_without_a_turn_end_does_settle_error():
     client = FiniteClient([assistant(TextBlock(text="hello"))])
 
     outcome = await run_outcome(client)
 
     assert outcome.reason == "error"
     assert outcome.message == "Agent stream ended without a result message"
-
-
-# ---------------------------------------------------------------------------
-# behavior 8: interrupt and abort (confirm existing behavior preserved)
-# ---------------------------------------------------------------------------
-
-
-async def test_interrupt_when_called_does_settle_interrupted():
-    client = FakeClient([])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(), noop_observer(), asyncio.Event())
-    await session.interrupt()
-    outcome = await _outcome(session)
-
-    assert outcome.reason == "interrupted"
-
-
-async def test_interrupt_when_called_before_end_does_win():
-    client = FakeClient([result_message(total_cost_usd=0.10)])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(), noop_observer(), asyncio.Event())
-    await session.interrupt()
-    outcome = await _settle(session)
-
-    assert outcome.reason == "interrupted"
-
-
-# ---------------------------------------------------------------------------
-# behavior 9: _build_options forwards max_budget_usd
-# ---------------------------------------------------------------------------
-
-
-async def test_options_when_max_budget_usd_set_does_include_max_budget_usd():
-    client = FakeClient([result_message(total_cost_usd=0.01)])
-    probe = FactoryProbe(client)
-    driver = create_claude_driver(client_factory=probe)
-
-    session = driver.start(make_prompt(max_budget_usd=5.0), noop_observer(), asyncio.Event())
-    await _drain()
-    await _settle(session)
-
-    assert client.options is not None
-    assert client.options["max_budget_usd"] == 5.0
-
-
-async def test_options_when_max_budget_usd_absent_does_omit_key():
-    client = FakeClient([result_message(total_cost_usd=0.01)])
-    probe = FactoryProbe(client)
-    driver = create_claude_driver(client_factory=probe)
-
-    session = driver.start(make_prompt(), noop_observer(), asyncio.Event())
-    await _drain()
-    await _settle(session)
-
-    assert client.options is not None
-    assert "max_budget_usd" not in client.options

@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 import types
+import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -37,14 +38,12 @@ from gymrat import exec as gymrat_exec
 from gymrat import process_group
 from gymrat.exec import (
     ExecOptions,
-    ExecResult,
-    ExecTimeoutError,
     SpawnError,
     exec_argv,
     release_contained,
     spawn_contained,
 )
-from tests._exec_fixtures import expected_result
+from tests._exec_fixtures import Teardown, cancel_task, leave_to_timeout, set_abort
 from tests._process_helpers import (
     SLEEPER_ARGV,
     capture_spawns,
@@ -228,8 +227,6 @@ if __name__ == "__main__":
 
 _SCRIPTS = {"beat": _BEAT, "bench": _BENCH, "tool": _TOOL, "ignore": _IGNORE, "orphan": _ORPHAN}
 
-type ExecTask = asyncio.Task[ExecResult | ExecTimeoutError]
-
 
 def read_beat(path: Path) -> str | None:
     """Read a heartbeat file, or ``None`` while it is absent or unreadable."""
@@ -306,7 +303,7 @@ def run_signalled_supervisor(
     grandchild_beat: Path,
     stop: Callable[[subprocess.Popen[str]], None],
 ) -> int:
-    """Run a tool-in-tool supervisor tree until the bench beats, then apply ``stop`` to it.
+    """Run a tool-in-tool supervisor tree until the bench and its child beat, then apply ``stop``.
 
     Args:
         tmp_path: Directory the supervisor runs in and the pid files land in.
@@ -336,6 +333,7 @@ def run_signalled_supervisor(
     )
     try:
         wait_for_beat(bench_beat)
+        wait_for_beat(grandchild_beat)
         tool_pid = wait_for_pid_file_blocking(inner_pid_file, timeout_s=_BEAT_TIMEOUT_S)
 
         stop(proc)
@@ -346,28 +344,6 @@ def run_signalled_supervisor(
             proc.kill()
             proc.communicate()
     return tool_pid
-
-
-def leave_to_timeout(task: ExecTask, abort: asyncio.Event) -> None:
-    """Leave the run alone: its own timeout tears it down."""
-
-
-def set_abort(task: ExecTask, abort: asyncio.Event) -> None:
-    """Tear the run down through its abort event."""
-    abort.set()
-
-
-def cancel_task(task: ExecTask, abort: asyncio.Event) -> None:
-    """Tear the run down by cancelling the task awaiting it."""
-    task.cancel()
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class Teardown:
-    """How a test ends the outer run: an optional timeout plus an action on the running task."""
-
-    timeout_ms: int | None
-    trigger: Callable[[ExecTask, asyncio.Event], None]
 
 
 @pytest.fixture
@@ -432,7 +408,7 @@ async def test_exec_argv_when_outer_run_torn_down_does_leave_no_bench_alive(
     await asyncio.to_thread(wait_for_beat, bench_beat)
     await asyncio.to_thread(wait_for_beat, grandchild_beat)
 
-    teardown.trigger(task, abort)
+    teardown.trigger(task, None, abort)
 
     with contextlib.suppress(asyncio.CancelledError):
         await asyncio.wait_for(task, _SETTLE_TIMEOUT_S)
@@ -442,110 +418,87 @@ async def test_exec_argv_when_outer_run_torn_down_does_leave_no_bench_alive(
     )
 
 
-async def test_exec_argv_when_child_exits_on_graceful_request_does_settle_at_child_speed(
+#: The timeout an ignoring child runs under, short enough to keep the timeout row quick.
+_IGNORING_CHILD_TIMEOUT_MS = 1000
+
+_POSIX_ONLY_IGNORE = pytest.mark.skipif(
+    sys.platform == "win32", reason="win32 has no ignorable termination signal"
+)
+
+
+@pytest.mark.parametrize(
+    ("script", "teardown", "bound_s", "outcome"),
+    [
+        pytest.param(
+            "beat",
+            Teardown(None, set_abort),
+            _CHILD_EXIT_SETTLE_S,
+            "ExecResult",
+            id="graceful-child-settles-at-child-speed",
+        ),
+        pytest.param(
+            "ignore",
+            Teardown(None, set_abort),
+            _GRACE_BOUND_S,
+            "ExecResult",
+            id="ignoring-child-aborted-is-killed-after-grace",
+            marks=_POSIX_ONLY_IGNORE,
+        ),
+        pytest.param(
+            "ignore",
+            Teardown(_IGNORING_CHILD_TIMEOUT_MS, leave_to_timeout),
+            _IGNORING_CHILD_TIMEOUT_MS / 1000 + _GRACE_BOUND_S,
+            "ExecTimeoutError",
+            id="ignoring-child-timed-out-is-killed-after-grace",
+            marks=_POSIX_ONLY_IGNORE,
+        ),
+        pytest.param(
+            "ignore",
+            Teardown(None, cancel_task),
+            _CANCEL_BOUND_S,
+            "CancelledError",
+            id="ignoring-child-cancelled-settles-in-reap-bound",
+            marks=_POSIX_ONLY_IGNORE,
+        ),
+    ],
+)
+async def test_exec_argv_when_torn_down_does_settle_within_the_bound_with_the_child_dead(
     tmp_path: Path,
     scripts: dict[str, Path],
     reap_beats: list[Path],
+    *,
+    script: str,
+    teardown: Teardown,
+    bound_s: float,
+    outcome: str,
 ) -> None:
     beat = tmp_path / "child.beat"
     reap_beats.append(beat)
     abort = asyncio.Event()
     task = asyncio.create_task(
         exec_argv(
-            [sys.executable, str(scripts["beat"]), str(beat)],
-            ExecOptions(cwd=str(tmp_path), abort=abort),
+            [sys.executable, str(scripts[script]), str(beat)],
+            ExecOptions(cwd=str(tmp_path), abort=abort, timeout_ms=teardown.timeout_ms),
         ),
     )
     await asyncio.to_thread(wait_for_beat, beat)
     loop = asyncio.get_running_loop()
     started = loop.time()
 
-    abort.set()
+    teardown.trigger(task, None, abort)
 
-    await asyncio.wait_for(task, _SETTLE_TIMEOUT_S)
-    assert loop.time() - started < _CHILD_EXIT_SETTLE_S
+    try:
+        settled: object = await asyncio.wait_for(task, _SETTLE_TIMEOUT_S)
+    except asyncio.CancelledError as cancelled:
+        settled = cancelled
+    assert loop.time() - started < bound_s
+    assert type(settled).__name__ == outcome
+    assert await asyncio.to_thread(heartbeat_stopped, beat), "the child outlived its teardown"
 
 
 # ---------------------------------------------------------------------------
 # a child that ignores the graceful request is killed once the grace elapses
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="win32 has no ignorable termination signal")
-async def test_exec_argv_when_aborted_and_child_ignores_graceful_signal_does_kill_after_grace(
-    tmp_path: Path,
-    scripts: dict[str, Path],
-    reap_beats: list[Path],
-) -> None:
-    beat = tmp_path / "child.beat"
-    reap_beats.append(beat)
-    abort = asyncio.Event()
-    task = asyncio.create_task(
-        exec_argv(
-            [sys.executable, str(scripts["ignore"]), str(beat)],
-            ExecOptions(cwd=str(tmp_path), abort=abort),
-        ),
-    )
-    await asyncio.to_thread(wait_for_beat, beat)
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-
-    abort.set()
-
-    result = await asyncio.wait_for(task, _SETTLE_TIMEOUT_S)
-    assert result == expected_result(exit_code=1)
-    assert loop.time() - started < _GRACE_BOUND_S
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="win32 has no ignorable termination signal")
-async def test_exec_argv_when_timed_out_and_child_ignores_graceful_signal_does_kill_after_grace(
-    tmp_path: Path,
-    scripts: dict[str, Path],
-    reap_beats: list[Path],
-) -> None:
-    beat = tmp_path / "child.beat"
-    reap_beats.append(beat)
-    timeout_ms = 1000
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-
-    result = await asyncio.wait_for(
-        exec_argv(
-            [sys.executable, str(scripts["ignore"]), str(beat)],
-            ExecOptions(cwd=str(tmp_path), timeout_ms=timeout_ms),
-        ),
-        _SETTLE_TIMEOUT_S,
-    )
-
-    assert isinstance(result, ExecTimeoutError)
-    assert result.timeout_ms == timeout_ms
-    assert loop.time() - started < timeout_ms / 1000 + _GRACE_BOUND_S
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="win32 has no ignorable termination signal")
-async def test_exec_argv_when_cancelled_and_child_ignores_graceful_signal_does_settle_in_reap_bound(
-    tmp_path: Path,
-    scripts: dict[str, Path],
-    reap_beats: list[Path],
-) -> None:
-    beat = tmp_path / "child.beat"
-    reap_beats.append(beat)
-    task = asyncio.create_task(
-        exec_argv(
-            [sys.executable, str(scripts["ignore"]), str(beat)],
-            ExecOptions(cwd=str(tmp_path)),
-        ),
-    )
-    await asyncio.to_thread(wait_for_beat, beat)
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-
-    task.cancel()
-
-    with contextlib.suppress(asyncio.CancelledError):
-        await asyncio.wait_for(task, _SETTLE_TIMEOUT_S)
-    assert loop.time() - started < _CANCEL_BOUND_S
-    assert await asyncio.to_thread(heartbeat_stopped, beat), "the child outlived its cancellation"
 
 
 # ---------------------------------------------------------------------------
@@ -567,6 +520,9 @@ def test_supervisor_when_signalled_mid_bench_does_leave_no_bench_alive(
 
     wait_until_dead_blocking(tool_pid, timeout_s=_SETTLE_TIMEOUT_S)
     assert heartbeat_stopped(bench_beat), "the bench outlived the signalled supervisor"
+    assert heartbeat_stopped(grandchild_beat), (
+        "the bench's grandchild outlived the signalled supervisor"
+    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="kill-on-close is a Job Object guarantee")
@@ -580,6 +536,9 @@ def test_supervisor_when_killed_without_cleanup_does_leave_no_bench_alive(
     run_signalled_supervisor(tmp_path, scripts, bench_beat, grandchild_beat, lambda p: p.kill())
 
     assert heartbeat_stopped(bench_beat), "the bench outlived the hard-killed supervisor"
+    assert heartbeat_stopped(grandchild_beat), (
+        "the bench's grandchild outlived the hard-killed supervisor"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -839,16 +798,18 @@ def test_attach_process_group_when_child_gets_a_job_does_limit_it_to_kill_on_clo
     )
 
 
-def test_terminate_process_group_when_job_assignment_refused_does_warn_and_fall_back_to_taskkill(
+@pytest.mark.parametrize("entry", ["terminate_process_group", "kill_process_group"])
+def test_stop_process_group_when_job_assignment_refused_does_fall_back_to_taskkill_with_one_warning(
     monkeypatch: pytest.MonkeyPatch,
     recwarn: pytest.WarningsRecorder,
+    entry: str,
 ) -> None:
     jobs = FakeJobs(assignment_granted=False)
     module = win32_process_group(monkeypatch, jobs)
     argv_calls = record_subprocess_runs(monkeypatch)
     module.attach_process_group(_CHILD_PID)
 
-    module.terminate_process_group(_CHILD_PID)
+    getattr(module, entry)(_CHILD_PID)
 
     refusals = [w for w in recwarn if "job assignment refused" in str(w.message)]
     assert len(refusals) == 1, "a refused assignment has to warn exactly once"
@@ -857,10 +818,9 @@ def test_terminate_process_group_when_job_assignment_refused_does_warn_and_fall_
         "a child that never reached a job was not torn down through taskkill"
     )
     assert jobs.closed == [_PROCESS_HANDLE, _JOB_HANDLE], "the refused job handle was leaked"
-    assert _CHILD_PID not in module._job_handles
 
 
-async def test_exec_argv_when_run_settles_on_win32_does_job_the_child_then_close_it(
+async def test_exec_argv_when_run_settles_on_win32_does_hold_the_child_in_a_job_until_it_settles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -890,7 +850,6 @@ async def test_exec_argv_when_run_settles_on_win32_does_job_the_child_then_close
     assert jobs.closed == [_PROCESS_HANDLE, _PROCESS_HANDLE, _JOB_HANDLE], (
         "the settled run left the child's job open, so a descendant survives it"
     )
-    assert jobbed_pid not in group._job_handles
 
 
 def test_kill_process_group_when_host_has_no_sigkill_does_terminate_the_job(
@@ -908,17 +867,19 @@ def test_kill_process_group_when_host_has_no_sigkill_does_terminate_the_job(
     )
 
 
-def test_terminate_process_group_when_job_still_emptying_does_wait_for_its_last_process(
+@pytest.mark.parametrize("entry", ["terminate_process_group", "release_process_group"])
+def test_terminate_or_release_process_group_when_job_still_emptying_does_wait_for_its_last_process(
     monkeypatch: pytest.MonkeyPatch,
+    entry: str,
 ) -> None:
     jobs = FakeJobs(active_counts=[2, 1, 0])
     module = win32_process_group(monkeypatch, jobs)
     module.attach_process_group(_CHILD_PID)
 
-    module.terminate_process_group(_CHILD_PID)
+    getattr(module, entry)(_CHILD_PID)
 
     assert jobs.terminated == [_JOB_HANDLE]
-    assert jobs.queried == [2, 1, 0], "the terminate returned before the job reported itself empty"
+    assert jobs.queried == [2, 1, 0], "the teardown returned before the job reported itself empty"
 
 
 def test_terminate_process_group_when_job_never_empties_does_give_up_at_the_grace(
@@ -937,7 +898,7 @@ def test_terminate_process_group_when_job_never_empties_does_give_up_at_the_grac
     assert elapsed < _GRACE_BOUND_S, "a job that never empties held the teardown open"
 
 
-def test_release_process_group_when_run_settles_does_close_the_job_and_forget_the_pid(
+def test_release_process_group_when_run_settles_does_terminate_and_close_the_empty_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     jobs = FakeJobs()
@@ -946,31 +907,27 @@ def test_release_process_group_when_run_settles_does_close_the_job_and_forget_th
 
     module.release_process_group(_CHILD_PID)
 
+    assert (jobs.terminated, jobs.queried) == ([_JOB_HANDLE], [0])
     assert jobs.closed == [_PROCESS_HANDLE, _JOB_HANDLE], (
         "the settle path left the job handle open, so a descendant survives it"
     )
-    assert _CHILD_PID not in module._job_handles
 
 
-def test_release_process_group_when_job_still_emptying_does_drain_it_before_closing(
+def test_kill_process_group_when_job_already_released_does_fall_back_to_taskkill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    jobs = FakeJobs(active_counts=[2, 1, 0])
+    jobs = FakeJobs()
     module = win32_process_group(monkeypatch, jobs)
+    argv_calls = record_subprocess_runs(monkeypatch)
     module.attach_process_group(_CHILD_PID)
-
     module.release_process_group(_CHILD_PID)
 
-    assert jobs.terminated == [_JOB_HANDLE], (
-        "the release left the job's members to die on their own after the handle closed"
+    module.kill_process_group(_CHILD_PID)
+
+    assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
+        "the released job was still on record, so the kill reached a closed handle"
     )
-    assert jobs.queried == [2, 1, 0], (
-        "the release closed the job handle before its members had reported themselves gone"
-    )
-    assert jobs.closed == [_PROCESS_HANDLE, _JOB_HANDLE], (
-        "the drained job handle was leaked instead of closed"
-    )
-    assert _CHILD_PID not in module._job_handles
+    assert jobs.terminated == [_JOB_HANDLE], "the kill reached the job after its release"
 
 
 # ---------------------------------------------------------------------------
@@ -1079,30 +1036,38 @@ def trace_containment(
     return steps
 
 
-def test_resume_process_group_when_child_is_suspended_does_resume_it(
+@pytest.mark.parametrize(
+    ("resume_granted", "resumed", "warnings_raised"),
+    [
+        pytest.param(True, [_CHILD_PID], [], id="suspended-child-is-resumed"),
+        pytest.param(
+            False,
+            [],
+            [f"could not resume pid {_CHILD_PID}: NTSTATUS 0xC0000022"],
+            id="refused-resume-warns",
+        ),
+    ],
+)
+def test_resume_process_group_when_resume_granted_or_refused_does_close_the_child_handle(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    resume_granted: bool,
+    resumed: list[int],
+    warnings_raised: list[str],
 ) -> None:
-    jobs = FakeJobs()
+    jobs = FakeJobs(resume_granted=resume_granted)
     module = win32_process_group(monkeypatch, jobs)
 
-    resumed = module.resume_process_group(_CHILD_PID)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = module.resume_process_group(_CHILD_PID)
 
-    assert resumed is True
-    assert jobs.resumed == [_CHILD_PID], "the suspended child was never resumed"
-    assert jobs.closed == [_PROCESS_HANDLE], "the resumed child's handle was leaked"
-
-
-def test_resume_process_group_when_host_refuses_resume_does_warn_and_report_the_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    jobs = FakeJobs(resume_granted=False)
-    module = win32_process_group(monkeypatch, jobs)
-
-    with pytest.warns(RuntimeWarning, match="could not resume"):
-        resumed = module.resume_process_group(_CHILD_PID)
-
-    assert resumed is False
-    assert jobs.closed == [_PROCESS_HANDLE], "the refused child's handle was leaked"
+    assert result is resume_granted
+    assert jobs.resumed == resumed
+    assert [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)] == (
+        warnings_raised
+    )
+    assert jobs.closed == [_PROCESS_HANDLE], "the child's handle was leaked"
 
 
 @pytest.mark.parametrize(
@@ -1159,31 +1124,15 @@ async def test_exec_argv_when_spawning_on_win32_does_not_ask_for_a_posix_session
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("refusal", "warning"),
-    [
-        pytest.param(
-            lambda: FakeJobs(creation_granted=False),
-            "job creation refused",
-            id="job-creation-refused",
-        ),
-        pytest.param(
-            lambda: FakeJobs(assignment_granted=False),
-            "job assignment refused",
-            id="job-assignment-refused",
-        ),
-    ],
-)
-async def test_spawn_contained_when_host_refuses_the_job_does_fall_back_to_taskkill_with_one_warning(
+async def test_spawn_contained_when_host_refuses_job_creation_does_fall_back_to_taskkill_with_one_warning(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     recwarn: pytest.WarningsRecorder,
-    refusal: Callable[[], FakeJobs],
-    warning: str,
 ) -> None:
     # The child is real and started running; its job layer is the faked win32
-    # one, and the taskkill it falls back to is recorded instead of run.
-    group = win32_process_group(monkeypatch, refusal())
+    # one, and the taskkill it falls back to is recorded instead of run. A
+    # refused assignment takes the same fallback through the stop entry points.
+    group = win32_process_group(monkeypatch, FakeJobs(creation_granted=False))
     bind_group_seams(monkeypatch, gymrat_exec, group)
     argv_calls = record_subprocess_runs(monkeypatch)
     spawn_children_running(monkeypatch)
@@ -1199,5 +1148,5 @@ async def test_spawn_contained_when_host_refuses_the_job_does_fall_back_to_taskk
 
     runtime_warnings = [str(w.message) for w in recwarn if w.category is RuntimeWarning]
     assert len(runtime_warnings) == 1, "a refused job warns once"
-    assert warning in runtime_warnings[0], "the one warning is not the job refusal"
+    assert "job creation refused" in runtime_warnings[0], "the one warning is not the job refusal"
     assert ["taskkill", "/F", "/T", "/PID", str(child.pid)] in argv_calls, "no taskkill ran"

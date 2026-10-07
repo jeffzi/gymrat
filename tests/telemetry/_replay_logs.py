@@ -13,7 +13,11 @@ from typing import Any
 
 from gymrat.session.records import record_to_wire
 from gymrat.supervisor.events import LaunchEvent, TurnEndEvent, to_json_line
-from tests.session.records._fixtures import AT, SESSION_ID
+from tests.session.records._fixtures import (
+    AT,
+    BASELINE_SHA,
+    SESSION_ID,
+)
 from tests.supervisor._fixtures import make_launch, make_turn_end
 
 _ONE_SECOND_NS = 1_000_000_000
@@ -25,8 +29,6 @@ T2 = T1 + _ONE_SECOND_NS
 T3 = T2 + _ONE_SECOND_NS
 T4 = T3 + _ONE_SECOND_NS
 T5 = T4 + _ONE_SECOND_NS
-
-HEAD_SHA = "a" * 40
 
 
 def write_lines(path: str, lines: list[str]) -> None:
@@ -45,10 +47,10 @@ def write_supervisor_log(path: str, events: list[Any]) -> None:
     write_lines(path, [to_json_line(ev) for ev in events])
 
 
-def launch_event(
+def replay_launch_event(
     session_id: str = SESSION_ID,
     at: int = T0,
-    head_sha: str = HEAD_SHA,
+    head_sha: str = BASELINE_SHA,
     **kwargs: Any,
 ) -> LaunchEvent:
     """Build the launch event that opens a supervisor log."""
@@ -63,6 +65,6 @@ def launch_event(
     )
 
 
-def turn_end(at: int = T3, cost_usd: float = 0.42) -> TurnEndEvent:
+def replay_turn_end(at: int = T3, cost_usd: float = 0.42) -> TurnEndEvent:
     """Build an agent turn-end event carrying ``cost_usd``."""
     return make_turn_end(at=at, text="done", cost_usd=cost_usd)

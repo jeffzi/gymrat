@@ -1,37 +1,33 @@
 """Shared helpers for telemetry provider tests.
 
 The ``memory_tracing`` context manager wires an in-memory exporter so tests
-can inspect finished spans without a collector. ``isolate_tracing_provider``
-is the autouse fixture every module that configures tracing registers by
-importing it.
+can inspect finished spans without a collector; ``hide_otlp_exporter`` and
+``hide_otel_sdk`` make the optional tracing packages fail to import.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import warnings
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
-import pytest
-
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterator
+    from collections.abc import Generator
 
+    import pytest
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from gymrat.telemetry.provider import _reset_for_tests, configure_tracing
+from gymrat.telemetry.provider import configure_tracing, reset_tracing
 
 
-def reset_provider_quietly() -> None:
-    """Call ``_reset_for_tests`` with OTel's deprecation warnings suppressed."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        _reset_for_tests()
-
-
-_OTLP_EXPORTER_PACKAGE = "opentelemetry.exporter.otlp.proto.http"
+def _hide_package(monkeypatch: pytest.MonkeyPatch, package: str, submodule: str) -> None:
+    # Map the package, the submodule the code under test imports, and every
+    # loaded submodule to None in sys.modules, so importing any of them raises
+    # ImportError.
+    loaded = [name for name in sys.modules if name == package or name.startswith(f"{package}.")]
+    for name in {package, f"{package}.{submodule}", *loaded}:
+        monkeypatch.setitem(sys.modules, name, None)
 
 
 def hide_otlp_exporter(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -41,16 +37,7 @@ def hide_otlp_exporter(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch: Maps the package and its loaded submodules to ``None`` in
             ``sys.modules``, so importing any of them raises ``ImportError``.
     """
-    hidden = [
-        name
-        for name in sys.modules
-        if name == _OTLP_EXPORTER_PACKAGE or name.startswith(f"{_OTLP_EXPORTER_PACKAGE}.")
-    ]
-    for name in {_OTLP_EXPORTER_PACKAGE, f"{_OTLP_EXPORTER_PACKAGE}.trace_exporter", *hidden}:
-        monkeypatch.setitem(sys.modules, name, None)
-
-
-_OTEL_SDK_PACKAGE = "opentelemetry.sdk"
+    _hide_package(monkeypatch, "opentelemetry.exporter.otlp.proto.http", "trace_exporter")
 
 
 def hide_otel_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -60,21 +47,7 @@ def hide_otel_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch: Maps the package and its loaded submodules to ``None`` in
             ``sys.modules``, so importing any of them raises ``ImportError``.
     """
-    hidden = [
-        name
-        for name in sys.modules
-        if name == _OTEL_SDK_PACKAGE or name.startswith(f"{_OTEL_SDK_PACKAGE}.")
-    ]
-    for name in {_OTEL_SDK_PACKAGE, f"{_OTEL_SDK_PACKAGE}.trace", *hidden}:
-        monkeypatch.setitem(sys.modules, name, None)
-
-
-@pytest.fixture(autouse=True)
-def isolate_tracing_provider() -> Iterator[None]:
-    """Start and end every test with no tracing provider."""
-    reset_provider_quietly()
-    yield
-    reset_provider_quietly()
+    _hide_package(monkeypatch, "opentelemetry.sdk", "trace")
 
 
 @contextmanager
@@ -110,7 +83,7 @@ def memory_tracing(session_id: str, *, buffered: bool = False) -> Generator[InMe
         yield exporter
     finally:
         os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
-        _reset_for_tests()
+        reset_tracing()
 
 
 def span_by_name(spans: tuple[Any, ...] | list[Any], name: str) -> Any:

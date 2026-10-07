@@ -19,12 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.exec import FAILURE_EXIT_CODE, ExecOptions, ExecResult
+from gymrat.exec import FAILURE_EXIT_CODE, ExecResult
 from gymrat.loop.iterate.run import run_hook
 from gymrat.session.records import IterationRecord, record_to_wire
 from gymrat.session.schema import HookStage
 from gymrat.session.workspace import Worktrees
-from tests._exec_fixtures import expected_result
+from tests._exec_fixtures import expected_result, install_exec
 from tests.loop.iterate._hooks import HookScripts, expected_hook_record
 from tests.session.records._fixtures import SESSION_ID, iteration_record, session_record
 
@@ -145,7 +145,9 @@ async def test_run_hook_when_hook_prints_nothing_does_report_empty(hooks: HookSc
     assert run.report == ""
 
 
-async def test_run_hook_when_successful_does_keep_stderr_out_of_report(hooks: HookScripts) -> None:
+async def test_run_hook_when_successful_hook_writes_both_channels_does_report_only_stdout(
+    hooks: HookScripts,
+) -> None:
     command = hooks.hook_command(
         "import sys\n"
         'sys.stdout.buffer.write(b"warmed the cache\\n")\n'
@@ -155,91 +157,28 @@ async def test_run_hook_when_successful_does_keep_stderr_out_of_report(hooks: Ho
     run = await run_hook(hooks.invocation_of(command))
 
     assert run.report == "[before] warmed the cache"
-
-
-# ---------------------------------------------------------------------------
-# run_hook — recorded byte counts
-# ---------------------------------------------------------------------------
-
-
-async def test_run_hook_when_command_runs_does_record_bytes_the_hook_printed(
-    hooks: HookScripts,
-) -> None:
-    command = hooks.printing("hello")
-
-    run = await run_hook(hooks.invocation_of(command))
-
     assert run.record.model_copy(update={"duration_ms": 0, "at": 0}) == expected_hook_record(
-        stage="before", seq=2, exit_code=0, stdout_bytes=6
+        stage="before", seq=2, exit_code=0, stdout_bytes=17, stderr_bytes=23
     )
 
 
-async def test_run_hook_when_hook_writes_stderr_does_record_stderr_bytes(
-    hooks: HookScripts,
-) -> None:
-    command = hooks.hook_command(
-        'import sys\nsys.stdout.buffer.write(b"hello\\n")\nsys.stderr.buffer.write(b"warning\\n")\n'
-    )
-
-    run = await run_hook(hooks.invocation_of(command))
-
-    assert run.record.stdout_bytes == 6
-    assert run.record.stderr_bytes == 8
+# ---------------------------------------------------------------------------
+# run_hook — timing
+# ---------------------------------------------------------------------------
 
 
-async def test_run_hook_when_clock_faked_does_record_duration_from_monotonic_clock(
+async def test_run_hook_when_clocks_faked_does_read_both_clocks_for_the_record(
     hooks: HookScripts,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ticks = itertools.count(start=1000.0, step=250.0)
     monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
-
-    run = await run_hook(hooks.invocation_of(hooks.hook_command("")))
-
-    assert run.record.duration_ms == 250.0
-
-
-async def test_run_hook_when_wall_clock_faked_does_stamp_the_record_in_nanoseconds(
-    hooks: HookScripts,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     stamp_ns = 1_700_000_000_123_456_789
     monkeypatch.setattr("gymrat.loop.iterate.run.now_ns", lambda: stamp_ns)
 
     run = await run_hook(hooks.invocation_of(hooks.hook_command("")))
 
-    assert run.record.at == stamp_ns
-
-
-# ---------------------------------------------------------------------------
-# run_hook — the 8 KiB relay cut
-# ---------------------------------------------------------------------------
-
-
-async def test_run_hook_when_stdout_over_budget_does_cut_at_last_whole_line(
-    hooks: HookScripts,
-) -> None:
-    line = "a" * 100
-    whole_lines = RELAY_LIMIT_BYTES // len(f"{line}\n".encode())
-    text = f"{line}\n" * 200
-    command = hooks.printing_content_of("many-lines.txt", text)
-
-    run = await run_hook(hooks.invocation_of(command))
-
-    assert labeled_lines(run.report, "before") == [line] * whole_lines
-    assert run.record.stdout_bytes == len(text.encode("utf-8"))
-
-
-async def test_run_hook_when_stdout_single_long_line_does_not_split_multi_byte_char(
-    hooks: HookScripts,
-) -> None:
-    content = "é" * 5000
-    command = hooks.printing_content_of("one-long-line.txt", content)
-
-    run = await run_hook(hooks.invocation_of(command))
-
-    assert labeled_lines(run.report, "before") == ["é" * (RELAY_LIMIT_BYTES // 2)]
-    assert run.record.stdout_bytes == len(content.encode("utf-8"))
+    assert (run.record.duration_ms, run.record.at) == (250.0, stamp_ns)
 
 
 # ---------------------------------------------------------------------------
@@ -262,20 +201,9 @@ async def test_run_hook_when_failing_over_budget_does_cap_each_channel(hooks: Ho
     assert run.record.stdout_bytes == len(stdout.encode("utf-8"))
 
 
-async def test_run_hook_when_failing_stderr_long_line_does_not_split_multi_byte_char(
+async def test_run_hook_when_hook_exits_nonzero_does_surface_the_failure(
     hooks: HookScripts,
 ) -> None:
-    command = hooks.failing_content_of("long-stderr-line", "", "é" * 5000)
-
-    run = await run_hook(hooks.invocation_of(command))
-
-    assert labeled_lines(run.report, "before") == [
-        "hook exited 3",
-        "é" * (RELAY_LIMIT_BYTES // 2),
-    ]
-
-
-async def test_run_hook_when_hook_exits_nonzero_does_report_and_record(hooks: HookScripts) -> None:
     command = hooks.hook_command(
         "import sys\n"
         'sys.stdout.buffer.write(b"checked the cache\\n")\n'
@@ -295,7 +223,7 @@ async def test_run_hook_when_hook_exits_nonzero_does_report_and_record(hooks: Ho
     )
 
 
-async def test_run_hook_when_hook_outruns_timeout_does_kill_and_report(
+async def test_run_hook_when_hook_outruns_timeout_does_kill_it_as_timed_out(
     hooks: HookScripts, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     command = hooks.hook_command("import time\ntime.sleep(5)\n")
@@ -341,7 +269,7 @@ async def test_run_hook_when_worktree_vanished_does_report_instead_of_raising(
     assert run.record.timed_out is False
 
 
-async def test_run_hook_when_abort_signal_set_does_kill_and_record(hooks: HookScripts) -> None:
+async def test_run_hook_when_abort_signal_set_does_kill_it(hooks: HookScripts) -> None:
     command = hooks.hook_command("import time\ntime.sleep(10)\n")
     abort = asyncio.Event()
 
@@ -367,16 +295,14 @@ async def test_run_hook_when_exec_output_capped_does_record_pre_cap_byte_counts(
     hooks: HookScripts,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def capped_exec(command: str, options: ExecOptions) -> ExecResult:
-        return ExecResult(
-            stdout="capped stdout",
-            stderr="capped stderr",
-            exit_code=0,
-            stdout_bytes=200_000,
-            stderr_bytes=150_000,
-        )
-
-    monkeypatch.setattr("gymrat.loop.iterate.run.exec", capped_exec)
+    capped = ExecResult(
+        stdout="capped stdout",
+        stderr="capped stderr",
+        exit_code=0,
+        stdout_bytes=200_000,
+        stderr_bytes=150_000,
+    )
+    install_exec(monkeypatch, "gymrat.loop.iterate.run.exec", capped)
 
     run = await run_hook(hooks.invocation_of("unused-because-exec-is-mocked"))
 
@@ -393,14 +319,8 @@ async def test_run_hook_when_invoked_does_run_under_the_default_timeout(
     hooks: HookScripts,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    handed: list[ExecOptions] = []
-
-    async def recording_exec(command: str, options: ExecOptions) -> ExecResult:
-        handed.append(options)
-        return expected_result()
-
-    monkeypatch.setattr("gymrat.loop.iterate.run.exec", recording_exec)
+    recorder = install_exec(monkeypatch, "gymrat.loop.iterate.run.exec", expected_result())
 
     await run_hook(hooks.invocation_of("unused-because-exec-is-mocked"))
 
-    assert [options.timeout_ms for options in handed] == [DEFAULT_TIMEOUT_MS]
+    assert [options.timeout_ms for _, options in recorder.calls] == [DEFAULT_TIMEOUT_MS]

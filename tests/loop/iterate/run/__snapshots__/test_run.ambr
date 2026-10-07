@@ -1,5 +1,5 @@
 # serializer version: 1
-# name: test_iterate_session_when_measured_does_render_the_report_golden
+# name: test_iterate_session_when_primary_is_named_metric_does_report_its_delta_alone
   list([
     'iteration 2 · experiment vs baseline · 10 paired samples',
     'metric                     │ baseline     │ experiment   │ vs baseline',

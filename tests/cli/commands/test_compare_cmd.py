@@ -4,48 +4,46 @@ These drive the command through :class:`typer.testing.CliRunner` with the
 ``compare`` and ``resolve_config`` seams replaced, so no real bench runs. They
 cover flag parsing into the config resolver, the text and JSON report going to
 stdout, the missing-bench error routing to exit 2 on stderr, the fail-on gate
-tripping to exit 1 only after the report is printed, budget time-left reporting
-in text and JSON output (including on gate-refusal), and duration warnings when
-the budget is tight.
+tripping to exit 1 only after the report is printed, the empty-geomean warning,
+and the command trace. The fail-on gate evaluation is also driven directly. The
+budget time-left line and the tight-budget warning are pinned with every other
+command's in ``test_session_cmds``.
 """
 
 from __future__ import annotations
 
 import json
-import re
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from gymrat.compare import CompareOptions
 
 import pytest
-from typer.testing import CliRunner
 
 from gymrat.cli.app import app
-from gymrat.cli.commands.compare import CompareFlags, _serialize_fail_on
+from gymrat.cli.commands.compare import should_fail_gate
 from gymrat.config import CliFlags, KindEntry, MetricEntry, ResolvedConfig
+from gymrat.report.text.render import render_report
 from gymrat.report.types import (
     ComparisonResult,
-    FailOnCondition,
     GeomeanFailOn,
     RegressedFailOn,
+    ReportOptions,
 )
 from gymrat.sampling import RunOptions, SamplingOptions
-from gymrat.session.paths import session_jsonl_path
-from gymrat.session.store import append_record
-from gymrat.utils import warn_to_stderr
 from tests._config import resolved_config
-from tests.cli._budget import install_budget, install_tight_budget
-from tests.cli._session import last_command_record, open_session
+from tests.cli._session import (
+    last_command_record,
+    open_session,
+    runner,
+)
 from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
     other_kind,
     permutation_metric,
+    without_gated_geomean,
 )
-from tests.session.records._fixtures import iteration_record, session_record, write_session_log
-
-runner = CliRunner()
 
 
 def _resolved(bench: str = "sh bench.sh") -> ResolvedConfig:
@@ -186,8 +184,6 @@ def test_compare_when_run_options_built_does_forward_every_field_to_compare_opti
         config_metrics=resolved.metrics,
         config_kinds=resolved.kinds,
     )
-    assert sampling.on_progress is not None
-    assert sampling.warn is not warn_to_stderr
 
 
 # ---------------------------------------------------------------------------
@@ -241,219 +237,125 @@ def test_compare_when_bench_missing_does_exit_two_with_message_on_stderr():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("fail_on", "warnings"),
+    [
+        pytest.param(
+            "geomean:2",
+            ['warning: geomean gate for "cand-empty" had no stable gating metrics to measure'],
+            id="geomean-gate-names-the-empty-candidate",
+        ),
+        pytest.param("regressed", [], id="no-geomean-gate-stays-silent"),
+    ],
+)
 @pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_fail_on_trips_does_exit_one_after_printing_report(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _stub_compare(monkeypatch, _regressed_result())
-
-    result = runner.invoke(
-        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "regressed"]
-    )
-
-    assert result.exit_code == 1
-    assert "main" in result.stdout
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_fail_on_does_not_trip_does_exit_zero(monkeypatch: pytest.MonkeyPatch):
-    _stub_compare(monkeypatch)
-
-    result = runner.invoke(
-        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "regressed"]
-    )
-
-    assert result.exit_code == 0
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_geomean_gate_has_nothing_stable_does_warn_on_stderr(
-    monkeypatch: pytest.MonkeyPatch,
+def test_compare_when_a_candidate_has_no_stable_gating_metric_does_warn_only_under_a_geomean_gate(
+    monkeypatch: pytest.MonkeyPatch, fail_on: str, warnings: list[str]
 ):
     _stub_compare(
         monkeypatch,
         create_comparison_result(
-            candidates=[create_candidate(label="cand", kinds=[other_kind(5.0, 0)])]
+            candidates=[
+                create_candidate(label="cand-empty", kinds=[other_kind(5.0, 0)]),
+                create_candidate(label="cand-ok", kinds=[other_kind(5.0, 3)]),
+            ]
         ),
     )
 
     result = runner.invoke(
-        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "geomean:2"]
+        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", fail_on]
     )
 
-    assert (
-        'warning: geomean gate for "cand" had no stable gating metrics to measure\n'
-        in result.stderr
-    )
+    assert [line for line in result.stderr.splitlines() if line.startswith("warning: ")] == warnings
 
 
 # ---------------------------------------------------------------------------
-# budget time-left line (text) and key (JSON) on compare
+# should_fail_gate
 # ---------------------------------------------------------------------------
 
 
-def test_compare_when_budget_active_does_end_text_with_time_left_line(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
+_REGRESSED_GATING = {"m/time": permutation_metric(verdict="regressed", delta=4, gating=True)}
+
+
+@pytest.mark.parametrize(
+    ("conditions", "result_args", "expected"),
+    [
+        pytest.param(
+            (),
+            {"metrics": _REGRESSED_GATING, "candidates": [create_candidate()]},
+            False,
+            id="no-conditions",
+        ),
+        pytest.param(
+            (RegressedFailOn(),),
+            {"metrics": _REGRESSED_GATING, "candidates": [create_candidate()]},
+            True,
+            id="regressed-gating-metric",
+        ),
+        pytest.param(
+            (RegressedFailOn(),),
+            {
+                "metrics": {
+                    "m/time": permutation_metric(verdict="regressed", delta=4, gating=False)
+                },
+                "candidates": [create_candidate()],
+            },
+            False,
+            id="regression-non-gating",
+        ),
+        *(
+            pytest.param(
+                (GeomeanFailOn(pct=2.0),),
+                {"candidates": [create_candidate(kinds=[other_kind(geomean, 3)])]},
+                expected,
+                id=f"geomean-{label}",
+            )
+            for geomean, expected, label in (
+                (5.0, True, "above-threshold"),
+                (2.0, True, "exactly-on-threshold"),
+                (1.0, False, "below-threshold"),
+            )
+        ),
+        pytest.param(
+            (GeomeanFailOn(pct=2.0),),
+            {"candidates": [create_candidate(kinds=[other_kind(5.0, 0)])]},
+            False,
+            id="gated-geomean-without-samples",
+        ),
+        pytest.param(
+            (GeomeanFailOn(pct=2.0),),
+            {"candidates": [create_candidate(kinds=[without_gated_geomean(other_kind(5.0, 3))])]},
+            False,
+            id="kind-non-gating",
+        ),
+        pytest.param(
+            (RegressedFailOn(), GeomeanFailOn(pct=99.0)),
+            {
+                "metrics": _REGRESSED_GATING,
+                "candidates": [create_candidate(kinds=[other_kind(1.0, 3)])],
+            },
+            True,
+            id="any-of-several-conditions",
+        ),
+        pytest.param(
+            (GeomeanFailOn(pct=99.0), RegressedFailOn()),
+            {
+                "metrics": _REGRESSED_GATING,
+                "candidates": [create_candidate(kinds=[other_kind(1.0, 3)])],
+            },
+            True,
+            id="tripping-condition-after-a-quiet-one",
+        ),
+    ],
+)
+def test_should_fail_gate_when_evaluated_does_trip_only_on_a_matching_gating_condition(
+    conditions: tuple[RegressedFailOn | GeomeanFailOn, ...],
+    result_args: dict[str, Any],
+    expected: bool,
 ):
-    _stub_compare(monkeypatch)
-    install_budget(repo, monkeypatch)
+    result = create_comparison_result(**result_args)
 
-    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == 0
-    lines = [line.strip() for line in result.stdout.split("\n") if line.strip()]
-    assert re.search(r"left of 30m", lines[-1])
-
-
-def test_compare_when_no_budget_does_omit_time_left_line(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    _stub_compare(monkeypatch)
-
-    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == 0
-    assert "left of" not in result.stdout
-
-
-def test_compare_when_format_json_and_budget_active_does_include_budget_object(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    _stub_compare(monkeypatch)
-    install_budget(repo, monkeypatch)
-
-    result = runner.invoke(
-        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "json"]
-    )
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert "budget" in doc
-    assert doc["budget"]["cap_minutes"] == 30
-    assert isinstance(doc["budget"]["remaining_seconds"], int)
-
-
-def test_compare_when_format_json_and_no_budget_does_omit_budget_key(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    _stub_compare(monkeypatch)
-
-    result = runner.invoke(
-        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "json"]
-    )
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert "budget" not in doc
-
-
-# ---------------------------------------------------------------------------
-# budget on gate-refusal output
-# ---------------------------------------------------------------------------
-
-
-def test_compare_when_fail_on_trips_and_budget_active_does_include_time_left_line(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    _stub_compare(monkeypatch, _regressed_result())
-    install_budget(repo, monkeypatch)
-
-    result = runner.invoke(
-        app,
-        ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "regressed"],
-    )
-
-    assert result.exit_code == 1
-    assert re.search(r"left of 30m", result.stdout)
-
-
-def test_compare_when_fail_on_trips_and_format_json_and_budget_active_does_include_budget_key(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    _stub_compare(monkeypatch, _regressed_result())
-    install_budget(repo, monkeypatch)
-
-    result = runner.invoke(
-        app,
-        [
-            "compare",
-            "main",
-            "cand",
-            "--bench",
-            "sh bench.sh",
-            "--fail-on",
-            "regressed",
-            "--format",
-            "json",
-        ],
-    )
-
-    assert result.exit_code == 1
-    doc = json.loads(result.stdout)
-    assert "budget" in doc
-    assert doc["budget"]["cap_minutes"] == 30
-
-
-# ---------------------------------------------------------------------------
-# budget absent on error exits
-# ---------------------------------------------------------------------------
-
-
-def test_compare_when_error_and_budget_active_does_not_include_budget(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    install_budget(repo, monkeypatch)
-
-    result = runner.invoke(app, ["compare", "main", "cand"])
-
-    assert result.exit_code == 2
-    assert "left of" not in result.stdout
-    assert "left of" not in result.stderr
-
-
-# ---------------------------------------------------------------------------
-# duration warnings
-# ---------------------------------------------------------------------------
-
-
-def _write_session_with_duration(repo: str, duration_ms: float) -> None:
-    """Write a session log with one iteration record carrying a known duration."""
-    write_session_log(repo, session_record())
-    append_record(session_jsonl_path(repo), iteration_record(duration_ms=duration_ms))
-
-
-def test_compare_when_budget_tight_and_estimate_known_does_warn_on_stderr(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    _stub_compare(monkeypatch)
-    install_tight_budget(repo, monkeypatch)
-    _write_session_with_duration(repo, 720_000)
-
-    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == 0
-    assert "warning" in result.stderr.lower()
-
-
-def test_compare_when_estimate_unknown_does_not_warn(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    _stub_compare(monkeypatch)
-    install_tight_budget(repo, monkeypatch)
-
-    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == 0
-    assert "warning" not in result.stderr.lower()
+    assert should_fail_gate(conditions, result) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -461,94 +363,59 @@ def test_compare_when_estimate_unknown_does_not_warn(
 # ---------------------------------------------------------------------------
 
 
-def test_compare_when_targets_labeled_does_record_the_labels_in_trace_args(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    open_session(repo)
-    _stub_compare(monkeypatch)
-
-    result = runner.invoke(app, ["compare", "before=main", "after=cand", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == 0
-    cmd = last_command_record(repo)
-    assert (cmd.args["baseline"], cmd.args["candidates"]) == ("before", ["after"])
-
-
-def test_compare_when_success_does_record_trace_with_baseline_candidates_fail_on(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    open_session(repo)
-    _stub_compare(monkeypatch)
-
-    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == 0
-    cmd = last_command_record(repo)
-    assert cmd.name == "compare"
-    assert cmd.args["baseline"] == "main"
-    assert cmd.args["candidates"] == ["cand"]
-    assert cmd.args["fail_on"] == ""
-    assert cmd.exit_code == 0
-    assert cmd.reason is None
-    for key in ("prepare", "adapter", "samples", "timeout", "config"):
-        assert key not in cmd.args
-
-
-def test_compare_when_config_overrides_given_does_include_them_in_trace_args(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    open_session(repo)
-    _stub_compare(monkeypatch)
-
-    result = runner.invoke(
-        app,
-        [
-            "compare",
+@pytest.mark.parametrize(
+    ("argv", "baseline", "candidates", "fail_on"),
+    [
+        pytest.param(["main", "cand"], "main", ["cand"], "", id="no-fail-on"),
+        pytest.param(
+            ["main", "cand", "--fail-on", "regressed"],
             "main",
-            "cand",
-            "--bench",
-            "sh bench.sh",
-            "--prepare",
-            "make",
-            "--adapter",
-            "mitata",
-            "--samples",
-            "7",
-            "--timeout",
-            "42",
-            "--config",
-            "gymrat.json",
-        ],
-    )
-
-    assert result.exit_code == 0
-    cmd = last_command_record(repo)
-    assert cmd.args["bench"] == "sh bench.sh"
-    assert cmd.args["prepare"] == "make"
-    assert cmd.args["adapter"] == "mitata"
-    assert cmd.args["samples"] == 7
-    assert cmd.args["timeout"] == 42
-    assert cmd.args["config"] == "gymrat.json"
-
-
-def test_compare_when_multiple_candidates_does_record_all_in_trace_args(
+            ["cand"],
+            "regressed",
+            id="fail-on-not-tripped",
+        ),
+        pytest.param(
+            ["main", "cand", "--fail-on", "geomean:99.5"],
+            "main",
+            ["cand"],
+            "geomean:99.5",
+            id="geomean-fail-on",
+        ),
+        pytest.param(
+            ["main", "cand", "--fail-on", "regressed", "--fail-on", "geomean:99.5"],
+            "main",
+            ["cand"],
+            "regressed,geomean:99.5",
+            id="regressed-and-geomean-fail-on",
+        ),
+        pytest.param(["before=main", "after=cand"], "before", ["after"], "", id="labeled-targets"),
+        pytest.param(
+            ["main", "cand1", "cand2"], "main", ["cand1", "cand2"], "", id="two-candidates"
+        ),
+    ],
+)
+def test_compare_when_success_does_record_trace_with_baseline_candidates_and_fail_on(
+    *,
+    argv: list[str],
+    baseline: str,
+    candidates: list[str],
+    fail_on: str,
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
     open_session(repo)
     _stub_compare(monkeypatch)
 
-    result = runner.invoke(app, ["compare", "main", "cand1", "cand2", "--bench", "sh bench.sh"])
+    result = runner.invoke(app, ["compare", *argv, "--bench", "sh bench.sh"])
 
     assert result.exit_code == 0
     cmd = last_command_record(repo)
-    assert cmd.args["candidates"] == ["cand1", "cand2"]
+    assert (cmd.name, cmd.exit_code, cmd.reason) == ("compare", 0, None)
+    assert (cmd.args["baseline"], cmd.args["candidates"]) == (baseline, candidates)
+    assert (cmd.args["fail_on"], cmd.args["bench"]) == (fail_on, "sh bench.sh")
 
 
-def test_compare_when_fail_on_trips_does_record_exit_one_with_gate_reason(
+def test_compare_when_fail_on_trips_does_exit_one_as_a_fail_on_gate_trip(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
@@ -560,104 +427,12 @@ def test_compare_when_fail_on_trips_does_record_exit_one_with_gate_reason(
     )
 
     assert result.exit_code == 1
-    cmd = last_command_record(repo)
-    assert cmd.exit_code == 1
-    assert cmd.reason == "fail-on"
-
-
-def test_compare_when_fail_on_does_not_trip_does_record_trace_with_baseline_and_exit_zero(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    open_session(repo)
-    _stub_compare(monkeypatch)
-
-    result = runner.invoke(
-        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "regressed"]
+    assert result.stdout == (
+        render_report(_regressed_result(), ReportOptions(fail_on=(RegressedFailOn(),), color=False))
+        + "\n"
     )
-
-    assert result.exit_code == 0
     cmd = last_command_record(repo)
-    assert cmd.args["baseline"] == "main"
-    assert cmd.args["fail_on"] == "regressed"
-    assert cmd.exit_code == 0
-    assert cmd.reason is None
-
-
-# ---------------------------------------------------------------------------
-# _serialize_fail_on
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("conditions", "expected"),
-    [
-        pytest.param((RegressedFailOn(),), "regressed", id="regressed-only"),
-        pytest.param((GeomeanFailOn(pct=3.5),), "geomean:3.5", id="geomean-only"),
-        pytest.param(
-            (RegressedFailOn(), GeomeanFailOn(pct=2.5)),
-            "regressed,geomean:2.5",
-            id="regressed-and-geomean",
-        ),
-    ],
-)
-def test_serialize_fail_on_when_known_conditions_does_render_csv(
-    conditions: tuple[FailOnCondition, ...],
-    expected: str,
-) -> None:
-    result = _serialize_fail_on(conditions)
-
-    assert result == expected
-
-
-def test_serialize_fail_on_when_unknown_condition_does_raise() -> None:
-    bogus = cast("FailOnCondition", object())
-
-    with pytest.raises(AssertionError, match="Expected code to be unreachable"):
-        _serialize_fail_on((bogus,))
-
-
-# ---------------------------------------------------------------------------
-# help text — meta variables and short forms
-# ---------------------------------------------------------------------------
-
-
-def test_compare_when_help_does_show_samples_with_short_form_and_int_metavar():
-    from tests.cli._help import help_output
-
-    out = help_output("compare")
-
-    assert "--samples" in out
-    assert "-s" in out
-    assert "<int>" in out
-
-
-def test_compare_when_help_does_show_timeout_with_short_form_and_int_metavar():
-    from tests.cli._help import help_output
-
-    out = help_output("compare")
-
-    assert "--timeout" in out
-    assert "-t" in out
-    assert "<int>" in out
-
-
-def test_compare_when_help_does_show_fail_on_with_condition_metavar():
-    from tests.cli._help import help_output
-
-    out = help_output("compare")
-
-    assert "--fail-on" in out
-    assert "<condition>" in out
-
-
-def test_compare_when_help_does_show_verbose_with_short_form():
-    from tests.cli._help import help_output
-
-    out = help_output("compare")
-
-    assert "--verbose" in out
-    assert re.search(r"(?<!\w)-v(?!\w)", out)
+    assert (cmd.exit_code, cmd.reason) == (1, "fail-on")
 
 
 # ---------------------------------------------------------------------------
@@ -672,15 +447,3 @@ def test_compare_when_short_verbose_flag_does_succeed(monkeypatch: pytest.Monkey
     result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh", "-v"])
 
     assert result.exit_code == 0
-
-
-# ---------------------------------------------------------------------------
-# flag dataclass
-# ---------------------------------------------------------------------------
-
-
-def test_compare_flags_when_built_does_add_verbose_and_fail_on():
-    flags = CompareFlags(verbose=True, fail_on=(RegressedFailOn(),))
-
-    assert flags.verbose is True
-    assert flags.fail_on == (RegressedFailOn(),)

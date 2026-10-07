@@ -19,24 +19,27 @@ from typing import override
 
 import pytest
 
-from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
+from gymrat.session.paths import lockfile_path
+from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import CapEvent, SessionEvent, SessionObserver, TextDeltaEvent
-from gymrat.supervisor.supervise import supervise
+from gymrat.supervisor.supervise import SupervisionResult, supervise
 from tests.supervisor._fixtures import (
     DelegatingSession,
+    _supervise,
+    _WrapDriver,
     collecting_observer,
     events_of,
     make_context,
     make_launch,
     make_prompt,
     read_log_lines,
-    supervise_fast,
     wait_for_event_or_task,
 )
 from tests.supervisor._mock_driver import (
     ActionStep,
     CostStep,
     EmitStep,
+    MockStep,
     TurnEndStep,
     create_mock_driver,
 )
@@ -70,28 +73,6 @@ class _RejectingInterruptSession(DelegatingSession):
     async def interrupt(self) -> None:
         message = "interrupt exploded"
         raise RuntimeError(message)
-
-
-class _WrapDriver:
-    """Capture the ``abort`` event the supervisor passes so tests can inspect or trigger it."""
-
-    def __init__(
-        self,
-        inner: Driver,
-        make_session: Callable[[DriverSession], DriverSession] = lambda s: s,
-    ) -> None:
-        self._inner = inner
-        self._make_session = make_session
-        self.captured_abort: asyncio.Event | None = None
-
-    def start(
-        self,
-        prompt: SessionPrompt,
-        observer: SessionObserver,
-        abort: asyncio.Event,
-    ) -> DriverSession:
-        self.captured_abort = abort
-        return self._make_session(self._inner.start(prompt, observer, abort))
 
 
 class _FutureSession:
@@ -139,14 +120,7 @@ async def test_supervise_when_session_completes_does_report_outcome(
 ):
     driver = create_mock_driver([CostStep(cost_usd=0.05), CostStep(cost_usd=0.12)])
 
-    result = await supervise(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"), max_minutes=10, log_path=str(tmp_path / "events.jsonl")
-        ),
-        launch=make_launch(),
-    )
+    result = await _supervise(str(tmp_path / "repo"), driver, is_lock_held=None)
 
     assert result.ended_by == "session"
     assert result.outcome == SessionOutcome(reason="completed", cost_usd=0.12)
@@ -160,14 +134,7 @@ async def test_supervise_when_clock_faked_does_report_duration_from_monotonic_cl
     monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
     driver = create_mock_driver([CostStep(cost_usd=0.05)])
 
-    result = await supervise(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"), max_minutes=10, log_path=str(tmp_path / "events.jsonl")
-        ),
-        launch=make_launch(),
-    )
+    result = await _supervise(str(tmp_path / "repo"), driver, is_lock_held=None)
 
     assert result.duration_ms == 250
 
@@ -182,12 +149,7 @@ async def test_supervise_when_session_runs_does_log_launch_first_then_events_in_
     driver = create_mock_driver(steps)
     log_path = tmp_path / "events.jsonl"
 
-    await supervise(
-        driver,
-        make_prompt(),
-        context=make_context(root=str(tmp_path / "repo"), max_minutes=10, log_path=str(log_path)),
-        launch=make_launch(),
-    )
+    await _supervise(str(tmp_path / "repo"), driver, is_lock_held=None)
 
     lines = read_log_lines(log_path)
     assert [line["type"] for line in lines[:3]] == ["launch", "text_delta", "usage_update"]
@@ -200,14 +162,8 @@ async def test_supervise_when_observer_given_does_forward_events_in_order(
     launch = make_launch()
     driver = create_mock_driver([CostStep(cost_usd=0.03)])
 
-    await supervise(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"), max_minutes=10, log_path=str(tmp_path / "events.jsonl")
-        ),
-        launch=launch,
-        observer=probe.observer,
+    await _supervise(
+        str(tmp_path / "repo"), driver, launch=launch, observer=probe.observer, is_lock_held=None
     )
 
     assert probe.events[0] == launch
@@ -219,44 +175,32 @@ async def test_supervise_when_observer_given_does_forward_events_in_order(
 # ---------------------------------------------------------------------------
 
 
-async def test_supervise_when_wall_clock_elapses_does_report_wall_clock(
+async def test_supervise_when_wall_clock_caps_a_long_session_does_interrupt_with_one_wall_clock_cap(
     tmp_path: Path,
 ):
-    driver = create_mock_driver([CostStep(cost_usd=0.05, delay_ms=60_000)])
+    root = str(tmp_path)
+    probe = collecting_observer()
+    # A single step delayed far past the cap, so the wall-clock cap always wins.
+    driver = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
+    log_path = tmp_path / "supervisor-events.jsonl"
 
     result = await supervise(
-        driver,
-        make_prompt(),
+        driver=driver,
+        prompt=make_prompt(cwd=root),
         context=make_context(
-            root=str(tmp_path / "repo"), max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")
-        ),
-        launch=make_launch(max_minutes=0.001),
-    )
-
-    assert result.ended_by == "wall-clock"
-    assert result.outcome.reason == "interrupted"
-
-
-async def test_supervise_when_wall_clock_elapses_does_emit_single_wall_clock_cap_event(
-    tmp_path: Path,
-):
-    probe = collecting_observer()
-    driver = create_mock_driver([CostStep(cost_usd=0.05, delay_ms=60_000)])
-
-    await supervise(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"), max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")
+            root=root, lock_path=lockfile_path(root), max_minutes=0.001, log_path=str(log_path)
         ),
         launch=make_launch(max_minutes=0.001),
         observer=probe.observer,
+        grace_ms=50,
     )
 
-    caps = events_of(probe.events, CapEvent)
-    assert len(caps) == 1
-    assert caps[0].cap == "wall-clock"
-    assert caps[0].action == "interrupting"
+    assert (result.ended_by, result.outcome.reason) == ("wall-clock", "interrupted")
+    assert [(cap.cap, cap.action) for cap in events_of(probe.events, CapEvent)] == [
+        ("wall-clock", "interrupting")
+    ]
+    cap_lines = [line for line in read_log_lines(log_path) if line["type"] == "cap"]
+    assert [line["cap"] for line in cap_lines] == ["wall-clock"]
 
 
 # ---------------------------------------------------------------------------
@@ -278,34 +222,33 @@ async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(tmp_
     wrapper = _WrapDriver(create_mock_driver([ActionStep(action=block)]))
     grace_ms = 100
 
-    async def run() -> object:
-        return await supervise(
+    async def run() -> SupervisionResult:
+        return await _supervise(
+            str(tmp_path / "repo"),
             wrapper,
-            make_prompt(),
-            context=make_context(
-                root=str(tmp_path / "repo"),
-                max_minutes=0.001,
-                log_path=str(tmp_path / "events.jsonl"),
-            ),
+            max_minutes=0.001,
             launch=make_launch(max_minutes=0.001),
             observer=observer,
             grace_ms=grace_ms,
+            is_lock_held=None,
         )
 
     task = asyncio.create_task(run())
     await wait_for_event_or_task(cap_seen, task)
     captured = wrapper.captured_abort
-    assert captured is not None
+    if captured is None:
+        pytest.fail("the driver never started, so no abort event was captured")
 
     cap_at = time.perf_counter()
-    assert not captured.is_set()
+    armed_at_cap = captured.is_set()
     await asyncio.wait_for(captured.wait(), timeout=2.0)
     grace_elapsed_ms = (time.perf_counter() - cap_at) * 1000
-    assert grace_elapsed_ms >= grace_ms * 0.5
-
     release.set()
     result = await asyncio.wait_for(task, timeout=2.0)
-    assert result.ended_by == "wall-clock"  # type: ignore[attr-defined]
+
+    assert armed_at_cap is False
+    assert grace_elapsed_ms >= grace_ms * 0.5
+    assert result.ended_by == "wall-clock"
 
 
 async def test_supervise_when_session_settles_within_grace_does_cancel_grace_timer(
@@ -314,14 +257,13 @@ async def test_supervise_when_session_settles_within_grace_does_cancel_grace_tim
     wrapper = _WrapDriver(create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)]))
     grace_ms = 50
 
-    result = await supervise(
+    result = await _supervise(
+        str(tmp_path / "repo"),
         wrapper,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"), max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")
-        ),
+        max_minutes=0.001,
         launch=make_launch(max_minutes=0.001),
         grace_ms=grace_ms,
+        is_lock_held=None,
     )
 
     await asyncio.sleep(grace_ms * 3 / 1000)
@@ -337,92 +279,6 @@ async def test_supervise_when_session_settles_within_grace_does_cancel_grace_tim
 # ---------------------------------------------------------------------------
 
 
-async def test_supervise_when_cost_reaches_max_usd_does_report_spend_cap(
-    tmp_path: Path,
-):
-    driver = create_mock_driver([TurnEndStep(cost_usd=0.12)])
-
-    # The launch event carries no cap, so the context is the only place it can be read from.
-    result = await supervise_fast(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"),
-            max_minutes=10,
-            max_usd=0.1,
-            log_path=str(tmp_path / "events.jsonl"),
-        ),
-        launch=make_launch(max_usd=None),
-    )
-
-    assert result.ended_by == "spend-cap"
-
-
-async def test_supervise_when_cost_reaches_max_usd_does_emit_single_spend_cap_event(
-    tmp_path: Path,
-):
-    probe = collecting_observer()
-    driver = create_mock_driver([TurnEndStep(cost_usd=0.12)])
-
-    await supervise_fast(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"),
-            max_minutes=10,
-            max_usd=0.1,
-            log_path=str(tmp_path / "events.jsonl"),
-        ),
-        launch=make_launch(max_usd=0.1),
-        observer=probe.observer,
-    )
-
-    caps = events_of(probe.events, CapEvent)
-    assert len(caps) == 1
-    assert caps[0].cap == "spend-cap"
-    assert caps[0].action == "ending"
-
-
-async def test_supervise_when_max_usd_none_does_not_enforce_cost(tmp_path: Path):
-    driver = create_mock_driver([CostStep(cost_usd=5.0), CostStep(cost_usd=10.0)])
-
-    result = await supervise(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"), max_minutes=10, log_path=str(tmp_path / "events.jsonl")
-        ),
-        launch=make_launch(),
-    )
-
-    assert result.ended_by == "session"
-    assert result.outcome.reason == "completed"
-    assert result.outcome.cost_usd == 10.0
-
-
-async def test_supervise_when_spend_cap_trips_does_log_usage_update_before_cap(
-    tmp_path: Path,
-):
-    driver = create_mock_driver([CostStep(cost_usd=0.12), TurnEndStep(cost_usd=0.12)])
-    log_path = tmp_path / "events.jsonl"
-
-    await supervise_fast(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"), max_minutes=10, max_usd=0.1, log_path=str(log_path)
-        ),
-        launch=make_launch(max_usd=0.1),
-    )
-
-    lines = read_log_lines(log_path)
-    types = [line["type"] for line in lines]
-    assert "cap" in types
-    cap_idx = types.index("cap")
-    preceding = types[:cap_idx]
-    assert "usage_update" in preceding
-
-
 async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
     tmp_path: Path,
 ):
@@ -432,15 +288,10 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
         TurnEndStep(cost_usd=5.0),
     ])
 
-    result = await supervise_fast(
+    result = await _supervise(
+        str(tmp_path / "repo"),
         driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"),
-            max_minutes=10,
-            max_usd=1.0,
-            log_path=str(tmp_path / "events.jsonl"),
-        ),
+        max_usd=1.0,
         launch=make_launch(max_usd=None),
         observer=probe.observer,
     )
@@ -451,6 +302,8 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
     assert caps[0].cap == "spend-cap"
     assert caps[0].action == "ending"
     assert result.outcome.cost_usd == 5.0
+    types = [line["type"] for line in read_log_lines(tmp_path / "events.jsonl")]
+    assert types.index("usage_update") < types.index("cap")
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +311,7 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
 # ---------------------------------------------------------------------------
 
 
-def _error_steps() -> list[object]:
+def _error_steps() -> list[MockStep]:
     boom_message = "kaboom"
 
     async def boom() -> None:
@@ -471,39 +324,17 @@ def _error_steps() -> list[object]:
     ]
 
 
-async def test_supervise_when_driver_errors_does_report_error_outcome(
+async def test_supervise_when_driver_errors_does_report_error_with_events_logged_up_to_failure(
     tmp_path: Path,
 ):
-    driver = create_mock_driver(_error_steps())  # type: ignore[arg-type]
+    driver = create_mock_driver(_error_steps())
 
-    result = await supervise(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"), max_minutes=10, log_path=str(tmp_path / "events.jsonl")
-        ),
-        launch=make_launch(),
-    )
+    result = await _supervise(str(tmp_path / "repo"), driver, is_lock_held=None)
 
     assert result.outcome.reason == "error"
     assert result.outcome.message == "kaboom"
     assert result.ended_by == "session"
-
-
-async def test_supervise_when_driver_errors_does_log_events_up_to_failure(
-    tmp_path: Path,
-):
-    driver = create_mock_driver(_error_steps())  # type: ignore[arg-type]
-    log_path = tmp_path / "events.jsonl"
-
-    await supervise(
-        driver,
-        make_prompt(),
-        context=make_context(root=str(tmp_path / "repo"), max_minutes=10, log_path=str(log_path)),
-        launch=make_launch(),
-    )
-
-    types = [line["type"] for line in read_log_lines(log_path)]
+    types = [line["type"] for line in read_log_lines(tmp_path / "events.jsonl")]
     assert types[0] == "launch"
     assert "text_delta" in types
     assert "usage_update" in types
@@ -523,18 +354,7 @@ async def test_supervise_when_observer_raises_does_still_fire_spend_cap(tmp_path
 
     driver = create_mock_driver([TurnEndStep(cost_usd=0.5)])
 
-    result = await supervise_fast(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"),
-            max_minutes=10,
-            max_usd=0.1,
-            log_path=str(tmp_path / "events.jsonl"),
-        ),
-        launch=make_launch(max_usd=0.1),
-        observer=throwing,
-    )
+    result = await _supervise(str(tmp_path / "repo"), driver, max_usd=0.1, observer=throwing)
 
     assert result.ended_by == "spend-cap"
 
@@ -550,7 +370,7 @@ _GRACE_RECOVERY_TIMEOUT_S = 5
         pytest.param(_RejectingInterruptSession, id="coroutine-fails"),
     ],
 )
-async def test_supervise_when_interrupt_fails_does_warn_and_recover_via_grace(
+async def test_supervise_when_interrupt_fails_does_recover_via_grace_with_a_warning(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     make_session: Callable[[DriverSession], DriverSession],
@@ -559,16 +379,13 @@ async def test_supervise_when_interrupt_fails_does_warn_and_recover_via_grace(
     driver = _WrapDriver(inner, make_session)
 
     async with asyncio.timeout(_GRACE_RECOVERY_TIMEOUT_S):
-        result = await supervise(
+        result = await _supervise(
+            str(tmp_path / "repo"),
             driver,
-            make_prompt(),
-            context=make_context(
-                root=str(tmp_path / "repo"),
-                max_minutes=0.001,
-                log_path=str(tmp_path / "events.jsonl"),
-            ),
+            max_minutes=0.001,
             launch=make_launch(max_minutes=0.001),
             grace_ms=50,
+            is_lock_held=None,
         )
     await asyncio.sleep(0)
 
@@ -581,21 +398,19 @@ async def test_supervise_when_outcome_rejects_does_propagate_rejection(tmp_path:
     probe = collecting_observer()
 
     with pytest.raises(RuntimeError, match="session crashed"):
-        await supervise(
+        await _supervise(
+            str(tmp_path / "repo"),
             _RejectingDriver(),
-            make_prompt(),
-            context=make_context(
-                root=str(tmp_path / "repo"), max_minutes=5, log_path=str(tmp_path / "events.jsonl")
-            ),
-            launch=make_launch(),
+            max_minutes=5,
             observer=probe.observer,
+            is_lock_held=None,
         )
 
     assert events_of(probe.events, CapEvent) == []
 
 
 # ---------------------------------------------------------------------------
-# B31 — observer resilience: cap fires even when an observer raises
+# observer resilience: the cap fires even when an observer raises
 # ---------------------------------------------------------------------------
 
 
@@ -617,35 +432,34 @@ async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
     wrapper = _WrapDriver(create_mock_driver([ActionStep(action=block)]))
     grace_ms = 100
 
-    async def run() -> object:
-        return await supervise(
+    async def run() -> SupervisionResult:
+        return await _supervise(
+            str(tmp_path / "repo"),
             wrapper,
-            make_prompt(),
-            context=make_context(
-                root=str(tmp_path / "repo"),
-                max_minutes=0.001,
-                log_path=str(tmp_path / "events.jsonl"),
-            ),
+            max_minutes=0.001,
             launch=make_launch(max_minutes=0.001),
             observer=failing_observer,
             grace_ms=grace_ms,
+            is_lock_held=None,
         )
 
     task = asyncio.create_task(run())
+
     with pytest.warns(RuntimeWarning, match="observer explodes on cap"):
         await asyncio.wait_for(cap_seen.wait(), timeout=2.0)
-
     captured = wrapper.captured_abort
-    assert captured is not None
+    if captured is None:
+        pytest.fail("the driver never started, so no abort event was captured")
     await asyncio.wait_for(captured.wait(), timeout=2.0)
-
     release.set()
     result = await asyncio.wait_for(task, timeout=2.0)
-    assert result.ended_by == "wall-clock"  # type: ignore[attr-defined]
+
+    assert captured.is_set()
+    assert result.ended_by == "wall-clock"
 
 
 # ---------------------------------------------------------------------------
-# B35 — interrupt task teardown
+# interrupt task teardown
 # ---------------------------------------------------------------------------
 
 
@@ -676,21 +490,19 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(tmp_path: 
     inner = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
     driver = _WrapDriver(inner, wrap)
 
-    result = await supervise(
+    result = await _supervise(
+        str(tmp_path / "repo"),
         driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"), max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")
-        ),
+        max_minutes=0.001,
         launch=make_launch(max_minutes=0.001),
         grace_ms=50,
+        is_lock_held=None,
     )
+    # Give the event loop a tick so the CancelledError propagates.
+    await asyncio.sleep(0)
 
     assert result.ended_by == "wall-clock"
     assert slow_session is not None
-
-    # Give the event loop a tick so the CancelledError propagates.
-    await asyncio.sleep(0)
     assert slow_session.interrupt_cancelled.is_set()
 
 
@@ -702,39 +514,31 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(tmp_path: 
 async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    supervise_mod = sys.modules["gymrat.supervisor.supervise"]
+    start_ms = 1_000_000
+    deadline_ms = start_ms + 10 * 60 * 1000
+    clock = [start_ms]
+    monkeypatch.setattr("gymrat.supervisor.supervise.now_ms", lambda: clock[0])
 
-    call_count = 0
-    start_time = 1_000_000
+    async def pass_deadline() -> None:
+        clock[0] = deadline_ms
 
-    # Advancing the fake clock past the deadline on the first poll proves the
-    # loop checks now_ms() rather than relying on a single asyncio.sleep.
-    def fake_now_ms() -> float:
-        nonlocal call_count
-        call_count += 1
-        if call_count <= 2:
-            return start_time
-        return start_time + 10 * 60 * 1000 + 1
+    # Only a poll that rereads the clock sees the jump; a single sleep to the
+    # deadline would leave the run waiting ten real minutes.
+    driver = create_mock_driver([
+        ActionStep(action=pass_deadline),
+        CostStep(cost_usd=0.01, delay_ms=60_000),
+    ])
 
-    monkeypatch.setattr(supervise_mod, "now_ms", fake_now_ms)
-    driver = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
-
-    deadline_ms = start_time + 10 * 60 * 1000
-    result = await supervise(
+    result = await _supervise(
+        str(tmp_path / "repo"),
         driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"),
-            max_minutes=10,
-            log_path=str(tmp_path / "events.jsonl"),
-            deadline_ms=deadline_ms,
-        ),
+        deadline_ms=deadline_ms,
         launch=make_launch(max_minutes=10),
         wall_clock_poll_ms=10,
+        is_lock_held=None,
     )
 
     assert result.ended_by == "wall-clock"
-    assert call_count >= 3
 
 
 # ---------------------------------------------------------------------------
@@ -764,17 +568,7 @@ async def test_supervise_when_spawned_end_raises_does_warn_to_stderr(
     inner = create_mock_driver([TurnEndStep(cost_usd=0.5)])
     driver = _WrapDriver(inner, _EndThenRaiseSession)
 
-    result = await supervise_fast(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"),
-            max_minutes=10,
-            max_usd=0.1,
-            log_path=str(tmp_path / "events.jsonl"),
-        ),
-        launch=make_launch(max_usd=0.1),
-    )
+    result = await _supervise(str(tmp_path / "repo"), driver, max_usd=0.1)
 
     await asyncio.sleep(0)
 
@@ -813,7 +607,7 @@ async def test_supervise_when_end_session_called_twice_does_fire_session_end_onc
     driver = _WrapDriver(inner, wrap)
 
     supervise_mod = sys.modules["gymrat.supervisor.supervise"]
-    cls = supervise_mod._Supervision  # type: ignore[attr-defined]
+    cls = supervise_mod._Supervision  # type: ignore[attr-defined] -- module looked up dynamically
     original_end_session = cls._end_session
     entry_count = _Box()
 
@@ -825,17 +619,7 @@ async def test_supervise_when_end_session_called_twice_does_fire_session_end_onc
 
     monkeypatch.setattr(cls, "_end_session", double_end)
 
-    result = await supervise_fast(
-        driver,
-        make_prompt(),
-        context=make_context(
-            root=str(tmp_path / "repo"),
-            max_minutes=10,
-            max_usd=0.1,
-            log_path=str(tmp_path / "events.jsonl"),
-        ),
-        launch=make_launch(max_usd=0.1),
-    )
+    result = await _supervise(str(tmp_path / "repo"), driver, max_usd=0.1)
 
     assert result.ended_by == "spend-cap"
     assert end_count.value == 1

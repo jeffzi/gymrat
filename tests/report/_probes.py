@@ -23,13 +23,22 @@ def probe_metric(
     direction: Direction = "lower",
     unit: MetricUnit | None = None,
     kind: str = "other",
-    gating: bool = True,
 ) -> ProbeMetric:
     """One probed metric: what it measured now, what the baseline holds, and the gap.
 
-    ``spread`` is a percentage of the median. ``reference_median`` and
-    ``delta_pct`` are ``None`` together when the baseline has nothing to pair
-    the metric with.
+    Args:
+        name: The metric name.
+        median: The metric's median now.
+        spread: The run-to-run spread as a percentage of the median.
+        reference_median: The baseline's median, ``None`` together with
+            ``delta_pct`` when the baseline has nothing to pair the metric with.
+        delta_pct: The gap to the baseline, in percent.
+        direction: Which way is better for the metric.
+        unit: The metric's unit, if any.
+        kind: The metric's kind.
+
+    Returns:
+        The probe metric.
     """
     return ProbeMetric(
         name=name,
@@ -37,7 +46,7 @@ def probe_metric(
         spread=spread,
         reference_median=reference_median,
         delta_pct=delta_pct,
-        meta=metric_meta(name, direction=direction, gating=gating, kind=kind, unit=unit),
+        meta=metric_meta(name, direction=direction, gating=True, kind=kind, unit=unit),
     )
 
 

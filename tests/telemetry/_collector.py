@@ -11,6 +11,7 @@ from __future__ import annotations
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, override
 
@@ -18,8 +19,6 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTrace
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterable
-
-_OK = 200
 
 
 @dataclass(frozen=True)
@@ -99,7 +98,7 @@ def otlp_collector(statuses: Iterable[int] = ()) -> Generator[OtlpCollector]:
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
             with lock:
                 received.append(ReceivedExport(path=self.path, spans=_received_spans(body)))
-                status = replies.pop(0) if replies else _OK
+                status = replies.pop(0) if replies else HTTPStatus.OK
             self.send_response(status)
             self.send_header("Content-Type", "application/x-protobuf")
             self.send_header("Content-Length", "0")

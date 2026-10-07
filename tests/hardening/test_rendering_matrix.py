@@ -1,236 +1,108 @@
-"""Rendering-matrix hardening across TTY, ``NO_COLOR``, and redirect.
+"""Rendering-matrix hardening for the shared color precedence.
 
 The suite pins the guarantees that keep color rendering honest no matter where
 gymrat's output lands:
 
-- a report printed to a real terminal is styled, while the same report piped
-  into a file or another process is plain,
-- one precedence rule — explicit flag beats ``FORCE_COLOR`` beats ``NO_COLOR``
-  beats terminal detection — governs all three color surfaces (the report on
-  stdout, the progress line on stderr, and the error text on stderr), with
-  ``FORCE_COLOR`` empty/``0``/``false`` not forcing and ``NO_COLOR`` empty
-  treated the same everywhere,
-- the ``--no-color`` flag never leaks into the environment a spawned bench
-  command inherits,
+- every color surface (the report on stdout, the doctor report on stdout, the
+  progress line on stderr, and the error text on stderr) routes through the
+  one shared precedence rule, whose full ladder is pinned in
+  ``tests/test_utils.py``,
 - a terminal that reports zero width neither crashes nor spills a garbled
   status line.
 
-The end-to-end cases drive a real pty and a real bench out of process, so they
-are POSIX-only; the precedence cases exercise the public rendering surfaces
-directly and run everywhere.
+The real-terminal, redirect, and bench-environment cases run out of process in
+``tests/hardening/test_rendering_end_to_end.py``; these cases exercise the
+public rendering surfaces in process and run everywhere.
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-import threading
-from pathlib import Path
 from typing import TYPE_CHECKING
-
-if sys.platform != "win32":
-    import pty
+from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.cli.console import resolve_stream_color, set_color_override, stderr_console
+from gymrat.cli.budget_report import emit_report
+from gymrat.cli.commands.doctor import doctor_command
+from gymrat.cli.console import stderr_console
 from gymrat.cli.exit import format_cli_error
-from gymrat.cli.run_setup import resolve_render_mode
-from gymrat.doctor import (
-    Check,
-    CheckSection,
-    EnvironmentInfo,
-    create_doctor_report,
-    render_doctor_report,
-)
-from tests._git import EMIT_ONE_BENCH
-from tests._git import run_git as _git
-from tests._git import write_committed_bench as _write_committed_bench
+from gymrat.cli.run_setup import SharedFlags, resolve_render_mode
+from gymrat.doctor import Check, CheckSection, build_doctor_report
+from gymrat.git import NotAGitRepositoryError
+from gymrat.report.style import render_lines
+from gymrat.report.types import DEFAULT_REPORT_OPTIONS
+from gymrat.session.paths import repo_root
+from tests._doctor_fixtures import doctor_report
 from tests._streams import FakeStream
-from tests.hardening._bench_helpers import drain as _drain
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-from tests._ansi import strip_ansi
-from tests._cli import ENTRY as _ENTRY
-
-# A bench that records the ``NO_COLOR`` its own environment carries. The parent
-# starts with ``NO_COLOR`` unset, so a leak would show up here as ``[1]``.
-_ENV_PROBE_BENCH = """#!/bin/sh
-printf 'NO_COLOR=[%s]' "${NO_COLOR-<unset>}" > "$GYMRAT_TEST_PROBE"
-echo 'METRIC x=1'
-"""
-
-_posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only pty and shell bench")
+    from gymrat.report.json_doc import BudgetSummary
+    from gymrat.report.types import ReportOptions
 
 
-def _neutral_env() -> dict[str, str]:
-    """A child environment with the color variables cleared and a real TERM.
+def _render_probe_text(result: str, options: ReportOptions) -> str:
+    """A text renderer that paints ``result`` red only when handed a resolved ``True``."""
+    # A deferred ``None`` renders plain rather than falling back on the capture
+    # console's own detection, so a report surface that stops resolving color
+    # against stdout fails the force-on row.
+    return render_lines(f"[red]{result}[/red]", color=options.color is True)
 
-    Neither ``NO_COLOR`` nor ``FORCE_COLOR`` is set, so color is decided purely
-    by terminal detection. ``TERM`` is pinned so a bare CI image still presents
-    a color-capable terminal on the pty.
+
+def _render_probe_json(result: str, /, *, budget: BudgetSummary | None = None) -> str:
+    """A JSON renderer the text-format probe never reaches."""
+    del budget
+    return result
+
+
+def _report_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
+    """Whether ``emit_report`` styles a text report written to a terminal stdout.
+
+    Args:
+        monkeypatch: Replaces stdout with a terminal and keeps the budget read
+            out of any surrounding repository.
+
+    Returns:
+        Whether the report written to stdout carries ANSI.
     """
-    env = dict(os.environ)
-    env.pop("NO_COLOR", None)
-    env.pop("FORCE_COLOR", None)
-    env["TERM"] = "xterm-256color"
-    return env
+    stdout = FakeStream(tty=True)
+    monkeypatch.setattr("sys.stdout", stdout)
+    outside_a_repo = create_autospec(
+        repo_root, side_effect=NotAGitRepositoryError("not a git repository")
+    )
+    monkeypatch.setattr("gymrat.cli.budget_report.repo_root", outside_a_repo)
+
+    emit_report(
+        "probe",
+        SharedFlags(),
+        DEFAULT_REPORT_OPTIONS,
+        text=_render_probe_text,
+        json=_render_probe_json,
+    )
+
+    return "\x1b[" in stdout.getvalue()
 
 
-def _run_report_on_pty(args: list[str], repo: str) -> str:
-    """Run the CLI with stdout attached to a real pty and return what it drew.
+def _doctor_report_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
+    """Whether the doctor command styles its report written to a terminal stdout.
 
-    The report is written to stdout, so stdout is the pty slave; stderr (the
-    progress line) is sent elsewhere so the returned text is the report alone.
+    Args:
+        monkeypatch: Replaces stdout with a terminal and the setup probes with
+            a fixed passing report.
+
+    Returns:
+        Whether the report written to stdout carries ANSI.
     """
-    master, slave = pty.openpty()
-    proc = subprocess.Popen(  # noqa: S603
-        [*_ENTRY, *args],
-        cwd=repo,
-        env=_neutral_env(),
-        stdin=subprocess.DEVNULL,
-        stdout=slave,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        close_fds=True,
-    )
-    os.close(slave)
-    chunks: list[bytes] = []
-    reader = threading.Thread(target=_drain, args=(master, chunks))
-    reader.start()
-    try:
-        proc.wait(timeout=120)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
-        reader.join(timeout=10)
-        os.close(master)
-        if proc.stderr is not None:
-            proc.stderr.close()
-    return b"".join(chunks).decode("utf-8", "replace")
-
-
-# ---------------------------------------------------------------------------
-# a real terminal renders styled; a redirect renders plain
-# ---------------------------------------------------------------------------
-
-
-@_posix_only
-def test_measure_report_when_stdout_is_a_real_tty_does_render_styled(
-    create_scratch_repo: Callable[[], str],
-):
-    repo = create_scratch_repo()
-    _write_committed_bench(repo, EMIT_ONE_BENCH)
-
-    output = _run_report_on_pty(["measure", "--bench", "sh bench.sh", "--samples", "1"], repo)
-
-    assert "gymrat measure" in strip_ansi(output)
-    assert "\x1b[" in output
-
-
-@_posix_only
-def test_compare_report_when_stdout_is_a_real_tty_does_render_styled(
-    create_scratch_repo: Callable[[], str],
-):
-    repo = create_scratch_repo()
-    _write_committed_bench(repo, EMIT_ONE_BENCH)
-    _git(["switch", "-c", "candidate"], repo)
-    _git(["switch", "main"], repo)
-
-    output = _run_report_on_pty(
-        ["compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
-        repo,
+    stdout = FakeStream(tty=True)
+    monkeypatch.setattr("sys.stdout", stdout)
+    report = doctor_report([CheckSection(title="T", checks=[Check("a", "ok", "x")])])
+    monkeypatch.setattr(
+        "gymrat.cli.commands.doctor.build_doctor_report",
+        create_autospec(build_doctor_report, return_value=report),
     )
 
-    assert "gymrat compare" in strip_ansi(output)
-    assert "\x1b[" in output
+    doctor_command()
 
-
-@_posix_only
-def test_measure_report_when_stdout_is_redirected_does_render_plain(
-    create_scratch_repo: Callable[[], str],
-):
-    repo = create_scratch_repo()
-    _write_committed_bench(repo, EMIT_ONE_BENCH)
-
-    result = subprocess.run(  # noqa: S603
-        [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "1"],
-        cwd=repo,
-        env=_neutral_env(),
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-
-    assert "gymrat measure" in result.stdout, result.stderr
-    assert "\x1b[" not in result.stdout
-
-
-# ---------------------------------------------------------------------------
-# --no-color does not leak into a spawned bench's environment
-# ---------------------------------------------------------------------------
-
-
-@_posix_only
-def test_measure_when_no_color_flag_does_not_leak_no_color_into_the_bench_env(
-    create_scratch_repo: Callable[[], str],
-):
-    repo = create_scratch_repo()
-    _write_committed_bench(repo, _ENV_PROBE_BENCH)
-    probe = Path(repo) / "env_probe.txt"
-    env = _neutral_env()
-    env["GYMRAT_TEST_PROBE"] = str(probe)
-
-    result = subprocess.run(  # noqa: S603
-        [*_ENTRY, "measure", "--no-color", "--bench", "sh bench.sh", "--samples", "1"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert probe.read_text(encoding="utf-8") == "NO_COLOR=[<unset>]"
-
-
-# ---------------------------------------------------------------------------
-# one precedence rule across the report, progress, and error surfaces
-# ---------------------------------------------------------------------------
-
-
-def _report_is_colored() -> bool:
-    """Whether the report surface would emit color for the ambient environment.
-
-    Drives the exact decision ``emit_report`` makes for the report — it resolves
-    a deferred color with ``resolve_stream_color(render_opts.color, sys.stdout)``,
-    so the probe asks the same helper for a terminal stdout. Routing through the
-    shared helper (rather than ``render_lines``' own capture-console logic) means
-    a change to the report surface's precedence fails this test.
-    """
-    return resolve_stream_color(None, FakeStream(tty=True))
-
-
-def _doctor_report_is_colored() -> bool:
-    """Whether the doctor report surface renders ANSI for the ambient environment.
-
-    Builds a minimal doctor report, resolves color the same way the doctor
-    command does (``resolve_stream_color`` with no override on a TTY stream),
-    and checks whether the rendered text carries ANSI. A change to either the
-    doctor renderer's color parameter or the shared precedence fails this probe.
-    """
-    env = EnvironmentInfo(gymrat_version="0.1.0", python_version="3.13.0", platform="test")
-    report = create_doctor_report(
-        env, [CheckSection(title="T", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
-    )
-    color = resolve_stream_color(None, FakeStream(tty=True))
-    return "\x1b[" in render_doctor_report(report, color=color)
+    return "\x1b[" in stdout.getvalue()
 
 
 def _progress_is_colored() -> bool:
@@ -241,6 +113,9 @@ def _progress_is_colored() -> bool:
     surface that stops going through the factory, or a factory that breaks the
     shared precedence, fails this probe where a bare ``resolve_stream_color``
     call would keep passing.
+
+    Returns:
+        Whether a styled print on the stderr console carries ANSI.
     """
     console = stderr_console()
     with console.capture() as capture:
@@ -261,16 +136,17 @@ def _apply_color_env(
             monkeypatch.setenv(name, value)
 
 
+# ---------------------------------------------------------------------------
+# one precedence rule across the report, progress, and error surfaces
+# ---------------------------------------------------------------------------
+
+
 # Environment states where the variables alone decide the outcome, so terminal
-# detection never enters into it and all three surfaces must agree.
+# detection never enters into it and all the surfaces must agree.
 @pytest.mark.parametrize(
     ("force_color", "no_color", "expected"),
     [
         pytest.param("1", None, True, id="force-on"),
-        pytest.param("1", "1", True, id="force-beats-no-color"),
-        pytest.param("0", "1", False, id="force-zero-does-not-beat-no-color"),
-        pytest.param("false", "1", False, id="force-false-does-not-beat-no-color"),
-        pytest.param("", "1", False, id="force-empty-does-not-beat-no-color"),
         pytest.param(None, "1", False, id="no-color-suppresses"),
     ],
 )
@@ -286,32 +162,14 @@ def test_color_precedence_when_env_decides_does_agree_across_report_progress_and
     monkeypatch.setenv("TERM", "xterm-256color")
     _apply_color_env(monkeypatch, force_color, no_color)
 
-    assert _report_is_colored() is expected
-    assert _doctor_report_is_colored() is expected
-    assert _progress_is_colored() is expected
-    assert _error_is_colored() is expected
+    surfaces = (
+        _report_is_colored(monkeypatch),
+        _doctor_report_is_colored(monkeypatch),
+        _progress_is_colored(),
+        _error_is_colored(),
+    )
 
-
-@pytest.mark.parametrize(
-    "force_color",
-    [pytest.param("0", id="zero"), pytest.param("false", id="false"), pytest.param("", id="empty")],
-)
-def test_error_surface_when_force_color_is_falsy_off_a_tty_does_render_plain(
-    monkeypatch: pytest.MonkeyPatch, force_color: str
-):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
-    _apply_color_env(monkeypatch, force_color, None)
-
-    assert "\x1b[" not in format_cli_error(ValueError("boom"))
-
-
-def test_error_surface_when_force_color_is_truthy_off_a_tty_does_render_colored(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
-    _apply_color_env(monkeypatch, "1", None)
-
-    assert "\x1b[" in format_cli_error(ValueError("boom"))
+    assert surfaces == (expected,) * 4
 
 
 def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
@@ -321,36 +179,3 @@ def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
     _apply_color_env(monkeypatch, "1", None)
 
     assert resolve_render_mode() == "plain"
-
-
-# ---------------------------------------------------------------------------
-# explicit color suppression
-# ---------------------------------------------------------------------------
-
-
-def test_error_surface_when_stderr_color_override_false_on_tty_does_strip_sgr(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
-    monkeypatch.setenv("TERM", "xterm-256color")
-    _apply_color_env(monkeypatch, None, None)
-
-    set_color_override(False)
-
-    result = format_cli_error(ValueError("boom"))
-
-    assert "\x1b[" not in result
-
-
-def test_progress_surface_when_colorless_does_strip_all_sgr_including_bold(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
-    monkeypatch.setenv("TERM", "xterm-256color")
-    _apply_color_env(monkeypatch, None, "1")
-
-    console = stderr_console()
-    with console.capture() as capture:
-        console.print("probe", style="bold", end="")
-
-    assert "\x1b[" not in capture.get()

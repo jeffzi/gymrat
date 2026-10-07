@@ -22,14 +22,12 @@ import threading
 import time
 import warnings
 from io import StringIO
-from typing import TYPE_CHECKING, Literal, NamedTuple, override
+from typing import TYPE_CHECKING, NamedTuple, override
 
 import pytest
 from rich.text import Text
 
 from gymrat.cli.live_display import ErasableLive, mount_live
-from gymrat.cli.progress import ProgressReporter
-from gymrat.progress_events import PrepareStarted
 from gymrat.signals import install_termination_cleanup, write_on_exit
 from tests._process_helpers import InterruptedTerminal, ProcessExit, track_mounted_cleanups
 from tests._rich import (
@@ -37,13 +35,15 @@ from tests._rich import (
     KEPT_LINE,
     TERMINATION_SIGNAL,
     WARNING_LINE,
-    Clock,
     console_output,
     cursor_hidden,
     screen_lines,
     sealed_console,
 )
-from tests._streams import RecordingStream
+from tests._streams import (
+    RaisingStream,
+    RecordingStream,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -180,14 +180,6 @@ def _spawned_threads_ended(before: set[threading.Thread]) -> bool:
     return not any(thread.is_alive() for thread in spawned)
 
 
-class _BrokenTerminal(StringIO):
-    """A console file that can no longer be written."""
-
-    @override
-    def write(self, text: str) -> int:
-        raise OSError(_TERMINAL_GONE)
-
-
 class _WriteLog(StringIO):
     """A console file that flags every write rich's refresh thread makes."""
 
@@ -301,32 +293,25 @@ def test_mount_live_when_signal_arrives_does_show_cursor(
     assert (hidden_before, cursor_hidden(console_output(console))) == (True, False)
 
 
-@pytest.mark.parametrize("row_count", [1, 4])
+@pytest.mark.parametrize(
+    ("row_count", "redirect_stderr"),
+    [
+        pytest.param(1, False, id="one-row"),
+        pytest.param(4, False, id="four-rows"),
+        pytest.param(3, True, id="live-redirects-stderr"),
+    ],
+)
 def test_mount_live_when_signal_arrives_does_blank_every_frame_row(
     monkeypatch: pytest.MonkeyPatch,
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
     row_count: int,
-):
-    console = sealed_console()
-    console.print(KEPT_LINE)
-    mounted_live(console, _rows(row_count))
-    monkeypatch.setattr(sys, "stderr", console.file)
-
-    raise_signal(TERMINATION_SIGNAL)
-
-    assert screen_lines(console_output(console)) == [KEPT_LINE]
-
-
-def test_mount_live_when_live_redirects_stderr_does_blank_every_frame_row(
-    monkeypatch: pytest.MonkeyPatch,
-    mounted_live: Callable[..., ErasableLive],
-    raise_signal: Callable[[int], int],
+    redirect_stderr: bool,
 ):
     console = sealed_console()
     console.print(KEPT_LINE)
     monkeypatch.setattr(sys, "stderr", console.file)
-    mounted_live(console, _rows(3), redirect_stderr=True)
+    mounted_live(console, _rows(row_count), redirect_stderr=redirect_stderr)
 
     raise_signal(TERMINATION_SIGNAL)
 
@@ -363,38 +348,40 @@ def test_mount_live_when_mounted_does_paint_the_first_frame(
     assert screen_lines(console_output(console)) == ["row 1", "row 2"]
 
 
-def test_mount_live_when_first_paint_raises_does_roll_back_the_mount(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    registry = track_mounted_cleanups(monkeypatch)
-    live = ErasableLive(
-        _FailingFrame(),
-        console=sealed_console(),
-        auto_refresh=True,
-        refresh_per_second=4,
-    )
-    threads_before = set(threading.enumerate())
-
-    with pytest.raises(RuntimeError, match=_PAINT_FAILURE):
-        mount_live(live)
-
-    assert (live.is_started, _spawned_threads_ended(threads_before), registry.live()) == (
-        False,
-        True,
-        [],
+def _live_whose_first_paint_raises() -> ErasableLive:
+    """An auto-refreshing live display whose first frame render raises."""
+    return ErasableLive(
+        _FailingFrame(), console=sealed_console(), auto_refresh=True, refresh_per_second=4
     )
 
 
-def test_mount_live_when_start_raises_does_roll_back_the_mount(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    registry = track_mounted_cleanups(monkeypatch)
+def _live_on_a_gone_terminal() -> ErasableLive:
+    """An auto-refreshing live display whose console's every write raises."""
     console = sealed_console()
-    console.file = _BrokenTerminal()
-    live = ErasableLive(_rows(2), console=console, auto_refresh=True, refresh_per_second=4)
+    console.file = RaisingStream(OSError(_TERMINAL_GONE))
+    return ErasableLive(_rows(2), console=console, auto_refresh=True, refresh_per_second=4)
+
+
+@pytest.mark.parametrize(
+    ("build_live", "error", "message"),
+    [
+        pytest.param(
+            _live_whose_first_paint_raises, RuntimeError, _PAINT_FAILURE, id="first-paint-raises"
+        ),
+        pytest.param(_live_on_a_gone_terminal, OSError, _TERMINAL_GONE, id="start-raises"),
+    ],
+)
+def test_mount_live_when_mounting_raises_does_roll_back_the_mount(
+    build_live: Callable[[], ErasableLive],
+    error: type[Exception],
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    registry = track_mounted_cleanups(monkeypatch)
+    live = build_live()
     threads_before = set(threading.enumerate())
 
-    with pytest.raises(OSError, match=_TERMINAL_GONE):
+    with pytest.raises(error, match=message):
         mount_live(live)
 
     assert (live.is_started, _spawned_threads_ended(threads_before), registry.live()) == (
@@ -788,33 +775,3 @@ def test_mount_live_when_print_interrupted_does_erase_the_shorter_frame(
         console.print("banana")
 
     assert screen_lines(terminal.at_exit) == case.screen
-
-
-# ---------------------------------------------------------------------------
-# warn -- verbatim message
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def warn_reporters() -> Iterator[list[ProgressReporter]]:
-    """Collect the reporters a warn test builds and stop them afterwards."""
-    reporters: list[ProgressReporter] = []
-    yield reporters
-    for reporter in reporters:
-        reporter.stop()
-
-
-@pytest.mark.parametrize("mode", ["live", "plain"])
-def test_warn_when_message_has_an_emoji_code_does_print_it_verbatim(
-    warn_reporters: list[ProgressReporter], mode: Literal["live", "plain"]
-):
-    console = sealed_console()
-    reporter = ProgressReporter(
-        mode=mode, console=console, target_count=1, sample_count=3, clock=Clock(0.0)
-    )
-    warn_reporters.append(reporter)
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-
-    reporter.warn("warning: lat:100:p99")
-
-    assert "warning: lat:100:p99" in screen_lines(console_output(console))

@@ -22,18 +22,15 @@ from gymrat.errors import GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
 from gymrat.sampling import (
     CleanupResult,
-    RunOptions,
-    SamplingOptions,
     TargetSpec,
     resolve_metric_meta_from_samples,
 )
 from gymrat.targets import WorktreeRemovalFailure
 from gymrat.utils import warn_to_stderr
 from gymrat.verdict import compute_kind_aggregates, compute_verdicts
+from tests._git import list_worktree_dirs, write_committed_bench
 from tests._git import run_git as _git
-from tests._git import write_committed_bench
-from tests._pipeline import install_pipeline
-from tests.conftest import list_worktree_dirs
+from tests._pipeline import install_pipeline, run_options
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -59,16 +56,10 @@ def _options(
         else [TargetSpec(label=None, target=name) for name in candidate_targets]
     )
     return CompareOptions(
-        run=RunOptions(
-            sampling=SamplingOptions(
-                bench="run",
-                prepare="prep",
-                samples=4,
-                timeout_seconds=1.0,
-                on_progress=on_progress,
-                warn=warn,
-            ),
-            adapter="metric-lines",
+        run=run_options(
+            samples=4,
+            on_progress=on_progress,
+            warn=warn,
             config_metrics=config_metrics,
             config_kinds=config_kinds,
         ),
@@ -101,7 +92,7 @@ async def test_compare_when_candidates_judged_does_use_shared_baseline(
     ]
 
 
-async def test_compare_when_metric_on_one_side_only_does_include_union_in_order(
+async def test_compare_when_metric_on_one_side_only_does_include_it_with_that_sides_median(
     monkeypatch: pytest.MonkeyPatch,
 ):
     baseline = [{"a": 1.0}, {"a": 2.0}]
@@ -111,17 +102,6 @@ async def test_compare_when_metric_on_one_side_only_does_include_union_in_order(
     result = await compare(_options())
 
     assert list(result.metrics.keys()) == ["a", "b"]
-
-
-async def test_compare_when_metric_on_one_side_only_does_report_that_sides_own_median(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    baseline = [{"a": 1.0}, {"a": 2.0}]
-    candidate = [{"b": 3.0}, {"b": 4.0}]
-    install_pipeline(monkeypatch, compare_mod, [baseline, candidate])
-
-    result = await compare(_options())
-
     assert result.metrics["a"].baseline_median == 1.5
     assert result.metrics["b"].candidates[0].median == 3.5
 
@@ -163,16 +143,7 @@ async def test_compare_when_metric_named_like_dict_method_does_treat_as_ordinary
     assert result.metrics["items"].baseline_median == 1.5
 
 
-async def test_compare_when_no_metrics_anywhere_does_raise_gymrat_error(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    install_pipeline(monkeypatch, compare_mod, [[{}, {}], [{}, {}]])
-
-    with pytest.raises(GymratError, match="No metrics found in benchmark output"):
-        await compare(_options())
-
-
-async def test_compare_when_baseline_round_unpaired_does_exclude_from_baseline_median(
+async def test_compare_when_baseline_round_unpaired_does_median_each_side_over_paired_rounds(
     monkeypatch: pytest.MonkeyPatch,
 ):
     baseline = [{"x": 1.0}, {"x": 2.0}, {"x": 100.0}]
@@ -184,31 +155,7 @@ async def test_compare_when_baseline_round_unpaired_does_exclude_from_baseline_m
     # Round 2 (value 100) has no candidate at the same index, so it is dropped
     # from the displayed baseline median; over all three rounds the median is 2.0.
     assert result.metrics["x"].baseline_median == 1.5
-
-
-async def test_compare_when_candidate_fully_paired_does_report_candidate_median(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    baseline = [{"x": 1.0}, {"x": 2.0}]
-    candidate = [{"x": 10.0}, {"x": 20.0}]
-    install_pipeline(monkeypatch, compare_mod, [baseline, candidate])
-
-    result = await compare(_options())
-
     assert result.metrics["x"].candidates[0].median == 15.0
-
-
-async def test_compare_when_baseline_median_zero_does_omit_spread(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    baseline = [{"x": -1.0}, {"x": 0.0}, {"x": 1.0}]
-    candidate = [{"x": -1.0}, {"x": 0.0}, {"x": 1.0}]
-    install_pipeline(monkeypatch, compare_mod, [baseline, candidate])
-
-    result = await compare(_options())
-
-    assert result.metrics["x"].baseline_median == 0.0
-    assert result.metrics["x"].baseline_spread is None
 
 
 async def test_compare_when_explicit_labels_given_does_flow_to_result(
@@ -227,7 +174,7 @@ async def test_compare_when_explicit_labels_given_does_flow_to_result(
     assert result.candidates[0].label == "cand-label"
 
 
-async def test_compare_when_cleanup_reports_removals_does_map_worktree_fields(
+async def test_compare_when_pipeline_completes_does_assemble_result_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ):
     dirty = CleanupResult(
@@ -301,14 +248,7 @@ def _commit_bench(repo: str, value: int) -> None:
 
 def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
     return CompareOptions(
-        run=RunOptions(
-            sampling=SamplingOptions(
-                bench="sh bench.sh", prepare=None, samples=3, timeout_seconds=30.0
-            ),
-            adapter="metric-lines",
-            config_metrics=None,
-            config_kinds=None,
-        ),
+        run=run_options(samples=3, bench="sh bench.sh", prepare=None, timeout_seconds=30.0),
         baseline=TargetSpec(label=None, target=baseline),
         candidates=[TargetSpec(label=None, target=candidate)],
         unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
@@ -317,15 +257,12 @@ def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
 
 @_posix_only
 async def test_compare_when_two_refs_does_produce_comparison_and_sweep(
-    create_scratch_repo: Callable[[], str],
-    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
 ):
-    repo = create_scratch_repo()
     _commit_bench(repo, 1)
     _git(["switch", "-c", "candidate"], repo)
     _commit_bench(repo, 2)
     _git(["switch", "main"], repo)
-    monkeypatch.chdir(repo)
 
     result = await compare(_e2e_options("main", "candidate"))
 
@@ -339,12 +276,9 @@ async def test_compare_when_two_refs_does_produce_comparison_and_sweep(
 
 @_posix_only
 async def test_compare_when_candidate_unresolvable_does_fail_with_nothing_on_disk(
-    create_scratch_repo: Callable[[], str],
-    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
 ):
-    repo = create_scratch_repo()
     _commit_bench(repo, 1)
-    monkeypatch.chdir(repo)
 
     with pytest.raises(GymratError, match="no-such-ref"):
         await compare(_e2e_options("main", "no-such-ref"))

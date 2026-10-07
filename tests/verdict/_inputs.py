@@ -4,8 +4,8 @@ A compact ``MetricSpec`` describes one metric's contribution to a run, and
 :func:`build_inputs` turns a list of specs into the ``(verdicts, metric_meta)``
 pair the aggregation layer consumes, preserving spec order.
 
-This is test-support code, not a test module: ``test_geomean`` and (later)
-``test_aggregate`` import it. It carries no test functions of its own.
+This is test-support code, not a test module: the verdict tests import it. It
+carries no test functions of its own.
 """
 
 from collections.abc import Sequence
@@ -25,15 +25,12 @@ METRIC_BYTES_LOWER: dict[str, MetricMeta] = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MetricSpec:
     """One metric's contribution to a run: what it is, and how it moved."""
 
     name: str
     """Full metric name — the key the verdict and exclusion lists report it under."""
-
-    short_name: str | None = None
-    """Defaults to ``name``, matching an adapter that reports no grouping."""
 
     direction: Direction = "lower"
     """Defaults to ``"lower"``, so a directionless spec list is lower-is-better."""
@@ -71,7 +68,6 @@ def build_inputs(
     metric_meta: dict[str, ResolvedMetricMeta] = {}
 
     for spec in specs:
-        short_name = spec.short_name if spec.short_name is not None else spec.name
         verdict = _resolve_verdict(spec)
         if verdict is not None:
             verdicts[spec.name] = verdict
@@ -82,7 +78,7 @@ def build_inputs(
             exact=verdict is not None and verdict.method == "exact",
             unit=None,
             kind=spec.kind,
-            short_name=short_name,
+            short_name=spec.name,
         )
 
     return verdicts, metric_meta
@@ -92,9 +88,14 @@ def noop_warn(_message: str) -> None:
     """Swallow divergence warnings so these cases stay silent on stderr."""
 
 
+def samples(*values: float) -> list[dict[str, float]]:
+    """Build round dicts keying each value under the default ``"metric"`` name."""
+    return [{"metric": value} for value in values]
+
+
 def create_samples(n: int, value: float) -> list[dict[str, float]]:
     """Build *n* single-metric sample rounds, each recording *value* under ``"metric"``."""
-    return [{"metric": value} for _ in range(n)]
+    return samples(*[value] * n)
 
 
 def unstable_band_verdict() -> BandVerdict:

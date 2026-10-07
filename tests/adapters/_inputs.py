@@ -9,8 +9,9 @@ import.
 :data:`LINE_BREAKS` lists every character ``str.splitlines`` breaks on, shared by
 the adapter tests that check a metric name holding one is rejected.
 
-This is test-support code, not a test module: ``test_mitata`` and
-``test_metric_lines`` import it. It carries no test functions of its own.
+This is test-support code, not a test module: ``test_mitata``,
+``test_adapters`` and ``tests/config/test_config_load.py`` import it. It
+carries no test functions of its own.
 """
 
 import json

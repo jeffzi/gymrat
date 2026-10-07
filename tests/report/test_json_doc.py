@@ -4,30 +4,42 @@ These cover the compare document (``render_json``), the measure document
 (``render_measure_json``), and the probe document (``render_probe_json``),
 including their schema shapes, per-metric and per-candidate serialization,
 worktree sections, non-finite handling, and the no-ANSI guarantee under forced
-color.
+color. They also cover the loop commands' start, keep, finalize, and sync
+documents (``render_start_json``, ``render_keep_json``,
+``render_finalize_json``, ``render_sync_json``): their schema shapes, the
+resumed and archived start variants, the runbook and budget fields, and the
+keep record's checks object.
 """
 
 from __future__ import annotations
 
 import json
 import math
-import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from gymrat.model import Exclusion, MetricUnit, PermutationVerdict
+from gymrat.loop.finalize import FinalizeResult
+from gymrat.loop.keep import KeepResult
+from gymrat.loop.start import StartResult
+from gymrat.loop.sync import SyncResult
+from gymrat.model import Exclusion, PermutationVerdict
 from gymrat.report.json_doc import (
     BudgetSummary,
+    render_finalize_json,
     render_json,
+    render_keep_json,
     render_measure_json,
     render_probe_json,
+    render_start_json,
+    render_sync_json,
 )
 from gymrat.report.types import (
     CandidateMetric,
     ComparisonResult,
     MetricComparison,
 )
+from gymrat.session.records import KeepChecks
 from gymrat.targets import WorktreeRemovalFailure
 from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._comparisons import (
@@ -38,9 +50,7 @@ from tests.report._comparisons import (
     kind_metric,
     metric_meta,
     n_way_metric,
-    other_kind,
     permutation_metric,
-    single_sample_result,
     two_kind_result,
 )
 from tests.report._measurements import (
@@ -50,15 +60,18 @@ from tests.report._measurements import (
 )
 from tests.report._probes import probe_metric, probe_result
 from tests.report._verdicts import band_metric, geomean_of, permutation_verdict
+from tests.session.records._fixtures import (
+    committed_keep,
+    empty_session_state,
+    finalize_record,
+    session_record,
+    session_state,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from syrupy.assertion import SnapshotAssertion
-
-    from gymrat.loop.probe import ProbeResult
-
-_ANSI_ESCAPE = re.compile("\x1b\\[")
 
 
 def _two_kind_with_exclusions() -> ComparisonResult:
@@ -116,51 +129,6 @@ def _two_kind_with_exclusions() -> ComparisonResult:
 
 
 # ---------------------------------------------------------------------------
-# render_json — schema shape
-# ---------------------------------------------------------------------------
-
-
-def test_render_json_when_single_candidate_does_produce_schema_version_1_shape():
-    result = create_comparison_result(
-        baseline_label="main",
-        candidates=[create_candidate(label="experiment")],
-        samples=10,
-        adapter="mitata",
-        metrics={"decode/time": permutation_metric(verdict="improved", delta=-10)},
-    )
-
-    doc = json.loads(render_json(result))
-
-    assert doc["schema_version"] == 1
-    assert doc["baseline"] == "main"
-    assert doc["candidates"] == ["experiment"]
-    assert doc["samples"] == 10
-    assert doc["adapter"] == "mitata"
-    assert "metrics" in doc
-    assert "per_candidate" in doc
-    assert "worktrees" in doc
-
-
-def test_render_json_when_top_level_keys_does_order_them_canonically():
-    result = create_comparison_result(
-        metrics={"decode/time": permutation_metric(verdict="improved", delta=-10)},
-    )
-
-    doc = json.loads(render_json(result))
-
-    assert list(doc.keys()) == [
-        "schema_version",
-        "baseline",
-        "candidates",
-        "samples",
-        "adapter",
-        "metrics",
-        "per_candidate",
-        "worktrees",
-    ]
-
-
-# ---------------------------------------------------------------------------
 # render_json — multi-candidate support
 # ---------------------------------------------------------------------------
 
@@ -195,18 +163,6 @@ def test_render_json_when_several_candidates_does_include_all_in_order():
 # ---------------------------------------------------------------------------
 
 
-def test_render_json_when_permutation_verdict_does_set_p_and_null_band():
-    result = create_comparison_result(
-        metrics={"decode/time": permutation_metric(verdict="improved", delta=-10, p=0.003)},
-    )
-
-    candidate = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][0]
-
-    assert candidate["method"] == "permutation"
-    assert candidate["p"] == 0.003
-    assert candidate["band"] is None
-
-
 def test_render_json_when_band_verdict_does_set_band_and_null_p():
     result = create_comparison_result(
         metrics={"decode/time": band_metric(verdict="no-signal", delta=-1, noise_pct=3.5)},
@@ -217,17 +173,6 @@ def test_render_json_when_band_verdict_does_set_band_and_null_p():
     assert candidate["method"] == "band"
     assert candidate["band"] == 3.5
     assert candidate["p"] is None
-
-
-def test_render_json_when_single_pair_does_store_no_signal_band_verdict():
-    candidate = json.loads(render_json(single_sample_result()))["metrics"]["decode/time"][
-        "candidates"
-    ][0]
-
-    assert candidate["verdict"] == "no-signal"
-    assert candidate["method"] == "band"
-    assert candidate["noise_pct"] == 0.5
-    assert candidate["band"] == 0.5
 
 
 def test_render_json_when_exact_verdict_does_null_noise_p_and_band():
@@ -250,8 +195,18 @@ def _paired_candidate(delta: float = -10.0) -> CandidateMetric:
     )
 
 
+def _first_candidate_delta(doc: dict[str, Any]) -> object:
+    """The ``decode/time`` metric's first candidate delta in a compare document."""
+    return doc["metrics"]["decode/time"]["candidates"][0]["delta"]
+
+
+def _first_kind_geomean(doc: dict[str, Any]) -> object:
+    """The first candidate's first kind geomean value in a compare document."""
+    return doc["per_candidate"][0]["kinds"][0]["geomean"]["value"]
+
+
 @pytest.mark.parametrize(
-    ("result", "path"),
+    ("result", "extract"),
     [
         pytest.param(
             create_comparison_result(
@@ -264,7 +219,7 @@ def _paired_candidate(delta: float = -10.0) -> CandidateMetric:
                     ),
                 },
             ),
-            ("metrics", "decode/time", "candidates", 0, "delta"),
+            _first_candidate_delta,
             id="delta",
         ),
         pytest.param(
@@ -277,72 +232,51 @@ def _paired_candidate(delta: float = -10.0) -> CandidateMetric:
                     ),
                 ],
             ),
-            ("per_candidate", 0, "kinds", 0, "geomean", "value"),
+            _first_kind_geomean,
             id="geomean",
         ),
     ],
 )
 def test_render_json_when_value_is_non_finite_does_render_null(
-    result: ComparisonResult, path: tuple[str | int, ...]
+    result: ComparisonResult, extract: Callable[[dict[str, Any]], object]
 ):
     doc = json.loads(render_json(result))
 
-    value = doc
-    for key in path:
-        value = value[key]
-
-    assert value is None
+    assert extract(doc) is None
 
 
 # ---------------------------------------------------------------------------
-# render_json — metric metadata
+# render_json and render_measure_json — metric metadata
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("unit", "expected"),
-    [(None, None), ("ns", "ns")],
-)
-def test_render_json_when_metric_unit_does_serialize_unit(
-    unit: MetricUnit | None,
-    expected: str | None,
-):
-    result = create_comparison_result(
-        metrics={"decode/time": permutation_metric(verdict="improved", delta=-5, unit=unit)},
-    )
-
-    doc = json.loads(render_json(result))
-
-    assert doc["metrics"]["decode/time"]["unit"] == expected
-
-
-def test_render_json_when_metric_meta_does_include_direction_and_gating():
-    result = create_comparison_result(
-        metrics={"decode/time": permutation_metric(verdict="improved", delta=-5, gating=False)},
-    )
-
-    metric = json.loads(render_json(result))["metrics"]["decode/time"]
-
-    assert metric["direction"] == "lower"
-    assert metric["gating"] is False
-
-
-def test_render_json_when_baseline_measured_does_include_median_and_spread():
-    result = create_comparison_result(
-        metrics={
-            "decode/time": permutation_metric(
-                verdict="improved",
-                delta=-10,
-                baseline_median=200,
-                baseline_spread=3.5,
+    ("render", "result", "name"),
+    [
+        pytest.param(
+            render_json,
+            create_comparison_result(
+                metrics={
+                    "decode/time": permutation_metric(verdict="improved", delta=-5, unit=None)
+                },
             ),
-        },
-    )
+            "decode/time",
+            id="compare",
+        ),
+        pytest.param(
+            render_measure_json,
+            create_measurement_result(metrics={"throughput/ops": measured_metric()}),
+            "throughput/ops",
+            id="measure",
+        ),
+    ],
+)
+def test_render_document_json_when_metric_has_no_unit_does_serialize_null_unit(
+    render: Callable[..., str], result: object, name: str
+):
+    doc = json.loads(render(result))
 
-    baseline = json.loads(render_json(result))["metrics"]["decode/time"]["baseline"]
-
-    assert baseline["median"] == 200
-    assert baseline["spread_pct"] == 3.5
+    assert doc["metrics"][name]["unit"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -350,10 +284,12 @@ def test_render_json_when_baseline_measured_does_include_median_and_spread():
 # ---------------------------------------------------------------------------
 
 
-def test_render_json_when_candidate_spans_kinds_does_carry_one_entry_per_kind():
+def test_render_json_when_candidate_spans_kinds_does_carry_one_entry_per_kind_in_field_order():
     doc = json.loads(render_json(_two_kind_with_exclusions()))
 
-    assert doc["per_candidate"][0]["kinds"] == [
+    kinds = doc["per_candidate"][0]["kinds"]
+    geomeans = [kinds[0]["geomean"], kinds[0]["groups"][0]["geomean"], kinds[0]["gated_geomean"]]
+    assert kinds == [
         {
             "kind": "time",
             "has_gating": True,
@@ -379,91 +315,8 @@ def test_render_json_when_candidate_spans_kinds_does_carry_one_entry_per_kind():
             "gated_geomean": None,
         },
     ]
-
-
-def test_render_json_when_rendering_geomeans_does_order_keys_by_geomean_result_fields():
-    field_names = ["value", "n", "band", "excluded"]
-
-    doc = json.loads(render_json(_two_kind_with_exclusions()))
-
-    kind = doc["per_candidate"][0]["kinds"][0]
-    geomeans = [kind["geomean"], kind["groups"][0]["geomean"], kind["gated_geomean"]]
-    assert [list(geomean) for geomean in geomeans] == [field_names] * 3
-    assert [list(entry) for entry in kind["geomean"]["excluded"]] == [["metric", "reason"]] * 2
-
-
-def test_render_json_when_candidate_spans_kinds_does_leave_no_blended_geomean():
-    doc = json.loads(render_json(_two_kind_with_exclusions()))
-
-    assert "geomean" not in doc["per_candidate"][0]
-
-
-def test_render_json_when_single_kind_does_use_same_shape_with_one_entry():
-    result = create_comparison_result(
-        candidates=[create_candidate(label="experiment", kinds=[other_kind(-3.2, 2)])],
-        metrics={"decode/time": permutation_metric(verdict="improved", delta=-10)},
-    )
-
-    doc = json.loads(render_json(result))
-
-    assert doc["per_candidate"][0]["kinds"] == [
-        {
-            "kind": "other",
-            "has_gating": True,
-            "geomean": {"value": -3.2, "n": 2, "excluded": [], "band": 0},
-            "groups": [],
-            "gated_geomean": {"value": -3.2, "n": 2, "excluded": [], "band": 0},
-        },
-    ]
-
-
-# ---------------------------------------------------------------------------
-# render_json — metric kind and group
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("metric_name", "kind", "group"),
-    [
-        ("entity/alive_check#time", "time", "entity"),
-        ("encode#memory", "memory", None),
-    ],
-)
-def test_render_json_when_reporting_metric_does_carry_kind_and_group(
-    metric_name: str,
-    kind: str,
-    group: str | None,
-):
-    doc = json.loads(render_json(_two_kind_with_exclusions()))
-
-    assert doc["metrics"][metric_name]["kind"] == kind
-    assert doc["metrics"][metric_name]["group"] == group
-
-
-# ---------------------------------------------------------------------------
-# render_json — verdict counts
-# ---------------------------------------------------------------------------
-
-
-def test_render_json_when_metrics_vary_does_tally_verdict_counts_per_candidate():
-    result = create_comparison_result(
-        metrics={
-            "faster/time": permutation_metric(verdict="improved", delta=-10),
-            "also-faster/time": permutation_metric(verdict="improved", delta=-5),
-            "slower/time": permutation_metric(verdict="regressed", delta=8),
-            "jittery/time": permutation_metric(verdict="unstable", delta=5),
-            "flat/time": permutation_metric(verdict="no-signal", delta=0.2),
-        },
-    )
-
-    counts = json.loads(render_json(result))["per_candidate"][0]["verdict_counts"]
-
-    assert list(counts.items()) == [
-        ("improved", 2),
-        ("regressed", 1),
-        ("unstable", 1),
-        ("no_signal", 1),
-    ]
+    assert [list(geomean) for geomean in geomeans] == [["value", "n", "band", "excluded"]] * 3
+    assert [list(entry) for entry in kinds[0]["geomean"]["excluded"]] == [["metric", "reason"]] * 2
 
 
 # ---------------------------------------------------------------------------
@@ -503,23 +356,6 @@ def test_render_json_when_baseline_unmeasured_does_render_null_baseline_fields()
     assert serialized["candidates"][0]["spread_pct"] is None
 
 
-def test_render_json_when_candidate_has_no_metric_data_does_render_all_nulls():
-    metric = MetricComparison(
-        baseline_median=100.0,
-        baseline_spread=1.0,
-        candidates=(_paired_candidate(), CandidateMetric()),
-        meta=metric_meta("decode/time", unit="ns"),
-    )
-    result = create_comparison_result(
-        candidates=[create_candidate(label="alpha"), create_candidate(label="beta")],
-        metrics={"decode/time": metric},
-    )
-
-    beta = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][1]
-
-    assert list(beta.items()) == list(_UNMEASURED_ROW.items())
-
-
 #: A candidate row with no measurement behind it, in the key order the document writes.
 _UNMEASURED_ROW: dict[str, object] = {
     "label": "beta",
@@ -534,11 +370,20 @@ _UNMEASURED_ROW: dict[str, object] = {
 }
 
 
-def test_render_json_when_metric_has_fewer_slices_than_candidates_does_render_an_empty_row():
+@pytest.mark.parametrize(
+    "candidates",
+    [
+        pytest.param((_paired_candidate(), CandidateMetric()), id="empty-candidate-slice"),
+        pytest.param((_paired_candidate(),), id="fewer-slices-than-candidates"),
+    ],
+)
+def test_render_json_when_candidate_has_no_metric_data_does_render_an_all_null_row(
+    candidates: tuple[CandidateMetric, ...],
+):
     metric = MetricComparison(
         baseline_median=100.0,
         baseline_spread=1.0,
-        candidates=(_paired_candidate(),),
+        candidates=candidates,
         meta=metric_meta("decode/time", unit="ns"),
     )
     result = create_comparison_result(
@@ -548,7 +393,7 @@ def test_render_json_when_metric_has_fewer_slices_than_candidates_does_render_an
 
     beta = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][1]
 
-    assert beta == _UNMEASURED_ROW
+    assert list(beta.items()) == list(_UNMEASURED_ROW.items())
 
 
 def test_render_json_when_candidate_measured_but_unpaired_does_keep_measurements():
@@ -571,67 +416,52 @@ def test_render_json_when_candidate_measured_but_unpaired_does_keep_measurements
 
 
 # ---------------------------------------------------------------------------
-# render_json — worktrees section
+# render_json and render_measure_json — worktrees section
 # ---------------------------------------------------------------------------
 
 
-def test_render_json_when_cleanup_clean_does_report_no_issues():
-    result = create_comparison_result(
-        worktrees_removed=2,
-        worktrees_left_behind=[],
-        worktree_prune_error=None,
-    )
-
-    worktrees = json.loads(render_json(result))["worktrees"]
-
-    assert worktrees == {"removed": 2, "left_behind": [], "prune_error": None}
-
-
-def test_render_json_when_cleanup_has_failures_does_report_left_behind_and_prune_error():
-    result = create_comparison_result(
-        worktrees_removed=1,
-        worktrees_left_behind=[
-            WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="contains modified files"),
-        ],
-        worktree_prune_error="fatal: prune failed",
-    )
-
-    worktrees = json.loads(render_json(result))["worktrees"]
-
-    assert worktrees["removed"] == 1
-    assert worktrees["left_behind"] == [
-        {"path": "/tmp/gymrat-abc", "reason": "contains modified files"},
-    ]
-    assert worktrees["prune_error"] == "fatal: prune failed"
-
-
-# ---------------------------------------------------------------------------
-# render_json — JSON validity and ANSI
-# ---------------------------------------------------------------------------
-
-
-def test_render_json_when_output_parsed_again_matches_identically():
-    result = create_comparison_result(
-        metrics={
-            "decode/time": permutation_metric(verdict="improved", delta=-10, unit="ns"),
-            "alloc/heap": exact_metric(delta=-5, unit="bytes"),
-        },
-        worktrees_removed=1,
-        worktrees_left_behind=[WorktreeRemovalFailure(dir="/tmp/gymrat-x", error="locked")],
-        worktree_prune_error="prune failed",
-    )
-
-    output = render_json(result)
-
-    assert json.dumps(json.loads(output), indent=2) == output
-
-
-def test_render_json_when_environment_forces_color_does_emit_no_ansi(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("render", "result"),
+    [
+        pytest.param(
+            render_json,
+            create_comparison_result(
+                worktrees_removed=1,
+                worktrees_left_behind=[
+                    WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="contains modified files"),
+                ],
+                worktree_prune_error="fatal: prune failed",
+            ),
+            id="compare",
+        ),
+        pytest.param(
+            render_measure_json,
+            create_measurement_result(
+                worktrees_removed=1,
+                worktrees_left_behind=[
+                    WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="contains modified files"),
+                ],
+                worktree_prune_error="fatal: prune failed",
+            ),
+            id="measure",
+        ),
+    ],
+)
+def test_render_document_json_when_cleanup_has_failures_does_report_them_in_worktrees(
+    render: Callable[..., str], result: object
 ):
-    monkeypatch.setenv("FORCE_COLOR", "1")
+    doc = json.loads(render(result))
 
-    assert not _ANSI_ESCAPE.search(render_json(_two_kind_with_exclusions()))
+    assert doc["worktrees"] == {
+        "removed": 1,
+        "left_behind": [{"path": "/tmp/gymrat-abc", "reason": "contains modified files"}],
+        "prune_error": "fatal: prune failed",
+    }
+
+
+# ---------------------------------------------------------------------------
+# render_json — JSON forms
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -660,89 +490,8 @@ def test_render_json_when_serializing_does_write_compact_json_forms(
 
 
 # ---------------------------------------------------------------------------
-# render_measure_json — schema shape
-# ---------------------------------------------------------------------------
-
-
-def test_render_measure_json_when_single_run_does_use_schema_version_1_shape():
-    result = create_measurement_result(
-        label="experiment",
-        samples=10,
-        adapter="mitata",
-        metrics={"decode/time": measured_metric(unit="ns")},
-    )
-
-    doc = json.loads(render_measure_json(result))
-
-    assert doc["schema_version"] == 1
-    assert doc["label"] == "experiment"
-    assert doc["samples"] == 10
-    assert doc["adapter"] == "mitata"
-    assert "metrics" in doc
-    assert "worktrees" in doc
-
-
-def test_render_measure_json_when_single_run_does_omit_comparison_only_sections():
-    doc = json.loads(render_measure_json(two_kind_measurement()))
-
-    assert "baseline" not in doc
-    assert "candidates" not in doc
-    assert "perCandidate" not in doc
-
-
-def test_render_measure_json_when_top_level_keys_does_order_them_canonically():
-    doc = json.loads(render_measure_json(two_kind_measurement()))
-
-    assert list(doc.keys()) == [
-        "schema_version",
-        "label",
-        "samples",
-        "adapter",
-        "metrics",
-        "worktrees",
-    ]
-
-
-# ---------------------------------------------------------------------------
 # render_measure_json — metric entries
 # ---------------------------------------------------------------------------
-
-
-def test_render_measure_json_when_grouped_metric_does_carry_contract_derived_group():
-    # The group derives from the metric name key, not short_name:
-    # "entity/alive_check#time" → group "entity"; short_name "alive_check"
-    # would yield None.
-    result = create_measurement_result(
-        metrics={
-            "entity/alive_check#time": measured_metric(
-                kind="time",
-                short_name="alive_check",
-                unit="ns",
-            ),
-        },
-    )
-
-    doc = json.loads(render_measure_json(result))
-
-    assert doc["metrics"]["entity/alive_check#time"]["group"] == "entity"
-    assert doc["metrics"]["entity/alive_check#time"]["kind"] == "time"
-
-
-def test_render_measure_json_when_single_segment_name_does_report_null_group():
-    result = create_measurement_result(
-        metrics={
-            "fib#time": measured_metric(
-                kind="time",
-                short_name="fib",
-                unit="ns",
-            ),
-        },
-    )
-
-    doc = json.loads(render_measure_json(result))
-
-    assert doc["metrics"]["fib#time"]["group"] is None
-    assert doc["metrics"]["fib#time"]["kind"] == "time"
 
 
 @pytest.mark.parametrize(
@@ -763,116 +512,17 @@ def test_render_measure_json_when_field_absent_does_render_null(
     assert doc["metrics"]["sparse/time"][field] is None
 
 
-def test_render_measure_json_when_metric_has_no_unit_does_render_null_unit():
-    result = create_measurement_result(
-        metrics={"throughput/ops": measured_metric()},
-    )
-
-    doc = json.loads(render_measure_json(result))
-
-    assert doc["metrics"]["throughput/ops"]["unit"] is None
-
-
-# ---------------------------------------------------------------------------
-# render_measure_json — worktrees section
-# ---------------------------------------------------------------------------
-
-
-def test_render_measure_json_when_cleanup_clean_does_report_no_issues():
-    doc = json.loads(render_measure_json(create_measurement_result(worktrees_removed=2)))
-
-    assert doc["worktrees"] == {"removed": 2, "left_behind": [], "prune_error": None}
-
-
-def test_render_measure_json_when_cleanup_has_failures_does_report_left_behind_and_prune_error():
-    result = create_measurement_result(
-        worktrees_removed=1,
-        worktrees_left_behind=[
-            WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="contains modified files"),
-        ],
-        worktree_prune_error="fatal: prune failed",
-    )
-
-    doc = json.loads(render_measure_json(result))
-
-    assert doc["worktrees"] == {
-        "removed": 1,
-        "left_behind": [{"path": "/tmp/gymrat-abc", "reason": "contains modified files"}],
-        "prune_error": "fatal: prune failed",
-    }
-
-
-# ---------------------------------------------------------------------------
-# render_measure_json — JSON validity and ANSI
-# ---------------------------------------------------------------------------
-
-
-def test_render_measure_json_when_environment_forces_color_does_emit_no_ansi(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-
-    assert not _ANSI_ESCAPE.search(render_measure_json(two_kind_measurement()))
-
-
-def test_render_measure_json_when_nesting_fields_does_indent_two_spaces_per_level():
-    result = two_kind_measurement(
-        worktrees_removed=1,
-        worktrees_left_behind=[WorktreeRemovalFailure(dir="/tmp/gymrat-x", error="locked")],
-        worktree_prune_error="prune failed",
-    )
-
-    lines = render_measure_json(result).split("\n")
-    worktrees_line = next(i for i, line in enumerate(lines) if line.strip() == '"worktrees": {')
-
-    assert re.match(r'^ {2}"schema_version": 1,$', lines[1])
-    assert re.match(r'^ {2}"worktrees": \{$', lines[worktrees_line])
-    assert re.match(r'^ {4}"removed": 1,$', lines[worktrees_line + 1])
-
-
 # ---------------------------------------------------------------------------
 # render_probe_json — schema shape
 # ---------------------------------------------------------------------------
 
 
-def test_render_probe_json_when_rendered_does_use_schema_version_1_shape():
-    doc = json.loads(render_probe_json(probe_result(metrics=[probe_metric()])))
+def test_render_probe_json_when_names_given_does_report_the_scope_and_names():
+    result = probe_result(names=("total_ms", "decode"), samples=3)
 
-    assert doc["schema_version"] == 1
-    assert doc["label"] == "experiment"
-    assert doc["adapter"] == "mitata"
-    assert list(doc.keys()) == [
-        "schema_version",
-        "label",
-        "samples",
-        "adapter",
-        "scoped",
-        "names",
-        "metrics",
-    ]
-
-
-@pytest.mark.parametrize(
-    ("result", "scoped", "names", "samples"),
-    [
-        pytest.param(
-            probe_result(names=("total_ms", "decode"), samples=3),
-            True,
-            ["total_ms", "decode"],
-            3,
-            id="scoped",
-        ),
-        pytest.param(probe_result(), False, [], 6, id="unscoped"),
-    ],
-)
-def test_render_probe_json_when_names_vary_does_report_the_scope_and_names(
-    result: ProbeResult, scoped: bool, names: list[str], samples: int
-):
     doc = json.loads(render_probe_json(result))
 
-    assert doc["scoped"] is scoped
-    assert doc["names"] == names
-    assert doc["samples"] == samples
+    assert (doc["scoped"], doc["names"], doc["samples"]) == (True, ["total_ms", "decode"], 3)
 
 
 # ---------------------------------------------------------------------------
@@ -880,28 +530,15 @@ def test_render_probe_json_when_names_vary_does_report_the_scope_and_names(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("name", "median", "spread", "reference_median", "delta_pct"),
-    [
-        pytest.param("decode/time", 90.0, 2.0, 100.0, -10.0, id="metric-paired"),
-        pytest.param("alloc_bytes", None, None, None, None, id="metric-field-absent"),
-    ],
-)
-def test_render_probe_json_when_metric_rendered_does_carry_snake_case_measurement_fields(
-    name: str,
-    median: float | None,
-    spread: float | None,
-    reference_median: float | None,
-    delta_pct: float | None,
-):
+def test_render_probe_json_when_metric_fields_absent_does_carry_them_as_null():
     result = probe_result(
         metrics=[
             probe_metric(
-                name,
-                median=median,
-                spread=spread,
-                reference_median=reference_median,
-                delta_pct=delta_pct,
+                "alloc_bytes",
+                median=None,
+                spread=None,
+                reference_median=None,
+                delta_pct=None,
                 unit="ns",
             )
         ]
@@ -909,57 +546,12 @@ def test_render_probe_json_when_metric_rendered_does_carry_snake_case_measuremen
 
     doc = json.loads(render_probe_json(result))
 
-    assert doc["metrics"][name] == {
-        "median": median,
-        "spread": spread,
-        "reference_median": reference_median,
-        "delta_pct": delta_pct,
+    assert doc["metrics"]["alloc_bytes"] == {
+        "median": None,
+        "spread": None,
+        "reference_median": None,
+        "delta_pct": None,
     }
-
-
-def test_render_probe_json_when_several_metrics_does_key_each_by_name_in_result_order():
-    result = probe_result(metrics=[probe_metric("total_ms"), probe_metric("alloc_bytes")])
-
-    doc = json.loads(render_probe_json(result))
-
-    assert list(doc["metrics"]) == ["total_ms", "alloc_bytes"]
-
-
-# ---------------------------------------------------------------------------
-# render_probe_json — budget
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "budget",
-    [
-        pytest.param(BudgetSummary(cap_minutes=30, remaining_seconds=900), id="budget-given"),
-        pytest.param(None, id="no-budget"),
-    ],
-)
-def test_render_probe_json_when_budget_varies_does_reflect_the_budget_key(
-    budget: BudgetSummary | None,
-):
-    doc = json.loads(render_probe_json(probe_result(), budget=budget))
-
-    if budget is None:
-        assert "budget" not in doc
-    else:
-        assert list(doc["budget"].items()) == [("cap_minutes", 30), ("remaining_seconds", 900)]
-
-
-# ---------------------------------------------------------------------------
-# render_probe_json — JSON validity and ANSI
-# ---------------------------------------------------------------------------
-
-
-def test_render_probe_json_when_environment_forces_color_does_emit_no_ansi(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    result = probe_result(metrics=[probe_metric("decode/time", unit="ns")])
-
-    assert not _ANSI_ESCAPE.search(render_probe_json(result))
 
 
 # ---------------------------------------------------------------------------
@@ -986,9 +578,212 @@ def _golden_probe_json() -> str:
         pytest.param(_golden_probe_json, id="probe"),
     ],
 )
-def test_render_json_document_when_rendered_does_match_its_golden(
+def test_render_document_json_when_rendered_does_match_its_golden(
     render: Callable[[], str], snapshot: SnapshotAssertion
 ):
     document = render()
 
     assert document.split("\n") == snapshot
+
+
+# ---------------------------------------------------------------------------
+# helpers — start / finalize / sync
+# ---------------------------------------------------------------------------
+
+
+#: The session header every start document in this file is rendered from.
+_SESSION = session_record()
+
+
+def _fresh_start() -> StartResult:
+    """A brand-new session (not resumed, nothing archived)."""
+    return StartResult(
+        session=_SESSION,
+        state=empty_session_state(),
+        resumed=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# render_start_json — fresh, resumed, and runbook
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("result", "runbook", "expected"),
+    [
+        pytest.param(
+            _fresh_start(),
+            None,
+            {
+                "session_id": _SESSION.session_id,
+                "branch": _SESSION.branch,
+                "baseline": {"ref": _SESSION.baseline.ref, "sha": _SESSION.baseline.sha},
+                "worktrees": {
+                    "experiment": _SESSION.worktrees.experiment,
+                    "baseline": _SESSION.worktrees.baseline,
+                },
+                "resumed": False,
+                "iteration_count": 0,
+                "keep_count": 0,
+                "runbook": None,
+            },
+            id="fresh",
+        ),
+        pytest.param(
+            StartResult(
+                session=session_record(),
+                state=session_state(iteration_count=5, keep_count=3),
+                resumed=True,
+            ),
+            None,
+            {"resumed": True, "iteration_count": 5, "keep_count": 3, "runbook": None},
+            id="resumed",
+        ),
+        pytest.param(
+            _fresh_start(),
+            "my-runbook.yml",
+            {"resumed": False, "iteration_count": 0, "keep_count": 0, "runbook": "my-runbook.yml"},
+            id="runbook",
+        ),
+    ],
+)
+def test_render_start_json_when_start_varies_does_reflect_state_and_runbook(
+    result: StartResult, runbook: str | None, expected: dict[str, object]
+):
+    doc = json.loads(render_start_json(result, runbook=runbook))
+
+    assert {key: doc[key] for key in expected} == expected
+
+
+# ---------------------------------------------------------------------------
+# render_start_json — archived start
+# ---------------------------------------------------------------------------
+
+
+def test_render_start_json_when_archived_does_include_archived_object():
+    result = StartResult(
+        session=session_record(),
+        state=empty_session_state(),
+        resumed=False,
+        archived="20260701-120000-beef",
+        archived_path="/repo/.gymrat/archive/20260701-120000-beef",
+    )
+
+    doc = json.loads(render_start_json(result))
+
+    assert doc["archived"] == {
+        "session_id": "20260701-120000-beef",
+        "path": "/repo/.gymrat/archive/20260701-120000-beef",
+    }
+
+
+# ---------------------------------------------------------------------------
+# render_keep_json — checks object
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("checks", "expected"),
+    [
+        pytest.param(
+            KeepChecks(configured=True, passed=False, stdout_bytes=120, stderr_bytes=45),
+            [("configured", True), ("passed", False), ("stdout_bytes", 120), ("stderr_bytes", 45)],
+            id="checks-ran",
+        ),
+        pytest.param(
+            KeepChecks(configured=False),
+            [
+                ("configured", False),
+                ("passed", None),
+                ("stdout_bytes", None),
+                ("stderr_bytes", None),
+            ],
+            id="no-checks-configured",
+        ),
+    ],
+)
+def test_render_keep_json_when_checks_recorded_does_serialize_every_checks_field_in_order(
+    checks: KeepChecks, expected: list[tuple[str, object]]
+):
+    result = KeepResult(record=committed_keep(1, checks=checks), report="keep report")
+
+    doc = json.loads(render_keep_json(result))
+
+    assert list(doc["checks"].items()) == expected
+
+
+# ---------------------------------------------------------------------------
+# render_finalize_json — schema shape
+# ---------------------------------------------------------------------------
+
+
+def test_render_finalize_json_when_rendered_does_produce_expected_keys():
+    record = finalize_record()
+    result = FinalizeResult(record=record, report="final report text")
+
+    doc = json.loads(render_finalize_json(result))
+
+    assert doc["branch"] == record.branch
+    assert doc["commit"] == record.commit
+    assert doc["message"] == record.message
+    assert doc["at"] == record.at
+
+
+# ---------------------------------------------------------------------------
+# render_sync_json — schema shape
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        pytest.param(
+            ("src/main.py", "src/lib.py"), ["src/main.py", "src/lib.py"], id="files-synced"
+        ),
+        pytest.param((), [], id="no-files"),
+    ],
+)
+def test_render_sync_json_when_files_vary_does_list_them(
+    files: tuple[str, ...], expected: list[str]
+):
+    result = SyncResult(files=files)
+
+    doc = json.loads(render_sync_json(result))
+
+    assert doc["files"] == expected
+
+
+# ---------------------------------------------------------------------------
+# render_*_json — budget key
+# ---------------------------------------------------------------------------
+
+
+_ABSENT = object()
+
+
+@pytest.mark.parametrize(
+    ("render", "expected"),
+    [
+        pytest.param(
+            lambda: render_start_json(
+                _fresh_start(), budget=BudgetSummary(cap_minutes=30, remaining_seconds=900)
+            ),
+            {"cap_minutes": 30, "remaining_seconds": 900},
+            id="budget-given",
+        ),
+        pytest.param(
+            lambda: render_finalize_json(
+                FinalizeResult(record=finalize_record(), report="report"), budget=None
+            ),
+            _ABSENT,
+            id="no-budget",
+        ),
+    ],
+)
+def test_render_document_json_when_budget_varies_does_reflect_the_budget_key(
+    render: Callable[[], str], expected: object
+):
+    doc = json.loads(render())
+
+    assert doc.get("budget", _ABSENT) == expected

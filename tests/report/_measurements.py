@@ -34,8 +34,17 @@ def measured_metric(
 ) -> MetricMeasurement:
     """One metric of a single-target run: what it measured, and how steady it was.
 
-    ``spread`` is a percentage of the median. Passing ``None`` is how a caller
-    pins the single-sample case, where there is no run-to-run jitter to report.
+    Args:
+        median: The metric's median.
+        spread: The run-to-run spread as a percentage of the median. ``None``
+            pins the single-sample case, where there is no jitter to report.
+        short_name: The metric's display name.
+        kind: The metric's kind.
+        unit: The metric's unit, if any.
+        gating: Whether the metric gates the run.
+
+    Returns:
+        The metric measurement.
     """
     return MetricMeasurement(
         median=median,

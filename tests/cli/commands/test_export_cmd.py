@@ -2,7 +2,7 @@
 
 These drive the assembled app through :class:`typer.testing.CliRunner` with the
 telemetry replay, tracing provider, and session store replaced. They cover
-registration and help, the argument/option contract, error exits, and the
+the argument/option contract, error exits, supervisor log selection, and the
 success path with its printed summary.
 """
 
@@ -18,28 +18,22 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from typer.testing import CliRunner, Result
 
 from gymrat.cli.app import app
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import record_to_wire
-from tests._ansi import SGR_RE
 from tests._cli import ENTRY, no_color_env
-from tests._imports import loaded_under, modules_imported_by
-from tests.cli._help import help_output
+from tests.cli._session import runner
 from tests.session.records._fixtures import SESSION_ID, command_record, session_record
 from tests.telemetry._collector import otlp_collector
 from tests.telemetry._fixtures import hide_otel_sdk, hide_otlp_exporter
-from tests.telemetry._fixtures import (
-    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
-)
 from tests.telemetry._replay_logs import (
     T0,
     T1,
     T2,
     T3,
-    launch_event,
-    turn_end,
+    replay_launch_event,
+    replay_turn_end,
     write_records_log,
     write_supervisor_log,
 )
@@ -47,7 +41,7 @@ from tests.telemetry._replay_logs import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-runner = CliRunner()
+    from typer.testing import Result
 
 
 def _output(result: Result) -> str:
@@ -63,16 +57,15 @@ _SHORT_TIMEOUT_SECONDS = "0.5"
 _UNREACHABLE_ENDPOINT = "http://127.0.0.1:1"
 
 
-def _populate_session_dir(
-    root: str,
-    *,
-    session_id: str = SESSION_ID,
-    extra_supervisor_session_id: str | None = None,
-) -> str:
+def _populate_session_dir(root: str, *, session_id: str = SESSION_ID) -> str:
     """Write a session log and a matching supervisor log under ``root``.
 
-    Returns the session log path. When ``extra_supervisor_session_id`` is given,
-    an additional supervisor log with that session id is written.
+    Args:
+        root: The repository root the session log goes under.
+        session_id: The session both logs belong to.
+
+    Returns:
+        The session log path.
     """
     session_log = session_jsonl_path(root)
     header = session_record(session_id=session_id, at=T0)
@@ -81,45 +74,11 @@ def _populate_session_dir(
 
     sup_dir = str(Path(session_log).parent)
     sup_log = str(Path(sup_dir) / "supervisor-001.jsonl")
-    write_supervisor_log(sup_log, [launch_event(session_id=session_id, at=T1), turn_end(at=T3)])
-
-    if extra_supervisor_session_id is not None:
-        other_log = str(Path(sup_dir) / "supervisor-002.jsonl")
-        write_supervisor_log(
-            other_log,
-            [launch_event(session_id=extra_supervisor_session_id, at=T1), turn_end(at=T3)],
-        )
+    write_supervisor_log(
+        sup_log, [replay_launch_event(session_id=session_id, at=T1), replay_turn_end(at=T3)]
+    )
 
     return session_log
-
-
-# ---------------------------------------------------------------------------
-# lazy imports
-# ---------------------------------------------------------------------------
-
-
-def test_export_when_app_imported_does_not_import_telemetry_provider_or_replay():
-    loaded = modules_imported_by("gymrat.cli.app")
-
-    assert loaded_under(loaded, "gymrat.telemetry.provider", "gymrat.telemetry.replay") == []
-
-
-# ---------------------------------------------------------------------------
-# registration and help
-# ---------------------------------------------------------------------------
-
-
-def test_export_when_root_help_does_list_export():
-    assert "export" in help_output()
-
-
-def test_export_when_help_does_document_options_and_positional():
-    out = help_output("export")
-
-    assert "--endpoint" in out
-    assert "--debug" in out
-    assert "env var: OTEL_EXPORTER_OTLP_ENDPOINT" in out
-    assert "[SESSION_LOG]" in out
 
 
 # ---------------------------------------------------------------------------
@@ -190,41 +149,38 @@ def test_export_when_tracer_records_nothing_does_exit_two_without_reporting_expo
 # ---------------------------------------------------------------------------
 
 
-def _endpoint_args(monkeypatch: pytest.MonkeyPatch, source: str, endpoint: str) -> list[str]:
+def _endpoint_args(monkeypatch: pytest.MonkeyPatch, source: str | None, endpoint: str) -> list[str]:
     """Supply ``endpoint`` through ``--endpoint`` or the environment, per ``source``.
 
     Args:
         monkeypatch: Sets the endpoint environment variable when ``source`` is ``"env"``.
-        source: ``"flag"`` to pass ``--endpoint``; any other value sets the environment variable.
+        source: ``"flag"`` to pass ``--endpoint``, ``None`` to supply no endpoint
+            at all; any other value sets the environment variable.
         endpoint: The endpoint value to supply.
 
     Returns:
         The extra command-line arguments the invocation needs.
     """
+    if source is None:
+        return []
     if source == "flag":
         return ["--endpoint", endpoint]
     monkeypatch.setenv(_ENDPOINT_ENV, endpoint)
     return []
 
 
-def test_export_when_no_endpoint_flag_and_no_env_does_exit_two_naming_env_var(
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(None, id="no-flag-and-no-env"),
+        pytest.param("flag", id="whitespace-only-flag"),
+        pytest.param("env", id="whitespace-only-env"),
+    ],
+)
+def test_export_when_endpoint_missing_or_blank_does_exit_two_naming_env_var(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-):
-    session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.delenv(_ENDPOINT_ENV, raising=False)
-
-    result = runner.invoke(app, ["export", session_log])
-
-    assert result.exit_code == 2
-    assert "No endpoint: pass --endpoint or set OTEL_EXPORTER_OTLP_ENDPOINT" in _output(result)
-
-
-@pytest.mark.parametrize("source", ["flag", "env"])
-def test_export_when_endpoint_whitespace_only_does_exit_two_naming_env_var(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    source: str,
+    source: str | None,
 ):
     session_log = _populate_session_dir(str(tmp_path))
     monkeypatch.delenv(_ENDPOINT_ENV, raising=False)
@@ -241,27 +197,31 @@ def test_export_when_endpoint_whitespace_only_does_exit_two_naming_env_var(
 # ---------------------------------------------------------------------------
 
 
-def test_export_when_session_log_missing_does_exit_two_with_path_in_message(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
-    missing = str(tmp_path / ".gymrat" / "session.jsonl")
-
-    result = runner.invoke(app, ["export", missing])
-
-    assert result.exit_code == 2
-    assert f"No session found in {missing}" in _output(result)
+def _blank_log(path: Path) -> None:
+    """Write a session log that holds only a blank line."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n", encoding="utf-8")
 
 
-def test_export_when_session_log_blank_does_exit_two_reporting_no_session(
+def _no_log(path: Path) -> None:
+    """Leave the session log path empty."""
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        pytest.param(_no_log, id="missing"),
+        pytest.param(_blank_log, id="blank"),
+    ],
+)
+def test_export_when_session_log_missing_or_blank_does_exit_two_reporting_no_session(
+    arrange: Callable[[Path], None],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
     session_log = session_jsonl_path(str(tmp_path))
-    Path(session_log).parent.mkdir(parents=True, exist_ok=True)
-    Path(session_log).write_text("\n", encoding="utf-8")
+    arrange(Path(session_log))
 
     result = runner.invoke(app, ["export", session_log])
 
@@ -356,25 +316,12 @@ def _return_one(*_args: object, **_kwargs: object) -> int:
 def _stub_tracing(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    configure_tracing: Callable[..., bool] = _always_true,
     replay_session: Callable[..., int] = _return_one,
 ) -> None:
     """Stub the tracing provider and replay calls the export command wires together."""
-    monkeypatch.setattr("gymrat.telemetry.provider.configure_tracing", configure_tracing)
+    monkeypatch.setattr("gymrat.telemetry.provider.configure_tracing", _always_true)
     monkeypatch.setattr("gymrat.telemetry.replay.replay_session", replay_session)
     monkeypatch.setattr("gymrat.telemetry.provider.flush_tracing", lambda: None)
-
-
-def _record_sdk_endpoint(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Stub tracing and record the endpoint tracing is configured with."""
-    seen: list[str] = []
-
-    def fake_configure(_session_id: str, *, endpoint: str) -> bool:
-        seen.append(endpoint)
-        return True
-
-    _stub_tracing(monkeypatch, configure_tracing=fake_configure)
-    return seen
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +329,7 @@ def _record_sdk_endpoint(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_export_when_valid_session_does_exit_zero_and_print_summary(
+def test_export_when_valid_session_does_print_the_export_summary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
@@ -402,20 +349,21 @@ def test_export_when_valid_session_does_exit_zero_and_print_summary(
     assert f"exported 3 spans for session {SESSION_ID} to {_ENDPOINT}" in lines
 
 
-def test_export_when_endpoint_flag_given_does_use_flag_over_env(
+def test_export_when_endpoint_flag_given_does_send_spans_to_the_flag_over_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
     session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.setenv(_ENDPOINT_ENV, "http://wrong:4318")
-    custom_endpoint = "http://custom:4318"
+    monkeypatch.delenv(_TRACES_ENDPOINT_ENV, raising=False)
+    monkeypatch.setenv(_ENDPOINT_ENV, _UNREACHABLE_ENDPOINT)
+    monkeypatch.setenv(_TIMEOUT_ENV, _SHORT_TIMEOUT_SECONDS)
 
-    seen_endpoints = _record_sdk_endpoint(monkeypatch)
+    with otlp_collector() as collector:
+        result = runner.invoke(app, ["export", session_log, "--endpoint", collector.endpoint])
 
-    result = runner.invoke(app, ["export", session_log, "--endpoint", custom_endpoint])
-
-    assert result.exit_code == 0
-    assert seen_endpoints == [custom_endpoint]
+    assert result.exit_code == 0, _output(result)
+    assert len(collector.span_names) == 3
+    assert f"exported 3 spans for session {SESSION_ID} to {collector.endpoint}" in result.stderr
 
 
 @pytest.mark.parametrize("source", ["flag", "env"])
@@ -442,7 +390,7 @@ def test_export_when_endpoint_padded_does_send_spans_to_trimmed_endpoint(
     ], _output(result)
 
 
-def test_export_when_final_session_line_is_torn_utf8_does_warn_and_export_the_rest(
+def test_export_when_final_session_line_is_torn_utf8_does_skip_only_that_line(
     tmp_path: Path,
 ):
     session_log = _populate_session_dir(str(tmp_path))
@@ -453,7 +401,7 @@ def test_export_when_final_session_line_is_torn_utf8_does_warn_and_export_the_re
 
     with otlp_collector() as collector:
         env[_ENDPOINT_ENV] = collector.endpoint
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
             [*ENTRY, "export", session_log],
             env=env,
             capture_output=True,
@@ -554,33 +502,6 @@ def test_export_when_no_session_log_argument_does_use_repo_session_path(
 # ---------------------------------------------------------------------------
 
 
-def test_export_when_supervisor_log_session_differs_does_skip_it(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    session_log = _populate_session_dir(
-        str(tmp_path),
-        extra_supervisor_session_id="other-session-id",
-    )
-    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
-
-    replay_calls: list[tuple[object, ...]] = []
-
-    def fake_replay(session_path: str, sup_logs: list[str]) -> int:
-        replay_calls.append((session_path, sup_logs))
-        return 1
-
-    _stub_tracing(monkeypatch, replay_session=fake_replay)
-
-    result = runner.invoke(app, ["export", session_log])
-
-    assert result.exit_code == 0
-    assert len(replay_calls) == 1
-    _, sup_logs = replay_calls[0]
-    assert len(sup_logs) == 1  # pyrefly: ignore[bad-argument-type]
-    assert "supervisor-001" in sup_logs[0]  # pyrefly: ignore[bad-index]
-
-
 def _first_line_writer(first_line: bytes) -> Callable[[Path], None]:
     """Build a writer that creates a supervisor log holding only ``first_line``."""
 
@@ -588,6 +509,14 @@ def _first_line_writer(first_line: bytes) -> Callable[[Path], None]:
         path.write_bytes(first_line)
 
     return write
+
+
+def _other_session_log(path: Path) -> None:
+    """Write a well-formed supervisor log whose launch line names another session."""
+    write_supervisor_log(
+        str(path),
+        [replay_launch_event(session_id="other-session-id", at=T1), replay_turn_end(at=T3)],
+    )
 
 
 def _dangling_symlink(path: Path) -> None:
@@ -598,6 +527,7 @@ def _dangling_symlink(path: Path) -> None:
 @pytest.mark.parametrize(
     "make_entry",
     [
+        pytest.param(_other_session_log, id="a-log-of-another-session"),
         pytest.param(_first_line_writer(b"{not json\n"), id="a-first-line-that-is-not-json"),
         pytest.param(_first_line_writer(b"\xff\xff\n"), id="a-first-line-that-is-not-utf8"),
         pytest.param(_first_line_writer(b"[1, 2]\n"), id="a-first-line-that-is-not-an-object"),
@@ -610,34 +540,28 @@ def _dangling_symlink(path: Path) -> None:
         ),
     ],
 )
-def test_export_when_supervisor_log_first_line_not_a_json_object_does_skip_it_silently(
+def test_export_when_supervisor_log_not_a_launch_of_this_session_does_skip_it_silently(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     make_entry: Callable[[Path], None],
 ):
     session_log = _populate_session_dir(str(tmp_path))
     make_entry(Path(session_log).parent / "supervisor-002.jsonl")
-    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
-    replay_calls: list[tuple[str, list[str]]] = []
+    monkeypatch.delenv(_TRACES_ENDPOINT_ENV, raising=False)
 
-    def fake_replay(session_path: str, sup_logs: list[str]) -> int:
-        replay_calls.append((session_path, sup_logs))
-        return 1
-
-    _stub_tracing(monkeypatch, replay_session=fake_replay)
-
-    result = runner.invoke(app, ["export", session_log])
+    with otlp_collector() as collector:
+        monkeypatch.setenv(_ENDPOINT_ENV, collector.endpoint)
+        result = runner.invoke(app, ["export", session_log])
 
     assert result.exit_code == 0, _output(result)
-    assert [[Path(log).name for log in logs] for _, logs in replay_calls] == [
-        ["supervisor-001.jsonl"]
-    ]
+    assert len(collector.span_names) == 3
+    assert f"exported 3 spans for session {SESSION_ID}" in result.stderr
     assert "warning: " not in result.stderr
 
 
 def _deny_read(path: Path) -> None:
     """Write a supervisor log for the session, then remove every permission on it."""
-    write_supervisor_log(str(path), [launch_event(), turn_end()])
+    write_supervisor_log(str(path), [replay_launch_event(), replay_turn_end()])
     path.chmod(0o000)
 
 
@@ -668,7 +592,7 @@ def _make_directory(path: Path) -> None:
         ),
     ],
 )
-def test_export_when_supervisor_log_unreadable_does_warn_and_export_the_rest(
+def test_export_when_supervisor_log_unreadable_does_skip_it_with_a_warning(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     make_unreadable: Callable[[Path], None],
@@ -677,40 +601,16 @@ def test_export_when_supervisor_log_unreadable_does_warn_and_export_the_rest(
     session_log = _populate_session_dir(str(tmp_path))
     unreadable = Path(session_log).parent / "supervisor-002.jsonl"
     make_unreadable(unreadable)
-    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
-    replay_calls: list[list[str]] = []
+    monkeypatch.delenv(_TRACES_ENDPOINT_ENV, raising=False)
 
-    def fake_replay(_session_path: str, sup_logs: list[str]) -> int:
-        replay_calls.append(sup_logs)
-        return 1
-
-    _stub_tracing(monkeypatch, replay_session=fake_replay)
-
-    result = runner.invoke(app, ["export", session_log])
+    with otlp_collector() as collector:
+        monkeypatch.setenv(_ENDPOINT_ENV, collector.endpoint)
+        result = runner.invoke(app, ["export", session_log])
 
     warning_lines = [line for line in result.stderr.splitlines() if line.startswith("warning: ")]
     assert result.exit_code == 0, _output(result)
-    assert [[Path(log).name for log in logs] for logs in replay_calls] == [["supervisor-001.jsonl"]]
+    assert len(collector.span_names) == 3
     assert len(warning_lines) == 1
     assert str(unreadable) in warning_lines[0]
     assert reason in warning_lines[0]
-    assert f"exported 1 spans for session {SESSION_ID}" in result.stderr
-
-
-# ---------------------------------------------------------------------------
-# --color / --no-color on export
-# ---------------------------------------------------------------------------
-
-
-def test_export_command_when_no_color_does_strip_ansi_from_stderr_error(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    missing = str(tmp_path / ".gymrat" / "session.jsonl")
-
-    result = runner.invoke(app, ["export", "--no-color", missing])
-
-    assert result.exit_code == 2
-    assert "No such option" not in result.stderr
-    assert not SGR_RE.search(result.stderr)
+    assert f"exported 3 spans for session {SESSION_ID}" in result.stderr

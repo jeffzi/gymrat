@@ -127,13 +127,17 @@ def reset() -> None:
     _exit_output.clear()
 
 
-def _exit_process(code: int) -> NoReturn:
+def exit_process(code: int) -> NoReturn:
     """Terminate the process immediately with ``code``.
 
     Uses ``os._exit`` rather than ``sys.exit``: the cleanups have already run,
     and raising ``SystemExit`` from a signal handler could be swallowed by an
     application ``except`` block, leaving the process alive after a termination
-    signal. Tests monkeypatch this seam to observe the code instead of exiting.
+    signal.
+
+    Test seam: tests replace this function to observe the exit code instead of
+    exiting. The termination handler looks it up at call time, so a replacement
+    installed after the handlers are wired up still takes effect.
 
     Args:
         code: The process exit status.
@@ -215,7 +219,7 @@ def _escalate(first_signal: int) -> NoReturn:
     _escalating = True
     _exit_output.clear()
     _write_exit_output(_run_collecting_warnings(list(_escalations), "escalation"))
-    _exit_process(_SIGNAL_EXIT_BASE + first_signal)
+    exit_process(_SIGNAL_EXIT_BASE + first_signal)
 
 
 def _handler(signal_number: int, _frame: FrameType | None) -> None:
@@ -233,7 +237,7 @@ def _handler(signal_number: int, _frame: FrameType | None) -> None:
 
     _handled_signal = signal_number
     _write_exit_output(_run_collecting_warnings(list(_registry.values()), "cleanup"))
-    _exit_process(_SIGNAL_EXIT_BASE + signal_number)
+    exit_process(_SIGNAL_EXIT_BASE + signal_number)
 
 
 def _ensure_handlers_installed() -> None:

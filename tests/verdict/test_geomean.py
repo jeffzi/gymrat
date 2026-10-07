@@ -5,81 +5,26 @@ ratio normalization, and noise-band propagation are all exercised here.
 """
 
 import math
-from collections.abc import Sequence
 
 import pytest
 
 from gymrat.model import (
     BandVerdict,
-    Direction,
-    ExactVerdict,
     Exclusion,
     ExclusionReason,
     GeomeanResult,
-    MetricMeta,
-    MetricVerdict,
 )
-from gymrat.verdict import compute_geomean, compute_verdicts
+from gymrat.verdict import compute_geomean
+from tests.report._verdicts import band_verdict, exact_verdict
 from tests.verdict._inputs import (
-    METRIC_BYTES_LOWER,
     MetricSpec,
     build_inputs,
-    create_samples,
-    noop_warn,
     unstable_band_verdict,
 )
-
-
-def gating_verdicts_with_noise(
-    noise: Sequence[float | None],
-) -> tuple[dict[str, MetricVerdict], dict[str, MetricMeta]]:
-    """Gating verdicts keyed ``metric1``…``metricN``, one per entry of ``noise``.
-
-    A number becomes a band verdict carrying that ``noise_pct``; ``None`` becomes
-    an exact verdict, which carries no noise figure at all. Every verdict can
-    be judged and has a usable ratio, so the geomean includes all of them.
-    """
-    verdicts: dict[str, MetricVerdict] = {}
-    metric_meta: dict[str, MetricMeta] = {}
-
-    for index, noise_pct in enumerate(noise):
-        key = f"metric{index + 1}"
-        if noise_pct is None:
-            verdicts[key] = ExactVerdict(
-                method="exact",
-                verdict="improved",
-                delta=-50.0,
-                n=4,
-            )
-        else:
-            verdicts[key] = BandVerdict(
-                method="band",
-                verdict="improved",
-                usable_n=4,
-                noise_pct=noise_pct,
-                noise_abs=noise_pct / 2,
-                delta=-50.0,
-                n=4,
-            )
-        metric_meta[key] = MetricMeta(
-            direction="lower",
-            gating=True,
-            exact=noise_pct is None,
-            unit=None,
-        )
-
-    return verdicts, metric_meta
-
 
 # ---------------------------------------------------------------------------
 # Empty and exclusion cases
 # ---------------------------------------------------------------------------
-
-
-def test_compute_geomean_when_no_metrics_does_return_zeroed_result():
-    result = compute_geomean({}, {})
-
-    assert result == GeomeanResult(value=0.0, n=0, band=0.0, excluded=())
 
 
 def test_compute_geomean_when_metric_non_gating_does_aggregate_like_any_other():
@@ -105,63 +50,6 @@ def test_compute_geomean_when_metric_one_sided_does_exclude_as_no_verdict_in_sco
     assert result.excluded == (Exclusion(metric="metric2", reason="no-verdict"),)
 
 
-@pytest.mark.parametrize(
-    ("direction", "delta", "reason"),
-    [
-        pytest.param("lower", math.nan, "undefined-ratio", id="nan-delta"),
-        pytest.param("lower", -150.0, "infinite-rho", id="rho-negative"),
-        pytest.param("lower", -100.0, "infinite-rho", id="rho-zero"),
-        pytest.param("higher", -100.0, "infinite-rho", id="rho-infinite"),
-    ],
-)
-def test_compute_geomean_when_sole_metric_ratio_invalid_does_exclude(
-    direction: Direction,
-    delta: float,
-    reason: ExclusionReason,
-):
-    verdicts, metric_meta = build_inputs(
-        [MetricSpec(name="metric1", direction=direction, delta=delta)],
-    )
-
-    result = compute_geomean(verdicts, metric_meta)
-
-    assert result.value == 0.0
-    assert result.n == 0
-    assert result.excluded == (Exclusion(metric="metric1", reason=reason),)
-
-
-# ---------------------------------------------------------------------------
-# Single gating metric
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("direction", "delta", "expected_value", "precision"),
-    [
-        pytest.param("lower", -5.0, -5.0, 1e-5, id="lower-improve"),
-        pytest.param("higher", 5.0, -4.76, 5e-2, id="higher-improve"),
-        pytest.param("lower", 0.0, 0.0, 1e-5, id="no-change"),
-        pytest.param("lower", 100.0, 100.0, 5e-2, id="lower-regress"),
-        pytest.param("higher", -10.0, 11.11, 5e-2, id="higher-regress"),
-    ],
-)
-def test_compute_geomean_when_single_gating_metric_does_report_value(
-    direction: Direction,
-    delta: float,
-    expected_value: float,
-    precision: float,
-):
-    verdicts, metric_meta = build_inputs(
-        [MetricSpec(name="metric1", direction=direction, delta=delta)],
-    )
-
-    result = compute_geomean(verdicts, metric_meta)
-
-    assert result.n == 1
-    assert result.excluded == ()
-    assert result.value == pytest.approx(expected_value, abs=precision)
-
-
 # ---------------------------------------------------------------------------
 # Multiple gating metrics
 # ---------------------------------------------------------------------------
@@ -179,7 +67,7 @@ def test_compute_geomean_when_multiple_lower_metrics_does_geomean_ratios():
 
     assert result.n == 2
     assert result.excluded == ()
-    assert result.value == pytest.approx(-7.54, abs=5e-2)
+    assert result.value == pytest.approx((math.sqrt(0.9 * 0.95) - 1) * 100, abs=1e-6)
 
 
 def test_compute_geomean_when_directions_differ_does_respect_each_metric():
@@ -194,7 +82,7 @@ def test_compute_geomean_when_directions_differ_does_respect_each_metric():
 
     assert result.n == 2
     assert result.excluded == ()
-    assert result.value == pytest.approx(-9.55, abs=0.5)
+    assert result.value == pytest.approx((math.sqrt(0.9 / 1.1) - 1) * 100, abs=1e-6)
 
 
 @pytest.mark.parametrize(
@@ -293,35 +181,27 @@ def test_compute_geomean_when_unstable_delta_nan_does_report_unstable_over_undef
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("noise", "expected"),
-    [
-        pytest.param([4.0], 4.0, id="single"),
-        pytest.param([3.0, 4.0], 2.5, id="two"),
-        pytest.param([None, 6.0], 3.0, id="exact-adds-no-noise"),
-    ],
-)
-def test_compute_geomean_when_metrics_carry_noise_does_propagate_band(
-    noise: Sequence[float | None],
-    expected: float,
-):
-    verdicts, metric_meta = gating_verdicts_with_noise(noise)
+def test_compute_geomean_when_exact_metric_beside_noisy_one_does_add_no_noise_to_band():
+    # An exact verdict carries no noise figure, but it is judged, so the geomean
+    # takes it and the band halves the noisy metric's noise across both.
+    verdicts, metric_meta = build_inputs([
+        MetricSpec(name="metric1", verdict=exact_verdict(delta=-50.0, n=4)),
+        MetricSpec(
+            name="metric2",
+            verdict=band_verdict(
+                verdict="improved",
+                usable_n=4,
+                noise_pct=6.0,
+                noise_abs=3.0,
+                delta=-50.0,
+                n=4,
+            ),
+        ),
+    ])
 
     result = compute_geomean(verdicts, metric_meta)
 
-    assert result.band == pytest.approx(expected, abs=1e-10)
-
-
-def test_compute_geomean_when_byte_metric_does_carry_quantization_noise():
-    left = create_samples(2, 4.0)
-    right = create_samples(2, 3.0)
-    verdicts = compute_verdicts(left, right, METRIC_BYTES_LOWER, warn=noop_warn)
-
-    result = compute_geomean(verdicts, METRIC_BYTES_LOWER)
-
-    assert result.n == 1
-    assert result.value == pytest.approx(-25.0, abs=1e-5)
-    assert result.band == pytest.approx(100 / 3, abs=1e-5)
+    assert result.band == pytest.approx(3.0, abs=1e-10)
 
 
 def test_compute_geomean_when_metric_excluded_does_leave_its_noise_out_of_band():

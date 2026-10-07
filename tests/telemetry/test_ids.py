@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from typing import TYPE_CHECKING
 
 import pytest
 from opentelemetry.trace import INVALID_SPAN, NonRecordingSpan, SpanContext, TraceFlags
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from gymrat.telemetry.provider import (
     format_traceparent,
@@ -28,26 +32,31 @@ def test_trace_id_of_when_called_does_return_pinned_sha256_value() -> None:
     assert result == 97386156705156847130924781873076287828
 
 
-def test_trace_id_of_when_called_twice_does_return_same_value() -> None:
-    first = trace_id_of("stable-id")
+class _ZeroHash:
+    """A ``sha256`` stand-in whose digest is all zero bytes."""
 
-    second = trace_id_of("stable-id")
+    def digest(self) -> bytes:
+        return b"\x00" * 32
 
-    assert first == second
+
+def _zero_hash(_data: bytes) -> _ZeroHash:
+    return _ZeroHash()
 
 
-def test_trace_id_of_when_result_would_be_zero_does_return_one(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "derive",
+    [
+        pytest.param(lambda: trace_id_of("anything"), id="trace-id"),
+        pytest.param(lambda: span_id_of("anything", "key"), id="span-id"),
+    ],
+)
+def test_id_of_when_hash_would_be_zero_does_return_one(
+    monkeypatch: pytest.MonkeyPatch, derive: Callable[[], int]
 ) -> None:
-    # A zero trace ID is invalid in W3C Trace Context; the function returns 1.
+    # A zero ID is invalid in W3C Trace Context; the derivation returns 1 instead.
+    monkeypatch.setattr(hashlib, "sha256", _zero_hash)
 
-    class _FakeHash:
-        def digest(self) -> bytes:
-            return b"\x00" * 32
-
-    monkeypatch.setattr(hashlib, "sha256", lambda _data: _FakeHash())  # pyrefly: ignore[implicit-any-lambda]
-
-    result = trace_id_of("anything")
+    result = derive()
 
     assert result == 1
 
@@ -64,28 +73,6 @@ def test_span_id_of_when_called_does_return_pinned_sha256_value() -> None:
 
     assert result == expected
     assert result == 3890457429828929257
-
-
-def test_span_id_of_when_called_twice_does_return_same_value() -> None:
-    first = span_id_of("stable-id", "key")
-
-    second = span_id_of("stable-id", "key")
-
-    assert first == second
-
-
-def test_span_id_of_when_result_would_be_zero_does_return_one(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _FakeHash:
-        def digest(self) -> bytes:
-            return b"\x00" * 32
-
-    monkeypatch.setattr(hashlib, "sha256", lambda _data: _FakeHash())  # pyrefly: ignore[implicit-any-lambda]
-
-    result = span_id_of("anything", "key")
-
-    assert result == 1
 
 
 # ---------------------------------------------------------------------------

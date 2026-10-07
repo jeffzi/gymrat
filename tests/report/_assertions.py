@@ -5,19 +5,18 @@ from __future__ import annotations
 import re
 
 from gymrat.report.style import render_lines
-from tests._ansi import SGR_RE, strip_ansi
+from tests._ansi import (
+    SGR_RE,
+    TRAILING_SGR_RUN,
+    strip_ansi,
+)
 
 # The column separator every rendered table row is split on.
 _SEPARATOR = "│"
-# A trailing run of SGR escapes with nothing but escapes between them and the end.
-_TRAILING_SGR_RUN = re.compile(r"(?:\x1b\[[0-9;]*m)*$")
 # A table rule: dashes meeting the first column separator at a crossing junction.
 _RULE = re.compile(r"^─+┼")
 # A section border: only dashes and top-T junctions, edge to edge.
 _BORDER = re.compile(r"^[─┬]+$")
-# A line dimmed end to end: opens with SGR 2 and closes with a reset. Rich closes
-# a dim span with a full reset (SGR 0) rather than the incremental dim-off SGR 22.
-DIMMED_LINE = re.compile(r"^\x1b\[2m.*\x1b\[0m$")
 
 
 def render_plain(*markup: str) -> str:
@@ -28,14 +27,6 @@ def render_plain(*markup: str) -> str:
 def render_colored(*markup: str) -> str:
     """The rich ``markup`` rendered with color on, one line per argument."""
     return render_lines(*markup, color=True)
-
-
-def sgr_codes(text: str) -> set[str]:
-    """Every SGR parameter code present in ``text``, resets left out."""
-    codes: set[str] = set()
-    for escape in SGR_RE.finditer(text):
-        codes.update(param for param in escape.group(1).split(";") if param not in {"", "0"})
-    return codes
 
 
 def table_rows(report: str) -> list[str]:
@@ -72,6 +63,16 @@ def line_containing(report: str, needle: str) -> str:
 
     A colored line starts with escape codes rather than its text, so the color
     tests match on content instead of a prefix.
+
+    Args:
+        report: The rendered report, lines joined by newlines.
+        needle: The text the line must contain.
+
+    Returns:
+        The first line of ``report`` that contains ``needle``.
+
+    Raises:
+        AssertionError: No line of ``report`` contains ``needle``.
     """
     for candidate in report.split("\n"):
         if needle in candidate:
@@ -86,17 +87,28 @@ def styles_at(line: str, marker: str, *, last: bool = False) -> list[str]:
     Only the unbroken run of escape sequences touching the marker counts, so a
     style opened at the start of the line does not leak into the result. A reset
     (``0`` or an empty parameter list) is dropped: it closes styles rather than
-    opening one. Pass ``last`` to read the trailing occurrence of a repeated
-    marker instead of the leading one.
+    opening one.
 
     Rich packs several parameters into one escape (``\\x1b[1;4m``), so each run is
     split on both the escape boundaries and the ``;`` inside them.
+
+    Args:
+        line: One rendered line, escape codes included.
+        marker: The text whose opening styles are read.
+        last: Read the trailing occurrence of a repeated marker instead of the
+            leading one.
+
+    Returns:
+        The SGR parameters, in the order they were opened.
+
+    Raises:
+        AssertionError: ``marker`` does not occur in ``line``.
     """
     index = line.rfind(marker) if last else line.find(marker)
     if index == -1:
         msg = f"no {marker!r} in line: {line!r}"
         raise AssertionError(msg)
-    run = _TRAILING_SGR_RUN.search(line[:index])
+    run = TRAILING_SGR_RUN.search(line[:index])
     opened = run.group(0) if run is not None else ""
     params: list[str] = []
     for escape in SGR_RE.finditer(opened):
@@ -105,21 +117,19 @@ def styles_at(line: str, marker: str, *, last: bool = False) -> list[str]:
 
 
 def offsets_of(line: str, glyph: str) -> list[int]:
-    """Character offsets of every occurrence of ``glyph`` in a rendered line."""
-    offsets: list[int] = []
-    start = line.find(glyph)
-    while start != -1:
-        offsets.append(start)
-        start = line.find(glyph, start + 1)
-    return offsets
+    """Character offsets of every occurrence of ``glyph`` in a rendered line.
 
+    Two table lines whose ``│`` separators sit at the same offsets have aligned
+    columns.
 
-def separator_offsets(line: str) -> list[int]:
-    """Character offsets of every column separator in a rendered table line.
+    Args:
+        line: One rendered line.
+        glyph: The text to locate.
 
-    Two lines whose separators sit at the same offsets have aligned columns.
+    Returns:
+        The start offset of each occurrence, left to right.
     """
-    return [index for index, char in enumerate(line) if char == _SEPARATOR]
+    return [match.start() for match in re.finditer(re.escape(glyph), line)]
 
 
 def separator_styles(line: str) -> list[list[str]]:
@@ -127,6 +137,12 @@ def separator_styles(line: str) -> list[list[str]]:
 
     A separator that inherits its row's style reports that style here; one left in
     the terminal's default color reports nothing.
+
+    Args:
+        line: One rendered table line, escape codes included.
+
+    Returns:
+        One list of open SGR parameters per separator, left to right.
     """
     closers: dict[str, re.Pattern[str]] = {
         "0": re.compile(r"^\d+$"),
@@ -153,15 +169,18 @@ def separator_styles(line: str) -> list[list[str]]:
     return styles
 
 
-def table_shape(report: str) -> list[str]:
-    """One entry per report line, coarse enough to read as a layout.
-
-    A table row collapses to its first cell, a header rule collapses to
-    ``"<rule>"``, a section's top border to ``"<border>"``, and every other line
-    stays as its plain text.
-    """
+def table_region(report: str) -> list[str]:
+    """The table region of a report: its shape down to the last table row."""
+    lines = report.split("\n")
+    last = -1
+    for index, line in enumerate(lines):
+        if _SEPARATOR in strip_ansi(line):
+            last = index
+    if last == -1:
+        msg = f"no table rows in report:\n{report}"
+        raise AssertionError(msg)
     shape: list[str] = []
-    for line in report.split("\n"):
+    for line in lines[: last + 1]:
         bare = strip_ansi(line)
         if _RULE.match(bare):
             shape.append("<rule>")
@@ -174,26 +193,18 @@ def table_shape(report: str) -> list[str]:
     return shape
 
 
-def table_region(report: str) -> list[str]:
-    """The table region of a report: its shape down to the last table row."""
-    lines = report.split("\n")
-    last = -1
-    for index, line in enumerate(lines):
-        if _SEPARATOR in strip_ansi(line):
-            last = index
-    if last == -1:
-        msg = f"no table rows in report:\n{report}"
-        raise AssertionError(msg)
-    return table_shape(report)[: last + 1]
-
-
 def highlight_lines(report: str) -> list[str]:
     """The lines of the ``highlights`` block, its heading excluded.
 
     The block runs from the line after the ``highlights`` heading down to the
     next blank line (or the end of the report). Lines keep their styling, so the
-    color tests can read the SGR parameters off a highlight entry. An absent
-    block yields an empty list.
+    color tests can read the SGR parameters off a highlight entry.
+
+    Args:
+        report: The rendered report, lines joined by newlines.
+
+    Returns:
+        The block's lines, or an empty list when the report has no block.
     """
     lines = report.split("\n")
     start = next(

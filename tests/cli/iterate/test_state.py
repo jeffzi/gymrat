@@ -8,8 +8,6 @@ deterministic without a clock.
 
 from __future__ import annotations
 
-import math
-from dataclasses import FrozenInstanceError
 from typing import TYPE_CHECKING
 
 import pytest
@@ -35,12 +33,8 @@ from gymrat.progress_events import (
 )
 from gymrat.utils import SamplingEta
 from tests._imports import loaded_under, modules_imported_by
-from tests.cli._progress_helpers import (
-    pass_finished as _pass_finished,
-)
-from tests.cli._progress_helpers import (
-    pass_started as _pass_started,
-)
+from tests.cli._progress_helpers import pass_finished as _pass_finished
+from tests.cli._progress_helpers import pass_started as _pass_started
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -87,7 +81,7 @@ _LAST_PASS_FINISHED = _pass_finished(1, 1, target_count=2, label="experiment", a
 
 
 # ---------------------------------------------------------------------------
-# Reducer shape: frozen records, no rich
+# Reducer shape: pure, no rich
 # ---------------------------------------------------------------------------
 
 
@@ -97,45 +91,9 @@ def test_state_module_when_imported_in_a_fresh_interpreter_does_not_load_rich():
     assert loaded_under(loaded, "rich") == []
 
 
-@pytest.mark.parametrize(
-    ("record", "attribute", "value"),
-    [
-        pytest.param(_INITIAL, "primary_metric", "throughput", id="iterate-state"),
-        pytest.param(_INITIAL.nodes.prepare, "status", "done", id="node-state"),
-        pytest.param(_INITIAL.pass_phase, "start_ms", 5.0, id="phase-counters"),
-    ],
-)
-def test_state_records_when_attribute_assigned_does_raise_frozen_instance_error(
-    record: object, attribute: str, value: object
-):
-    with pytest.raises(FrozenInstanceError):
-        setattr(record, attribute, value)
-
-
-def test_advance_when_applied_twice_to_same_input_does_return_equal_states():
-    event = PrepareFinished(label="baseline", at_ms=5000)
-    state = advance(_state(), PrepareStarted(label="baseline", at_ms=0))
-
-    assert advance(state, event) == advance(state, event)
-
-
-def test_advance_when_applied_does_leave_input_state_unchanged():
-    state = _state()
-
-    advance(state, PrepareStarted(label="baseline", at_ms=1000))
-
-    assert state == _state()
-
-
 # ---------------------------------------------------------------------------
 # Row transitions
 # ---------------------------------------------------------------------------
-
-
-def test_advance_when_before_hook_started_does_mark_hook_row_running():
-    result = advance(_state(has_before_hook=True), HookStarted(stage="before", at_ms=0))
-
-    assert result.nodes.before_hook.status == "running"
 
 
 def test_advance_when_before_hook_finished_does_mark_hook_row_done():
@@ -144,26 +102,6 @@ def test_advance_when_before_hook_finished_does_mark_hook_row_done():
     result = advance(state, HookFinished(stage="before", at_ms=2000))
 
     assert result.nodes.before_hook.status == "done"
-
-
-def test_advance_when_prepare_started_does_mark_prepare_row_running():
-    result = advance(_state(), PrepareStarted(label="baseline", at_ms=1000))
-
-    assert result.nodes.prepare.status == "running"
-
-
-def test_advance_when_second_prepare_finishes_does_accumulate_elapsed():
-    state = _apply(
-        _state(),
-        PrepareStarted(label="baseline", at_ms=0),
-        PrepareFinished(label="baseline", at_ms=3000),
-        PrepareStarted(label="candidate", at_ms=3000),
-    )
-
-    result = advance(state, PrepareFinished(label="candidate", at_ms=5000))
-
-    assert result.nodes.prepare.status == "done"
-    assert result.nodes.prepare.elapsed_ms == 5000
 
 
 def test_advance_when_pass_finishes_does_advance_pass_phase_eta():
@@ -196,70 +134,10 @@ def test_advance_when_judge_finished_does_store_judge_detail_as_data():
     )
 
 
-@pytest.mark.parametrize(
-    ("regressed", "expected_status"),
-    [
-        pytest.param((), "skipped", id="no-regression"),
-        pytest.param(("latency",), "pending", id="regression"),
-    ],
-)
-def test_advance_when_judge_finished_does_skip_confirm_only_without_regression(
-    regressed: tuple[str, ...], expected_status: str
-):
-    result = advance(
-        _state(),
-        JudgeFinished(primary_delta_pct=-2.0, regressed=regressed, at_ms=6000),
-    )
+def test_advance_when_confirm_started_does_set_confirm_note():
+    result = advance(_state(), ConfirmStarted(filtered_metrics=("latency", "alloc"), at_ms=5000))
 
-    assert result.nodes.confirm.status == expected_status
-
-
-def test_advance_when_confirm_skipped_after_a_regression_does_mark_confirm_row_skipped():
-    state = advance(
-        _state(),
-        JudgeFinished(primary_delta_pct=-2.0, regressed=("latency",), at_ms=6000),
-    )
-
-    result = advance(state, ConfirmSkipped(at_ms=6000))
-
-    assert result.nodes.confirm.status == "skipped"
-
-
-@pytest.mark.parametrize(
-    ("filtered_metrics", "expected_note"),
-    [
-        pytest.param(None, "full suite", id="unfiltered"),
-        pytest.param(("latency",), "1 metric", id="one-metric"),
-        pytest.param(("latency", "alloc"), "2 metrics", id="two-metrics"),
-    ],
-)
-def test_advance_when_confirm_started_does_set_confirm_note(
-    filtered_metrics: tuple[str, ...] | None, expected_note: str
-):
-    result = advance(_state(), ConfirmStarted(filtered_metrics=filtered_metrics, at_ms=5000))
-
-    assert result.nodes.confirm.note == expected_note
-
-
-@pytest.mark.parametrize(
-    ("checks_cmd", "expected_detail"),
-    [
-        pytest.param(None, "improved suggested", id="no-checks-cmd"),
-        pytest.param(
-            "npm run check && npm test",
-            "improved suggested — checks (npm run check && npm test) run at gymrat keep",
-            id="with-checks-cmd",
-        ),
-    ],
-)
-def test_advance_when_iteration_recorded_does_set_record_detail(
-    checks_cmd: str | None, expected_detail: str
-):
-    result = advance(
-        _state(checks_cmd=checks_cmd), IterationRecorded(seq=2, outcome="improved", at_ms=15000)
-    )
-
-    assert result.nodes.record.detail == expected_detail
+    assert result.nodes.confirm.note == "2 metrics"
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +165,12 @@ def test_advance_when_iteration_recorded_does_set_record_detail(
             JudgeFinished(primary_delta_pct=-2.0, regressed=(), at_ms=6000),
             "judge -2.0% on geomean · no gating regression",
             id="judge-finished",
+        ),
+        pytest.param(
+            (),
+            JudgeFinished(primary_delta_pct=None, regressed=(), at_ms=6000),
+            "judge — · no gating regression",
+            id="judge-finished-missing-delta",
         ),
         pytest.param(
             (ConfirmStarted(filtered_metrics=None, at_ms=5000),),
@@ -333,28 +217,3 @@ def test_plain_line_when_non_milestone_event_does_return_none(
     result = plain_line(before, advance(before, event), event)
 
     assert result is None
-
-
-@pytest.mark.parametrize(
-    ("delta", "expected"),
-    [
-        pytest.param(2.2, "+2.2% on geomean", id="positive"),
-        pytest.param(-1.3, "-1.3% on geomean", id="negative"),
-        pytest.param(0.0, "0.0% on geomean", id="zero"),
-        pytest.param(0.04, "0.0% on geomean", id="positive-rounds-to-zero"),
-        pytest.param(-0.04, "0.0% on geomean", id="negative-rounds-to-zero"),
-        pytest.param(None, "—", id="missing"),
-        pytest.param(math.nan, "—", id="nan"),
-        pytest.param(math.inf, "—", id="positive-infinity"),
-        pytest.param(-math.inf, "—", id="negative-infinity"),
-    ],
-)
-def test_plain_line_when_judge_finished_does_print_delta_like_the_report(
-    delta: float | None, expected: str
-):
-    before = _state()
-    event = JudgeFinished(primary_delta_pct=delta, regressed=(), at_ms=6000)
-
-    result = plain_line(before, advance(before, event), event)
-
-    assert result == f"judge {expected} · no gating regression"

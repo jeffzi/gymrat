@@ -6,18 +6,20 @@ variants from them.
 """
 
 import json
-import re
 
-from tests.session.records._fixtures import AT, COMMIT, SESSION_ID
-
-SHA = "a" * 40
+from tests.session.records._fixtures import (
+    AT,
+    BASELINE_SHA,
+    COMMIT,
+    SESSION_ID,
+)
 
 SESSION_RECORD: dict[str, object] = {
     "type": "session",
     "schema": 1,
     "session_id": SESSION_ID,
     "at": AT,
-    "baseline": {"ref": "main", "sha": SHA},
+    "baseline": {"ref": "main", "sha": BASELINE_SHA},
     "branch": f"gymrat/{SESSION_ID}",
     "worktrees": {
         "experiment": "/repo/.gymrat/experiment",
@@ -155,7 +157,7 @@ def omitting(record: dict[str, object], key: str) -> dict[str, object]:
 
 def patching(record: dict[str, object], patch: dict[str, object]) -> dict[str, object]:
     """Copy of ``record`` with ``patch`` merged over it."""
-    return {**record, **patch}
+    return record | patch
 
 
 _RAW_NUMBER = "raw-number-placeholder"
@@ -184,13 +186,19 @@ def with_raw_number(line: str, keys: tuple[str, ...], literal: str) -> str:
     return json.dumps(data).replace(f'"{_RAW_NUMBER}"', literal)
 
 
-def mentions(field: str) -> re.Pattern[str]:
-    """Matches an error message that names ``field`` as the failing location."""
-    return re.compile(rf"\b{re.escape(field)}\b")
-
-
 def field_of(record: dict[str, object], key: str) -> dict[str, object]:
-    """The nested object ``record`` holds under ``key``."""
+    """The nested object ``record`` holds under ``key``.
+
+    Args:
+        record: The wire record to read from.
+        key: The field holding the nested object.
+
+    Returns:
+        The nested object.
+
+    Raises:
+        TypeError: When the value under ``key`` is not an object.
+    """
     value = record[key]
     if not isinstance(value, dict):
         msg = f"{key!r} holds {type(value).__name__}, not an object"

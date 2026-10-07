@@ -4,7 +4,7 @@
 serialized JSON line per event to a log file, creating the parent directory
 tree lazily on the first write. Serialization is delegated to ``to_json_line``
 (compact snake_case); these tests pin the file-writing side effects, the lazy
-directory creation, the failure surface, and ``SessionObserver`` compatibility.
+directory creation, and the failure surface.
 """
 
 import re
@@ -15,10 +15,8 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.supervisor.events import (
-    CapEvent,
     TextDeltaEvent,
     UsageUpdateEvent,
-    combine_observers,
     create_event_log_writer,
     probe_event_log_path,
     to_json_line,
@@ -81,32 +79,6 @@ def test_create_event_log_writer_when_event_holds_non_ascii_text_does_write_utf8
     writer(event)
 
     assert log_path.read_bytes() == (to_json_line(event) + "\n").encode("utf-8")
-
-
-def test_create_event_log_writer_when_cap_event_written_does_round_trip(
-    tmp_path: Path,
-):
-    log_path = tmp_path / "events.jsonl"
-    writer = create_event_log_writer(log_path)
-
-    writer(CapEvent(cap="wall-clock", at=5_000_000_000_000, action="interrupting"))
-
-    assert read_log_lines(log_path) == [
-        {"type": "cap", "at": 5_000_000_000_000, "cap": "wall-clock", "action": "interrupting"},
-    ]
-
-
-def test_create_event_log_writer_when_wrapped_in_combine_observers_does_write_one_line(
-    tmp_path: Path,
-):
-    log_path = tmp_path / "events.jsonl"
-    combined = combine_observers(create_event_log_writer(log_path))
-
-    combined(UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01))
-
-    assert read_log_lines(log_path) == [
-        {"type": "usage_update", "at": 1_000_000_000_000, "cost_usd": 0.01},
-    ]
 
 
 # ---------------------------------------------------------------------------

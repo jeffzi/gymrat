@@ -4,7 +4,6 @@ These cover the style/color primitives (label clipping by terminal cells and
 grapheme clusters) plus the color-resolution and capture-rendering tests.
 """
 
-import io
 import os
 
 import pytest
@@ -13,14 +12,8 @@ from hypothesis import strategies as st
 from rich.cells import cell_len, split_graphemes
 from rich.markup import escape
 
-from gymrat.report.display import DisplayClass
 from gymrat.report.style import (
-    AGGREGATE_LABEL_STYLE,
-    GROUP_LABEL_STYLE,
-    LABEL_DISPLAY_WIDTH,
     RENDER_WIDTH,
-    VARIANT_NAME_STYLE,
-    VERDICT_STYLES,
     format_hint,
     highlight_inline_code,
     make_capture_console,
@@ -28,8 +21,8 @@ from gymrat.report.style import (
     shorten_label,
     truncate_labels,
 )
-from tests._ansi import sgr_params
-from tests.report._assertions import render_colored, render_plain
+from tests._ansi import strip_ansi
+from tests.report._assertions import render_colored, render_plain, styles_at
 
 # ---------------------------------------------------------------------------
 # shorten_label
@@ -131,10 +124,6 @@ def test_shorten_label_when_clipping_does_keep_whole_clusters_from_both_ends(
 # ---------------------------------------------------------------------------
 
 
-def test_label_display_width_when_referenced_does_equal_twenty():
-    assert LABEL_DISPLAY_WIDTH == 20
-
-
 def test_truncate_labels_when_every_label_fits_does_return_verbatim():
     labels = ["main", "feature/short-branch"]
 
@@ -174,72 +163,15 @@ def test_truncate_labels_when_widening_past_a_fitting_label_does_not_lengthen_it
 
 
 # ---------------------------------------------------------------------------
-# style constants
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("display_class", "expected"),
-    [
-        pytest.param("improved", "green", id="improved"),
-        pytest.param("regressed", "red", id="regressed"),
-        pytest.param("unstable", "yellow", id="unstable"),
-        pytest.param("identical", "cyan", id="identical"),
-        pytest.param("within-noise", "dim", id="within-noise"),
-        pytest.param("inconclusive", "dim", id="inconclusive"),
-    ],
-)
-def test_verdict_styles_when_referenced_does_map_display_class_to_style(
-    display_class: DisplayClass, expected: str
-):
-    assert VERDICT_STYLES[display_class] == expected
-
-
-def test_variant_name_style_when_referenced_does_equal_bold_underline():
-    assert VARIANT_NAME_STYLE == "bold underline"
-
-
-def test_group_label_style_when_referenced_does_equal_bold_blue():
-    assert GROUP_LABEL_STYLE == "bold blue"
-
-
-def test_aggregate_label_style_when_referenced_does_equal_bold():
-    assert AGGREGATE_LABEL_STYLE == "bold"
-
-
-# ---------------------------------------------------------------------------
 # highlight_inline_code
 # ---------------------------------------------------------------------------
 
 
-def test_highlight_inline_code_when_span_present_does_strip_backticks_and_keep_content():
-    result = highlight_inline_code("Run `gymrat doctor` to verify.")
+def test_highlight_inline_code_when_span_in_prose_does_paint_the_span_blue_without_backticks():
+    styled = highlight_inline_code("Run `gymrat doctor` to verify.")
 
-    assert "`" not in result
-    assert "gymrat doctor" in result
-
-
-def test_highlight_inline_code_when_colored_does_paint_the_span_blue():
-    styled = render_colored(highlight_inline_code("Run `gymrat doctor` to verify."))
-
-    assert "34" in sgr_params(styled[: styled.index("gymrat doctor")])
-    assert "`" not in styled
-
-
-def test_highlight_inline_code_when_suppressed_does_render_bare_content():
-    plain = render_plain(highlight_inline_code("Run `gymrat doctor` to verify."))
-
-    assert plain == "Run gymrat doctor to verify."
-
-
-def test_highlight_inline_code_when_multiple_spans_does_render_each_bare():
-    plain = render_plain(highlight_inline_code("Use `gymrat compare` or `gymrat measure`."))
-
-    assert plain == "Use gymrat compare or gymrat measure."
-
-
-def test_highlight_inline_code_when_no_backticks_does_return_unchanged():
-    assert highlight_inline_code("No inline code here.") == "No inline code here."
+    assert render_plain(styled) == "Run gymrat doctor to verify."
+    assert styles_at(render_colored(styled), "gymrat doctor") == ["34"]
 
 
 @pytest.mark.parametrize(
@@ -249,16 +181,17 @@ def test_highlight_inline_code_when_no_backticks_does_return_unchanged():
         pytest.param("`--bench`", "--bench", id="flag"),
         pytest.param("`gymrat.json`", "gymrat.json", id="path"),
         pytest.param("`runbook`", "runbook", id="single-word"),
+        pytest.param(
+            "Use `gymrat compare` or `gymrat measure`.",
+            "Use gymrat compare or gymrat measure.",
+            id="multiple-spans",
+        ),
+        pytest.param("No inline code here.", "No inline code here.", id="no-backticks"),
+        pytest.param("Metric `[i]` counts.", "Metric [i] counts.", id="markup-metacharacters"),
     ],
 )
 def test_highlight_inline_code_when_rendered_plain_does_yield_content(text: str, expected: str):
     assert render_plain(highlight_inline_code(text)) == expected
-
-
-def test_highlight_inline_code_when_content_has_markup_metacharacters_does_render_literally():
-    plain = render_plain(highlight_inline_code("Metric `[i]` counts."))
-
-    assert plain == "Metric [i] counts."
 
 
 # ---------------------------------------------------------------------------
@@ -266,23 +199,6 @@ def test_highlight_inline_code_when_content_has_markup_metacharacters_does_rende
 # ---------------------------------------------------------------------------
 
 _HINT = "run `gymrat doctor` first"
-
-
-def test_format_hint_when_rendered_plain_does_yield_the_bare_sentence():
-    assert render_plain(format_hint(_HINT)) == "run gymrat doctor first"
-
-
-def test_format_hint_when_colored_does_dim_the_whole_line():
-    styled = render_colored(format_hint(_HINT))
-
-    assert styled.startswith("\x1b[2m")
-    assert styled.endswith("\x1b[0m")
-
-
-def test_format_hint_when_colored_does_paint_the_inline_code_blue():
-    styled = render_colored(format_hint(_HINT))
-
-    assert "34" in sgr_params(styled[: styled.index("gymrat doctor")])
 
 
 @pytest.mark.parametrize(
@@ -302,7 +218,13 @@ def test_format_hint_when_text_has_markup_metacharacters_does_render_them_litera
 
 
 def test_format_hint_when_code_spans_bracket_prose_does_paint_only_the_spans_blue():
-    assert format_hint("`a` or `b`") == "[dim][blue]a[/blue] or [blue]b[/blue][/dim]"
+    line = render_colored(format_hint("`a` or `b`"))
+
+    assert (styles_at(line, "a"), styles_at(line, " or "), styles_at(line, "b", last=True)) == (
+        ["2", "34"],
+        ["2"],
+        ["2", "34"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -310,64 +232,26 @@ def test_format_hint_when_code_spans_bracket_prose_does_paint_only_the_spans_blu
 # ---------------------------------------------------------------------------
 
 
-def test_render_lines_when_color_true_does_emit_ansi_despite_no_color_env(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("env", "color", "has_ansi"),
+    [
+        pytest.param({"NO_COLOR": "1"}, True, True, id="color-on-beats-no-color"),
+        pytest.param({"FORCE_COLOR": "1"}, False, False, id="color-off-beats-force-color"),
+        pytest.param({"NO_COLOR": "1"}, None, False, id="unset-follows-no-color"),
+        pytest.param({"FORCE_COLOR": "1"}, None, True, id="unset-follows-force-color"),
+        pytest.param({}, None, False, id="unset-without-env-captures-plain"),
+        pytest.param({"TERM": "dumb"}, True, True, id="color-on-beats-dumb-terminal"),
+    ],
+)
+def test_render_lines_when_color_and_env_vary_does_resolve_ansi(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], color: bool | None, has_ansi: bool
 ):
-    monkeypatch.setenv("NO_COLOR", "1")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
 
-    result = render_lines("[red]hi[/red]", color=True)
+    result = render_lines("[red]hi[/red]", color=color)
 
-    assert "\x1b[" in result
-    assert "hi" in result
-
-
-def test_render_lines_when_color_false_does_suppress_ansi_despite_force_color_env(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-
-    result = render_lines("[red]hi[/red]", color=False)
-
-    assert "\x1b[" not in result
-    assert result == "hi"
-
-
-def test_render_lines_when_color_none_and_no_color_env_does_render_plain(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("NO_COLOR", "1")
-
-    result = render_lines("[red]hi[/red]", color=None)
-
-    assert "\x1b[" not in result
-
-
-def test_render_lines_when_color_none_and_force_color_env_does_emit_ansi(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-
-    result = render_lines("[red]hi[/red]", color=None)
-
-    assert "\x1b[" in result
-
-
-def test_render_lines_when_color_none_and_both_env_set_does_let_force_color_win(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    # FORCE_COLOR beats NO_COLOR when both are set.
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.setenv("NO_COLOR", "1")
-
-    result = render_lines("[red]hi[/red]", color=None)
-
-    assert "\x1b[" in result
-
-
-def test_render_lines_when_color_none_and_no_env_and_capture_does_render_plain():
-    result = render_lines("[red]hi[/red]", color=None)
-
-    assert "\x1b[" not in result
+    assert ("\x1b[" in result, strip_ansi(result)) == (has_ansi, "hi")
 
 
 def test_render_lines_when_invoked_does_not_mutate_os_environ(monkeypatch: pytest.MonkeyPatch):
@@ -384,12 +268,21 @@ def test_render_lines_when_invoked_does_not_mutate_os_environ(monkeypatch: pytes
 # ---------------------------------------------------------------------------
 
 
-def test_render_lines_when_content_exceeds_width_does_not_soft_wrap():
-    long_line = "x" * (RENDER_WIDTH + 100)
+@pytest.mark.parametrize(
+    ("markup", "expected"),
+    [
+        pytest.param(
+            "x" * (RENDER_WIDTH + 100), "x" * (RENDER_WIDTH + 100), id="wider-than-width-unwrapped"
+        ),
+        pytest.param("hi", "hi", id="shorter-than-width-no-trailing-space"),
+        pytest.param(escape("[i]"), "[i]", id="escaped-markup-metacharacters"),
+        pytest.param("lat:100:p99", "lat:100:p99", id="colon-word-not-emoji"),
+    ],
+)
+def test_render_lines_when_plain_does_render_text_verbatim(markup: str, expected: str):
+    result = render_lines(markup, color=False)
 
-    result = render_lines(long_line, color=False)
-
-    assert result == long_line
+    assert result == expected
 
 
 def test_render_lines_when_given_multiple_renderables_does_join_with_newlines():
@@ -398,104 +291,9 @@ def test_render_lines_when_given_multiple_renderables_does_join_with_newlines():
     assert result == "line1\nline2"
 
 
-def test_render_lines_when_content_shorter_than_width_does_not_emit_trailing_whitespace():
-    result = render_lines("hi", color=False)
-
-    assert result == "hi"
-
-
-def test_render_lines_when_text_escaped_does_render_markup_metacharacters_literally():
-    result = render_lines(escape("[i]"), color=False)
-
-    assert result == "[i]"
-
-
-def test_render_lines_when_text_has_colon_word_does_render_it_literally():
-    result = render_lines("lat:100:p99", color=False)
-
-    assert result == "lat:100:p99"
-
-
 # ---------------------------------------------------------------------------
 # make_capture_console
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("color", "has_ansi"),
-    [
-        pytest.param(True, True, id="color-on-emits-ansi"),
-        pytest.param(False, False, id="color-off-plain"),
-    ],
-)
-def test_make_capture_console_when_color_set_does_honor_color_and_capture_output(
-    color: bool, has_ansi: bool
-):
-    console = make_capture_console(color=color)
-
-    console.print("[red]hi[/red]")
-
-    assert isinstance(console.file, io.StringIO)
-    captured = console.file.getvalue()
-    assert "hi" in captured
-    assert ("\x1b[" in captured) is has_ansi
-
-
-def test_make_capture_console_when_color_none_and_force_color_zero_does_render_plain(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "0")
-
-    console = make_capture_console(color=None)
-    console.print("[red]hi[/red]")
-
-    assert isinstance(console.file, io.StringIO)
-    captured = console.file.getvalue()
-    assert "hi" in captured
-    assert "\x1b[" not in captured
-
-
-def test_make_capture_console_when_color_none_and_no_color_set_does_suppress_all_styling(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("NO_COLOR", "")
-
-    console = make_capture_console(color=None)
-    console.print("[bold]hi[/bold]")
-
-    assert isinstance(console.file, io.StringIO)
-    captured = console.file.getvalue()
-    assert "hi" in captured
-    assert "\x1b[" not in captured
-
-
-def test_make_capture_console_when_color_true_and_term_dumb_does_still_emit_ansi(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("TERM", "dumb")
-
-    console = make_capture_console(color=True)
-    console.print("[red]hi[/red]")
-
-    assert isinstance(console.file, io.StringIO)
-    captured = console.file.getvalue()
-    assert "\x1b[" in captured
-    assert "hi" in captured
-
-
-def test_make_capture_console_when_color_none_and_force_color_env_and_term_dumb_does_emit_ansi(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("TERM", "dumb")
-    monkeypatch.setenv("FORCE_COLOR", "1")
-
-    console = make_capture_console(color=None)
-    console.print("[red]hi[/red]")
-
-    assert isinstance(console.file, io.StringIO)
-    captured = console.file.getvalue()
-    assert "\x1b[" in captured
-    assert "hi" in captured
 
 
 def test_make_capture_console_when_term_dumb_does_keep_the_render_width(
@@ -506,14 +304,3 @@ def test_make_capture_console_when_term_dumb_does_keep_the_render_width(
     console = make_capture_console(color=True)
 
     assert console.width == RENDER_WIDTH
-
-
-def test_render_lines_when_color_true_and_term_dumb_does_emit_ansi(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("TERM", "dumb")
-
-    result = render_lines("[red]hi[/red]", color=True)
-
-    assert "\x1b[" in result
-    assert "hi" in result

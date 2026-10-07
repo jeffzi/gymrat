@@ -1,5 +1,5 @@
 # serializer version: 1
-# name: test_render_json_document_when_rendered_does_match_its_golden[compare]
+# name: test_render_document_json_when_rendered_does_match_its_golden[compare]
   list([
     '{',
     '  "schema_version": 1,',
@@ -167,7 +167,7 @@
     '}',
   ])
 # ---
-# name: test_render_json_document_when_rendered_does_match_its_golden[measure]
+# name: test_render_document_json_when_rendered_does_match_its_golden[measure]
   list([
     '{',
     '  "schema_version": 1,',
@@ -224,7 +224,7 @@
     '}',
   ])
 # ---
-# name: test_render_json_document_when_rendered_does_match_its_golden[probe]
+# name: test_render_document_json_when_rendered_does_match_its_golden[probe]
   list([
     '{',
     '  "schema_version": 1,',

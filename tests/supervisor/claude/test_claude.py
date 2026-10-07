@@ -4,12 +4,17 @@ The driver is exercised entirely through an injected fake client, so these
 tests never start the real ``claude-agent-sdk`` client. The fake mimics the
 streaming client surface the driver relies on (``connect``/``query``/
 ``receive_messages``/``interrupt``/``disconnect``) and yields the SDK's own
-message and content-block dataclasses.
+message and content-block dataclasses. The cost rule every driver applies to
+a reported cost is pinned here too.
 """
 
 import asyncio
 import json
+import math
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import override
 
 import pytest
@@ -27,7 +32,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-from gymrat.supervisor.claude import create_claude_driver
+from gymrat.supervisor.claude import create_claude_driver, usable_cost
 from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
     CompactionEvent,
@@ -40,6 +45,7 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
     summarize,
 )
+from tests._imports import loaded_under
 from tests.supervisor._fixtures import (
     FactoryProbe,
     FakeClient,
@@ -58,19 +64,6 @@ from tests.supervisor._fixtures import (
 )
 
 # ---------------------------------------------------------------------------
-# test-local client variants
-# ---------------------------------------------------------------------------
-
-
-class Unserializable:
-    """A tool-result value that JSON cannot encode, with a stable ``repr``."""
-
-    @override
-    def __repr__(self) -> str:
-        return "UNSERIALIZABLE"
-
-
-# ---------------------------------------------------------------------------
 # construction and lazy loading
 # ---------------------------------------------------------------------------
 
@@ -84,19 +77,24 @@ def test_create_claude_driver_when_given_factory_does_return_driver_without_call
     assert probe.calls == 0
 
 
-def test_create_claude_driver_when_constructed_does_not_import_sdk(monkeypatch: pytest.MonkeyPatch):
-    loaded = False
+#: Build the default driver in a fresh interpreter, then report every loaded module.
+_CONSTRUCT_PROBE = (
+    "import json, sys\n"
+    "from gymrat.supervisor.claude import create_claude_driver\n"
+    "create_claude_driver()\n"
+    "json.dump(sorted(sys.modules), sys.stdout)"
+)
 
-    def spy() -> object:
-        nonlocal loaded
-        loaded = True
-        return object()
 
-    monkeypatch.setattr("gymrat.supervisor.claude._load_default_factory", spy)
+def test_create_claude_driver_when_constructed_does_not_import_sdk():
+    probe = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
+        [sys.executable, "-c", _CONSTRUCT_PROBE],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
-    create_claude_driver()
-
-    assert loaded is False  # pyrefly: ignore[unnecessary-comparison] -- verifying spy was not called
+    assert loaded_under(frozenset(json.loads(probe.stdout)), "claude_agent_sdk") == []
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +108,26 @@ async def _start_with_prompt(prompt: SessionPrompt) -> FiniteClient:
     driver = create_claude_driver(client_factory=FactoryProbe(client))
     await run_session(driver, collecting_observer().observer, prompt)
     return client
+
+
+#: The timeout variables every session hands the agent, at ``make_prompt``'s 60 s default.
+_DEFAULT_ENV = {
+    "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS": "60000",
+    "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS": "60000",
+    "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS": "",
+    "MCP_TOOL_TIMEOUT": "60000",
+}
+
+#: The client options ``make_prompt``'s defaults produce, with no optional field given.
+_DEFAULT_OPTIONS = {
+    "cwd": "/tmp/test",
+    "permission_mode": "bypassPermissions",
+    "include_partial_messages": True,
+    "system_prompt": {"type": "preset", "preset": "claude_code", "append": "follow the runbook"},
+    "env": _DEFAULT_ENV,
+}
+
+_TRACEPARENT = "00-abc123-def456-01"
 
 
 async def test_start_when_launched_does_forward_options_to_client():
@@ -141,74 +159,29 @@ async def test_start_when_launched_does_forward_options_to_client():
     assert client.query_prompts == ["hello agent"]
 
 
-async def test_start_when_system_prompt_append_present_does_include_preset_append():
-    client = await _start_with_prompt(make_prompt(system_prompt_append="extra instructions"))
+@pytest.mark.parametrize(
+    ("prompt", "added"),
+    [
+        pytest.param(
+            make_prompt(model="claude-sonnet-4-20250514"),
+            {"model": "claude-sonnet-4-20250514"},
+            id="model",
+        ),
+        pytest.param(make_prompt(effort="high"), {"effort": "high"}, id="effort"),
+        pytest.param(make_prompt(max_budget_usd=5.0), {"max_budget_usd": 5.0}, id="max-budget"),
+        pytest.param(
+            make_prompt(traceparent=_TRACEPARENT),
+            {"env": {**_DEFAULT_ENV, "GYMRAT_TRACEPARENT": _TRACEPARENT}},
+            id="traceparent-under-its-own-name",
+        ),
+    ],
+)
+async def test_start_when_an_optional_field_given_does_add_only_that_option(
+    prompt: SessionPrompt, added: dict[str, object]
+):
+    client = await _start_with_prompt(prompt)
 
-    assert client.options is not None
-    assert client.options["system_prompt"] == {
-        "type": "preset",
-        "preset": "claude_code",
-        "append": "extra instructions",
-    }
-
-
-async def test_start_when_model_given_does_include_model():
-    client = await _start_with_prompt(make_prompt(model="claude-sonnet-4-20250514"))
-
-    assert client.options is not None
-    assert client.options["model"] == "claude-sonnet-4-20250514"
-
-
-async def test_start_when_model_absent_does_omit_model():
-    client = await _start_with_prompt(make_prompt())
-
-    assert client.options is not None
-    assert "model" not in client.options
-
-
-async def test_start_when_effort_given_does_include_effort():
-    client = await _start_with_prompt(make_prompt(effort="high"))
-
-    assert client.options is not None
-    assert client.options["effort"] == "high"
-
-
-async def test_start_when_effort_absent_does_omit_effort():
-    client = await _start_with_prompt(make_prompt())
-
-    assert client.options is not None
-    assert "effort" not in client.options
-
-
-async def test_start_when_command_timeout_ms_given_does_set_timeout_env_vars():
-    client = await _start_with_prompt(make_prompt(command_timeout_ms=300000))
-
-    assert client.options is not None
-    env = client.options["env"]
-    assert isinstance(env, dict)
-    assert env["CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS"] == "300000"
-    assert env["CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS"] == "300000"
-    assert env["CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS"] == ""
-    assert env["MCP_TOOL_TIMEOUT"] == "300000"
-
-
-async def test_start_when_traceparent_set_does_include_gymrat_traceparent_in_env():
-    tp = "00-abc123-def456-01"
-
-    client = await _start_with_prompt(make_prompt(traceparent=tp))
-
-    assert client.options is not None
-    env = client.options.get("env", {})
-    assert env["GYMRAT_TRACEPARENT"] == tp  # pyrefly: ignore[bad-index]
-    assert "TRACEPARENT" not in env  # pyrefly: ignore[not-iterable]
-
-
-async def test_start_when_traceparent_none_does_omit_gymrat_traceparent_from_env():
-    client = await _start_with_prompt(make_prompt())
-
-    assert client.options is not None
-    env = client.options.get("env", {})
-    assert "GYMRAT_TRACEPARENT" not in env  # pyrefly: ignore[not-iterable]
+    assert client.options == _DEFAULT_OPTIONS | added
 
 
 # ---------------------------------------------------------------------------
@@ -216,15 +189,23 @@ async def test_start_when_traceparent_none_does_omit_gymrat_traceparent_from_env
 # ---------------------------------------------------------------------------
 
 
-async def test_mapping_when_text_block_does_emit_text_delta():
-    events = await run_with_messages([assistant(TextBlock(text="hello world"))])
+@pytest.mark.parametrize(
+    ("text", "parent"),
+    [
+        pytest.param("hello world", None, id="top-level"),
+        pytest.param("subagent output", "tu_parent", id="under-a-parent-tool-call"),
+    ],
+)
+async def test_start_when_text_block_does_emit_text_delta_carrying_its_parent(
+    text: str, parent: str | None
+):
+    events = await run_with_messages([assistant(TextBlock(text=text), parent_tool_use_id=parent)])
 
-    text_events = events_of(events, TextDeltaEvent)
-    assert len(text_events) == 1
-    assert text_events[0].chunk == "hello world"
+    deltas = events_of(events, TextDeltaEvent)
+    assert [(delta.chunk, delta.parent_tool_use_id) for delta in deltas] == [(text, parent)]
 
 
-async def test_mapping_when_read_path_under_cwd_does_summarize_relative_to_cwd():
+async def test_start_when_read_path_under_cwd_does_summarize_relative_to_cwd():
     tool_use = ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/my/project/src/main.py"})
     driver = create_claude_driver(
         client_factory=FactoryProbe(FiniteClient([assistant(tool_use), result_message()]))
@@ -237,7 +218,7 @@ async def test_mapping_when_read_path_under_cwd_does_summarize_relative_to_cwd()
     assert starts[0].input_summary == "src/main.py"
 
 
-async def test_mapping_when_tool_result_has_no_matching_start_does_use_fallback_fields():
+async def test_start_when_tool_result_has_no_matching_start_does_use_fallback_fields():
     orphan = tool_results(ToolResultBlock(tool_use_id="tu_orphan", content="result"))
 
     events = await run_with_messages([orphan])
@@ -249,12 +230,12 @@ async def test_mapping_when_tool_result_has_no_matching_start_does_use_fallback_
     assert ends[0].duration_ms == 0
 
 
+@dataclass(slots=True)
 class _FakeClocks:
     """Mutable readings for the duration clock and the wall clock."""
 
-    def __init__(self) -> None:
-        self.monotonic_ms = 0.0
-        self.wall_ns = 0
+    monotonic_ms: float = 0.0
+    wall_ns: int = 0
 
 
 class _ClockedClient(FiniteClient):
@@ -274,7 +255,7 @@ class _ClockedClient(FiniteClient):
             yield message
 
 
-async def test_mapping_when_wall_clock_jumps_back_does_report_monotonic_tool_duration(
+async def test_start_when_wall_clock_jumps_back_does_report_monotonic_tool_duration(
     monkeypatch: pytest.MonkeyPatch,
 ):
     clocks = _FakeClocks()
@@ -306,44 +287,29 @@ async def test_mapping_when_wall_clock_jumps_back_does_report_monotonic_tool_dur
     assert [end.duration_ms for end in ends] == [250]
 
 
-async def test_mapping_when_tool_result_content_not_string_does_json_encode():
-    payload = [{"type": "text", "text": "hi"}]
+_JSON_CONTENT = [{"type": "text", "text": "hi"}]
+_OPAQUE_CONTENT = [{"type": "opaque", "value": object()}]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_result"),
+    [
+        pytest.param(_JSON_CONTENT, json.dumps(_JSON_CONTENT), id="list-json"),
+        pytest.param(_OPAQUE_CONTENT, str(_OPAQUE_CONTENT), id="not-json-encodable-str-fallback"),
+        pytest.param(None, "null", id="none-null"),
+    ],
+)
+async def test_start_when_tool_result_content_not_a_string_does_encode_it_as_the_result(
+    content: list[dict[str, object]] | None, expected_result: str
+):
     messages = [
         assistant(ToolUseBlock(id="tu_3", name="Bash", input={"command": "echo hi"})),
-        tool_results(ToolResultBlock(tool_use_id="tu_3", content=payload)),
+        tool_results(ToolResultBlock(tool_use_id="tu_3", content=content)),
     ]
 
     events = await run_with_messages(messages)
 
-    ends = events_of(events, ToolEndEvent)
-    assert len(ends) == 1
-    assert ends[0].result == json.dumps(payload)
-
-
-async def test_mapping_when_tool_result_content_not_json_encodable_does_fall_back_to_str():
-    payload = [{"type": "opaque", "value": Unserializable()}]
-    messages = [
-        assistant(ToolUseBlock(id="tu_c", name="Test", input={})),
-        tool_results(ToolResultBlock(tool_use_id="tu_c", content=payload)),
-    ]
-
-    events = await run_with_messages(messages)
-
-    ends = events_of(events, ToolEndEvent)
-    assert len(ends) == 1
-    assert ends[0].result == str(payload)
-
-
-async def test_mapping_when_tool_result_content_none_does_emit_tool_end_with_empty_result():
-    messages = [
-        assistant(ToolUseBlock(id="tu_n", name="Write", input={"file_path": "/a"})),
-        tool_results(ToolResultBlock(tool_use_id="tu_n", content=None)),
-    ]
-
-    events = await run_with_messages(messages)
-
-    ends = events_of(events, ToolEndEvent)
-    assert [(end.tool_name, end.result) for end in ends] == [("Write", "null")]
+    assert [end.result for end in events_of(events, ToolEndEvent)] == [expected_result]
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +340,7 @@ _WEB_SEARCH_RESULT: dict[str, object] = {
         ),
     ],
 )
-async def test_mapping_when_tool_use_block_does_emit_tool_start(
+async def test_start_when_tool_use_block_does_emit_tool_start(
     block: ToolUseBlock | ServerToolUseBlock,
     expected_input_summary: str,
 ):
@@ -415,7 +381,7 @@ async def test_mapping_when_tool_use_block_does_emit_tool_start(
         ),
     ],
 )
-async def test_mapping_when_tool_result_matches_start_does_emit_tool_end_with_tracked_name(
+async def test_start_when_tool_result_matches_start_does_emit_tool_end_with_tracked_name(
     messages: list[object],
     tool_use_id: str,
     tool_name: str,
@@ -433,44 +399,11 @@ async def test_mapping_when_tool_result_matches_start_does_emit_tool_end_with_tr
 
 
 # ---------------------------------------------------------------------------
-# message mapping — text block
-# ---------------------------------------------------------------------------
-
-
-async def test_mapping_when_complete_text_block_does_still_emit_text_delta():
-    events = await run_with_messages([assistant(TextBlock(text="hello"))])
-
-    text_events = events_of(events, TextDeltaEvent)
-    assert len(text_events) == 1
-    assert text_events[0].chunk == "hello"
-
-
-async def test_mapping_when_text_block_with_parent_does_carry_parent_tool_use_id():
-    msg = assistant(TextBlock(text="subagent output"), parent_tool_use_id="tu_parent")
-
-    events = await run_with_messages([msg])
-
-    text_events = events_of(events, TextDeltaEvent)
-    assert len(text_events) == 1
-    assert text_events[0].parent_tool_use_id == "tu_parent"
-
-
-# ---------------------------------------------------------------------------
 # tool events carry parent_tool_use_id
 # ---------------------------------------------------------------------------
 
 
-async def test_mapping_when_tool_use_with_parent_does_carry_parent_tool_use_id():
-    tool_use = ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/foo.ts"})
-    msg = assistant(tool_use, parent_tool_use_id="tu_parent")
-
-    events = await run_with_messages([msg])
-
-    starts = events_of(events, ToolStartEvent)
-    assert starts[0].parent_tool_use_id == "tu_parent"
-
-
-async def test_mapping_when_tool_result_with_parent_does_carry_parent_tool_use_id():
+async def test_start_when_tool_result_with_parent_does_carry_parent_tool_use_id():
     messages = [
         assistant(
             ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/foo.ts"}),
@@ -484,8 +417,10 @@ async def test_mapping_when_tool_result_with_parent_does_carry_parent_tool_use_i
 
     events = await run_with_messages(messages)
 
+    starts = events_of(events, ToolStartEvent)
     ends = events_of(events, ToolEndEvent)
-    assert ends[0].parent_tool_use_id == "tu_parent"
+    assert [start.parent_tool_use_id for start in starts] == ["tu_parent"]
+    assert [end.parent_tool_use_id for end in ends] == ["tu_parent"]
 
 
 # ---------------------------------------------------------------------------
@@ -530,21 +465,10 @@ async def test_mapping_when_tool_result_with_parent_does_carry_parent_tool_use_i
         pytest.param(object(), id="non-sdk-object"),
     ],
 )
-async def test_mapping_when_message_carries_no_session_content_does_emit_nothing(
+async def test_start_when_message_carries_no_session_content_does_emit_nothing(
     message: object,
 ):
     assert await run_with_messages([message]) == []
-
-
-# ---------------------------------------------------------------------------
-# cost tracking
-# ---------------------------------------------------------------------------
-
-
-async def test_cost_when_no_messages_carry_cost_does_not_emit_usage_update():
-    events = await run_with_messages([assistant(TextBlock(text="hello"))])
-
-    assert events_of(events, UsageUpdateEvent) == []
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +481,7 @@ def _interrupting_observer(
 ) -> SessionObserver:
     """Observer that schedules ``interrupt`` after ``after`` usage updates."""
     seen = 0
+    interrupts: list[asyncio.Task[None]] = []
 
     def observer(event: SessionEvent) -> None:
         nonlocal seen
@@ -564,7 +489,7 @@ def _interrupting_observer(
         if isinstance(event, UsageUpdateEvent):
             seen += 1
             if seen == after:
-                asyncio.ensure_future(holder["session"].interrupt())  # noqa: RUF006
+                interrupts.append(asyncio.ensure_future(holder["session"].interrupt()))
 
     return observer
 
@@ -576,7 +501,14 @@ async def _run_interrupting_on_first_usage_update(
 
     Usage updates come from result messages, which leave the session idle
     between turns; the soft stop lands when the stream delivers its next
-    message, so ``messages`` must carry one after the interrupting result.
+    message.
+
+    Args:
+        messages: The scripted SDK messages, which must carry one more message
+            after the interrupting result.
+
+    Returns:
+        The settled outcome and the fake client the session drove.
     """
     client = FakeClient(messages)
     driver = create_claude_driver(client_factory=FactoryProbe(client))
@@ -590,14 +522,15 @@ async def _run_interrupting_on_first_usage_update(
     return outcome, client
 
 
-async def test_interrupt_when_scheduled_on_usage_update_does_report_crossing_cost():
-    outcome, _client = await _run_interrupting_on_first_usage_update([
+async def test_interrupt_when_scheduled_on_usage_update_does_soft_stop_at_the_crossing_cost():
+    outcome, client = await _run_interrupting_on_first_usage_update([
         result_message(total_cost_usd=0.15),
         assistant(TextBlock(text="late")),
     ])
 
-    assert outcome.reason == "interrupted"
-    assert outcome.cost_usd == 0.15
+    assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.15)
+    assert client.interrupt_called is True
+    assert client.disconnect_count == 1  # only the finally teardown, never interrupt itself
 
 
 async def test_interrupt_when_first_call_wins_does_ignore_later_higher_cost():
@@ -608,16 +541,6 @@ async def test_interrupt_when_first_call_wins_does_ignore_later_higher_cost():
 
     assert outcome.reason == "interrupted"
     assert outcome.cost_usd == 0.1
-
-
-async def test_interrupt_when_called_does_soft_stop_without_disconnecting():
-    _outcome, client = await _run_interrupting_on_first_usage_update([
-        result_message(total_cost_usd=0.15),
-        assistant(TextBlock(text="late")),
-    ])
-
-    assert client.interrupt_called is True
-    assert client.disconnect_count == 1  # only the finally teardown, never interrupt itself
 
 
 async def test_interrupt_when_called_between_messages_does_stop_before_next_message():
@@ -646,53 +569,21 @@ async def test_interrupt_when_called_between_messages_does_stop_before_next_mess
     assert [e.chunk for e in events_of(probe.events, TextDeltaEvent)] == ["first"]
 
 
-async def test_interrupt_when_called_repeatedly_before_client_does_resolve_interrupted_once():
-    client = FakeClient([])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    session = driver.start(make_prompt(), collecting_observer().observer, asyncio.Event())
-    await session.interrupt()  # client not built yet — the soft stop cannot reach it
-    await session.interrupt()  # already stopped — a no-op that keeps the first outcome
-    outcome = await session.outcome
-
-    assert outcome.reason == "interrupted"
-    assert outcome.cost_usd == 0.0
-    assert client.interrupt_called is False
-
-
 # ---------------------------------------------------------------------------
 # abort
 # ---------------------------------------------------------------------------
 
 
-async def test_abort_when_fired_does_resolve_interrupted():
-    client = FakeClient([result_message(total_cost_usd=0.1)])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-    abort = asyncio.Event()
-    events: list[SessionEvent] = []
-
-    def observer(event: SessionEvent) -> None:
-        events.append(event)
-        if isinstance(event, UsageUpdateEvent):
-            abort.set()
-
-    session = driver.start(make_prompt(), observer, abort)
-    outcome = await session.outcome
-
-    assert outcome.reason == "interrupted"
-    assert outcome.cost_usd == 0.1
-    assert client.disconnect_count >= 1
-
-
-async def test_abort_when_fired_after_interrupt_does_preserve_interrupt_cost():
+async def test_start_when_abort_fired_after_interrupt_does_preserve_interrupt_cost():
     client = FakeClient([result_message(total_cost_usd=0.1), result_message(total_cost_usd=0.3)])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
     abort = asyncio.Event()
     holder: dict[str, DriverSession] = {}
+    interrupts: list[asyncio.Task[None]] = []
 
     def observer(event: SessionEvent) -> None:
         if isinstance(event, UsageUpdateEvent):
-            asyncio.ensure_future(holder["session"].interrupt())  # noqa: RUF006
+            interrupts.append(asyncio.ensure_future(holder["session"].interrupt()))
             abort.set()
 
     holder["session"] = driver.start(make_prompt(), observer, abort)
@@ -702,7 +593,7 @@ async def test_abort_when_fired_after_interrupt_does_preserve_interrupt_cost():
     assert outcome.cost_usd == 0.1
 
 
-async def test_abort_when_already_set_at_start_does_resolve_interrupted_without_client():
+async def test_start_when_abort_already_set_at_start_does_resolve_interrupted_without_client():
     probe = FactoryProbe(FakeClient([]))
     driver = create_claude_driver(client_factory=probe)
     abort = asyncio.Event()
@@ -715,46 +606,9 @@ async def test_abort_when_already_set_at_start_does_resolve_interrupted_without_
     assert probe.calls == 0
 
 
-async def test_abort_when_disconnect_raises_does_preserve_settled_outcome():
-
-    class DisconnectRaisingClient(FakeClient):
-        @override
-        async def disconnect(self) -> None:
-            self.disconnect_count += 1
-            self._released.set()
-            message = "abort disconnect failed"
-            raise RuntimeError(message)
-
-    client = DisconnectRaisingClient([result_message(total_cost_usd=0.10)])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-    abort = asyncio.Event()
-
-    def observer(event: SessionEvent) -> None:
-        if isinstance(event, UsageUpdateEvent):
-            abort.set()
-
-    with pytest.warns(RuntimeWarning, match="disconnect failed"):
-        outcome = await run_session(driver, observer, abort=abort)
-
-    assert outcome.reason == "interrupted"
-    assert outcome.cost_usd == 0.10
-
-
 # ---------------------------------------------------------------------------
 # result message — session settlement
 # ---------------------------------------------------------------------------
-
-
-async def test_result_when_stream_yields_result_message_does_settle_completed():
-    messages = [
-        assistant(TextBlock(text="done")),
-        result_message(total_cost_usd=0.05, num_turns=3),
-    ]
-
-    outcome = await run_outcome(FiniteClient(messages))
-
-    assert outcome.reason == "completed"
-    assert outcome.cost_usd == 0.05
 
 
 @pytest.mark.parametrize(
@@ -764,119 +618,67 @@ async def test_result_when_stream_yields_result_message_does_settle_completed():
         pytest.param(None, "error", id="result-text-absent-uses-subtype"),
     ],
 )
-async def test_result_when_is_error_does_settle_error(
+async def test_start_when_result_is_error_does_settle_error_as_the_final_result(
     result_text: str | None,
     expected_message: str,
 ):
-    messages = [result_message(subtype="error", is_error=True, result=result_text)]
-
-    outcome = await run_outcome(FakeClient(messages))
-
-    assert outcome.reason == "error"
-    assert outcome.message == expected_message
-
-
-async def test_result_when_is_error_with_cost_does_settle_as_final_result_not_turn_end():
-    messages = [result_message(subtype="error", is_error=True, result="boom", total_cost_usd=0.2)]
+    messages = [
+        result_message(subtype="error", is_error=True, result=result_text, total_cost_usd=0.2)
+    ]
     probe = collecting_observer()
 
-    outcome = await run_outcome(FiniteClient(messages), probe.observer)
+    outcome = await run_outcome(FakeClient(messages), probe.observer)
 
-    updates = events_of(probe.events, UsageUpdateEvent)
-    assert (outcome.reason, outcome.cost_usd) == ("error", 0.2)
-    assert [update.cost_usd for update in updates] == [0.2]
+    assert (outcome.reason, outcome.message, outcome.cost_usd) == ("error", expected_message, 0.2)
+    assert [update.cost_usd for update in events_of(probe.events, UsageUpdateEvent)] == [0.2]
     assert events_of(probe.events, TurnEndEvent) == []
 
 
-async def test_result_when_message_settles_and_has_cost_does_emit_usage_update():
-    messages = [result_message(total_cost_usd=0.05)]
-    probe = collecting_observer()
-
-    await run_outcome(FiniteClient(messages), probe.observer)
-
-    updates = events_of(probe.events, UsageUpdateEvent)
-    assert [update.cost_usd for update in updates] == [0.05]
-
-
 @pytest.mark.parametrize(
-    "cost",
+    ("cost", "expected_updates", "expected_cost"),
     [
-        pytest.param(None, id="none-cost"),
-        pytest.param(0.0, id="zero-cost"),
+        pytest.param(0.05, [0.05], 0.05, id="usable-cost"),
+        pytest.param(None, [], 0.0, id="none-cost"),
+        pytest.param(0.0, [], 0.0, id="zero-cost"),
     ],
 )
-async def test_result_when_message_settles_without_cost_does_not_emit_usage_update(
-    cost: float | None,
+async def test_start_when_stream_ends_after_a_turn_does_settle_completed_at_the_reported_cost(
+    cost: float | None, expected_updates: list[float], expected_cost: float
 ):
-    messages = [result_message(total_cost_usd=cost)]
     probe = collecting_observer()
 
-    await run_outcome(FiniteClient(messages), probe.observer)
+    outcome = await run_outcome(FiniteClient([result_message(total_cost_usd=cost)]), probe.observer)
 
-    assert events_of(probe.events, UsageUpdateEvent) == []
-
-
-async def test_result_when_stream_ends_without_result_does_settle_error():
-    outcome = await run_outcome(FiniteClient([assistant(TextBlock(text="hello"))]))
-
-    assert outcome.reason == "error"
-    assert outcome.message is not None
-    assert "result" in outcome.message.lower()
-
-
-async def test_result_when_system_message_has_subtype_does_not_end_session():
-    messages = [
-        system_message(subtype="init"),
-        assistant(TextBlock(text="hello")),
-    ]
-
-    events = await run_with_messages(messages)
-
-    text_events = events_of(events, TextDeltaEvent)
-    assert len(text_events) == 1
-    assert text_events[0].chunk == "hello"
+    assert (outcome.reason, outcome.cost_usd) == ("completed", expected_cost)
+    assert [u.cost_usd for u in events_of(probe.events, UsageUpdateEvent)] == expected_updates
 
 
 # ---------------------------------------------------------------------------
 # system message — compact_boundary → CompactionEvent
 # ---------------------------------------------------------------------------
 
-
-async def test_mapping_when_system_message_compact_boundary_does_emit_compaction_event():
-    messages = [
-        system_message(subtype="compact_boundary"),
-        assistant(TextBlock(text="hello")),
-    ]
-
-    events = await run_with_messages(messages)
-
-    compaction_events = events_of(events, CompactionEvent)
-    assert len(compaction_events) == 1
-    assert compaction_events[0].at > 0
+_COMPACTED_AT_NS = 1_700_000_000_000_000_000
 
 
-async def test_mapping_when_system_message_compact_boundary_does_not_end_session():
-    messages = [
-        system_message(subtype="compact_boundary"),
-        result_message(total_cost_usd=0.05),
-    ]
+@pytest.mark.parametrize(
+    ("subtype", "expected_compactions"),
+    [
+        pytest.param("init", [], id="init"),
+        pytest.param("some_other_subtype", [], id="other-subtype"),
+        pytest.param("compact_boundary", [_COMPACTED_AT_NS], id="compact-boundary"),
+    ],
+)
+async def test_start_when_system_message_arrives_does_emit_compaction_only_on_compact_boundary(
+    monkeypatch: pytest.MonkeyPatch, subtype: str, expected_compactions: list[int]
+):
+    monkeypatch.setattr("time.time_ns", lambda: _COMPACTED_AT_NS)
+    messages = [system_message(subtype=subtype), result_message(total_cost_usd=0.05)]
+    probe = collecting_observer()
 
-    outcome = await run_outcome(FiniteClient(messages))
+    outcome = await run_outcome(FiniteClient(messages), probe.observer)
 
     assert outcome.reason == "completed"
-
-
-async def test_mapping_when_system_message_other_subtype_does_not_emit_compaction_event():
-    messages = [
-        system_message(subtype="init"),
-        system_message(subtype="some_other_subtype"),
-        assistant(TextBlock(text="hello")),
-    ]
-
-    events = await run_with_messages(messages)
-
-    compaction_events = events_of(events, CompactionEvent)
-    assert compaction_events == []
+    assert [event.at for event in events_of(probe.events, CompactionEvent)] == expected_compactions
 
 
 # ---------------------------------------------------------------------------
@@ -884,7 +686,7 @@ async def test_mapping_when_system_message_other_subtype_does_not_emit_compactio
 # ---------------------------------------------------------------------------
 
 
-async def test_outcome_when_stream_raises_does_resolve_error_without_raising():
+async def test_start_when_stream_raises_does_resolve_error_without_raising():
     client = FakeClient([result_message(total_cost_usd=0.04)], throw=RuntimeError("SDK failure"))
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
@@ -903,10 +705,7 @@ async def test_outcome_when_stream_raises_does_resolve_error_without_raising():
 async def test_start_when_sdk_import_fails_does_resolve_error_naming_package(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    def raise_missing() -> object:
-        raise ModuleNotFoundError
-
-    monkeypatch.setattr("gymrat.supervisor.claude._load_default_factory", raise_missing)
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", None)
     driver = create_claude_driver()
 
     outcome = await run_session(driver, collecting_observer().observer)
@@ -936,29 +735,12 @@ async def test_start_when_client_factory_raises_does_resolve_error_without_raisi
     assert outcome.cost_usd == 0.0
 
 
-async def test_start_when_disconnect_raises_after_normal_stream_does_still_resolve_completed():
-    class DisconnectFailingClient(FiniteClient):
-        @override
-        async def disconnect(self) -> None:
-            message = "teardown boom"
-            raise RuntimeError(message)
-
-    client = DisconnectFailingClient([result_message(total_cost_usd=0.05)])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    with pytest.warns(RuntimeWarning, match="disconnect failed"):
-        outcome = await run_session(driver, collecting_observer().observer)
-
-    assert outcome.reason == "completed"
-    assert outcome.cost_usd == 0.05
-
-
 # ---------------------------------------------------------------------------
 # start — interrupted before client connects
 # ---------------------------------------------------------------------------
 
 
-async def test_start_when_interrupted_before_connect_does_never_send_kickoff_query():
+async def test_start_when_interrupted_before_connect_does_resolve_once_without_sending_kickoff():
     client = FakeClient([])
     probe = FactoryProbe(client)
     driver = create_claude_driver(client_factory=probe)
@@ -968,8 +750,41 @@ async def test_start_when_interrupted_before_connect_does_never_send_kickoff_que
         collecting_observer().observer,
         asyncio.Event(),
     )
-    await session.interrupt()
+    await session.interrupt()  # client not built yet — the soft stop cannot reach it
+    await session.interrupt()  # already stopped — a no-op that keeps the first outcome
     outcome = await session.outcome
 
-    assert outcome.reason == "interrupted"
+    assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.0)
+    assert client.interrupt_called is False
     assert client.query_prompts == []
+
+
+# ---------------------------------------------------------------------------
+# usable_cost
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        pytest.param(0.42, 0.42, id="positive-float"),
+        pytest.param(3, 3.0, id="positive-int"),
+        pytest.param(None, None, id="missing"),
+        pytest.param("0.42", None, id="string"),
+        pytest.param(True, None, id="true"),
+        pytest.param(False, None, id="false"),
+        pytest.param(math.nan, None, id="nan"),
+        pytest.param(math.inf, None, id="positive-infinity"),
+        pytest.param(-math.inf, None, id="negative-infinity"),
+        pytest.param(0.0, None, id="zero"),
+        pytest.param(-0.3, None, id="negative"),
+    ],
+)
+def test_usable_cost_when_reported_does_accept_only_finite_positive_numbers(
+    reported: object,
+    expected: float | None,
+):
+    cost = usable_cost(reported)
+
+    assert cost == expected
+    assert type(cost) is type(expected)

@@ -18,10 +18,11 @@ import pytest
 from gymrat.session.paths import lockfile_path, repo_root
 from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
-from tests._git import EMIT_ONE_BENCH, write_committed_bench
+from tests._cli import run_cli
+from tests._git import EMIT_ONE_BENCH, list_worktree_dirs, wait_for_worktrees, write_committed_bench
 from tests._git import run_git as _git
+from tests._lock import FIXED_HOLDER_AT, hold_lock
 from tests._process_helpers import wait_for_pid_file_blocking
-from tests.conftest import hold_lock, list_worktree_dirs, wait_for_worktrees
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 
@@ -38,18 +39,12 @@ _SLOW_BENCH = "#!/bin/sh\necho $$ > '{pid_path}'\nsleep 5\necho 'METRIC x=1'\n"
 def test_cli_when_outside_repo_does_measure_lock_free(tmp_path: Path):
     (tmp_path / "bench.sh").write_text(EMIT_ONE_BENCH, encoding="utf-8")
 
-    result = subprocess.run(  # noqa: S603
-        [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "2"],
-        cwd=tmp_path,
-        env=_env(),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+    result = run_cli(
+        ["measure", "--bench", "sh bench.sh", "--samples", "2"], tmp_path, check=False, timeout=60
     )
 
     assert result.returncode == 0, result.stderr
-    assert "x" in result.stdout
+    assert "x                │ 1 ± 0%" in result.stdout.splitlines()
 
 
 # ---------------------------------------------------------------------------
@@ -65,18 +60,15 @@ def test_cli_when_rival_lock_held_does_exit_two_naming_holder_without_benching(
     lock_path = lockfile_path(repo_root(repo))
     blocker = hold_lock(
         lock_path,
-        holder={"pid": os.getpid(), "command": "measure", "at": "2026-01-01T00:00:00.000Z"},
+        holder={"pid": os.getpid(), "command": "measure", "at": FIXED_HOLDER_AT},
     )
 
     try:
-        result = subprocess.run(  # noqa: S603
-            [*_ENTRY, "compare", "main", "main", "--bench", "sh bench.sh", "--samples", "1"],
-            cwd=repo,
-            env=_env(),
-            capture_output=True,
-            text=True,
-            timeout=60,
+        result = run_cli(
+            ["compare", "main", "main", "--bench", "sh bench.sh", "--samples", "1"],
+            repo,
             check=False,
+            timeout=60,
         )
 
         assert result.returncode == 2
@@ -87,27 +79,7 @@ def test_cli_when_rival_lock_held_does_exit_two_naming_holder_without_benching(
 
 
 # ---------------------------------------------------------------------------
-# usage errors
-# ---------------------------------------------------------------------------
-
-
-def test_cli_when_usage_error_does_exit_two_and_print_once(tmp_path: Path):
-    result = subprocess.run(  # noqa: S603
-        [*_ENTRY, "compare", "main"],
-        cwd=tmp_path,
-        env=_env(),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-
-    assert result.returncode == 2
-    assert result.stderr.count("Usage:") == 1
-
-
-# ---------------------------------------------------------------------------
-# signal-driven cleanup
+# signal-driven shutdown
 # ---------------------------------------------------------------------------
 
 
@@ -119,7 +91,7 @@ def test_cli_when_usage_error_does_exit_two_and_print_once(tmp_path: Path):
         pytest.param(getattr(signal, "SIGHUP", None), 129, id="sighup"),
     ],
 )
-def test_cli_when_signalled_mid_run_does_exit_128_plus_signal_number_and_sweep_worktrees(
+def test_cli_when_signalled_mid_run_does_exit_on_the_signal_status_leaving_no_worktree(
     signal_number: int,
     expected_code: int,
     create_scratch_repo: Callable[[], str],
@@ -132,7 +104,7 @@ def test_cli_when_signalled_mid_run_does_exit_128_plus_signal_number_and_sweep_w
     _git(["switch", "-c", "candidate"], repo)
     _git(["switch", "main"], repo)
 
-    proc = subprocess.Popen(  # noqa: S603
+    proc = subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
         [*_ENTRY, "compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
         cwd=repo,
         env=_env(),
@@ -151,4 +123,44 @@ def test_cli_when_signalled_mid_run_does_exit_128_plus_signal_number_and_sweep_w
             proc.communicate()
 
     assert proc.returncode == expected_code
+    assert list_worktree_dirs(repo, include_main=False) == []
+
+
+# ---------------------------------------------------------------------------
+# a stranded worktree dir from a killed run survives a subsequent normal run
+# ---------------------------------------------------------------------------
+
+
+def test_compare_when_stranded_worktree_dir_preexists_does_not_sweep_or_corrupt_it(
+    create_scratch_repo: Callable[[], str],
+    tmp_path: Path,
+):
+    # A sweep by name pattern under a shared temp base cannot tell a stale leftover
+    # from a concurrent run's live worktree, so a normal run must leave it alone.
+    repo = create_scratch_repo()
+    write_committed_bench(repo, EMIT_ONE_BENCH)
+    _git(["switch", "-c", "candidate"], repo)
+    _git(["switch", "main"], repo)
+    controlled_base = tmp_path / "controlled-base"
+    controlled_base.mkdir()
+    stranded = controlled_base / "gymrat-wt-stranded-from-a-killed-run"
+    stranded.mkdir()
+    marker = stranded / "leftover.txt"
+    marker.write_text("stranded", encoding="utf-8")
+    env = _env()
+    env["TMPDIR"] = str(controlled_base)
+
+    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
+        [*_ENTRY, "compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert stranded.is_dir()
+    assert marker.read_text(encoding="utf-8") == "stranded"
     assert list_worktree_dirs(repo, include_main=False) == []

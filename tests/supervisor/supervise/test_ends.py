@@ -19,12 +19,12 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, get_args, override
+from typing import TYPE_CHECKING, override
 
 import pytest
 
 from gymrat.clock import now_ms, now_ns
-from gymrat.config import BenchlessConfig, StopConfig
+from gymrat.config import StopConfig
 from gymrat.session.paths import session_dir, session_jsonl_path
 from gymrat.supervisor.events import (
     CapEvent,
@@ -34,7 +34,6 @@ from gymrat.supervisor.events import (
     ToolEndEvent,
     UsageUpdateEvent,
 )
-from gymrat.supervisor.supervise import EndedBy, supervise
 from tests._config import benchless_config
 from tests.session.records._fixtures import (
     append_records,
@@ -46,16 +45,13 @@ from tests.session.records._fixtures import (
 from tests.supervisor._fixtures import (
     DelegatingSession,
     InterruptEmitsEndDriver,
-    add_stop_async,
+    _supervise,
+    _WrapDriver,
     collecting_observer,
     emit_turn_end,
     events_of,
     follow_ups_with_action,
-    make_context,
-    make_launch,
-    make_prompt,
     read_log_lines,
-    seed_session_log,
     sent_texts,
 )
 from tests.supervisor._mock_driver import (
@@ -71,7 +67,6 @@ if TYPE_CHECKING:
     from gymrat.session.records import SessionLogRecord
     from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
     from gymrat.supervisor.events import SessionObserver
-    from gymrat.supervisor.supervise import SupervisionResult
     from tests.supervisor._mock_driver import MockStep
 
 
@@ -93,14 +88,6 @@ _NEEDS_MODE_BITS = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def root(tmp_path: Path) -> str:
-    """A scratch repository root whose session log holds only its header."""
-    path = str(tmp_path / "repo")
-    seed_session_log(path)
-    return path
 
 
 @dataclass
@@ -187,39 +174,6 @@ def _ended_markers(markers: list[str]) -> list[str]:
     return [marker for marker in markers if marker.startswith("follow_up:ended:")]
 
 
-async def _supervise(
-    root: str,
-    driver: Driver,
-    *,
-    config: BenchlessConfig | None = None,
-    observer: SessionObserver | None = None,
-    is_lock_held: Callable[[], bool] = lambda: False,
-    grace_ms: int = 30_000,
-    max_usd: float | None = None,
-    deadline_ms: float | None = None,
-    settle_window_ms: int = 0,
-) -> SupervisionResult:
-    return await supervise(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=_events_path(root),
-            lock_path=str(Path(root).parent / "lockfile"),
-            config=config,
-            max_usd=max_usd,
-            deadline_ms=deadline_ms,
-        ),
-        launch=make_launch(max_usd=max_usd),
-        observer=observer,
-        grace_ms=grace_ms,
-        wall_clock_poll_ms=1,
-        settle_window_ms=settle_window_ms,
-        lock_poll_ms=1,
-        is_lock_held=is_lock_held,
-    )
-
-
 @dataclass
 class _LockSwitch:
     """A repository lock a test holds and releases between driver steps."""
@@ -268,22 +222,6 @@ class _StubbornDriver:
     ) -> DriverSession:
         self.abort = abort
         return _StubbornSession(self._inner.start(prompt, observer, abort), self)
-
-
-# ---------------------------------------------------------------------------
-# EndedBy
-# ---------------------------------------------------------------------------
-
-
-def test_ended_by_when_inspected_does_list_every_ending():
-    assert set(get_args(EndedBy)) == {
-        "session",
-        "wall-clock",
-        "spend-cap",
-        "guard",
-        "stop-condition",
-        "hook-failure",
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -419,54 +357,84 @@ async def test_supervise_when_log_rewritten_at_same_size_does_not_read_it_at_too
     assert result.outcome.reason == "completed"
 
 
-async def test_supervise_when_grown_log_fails_to_read_at_tool_end_does_end_with_error_outcome(
-    root: str,
-):
-    async def append_garbage() -> None:
-        _append_log_bytes(root, b"not valid json\n")
-
-    driver = create_mock_driver([
-        EmitStep(emit=UsageUpdateEvent(at=now_ns(), cost_usd=0.25)),
-        ActionStep(action=append_garbage),
-        _tool_end(),
-    ])
-
-    result = await _supervise(root, driver)
-
-    message = f"Invalid JSON at {session_jsonl_path(root)}:2"
-    assert (
-        result.ended_by,
-        result.end_reason,
-        result.outcome.reason,
-        result.outcome.cost_usd,
-        result.outcome.message,
-    ) == ("session", message, "error", 0.25, message)
-
-
 def _replace_log_with_directory(root: str) -> None:
     _log_path(root).unlink()
     _log_path(root).mkdir()
 
 
+def _directory_at_log(root: str, _access: _SessionDirAccess) -> None:
+    _replace_log_with_directory(root)
+
+
+def _append_invalid_json(root: str, _access: _SessionDirAccess) -> None:
+    _append_log_bytes(root, b"not valid json\n")
+
+
+def _deny_session_dir(_root: str, access: _SessionDirAccess) -> None:
+    access.deny()
+
+
 @pytest.mark.parametrize(
-    "trigger",
+    ("make_unreadable", "trigger", "message"),
     [
-        pytest.param(_tool_end(), id="tool-end-scan"),
-        pytest.param(TurnEndStep(), id="turn-end-settle"),
+        pytest.param(
+            _directory_at_log,
+            _tool_end(),
+            "Cannot read session log at {log}",
+            id="directory-at-tool-end-scan",
+        ),
+        pytest.param(
+            _directory_at_log,
+            TurnEndStep(),
+            "Cannot read session log at {log}",
+            id="directory-at-turn-end-settle",
+        ),
+        pytest.param(
+            _append_invalid_json,
+            _tool_end(),
+            "Invalid JSON at {log}:2",
+            id="invalid-json-at-tool-end-scan",
+        ),
+        pytest.param(
+            _append_invalid_json,
+            TurnEndStep(),
+            "Invalid JSON at {log}:2",
+            id="invalid-json-at-turn-end-settle",
+        ),
+        pytest.param(
+            _deny_session_dir,
+            _tool_end(),
+            "Cannot inspect session log {log}",
+            id="stat-denied-at-tool-end-scan",
+            marks=[_NEEDS_MODE_BITS, pytest.mark.filterwarnings("default::RuntimeWarning")],
+        ),
     ],
 )
 async def test_supervise_when_log_becomes_unreadable_does_end_with_error_outcome_naming_the_log(
-    root: str, trigger: MockStep
+    root: str,
+    session_dir_access: _SessionDirAccess,
+    make_unreadable: Callable[[str, _SessionDirAccess], None],
+    trigger: MockStep,
+    message: str,
 ):
-    async def make_unreadable() -> None:
-        _replace_log_with_directory(root)
+    async def break_log() -> None:
+        make_unreadable(root, session_dir_access)
 
-    driver = create_mock_driver([ActionStep(action=make_unreadable), trigger])
+    driver = create_mock_driver([
+        EmitStep(emit=UsageUpdateEvent(at=now_ns(), cost_usd=0.25)),
+        ActionStep(action=break_log),
+        trigger,
+    ])
 
     result = await _supervise(root, driver)
 
-    assert (result.ended_by, result.outcome.reason) == ("session", "error")
-    assert f"Cannot read session log at {session_jsonl_path(root)}" in str(result.outcome.message)
+    assert (result.ended_by, result.outcome.reason, result.outcome.cost_usd) == (
+        "session",
+        "error",
+        0.25,
+    )
+    assert result.end_reason == result.outcome.message
+    assert message.format(log=session_jsonl_path(root)) in str(result.outcome.message)
 
 
 async def test_supervise_when_log_is_unreadable_at_launch_does_run_until_the_session_ends(
@@ -506,22 +474,6 @@ async def test_supervise_when_launch_read_fails_does_scan_hooks_only_after_first
 
     assert result.ended_by == "hook-failure"
     assert result.end_reason == _LATER_FAILED_HOOK_REASON
-
-
-@_NEEDS_MODE_BITS
-@pytest.mark.filterwarnings("default::RuntimeWarning")
-async def test_supervise_when_log_stat_fails_at_tool_end_does_end_with_error_outcome(
-    root: str, session_dir_access: _SessionDirAccess
-):
-    async def deny_access() -> None:
-        session_dir_access.deny()
-
-    driver = create_mock_driver([ActionStep(action=deny_access), _tool_end()])
-
-    result = await _supervise(root, driver)
-
-    assert result.outcome.reason == "error"
-    assert result.outcome.message is not None
 
 
 def _corrupt_log_at_launch(root: str, _access: _SessionDirAccess) -> None:
@@ -847,25 +799,12 @@ class _SlowEndSession(DelegatingSession):
         await self._inner.end()
 
 
-class _SlowEndDriver:
-    """A driver whose sessions take ``delay_ms`` to settle after ``end``, outlasting a settle window."""
-
-    def __init__(self, inner: Driver, delay_ms: int) -> None:
-        self._inner = inner
-        self._delay_ms = delay_ms
-
-    def start(
-        self,
-        prompt: SessionPrompt,
-        observer: SessionObserver,
-        abort: asyncio.Event,
-    ) -> DriverSession:
-        return _SlowEndSession(self._inner.start(prompt, observer, abort), self._delay_ms)
-
-
 async def test_supervise_when_wall_clock_passes_after_spend_cap_fired_does_emit_one_cap(root: str):
     probe = collecting_observer()
-    driver = _SlowEndDriver(create_mock_driver([TurnEndStep(cost_usd=5.0)]), delay_ms=300)
+    driver = _WrapDriver(
+        create_mock_driver([TurnEndStep(cost_usd=5.0)]),
+        lambda session: _SlowEndSession(session, 300),
+    )
 
     result = await _supervise(
         root, driver, observer=probe.observer, max_usd=1.0, deadline_ms=now_ms() + 100
@@ -875,26 +814,12 @@ async def test_supervise_when_wall_clock_passes_after_spend_cap_fired_does_emit_
     assert (result.ended_by, caps) == ("spend-cap", [("spend-cap", "ending")])
 
 
-async def test_supervise_when_usage_update_arrives_during_lock_poll_does_keep_polling(root: str):
-    probe = collecting_observer()
-    lock = _LockSwitch(held=True)
-    driver = create_mock_driver([
-        emit_turn_end(),
-        EmitStep(emit=UsageUpdateEvent(at=now_ns(), cost_usd=0.02), delay_ms=5),
-        ActionStep(action=lock.release, delay_ms=5),
-        ActionStep(action=lambda: add_stop_async(root), delay_ms=50),
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-    ])
-
-    await _supervise(root, driver, observer=probe.observer, is_lock_held=lock.is_held)
-
-    actions = [event.action for event in events_of(probe.events, FollowUpEvent)]
-    assert actions == ["waiting", "replied", "ended"]
-
-
 async def test_supervise_when_cap_ends_session_during_settle_window_does_not_reply(root: str):
     probe = collecting_observer()
-    driver = _SlowEndDriver(create_mock_driver([TurnEndStep(cost_usd=0.01)]), delay_ms=400)
+    driver = _WrapDriver(
+        create_mock_driver([TurnEndStep(cost_usd=0.01)]),
+        lambda session: _SlowEndSession(session, 400),
+    )
 
     result = await _supervise(
         root,

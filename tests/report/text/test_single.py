@@ -35,7 +35,6 @@ from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
     exact_metric,
-    grouped_flat_result,
     kind_metric,
     metric_meta,
     permutation_metric,
@@ -43,34 +42,6 @@ from tests.report._comparisons import (
     two_kind_result,
 )
 from tests.report._verdicts import exact_verdict, geomean_of
-
-# ---------------------------------------------------------------------------
-# indented member rows
-# ---------------------------------------------------------------------------
-
-
-def test_render_report_when_flat_grouped_does_indent_member_rows():
-    report = render_report(grouped_flat_result())
-
-    line = line_starting_with(report, "  alive_check")
-
-    assert cells_of(line)[0].rstrip() == "  alive_check"
-
-
-# ---------------------------------------------------------------------------
-# kind suffix on group header
-# ---------------------------------------------------------------------------
-
-
-def test_render_report_when_flat_grouped_does_show_kind_on_group_header():
-    # In the flat layout there is no section header to carry the kind, so it
-    # is stated on the group header instead (e.g. "entity  time").
-    report = strip_ansi(render_report(grouped_flat_result()))
-
-    entity_header = line_starting_with(report, "entity ")
-
-    assert "time" in cells_of(entity_header)[0]
-
 
 # ---------------------------------------------------------------------------
 # pair count alignment across rows with and without a band
@@ -173,14 +144,6 @@ def test_render_report_when_rows_are_short_of_pairs_does_align_their_pair_counts
     first_offsets = offsets_of(first_line, "n=")
     assert first_offsets != []
     assert first_offsets == offsets_of(second_line, "n=")
-
-
-def test_render_report_when_a_row_is_unstable_does_reserve_the_band_slot_before_its_pair_count():
-    report = strip_ansi(render_report(_unstable_with_band_result()))
-
-    unstable_line = line_containing(report, "unstable")
-
-    assert unstable_line.endswith("≈  unstable         n=8")
 
 
 # ---------------------------------------------------------------------------

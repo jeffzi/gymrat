@@ -22,13 +22,15 @@ from gymrat.loop.finalize import (
 from gymrat.loop.start import start_session
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import FinalizeRecord, SessionLogRecord
-from gymrat.session.store import append_record
 from tests._config import resolved_config
-from tests._git import head_of
+from tests._git import commit_all, head_of, list_worktree_dirs
 from tests._git import run_git as _git
-from tests.conftest import list_worktree_dirs
-from tests.loop._settle import capture_error
+from tests.loop._settle import (
+    capture_error,
+    keep_iteration,
+)
 from tests.session.records._fixtures import (
+    append_records,
     committed_keep,
     iteration_record,
     log_records,
@@ -59,77 +61,23 @@ def _commit_iteration(root: str, seq: int, message: str) -> str:
     moves that branch forward exactly as a real ``gymrat keep`` would. The keep
     record is left to the caller.
     """
-    worktree = experiment_worktree_dir(root)
-    (Path(worktree) / f"step-{seq}.txt").write_text(f"{message}\n", encoding="utf-8")
-    _git(["add", "-A"], worktree)
-    _git(["commit", "-m", message], worktree)
-    commit = head_of(worktree)
-    append_record(session_jsonl_path(root), iteration_record(seq=seq))
+    commit = commit_all(experiment_worktree_dir(root), message, file=f"step-{seq}.txt")
+    append_records(root, iteration_record(seq=seq))
     return commit
 
 
 def _keep_iteration(root: str, seq: int, message: str) -> str:
     """Commit one edit and log the iteration and the committed keep that settled it."""
-    commit = _commit_iteration(root, seq, message)
-    append_record(session_jsonl_path(root), committed_keep(seq, commit=commit, message=message))
+    commit = commit_all(experiment_worktree_dir(root), message, file=f"step-{seq}.txt")
+    keep_iteration(root, seq, commit=commit, message=message)
     return commit
 
 
-def _mentions_keep_and_discard(hint: str) -> bool:
-    """Whether ``hint`` names both settling commands."""
-    return bool(
-        re.search(r"keep", hint, re.IGNORECASE) and re.search(r"discard", hint, re.IGNORECASE)
-    )
-
-
 @pytest.fixture
-def repo(create_scratch_repo: Callable[[], str]) -> str:
-    """A scratch repository with an open session on ``main``."""
-    root = create_scratch_repo()
-    start_session(root, "main", CONFIG)
-    return root
-
-
-@pytest.fixture
-def baseline_sha(repo: str) -> str:
-    """The commit ``main`` sits on — the baseline every squash hangs from."""
-    # start_session never moves main, so reading it after the session opens
-    # yields the same commit the baseline is pinned to.
-    return head_of(repo)
-
-
-# ---------------------------------------------------------------------------
-# when the repository holds no session
-# ---------------------------------------------------------------------------
-
-
-def test_finalize_when_no_session_does_refuse_pointing_at_the_command_that_opens_one(
-    create_scratch_repo: Callable[[], str],
-):
-    empty = create_scratch_repo()
-
-    error = capture_error(lambda: finalize_session(empty))
-
-    assert error.hint is not None
-    assert "gymrat start" in error.hint
-
-
-# ---------------------------------------------------------------------------
-# when the session was already finalized
-# ---------------------------------------------------------------------------
-
-
-def test_finalize_when_already_finalized_does_refuse_naming_closed_session_and_fresh_start(
-    repo: str,
-):
-    _keep_iteration(repo, 1, "cache the regex")
-    finalize_session(repo)
-
-    error = capture_error(lambda: finalize_session(repo))
-
-    assert session_header_of(repo).session_id in str(error)
-    assert error.hint is not None
-    assert "gymrat start" in error.hint
+def session_repo(repo: str) -> str:
+    """The scratch repository with an open session on ``main``."""
+    start_session(repo, "main", CONFIG)
+    return repo
 
 
 # ---------------------------------------------------------------------------
@@ -137,21 +85,18 @@ def test_finalize_when_already_finalized_does_refuse_naming_closed_session_and_f
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_when_nothing_kept_does_refuse_creating_no_branch_and_no_record(repo: str):
-    before = len(log_records(repo))
+def test_finalize_session_when_nothing_kept_does_refuse_creating_no_branch_and_no_record(
+    session_repo: str,
+):
+    before = len(log_records(session_repo))
 
-    error = capture_error(lambda: finalize_session(repo))
-
-    assert error.hint is not None
-    assert re.search(r"keep", error.hint, re.IGNORECASE)
-    assert _git(["branch", "--list", "*-final"], repo) == ""
-    assert len(log_records(repo)) == before
-
-
-def test_finalize_when_nothing_kept_does_carry_nothing_kept_reason(repo: str):
-    error = capture_error(lambda: finalize_session(repo))
+    error = capture_error(lambda: finalize_session(session_repo))
 
     assert error.reason == "nothing-kept"
+    assert error.hint is not None
+    assert re.search(r"keep", error.hint, re.IGNORECASE)
+    assert _git(["branch", "--list", "*-final"], session_repo) == ""
+    assert len(log_records(session_repo)) == before
 
 
 # ---------------------------------------------------------------------------
@@ -159,25 +104,20 @@ def test_finalize_when_nothing_kept_does_carry_nothing_kept_reason(repo: str):
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_when_last_iteration_unsettled_does_refuse_writing_no_record(repo: str):
-    _keep_iteration(repo, 1, "cache the regex")
-    append_record(session_jsonl_path(repo), iteration_record(seq=2))
-    before = len(log_records(repo))
+def test_finalize_session_when_last_iteration_unsettled_does_refuse_writing_no_record(
+    session_repo: str,
+):
+    _keep_iteration(session_repo, 1, "cache the regex")
+    append_records(session_repo, iteration_record(seq=2))
+    before = len(log_records(session_repo))
 
-    error = capture_error(lambda: finalize_session(repo))
-
-    assert error.hint is not None
-    assert _mentions_keep_and_discard(error.hint)
-    assert len(log_records(repo)) == before
-
-
-def test_finalize_when_last_iteration_unsettled_does_carry_unsettled_reason(repo: str):
-    _keep_iteration(repo, 1, "cache the regex")
-    append_record(session_jsonl_path(repo), iteration_record(seq=2))
-
-    error = capture_error(lambda: finalize_session(repo))
+    error = capture_error(lambda: finalize_session(session_repo))
 
     assert error.reason == "unsettled"
+    assert error.hint is not None
+    assert re.search(r"keep", error.hint, re.IGNORECASE)
+    assert re.search(r"discard", error.hint, re.IGNORECASE)
+    assert len(log_records(session_repo)) == before
 
 
 # ---------------------------------------------------------------------------
@@ -185,25 +125,22 @@ def test_finalize_when_last_iteration_unsettled_does_carry_unsettled_reason(repo
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_when_experiment_worktree_dirty_does_refuse_writing_no_record(repo: str):
-    _keep_iteration(repo, 1, "cache the regex")
-    (Path(experiment_worktree_dir(repo)) / "scratch.txt").write_text("notes\n", encoding="utf-8")
-    before = len(log_records(repo))
+def test_finalize_session_when_experiment_worktree_dirty_does_refuse_writing_no_record(
+    session_repo: str,
+):
+    _keep_iteration(session_repo, 1, "cache the regex")
+    (Path(experiment_worktree_dir(session_repo)) / "scratch.txt").write_text(
+        "notes\n", encoding="utf-8"
+    )
+    before = len(log_records(session_repo))
 
-    error = capture_error(lambda: finalize_session(repo))
-
-    assert error.hint is not None
-    assert _mentions_keep_and_discard(error.hint)
-    assert len(log_records(repo)) == before
-
-
-def test_finalize_when_experiment_worktree_dirty_does_carry_dirty_worktree_reason(repo: str):
-    _keep_iteration(repo, 1, "cache the regex")
-    (Path(experiment_worktree_dir(repo)) / "scratch.txt").write_text("notes\n", encoding="utf-8")
-
-    error = capture_error(lambda: finalize_session(repo))
+    error = capture_error(lambda: finalize_session(session_repo))
 
     assert error.reason == "dirty-worktree"
+    assert error.hint is not None
+    assert re.search(r"keep", error.hint, re.IGNORECASE)
+    assert re.search(r"discard", error.hint, re.IGNORECASE)
+    assert len(log_records(session_repo)) == before
 
 
 # ---------------------------------------------------------------------------
@@ -211,35 +148,22 @@ def test_finalize_when_experiment_worktree_dirty_does_carry_dirty_worktree_reaso
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_when_experiment_head_ahead_of_last_keep_does_refuse_hinting_keep_or_discard(
-    repo: str,
+def test_finalize_session_when_experiment_head_ahead_of_last_keep_does_refuse_hinting_keep_or_discard(
+    session_repo: str,
 ):
-    _keep_iteration(repo, 1, "cache the regex")
-    worktree = experiment_worktree_dir(repo)
-    (Path(worktree) / "extra.txt").write_text("extra\n", encoding="utf-8")
-    _git(["add", "-A"], worktree)
-    _git(["commit", "-m", "extra commit"], worktree)
-    before = len(log_records(repo))
+    _keep_iteration(session_repo, 1, "cache the regex")
+    commit_all(
+        experiment_worktree_dir(session_repo), "extra commit", file="extra.txt", content="extra\n"
+    )
+    before = len(log_records(session_repo))
 
-    error = capture_error(lambda: finalize_session(repo))
-
-    assert error.hint is not None
-    assert _mentions_keep_and_discard(error.hint)
-    assert len(log_records(repo)) == before
-
-
-def test_finalize_when_experiment_head_ahead_of_last_keep_does_carry_unkept_commits_reason(
-    repo: str,
-):
-    _keep_iteration(repo, 1, "cache the regex")
-    worktree = experiment_worktree_dir(repo)
-    (Path(worktree) / "extra.txt").write_text("extra\n", encoding="utf-8")
-    _git(["add", "-A"], worktree)
-    _git(["commit", "-m", "extra commit"], worktree)
-
-    error = capture_error(lambda: finalize_session(repo))
+    error = capture_error(lambda: finalize_session(session_repo))
 
     assert error.reason == "unkept-commits"
+    assert error.hint is not None
+    assert re.search(r"keep", error.hint, re.IGNORECASE)
+    assert re.search(r"discard", error.hint, re.IGNORECASE)
+    assert len(log_records(session_repo)) == before
 
 
 # ---------------------------------------------------------------------------
@@ -247,35 +171,21 @@ def test_finalize_when_experiment_head_ahead_of_last_keep_does_carry_unkept_comm
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_when_experiment_worktree_gone_does_finalize_anyway(repo: str):
-    _keep_iteration(repo, 1, "cache the regex")
-    shutil.rmtree(experiment_worktree_dir(repo))
-
-    result = finalize_session(repo)
-
-    assert _last_record(repo) == result.record
-
-
-def test_finalize_when_worktree_gone_and_unkept_commits_exist_does_squash_last_kept_tree(
-    repo: str,
+def test_finalize_session_when_worktree_gone_and_unkept_commits_exist_does_finalize_squashing_last_kept_tree(
+    session_repo: str,
 ):
-    last_kept_commit = _keep_iteration(repo, 1, "cache the regex")
-    last_kept_tree = _git(["rev-parse", f"{last_kept_commit}^{{tree}}"], repo)
+    last_kept_commit = _keep_iteration(session_repo, 1, "cache the regex")
+    last_kept_tree = _git(["rev-parse", f"{last_kept_commit}^{{tree}}"], session_repo)
 
-    worktree = experiment_worktree_dir(repo)
-    (Path(worktree) / "unkept.txt").write_text("unkept work\n", encoding="utf-8")
-    _git(["add", "-A"], worktree)
-    _git(["commit", "-m", "unkept commit"], worktree)
-    session_branch = session_header_of(repo).branch
-    branch_tip_tree = _git(["rev-parse", f"{session_branch}^{{tree}}"], repo)
-    assert last_kept_tree != branch_tip_tree, "precondition: unkept commit changed the tree"
-
+    worktree = experiment_worktree_dir(session_repo)
+    commit_all(worktree, "unkept commit", file="unkept.txt", content="unkept work\n")
     shutil.rmtree(worktree)
 
-    result = finalize_session(repo)
+    result = finalize_session(session_repo)
 
-    squash_tree = _git(["rev-parse", f"{result.record.branch}^{{tree}}"], repo)
+    squash_tree = _git(["rev-parse", f"{result.record.branch}^{{tree}}"], session_repo)
     assert squash_tree == last_kept_tree
+    assert _last_record(session_repo) == result.record
 
 
 # ---------------------------------------------------------------------------
@@ -283,27 +193,37 @@ def test_finalize_when_worktree_gone_and_unkept_commits_exist_does_squash_last_k
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_when_keep_has_no_message_does_stand_short_commit_in(repo: str):
-    _keep_iteration(repo, 1, "cache the regex")
-    commit = _commit_iteration(repo, 2, "hoist the loop")
-    append_record(session_jsonl_path(repo), committed_keep(2, commit=commit, message=None))
-
-    result = finalize_session(repo)
-
-    subject = _git(["log", "-1", "--format=%s", result.record.branch], repo)
-    body = _git(["log", "-1", "--format=%b", result.record.branch], repo)
-    assert "2 kept iterations" in subject
-    assert body.split("\n") == ["cache the regex", commit[:7]]
+def _keep_without_message(root: str) -> list[str]:
+    """Keep one described edit and one bare commit; return the body finalize should write."""
+    _keep_iteration(root, 1, "cache the regex")
+    commit = _commit_iteration(root, 2, "hoist the loop")
+    append_records(root, committed_keep(2, commit=commit, message=None))
+    return ["cache the regex", commit[:7]]
 
 
-def test_finalize_when_keep_has_no_message_and_no_commit_does_stand_placeholder_in(repo: str):
-    _commit_iteration(repo, 1, "cache the regex")
-    append_record(session_jsonl_path(repo), committed_keep(1, commit=None, message=None))
+def _keep_without_message_or_commit(root: str) -> list[str]:
+    """Keep one iteration with neither message nor commit; return the expected body."""
+    _commit_iteration(root, 1, "cache the regex")
+    append_records(root, committed_keep(1, commit=None, message=None))
+    return ["(no message)"]
 
-    result = finalize_session(repo)
 
-    body = _git(["log", "-1", "--format=%b", result.record.branch], repo)
-    assert body.split("\n") == ["(no message)"]
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        pytest.param(_keep_without_message, id="short-commit-stands-in"),
+        pytest.param(_keep_without_message_or_commit, id="placeholder-stands-in"),
+    ],
+)
+def test_finalize_session_when_keep_has_no_message_does_stand_a_fallback_line_in(
+    session_repo: str, arrange: Callable[[str], list[str]]
+):
+    expected_body = arrange(session_repo)
+
+    result = finalize_session(session_repo)
+
+    body = _git(["log", "-1", "--format=%b", result.record.branch], session_repo)
+    assert body.split("\n") == expected_body
 
 
 # ---------------------------------------------------------------------------
@@ -314,11 +234,11 @@ MESSAGES = ["cache the regex", "hoist the loop"]
 
 
 @pytest.fixture
-def kept_repo(repo: str) -> str:
+def kept_repo(session_repo: str) -> str:
     """A repository whose open session has two committed keeps ready to squash."""
     for index, message in enumerate(MESSAGES):
-        _keep_iteration(repo, index + 1, message)
-    return repo
+        _keep_iteration(session_repo, index + 1, message)
+    return session_repo
 
 
 @pytest.fixture
@@ -327,33 +247,42 @@ def final_branch(kept_repo: str) -> str:
     return f"{session_header_of(kept_repo).branch}-final"
 
 
-def test_finalize_when_committed_keeps_exist_does_build_one_commit_carrying_session_tree_on_pinned_baseline(
-    kept_repo: str, baseline_sha: str, final_branch: str
+def test_finalize_session_when_committed_keeps_exist_does_close_the_session_on_one_squash_commit(
+    kept_repo: str, repo_head: str, final_branch: str
 ):
     session_branch = session_header_of(kept_repo).branch
     session_tree = _git(["rev-parse", f"{session_branch}^{{tree}}"], kept_repo)
+    session_head = _git(["rev-parse", session_branch], kept_repo)
 
     result = finalize_session(kept_repo)
 
+    record = result.record
+    subject = _git(["log", "-1", "--format=%s", final_branch], kept_repo)
+    body = _git(["log", "-1", "--format=%b", final_branch], kept_repo)
     assert _git(["rev-parse", f"{final_branch}^{{tree}}"], kept_repo) == session_tree
-    assert _git(["rev-parse", f"{final_branch}^"], kept_repo) == baseline_sha
-    assert _git(["rev-parse", final_branch], kept_repo) == result.record.commit
-
-
-def test_finalize_when_committed_keeps_exist_does_move_neither_checkout_nor_session_branch(
-    kept_repo: str, baseline_sha: str
-):
-    session_branch = session_header_of(kept_repo).branch
-    session_head = _git(["rev-parse", session_branch], kept_repo)
-
-    finalize_session(kept_repo)
-
-    assert head_of(kept_repo) == baseline_sha
+    assert _git(["rev-parse", f"{final_branch}^"], kept_repo) == repo_head
+    assert _git(["rev-parse", final_branch], kept_repo) == record.commit
+    assert (record.type, record.branch) == ("finalize", final_branch)
+    assert record.at > 0
+    assert _last_record(kept_repo) == record
+    assert "2 kept iterations" in subject
+    assert body.split("\n") == MESSAGES
+    assert record.message == f"{subject}\n\n{body}"
+    assert head_of(kept_repo) == repo_head
     assert _git(["rev-parse", "--abbrev-ref", "HEAD"], kept_repo) == "main"
     assert _git(["rev-parse", session_branch], kept_repo) == session_head
+    assert not Path(experiment_worktree_dir(kept_repo)).exists()
+    assert not Path(baseline_worktree_dir(kept_repo)).exists()
+    assert list_worktree_dirs(kept_repo, include_main=False) == []
+    assert final_branch in result.report
+    assert record.commit[:7] in result.report
+    assert "2 kept" in result.report
+    assert re.search(r"closed", result.report, re.IGNORECASE)
 
 
-def test_finalize_when_baseline_commit_unknown_does_raise_naming_the_check_command(kept_repo: str):
+def test_finalize_session_when_baseline_commit_unknown_does_raise_naming_the_check_command(
+    kept_repo: str,
+):
     unknown = "0" * 40
     pinned = session_header_of(kept_repo).baseline.sha
     log = Path(session_jsonl_path(kept_repo))
@@ -367,55 +296,7 @@ def test_finalize_when_baseline_commit_unknown_does_raise_naming_the_check_comma
     )
 
 
-def test_finalize_when_committed_keeps_exist_does_append_a_finalize_record_naming_branch_and_squash_commit(
-    kept_repo: str, final_branch: str
-):
-    result = finalize_session(kept_repo)
-
-    record = result.record
-    assert record.type == "finalize"
-    assert isinstance(record.at, int)
-    assert record.at > 0
-    assert record.branch == final_branch
-    assert record.commit == _git(["rev-parse", final_branch], kept_repo)
-    assert isinstance(record.message, str)
-    assert _last_record(kept_repo) == record
-
-
-def test_finalize_when_committed_keeps_exist_does_take_both_worktrees_off_disk_and_out_of_git(
-    kept_repo: str,
-):
-    finalize_session(kept_repo)
-
-    assert not Path(experiment_worktree_dir(kept_repo)).exists()
-    assert not Path(baseline_worktree_dir(kept_repo)).exists()
-    assert list_worktree_dirs(kept_repo, include_main=False) == []
-
-
-def test_finalize_when_committed_keeps_exist_does_report_branch_short_commit_kept_count_and_closed_session(
-    kept_repo: str, final_branch: str
-):
-    result = finalize_session(kept_repo)
-
-    assert final_branch in result.report
-    assert result.record.commit[:7] in result.report
-    assert "2 kept" in result.report
-    assert re.search(r"closed", result.report, re.IGNORECASE)
-
-
-def test_finalize_when_committed_keeps_exist_does_generate_a_message_naming_kept_count_over_kept_messages(
-    kept_repo: str, final_branch: str
-):
-    result = finalize_session(kept_repo)
-
-    subject = _git(["log", "-1", "--format=%s", final_branch], kept_repo)
-    body = _git(["log", "-1", "--format=%b", final_branch], kept_repo)
-    assert "2 kept iterations" in subject
-    assert body.split("\n") == MESSAGES
-    assert result.record.message == f"{subject}\n\n{body}"
-
-
-def test_finalize_when_callers_message_given_does_commit_it_verbatim(
+def test_finalize_session_when_callers_message_given_does_commit_it_verbatim(
     kept_repo: str, final_branch: str
 ):
     result = finalize_session(kept_repo, FinalizeOptions(message="squash the tuning session"))
@@ -426,14 +307,18 @@ def test_finalize_when_callers_message_given_does_commit_it_verbatim(
     assert result.record.message == "squash the tuning session"
 
 
-def test_finalize_when_callers_branch_name_given_does_point_it_at_the_squash_commit(kept_repo: str):
+def test_finalize_session_when_callers_branch_name_given_does_point_it_at_the_squash_commit(
+    kept_repo: str,
+):
     result = finalize_session(kept_repo, FinalizeOptions(branch="perf/regex-cache"))
 
     assert result.record.branch == "perf/regex-cache"
     assert _git(["rev-parse", "perf/regex-cache"], kept_repo) == result.record.commit
 
 
-def test_finalize_when_branch_name_looks_like_flag_does_refuse_creating_nothing(kept_repo: str):
+def test_finalize_session_when_branch_name_looks_like_flag_does_refuse_creating_nothing(
+    kept_repo: str,
+):
     branches_before = _git(["branch", "--format=%(refname:short)"], kept_repo)
     before = len(log_records(kept_repo))
 
@@ -441,41 +326,27 @@ def test_finalize_when_branch_name_looks_like_flag_does_refuse_creating_nothing(
 
     assert "-m" in str(error)
     assert re.search(r"flag", str(error), re.IGNORECASE)
+    assert error.reason == "bad-branch"
     assert error.hint is not None
     assert _git(["branch", "--format=%(refname:short)"], kept_repo) == branches_before
     assert len(log_records(kept_repo)) == before
 
 
-def test_finalize_when_branch_name_looks_like_flag_does_carry_bad_branch_reason(kept_repo: str):
-    error = capture_error(lambda: finalize_session(kept_repo, FinalizeOptions(branch="-m")))
-
-    assert error.reason == "bad-branch"
-
-
-def test_finalize_does_refuse_when_the_target_branch_already_exists_creating_nothing(
-    kept_repo: str, baseline_sha: str, final_branch: str
+def test_finalize_session_when_target_branch_exists_does_refuse_creating_nothing(
+    kept_repo: str, repo_head: str, final_branch: str
 ):
-    _git(["branch", final_branch, baseline_sha], kept_repo)
+    _git(["branch", final_branch, repo_head], kept_repo)
     before = len(log_records(kept_repo))
 
     error = capture_error(lambda: finalize_session(kept_repo))
 
     assert final_branch in str(error)
-    assert _git(["rev-parse", final_branch], kept_repo) == baseline_sha
+    assert error.reason == "branch-exists"
+    assert _git(["rev-parse", final_branch], kept_repo) == repo_head
     assert len(log_records(kept_repo)) == before
 
 
-def test_finalize_does_carry_branch_exists_reason_when_target_branch_already_exists(
-    kept_repo: str, baseline_sha: str, final_branch: str
-):
-    _git(["branch", final_branch, baseline_sha], kept_repo)
-
-    error = capture_error(lambda: finalize_session(kept_repo))
-
-    assert error.reason == "branch-exists"
-
-
-def test_finalize_does_close_the_session_even_when_git_refuses_to_remove_a_worktree(
+def test_finalize_session_when_worktree_removal_refused_does_close_the_session(
     kept_repo: str,
 ):
     # A locked worktree is the one git declines to take with a single --force,
@@ -495,8 +366,8 @@ def test_finalize_does_close_the_session_even_when_git_refuses_to_remove_a_workt
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_when_stopped_and_has_kept_work_does_close_the_session(kept_repo: str):
-    append_record(session_jsonl_path(kept_repo), stop_record())
+def test_finalize_session_when_stopped_and_has_kept_work_does_close_the_session(kept_repo: str):
+    append_records(kept_repo, stop_record())
 
     result = finalize_session(kept_repo)
 

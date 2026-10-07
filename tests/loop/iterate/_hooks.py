@@ -45,10 +45,16 @@ class HookScripts:
         return f'"{sys.executable}" "{script_path}"'
 
     def printing(self, *lines: str) -> str:
-        r"""A command printing each of ``lines`` on its own line on stdout.
+        r"""A command printing each given line on its own line on stdout.
 
         Writes go through ``sys.stdout.buffer`` so ``\n`` stays a single byte
         on Windows — text-mode stdout would translate it to ``\r\n``.
+
+        Args:
+            *lines: The lines to print, in order.
+
+        Returns:
+            The shell command that runs the printing script.
         """
         writes = "\n".join(
             f"sys.stdout.buffer.write({json.dumps(line + chr(10))}.encode())" for line in lines
@@ -56,11 +62,19 @@ class HookScripts:
         return self.hook_command(f"import sys\n{writes}\n")
 
     def printing_line(self, name: str, channel: Channel, content: str) -> str:
-        """Park ``content`` in ``name`` beside the hook and return source printing it.
+        """Park text in a file beside the hook and return source printing it.
 
         The text lives in a file rather than inside the script so a payload far
         larger than a source literal wants to be still reaches the runner byte
         for byte.
+
+        Args:
+            name: The file name, under the hook directory, the text is parked in.
+            channel: The stream the source writes the text to.
+            content: The text to park and print.
+
+        Returns:
+            One line of Python source that writes the parked text to ``channel``.
         """
         data_path = Path(self.temp_dir) / name
         data_path.write_bytes(content.encode())
@@ -107,8 +121,13 @@ def expected_hook_record(**overrides: Any) -> HookRecord:
     ``at`` and ``duration_ms`` are both nondeterministic, so each defaults to 0
     here and callers compare against a record whose own ``at`` and
     ``duration_ms`` they have replaced with 0.
-    ``timed_out`` defaults to ``False`` and ``stderr_bytes`` to 0; every other
-    field is the caller's to name.
+
+    Args:
+        **overrides: The record's fields. ``timed_out`` defaults to ``False``
+            and ``stderr_bytes`` to 0; every other field is the caller's to name.
+
+    Returns:
+        The expected hook record.
     """
     fields: dict[str, Any] = {
         "type": "hook",

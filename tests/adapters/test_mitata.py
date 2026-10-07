@@ -4,19 +4,10 @@ from typing import Any
 
 import pytest
 
-from gymrat.adapters import AdapterError, MetricDefaults, mitata_adapter
+from gymrat.adapters import AdapterError, mitata_adapter
 from tests.adapters._inputs import LINE_BREAKS, build_stdout
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mitata.json"
-
-# ---------------------------------------------------------------------------
-# adapter shape
-# ---------------------------------------------------------------------------
-
-
-def test_mitata_adapter_when_inspected_does_expose_name():
-    assert mitata_adapter.name == "mitata"
-
 
 # ---------------------------------------------------------------------------
 # basic JSON parsing
@@ -34,10 +25,74 @@ _BASIC_FIXTURE = build_stdout([
         pytest.param(f"some preamble\nmore output\n{_BASIC_FIXTURE}", id="preamble"),
         pytest.param(f"{_BASIC_FIXTURE}\ntrailing output\nmore output", id="trailer"),
         pytest.param(f"preamble\n{_BASIC_FIXTURE}\ntrailer", id="preamble-and-trailer"),
+        pytest.param(
+            f"cpu: {{model}}\nruntime: bun {{version}}\n\n{_BASIC_FIXTURE}", id="braces-before"
+        ),
+        pytest.param(f"{_BASIC_FIXTURE}\nfooter: {{info}}", id="braces-after"),
+        pytest.param(f"cpu: {{model}}\n{_BASIC_FIXTURE}\nfooter: {{info}}", id="braces-both-sides"),
+        pytest.param(f'weight: 5" tall\n{_BASIC_FIXTURE}', id="stray-quote-before"),
+        pytest.param(
+            f'cpu: {{model 5" tall\n{_BASIC_FIXTURE}', id="stray-quote-inside-unclosed-brace"
+        ),
+        pytest.param(f"cpu: {{model\n{_BASIC_FIXTURE}", id="unbalanced-brace-before"),
     ],
 )
 def test_parse_when_json_surrounded_by_text_does_extract_metrics(stdout: str):
     assert mitata_adapter.parse(stdout) == {"encode#time": 42}
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        pytest.param("value with {braces} inside", id="braces-in-string"),
+        pytest.param('value with "escaped" quotes and {braces}', id="escaped-quotes"),
+    ],
+)
+def test_parse_when_a_payload_string_carries_braces_or_quotes_does_read_the_whole_object(
+    alias: str,
+):
+    payload = build_stdout([{"alias": alias, "runs": [{"args": {}, "stats": {"p50": 42}}]}])
+
+    assert mitata_adapter.parse(payload) == {f"{alias}#time": 42}
+
+
+def test_parse_when_truncated_json_has_nested_object_does_report_decode_failure():
+    # Truncated outer JSON — raw_decode at position 0 fails. The inner
+    # {"alias":"encode"} is valid JSON but carries no "benchmarks" key.
+    # The adapter should prefer the decode failure (explaining WHY the real
+    # payload could not parse) over the generic "JSON missing benchmarks array".
+    truncated = '{"benchmarks":[{"alias":"encode"}],"extra":'
+
+    with pytest.raises(AdapterError, match=r"^Failed to parse JSON:"):
+        mitata_adapter.parse(truncated)
+
+
+def test_parse_when_pathological_nesting_does_raise_adapter_error_not_recursion_error():
+    # A bare run of ``{`` is refused at the first key without descending, so the
+    # depth comes from arrays under one key; one ``{`` keeps it to one attempt.
+    stdout = '{"a":' + "[" * 500_000
+
+    with pytest.raises(AdapterError, match=r"^Failed to parse JSON: Exceeded maximum recursion"):
+        mitata_adapter.parse(stdout)
+
+
+def test_parse_when_decoy_precedes_real_object_does_prefer_the_benchmarks_carrier():
+    decoy = json.dumps({"foo": "bar"})
+    real = build_stdout([{"alias": "a", "runs": [{"args": {}, "stats": {"p50": 1}}]}])
+
+    assert mitata_adapter.parse(f"{decoy}\n{real}") == {"a#time": 1}
+
+
+def test_parse_when_several_candidates_fail_does_report_longest_candidates_error():
+    long_bad = '{"padding":"' + ("x" * 100) + '","bad":@}'
+    stdout = f"{long_bad} noise {{!}}"
+
+    with pytest.raises(AdapterError) as exc_info:
+        mitata_adapter.parse(stdout)
+
+    assert str(exc_info.value) == (
+        "Failed to parse JSON: Expecting value: line 1 column 121 (char 120)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +112,42 @@ def test_parse_when_json_surrounded_by_text_does_extract_metrics(stdout: str):
             "test/$x/$unknown", {"x": "1"}, 77, "test/x=1/$unknown#time", id="stray-dollar"
         ),
         pytest.param("$ab", {"a": "x", "ab": "y"}, 8, "ab=y#time", id="longest-key-first"),
+        pytest.param("test/$x", {}, 42, "test/$x#time", id="no-args-keeps-placeholder"),
+        *(
+            pytest.param(
+                "decode/$text", {"text": value}, 42, f"decode/text={value}#time", id=value_id
+            )
+            for value, value_id in [
+                ("a$&b", "whole-match-reference"),
+                ("a$`b", "prefix-reference"),
+                ("a$'b", "suffix-reference"),
+                ("a$$b", "escaped-dollar"),
+            ]
+        ),
+        pytest.param(
+            "decode/$text", {"text": "a\\1b"}, 42, "decode/text=a\\1b#time", id="backreference"
+        ),
+        pytest.param(
+            "decode/$text",
+            {"text": "\\g<0>"},
+            42,
+            "decode/text=\\g<0>#time",
+            id="named-group-reference",
+        ),
+        pytest.param(
+            "op/$a/$b",
+            {"a": "$b", "b": "y"},
+            7,
+            "op/a=$b/b=y#time",
+            id="value-is-later-placeholder",
+        ),
+        pytest.param(
+            "op/$a/$b",
+            {"a": "y", "b": "$a"},
+            7,
+            "op/a=y/b=$a#time",
+            id="value-is-earlier-placeholder",
+        ),
     ],
 )
 def test_parse_when_alias_has_placeholders_does_substitute_arg_values(
@@ -69,14 +160,6 @@ def test_parse_when_alias_has_placeholders_does_substitute_arg_values(
     assert mitata_adapter.parse(stdout) == {metric_name: p50}
 
 
-def test_parse_when_alias_has_placeholders_and_args_empty_does_keep_placeholders_literal():
-    stdout = build_stdout([
-        {"alias": "test/$x", "runs": [{"name": "test", "args": {}, "stats": {"p50": 42}}]}
-    ])
-
-    assert mitata_adapter.parse(stdout) == {"test/$x#time": 42}
-
-
 @pytest.mark.parametrize(
     ("value", "serialized"),
     [
@@ -84,54 +167,20 @@ def test_parse_when_alias_has_placeholders_and_args_empty_does_keep_placeholders
         pytest.param(5, "5", id="int"),
         pytest.param(5.0, "5", id="integral-float"),
         pytest.param(1.5, "1.5", id="float"),
-        pytest.param(float("inf"), "inf", id="infinite-float"),
         pytest.param(True, "true", id="bool-true"),
         pytest.param(False, "false", id="bool-false"),
         pytest.param(None, "null", id="none"),
+        pytest.param({"size": 100}, '{"size":100}', id="object"),
+        pytest.param({"z": 1, "a": 2}, '{"a":2,"z":1}', id="object-keys-sorted"),
+        pytest.param([1, 2, 3], "[1,2,3]", id="array"),
     ],
 )
-def test_parse_when_arg_is_primitive_does_serialize_js_style(value: Any, serialized: str):
+def test_parse_when_arg_value_given_does_serialize_js_style(value: Any, serialized: str):
     stdout = build_stdout([
         {"alias": "b/$v", "runs": [{"name": "b", "args": {"v": value}, "stats": {"p50": 1}}]}
     ])
 
     assert mitata_adapter.parse(stdout) == {f"b/v={serialized}#time": 1}
-
-
-# ---------------------------------------------------------------------------
-# alias substitution with hostile argument values
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        pytest.param("a$&b", id="whole-match-reference"),
-        pytest.param("a$`b", id="prefix-reference"),
-        pytest.param("a$'b", id="suffix-reference"),
-        pytest.param("a$$b", id="escaped-dollar"),
-    ],
-)
-def test_parse_when_arg_value_holds_regex_replacement_syntax_does_keep_it_literal(value: str):
-    stdout = build_stdout([
-        {
-            "alias": "decode/$text",
-            "runs": [{"name": "d", "args": {"text": value}, "stats": {"p50": 42}}],
-        }
-    ])
-
-    assert mitata_adapter.parse(stdout) == {f"decode/text={value}#time": 42}
-
-
-def test_parse_when_arg_value_introduces_a_placeholder_does_not_re_substitute_it():
-    stdout = build_stdout([
-        {
-            "alias": "op/$a/$b",
-            "runs": [{"name": "op", "args": {"a": "$b", "b": "y"}, "stats": {"p50": 7}}],
-        }
-    ])
-
-    assert mitata_adapter.parse(stdout) == {"op/a=$b/b=y#time": 7}
 
 
 # ---------------------------------------------------------------------------
@@ -195,12 +244,12 @@ def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip(terminato
     ]
 
 
-_LINE_TERMINATOR_ALIASES = [
-    pytest.param(f"enc{line_break.char}ode", id=line_break.name) for line_break in LINE_BREAKS
-]
+# One non-ASCII terminator per skip site catches both a missing escape and an
+# ``ensure_ascii=False`` regression; the per-character escape table is pinned once,
+# on the error-string warning below.
+_LINE_TERMINATOR_ALIAS = "enc\u2028ode"
 
 
-@pytest.mark.parametrize("alias", _LINE_TERMINATOR_ALIASES)
 @pytest.mark.parametrize(
     ("fields", "warning_template"),
     [
@@ -233,32 +282,24 @@ _LINE_TERMINATOR_ALIASES = [
     ],
 )
 def test_parse_when_skip_warning_names_alias_holding_line_terminator_does_escape_it(
-    alias: str, fields: dict[str, Any], warning_template: str
+    fields: dict[str, Any], warning_template: str
 ):
     stdout = build_stdout([
-        {"alias": alias, **fields},
+        {"alias": _LINE_TERMINATOR_ALIAS, **fields},
         {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
     ])
     warnings: list[str] = []
 
     mitata_adapter.parse(stdout, warnings.append)
 
-    assert warnings == [warning_template.format(alias=json.dumps(alias))]
+    assert warnings == [warning_template.format(alias='"enc\\u2028ode"')]
 
 
 @pytest.mark.parametrize(
     ("alias", "args"),
     [
-        *(
-            pytest.param(f"en{line_break.char}c#ode", {}, id=f"alias-{line_break.name}")
-            for line_break in LINE_BREAKS
-        ),
-        *(
-            pytest.param(
-                "enc#$text", {"text": f"a{line_break.char}b"}, id=f"arg-value-{line_break.name}"
-            )
-            for line_break in LINE_BREAKS
-        ),
+        pytest.param("en\u2028c#ode", {}, id="alias"),
+        pytest.param("enc#$text", {"text": "a\u2028b"}, id="arg-value"),
     ],
 )
 def test_parse_when_reserved_hash_name_holds_line_terminator_does_raise_on_one_line(
@@ -279,25 +320,25 @@ def test_parse_when_reserved_hash_name_holds_line_terminator_does_raise_on_one_l
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_alias_contains_hash_does_raise_adapter_error():
-    stdout = build_stdout([
-        {"alias": "enc#ode", "runs": [{"name": "e", "args": {}, "stats": {"p50": 42}}]}
-    ])
+@pytest.mark.parametrize(
+    ("alias", "args", "prefix"),
+    [
+        pytest.param("enc#ode", {}, "enc#ode", id="alias"),
+        pytest.param("op/$v", {"v": "a#b"}, "op/v=a#b", id="substituted-arg"),
+    ],
+)
+def test_parse_when_metric_prefix_contains_hash_does_raise_adapter_error(
+    alias: str, args: dict[str, str], prefix: str
+):
+    stdout = build_stdout([{"alias": alias, "runs": [{"args": args, "stats": {"p50": 42}}]}])
 
-    with pytest.raises(AdapterError, match="enc#ode"):
+    with pytest.raises(AdapterError) as exc_info:
         mitata_adapter.parse(stdout)
 
-
-def test_parse_when_substituted_arg_introduces_hash_does_raise_adapter_error():
-    stdout = build_stdout([
-        {
-            "alias": "op/$v",
-            "runs": [{"name": "o", "args": {"v": "a#b"}, "stats": {"p50": 42}}],
-        }
-    ])
-
-    with pytest.raises(AdapterError):
-        mitata_adapter.parse(stdout)
+    assert str(exc_info.value) == (
+        f"Metric prefix \"{prefix}\" contains '#', which is reserved as the "
+        f'metric-type separator (alias: "{alias}")'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +371,7 @@ def test_parse_when_metric_name_has_empty_path_segment_does_warn_once_and_skip_r
 
 
 @pytest.mark.parametrize(("alias", "args", "prefix"), _EMPTY_SEGMENT_PREFIXES)
-def test_parse_when_only_runs_with_empty_path_segment_remain_does_raise_adapter_error(
+def test_parse_when_only_run_has_empty_path_segment_does_warn_and_raise(
     alias: str, args: dict[str, str], prefix: str
 ):
     stdout = build_stdout([{"alias": alias, "runs": [{"args": args, "stats": {"p50": 42}}]}])
@@ -509,13 +550,28 @@ _ALIAS_MISSING_PLACEHOLDER = build_stdout([
 ])
 
 
+@pytest.mark.parametrize(
+    ("stdout", "name", "kept"),
+    [
+        pytest.param(_ALIAS_MISSING_PLACEHOLDER, "decode#time", 20, id="alias-missing-placeholder"),
+        pytest.param(
+            build_stdout([
+                {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 1}}]},
+                {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 2}}]},
+            ]),
+            "encode#time",
+            2,
+            id="two-benchmarks-share-alias",
+        ),
+    ],
+)
 def test_parse_when_metric_names_collide_does_warn_and_keep_last(
-    capsys: pytest.CaptureFixture[str],
+    stdout: str, name: str, kept: int, capsys: pytest.CaptureFixture[str]
 ):
-    result = mitata_adapter.parse(_ALIAS_MISSING_PLACEHOLDER)
+    result = mitata_adapter.parse(stdout)
 
-    assert result == {"decode#time": 20}
-    assert "Duplicate metric name: decode#time" in capsys.readouterr().err
+    assert result == {name: kept}
+    assert f"Duplicate metric name: {name}" in capsys.readouterr().err
 
 
 def test_parse_when_collision_and_sink_given_does_route_warning_off_stderr(
@@ -527,36 +583,6 @@ def test_parse_when_collision_and_sink_given_does_route_warning_off_stderr(
 
     assert any("Duplicate metric name: decode#time" in w for w in warnings)
     assert capsys.readouterr().err == ""
-
-
-def test_parse_when_two_benchmarks_share_alias_does_warn_collision(
-    capsys: pytest.CaptureFixture[str],
-):
-    stdout = build_stdout([
-        {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 1}}]},
-        {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 2}}]},
-    ])
-
-    mitata_adapter.parse(stdout)
-
-    assert "Duplicate metric name: encode#time" in capsys.readouterr().err
-
-
-# ---------------------------------------------------------------------------
-# p50 value extraction
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "p50",
-    [pytest.param(123.456, id="decimal"), pytest.param(0.0791015625, id="high-precision")],
-)
-def test_parse_when_p50_present_does_use_it_as_time_metric(p50: float):
-    stdout = build_stdout([
-        {"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {"p50": p50}}]}
-    ])
-
-    assert mitata_adapter.parse(stdout) == {"test#time": p50}
 
 
 # ---------------------------------------------------------------------------
@@ -578,35 +604,23 @@ def test_parse_when_heap_avg_present_does_emit_heap_metric_keeping_integers():
     assert [type(v) for v in result.values()] == [int, int]
 
 
-def test_parse_when_heap_avg_present_on_parameterized_bench_does_emit_named_heap_metric():
+@pytest.mark.parametrize(
+    "stats",
+    [
+        pytest.param({"p50": 42, "heap": {"total": 1024}}, id="heap-avg-missing"),
+        pytest.param({"p50": 42}, id="heap-absent"),
+    ],
+)
+def test_parse_when_heap_avg_not_given_does_skip_heap_metric_silently(stats: dict[str, Any]):
     stdout = build_stdout([
-        {
-            "alias": "decode/$text",
-            "runs": [
-                {
-                    "name": "d",
-                    "args": {"text": "digits"},
-                    "stats": {"p50": 10, "heap": {"avg": 256}},
-                }
-            ],
-        }
+        {"alias": "test", "runs": [{"name": "test", "args": {}, "stats": stats}]}
     ])
+    warnings: list[str] = []
 
-    assert mitata_adapter.parse(stdout) == {
-        "decode/text=digits#time": 10,
-        "decode/text=digits#heap": 256,
-    }
+    result = mitata_adapter.parse(stdout, warnings.append)
 
-
-def test_parse_when_heap_avg_missing_does_skip_heap_metric():
-    stdout = build_stdout([
-        {
-            "alias": "test",
-            "runs": [{"name": "test", "args": {}, "stats": {"p50": 42, "heap": {"total": 1024}}}],
-        }
-    ])
-
-    assert mitata_adapter.parse(stdout) == {"test#time": 42}
+    assert result == {"test#time": 42}
+    assert warnings == []
 
 
 _INVALID_HEAP_PREFIX = 'Skipping heap metric of "test" with invalid'
@@ -666,153 +680,68 @@ def test_parse_when_heap_is_malformed_does_warn_once_and_keep_time_metric(
     assert warnings == [warning]
 
 
-def test_parse_when_heap_absent_does_not_warn():
-    stdout = build_stdout([
-        {"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {"p50": 42}}]}
-    ])
-    warnings: list[str] = []
-
-    result = mitata_adapter.parse(stdout, warnings.append)
-
-    assert result == {"test#time": 42}
-    assert warnings == []
-
-
-# ---------------------------------------------------------------------------
-# non-finite statistics
-# ---------------------------------------------------------------------------
-
-
-def test_parse_when_every_p50_non_finite_does_raise_no_valid_runs():
-    stdout = (
-        '{"benchmarks":[{"alias":"test","runs":[{"name":"t","args":{},"stats":{"p50":1e999}}]}]}'
-    )
-
-    with pytest.raises(AdapterError, match=r"^No valid benchmark runs found$"):
-        mitata_adapter.parse(stdout)
-
-
-# ---------------------------------------------------------------------------
-# multiple runs and benchmarks
-# ---------------------------------------------------------------------------
-
-
-def test_parse_when_benchmark_has_multiple_runs_does_emit_metric_per_run():
-    stdout = build_stdout([
-        {
-            "alias": "decode/$text",
-            "runs": [
-                {"name": "d", "args": {"text": "digits"}, "stats": {"p50": 10}},
-                {"name": "w", "args": {"text": "words"}, "stats": {"p50": 20}},
-            ],
-        }
-    ])
-
-    assert mitata_adapter.parse(stdout) == {
-        "decode/text=digits#time": 10,
-        "decode/text=words#time": 20,
-    }
-
-
-def test_parse_when_runs_have_heap_does_emit_heap_metric_per_run():
-    stdout = build_stdout([
-        {
-            "alias": "decode/$text",
-            "runs": [
-                {
-                    "name": "d",
-                    "args": {"text": "digits"},
-                    "stats": {"p50": 10, "heap": {"avg": 256}},
-                },
-                {
-                    "name": "w",
-                    "args": {"text": "words"},
-                    "stats": {"p50": 20, "heap": {"avg": 512}},
-                },
-            ],
-        }
-    ])
-
-    assert mitata_adapter.parse(stdout) == {
-        "decode/text=digits#time": 10,
-        "decode/text=digits#heap": 256,
-        "decode/text=words#time": 20,
-        "decode/text=words#heap": 512,
-    }
-
-
-def test_parse_when_multiple_benchmarks_does_emit_metrics_for_all():
-    stdout = build_stdout([
-        {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 42}}]},
-        {"alias": "decode", "runs": [{"name": "decode", "args": {}, "stats": {"p50": 100}}]},
-    ])
-
-    assert mitata_adapter.parse(stdout) == {"encode#time": 42, "decode#time": 100}
-
-
-# ---------------------------------------------------------------------------
-# name-derived defaults
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "metric_name",
-    ["test#time", "encode#time", "decode/x=1#time", "complex/a=1/b=2#time"],
-)
-def test_defaults_when_time_metric_does_describe_as_lower_ns_time(metric_name: str):
-    short_name = metric_name.removesuffix("#time")
-
-    assert mitata_adapter.defaults(metric_name) == MetricDefaults(
-        direction="lower", unit="ns", kind="time", short_name=short_name
-    )
-
-
-@pytest.mark.parametrize(
-    "metric_name",
-    ["test#heap", "encode#heap", "decode/x=1#heap", "complex/a=1/b=2#heap"],
-)
-def test_defaults_when_heap_metric_does_describe_as_lower_bytes_memory(metric_name: str):
-    short_name = metric_name.removesuffix("#heap")
-
-    assert mitata_adapter.defaults(metric_name) == MetricDefaults(
-        direction="lower", unit="bytes", kind="memory", short_name=short_name
-    )
-
-
-@pytest.mark.parametrize("metric_name", ["custom_metric", "test", "test/throughput", "test/ops"])
-def test_defaults_when_metric_unrecognized_does_return_direction_only(metric_name: str):
-    assert mitata_adapter.defaults(metric_name) == MetricDefaults(direction="lower")
-
-
 # ---------------------------------------------------------------------------
 # error handling
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_no_json_object_found_does_raise():
-    with pytest.raises(AdapterError, match=r"^No JSON object found in stdout$"):
-        mitata_adapter.parse("not valid json at all")
+_NO_VALID_RUNS = r"^No valid benchmark runs found$"
 
 
-def test_parse_when_json_between_braces_malformed_does_raise():
-    with pytest.raises(AdapterError, match=r"^Failed to parse JSON: "):
-        mitata_adapter.parse("preamble { invalid json } trailer")
-
-
-def test_parse_when_benchmarks_array_missing_does_raise():
-    with pytest.raises(AdapterError, match=r"^JSON missing benchmarks array$"):
-        mitata_adapter.parse(json.dumps({"something": "else"}))
-
-
-def test_parse_when_benchmarks_array_empty_does_raise():
-    with pytest.raises(AdapterError, match=r"^benchmarks array is empty$"):
-        mitata_adapter.parse(json.dumps({"benchmarks": []}))
-
-
-def test_parse_when_no_run_has_valid_stats_does_raise():
-    stdout = build_stdout([{"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {}}]}])
-
-    with pytest.raises(AdapterError, match=r"^No valid benchmark runs found$"):
+@pytest.mark.parametrize(
+    ("stdout", "message"),
+    [
+        pytest.param(
+            "not valid json at all", r"^No JSON object found in stdout$", id="no-json-object"
+        ),
+        pytest.param(
+            "preamble { invalid json } trailer",
+            r"^Failed to parse JSON: ",
+            id="malformed-json-between-braces",
+        ),
+        pytest.param(
+            json.dumps({"something": "else"}),
+            r"^JSON missing benchmarks array$",
+            id="benchmarks-array-missing",
+        ),
+        pytest.param(
+            json.dumps({"benchmarks": []}),
+            r"^benchmarks array is empty$",
+            id="benchmarks-array-empty",
+        ),
+        pytest.param(
+            build_stdout([{"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {}}]}]),
+            _NO_VALID_RUNS,
+            id="no-valid-stats",
+        ),
+        pytest.param(
+            '{"benchmarks":[{"alias":"test","runs":[{"name":"t","args":{},"stats":{"p50":1e999}}]}]}',
+            _NO_VALID_RUNS,
+            id="every-p50-non-finite",
+        ),
+        pytest.param(
+            build_stdout([
+                {
+                    "alias": "test",
+                    "runs": [
+                        {
+                            "name": "test",
+                            "args": {},
+                            "error": "something failed",
+                            "stats": {"p50": 10},
+                        }
+                    ],
+                }
+            ]),
+            _NO_VALID_RUNS,
+            id="every-run-errored",
+        ),
+    ],
+)
+def test_parse_when_stdout_has_no_usable_payload_does_raise_adapter_error(
+    stdout: str, message: str
+):
+    with pytest.raises(AdapterError, match=message):
         mitata_adapter.parse(stdout)
 
 
@@ -890,20 +819,6 @@ def test_parse_when_error_string_holds_line_terminator_does_escape_only_the_term
     assert warnings == [f'Skipping run with an error: "test" (naïve "x"{escaped}boom)']
 
 
-def test_parse_when_all_runs_have_errors_does_raise():
-    stdout = build_stdout([
-        {
-            "alias": "test",
-            "runs": [
-                {"name": "test", "args": {}, "error": "something failed", "stats": {"p50": 10}}
-            ],
-        }
-    ])
-
-    with pytest.raises(AdapterError, match=r"^No valid benchmark runs found$"):
-        mitata_adapter.parse(stdout)
-
-
 def test_parse_when_error_field_is_null_does_process_run_normally():
     stdout = build_stdout([
         {
@@ -913,82 +828,6 @@ def test_parse_when_error_field_is_null_does_process_run_normally():
     ])
 
     assert mitata_adapter.parse(stdout) == {"test#time": 10}
-
-
-# ---------------------------------------------------------------------------
-# non-primitive run-argument serialization
-# ---------------------------------------------------------------------------
-
-
-def test_parse_when_arg_value_is_object_does_serialize_via_json():
-    stdout = build_stdout([
-        {
-            "alias": "bench/$opts",
-            "runs": [{"name": "cfg", "args": {"opts": {"size": 100}}, "stats": {"p50": 5}}],
-        }
-    ])
-
-    assert mitata_adapter.parse(stdout) == {'bench/opts={"size":100}#time': 5}
-
-
-def test_parse_when_object_arg_values_differ_does_keep_distinct_names():
-    stdout = build_stdout([
-        {
-            "alias": "bench/$opts",
-            "runs": [
-                {"name": "a", "args": {"opts": {"size": 100}}, "stats": {"p50": 5}},
-                {"name": "b", "args": {"opts": {"size": 200}}, "stats": {"p50": 10}},
-            ],
-        }
-    ])
-
-    assert mitata_adapter.parse(stdout) == {
-        'bench/opts={"size":100}#time': 5,
-        'bench/opts={"size":200}#time': 10,
-    }
-
-
-def test_parse_when_object_arg_has_unsorted_keys_does_serialize_in_sorted_order():
-    stdout = build_stdout([
-        {
-            "alias": "bench/$opts",
-            "runs": [{"name": "cfg", "args": {"opts": {"z": 1, "a": 2}}, "stats": {"p50": 5}}],
-        }
-    ])
-
-    assert mitata_adapter.parse(stdout) == {'bench/opts={"a":2,"z":1}#time': 5}
-
-
-def test_parse_when_arg_value_is_array_does_serialize_via_json():
-    stdout = build_stdout([
-        {
-            "alias": "bench/$items",
-            "runs": [{"name": "list", "args": {"items": [1, 2, 3]}, "stats": {"p50": 7}}],
-        }
-    ])
-
-    assert mitata_adapter.parse(stdout) == {"bench/items=[1,2,3]#time": 7}
-
-
-# ---------------------------------------------------------------------------
-# skip warnings and the warning sink
-# ---------------------------------------------------------------------------
-
-
-def test_parse_when_skip_warning_and_sink_given_does_route_off_stderr(
-    capsys: pytest.CaptureFixture[str],
-):
-    stdout = (
-        '{"benchmarks":[{"alias":"test","runs":['
-        '{"name":"test","args":{},"stats":{"p50":1e999}},'
-        '{"name":"test2","args":{},"stats":{"p50":20}}]}]}'
-    )
-    warnings: list[str] = []
-
-    mitata_adapter.parse(stdout, warnings.append)
-
-    assert len(warnings) == 1
-    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------

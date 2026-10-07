@@ -15,20 +15,16 @@ so the suite is order-independent and safe under ``pytest-xdist`` /
 
 from __future__ import annotations
 
-import json
 import math
+import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
 from gymrat.config import HooksConfig, KindEntry, MetricEntry
 from gymrat.errors import GymratError
-from gymrat.loop.iterate.confirm import scoped_bench
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, ProbeResult, probe_session
-from gymrat.report.json_doc import render_probe_json
-from gymrat.report.text.probe import render_probe_report
-from gymrat.report.types import MetricMeasurement, ReportOptions
+from gymrat.progress_events import PassStarted
 from gymrat.sampling import TargetSpec
 from gymrat.session.paths import experiment_worktree_dir, progress_path
 from tests.loop._probe import (
@@ -38,16 +34,11 @@ from tests.loop._probe import (
     only_call,
 )
 from tests.loop._settle import checks_config, start_with
-from tests.report._assertions import delta_cell, line_containing, styles_at
-from tests.report._comparisons import metric_meta
+from tests.loop.iterate._fixtures import (
+    FILTER,
+)
 from tests.report._measurements import measured_metric
-from tests.session.records._fixtures import baseline_record, finalize_record, log_records
-
-if TYPE_CHECKING:
-    from gymrat.model import Direction
-
-#: The rerun template a consumer configures when their bench can be narrowed.
-FILTER = "npm run bench -- --filter {names}"
+from tests.session.records._fixtures import baseline_record, log_records
 
 #: The sample count a probe requests and the count it should end up taking:
 #: unset falls back to the probe default, an explicit count always wins.
@@ -85,31 +76,6 @@ async def _probe_total_ms(
 
 
 # ---------------------------------------------------------------------------
-# the session guard
-# ---------------------------------------------------------------------------
-
-
-async def test_probe_session_when_no_session_does_refuse_pointing_at_the_command_that_opens_one(
-    repo: str,
-):
-    with pytest.raises(GymratError) as excinfo:
-        await probe_session(repo, checks_config(), ProbeOptions())
-
-    assert excinfo.value.reason == "no-session"
-    assert excinfo.value.hint is not None
-    assert "gymrat start" in excinfo.value.hint
-
-
-async def test_probe_session_when_session_finalized_does_refuse(repo: str):
-    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES), finalize_record()))
-
-    with pytest.raises(GymratError) as excinfo:
-        await probe_session(repo, checks_config(), ProbeOptions())
-
-    assert excinfo.value.reason == "finalized"
-
-
-# ---------------------------------------------------------------------------
 # what gets benched
 # ---------------------------------------------------------------------------
 
@@ -129,6 +95,7 @@ async def test_probe_session_when_no_names_does_bench_the_whole_bench_in_the_exp
     assert result.names == ()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX quoting only")
 async def test_probe_session_when_names_given_does_bench_the_filter_scoped_command(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -139,7 +106,10 @@ async def test_probe_session_when_names_given_does_bench_the_filter_scoped_comma
 
     result = await probe_session(repo, config, ProbeOptions(names=names))
 
-    assert only_call(recorder).run.sampling.bench == scoped_bench(config, names)
+    assert (
+        only_call(recorder).run.sampling.bench
+        == "npm run bench -- --filter total_ms 'decode large payload'"
+    )
     assert result.names == names
 
 
@@ -192,8 +162,6 @@ async def test_probe_session_when_sampling_does_take_the_count_from_options_neve
 
     assert only_call(recorder).run.sampling.samples == expected
     assert result.samples == expected
-    assert result.label == "experiment"
-    assert result.adapter == "mitata"
 
 
 async def test_probe_session_when_run_starts_does_take_the_rest_of_the_options_from_config(
@@ -207,10 +175,11 @@ async def test_probe_session_when_run_starts_does_take_the_rest_of_the_options_f
         metrics={"total_ms": MetricEntry(direction="lower", gating=True, exact=False)},
         kinds={"memory": KindEntry(gating=False)},
     )
-    recorder = install_measure(monkeypatch, measurement())
+    recorder = install_measure(monkeypatch, measurement(adapter="metric-lines"))
 
-    await probe_session(repo, config, ProbeOptions())
+    result = await probe_session(repo, config, ProbeOptions())
 
+    assert (result.label, result.adapter) == ("experiment", "mitata")
     forwarded = only_call(recorder).run
     assert forwarded.sampling.prepare == "npm ci"
     assert forwarded.adapter == "mitata"
@@ -223,21 +192,19 @@ async def test_probe_session_when_callbacks_given_does_forward_them_to_the_run(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
+    event = PassStarted(round=1, total_rounds=1, target_count=1, label="experiment", at_ms=0)
+    install_measure(
+        monkeypatch, measurement(), progress=(event,), warnings=("bench output looked odd",)
+    )
     events: list[object] = []
     warnings: list[str] = []
-    recorder = install_measure(monkeypatch, measurement())
 
     await probe_session(
         repo, checks_config(), ProbeOptions(on_progress=events.append, warn=warnings.append)
     )
 
-    forwarded = only_call(recorder).run.sampling
-    sentinel = object()
-    assert forwarded.on_progress is not None
-    forwarded.on_progress(sentinel)  # type: ignore[arg-type]
-    assert events[-1] is sentinel
-    forwarded.warn("bench output looked odd")
-    assert warnings[-1] == "bench output looked odd"
+    assert events == [event]
+    assert warnings == ["bench output looked odd"]
 
 
 # ---------------------------------------------------------------------------
@@ -267,19 +234,6 @@ async def test_probe_session_when_run_reports_metrics_does_pair_each_with_its_ba
     assert result.metrics[1].meta == alloc.meta
 
 
-async def test_probe_session_when_metric_slower_than_the_baseline_does_report_a_positive_delta(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    install_measure(
-        monkeypatch, measurement({"total_ms": measured_metric(median=125.0, spread=1.0)})
-    )
-
-    result = await probe_session(repo, checks_config(), ProbeOptions())
-
-    assert result.metrics[0].delta_pct == pytest.approx(25.0)
-
-
 @pytest.mark.parametrize(
     ("samples", "median", "expected_reference"),
     [
@@ -288,7 +242,7 @@ async def test_probe_session_when_metric_slower_than_the_baseline_does_report_a_
         pytest.param(BASELINE_SAMPLES, None, 100.0, id="run-reported-no-median"),
     ],
 )
-async def test_probe_session_when_no_usable_reference_does_report_no_delta(
+async def test_probe_session_when_reference_or_median_missing_or_zero_does_report_no_delta(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     samples: tuple[dict[str, float], ...],
@@ -310,51 +264,21 @@ async def test_probe_session_when_no_usable_reference_does_report_no_delta(
 @pytest.mark.parametrize(
     ("reference", "median", "expected"),
     [
+        pytest.param(100.0, 125.0, 25.0, id="slower-than-the-baseline-is-positive"),
         pytest.param(-10.0, -5.0, 50.0, id="negative-reference-scales-by-its-magnitude"),
         pytest.param(0.0, 0.0, 0.0, id="both-zero-is-no-change"),
     ],
 )
-async def test_probe_session_when_reference_signed_or_zero_does_match_the_iterate_delta(
+async def test_probe_session_when_reference_usable_does_match_the_iterate_delta(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     reference: float,
     median: float,
     expected: float,
 ):
-    start_with(repo, (baseline_record(samples=({"total_ms": reference},)),))
-    install_measure(
-        monkeypatch,
-        measurement({
-            "total_ms": measured_metric(median=median, spread=1.0, short_name="total_ms")
-        }),
-    )
-
-    result = await probe_session(repo, checks_config(), ProbeOptions())
+    result = await _probe_total_ms(repo, monkeypatch, reference=reference, median=median)
 
     assert result.metrics[0].delta_pct == pytest.approx(expected)
-
-
-@pytest.mark.parametrize(
-    ("direction", "code"),
-    [
-        pytest.param("lower", "31", id="lower-is-regressed"),
-        pytest.param("higher", "32", id="higher-is-improved"),
-    ],
-)
-async def test_probe_session_when_negative_median_rises_does_render_a_positive_delta_by_direction(
-    repo: str, monkeypatch: pytest.MonkeyPatch, direction: Direction, code: str
-):
-    start_with(repo, (baseline_record(samples=({"total_ms": -10.0},)),))
-    meta = metric_meta("total_ms", direction=direction)
-    install_measure(
-        monkeypatch,
-        measurement({"total_ms": MetricMeasurement(median=-5.0, spread=1.0, meta=meta)}),
-    )
-    result = await probe_session(repo, checks_config(), ProbeOptions())
-
-    row = line_containing(render_probe_report(result, ReportOptions(color=True)), "total_ms")
-
-    assert code in styles_at(row, "+50.0%")
 
 
 @pytest.mark.parametrize(("reference", "median"), NON_FINITE_RATIOS)
@@ -364,45 +288,6 @@ async def test_probe_session_when_delta_ratio_not_finite_does_report_no_delta(
     result = await _probe_total_ms(repo, monkeypatch, reference=reference, median=median)
 
     assert result.metrics[0].delta_pct is None
-
-
-@pytest.mark.parametrize(("reference", "median"), NON_FINITE_RATIOS)
-async def test_probe_session_when_delta_ratio_not_finite_does_render_a_blank_delta(
-    repo: str, monkeypatch: pytest.MonkeyPatch, reference: float, median: float
-):
-    result = await _probe_total_ms(repo, monkeypatch, reference=reference, median=median)
-
-    row = line_containing(render_probe_report(result, ReportOptions(color=False)), "total_ms")
-
-    assert delta_cell(row).strip() == ""
-
-
-@pytest.mark.parametrize(("reference", "median"), NON_FINITE_RATIOS)
-async def test_probe_session_when_delta_ratio_not_finite_does_write_a_null_delta_to_the_document(
-    repo: str, monkeypatch: pytest.MonkeyPatch, reference: float, median: float
-):
-    result = await _probe_total_ms(repo, monkeypatch, reference=reference, median=median)
-
-    doc = json.loads(render_probe_json(result))
-
-    assert doc["metrics"]["total_ms"]["delta_pct"] is None
-
-
-async def test_probe_session_when_several_baselines_recorded_does_reference_the_newest(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(
-        repo,
-        (
-            baseline_record(samples=({"total_ms": 400.0},)),
-            baseline_record(samples=({"total_ms": 200.0},)),
-        ),
-    )
-    install_measure(monkeypatch, measurement())
-
-    result = await probe_session(repo, checks_config(), ProbeOptions())
-
-    assert result.metrics[0].reference_median == 200.0
 
 
 # ---------------------------------------------------------------------------

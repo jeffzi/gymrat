@@ -16,12 +16,11 @@ from gymrat.config import KindEntry, MetricEntry
 from gymrat.loop.baseline import measure_baseline
 from gymrat.sampling import RunOptions, SamplingOptions, TargetSpec
 from gymrat.session.records import BaselineRecord
+from tests.loop._probe import install_measure, only_call
 from tests.report._measurements import create_measurement_result
 
 if TYPE_CHECKING:
-    from gymrat.measure import MeasureOptions
     from gymrat.progress_events import ProgressEvent
-    from gymrat.report.types import MeasurementResult
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -47,13 +46,6 @@ def _run_options() -> RunOptions:
     )
 
 
-def _fake_engine(result: MeasurementResult):
-    async def fake_measure(options: object) -> MeasurementResult:
-        return result
-
-    return fake_measure
-
-
 # ---------------------------------------------------------------------------
 # measure_baseline returns result and record
 # ---------------------------------------------------------------------------
@@ -63,45 +55,29 @@ def _fake_engine(result: MeasurementResult):
     "target_label",
     [
         pytest.param("build", id="target-label-matches-measurement"),
-        pytest.param(None, id="target-label-differs-from-measurement"),
+        pytest.param("release", id="target-label-differs-from-measurement"),
     ],
 )
-def test_measure_baseline_when_called_does_return_result_and_record_with_matching_fields(
+def test_measure_baseline_when_target_given_does_return_the_measurement_with_its_baseline_record(
     monkeypatch: pytest.MonkeyPatch,
-    target_label: str | None,
+    target_label: str,
 ):
     rounds: list[dict[str, float]] = [{"latency": 41}, {"latency": 43}]
     handed_back = create_measurement_result(label="build", rounds=rounds)
-    monkeypatch.setattr("gymrat.measure.measure", _fake_engine(handed_back))
+    recorder = install_measure(monkeypatch, handed_back)
     ticks = iter([1_000.0, 1_500.0])
     monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
-
-    result, record = asyncio.run(
-        measure_baseline(TargetSpec(label=target_label, target="main"), _run_options())
-    )
-
-    assert result is handed_back
-    assert isinstance(record, BaselineRecord)
-    assert record.label == "build"
-    assert record.samples == tuple(rounds)
-    assert record.duration_ms == 500
-
-
-def test_measure_baseline_when_called_does_hand_the_engine_the_target_and_run_options(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    captured: list[MeasureOptions] = []
-
-    async def spy_measure(options: MeasureOptions) -> MeasurementResult:
-        captured.append(options)
-        return create_measurement_result(label="build")
-
-    monkeypatch.setattr("gymrat.measure.measure", spy_measure)
-    target = TargetSpec(label="build", target="main")
+    stamp_ns = 1_700_000_000_123_456_789
+    monkeypatch.setattr("gymrat.loop.baseline.now_ns", lambda: stamp_ns)
+    target = TargetSpec(label=target_label, target="main")
     run_options = _run_options()
 
-    asyncio.run(measure_baseline(target, run_options))
+    result, record = asyncio.run(measure_baseline(target, run_options))
 
-    assert len(captured) == 1
-    assert captured[0].target == target
-    assert captured[0].run is run_options
+    forwarded = only_call(recorder)
+    assert forwarded.target == target
+    assert forwarded.run is run_options
+    assert result is handed_back
+    assert record == BaselineRecord(
+        type="baseline", at=stamp_ns, label="build", samples=tuple(rounds), duration_ms=500
+    )

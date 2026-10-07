@@ -1,68 +1,50 @@
 """Integration tests that drive a real gymrat session under the supervisor.
 
-Two flows are covered:
+A mock agent runs the real CLI out-of-process — ``start``, ``iterate``,
+``keep``, ``finalize`` — one command per driver action step, so the supervisor
+sees a whole optimization session complete through the shipped binary rather
+than a stubbed driver. Before ``finalize``, the agent ends a turn while another
+holder has the repository lock, so the supervisor's probe of the repository's
+real lock file must see it held and wait it out before replying. A trailing cost
+step gives the run a non-zero spend, and a closing agent turn end makes the
+supervisor read the session log the CLI left in the repository, so the run ends
+on the finalized session.
 
-- A mock agent that runs the real CLI out-of-process — ``start``, ``iterate``,
-  ``keep``, ``finalize`` — one command per driver action step, so the supervisor
-  sees a whole optimization session complete through the shipped binary rather
-  than a stubbed driver. A trailing cost step gives the run a non-zero spend.
-- A wall-clock cap firing before a long-delayed step can settle, asserted for a
-  single ``cap`` event on both the observer and the JSONL log.
-
-POSIX-only: the first flow leans on real git worktrees and bench subprocesses,
+POSIX-only: the flow leans on real git worktrees and bench subprocesses,
 matching the other subprocess integration suites.
 """
 
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from gymrat.session.paths import lockfile_path, session_jsonl_path
+from gymrat.supervisor.events import FollowUpEvent, SessionEvent
 from gymrat.supervisor.supervise import supervise
-from tests.loop._bench import BASELINE_LATENCY, commit_project, tune_experiment
+from tests._cli import run_cli
+from tests._lock import hold_lock
+from tests.loop._bench import commit_project, tune_experiment
 from tests.supervisor._fixtures import (
-    collecting_observer,
     make_context,
     make_launch,
     make_prompt,
     read_log_lines,
 )
-from tests.supervisor._mock_driver import ActionStep, CostStep, create_mock_driver
+from tests.supervisor._mock_driver import ActionStep, CostStep, TurnEndStep, create_mock_driver
+
+if TYPE_CHECKING:
+    from filelock import FileLock
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees and gating")
-
-from tests._cli import ENTRY as _ENTRY
 
 #: Generous budget: every action creates real worktrees and spawns real benches.
 LONG_RUN_TIMEOUT = 180
 
 #: The latency the edit tunes to — an improvement over the untuned baseline.
 TUNED_LATENCY = 90
-
-
-def _run_gymrat(args: list[str], cwd: str) -> None:
-    """Run one gymrat CLI command in ``cwd``, blocking until it finishes.
-
-    Blocking is what makes each driver action mirror a real agent: the command
-    runs to completion before the next step. A non-zero exit is re-raised with
-    the child's stderr attached so the mock driver's error outcome carries a
-    debuggable message.
-    """
-    try:
-        subprocess.run(  # noqa: S603
-            [*_ENTRY, *args],
-            cwd=cwd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=LONG_RUN_TIMEOUT,
-        )
-    except subprocess.CalledProcessError as error:
-        detail = f"gymrat {' '.join(args)} failed (exit {error.returncode}): {error.stderr}"
-        raise AssertionError(detail) from error
 
 
 # ---------------------------------------------------------------------------
@@ -78,28 +60,39 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
     log_path = Path(repo) / "supervisor-events.jsonl"
 
     async def start() -> None:
-        _run_gymrat(["start", "--baseline", "main"], repo)
+        run_cli(["start", "--baseline", "main"], repo, timeout=LONG_RUN_TIMEOUT)
 
     async def iterate() -> None:
         tune_experiment(repo, TUNED_LATENCY)
-        _run_gymrat(["iterate"], repo)
+        run_cli(["iterate"], repo, timeout=LONG_RUN_TIMEOUT)
 
     async def keep() -> None:
-        _run_gymrat(["keep", "-m", "tune latency to 90"], repo)
+        run_cli(["keep", "-m", "tune latency to 90"], repo, timeout=LONG_RUN_TIMEOUT)
 
     async def finalize() -> None:
-        _run_gymrat(["finalize"], repo)
+        run_cli(["finalize"], repo, timeout=LONG_RUN_TIMEOUT)
 
-    # Sanity-check the tuned value is a real improvement over the untuned bench,
-    # so the iterate is a step forward, not a no-op.
-    assert TUNED_LATENCY < BASELINE_LATENCY
+    other_holder: list[FileLock] = []
+
+    async def hold_repo_lock() -> None:
+        other_holder.append(hold_lock(lockfile_path(repo)))
+
+    # The other holder finishes once the supervisor responds to the turn end, so
+    # the agent's next command can take the lock again.
+    def release_on_follow_up(event: SessionEvent) -> None:
+        if isinstance(event, FollowUpEvent):
+            for lock in other_holder:
+                lock.release()
 
     driver = create_mock_driver([
         ActionStep(action=start),
         ActionStep(action=iterate),
         ActionStep(action=keep),
+        ActionStep(action=hold_repo_lock),
+        TurnEndStep(),
         ActionStep(action=finalize),
         CostStep(cost_usd=0.42),
+        TurnEndStep(),
     ])
 
     result = await supervise(
@@ -109,59 +102,25 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
             root=repo, lock_path=lockfile_path(repo), max_minutes=30, log_path=str(log_path)
         ),
         launch=make_launch(),
+        observer=release_on_follow_up,
     )
 
     # A failed CLI command surfaces here as an error outcome; show its message.
-    if result.outcome.reason == "error":
-        pytest.fail(result.outcome.message or "session ended with an unreported error")
-
+    assert result.outcome.reason == "completed", result.outcome.message
     assert result.ended_by == "session"
-    assert result.outcome.reason == "completed"
     assert result.outcome.cost_usd == 0.42
 
     log_lines = read_log_lines(log_path)
     assert log_lines[0]["type"] == "launch"
     assert any(line["type"] == "usage_update" for line in log_lines[1:])
+    # The supervisor waited out the repository lock before replying, then ended
+    # the run on the finalized session it read from the repo.
+    assert [
+        (line["action"], line.get("reason")) for line in log_lines if line["type"] == "follow_up"
+    ] == [("waiting", None), ("replied", None), ("ended", "finished")]
 
     # The session log the CLI left on disk holds the whole run, open to close.
     session_records = read_log_lines(session_jsonl_path(repo))
     record_types = {record["type"] for record in session_records}
     assert "session" in record_types
     assert "finalize" in record_types
-
-
-# ---------------------------------------------------------------------------
-# the wall-clock cap fires before the session finishes
-# ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_wall_clock_caps_a_long_session_does_report_wall_clock(
-    tmp_path: Path,
-):
-    root = str(tmp_path)
-    probe = collecting_observer()
-    # A single step delayed far past the cap, so the wall-clock cap always wins.
-    driver = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
-    log_path = tmp_path / "supervisor-events.jsonl"
-
-    result = await supervise(
-        driver=driver,
-        prompt=make_prompt(cwd=root),
-        context=make_context(
-            root=root, lock_path=lockfile_path(root), max_minutes=0.001, log_path=str(log_path)
-        ),
-        launch=make_launch(max_minutes=0.001),
-        observer=probe.observer,
-        grace_ms=50,
-    )
-
-    assert result.ended_by == "wall-clock"
-    assert result.outcome.reason == "interrupted"
-
-    cap_events = [event for event in probe.events if event.type == "cap"]
-    assert len(cap_events) == 1
-    assert cap_events[0].cap == "wall-clock"  # type: ignore[attr-defined]
-
-    cap_lines = [line for line in read_log_lines(log_path) if line["type"] == "cap"]
-    assert len(cap_lines) == 1
-    assert cap_lines[0]["cap"] == "wall-clock"

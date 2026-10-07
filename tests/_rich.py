@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import signal
 from io import StringIO
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import pyte
 import pyte.modes
@@ -33,6 +33,32 @@ KEPT_LINE = "kept above"
 
 #: A warning a cleanup installed after the erase raises.
 WARNING_LINE = "warning: banana"
+
+
+class _Stoppable(Protocol):
+    # A read-only property, so a renderer whose ``stop`` is a frozen field
+    # matches as well as one whose ``stop`` is a method.
+    @property
+    def stop(self) -> Callable[[], None]: ...
+
+
+# Every renderer a test built through ``track``, so teardown can stop it.
+_tracked: list[_Stoppable] = []
+
+
+def track[R: _Stoppable](renderer: R) -> R:
+    """Record ``renderer`` so :func:`stop_tracked` stops it at teardown, then return it."""
+    _tracked.append(renderer)
+    return renderer
+
+
+def stop_tracked() -> None:
+    """Stop every renderer :func:`track` recorded, so no live refresh thread outlives a test.
+
+    ``stop()`` is idempotent, so a renderer the test already stopped is unaffected.
+    """
+    while _tracked:
+        _tracked.pop().stop()
 
 
 class Clock[T: (int, float)]:
@@ -101,6 +127,7 @@ def frame_text(
     renderable: RenderableType,
     *,
     width: int = 80,
+    height: int = 24,
     get_time: Callable[[], float] | None = None,
 ) -> str:
     """Render ``renderable`` through a throwaway non-terminal console, as plain text.
@@ -111,6 +138,8 @@ def frame_text(
     Args:
         renderable: What to render.
         width: Console width in columns.
+        height: Console height in rows, pinned so the real terminal's height
+            never leaks into the render.
         get_time: Pins the console clock so that a ``Spinner`` picks a
             deterministic frame rather than whatever the wall clock says.
             None uses a clock stopped at zero.
@@ -122,6 +151,7 @@ def frame_text(
     console = Console(
         file=buf,
         width=width,
+        height=height,
         force_terminal=False,
         no_color=True,
         legacy_windows=False,
@@ -133,11 +163,19 @@ def frame_text(
 
 
 def screen_lines(raw: str, *, width: int = 80, height: int = 24) -> list[str]:
-    """Replay *raw* through a ``pyte.Screen`` and return visible rows.
+    """Replay a captured terminal stream through a ``pyte.Screen``.
 
     Sets LNM (``pyte.modes.LNM``) so that LF translates to CR+LF the way a
-    real terminal does.  Trailing whitespace is stripped per line; trailing
-    empty lines are stripped from the result.
+    real terminal does.
+
+    Args:
+        raw: The captured output, escape sequences included.
+        width: Screen width in columns.
+        height: Screen height in rows.
+
+    Returns:
+        The visible rows, each stripped of trailing whitespace, with trailing
+        empty rows dropped.
     """
     lines = [line.rstrip() for line in _replay(raw, width, height).display]
     while lines and not lines[-1]:

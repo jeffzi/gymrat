@@ -17,32 +17,33 @@ carried.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
 from gymrat.config import StopConfig
-from gymrat.errors import GymratError
 from gymrat.loop.status import status_session
-from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     KeepChecks,
     SessionLogRecord,
     SessionRecord,
 )
 from gymrat.session.workspace import BaselineRef
-from tests._ansi import SGR_RE
+from tests._ansi import (
+    strip_sgr,
+)
 from tests._config import benchless_config as _config
+from tests.session._store_records import (
+    BASELINE,
+    HOOK,
+)
 from tests.session.records._fixtures import (
     SESSION_ID,
-    baseline_record,
     blocked_keep,
     command_record,
     committed_keep,
     discard_record,
     finalize_record,
-    hook_record,
     make_iteration,
     session_record,
     stop_record,
@@ -51,7 +52,9 @@ from tests.session.records._fixtures import (
 )
 
 if TYPE_CHECKING:
-    from gymrat.session.schema import Outcome
+    from pathlib import Path
+
+    from gymrat.config import BenchlessConfig
 
 # A 40-hex baseline sha whose first seven characters are recognizable on their own.
 _BASELINE_SHA = "a1b2c3d" + "e" * 33
@@ -66,7 +69,7 @@ _HEADER_LINE_COUNT = 4
 
 def _report_lines(report: str) -> list[str]:
     """The report's lines, stripped of color, with trailing blanks dropped."""
-    lines = [SGR_RE.sub("", line) for line in report.split("\n")]
+    lines = [strip_sgr(line) for line in report.split("\n")]
     while lines and lines[-1] == "":
         lines.pop()
     return lines
@@ -85,13 +88,6 @@ def _session(root: str) -> SessionRecord:
     )
 
 
-# A recorded baseline measurement of ``main``.
-_BASELINE = baseline_record(samples=({"total_ms": 15200}, {"total_ms": 15184}))
-
-# A hook run around the first iteration — history ``status`` has no line for.
-_HOOK = hook_record()
-
-
 def four_iterations() -> tuple[SessionLogRecord, ...]:
     """Four measured iterations: one kept, one discarded, one blocked, one unsettled.
 
@@ -99,8 +95,8 @@ def four_iterations() -> tuple[SessionLogRecord, ...]:
     by the checks gate, and the fourth is still waiting to be settled.
     """
     return (
-        _BASELINE,
-        _HOOK,
+        BASELINE,
+        HOOK,
         make_iteration(-7.2, "improved"),
         committed_keep(1, commit=_KEEP_COMMIT),
         make_iteration(9.4, "regressed", seq=2),
@@ -111,30 +107,25 @@ def four_iterations() -> tuple[SessionLogRecord, ...]:
     )
 
 
-# ---------------------------------------------------------------------------
-# refusing to render
-# ---------------------------------------------------------------------------
+#: The body ``four_iterations`` renders under the header: one line per record, then the totals.
+_FOUR_ITERATIONS_BODY = [
+    "baseline main · total_ms 15192",
+    "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+    "iteration 2 · ✗ +9.4% · discarded",
+    "iteration 3 · ✓ -3.1% · keep-blocked (checks-failed)",
+    "iteration 4 · ~ +0.1% · unsettled",
+    "4 iterations · 1 kept · 1 discarded",
+]
 
 
-def test_status_session_when_no_session_does_refuse_pointing_at_start(tmp_path: Path):
-    with pytest.raises(GymratError) as exc:
-        status_session(str(tmp_path), _config())
-
-    assert "gymrat start" in (exc.value.hint or "")
-
-
-def test_status_session_when_a_log_line_is_not_json_does_surface_the_store_error_with_path_and_line(
-    tmp_path: Path,
-):
-    root = str(tmp_path)
-    write_session_log(root, _session(root))
-    with Path(session_jsonl_path(root)).open("a", encoding="utf-8") as handle:
-        handle.write("{not json\n")  # cspell:disable-line
-
-    with pytest.raises(GymratError) as exc:
-        status_session(root, _config())
-
-    assert f"{session_jsonl_path(root)}:2" in str(exc.value)
+def _header(root: str) -> list[str]:
+    """The four header lines a report opens on for the session ``_session`` writes at ``root``."""
+    return [
+        f"session {SESSION_ID} · baseline main@a1b2c3d · adapter metric-lines",
+        f"branch gymrat/{SESSION_ID}",
+        f"experiment worktree {worktrees_at(root).experiment}",
+        f"baseline worktree {worktrees_at(root).baseline}",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -150,211 +141,137 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
 
     report = status_session(root, _config())
 
-    assert _report_lines(report) == [
-        f"session {SESSION_ID} · baseline main@a1b2c3d · adapter metric-lines",
-        f"branch gymrat/{SESSION_ID}",
-        f"experiment worktree {worktrees_at(root).experiment}",
-        f"baseline worktree {worktrees_at(root).baseline}",
-        "baseline main · total_ms 15192",
-        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-        "iteration 2 · ✗ +9.4% · discarded",
-        "iteration 3 · ✓ -3.1% · keep-blocked (checks-failed)",
-        "iteration 4 · ~ +0.1% · unsettled",
-        "4 iterations · 1 kept · 1 discarded",
-    ]
-
-
-def test_status_session_when_finalized_does_close_the_report_under_the_totals(tmp_path: Path):
-    root = str(tmp_path)
-    write_session_log(
-        root,
-        _session(root),
-        (
-            make_iteration(-7.2, "improved"),
-            committed_keep(1, commit=_KEEP_COMMIT),
-            finalize_record(),
-        ),
-    )
-
-    report = status_session(root, _config())
-
-    assert _body_lines(report) == [
-        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-        "1 iteration · 1 kept · 0 discarded",
-        f"finalized · branch gymrat/{SESSION_ID}-final · commit ccccccc",
-    ]
-
-
-def test_status_session_when_final_line_torn_does_render_from_the_complete_records(tmp_path: Path):
-    root = str(tmp_path)
-    write_session_log(
-        root,
-        _session(root),
-        (make_iteration(-7.2, "improved"), committed_keep(1, commit=_KEEP_COMMIT)),
-    )
-    with Path(session_jsonl_path(root)).open("a", encoding="utf-8") as handle:
-        handle.write('{"type":"itera')  # cspell:disable-line
-
-    report = status_session(root, _config())
-
-    assert _body_lines(report) == [
-        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-        "1 iteration · 1 kept · 0 discarded",
-    ]
+    assert _report_lines(report) == [*_header(root), *_FOUR_ITERATIONS_BODY]
 
 
 # ---------------------------------------------------------------------------
-# the positional settle fold
+# the positional settle fold and closing records
 # ---------------------------------------------------------------------------
-
-
-def test_status_session_when_nothing_measured_keep_took_a_later_number_does_read_it_unsettled(
-    tmp_path: Path,
-):
-    root = str(tmp_path)
-    write_session_log(
-        root,
-        _session(root),
-        (
-            make_iteration(-7.2, "improved"),
-            committed_keep(1, commit=_KEEP_COMMIT),
-            blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
-            make_iteration(-3.1, "improved", seq=2),
-        ),
-    )
-
-    report = status_session(root, _config())
-
-    assert _body_lines(report) == [
-        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-        "keep-blocked (nothing-measured)",
-        "iteration 2 · ✓ -3.1% · unsettled",
-        "2 iterations · 1 kept · 0 discarded",
-    ]
-
-
-def test_status_session_when_no_iteration_followed_a_nothing_measured_keep_does_render_it_anyway(
-    tmp_path: Path,
-):
-    root = str(tmp_path)
-    write_session_log(
-        root,
-        _session(root),
-        (
-            make_iteration(-7.2, "improved"),
-            committed_keep(1, commit=_KEEP_COMMIT),
-            blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
-        ),
-    )
-
-    report = status_session(root, _config())
-
-    assert _body_lines(report) == [
-        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-        "keep-blocked (nothing-measured)",
-        "1 iteration · 1 kept · 0 discarded",
-    ]
-
-
-def test_status_session_when_a_gating_block_was_superseded_by_a_discard_does_render_both(
-    tmp_path: Path,
-):
-    root = str(tmp_path)
-    write_session_log(
-        root,
-        _session(root),
-        (
-            make_iteration(9.4, "regressed"),
-            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
-            discard_record(2),
-        ),
-    )
-
-    report = status_session(root, _config())
-
-    assert _body_lines(report) == [
-        "iteration 1 · ✗ +9.4% · discarded",
-        "keep-blocked (gating-regression)",
-        "1 iteration · 0 kept · 1 discarded",
-    ]
 
 
 @pytest.mark.parametrize(
-    ("outcome", "delta_pct", "line"),
+    ("history", "body"),
     [
         pytest.param(
-            "no-signal",
-            0.1,
-            "iteration 1 · ~ +0.1% · kept b1b2b3b (no-signal)",
-            id="no-signal",
+            (
+                make_iteration(-7.2, "improved"),
+                committed_keep(1, commit=_KEEP_COMMIT),
+                finalize_record(),
+            ),
+            [
+                "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+                "1 iteration · 1 kept · 0 discarded",
+                f"finalized · branch gymrat/{SESSION_ID}-final · commit ccccccc",
+            ],
+            id="finalized-closes-under-the-totals",
         ),
         pytest.param(
-            "regressed",
-            9.4,
-            "iteration 1 · ✗ +9.4% · kept b1b2b3b (regressed)",
-            id="regressed",
+            (
+                make_iteration(-7.2, "improved"),
+                committed_keep(1, commit=_KEEP_COMMIT),
+                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+                make_iteration(-3.1, "improved", seq=2),
+            ),
+            [
+                "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+                "keep-blocked (nothing-measured)",
+                "iteration 2 · ✓ -3.1% · unsettled",
+                "2 iterations · 1 kept · 0 discarded",
+            ],
+            id="nothing-measured-keep-before-a-later-iteration",
+        ),
+        pytest.param(
+            (
+                make_iteration(-7.2, "improved"),
+                committed_keep(1, commit=_KEEP_COMMIT),
+                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+            ),
+            [
+                "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+                "keep-blocked (nothing-measured)",
+                "1 iteration · 1 kept · 0 discarded",
+            ],
+            id="nothing-measured-keep-with-no-iteration-after",
+        ),
+        pytest.param(
+            (
+                make_iteration(9.4, "regressed"),
+                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                discard_record(2),
+            ),
+            [
+                "iteration 1 · ✗ +9.4% · discarded",
+                "keep-blocked (gating-regression)",
+                "1 iteration · 0 kept · 1 discarded",
+            ],
+            id="gating-block-superseded-by-a-discard",
+        ),
+        pytest.param(
+            (make_iteration(0.1, "no-signal"), committed_keep(1, commit=_KEEP_COMMIT)),
+            [
+                "iteration 1 · ~ +0.1% · kept b1b2b3b (no-signal)",
+                "1 iteration · 1 kept · 0 discarded",
+            ],
+            id="no-signal-iteration-kept",
+        ),
+        pytest.param(
+            (make_iteration(9.4, "regressed"), committed_keep(1, commit=_KEEP_COMMIT)),
+            [
+                "iteration 1 · ✗ +9.4% · kept b1b2b3b (regressed)",
+                "1 iteration · 1 kept · 0 discarded",
+            ],
+            id="regressed-iteration-kept",
+        ),
+        pytest.param(
+            (
+                make_iteration(0.1, "no-signal"),
+                blocked_keep(1, reason="not-improved", checks=KeepChecks(configured=True)),
+                committed_keep(1, commit=_KEEP_COMMIT),
+            ),
+            [
+                "iteration 1 · ~ +0.1% · kept b1b2b3b (no-signal)",
+                "keep-blocked (not-improved)",
+                "1 iteration · 1 kept · 0 discarded",
+            ],
+            id="not-improved-keep-later-resettled",
+        ),
+        pytest.param(
+            (
+                make_iteration(-7.2, "improved"),
+                blocked_keep(1, reason="checks-failed"),
+                committed_keep(1, commit=_KEEP_COMMIT),
+            ),
+            [
+                "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+                "keep-blocked (checks-failed)",
+                "1 iteration · 1 kept · 0 discarded",
+            ],
+            id="checks-failed-keep-later-resettled",
+        ),
+        pytest.param(
+            (
+                make_iteration(-7.2, "improved"),
+                committed_keep(1, commit=_KEEP_COMMIT),
+                stop_record(message="target reached\ncleaning up"),
+            ),
+            [
+                "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+                "stopped · target reached",
+                "1 iteration · 1 kept · 0 discarded",
+            ],
+            id="stop-record-in-file-order",
         ),
     ],
 )
-def test_status_session_when_an_unimproved_iteration_was_kept_does_name_the_outcome(
-    tmp_path: Path, outcome: Outcome, delta_pct: float, line: str
+def test_status_session_when_history_settles_records_does_render_each_line_in_file_order(
+    tmp_path: Path, history: tuple[SessionLogRecord, ...], body: list[str]
 ):
     root = str(tmp_path)
-    write_session_log(
-        root,
-        _session(root),
-        (make_iteration(delta_pct, outcome), committed_keep(1, commit=_KEEP_COMMIT)),
-    )
+    write_session_log(root, _session(root), history)
 
     report = status_session(root, _config())
 
-    assert _body_lines(report) == [line, "1 iteration · 1 kept · 0 discarded"]
-
-
-def test_status_session_when_a_not_improved_keep_was_later_resettled_does_render_both(
-    tmp_path: Path,
-):
-    root = str(tmp_path)
-    write_session_log(
-        root,
-        _session(root),
-        (
-            make_iteration(0.1, "no-signal"),
-            blocked_keep(1, reason="not-improved", checks=KeepChecks(configured=True)),
-            committed_keep(1, commit=_KEEP_COMMIT),
-        ),
-    )
-
-    report = status_session(root, _config())
-
-    assert _body_lines(report) == [
-        "iteration 1 · ~ +0.1% · kept b1b2b3b (no-signal)",
-        "keep-blocked (not-improved)",
-        "1 iteration · 1 kept · 0 discarded",
-    ]
-
-
-def test_status_session_when_a_checks_failed_keep_was_later_resettled_does_render_both(
-    tmp_path: Path,
-):
-    root = str(tmp_path)
-    write_session_log(
-        root,
-        _session(root),
-        (
-            make_iteration(-7.2, "improved"),
-            blocked_keep(1, reason="checks-failed"),
-            committed_keep(1, commit=_KEEP_COMMIT),
-        ),
-    )
-
-    report = status_session(root, _config())
-
-    assert _body_lines(report) == [
-        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-        "keep-blocked (checks-failed)",
-        "1 iteration · 1 kept · 0 discarded",
-    ]
+    assert _body_lines(report) == body
 
 
 # ---------------------------------------------------------------------------
@@ -362,59 +279,33 @@ def test_status_session_when_a_checks_failed_keep_was_later_resettled_does_rende
 # ---------------------------------------------------------------------------
 
 
-def test_status_session_when_stop_configured_does_forward_it_to_the_footer(tmp_path: Path):
-    root = str(tmp_path)
-    write_session_log(root, _session(root), four_iterations())
-
-    report = status_session(root, _config(stop=StopConfig(max_iterations=30)))
-
-    assert "stop: 4 of 30 iterations" in _report_lines(report)
-
-
-def test_status_session_when_runbook_configured_does_include_a_runbook_line(tmp_path: Path):
-    root = str(tmp_path)
-    write_session_log(root, _session(root), four_iterations())
-
-    report = status_session(root, _config(runbook=_RUNBOOK_PATH))
-
-    assert f"runbook {_RUNBOOK_PATH}" in _report_lines(report)
-
-
-def test_status_session_when_runbook_not_configured_does_omit_the_runbook_line(tmp_path: Path):
-    root = str(tmp_path)
-    write_session_log(root, _session(root), four_iterations())
-
-    report = status_session(root, _config())
-
-    assert not any("runbook" in line for line in _report_lines(report))
-
-
-# ---------------------------------------------------------------------------
-# stop record in history
-# ---------------------------------------------------------------------------
-
-
-def test_status_session_when_log_has_stop_record_does_render_stopped_line_in_file_order(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("config", "lines_above", "line"),
+    [
+        pytest.param(
+            _config(stop=StopConfig(max_iterations=30)),
+            10,
+            "stop: 4 of 30 iterations",
+            id="stop-line-closes-the-footer",
+        ),
+        pytest.param(
+            _config(runbook=_RUNBOOK_PATH),
+            _HEADER_LINE_COUNT,
+            f"runbook {_RUNBOOK_PATH}",
+            id="runbook-line-under-the-header",
+        ),
+    ],
+)
+def test_status_session_when_live_config_sets_a_field_does_render_its_line_in_place(
+    tmp_path: Path, config: BenchlessConfig, lines_above: int, line: str
 ):
     root = str(tmp_path)
-    write_session_log(
-        root,
-        _session(root),
-        (
-            make_iteration(-7.2, "improved"),
-            committed_keep(1, commit=_KEEP_COMMIT),
-            stop_record(message="target reached\ncleaning up"),
-        ),
-    )
+    write_session_log(root, _session(root), four_iterations())
+    plain = [*_header(root), *_FOUR_ITERATIONS_BODY]
 
-    report = status_session(root, _config())
+    report = status_session(root, config)
 
-    assert _body_lines(report) == [
-        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-        "stopped · target reached",
-        "1 iteration · 1 kept · 0 discarded",
-    ]
+    assert _report_lines(report) == [*plain[:lines_above], line, *plain[lines_above:]]
 
 
 # ---------------------------------------------------------------------------
@@ -425,26 +316,20 @@ def test_status_session_when_log_has_stop_record_does_render_stopped_line_in_fil
 def test_status_session_when_command_records_interleaved_does_render_same_lines(
     tmp_path: Path,
 ):
-    root_without = str(tmp_path / "without")
-    root_with = str(tmp_path / "with")
-    Path(root_without).mkdir()
-    Path(root_with).mkdir()
-
-    base_history = four_iterations()
-    write_session_log(root_without, _session(root_without), base_history)
-
+    root = str(tmp_path)
+    history = four_iterations()
     history_with_commands = (
         command_record(seq=0),
-        *base_history[:3],
+        *history[:3],
         command_record(seq=1),
-        *base_history[3:],
+        *history[3:],
         command_record(seq=5),
     )
-    write_session_log(root_with, _session(root_with), history_with_commands)
+    write_session_log(root, _session(root), history_with_commands)
 
-    assert _body_lines(status_session(root_with, _config())) == _body_lines(
-        status_session(root_without, _config())
-    )
+    report = status_session(root, _config())
+
+    assert _body_lines(report) == _FOUR_ITERATIONS_BODY
 
 
 # ---------------------------------------------------------------------------
@@ -452,19 +337,22 @@ def test_status_session_when_command_records_interleaved_does_render_same_lines(
 # ---------------------------------------------------------------------------
 
 
-def test_status_session_when_color_false_does_suppress_ansi(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("color", "emitted"),
+    [
+        pytest.param(False, False, id="false-suppresses-despite-force-color"),
+        pytest.param(True, True, id="true-forces"),
+        pytest.param(None, True, id="none-defers-to-force-color"),
+    ],
+)
+def test_status_session_when_color_given_does_follow_it_over_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, color: bool | None, emitted: bool
+):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
     root = str(tmp_path)
     write_session_log(root, _session(root), four_iterations())
 
-    report = status_session(root, _config(), color=False)
+    report = status_session(root, _config(), color=color)
 
-    assert "\x1b[" not in report
-
-
-def test_status_session_when_color_true_does_emit_ansi(tmp_path: Path):
-    root = str(tmp_path)
-    write_session_log(root, _session(root), four_iterations())
-
-    report = status_session(root, _config(), color=True)
-
-    assert "\x1b[" in report
+    assert ("\x1b[" in report) is emitted

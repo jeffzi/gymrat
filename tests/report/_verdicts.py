@@ -129,14 +129,23 @@ def band_metric(
     noise_pct: float = 2.5,
     n: int = 4,
     usable_n: int | None = None,
-    direction: Direction = "lower",
     unit: MetricUnit | None = None,
 ) -> MetricComparison:
     """A two-sided metric whose verdict fell back to the noise band.
 
-    ``n`` is the total pair count and ``usable_n`` how many of those pairs
-    survived tie-dropping. ``n < 6`` means the run was too short for the
-    permutation test; ``n >= 6`` with ``usable_n < 6`` means ties starved it.
+    ``n < 6`` means the run was too short for the permutation test; ``n >= 6``
+    with ``usable_n < 6`` means ties starved it.
+
+    Args:
+        verdict: The band verdict.
+        delta: The candidate's delta, in percent.
+        noise_pct: The noise band, in percent.
+        n: The total pair count.
+        usable_n: How many pairs survived tie-dropping; ``None`` means all ``n``.
+        unit: The metric's unit, if any.
+
+    Returns:
+        The metric comparison, judged for a single candidate.
     """
     resolved_usable = n if usable_n is None else usable_n
     return MetricComparison(
@@ -158,7 +167,7 @@ def band_metric(
             ),
         ),
         meta=ResolvedMetricMeta(
-            direction=direction,
+            direction="lower",
             gating=True,
             exact=False,
             unit=unit,
@@ -185,6 +194,13 @@ def metric_for(
 
     The baseline median and spread are carried once, so the candidate entries
     differ only in what the pairwise verdict engine returned for each of them.
+
+    Args:
+        candidates: Each candidate's permutation outcome, in candidate order.
+        direction: Which way is better for the metric.
+
+    Returns:
+        The metric comparison.
     """
     return MetricComparison(
         baseline_median=100.0,

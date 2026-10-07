@@ -21,8 +21,17 @@ RUNBOOK_CONTENT = "# My Runbook\n\nStep 1: run benchmarks.\n"
 
 _EXPERIMENT_WORKTREE = "/tmp/experiment"
 
-# A minimal skill body used where the clock-rule/cap-omission checks below
-# only need some text, not the bundled skill's actual content.
+# The supervised-mode contract an unattended session runs under, word for word.
+_CONTRACT_PARAGRAPH = (
+    "No human reads the turns of this session. Ask-first rules resolve to deciding "
+    "from the runbook — the runbook is the authority. When the work is done, run "
+    '`gymrat stop -m "<report>"` and only then end the turn. The supervisor replies '
+    "after every turn and the session continues, so ending a turn never waits for "
+    "anything. Never run a gymrat command in the background."
+)
+
+# A minimal skill body used where the paragraph checks below only need some
+# text, not the bundled skill's actual content.
 _GENERIC_SKILL_TEXT = "# Skill Title\n\nSome guidance.\n"
 
 
@@ -49,9 +58,10 @@ def _compose_with_skill_text(
     return compose_kickoff(config, experiment_worktree=experiment_worktree)
 
 
-def _assert_precedes_runbook_heading(append_lower: str, marker: str) -> None:
-    """Assert ``marker`` appears in ``append_lower`` before the ``## runbook:`` heading."""
-    assert append_lower.index(marker) < append_lower.index("## runbook:")
+@pytest.fixture
+def generic_kickoff(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> KickoffResult:
+    """The kickoff composed around a minimal skill body and the default runbook."""
+    return _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +119,7 @@ def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cau
 # ---------------------------------------------------------------------------
 
 
-def test_compose_kickoff_when_skill_and_runbook_present_does_order_skill_before_runbook(
+def test_compose_kickoff_when_skill_and_runbook_present_does_put_the_skill_body_before_runbook(
     tmp_path: Path,
 ):
     config = benchless_config(runbook=_write_runbook(tmp_path))
@@ -117,21 +127,11 @@ def test_compose_kickoff_when_skill_and_runbook_present_does_order_skill_before_
     result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
     append = result.system_prompt_append
+    prelude = append.partition(SKILL_MARKER)[0]
     assert SKILL_MARKER in append
     assert RUNBOOK_CONTENT in append
     assert f"## Runbook: {config.runbook}" in append
     assert append.index(SKILL_MARKER) < append.index("## Runbook:")
-
-
-def test_compose_kickoff_when_bundled_skill_has_frontmatter_does_omit_it_from_append(
-    tmp_path: Path,
-):
-    config = benchless_config(runbook=_write_runbook(tmp_path))
-
-    result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
-
-    prelude = result.system_prompt_append.partition(SKILL_MARKER)[0]
-    assert SKILL_MARKER in result.system_prompt_append
     assert "---" not in prelude
     assert "name: gymrat" not in prelude
     assert "description:" not in prelude
@@ -205,20 +205,6 @@ def test_compose_kickoff_when_prompt_given_does_start_with_it_verbatim(tmp_path:
 # ---------------------------------------------------------------------------
 
 
-def test_compose_kickoff_when_happy_path_does_include_clock_rule_in_append(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
-
-    append_lower = result.system_prompt_append.lower()
-    assert "wall-clock" in append_lower
-    assert "time left" in append_lower
-    assert "never estimate" in append_lower
-    assert "records nothing" in append_lower
-    _assert_precedes_runbook_heading(append_lower, "records nothing")
-
-
 def _clock_rule_paragraph(append: str) -> str:
     """The append paragraph carrying the wall-clock reading rule."""
     return next(p for p in append.split("\n\n") if "never estimate" in p.lower())
@@ -233,32 +219,21 @@ def _clock_rule_paragraph(append: str) -> str:
         pytest.param("`probe`", id="probe-tool"),
         pytest.param("budget.remaining_seconds", id="tool-json-field"),
         pytest.param("json", id="tool-form"),
+        pytest.param("wall-clock", id="wall-clock-cap"),
+        pytest.param("time left", id="read-time-left"),
+        pytest.param("never estimate", id="never-estimate"),
+        pytest.param("records nothing", id="killed-measurement-records-nothing"),
     ],
 )
-def test_compose_kickoff_when_happy_path_does_state_both_clock_forms_in_the_clock_rule(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_compose_kickoff_when_happy_path_does_state_phrase_in_the_clock_rule(
+    generic_kickoff: KickoffResult,
     phrase: str,
 ):
-    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+    result = generic_kickoff
 
     clock_rule = _clock_rule_paragraph(result.system_prompt_append).lower()
 
     assert phrase in clock_rule
-
-
-@pytest.mark.parametrize("field", ["system_prompt_append", "kickoff"])
-def test_compose_kickoff_when_happy_path_does_omit_cap_numbers_and_spend(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    field: str,
-):
-    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
-
-    text = getattr(result, field).lower()
-    assert "30 minute" not in text
-    assert "max_minutes" not in text
-    assert "spend" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -310,65 +285,25 @@ def test_compose_kickoff_when_prompt_is_default_or_given_does_end_with_preflight
 
 
 # ---------------------------------------------------------------------------
-# compose_kickoff — supervised-mode contract paragraph
+# compose_kickoff — no cap or spend language in code-authored text
 # ---------------------------------------------------------------------------
 
 
-def test_compose_kickoff_when_happy_path_does_include_contract_paragraph_in_append(
+@pytest.mark.parametrize("field", ["system_prompt_append", "kickoff"])
+@pytest.mark.parametrize("forbidden", ["usd", "spend", "$", "30 minute", "max_minutes"])
+def test_compose_kickoff_when_skill_mentions_spend_does_keep_cap_and_spend_out_of_authored_text(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
-
-    append_lower = result.system_prompt_append.lower()
-    assert "no human reads" in append_lower or "no human" in append_lower
-    assert "runbook" in append_lower
-    assert "gymrat stop" in append_lower
-    assert "-m" in result.system_prompt_append
-    assert "never" in append_lower
-    assert "background" in append_lower
-
-
-def test_compose_kickoff_when_happy_path_does_place_contract_before_runbook(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
-
-    append_lower = result.system_prompt_append.lower()
-    _assert_precedes_runbook_heading(append_lower, "gymrat stop")
-
-
-def test_compose_kickoff_when_happy_path_does_state_turn_ending_never_waits(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
-
-    append_lower = result.system_prompt_append.lower()
-    assert "ending a turn never waits" in append_lower
-
-
-# ---------------------------------------------------------------------------
-# compose_kickoff — no spend/usd/dollar language in code-authored text
-# ---------------------------------------------------------------------------
-
-
-def test_compose_kickoff_when_happy_path_does_omit_usd_and_dollar_from_authored_paragraphs(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    field: str,
+    forbidden: str,
+):
     skill_text = "# Skill Title\n\nSome guidance with --max-usd 10 and spend and $ dollar.\n"
+
     result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
 
-    append = result.system_prompt_append
-    # The contract paragraph must exist for this guard to be meaningful.
-    assert "gymrat stop" in append.lower(), "contract paragraph is missing"
-    # skill_text may legitimately contain --max-usd; exclude it so only
-    # code-authored text is checked.
-    authored = append.replace(skill_text, "").lower()
-    for forbidden in ("usd", "spend", "$"):
-        assert forbidden not in authored, f"Code-authored text must not contain {forbidden!r}"
+    # The skill text may legitimately mention spend; only code-authored text is checked.
+    authored = getattr(result, field).replace(skill_text, "").lower()
+    assert forbidden not in authored
 
 
 # ---------------------------------------------------------------------------
@@ -398,34 +333,32 @@ def _tools_paragraph_index(paragraphs: list[str]) -> int:
     ],
 )
 def test_compose_kickoff_when_happy_path_does_state_phrase_in_tools_paragraph(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    generic_kickoff: KickoffResult,
     phrase: str,
-) -> None:
-    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+):
+    result = generic_kickoff
 
     paragraphs = result.system_prompt_append.split("\n\n")
     tools_paragraph = paragraphs[_tools_paragraph_index(paragraphs)]
     assert phrase in tools_paragraph.lower()
 
 
-def test_compose_kickoff_when_happy_path_does_place_tools_paragraph_between_contract_and_runbook(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+def test_compose_kickoff_when_happy_path_does_order_the_authored_paragraphs_ahead_of_the_runbook(
+    generic_kickoff: KickoffResult,
+):
+    result = generic_kickoff
 
     paragraphs = result.system_prompt_append.split("\n\n")
-    contract_index = next(i for i, p in enumerate(paragraphs) if "gymrat stop" in p)
+    contract_index = paragraphs.index(_CONTRACT_PARAGRAPH)
+    clock_rule_index = paragraphs.index(_clock_rule_paragraph(result.system_prompt_append))
     runbook_index = next(i for i, p in enumerate(paragraphs) if p.startswith("## Runbook:"))
-    assert contract_index < _tools_paragraph_index(paragraphs) < runbook_index
+    assert contract_index < _tools_paragraph_index(paragraphs) < clock_rule_index < runbook_index
 
 
 def test_compose_kickoff_when_happy_path_does_not_mention_tools_in_kickoff(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+    generic_kickoff: KickoffResult,
+):
+    result = generic_kickoff
 
     kickoff_lower = result.kickoff.lower()
     assert "tool" not in kickoff_lower

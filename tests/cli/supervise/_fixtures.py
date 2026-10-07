@@ -6,15 +6,14 @@ helper imported as ``tests.cli.supervise._fixtures``.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, tzinfo
-from pathlib import Path
+from datetime import UTC, tzinfo
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     import pytest
-    from rich.console import Console, RenderableType
+    from rich.console import RenderableType
 
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
@@ -28,10 +27,7 @@ from gymrat.cli.supervise.progress import (
     create_supervise_reporter,
 )
 from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
-from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import start_session
-from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
-from gymrat.session.store import append_record
 from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     CapAction,
@@ -39,6 +35,7 @@ from gymrat.supervisor.events import (
     CapType,
     FollowUpEvent,
     LaunchEvent,
+    ModelPhase,
     ModelPhaseEvent,
     SessionObserver,
     ThinkingUpdateEvent,
@@ -49,17 +46,23 @@ from gymrat.supervisor.events import (
 )
 from gymrat.supervisor.supervise import SupervisionResult
 from gymrat.utils import NS_PER_MS
+from tests._ansi import (
+    strip_sgr,
+)
 from tests._config import resolved_config
-from tests._git import head_of, run_git
-from tests._rich import Clock, console_output, frame_text, sealed_console
+from tests._rich import (
+    Clock,
+    console_output,
+    frame_text,
+    sealed_console,
+    track,
+)
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
+    SUPERVISED_SESSION_ID,
     baseline_record,
-    committed_keep,
     empty_session_state,
-    iteration_record,
     make_iteration,
-    session_header_of,
     session_state,
 )
 from tests.supervisor._fixtures import make_launch, make_turn_end
@@ -74,24 +77,14 @@ def start_open_session(repo: str) -> None:
     start_session(repo, "main", resolved_config())
 
 
-def finalized_session(repo: str) -> str:
-    """Open a session, keep one committed edit, and finalize it; return its id."""
-    start_open_session(repo)
-    session_id = session_header_of(repo).session_id
-    worktree = experiment_worktree_dir(repo)
-    (Path(worktree) / "README.md").write_text("# edit\n", encoding="utf-8")
-    run_git(["add", "README.md"], worktree)
-    run_git(["commit", "-m", "edit"], worktree)
-    append_record(session_jsonl_path(repo), iteration_record(seq=1))
-    append_record(session_jsonl_path(repo), committed_keep(1, commit=head_of(worktree)))
-    finalize_session(repo)
-    return session_id
-
-
 def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """Replace the baseline measurement path so no real bench runs.
 
-    Returns a list that records each call's keyword arguments.
+    Args:
+        monkeypatch: The fixture that installs the stand-in measurement.
+
+    Returns:
+        A list that records each call's keyword arguments.
     """
     calls: list[dict[str, Any]] = []
 
@@ -105,21 +98,19 @@ def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any
     return calls
 
 
-def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
-    """Epoch milliseconds to local ``HH:MM:SS``.
-
-    Uses the same epoch-to-local conversion the implementation should use, so
-    tests are timezone-independent — they compute the expected string rather
-    than hard-coding a clock time.
-    """
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).astimezone().strftime("%H:%M:%S")
-
-
 def session_state_three_iterations(delta_pct: float, outcome: str, *, seq: int = 1) -> SessionState:
     """Build a three-iteration session state for loop-row tests.
 
     The shared "loop row has content" arrangement used by summary, frame, and
     reporter tests that only vary the last iteration's delta and outcome.
+
+    Args:
+        delta_pct: The last iteration's delta.
+        outcome: The last iteration's outcome.
+        seq: The last iteration's sequence number.
+
+    Returns:
+        A state with two kept iterations and one discarded.
     """
     return session_state(
         iteration_count=3,
@@ -136,10 +127,16 @@ def make_read_session(
     best: BestIteration | None = None,
     stop_message: str | None = None,
 ) -> Callable[[], ReadSessionResult]:
-    """A ``read_session`` that always returns ``state`` and ``has_baseline``.
+    """A ``read_session`` that always returns the same result.
 
-    ``best`` / ``stop_message`` default to ``None`` on ``ReadSessionResult``
-    itself, so callers that omit them still get a valid result.
+    Args:
+        state: The session state the result carries.
+        has_baseline: Whether the session has recorded a baseline.
+        best: The best iteration, if any.
+        stop_message: The stop-condition message, if any.
+
+    Returns:
+        A callable returning one fixed ``ReadSessionResult``.
     """
     result = ReadSessionResult(
         state=state,
@@ -202,11 +199,18 @@ def launch_event(
     max_minutes: float = 60,
     max_usd: float | None = None,
 ) -> LaunchEvent:
-    """A ``LaunchEvent`` stamped at *at_ms* milliseconds, with sensible cap and model defaults.
+    """A ``LaunchEvent`` with sensible cap and model defaults.
 
-    ``at_ms`` is in the test's millisecond vocabulary; the event is stamped
-    ``at=at_ms * NS_PER_MS`` (nanoseconds) so the dashboard's ingestion
-    boundary (``event.at // 1_000_000``) recovers the same millisecond value.
+    The event is stamped in nanoseconds so the dashboard's ingestion boundary
+    (``event.at // 1_000_000``) recovers the same millisecond value.
+
+    Args:
+        at_ms: The launch time, in milliseconds.
+        max_minutes: The wall-clock cap the launch carries.
+        max_usd: The spend cap the launch carries, if any.
+
+    Returns:
+        The launch event.
     """
     return make_launch(
         at=at_ms * NS_PER_MS, head_sha="abc123", max_minutes=max_minutes, max_usd=max_usd
@@ -238,7 +242,6 @@ def tool_end_event(
     at_ms: int = 3000,
     *,
     result: str = "ok",
-    result_summary: str = "ok",
     started_at_ms: int = _DEFAULT_TOOL_START_TS,
     parent_tool_use_id: str | None = None,
 ) -> ToolEndEvent:
@@ -249,7 +252,7 @@ def tool_end_event(
         tool_name=tool_name,
         duration_ms=at_ms - started_at_ms,
         result=result,
-        result_summary=result_summary,
+        result_summary="ok",
         parent_tool_use_id=parent_tool_use_id,
     )
 
@@ -266,7 +269,7 @@ def cap_event(cap: CapType, at_ms: int = 5000, *, action: CapAction = "interrupt
 
 def model_phase_event(
     at_ms: int,
-    phase: str,
+    phase: ModelPhase,
     *,
     tool_name: str | None = None,
     parent_tool_use_id: str | None = None,
@@ -274,7 +277,7 @@ def model_phase_event(
     """A ``ModelPhaseEvent``; *parent_tool_use_id* scopes it to a nested tool."""
     return ModelPhaseEvent(
         at=at_ms * NS_PER_MS,
-        phase=phase,  # type: ignore[arg-type]
+        phase=phase,
         tool_name=tool_name,
         parent_tool_use_id=parent_tool_use_id,
     )
@@ -284,14 +287,13 @@ def thinking_event(
     at_ms: int,
     *,
     estimated_tokens: int = 100,
-    delta: int = 10,
     parent_tool_use_id: str | None = None,
 ) -> ThinkingUpdateEvent:
     """A ``ThinkingUpdateEvent`` carrying the given cumulative token estimate."""
     return ThinkingUpdateEvent(
         at=at_ms * NS_PER_MS,
         estimated_tokens=estimated_tokens,
-        delta=delta,
+        delta=10,
         parent_tool_use_id=parent_tool_use_id,
     )
 
@@ -300,18 +302,10 @@ def turn_end_event(
     at_ms: int = 5000,
     *,
     text: str = "Turn summary.",
-    cost_usd: float = 0.01,
     origin: Literal["agent", "injected"] = "agent",
-    budget_exhausted: bool = False,
 ) -> TurnEndEvent:
-    """A ``TurnEndEvent`` attributed to *origin*."""
-    return make_turn_end(
-        at=at_ms * NS_PER_MS,
-        text=text,
-        cost_usd=cost_usd,
-        origin=origin,
-        budget_exhausted=budget_exhausted,
-    )
+    """A ``TurnEndEvent`` attributed to *origin*, costing one cent with budget left."""
+    return make_turn_end(at=at_ms * NS_PER_MS, text=text, origin=origin)
 
 
 def follow_up_event(
@@ -319,16 +313,18 @@ def follow_up_event(
     *,
     action: Literal["replied", "waiting", "ended"] = "replied",
     reason: str | None = None,
-    text: str | None = None,
 ) -> FollowUpEvent:
     """A ``FollowUpEvent`` carrying the supervisor's decision for the turn."""
-    return FollowUpEvent(at=at_ms * NS_PER_MS, action=action, reason=reason, text=text)
+    return FollowUpEvent(at=at_ms * NS_PER_MS, action=action, reason=reason)
 
 
 def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
     """Minimum event sequence that gets session state into the loop/best rows.
 
     The Bash end triggers the reporter's session re-read.
+
+    Args:
+        observer: The reporter observer the events are fired at.
     """
     observer(launch_event(1000))
     observer(tool_start_event("Bash", "bash-1", 2000))
@@ -341,6 +337,9 @@ def fire_launch_and_bash_start(observer: SessionObserver) -> None:
     Used by the in-flight-guard and nested-event tests, which fire a second
     event on top of the still-running Bash call and assert whether it takes
     effect or is ignored.
+
+    Args:
+        observer: The reporter observer the events are fired at.
     """
     observer(launch_event(1000))
     observer(tool_start_event("Bash", "bash-1", 1500))
@@ -366,11 +365,6 @@ def _no_progress(_root: str) -> ProgressSnapshot | None:
     return None
 
 
-# Every reporter make_reporter builds, so teardown can stop the live refresh
-# thread each one starts.
-_built_reporters: list[SuperviseReporter] = []
-
-
 class ReporterKit(NamedTuple):
     """A live-mode reporter paired with the injectable clock that drives it."""
 
@@ -388,8 +382,8 @@ def make_reporter(
     clock_start: int = 1000,
     read_progress: Callable[[str], ProgressSnapshot | None] | None = None,
     plain_write: Callable[[str], None] | None = None,
-    session_id: str = "20260813-125044-34ec",
-    branch: str = "gymrat/20260813-125044-34ec",
+    session_id: str = SUPERVISED_SESSION_ID,
+    branch: str = f"gymrat/{SUPERVISED_SESSION_ID}",
     color: bool | None = None,
     tz: tzinfo | None = UTC,
     model: str | None = None,
@@ -400,8 +394,7 @@ def make_reporter(
 ) -> ReporterKit:
     """Build a reporter with injectable dependencies for deterministic testing.
 
-    The reporter is recorded so ``stop_built_reporters`` can stop it at
-    teardown.
+    The reporter is tracked, so the CLI tests' autouse teardown stops it.
 
     Args:
         mode: ``"live"`` for a Rich Live dashboard, ``"plain"`` for line-by-line output.
@@ -457,14 +450,7 @@ def make_reporter(
         idle_warn_ms=idle_warn_ms,
         refresh_ms=refresh_ms,
     )
-    _built_reporters.append(reporter)
-    return ReporterKit(reporter, clock)
-
-
-def stop_built_reporters() -> None:
-    """Stop every reporter ``make_reporter`` built, ending its live refresh thread."""
-    while _built_reporters:
-        _built_reporters.pop().stop()
+    return ReporterKit(track(reporter), clock)
 
 
 def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> str:
@@ -479,18 +465,13 @@ def line_after(frame: str, needle: str) -> str:
     return lines[idx + 1]
 
 
-def _printed(console: Console, renderable: RenderableType) -> str:
-    """Print *renderable* to a sealed console and return everything it wrote."""
+def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
+    """Render ``renderable`` through a sealed console with standard color."""
+    console = sealed_console(width=width, no_color=False, color_system="standard")
     console.print(renderable)
     return console_output(console)
 
 
-def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
-    """Render ``renderable`` through a sealed console with standard color."""
-    console = sealed_console(width=width, no_color=False, color_system="standard")
-    return _printed(console, renderable)
-
-
-def render_colorless(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
-    """Render ``renderable`` through a sealed terminal console with colour off, as ``--no-color`` does."""
-    return _printed(sealed_console(width=width, color_system=None), renderable)
+def lines_containing(frame: str, needle: str) -> list[str]:
+    """Return the raw lines of *frame* whose text, color codes stripped, contains *needle*."""
+    return [line for line in frame.splitlines() if needle in strip_sgr(line)]
