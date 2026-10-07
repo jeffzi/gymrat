@@ -10,24 +10,32 @@ stay deterministic under ``pytest-randomly`` and ``pytest-xdist``.
 
 import asyncio
 import itertools
-import sys
 import time
 from collections.abc import Awaitable, Callable, Coroutine
-from dataclasses import dataclass
 from pathlib import Path
 from typing import override
 
 import pytest
 
-from gymrat.session.paths import lockfile_path
-from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
-from gymrat.supervisor.events import CapEvent, SessionEvent, SessionObserver, TextDeltaEvent
+from gymrat.clock import now_ns
+from gymrat.session.paths import lockfile_path, session_jsonl_path
+from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
+from gymrat.supervisor.events import (
+    CapEvent,
+    FollowUpEvent,
+    SessionEvent,
+    SessionObserver,
+    TextDeltaEvent,
+    ToolEndEvent,
+)
 from gymrat.supervisor.supervise import SupervisionResult, supervise
 from tests.supervisor._fixtures import (
     DelegatingSession,
     _supervise,
     _WrapDriver,
+    add_stop_async,
     collecting_observer,
+    emit_turn_end,
     events_of,
     make_context,
     make_launch,
@@ -43,14 +51,6 @@ from tests.supervisor._mock_driver import (
     TurnEndStep,
     create_mock_driver,
 )
-
-
-@dataclass
-class _Box:
-    """A mutable integer holder for counting side effects across closures."""
-
-    value: int = 0
-
 
 # ---------------------------------------------------------------------------
 # test doubles
@@ -577,49 +577,218 @@ async def test_supervise_when_spawned_end_raises_does_warn_to_stderr(
 
 
 # ---------------------------------------------------------------------------
-# _end_session re-entry guard
+# a held lock: one follow-up per release
+# ---------------------------------------------------------------------------
+
+#: How long a test waits for a follow-up before failing instead of hanging.
+_FOLLOW_UP_TIMEOUT_S = 5
+
+
+class _FollowUpWatch:
+    """An observer that records every event and lets a test await follow-ups."""
+
+    def __init__(self) -> None:
+        self.events: list[SessionEvent] = []
+        self._follow_up = asyncio.Event()
+
+    def __call__(self, event: SessionEvent) -> None:
+        self.events.append(event)
+        if isinstance(event, FollowUpEvent):
+            self._follow_up.set()
+
+    def actions(self) -> list[str]:
+        """The action of every follow-up received so far, in order."""
+        return [e.action for e in events_of(self.events, FollowUpEvent)]
+
+    async def until(self, predicate: Callable[[list[str]], bool]) -> None:
+        """Wait until ``predicate`` holds for the follow-up actions received so far."""
+        async with asyncio.timeout(_FOLLOW_UP_TIMEOUT_S):
+            while not predicate(self.actions()):
+                self._follow_up.clear()
+                await self._follow_up.wait()
+
+
+def _driver_calls(driver_calls: list[tuple[str, str | None]]) -> list[str]:
+    return [call for call, _ in driver_calls if call in {"send", "end"}]
+
+
+@pytest.mark.parametrize(
+    ("waits_before_release", "stop_before_release", "actions", "calls", "free_probes"),
+    [
+        pytest.param(
+            1,
+            False,
+            ["waiting", "replied", "ended"],
+            ["send", "end"],
+            2,
+            id="freed-during-settle",
+        ),
+        pytest.param(1, True, ["waiting", "ended"], ["end"], 1, id="freed-during-settle-with-stop"),
+        pytest.param(
+            2,
+            False,
+            ["waiting", "waiting", "replied", "ended"],
+            ["send", "end"],
+            3,
+            id="freed-after-the-newer-turn-waits",
+        ),
+    ],
+)
+async def test_supervise_when_turn_end_arrives_while_waiting_on_the_lock_does_follow_up_once(
+    root: str,
+    *,
+    waits_before_release: int,
+    stop_before_release: bool,
+    actions: list[str],
+    calls: list[str],
+    free_probes: int,
+):
+    # The stop record for the reply cases lands well after the release, so a
+    # superseded lock poll left pending would follow up a second time in between.
+    # A superseded poll also probes the freed lock within its 1 ms interval, long
+    # before the 50 ms settle ends the session, so counting the probes that find
+    # the lock free catches it even where the end guard hides a second end.
+    held = [True]
+    seen_free: list[None] = []
+    watch = _FollowUpWatch()
+
+    def is_lock_held() -> bool:
+        if not held[0]:
+            seen_free.append(None)
+        return held[0]
+
+    async def release_lock() -> None:
+        await watch.until(lambda seen: seen.count("waiting") == waits_before_release)
+        if stop_before_release:
+            await add_stop_async(root)
+        held[0] = False
+        await watch.until(lambda seen: "replied" in seen or "ended" in seen)
+
+    driver = create_mock_driver([
+        emit_turn_end(),
+        ActionStep(action=lambda: watch.until(lambda seen: "waiting" in seen)),
+        emit_turn_end(),
+        ActionStep(action=release_lock),
+        ActionStep(action=lambda: add_stop_async(root), delay_ms=200),
+        TurnEndStep(cost_usd=0.01),
+    ])
+
+    result = await _supervise(
+        root, driver, observer=watch, settle_window_ms=50, is_lock_held=is_lock_held
+    )
+
+    assert result.ended_by == "session"
+    assert watch.actions() == actions
+    assert _driver_calls(driver.sessions[0].calls) == calls
+    assert len(seen_free) == free_probes
+
+
+@pytest.mark.parametrize(
+    ("agent_steps", "actions", "calls"),
+    [
+        pytest.param(
+            [], ["waiting", "waiting", "replied", "ended"], ["send", "end"], id="lock-frees"
+        ),
+        pytest.param(
+            [EmitStep(emit=TextDeltaEvent(at=now_ns(), chunk="typing"))],
+            ["waiting", "waiting", "ended"],
+            ["end"],
+            id="agent-acts-then-lock-frees",
+        ),
+    ],
+)
+async def test_supervise_when_lock_retaken_during_the_poll_settle_does_wait_again(
+    root: str, agent_steps: list[MockStep], actions: list[str], calls: list[str]
+):
+    # The probes answer the first settle, the lock poll, and the poll's own
+    # settle; the lock stays held after that until the script frees it.
+    probes = iter([True, False, True])
+    held = [True]
+
+    async def release_lock() -> None:
+        held[0] = False
+
+    watch = _FollowUpWatch()
+    driver = create_mock_driver([
+        emit_turn_end(),
+        ActionStep(action=lambda: watch.until(lambda seen: seen.count("waiting") == 2)),
+        *agent_steps,
+        ActionStep(action=release_lock),
+        ActionStep(action=lambda: add_stop_async(root), delay_ms=200),
+        TurnEndStep(cost_usd=0.01),
+    ])
+
+    async with asyncio.timeout(_FOLLOW_UP_TIMEOUT_S):
+        result = await _supervise(
+            root, driver, observer=watch, is_lock_held=lambda: next(probes, held[0])
+        )
+
+    assert result.ended_by == "session"
+    assert watch.actions() == actions
+    assert _driver_calls(driver.sessions[0].calls) == calls
+
+
+# ---------------------------------------------------------------------------
+# an end requested twice ends the session once
 # ---------------------------------------------------------------------------
 
 
-class _CountingEndSession(DelegatingSession):
-    """Counts ``end`` calls to detect duplicate ``_end_session`` invocations."""
+class _ObserverCapturingDriver:
+    """Hand the test the observer the supervisor gives the driver."""
 
-    def __init__(self, inner: DriverSession, counter: _Box) -> None:
-        super().__init__(inner)
-        self._counter = counter
+    def __init__(self, inner: Driver) -> None:
+        self._inner = inner
+        self.observer: SessionObserver | None = None
 
-    @override
-    async def end(self) -> None:
-        self._counter.value += 1
-        await self._inner.end()
+    def start(
+        self,
+        prompt: SessionPrompt,
+        observer: SessionObserver,
+        abort: asyncio.Event,
+    ) -> DriverSession:
+        self.observer = observer
+        return self._inner.start(prompt, observer, abort)
 
 
-async def test_supervise_when_end_session_called_twice_does_fire_session_end_once(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    end_count = _Box()
+def _tool_end_event(tool_use_id: str) -> ToolEndEvent:
+    return ToolEndEvent(
+        at=now_ns(),
+        tool_use_id=tool_use_id,
+        tool_name="Bash",
+        duration_ms=10,
+        result="ok",
+        result_summary="ok",
+    )
 
-    def wrap(inner: DriverSession) -> DriverSession:
-        return _CountingEndSession(inner, end_count)
 
-    inner = create_mock_driver([TurnEndStep(cost_usd=0.5)])
-    driver = _WrapDriver(inner, wrap)
+def _append_garbage_line(root: str) -> None:
+    # Sync on purpose: a blocking file open inside the async step trips ASYNC230.
+    with Path(session_jsonl_path(root)).open("ab") as handle:
+        handle.write(b"not valid json\n")
 
-    supervise_mod = sys.modules["gymrat.supervisor.supervise"]
-    cls = supervise_mod._Supervision  # type: ignore[attr-defined] -- module looked up dynamically
-    original_end_session = cls._end_session
-    entry_count = _Box()
 
-    def double_end(self_inner: object, *args: object, **kwargs: object) -> None:
-        entry_count.value += 1
-        original_end_session(self_inner, *args, **kwargs)
-        if entry_count.value == 1:
-            original_end_session(self_inner, *args, **kwargs)
+async def test_supervise_when_two_tool_ends_find_the_log_unreadable_does_end_once(root: str):
+    watch = _FollowUpWatch()
+    driver: _ObserverCapturingDriver | None = None
 
-    monkeypatch.setattr(cls, "_end_session", double_end)
+    async def break_log() -> None:
+        _append_garbage_line(root)
 
-    result = await _supervise(str(tmp_path / "repo"), driver, max_usd=0.1)
+    async def deliver_two_tool_ends() -> None:
+        if driver is None or driver.observer is None:
+            pytest.fail("the driver never started, so no observer was captured")
+        driver.observer(_tool_end_event("t1"))
+        driver.observer(_tool_end_event("t2"))
 
-    assert result.ended_by == "spend-cap"
-    assert end_count.value == 1
+    inner = create_mock_driver([
+        ActionStep(action=break_log),
+        ActionStep(action=deliver_two_tool_ends),
+        TurnEndStep(),
+    ])
+    driver = _ObserverCapturingDriver(inner)
+
+    result = await _supervise(root, driver, observer=watch)
+
+    assert result.outcome.reason == "error"
+    assert watch.actions() == ["ended"]
+    assert _driver_calls(inner.sessions[0].calls) == ["end"]

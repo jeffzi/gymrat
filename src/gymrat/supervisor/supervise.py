@@ -67,6 +67,9 @@ waiting for another process to release it."""
 EndedBy = Literal["session", "wall-clock", "spend-cap", "guard", "stop-condition", "hook-failure"]
 """How a supervised run ended. See ``SupervisionResult.ended_by`` for the meaning of each member."""
 
+_TaskSlot = Literal["settle", "lock_poll"]
+"""Names of the at-most-one-per-slot background tasks the supervisor schedules."""
+
 _IN_FLIGHT_EXCLUSION = frozenset({"cap", "launch", "follow_up", "compaction"})
 """Event types that do NOT cancel a pending settle window or lock poll.
 
@@ -201,7 +204,7 @@ class _Supervision:
             else outcome_record_count(launch_records),
         )
         self._reply_outstanding = False
-        self._tasks: dict[Literal["settle", "lock_poll"], asyncio.Task[None]] = {}
+        self._tasks: dict[_TaskSlot, asyncio.Task[None]] = {}
         self._last_cost_usd = 0.0
         self._background_tasks: set[asyncio.Task[None]] = set()
 
@@ -260,14 +263,14 @@ class _Supervision:
         self._cancel("settle")
         self._cancel("lock_poll")
 
-    def _cancel(self, slot: Literal["settle", "lock_poll"]) -> None:
+    def _cancel(self, slot: _TaskSlot) -> None:
         task = self._tasks.pop(slot, None)
         if task is not None:
             task.cancel()
 
     def _schedule(
         self,
-        slot: Literal["settle", "lock_poll"],
+        slot: _TaskSlot,
         routine: Coroutine[object, object, None],
     ) -> None:
         task = asyncio.create_task(routine)
@@ -288,7 +291,7 @@ class _Supervision:
                 return
             self._reply_outstanding = False
 
-        self._cancel("settle")
+        self._cancel_pending()
         self._schedule("settle", self._run_settle(event))
 
     async def _run_settle(self, turn: TurnEndEvent, *, after_wait: bool = False) -> None:
