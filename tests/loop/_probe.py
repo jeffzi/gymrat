@@ -45,22 +45,30 @@ class MeasureRecorder:
     script, so it is replaced wholesale: the recorder hands back a canned
     :class:`MeasurementResult` and keeps the options it was called with, which is
     how a test reads the target, bench command, and sample count a probe asked
-    for. When ``progress`` events are given, each call reports them through the
-    progress callback it was handed, so a test can read what the caller wired
-    that callback to.
+    for. When ``progress`` events or ``warnings`` are given, each call reports
+    them through the progress callback and warn sink it was handed, so a test
+    can read what the caller wired those to.
     """
 
-    def __init__(self, result: MeasurementResult, progress: Sequence[ProgressEvent] = ()) -> None:
+    def __init__(
+        self,
+        result: MeasurementResult,
+        progress: Sequence[ProgressEvent] = (),
+        warnings: Sequence[str] = (),
+    ) -> None:
         self.result = result
         self.progress = tuple(progress)
+        self.warnings = tuple(warnings)
         self.calls: list[MeasureOptions] = []
 
     async def __call__(self, options: MeasureOptions) -> MeasurementResult:
         self.calls.append(options)
-        on_progress = options.run.sampling.on_progress
-        if on_progress is not None:
+        sampling = options.run.sampling
+        if sampling.on_progress is not None:
             for event in self.progress:
-                on_progress(event)
+                sampling.on_progress(event)
+        for message in self.warnings:
+            sampling.warn(message)
         return self.result
 
 
@@ -69,9 +77,20 @@ def install_measure(
     result: MeasurementResult,
     *,
     progress: Sequence[ProgressEvent] = (),
+    warnings: Sequence[str] = (),
 ) -> MeasureRecorder:
-    """Replace ``gymrat.measure.measure`` with a recorder answering ``result``."""
-    recorder = MeasureRecorder(result, progress)
+    """Replace ``gymrat.measure.measure`` with a recorder answering ``result``.
+
+    Args:
+        monkeypatch: The test's monkeypatch fixture.
+        result: The measurement every call hands back.
+        progress: Events each call reports through the progress callback it was handed.
+        warnings: Messages each call sends through the warn sink it was handed.
+
+    Returns:
+        The installed recorder.
+    """
+    recorder = MeasureRecorder(result, progress, warnings)
     monkeypatch.setattr("gymrat.measure.measure", recorder)
     return recorder
 

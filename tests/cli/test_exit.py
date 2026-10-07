@@ -10,8 +10,12 @@ and trace tests live in ``tests/test_command_run.py``.
 import errno
 import io
 import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from typing import Any
+from unittest.mock import Mock, call
 
 import pytest
 import typer
@@ -27,22 +31,59 @@ from gymrat.cli.exit import (
     write_stdout,
 )
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
-from tests._imports import loaded_under, modules_imported_by
-from tests._process_helpers import run_with_closed_reader, run_with_failing_stdout
+from tests._process_helpers import run_with_closed_reader
 from tests._rich import unwrap_panel
 from tests._streams import FakeStream, RaisingStream
-from tests.cli._help import help_output
-from tests.cli._session import CLOSED_STDOUT_ERRORS, runner, stub_measure
+from tests.cli._session import (
+    runner,
+    stub_resolve,
+)
+
+# Execs ``argv[1:]`` with the file-size limit at zero, so every write the new
+# program makes to a regular file fails with EFBIG. Bytecode caching is off so
+# the child never trips the limit on its own ``.pyc`` files.
+_ZERO_FILE_SIZE_TRAMPOLINE = """
+import os, resource, sys
+resource.setrlimit(resource.RLIMIT_FSIZE, (0, resource.RLIM_INFINITY))
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.execv(sys.argv[1], sys.argv[1:])
+"""
 
 
-def _force_color(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Set FORCE_COLOR so color resolution is forced on."""
-    monkeypatch.setenv("FORCE_COLOR", "1")
+def _run_with_failing_stdout(
+    argv: list[str], **run_kwargs: Any
+) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` with every stdout write failing for a reason other than a closed pipe.
+
+    Stdout is a regular file and the child's file-size limit is zero, so each
+    write fails with EFBIG, the portable stand-in for a full disk (macOS has no
+    ``/dev/full``). Stderr is captured through a pipe, which the limit does not
+    cover. POSIX only: Windows has no file-size limit.
+
+    Args:
+        argv: The command to run; ``argv[0]`` must be an executable path.
+        **run_kwargs: Extra ``subprocess.run`` arguments such as ``cwd`` and
+            ``timeout``.
+
+    Returns:
+        The finished child, run with ``check=False`` and text-decoded stderr.
+    """
+    with tempfile.TemporaryFile() as stdout:
+        return subprocess.run(  # noqa: S603 -- caller passes a fixed argv
+            [sys.executable, "-c", _ZERO_FILE_SIZE_TRAMPOLINE, *argv],
+            stdout=stdout,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            **run_kwargs,
+        )
 
 
-def _force_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Set NO_COLOR so color resolution is forced off."""
-    monkeypatch.setenv("NO_COLOR", "1")
+#: How each platform reports a stdout reader that has gone: ``(error, sys.platform)``.
+CLOSED_STDOUT_ERRORS = [
+    pytest.param(BrokenPipeError(errno.EPIPE, "Broken pipe"), "linux", id="posix-broken-pipe"),
+    pytest.param(OSError(errno.EINVAL, "Invalid argument"), "win32", id="windows-einval"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -62,23 +103,11 @@ def test_constants_when_checked_does_match_the_shipped_contract():
 
 
 def test_write_and_flush_when_called_does_write_then_flush():
-    class Recorder:
-        def __init__(self):
-            self.data = ""
-            self.flushed = False
+    stream = Mock()
 
-        def write(self, data: str) -> None:
-            self.data += data
+    write_and_flush(stream, "hello")
 
-        def flush(self) -> None:
-            self.flushed = True
-
-    recorder = Recorder()
-
-    write_and_flush(recorder, "hello")
-
-    assert recorder.data == "hello"
-    assert recorder.flushed is True
+    assert stream.method_calls == [call.write("hello"), call.flush()]
 
 
 #: Lines each flood probe prints: 16384 lines of 64 bytes overflow any pipe buffer.
@@ -148,7 +177,7 @@ def test_write_stdout_when_pipe_closed_does_return_without_raising(
 def test_run_cli_when_body_raises_broken_pipe_does_exit_two_with_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    stub_measure(monkeypatch)
+    stub_resolve(monkeypatch)
 
     async def _explode(*_args: object, **_kwargs: object) -> None:
         raise BrokenPipeError(errno.EPIPE, "Broken pipe")
@@ -166,7 +195,7 @@ def test_run_cli_when_body_raises_broken_pipe_does_exit_two_with_error(
 def test_gymrat_when_stdout_write_fails_otherwise_does_exit_two_without_shutdown_traceback(
     tmp_path: Path, fmt: str
 ):
-    result = run_with_failing_stdout(
+    result = _run_with_failing_stdout(
         [sys.executable, "-m", "gymrat", "doctor", "--format", fmt], cwd=tmp_path, timeout=60
     )
 
@@ -178,39 +207,6 @@ def test_gymrat_when_stdout_write_fails_otherwise_does_exit_two_without_shutdown
 # ---------------------------------------------------------------------------
 # color control
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        pytest.param(("compare",), id="compare"),
-        pytest.param(("measure",), id="measure"),
-        pytest.param(("doctor",), id="doctor"),
-        pytest.param(("init",), id="init"),
-        pytest.param(("iterate",), id="iterate"),
-        pytest.param(("status",), id="status"),
-        pytest.param(("supervise",), id="supervise"),
-    ],
-)
-def test_color_flag_when_help_does_show_color_no_color_pair(command: tuple[str, ...]):
-    out = help_output(*command)
-
-    tokens = out.split()
-    assert "--color" in tokens
-    assert "--no-color" in tokens
-
-
-def test_format_cli_error_when_stderr_color_override_false_does_strip_all_sgr(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
-    monkeypatch.setenv("TERM", "xterm-256color")
-
-    set_color_override(False)
-
-    result = format_cli_error(ValueError("boom"))
-
-    assert "\x1b[" not in result
 
 
 @pytest.mark.parametrize(
@@ -238,32 +234,14 @@ def test_format_cli_error_when_color_override_set_does_beat_the_color_env_vars(
 
 
 # ---------------------------------------------------------------------------
-# import-latency guard
-# ---------------------------------------------------------------------------
-
-
-def test_importing_cli_modules_does_not_pull_the_heavy_stack_or_command_bodies():
-    loaded = modules_imported_by(
-        "gymrat.cli.exit",
-        "gymrat.cli.run_setup",
-        "gymrat.cli.options",
-        "gymrat.cli.progress",
-        "gymrat.cli.commands.compare",
-    )
-
-    assert loaded_under(loaded, "scipy", "numpy") == []
-    assert loaded_under(loaded, "gymrat.compare", "gymrat.measure") == []
-
-
-# ---------------------------------------------------------------------------
 # format_cli_error
 # ---------------------------------------------------------------------------
 
 
-def test_format_cli_error_when_colored_paints_the_error_label_red(
+def test_format_cli_error_when_colored_does_paint_the_error_label_red(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _force_color(monkeypatch)
+    monkeypatch.setenv("FORCE_COLOR", "1")
 
     output = format_cli_error(ValueError("boom"))
 
@@ -271,43 +249,41 @@ def test_format_cli_error_when_colored_paints_the_error_label_red(
     assert "Error" in output
 
 
-def test_format_cli_error_when_no_color_renders_plain_label_and_message(
+def test_format_cli_error_when_adapter_error_does_keep_its_class_name_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _force_no_color(monkeypatch)
-
-    output = format_cli_error(ValueError("boom"))
-
-    assert "Error: boom" in output
-    assert "\x1b[" not in output
-
-
-def test_format_cli_error_when_adapter_error_keeps_its_class_name_prefix(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _force_no_color(monkeypatch)
+    monkeypatch.setenv("NO_COLOR", "1")
 
     output = format_cli_error(AdapterError("parse failed"))
 
     assert "AdapterError: parse failed" in output
 
 
-def test_format_cli_error_includes_stack_only_under_debug():
+@pytest.mark.parametrize(
+    ("debug", "has_stack"),
+    [
+        pytest.param(True, True, id="debug"),
+        pytest.param(False, False, id="no-debug"),
+    ],
+)
+def test_format_cli_error_when_debug_toggled_does_include_the_stack_only_under_debug(
+    debug: bool, has_stack: bool
+):
     message = "boom"
     try:
         raise ValueError(message)
-    except ValueError as error:
-        with_stack = format_cli_error(error, debug=True)
-        without_stack = format_cli_error(error, debug=False)
+    except ValueError as caught:
+        error = caught
 
-    assert "Traceback" in with_stack
-    assert "Traceback" not in without_stack
+    output = format_cli_error(error, debug=debug)
+
+    assert ("Traceback" in output) is has_stack
 
 
-def test_format_cli_error_when_gymrat_error_carries_hint_appends_unlabeled_line_without_footer(
+def test_format_cli_error_when_gymrat_error_carries_hint_does_append_an_unlabeled_line_without_footer(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _force_no_color(monkeypatch)
+    monkeypatch.setenv("NO_COLOR", "1")
 
     output = format_cli_error(GymratError("boom", hint="run gymrat doctor"))
 
@@ -316,10 +292,10 @@ def test_format_cli_error_when_gymrat_error_carries_hint_appends_unlabeled_line_
     assert BUGS_URL not in output
 
 
-def test_format_cli_error_when_hint_colored_does_dim_the_line_and_paint_inline_code_blue(
+def test_format_cli_error_when_hint_colored_does_render_inline_code_blue_on_a_dim_line(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _force_color(monkeypatch)
+    monkeypatch.setenv("FORCE_COLOR", "1")
 
     output = format_cli_error(GymratError("boom", hint="run `gymrat doctor` first"))
 
@@ -328,29 +304,24 @@ def test_format_cli_error_when_hint_colored_does_dim_the_line_and_paint_inline_c
     assert "\x1b[2;34mgymrat doctor" in hint_line  # cspell:disable-line
 
 
-def test_format_cli_error_when_not_gymrat_error_prints_no_hint_line(
+def test_format_cli_error_when_not_gymrat_error_does_render_plain_label_message_and_bug_footer(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _force_no_color(monkeypatch)
+    monkeypatch.setenv("NO_COLOR", "1")
 
     output = format_cli_error(ValueError("boom"))
 
-    assert output.splitlines()[:2] == [
+    assert output.splitlines() == [
         "Error: boom",
         "Run with gymrat --debug for details. If this is a bug, please report it at",
+        BUGS_URL,
     ]
 
 
-def test_format_cli_error_when_not_gymrat_error_appends_bug_footer():
-    output = format_cli_error(ValueError("boom"))
-
-    assert BUGS_URL in output
-
-
-def test_format_cli_error_when_value_is_not_an_exception_still_renders(
+def test_format_cli_error_when_value_is_not_an_exception_does_still_render(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _force_no_color(monkeypatch)
+    monkeypatch.setenv("NO_COLOR", "1")
 
     output = format_cli_error("plain failure")
 
@@ -363,7 +334,7 @@ def test_format_cli_error_when_value_is_not_an_exception_still_renders(
 # ---------------------------------------------------------------------------
 
 
-def test_exit_with_error_writes_to_stderr_and_exits_on_the_given_code(
+def test_exit_with_error_when_stderr_writable_does_exit_on_the_code_with_the_error_reported(
     monkeypatch: pytest.MonkeyPatch,
 ):
     captured = io.StringIO()
@@ -376,20 +347,10 @@ def test_exit_with_error_writes_to_stderr_and_exits_on_the_given_code(
     assert "Error: boom" in captured.getvalue()
 
 
-def test_exit_with_error_when_stderr_write_fails_keeps_the_exit_code(
+def test_exit_with_error_when_stderr_write_fails_does_keep_the_exit_code(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    class BrokenStderr:
-        def write(self, _data: str) -> int:
-            raise OSError
-
-        def flush(self) -> None:
-            raise OSError
-
-        def isatty(self) -> bool:
-            return False
-
-    monkeypatch.setattr("sys.stderr", BrokenStderr())
+    monkeypatch.setattr("sys.stderr", RaisingStream(OSError()))
 
     with pytest.raises(typer.Exit) as exc:
         exit_with_error(ValueError("boom"), code=TOOL_FAILURE_EXIT_CODE)
@@ -397,7 +358,7 @@ def test_exit_with_error_when_stderr_write_fails_keeps_the_exit_code(
     assert exc.value.exit_code == TOOL_FAILURE_EXIT_CODE
 
 
-def test_exit_with_error_honors_debug_mode_for_the_stack(monkeypatch: pytest.MonkeyPatch):
+def test_exit_with_error_when_debug_mode_on_does_print_the_stack(monkeypatch: pytest.MonkeyPatch):
     captured = io.StringIO()
     monkeypatch.setattr("sys.stderr", captured)
     set_debug_mode(True)

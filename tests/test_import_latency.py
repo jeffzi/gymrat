@@ -11,10 +11,12 @@ that subprocess holds: the test process has its own imports (pytest pulls in a
 large dependency tree), so inspecting this process's ``sys.modules`` could never
 prove the package itself stayed clean.
 
-The guard extends to the CLI entry module: importing ``gymrat.cli.app`` and
-rendering ``--help`` must stay just as cheap as importing the package, so the
-command bodies (and the heavy statistics stack they pull) are imported lazily at
-call time, never when the app is assembled.
+The guard extends to the CLI entry module: importing ``gymrat.__main__`` and
+``gymrat.cli.app`` and rendering ``--help`` must stay just as cheap as importing
+the package, so the command bodies (comparison, measurement, the telemetry
+provider and replay) and the heavy stack they pull are imported lazily at call
+time, never when the app is assembled. ``gymrat.scaffold`` loads in the same
+probe and must stay off ``tomli_w``, which only the config writer needs.
 
 The same discipline covers ``claude_agent_sdk``, the supervise driver's backend:
 it drags in ``mcp``, ``starlette``, ``uvicorn``, and ``httpx``, so the Claude
@@ -46,7 +48,7 @@ def _run_probe(probe: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_importing_package_when_loaded_does_not_import_scipy_or_numpy():
+def test_importing_package_when_loaded_does_not_import_heavy_dependencies():
     loaded = modules_imported_by(
         "gymrat",
         "gymrat.stats",
@@ -73,52 +75,33 @@ def test_importing_package_when_loaded_does_not_import_scipy_or_numpy():
     assert heavy == [], f"package import pulled in heavy modules: {heavy}"
 
 
-def test_importing_cli_app_when_rendering_help_does_not_import_scipy_or_numpy():
-    probe = """
-import sys
-from typer.testing import CliRunner
-from gymrat.cli.app import app
-result = CliRunner().invoke(app, ["--help"])
-if result.exit_code != 0:
-    print(f'--help failed: {result.output}', file=sys.stderr)
-    sys.exit(1)
-heavy = sorted(
-    name
-    for name in sys.modules
-    if name in {'scipy', 'numpy', 'claude_agent_sdk', 'opentelemetry'}
-    or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.', 'opentelemetry.'))
-)
-bodies = [name for name in ('gymrat.compare', 'gymrat.measure') if name in sys.modules]
-if heavy:
-    print(f'cli app import pulled heavy modules: {heavy}', file=sys.stderr)
-    sys.exit(1)
-if bodies:
-    print(f'cli app import pulled command bodies: {bodies}', file=sys.stderr)
-    sys.exit(1)
-"""
-
-    result = _run_probe(probe)
-
-    assert result.returncode == 0, result.stderr
-
-
-def test_main_module_when_rendering_help_does_not_import_scipy_or_numpy():
+def test_main_module_when_rendering_help_does_not_import_heavy_modules_or_command_bodies():
     probe = """
 import sys
 import gymrat.__main__  # noqa: F401 -- exercise the module's top-level imports
+import gymrat.scaffold  # noqa: F401 -- init's writer must stay off tomli_w
 from gymrat.cli.app import app
 from typer.testing import CliRunner
 result = CliRunner().invoke(app, ["--help"])
 if result.exit_code != 0:
     print(f'--help failed: {result.output}', file=sys.stderr)
     sys.exit(1)
+heavy_roots = ('scipy', 'numpy', 'claude_agent_sdk', 'opentelemetry', 'tomli_w')
 heavy = sorted(
     name
     for name in sys.modules
-    if name in {'scipy', 'numpy', 'claude_agent_sdk', 'opentelemetry'}
-    or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.', 'opentelemetry.'))
+    if name in heavy_roots or name.startswith(tuple(f'{root}.' for root in heavy_roots))
 )
-bodies = [name for name in ('gymrat.compare', 'gymrat.measure') if name in sys.modules]
+bodies = [
+    name
+    for name in (
+        'gymrat.compare',
+        'gymrat.measure',
+        'gymrat.telemetry.provider',
+        'gymrat.telemetry.replay',
+    )
+    if name in sys.modules
+]
 if heavy:
     print(f'module entry pulled heavy modules: {heavy}', file=sys.stderr)
     sys.exit(1)

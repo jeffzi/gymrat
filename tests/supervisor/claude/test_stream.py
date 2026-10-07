@@ -29,25 +29,7 @@ from tests.supervisor._fixtures import (
 # ---------------------------------------------------------------------------
 
 
-async def test_stream_when_thinking_delta_short_does_flush_only_on_block_stop():
-    messages = [
-        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event({
-            "type": "content_block_delta",
-            "delta": {"type": "thinking_delta", "thinking": "a" * 100},
-        }),
-        stream_event({"type": "content_block_stop"}),
-    ]
-
-    events = await run_with_messages(messages)
-
-    updates = events_of(events, ThinkingUpdateEvent)
-    # block_start emits (0, 0); the 100-char delta stays under the 200-char
-    # throttle, so the only other update is the block_stop flush.
-    assert [(u.delta, u.estimated_tokens) for u in updates] == [(0, 0), (25, 25)]
-
-
-async def test_stream_when_second_thinking_block_starts_does_report_the_running_estimate():
+async def test_start_when_thinking_blocks_stay_under_throttle_does_flush_each_at_block_stop():
     messages = [
         stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
         stream_event({
@@ -56,15 +38,23 @@ async def test_stream_when_second_thinking_block_starts_does_report_the_running_
         }),
         stream_event({"type": "content_block_stop"}),
         stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
+        stream_event({
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": "abcdefgh"},
+        }),
+        stream_event({"type": "content_block_stop"}),
     ]
 
     events = await run_with_messages(messages)
 
     updates = events_of(events, ThinkingUpdateEvent)
-    assert [(u.delta, u.estimated_tokens) for u in updates] == [(0, 0), (25, 25), (0, 25)]
+    # Each block_start reports the running estimate with no delta; deltas under
+    # the 200-char throttle flush only at block_stop, and the second block's
+    # estimate builds on the first's.
+    assert [(u.delta, u.estimated_tokens) for u in updates] == [(0, 0), (25, 25), (0, 25), (2, 27)]
 
 
-async def test_stream_when_thinking_delta_crosses_throttle_does_emit_mid_block():
+async def test_start_when_thinking_delta_crosses_throttle_does_emit_mid_block():
     messages = [
         stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
         stream_event({
@@ -90,7 +80,7 @@ async def test_stream_when_thinking_delta_crosses_throttle_does_emit_mid_block()
     ]
 
 
-async def test_stream_when_thinking_deltas_accumulated_does_bound_update_count():
+async def test_start_when_thinking_deltas_accumulated_does_bound_update_count():
     chunk = "a" * 50
     num_chunks = 20  # 1000 chars total
     messages = [
@@ -113,52 +103,7 @@ async def test_stream_when_thinking_deltas_accumulated_does_bound_update_count()
     assert updates[-1].estimated_tokens == ceil(1000 / 4)
 
 
-async def test_stream_when_single_thinking_block_does_report_delta_equal_to_estimated_tokens():
-    messages = [
-        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event({
-            "type": "content_block_delta",
-            "delta": {"type": "thinking_delta", "thinking": "abcd"},
-        }),
-        stream_event({"type": "content_block_stop"}),
-    ]
-
-    events = await run_with_messages(messages)
-
-    updates = events_of(events, ThinkingUpdateEvent)
-    assert len(updates) == 2
-    assert updates[0].delta == 0
-    assert updates[0].estimated_tokens == 0
-    assert updates[-1].delta == 1
-    assert updates[-1].estimated_tokens == 1
-
-
-async def test_stream_when_multiple_thinking_blocks_does_accumulate_estimated_tokens():
-    messages = [
-        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event({
-            "type": "content_block_delta",
-            "delta": {"type": "thinking_delta", "thinking": "abcd"},
-        }),
-        stream_event({"type": "content_block_stop"}),
-        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event({
-            "type": "content_block_delta",
-            "delta": {"type": "thinking_delta", "thinking": "abcdefgh"},
-        }),
-        stream_event({"type": "content_block_stop"}),
-    ]
-
-    events = await run_with_messages(messages)
-
-    updates = events_of(events, ThinkingUpdateEvent)
-    first_block = [u for u in updates if u.estimated_tokens <= 1]
-    second_block_final = updates[-1]
-    assert first_block[-1].estimated_tokens == 1
-    assert second_block_final.estimated_tokens == 3
-
-
-async def test_stream_when_thinking_delta_has_parent_does_carry_parent_tool_use_id():
+async def test_start_when_thinking_delta_has_parent_does_carry_parent_tool_use_id():
     messages = [
         stream_event(
             {"type": "content_block_start", "content_block": {"type": "thinking"}},
@@ -206,7 +151,7 @@ _TEXT_BLOCK_MESSAGES = [
         ),
     ],
 )
-async def test_stream_when_phase_event_received_does_emit_model_phase(
+async def test_start_when_phase_event_received_does_emit_model_phase(
     messages: list[StreamEvent], expected_phase: str
 ):
     events = await run_with_messages(messages)
@@ -215,7 +160,7 @@ async def test_stream_when_phase_event_received_does_emit_model_phase(
     assert any((p.phase, p.parent_tool_use_id) == (expected_phase, "tu_x") for p in phases)
 
 
-async def test_stream_when_tool_use_block_start_does_emit_model_phase_tool_input():
+async def test_start_when_tool_use_block_start_does_emit_model_phase_tool_input():
     messages = [
         stream_event({
             "type": "content_block_start",
@@ -248,7 +193,7 @@ async def test_stream_when_tool_use_block_start_does_emit_model_phase_tool_input
         pytest.param("totally_unknown_type", id="unrecognized"),
     ],
 )
-async def test_stream_when_silent_event_type_does_emit_nothing(event_type: str):
+async def test_start_when_silent_event_type_does_emit_nothing(event_type: str):
     messages = [stream_event({"type": event_type})]
 
     events = await run_with_messages(messages)
@@ -261,7 +206,7 @@ async def test_stream_when_silent_event_type_does_emit_nothing(event_type: str):
 # ---------------------------------------------------------------------------
 
 
-async def test_stream_when_subagent_thinking_does_not_inflate_top_level_total():
+async def test_start_when_subagent_thinking_does_not_inflate_top_level_total():
     messages = [
         stream_event(
             {"type": "content_block_start", "content_block": {"type": "thinking"}},

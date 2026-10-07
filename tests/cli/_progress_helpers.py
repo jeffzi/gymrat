@@ -1,16 +1,18 @@
-"""Shared progress-event builders for the progress renderer and progress state tests."""
+"""Shared progress-event and renderer builders for the progress renderer and progress state tests."""
 
 from __future__ import annotations
 
 from functools import partial
 from typing import TYPE_CHECKING
 
+from gymrat.cli.iterate.progress import IterateRenderer
 from gymrat.progress_events import PassFinished, PassStarted
+from tests._rich import Clock, sealed_console, track
 
 if TYPE_CHECKING:
     from typing import Literal
 
-    from tests._rich import Clock
+    from rich.console import Console
 
 
 def ms_from_clock(clock: Clock[float]) -> int:
@@ -43,3 +45,62 @@ pass_started = partial(_pass_event, PassStarted)
 
 #: Build the event a bench pass emits as it finishes, one target per pass unless overridden.
 pass_finished = partial(_pass_event, PassFinished)
+
+
+def iterate_renderer(
+    mode: Literal["live", "plain"],
+    *,
+    console: Console | None = None,
+    width: int = 80,
+    height: int = 24,
+    seq: int = 1,
+    session_id: str = "test-session",
+    sample_count: int = 5,
+    metric_count: int = 3,
+    primary_metric: str = "geomean",
+    verbose: bool = False,
+    checks_cmd: str | None = None,
+    has_before_hook: bool = False,
+    has_after_hook: bool = False,
+) -> tuple[Console, Clock[float], IterateRenderer]:
+    """Build an iterate renderer on a sealed console driven by a hand-advanced clock.
+
+    The renderer is tracked, so the CLI tests' autouse teardown stops it.
+
+    Args:
+        mode: ``"live"`` for a rich live checklist, ``"plain"`` for milestone lines.
+        console: The console to render to; a sealed ``width`` x ``height``
+            console pinned to the clock when ``None``.
+        width: Columns of the console built when ``console`` is ``None``.
+        height: Rows of the console built when ``console`` is ``None``.
+        seq: The iteration number shown.
+        session_id: The session identifier shown.
+        sample_count: Samples per pass.
+        metric_count: Metrics the bench reports.
+        primary_metric: The metric the verdict ranks by.
+        verbose: Whether the renderer shows its verbose detail.
+        checks_cmd: The checks command, or ``None`` when checks are off.
+        has_before_hook: Whether a before hook runs.
+        has_after_hook: Whether an after hook runs.
+
+    Returns:
+        The console, the clock, and the renderer.
+    """
+    clock = Clock(0.0)
+    if console is None:
+        console = sealed_console(width=width, height=height, get_time=clock)
+    renderer = IterateRenderer(
+        mode=mode,
+        console=console,
+        seq=seq,
+        session_id=session_id,
+        sample_count=sample_count,
+        metric_count=metric_count,
+        primary_metric=primary_metric,
+        verbose=verbose,
+        clock=clock,
+        checks_cmd=checks_cmd,
+        has_before_hook=has_before_hook,
+        has_after_hook=has_after_hook,
+    )
+    return console, clock, track(renderer)

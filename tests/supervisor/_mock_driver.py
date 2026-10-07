@@ -219,7 +219,12 @@ class _MockDriver:
 def create_mock_driver(steps: Sequence[MockStep]) -> _MockDriver:
     """Return a driver that runs ``steps`` in order on each ``start``.
 
-    The returned ``_MockDriver`` satisfies the :class:`Driver` protocol and
-    exposes a ``.sessions`` list for test assertions on ``send``/``end`` calls.
+    Args:
+        steps: The scripted steps every started session plays in order.
+
+    Returns:
+        A driver satisfying the :class:`Driver` protocol, whose ``.sessions``
+        list holds each started session for assertions on ``send`` and ``end``
+        calls.
     """
     return _MockDriver(tuple(steps))

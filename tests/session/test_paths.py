@@ -6,8 +6,6 @@
 exercised against an arbitrary absolute root.
 """
 
-import os
-import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -18,13 +16,13 @@ import pytest
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.session.paths import (
-    SESSION_LOG_NAME,
     archived_session_path,
     baseline_worktree_dir,
     budget_path,
     experiment_worktree_dir,
     git_common_dir,
     lockfile_path,
+    progress_path,
     repo_root,
     repository_lookup_error,
     session_dir,
@@ -33,8 +31,9 @@ from gymrat.session.paths import (
     supervisor_log_name,
 )
 from tests._git import run_git
-
-SESSION_ID = "20260808-141530-a3f2"
+from tests.session.records._fixtures import (
+    SESSION_ID,
+)
 
 # An arbitrary absolute root: the derivation helpers never touch the filesystem.
 ROOT = str(Path(tempfile.gettempdir()) / "repo-root")
@@ -96,7 +95,7 @@ def test_repo_root_when_probed_from_nested_subdir_does_return_top_level(
 
     root = repo_root(str(nested))
 
-    assert os.path.normpath(root) == os.path.normpath(repo)
+    assert Path(root) == Path(repo)
 
 
 def test_repo_root_when_no_directory_given_does_use_cwd(
@@ -109,16 +108,12 @@ def test_repo_root_when_no_directory_given_does_use_cwd(
 
     root = repo_root()
 
-    assert os.path.normpath(root) == os.path.normpath(repo)
+    assert Path(root) == Path(repo)
 
 
-def test_repo_root_when_directory_not_in_repo_does_raise_gymrat_error():
-    outside = tempfile.mkdtemp(prefix="not-a-repo-")
-    try:
-        with pytest.raises(GymratError, match=r"(?i)git repository"):
-            repo_root(outside)
-    finally:
-        shutil.rmtree(outside, ignore_errors=True)
+def test_repo_root_when_directory_not_in_repo_does_raise_gymrat_error(tmp_path: Path):
+    with pytest.raises(GymratError, match=r"(?i)git repository"):
+        repo_root(str(tmp_path))
 
 
 def _add_worktree(repo: str, relative: str) -> str:
@@ -134,23 +129,28 @@ def _add_worktree(repo: str, relative: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_git_common_dir_when_called_at_the_main_checkout_does_return_its_git_directory(
-    create_scratch_repo: Callable[[], str],
+def _main_checkout(repo: str) -> str:
+    return repo
+
+
+def _linked_worktree(repo: str) -> str:
+    return _add_worktree(repo, "linked")
+
+
+@pytest.mark.parametrize(
+    "checkout",
+    [
+        pytest.param(_main_checkout, id="main-checkout"),
+        pytest.param(_linked_worktree, id="linked-worktree"),
+    ],
+)
+def test_git_common_dir_when_called_does_return_the_git_directory_of_the_owning_repository(
+    create_scratch_repo: Callable[[], str], checkout: Callable[[str], str]
 ):
     repo = create_scratch_repo()
+    directory = checkout(repo)
 
-    common = git_common_dir(repo)
-
-    assert Path(common).resolve() == Path(repo, ".git").resolve()
-
-
-def test_git_common_dir_when_called_in_a_linked_worktree_does_return_the_owners_git_directory(
-    create_scratch_repo: Callable[[], str],
-):
-    repo = create_scratch_repo()
-    worktree = _add_worktree(repo, "linked")
-
-    common = git_common_dir(worktree)
+    common = git_common_dir(directory)
 
     assert Path(common).resolve() == Path(repo, ".git").resolve()
 
@@ -184,7 +184,7 @@ def test_repo_root_when_probed_inside_a_gymrat_worktree_does_return_the_owning_r
 
     root = repo_root(str(probe))
 
-    assert os.path.normpath(root) == os.path.normpath(repo)
+    assert Path(root) == Path(repo)
 
 
 @pytest.mark.parametrize(("worktree_name", "below"), GYMRAT_WORKTREE_PROBES)
@@ -199,7 +199,7 @@ def test_repo_root_when_owning_checkout_is_a_linked_worktree_does_return_that_ch
 
     root = repo_root(str(probe))
 
-    assert os.path.normpath(root) == os.path.normpath(owner)
+    assert Path(root) == Path(owner)
 
 
 def test_repo_root_when_directory_above_gymrat_dir_is_not_a_repository_does_return_the_toplevel(
@@ -211,7 +211,7 @@ def test_repo_root_when_directory_above_gymrat_dir_is_not_a_repository_does_retu
 
     root = repo_root(str(standalone))
 
-    assert os.path.normpath(root) == os.path.normpath(standalone)
+    assert Path(root) == Path(standalone)
 
 
 def test_repo_root_when_directory_above_gymrat_dir_is_below_a_checkout_top_does_return_the_toplevel(
@@ -222,7 +222,7 @@ def test_repo_root_when_directory_above_gymrat_dir_is_below_a_checkout_top_does_
 
     root = repo_root(worktree)
 
-    assert os.path.normpath(root) == os.path.normpath(worktree)
+    assert Path(root) == Path(worktree)
 
 
 def test_repo_root_when_gymrat_worktree_reached_through_a_symlink_does_return_the_owning_repository(
@@ -235,7 +235,7 @@ def test_repo_root_when_gymrat_worktree_reached_through_a_symlink_does_return_th
 
     root = repo_root(str(alias / ".gymrat" / "worktrees" / "experiment"))
 
-    assert os.path.normpath(root) == os.path.normpath(repo)
+    assert Path(root) == Path(repo)
 
 
 def test_repo_root_when_probed_in_a_worktree_outside_the_gymrat_dir_does_return_that_worktree(
@@ -246,7 +246,7 @@ def test_repo_root_when_probed_in_a_worktree_outside_the_gymrat_dir_does_return_
 
     root = repo_root(worktree)
 
-    assert os.path.normpath(root) == os.path.normpath(worktree)
+    assert Path(root) == Path(worktree)
 
 
 def test_repo_root_when_foreign_worktree_sits_in_gymrat_dir_does_return_that_worktree(
@@ -260,7 +260,7 @@ def test_repo_root_when_foreign_worktree_sits_in_gymrat_dir_does_return_that_wor
 
     root = repo_root(target)
 
-    assert os.path.normpath(root) == os.path.normpath(target)
+    assert Path(root) == Path(target)
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +281,7 @@ def _derive_archived(root: str) -> str:
         (baseline_worktree_dir, (".gymrat", "worktrees", "baseline")),
         (_derive_archived, (".gymrat", f"session-{SESSION_ID}.jsonl")),
         (budget_path, (".gymrat", "budget.json")),
+        (progress_path, (".gymrat", "progress.json")),
     ],
 )
 def test_session_layout_when_deriving_path_does_place_under_root(
@@ -296,21 +297,24 @@ def test_session_layout_when_deriving_path_does_place_under_root(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("root", "name"), LOCKFILE_NAMES)
-def test_lockfile_path_when_given_root_does_map_to_golden_name(root: str, name: str):
-    assert lockfile_path(root) == str(Path(tempfile.gettempdir()) / name)
-
-
 # The supervise lock shares the repo digest (it is keyed on the root, not the
-# prefix), so the golden names are the lockfile names with the supervise prefix.
-SUPERVISE_LOCKFILE_NAMES = [
-    (root, name.replace("gymrat-lock-", "gymrat-supervise-lock-")) for root, name in LOCKFILE_NAMES
-]
+# prefix), so its golden names are the lockfile names with the supervise prefix.
+@pytest.mark.parametrize(
+    ("lock_path", "prefix"),
+    [
+        pytest.param(lockfile_path, "gymrat-lock-", id="repo-lock"),
+        pytest.param(supervise_lockfile_path, "gymrat-supervise-lock-", id="supervise-lock"),
+    ],
+)
+@pytest.mark.parametrize(("root", "name"), LOCKFILE_NAMES)
+def test_lockfile_path_when_given_root_does_map_to_golden_name(
+    lock_path: Callable[[str], str], prefix: str, root: str, name: str
+):
+    expected = name.replace("gymrat-lock-", prefix)
 
+    path = lock_path(root)
 
-@pytest.mark.parametrize(("root", "name"), SUPERVISE_LOCKFILE_NAMES)
-def test_supervise_lockfile_path_when_given_root_does_map_to_golden_name(root: str, name: str):
-    assert supervise_lockfile_path(root) == str(Path(tempfile.gettempdir()) / name)
+    assert path == str(Path(tempfile.gettempdir()) / expected)
 
 
 # ---------------------------------------------------------------------------
@@ -318,17 +322,7 @@ def test_supervise_lockfile_path_when_given_root_does_map_to_golden_name(root: s
 # ---------------------------------------------------------------------------
 
 
-def test_session_log_name_when_accessed_does_return_bare_filename():
-    assert SESSION_LOG_NAME == "session.jsonl"
-
-
 def test_supervisor_log_name_when_given_timestamp_does_return_filename_with_ms():
     name = supervisor_log_name(1723123456789)
 
     assert name == "supervisor-1723123456789.jsonl"
-
-
-def test_session_jsonl_path_when_derived_does_end_with_session_log_name():
-    path = session_jsonl_path(ROOT)
-
-    assert path.endswith(SESSION_LOG_NAME)

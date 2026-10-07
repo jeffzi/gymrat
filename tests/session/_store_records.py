@@ -2,10 +2,10 @@
 
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.session.records import BaselineRecord, HookRecord, PairedSamples, SessionRecord
+from gymrat.session.workspace import Worktrees
 from tests.session.records._fixtures import (
     AT,
     COMMIT,
-    Worktrees,
     baseline_record,
     finalize_record,
     hook_record,

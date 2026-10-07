@@ -21,6 +21,7 @@ from gymrat.model import Exclusion, GeomeanResult, ResolvedMetricMeta
 from gymrat.report.table.markup import (
     NO_AGGREGATE,
     GroupBlock,
+    MetricBlock,
     VerdictParts,
     VerdictWidths,
     geomean_value_style,
@@ -205,55 +206,13 @@ def _group_blocks(layout: SectionLayout[_Row]) -> list[GroupBlock[_Row]]:
     return [block for block in section.blocks if isinstance(block, GroupBlock)]
 
 
-def test_plan_sections_when_deeper_path_does_use_full_prefix_as_group():
-    layout = plan_sections(
-        {
-            "node/access/get_1field#time": _metric(short_name="get_1field"),
-            "node/access/get_2field#time": _metric(short_name="get_2field"),
-        },
-        _measure,
-    )
-
-    groups = _group_blocks(layout)
-    assert [g.group for g in groups] == ["node/access"]
-    assert len(groups[0].metrics) == 2
-
-
-def test_plan_sections_when_single_segment_name_does_produce_no_group():
-    layout = plan_sections(
-        {
-            "fib#time": _metric(short_name="fib"),
-            "warmup#time": _metric(short_name="warmup"),
-        },
-        _measure,
-    )
-
-    groups = _group_blocks(layout)
-    assert groups == []
-
-
-def test_plan_sections_when_measure_callback_does_receive_contract_derived_group():
-    # The group derives from the metric name key ("entity/alive_check#time" →
-    # "entity"), not from short_name ("alive_check" → None).
-    layout = plan_sections(
-        {
-            "entity/alive_check#time": _metric(short_name="alive_check"),
-            "fib#time": _metric(short_name="fib"),
-        },
-        _measure,
-    )
-
-    rows_by_name = {row.name: row for row in layout.ordered}
-    assert rows_by_name["entity/alive_check#time"].group == "entity"
-    assert rows_by_name["fib#time"].group is None
-
-
 def test_plan_sections_when_group_members_interleave_does_gather_them_in_the_first_block():
     # The group derives from the metric name key, not short_name:
     # "entity/spawn#time" → group "entity".
     layout = plan_sections(
         {
             "entity/spawn#time": _metric(),
+            "fib#time": _metric(),
             "render/frame#time": _metric(),
             "entity/remove#time": _metric(),
         },
@@ -269,6 +228,7 @@ def test_plan_sections_when_group_members_interleave_does_gather_them_in_the_fir
                 _Row(name="entity/remove#time", group="entity"),
             ],
         ),
+        MetricBlock(metric=_Row(name="fib#time", group=None)),
         GroupBlock(group="render", metrics=[_Row(name="render/frame#time", group="render")]),
     ]
 

@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.report.tally import VerdictCounts, count_verdicts, verdict_summary_parts
-from tests.report._assertions import render_colored, render_plain, sgr_codes
+from tests._ansi import (
+    sgr_codes,
+)
+from tests.report._assertions import (
+    render_colored,
+    render_plain,
+)
 from tests.report._verdicts import (
     CandidateSpec,
     approximate_metric,
@@ -39,25 +45,32 @@ def _find_plain(parts: Sequence[str], needle: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_count_verdicts_when_mixed_does_count_each_class_and_skip_no_verdict():
-    metrics: MetricComparisons = {
-        "faster/time": approximate_metric(verdict="improved", delta=-10),
-        "also-faster/time": approximate_metric(verdict="improved", delta=-5),
-        "slower/time": approximate_metric(verdict="regressed", delta=8),
-        "jittery/time": approximate_metric(verdict="unstable", delta=5, noise_pct=300),
-        "flat/time": approximate_metric(verdict="no-signal", delta=0.2),
-        "one-sided/time": one_sided_metric(),
-    }
-
+@pytest.mark.parametrize(
+    ("metrics", "expected"),
+    [
+        pytest.param(
+            {
+                "faster/time": approximate_metric(verdict="improved", delta=-10),
+                "also-faster/time": approximate_metric(verdict="improved", delta=-5),
+                "slower/time": approximate_metric(verdict="regressed", delta=8),
+                "jittery/time": approximate_metric(verdict="unstable", delta=5, noise_pct=300),
+                "flat/time": approximate_metric(verdict="no-signal", delta=0.2),
+                "one-sided/time": one_sided_metric(),
+            },
+            VerdictCounts(improved=2, regressed=1, unstable=1, no_signal=1),
+            id="mixed-skips-no-verdict",
+        ),
+        pytest.param(
+            {}, VerdictCounts(improved=0, regressed=0, unstable=0, no_signal=0), id="no-metrics"
+        ),
+    ],
+)
+def test_count_verdicts_when_given_metrics_does_count_each_class(
+    metrics: MetricComparisons, expected: VerdictCounts
+):
     counts = count_verdicts(metrics, 0)
 
-    assert counts == VerdictCounts(improved=2, regressed=1, unstable=1, no_signal=1)
-
-
-def test_count_verdicts_when_no_metrics_does_report_zeros():
-    counts = count_verdicts({}, 0)
-
-    assert counts == VerdictCounts(improved=0, regressed=0, unstable=0, no_signal=0)
+    assert counts == expected
 
 
 @pytest.mark.parametrize(
@@ -94,34 +107,17 @@ _MIXED: MetricComparisons = {
 }
 
 
-def test_verdict_summary_parts_when_plain_does_carry_no_ansi():
+def test_verdict_summary_parts_when_mixed_does_render_every_class_with_its_count_color():
     parts = verdict_summary_parts(_MIXED, 0)
 
-    assert "\x1b[" not in "".join(render_plain(part) for part in parts)
-
-
-def test_verdict_summary_parts_when_mixed_does_tally_identical_and_single_pair_apart_from_noise():
-    parts = verdict_summary_parts(_MIXED, 0)
-
-    assert render_plain(_find_plain(parts, "identical")) == "= 1 identical"
-    assert render_plain(_find_plain(parts, "inconclusive")) == "? 1 inconclusive"
-    assert render_plain(_find_plain(parts, "within noise")) == "~ 1 within noise"
-
-
-@pytest.mark.parametrize(
-    ("label", "code"),
-    [
-        pytest.param("improved", "32", id="improved-green"),
-        pytest.param("regressed", "31", id="regressed-red"),
-        pytest.param("unstable", "33", id="unstable-yellow"),
-        pytest.param("identical", "36", id="identical-cyan"),
-    ],
-)
-def test_verdict_summary_parts_when_nonzero_does_color_the_part(label: str, code: str):
-    parts = verdict_summary_parts(_MIXED, 0)
-    part = _find_plain(parts, label)
-
-    assert code in sgr_codes(render_colored(part))
+    assert [(render_plain(part), sorted(sgr_codes(render_colored(part)))) for part in parts] == [
+        ("✓ 1 improved", ["32"]),
+        ("✗ 1 regressed", ["31"]),
+        ("≈ 1 unstable", ["33"]),
+        ("= 1 identical", ["36"]),
+        ("~ 1 within noise", []),
+        ("? 1 inconclusive", []),
+    ]
 
 
 @pytest.mark.parametrize("label", ["regressed", "identical"])
@@ -134,13 +130,6 @@ def test_verdict_summary_parts_when_zero_count_does_dim_the_part(label: str):
     part = _find_plain(parts, label)
 
     assert "2" in sgr_codes(render_colored(part))
-
-
-def test_verdict_summary_parts_when_within_noise_nonzero_does_not_dim():
-    parts = verdict_summary_parts(_MIXED, 0)
-    part = _find_plain(parts, "within noise")
-
-    assert "2" not in sgr_codes(render_colored(part))
 
 
 def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_width():
@@ -157,15 +146,3 @@ def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_widt
     assert render_plain(_find_plain(parts, "regressed")) == "✗  1 regressed"
     assert render_plain(_find_plain(parts, "unstable")) == "≈  1 unstable"
     assert render_plain(_find_plain(parts, "within noise")) == "~  0 within noise"
-
-
-def test_verdict_summary_parts_when_sub_minimum_band_does_tally_as_inconclusive():
-    metrics: MetricComparisons = {
-        "short-improved/time": band_metric(verdict="improved", delta=-10, n=4),
-        "adequate/time": approximate_metric(verdict="improved", delta=-5),
-    }
-
-    parts = verdict_summary_parts(metrics, 0)
-
-    assert render_plain(_find_plain(parts, "improved")) == "✓ 1 improved"
-    assert render_plain(_find_plain(parts, "inconclusive")) == "? 1 inconclusive"

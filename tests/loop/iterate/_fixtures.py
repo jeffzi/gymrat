@@ -20,19 +20,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import pytest
+
 from gymrat.errors import GymratError
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
 from gymrat.session.paths import session_jsonl_path
-from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord, record_to_wire
+from gymrat.session.records import (
+    IterationRecord,
+    MetricVerdict,
+    SessionLogRecord,
+    SessionRecord,
+    record_to_wire,
+)
 from gymrat.session.workspace import Worktrees
 from tests._ansi import stripped_lines
 from tests._exec_fixtures import expected_result
-from tests.session.records._fixtures import SESSION_ID, log_records
-from tests.session.records._fixtures import session_record as _session_record_defaults
+from tests.session.records._fixtures import SESSION_ID, log_records, session_record
 
 if TYPE_CHECKING:
-    import pytest
-
     from gymrat.exec import ExecOptions, ExecResult
 
 #: Ten rounds of a bench that stayed near 100.
@@ -43,10 +48,17 @@ BASELINE_BYTES: list[float] = [value * 10 for value in BASELINE_MS]
 
 
 def scaled(values: list[float], factor: float) -> list[float]:
-    """Scale every round by ``factor``, moving the median by exactly that much.
+    """Scale every round by the same factor, moving the median by exactly that much.
 
     A constant factor leaves every pairwise difference the same sign, which is
     what makes the permutation test call the move rather than shrug at it.
+
+    Args:
+        values: The rounds to scale.
+        factor: The multiplier applied to every round.
+
+    Returns:
+        The scaled rounds, in the same order.
     """
     return [value * factor for value in values]
 
@@ -64,19 +76,34 @@ def baseline_rounds() -> list[dict[str, float]]:
     return rounds(BASELINE_MS, BASELINE_BYTES)
 
 
+#: The filter template a bench that can run a subset of its metrics is configured with.
+FILTER = "npm run bench -- --filter {names}"
+
+
+def regressed_rounds() -> list[dict[str, float]]:
+    """Ten rounds 10% slower and 10% fatter than the baseline's."""
+    return rounds(scaled(BASELINE_MS, 1.1), scaled(BASELINE_BYTES, 1.1))
+
+
 def improved_rounds() -> list[dict[str, float]]:
     """Ten rounds 10% faster and 20% leaner than the baseline's."""
     return rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 0.8))
 
 
-def session_record(root: str) -> SessionRecord:
+def iterate_session_header(root: str) -> SessionRecord:
     """A session header whose worktrees sit beside the default paths.
 
     Placing the worktrees on ``side-experiment`` / ``side-baseline`` rather than
     on the defaults means a run that recomputed the paths instead of reading them
     off the record would bench directories no test ever filled.
+
+    Args:
+        root: The repository the worktrees sit under.
+
+    Returns:
+        The session header naming the side worktrees.
     """
-    return _session_record_defaults(
+    return session_record(
         session_id=SESSION_ID,
         worktrees=Worktrees(
             experiment=str(Path(root) / "side-experiment"),
@@ -97,18 +124,8 @@ class PairedRun:
 class _RecordedCall:
     """The positional arguments one ``collect_samples`` call was handed."""
 
-    adapter: object
     targets: list[TargetContext]
     options: SamplingOptions
-    abort: object
-
-
-@dataclass(frozen=True, slots=True)
-class SamplingCall:
-    """The targets and bench command of one recorded sampling call."""
-
-    targets: list[TargetContext]
-    bench: str
 
 
 class CollectSamplesRecorder:
@@ -116,8 +133,8 @@ class CollectSamplesRecorder:
 
     The recorder is installed once by :func:`install_collect_samples`; a test
     then configures how it answers with :func:`stub_samples` or
-    :func:`stub_runs`. Every call is stored so :func:`sampling_call` can read the
-    targets and bench a call was handed.
+    :func:`stub_runs`. Every call is stored in ``calls``, so a test can read the
+    targets and options a call was handed.
     """
 
     def __init__(self) -> None:
@@ -132,7 +149,7 @@ class CollectSamplesRecorder:
         abort: object,
     ) -> list[TargetSamples]:
         target_list = list(targets)
-        self.calls.append(_RecordedCall(adapter, target_list, options, abort))
+        self.calls.append(_RecordedCall(target_list, options))
         if self._answer is None:
             message = "collect_samples was called before a stub was installed"
             raise AssertionError(message)
@@ -141,6 +158,31 @@ class CollectSamplesRecorder:
     @property
     def call_count(self) -> int:
         return len(self.calls)
+
+
+def regressed_run() -> PairedRun:
+    """A paired run whose both metrics read 10% worse than the baseline's."""
+    return PairedRun(regressed_rounds(), baseline_rounds())
+
+
+def assert_permutation(
+    metric: MetricVerdict, *, delta: float, verdict: str, confirmed: bool
+) -> None:
+    """Assert ``metric`` is a gating permutation verdict with the given delta and outcome.
+
+    Args:
+        metric: The verdict an iteration recorded for one metric.
+        delta: The expected percentage change.
+        verdict: The expected verdict word.
+        confirmed: Whether the confirm rerun is expected to have settled it.
+    """
+    assert metric.delta_pct == pytest.approx(delta, abs=1e-6)
+    assert metric.verdict == verdict
+    assert metric.method == "permutation"
+    assert metric.p is not None
+    assert metric.noise_pct is not None
+    assert metric.gating is True
+    assert metric.confirmed is confirmed
 
 
 def install_collect_samples(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
@@ -170,7 +212,7 @@ def stub_samples(
     baseline: list[dict[str, float]],
 ) -> None:
     """Answer every sampling call with ``experiment`` and ``baseline`` keyed on worktree dir."""
-    worktrees = session_record(root).worktrees
+    worktrees = iterate_session_header(root).worktrees
     by_dir = {worktrees.experiment: experiment, worktrees.baseline: baseline}
 
     def answer(targets: list[TargetContext]) -> list[TargetSamples]:
@@ -184,13 +226,19 @@ def stub_runs(
     root: str,
     runs: list[PairedRun | GymratError],
 ) -> None:
-    """Answer the nth sampling call with the nth entry of ``runs``, keyed on worktree dir.
+    """Answer each sampling call with the next paired run, keyed on worktree dir.
 
-    A :class:`GymratError` entry rejects that call, standing in for a bench that
-    failed mid-run. A call past the end of ``runs`` rejects too, so an unexpected
-    extra rerun surfaces as a failure rather than as silently reused samples.
+    A call past the last run rejects, so an unexpected extra rerun surfaces as a
+    failure rather than as silently reused samples.
+
+    Args:
+        mock: The sampling recorder whose answers to set.
+        root: The repository whose session header names the worktrees.
+        runs: One entry per expected sampling call, in order. A
+            :class:`GymratError` entry rejects that call, standing in for a
+            bench that failed mid-run.
     """
-    worktrees = session_record(root).worktrees
+    worktrees = iterate_session_header(root).worktrees
     state = {"index": 0}
 
     def answer(targets: list[TargetContext]) -> list[TargetSamples]:
@@ -208,15 +256,6 @@ def stub_runs(
     mock._answer = answer
 
 
-def sampling_call(mock: CollectSamplesRecorder, index: int) -> SamplingCall:
-    """The targets and bench command of sampling call ``index``, failing when there was none."""
-    if index >= len(mock.calls):
-        message = f"expected collect_samples to have been called {index + 1} time(s)"
-        raise AssertionError(message)
-    call = mock.calls[index]
-    return SamplingCall(targets=call.targets, bench=call.options.bench)
-
-
 def trimmed_report_lines(report: str) -> list[str]:
     """The report's lines, stripped of color and of the indentation a grouped metric carries."""
     return stripped_lines(report, keep_blank=True)
@@ -228,10 +267,16 @@ def plain_report(report: str) -> str:
 
 
 def as_logged(value: SessionLogRecord) -> object:
-    """``value`` after the round trip through the wire the session log puts it through.
+    """A record after the round trip through the wire the session log puts it through.
 
     A record read back off the log is a fresh dataclass built from JSON, so the
     two sides have to meet on the logged shape to compare field by field.
+
+    Args:
+        value: The record to send through the wire.
+
+    Returns:
+        The decoded JSON object the session log would hold for ``value``.
     """
     return json.loads(json.dumps(record_to_wire(value)))
 

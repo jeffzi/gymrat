@@ -46,24 +46,17 @@ if TYPE_CHECKING:
         pytest.param(-1735, "ns", "-1.7µs", id="neg-us"),
         pytest.param(-2_000_000_000, "ns", "-2.0s", id="neg-s"),
         pytest.param(-999.5, "bytes", "-1.0KB", id="neg-rounds-onto-kb"),
+        pytest.param(0, None, "0", id="no-unit-zero"),
+        pytest.param(1200, None, "1200", id="no-unit-thousands"),
+        pytest.param(1_100_000, None, "1100000", id="no-unit-millions"),
+        pytest.param(1199.6, None, "1200", id="no-unit-rounds-up"),
+        pytest.param(1199.4, None, "1199", id="no-unit-rounds-down"),
     ],
 )
-def test_format_value_when_given_unit_does_scale_to_tier(
-    value: float, unit: MetricUnit, expected: str
+def test_format_value_when_finite_does_scale_to_its_unit_tier(
+    value: float, unit: MetricUnit | None, expected: str
 ):
     assert format_value(value, unit) == expected
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        pytest.param(0, "0", id="zero"),
-        pytest.param(1200, "1200", id="thousands"),
-        pytest.param(1_100_000, "1100000", id="millions"),
-    ],
-)
-def test_format_value_when_no_unit_does_round_to_int(value: float, expected: str):
-    assert format_value(value) == expected
 
 
 @pytest.mark.parametrize(
@@ -74,8 +67,8 @@ def test_format_value_when_no_unit_does_round_to_int(value: float, expected: str
         pytest.param(float("nan"), "ns", "NaN", id="not-a-number"),
     ],
 )
-def test_format_value_when_non_finite_does_use_sentinel_token(
-    value: float, unit: MetricUnit, expected: str
+def test_format_value_when_non_finite_does_render_the_sentinel(
+    value: float, unit: MetricUnit | None, expected: str
 ):
     assert format_value(value, unit) == expected
 
@@ -103,7 +96,7 @@ def test_format_evidence_when_statistical_improvement_does_add_nothing():
         pytest.param(0.5, "noise ±0.5%", id="sub-percent"),
     ],
 )
-def test_format_evidence_when_unstable_within_cap_does_state_percentage(
+def test_format_evidence_when_unstable_within_cap_does_state_the_noise_percentage(
     noise_pct: float, expected: str
 ):
     verdict = permutation_verdict(verdict="unstable", noise_pct=noise_pct, noise_abs=381)
@@ -111,27 +104,35 @@ def test_format_evidence_when_unstable_within_cap_does_state_percentage(
     assert format_evidence(verdict, "bytes", 5) == expected
 
 
-def test_format_evidence_when_unstable_past_cap_does_state_absolute_units():
-    verdict = permutation_verdict(verdict="unstable", noise_pct=7620, noise_abs=381)
-
-    assert format_evidence(verdict, "bytes", 5) == "±381B noise on a 5B median"
-
-
 @pytest.mark.parametrize(
-    ("baseline_median", "candidate_median", "expected"),
+    ("noise_pct", "noise_abs", "baseline_median", "candidate_median", "expected"),
     [
-        pytest.param(0, None, "±6B noise on a 0B median", id="zero-baseline-median"),
-        pytest.param(100, 0, "±6B noise on a 0B candidate median", id="zero-candidate-median"),
-        pytest.param(1e-310, None, "±6B noise on a 0B median", id="overflowing-baseline-ratio"),
+        pytest.param(7620, 381, 5, None, "±381B noise on a 5B median", id="past-cap"),
+        pytest.param(0.5, 6, 0, None, "±6B noise on a 0B median", id="zero-baseline-median"),
         pytest.param(
-            100, 1e-310, "±6B noise on a 0B candidate median", id="overflowing-candidate-ratio"
+            0.5, 6, 100, 0, "±6B noise on a 0B candidate median", id="zero-candidate-median"
+        ),
+        pytest.param(
+            0.5, 6, 1e-310, None, "±6B noise on a 0B median", id="overflowing-baseline-ratio"
+        ),
+        pytest.param(
+            0.5,
+            6,
+            100,
+            1e-310,
+            "±6B noise on a 0B candidate median",
+            id="overflowing-candidate-ratio",
         ),
     ],
 )
-def test_format_evidence_when_unstable_around_zero_median_does_state_absolute_units(
-    baseline_median: float, candidate_median: float | None, expected: str
+def test_format_evidence_when_percentage_unusable_does_state_absolute_units(
+    noise_pct: float,
+    noise_abs: float,
+    baseline_median: float,
+    candidate_median: float | None,
+    expected: str,
 ):
-    verdict = permutation_verdict(verdict="unstable", noise_pct=0.5, noise_abs=6)
+    verdict = permutation_verdict(verdict="unstable", noise_pct=noise_pct, noise_abs=noise_abs)
 
     assert format_evidence(verdict, "bytes", baseline_median, candidate_median) == expected
 
@@ -154,7 +155,9 @@ def test_format_evidence_when_unstable_around_zero_median_does_state_absolute_un
         pytest.param(-0.06, "-0.1%", id="just-below-rounding-floor"),
     ],
 )
-def test_format_percent_delta_when_finite_does_sign_and_round(delta: float, expected: str):
+def test_format_percent_delta_when_finite_does_round_to_a_signed_one_decimal_percentage(
+    delta: float, expected: str
+):
     assert format_percent_delta(delta) == expected
 
 
@@ -167,5 +170,5 @@ def test_format_percent_delta_when_finite_does_sign_and_round(delta: float, expe
         pytest.param(float("-inf"), id="negative-infinity"),
     ],
 )
-def test_format_percent_delta_when_no_finite_value_does_render_nothing(delta: float | None):
+def test_format_percent_delta_when_missing_or_non_finite_does_render_nothing(delta: float | None):
     assert format_percent_delta(delta) == ""

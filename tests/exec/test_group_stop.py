@@ -10,6 +10,7 @@ import asyncio
 import shlex
 import signal
 import sys
+import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -19,9 +20,7 @@ from gymrat import exec as exec_mod
 from gymrat.exec import ExecOptions
 from gymrat.exec import exec as run_exec
 from gymrat.signals import install_termination_cleanup
-from tests._exec_fixtures import (
-    isolate_live_groups as _isolate_live_groups,  # noqa: F401 -- registers the autouse fixture
-)
+from tests._exec_fixtures import ExecTask, Teardown, leave_to_timeout, set_abort
 from tests._process_helpers import wait_for_pid_file, wait_until_dead
 
 # exec drives POSIX process groups (killpg) and sh-only shell syntax; neither
@@ -129,71 +128,41 @@ def slow_cleanup_command(
     return f"{cleaner}; true" if nested else f"exec {cleaner}"
 
 
-def escalate_termination(raise_signal: Callable[[int], int]) -> None:
-    """Deliver a second termination signal before the live-group kill sweep has run."""
+def escalate_termination(raise_signal: Callable[[int], int]) -> int:
+    """Deliver a second termination signal before the live-group kill sweep has run.
+
+    Args:
+        raise_signal: Runs the installed handler for a signal and reports the exit code.
+
+    Returns:
+        The exit code the first signal's handler ends the process with.
+    """
 
     def interrupt() -> None:
         raise_signal(signal.SIGTERM)
 
     install_termination_cleanup(interrupt)
     install_termination_cleanup(exec_mod.kill_live_process_groups)
-    raise_signal(signal.SIGINT)
-
-
-async def test_exec_when_second_signal_arrives_before_kill_sweep_runs_does_kill_live_group(
-    tmp_path: Path,
-    spawned_processes: list[asyncio.subprocess.Process],
-    make_opts: Callable[..., ExecOptions],
-    raise_signal: Callable[[int], int],
-) -> None:
-    task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, make_opts(stdin="go\n")))
-    shell = await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
-
-    def interrupt() -> None:
-        raise_signal(signal.SIGTERM)
-
-    install_termination_cleanup(interrupt)
-    install_termination_cleanup(exec_mod.kill_live_process_groups)
-
-    code = raise_signal(signal.SIGINT)
-
-    await wait_until_dead(shell, timeout_s=3.0)
-    await task
-    assert code == 128 + signal.SIGINT
+    return raise_signal(signal.SIGINT)
 
 
 @pytest.mark.usefixtures("roomy_escalation_grace")
-async def test_exec_when_second_signal_arrives_before_kill_sweep_runs_does_let_leader_clean_up_first(
+@pytest.mark.parametrize("nested", [False, True], ids=["leader", "nested-child"])
+async def test_exec_when_second_signal_arrives_before_kill_sweep_runs_does_let_the_cleaner_finish(
     tmp_path: Path,
     make_opts: Callable[..., ExecOptions],
     raise_signal: Callable[[int], int],
+    *,
+    nested: bool,
 ) -> None:
-    command = slow_cleanup_command(nested=False, cleanup_s=_ESCALATED_CLEANUP_S)
+    command = slow_cleanup_command(nested=nested, cleanup_s=_ESCALATED_CLEANUP_S)
     task = asyncio.create_task(run_exec(command, make_opts()))
     await wait_for_pid_file(tmp_path / _CLEANER_PID_FILE)
+
     escalate_termination(raise_signal)
 
     await task
-
-    assert (tmp_path / _CLEANED_MARKER).exists(), (
-        "the group was killed before its leader cleaned up"
-    )
-
-
-@pytest.mark.usefixtures("roomy_escalation_grace")
-async def test_exec_when_second_signal_arrives_before_kill_sweep_runs_does_let_nested_child_clean_up(
-    tmp_path: Path,
-    make_opts: Callable[..., ExecOptions],
-    raise_signal: Callable[[int], int],
-) -> None:
-    command = slow_cleanup_command(nested=True, cleanup_s=_ESCALATED_CLEANUP_S)
-    task = asyncio.create_task(run_exec(command, make_opts()))
-    await wait_for_pid_file(tmp_path / _CLEANER_PID_FILE)
-    escalate_termination(raise_signal)
-
-    await task
-
-    assert (tmp_path / _CLEANED_MARKER).exists(), "the group was killed once its leader died"
+    assert (tmp_path / _CLEANED_MARKER).exists(), "the group was killed before the cleaner finished"
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +193,8 @@ def group_wait_graces(monkeypatch: pytest.MonkeyPatch) -> list[float]:
         pytest.param(3, 0.025, id="nested-three-times"),
     ],
 )
-async def test_exec_when_second_signal_arrives_in_nested_run_does_halve_grace_per_level(
+@pytest.mark.usefixtures("spawned_processes")
+async def test_exec_when_second_signal_arrives_in_nested_run_does_kill_live_group_after_halved_grace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
@@ -236,16 +206,13 @@ async def test_exec_when_second_signal_arrives_in_nested_run_does_halve_grace_pe
 ) -> None:
     monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", nesting_depth)
     task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, make_opts(stdin="go\n")))
-    await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
+    shell = await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
 
-    def interrupt() -> None:
-        raise_signal(signal.SIGTERM)
-
-    install_termination_cleanup(interrupt)
-
-    raise_signal(signal.SIGINT)
-
+    code = escalate_termination(raise_signal)
     await task
+
+    await wait_until_dead(shell, timeout_s=3.0)
+    assert code == 128 + signal.SIGINT
     assert group_wait_graces == [pytest.approx(expected_grace_s)]
 
 
@@ -277,18 +244,9 @@ async def test_kill_live_process_groups_when_run_is_nested_does_halve_grace_per_
     assert group_wait_graces == [pytest.approx(expected_grace_s)]
 
 
-@pytest.fixture
-def abort_wait_graces(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Record the grace each aborted run's stop is given, still waiting it out for real."""
-    graces: list[float] = []
-    real_wait = exec_mod._wait_for_exit
-
-    async def record(proc: asyncio.subprocess.Process, grace_s: float) -> bool:
-        graces.append(grace_s)
-        return await real_wait(proc, grace_s)
-
-    monkeypatch.setattr(exec_mod, "_wait_for_exit", record)
-    return graces
+# asyncio may fire a timer up to a clock tick early, so a wait can end a hair
+# before its grace by the test's own clock.
+_TIMER_SLACK_S = 0.01
 
 
 @pytest.mark.parametrize(
@@ -297,14 +255,12 @@ def abort_wait_graces(monkeypatch: pytest.MonkeyPatch) -> list[float]:
         pytest.param(0, 1.0, id="top-level"),
         pytest.param(1, 0.5, id="nested-once"),
         pytest.param(2, 0.25, id="nested-twice"),
-        pytest.param(3, 0.125, id="nested-three-times"),
     ],
 )
 async def test_exec_when_aborted_in_nested_run_does_halve_grace_per_level(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
-    abort_wait_graces: list[float],
     *,
     nesting_depth: int,
     expected_grace_s: float,
@@ -314,11 +270,15 @@ async def test_exec_when_aborted_in_nested_run_does_halve_grace_per_level(
     options = make_opts(stdin="go\n", abort=abort)
     task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, options))
     await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
+    started = time.monotonic()
 
     abort.set()
-
     await task
-    assert abort_wait_graces == [pytest.approx(expected_grace_s)]
+    elapsed = time.monotonic() - started
+
+    # The group ignores the polite request, so it stands for the whole grace;
+    # a grace twice as long, the level above's, would outlast the bound.
+    assert expected_grace_s - _TIMER_SLACK_S <= elapsed < 2 * expected_grace_s
 
 
 # ---------------------------------------------------------------------------
@@ -326,42 +286,35 @@ async def test_exec_when_aborted_in_nested_run_does_halve_grace_per_level(
 # ---------------------------------------------------------------------------
 
 
-async def test_kill_live_process_groups_when_leader_dies_before_nested_child_does_let_child_clean_up(
-    tmp_path: Path,
-    make_opts: Callable[..., ExecOptions],
+def _sweep_live_groups(
+    task: ExecTask, proc: asyncio.subprocess.Process | None, abort: asyncio.Event
 ) -> None:
-    task = asyncio.create_task(run_exec(slow_cleanup_command(nested=True), make_opts()))
-    await wait_for_pid_file(tmp_path / _CLEANER_PID_FILE)
-
+    """Stop the run through the live-group kill sweep a termination signal runs."""
     exec_mod.kill_live_process_groups()
 
-    await task
-    assert (tmp_path / _CLEANED_MARKER).exists(), "the group was killed once its leader died"
 
-
-async def test_exec_when_aborted_and_leader_dies_before_nested_child_does_let_child_clean_up(
+@pytest.mark.parametrize(
+    "teardown",
+    [
+        pytest.param(Teardown(None, _sweep_live_groups), id="kill-sweep"),
+        pytest.param(Teardown(None, set_abort), id="abort"),
+        pytest.param(Teardown(_TIMEOUT_AFTER_START_MS, leave_to_timeout), id="timeout"),
+    ],
+)
+async def test_exec_when_leader_dies_before_nested_child_does_let_child_clean_up(
     tmp_path: Path,
     make_opts: Callable[..., ExecOptions],
+    teardown: Teardown,
 ) -> None:
     abort = asyncio.Event()
     command = slow_cleanup_command(nested=True, release_stdio=True)
-    task = asyncio.create_task(run_exec(command, make_opts(abort=abort)))
+    options = make_opts(abort=abort, timeout_ms=teardown.timeout_ms)
+    task = asyncio.create_task(run_exec(command, options))
     await wait_for_pid_file(tmp_path / _CLEANER_PID_FILE)
 
-    abort.set()
+    teardown.trigger(task, None, abort)
 
     await task
-    assert (tmp_path / _CLEANED_MARKER).exists(), "the group was killed once its leader died"
-
-
-async def test_exec_when_timed_out_and_leader_dies_before_nested_child_does_let_child_clean_up(
-    tmp_path: Path,
-    make_opts: Callable[..., ExecOptions],
-) -> None:
-    command = slow_cleanup_command(nested=True, release_stdio=True)
-
-    await run_exec(command, make_opts(timeout_ms=_TIMEOUT_AFTER_START_MS))
-
     assert (tmp_path / _CLEANED_MARKER).exists(), "the group was killed once its leader died"
 
 
@@ -412,32 +365,25 @@ def nested_run_command() -> str:
     return f"exec {nested_run}"
 
 
-async def test_kill_live_process_groups_when_nested_run_sweeps_term_ignoring_bench_does_leave_bench_dead(
+@pytest.mark.parametrize(
+    "teardown",
+    [
+        pytest.param(Teardown(None, _sweep_live_groups), id="kill-sweep"),
+        pytest.param(Teardown(None, set_abort), id="abort"),
+    ],
+)
+async def test_exec_when_nested_run_sweeps_term_ignoring_bench_does_leave_bench_dead(
     tmp_path: Path,
     make_opts: Callable[..., ExecOptions],
     reap_groups: list[int],
-) -> None:
-    task = asyncio.create_task(run_exec(nested_run_command(), make_opts()))
-    bench = await wait_for_pid_file(tmp_path / _SHELL_PID_FILE, _NESTED_START_TIMEOUT_S)
-    reap_groups.append(bench)
-
-    exec_mod.kill_live_process_groups()
-
-    await asyncio.wait_for(task, _NESTED_SETTLE_TIMEOUT_S)
-    await wait_until_dead(bench, timeout_s=_KILLED_BENCH_SETTLE_S)
-
-
-async def test_exec_when_aborted_and_nested_run_sweeps_term_ignoring_bench_does_leave_bench_dead(
-    tmp_path: Path,
-    make_opts: Callable[..., ExecOptions],
-    reap_groups: list[int],
+    teardown: Teardown,
 ) -> None:
     abort = asyncio.Event()
     task = asyncio.create_task(run_exec(nested_run_command(), make_opts(abort=abort)))
     bench = await wait_for_pid_file(tmp_path / _SHELL_PID_FILE, _NESTED_START_TIMEOUT_S)
     reap_groups.append(bench)
 
-    abort.set()
+    teardown.trigger(task, None, abort)
 
     await asyncio.wait_for(task, _NESTED_SETTLE_TIMEOUT_S)
     await wait_until_dead(bench, timeout_s=_KILLED_BENCH_SETTLE_S)

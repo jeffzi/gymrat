@@ -1,17 +1,22 @@
-"""Behavioral tests for the sampling core and progress reporting."""
+"""Behavioral tests for the sampling core and progress reporting.
+
+They also cover the per-metric median and spread computed from collected
+samples, and metric-meta resolution: adapter defaults, then kind, then metric.
+"""
 
 import asyncio
 import sys
 import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
 
-from gymrat import sampling
-from gymrat.adapters import AdapterError, metric_lines_adapter
+from gymrat.adapters import Adapter, AdapterError, MetricDefaults, metric_lines_adapter
 from gymrat.config import KindEntry, MetricEntry, ResolvedConfig
-from gymrat.errors import CommandError
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
+from gymrat.errors import CommandError, GymratError
+from gymrat.exec import ExecResult, ExecTimeoutError
+from gymrat.model import ResolvedMetricMeta
 from gymrat.progress_events import (
     PassFinished,
     PassStarted,
@@ -24,9 +29,15 @@ from gymrat.sampling import (
     SamplingOptions,
     TargetContext,
     collect_samples,
+    compute_metric_stats,
+    own_values,
+    resolve_metric_meta,
+    resolve_metric_meta_from_samples,
 )
 from gymrat.targets import InPlaceTarget, RefTarget
-from tests._exec_fixtures import expected_result
+from tests._exec_fixtures import expected_result, install_exec
+from tests.report._comparisons import metric_meta
+from tests.sampling._adapters import make_adapter
 
 REF_HINT = (
     "the worktree only contains files tracked at this ref; "
@@ -44,27 +55,8 @@ def make_failure(stdout: str = "", stderr: str = "boom") -> ExecResult:
     return expected_result(stdout, stderr, exit_code=1)
 
 
-def patch_exec(
-    monkeypatch: pytest.MonkeyPatch,
-    result: ExecResult | ExecTimeoutError,
-) -> list[tuple[str, str, int | None]]:
-    """Patch the sampling exec seam to return ``result`` and record each call.
-
-    Args:
-        monkeypatch: Pytest fixture used to patch the exec seam.
-        result: The result or timeout error to return from every patched call.
-
-    Returns:
-        The list of ``(command, cwd, timeout_ms)`` tuples in call order.
-    """
-    calls: list[tuple[str, str, int | None]] = []
-
-    async def _exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:
-        calls.append((command, options.cwd, options.timeout_ms))
-        return result
-
-    monkeypatch.setattr(sampling, "exec", _exec)
-    return calls
+#: The ``exec`` the sampling module calls, which every test here replaces.
+SAMPLING_EXEC = "gymrat.sampling.exec"
 
 
 def two_in_place_targets() -> list[TargetContext]:
@@ -92,48 +84,41 @@ def one_in_place_target() -> list[TargetContext]:
     ]
 
 
-async def test_collect_samples_when_prepare_set_does_run_prepare_per_target_before_any_bench(
+@pytest.mark.parametrize(
+    ("prepare", "expected_commands"),
+    [
+        pytest.param(
+            "prep",
+            [
+                ("prep", "/a"),
+                ("prep", "/b"),
+                ("run", "/a"),
+                ("run", "/b"),
+                ("run", "/a"),
+                ("run", "/b"),
+            ],
+            id="prepare-per-target-before-any-bench",
+        ),
+        pytest.param(
+            None,
+            [("run", "/a"), ("run", "/b"), ("run", "/a"), ("run", "/b")],
+            id="bench-only",
+        ),
+    ],
+)
+async def test_collect_samples_when_run_does_collect_each_targets_samples_in_schedule_order(
     monkeypatch: pytest.MonkeyPatch,
+    prepare: str | None,
+    expected_commands: list[tuple[str, str]],
 ):
-    calls = patch_exec(monkeypatch, make_success())
+    recorder = install_exec(monkeypatch, SAMPLING_EXEC, make_success("METRIC x=1"))
     targets = two_in_place_targets()
-    options = SamplingOptions(bench="run", prepare="prep", samples=2, timeout_seconds=1.0)
-
-    await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    commands = [(command, cwd) for command, cwd, _ in calls]
-    assert commands == [
-        ("prep", "/a"),
-        ("prep", "/b"),
-        ("run", "/a"),
-        ("run", "/b"),
-        ("run", "/a"),
-        ("run", "/b"),
-    ]
-
-
-async def test_collect_samples_when_prepare_absent_does_skip_prepare_and_run_bench_only(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    calls = patch_exec(monkeypatch, make_success())
-    targets = two_in_place_targets()
-    options = SamplingOptions(bench="run", prepare=None, samples=2, timeout_seconds=1.0)
-
-    await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    commands = [command for command, _, _ in calls]
-    assert commands == ["run", "run", "run", "run"]
-
-
-async def test_collect_samples_when_finished_does_return_samples_per_target_in_order(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    patch_exec(monkeypatch, make_success("METRIC x=1"))
-    targets = two_in_place_targets()
-    options = SamplingOptions(bench="run", prepare=None, samples=2, timeout_seconds=1.0)
+    options = SamplingOptions(bench="run", prepare=prepare, samples=2, timeout_seconds=2.5)
 
     result = await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
 
+    assert [(command, options.cwd) for command, options in recorder.calls] == expected_commands
+    assert {options.timeout_ms for _, options in recorder.calls} == {2500}
     assert [ts.ctx for ts in result] == targets
     assert [ts.samples for ts in result] == [
         [{"x": 1.0}, {"x": 1.0}],
@@ -141,24 +126,11 @@ async def test_collect_samples_when_finished_does_return_samples_per_target_in_o
     ]
 
 
-async def test_collect_samples_when_timeout_seconds_given_does_pass_millisecond_timeout(
+async def test_collect_samples_when_progress_given_does_emit_every_event_stamped_from_the_clock(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    calls = patch_exec(monkeypatch, make_success())
-    targets = one_in_place_target()
-    options = SamplingOptions(bench="run", prepare=None, samples=1, timeout_seconds=2.5)
-
-    await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    assert calls[0][2] == 2500
-
-
-async def test_collect_samples_when_progress_given_does_fire_prepare_and_pass_events(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    patch_exec(monkeypatch, make_success())
+    install_exec(monkeypatch, SAMPLING_EXEC, make_success())
     events: list[ProgressEvent] = []
-    targets = two_in_place_targets()
     clock_ms = 0.0
 
     def tick() -> float:
@@ -169,71 +141,38 @@ async def test_collect_samples_when_progress_given_does_fire_prepare_and_pass_ev
     options = SamplingOptions(
         bench="run",
         prepare="prep",
-        samples=2,
+        samples=3,
         timeout_seconds=1.0,
         on_progress=events.append,
         clock=tick,
     )
 
-    await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+    await collect_samples(metric_lines_adapter, two_in_place_targets(), options, asyncio.Event())
 
-    types_and_labels = [
-        (type(e).__name__, e.label)
-        for e in events
-        if isinstance(e, (PrepareStarted, PrepareFinished, PassStarted, PassFinished))
+    assert events == [
+        PrepareStarted("old", 100.0),
+        PrepareFinished("old", 200.0),
+        PrepareStarted("new", 300.0),
+        PrepareFinished("new", 400.0),
+        PassStarted(1, 3, 2, "old", 500.0, phase="measure"),
+        PassFinished(1, 3, 2, "old", 600.0, phase="measure"),
+        PassStarted(1, 3, 2, "new", 700.0, phase="measure"),
+        PassFinished(1, 3, 2, "new", 800.0, phase="measure"),
+        PassStarted(2, 3, 2, "old", 900.0, phase="measure"),
+        PassFinished(2, 3, 2, "old", 1000.0, phase="measure"),
+        PassStarted(2, 3, 2, "new", 1100.0, phase="measure"),
+        PassFinished(2, 3, 2, "new", 1200.0, phase="measure"),
+        PassStarted(3, 3, 2, "old", 1300.0, phase="measure"),
+        PassFinished(3, 3, 2, "old", 1400.0, phase="measure"),
+        PassStarted(3, 3, 2, "new", 1500.0, phase="measure"),
+        PassFinished(3, 3, 2, "new", 1600.0, phase="measure"),
     ]
-    assert types_and_labels == [
-        ("PrepareStarted", "old"),
-        ("PrepareFinished", "old"),
-        ("PrepareStarted", "new"),
-        ("PrepareFinished", "new"),
-        ("PassStarted", "old"),
-        ("PassFinished", "old"),
-        ("PassStarted", "new"),
-        ("PassFinished", "new"),
-        ("PassStarted", "old"),
-        ("PassFinished", "old"),
-        ("PassStarted", "new"),
-        ("PassFinished", "new"),
-    ]
-
-
-async def test_collect_samples_when_progress_given_does_stamp_at_ms_from_clock(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    patch_exec(monkeypatch, make_success())
-    events: list[ProgressEvent] = []
-    call_count = 0
-
-    def deterministic_clock() -> float:
-        nonlocal call_count
-        call_count += 1
-        return call_count * 10.0
-
-    targets = one_in_place_target()
-    options = SamplingOptions(
-        bench="run",
-        prepare="prep",
-        samples=1,
-        timeout_seconds=1.0,
-        on_progress=events.append,
-        clock=deterministic_clock,
-    )
-
-    await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    timestamps = [e.at_ms for e in events]
-    assert timestamps == sorted(timestamps)
-    assert all(t % 10.0 == 0.0 for t in timestamps), (
-        "timestamps should come from the injected clock"
-    )
-    assert events[0].at_ms == 10.0
 
 
 async def test_collect_samples_when_clock_omitted_does_stamp_monotonic_milliseconds(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    patch_exec(monkeypatch, make_success())
+    install_exec(monkeypatch, SAMPLING_EXEC, make_success())
     monkeypatch.setattr(time, "perf_counter", lambda: 2.5)
     events: list[ProgressEvent] = []
     options = SamplingOptions(
@@ -249,44 +188,27 @@ async def test_collect_samples_when_clock_omitted_does_stamp_monotonic_milliseco
     assert [e.at_ms for e in events] == [2500.0, 2500.0]
 
 
-async def test_collect_samples_when_progress_given_does_emit_pass_started_with_correct_fields(
+@pytest.mark.parametrize(
+    ("prepare", "expected_events"),
+    [
+        pytest.param(
+            None,
+            [PassStarted(round=1, total_rounds=1, target_count=1, label="old", at_ms=0.0)],
+            id="bench-fails",
+        ),
+        pytest.param("prep", [PrepareStarted(label="old", at_ms=0.0)], id="prepare-fails"),
+    ],
+)
+async def test_collect_samples_when_command_fails_does_emit_its_start_but_never_its_finish(
     monkeypatch: pytest.MonkeyPatch,
+    prepare: str | None,
+    expected_events: list[ProgressEvent],
 ):
-    patch_exec(monkeypatch, make_success())
+    install_exec(monkeypatch, SAMPLING_EXEC, make_failure())
     events: list[ProgressEvent] = []
-    targets = two_in_place_targets()
     options = SamplingOptions(
         bench="run",
-        prepare=None,
-        samples=2,
-        timeout_seconds=1.0,
-        on_progress=events.append,
-        clock=lambda: 0.0,
-    )
-
-    await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    pass_started_events = [e for e in events if isinstance(e, PassStarted)]
-    first = pass_started_events[0]
-    assert first.round == 1
-    assert first.total_rounds == 2
-    assert first.target_count == 2
-    assert first.label == "old"
-    assert first.phase == "measure"
-
-    second = pass_started_events[1]
-    assert second.label == "new"
-
-
-async def test_collect_samples_when_bench_fails_does_emit_started_but_not_finished(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    patch_exec(monkeypatch, make_failure())
-    events: list[ProgressEvent] = []
-    targets = one_in_place_target()
-    options = SamplingOptions(
-        bench="run",
-        prepare=None,
+        prepare=prepare,
         samples=1,
         timeout_seconds=1.0,
         on_progress=events.append,
@@ -294,57 +216,15 @@ async def test_collect_samples_when_bench_fails_does_emit_started_but_not_finish
     )
 
     with pytest.raises(CommandError):
-        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+        await collect_samples(metric_lines_adapter, one_in_place_target(), options, asyncio.Event())
 
-    assert any(isinstance(e, PassStarted) for e in events)
-    assert not any(isinstance(e, PassFinished) for e in events)
-
-
-async def test_collect_samples_when_prepare_fails_does_emit_prepare_started_but_not_finished(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    patch_exec(monkeypatch, make_failure())
-    events: list[ProgressEvent] = []
-    targets = one_in_place_target()
-    options = SamplingOptions(
-        bench="run",
-        prepare="prep",
-        samples=1,
-        timeout_seconds=1.0,
-        on_progress=events.append,
-        clock=lambda: 0.0,
-    )
-
-    with pytest.raises(CommandError):
-        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    assert any(isinstance(e, PrepareStarted) for e in events)
-    assert not any(isinstance(e, PrepareFinished) for e in events)
-
-
-async def test_collect_samples_when_warn_sink_given_does_pass_it_through_to_parse(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    patch_exec(monkeypatch, make_success("METRIC foo=bar\nMETRIC x=1"))
-    warnings: list[str] = []
-    targets = one_in_place_target()
-    options = SamplingOptions(
-        bench="run",
-        prepare=None,
-        samples=1,
-        timeout_seconds=1.0,
-        warn=warnings.append,
-    )
-
-    await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    assert warnings == ["Failed to parse METRIC line: METRIC foo=bar"]
+    assert events == expected_events
 
 
 async def test_collect_samples_when_bench_output_unreadable_does_warn_after_the_pass_finished(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    patch_exec(monkeypatch, make_success("METRIC foo=bar\nMETRIC x=1"))
+    install_exec(monkeypatch, SAMPLING_EXEC, make_success("METRIC foo=bar\nMETRIC x=1"))
     log: list[object] = []
     options = SamplingOptions(
         bench="run",
@@ -368,14 +248,14 @@ async def test_collect_samples_when_bench_output_unreadable_does_warn_after_the_
 async def test_collect_samples_when_prepare_fails_does_stop_before_any_bench(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    calls = patch_exec(monkeypatch, make_failure())
+    recorder = install_exec(monkeypatch, SAMPLING_EXEC, make_failure())
     targets = two_in_place_targets()
     options = SamplingOptions(bench="run", prepare="prep", samples=2, timeout_seconds=1.0)
 
     with pytest.raises(CommandError):
         await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
 
-    assert [command for command, _, _ in calls] == ["prep"]
+    assert [command for command, _ in recorder.calls] == ["prep"]
 
 
 @pytest.mark.parametrize(
@@ -390,25 +270,14 @@ async def test_collect_samples_when_prepare_fails_does_stop_before_any_bench(
 async def test_collect_samples_when_bench_fails_does_stop_mid_schedule(
     monkeypatch: pytest.MonkeyPatch, result: ExecResult, error: type[Exception]
 ):
-    calls = patch_exec(monkeypatch, result)
+    recorder = install_exec(monkeypatch, SAMPLING_EXEC, result)
     targets = two_in_place_targets()
     options = SamplingOptions(bench="run", prepare=None, samples=2, timeout_seconds=1.0)
 
     with pytest.raises(error):
         await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
 
-    assert [command for command, _, _ in calls] == ["run"]
-
-
-async def test_collect_samples_when_bench_fails_with_empty_stderr_does_raise_command_error(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    patch_exec(monkeypatch, make_failure(stderr=""))
-    targets = one_in_place_target()
-    options = SamplingOptions(bench="run", prepare=None, samples=1, timeout_seconds=1.0)
-
-    with pytest.raises(CommandError):
-        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+    assert [command for command, _ in recorder.calls] == ["run"]
 
 
 _IN_PLACE_NEW = TargetContext(
@@ -426,6 +295,30 @@ _TIMED_OUT = ExecTimeoutError(
 )
 _BENCH_ONLY = SamplingOptions(bench="run-bench", prepare=None, samples=1, timeout_seconds=1.5)
 _WITH_PREPARE = SamplingOptions(bench="run", prepare="setup", samples=1, timeout_seconds=1.5)
+_IN_PLACE_X = TargetContext(target=InPlaceTarget(dir="/work"), dir="/work", label="x")
+_RUN_ONLY = SamplingOptions(bench="run", prepare=None, samples=1, timeout_seconds=1.0)
+
+
+_FAILED_HEAD = [
+    'bench command failed ("x", sample 1)',
+    "  dir:       /work",
+    "  command:   run",
+    "  exit code: 1",
+]
+_TIMED_OUT_HEAD = [
+    'bench command timed out ("x", sample 1)',
+    "  dir:       /work",
+    "  command:   run",
+    "  timeout:   1000ms",
+]
+
+
+def _failed(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -> ExecResult:
+    return ExecResult(stdout, stderr, 1, stdout_bytes, stderr_bytes)
+
+
+def _timed_out(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -> ExecTimeoutError:
+    return ExecTimeoutError(stdout, stderr, 1000, stdout_bytes, stderr_bytes)
 
 
 @pytest.mark.parametrize(
@@ -481,6 +374,74 @@ _WITH_PREPARE = SamplingOptions(bench="run", prepare="setup", samples=1, timeout
             REF_HINT,
             id="prepare-times-out-on-a-ref",
         ),
+        pytest.param(
+            _failed("std", "", 3, 0),
+            _IN_PLACE_X,
+            _RUN_ONLY,
+            "\n".join([*_FAILED_HEAD, "std"]),
+            None,
+            id="stdout-only-bare",
+        ),
+        pytest.param(
+            _failed("", "err", 0, 50),
+            _IN_PLACE_X,
+            _RUN_ONLY,
+            "\n".join([*_FAILED_HEAD, "--- stderr (truncated, 50 bytes total) ---", "err"]),
+            None,
+            id="stderr-only-truncated",
+        ),
+        pytest.param(
+            _failed("head", "", 100, 0),
+            _IN_PLACE_X,
+            _RUN_ONLY,
+            "\n".join([*_FAILED_HEAD, "--- stdout (truncated, 100 bytes total) ---", "head"]),
+            None,
+            id="stdout-only-truncated",
+        ),
+        pytest.param(
+            _failed("std", "err", 3, 3),
+            _IN_PLACE_X,
+            _RUN_ONLY,
+            "\n".join([*_FAILED_HEAD, "--- stderr ---", "err", "--- stdout ---", "std"]),
+            None,
+            id="both-labelled-stderr-first",
+        ),
+        pytest.param(
+            _failed("s", "e", 1, 50),
+            _IN_PLACE_X,
+            _RUN_ONLY,
+            "\n".join([
+                *_FAILED_HEAD,
+                "--- stderr (truncated, 50 bytes total) ---",
+                "e",
+                "--- stdout ---",
+                "s",
+            ]),
+            None,
+            id="both-one-truncated",
+        ),
+        pytest.param(
+            _failed("", "", 0, 0),
+            _IN_PLACE_X,
+            _RUN_ONLY,
+            "\n".join(_FAILED_HEAD),
+            None,
+            id="neither-present",
+        ),
+        pytest.param(
+            _timed_out("s", "e", 1, 50),
+            _IN_PLACE_X,
+            _RUN_ONLY,
+            "\n".join([
+                *_TIMED_OUT_HEAD,
+                "--- stderr (truncated, 50 bytes total) ---",
+                "e",
+                "--- stdout ---",
+                "s",
+            ]),
+            None,
+            id="timed-out-both-streams",
+        ),
     ],
 )
 async def test_collect_samples_when_command_fails_does_raise_error_with_full_shape(  # noqa: PLR0917 -- one parameter per failure axis plus the fixture
@@ -491,119 +452,12 @@ async def test_collect_samples_when_command_fails_does_raise_error_with_full_sha
     hint: str | None,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    patch_exec(monkeypatch, result)
+    install_exec(monkeypatch, SAMPLING_EXEC, result)
 
     with pytest.raises(CommandError) as caught:
         await collect_samples(metric_lines_adapter, [target], options, asyncio.Event())
 
     assert (str(caught.value), caught.value.hint) == (expected, hint)
-
-
-async def test_collect_samples_when_no_position_does_omit_position_from_header(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    patch_exec(
-        monkeypatch,
-        ExecResult(stdout="", stderr="boom", exit_code=1, stdout_bytes=4, stderr_bytes=4),
-    )
-    targets = [
-        TargetContext(target=InPlaceTarget(dir="/work"), dir="/work", label="solo"),
-    ]
-    options = SamplingOptions(bench="run", prepare=None, samples=1, timeout_seconds=1.0)
-
-    with pytest.raises(CommandError) as caught:
-        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    assert str(caught.value).splitlines()[0] == 'bench command failed ("solo", sample 1)'
-
-
-@pytest.mark.parametrize(
-    ("streams", "expected_tail"),
-    [
-        pytest.param(("", "err", 0, 3), ["err"], id="stderr-only-bare"),
-        pytest.param(("std", "", 3, 0), ["std"], id="stdout-only-bare"),
-        pytest.param(
-            ("", "err", 0, 50),
-            ["--- stderr (truncated, 50 bytes total) ---", "err"],
-            id="stderr-only-truncated",
-        ),
-        pytest.param(
-            ("head", "", 100, 0),
-            ["--- stdout (truncated, 100 bytes total) ---", "head"],
-            id="stdout-only-truncated",
-        ),
-        pytest.param(
-            ("std", "err", 3, 3),
-            ["--- stderr ---", "err", "--- stdout ---", "std"],
-            id="both-labelled-stderr-first",
-        ),
-        pytest.param(
-            ("s", "e", 1, 50),
-            ["--- stderr (truncated, 50 bytes total) ---", "e", "--- stdout ---", "s"],
-            id="both-one-truncated",
-        ),
-        pytest.param(("", "", 0, 0), [], id="neither-present"),
-    ],
-)
-async def test_collect_samples_when_bench_fails_does_render_captured_output(
-    monkeypatch: pytest.MonkeyPatch,
-    streams: tuple[str, str, int, int],
-    expected_tail: list[str],
-):
-    stdout, stderr, stdout_bytes, stderr_bytes = streams
-    patch_exec(
-        monkeypatch,
-        ExecResult(
-            stdout=stdout,
-            stderr=stderr,
-            exit_code=1,
-            stdout_bytes=stdout_bytes,
-            stderr_bytes=stderr_bytes,
-        ),
-    )
-    targets = [
-        TargetContext(target=InPlaceTarget(dir="/work"), dir="/work", label="x"),
-    ]
-    options = SamplingOptions(bench="run", prepare=None, samples=1, timeout_seconds=1.0)
-
-    with pytest.raises(CommandError) as caught:
-        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    head = [
-        'bench command failed ("x", sample 1)',
-        "  dir:       /work",
-        "  command:   run",
-        "  exit code: 1",
-    ]
-    assert str(caught.value) == "\n".join(head + expected_tail)
-
-
-async def test_collect_samples_when_bench_times_out_does_render_both_captured_streams(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    patch_exec(
-        monkeypatch,
-        ExecTimeoutError(stdout="s", stderr="e", timeout_ms=1000, stdout_bytes=1, stderr_bytes=50),
-    )
-    targets = [
-        TargetContext(target=InPlaceTarget(dir="/work"), dir="/work", label="x"),
-    ]
-    options = SamplingOptions(bench="run", prepare=None, samples=1, timeout_seconds=1.0)
-
-    with pytest.raises(CommandError) as caught:
-        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    expected = [
-        'bench command timed out ("x", sample 1)',
-        "  dir:       /work",
-        "  command:   run",
-        "  timeout:   1000ms",
-        "--- stderr (truncated, 50 bytes total) ---",
-        "e",
-        "--- stdout ---",
-        "s",
-    ]
-    assert str(caught.value) == "\n".join(expected)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
@@ -648,7 +502,7 @@ def _resolved_config() -> ResolvedConfig:
     )
 
 
-def test_run_options_from_config_when_called_does_copy_the_run_settings_and_default_clock():
+def test_run_options_from_config_when_called_does_copy_the_run_settings_leaving_the_default_clock():
     events: list[ProgressEvent] = []
     warnings: list[str] = []
     config = _resolved_config()
@@ -662,17 +516,310 @@ def test_run_options_from_config_when_called_does_copy_the_run_settings_and_defa
             samples=7,
             timeout_seconds=25,
             on_progress=events.append,
-            warn=run.sampling.warn,
+            warn=warnings.append,
         ),
         adapter="mitata",
         config_metrics=config.metrics,
         config_kinds=config.kinds,
     )
-    run.sampling.warn("unreadable line")
-    assert warnings == ["unreadable line"]
 
 
 def test_run_options_from_config_when_bench_and_samples_given_does_override_the_configured_ones():
     run = RunOptions.from_config(_resolved_config(), samples=3, bench="run --filter a")
 
     assert (run.sampling.bench, run.sampling.samples) == ("run --filter a", 3)
+
+
+@pytest.mark.parametrize(
+    ("values", "expected_median", "expected_spread"),
+    [
+        pytest.param([], None, None, id="empty"),
+        pytest.param([5.0], 5.0, None, id="single-value"),
+        pytest.param([10.0, 20.0, 30.0], 20.0, pytest.approx(50.0), id="odd-length-sorted"),
+        pytest.param(
+            [30.0, 10.0, 40.0, 20.0], 25.0, pytest.approx(60.0), id="even-length-unsorted"
+        ),
+        pytest.param([-1.0, 0.0, 1.0], 0.0, None, id="median-zero"),
+        pytest.param([0.0, 5e-324, 1.0], 5e-324, None, id="ratio-overflows-to-infinity"),
+    ],
+)
+def test_compute_metric_stats_when_given_values_does_return_median_and_percent_spread(
+    values: list[float],
+    expected_median: float | None,
+    expected_spread: object,
+):
+    stats = compute_metric_stats(values)
+
+    assert (stats.median, stats.spread) == (expected_median, expected_spread)
+
+
+def test_own_values_when_rounds_missing_metric_does_skip_them():
+    samples = [{"x": 1.0}, {"y": 2.0}, {"x": 3.0}]
+
+    assert own_values(samples, "x") == [1.0, 3.0]
+
+
+def resolve(
+    names: Sequence[str],
+    config_metrics: dict[str, MetricEntry] | None,
+    adapter: Adapter,
+    config_kinds: dict[str, KindEntry] | None = None,
+) -> dict[str, ResolvedMetricMeta]:
+    """Resolve the metadata of one round that reported every name in ``names``, in order."""
+    samples = [[dict.fromkeys(names, 1.0)]]
+    return resolve_metric_meta_from_samples(samples, config_metrics, adapter, config_kinds)
+
+
+# ---------------------------------------------------------------------------
+# resolve_metric_meta — adapter defaults
+# ---------------------------------------------------------------------------
+
+
+def _lower_only(_name: str) -> MetricDefaults:
+    return MetricDefaults(direction="lower")
+
+
+def _higher_in_ns(_name: str) -> MetricDefaults:
+    return MetricDefaults(direction="higher", unit="ns")
+
+
+def _memory_heap(_name: str) -> MetricDefaults:
+    return MetricDefaults(direction="lower", kind="memory", short_name="heap")
+
+
+@pytest.mark.parametrize(
+    ("defaults_fn", "name", "expected"),
+    [
+        pytest.param(
+            _lower_only,
+            "response-time",
+            metric_meta("response-time"),
+            id="gating-not-exact-no-kind-full-name",
+        ),
+        pytest.param(
+            _higher_in_ns,
+            "throughput",
+            metric_meta("throughput", direction="higher", unit="ns"),
+            id="direction-and-unit",
+        ),
+        pytest.param(
+            _memory_heap,
+            "bench-a/heap",
+            metric_meta("heap", kind="memory"),
+            id="kind-and-short-name",
+        ),
+    ],
+)
+def test_resolve_metric_meta_when_config_metrics_none_does_carry_the_adapter_defaults(
+    defaults_fn: Callable[[str], MetricDefaults], name: str, expected: ResolvedMetricMeta
+):
+    adapter = make_adapter(defaults_fn)
+
+    result = resolve([name], None, adapter)
+
+    assert result == {name: expected}
+
+
+# ---------------------------------------------------------------------------
+# resolve_metric_meta — per-metric config overrides
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("metric_name", "entry", "expected"),
+    [
+        pytest.param(
+            "throughput",
+            MetricEntry(direction="higher"),
+            metric_meta("throughput", direction="higher"),
+            id="direction",
+        ),
+        pytest.param(
+            "response-time",
+            MetricEntry(gating=False),
+            metric_meta("response-time", gating=False),
+            id="gating",
+        ),
+        pytest.param(
+            "response-time",
+            MetricEntry(exact=True),
+            metric_meta("response-time", exact=True),
+            id="exact",
+        ),
+    ],
+)
+def test_resolve_metric_meta_when_config_sets_single_field_does_override_only_the_named_metric(
+    metric_name: str, entry: MetricEntry, expected: ResolvedMetricMeta
+):
+    adapter = make_adapter()
+    config_metrics = {metric_name: entry, "unused": MetricEntry(gating=True, exact=True)}
+
+    result = resolve([metric_name], config_metrics, adapter)
+
+    assert result == {metric_name: expected}
+
+
+# ---------------------------------------------------------------------------
+# resolve_metric_meta — no metric reported
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_metric_meta_from_samples_when_no_set_reports_a_metric_does_raise():
+    sample_sets = [[{}, {}], [{}, {}]]
+
+    with pytest.raises(GymratError, match="^No metrics found in benchmark output$"):
+        resolve_metric_meta_from_samples(sample_sets, None, make_adapter(), None)
+
+
+# ---------------------------------------------------------------------------
+# resolve_metric_meta — multiple metrics
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_metric_meta_when_multiple_names_does_resolve_each_in_order():
+    def defaults_fn(name: str) -> MetricDefaults:
+        if name == "response-time":
+            return MetricDefaults(direction="lower", unit="ns")
+        if name == "throughput":
+            return MetricDefaults(direction="higher")
+        return MetricDefaults(direction="lower")
+
+    adapter = make_adapter(defaults_fn)
+    config_metrics = {
+        "response-time": MetricEntry(gating=False),
+        "throughput": MetricEntry(exact=True),
+    }
+
+    result = resolve(["response-time", "throughput"], config_metrics, adapter)
+
+    assert list(result) == ["response-time", "throughput"]
+    assert result == {
+        "response-time": metric_meta("response-time", unit="ns", gating=False),
+        "throughput": metric_meta("throughput", direction="higher", exact=True),
+    }
+
+
+# ---------------------------------------------------------------------------
+# resolve_metric_meta — kind-level gating
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_metric_meta_when_kind_sets_gating_does_apply_only_to_matching_kind():
+    def defaults_fn(name: str) -> MetricDefaults:
+        if name.endswith("/heap"):
+            return MetricDefaults(direction="lower", kind="memory", short_name="heap")
+        return MetricDefaults(direction="lower", kind="time", short_name="time")
+
+    adapter = make_adapter(defaults_fn)
+    config_kinds = {"memory": KindEntry(gating=False)}
+
+    result = resolve(["bench-a/heap", "bench-a/time"], None, adapter, config_kinds)
+
+    assert result == {
+        "bench-a/heap": metric_meta("heap", gating=False, kind="memory"),
+        "bench-a/time": metric_meta("time", kind="time"),
+    }
+
+
+def test_resolve_metric_meta_when_metric_and_kind_disagree_does_let_metric_win():
+    adapter = make_adapter(
+        lambda name: MetricDefaults(
+            direction="lower", kind="memory", short_name=name.split("/")[-1]
+        )
+    )
+    config_metrics = {"bench-a/heap": MetricEntry(gating=True)}
+    config_kinds = {"memory": KindEntry(gating=False)}
+
+    result = resolve(["bench-a/heap", "bench-a/rss"], config_metrics, adapter, config_kinds)
+
+    assert result == {
+        "bench-a/heap": metric_meta("heap", kind="memory"),
+        "bench-a/rss": metric_meta("rss", kind="memory", gating=False),
+    }
+
+
+@pytest.mark.parametrize(
+    ("adapter_kind", "config_metrics", "config_kinds", "expected"),
+    [
+        pytest.param(
+            "memory",
+            {"bench-a/heap": MetricEntry(exact=True)},
+            {"memory": KindEntry(gating=False)},
+            metric_meta("heap", kind="memory", gating=False, exact=True),
+            id="metric-entry-without-gating",
+        ),
+        pytest.param(
+            "memory",
+            None,
+            {"memory": KindEntry(gating=None)},
+            metric_meta("heap", kind="memory"),
+            id="kind-entry-without-gating",
+        ),
+        pytest.param(
+            None,
+            None,
+            {"other": KindEntry(gating=False)},
+            metric_meta("heap", kind="other", gating=False),
+            id="adapter-reports-no-kind",
+        ),
+    ],
+)
+def test_resolve_metric_meta_when_metric_leaves_gating_unset_does_take_it_from_kind_or_default(
+    adapter_kind: str | None,
+    config_metrics: dict[str, MetricEntry] | None,
+    config_kinds: dict[str, KindEntry],
+    expected: ResolvedMetricMeta,
+):
+    adapter = make_adapter(
+        lambda _name: MetricDefaults(direction="lower", kind=adapter_kind, short_name="heap")
+    )
+
+    result = resolve(["bench-a/heap"], config_metrics, adapter, config_kinds)
+
+    assert result == {"bench-a/heap": expected}
+
+
+# ---------------------------------------------------------------------------
+# resolve_metric_meta — one metric
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("entry", "config_kinds", "expected"),
+    [
+        pytest.param(
+            None,
+            None,
+            metric_meta("heap", direction="higher", kind="memory", unit="bytes"),
+            id="adapter-defaults",
+        ),
+        pytest.param(
+            MetricEntry(direction="lower"),
+            None,
+            metric_meta("heap", direction="lower", kind="memory", unit="bytes"),
+            id="entry-direction",
+        ),
+        pytest.param(
+            MetricEntry(exact=True),
+            {"memory": KindEntry(gating=False)},
+            metric_meta(
+                "heap", direction="higher", kind="memory", unit="bytes", gating=False, exact=True
+            ),
+            id="entry-without-direction-and-kind-gating",
+        ),
+    ],
+)
+def test_resolve_metric_meta_when_given_one_metric_does_layer_entry_over_kind_over_adapter(
+    entry: MetricEntry | None,
+    config_kinds: dict[str, KindEntry] | None,
+    expected: ResolvedMetricMeta,
+):
+    adapter = make_adapter(
+        lambda _name: MetricDefaults(
+            direction="higher", kind="memory", short_name="heap", unit="bytes"
+        )
+    )
+
+    result = resolve_metric_meta("bench-a/heap", entry, adapter, config_kinds)
+
+    assert result == expected

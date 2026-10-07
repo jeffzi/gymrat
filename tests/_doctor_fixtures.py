@@ -1,12 +1,15 @@
-"""Shared seam patches for ``gymrat.doctor`` tests.
+"""Shared inputs and seam patches for ``gymrat.doctor`` tests.
 
 This is test-support code, not a test module: it carries no test functions of
-its own. Both ``tests/doctor/test_report.py`` (assembly-level) and
-``tests/cli/commands/test_doctor_cmd.py`` (CLI-level) patch the config-inspection,
-config-section, workflow-section, and bench-section seams on
-``gymrat.doctor`` the same way; :func:`patch_common_seams` holds that
-shared body. Each call site still owns its own environment/git seams and its
-own ``problems`` wording, since those diverge between the two test files.
+its own. :func:`environment_info` builds the version and platform context a
+doctor report opens with, and :func:`doctor_report` and
+:func:`single_check_report` build whole reports on it, for
+``tests/test_doctor.py``, ``tests/cli/supervise/test_preflight.py`` and
+``tests/hardening/test_rendering_matrix.py``. :func:`patch_common_seams` and
+:func:`fixed_section` patch the config-inspection, config-section,
+workflow-section, and bench-section seams on ``gymrat.doctor`` for
+``tests/cli/commands/test_doctor_cmd.py``, which still owns its own
+environment/git seams and its own ``problems`` wording.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ if TYPE_CHECKING:
     import pytest
 
 from gymrat.config import ConfigInspection
-from gymrat.doctor import Check, CheckSection, EnvironmentInfo
+from gymrat.doctor import Check, CheckSection, DoctorReport, EnvironmentInfo, create_doctor_report
 from tests._config import benchless_config
 
 _MODULE = "gymrat.doctor"
@@ -31,6 +34,32 @@ def environment_info(**overrides: Any) -> EnvironmentInfo:
     """The version and platform context a doctor report opens with, any field overridable."""
     default = EnvironmentInfo(gymrat_version="0.5.0", python_version="3.13.0", platform="darwin")
     return replace(default, **overrides)
+
+
+def doctor_report(sections: list[CheckSection], **env_overrides: Any) -> DoctorReport:
+    """A doctor report over ``sections``, opened by :func:`environment_info`.
+
+    Args:
+        sections: The report's check sections, in order.
+        **env_overrides: Fields of the opening environment context to override.
+
+    Returns:
+        The assembled report, its counts aggregated from ``sections``.
+    """
+    return create_doctor_report(environment_info(**env_overrides), sections)
+
+
+def single_check_report(check: Check, title: str = "Environment") -> DoctorReport:
+    """A doctor report holding ``check`` alone, in one section titled ``title``.
+
+    Args:
+        check: The report's only check.
+        title: The title of the section holding it.
+
+    Returns:
+        The assembled report.
+    """
+    return doctor_report([CheckSection(title=title, checks=[check])])
 
 
 def fixed_section(title: str, checks: list[Check]) -> Callable[..., CheckSection]:
@@ -49,7 +78,19 @@ def patch_common_seams(
     bench_fail: bool,
     problems: list[str],
 ) -> SimpleNamespace:
-    """Patch the config-inspection, config, workflow, and bench seams shared by both test files."""
+    """Patch the config-inspection, config, workflow, and bench seams with fixed sections.
+
+    Args:
+        monkeypatch: The fixture the seams are patched through.
+        config_failure: Whether the config inspection finds no file and the
+            Configuration section reports a failing check.
+        bench_fail: Whether the Bench section reports a crashed bench.
+        problems: The problems the config inspection reports.
+
+    Returns:
+        A namespace whose ``bench_calls`` lists the keyword arguments of every
+        Bench section build.
+    """
     inspection = ConfigInspection(
         config_path="/missing/gymrat.json" if config_failure else "/project/gymrat.json",
         problems=problems,

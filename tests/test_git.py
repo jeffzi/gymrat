@@ -16,47 +16,63 @@ from pathlib import Path
 
 import pytest
 
-from gymrat import git as git_module
 from gymrat import signals
 from gymrat.git import (
     run_git,
     try_git,
 )
-from tests.conftest import list_worktree_dirs
-
-
-@pytest.fixture
-def scratch_repo(create_scratch_repo: Callable[[], str]) -> str:
-    """A throwaway git repo on ``main`` with one committed file."""
-    return create_scratch_repo()
-
+from tests._git import install_git_hook, list_worktree_dirs
 
 # ---------------------------------------------------------------------------
 # run_git
 # ---------------------------------------------------------------------------
 
 
-def test_run_git_when_rev_parse_head_does_return_forty_hex_sha(scratch_repo: str):
-    result = run_git(["rev-parse", "HEAD"], scratch_repo)
+def test_run_git_when_rev_parse_head_does_return_forty_hex_sha(repo: str):
+    result = run_git(["rev-parse", "HEAD"], repo)
 
     assert re.fullmatch(r"[0-9a-f]{40}", result.strip())
 
 
-def test_run_git_when_repo_env_vars_set_does_scrub_them_and_use_cwd(
-    scratch_repo: str, monkeypatch: pytest.MonkeyPatch
+_GIT_DIR_ARGS = ["rev-parse", "--git-dir"]
+
+
+@pytest.mark.parametrize(
+    ("key", "args", "expected"),
+    [
+        pytest.param("GIT_DIR", _GIT_DIR_ARGS, ".git\n", id="GIT_DIR"),
+        pytest.param("GIT_WORK_TREE", _GIT_DIR_ARGS, ".git\n", id="GIT_WORK_TREE"),
+        pytest.param("GIT_COMMON_DIR", _GIT_DIR_ARGS, ".git\n", id="GIT_COMMON_DIR"),
+        pytest.param("GIT_OBJECT_DIRECTORY", _GIT_DIR_ARGS, ".git\n", id="GIT_OBJECT_DIRECTORY"),
+        pytest.param("GIT_INDEX_FILE", ["ls-files"], "README.md\n", id="GIT_INDEX_FILE"),
+    ],
+)
+def test_run_git_when_repo_env_var_set_does_scrub_it_and_use_cwd(
+    repo: str, monkeypatch: pytest.MonkeyPatch, key: str, args: list[str], expected: str
 ):
-    for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
-        monkeypatch.setenv(key, "/nonexistent/.git")
+    monkeypatch.setenv(key, "/nonexistent/.git")
 
-    result = run_git(["rev-parse", "--git-dir"], scratch_repo)
+    result = run_git(args, repo)
 
-    assert result.strip() == ".git"
+    assert result == expected
 
 
-def test_run_git_when_extra_env_passed_does_apply_it_to_child_process(scratch_repo: str):
+def test_run_git_when_alternate_object_dirs_set_does_not_read_objects_through_them(
+    repo: str, create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+):
+    other = create_scratch_repo()
+    (Path(other) / "banana.txt").write_text("only in the other repo\n")
+    blob = run_git(["hash-object", "-w", "banana.txt"], other).strip()
+    monkeypatch.setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", str(Path(other) / ".git" / "objects"))
+
+    with pytest.raises(subprocess.CalledProcessError):
+        run_git(["cat-file", "-e", blob], repo)
+
+
+def test_run_git_when_extra_env_passed_does_apply_it_to_child_process(repo: str):
     result = run_git(
         ["var", "GIT_AUTHOR_IDENT"],
-        scratch_repo,
+        repo,
         env={"GIT_AUTHOR_NAME": "Banana", "GIT_AUTHOR_EMAIL": "banana@example.com"},
     )
 
@@ -64,21 +80,21 @@ def test_run_git_when_extra_env_passed_does_apply_it_to_child_process(scratch_re
 
 
 def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
-    scratch_repo: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    repo: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("GIT_INDEX_FILE", "/nonexistent/.git/index")
     custom_index = str(tmp_path / "custom-index")
-    (Path(scratch_repo) / "staged.txt").write_text("banana\n")
+    (Path(repo) / "staged.txt").write_text("banana\n")
 
-    run_git(["read-tree", "--empty"], scratch_repo, env={"GIT_INDEX_FILE": custom_index})
+    run_git(["read-tree", "--empty"], repo, env={"GIT_INDEX_FILE": custom_index})
     run_git(
         ["update-index", "--add", "--", "staged.txt"],
-        scratch_repo,
+        repo,
         env={"GIT_INDEX_FILE": custom_index},
     )
-    tree_sha = run_git(["write-tree"], scratch_repo, env={"GIT_INDEX_FILE": custom_index}).strip()
-    listing = run_git(["ls-tree", tree_sha], scratch_repo)
-    real_index_status = run_git(["diff", "--cached", "--name-only"], scratch_repo)
+    tree_sha = run_git(["write-tree"], repo, env={"GIT_INDEX_FILE": custom_index}).strip()
+    listing = run_git(["ls-tree", tree_sha], repo)
+    real_index_status = run_git(["diff", "--cached", "--name-only"], repo)
 
     assert "staged.txt" in listing
     assert real_index_status == ""
@@ -89,44 +105,52 @@ def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
 # ---------------------------------------------------------------------------
 
 
-def test_try_git_when_command_succeeds_does_return_none(scratch_repo: str):
-    assert try_git(["rev-parse", "HEAD"], scratch_repo) is None
+def test_try_git_when_command_succeeds_does_return_none(repo: str):
+    assert try_git(["rev-parse", "HEAD"], repo) is None
 
 
-def test_try_git_when_command_fails_does_return_stderr_diagnostic(scratch_repo: str):
-    result = try_git(["rev-parse", "--verify", "does-not-exist"], scratch_repo)
-
-    assert result
-    assert "fatal" in result
+def _git_fails(_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave ``subprocess.run`` alone; the command itself fails."""
 
 
-def test_try_git_when_git_binary_missing_does_return_diagnostic_string(
-    scratch_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    def raise_not_found(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+def _git_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_not_found(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
         message = "git"
         raise FileNotFoundError(message)
 
     monkeypatch.setattr(subprocess, "run", raise_not_found)
 
-    result = try_git(["rev-parse", "HEAD"], scratch_repo)
 
-    assert result is not None
-    assert isinstance(result, str)
-
-
-def test_try_git_when_command_times_out_does_return_diagnostic_string(
-    scratch_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    def raise_timeout(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+def _git_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_timeout(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd=["git"], timeout=1)
 
     monkeypatch.setattr(subprocess, "run", raise_timeout)
 
-    result = try_git(["rev-parse", "HEAD"], scratch_repo)
 
-    assert result is not None
-    assert isinstance(result, str)
+@pytest.mark.parametrize(
+    ("arrange", "diagnostic"),
+    [
+        pytest.param(_git_fails, "fatal: Needed a single revision", id="command-fails"),
+        pytest.param(_git_missing, "git", id="git-binary-missing"),
+        pytest.param(
+            _git_times_out,
+            "Command '['git']' timed out after 1 seconds",
+            id="command-times-out",
+        ),
+    ],
+)
+def test_try_git_when_the_call_fails_does_return_the_diagnostic_text(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: Callable[[pytest.MonkeyPatch], None],
+    diagnostic: str,
+):
+    arrange(monkeypatch)
+
+    result = try_git(["rev-parse", "--verify", "does-not-exist"], repo)
+
+    assert result == diagnostic
 
 
 # ---------------------------------------------------------------------------
@@ -143,37 +167,19 @@ _DEFERRAL_ELAPSED_FRACTION = 0.5
 _EXIT_POLL_TIMEOUT_SECONDS = 2.0
 _EXIT_POLL_INTERVAL_SECONDS = 0.01
 
-_TERMINATION_SIGNALS = [
-    pytest.param(resolved, id=name)
-    for name in ("SIGINT", "SIGTERM", "SIGHUP")
-    if (resolved := getattr(signal, name, None)) is not None
-]
-
-
-def _install_sleep_post_checkout_hook(repo_dir: str, seconds: int) -> None:
-    """Install a post-checkout hook that only sleeps.
-
-    Keeps ``git worktree add`` in-flight long enough for a mid-call signal to
-    land.
-    """
-    hook_path = Path(repo_dir) / ".git" / "hooks" / "post-checkout"
-    hook_path.parent.mkdir(parents=True, exist_ok=True)
-    hook_path.write_text(f"#!/bin/sh\nsleep {seconds}\n", encoding="utf-8")
-    hook_path.chmod(0o755)
-
 
 @pytest.mark.skipif(
     not hasattr(signal, "pthread_sigmask"),
     reason="Signal masking requires POSIX pthread_sigmask",
 )
-@pytest.mark.parametrize("term_signal", _TERMINATION_SIGNALS)
 def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_until_git_exits(
-    term_signal: signal.Signals,
-    create_scratch_repo: Callable[[], str],
-    monkeypatch: pytest.MonkeyPatch,
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    repo = create_scratch_repo()
-    _install_sleep_post_checkout_hook(repo, _WORKTREE_SLEEP_SECONDS)
+    # One signal suffices here: the deferred set is pinned in the signals suite.
+    term_signal = signal.SIGTERM
+    # A hook that only sleeps keeps ``git worktree add`` in flight long enough
+    # for a mid-call signal to land.
+    install_git_hook(repo, "post-checkout", f"sleep {_WORKTREE_SLEEP_SECONDS}\n")
     worktree_dir = str(Path(repo) / "wt")
 
     exit_record: dict[str, float] = {}
@@ -182,7 +188,7 @@ def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_unt
         exit_record["code"] = code
         exit_record["at"] = time.monotonic()
 
-    monkeypatch.setattr(signals, "_exit_process", record_exit)
+    monkeypatch.setattr(signals, "exit_process", record_exit)
 
     sweep_record: dict[str, bool] = {}
 
@@ -190,7 +196,7 @@ def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_unt
         sweep_record["worktree_materialized"] = (Path(worktree_dir) / ".git").exists()
         shutil.rmtree(worktree_dir, ignore_errors=True)
         subprocess.run(
-            ["git", "worktree", "prune"],  # noqa: S607
+            ["git", "worktree", "prune"],  # noqa: S607 -- git resolved from PATH like a user's shell
             cwd=repo,
             check=False,
             capture_output=True,
@@ -215,25 +221,9 @@ def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_unt
     assert list_worktree_dirs(repo, include_main=False) == []
 
 
-def test_run_git_when_inspected_does_delegate_signal_deferral_to_signals_module():
-    assert git_module.deferring_termination_signals is signals.deferring_termination_signals
-
-
-def test_run_git_when_object_env_vars_set_does_scrub_them_and_use_cwd(
-    scratch_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    for key in ("GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
-        monkeypatch.setenv(key, "/nonexistent/objects")
-
-    result = run_git(["rev-parse", "--git-dir"], scratch_repo)
-
-    assert result.strip() == ".git"
-
-
 def test_run_git_when_pthread_sigmask_unavailable_does_run_unmasked_and_return_stdout(
-    create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    repo = create_scratch_repo()
     monkeypatch.setattr(signals, "pthread_sigmask", None)
 
     result = run_git(["rev-parse", "HEAD"], repo)
@@ -246,19 +236,9 @@ def test_run_git_when_pthread_sigmask_unavailable_does_run_unmasked_and_return_s
 # ---------------------------------------------------------------------------
 
 
-def test_run_git_when_invoked_does_pass_stdin_devnull(
-    scratch_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    captured_kwargs: list[dict[str, object]] = []
-    real_run = subprocess.run
+@pytest.mark.usefixtures("stdin_holding_text")
+def test_run_git_when_a_command_reads_stdin_does_see_it_closed(repo: str):
+    # A closed stdin hashes to git's well-known empty-blob id; the inherited one holds text.
+    result = run_git(["hash-object", "--stdin"], repo)
 
-    def recording_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured_kwargs.append(dict(kwargs))
-        return real_run(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(subprocess, "run", recording_run)
-
-    run_git(["rev-parse", "HEAD"], scratch_repo)
-
-    assert captured_kwargs
-    assert captured_kwargs[0]["stdin"] is subprocess.DEVNULL
+    assert result.strip() == "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"

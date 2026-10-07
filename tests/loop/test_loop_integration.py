@@ -8,15 +8,14 @@ faked. Three flows are covered:
   process, so every command has to rebuild the session from the log on disk.
 - Lock contention: a gated bench holds the first ``iterate`` open while a second
   one collides with the repository lock and is refused.
-- A restart after a session finalized without its worktree on disk, which must
-  open a fresh session rather than resume the closed one.
+- The session guard: every loop command refuses to run without an open session,
+  naming what it was about to do in the hint that points at ``gymrat start``.
 
 POSIX-only: the flows lean on real subprocesses, worktrees, and file gating.
 """
 
-import json
+import asyncio
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -25,35 +24,45 @@ from pathlib import Path
 
 import pytest
 
+from gymrat.errors import GymratError
+from gymrat.loop.discard import discard_session
 from gymrat.loop.finalize import finalize_session
-from gymrat.loop.start import start_session
+from gymrat.loop.iterate.run import iterate_session
+from gymrat.loop.keep import keep_session
+from gymrat.loop.probe import ProbeOptions, probe_session
+from gymrat.loop.status import status_session
+from gymrat.loop.stop import stop_session
+from gymrat.loop.sync import sync_to_experiment
+from gymrat.session.lock import read_holder
 from gymrat.session.paths import (
-    archived_session_path,
-    baseline_worktree_dir,
     experiment_worktree_dir,
     lockfile_path,
-    session_jsonl_path,
 )
 from gymrat.session.records import (
     BaselineRecord,
     DiscardRecord,
     IterationRecord,
     KeepRecord,
-    SessionLogRecord,
     SessionRecord,
 )
-from gymrat.session.store import append_record, read_records
-from tests._config import resolved_config
-from tests._git import head_of
-from tests._git import run_git as _git
-from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project, tune_experiment
-from tests.session.records._fixtures import committed_keep, iteration_record, log_records
-
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees and gating")
-
-from tests._ansi import strip_sgr as _strip_ansi
+from tests._ansi import (
+    strip_sgr,
+)
 from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
+from tests._cli import run_cli
+from tests._config import benchless_config, resolved_config
+from tests._git import run_git as _git
+from tests._git import status_of
+from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project, tune_experiment
+from tests.loop._settle import checks_config, start_with
+from tests.session.records._fixtures import (
+    finalize_record,
+    log_records,
+    records_of_type,
+)
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees and gating")
 
 #: Generous budget: every command creates real worktrees and spawns real benches.
 LONG_RUN_TIMEOUT = 180
@@ -73,44 +82,6 @@ DISCARD_MARKER = "discarded-edit-marker"
 DISCARDED_FILE = "discarded-note.txt"
 
 
-def _run_cli(repo: str, *argv: str) -> subprocess.CompletedProcess[str]:
-    """Run one loop command from a cold-start process rooted in ``repo``.
-
-    A fresh process per call is what makes the sequence a restart test: nothing a
-    command computed survives into the next one, so every command has to rebuild
-    the session from the log on disk.
-    """
-    return subprocess.run(  # noqa: S603
-        [*_ENTRY, *argv],
-        cwd=repo,
-        env=_env(),
-        capture_output=True,
-        text=True,
-        timeout=LONG_RUN_TIMEOUT,
-        check=False,
-    )
-
-
-def _lock_holder_pid(lock_path: str) -> int | None:
-    """Pid stamped into the lock file's holder record, or ``None`` if unreadable.
-
-    A pure read on purpose: probing with ``flock`` would itself acquire the lock
-    whenever it is still free and steal it from the process under test for the
-    instant before the probe closes its descriptor. ``None`` covers a missing
-    file, a partially written record, and a stale record without a pid.
-    """
-    try:
-        pid = json.loads(Path(lock_path).read_text(encoding="utf-8"))["pid"]
-    except (OSError, ValueError, TypeError, KeyError):
-        return None
-    return pid if isinstance(pid, int) else None
-
-
-def _pick[R: SessionLogRecord](records: list[SessionLogRecord], record_type: type[R]) -> list[R]:
-    """The records of one class, in file order, narrowed to that record's shape."""
-    return [record for record in records if isinstance(record, record_type)]
-
-
 def _latency_samples(latency: int, count: int = SAMPLES) -> tuple[dict[str, float], ...]:
     """``count`` sample rounds, each reporting ``latency``."""
     return tuple({"latency": float(latency)} for _ in range(count))
@@ -128,25 +99,35 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     commit_project(repo, samples=SAMPLES)
 
     exit_codes: list[int] = [
-        _run_cli(repo, "start", "--baseline", "main").returncode,
-        _run_cli(repo, "measure", "main", "--record").returncode,
+        run_cli(
+            ["start", "--baseline", "main"], repo, check=False, timeout=LONG_RUN_TIMEOUT
+        ).returncode,
+        run_cli(
+            ["measure", "main", "--record"], repo, check=False, timeout=LONG_RUN_TIMEOUT
+        ).returncode,
     ]
     tune_experiment(repo, KEPT_LATENCY)
-    exit_codes.append(_run_cli(repo, "iterate").returncode)
-    exit_codes.append(_run_cli(repo, "keep", "-m", "tune latency to 90").returncode)
+    exit_codes.append(run_cli(["iterate"], repo, check=False, timeout=LONG_RUN_TIMEOUT).returncode)
+    exit_codes.append(
+        run_cli(
+            ["keep", "-m", "tune latency to 90"], repo, check=False, timeout=LONG_RUN_TIMEOUT
+        ).returncode
+    )
 
-    status_report = _strip_ansi(_run_cli(repo, "status", "--no-color").stdout)
+    status_report = strip_sgr(
+        run_cli(["status", "--no-color"], repo, check=False, timeout=LONG_RUN_TIMEOUT).stdout
+    )
 
     tune_experiment(repo, DISCARDED_LATENCY)
     (Path(experiment_worktree_dir(repo)) / DISCARDED_FILE).write_text(
         f"{DISCARD_MARKER}\n", encoding="utf-8"
     )
-    exit_codes.append(_run_cli(repo, "iterate").returncode)
-    exit_codes.append(_run_cli(repo, "discard").returncode)
+    exit_codes.append(run_cli(["iterate"], repo, check=False, timeout=LONG_RUN_TIMEOUT).returncode)
+    exit_codes.append(run_cli(["discard"], repo, check=False, timeout=LONG_RUN_TIMEOUT).returncode)
 
     records = log_records(repo)
-    session = _pick(records, SessionRecord)[0]
-    keep = _pick(records, KeepRecord)[0]
+    session = records_of_type(repo, SessionRecord)[0]
+    keep = records_of_type(repo, KeepRecord)[0]
     branch = session.branch
     kept_commit = keep.commit
     assert kept_commit is not None
@@ -170,13 +151,13 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
 
     # The second iteration numbers from the log left by the first — seq 2 can
     # only come from reading the log, nothing carried over in memory.
-    iterations = _pick(records, IterationRecord)
+    iterations = records_of_type(repo, IterationRecord)
     assert [record.seq for record in iterations] == [1, 2]
     assert keep.seq == 1
     assert keep.status == "committed"
-    assert _pick(records, DiscardRecord)[0].seq == 2
+    assert records_of_type(repo, DiscardRecord)[0].seq == 2
 
-    baseline = _pick(records, BaselineRecord)[0]
+    baseline = records_of_type(repo, BaselineRecord)[0]
     assert baseline.label == "main"
     assert baseline.samples == _latency_samples(BASELINE_LATENCY)
     first, second = iterations
@@ -191,7 +172,7 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     assert f"baseline main · latency {BASELINE_LATENCY}" in lines
     assert re.search(rf"^iteration 1 · .* · kept {kept_commit[:7]}$", status_report, re.MULTILINE)
 
-    assert _git(["status", "--porcelain"], repo) == ""
+    assert status_of(repo) == ""
 
     assert _git(["log", "--format=%H", f"main..{branch}"], repo).split("\n") == [kept_commit]
     assert _git(["show", f"{branch}:{TUNING_FILE}"], repo) == str(KEPT_LATENCY)
@@ -215,11 +196,11 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
     repo = create_scratch_repo()
     commit_project(repo, samples=SAMPLES, gate_file=gate_file)
 
-    assert _run_cli(repo, "start", "--baseline", "main").returncode == 0
+    run_cli(["start", "--baseline", "main"], repo, timeout=LONG_RUN_TIMEOUT)
     tune_experiment(repo, KEPT_LATENCY)
 
     lock_path = lockfile_path(repo)
-    first = subprocess.Popen(  # noqa: S603
+    first = subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
         [*_ENTRY, "iterate"],
         cwd=repo,
         env=_env(),
@@ -235,11 +216,14 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
             if time.monotonic() > deadline:
                 first.kill()
                 pytest.fail("first iterate never grabbed the lock")
-            if _lock_holder_pid(lock_path) == first.pid:
+            # A pure read on purpose: probing with flock would itself take the
+            # lock whenever it is still free, stealing it from the first run.
+            holder = read_holder(lock_path)
+            if holder is not None and holder.pid == first.pid:
                 break
             time.sleep(0.025)
 
-        second = _run_cli(repo, "iterate")
+        second = run_cli(["iterate"], repo, check=False, timeout=LONG_RUN_TIMEOUT)
         Path(gate_file).write_text("", encoding="utf-8")
         first_stdout, first_stderr = first.communicate(timeout=LONG_RUN_TIMEOUT)
     finally:
@@ -248,46 +232,102 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
             first.communicate()
 
     assert second.returncode == 2, second.stderr
+    assert second.stderr.startswith(f"Error: Lock held by PID {first.pid} (iterate, started ")
     assert first.returncode == 0, first_stderr or first_stdout
-    assert len(_pick(log_records(repo), IterationRecord)) == 1
+    assert len(records_of_type(repo, IterationRecord)) == 1
 
 
 # ---------------------------------------------------------------------------
-# restart after a finalize whose worktree was deleted first
+# the session guard every loop command runs first
 # ---------------------------------------------------------------------------
 
 
-def test_loop_when_restarted_after_a_finalize_without_worktree_does_open_fresh(
-    create_scratch_repo: Callable[[], str],
+def _iterate(root: str) -> object:
+    return asyncio.run(iterate_session(root, resolved_config()))
+
+
+def _keep(root: str) -> object:
+    return asyncio.run(keep_session(root, benchless_config()))
+
+
+def _probe(root: str) -> object:
+    return asyncio.run(probe_session(root, checks_config(), ProbeOptions()))
+
+
+def _stop(root: str) -> object:
+    return stop_session(root, "done")
+
+
+def _status(root: str) -> object:
+    return status_session(root, benchless_config())
+
+
+def _leave_without_a_session(root: str) -> str:
+    """Start nothing; return the refusal message a missing session earns."""
+    return f"No session in {root}"
+
+
+def _finalize_a_session(root: str) -> str:
+    """Open a session and finalize it; return the refusal message a closed session earns."""
+    finalize = finalize_record()
+    start_with(root, (finalize,))
+    session = records_of_type(root, SessionRecord)[0]
+    return f"Session {session.session_id} was finalized onto {finalize.branch}"
+
+
+#: Every loop command, the verb its refusal names, and whether it also refuses a
+#: finalized session — status reads a closed session's history, so it does not.
+_GUARDED_COMMANDS: list[tuple[str, Callable[[str], object], str, bool]] = [
+    ("iterate", _iterate, "measuring an edit", True),
+    ("keep", _keep, "settling an edit", True),
+    ("discard", discard_session, "settling an edit", True),
+    ("finalize", finalize_session, "closing the session", True),
+    ("stop", _stop, "stopping the session", True),
+    ("status", _status, "asking for its status", False),
+    ("sync", sync_to_experiment, "syncing changes", True),
+    ("probe", _probe, "probing", True),
+]
+
+_GUARD_CASES = [
+    *(
+        pytest.param(
+            command,
+            _leave_without_a_session,
+            "no-session",
+            f"Run gymrat start to open one before {verb}.",
+            id=f"{name}-no-session",
+        )
+        for name, command, verb, _ in _GUARDED_COMMANDS
+    ),
+    *(
+        pytest.param(
+            command,
+            _finalize_a_session,
+            "finalized",
+            f"Run gymrat start to open a new session before {verb}.",
+            id=f"{name}-finalized",
+        )
+        for name, command, verb, refuses_finalized in _GUARDED_COMMANDS
+        if refuses_finalized
+    ),
+]
+
+
+@pytest.mark.parametrize(("command", "arrange", "reason", "hint"), _GUARD_CASES)
+def test_loop_command_when_no_open_session_does_refuse_naming_its_verb(
+    repo: str,
+    command: Callable[[str], object],
+    arrange: Callable[[str], str],
+    reason: str,
+    hint: str,
 ):
-    repo = create_scratch_repo()
+    message = arrange(repo)
 
-    # The bench never runs — the iteration record stands in for what iterate measured.
-    first = start_session(repo, "main", resolved_config())
-    closed_session_id = first.session.session_id
+    with pytest.raises(GymratError) as excinfo:
+        command(repo)
 
-    worktree = experiment_worktree_dir(repo)
-    (Path(worktree) / TUNING_FILE).write_text(f"{KEPT_LATENCY}\n", encoding="utf-8")
-    _git(["add", "-A"], worktree)
-    _git(["commit", "-m", "tune latency to 90"], worktree)
-    append_record(session_jsonl_path(repo), iteration_record(seq=1))
-    append_record(
-        session_jsonl_path(repo),
-        committed_keep(1, commit=head_of(worktree)),
+    assert (str(excinfo.value), excinfo.value.reason, excinfo.value.hint) == (
+        message,
+        reason,
+        hint,
     )
-
-    # The directory goes before finalize does, so ``git worktree remove`` finds
-    # nothing to take and git keeps its entry for the path.
-    shutil.rmtree(worktree)
-    finalize_session(repo)
-    closed_log = log_records(repo)
-
-    restarted = start_session(repo, "main", resolved_config())
-
-    assert restarted.resumed is False
-    assert restarted.session.session_id != closed_session_id
-
-    assert Path(experiment_worktree_dir(repo)).exists()
-    assert Path(baseline_worktree_dir(repo)).exists()
-
-    assert read_records(archived_session_path(repo, closed_session_id)) == closed_log

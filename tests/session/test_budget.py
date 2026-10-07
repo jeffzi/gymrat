@@ -11,8 +11,8 @@ when the file is already gone.
 """
 
 import json
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -26,6 +26,7 @@ from gymrat.session.budget import (
 )
 from gymrat.session.paths import budget_path
 from gymrat.session.records import SessionLogRecord
+from tests._lock import hold_supervise_lock, remove_lock_files
 from tests.session.records._fixtures import baseline_record, iteration_record
 
 _FAR_FUTURE_DEADLINE_MS = 999_999_999.0
@@ -88,25 +89,10 @@ def test_remaining_ms_when_called_does_return_clamped_difference(
 # ---------------------------------------------------------------------------
 
 
-def test_write_budget_when_called_does_write_only_the_cap_and_the_deadline(root: str):
-    budget = _make_budget()
-
-    write_budget(root, budget)
-
-    assert _read_json(root) == {"max_minutes": 30, "deadline_ms": 1_800_000.0}
-
-
 def test_write_budget_when_called_does_write_compact_json_bytes(root: str):
     write_budget(root, _make_budget())
 
     assert _budget_file(root).read_bytes() == b'{"max_minutes":30.0,"deadline_ms":1800000.0}'
-
-
-def test_write_budget_when_called_twice_does_overwrite_previous(root: str):
-    write_budget(root, _make_budget(max_minutes=10))
-    write_budget(root, _make_budget(max_minutes=20))
-
-    assert _read_json(root)["max_minutes"] == 20
 
 
 # ---------------------------------------------------------------------------
@@ -114,77 +100,80 @@ def test_write_budget_when_called_twice_does_overwrite_previous(root: str):
 # ---------------------------------------------------------------------------
 
 
-def test_read_budget_when_file_exists_and_lock_held_and_deadline_ahead_does_return_budget(
-    root: str,
-):
-    original = _make_budget(deadline_ms=_FAR_FUTURE_DEADLINE_MS)
-    write_budget(root, original)
+@pytest.fixture
+def supervise_lock(root: str, request: pytest.FixtureRequest) -> Iterator[None]:
+    """Hold the real supervise lock for ``root``, unless the test parametrizes it ``False``."""
+    if getattr(request, "param", True):
+        lock = hold_supervise_lock(root)
+        yield
+        lock.release()
+    else:
+        yield
+    remove_lock_files(root)
 
-    with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
-        result = read_budget(root, now_ms=1000.0)
 
-    assert result == original
+_WRITTEN = _make_budget(deadline_ms=5000.0)
 
 
 @pytest.mark.parametrize(
-    "raw_content",
+    ("supervise_lock", "now_ms", "expected"),
     [
-        pytest.param(None, id="file-absent"),
-        pytest.param("not valid json{{{", id="invalid-json"),
-        pytest.param(json.dumps({"unexpected_field": 42}), id="wrong-schema"),
-        pytest.param(json.dumps([1, 2, 3]), id="array-not-object"),
-        pytest.param(json.dumps(42), id="number-not-object"),
-        pytest.param(_budget_json(deadline_ms="soon"), id="deadline-string"),
-        pytest.param(_budget_json(deadline_ms=None), id="deadline-null"),
-        pytest.param(_budget_json(max_minutes="long"), id="max-minutes-string"),
-        pytest.param(_budget_json(deadline_ms=True), id="deadline-bool"),
-        pytest.param(_budget_json(extra=1), id="unexpected-field"),
+        pytest.param(True, 1000.0, _WRITTEN, id="lock-held-and-deadline-ahead"),
+        pytest.param(True, 6000.0, None, id="deadline-passed"),
+        pytest.param(False, 1000.0, None, id="supervise-lock-not-held"),
+    ],
+    indirect=["supervise_lock"],
+)
+@pytest.mark.usefixtures("supervise_lock")
+def test_read_budget_when_file_written_does_return_it_only_while_held_and_ahead(
+    root: str, now_ms: float, expected: Budget | None
+):
+    write_budget(root, _WRITTEN)
+
+    result = read_budget(root, now_ms=now_ms)
+
+    assert result == expected
+
+
+def _contents(raw: bytes) -> Callable[[Path], None]:
+    def write(path: Path) -> None:
+        path.write_bytes(raw)
+
+    return write
+
+
+def _absent(_path: Path) -> None:
+    """Leave the budget file absent."""
+
+
+def _directory(path: Path) -> None:
+    path.mkdir()
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        pytest.param(_absent, id="file-absent"),
+        pytest.param(_directory, id="path-is-a-directory"),
+        pytest.param(_contents(b"not valid json{{{"), id="invalid-json"),
+        pytest.param(_contents(b"\xff\xfe not text"), id="not-utf8"),
+        pytest.param(_contents(json.dumps({"unexpected_field": 42}).encode()), id="wrong-schema"),
+        pytest.param(_contents(json.dumps([1, 2, 3]).encode()), id="array-not-object"),
+        pytest.param(_contents(json.dumps(42).encode()), id="number-not-object"),
+        pytest.param(_contents(_budget_json(deadline_ms="soon").encode()), id="deadline-string"),
+        pytest.param(_contents(_budget_json(deadline_ms=None).encode()), id="deadline-null"),
+        pytest.param(_contents(_budget_json(max_minutes="long").encode()), id="max-minutes-string"),
+        pytest.param(_contents(_budget_json(deadline_ms=True).encode()), id="deadline-bool"),
+        pytest.param(_contents(_budget_json(extra=1).encode()), id="unexpected-field"),
     ],
 )
+@pytest.mark.usefixtures("supervise_lock")
 def test_read_budget_when_file_unreadable_or_invalid_does_return_none(
-    root: str, raw_content: str | None
+    root: str, arrange: Callable[[Path], None]
 ):
-    if raw_content is not None:
-        _budget_file(root).write_text(raw_content, encoding="utf-8")
+    arrange(_budget_file(root))
 
-    with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
-        result = read_budget(root, now_ms=0.0)
-
-    assert result is None
-
-
-def test_read_budget_when_file_is_not_utf8_does_return_none(root: str):
-    _budget_file(root).write_bytes(b"\xff\xfe not text")
-
-    with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
-        result = read_budget(root, now_ms=0.0)
-
-    assert result is None
-
-
-def test_read_budget_when_path_cannot_be_read_does_return_none(root: str):
-    _budget_file(root).mkdir()
-
-    with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
-        result = read_budget(root, now_ms=0.0)
-
-    assert result is None
-
-
-def test_read_budget_when_deadline_passed_does_return_none(root: str):
-    write_budget(root, _make_budget(deadline_ms=5000.0))
-
-    with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
-        result = read_budget(root, now_ms=6000.0)
-
-    assert result is None
-
-
-def test_read_budget_when_supervise_lock_not_held_does_return_none(root: str):
-    write_budget(root, _make_budget(deadline_ms=_FAR_FUTURE_DEADLINE_MS))
-
-    with patch("gymrat.session.budget.is_held", autospec=True, return_value=False):
-        result = read_budget(root, now_ms=1000.0)
+    result = read_budget(root, now_ms=0.0)
 
     assert result is None
 

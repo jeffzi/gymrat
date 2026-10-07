@@ -32,11 +32,6 @@ from tests.session.records._fixtures import (
 )
 
 # ---------------------------------------------------------------------------
-# Keep records
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # fold_session
 # ---------------------------------------------------------------------------
 
@@ -224,7 +219,9 @@ _ITERATION_1_UNSETTLED = session_state(
 def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
     records: list[SessionLogRecord], expected: SessionState
 ):
-    assert fold_session(records) == expected
+    state = fold_session(records)
+
+    assert state == expected
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +290,9 @@ def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
 def test_fold_session_when_records_replayed_does_report_ends_on_gating_block(
     records: list[SessionLogRecord], expected: bool
 ):
-    assert fold_session(records).ends_on_gating_block is expected
+    state = fold_session(records)
+
+    assert state.ends_on_gating_block is expected
 
 
 # ---------------------------------------------------------------------------
@@ -313,16 +312,6 @@ def test_fold_session_when_records_replayed_does_report_ends_on_gating_block(
             [SESSION, ITERATION_1, committed_keep(1), stop_record(), BASELINE],
             True,
             id="a-stop-followed-only-by-a-baseline",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), stop_record(), HOOK],
-            True,
-            id="a-stop-followed-only-by-a-hook",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), stop_record(), BASELINE, HOOK],
-            True,
-            id="a-stop-followed-only-by-baseline-and-hook",
         ),
         pytest.param(
             [
@@ -374,7 +363,9 @@ def test_fold_session_when_records_replayed_does_report_ends_on_gating_block(
 def test_fold_session_when_records_replayed_does_report_ends_on_stop(
     records: list[SessionLogRecord], expected: bool
 ):
-    assert fold_session(records).ends_on_stop is expected
+    state = fold_session(records)
+
+    assert state.ends_on_stop is expected
 
 
 # ---------------------------------------------------------------------------

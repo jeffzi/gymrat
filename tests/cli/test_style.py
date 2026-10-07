@@ -1,40 +1,26 @@
-"""Tests for CLI style vocabulary constants and theme wiring.
+"""Tests for CLI theme wiring.
 
-Running-state elements (spinners, in-flight timers) render cyan.  Alert
-surfaces (idle warnings, caps) render yellow.  The theme entries that Rich
-progress columns hard-code (``progress.spinner``, ``progress.elapsed``) follow
-the style constants so a colour change in one place propagates everywhere.
+Running-state elements (spinners, in-flight timers) and alert surfaces (idle
+warnings, caps) take their colors from the style constants. The theme entries
+that Rich progress columns hard-code (``progress.spinner``,
+``progress.elapsed``) follow those constants so a color change in one place
+propagates everywhere.
 """
 
+import pytest
 from rich.style import Style
 
-from gymrat.cli.style import CLI_THEME, STYLE_ALERT, STYLE_RUNNING, STYLE_TIMER_RUNNING
-
-# ---------------------------------------------------------------------------
-# running vs alert colour split
-# ---------------------------------------------------------------------------
+from gymrat.cli.style import CLI_THEME, STYLE_RUNNING, STYLE_TIMER_RUNNING
 
 
-def test_style_running_when_referenced_does_equal_cyan():
-    assert STYLE_RUNNING == "cyan"
-
-
-def test_style_timer_running_when_referenced_does_equal_cyan():
-    assert STYLE_TIMER_RUNNING == "cyan"
-
-
-def test_style_alert_when_referenced_does_equal_yellow():
-    assert STYLE_ALERT == "yellow"
-
-
-# ---------------------------------------------------------------------------
-# CLI_THEME wiring
-# ---------------------------------------------------------------------------
-
-
-def test_cli_theme_when_spinner_resolved_does_match_running_style():
-    assert CLI_THEME.styles["progress.spinner"] == Style.parse(STYLE_RUNNING)
-
-
-def test_cli_theme_when_elapsed_resolved_does_match_timer_running_style():
-    assert CLI_THEME.styles["progress.elapsed"] == Style.parse(STYLE_TIMER_RUNNING)
+@pytest.mark.parametrize(
+    ("theme_key", "style"),
+    [
+        pytest.param("progress.spinner", STYLE_RUNNING, id="spinner-running"),
+        pytest.param("progress.elapsed", STYLE_TIMER_RUNNING, id="elapsed-timer-running"),
+    ],
+)
+def test_cli_theme_when_progress_entry_resolved_does_match_its_style_constant(
+    theme_key: str, style: str
+):
+    assert CLI_THEME.styles[theme_key] == Style.parse(style)

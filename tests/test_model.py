@@ -1,3 +1,4 @@
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -26,68 +27,53 @@ def _round_lists(draw: st.DrawFn) -> list[dict[str, float]]:
 
 
 # ---------------------------------------------------------------------------
-# pair_metric — happy path and truncation
+# pair_metric — examples
 # ---------------------------------------------------------------------------
 
 
-def test_pair_metric_when_shared_metric_across_equal_runs_does_align_values():
-    left = [{"t": 1.0}, {"t": 2.0}]
-    right = [{"t": 10.0}, {"t": 20.0}]
+@pytest.mark.parametrize(
+    ("left", "right", "metric", "expected"),
+    [
+        pytest.param(
+            [{"t": 1.0}, {"t": 2.0}],
+            [{"t": 10.0}, {"t": 20.0}],
+            "t",
+            ((1.0, 2.0), (10.0, 20.0), 0),
+            id="equal-runs",
+        ),
+        pytest.param(
+            [{"t": 1.0}, {"t": 2.0}, {"t": 3.0}],
+            [{"t": 10.0}, {"t": 20.0}],
+            "t",
+            ((1.0, 2.0), (10.0, 20.0), 0),
+            id="truncates-to-shorter",
+        ),
+        pytest.param(
+            [{"t": 1.0}, {"t": 2.0}, {"t": 3.0}],
+            [{"t": 10.0}, {"other": 99.0}, {"t": 30.0}],
+            "t",
+            ((1.0, 3.0), (10.0, 30.0), 1),
+            id="missing-one-side",
+        ),
+        pytest.param(
+            [{"t": 1.0}, {"other": 5.0}],
+            [{"t": 10.0}, {"other": 50.0}],
+            "t",
+            ((1.0,), (10.0,), 0),
+            id="missing-both-sides",
+        ),
+        pytest.param([{"t": 1.0}], [{"t": 2.0}], "missing", ((), (), 0), id="absent-everywhere"),
+    ],
+)
+def test_pair_metric_when_rounds_given_does_pair_the_rounds_both_sides_measured(
+    left: list[dict[str, float]],
+    right: list[dict[str, float]],
+    metric: str,
+    expected: tuple[tuple[float, ...], tuple[float, ...], int],
+):
+    result = pair_metric(left, right, metric)
 
-    result = pair_metric(left, right, "t")
-
-    assert result.left == (1.0, 2.0)
-    assert result.right == (10.0, 20.0)
-    assert result.dropped == 0
-
-
-def test_pair_metric_when_lengths_differ_does_truncate_to_shorter_run():
-    left = [{"t": 1.0}, {"t": 2.0}, {"t": 3.0}]
-    right = [{"t": 10.0}, {"t": 20.0}]
-
-    result = pair_metric(left, right, "t")
-
-    assert result.left == (1.0, 2.0)
-    assert result.right == (10.0, 20.0)
-    assert result.dropped == 0
-
-
-# ---------------------------------------------------------------------------
-# pair_metric — dropping unpaired rounds
-# ---------------------------------------------------------------------------
-
-
-def test_pair_metric_when_metric_missing_on_one_side_does_drop_from_both():
-    left = [{"t": 1.0}, {"t": 2.0}, {"t": 3.0}]
-    right = [{"t": 10.0}, {"other": 99.0}, {"t": 30.0}]
-
-    result = pair_metric(left, right, "t")
-
-    assert result.left == (1.0, 3.0)
-    assert result.right == (10.0, 30.0)
-    assert len(result.left) == len(result.right)
-    assert result.dropped == 1
-
-
-def test_pair_metric_when_metric_missing_on_both_sides_does_not_increment_dropped():
-    left = [{"t": 1.0}, {"other": 5.0}]
-    right = [{"t": 10.0}, {"other": 50.0}]
-
-    result = pair_metric(left, right, "t")
-
-    assert result.left == (1.0,)
-    assert result.right == (10.0,)
-    assert result.dropped == 0
-
-
-def test_pair_metric_when_metric_absent_everywhere_does_return_empty_sequences():
-    left = [{"t": 1.0}]
-    right = [{"t": 2.0}]
-
-    result = pair_metric(left, right, "missing")
-
-    assert result.left == ()
-    assert result.right == ()
+    assert (result.left, result.right, result.dropped) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -99,18 +85,6 @@ _any_rounds = given(
     right=_round_lists(),
     metric=st.sampled_from(_METRIC_NAMES),
 )
-
-
-@_any_rounds
-def test_pair_metric_when_given_any_rounds_does_return_bounded_equal_length_sequences(
-    left: list[dict[str, float]],
-    right: list[dict[str, float]],
-    metric: str,
-):
-    result = pair_metric(left, right, metric)
-
-    assert len(result.left) == len(result.right)
-    assert len(result.left) <= min(len(left), len(right))
 
 
 @_any_rounds

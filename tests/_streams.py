@@ -7,7 +7,7 @@ from typing import override
 class FakeStream(io.StringIO):
     """A stdout/stderr stand-in whose TTY status the test controls."""
 
-    def __init__(self, *, tty: bool):
+    def __init__(self, *, tty: bool) -> None:
         super().__init__()
         self._tty = tty
 
@@ -17,15 +17,14 @@ class FakeStream(io.StringIO):
 
 
 class RaisingStream(FakeStream):
-    """A stream whose every write raises ``error``, as a closed pipe would.
+    """A non-terminal stream whose every write raises ``error``, as a closed pipe would.
 
     Args:
         error: The exception each ``write`` raises.
-        tty: What ``isatty`` reports.
     """
 
-    def __init__(self, error: OSError, *, tty: bool = False) -> None:
-        super().__init__(tty=tty)
+    def __init__(self, error: OSError) -> None:
+        super().__init__(tty=False)
         self._error = error
 
     @override

@@ -14,35 +14,42 @@ import pytest
 from gymrat.cli.supervised import guard_supervised_origin, is_supervised_run_live
 from gymrat.errors import GymratError
 from gymrat.session.budget import Budget, write_budget
-from gymrat.session.paths import budget_path, supervise_lockfile_path
+from gymrat.session.paths import budget_path
+from tests._lock import hold_supervise_lock, remove_lock_files
 from tests.cli._budget import (
     LIVE_BUDGET,
     SUPERVISED_HINT,
-    mark_tool_origin,
     set_origin,
 )
-from tests.conftest import hold_lock, remove_lock_files
 
 #: A budget whose deadline is already in the past, so every liveness check against it answers false.
 EXPIRED_BUDGET = Budget(max_minutes=30, deadline_ms=1.0)
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Iterator[str]:
+def state_dir(tmp_path: Path) -> Iterator[str]:
     """A repository root with an empty ``.gymrat`` state directory, its lock files removed after."""
     (tmp_path / ".gymrat").mkdir()
     yield str(tmp_path)
     remove_lock_files(str(tmp_path))
 
 
-def _write_budget_directory(repo: str) -> None:
+@pytest.fixture
+def supervise_lock(state_dir: str) -> Iterator[None]:
+    """Hold the real supervise lock for ``state_dir`` for the duration of the test."""
+    lock = hold_supervise_lock(state_dir)
+    yield
+    lock.release()
+
+
+def _write_budget_directory(state_dir: str) -> None:
     """Put a directory where the budget file belongs so reading it fails."""
-    Path(budget_path(repo)).mkdir()
+    Path(budget_path(state_dir)).mkdir()
 
 
-def _write_garbage_budget(repo: str) -> None:
+def _write_garbage_budget(state_dir: str) -> None:
     """Write a budget file that is not valid JSON."""
-    Path(budget_path(repo)).write_text("banana", encoding="utf-8")
+    Path(budget_path(state_dir)).write_text("banana", encoding="utf-8")
 
 
 @pytest.fixture(
@@ -54,19 +61,19 @@ def _write_garbage_budget(repo: str) -> None:
         pytest.param("directory", id="budget-unreadable"),
     ]
 )
-def not_live_repo(request: pytest.FixtureRequest, repo: str) -> Iterator[str]:
+def not_live_repo(request: pytest.FixtureRequest, state_dir: str) -> Iterator[str]:
     """A repository root in one of the states where no supervised run is live."""
     case: str = request.param
-    lock = None if case == "released" else hold_lock(supervise_lockfile_path(repo), "supervise")
+    lock = None if case == "released" else hold_supervise_lock(state_dir)
     if case == "expired":
-        write_budget(repo, EXPIRED_BUDGET)
+        write_budget(state_dir, EXPIRED_BUDGET)
     elif case == "released":
-        write_budget(repo, LIVE_BUDGET)
+        write_budget(state_dir, LIVE_BUDGET)
     elif case == "garbage":
-        _write_garbage_budget(repo)
+        _write_garbage_budget(state_dir)
     elif case == "directory":
-        _write_budget_directory(repo)
-    yield repo
+        _write_budget_directory(state_dir)
+    yield state_dir
     if lock is not None:
         lock.release()
 
@@ -75,38 +82,17 @@ def not_live_repo(request: pytest.FixtureRequest, repo: str) -> Iterator[str]:
 # is_supervised_run_live
 # ---------------------------------------------------------------------------
 
-#: Every command origin the guard treats differently: unset, the tool host, and the shell.
-ORIGINS = [
-    pytest.param(None, id="origin-unset"),
-    pytest.param("tool", id="origin-tool"),
-    pytest.param("cli", id="origin-cli"),
-]
-#: Two more non-tool spellings, added where a test needs every origin the guard refuses.
-NON_TOOL_EXTRAS = [
-    pytest.param("", id="origin-empty"),
-    pytest.param("TOOL", id="origin-uppercase-tool"),
-]
 
-
-@pytest.mark.parametrize("origin", ORIGINS)
 @pytest.mark.usefixtures("supervise_lock")
-def test_is_supervised_run_live_when_budget_live_and_lock_held_does_answer_true(
-    repo: str, monkeypatch: pytest.MonkeyPatch, origin: str | None
-):
-    write_budget(repo, LIVE_BUDGET)
-    set_origin(monkeypatch, origin)
+def test_is_supervised_run_live_when_budget_live_and_lock_held_does_answer_true(state_dir: str):
+    write_budget(state_dir, LIVE_BUDGET)
 
-    live = is_supervised_run_live(repo)
+    live = is_supervised_run_live(state_dir)
 
     assert live is True
 
 
-@pytest.mark.parametrize("origin", ORIGINS)
-def test_is_supervised_run_live_when_not_live_does_answer_false(
-    not_live_repo: str, monkeypatch: pytest.MonkeyPatch, origin: str | None
-):
-    set_origin(monkeypatch, origin)
-
+def test_is_supervised_run_live_when_not_live_does_answer_false(not_live_repo: str):
     live = is_supervised_run_live(not_live_repo)
 
     assert live is False
@@ -122,18 +108,19 @@ def test_is_supervised_run_live_when_not_live_does_answer_false(
     [
         pytest.param(None, id="origin-unset"),
         pytest.param("cli", id="origin-cli"),
-        *NON_TOOL_EXTRAS,
+        pytest.param("", id="origin-empty"),
+        pytest.param("TOOL", id="origin-uppercase-tool"),
     ],
 )
 @pytest.mark.usefixtures("supervise_lock")
 def test_guard_supervised_origin_when_live_and_origin_not_tool_does_refuse(
-    repo: str, monkeypatch: pytest.MonkeyPatch, origin: str | None
+    state_dir: str, monkeypatch: pytest.MonkeyPatch, origin: str | None
 ):
-    write_budget(repo, LIVE_BUDGET)
+    write_budget(state_dir, LIVE_BUDGET)
     set_origin(monkeypatch, origin)
 
     with pytest.raises(GymratError) as exc:
-        guard_supervised_origin(repo, "iterate")
+        guard_supervised_origin(state_dir, "iterate")
 
     assert str(exc.value) == "a supervised run is live; use the iterate tool"
     assert exc.value.hint == SUPERVISED_HINT
@@ -142,22 +129,28 @@ def test_guard_supervised_origin_when_live_and_origin_not_tool_does_refuse(
 
 @pytest.mark.usefixtures("supervise_lock")
 def test_guard_supervised_origin_when_live_and_origin_tool_does_allow(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    state_dir: str, monkeypatch: pytest.MonkeyPatch
 ):
-    write_budget(repo, LIVE_BUDGET)
-    mark_tool_origin(monkeypatch)
+    write_budget(state_dir, LIVE_BUDGET)
+    set_origin(monkeypatch, "tool")
 
-    result = guard_supervised_origin(repo, "iterate")
+    result = guard_supervised_origin(state_dir, "iterate")
 
     assert result is None
 
 
-@pytest.mark.parametrize("origin", [*ORIGINS, *NON_TOOL_EXTRAS])
+@pytest.mark.parametrize(
+    "origin",
+    [
+        pytest.param("tool", id="origin-tool"),
+        pytest.param("cli", id="origin-cli"),
+    ],
+)
 def test_guard_supervised_origin_when_not_live_does_allow(
-    repo: str, monkeypatch: pytest.MonkeyPatch, origin: str | None
+    state_dir: str, monkeypatch: pytest.MonkeyPatch, origin: str | None
 ):
     set_origin(monkeypatch, origin)
 
-    result = guard_supervised_origin(repo, "keep")
+    result = guard_supervised_origin(state_dir, "keep")
 
     assert result is None

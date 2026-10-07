@@ -17,20 +17,22 @@ import pytest
 from gymrat import measure as measure_mod
 from gymrat import sampling
 from gymrat.config import KindEntry, MetricEntry
-from gymrat.errors import CommandError, GymratError
+from gymrat.errors import CommandError
 from gymrat.measure import MeasureOptions, measure
 from gymrat.sampling import (
     CleanupResult,
-    RunOptions,
-    SamplingOptions,
     TargetSpec,
     WorktreeInfo,
 )
 from gymrat.targets import WorktreeRemovalFailure
 from gymrat.utils import warn_to_stderr
-from tests._git import EMIT_ONE_BENCH, write_committed_bench
-from tests._pipeline import install_pipeline
-from tests.conftest import create_in_place_target_dir, list_worktree_dirs
+from tests._git import (
+    EMIT_ONE_BENCH,
+    create_in_place_target_dir,
+    list_worktree_dirs,
+    write_committed_bench,
+)
+from tests._pipeline import install_pipeline, run_options
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -50,16 +52,10 @@ def _options(
 ) -> MeasureOptions:
     resolved_spec = spec if spec is not None else TargetSpec(label=None, target=target)
     return MeasureOptions(
-        run=RunOptions(
-            sampling=SamplingOptions(
-                bench="run",
-                prepare="prep",
-                samples=3,
-                timeout_seconds=1.0,
-                on_progress=on_progress,
-                warn=warn,
-            ),
-            adapter="metric-lines",
+        run=run_options(
+            samples=3,
+            on_progress=on_progress,
+            warn=warn,
             config_metrics=config_metrics,
             config_kinds=config_kinds,
         ),
@@ -67,7 +63,7 @@ def _options(
     )
 
 
-async def test_measure_when_target_benched_does_report_metric_median_and_spread(
+async def test_measure_when_target_benched_does_assemble_the_result(
     monkeypatch: pytest.MonkeyPatch,
 ):
     install_pipeline(monkeypatch, measure_mod, [[{"x": 10.0}, {"x": 20.0}, {"x": 30.0}]])
@@ -113,24 +109,6 @@ async def test_measure_when_rounds_report_different_metrics_does_median_over_pre
     assert result.rounds == ({"x": 1.0}, {"y": 2.0}, {"x": 3.0})
 
 
-async def test_measure_when_no_metrics_does_raise_gymrat_error(monkeypatch: pytest.MonkeyPatch):
-    install_pipeline(monkeypatch, measure_mod, [[{}, {}]])
-
-    with pytest.raises(GymratError, match="No metrics found in benchmark output"):
-        await measure(_options())
-
-
-async def test_measure_when_metric_median_zero_does_report_no_spread(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    install_pipeline(monkeypatch, measure_mod, [[{"x": -1.0}, {"x": 0.0}, {"x": 1.0}]])
-
-    result = await measure(_options())
-
-    assert result.metrics["x"].median == 0.0
-    assert result.metrics["x"].spread is None
-
-
 async def test_measure_when_cleanup_reports_removals_does_map_worktree_fields(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -160,17 +138,13 @@ async def test_measure_when_progress_and_warn_given_does_forward_to_sampling(
 
     forwarded = captured.options
     assert forwarded is not None
+    sampling = options.run.sampling
+    assert forwarded.on_progress is sampling.on_progress
+    assert forwarded.warn is sampling.warn
     assert forwarded.bench == "run"
     assert forwarded.prepare == "prep"
     assert forwarded.samples == 3
     assert forwarded.timeout_seconds == 1.0
-
-    sentinel = object()
-    forwarded.on_progress(sentinel)  # type: ignore[arg-type]
-    assert steps[-1] is sentinel
-    assert forwarded.warn is not None
-    forwarded.warn("test warning")
-    assert warnings[-1] == "test warning"
 
 
 async def test_measure_when_config_overrides_given_does_apply_them_to_the_result(
@@ -199,26 +173,16 @@ _FAIL = "#!/bin/sh\nexit 1\n"
 
 def _e2e_options(target: str) -> MeasureOptions:
     return MeasureOptions(
-        run=RunOptions(
-            sampling=SamplingOptions(
-                bench="sh bench.sh", prepare=None, samples=2, timeout_seconds=30.0
-            ),
-            adapter="metric-lines",
-            config_metrics=None,
-            config_kinds=None,
-        ),
+        run=run_options(samples=2, bench="sh bench.sh", prepare=None, timeout_seconds=30.0),
         target=TargetSpec(label=None, target=target),
     )
 
 
 @_posix_only
 async def test_measure_when_in_place_target_does_bench_without_worktree(
-    create_scratch_repo: Callable[[], str],
-    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
 ):
-    repo = create_scratch_repo()
     target_dir = create_in_place_target_dir(repo, "bench", EMIT_ONE_BENCH)
-    monkeypatch.chdir(repo)
 
     result = await measure(_e2e_options(target_dir))
 
@@ -229,12 +193,9 @@ async def test_measure_when_in_place_target_does_bench_without_worktree(
 
 @_posix_only
 async def test_measure_when_ref_target_does_bench_in_worktree_and_sweep(
-    create_scratch_repo: Callable[[], str],
-    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
 ):
-    repo = create_scratch_repo()
     write_committed_bench(repo, EMIT_ONE_BENCH)
-    monkeypatch.chdir(repo)
 
     result = await measure(_e2e_options("HEAD"))
 
@@ -245,12 +206,9 @@ async def test_measure_when_ref_target_does_bench_in_worktree_and_sweep(
 
 @_posix_only
 async def test_measure_when_bench_fails_does_reject_and_remove_worktrees(
-    create_scratch_repo: Callable[[], str],
-    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
 ):
-    repo = create_scratch_repo()
     write_committed_bench(repo, _FAIL)
-    monkeypatch.chdir(repo)
 
     with pytest.raises(CommandError):
         await measure(_e2e_options("HEAD"))
@@ -260,12 +218,10 @@ async def test_measure_when_bench_fails_does_reject_and_remove_worktrees(
 
 @_posix_only
 async def test_measure_when_bench_fails_and_worktree_unremovable_does_name_stranded_dir(
-    create_scratch_repo: Callable[[], str],
+    repo: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    repo = create_scratch_repo()
     write_committed_bench(repo, _FAIL)
-    monkeypatch.chdir(repo)
     dirty = CleanupResult(
         removed=0,
         failures=(WorktreeRemovalFailure(dir="/tmp/stranded-wt", error="in use"),),

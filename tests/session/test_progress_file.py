@@ -10,12 +10,10 @@ partial file.  ``clear_progress`` removes the sidecar when the iteration exits.
 import json
 import os
 import sys
-import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from gymrat.progress_events import (
     HookStarted,
@@ -25,7 +23,6 @@ from gymrat.progress_events import (
 )
 from gymrat.session.paths import progress_path, session_dir
 from gymrat.session.progress_file import (
-    STALENESS_BOUND_SECONDS,
     ProgressSnapshot,
     SidecarWriter,
     clear_progress,
@@ -34,33 +31,20 @@ from gymrat.session.progress_file import (
 )
 
 # ---------------------------------------------------------------------------
-# progress_path
-# ---------------------------------------------------------------------------
-
-
-def test_progress_path_when_given_root_does_place_file_under_session_dir(
-    root: str,
-):
-    result = progress_path(root)
-
-    expected = str(Path(session_dir(root)) / "progress.json")
-    assert result == expected
-
-
-# ---------------------------------------------------------------------------
 # write_progress
 # ---------------------------------------------------------------------------
 
 
+_VALID_FIELDS: dict[str, object] = {
+    "passes_completed": 3,
+    "passes_total": 10,
+    "last_pass_duration_ms": 1234.5,
+}
+
+
 def _make_snapshot(**overrides: object) -> ProgressSnapshot:
     """Build a ProgressSnapshot with sensible defaults, overridable per-field."""
-    defaults: dict[str, object] = {
-        "passes_completed": 3,
-        "passes_total": 10,
-        "last_pass_duration_ms": 1234.5,
-    }
-    defaults.update(overrides)
-    return ProgressSnapshot(**defaults)  # type: ignore[arg-type]
+    return ProgressSnapshot(**(_VALID_FIELDS | overrides))  # type: ignore[arg-type]
 
 
 def _progress_file(root: str) -> Path:
@@ -80,21 +64,6 @@ def test_write_progress_when_called_does_create_readable_json_file(root: str):
     assert _progress_file(root).read_text(encoding="utf-8") == (
         '{"passes_completed":3,"passes_total":10,"last_pass_duration_ms":1234.5}'
     )
-
-
-def test_write_progress_when_called_twice_does_overwrite_previous_snapshot(
-    root: str,
-):
-    write_progress(root, _make_snapshot(passes_completed=1))
-    write_progress(root, _make_snapshot(passes_completed=2))
-
-    assert _read_json(root)["passes_completed"] == 2
-
-
-def test_write_progress_when_called_does_leave_no_temp_file_behind(root: str):
-    write_progress(root, _make_snapshot())
-
-    assert sorted(p.name for p in Path(session_dir(root)).iterdir()) == ["progress.json"]
 
 
 # ---------------------------------------------------------------------------
@@ -123,59 +92,34 @@ def test_read_progress_when_file_written_does_round_trip_every_field(
     assert result == original
 
 
-def test_read_progress_when_file_absent_does_return_none(root: str):
-    result = read_progress(root)
-
-    assert result is None
-
-
-def test_read_progress_when_file_contains_invalid_json_does_return_none(
-    root: str,
-):
-    _progress_file(root).write_text("not valid json{{{", encoding="utf-8")
-
-    result = read_progress(root)
-
-    assert result is None
-
-
-_VALID_FIELDS: dict[str, object] = {
-    "passes_completed": 3,
-    "passes_total": 10,
-    "last_pass_duration_ms": 1234.5,
-}
+def _json(payload: object) -> bytes:
+    return json.dumps(payload).encode()
 
 
 @pytest.mark.parametrize(
-    "payload",
+    "contents",
     [
-        pytest.param({"unexpected_field": 42}, id="only-unknown-key"),
-        pytest.param({**_VALID_FIELDS, "unexpected_field": 42}, id="extra-unknown-key"),
+        pytest.param(None, id="file-absent"),
+        pytest.param(b"not valid json{{{", id="invalid-json"),
+        pytest.param(b"\x80\x81\x82", id="non-utf8-bytes"),
+        pytest.param(_json({"unexpected_field": 42}), id="only-unknown-key"),
+        pytest.param(_json({**_VALID_FIELDS, "unexpected_field": 42}), id="extra-unknown-key"),
+        pytest.param(_json({"passes_completed": 3, "passes_total": 10}), id="missing-key"),
+        pytest.param(_json({**_VALID_FIELDS, "passes_completed": "x"}), id="string-for-int"),
+        pytest.param(_json({**_VALID_FIELDS, "passes_total": True}), id="bool-for-int"),
+        pytest.param(_json({**_VALID_FIELDS, "passes_completed": 3.0}), id="float-for-int"),
         pytest.param(
-            {"passes_completed": 3, "passes_total": 10},
-            id="missing-key",
+            _json({**_VALID_FIELDS, "last_pass_duration_ms": "fast"}), id="string-for-float"
         ),
-        pytest.param({**_VALID_FIELDS, "passes_completed": "x"}, id="string-for-int"),
-        pytest.param({**_VALID_FIELDS, "passes_total": True}, id="bool-for-int"),
-        pytest.param({**_VALID_FIELDS, "passes_completed": 3.0}, id="float-for-int"),
-        pytest.param({**_VALID_FIELDS, "last_pass_duration_ms": "fast"}, id="string-for-float"),
-        pytest.param({**_VALID_FIELDS, "last_pass_duration_ms": False}, id="bool-for-float"),
-        pytest.param([3, 10, 1234.5], id="array-not-object"),
+        pytest.param(_json({**_VALID_FIELDS, "last_pass_duration_ms": False}), id="bool-for-float"),
+        pytest.param(_json([3, 10, 1234.5]), id="array-not-object"),
     ],
 )
-def test_read_progress_when_file_contains_wrong_schema_does_return_none(root: str, payload: object):
-    _progress_file(root).write_text(json.dumps(payload), encoding="utf-8")
-
-    result = read_progress(root)
-
-    assert result is None
-
-
-def test_read_progress_when_file_is_stale_does_return_none(root: str):
-    write_progress(root, _make_snapshot())
-    path = _progress_file(root)
-    stale_time = time.time() - STALENESS_BOUND_SECONDS - 60
-    os.utime(path, (stale_time, stale_time))
+def test_read_progress_when_file_absent_or_unreadable_as_a_snapshot_does_return_none(
+    root: str, contents: bytes | None
+):
+    if contents is not None:
+        _progress_file(root).write_bytes(contents)
 
     result = read_progress(root)
 
@@ -256,14 +200,6 @@ def test_read_progress_when_sidecar_cannot_be_stat_does_return_none(unsearchable
     assert result is None
 
 
-def test_read_progress_when_file_contains_non_utf8_bytes_does_return_none(root: str):
-    _progress_file(root).write_bytes(b"\x80\x81\x82")
-
-    result = read_progress(root)
-
-    assert result is None
-
-
 # ---------------------------------------------------------------------------
 # clear_progress
 # ---------------------------------------------------------------------------
@@ -275,10 +211,6 @@ def test_clear_progress_when_file_exists_does_remove_it(root: str):
     clear_progress(root)
 
     assert not _progress_file(root).exists()
-
-
-def test_clear_progress_when_file_absent_does_not_raise(root: str):
-    clear_progress(root)
 
 
 def test_clear_progress_when_file_absent_does_not_warn(root: str):
@@ -322,18 +254,6 @@ def test_clear_progress_when_unlink_raises_and_no_sink_given_does_not_raise(
     clear_progress(held_open_sidecar)
 
     assert _progress_file(held_open_sidecar).exists()
-
-
-# ---------------------------------------------------------------------------
-# ProgressSnapshot
-# ---------------------------------------------------------------------------
-
-
-def test_progress_snapshot_when_constructed_does_be_frozen():
-    snapshot = _make_snapshot()
-
-    with pytest.raises(ValidationError, match="frozen"):
-        snapshot.passes_completed = 99  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------

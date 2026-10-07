@@ -3,13 +3,16 @@
 ``supervise`` processes ``TurnEndEvent`` by entering an idle state, running a
 settle window, reading and folding the session log, probing the repository lock,
 and delegating to ``classify`` for the decision. These tests exercise the full
-supervisor-classifier wiring: scheduling, caps, in-flight detection, settle
-windows, lock polling, guard propagation, and the follow-up events that each
-decision emits through the combined observer and into the JSONL log.
+supervisor-classifier wiring: scheduling, lock polling, guard propagation, and
+the follow-up events that each decision emits through the combined observer and
+into the JSONL log.
 
-Unless otherwise noted, tests pass ``settle_window_ms=0`` and ``lock_poll_ms=1``
-to keep runs instantaneous, and inject ``is_lock_held`` as a callable to avoid
-filesystem contention.
+Unless otherwise noted, tests run through ``_supervise``, which passes
+``settle_window_ms=0`` and ``lock_poll_ms=1`` to keep runs instantaneous and
+injects ``is_lock_held`` as a callable to avoid filesystem contention.
+
+Settle-window and lock-poll cancellation, and the wall-clock cap's quiet tail,
+are covered here too.
 """
 
 from __future__ import annotations
@@ -17,249 +20,101 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from gymrat.clock import now_ns
-from gymrat.session.paths import session_jsonl_path
-from gymrat.session.store import append_record
-from gymrat.supervisor.driver import SessionOutcome
+import pytest
+
+from gymrat.clock import now_ms, now_ns
 from gymrat.supervisor.events import (
     CapEvent,
     CompactionEvent,
     FollowUpEvent,
     TextDeltaEvent,
+    ToolStartEvent,
+    UsageUpdateEvent,
 )
-from gymrat.supervisor.supervise import EndedBy, SupervisionResult, supervise
-from tests.conftest import hold_lock
+from gymrat.supervisor.turns import CONSECUTIVE_DISCARD_LIMIT
+from tests._lock import hold_lock
 from tests.session.records._fixtures import (
+    append_records,
     command_record,
-    stop_record,
+    discard_record,
 )
 from tests.supervisor._fixtures import (
+    InterruptEmitsEndDriver,
+    _supervise,
     add_stop_async,
     collecting_observer,
     emit_turn_end,
     events_of,
     follow_ups_with_action,
-    make_context,
     make_launch,
-    make_prompt,
-    seed_session_log,
+    read_log_lines,
     seed_with_stop,
     sent_texts,
-    supervise_fast,
 )
 from tests.supervisor._mock_driver import (
     ActionStep,
     CostStep,
     EmitStep,
+    MockStep,
     TurnEndStep,
     create_mock_driver,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
-
-# ---------------------------------------------------------------------------
-# behavior 1: module constants and new parameters
-# ---------------------------------------------------------------------------
-
-
-def test_settle_window_ms_when_imported_does_equal_800():
-    from gymrat.supervisor.supervise import SETTLE_WINDOW_MS
-
-    assert SETTLE_WINDOW_MS == 800
-
-
-def test_lock_poll_ms_when_imported_does_equal_5000():
-    from gymrat.supervisor.supervise import LOCK_POLL_MS
-
-    assert LOCK_POLL_MS == 5000
+    from gymrat.supervisor.events import SessionEvent
 
 
 # ---------------------------------------------------------------------------
-# behavior 2: EndedBy gains "guard" and SupervisionResult gains end_reason
+# a turn end settles, folds the log and classifies
 # ---------------------------------------------------------------------------
 
 
-def test_ended_by_when_guard_value_used_does_be_valid():
-    assert "guard" in EndedBy.__args__  # type: ignore[attr-defined]
-
-
-def test_supervision_result_when_constructed_with_end_reason_does_carry_it():
-    result = SupervisionResult(
-        outcome=SessionOutcome(reason="completed", cost_usd=0.0),
-        ended_by="session",
-        end_reason="test-reason",
-        duration_ms=100,
-    )
-
-    assert result.end_reason == "test-reason"
-
-
-def test_supervision_result_when_no_end_reason_does_default_to_none():
-    result = SupervisionResult(
-        outcome=SessionOutcome(reason="completed", cost_usd=0.0),
-        ended_by="session",
-        duration_ms=100,
-    )
-
-    assert result.end_reason is None
-
-
-# ---------------------------------------------------------------------------
-# behavior 3: turn end triggers settle → fold → classify
-# ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_turn_end_with_stop_record_does_end_as_session(
+async def test_supervise_when_turn_end_with_stop_record_does_log_a_finished_end(
     tmp_path: Path,
 ):
     root = str(tmp_path / "repo")
     seed_with_stop(root)
-    lock_path = str(tmp_path / "lockfile")
-
-    driver = create_mock_driver([
-        TurnEndStep(cost_usd=0.01),
-    ])
-
-    result = await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
-    )
-
-    assert result.ended_by == "session"
-    assert result.end_reason is None
-    assert result.outcome.reason in {"completed", "interrupted"}
-
-
-# ---------------------------------------------------------------------------
-# behavior 4: End("spend-cap") → CapEvent, session.end(), ended_by="spend-cap"
-# ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_cost_exceeds_max_usd_at_turn_end_does_end_as_spend_cap(
-    tmp_path: Path,
-):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
-    lock_path = str(tmp_path / "lockfile")
     probe = collecting_observer()
+    driver = create_mock_driver([TurnEndStep(cost_usd=0.01)])
 
-    driver = create_mock_driver([
-        TurnEndStep(cost_usd=5.0),
-    ])
+    result = await _supervise(root, driver, observer=probe.observer)
 
-    result = await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-            max_usd=1.0,
-        ),
-        launch=make_launch(max_usd=1.0),
-        observer=probe.observer,
+    assert (result.ended_by, result.end_reason, result.outcome.reason) == (
+        "session",
+        None,
+        "completed",
     )
-
-    assert result.ended_by == "spend-cap"
-    assert result.end_reason == "spend-cap"
-
-    caps = events_of(probe.events, CapEvent)
-    assert len(caps) == 1
-    assert caps[0].cap == "spend-cap"
-    assert caps[0].action == "ending"
-
-
-# ---------------------------------------------------------------------------
-# behavior 4: guard End(reason) → session.end(), ended_by="guard", end_reason
-# ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_no_progress_guard_trips_does_end_as_guard_from_supervisor_state(
-    tmp_path: Path,
-):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
-    lock_path = str(tmp_path / "lockfile")
-    probe = collecting_observer()
-
-    # Four turn ends with no new session records → no-progress guard fires
-    driver = create_mock_driver([
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-    ])
-
-    result = await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
-        observer=probe.observer,
-    )
-
-    assert result.ended_by == "guard"
-    assert result.end_reason == "no-progress"
+    assert [(e.action, e.reason, e.text) for e in events_of(probe.events, FollowUpEvent)] == [
+        ("ended", "finished", None)
+    ]
+    lines = read_log_lines(tmp_path / "events.jsonl")
+    assert [
+        {key: value for key, value in line.items() if key != "at"}
+        for line in lines
+        if line["type"] in {"turn_end", "follow_up"}
+    ] == [
+        {
+            "type": "turn_end",
+            "text": "",
+            "cost_usd": 0.01,
+            "origin": "agent",
+            "budget_exhausted": False,
+        },
+        {"type": "follow_up", "action": "ended", "reason": "finished"},
+    ]
 
 
 # ---------------------------------------------------------------------------
-# behavior 4: Reply(text) → session.send(text)
-# ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_classifier_replies_does_send_text_to_session(
-    tmp_path: Path,
-):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
-    lock_path = str(tmp_path / "lockfile")
-
-    # First turn end → Reply → send → second turn end → add stop → End
-    driver = create_mock_driver([
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-        ActionStep(action=lambda: add_stop_async(root)),
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-    ])
-
-    result = await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
-    )
-
-    assert result.ended_by == "session"
-
-
-# ---------------------------------------------------------------------------
-# behavior 5: turn end while reply outstanding
+# a turn end while a reply is outstanding
 # ---------------------------------------------------------------------------
 
 
 async def test_supervise_when_turn_end_while_reply_outstanding_does_not_schedule(
-    tmp_path: Path,
+    root: str,
 ):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
-    lock_path = str(tmp_path / "lockfile")
-    probe = collecting_observer()
-
     # First agent turn → Reply (outstanding). The injected turn end is emitted
     # via EmitStep (not TurnEndStep) so the mock does not block waiting for
     # send/end — the supervisor ignores it because reply is outstanding.
@@ -270,112 +125,57 @@ async def test_supervise_when_turn_end_while_reply_outstanding_does_not_schedule
         ActionStep(action=lambda: add_stop_async(root)),
         TurnEndStep(cost_usd=0.01, origin="agent"),
     ])
+    probe = collecting_observer()
 
-    result = await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
-        observer=probe.observer,
-    )
+    result = await _supervise(root, driver, observer=probe.observer)
 
     assert result.ended_by == "session"
+    assert [e.action for e in events_of(probe.events, FollowUpEvent)] == ["replied", "ended"]
+    assert len(sent_texts(driver.sessions[0])) == 1
 
 
 # ---------------------------------------------------------------------------
-# behavior 6: WaitForLock → poll → settle → classify with after_wait=True
+# a held lock: wait, then reply with the after-wait line
 # ---------------------------------------------------------------------------
 
 
-async def test_supervise_when_lock_held_does_wait_then_classify_with_after_wait(
-    tmp_path: Path,
+async def test_supervise_when_lock_held_does_wait_then_reply_with_the_after_wait_line(
+    root: str,
 ):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
-    lock_path = str(tmp_path / "lockfile")
     probe = collecting_observer()
     poll_count = 0
 
     def lock_held() -> bool:
         nonlocal poll_count
         poll_count += 1
-        if poll_count == 1:
-            return True
-        # On release, add the stop record so the re-classification ends the session
-        append_record(session_jsonl_path(root), stop_record())
-        return False
+        return poll_count == 1
 
     driver = create_mock_driver([
         TurnEndStep(cost_usd=0.01, origin="agent"),
-    ])
-
-    result = await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
-        observer=probe.observer,
-        is_lock_held=lock_held,
-    )
-
-    assert result.ended_by == "session"
-
-    waiting_events = follow_ups_with_action(probe.events, "waiting")
-    assert len(waiting_events) >= 1
-
-
-async def test_supervise_when_lock_held_after_two_fruitless_replies_does_wait_instead_of_ending(
-    tmp_path: Path,
-):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
-    lock_path = str(tmp_path / "lockfile")
-    probe = collecting_observer()
-    lock_held_calls = 0
-
-    def lock_held() -> bool:
-        nonlocal lock_held_calls
-        lock_held_calls += 1
-        return lock_held_calls <= 1
-
-    driver = create_mock_driver([
-        TurnEndStep(cost_usd=0.01, origin="agent"),  # Reply #1
-        TurnEndStep(cost_usd=0.01, origin="agent"),  # Reply #2
         ActionStep(action=lambda: add_stop_async(root)),
-        TurnEndStep(cost_usd=0.01, origin="agent"),  # Would be no-progress #3 but lock held → wait
+        TurnEndStep(cost_usd=0.01, origin="agent"),
     ])
 
-    result = await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
-        observer=probe.observer,
-        is_lock_held=lock_held,
-    )
+    result = await _supervise(root, driver, observer=probe.observer, is_lock_held=lock_held)
 
-    waiting_events = follow_ups_with_action(probe.events, "waiting")
-    assert len(waiting_events) >= 1
     assert result.ended_by == "session"
+    assert [e.action for e in events_of(probe.events, FollowUpEvent)] == [
+        "waiting",
+        "replied",
+        "ended",
+    ]
+    replies = sent_texts(driver.sessions[0])
+    assert len(replies) == 1
+    assert replies[0] is not None
+    assert replies[0].endswith(
+        "The command you left running has finished; its record, if any, is in the session log."
+    )
 
 
 async def test_supervise_when_real_lock_held_does_wait_then_reply_with_after_wait_line(
+    root: str,
     tmp_path: Path,
 ):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
     lock_path = str(tmp_path / "lockfile")
     probe = collecting_observer()
 
@@ -385,9 +185,7 @@ async def test_supervise_when_real_lock_held_does_wait_then_reply_with_after_wai
 
     async def release_after_waiting() -> None:
         nonlocal released
-        # probe.events is a plain list mutated by another coroutine — no
-        # callback hook to wire an asyncio.Event to; polling is the only option.
-        while not any(  # noqa: ASYNC110
+        while not any(  # noqa: ASYNC110 -- probe.events is a plain list with no hook to wire an Event to
             e.action == "waiting" for e in events_of(probe.events, FollowUpEvent)
         ):
             await asyncio.sleep(0.005)
@@ -405,19 +203,7 @@ async def test_supervise_when_real_lock_held_does_wait_then_reply_with_after_wai
         TurnEndStep(cost_usd=0.01, origin="agent"),
     ])
 
-    result = await supervise(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
-        observer=probe.observer,
-        settle_window_ms=0,
-        lock_poll_ms=1,
-    )
+    result = await _supervise(root, driver, observer=probe.observer, is_lock_held=None)
 
     assert released
     assert result.ended_by == "session"
@@ -433,248 +219,236 @@ async def test_supervise_when_real_lock_held_does_wait_then_reply_with_after_wai
     )
 
 
-async def test_supervise_when_text_delta_during_lock_poll_does_cancel_poll(
-    tmp_path: Path,
-):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
-    lock_path = str(tmp_path / "lockfile")
-    probe = collecting_observer()
-
-    driver = create_mock_driver([
-        emit_turn_end(),
-        EmitStep(
-            emit=TextDeltaEvent(at=now_ns(), chunk="typing"),
-            delay_ms=30,
-        ),
-        ActionStep(action=lambda: add_stop_async(root)),
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-    ])
-
-    result = await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
-        observer=probe.observer,
-        is_lock_held=lambda: True,
-    )
-
-    assert result.ended_by == "session"
-
-    waiting_events = follow_ups_with_action(probe.events, "waiting")
-    replied_events = follow_ups_with_action(probe.events, "replied")
-    assert len(waiting_events) >= 1
-    assert len(replied_events) == 0
-
-    session = driver.sessions[0]
-    assert len(sent_texts(session)) == 0
-
-
 # ---------------------------------------------------------------------------
-# behavior 7: every decision emitted as FollowUpEvent
+# a guard trips: no progress, or a streak of discards
 # ---------------------------------------------------------------------------
 
 
-async def test_supervise_when_session_ends_normally_does_emit_ended_follow_up(
-    tmp_path: Path,
-):
-    root = str(tmp_path / "repo")
-    seed_with_stop(root)
-    lock_path = str(tmp_path / "lockfile")
-    probe = collecting_observer()
-
-    driver = create_mock_driver([
-        TurnEndStep(cost_usd=0.01),
-    ])
-
-    await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
-        observer=probe.observer,
-    )
-
-    ended = follow_ups_with_action(probe.events, "ended")
-    assert len(ended) >= 1
-    assert ended[0].reason == "finished"
-
-
-async def test_supervise_when_classifier_replies_does_emit_replied_follow_up(
-    tmp_path: Path,
-):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
-    lock_path = str(tmp_path / "lockfile")
-    probe = collecting_observer()
-
-    driver = create_mock_driver([
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-        ActionStep(action=lambda: add_stop_async(root)),
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-    ])
-
-    await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
-        observer=probe.observer,
-    )
-
-    replied = follow_ups_with_action(probe.events, "replied")
-    assert len(replied) >= 1
-    assert replied[0].text is not None
-
-
-# ---------------------------------------------------------------------------
-# behavior 9: spend cap at turn end, not via _cost_observer
-# ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_usage_update_alone_does_not_end_session(
-    tmp_path: Path,
-):
-    root = str(tmp_path / "repo")
-    seed_with_stop(root)
-    lock_path = str(tmp_path / "lockfile")
-
-    driver = create_mock_driver([
-        CostStep(cost_usd=5.0),
-        TurnEndStep(cost_usd=5.0),
-    ])
-
-    result = await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-            max_usd=1.0,
-        ),
-        launch=make_launch(max_usd=1.0),
-    )
-
-    # A stop record makes classify() return End("finished") ahead of the budget check.
-    assert result.ended_by == "session"
-
-
-async def test_supervise_when_turn_end_cost_exceeds_max_usd_without_stop_does_end_spend_cap(
-    tmp_path: Path,
-):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
-    lock_path = str(tmp_path / "lockfile")
-
-    driver = create_mock_driver([
-        TurnEndStep(cost_usd=5.0),
-    ])
-
-    result = await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-            max_usd=1.0,
-        ),
-        launch=make_launch(max_usd=1.0),
-    )
-
-    assert result.ended_by == "spend-cap"
-    assert result.end_reason == "spend-cap"
-
-
-# ---------------------------------------------------------------------------
-# behavior 10: initial record count excludes command records
-# ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_command_records_appended_mid_session_does_still_trip_no_progress(
-    tmp_path: Path,
-):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
-    lock_path = str(tmp_path / "lockfile")
-    probe = collecting_observer()
-    cmd_seq = 0
+def _stale_turns_with_commands(root: str) -> list[MockStep]:
+    """Four agent turns, each followed by a command record and no outcome record."""
+    seqs = iter(range(1, 4))
 
     async def append_command() -> None:
-        nonlocal cmd_seq
-        cmd_seq += 1
-        append_record(session_jsonl_path(root), command_record(seq=cmd_seq))
+        append_records(root, command_record(seq=next(seqs)))
 
-    driver = create_mock_driver([
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-        ActionStep(action=append_command),
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-        ActionStep(action=append_command),
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-        ActionStep(action=append_command),
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-    ])
-
-    result = await supervise_fast(
-        driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
-        observer=probe.observer,
-    )
-
-    assert result.ended_by == "guard"
-    assert result.end_reason == "no-progress"
+    steps: list[MockStep] = []
+    for _ in range(3):
+        steps += [TurnEndStep(cost_usd=0.01, origin="agent"), ActionStep(action=append_command)]
+    return [*steps, TurnEndStep(cost_usd=0.01, origin="agent")]
 
 
-# ---------------------------------------------------------------------------
-# behavior 11: CompactionEvent during settle/lock-poll does not cancel reply
-# ---------------------------------------------------------------------------
+def _discard_streak(root: str) -> list[MockStep]:
+    """Enough discard records to trip the streak guard, then one agent turn."""
+
+    async def add_discards() -> None:
+        for seq in range(1, CONSECUTIVE_DISCARD_LIMIT + 1):
+            append_records(root, discard_record(seq=seq))
+
+    return [ActionStep(action=add_discards), TurnEndStep(cost_usd=0.01, origin="agent")]
 
 
-async def test_supervise_when_compaction_event_during_settle_does_not_cancel_pending_reply(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("steps", "end_reason"),
+    [
+        pytest.param(_stale_turns_with_commands, "no-progress", id="no-progress-despite-commands"),
+        pytest.param(_discard_streak, "consecutive-discards", id="consecutive-discards"),
+    ],
+)
+async def test_supervise_when_a_guard_trips_does_end_as_guard_naming_it(
+    root: str, steps: Callable[[str], list[MockStep]], end_reason: str
 ):
-    root = str(tmp_path / "repo")
-    seed_session_log(root)
-    lock_path = str(tmp_path / "lockfile")
-    probe = collecting_observer()
+    driver = create_mock_driver(steps(root))
 
+    result = await _supervise(root, driver)
+
+    assert (result.ended_by, result.end_reason) == ("guard", end_reason)
+
+
+_WALL_CLOCK_MAX_MINUTES = 0.001
+"""A deadline low enough that the wall-clock poll fires on its first check."""
+
+
+# ---------------------------------------------------------------------------
+# agent activity cancels the pending settle window or lock poll
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("delay_ms", "settle_window_ms", "lock_starts_held", "actions"),
+    [
+        pytest.param(5, 50, False, ["ended"], id="settle-window"),
+        pytest.param(30, 0, True, ["waiting", "ended"], id="lock-poll"),
+    ],
+)
+@pytest.mark.parametrize(
+    "agent_event",
+    [
+        pytest.param(lambda: TextDeltaEvent(at=now_ns(), chunk="typing"), id="text-delta"),
+        pytest.param(
+            lambda: ToolStartEvent(
+                at=now_ns(), tool_use_id="t1", tool_name="Read", input={}, input_summary="/x"
+            ),
+            id="tool-start",
+        ),
+    ],
+)
+async def test_supervise_when_agent_acts_while_a_reply_is_pending_does_cancel_it_quietly(
+    root: str,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    *,
+    delay_ms: int,
+    settle_window_ms: int,
+    lock_starts_held: bool,
+    actions: list[str],
+    agent_event: Callable[[], SessionEvent],
+):
+    # The lock frees and the stop record lands well after the agent acts, so a
+    # pending reply the activity failed to cancel would fire in between and send text.
+    held = [lock_starts_held]
+
+    async def release_lock() -> None:
+        held[0] = False
+
+    probe = collecting_observer()
     driver = create_mock_driver([
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-        EmitStep(emit=CompactionEvent(at=now_ns()), delay_ms=10),
-        ActionStep(action=lambda: add_stop_async(root)),
+        emit_turn_end(),
+        EmitStep(emit=agent_event(), delay_ms=delay_ms),
+        ActionStep(action=release_lock),
+        ActionStep(action=lambda: add_stop_async(root), delay_ms=200),
         TurnEndStep(cost_usd=0.01, origin="agent"),
     ])
 
-    result = await supervise_fast(
+    result = await _supervise(
+        root,
         driver,
-        make_prompt(cwd=root),
-        context=make_context(
-            root=root,
-            log_path=str(tmp_path / "events.jsonl"),
-            lock_path=lock_path,
-        ),
-        launch=make_launch(),
         observer=probe.observer,
+        settle_window_ms=settle_window_ms,
+        is_lock_held=lambda: held[0],
     )
 
     assert result.ended_by == "session"
+    assert [e.action for e in events_of(probe.events, FollowUpEvent)] == actions
+    assert sent_texts(driver.sessions[0]) == []
+    assert "failed" not in capsys.readouterr().err
+    assert [record for record in caplog.records if record.name == "asyncio"] == []
+
+
+# ---------------------------------------------------------------------------
+# events that are not agent activity leave the pending reply alone
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        pytest.param(UsageUpdateEvent(at=now_ns(), cost_usd=0.02), id="usage-update"),
+        pytest.param(CompactionEvent(at=now_ns()), id="compaction"),
+    ],
+)
+async def test_supervise_when_a_passive_event_arrives_during_settle_does_still_reply(
+    root: str, event: SessionEvent
+):
+    probe = collecting_observer()
+    driver = create_mock_driver([
+        emit_turn_end(),
+        EmitStep(emit=event, delay_ms=5),
+        ActionStep(action=lambda: add_stop_async(root), delay_ms=200),
+        TurnEndStep(cost_usd=0.01, origin="agent"),
+    ])
+
+    result = await _supervise(root, driver, observer=probe.observer, settle_window_ms=50)
+
+    replied = follow_ups_with_action(probe.events, "replied")
+    assert result.ended_by == "session"
+    assert len(replied) == 1
+    assert sent_texts(driver.sessions[0]) == [replied[0].text]
+
+
+# ---------------------------------------------------------------------------
+# cap fired — later turn ends emit no follow-up
+# ---------------------------------------------------------------------------
+
+
+def _tool_starts(events: list[SessionEvent]) -> list[ToolStartEvent]:
+    return events_of(events, ToolStartEvent)
+
+
+def _replied_follow_ups(events: list[SessionEvent]) -> list[FollowUpEvent]:
+    return follow_ups_with_action(events, "replied")
+
+
+@pytest.mark.parametrize(
+    ("first_step", "reached"),
+    [
+        pytest.param(
+            EmitStep(
+                emit=ToolStartEvent(
+                    at=now_ns(),
+                    tool_use_id="t1",
+                    tool_name="Read",
+                    input={},
+                    input_summary="/x",
+                ),
+            ),
+            _tool_starts,
+            id="in-flight",
+        ),
+        pytest.param(
+            TurnEndStep(cost_usd=0.01, origin="agent"),
+            _replied_follow_ups,
+            id="reply-outstanding",
+        ),
+    ],
+)
+async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_up(
+    root: str,
+    monkeypatch: pytest.MonkeyPatch,
+    first_step: MockStep,
+    reached: Callable[[list[SessionEvent]], Sequence[SessionEvent]],
+):
+    probe = collecting_observer()
+    clock = [now_ms()]
+    deadline_ms = clock[0] + 60_000
+    monkeypatch.setattr("gymrat.supervisor.supervise.now_ms", lambda: clock[0])
+
+    state_reached = asyncio.Event()
+
+    def observe(event: SessionEvent) -> None:
+        probe.observer(event)
+        if reached(probe.events):
+            state_reached.set()
+
+    async def pass_deadline_once_reached() -> None:
+        async with asyncio.timeout(5):
+            await state_reached.wait()
+        clock[0] = deadline_ms
+
+    inner = create_mock_driver([
+        first_step,
+        ActionStep(action=pass_deadline_once_reached),
+        CostStep(cost_usd=0.01, delay_ms=60_000),
+    ])
+    driver = InterruptEmitsEndDriver(inner)
+
+    result = await _supervise(
+        root,
+        driver,
+        max_minutes=_WALL_CLOCK_MAX_MINUTES,
+        deadline_ms=deadline_ms,
+        launch=make_launch(max_minutes=_WALL_CLOCK_MAX_MINUTES),
+        observer=observe,
+        grace_ms=50,
+    )
+
+    assert result.ended_by == "wall-clock"
+
+    caps = events_of(probe.events, CapEvent)
+    assert len(caps) == 1
+    assert caps[0].cap == "wall-clock"
+
+    cap_idx = probe.events.index(caps[0])
+    assert probe.events.index(reached(probe.events)[0]) < cap_idx
+    events_after_cap = probe.events[cap_idx + 1 :]
+    follow_ups_after = events_of(events_after_cap, FollowUpEvent)
+    assert follow_ups_after == []

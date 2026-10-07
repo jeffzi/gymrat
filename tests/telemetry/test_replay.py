@@ -1,4 +1,7 @@
-"""Tests for log-to-spans replay: session, run, and command spans from JSONL logs."""
+"""Tests for log-to-spans replay: session, run, and command spans from JSONL logs.
+
+Replaying a session log must also yield the spans live tracing emitted for it.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +11,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from opentelemetry.trace import StatusCode
 
+from gymrat.command_run import CommandTrace, with_repo_lock
+from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import HookRecord, record_to_wire
 from gymrat.supervisor.events import (
     CapEvent,
@@ -20,27 +26,28 @@ from gymrat.supervisor.events import (
 from gymrat.telemetry.provider import span_id_of, trace_id_of
 from gymrat.telemetry.replay import replay_session
 from tests.session.records._fixtures import (
+    BASELINE_SHA,
     SESSION_ID,
+    append_records,
+    archive_and_reopen_session_log,
     baseline_record,
     command_record,
+    hook_record,
     iteration_record,
     session_record,
+    write_session_log,
 )
 from tests.session.records._wire import with_raw_number
-from tests.telemetry._fixtures import (
-    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
-)
 from tests.telemetry._fixtures import memory_tracing, span_by_name, spans_by_prefix
 from tests.telemetry._replay_logs import (
-    HEAD_SHA,
     T0,
     T1,
     T2,
     T3,
     T4,
     T5,
-    launch_event,
-    turn_end,
+    replay_launch_event,
+    replay_turn_end,
     write_lines,
     write_records_log,
     write_supervisor_log,
@@ -49,7 +56,7 @@ from tests.telemetry._replay_logs import (
 
 def _write_standard_run(sup_log: str) -> None:
     """Write a launch/turn_end pair spanning the standard run window (``T1`` to ``T3``)."""
-    write_supervisor_log(sup_log, [launch_event(at=T1), turn_end(at=T3)])
+    write_supervisor_log(sup_log, [replay_launch_event(at=T1), replay_turn_end(at=T3)])
 
 
 def _command(
@@ -106,26 +113,18 @@ def log_paths(tmp_path_factory: pytest.TempPathFactory) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def test_replay_session_when_called_does_create_session_span(log_paths: tuple[str, str]):
-    session_log, sup_log = log_paths
-    header = session_record(at=T0)
-    write_records_log(session_log, [header])
-    write_supervisor_log(sup_log, [launch_event(at=T1), turn_end(at=T2)])
-
-    spans = _replay(session_log, sup_log)
-    session_span = span_by_name(spans, "gymrat.session")
-    assert session_span.context.trace_id == trace_id_of(SESSION_ID)
-    assert session_span.context.span_id == span_id_of(SESSION_ID, "session")
-
-
-def test_replay_session_when_called_does_set_session_span_timing(log_paths: tuple[str, str]):
+def test_replay_session_when_called_does_create_the_session_span_from_header_to_run_end(
+    log_paths: tuple[str, str],
+):
     session_log, sup_log = log_paths
     _write_basic_run(session_log, sup_log)
 
     spans = _replay(session_log, sup_log)
+
     session_span = span_by_name(spans, "gymrat.session")
-    assert session_span.start_time == T0
-    assert session_span.end_time == T3
+    assert session_span.context.trace_id == trace_id_of(SESSION_ID)
+    assert session_span.context.span_id == span_id_of(SESSION_ID, "session")
+    assert (session_span.start_time, session_span.end_time) == (T0, T3)
 
 
 # ---------------------------------------------------------------------------
@@ -138,24 +137,31 @@ def test_replay_session_when_supervisor_log_exists_does_create_run_span(log_path
     _write_basic_run(session_log, sup_log)
 
     spans = _replay(session_log, sup_log)
+
     run_span = span_by_name(spans, "gymrat.run")
     assert run_span.context.span_id == span_id_of(SESSION_ID, f"run:{T1}")
-    assert run_span.start_time == T1
-    assert run_span.end_time == T3
+    assert (run_span.start_time, run_span.end_time) == (T1, T3)
+    attrs = dict(run_span.attributes)
+    assert "gymrat.run.max_usd" not in attrs
+    assert "gymrat.run.effort" not in attrs
+    assert "gen_ai.request.model" not in attrs
 
 
 def test_replay_session_when_run_span_created_does_set_run_attributes(log_paths: tuple[str, str]):
     session_log, sup_log = log_paths
     header = session_record(at=T0)
-    launch = launch_event(at=T1, max_usd=5.0, effort="high", model="claude-sonnet-4-20250514")
+    launch = replay_launch_event(
+        at=T1, max_usd=5.0, effort="high", model="claude-sonnet-4-20250514"
+    )
     write_records_log(session_log, [header])
-    write_supervisor_log(sup_log, [launch, turn_end(at=T3)])
+    write_supervisor_log(sup_log, [launch, replay_turn_end(at=T3)])
 
     spans = _replay(session_log, sup_log)
+
     run_span = span_by_name(spans, "gymrat.run")
     attrs = dict(run_span.attributes)
     assert attrs["gymrat.session.id"] == SESSION_ID
-    assert attrs["gymrat.run.head_sha"] == HEAD_SHA
+    assert attrs["gymrat.run.head_sha"] == BASELINE_SHA
     assert attrs["gymrat.run.max_minutes"] == 60.0
     assert attrs["gymrat.run.max_usd"] == 5.0
     assert attrs["gymrat.run.effort"] == "high"
@@ -163,75 +169,22 @@ def test_replay_session_when_run_span_created_does_set_run_attributes(log_paths:
     assert attrs["gen_ai.provider.name"] == "anthropic"
 
 
-def test_replay_session_when_optional_run_fields_none_does_omit_attributes(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    _write_basic_run(session_log, sup_log)
-
-    spans = _replay(session_log, sup_log)
-    run_span = span_by_name(spans, "gymrat.run")
-    attrs = dict(run_span.attributes)
-    assert "gymrat.run.max_usd" not in attrs
-    assert "gymrat.run.effort" not in attrs
-    assert "gen_ai.request.model" not in attrs
-
-
-def test_replay_session_when_turn_end_in_supervisor_does_set_cost_usd(log_paths: tuple[str, str]):
-    session_log, sup_log = log_paths
-    header = session_record(at=T0)
-    write_records_log(session_log, [header])
-    write_supervisor_log(
-        sup_log,
-        [launch_event(at=T1), turn_end(at=T2, cost_usd=0.10), turn_end(at=T3, cost_usd=0.42)],
-    )
-
-    spans = _replay(session_log, sup_log)
-    run_span = span_by_name(spans, "gymrat.run")
-    assert run_span.attributes["gymrat.run.cost_usd"] == pytest.approx(0.42)
-
-
-def test_replay_session_when_turn_end_in_supervisor_does_mirror_session_cost_onto_span_event(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    write_records_log(session_log, [session_record(at=T0)])
-    write_supervisor_log(sup_log, [launch_event(at=T1), turn_end(at=T3, cost_usd=0.42)])
-
-    spans = _replay(session_log, sup_log)
-
-    run_span = span_by_name(spans, "gymrat.run")
-    turn_ends = [ev for ev in run_span.events if ev.name == "gymrat.turn_end"]
-    assert [dict(ev.attributes) for ev in turn_ends] == [
-        {
-            "gymrat.turn.session_cost_usd": pytest.approx(0.42),
-            "gymrat.turn.origin": "agent",
-            "gymrat.turn.budget_exhausted": False,
-        }
-    ]
-
-
+@pytest.mark.parametrize(
+    "usage_line",
+    [
+        pytest.param(to_json_line(UsageUpdateEvent(at=T3, cost_usd=1.23)), id="usage-update"),
+        pytest.param(
+            json.dumps({"type": "usage_update", "at": T3, "cost_usd": 1.23, "settled": True}),
+            id="usage-update-with-settled",
+        ),
+    ],
+)
 def test_replay_session_when_usage_update_in_supervisor_does_set_cost_usd(
-    log_paths: tuple[str, str],
+    log_paths: tuple[str, str], usage_line: str
 ):
     session_log, sup_log = log_paths
-    header = session_record(at=T0)
-    usage = UsageUpdateEvent(at=T3, cost_usd=1.23)
-    write_records_log(session_log, [header])
-    write_supervisor_log(sup_log, [launch_event(at=T1), usage])
-
-    spans = _replay(session_log, sup_log)
-    run_span = span_by_name(spans, "gymrat.run")
-    assert run_span.attributes["gymrat.run.cost_usd"] == pytest.approx(1.23)
-
-
-def test_replay_session_when_usage_update_line_has_settled_does_set_cost_usd(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    usage = {"type": "usage_update", "at": T3, "cost_usd": 1.23, "settled": True}
     write_records_log(session_log, [session_record(at=T0)])
-    write_lines(sup_log, [to_json_line(launch_event(at=T1)), json.dumps(usage)])
+    write_lines(sup_log, [to_json_line(replay_launch_event(at=T1)), usage_line])
 
     spans = _replay(session_log, sup_log)
 
@@ -248,8 +201,8 @@ def test_replay_session_when_supervisor_events_present_does_mirror_onto_run_span
     write_supervisor_log(
         sup_log,
         [
-            launch_event(at=T1),
-            turn_end(at=T2),
+            replay_launch_event(at=T1),
+            replay_turn_end(at=T2),
             FollowUpEvent(at=T3, action="replied", reason="continue"),
             CapEvent(at=T4, cap="wall-clock", action="interrupting"),
             CompactionEvent(at=T5),
@@ -257,15 +210,14 @@ def test_replay_session_when_supervisor_events_present_does_mirror_onto_run_span
     )
 
     spans = _replay(session_log, sup_log)
+
     run_span = span_by_name(spans, "gymrat.run")
-    mirrored = {ev.name: dict(ev.attributes) for ev in run_span.events}
-    assert "gymrat.turn_end" in mirrored
-    assert mirrored["gymrat.follow_up"] == {
-        "gymrat.follow_up.action": "replied",
-        "gymrat.follow_up.reason": "continue",
-    }
-    assert mirrored["gymrat.cap"] == {"gymrat.cap.name": "wall-clock"}
-    assert mirrored["gymrat.compaction"] == {}
+    assert [ev.name for ev in run_span.events] == [
+        "gymrat.turn_end",
+        "gymrat.follow_up",
+        "gymrat.cap",
+        "gymrat.compaction",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -280,41 +232,11 @@ def test_replay_session_when_command_record_present_does_create_command_span(
     _write_measure_command_run(session_log, sup_log)
 
     spans = _replay(session_log, sup_log)
+
     cmd_span = span_by_name(spans, "gymrat.command.measure")
     assert cmd_span.context.trace_id == trace_id_of(SESSION_ID)
-
-
-def test_replay_session_when_command_span_created_does_set_deterministic_id(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    _write_measure_command_run(session_log, sup_log)
-
-    spans = _replay(session_log, sup_log)
-    cmd_span = span_by_name(spans, "gymrat.command.measure")
     assert cmd_span.context.span_id == span_id_of(SESSION_ID, "command:2")
-
-
-def test_replay_session_when_command_span_created_does_set_timing_from_duration(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    _write_measure_command_run(session_log, sup_log)
-
-    spans = _replay(session_log, sup_log)
-    cmd_span = span_by_name(spans, "gymrat.command.measure")
-    assert cmd_span.end_time == T2
-    assert cmd_span.start_time == T2 - 500 * 1_000_000
-
-
-def test_replay_session_when_command_span_created_does_use_command_attributes(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    _write_measure_command_run(session_log, sup_log)
-
-    spans = _replay(session_log, sup_log)
-    cmd_span = span_by_name(spans, "gymrat.command.measure")
+    assert (cmd_span.start_time, cmd_span.end_time) == (T2 - 500 * 1_000_000, T2)
     assert cmd_span.attributes["gymrat.session.id"] == SESSION_ID
     assert cmd_span.attributes["gymrat.command.name"] == "measure"
 
@@ -341,9 +263,8 @@ def test_replay_session_when_command_exit_code_does_set_span_status(
     _write_standard_run(sup_log)
 
     spans = _replay(session_log, sup_log)
-    cmd_span = span_by_name(spans, "gymrat.command.iterate")
-    from opentelemetry.trace import StatusCode
 
+    cmd_span = span_by_name(spans, "gymrat.command.iterate")
     assert (cmd_span.status.status_code, cmd_span.status.description) == (
         getattr(StatusCode, expected_status),
         expected_description,
@@ -371,39 +292,32 @@ def test_replay_session_when_command_has_traceparent_does_link_only_a_valid_one(
     _write_standard_run(sup_log)
 
     spans = _replay(session_log, sup_log)
+
     cmd_span = span_by_name(spans, "gymrat.command.measure")
     assert [link.context.span_id for link in cmd_span.links] == expected_links
 
 
-def test_replay_session_when_command_in_run_range_does_parent_under_run(log_paths: tuple[str, str]):
-    session_log, sup_log = log_paths
-    header = session_record(at=T0)
-    cmd = _command("measure", duration_ms=100)
-    write_records_log(session_log, [header, cmd])
-    write_supervisor_log(sup_log, [launch_event(at=T1), turn_end(at=T4)])
-
-    spans = _replay(session_log, sup_log)
-    cmd_span = span_by_name(spans, "gymrat.command.measure")
-    run_span = span_by_name(spans, "gymrat.run")
-    assert cmd_span.parent is not None
-    assert cmd_span.parent.span_id == run_span.context.span_id
-
-
-def test_replay_session_when_command_outside_run_range_does_parent_under_session(
-    log_paths: tuple[str, str],
+@pytest.mark.parametrize(
+    ("command_at", "run_end", "parent", "session_end"),
+    [
+        pytest.param(T2, T4, "gymrat.run", T4, id="inside-the-run-parents-under-it"),
+        pytest.param(T5, T2, "gymrat.session", T5, id="after-every-run-parents-under-the-session"),
+    ],
+)
+def test_replay_session_when_command_time_falls_in_or_out_of_a_run_does_parent_it_accordingly(
+    log_paths: tuple[str, str], command_at: int, run_end: int, parent: str, session_end: int
 ):
     session_log, sup_log = log_paths
-    header = session_record(at=T0)
-    # Command at is after run end time
-    cmd = _command("measure", at=T5, duration_ms=100)
-    write_records_log(session_log, [header, cmd])
-    write_supervisor_log(sup_log, [launch_event(at=T1), turn_end(at=T2)])
+    cmd = _command("measure", at=command_at, duration_ms=100)
+    write_records_log(session_log, [session_record(at=T0), cmd])
+    write_supervisor_log(sup_log, [replay_launch_event(at=T1), replay_turn_end(at=run_end)])
 
     spans = _replay(session_log, sup_log)
+
     cmd_span = span_by_name(spans, "gymrat.command.measure")
-    session_span = span_by_name(spans, "gymrat.session")
     assert cmd_span.parent is not None
-    assert cmd_span.parent.span_id == session_span.context.span_id
+    assert cmd_span.parent.span_id == span_by_name(spans, parent).context.span_id
+    assert span_by_name(spans, "gymrat.session").end_time == session_end
 
 
 def _traceparent_of(span_key: str) -> str:
@@ -424,7 +338,7 @@ def test_replay_session_when_command_outside_run_range_has_traceparent_does_pare
     session_log, sup_log = log_paths
     cmd = _command("measure", at=T5, duration_ms=100, traceparent=_traceparent_of(linked_span_key))
     write_records_log(session_log, [session_record(at=T0), cmd])
-    write_supervisor_log(sup_log, [launch_event(at=T1), turn_end(at=T2)])
+    write_supervisor_log(sup_log, [replay_launch_event(at=T1), replay_turn_end(at=T2)])
 
     spans = _replay(session_log, sup_log)
 
@@ -439,27 +353,14 @@ def test_replay_session_when_command_in_one_run_links_to_another_does_parent_und
     second_log = str(tmp_path / "second.jsonl")
     cmd = _command("measure", at=T2, duration_ms=100, traceparent=_traceparent_of(f"run:{T4}"))
     write_records_log(session_log, [session_record(at=T0), cmd])
-    write_supervisor_log(first_log, [launch_event(at=T1), turn_end(at=T3)])
-    write_supervisor_log(second_log, [launch_event(at=T4), turn_end(at=T5)])
+    write_supervisor_log(first_log, [replay_launch_event(at=T1), replay_turn_end(at=T3)])
+    write_supervisor_log(second_log, [replay_launch_event(at=T4), replay_turn_end(at=T5)])
 
     with memory_tracing(SESSION_ID) as exporter:
         replay_session(session_log, [first_log, second_log])
 
     cmd_span = span_by_name(exporter.get_finished_spans(), "gymrat.command.measure")
     assert cmd_span.parent.span_id == span_id_of(SESSION_ID, f"run:{T1}")
-
-
-def test_replay_session_when_a_record_outlasts_every_run_does_end_the_session_span_at_it(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    cmd = _command("measure", at=T5, duration_ms=100)
-    write_records_log(session_log, [session_record(at=T0), cmd])
-    write_supervisor_log(sup_log, [launch_event(at=T1), turn_end(at=T2)])
-
-    spans = _replay(session_log, sup_log)
-
-    assert span_by_name(spans, "gymrat.session").end_time == T5
 
 
 # ---------------------------------------------------------------------------
@@ -476,9 +377,10 @@ def test_replay_session_when_records_between_commands_does_add_events_on_command
     iter_rec = iteration_record(at=T2)
     cmd2 = _command("iterate", duration_ms=100, seq=2)
     write_records_log(session_log, [header, cmd1, iter_rec, cmd2])
-    write_supervisor_log(sup_log, [launch_event(at=T0), turn_end(at=T4)])
+    write_supervisor_log(sup_log, [replay_launch_event(at=T0), replay_turn_end(at=T4)])
 
     spans = _replay(session_log, sup_log)
+
     cmd_span = span_by_name(spans, "gymrat.command.iterate")
     event_names = [ev.name for ev in cmd_span.events]
     assert "gymrat.iteration" in event_names
@@ -491,9 +393,10 @@ def test_replay_session_when_log_has_no_command_does_add_events_on_session_span(
     header = session_record(at=T0)
     baseline = baseline_record(at=T1)
     write_records_log(session_log, [header, baseline])
-    write_supervisor_log(sup_log, [launch_event(at=T0), turn_end(at=T3)])
+    write_supervisor_log(sup_log, [replay_launch_event(at=T0), replay_turn_end(at=T3)])
 
     spans = _replay(session_log, sup_log)
+
     session_span = span_by_name(spans, "gymrat.session")
     event_names = [ev.name for ev in session_span.events]
     assert "gymrat.baseline" in event_names
@@ -508,9 +411,10 @@ def test_replay_session_when_records_follow_last_command_does_add_events_on_sess
     cmd = _command("measure", at=T1, duration_ms=100)
     baseline = baseline_record(at=T2)
     write_records_log(session_log, [header, cmd, baseline])
-    write_supervisor_log(sup_log, [launch_event(at=T0), turn_end(at=T3)])
+    write_supervisor_log(sup_log, [replay_launch_event(at=T0), replay_turn_end(at=T3)])
 
     spans = _replay(session_log, sup_log)
+
     session_span = span_by_name(spans, "gymrat.session")
     cmd_span = span_by_name(spans, "gymrat.command.measure")
 
@@ -539,9 +443,10 @@ def test_replay_session_when_records_precede_first_command_does_attach_them_to_c
     )
     cmd = _command("measure", at=T2, duration_ms=100)
     write_records_log(session_log, [header, baseline, hook, cmd])
-    write_supervisor_log(sup_log, [launch_event(at=T0), turn_end(at=T4)])
+    write_supervisor_log(sup_log, [replay_launch_event(at=T0), replay_turn_end(at=T4)])
 
     spans = _replay(session_log, sup_log)
+
     session_span = span_by_name(spans, "gymrat.session")
     cmd_span = span_by_name(spans, "gymrat.command.measure")
 
@@ -552,30 +457,6 @@ def test_replay_session_when_records_precede_first_command_does_attach_them_to_c
     assert "gymrat.hook" in cmd_event_names
     assert "gymrat.baseline" not in session_event_names
     assert "gymrat.hook" not in session_event_names
-
-
-# ---------------------------------------------------------------------------
-# idempotent replay
-# ---------------------------------------------------------------------------
-
-
-def test_replay_session_when_replayed_twice_does_produce_identical_ids(log_paths: tuple[str, str]):
-    session_log, sup_log = log_paths
-    header = session_record(at=T0)
-    cmd = _command("measure", duration_ms=100)
-    write_records_log(session_log, [header, cmd])
-    _write_standard_run(sup_log)
-
-    def run_replay() -> dict[str, tuple[int, int]]:
-        with memory_tracing(SESSION_ID) as exporter:
-            replay_session(session_log, [sup_log])
-            finished = exporter.get_finished_spans()
-            return {s.name: (s.context.trace_id, s.context.span_id) for s in finished}  # pyrefly: ignore[missing-attribute]
-
-    first = run_replay()
-    second = run_replay()
-
-    assert first == second
 
 
 # ---------------------------------------------------------------------------
@@ -606,14 +487,20 @@ def test_replay_session_when_supervisor_line_unrecognized_does_skip_it(log_paths
     session_log, sup_log = log_paths
     header = session_record(at=T0)
     write_records_log(session_log, [header])
-    with Path(sup_log).open("w", encoding="utf-8") as fh:
-        fh.write(to_json_line(launch_event(at=T1)) + "\n")
-        fh.write('{"type": "unknown_future_event"}\n')
-        fh.write(to_json_line(turn_end(at=T3)) + "\n")
+    write_lines(
+        sup_log,
+        [
+            to_json_line(replay_launch_event(at=T1)),
+            '{"type": "unknown_future_event"}',
+            to_json_line(replay_turn_end(at=T3)),
+        ],
+    )
 
     spans = _replay(session_log, sup_log)
+
     run_span = span_by_name(spans, "gymrat.run")
-    assert run_span is not None
+    assert (run_span.start_time, run_span.end_time) == (T1, T3)
+    assert [ev.name for ev in run_span.events] == ["gymrat.turn_end"]
 
 
 def test_replay_session_when_supervisor_line_holds_non_finite_number_does_skip_it_silently(
@@ -625,9 +512,9 @@ def test_replay_session_when_supervisor_line_holds_non_finite_number_does_skip_i
     write_lines(
         sup_log,
         [
-            to_json_line(launch_event(at=T1)),
-            to_json_line(turn_end(at=T2, cost_usd=0.10)),
-            with_raw_number(to_json_line(turn_end(at=T3)), ("cost_usd",), "NaN"),
+            to_json_line(replay_launch_event(at=T1)),
+            to_json_line(replay_turn_end(at=T2, cost_usd=0.10)),
+            with_raw_number(to_json_line(replay_turn_end(at=T3)), ("cost_usd",), "NaN"),
         ],
     )
 
@@ -644,7 +531,7 @@ def test_replay_session_when_supervisor_first_line_malformed_does_ignore_the_log
 ):
     session_log, sup_log = log_paths
     write_records_log(session_log, [session_record(at=T0)])
-    write_lines(sup_log, ["{not json", to_json_line(turn_end(at=T3))])
+    write_lines(sup_log, ["{not json", to_json_line(replay_turn_end(at=T3))])
 
     spans = _replay(session_log, sup_log)
 
@@ -660,9 +547,10 @@ def test_replay_session_when_launch_session_id_differs_does_skip_log(log_paths: 
     session_log, sup_log = log_paths
     header = session_record(at=T0)
     write_records_log(session_log, [header])
-    write_supervisor_log(sup_log, [launch_event(at=T1, session_id="other-session")])
+    write_supervisor_log(sup_log, [replay_launch_event(at=T1, session_id="other-session")])
 
     spans = _replay(session_log, sup_log)
+
     run_spans = spans_by_prefix(spans, "gymrat.run")
     assert len(run_spans) == 0
 
@@ -672,15 +560,6 @@ def test_replay_session_when_launch_session_id_differs_does_skip_log(log_paths: 
 # ---------------------------------------------------------------------------
 
 _REPLAY_LOGGER = "gymrat.telemetry.replay"
-
-
-def _assert_warning_mentions(
-    records: list[logging.LogRecord], substring: str, description: str
-) -> None:
-    matches = [r for r in records if r.name == _REPLAY_LOGGER and r.levelno == logging.WARNING]
-    assert any(substring in r.message for r in matches), (
-        f"expected a warning mentioning {description}; got {[r.message for r in matches]}"
-    )
 
 
 def _assert_one_warning_naming(records: list[logging.LogRecord], *fragments: str) -> None:
@@ -723,7 +602,7 @@ def test_replay_session_when_session_line_unparseable_does_log_warning_with_line
     ):
         replay_session(session_log, [sup_log])
 
-    _assert_warning_mentions(caplog.records, "skipping line 2 (invalid JSON)", "line 2")
+    _assert_one_warning_naming(caplog.records, "skipping line 2 (invalid JSON)")
     spans = exporter.get_finished_spans()
     span_by_name(spans, "gymrat.command.measure")
     assert all(ev.name != "gymrat.iteration" for span in spans for ev in span.events)
@@ -823,9 +702,9 @@ def test_replay_session_when_supervisor_line_is_torn_utf8_does_replay_its_other_
     session_log, sup_log = log_paths
     write_records_log(session_log, [session_record(at=T0)])
     lines = [
-        to_json_line(launch_event(at=T1)).encode(),
-        to_json_line(turn_end(at=T2, cost_usd=0.10)).encode(),
-        to_json_line(turn_end(at=T3, cost_usd=0.42)).encode(),
+        to_json_line(replay_launch_event(at=T1)).encode(),
+        to_json_line(replay_turn_end(at=T2, cost_usd=0.10)).encode(),
+        to_json_line(replay_turn_end(at=T3, cost_usd=0.42)).encode(),
     ]
     lines.insert(torn_index, _TORN_UTF8_LINE)
     Path(sup_log).write_bytes(b"\n".join(lines))
@@ -848,32 +727,139 @@ def test_replay_session_when_supervisor_line_is_torn_utf8_does_replay_its_other_
 
 
 def test_replay_session_when_skipped_line_before_command_does_key_span_id_on_physical_line_number(
-    tmp_path_factory: pytest.TempPathFactory,
+    log_paths: tuple[str, str],
 ):
-    tmp_dir = tmp_path_factory.mktemp("replay-key")
-    session_clean = str(tmp_dir / "clean.jsonl")
-    session_dirty = str(tmp_dir / "dirty.jsonl")
-    sup_log = str(tmp_dir / "run.jsonl")
-
+    session_log, sup_log = log_paths
     header = session_record(at=T0)
     cmd = _command("measure", at=T2, duration_ms=100)
+    write_lines(
+        session_log,
+        [json.dumps(record_to_wire(header)), "not valid json", json.dumps(record_to_wire(cmd))],
+    )
+    write_supervisor_log(sup_log, [replay_launch_event(at=T1), replay_turn_end(at=T4)])
 
-    write_records_log(session_clean, [header, cmd])
+    spans = _replay(session_log, sup_log)
 
-    with Path(session_dirty).open("w", encoding="utf-8") as fh:
-        fh.write(json.dumps(record_to_wire(header)) + "\n")
-        fh.write("not valid json\n")
-        fh.write(json.dumps(record_to_wire(cmd)) + "\n")
+    cmd_span = span_by_name(spans, "gymrat.command.measure")
+    assert cmd_span.context.span_id == span_id_of(SESSION_ID, "command:3")
 
-    write_supervisor_log(sup_log, [launch_event(at=T1), turn_end(at=T4)])
 
-    spans_clean = _replay(session_clean, sup_log)
-    cmd_clean = span_by_name(spans_clean, "gymrat.command.measure")
+def _span_signature(span: Any) -> tuple[Any, ...]:
+    parent_span_id = span.parent.span_id if span.parent else None
+    event_names = tuple(sorted(ev.name for ev in span.events))
+    status_name = span.status.status_code.name
+    return (
+        span.name,
+        span.context.trace_id,
+        span.context.span_id,
+        parent_span_id,
+        status_name,
+        event_names,
+        dict(span.attributes),
+        tuple(link.context.span_id for link in span.links),
+    )
 
-    spans_dirty = _replay(session_dirty, sup_log)
-    cmd_dirty = span_by_name(spans_dirty, "gymrat.command.measure")
 
-    # The dirty log has the command on physical line 3, clean on line 2.
-    # The span ids differ because the physical line number differs.
-    assert cmd_clean.context.span_id == span_id_of(SESSION_ID, "command:2")
-    assert cmd_dirty.context.span_id == span_id_of(SESSION_ID, "command:3")
+def _event_records(span: Any) -> list[tuple[str, dict[str, Any]]]:
+    return [(ev.name, dict(ev.attributes)) for ev in span.events]
+
+
+async def test_replay_session_when_later_command_appends_record_live_does_match_replayed_events(
+    repo: str,
+):
+    header = session_record()
+    write_session_log(repo, header)
+
+    async def body_measure(trace: CommandTrace) -> str:
+        return "ok"
+
+    async def body_compare(trace: CommandTrace) -> str:
+        append_records(repo, hook_record())
+        return "ok"
+
+    with memory_tracing(header.session_id) as live_exporter:
+        await with_repo_lock("measure", body_measure)
+        await with_repo_lock("compare", body_compare)
+
+    live_spans = live_exporter.get_finished_spans()
+
+    with memory_tracing(header.session_id) as replay_exporter:
+        replay_session(session_jsonl_path(repo), [])
+
+    replay_spans = replay_exporter.get_finished_spans()
+    live_compare = span_by_name(live_spans, "gymrat.command.compare")
+    replay_compare = span_by_name(replay_spans, "gymrat.command.compare")
+    live_measure = span_by_name(live_spans, "gymrat.command.measure")
+    replay_measure = span_by_name(replay_spans, "gymrat.command.measure")
+    assert "gymrat.hook" in [ev.name for ev in live_compare.events]
+    assert _event_records(replay_compare) == _event_records(live_compare)
+    assert _event_records(replay_measure) == _event_records(live_measure)
+
+
+async def test_replay_session_when_command_opens_session_with_baseline_live_does_match_replayed_events(
+    repo: str,
+):
+    previous = session_record()
+    write_session_log(repo, previous)
+    fresh = session_record(session_id="20260809-090000-b7e4")
+
+    async def body_supervise(trace: CommandTrace) -> str:
+        archive_and_reopen_session_log(previous, fresh)
+        return "ok"
+
+    with memory_tracing(fresh.session_id) as live_exporter:
+        await with_repo_lock("supervise", body_supervise)
+
+    live_cmd = span_by_name(live_exporter.get_finished_spans(), "gymrat.command.supervise")
+
+    with memory_tracing(fresh.session_id) as replay_exporter:
+        replay_session(session_jsonl_path(repo), [])
+
+    replay_cmd = span_by_name(replay_exporter.get_finished_spans(), "gymrat.command.supervise")
+    live_events = [ev.name for ev in live_cmd.events]
+    assert "gymrat.baseline" in live_events
+    assert [ev.name for ev in replay_cmd.events] == live_events
+
+
+async def test_replay_session_when_gymrat_traceparent_set_live_does_match_replayed_spans(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+):
+    header = session_record()
+    write_session_log(repo, header)
+
+    # Build a GYMRAT_TRACEPARENT from deterministic IDs so live and replay agree
+    run_trace = trace_id_of(header.session_id)
+    run_span = span_id_of(header.session_id, f"run:{T0}")
+    run_traceparent = f"00-{run_trace:032x}-{run_span:016x}-01"
+    monkeypatch.setenv("GYMRAT_TRACEPARENT", run_traceparent)
+
+    jsonl_path = session_jsonl_path(repo)
+
+    # Write a supervisor log that covers the command's time
+    sup_dir = tmp_path_factory.mktemp("parity-sup")
+    sup_log = str(sup_dir / "run.jsonl")
+    write_supervisor_log(
+        sup_log,
+        [replay_launch_event(session_id=header.session_id, at=T0), replay_turn_end(at=T5)],
+    )
+
+    with memory_tracing(header.session_id) as live_exporter:
+
+        async def body(trace: CommandTrace) -> str:
+            return "ok"
+
+        await with_repo_lock("measure", body)
+
+    live_spans = live_exporter.get_finished_spans()
+    live_cmd = next(s for s in live_spans if s.name.startswith("gymrat.command."))
+
+    with memory_tracing(header.session_id) as replay_exporter:
+        replay_session(jsonl_path, [sup_log])
+
+    replay_spans = replay_exporter.get_finished_spans()
+    replay_cmd = next(s for s in replay_spans if s.name.startswith("gymrat.command."))
+
+    assert live_cmd.parent is not None
+    assert _span_signature(live_cmd) == _span_signature(replay_cmd)

@@ -39,25 +39,17 @@ def test_summarize_when_within_budget_does_return_collapsed_text(text: str, expe
     assert summarize(text) == expected
 
 
-def test_summarize_when_over_budget_does_truncate_with_bare_ellipsis():
-    overflow = 250
-
-    result = summarize("a" * (SUMMARY_MAX_CHARS + overflow))
-
-    assert result == "a" * SUMMARY_MAX_CHARS + "…"
-
-
-def test_summarize_when_multiline_over_budget_does_truncate_with_bare_ellipsis():
-    lines = ["line"] * SUMMARY_MAX_CHARS
-
-    result = summarize("\n".join(lines))
-
-    assert result == " ".join(lines)[:SUMMARY_MAX_CHARS] + "…"
-
-
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
+        pytest.param(
+            "a" * (SUMMARY_MAX_CHARS + 250), "a" * SUMMARY_MAX_CHARS + "…", id="ascii-over-budget"
+        ),
+        pytest.param(
+            "\n".join(["line"] * SUMMARY_MAX_CHARS),
+            " ".join(["line"] * SUMMARY_MAX_CHARS)[:SUMMARY_MAX_CHARS] + "…",
+            id="multiline-collapsed-then-truncated",
+        ),
         pytest.param(
             "\U0001f3af" * (SUMMARY_MAX_CHARS + 3),
             "\U0001f3af" * SUMMARY_MAX_CHARS + "…",
@@ -70,7 +62,7 @@ def test_summarize_when_multiline_over_budget_does_truncate_with_bare_ellipsis()
         ),
     ],
 )
-def test_summarize_when_truncating_does_split_on_code_point_boundaries(text: str, expected: str):
+def test_summarize_when_over_budget_does_truncate_with_bare_ellipsis(text: str, expected: str):
     assert summarize(text) == expected
 
 
@@ -121,108 +113,7 @@ def test_summarize_input_when_given_value_does_summarize_its_json_form(
             "/a/nb.ipynb",
             id="notebook-edit",
         ),
-    ],
-)
-def test_summarize_input_when_file_tool_does_extract_path_only(
-    tool_name: str, tool_input: dict[str, object], expected: str
-):
-    assert summarize_input(tool_input, tool_name=tool_name) == expected
-
-
-def test_summarize_input_when_path_under_root_does_render_relative():
-    result = summarize_input(
-        {"file_path": "/project/src/main.py"},
-        tool_name="Read",
-        supervised_root="/project",
-    )
-
-    assert result == "src/main.py"
-
-
-def test_summarize_input_when_path_under_home_does_render_tilde_prefixed():
-    home = str(Path.home())
-
-    result = summarize_input(
-        {"file_path": f"{home}/Documents/notes.md"},
-        tool_name="Read",
-        supervised_root="/other/project",
-    )
-
-    assert result == "~/Documents/notes.md"
-
-
-def test_summarize_input_when_path_under_root_and_home_does_prefer_root_relative():
-    home = str(Path.home())
-    root = f"{home}/project"
-
-    result = summarize_input(
-        {"file_path": f"{root}/src/main.py"},
-        tool_name="Read",
-        supervised_root=root,
-    )
-
-    assert result == "src/main.py"
-
-
-def test_summarize_input_when_path_outside_root_and_home_does_render_verbatim():
-    result = summarize_input(
-        {"file_path": "/etc/config.ini"},
-        tool_name="Read",
-        supervised_root="/project",
-    )
-
-    assert result == "/etc/config.ini"
-
-
-@pytest.mark.parametrize(
-    ("file_path", "expected"),
-    [
-        pytest.param("/project/..cache/data.json", "..cache/data.json", id="directory"),
-        pytest.param("/project/..hidden", "..hidden", id="file"),
-    ],
-)
-def test_summarize_input_when_first_component_under_root_starts_with_two_dots_does_render_relative(
-    file_path: str, expected: str
-):
-    result = summarize_input(
-        {"file_path": file_path},
-        tool_name="Read",
-        supervised_root="/project",
-    )
-
-    assert result == expected
-
-
-@pytest.mark.parametrize(
-    ("suffix", "expected"),
-    [
-        pytest.param("/work/sibling/main.py", "~/work/sibling/main.py", id="sibling-of-root"),
-        pytest.param("/work", "~/work", id="parent-of-root"),
-    ],
-)
-def test_summarize_input_when_path_escapes_root_to_parent_does_render_tilde_prefixed(
-    suffix: str, expected: str
-):
-    home = str(Path.home())
-
-    result = summarize_input(
-        {"file_path": f"{home}{suffix}"},
-        tool_name="Read",
-        supervised_root=f"{home}/work/project",
-    )
-
-    assert result == expected
-
-
-def test_summarize_input_when_bash_does_extract_command():
-    result = summarize_input({"command": "echo hello"}, tool_name="Bash")
-
-    assert result == "echo hello"
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "tool_input"),
-    [
+        pytest.param("Bash", {"command": "echo hello"}, "echo hello", id="bash-command"),
         pytest.param(
             "Agent",
             {
@@ -230,6 +121,7 @@ def test_summarize_input_when_bash_does_extract_command():
                 "description": "Explore ECS source architecture",
                 "prompt": "long prompt body that should never appear",
             },
+            "Explore: Explore ECS source architecture",
             id="agent-subagent-type",
         ),
         pytest.param(
@@ -239,30 +131,15 @@ def test_summarize_input_when_bash_does_extract_command():
                 "description": "Explore ECS source architecture",
                 "prompt": "long prompt body that should never appear",
             },
+            "Explore: Explore ECS source architecture",
             id="task-type",
         ),
-    ],
-)
-def test_summarize_input_when_agent_or_task_does_extract_type_and_description(
-    tool_name: str, tool_input: dict[str, object]
-):
-    result = summarize_input(tool_input, tool_name=tool_name)
-
-    assert result == "Explore: Explore ECS source architecture"
-
-
-def test_summarize_input_when_agent_has_no_subagent_type_does_show_description_only():
-    result = summarize_input(
-        {"description": "Explore ECS source architecture", "prompt": "..."},
-        tool_name="Agent",
-    )
-
-    assert result == "Explore ECS source architecture"
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "tool_input", "expected"),
-    [
+        pytest.param(
+            "Agent",
+            {"description": "Explore ECS source architecture", "prompt": "..."},
+            "Explore ECS source architecture",
+            id="agent-without-type-shows-description-only",
+        ),
         pytest.param("Skill", {"skill": "gymrat"}, "gymrat", id="skill-name-only"),
         pytest.param(
             "Skill",
@@ -272,10 +149,59 @@ def test_summarize_input_when_agent_has_no_subagent_type_does_show_description_o
         ),
     ],
 )
-def test_summarize_input_when_skill_tool_does_extract_skill_and_args(
+def test_summarize_input_when_known_tool_does_extract_its_identifying_fields(
     tool_name: str, tool_input: dict[str, object], expected: str
 ):
     assert summarize_input(tool_input, tool_name=tool_name) == expected
+
+
+@pytest.mark.parametrize(
+    ("file_path", "supervised_root", "expected"),
+    [
+        pytest.param("/project/src/main.py", "/project", "src/main.py", id="under-root"),
+        pytest.param(
+            "{home}/Documents/notes.md",
+            "/other/project",
+            "~/Documents/notes.md",
+            id="under-home",
+        ),
+        pytest.param(
+            "{home}/project/src/main.py",
+            "{home}/project",
+            "src/main.py",
+            id="under-root-and-home-prefers-root",
+        ),
+        pytest.param("/etc/config.ini", "/project", "/etc/config.ini", id="outside-both-verbatim"),
+        pytest.param(
+            "/project/..cache/data.json",
+            "/project",
+            "..cache/data.json",
+            id="two-dot-directory-under-root",
+        ),
+        pytest.param("/project/..hidden", "/project", "..hidden", id="two-dot-file-under-root"),
+        pytest.param(
+            "{home}/work/sibling/main.py",
+            "{home}/work/project",
+            "~/work/sibling/main.py",
+            id="sibling-of-root-under-home",
+        ),
+        pytest.param(
+            "{home}/work", "{home}/work/project", "~/work", id="parent-of-root-under-home"
+        ),
+    ],
+)
+def test_summarize_input_when_file_path_given_does_render_it_from_root_or_home(
+    file_path: str, supervised_root: str, expected: str
+):
+    home = str(Path.home())
+
+    result = summarize_input(
+        {"file_path": file_path.format(home=home)},
+        tool_name="Read",
+        supervised_root=supervised_root.format(home=home),
+    )
+
+    assert result == expected
 
 
 # ---------------------------------------------------------------------------
@@ -359,19 +285,12 @@ def test_summarize_input_when_probe_names_long_does_truncate_via_length_cap():
         pytest.param("Bash", {"not_command": "echo"}, id="bash-missing-command"),
         pytest.param("Agent", {"prompt": "..."}, id="agent-missing-type"),
         pytest.param("Skill", {"not_skill": "foo"}, id="skill-missing-skill"),
+        pytest.param("UnknownTool", {"some_key": "some_value"}, id="unknown-tool"),
     ],
 )
-def test_summarize_input_when_expected_field_missing_does_fall_back_to_json(
+def test_summarize_input_when_no_known_field_to_extract_does_fall_back_to_json(
     tool_name: str, tool_input: dict[str, object]
 ):
     result = summarize_input(tool_input, tool_name=tool_name)
 
     assert result == json.dumps(tool_input, separators=(",", ":"))
-
-
-def test_summarize_input_when_unknown_tool_does_fall_back_to_json():
-    tool_input = {"some_key": "some_value"}
-
-    result = summarize_input(tool_input, tool_name="UnknownTool")
-
-    assert result == '{"some_key":"some_value"}'

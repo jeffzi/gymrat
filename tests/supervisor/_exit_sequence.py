@@ -87,11 +87,6 @@ async def run_sequence(
     return ExitRun(report, phases, events, warnings)
 
 
-def write_text(path: str, text: str) -> None:
-    """Filesystem write kept out of the async body so it is not flagged as blocking I/O."""
-    Path(path).write_text(text, encoding="utf-8")
-
-
 def fingerprint(root: str) -> str:
     """The experiment worktree's fingerprint, as an iteration would have measured it."""
     experiment = experiment_worktree_dir(root)

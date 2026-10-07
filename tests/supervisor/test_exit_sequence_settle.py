@@ -19,21 +19,25 @@ from unittest.mock import create_autospec
 import pytest
 
 from gymrat.session.paths import experiment_worktree_dir
-from gymrat.session.records import DiscardRecord, KeepChecks, KeepRecord
+from gymrat.session.records import CommandRecord, DiscardRecord, KeepChecks, KeepRecord
 from gymrat.session.workspace import worktree_fingerprint
 from gymrat.supervisor.exit_sequence import ExitStep
-from tests._exec_fixtures import expected_result
+from tests._exec_fixtures import (
+    expected_result,
+    install_exec,
+)
+from tests._files import write_text
+from tests._git import status_of
 from tests.loop._settle import (
     CHECKS,
+    KEEP_EXEC,
     UNUSED_EXEC,
     checks_fail,
     checks_pass,
     confirmed_regression,
     edit_experiment,
-    install_exec,
     settling_record_of,
     start_with,
-    status_of,
     unimproved,
 )
 from tests.session.records._fixtures import (
@@ -42,7 +46,7 @@ from tests.session.records._fixtures import (
     command_record,
     hook_record,
     iteration_record,
-    log_records,
+    records_of_type,
 )
 from tests.supervisor._exit_sequence import (
     fingerprint,
@@ -50,8 +54,6 @@ from tests.supervisor._exit_sequence import (
     measured,
     run_sequence,
     session_context,
-    unimproved_iteration,
-    write_text,
 )
 
 if TYPE_CHECKING:
@@ -65,12 +67,6 @@ if TYPE_CHECKING:
 TREE_CHANGED = (
     "tree changed after measuring — an after hook, a later edit, or an interrupted discard"
 )
-
-
-def _settling_records(root: str) -> list[KeepRecord | DiscardRecord]:
-    """Every keep and discard the session log holds."""
-    records = log_records(root)
-    return [r for r in records if isinstance(r, KeepRecord | DiscardRecord)]
 
 
 def _edit_again(root: str) -> None:
@@ -132,6 +128,16 @@ def _failed_after_hook_ahead_of_a_command_record(root: str) -> None:
     )
 
 
+def _failed_standing_attempt(root: str) -> None:
+    # The first attempt's hook passed; the retry that recorded the iteration is the one that failed.
+    append_records(
+        root,
+        hook_record(seq=1, stage="before"),
+        hook_record(seq=1, stage="before", exit_code=1),
+    )
+    measured(root, iteration_record(seq=1))
+
+
 def _gating_block_iteration(root: str) -> None:
     """A confirmed regression standing under a gating block, ready for the gate to decide it."""
     measured(
@@ -153,8 +159,11 @@ async def test_run_exit_sequence_when_unsettled_improved_and_gate_passes_does_co
     improved_iteration(repo)
     checks_pass(monkeypatch)
 
-    await run_sequence(session_context(repo, checks=CHECKS))
+    run = await run_sequence(session_context(repo, checks=CHECKS))
 
+    assert run.report.steps[0] == ExitStep(
+        kind="settled", text="settled: kept iteration 1 (checks passed)"
+    )
     record = settling_record_of(repo)
     assert isinstance(record, KeepRecord)
     assert (record.status, record.seq, record.message) == (
@@ -165,43 +174,18 @@ async def test_run_exit_sequence_when_unsettled_improved_and_gate_passes_does_co
     assert status_of(experiment_worktree_dir(repo)) == ""
 
 
-async def test_run_exit_sequence_when_the_checks_pass_does_report_the_kept_iteration_as_checked(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+async def test_run_exit_sequence_when_no_checks_are_configured_does_say_so_to_the_report_and_warn_sink(
+    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     start_with(repo)
     improved_iteration(repo)
-    checks_pass(monkeypatch)
-
-    run = await run_sequence(session_context(repo, checks=CHECKS))
-
-    assert run.report.steps[0] == ExitStep(
-        kind="settled", text="settled: kept iteration 1 (checks passed)"
-    )
-
-
-async def test_run_exit_sequence_when_no_checks_are_configured_does_say_so_on_the_kept_step(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo)
-    improved_iteration(repo)
-    install_exec(monkeypatch, UNUSED_EXEC)
+    install_exec(monkeypatch, KEEP_EXEC, UNUSED_EXEC)
 
     run = await run_sequence(session_context(repo))
 
     assert run.report.steps[0] == ExitStep(
         kind="settled", text="settled: kept iteration 1 (checks not configured)"
     )
-
-
-async def test_run_exit_sequence_when_no_checks_are_configured_does_route_the_hint_to_the_warn_sink(
-    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
-    start_with(repo)
-    improved_iteration(repo)
-    install_exec(monkeypatch, UNUSED_EXEC)
-
-    run = await run_sequence(session_context(repo))
-
     assert "no checks command is configured" in "\n".join(run.warnings)
     assert capsys.readouterr().err == ""
 
@@ -228,10 +212,15 @@ async def test_run_exit_sequence_when_the_kept_tree_has_no_fingerprint_does_add_
     improved_iteration(repo)
     checks_pass(monkeypatch)
     standing = worktree_fingerprint(Path(experiment_worktree_dir(repo)))
-    # The gate reads the standing tree first; only the read after the keep fails.
+
+    def fingerprint_until_kept(directory: Path) -> str | None:
+        # The standing edit fingerprints as usual; once the keep commits it, the
+        # clean tree's read fails, so only the kept-tree note loses its input.
+        return standing if status_of(str(directory)) else None
+
     monkeypatch.setattr(
         "gymrat.supervisor.exit_sequence.worktree_fingerprint",
-        create_autospec(worktree_fingerprint, side_effect=[standing, None]),
+        create_autospec(worktree_fingerprint, side_effect=fingerprint_until_kept),
     )
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
@@ -258,6 +247,8 @@ async def test_run_exit_sequence_when_the_checks_fail_does_leave_the_iteration_f
         ),
     )
     assert status_of(experiment_worktree_dir(repo)) != ""
+    command = records_of_type(repo, CommandRecord)[-1]
+    assert (command.exit_code, command.reason, command.seq) == (1, "checks-failed", 1)
 
 
 async def test_run_exit_sequence_when_the_agent_committed_nothing_does_report_it_settled(
@@ -272,6 +263,8 @@ async def test_run_exit_sequence_when_the_agent_committed_nothing_does_report_it
     assert run.report.steps[0] == ExitStep(
         kind="settled", text="settled: iteration 1 had nothing to commit"
     )
+    command = records_of_type(repo, CommandRecord)[-1]
+    assert (command.exit_code, command.reason, command.seq) == (0, None, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +284,9 @@ GATE_FAILURES = [
         _failed_after_hook_ahead_of_a_command_record,
         "after hook failed",
         id="after-hook-failed-ahead-of-a-command-record",
+    ),
+    pytest.param(
+        _failed_standing_attempt, "before hook failed", id="only-the-standing-attempt-failed"
     ),
 ]
 
@@ -343,7 +339,7 @@ async def test_run_exit_sequence_when_improved_but_the_gate_fails_does_neither_k
 
     await run_sequence(session_context(repo, checks=CHECKS))
 
-    assert _settling_records(repo) == []
+    assert records_of_type(repo, KeepRecord | DiscardRecord) == []
     assert recorder.calls == []
     assert status_of(experiment_worktree_dir(repo)) != ""
 
@@ -354,29 +350,18 @@ async def test_run_exit_sequence_when_improved_but_the_gate_fails_does_neither_k
 
 
 @pytest.mark.parametrize("outcome", ["no-signal", "regressed"])
-async def test_run_exit_sequence_when_unsettled_and_not_improved_does_report_the_discard(
+async def test_run_exit_sequence_when_unsettled_and_not_improved_does_revert_it_without_checks(
     repo: str, monkeypatch: pytest.MonkeyPatch, outcome: Outcome
 ):
     start_with(repo)
     measured(repo, unimproved(1, outcome))
-    checks_pass(monkeypatch)
+    recorder = checks_pass(monkeypatch)
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
     assert run.report.steps[0] == ExitStep(
         kind="settled", text=f"settled: discarded iteration 1 ({outcome})"
     )
-
-
-async def test_run_exit_sequence_when_unsettled_and_not_improved_does_revert_without_committing(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo)
-    unimproved_iteration(repo)
-    recorder = checks_pass(monkeypatch)
-
-    await run_sequence(session_context(repo, checks=CHECKS))
-
     assert isinstance(settling_record_of(repo), DiscardRecord)
     assert status_of(experiment_worktree_dir(repo)) == ""
     assert recorder.calls == []
@@ -398,7 +383,7 @@ async def test_run_exit_sequence_when_not_improved_and_the_gate_fails_does_rever
             f"left unsettled: iteration 1 regressed but {TREE_CHANGED} — keep or discard it by hand"
         ),
     )
-    assert _settling_records(repo) == []
+    assert records_of_type(repo, KeepRecord | DiscardRecord) == []
 
 
 # ---------------------------------------------------------------------------
@@ -486,26 +471,6 @@ async def test_run_exit_sequence_when_an_earlier_attempt_failed_its_before_hook_
     assert run.report.steps[0] == ExitStep(kind="settled", text=f"settled: {settled}")
 
 
-async def test_run_exit_sequence_when_only_the_standing_attempt_failed_its_before_hook_does_leave_it(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo)
-    # The first attempt's hook passed; the retry that recorded the iteration is the one that failed.
-    append_records(
-        repo,
-        hook_record(seq=1, stage="before"),
-        hook_record(seq=1, stage="before", exit_code=1),
-    )
-    measured(repo, iteration_record(seq=1))
-    checks_pass(monkeypatch)
-
-    run = await run_sequence(session_context(repo, checks=CHECKS))
-
-    step = run.report.steps[0]
-    assert step.kind == "left"
-    assert "iteration 1 improved but before hook failed" in step.text
-
-
 # ---------------------------------------------------------------------------
 # unmeasured edits nobody asked about
 # ---------------------------------------------------------------------------
@@ -530,5 +495,5 @@ async def test_run_exit_sequence_when_only_unmeasured_edits_stand_does_count_the
     assert run.report.steps[0] == ExitStep(
         kind="left", text=f"left in worktree: {counted} — measure or discard by hand"
     )
-    assert _settling_records(repo) == []
+    assert records_of_type(repo, KeepRecord | DiscardRecord) == []
     assert status_of(experiment_worktree_dir(repo)) != ""

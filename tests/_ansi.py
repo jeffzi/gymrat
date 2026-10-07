@@ -8,6 +8,9 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
 """Matches SGR (Select Graphic Rendition) sequences only."""
 
+TRAILING_SGR_RUN = re.compile(r"(?:\x1b\[[0-9;]*m)*$")
+"""Matches the run of SGR escapes a string ends on, with nothing between them."""
+
 SGR_BOLD = 1
 SGR_DIM = 2
 SGR_RED = 31
@@ -46,19 +49,32 @@ def normalize(text: str) -> str:
 
 
 def sgr_params(text: str) -> str:
-    """The SGR parameter list of the last SGR escape in ``text`` (e.g. ``"2;34"``).
+    """The SGR parameter list of the last SGR escape in ``text``.
 
     Asserts which attributes a styled span carries without pinning the exact
     escape bytes rich emits.
+
+    Args:
+        text: Rendered output holding at least one SGR escape.
+
+    Returns:
+        The escape's raw parameter list, such as ``"2;34"``.
     """
     match = list(SGR_RE.finditer(text))[-1]
     return match.group(1)
 
 
+def sgr_codes(text: str) -> set[str]:
+    """Every SGR parameter code present in ``text``, resets left out."""
+    codes: set[str] = set()
+    for escape in SGR_RE.finditer(text):
+        codes.update(param for param in escape.group(1).split(";") if param not in {"", "0"})
+    return codes
+
+
 def has_sgr(text: str, code: int) -> bool:
-    """True when ``text`` contains an ANSI SGR sequence with parameter ``code``."""
-    target = str(code)
-    return any(target in match.group(1).split(";") for match in SGR_RE.finditer(text))
+    """True when ``text`` opens the SGR style ``code``; a reset (``0``) is never a style."""
+    return str(code) in sgr_codes(text)
 
 
 def assert_has_sgr(lines: list[str], code: int) -> None:

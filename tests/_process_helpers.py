@@ -7,7 +7,6 @@ import pathlib
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Callable, Iterable
 from io import StringIO
@@ -106,10 +105,16 @@ def _has_exited(pid: int) -> bool:
 
 
 def is_alive(pid: int) -> bool:
-    """True while a process with ``pid`` exists and has not yet exited.
+    """Report whether a process is still running.
 
     A zombie counts as dead: it has run its last instruction and only its exit
     status survives.
+
+    Args:
+        pid: The process ID to probe.
+
+    Returns:
+        True while the process exists and has not yet exited.
     """
     try:
         os.kill(pid, 0)
@@ -289,54 +294,26 @@ def run_with_closed_reader(
         os.close(write_end)
 
 
-# Execs ``argv[1:]`` with the file-size limit at zero, so every write the new
-# program makes to a regular file fails with EFBIG. Bytecode caching is off so
-# the child never trips the limit on its own ``.pyc`` files.
-_ZERO_FILE_SIZE_TRAMPOLINE = """
-import os, resource, sys
-resource.setrlimit(resource.RLIMIT_FSIZE, (0, resource.RLIM_INFINITY))
-os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-os.execv(sys.argv[1], sys.argv[1:])
-"""
-
-
-def run_with_failing_stdout(argv: list[str], **run_kwargs: Any) -> subprocess.CompletedProcess[str]:
-    """Run ``argv`` with every stdout write failing for a reason other than a closed pipe.
-
-    Stdout is a regular file and the child's file-size limit is zero, so each
-    write fails with EFBIG, the portable stand-in for a full disk (macOS has no
-    ``/dev/full``). Stderr is captured through a pipe, which the limit does not
-    cover. POSIX only: Windows has no file-size limit.
-
-    Args:
-        argv: The command to run; ``argv[0]`` must be an executable path.
-        **run_kwargs: Extra ``subprocess.run`` arguments such as ``cwd`` and
-            ``timeout``.
-
-    Returns:
-        The finished child, run with ``check=False`` and text-decoded stderr.
-    """
-    with tempfile.TemporaryFile() as stdout:
-        return subprocess.run(  # noqa: S603 -- caller passes a fixed argv
-            [sys.executable, "-c", _ZERO_FILE_SIZE_TRAMPOLINE, *argv],
-            stdout=stdout,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-            **run_kwargs,
-        )
-
-
 def capture_spawns(
     monkeypatch: "pytest.MonkeyPatch",
     attr: str,
+    into: list[asyncio.subprocess.Process] | None = None,
 ) -> list[asyncio.subprocess.Process]:
     """Wrap ``asyncio.<attr>`` to record every spawned ``Process``.
 
     The wrapper leaves the spawn itself real, so a test can reach into the
     captured child's stdio pipes or reap survivors on teardown.
+
+    Args:
+        monkeypatch: Patches ``asyncio.<attr>`` for the duration of the test.
+        attr: The asyncio spawner to wrap, such as ``create_subprocess_exec``.
+        into: A list to record into, so several spawners can share one;
+            ``None`` records into a fresh list.
+
+    Returns:
+        The list each spawned process is appended to.
     """
-    processes: list[asyncio.subprocess.Process] = []
+    processes: list[asyncio.subprocess.Process] = [] if into is None else into
     real = getattr(asyncio, attr)
 
     async def wrapper(*args: object, **kwargs: object) -> asyncio.subprocess.Process:

@@ -72,6 +72,15 @@ def other_kind(
     It gates, holds no groups, and shares one aggregate between its section and
     gated geomeans, so a caller excluding metrics or widening the band writes
     that only once.
+
+    Args:
+        value: The geomean delta, in percent.
+        n: How many metrics the geomean covers.
+        band: The geomean's noise band, in percent.
+        excluded: The metrics the geomean left out, with their reasons.
+
+    Returns:
+        The kind aggregate, its gated geomean equal to its section geomean.
     """
     geomean = geomean_of(value, n, band=band, excluded=excluded)
     return KindAggregate(kind="other", geomean=geomean, groups=(), gated_geomean=geomean)
@@ -84,9 +93,15 @@ def create_candidate(
 ) -> CandidateComparison:
     """One candidate's run-level results, judged against the shared baseline.
 
-    ``kinds`` defaults to the single-kind run every other default here
-    describes: one ``other`` kind, no groups, whose section and gated geomeans
-    share the same default aggregate.
+    Args:
+        label: The candidate's target label.
+        kinds: The candidate's kind aggregates. ``None`` gives the single-kind
+            run every other default here describes: one ``other`` kind, no
+            groups, whose section and gated geomeans share the same default
+            aggregate.
+
+    Returns:
+        The candidate comparison.
     """
     return CandidateComparison(
         label=label,
@@ -172,11 +187,11 @@ def permutation_metric(
 def exact_metric(
     *,
     delta: float,
-    baseline_median: float = 1000.0,
     n: int = 10,
     unit: MetricUnit | None = "bytes",
 ) -> MetricComparison:
-    """A counted metric, compared exactly rather than statistically."""
+    """A counted metric with a 1000 baseline, compared exactly rather than statistically."""
+    baseline_median = 1000.0
     return MetricComparison(
         baseline_median=baseline_median,
         baseline_spread=None,
@@ -241,9 +256,13 @@ def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricComparison:
 def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
     """A multi-candidate comparison with one metric judged per candidate.
 
-    With three candidates (the default): ``candidate-a`` improved,
-    ``candidate-b`` regressed, ``candidate-c`` unstable (band method). With two:
-    the first pair alone.
+    Args:
+        candidate_count: ``3`` gives ``candidate-a`` improved, ``candidate-b``
+            regressed and ``candidate-c`` unstable (band method); ``2`` gives
+            the first pair alone.
+
+    Returns:
+        The comparison result.
     """
     candidates = [
         create_candidate(label="candidate-a", kinds=[other_kind(-10, 1)]),
@@ -425,50 +444,6 @@ def two_kind_result() -> ComparisonResult:
 def without_gated_geomean(kind: KindAggregate) -> KindAggregate:
     """The kind with its gated geomean cleared, as a non-gating kind carries."""
     return replace(kind, gated_geomean=None)
-
-
-def grouped_flat_result() -> ComparisonResult:
-    """Single ``time`` kind: ``entity`` group (2 members) + ungrouped ``warmup``."""
-    geomean = geomean_of(-3.2, 3)
-    return create_comparison_result(
-        metrics={
-            "entity/alive_check#time": kind_metric(
-                kind="time",
-                short_name="entity.alive_check",
-                verdict="improved",
-                delta=-10,
-            ),
-            "entity/spawn#time": kind_metric(
-                kind="time",
-                short_name="entity.spawn",
-                verdict="regressed",
-                delta=4,
-            ),
-            "warmup#time": kind_metric(
-                kind="time",
-                short_name="warmup",
-                verdict="no-signal",
-                delta=0.3,
-            ),
-        },
-        candidates=[
-            create_candidate(
-                kinds=[
-                    KindAggregate(
-                        kind="time",
-                        geomean=geomean,
-                        groups=(
-                            GroupAggregate(
-                                group="entity",
-                                geomean=geomean_of(-3.1, 2),
-                            ),
-                        ),
-                        gated_geomean=geomean,
-                    )
-                ]
-            )
-        ],
-    )
 
 
 def grouped_comparison() -> ComparisonResult:

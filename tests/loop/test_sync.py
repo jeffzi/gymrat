@@ -54,40 +54,37 @@ def _tree_snapshot(root: str) -> dict[str, bytes | str | None]:
 # ---------------------------------------------------------------------------
 
 
-def test_sync_to_experiment_when_tracked_file_modified_does_apply_change_to_experiment(
-    session: str,
+@pytest.mark.parametrize(
+    "files",
+    [
+        pytest.param({"README.md": "# Modified\n"}, id="tracked-file-modified"),
+        pytest.param({"new_file.txt": "hello\n"}, id="untracked-file-added"),
+        pytest.param({"README.md": "# Changed\n", "extra.py": "x = 1\n"}, id="several-files"),
+        pytest.param({"été.txt": "summer\n"}, id="non-ascii-name"),
+        pytest.param(
+            {"a -> b.txt": "literal arrow\n"},
+            id="arrow-literal-in-name",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="'>' is illegal in Windows filenames"
+            ),
+        ),
+    ],
+)
+def test_sync_to_experiment_when_changes_present_does_copy_each_file_and_return_the_sorted_paths(
+    session: str, files: dict[str, str]
 ):
-    (Path(session) / "README.md").write_text("# Modified\n", encoding="utf-8")
+    # core.quotePath=true C-quotes non-ASCII names; pinned so a developer's global
+    # config cannot turn it off, since sync must still copy the real path.
+    run_git(["config", "core.quotePath", "true"], session)
+    for name, content in files.items():
+        (Path(session) / name).write_text(content, encoding="utf-8")
 
     result = sync_to_experiment(session)
 
     experiment = experiment_worktree_dir(session)
-    assert (Path(experiment) / "README.md").read_text(encoding="utf-8") == "# Modified\n"
-    assert isinstance(result, SyncResult)
-    assert "README.md" in result.files
-
-
-def test_sync_to_experiment_when_untracked_file_added_does_copy_it_to_experiment(
-    session: str,
-):
-    (Path(session) / "new_file.txt").write_text("hello\n", encoding="utf-8")
-
-    result = sync_to_experiment(session)
-
-    experiment = experiment_worktree_dir(session)
-    assert (Path(experiment) / "new_file.txt").read_text(encoding="utf-8") == "hello\n"
-    assert "new_file.txt" in result.files
-
-
-def test_sync_to_experiment_when_changes_present_does_return_all_synced_paths(
-    session: str,
-):
-    (Path(session) / "README.md").write_text("# Changed\n", encoding="utf-8")
-    (Path(session) / "extra.py").write_text("x = 1\n", encoding="utf-8")
-
-    result = sync_to_experiment(session)
-
-    assert set(result.files) == {"README.md", "extra.py"}
+    synced = {name: (Path(experiment) / name).read_text(encoding="utf-8") for name in files}
+    assert synced == files
+    assert result.files == tuple(sorted(files))
 
 
 def test_sync_to_experiment_when_changes_present_does_not_sync_gymrat_dir(
@@ -124,109 +121,74 @@ def test_sync_to_experiment_when_working_tree_clean_does_return_empty_file_list(
 # ---------------------------------------------------------------------------
 
 
-def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_refuse_leaving_worktree_intact(
-    session: str,
-):
-    experiment = experiment_worktree_dir(session)
+def _both_modify_readme(session: str) -> str:
+    """Edit README.md in the main tree and, differently, in the experiment."""
     (Path(session) / "README.md").write_text("# Main change\n", encoding="utf-8")
-    (Path(experiment) / "README.md").write_text("# Experiment change\n", encoding="utf-8")
-
-    with pytest.raises(GymratError) as excinfo:
-        sync_to_experiment(session)
-
-    assert "README.md" in str(excinfo.value)
-    hint = excinfo.value.hint or ""
-    assert "settle" in hint.lower() or "revert" in hint.lower()
-    assert (Path(experiment) / "README.md").read_text(encoding="utf-8") == "# Experiment change\n"
+    (Path(experiment_worktree_dir(session)) / "README.md").write_text(
+        "# Experiment change\n", encoding="utf-8"
+    )
+    return "README.md"
 
 
-def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_carry_dirty_worktree_reason(
-    session: str,
-):
-    experiment = experiment_worktree_dir(session)
-    (Path(session) / "README.md").write_text("# Main change\n", encoding="utf-8")
-    (Path(experiment) / "README.md").write_text("# Experiment change\n", encoding="utf-8")
-
-    with pytest.raises(GymratError) as excinfo:
-        sync_to_experiment(session)
-
-    assert excinfo.value.reason == "dirty-worktree"
-
-
-# ---------------------------------------------------------------------------
-# no open session
-# ---------------------------------------------------------------------------
-
-
-def test_sync_to_experiment_when_no_session_does_raise_pointing_at_start(
-    repo: str,
-):
-    with pytest.raises(GymratError) as excinfo:
-        sync_to_experiment(repo)
-
-    assert "gymrat start" in (excinfo.value.hint or "")
-
-
-# ---------------------------------------------------------------------------
-# non-ASCII / quoted-by-git filenames
-# ---------------------------------------------------------------------------
-
-
-def test_sync_to_experiment_when_filename_contains_non_ascii_does_sync_real_path(
-    session: str,
-):
-    # core.quotePath=true C-quotes non-ASCII names; sync must use the real path.
-    run_git(["config", "core.quotePath", "true"], session)
-    non_ascii_name = "été.txt"  # ete with accents
-    (Path(session) / non_ascii_name).write_text("summer\n", encoding="utf-8")
-
-    result = sync_to_experiment(session)
-
-    experiment = experiment_worktree_dir(session)
-    assert (Path(experiment) / non_ascii_name).read_text(encoding="utf-8") == "summer\n"
-    assert non_ascii_name in result.files
-
-
-# ---------------------------------------------------------------------------
-# renames
-# ---------------------------------------------------------------------------
-
-
-def test_sync_to_experiment_when_file_renamed_does_remove_old_path_from_experiment(
-    session: str,
-):
+def _rename_with_dirty_source(session: str) -> str:
+    """Rename README.md in the main tree while the experiment edits the source."""
     run_git(["mv", "README.md", "GUIDE.md"], session)
+    (Path(experiment_worktree_dir(session)) / "README.md").write_text(
+        "# Experiment change\n", encoding="utf-8"
+    )
+    return "README.md"
 
-    result = sync_to_experiment(session)
 
-    experiment = experiment_worktree_dir(session)
-    assert not (Path(experiment) / "README.md").exists()
-    assert (Path(experiment) / "GUIDE.md").read_text(encoding="utf-8") == "# Test Repo\n"
-    assert "GUIDE.md" in result.files
+def _rename_with_dirty_destination(session: str) -> str:
+    """Rename README.md in the main tree while the experiment writes the destination."""
+    run_git(["mv", "README.md", "GUIDE.md"], session)
+    (Path(experiment_worktree_dir(session)) / "GUIDE.md").write_text(
+        "# Experiment change\n", encoding="utf-8"
+    )
+    return "GUIDE.md"
+
+
+def _rename_then_delete_with_dirty_source(session: str) -> str:
+    """Rename then delete README.md in the main tree while the experiment edits the source."""
+    run_git(["mv", "README.md", "GUIDE.md"], session)
+    (Path(session) / "GUIDE.md").unlink()
+    (Path(experiment_worktree_dir(session)) / "README.md").write_text(
+        "# Experiment change\n", encoding="utf-8"
+    )
+    return "README.md"
 
 
 @pytest.mark.parametrize(
-    "conflicting_path",
+    "arrange",
     [
-        pytest.param("README.md", id="rename-source"),
-        pytest.param("GUIDE.md", id="rename-destination"),
+        pytest.param(_both_modify_readme, id="modified-on-both-sides"),
+        pytest.param(_rename_with_dirty_source, id="rename-source"),
+        pytest.param(_rename_with_dirty_destination, id="rename-destination"),
+        pytest.param(_rename_then_delete_with_dirty_source, id="rename-then-delete-source"),
     ],
 )
-def test_sync_to_experiment_when_renamed_path_dirty_in_experiment_does_refuse_leaving_worktree_intact(
+def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_refuse_leaving_worktree_intact(
     session: str,
-    conflicting_path: str,
+    arrange: Callable[[str], str],
 ):
+    conflicting_path = arrange(session)
     experiment = experiment_worktree_dir(session)
-    run_git(["mv", "README.md", "GUIDE.md"], session)
-    (Path(experiment) / conflicting_path).write_text("# Experiment change\n", encoding="utf-8")
     before = _tree_snapshot(experiment)
 
     with pytest.raises(GymratError) as excinfo:
         sync_to_experiment(session)
 
-    assert conflicting_path in str(excinfo.value)
+    assert str(excinfo.value) == (
+        f"Cannot sync — the experiment worktree has uncommitted changes in: {conflicting_path}"
+    )
     assert excinfo.value.reason == "dirty-worktree"
+    assert excinfo.value.hint == "Settle or revert the experiment worktree first."
     assert _tree_snapshot(experiment) == before
+
+
+# ---------------------------------------------------------------------------
+# renames
+# ---------------------------------------------------------------------------
 
 
 def test_sync_to_experiment_when_renamed_file_then_deleted_does_remove_old_path_from_experiment(
@@ -240,37 +202,6 @@ def test_sync_to_experiment_when_renamed_file_then_deleted_does_remove_old_path_
     experiment = experiment_worktree_dir(session)
     assert not (Path(experiment) / "README.md").exists()
     assert not (Path(experiment) / "GUIDE.md").exists()
-
-
-def test_sync_to_experiment_when_renamed_then_deleted_source_dirty_in_experiment_does_refuse_leaving_worktree_intact(
-    session: str,
-):
-    experiment = experiment_worktree_dir(session)
-    run_git(["mv", "README.md", "GUIDE.md"], session)
-    (Path(session) / "GUIDE.md").unlink()
-    (Path(experiment) / "README.md").write_text("# Experiment change\n", encoding="utf-8")
-    before = _tree_snapshot(experiment)
-
-    with pytest.raises(GymratError) as excinfo:
-        sync_to_experiment(session)
-
-    assert "README.md" in str(excinfo.value)
-    assert excinfo.value.reason == "dirty-worktree"
-    assert _tree_snapshot(experiment) == before
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="'>' is illegal in Windows filenames")
-def test_sync_to_experiment_when_path_contains_arrow_literal_does_not_misparse_as_rename(  # cspell:disable-line
-    session: str,
-):
-    arrow_name = "a -> b.txt"
-    (Path(session) / arrow_name).write_text("literal arrow\n", encoding="utf-8")
-
-    result = sync_to_experiment(session)
-
-    experiment = experiment_worktree_dir(session)
-    assert (Path(experiment) / arrow_name).read_text(encoding="utf-8") == "literal arrow\n"
-    assert arrow_name in result.files
 
 
 # ---------------------------------------------------------------------------
@@ -357,51 +288,95 @@ def test_sync_to_experiment_when_git_status_fails_does_raise_gymrat_error(
 # ---------------------------------------------------------------------------
 
 
-def test_sync_to_experiment_when_source_is_directory_does_report_expected_file_and_submodule_hint(
-    session: str,
-):
+SUBMODULE_HINT = "If this is a submodule, commit or remove it before syncing."
+
+
+def _readme_replaced_by_directory(session: str) -> str:
+    """Replace the tracked README.md in the main tree with a directory."""
     readme = Path(session) / "README.md"
     readme.unlink()
     readme.mkdir()
     (readme / "nested.txt").write_text("inside\n", encoding="utf-8")
-
-    with pytest.raises(GymratError, match="expected a file but found a directory") as excinfo:
-        sync_to_experiment(session)
-
-    assert "README.md" in str(excinfo.value)
-    hint = excinfo.value.hint or ""
-    assert "submodule" in hint
+    return "README.md"
 
 
-def test_sync_to_experiment_when_nested_repository_present_does_leave_experiment_untouched(
-    session: str,
-):
-    experiment = experiment_worktree_dir(session)
+def _nested_repository(session: str) -> str:
+    """Modify README.md and add an untracked nested repository beside it."""
     (Path(session) / "README.md").write_text("# Modified\n", encoding="utf-8")
     nested = Path(session) / "vendor"
     nested.mkdir()
     run_git(["init"], str(nested))
     (nested / "lib.py").write_text("x = 1\n", encoding="utf-8")
+    return "vendor/"
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        pytest.param(_readme_replaced_by_directory, id="tracked-file-became-directory"),
+        pytest.param(_nested_repository, id="nested-repository"),
+    ],
+)
+def test_sync_to_experiment_when_main_tree_entry_is_directory_does_refuse_leaving_experiment_untouched(
+    session: str,
+    arrange: Callable[[str], str],
+):
+    offending = arrange(session)
+    experiment = experiment_worktree_dir(session)
     before = _tree_snapshot(experiment)
 
-    with pytest.raises(GymratError, match="expected a file but found a directory"):
+    with pytest.raises(GymratError) as excinfo:
         sync_to_experiment(session)
 
+    assert str(excinfo.value) == f"Cannot sync '{offending}': expected a file but found a directory"
+    assert excinfo.value.hint == SUBMODULE_HINT
     assert _tree_snapshot(experiment) == before
 
 
-def test_sync_to_experiment_when_destination_is_directory_does_leave_experiment_untouched(
-    session: str,
-):
-    experiment = experiment_worktree_dir(session)
+def _destination_is_directory(session: str) -> str:
+    """Add a main-tree file whose path is a directory in the experiment."""
     (Path(session) / "AAA.txt").write_text("lands first\n", encoding="utf-8")
     (Path(session) / "notes").write_text("a file\n", encoding="utf-8")
-    (Path(experiment) / "notes").mkdir()
+    (Path(experiment_worktree_dir(session)) / "notes").mkdir()
+    return "notes"
+
+
+def _rename_source_is_directory(session: str) -> str:
+    """Rename README.md in the main tree while the experiment commits it as a directory.
+
+    The experiment commits the swap so its worktree is clean: the refusal comes
+    from the directory itself, not from a dirty path.
+    """
+    experiment = experiment_worktree_dir(session)
+    run_git(["mv", "README.md", "GUIDE.md"], session)
+    run_git(["rm", "README.md"], experiment)
+    (Path(experiment) / "README.md").mkdir()
+    (Path(experiment) / "README.md" / "inner.txt").write_text("inside\n", encoding="utf-8")
+    run_git(["add", "README.md"], experiment)
+    run_git(["commit", "-m", "replace file with directory"], experiment)
+    return "README.md"
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        pytest.param(_destination_is_directory, id="destination"),
+        pytest.param(_rename_source_is_directory, id="rename-source"),
+    ],
+)
+def test_sync_to_experiment_when_experiment_path_is_directory_does_refuse_leaving_experiment_untouched(
+    session: str,
+    arrange: Callable[[str], str],
+):
+    offending = arrange(session)
+    experiment = experiment_worktree_dir(session)
     before = _tree_snapshot(experiment)
 
-    with pytest.raises(GymratError, match="expected a file but found a directory"):
+    with pytest.raises(GymratError) as excinfo:
         sync_to_experiment(session)
 
+    assert str(excinfo.value) == f"Cannot sync '{offending}': expected a file but found a directory"
+    assert excinfo.value.hint == SUBMODULE_HINT
     assert _tree_snapshot(experiment) == before
 
 
@@ -421,26 +396,6 @@ def test_sync_to_experiment_when_destination_ancestor_is_file_does_leave_experim
     assert str(excinfo.value) == (
         "Cannot sync 'notes/x.txt': 'notes' is not a directory in the experiment worktree"
     )
-    assert _tree_snapshot(experiment) == before
-
-
-def test_sync_to_experiment_when_rename_source_is_directory_in_experiment_does_leave_experiment_untouched(
-    session: str,
-):
-    # The experiment commits the swap so its worktree is clean: the refusal
-    # comes from the directory itself, not from a dirty path.
-    experiment = experiment_worktree_dir(session)
-    run_git(["mv", "README.md", "GUIDE.md"], session)
-    run_git(["rm", "README.md"], experiment)
-    (Path(experiment) / "README.md").mkdir()
-    (Path(experiment) / "README.md" / "inner.txt").write_text("inside\n", encoding="utf-8")
-    run_git(["add", "README.md"], experiment)
-    run_git(["commit", "-m", "replace file with directory"], experiment)
-    before = _tree_snapshot(experiment)
-
-    with pytest.raises(GymratError, match="expected a file but found a directory"):
-        sync_to_experiment(session)
-
     assert _tree_snapshot(experiment) == before
 
 

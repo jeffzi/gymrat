@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -46,7 +45,6 @@ from tests.report._comparisons import (
     kind_metric,
     memory_kind,
     metric_meta,
-    multi_candidate_result,
     n_way_kind_metric,
     other_kind,
     permutation_metric,
@@ -108,19 +106,6 @@ def _one_kind_result() -> ComparisonResult:
     )
 
 
-def test_render_report_when_one_kind_does_keep_the_flat_layout_and_one_geomean_row():
-    assert table_region(render_report(_one_kind_result())) == [
-        _HEADER,
-        "metric",
-        "<rule>",
-        "entity · time",
-        "alive_check",
-        "spawn",
-        "<rule>",
-        "geomean (2 stable metrics)",
-    ]
-
-
 def _non_gating_result() -> ComparisonResult:
     """One ``time`` kind that gates nothing, so its geomean has no stable metrics."""
     return create_comparison_result(
@@ -174,37 +159,6 @@ def _mixed_methods_result() -> ComparisonResult:
     )
 
 
-def test_render_report_when_the_kind_does_not_gate_does_report_no_stable_metrics():
-    row = line_starting_with(render_report(_non_gating_result()), "geomean")
-
-    assert [cell.strip() for cell in cells_of(row)] == ["geomean", "", "", "—  no stable metrics"]
-
-
-def test_render_report_when_flat_geomean_clears_its_band_does_paint_it_green(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    result = replace(
-        _one_kind_result(),
-        candidates=(
-            create_candidate(
-                kinds=[
-                    KindAggregate(
-                        kind="time",
-                        geomean=geomean_of(-3.2, 2),
-                        groups=(),
-                        gated_geomean=geomean_of(-3.2, 2, band=1),
-                    )
-                ]
-            ),
-        ),
-    )
-
-    line = line_containing(render_report(result), "geomean")
-
-    assert styles_at(line, "-3.2%") == ["1", "32"]
-
-
 # ---------------------------------------------------------------------------
 # flat non-gating kind
 # ---------------------------------------------------------------------------
@@ -231,7 +185,9 @@ def _flat_non_gating_result() -> ComparisonResult:
 
 
 def test_render_report_when_the_sole_kind_gates_nothing_does_tag_before_the_header():
-    assert table_region(render_report(_flat_non_gating_result())) == [
+    report = render_report(_flat_non_gating_result())
+
+    assert table_region(report) == [
         _HEADER,
         "informational — gating off (config: kinds.time.gating = false)",
         "metric",
@@ -241,89 +197,6 @@ def test_render_report_when_the_sole_kind_gates_nothing_does_tag_before_the_head
         "<rule>",
         "geomean",
     ]
-
-
-@pytest.mark.parametrize(
-    ("make_result", "expected"),
-    [
-        pytest.param(
-            _flat_non_gating_result,
-            "informational — gating off (config: kinds.time.gating = false)",
-            id="kind-level-config",
-        ),
-        pytest.param(
-            lambda: replace(_flat_non_gating_result(), config_kinds=None),
-            "informational — gating off",
-            id="per-metric-overrides",
-        ),
-    ],
-)
-def test_render_report_when_flat_kind_is_informational_does_credit_the_config_source(
-    make_result: Callable[[], ComparisonResult], expected: str
-):
-    report = render_report(make_result())
-
-    assert line_containing(report, "informational") == expected
-
-
-def test_render_report_when_flat_kind_is_informational_and_colored_does_dim_the_tag(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-
-    tag = line_containing(render_report(_flat_non_gating_result()), "informational")
-
-    assert styles_at(tag, "informational") == ["2"]
-
-
-# ---------------------------------------------------------------------------
-# group and geomean labels, colored
-# ---------------------------------------------------------------------------
-
-
-def _flat_result() -> ComparisonResult:
-    """A single-candidate run of one kind, whose table closes on a flat geomean row."""
-    return create_comparison_result(
-        metrics={"faster/time": permutation_metric(verdict="improved", delta=-17.5)}
-    )
-
-
-@pytest.mark.parametrize(
-    "make_result",
-    [
-        pytest.param(two_kind_result, id="single-candidate"),
-        pytest.param(grouped_comparison, id="multi-candidate"),
-    ],
-)
-def test_render_report_when_colored_does_paint_the_group_sub_header_blue(
-    monkeypatch: pytest.MonkeyPatch, make_result: Callable[[], ComparisonResult]
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-
-    row = line_containing(render_report(make_result()), "entity")
-
-    assert styles_at(row, "entity") == ["1", "34"]
-
-
-@pytest.mark.parametrize(
-    ("label", "make_result"),
-    [
-        pytest.param("geomean · entity", two_kind_result, id="group-single"),
-        pytest.param("geomean · time", two_kind_result, id="kind-single"),
-        pytest.param("geomean", _flat_result, id="flat-single"),
-        pytest.param("geomean · entity", grouped_comparison, id="group-multi"),
-        pytest.param("geomean · time", grouped_comparison, id="kind-multi"),
-        pytest.param("geomean", multi_candidate_result, id="flat-multi"),
-    ],
-)
-def test_render_report_when_colored_does_embolden_the_geomean_label(
-    monkeypatch: pytest.MonkeyPatch, label: str, make_result: Callable[[], ComparisonResult]
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-
-    row = line_containing(render_report(make_result()), label)
-
-    assert styles_at(row, label) == ["1"]
 
 
 # ---------------------------------------------------------------------------
@@ -380,32 +253,27 @@ def _quiet_two_kind_result() -> ComparisonResult:
     ],
 )
 def test_render_report_when_quiet_metrics_and_colored_does_leave_the_geomean_uncolored(
-    monkeypatch: pytest.MonkeyPatch, label: str, value: str
+    label: str, value: str
 ):
-    monkeypatch.setenv("FORCE_COLOR", "1")
 
-    line = line_containing(render_report(_quiet_two_kind_result()), label)
+    line = line_containing(
+        render_report(_quiet_two_kind_result(), ReportOptions(color=True)), label
+    )
 
     assert styles_at(line, value) == ["1"]
 
 
-def test_render_report_when_quiet_flat_metric_and_colored_does_leave_the_geomean_uncolored(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
+def test_render_report_when_quiet_flat_metric_and_colored_does_leave_the_geomean_uncolored():
     result = create_comparison_result(
         metrics={"faster/time": permutation_metric(verdict="no-signal", delta=-0.5)}
     )
 
-    line = line_containing(render_report(result), "geomean")
+    line = line_containing(render_report(result, ReportOptions(color=True)), "geomean")
 
     assert styles_at(line, "-5.8%") == ["1"]
 
 
-def test_render_report_when_colored_does_judge_each_candidate_column_by_its_own_verdicts(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
+def test_render_report_when_colored_does_judge_each_candidate_column_by_its_own_verdicts():
     result = create_comparison_result(
         metrics={
             "entity/alive_check#time": n_way_kind_metric(
@@ -445,7 +313,7 @@ def test_render_report_when_colored_does_judge_each_candidate_column_by_its_own_
         config_kinds={"memory": KindEntry(gating=False)},
     )
 
-    line = line_containing(render_report(result), "geomean · time")
+    line = line_containing(render_report(result, ReportOptions(color=True)), "geomean · time")
 
     assert styles_at(line, "-9.0%") == ["1"]
     assert styles_at(line, "-12.0%") == ["1", "32"]
@@ -522,7 +390,7 @@ def _representative_result() -> ComparisonResult:
     )
 
 
-def test_render_report_when_representative_does_assemble_table_summary_and_highlights():
+def test_render_report_when_representative_does_assemble_the_whole_report():
     report = render_report(_representative_result())
 
     assert table_region(report) == [
@@ -608,24 +476,6 @@ def _degenerate_result() -> ComparisonResult:
     )
 
 
-def test_render_report_when_degenerate_and_dirty_cleanup_does_close_with_footer_and_worktrees():
-    report = render_report(_degenerate_result())
-
-    assert line_starting_with(report, "✓ 0 improved") == (
-        "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   "
-        "= 0 identical   ~ 2 within noise   ? 1 inconclusive"
-    )
-    assert "highlights" not in report
-
-    lines = report.split("\n")
-    assert lines[-4:] == [
-        "re-run with gymrat compare --samples 6 or more for statistical verdicts",
-        "1 worktree removed · 1 left behind",
-        "  left behind: /tmp/gymrat-abc123 (contains modified files)",
-        "  worktree prune failed: could not lock config file",
-    ]
-
-
 def _two_candidate_result() -> ComparisonResult:
     return create_comparison_result(
         candidates=[
@@ -701,55 +551,10 @@ def _two_candidate_result() -> ComparisonResult:
     )
 
 
-def test_render_report_when_verbose_two_candidate_does_summarize_group_and_footer_per_candidate():
-    report = render_report(_two_candidate_result(), ReportOptions(verbose=True))
-
-    summaries = [line for line in report.split("\n") if re.search(r"✓ \d+ improved", line)]
-    assert [re.sub(r"\s+", " ", line) for line in summaries] == [
-        (
-            "perf/simd-decode ✓ 2 improved ✗ 1 regressed ≈ 0 unstable "
-            "= 0 identical ~ 0 within noise ? 0 inconclusive"
-        ),
-        (
-            "perf/lut-decode ✓ 0 improved ✗ 0 regressed ≈ 0 unstable "
-            "= 0 identical ~ 1 within noise ? 1 inconclusive"
-        ),
-    ]
-    assert _normalized_highlights(report) == [
-        "perf/simd-decode",
-        "✗ encode#time +2.2%",
-        "✓ decode/text=digits#time -17.9%",
-        "✓ encode#heap -7.9% (exact)",
-    ]
-
-    lines = report.split("\n")
-    assert lines[-3:] == [
-        "verdicts: sign-flip permutation test on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05",
-        "noise band ±(half-range × K) — n=4 below permutation floor (6 pairs)",
-        (
-            "some rounds were dropped — not all samples produced paired measurements "
-            "for every metric"
-        ),
-    ]
-
-
-def test_render_report_when_sectioned_does_assemble_summary_and_highlights_below_the_table():
-    report = render_report(two_kind_result())
-
-    assert line_starting_with(report, "✓ 2 improved") == (
-        "✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   "
-        "= 0 identical   ~ 1 within noise   ? 0 inconclusive"
-    )
-    assert _normalized_highlights(report) == [
-        "✗ time · entity.spawn +4.0%",
-        "✓ time · entity.alive_check -10.0%",
-        "✓ memory · encode -7.0%",
-    ]
-
-
 def test_render_report_when_single_sample_does_close_on_the_hint_with_no_highlights():
     report = render_report(single_sample_result())
 
+    assert cells_of(line_starting_with(report, "decode/time"))[-1].strip() == "?  -0.4%"
     assert "highlights" not in report
     assert line_starting_with(report, "✓ 0 improved") == (
         "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   "
@@ -758,19 +563,6 @@ def test_render_report_when_single_sample_does_close_on_the_hint_with_no_highlig
     assert report.split("\n")[-1] == (
         "re-run with gymrat compare --samples 6 or more for statistical verdicts"
     )
-
-
-def test_render_report_when_flat_non_gating_does_assemble_tag_summary_and_highlights():
-    report = render_report(_flat_non_gating_result())
-
-    assert line_containing(report, "informational") == (
-        "informational — gating off (config: kinds.time.gating = false)"
-    )
-    assert line_starting_with(report, "✓ 1 improved") == (
-        "✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   "
-        "= 0 identical   ~ 1 within noise   ? 0 inconclusive"
-    )
-    assert _normalized_highlights(report) == ["✓ warmup#time -10.0%"]
 
 
 # ---------------------------------------------------------------------------

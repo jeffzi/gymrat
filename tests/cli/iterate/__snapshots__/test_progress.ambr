@@ -20,9 +20,6 @@
   ○ record
   '''
 # ---
-# name: test_frame_when_compact_layout_does_show_single_row
-  '⠋ sampling                                            0% · A · 00:00/--:--'
-# ---
 # name: test_frame_when_confirm_finished_does_show_outcome[not-reproduced]
   '''
   iterate #1 · session test-session · 0s elapsed
@@ -40,6 +37,16 @@
   ○ passes
   ✓ judged +2.0% on geomean · 1 regressed: x
   ✓ confirmed 0/2 · regressions reproduced 4s
+  ○ record
+  '''
+# ---
+# name: test_frame_when_confirm_finished_does_show_summary_on_node_line
+  '''
+  iterate #1 · session test-session · 20s elapsed
+  ○ prepare
+  ○ passes
+  ✓ judged +2.0% on geomean · 1 regressed: x
+  ✓ confirmed 4/4 · regressions reproduced 14s
   ○ record
   '''
 # ---
@@ -99,16 +106,6 @@
   ✓ prepared
   ○ passes
   ✓ judged -3.2% on geomean · 1 regressed: latency 4s
-  ○ confirm (only if a gating metric regresses)
-  ○ record
-  '''
-# ---
-# name: test_frame_when_judge_finished_does_show_delta_and_regressed
-  '''
-  iterate #1 · session test-session · 00:06/00:11
-  ✓ prepared
-  ○ passes
-  ✓ judged -3.2% on geomean · 2 regressed: latency, throughput
   ○ confirm (only if a gating metric regresses)
   ○ record
   '''
@@ -208,6 +205,36 @@
   ○ record
   '''
 # ---
+# name: test_frame_when_metric_name_has_emoji_code_does_print_the_name_literally[finished]
+  '''
+  iterate #1 · session test-session · 0s elapsed
+  ○ prepare
+  ○ passes
+  ✓ judged +2.0% on cpu:fire:total · 1 regressed: lat:100:p99#time
+  ○ confirm (only if a gating metric regresses)
+  ○ record
+  '''
+# ---
+# name: test_frame_when_metric_name_has_emoji_code_does_print_the_name_literally[pending]
+  '''
+  iterate #1 · session test-session
+  ○ prepare
+  ○ passes
+  ○ judge (3 metrics · cpu:fire:total primary)
+  ○ confirm (only if a gating metric regresses)
+  ○ record
+  '''
+# ---
+# name: test_frame_when_metric_name_has_emoji_code_does_print_the_name_literally[running]
+  '''
+  iterate #1 · session test-session · 0s elapsed
+  ○ prepare
+  ○ passes
+  ⠋ judging 3 metrics · cpu:fire:total primary
+  ○ confirm (only if a gating metric regresses)
+  ○ record
+  '''
+# ---
 # name: test_frame_when_passes_mid_run_does_show_bar_count_and_clock
   '''
   iterate #1 · session test-session · 01:04/02:24
@@ -216,16 +243,6 @@
   ○ judge (3 metrics · geomean primary)
   ○ confirm (only if a gating metric regresses)
   ○ record
-  '''
-# ---
-# name: test_frame_when_recorded_does_show_outcome_suggested
-  '''
-  iterate #3 · session test-session · 0s elapsed
-  ○ prepare
-  ○ passes
-  ○ judge (3 metrics · geomean primary)
-  ○ confirm (only if a gating metric regresses)
-  ✓ recorded improved suggested
   '''
 # ---
 # name: test_frame_when_recorded_with_checks_cmd_does_show_gymrat_keep
@@ -247,19 +264,4 @@
   ○ confirm (only if a gating metric regresses)
   ○ record
   '''
-# ---
-# name: test_plain_when_confirm_finished_does_print_timestamped_line
-  '[00:00:05] confirm 0/2 · regressions reproduced'
-# ---
-# name: test_plain_when_judge_finished_does_print_timestamped_line
-  '[00:00:00] judge -2.0% on geomean · no gating regression'
-# ---
-# name: test_plain_when_passes_done_does_print_timestamped_line
-  '[00:00:21] passes done (20s)'
-# ---
-# name: test_plain_when_prepare_done_does_print_timestamped_line
-  '[00:00:05] prepare baseline done (5s)'
-# ---
-# name: test_plain_when_recorded_does_print_timestamped_line
-  '[00:00:00] recorded improved suggested'
 # ---

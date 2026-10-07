@@ -6,24 +6,22 @@ tuple fields take a JSON array but reject strings and non-numeric or boolean
 items.
 """
 
-from typing import get_args
-
 import pytest
 
 from gymrat.errors import GymratError
 from gymrat.session.records import (
     BaselineRecord,
     IterationRecord,
-    KeepChecks,
-    KeepRecord,
-    SessionLogRecord,
     parse_record,
 )
-from tests.session.records._fixtures import AT
+from tests.session.records._fixtures import (
+    BASELINE_SHA,
+)
 from tests.session.records._wire import (
     BASELINE_RECORD,
     BLOCKED_KEEP_RECORD,
     COMMAND_RECORD,
+    COMMAND_RECORD_SUCCESS,
     COMMAND_RECORD_WITH_TRACEPARENT,
     COMMITTED_KEEP_RECORD,
     DISCARD_RECORD,
@@ -32,7 +30,6 @@ from tests.session.records._wire import (
     ITERATION_RECORD,
     METRIC_VERDICT,
     SESSION_RECORD,
-    SHA,
     STOP_RECORD,
     config_with,
     field_of,
@@ -58,34 +55,42 @@ def _nested_with(record: dict[str, object], field: str, **overrides: object) -> 
 # ---------------------------------------------------------------------------
 
 
+_KNOWN_TYPES_HINT = (
+    "Expected one of: session, baseline, iteration, keep, discard, hook, finalize, stop, command."
+)
+
+
 @pytest.mark.parametrize(
-    "value",
+    ("value", "shown"),
     [
-        pytest.param(None, id="null"),
-        pytest.param(42, id="number"),
-        pytest.param("session", id="string"),
-        pytest.param([SESSION_RECORD], id="array"),
-        pytest.param(omitting(DISCARD_RECORD, "type"), id="no-type-discriminator"),
-        pytest.param({"type": 42}, id="type-not-a-string"),
+        pytest.param(None, "null", id="null"),
+        pytest.param(42, "42", id="number"),
+        pytest.param("session", '"session"', id="string"),
+        pytest.param(["session"], '["session"]', id="array"),
     ],
 )
-def test_parse_record_when_value_has_no_recognized_type_does_raise(value: object):
-    with pytest.raises(GymratError):
+def test_parse_record_when_value_not_an_object_does_raise_naming_it(value: object, shown: str):
+    with pytest.raises(GymratError) as exc:
         parse_record(value)
 
+    assert str(exc.value) == f"Invalid session record: expected a JSON object, got {shown}"
 
-def test_parse_record_when_type_unknown_does_raise_with_known_types_hint():
-    known_types = ", ".join(
-        get_args(member.model_fields["type"].annotation)[0]
-        for member in get_args(SessionLogRecord.__value__)
-    )
 
+@pytest.mark.parametrize(
+    ("value", "shown"),
+    [
+        pytest.param({"type": "banana", "seq": 1}, '"banana"', id="unknown-name"),
+        pytest.param(omitting(DISCARD_RECORD, "type"), "undefined", id="no-type-discriminator"),
+        pytest.param({"type": 42}, "42", id="type-not-a-string"),
+    ],
+)
+def test_parse_record_when_type_unknown_does_raise_with_known_types_hint(value: object, shown: str):
     with pytest.raises(GymratError) as exc:
-        parse_record({"type": "banana", "seq": 1})
+        parse_record(value)
 
     assert (str(exc.value), exc.value.hint) == (
-        'Unknown session record type: "banana"',
-        f"Expected one of: {known_types}.",
+        f"Unknown session record type: {shown}",
+        _KNOWN_TYPES_HINT,
     )
 
 
@@ -190,7 +195,7 @@ def _confirm_with(**overrides: object) -> dict[str, object]:
     return {**CONFIRM, **overrides}
 
 
-def test_parse_record_when_tuple_fields_sent_as_arrays_does_hold_tuples():
+def test_parse_record_when_iteration_tuple_fields_sent_as_arrays_does_hold_tuples():
     record = patching(ITERATION_RECORD, {"confirm": CONFIRM})
 
     parsed = parse_record(record)
@@ -425,6 +430,11 @@ _COMMAND_REASONS = (
             "config.samples: expected a number at or above 1, got 0",
             id="config-samples-zero-float-beside-equal-stray-key",
         ),
+        pytest.param(
+            _nested_with(COMMITTED_KEEP_RECORD, "checks", stdout_bytes=-1.0),
+            "checks.stdout_bytes: expected a number at or above 0, got -1",
+            id="keep-checks-stdout-bytes-negative-float",
+        ),
         # confirm field
         pytest.param(
             patching(ITERATION_RECORD, {"confirm": _confirm_with(filtered="total_ms")}),
@@ -472,7 +482,7 @@ _COMMAND_REASONS = (
         ),
         # fields that violate their schema
         pytest.param(
-            patching(SESSION_RECORD, {"baseline": {"ref": 42, "sha": SHA}}),
+            patching(SESSION_RECORD, {"baseline": {"ref": 42, "sha": BASELINE_SHA}}),
             "baseline.ref: expected a string, got 42",
             id="baseline-ref-not-string",
         ),
@@ -526,6 +536,11 @@ _COMMAND_REASONS = (
             "branch: expected a string, got 42",
             id="finalize-branch-not-string",
         ),
+        pytest.param(
+            patching(COMMAND_RECORD, {"name": ""}),
+            'name: expected a non-empty string, got ""',
+            id="command-name-empty",
+        ),
     ],
 )
 def test_parse_record_when_field_invalid_does_reject_with_message(value: object, expected: str):
@@ -536,24 +551,31 @@ def test_parse_record_when_field_invalid_does_reject_with_message(value: object,
 
 
 # ---------------------------------------------------------------------------
-# Python-side construction — an optional field takes None
+# CommandRecord — exit_code / reason consistency
 # ---------------------------------------------------------------------------
 
 
-def test_keep_record_when_constructed_with_none_optionals_does_hold_none():
-    record = KeepRecord(
-        type="keep",
-        seq=1,
-        at=AT,
-        status="committed",
-        checks=KeepChecks(configured=True, passed=None, stdout_bytes=None),
-        commit=None,
-        message=None,
-    )
+@pytest.mark.parametrize(
+    ("value", "rule"),
+    [
+        pytest.param(
+            patching(COMMAND_RECORD_SUCCESS, {"reason": "budget-exceeded"}),
+            "a successful command must not carry a reason",
+            id="success-with-reason",
+        ),
+        pytest.param(
+            omitting(COMMAND_RECORD, "reason"),
+            "a failed command must carry a reason",
+            id="failure-without-reason",
+        ),
+    ],
+)
+def test_parse_record_when_command_exit_code_and_reason_disagree_does_reject_with_the_rule(
+    value: object, rule: str
+):
+    with pytest.raises(GymratError) as exc:
+        parse_record(value)
 
-    assert (
-        record.commit,
-        record.message,
-        record.checks.passed,
-        record.checks.stdout_bytes,
-    ) == (None, None, None, None)
+    message = str(exc.value)
+    assert rule in message
+    assert "expected a valid value" not in message

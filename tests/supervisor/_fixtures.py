@@ -6,7 +6,9 @@ the list it fills; ``make_launch`` builds a fully-populated ``LaunchEvent`` from
 overridable defaults; ``read_log_lines`` parses a JSONL log into dicts;
 ``NotJsonEncodable`` is a value ``json.dumps`` cannot encode.
 ``seed_session_log``, ``seed_with_stop``, ``add_stop_async``, and
-``supervise_fast`` share the turn-loop test boilerplate. ``result_message``,
+``_supervise`` share the turn-loop test boilerplate; ``_WrapDriver`` captures
+the abort event a supervised driver receives; ``_SENTINEL_SERVER`` is the MCP
+server config the stubbed tools and hooks factories hand back. ``result_message``,
 ``system_message``, ``assistant``, ``tool_results``, and ``stream_event`` build
 the real ``claude-agent-sdk`` message dataclasses the Claude driver consumes.
 ``wait_for_event_or_task`` waits on an event a background task should set,
@@ -48,6 +50,7 @@ from gymrat.supervisor.events import (
 from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult, supervise
 from tests._config import benchless_config
 from tests.session.records._fixtures import (
+    SUPERVISED_SESSION_ID,
     append_records,
     session_record,
     stop_record,
@@ -90,7 +93,7 @@ def make_launch(
     effort: Effort | None = None,
     runbook_path: str = "/path/to/runbook.md",
     kickoff_summary: str = "test kickoff",
-    session_id: str = "20260813-125044-34ec",
+    session_id: str = SUPERVISED_SESSION_ID,
 ) -> LaunchEvent:
     """Build a ``LaunchEvent`` from shared defaults, overridden per keyword."""
     return LaunchEvent(
@@ -326,13 +329,10 @@ class FakeClient:
 class FiniteClient(FakeClient):
     """A client whose stream ends naturally instead of blocking after the script."""
 
-    @override
-    async def receive_messages(self):
-        for message in self.messages:
-            await asyncio.sleep(0)
-            yield message
-        if self.throw is not None:
-            raise self.throw
+    def __init__(self, messages: Sequence[object], *, throw: Exception | None = None) -> None:
+        super().__init__(messages, throw=throw)
+        # Released from the start, so the stream ends once the script is spent.
+        self._released.set()
 
 
 class FactoryProbe:
@@ -438,37 +438,97 @@ def sent_texts(session: _MockSession) -> list[str | None]:
 
 
 def emit_turn_end(
-    *,
-    cost_usd: float = 0.01,
-    origin: Literal["agent", "injected"] = "agent",
-    delay_ms: int | None = None,
+    *, cost_usd: float = 0.01, origin: Literal["agent", "injected"] = "agent"
 ) -> EmitStep:
     """Build an ``EmitStep`` for a ``TurnEndEvent`` with the fields every caller shares."""
-    return EmitStep(emit=make_turn_end(cost_usd=cost_usd, origin=origin), delay_ms=delay_ms)
+    return EmitStep(emit=make_turn_end(cost_usd=cost_usd, origin=origin))
 
 
-async def supervise_fast(
+#: The MCP server config a stubbed tools or hooks factory hands back, so a test
+#: can find it again in the client options.
+_SENTINEL_SERVER: dict[str, str] = {"type": "stdio", "command": "fake"}
+
+
+class _WrapDriver:
+    """Capture the ``abort`` event the supervisor passes so tests can inspect or trigger it."""
+
+    def __init__(
+        self,
+        inner: Driver,
+        make_session: Callable[[DriverSession], DriverSession] = lambda s: s,
+    ) -> None:
+        self._inner = inner
+        self._make_session = make_session
+        self.captured_abort: asyncio.Event | None = None
+
+    def start(
+        self,
+        prompt: SessionPrompt,
+        observer: SessionObserver,
+        abort: asyncio.Event,
+    ) -> DriverSession:
+        self.captured_abort = abort
+        return self._make_session(self._inner.start(prompt, observer, abort))
+
+
+async def _supervise(
+    root: str,
     driver: Driver,
-    prompt: SessionPrompt,
     *,
-    context: SupervisedSession,
-    launch: LaunchEvent,
+    config: BenchlessConfig | None = None,
+    max_minutes: float = 10,
+    max_usd: float | None = None,
+    deadline_ms: float | None = None,
+    launch: LaunchEvent | None = None,
     observer: SessionObserver | None = None,
-    is_lock_held: Callable[[], bool] = lambda: False,
+    is_lock_held: Callable[[], bool] | None = lambda: False,
     grace_ms: int = 30_000,
     settle_window_ms: int = 0,
+    wall_clock_poll_ms: int = 1,
 ) -> SupervisionResult:
-    """Call ``supervise`` with the settle-window and lock-poll defaults every fast test shares."""
+    """Supervise ``driver`` over the repository at ``root`` with fast polls and no settle window.
+
+    The event log and the repository lock file sit beside ``root``; the
+    session's caps come from the keywords, and the launch event carries the
+    same spend cap unless ``launch`` says otherwise.
+
+    Args:
+        root: The repository the session runs in.
+        driver: The agent driver to supervise.
+        config: The settled config, or None for the benchless defaults.
+        max_minutes: The wall-clock cap in minutes.
+        max_usd: The spend cap in dollars, or None for no cap.
+        deadline_ms: The wall-clock deadline, or None for ``max_minutes`` from now.
+        launch: The launch event to emit, or None for one carrying ``max_usd``.
+        observer: Receives every session event.
+        is_lock_held: Answers whether the repository lock is held; None probes
+            the real lock file instead.
+        grace_ms: How long a stop request waits before forcing cancellation.
+        settle_window_ms: Idle time after a turn ends before the log is read.
+        wall_clock_poll_ms: How often the caps are checked.
+
+    Returns:
+        How the supervised session ended.
+    """
     return await supervise(
         driver,
-        prompt,
-        context=context,
-        launch=launch,
+        make_prompt(cwd=root),
+        context=make_context(
+            root=root,
+            log_path=str(Path(root).parent / "events.jsonl"),
+            lock_path=str(Path(root).parent / "lockfile"),
+            config=config,
+            deadline_ms=deadline_ms,
+            max_minutes=max_minutes,
+            max_usd=max_usd,
+        ),
+        launch=make_launch(max_usd=max_usd) if launch is None else launch,
         observer=observer,
+        grace_ms=grace_ms,
+        wall_clock_poll_ms=wall_clock_poll_ms,
         settle_window_ms=settle_window_ms,
         lock_poll_ms=1,
         is_lock_held=is_lock_held,
-        grace_ms=grace_ms,
     )
 
 
@@ -522,8 +582,12 @@ async def wait_for_event_or_task(event: asyncio.Event, awaitable: Awaitable[obje
     A task that settles before setting the event never will, so an unbounded
     wait would hang the suite. Its exception is re-raised; a task that returned
     instead fails the test naming what it returned, such as an error outcome.
-    A task or future passed in is never cancelled or consumed, so the test can
-    still await it afterwards.
+
+    Args:
+        event: The event the test waits on.
+        awaitable: The task, future, or coroutine expected to set ``event``. A
+            task or future is never cancelled or consumed, so the test can still
+            await it afterwards.
     """
     task = asyncio.ensure_future(awaitable)
     waiter = asyncio.ensure_future(event.wait())

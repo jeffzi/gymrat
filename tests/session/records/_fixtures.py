@@ -11,11 +11,18 @@ helper imported as ``tests.session.records._fixtures``.
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from types import UnionType
+from typing import Any, Literal, overload
 
 from pydantic import BaseModel
 
-from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
+from gymrat.session.paths import (
+    archived_session_path,
+    baseline_worktree_dir,
+    experiment_worktree_dir,
+    repo_root,
+    session_jsonl_path,
+)
 from gymrat.session.records import (
     BaselineRecord,
     CommandRecord,
@@ -48,6 +55,12 @@ SQUASH_COMMIT = "c" * 40
 #: The session id every fixture record belongs to.
 SESSION_ID = "20260808-141530-a3f2"
 
+#: The session id the supervised-run fixtures (launch events, dashboards) carry.
+SUPERVISED_SESSION_ID = "20260813-125044-34ec"
+
+#: The baseline commit SHA fixture records pin; not a real commit.
+BASELINE_SHA = "a" * 40
+
 #: The unterminated JSON prefix a writer killed mid-append leaves as the log's tail.
 TORN_PREFIX: bytes = b'{"type":"iter'
 
@@ -73,6 +86,12 @@ def session_record(**overrides: Any) -> SessionRecord:
     ``session_id`` drives the default ``branch``, so a caller overriding just
     the id still gets a matching branch; a caller after a divergent branch
     overrides both explicitly.
+
+    Args:
+        **overrides: ``SessionRecord`` fields to set in place of the defaults.
+
+    Returns:
+        The session header with ``overrides`` applied.
     """
     session_id = overrides.get("session_id", SESSION_ID)
     # pyrefly: ignore[missing-argument] -- validate_by_name accepts schema_version
@@ -81,7 +100,7 @@ def session_record(**overrides: Any) -> SessionRecord:
         schema_version=1,
         session_id=session_id,
         at=AT,
-        baseline=BaselineRef(ref="main", sha="a" * 40),
+        baseline=BaselineRef(ref="main", sha=BASELINE_SHA),
         branch=f"gymrat/{session_id}",
         worktrees=Worktrees(
             experiment="/repo/.gymrat/worktrees/experiment",
@@ -162,8 +181,14 @@ def committed_keep(seq: int, **overrides: Any) -> KeepRecord:
 def blocked_keep(seq: int, **overrides: Any) -> KeepRecord:
     """A keep the checks gate refused, leaving the iteration numbered ``seq`` uncommitted.
 
-    ``reason`` defaults to ``"checks-failed"``; pass ``reason=None`` to erase it,
-    or a settling reason such as ``"gating-regression"`` to override it.
+    Args:
+        seq: The iteration the refused keep settles.
+        **overrides: ``KeepRecord`` fields to set in place of the defaults. ``reason``
+            defaults to ``"checks-failed"``; pass ``reason=None`` to erase it, or a
+            settling reason such as ``"gating-regression"`` to override it.
+
+    Returns:
+        The blocked keep record with ``overrides`` applied.
     """
     default = KeepRecord(
         type="keep",
@@ -281,6 +306,51 @@ def append_records(root: str, *records: SessionLogRecord) -> None:
 def log_records(root: str) -> list[SessionLogRecord]:
     """Every record the session JSONL log under ``root`` currently holds."""
     return read_records(session_jsonl_path(root))
+
+
+def archive_and_reopen_session_log(previous: SessionRecord, fresh: SessionRecord) -> None:
+    """Archive the open session log, as a new session does, and write a fresh one.
+
+    The fresh log holds ``fresh`` and one baseline record. The repository is the
+    one the process runs in.
+
+    Args:
+        previous: The header of the session whose log is archived.
+        fresh: The header the fresh log opens with.
+    """
+    root = repo_root()
+    archive = Path(archived_session_path(root, previous.session_id))
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    Path(session_jsonl_path(root)).rename(archive)
+    write_session_log(root, fresh, (baseline_record(),))
+
+
+@overload
+def records_of_type[R: SessionLogRecord](
+    root: str, record_type: type[R], *, matching: Literal[True] = True
+) -> list[R]: ...
+
+
+@overload
+def records_of_type(
+    root: str, record_type: type[SessionLogRecord] | UnionType, *, matching: bool
+) -> list[SessionLogRecord]: ...
+
+
+def records_of_type(
+    root: str, record_type: type[SessionLogRecord] | UnionType, *, matching: bool = True
+) -> list[SessionLogRecord]:
+    """The records of ``root``'s session log that are, or are not, of ``record_type``.
+
+    Args:
+        root: The repository whose session log is read.
+        record_type: A record class, or a union of record classes.
+        matching: ``False`` keeps the records that are *not* of ``record_type``.
+
+    Returns:
+        The selected records, in file order.
+    """
+    return [record for record in log_records(root) if isinstance(record, record_type) is matching]
 
 
 def session_header_of(root: str) -> SessionRecord:

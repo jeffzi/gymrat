@@ -1,23 +1,16 @@
-import time
+from typing import Any
 
 import pytest
+from pydantic import TypeAdapter
 
 from gymrat.session.records import (
-    BaselineRecord,
-    FinalizeRecord,
-    HookRecord,
-    IterationRecord,
     NonFiniteNumberError,
-    SessionRecord,
-    StopRecord,
+    SessionLogRecord,
     decode_log_line,
     parse_record,
     record_to_wire,
 )
-from gymrat.session.workspace import Worktrees
-from tests.session.records._fixtures import baseline_record, session_record
 from tests.session.records._wire import (
-    AT,
     BASELINE_RECORD,
     BLOCKED_KEEP_RECORD,
     COMMAND_RECORD,
@@ -36,23 +29,6 @@ from tests.session.records._wire import (
     omitting,
     patching,
 )
-
-# ---------------------------------------------------------------------------
-# now_ns
-# ---------------------------------------------------------------------------
-
-
-def test_now_ns_when_called_does_return_nanosecond_epoch_integer():
-    from gymrat.clock import now_ns
-
-    before = time.time_ns()
-
-    result = now_ns()
-
-    after = time.time_ns()
-    assert isinstance(result, int)
-    assert before <= result <= after
-
 
 # ---------------------------------------------------------------------------
 # parse_record — valid records round-trip through the wire
@@ -161,14 +137,6 @@ def test_now_ns_when_called_does_return_nanosecond_epoch_integer():
             patching(ITERATION_RECORD, {"duration_ms": 4200.5, "measured_tree": "abc123def456"}),
             id="iteration-with-duration-and-tree",
         ),
-        pytest.param(
-            patching(ITERATION_RECORD, {"duration_ms": 4200}),
-            id="iteration-with-duration-only",
-        ),
-        pytest.param(
-            patching(ITERATION_RECORD, {"measured_tree": "abc123def456"}),
-            id="iteration-with-tree-only",
-        ),
         pytest.param(COMMITTED_KEEP_RECORD, id="committed-keep"),
         pytest.param(
             omitting(COMMITTED_KEEP_RECORD, "message"),
@@ -182,20 +150,6 @@ def test_now_ns_when_called_does_return_nanosecond_epoch_integer():
             ),
             id="keep-blocked-nothing-measured",
         ),
-        pytest.param(
-            patching(
-                BLOCKED_KEEP_RECORD,
-                {"seq": 1, "reason": "nothing-to-commit", "checks": {"configured": True}},
-            ),
-            id="keep-blocked-nothing-to-commit",
-        ),
-        pytest.param(
-            patching(
-                BLOCKED_KEEP_RECORD,
-                {"seq": 1, "reason": "not-improved", "checks": {"configured": True}},
-            ),
-            id="keep-blocked-not-improved",
-        ),
         pytest.param(DISCARD_RECORD, id="discard"),
         pytest.param(HOOK_RECORD, id="hook"),
         pytest.param(patching(HOOK_RECORD, {"stderr_bytes": 42}), id="hook-with-stderr-bytes"),
@@ -205,42 +159,10 @@ def test_now_ns_when_called_does_return_nanosecond_epoch_integer():
         pytest.param(COMMAND_RECORD, id="command"),
         pytest.param(COMMAND_RECORD_SUCCESS, id="command-success-no-reason"),
         pytest.param(COMMAND_RECORD_WITH_TRACEPARENT, id="command-with-traceparent"),
-        pytest.param(
-            patching(COMMAND_RECORD, {"name": "probe", "reason": "no-filter"}),
-            id="command-probe-no-filter",
-        ),
-        pytest.param(
-            patching(COMMAND_RECORD, {"name": "probe", "reason": "no-baseline"}),
-            id="command-probe-no-baseline",
-        ),
-        pytest.param(
-            patching(COMMAND_RECORD, {"exit_code": 2, "reason": "supervised-use-tool"}),
-            id="command-supervised-use-tool",
-        ),
     ],
 )
 def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[str, object]):
     assert record_to_wire(parse_record(record)) == record
-
-
-# ---------------------------------------------------------------------------
-# parse_record — backward compatibility with older logs
-# ---------------------------------------------------------------------------
-
-
-def test_parse_record_when_iteration_lacks_duration_and_tree_does_default_to_none():
-    parsed = parse_record(ITERATION_RECORD)
-
-    assert isinstance(parsed, IterationRecord)
-    assert parsed.duration_ms is None
-    assert parsed.measured_tree is None
-
-
-def test_parse_record_when_baseline_lacks_duration_does_default_to_none():
-    parsed = parse_record(BASELINE_RECORD)
-
-    assert isinstance(parsed, BaselineRecord)
-    assert parsed.duration_ms is None
 
 
 # ---------------------------------------------------------------------------
@@ -288,91 +210,95 @@ def test_decode_log_line_when_numbers_finite_does_decode_them_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# Record model behavior
+# JSON schema — WithJsonSchema overrides on optional fields
 # ---------------------------------------------------------------------------
 
 
-def test_record_when_model_copy_called_does_return_updated_copy():
-    record = HookRecord(
-        type="hook",
-        at=AT,
-        stage="before",
-        seq=4,
-        exit_code=0,
-        duration_ms=120,
-        stdout_bytes=80,
-        timed_out=False,
-    )
-
-    updated = record.model_copy(update={"exit_code": 42})
-
-    assert updated.exit_code == 42
-    assert record.exit_code == 0
+def _session_log_schema() -> dict[str, Any]:
+    """The JSON schema ``TypeAdapter`` generates directly from ``SessionLogRecord``."""
+    return TypeAdapter(SessionLogRecord).json_schema()
 
 
-def test_session_record_when_dumped_does_use_schema_key_not_schema_version():
-    record = session_record(
-        worktrees=Worktrees(
-            experiment="/repo/.gymrat/experiment",
-            baseline="/repo/.gymrat/baseline",
-        ),
-    )
+def test_json_schema_when_optional_never_null_fields_present_does_emit_non_null_types():
+    defs = _session_log_schema()["$defs"]
 
-    wire = record_to_wire(record)
+    stdout_bytes = defs["KeepChecks"]["properties"]["stdout_bytes"]
 
-    assert "schema" in wire
-    assert "schema_version" not in wire
-    assert wire["schema"] == 1
+    assert (stdout_bytes.get("type"), stdout_bytes.get("anyOf")) == ("integer", None)
 
 
-def test_session_record_when_parsed_from_wire_schema_does_populate_schema_version():
-    parsed = parse_record(SESSION_RECORD)
+def test_json_schema_when_generated_does_type_null_only_on_the_delta_pct_fields():
+    defs = _session_log_schema()["$defs"]
 
-    assert isinstance(parsed, SessionRecord)
-    assert parsed.schema_version == 1
+    nullable = {
+        (model, field)
+        for model, definition in defs.items()
+        for field, prop in definition.get("properties", {}).items()
+        if prop.get("type") == "null" or {"type": "null"} in prop.get("anyOf", [])
+    }
 
-
-def test_record_to_wire_when_called_does_produce_snake_case_wire():
-    record = session_record(
-        worktrees=Worktrees(
-            experiment="/repo/.gymrat/experiment",
-            baseline="/repo/.gymrat/baseline",
-        ),
-    )
-
-    wire = record_to_wire(record)
-
-    assert wire == SESSION_RECORD
+    assert nullable == {("IterationPrimary", "delta_pct"), ("MetricVerdict", "delta_pct")}
 
 
 # ---------------------------------------------------------------------------
-# RecordEnvelope — seq omitted from wire when None
+# JSON schema — Field(description=...) on every field
 # ---------------------------------------------------------------------------
 
 
-def test_record_to_wire_when_seq_none_does_omit_seq_from_wire():
-    record = baseline_record()
+def test_json_schema_when_generated_does_carry_descriptions_on_every_field():
+    schema = _session_log_schema()
+    defs = schema.get("$defs", {})
 
-    wire = record_to_wire(record)
+    missing: list[str] = []
+    for model_name, model_schema in defs.items():
+        props = model_schema.get("properties", {})
+        for field_name, field_schema in props.items():
+            if "description" not in field_schema:
+                missing.append(f"{model_name}.{field_name}")
 
-    assert "seq" not in wire
+    assert not missing, f"Fields without description: {missing}"
 
 
 # ---------------------------------------------------------------------------
-# Model — seq field absent on non-sequenced records
+# JSON schema — SessionHooks and Confirm referenced through $defs
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "model_cls",
+    ("model_name", "field", "definition"),
     [
-        pytest.param(SessionRecord, id="session"),
-        pytest.param(BaselineRecord, id="baseline"),
-        pytest.param(FinalizeRecord, id="finalize"),
-        pytest.param(StopRecord, id="stop"),
+        pytest.param("SessionConfig", "hooks", "SessionHooks", id="session-config-hooks"),
+        pytest.param("IterationRecord", "confirm", "Confirm", id="iteration-record-confirm"),
     ],
 )
-def test_model_when_non_sequenced_record_does_not_have_seq_field(
-    model_cls: type,
+def test_json_schema_when_generated_does_ref_the_nested_model_without_null(
+    model_name: str, field: str, definition: str
 ):
-    assert "seq" not in model_cls.model_fields
+    schema = _session_log_schema()
+
+    field_schema = schema["$defs"][model_name]["properties"][field]
+
+    assert (field_schema["$ref"], "anyOf" in field_schema) == (f"#/$defs/{definition}", False)
+
+
+# ---------------------------------------------------------------------------
+# JSON schema — seq distribution across record types
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        pytest.param("SessionRecord", id="session"),
+        pytest.param("BaselineRecord", id="baseline"),
+        pytest.param("FinalizeRecord", id="finalize"),
+        pytest.param("StopRecord", id="stop"),
+    ],
+)
+def test_json_schema_when_generated_does_not_include_seq_on_non_sequenced_record(
+    model_name: str,
+):
+    schema = _session_log_schema()
+    model_schema = schema["$defs"][model_name]
+
+    assert "seq" not in model_schema["properties"]

@@ -46,18 +46,11 @@ NEW_TEXT = "café ✓ new content\n"
 LIMIT_BYTES = 8192
 
 
-def _error_with_stderr(message: str, stderr: str | bytes) -> Exception:
-    """Build a plain exception carrying a ``stderr`` attribute for the helpers."""
+def _error_with(message: str, **streams: str | bytes) -> Exception:
+    """Build a plain exception carrying the given ``stdout``/``stderr`` attributes."""
     error = Exception(message)
-    error.stderr = stderr  # type: ignore[attr-defined]
-    return error
-
-
-def _error_with_streams(message: str, *, stdout: str | bytes, stderr: str | bytes) -> Exception:
-    """Build a plain exception carrying both stream attributes for the helpers."""
-    error = Exception(message)
-    error.stdout = stdout  # type: ignore[attr-defined]
-    error.stderr = stderr  # type: ignore[attr-defined]
+    for name, value in streams.items():
+        setattr(error, name, value)
     return error
 
 
@@ -225,39 +218,18 @@ def test_abbreviate_home_when_windows_path_under_home_does_use_forward_slashes(
 
 
 @pytest.mark.parametrize(
-    "noun",
+    ("count", "noun", "expected"),
     [
-        "file",
-        "metric",
-        "iteration",
-        "keep",
-        "sample",
-        "worktree",
-        "edit",
-        "warning",
-        "failure",
-        "kept iteration",
-        "uncommitted file",
+        pytest.param(2, "kept iteration", "2 kept iterations", id="plural"),
+        pytest.param(1, "metric", "1 metric", id="one"),
+        pytest.param(0, "file", "0 files", id="zero"),
+        pytest.param(-1, "file", "-1 files", id="negative"),
     ],
 )
-def test_pluralize_when_count_is_plural_does_append_s(noun: str):
-    assert pluralize(2, noun) == f"2 {noun}s"
-
-
-@pytest.mark.parametrize("noun", ["metric", "kept iteration"])
-def test_pluralize_when_count_is_one_does_leave_noun_unchanged(noun: str):
-    assert pluralize(1, noun) == f"1 {noun}"
-
-
-@pytest.mark.parametrize(
-    ("count", "expected"),
-    [
-        pytest.param(0, "0 files", id="zero"),
-        pytest.param(-1, "-1 files", id="negative"),
-    ],
-)
-def test_pluralize_when_count_is_not_one_does_use_the_plural_form(count: int, expected: str):
-    assert pluralize(count, "file") == expected
+def test_pluralize_when_count_varies_does_add_s_unless_the_count_is_one(
+    count: int, noun: str, expected: str
+):
+    assert pluralize(count, noun) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -321,15 +293,6 @@ def test_fan_out_when_subscriber_raises_does_report_error_and_call_remaining():
     assert len(errors) == 1
     assert isinstance(errors[0], RuntimeError)
     assert str(errors[0]) == "boom"
-
-
-def test_fan_out_when_no_subscribers_does_not_report_errors():
-    errors: list[Exception] = []
-    dispatch = fan_out([], errors.append)
-
-    dispatch(_Event())
-
-    assert errors == []
 
 
 # ---------------------------------------------------------------------------
@@ -536,19 +499,13 @@ def test_sampling_eta_when_given_only_a_total_does_start_with_no_samples() -> No
     assert (eta.completed, eta.total_time_ms, eta.total) == (0, 0.0, 10)
 
 
-def test_sampling_eta_advanced_when_given_duration_does_return_incremented_copy() -> None:
+def test_sampling_eta_advanced_when_called_does_return_an_accumulated_copy() -> None:
     eta = SamplingEta(total=4)
 
-    advanced = eta.advanced(100.0)
+    advanced = eta.advanced(100.0).advanced(300.0)
 
-    assert (advanced.completed, advanced.total_time_ms, advanced.total) == (1, 100.0, 4)
+    assert (advanced.completed, advanced.total_time_ms, advanced.total) == (2, 400.0, 4)
     assert (eta.completed, eta.total_time_ms) == (0, 0.0)
-
-
-def test_sampling_eta_advanced_when_called_repeatedly_does_accumulate_samples() -> None:
-    eta = SamplingEta(total=4).advanced(100.0).advanced(300.0)
-
-    assert (eta.completed, eta.total_time_ms) == (2, 400.0)
 
 
 @pytest.mark.parametrize(
@@ -590,23 +547,14 @@ def test_sampling_eta_eta_ms_when_given_state_does_return_expected_estimate(
         (5_400_000, "1h 30m"),
         (7_200_000, "2h 00m"),
         pytest.param(36_000_000, "10h 00m", id="multi-digit-hours"),
+        pytest.param(-1, "0s", id="negative-renders-zero"),
+        pytest.param(-1000, "0s", id="negative-second-renders-zero"),
+        pytest.param(-999_999, "0s", id="large-negative-renders-zero"),
     ],
 )
 def test_format_duration_when_given_milliseconds_does_render_expected_duration(
     ms: float, expected: str
 ) -> None:
-    assert format_duration(ms) == expected
-
-
-@pytest.mark.parametrize(
-    ("ms", "expected"),
-    [
-        (-1, "0s"),
-        (-1000, "0s"),
-        (-999_999, "0s"),
-    ],
-)
-def test_format_duration_when_negative_input_does_render_zero(ms: float, expected: str) -> None:
     assert format_duration(ms) == expected
 
 
@@ -616,30 +564,19 @@ def test_format_duration_when_negative_input_does_render_zero(ms: float, expecte
 
 
 @pytest.mark.parametrize(
-    ("at_ms", "run_start_ms"),
-    [
-        pytest.param(1_000, 1_000, id="zero-elapsed"),
-        pytest.param(999, 1_000, id="negative-elapsed-clamps-to-zero"),
-        pytest.param(0, 90_000, id="large-negative-elapsed-clamps-to-zero"),
-        pytest.param(90_000, None, id="unanchored-run"),
-    ],
-)
-def test_format_timestamp_when_elapsed_not_positive_does_render_zero_timestamp(
-    at_ms: float, run_start_ms: float | None
-) -> None:
-    assert format_timestamp(at_ms, run_start_ms) == "[00:00:00]"
-
-
-@pytest.mark.parametrize(
     ("at_ms", "run_start_ms", "expected"),
     [
+        pytest.param(1_000, 1_000, "[00:00:00]", id="zero-elapsed"),
+        pytest.param(999, 1_000, "[00:00:00]", id="negative-elapsed-clamps-to-zero"),
+        pytest.param(0, 90_000, "[00:00:00]", id="large-negative-elapsed-clamps-to-zero"),
+        pytest.param(90_000, None, "[00:00:00]", id="unanchored-run"),
         pytest.param(91_000, 1_000, "[00:01:30]", id="ninety-seconds-elapsed"),
         pytest.param(3_601_000, 1_000, "[01:00:00]", id="one-hour-elapsed"),
         pytest.param(36_001_000, 1_000, "[10:00:00]", id="multi-digit-hours-elapsed"),
     ],
 )
-def test_format_timestamp_when_positive_elapsed_does_render_elapsed_clock(
-    at_ms: float, run_start_ms: float, expected: str
+def test_format_timestamp_when_given_a_moment_does_render_the_elapsed_clock(
+    at_ms: float, run_start_ms: float | None, expected: str
 ) -> None:
     assert format_timestamp(at_ms, run_start_ms) == expected
 
@@ -706,65 +643,46 @@ def test_format_eta_when_given_milliseconds_does_render_expected_eta(
 # ---------------------------------------------------------------------------
 
 
-def test_limit_output_when_within_budget_does_return_text_unchanged() -> None:
-    text = "a short line\nand another\n"
+_HUNDRED_A_LINE = "a" * 100 + "\n"
 
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param(
+            "a short line\nand another\n", "a short line\nand another\n", id="within-budget"
+        ),
+        pytest.param(
+            "café résumé naïve €42",  # cspell:disable-line
+            "café résumé naïve €42",  # cspell:disable-line
+            id="multi-byte-within-budget",
+        ),
+        pytest.param(
+            _HUNDRED_A_LINE * 200,
+            (_HUNDRED_A_LINE * (LIMIT_BYTES // len(_HUNDRED_A_LINE))).removesuffix("\n"),
+            id="multi-line-overrun-cuts-at-the-last-whole-line",
+        ),
+        pytest.param("a" * 9000, "a" * LIMIT_BYTES, id="single-long-line-cuts-at-a-char"),
+        pytest.param(
+            "\n" + "a" * 9000,
+            "\n" + "a" * (LIMIT_BYTES - 1),
+            id="only-newline-at-byte-zero-cuts-at-a-char",
+        ),
+    ],
+)
+def test_limit_output_when_given_text_does_keep_it_within_the_byte_budget(
+    text: str, expected: str
+) -> None:
     result = limit_output(text)
 
-    assert result == text
-
-
-def test_limit_output_when_multi_line_overrun_does_cut_to_last_whole_line() -> None:
-    line = "a" * 100
-    text = f"{line}\n" * 200
-    whole_lines = LIMIT_BYTES // len(f"{line}\n".encode())
-
-    result = limit_output(text)
-
-    expected = (f"{line}\n" * whole_lines).removesuffix("\n")
     assert result == expected
     assert len(result.encode("utf-8")) <= LIMIT_BYTES
-
-
-def test_limit_output_when_single_long_line_does_cut_to_last_whole_char() -> None:
-    text = "a" * 9000
-
-    result = limit_output(text)
-
-    assert result == "a" * LIMIT_BYTES
-
-
-def test_limit_output_when_only_newline_at_byte_zero_does_char_cut_not_empty() -> None:
-    text = "\n" + "a" * 9000
-
-    result = limit_output(text)
-
-    assert result == "\n" + "a" * (LIMIT_BYTES - 1)
-    assert result != ""
-    assert len(result.encode("utf-8")) <= LIMIT_BYTES
-
-
-def test_limit_output_when_cut_splits_multi_byte_char_does_not_emit_replacement() -> None:
-    text = "é" * 9000  # each "é" is 2 bytes in UTF-8
-
-    result = limit_output(text)
-
-    assert len(result.encode("utf-8")) <= LIMIT_BYTES
-    assert "�" not in result
-    assert result == "é" * (LIMIT_BYTES // 2)
-
-
-def test_limit_output_when_valid_utf8_within_budget_does_return_text_unchanged() -> None:
-    text = "café résumé naïve €42"  # cspell:disable-line
-
-    result = limit_output(text)
-
-    assert result == text
 
 
 @pytest.mark.parametrize(
     ("char", "prefix"),
     [
+        pytest.param("é", "", id="2-byte-accent"),
         pytest.param("€", "", id="3-byte-euro"),
         pytest.param("\U0001f389", "a", id="4-byte-emoji-with-ascii-prefix"),
     ],
@@ -783,7 +701,7 @@ def test_limit_output_when_cut_splits_wide_char_does_drop_partial_bytes(
 
     assert result == prefix + char * full_chars
     assert len(result.encode("utf-8")) <= LIMIT_BYTES
-    assert "�" not in result
+    assert "\N{REPLACEMENT CHARACTER}" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -792,54 +710,55 @@ def test_limit_output_when_cut_splits_wide_char_does_drop_partial_bytes(
 
 
 @pytest.mark.parametrize(
-    "stderr",
+    ("error", "expected"),
     [
-        pytest.param("fatal: bad thing\n", id="str"),
-        pytest.param(b"fatal: bad thing\n", id="bytes"),
+        pytest.param(
+            subprocess.CalledProcessError(1, ["git"], stderr="fatal: bad thing\n"),
+            "fatal: bad thing",
+            id="stderr-str-over-message",
+        ),
+        pytest.param(
+            subprocess.CalledProcessError(1, ["git"], stderr=b"fatal: bad thing\n"),
+            "fatal: bad thing",
+            id="stderr-bytes-over-message",
+        ),
+        pytest.param(_error_with("real message", stderr=""), "real message", id="stderr-empty"),
+        pytest.param(
+            _error_with("real message", stderr="   \n\t"), "real message", id="stderr-blank"
+        ),
+        pytest.param(ValueError("plain message"), "plain message", id="stderr-absent"),
+        pytest.param(
+            subprocess.CalledProcessError(
+                1, ["git", "commit"], output="hook rejected the commit\n", stderr=""
+            ),
+            "hook rejected the commit",
+            id="blank-stderr-falls-back-to-stdout-str",
+        ),
+        pytest.param(
+            subprocess.CalledProcessError(
+                1, ["git", "commit"], output=b"hook rejected the commit\n", stderr=""
+            ),
+            "hook rejected the commit",
+            id="blank-stderr-falls-back-to-stdout-bytes",
+        ),
+        pytest.param(
+            subprocess.CalledProcessError(
+                1, ["git", "commit"], output="on stdout", stderr="on stderr"
+            ),
+            "on stderr",
+            id="both-non-blank-prefers-stderr",
+        ),
+        pytest.param(
+            _error_with("real message", stdout="  \n\t", stderr=""),
+            "real message",
+            id="both-blank-falls-back-to-message",
+        ),
     ],
 )
-def test_stderr_text_of_when_stderr_non_blank_does_prefer_it_over_message(stderr: str | bytes):
-    error = subprocess.CalledProcessError(1, ["git"], stderr=stderr)
-
-    assert stderr_text_of(error) == "fatal: bad thing"
-
-
-@pytest.mark.parametrize("stderr", ["", "   \n\t"])
-def test_stderr_text_of_when_stderr_blank_does_fall_back_to_message(stderr: str):
-    error = _error_with_stderr("real message", stderr)
-
-    assert stderr_text_of(error) == "real message"
-
-
-def test_stderr_text_of_when_stderr_absent_does_fall_back_to_message():
-    assert stderr_text_of(ValueError("plain message")) == "plain message"
-
-
-@pytest.mark.parametrize(
-    "stdout",
-    [
-        pytest.param("hook rejected the commit\n", id="str"),
-        pytest.param(b"hook rejected the commit\n", id="bytes"),
-    ],
-)
-def test_stderr_text_of_when_stderr_blank_does_fall_back_to_stdout(stdout: str | bytes):
-    error = subprocess.CalledProcessError(1, ["git", "commit"], output=stdout, stderr="")
-
-    assert stderr_text_of(error) == "hook rejected the commit"
-
-
-def test_stderr_text_of_when_both_streams_non_blank_does_prefer_stderr():
-    error = subprocess.CalledProcessError(
-        1, ["git", "commit"], output="on stdout", stderr="on stderr"
-    )
-
-    assert stderr_text_of(error) == "on stderr"
-
-
-def test_stderr_text_of_when_both_streams_blank_does_fall_back_to_message():
-    error = _error_with_streams("real message", stdout="  \n\t", stderr="")
-
-    assert stderr_text_of(error) == "real message"
+def test_stderr_text_of_when_streams_vary_does_prefer_stderr_then_stdout_then_message(
+    error: Exception, expected: str
+):
+    assert stderr_text_of(error) == expected
 
 
 # ---------------------------------------------------------------------------

@@ -7,32 +7,9 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from tests.conftest import BASELINE_ENV_NAMES, BASELINE_ENV_PREFIXES, PINNED_ENV
 
-ALLOWED_NAMES = {
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "TEMP",
-    "TMP",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "VIRTUAL_ENV",
-    "PYTHONPATH",
-    "CI",
-    "SYSTEMROOT",
-    "USERPROFILE",
-    "PATHEXT",
-    "COMSPEC",
-}
-ALLOWED_PREFIXES = ("UV_", "PYTEST_", "COVERAGE_")
-PINNED = {
-    "LANG": "C.UTF-8",
-    "LC_ALL": "C.UTF-8",
-    "GIT_CONFIG_GLOBAL": os.devnull,
-    "GIT_CONFIG_NOSYSTEM": "1",
-}
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: What a developer's shell might export that must never reach a test.
 SHELL_EXPORTS = {
@@ -92,7 +69,7 @@ from tests._git import run_git
 
 SHELL_EXPORTS = {SHELL_EXPORTS!r}
 ABSENT = {ABSENT!r}
-PINNED = {PINNED!r}
+PINNED = {PINNED_ENV!r}
 HIDDEN = (set(SHELL_EXPORTS) - set(PINNED)) | {{{WORKER_ONLY!r}}}
 SEEN_AT_TEARDOWN = {{}}
 
@@ -192,7 +169,9 @@ def test_monkeypatch_undo_runs_before_module_cleanups_and_restore():
 
 
 def _is_allowed(name: str) -> bool:
-    return name in ALLOWED_NAMES or name in PINNED or name.startswith(ALLOWED_PREFIXES)
+    return (
+        name in BASELINE_ENV_NAMES or name in PINNED_ENV or name.startswith(BASELINE_ENV_PREFIXES)
+    )
 
 
 def _run_inner_pytest(
@@ -222,16 +201,16 @@ def _run_inner_pytest(
         "-q",
         str(test_file),
     ]
-    return subprocess.run(  # noqa: S603
+    return subprocess.run(  # noqa: S603 -- fixed interpreter plus test-chosen args
         command, cwd=tmp_path, env=env, capture_output=True, text=True, check=False
     )
 
 
 def test_environ_when_test_starts_does_hold_only_allowlisted_and_pinned_names():
     unexpected = sorted(name for name in os.environ if not _is_allowed(name))
-    pinned = {name: os.environ.get(name) for name in PINNED}
+    pinned = {name: os.environ.get(name) for name in PINNED_ENV}
 
-    assert (unexpected, pinned) == ([], PINNED)
+    assert (unexpected, pinned) == ([], PINNED_ENV)
 
 
 @pytest.mark.parametrize(
@@ -252,7 +231,7 @@ def test_environ_when_test_starts_does_hold_only_allowlisted_and_pinned_names():
         ),
     ],
 )
-def test_baseline_when_shell_exports_variables_does_hide_them_and_restore_after_each_test(
+def test_baseline_when_shell_exports_variables_does_isolate_each_test_from_them(
     tmp_path: Path, worker_args: list[str], worker_kept: dict[str, str]
 ):
     global_config = tmp_path / "gitconfig"
@@ -268,7 +247,7 @@ def test_baseline_when_shell_exports_variables_does_hide_them_and_restore_after_
     shell_kept = {
         name: value
         for name, value in env.items()
-        if _is_allowed(name) and name not in PINNED and not name.startswith(PYTEST_OWNED)
+        if _is_allowed(name) and name not in PINNED_ENV and not name.startswith(PYTEST_OWNED)
     } | worker_kept
     inner = f"{INNER_TESTS}\nSHELL_KEPT = {shell_kept!r}\n"
 

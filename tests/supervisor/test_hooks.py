@@ -1,16 +1,27 @@
-"""Tests for the rule confining a supervised agent's file edits to the worktree."""
+"""Tests for the PreToolUse hooks registered on a supervised Claude session.
+
+These cover the rule confining the agent's file edits to the experiment
+worktree, the rule refusing a gymrat command run in the background, and the hooks
+mapping the factory registers.
+"""
 
 import os
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from claude_agent_sdk import HookContext, PreToolUseHookInput
 
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
 from gymrat.supervisor import hooks
-from gymrat.supervisor.hooks import check_file_edit
+from gymrat.supervisor.hooks import (
+    check_background_gymrat,
+    check_file_edit,
+    supervise_hooks_factory,
+)
 
 _needs_symlinks = pytest.mark.skipif(
     sys.platform == "win32", reason="creating symlinks needs extra privileges on Windows"
@@ -57,16 +68,6 @@ def test_check_file_edit_when_path_in_worktree_does_allow(
     hook_input = {"tool_name": tool_name, "tool_input": {path_key: str(worktree / "x.py")}}
 
     assert check_file_edit(hook_input, root) is None
-
-
-def test_check_file_edit_when_repo_under_scratch_root_does_deny_main_tree(root: Path):
-    scratch = Path(tempfile.gettempdir()).resolve()
-    assert root.resolve().is_relative_to(scratch), "the repository must sit under a scratch root"
-    path = str(root / "src" / "x.py")
-
-    assert check_file_edit({"tool_name": "Write", "tool_input": {"file_path": path}}, root) == (
-        _outside(path)
-    )
 
 
 @pytest.mark.parametrize(("tool_name", "path_key"), _EDITING_TOOLS)
@@ -175,19 +176,25 @@ def test_check_file_edit_when_relative_path_and_no_usable_cwd_does_resolve_again
 # ---------------------------------------------------------------------------
 
 
-def test_check_file_edit_when_path_under_gettempdir_outside_repo_does_allow(root: Path):
-    path = str(Path(tempfile.gettempdir()) / "gymrat-scratch" / "notes.txt")
+@pytest.mark.parametrize(
+    "path",
+    [
+        pytest.param(
+            str(Path(tempfile.gettempdir()) / "gymrat-scratch" / "notes.txt"), id="gettempdir"
+        ),
+        pytest.param(
+            "/tmp/gymrat-scratch/notes.txt",
+            id="slash-tmp",
+            marks=pytest.mark.skipif(
+                not Path("/tmp").is_dir(), reason="/tmp does not exist on this platform"
+            ),
+        ),
+    ],
+)
+def test_check_file_edit_when_path_under_a_scratch_root_outside_repo_does_allow(
+    root: Path, path: str
+):
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
-
-    assert check_file_edit(hook_input, root) is None
-
-
-@pytest.mark.skipif(not Path("/tmp").is_dir(), reason="/tmp does not exist on this platform")
-def test_check_file_edit_when_path_under_slash_tmp_outside_repo_does_allow(root: Path):
-    hook_input = {
-        "tool_name": "Write",
-        "tool_input": {"file_path": "/tmp/gymrat-scratch/notes.txt"},
-    }
 
     assert check_file_edit(hook_input, root) is None
 
@@ -210,15 +217,40 @@ def test_check_file_edit_when_posix_tmp_missing_does_deny_path_under_it(
     assert check_file_edit(hook_input, root) == _outside(path)
 
 
-def test_check_file_edit_when_windows_and_path_under_temp_env_does_allow(
-    root: Path, monkeypatch: pytest.MonkeyPatch
+def _allowed(_path: str) -> None:
+    return None
+
+
+def _set_temp(monkeypatch: pytest.MonkeyPatch, temp: Path) -> None:
+    monkeypatch.setenv("TEMP", str(temp))
+
+
+def _unset_temp(monkeypatch: pytest.MonkeyPatch, _temp: Path) -> None:
+    monkeypatch.delenv("TEMP", raising=False)
+
+
+@pytest.mark.parametrize(
+    ("platform", "arrange_temp", "expected"),
+    [
+        pytest.param("win32", _set_temp, _allowed, id="windows-under-temp-allowed"),
+        pytest.param("win32", _unset_temp, _outside, id="windows-temp-unset-denied"),
+        pytest.param("linux", _set_temp, _outside, id="not-windows-temp-ignored"),
+    ],
+)
+def test_check_file_edit_when_path_under_the_temp_env_does_trust_it_only_on_windows(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    arrange_temp: Callable[[pytest.MonkeyPatch, Path], None],
+    expected: Callable[[str], str | None],
 ):
     temp = Path(root.anchor) / "banana"
-    monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setenv("TEMP", str(temp))
-    hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(temp / "notes.txt")}}
+    monkeypatch.setattr(sys, "platform", platform)
+    arrange_temp(monkeypatch, temp)
+    path = str(temp / "notes.txt")
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) is None
+    assert check_file_edit(hook_input, root) == expected(path)
 
 
 @_needs_symlinks
@@ -233,29 +265,6 @@ def test_check_file_edit_when_windows_and_temp_env_is_symlink_does_allow_its_tar
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(target / "x.py")}}
 
     assert check_file_edit(hook_input, root) is None
-
-
-def test_check_file_edit_when_windows_and_temp_env_unset_does_deny(
-    root: Path, monkeypatch: pytest.MonkeyPatch
-):
-    path = str(Path(root.anchor) / "banana" / "notes.txt")
-    monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("TEMP", raising=False)
-    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
-
-    assert check_file_edit(hook_input, root) == _outside(path)
-
-
-def test_check_file_edit_when_not_windows_and_path_under_temp_env_does_deny(
-    root: Path, monkeypatch: pytest.MonkeyPatch
-):
-    temp = Path(root.anchor) / "banana"
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setenv("TEMP", str(temp))
-    path = str(temp / "notes.txt")
-    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
-
-    assert check_file_edit(hook_input, root) == _outside(path)
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +397,13 @@ def ignores_case(root: Path) -> None:
 
 
 @pytest.fixture
+def under_scratch_root(root: Path) -> None:
+    """Skip unless the repository sits under the system temp directory, a scratch root."""
+    if not root.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve()):
+        pytest.skip("needs the repository under the system temp directory")
+
+
+@pytest.fixture
 def honors_case(root: Path) -> None:
     """Skip unless the filesystem under the repository tells letter cases apart."""
     if _upper_root(root).exists():
@@ -410,7 +426,7 @@ def case_sensitive_stat(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fail_stat(monkeypatch, ("stat", "lstat"), is_upper_spelling, FileNotFoundError(2, "missing"))
 
 
-@pytest.mark.usefixtures("ignores_case")
+@pytest.mark.usefixtures("ignores_case", "under_scratch_root")
 @pytest.mark.parametrize(
     "tail",
     [
@@ -421,8 +437,6 @@ def case_sensitive_stat(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_check_file_edit_when_case_variant_of_main_tree_under_scratch_root_does_deny(
     root: Path, tail: str
 ):
-    scratch = Path(tempfile.gettempdir()).resolve()
-    assert root.resolve().is_relative_to(scratch), "the repository must sit under a scratch root"
     path = str(_upper_root(root) / tail)
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
@@ -702,3 +716,229 @@ def test_check_file_edit_when_tool_not_an_editing_tool_does_allow(
     hook_input = {"tool_name": tool_name, "tool_input": tool_input}
 
     assert check_file_edit(hook_input, root) is None
+
+
+# ---------------------------------------------------------------------------
+# PreToolUse hook registration
+# ---------------------------------------------------------------------------
+
+_BACKGROUND_REASON = "never background a gymrat command; run it in the foreground"
+_REFUSED_REASON = "gymrat could not evaluate this call, so it was refused"
+_CONTEXT: HookContext = {"signal": None}
+
+
+def _bash(command: object, **extra: object) -> dict[str, object]:
+    return {"tool_name": "Bash", "tool_input": {"command": command, **extra}}
+
+
+def _pre_tool_use(tool_name: str, tool_input: dict[str, object]) -> PreToolUseHookInput:
+    return {
+        "hook_event_name": "PreToolUse",
+        "session_id": "session",
+        "transcript_path": "/transcript",
+        "cwd": "/cwd",
+        "tool_name": tool_name,
+        "tool_input": tool_input,
+        "tool_use_id": "tool-1",
+    }
+
+
+def _bash_hook_input(command: object, **extra: object) -> PreToolUseHookInput:
+    return _pre_tool_use("Bash", {"command": command, **extra})
+
+
+def _deny(reason: str) -> dict[str, object]:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
+# Background gymrat rule
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gymrat keep -m x",
+        "uv run gymrat status",
+        "cd x && gymrat measure .",
+        ".venv/bin/gymrat keep",
+        "python -m gymrat iterate",
+        "cat gymrat.toml",
+        pytest.param("echo 'unbalanced gymrat keep", id="unbalanced-quote"),
+    ],
+)
+def test_check_background_gymrat_when_in_background_gymrat_word_does_deny(command: str):
+    hook_input = _bash(command, run_in_background=True)
+
+    assert check_background_gymrat(hook_input) == _BACKGROUND_REASON
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sleep 10",
+        "cat gymrat-notes.txt",
+        "ls my-gymrat",
+        "ls mygymrat",  # cspell:disable-line
+        "tail gymrat_log",
+        "echo gymrat2",
+        "ls x_gymrat",
+        "ls 2gymrat",
+        "ls agymrat",  # cspell:disable-line
+        "ls gymrats",  # cspell:disable-line
+        "ls gymrat9",
+        "ls Xgymrat",  # cspell:disable-line
+        "ls gymratX",  # cspell:disable-line
+        pytest.param("echo 'unbalanced \"quotes", id="unbalanced-quote"),
+        pytest.param('git commit -m "tune the parser\n\nkeeps the fast path"', id="multi-line"),
+        pytest.param("git commit -m 'use `parse()` over `split()`'", id="backticks"),
+    ],
+)
+def test_check_background_gymrat_when_in_background_without_gymrat_word_does_allow(
+    command: str,
+):
+    hook_input = _bash(command, run_in_background=True)
+
+    assert check_background_gymrat(hook_input) is None
+
+
+@pytest.mark.parametrize(
+    "hook_input",
+    [
+        pytest.param(_bash("gymrat keep -m x", run_in_background=False), id="background-false"),
+        pytest.param(_bash("gymrat keep -m x"), id="background-missing"),
+        pytest.param(_bash("gymrat keep -m x", run_in_background="true"), id="background-string"),
+        pytest.param(_bash("gymrat keep -m x", run_in_background=1), id="background-int-one"),
+        pytest.param(
+            {"tool_name": "Bash", "tool_input": {"run_in_background": True}},
+            id="command-missing",
+        ),
+        pytest.param(_bash(None, run_in_background=True), id="command-none"),
+        pytest.param(_bash(["gymrat", "keep"], run_in_background=True), id="command-list"),
+        pytest.param(
+            {"tool_name": "Bash", "tool_input": "gymrat keep -m x"}, id="tool-input-string"
+        ),
+        pytest.param({"tool_name": "Bash", "tool_input": None}, id="tool-input-none"),
+    ],
+)
+def test_check_background_gymrat_when_not_a_background_gymrat_command_does_allow(
+    hook_input: dict[str, object],
+):
+    assert check_background_gymrat(hook_input) is None
+
+
+# ---------------------------------------------------------------------------
+# Hooks mapping
+# ---------------------------------------------------------------------------
+
+
+def test_supervise_hooks_factory_when_built_does_register_edit_and_bash_matchers(root: Path):
+    mapping = supervise_hooks_factory(root)()
+
+    assert list(mapping) == ["PreToolUse"]
+    assert [matcher.matcher for matcher in mapping["PreToolUse"]] == [
+        "Edit|Write|MultiEdit|NotebookEdit",
+        "Bash",
+    ]
+
+
+#: Which ``PreToolUse`` matcher a case calls, the input it hands it, and the answer expected.
+_CallbackCase = tuple[int, PreToolUseHookInput, dict[str, object]]
+
+
+def _write_outside(root: Path, _worktree: Path) -> _CallbackCase:
+    path = str(root / "x.py")
+    return (
+        0,
+        _pre_tool_use("Write", {"file_path": path}),
+        _deny(f"edits belong in the experiment worktree: {path} is outside it"),
+    )
+
+
+def _write_inside(_root: Path, worktree: Path) -> _CallbackCase:
+    return 0, _pre_tool_use("Write", {"file_path": str(worktree / "x.py")}), {}
+
+
+def _background_gymrat(_root: Path, _worktree: Path) -> _CallbackCase:
+    return (
+        1,
+        _bash_hook_input("gymrat keep -m x", run_in_background=True),
+        _deny(_BACKGROUND_REASON),
+    )
+
+
+def _foreground_gymrat(_root: Path, _worktree: Path) -> _CallbackCase:
+    return 1, _bash_hook_input("gymrat keep -m x"), {}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(_write_outside, id="file-write-outside-worktree-denied"),
+        pytest.param(_write_inside, id="file-write-inside-worktree-allowed"),
+        pytest.param(_background_gymrat, id="bash-background-gymrat-denied"),
+        pytest.param(_foreground_gymrat, id="bash-foreground-gymrat-allowed"),
+    ],
+)
+async def test_callback_when_called_does_answer_with_its_rule_decision(
+    root: Path,
+    worktree: Path,
+    case: Callable[[Path, Path], _CallbackCase],
+):
+    index, hook_input, expected = case(root, worktree)
+    callback = supervise_hooks_factory(root)()["PreToolUse"][index].hooks[0]
+
+    output = await callback(hook_input, "tool-1", _CONTEXT)
+
+    assert output == expected
+
+
+@pytest.mark.parametrize(
+    ("rule_name", "index"),
+    [
+        pytest.param("check_file_edit", 0, id="file"),
+        pytest.param("check_background_gymrat", 1, id="bash"),
+    ],
+)
+async def test_callback_when_rule_raises_does_deny(
+    root: Path, monkeypatch: pytest.MonkeyPatch, rule_name: str, index: int
+):
+    def _explode(*_args: object) -> str | None:
+        message = "boom"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(hooks, rule_name, _explode)
+    callback = supervise_hooks_factory(root)()["PreToolUse"][index].hooks[0]
+
+    output = await callback(_bash_hook_input("ls"), "t", _CONTEXT)
+
+    assert output == _deny(_REFUSED_REASON)
+
+
+def test_supervise_hooks_factory_when_created_does_defer_the_sdk_import_until_built(root: Path):
+    probe = f"""
+import sys
+from pathlib import Path
+from gymrat.supervisor.hooks import supervise_hooks_factory
+factory = supervise_hooks_factory(Path({str(root)!r}))
+if 'claude_agent_sdk' in sys.modules:
+    print('factory creation imported the SDK', file=sys.stderr)
+    sys.exit(1)
+factory()
+if 'claude_agent_sdk' not in sys.modules:
+    print('building the mapping did not import the SDK', file=sys.stderr)
+    sys.exit(1)
+"""
+
+    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr

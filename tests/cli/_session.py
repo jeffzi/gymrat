@@ -3,8 +3,7 @@
 Builders and stubs used by more than one ``tests/cli`` module: the loop-command
 repos and tty stand-ins, the session-log readers, and the ``measure`` seam
 stubs.  This is test-support code, not a test module: it carries no test
-functions.  Its fixtures (``stop_repo``, ``sync_repo`` and ``_in_non_repo``)
-are registered for the directory by ``tests/cli/conftest.py``.
+functions.
 """
 
 import contextlib
@@ -23,19 +22,19 @@ from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import start_session
 from gymrat.measure import MeasureOptions
 from gymrat.report.types import MeasurementResult
-from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import CommandRecord, SessionRecord
-from gymrat.session.store import append_record
-from tests._ansi import stripped_lines
 from tests._config import resolved_config
-from tests._git import head_of, run_git
+from tests._git import commit_all
 from tests._streams import RaisingStream
 from tests.config._toml import write_config
 from tests.loop._probe import install_measure
-from tests.loop._settle import start_with
+from tests.loop._settle import (
+    keep_iteration,
+)
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
-    committed_keep,
+    append_records,
     iteration_record,
     log_records,
     session_header_of,
@@ -44,12 +43,6 @@ from tests.session.records._fixtures import (
 )
 
 runner = CliRunner()
-
-#: How each platform reports a stdout reader that has gone: ``(error, sys.platform)``.
-CLOSED_STDOUT_ERRORS = [
-    pytest.param(BrokenPipeError(errno.EPIPE, "Broken pipe"), "linux", id="posix-broken-pipe"),
-    pytest.param(OSError(errno.EINVAL, "Invalid argument"), "win32", id="windows-einval"),
-]
 
 
 def closed_stdout_error() -> OSError:
@@ -140,9 +133,7 @@ def capture_measure(
 ) -> list[MeasureOptions]:
     """Stub the ``measure`` seam and capture the options of each call.
 
-    The fake lets a test pin the label and raw rounds a recording is built from,
-    or assert the seam was never reached by checking the returned list stayed
-    empty.
+    The fake lets a test pin the label and raw rounds a recording is built from.
 
     Args:
         monkeypatch: The fixture that installs the fake.
@@ -163,16 +154,6 @@ def stub_measure(
     return capture_measure(monkeypatch, result)
 
 
-def plain_lines(text: str) -> list[str]:
-    """The non-blank lines of ``text``, stripped of color and surrounding space."""
-    return stripped_lines(text, keep_blank=False)
-
-
-def always_tty(_stream: object) -> bool:
-    """Stand in for ``is_tty`` so the discard command takes its interactive path."""
-    return True
-
-
 def never_tty(_stream: object) -> bool:
     """Stand in for ``is_tty`` so the discard command takes its non-interactive path."""
     return False
@@ -181,14 +162,8 @@ def never_tty(_stream: object) -> bool:
 def make_discard_repo(repo: str) -> str:
     """Set up ``repo`` with an open session and one unsettled iteration to discard."""
     start_session(repo, "main", resolved_config())
-    append_record(session_jsonl_path(repo), iteration_record(seq=1))
+    append_records(repo, iteration_record(seq=1))
     return repo
-
-
-@pytest.fixture
-def _in_non_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Run from a directory that is not a git repo, so the command benches lock-free."""
-    monkeypatch.chdir(tmp_path)
 
 
 def open_session(repo: str) -> None:
@@ -196,31 +171,11 @@ def open_session(repo: str) -> None:
     write_session_log(repo, session_record())
 
 
-@pytest.fixture
-def stop_repo(repo: str) -> str:
-    """A repository with a settled, configured session ready for the stop command."""
-    start_with(repo, (iteration_record(seq=1), committed_keep(1)))
-    write_bench_config(repo)
-    return repo
-
-
-@pytest.fixture
-def sync_repo(repo: str) -> str:
-    """A repository with an open session, ready for sync tests."""
-    start_session(repo, "main", resolved_config())
-    return repo
-
-
 def open_session_with_one_keep(root: str) -> SessionRecord:
     """Open a session, commit and log one kept iteration, and return the session header."""
     start_session(root, "main", resolved_config())
-    worktree = experiment_worktree_dir(root)
-    (Path(worktree) / "step.txt").write_text("cache the regex\n", encoding="utf-8")
-    run_git(["add", "-A"], worktree)
-    run_git(["commit", "-m", "cache the regex"], worktree)
-    commit = head_of(worktree)
-    append_record(session_jsonl_path(root), iteration_record(seq=1))
-    append_record(session_jsonl_path(root), committed_keep(1, commit=commit))
+    commit = commit_all(experiment_worktree_dir(root), "cache the regex", file="step.txt")
+    keep_iteration(root, 1, commit=commit)
     return session_header_of(root)
 
 
@@ -234,7 +189,14 @@ def close_session_with_one_keep(root: str) -> str:
 def last_command_record(root: str) -> CommandRecord:
     """Read the session log and return the last ``CommandRecord``.
 
-    Raises ``AssertionError`` when the log contains no command record.
+    Args:
+        root: The repository whose session log is read.
+
+    Returns:
+        The last command record in the log.
+
+    Raises:
+        AssertionError: The log holds no command record.
     """
     records = log_records(root)
     for record in reversed(records):
@@ -242,11 +204,6 @@ def last_command_record(root: str) -> CommandRecord:
             return record
     msg = "no CommandRecord found in session log"
     raise AssertionError(msg)
-
-
-def records_of(repo: str, *, commands: bool) -> list[object]:
-    """The session-log records that are (or are not) command traces."""
-    return [r for r in log_records(repo) if isinstance(r, CommandRecord) is commands]
 
 
 def write_bench_config(root: str, **extra: object) -> None:

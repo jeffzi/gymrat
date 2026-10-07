@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import types
+import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -56,7 +57,14 @@ _CHILD_STATUS = 7
 # Grace a wait expected to end early is given, far longer than any probe takes.
 _LONG_WAIT_S = 10.0
 
-# macOS ``p_stat`` of a running process, as <sys/proc.h> numbers it.
+# The macOS ``kinfo_proc`` layout, spelled out from <sys/sysctl.h> and
+# <sys/proc.h> rather than read from the module under test, so a wrong value
+# there cannot also shape the records these tests feed it.
+_DARWIN_KINFO_PROC_SIZE = 648
+_DARWIN_FLAG_AND_STATE = struct.Struct("=iB")  # p_flag, then p_stat right after it
+_DARWIN_FLAG_AND_STATE_OFFSET = 32
+_DARWIN_P_WEXIT = 0x2000
+_DARWIN_SZOMB = 5
 _DARWIN_RUNNING = 2
 
 # Grace a wait expected to run its full course is given, kept short so it stays cheap.
@@ -222,20 +230,9 @@ class StubCLibrary:
 
 def darwin_record(flag: int, state: int) -> bytes:
     """One macOS ``kinfo_proc`` record carrying ``flag`` as ``p_flag`` and ``state`` as ``p_stat``."""
-    record = bytearray(process_group._DARWIN_KINFO_PROC_SIZE)
-    process_group._DARWIN_FLAG_AND_STATE.pack_into(
-        record, process_group._DARWIN_FLAG_AND_STATE_OFFSET, flag, state
-    )
+    record = bytearray(_DARWIN_KINFO_PROC_SIZE)
+    _DARWIN_FLAG_AND_STATE.pack_into(record, _DARWIN_FLAG_AND_STATE_OFFSET, flag, state)
     return bytes(record)
-
-
-@pytest.fixture
-def sleeping_child() -> Iterator[subprocess.Popen[bytes]]:
-    """A running child process, killed and reaped on teardown."""
-    proc = subprocess.Popen(["sleep", "30"])  # noqa: S607 -- fixed argv, sleep on PATH
-    yield proc
-    proc.kill()
-    proc.wait()
 
 
 @pytest.fixture
@@ -319,20 +316,28 @@ def test_wait_for_process_group_exit_when_leader_reaped_during_probe_does_return
     assert time.monotonic() - started < _LONG_WAIT_S / 2
 
 
-def test_wait_for_process_group_exit_when_child_leader_running_does_wait_out_timeout(
-    sleeping_child: subprocess.Popen[bytes],
+def _child_leader(leader: subprocess.Popen[bytes]) -> int:
+    return leader.pid
+
+
+def _parent_process(_leader: subprocess.Popen[bytes]) -> int:
+    return os.getppid()
+
+
+@pytest.mark.parametrize(
+    "leader_of",
+    [
+        pytest.param(_child_leader, id="child-leader"),
+        pytest.param(_parent_process, id="non-child-leader"),
+    ],
+)
+def test_wait_for_process_group_exit_when_leader_running_does_wait_out_timeout(
+    sleeping_group_leader: subprocess.Popen[bytes],
+    leader_of: Callable[[subprocess.Popen[bytes]], int],
 ) -> None:
     started = time.monotonic()
 
-    wait_for_process_group_exit([sleeping_child.pid], _SHORT_WAIT_S)
-
-    assert time.monotonic() - started >= _SHORT_WAIT_S
-
-
-def test_wait_for_process_group_exit_when_non_child_leader_running_does_wait_out_timeout() -> None:
-    started = time.monotonic()
-
-    wait_for_process_group_exit([os.getppid()], _SHORT_WAIT_S)
+    wait_for_process_group_exit([leader_of(sleeping_group_leader)], _SHORT_WAIT_S)
 
     assert time.monotonic() - started >= _SHORT_WAIT_S
 
@@ -358,14 +363,18 @@ def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_
 
 
 @pytest.mark.parametrize(
-    "listed",
+    ("listed", "timeout_s", "waits"),
     [
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="S")],
+            _SHORT_WAIT_S,
+            True,
             id="sleeping-member",
         ),
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="R")],
+            _SHORT_WAIT_S,
+            True,
             id="running-member",
         ),
         pytest.param(
@@ -373,6 +382,8 @@ def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_
                 _ZOMBIE_LEADER,
                 FakeProcess(_FAKE_MEMBER, state="S", comm=f"a) Z 1 {_FAKE_GROUP}".encode()),
             ],
+            _SHORT_WAIT_S,
+            True,
             id="member-name-mimics-zombie-fields",
         ),
         pytest.param(
@@ -381,99 +392,58 @@ def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_
                 FakeProcess(_FAKE_MEMBER, state="S"),
                 FakeProcess(_FAKE_MEMBER + 1, state="S", comm=_CUT_NAME, group_id=_FAKE_GROUP + 10),
             ],
+            _SHORT_WAIT_S,
+            True,
             id="unrelated-name-cut-mid-character",
         ),
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="S", comm=b"a) (Z " + _CUT_NAME)],
+            _SHORT_WAIT_S,
+            True,
             id="member-name-cut-mid-character-with-parentheses",
         ),
-    ],
-)
-def test_wait_for_process_group_exit_when_linux_zombie_leader_has_live_member_does_wait_out_timeout(
-    linux_proc_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    listed: list[FakeProcess],
-) -> None:
-    for process in listed:
-        process.write(linux_proc_root)
-    monkeypatch.setattr(process_group, "os", ProbedLeader(exited=True))
-    started = time.monotonic()
-
-    wait_for_process_group_exit([_FAKE_GROUP], _SHORT_WAIT_S)
-
-    assert time.monotonic() - started >= _SHORT_WAIT_S
-
-
-@pytest.mark.parametrize(
-    "listed",
-    [
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="Z")],
+            _LONG_WAIT_S,
+            False,
             id="every-member-a-zombie",
         ),
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="X")],
+            _LONG_WAIT_S,
+            False,
             id="member-exiting",
         ),
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="x")],
+            _LONG_WAIT_S,
+            False,
             id="member-exiting-old-kernel-letter",
         ),
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="S", group_id=_FAKE_GROUP + 10)],
+            _LONG_WAIT_S,
+            False,
             id="only-another-group-running",
         ),
     ],
 )
-def test_wait_for_process_group_exit_when_linux_group_has_no_live_member_does_return_before_timeout(
+def test_wait_for_process_group_exit_when_linux_zombie_leader_does_wait_only_for_live_members(
     linux_proc_root: Path,
     monkeypatch: pytest.MonkeyPatch,
     listed: list[FakeProcess],
+    *,
+    timeout_s: float,
+    waits: bool,
 ) -> None:
     for process in listed:
         process.write(linux_proc_root)
     monkeypatch.setattr(process_group, "os", ProbedLeader(exited=True))
     started = time.monotonic()
 
-    wait_for_process_group_exit([_FAKE_GROUP], _LONG_WAIT_S)
+    wait_for_process_group_exit([_FAKE_GROUP], timeout_s)
 
-    assert time.monotonic() - started < _LONG_WAIT_S / 2
-
-
-@pytest.mark.parametrize(
-    "listed",
-    [
-        pytest.param(
-            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="Z")],
-            id="every-member-a-zombie",
-        ),
-        pytest.param(
-            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="X")],
-            id="member-exiting",
-        ),
-        pytest.param(
-            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="x")],
-            id="member-exiting-old-kernel-letter",
-        ),
-        pytest.param(
-            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="S", group_id=_FAKE_GROUP + 10)],
-            id="only-another-group-running",
-        ),
-    ],
-)
-async def test_wait_for_process_group_exit_async_when_linux_group_has_no_live_member_does_return_before_timeout(
-    linux_proc_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    listed: list[FakeProcess],
-) -> None:
-    for process in listed:
-        process.write(linux_proc_root)
-    monkeypatch.setattr(process_group, "os", ProbedLeader(exited=True))
-    started = time.monotonic()
-
-    await wait_for_process_group_exit_async(_FAKE_GROUP, _LONG_WAIT_S)
-
-    assert time.monotonic() - started < _LONG_WAIT_S / 2
+    assert (time.monotonic() - started >= _SHORT_WAIT_S) is waits
 
 
 def _without_proc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -527,92 +497,49 @@ _GROUPS_WITHOUT_LISTING = [
 ]
 
 
-@pytest.mark.parametrize("hide_members", _GROUPS_WITHOUT_LISTING)
-def test_wait_for_process_group_exit_when_listing_unavailable_and_leader_running_does_wait_on_leader(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    hide_members: Callable[[Path, pytest.MonkeyPatch], None],
-) -> None:
-    hide_members(tmp_path, monkeypatch)
-    monkeypatch.setattr(process_group, "os", ProbedLeader(exited=False))
-    started = time.monotonic()
-
-    wait_for_process_group_exit([_FAKE_GROUP], _SHORT_WAIT_S)
-
-    assert time.monotonic() - started >= _SHORT_WAIT_S
+# Whether the leader has exited, the grace the wait is given, and whether it runs that grace out.
+_LEADER_OUTCOMES = [
+    pytest.param(False, _SHORT_WAIT_S, True, id="leader-running-waits-out-the-timeout"),
+    pytest.param(True, _LONG_WAIT_S, False, id="leader-exited-returns-at-once"),
+]
 
 
 @pytest.mark.parametrize("hide_members", _GROUPS_WITHOUT_LISTING)
-def test_wait_for_process_group_exit_when_listing_unavailable_and_leader_exited_does_return_at_once(
+@pytest.mark.parametrize(("exited", "timeout_s", "waits"), _LEADER_OUTCOMES)
+def test_wait_for_process_group_exit_when_listing_unavailable_does_wait_on_the_leader(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     hide_members: Callable[[Path, pytest.MonkeyPatch], None],
+    *,
+    exited: bool,
+    timeout_s: float,
+    waits: bool,
 ) -> None:
     hide_members(tmp_path, monkeypatch)
-    monkeypatch.setattr(process_group, "os", ProbedLeader(exited=True))
+    monkeypatch.setattr(process_group, "os", ProbedLeader(exited=exited))
     started = time.monotonic()
 
-    wait_for_process_group_exit([_FAKE_GROUP], _LONG_WAIT_S)
+    wait_for_process_group_exit([_FAKE_GROUP], timeout_s)
 
-    assert time.monotonic() - started < _LONG_WAIT_S / 2
+    assert (time.monotonic() - started >= _SHORT_WAIT_S) is waits
 
 
-@pytest.mark.parametrize("hide_members", _GROUPS_WITHOUT_LISTING)
-async def test_wait_for_process_group_exit_async_when_listing_unavailable_and_leader_running_does_wait_on_leader(
+@pytest.mark.parametrize(("exited", "timeout_s", "waits"), _LEADER_OUTCOMES)
+async def test_wait_for_process_group_exit_async_when_listing_unavailable_does_wait_on_the_leader(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    hide_members: Callable[[Path, pytest.MonkeyPatch], None],
+    *,
+    exited: bool,
+    timeout_s: float,
+    waits: bool,
 ) -> None:
-    hide_members(tmp_path, monkeypatch)
-    monkeypatch.setattr(process_group, "os", ProbedLeader(exited=False))
+    _platform_without_listing(tmp_path, monkeypatch)
+    monkeypatch.setattr(process_group, "os", ProbedLeader(exited=exited))
     started = time.monotonic()
 
-    await wait_for_process_group_exit_async(_FAKE_GROUP, _SHORT_WAIT_S)
+    await wait_for_process_group_exit_async(_FAKE_GROUP, timeout_s)
 
-    assert time.monotonic() - started >= _SHORT_WAIT_S
-
-
-@pytest.mark.parametrize("hide_members", _GROUPS_WITHOUT_LISTING)
-async def test_wait_for_process_group_exit_async_when_listing_unavailable_and_leader_exited_does_return_at_once(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    hide_members: Callable[[Path, pytest.MonkeyPatch], None],
-) -> None:
-    hide_members(tmp_path, monkeypatch)
-    monkeypatch.setattr(process_group, "os", ProbedLeader(exited=True))
-    started = time.monotonic()
-
-    await wait_for_process_group_exit_async(_FAKE_GROUP, _LONG_WAIT_S)
-
-    assert time.monotonic() - started < _LONG_WAIT_S / 2
-
-
-@pytest.mark.parametrize(
-    ("members", "still_running"),
-    [
-        pytest.param([(0, _DARWIN_RUNNING)], True, id="running-member"),
-        pytest.param(
-            [(process_group._DARWIN_P_WEXIT, _DARWIN_RUNNING)], False, id="exiting-member"
-        ),
-        pytest.param([(0, process_group._DARWIN_SZOMB)], False, id="zombie-member"),
-    ],
-)
-def test_wait_for_process_group_exit_when_darwin_leader_exited_does_wait_only_for_running_members(
-    monkeypatch: pytest.MonkeyPatch,
-    members: list[tuple[int, int]],
-    still_running: bool,
-) -> None:
-    def listed(_group_id: int) -> list[tuple[int, int]]:
-        return members
-
-    monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(process_group, "_darwin_group_members", listed)
-    monkeypatch.setattr(process_group, "os", ProbedLeader(exited=True))
-    started = time.monotonic()
-
-    wait_for_process_group_exit([_FAKE_GROUP], _SHORT_WAIT_S)
-
-    assert (time.monotonic() - started >= _SHORT_WAIT_S) == still_running
+    assert (time.monotonic() - started >= _SHORT_WAIT_S) is waits
 
 
 # A few bytes past the last whole record, as a listing cut mid-record reports them.
@@ -624,7 +551,7 @@ _PARTIAL_RECORD = bytes(16)
     [
         pytest.param(_PARTIAL_RECORD, False, id="shorter-than-a-record"),
         pytest.param(
-            darwin_record(0, process_group._DARWIN_SZOMB) + _PARTIAL_RECORD,
+            darwin_record(0, _DARWIN_SZOMB) + _PARTIAL_RECORD,
             False,
             id="zombie-record-then-partial",
         ),
@@ -633,12 +560,14 @@ _PARTIAL_RECORD = bytes(16)
             True,
             id="running-record-then-partial",
         ),
+        pytest.param(darwin_record(0, _DARWIN_SZOMB), False, id="whole-zombie-record"),
+        pytest.param(darwin_record(0, _DARWIN_RUNNING), True, id="whole-running-record"),
         pytest.param(
-            darwin_record(0, process_group._DARWIN_SZOMB), False, id="whole-zombie-record"
+            darwin_record(_DARWIN_P_WEXIT, _DARWIN_RUNNING), False, id="whole-exiting-record"
         ),
     ],
 )
-def test_wait_for_process_group_exit_when_darwin_listing_ends_mid_record_does_ignore_partial_record(
+def test_wait_for_process_group_exit_when_darwin_leader_exited_does_wait_only_for_whole_running_records(
     monkeypatch: pytest.MonkeyPatch,
     listing: bytes,
     still_running: bool,
@@ -653,21 +582,6 @@ def test_wait_for_process_group_exit_when_darwin_listing_ends_mid_record_does_ig
     wait_for_process_group_exit([_FAKE_GROUP], _SHORT_WAIT_S)
 
     assert (time.monotonic() - started >= _SHORT_WAIT_S) == still_running
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="only macOS lists members through sysctl")
-def test_wait_for_process_group_exit_when_darwin_listing_fails_does_wait_on_leader(
-    sleeping_group_leader: subprocess.Popen[bytes],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        process_group, "_c_library", lambda: StubCLibrary(failure_errno=errno.EINVAL)
-    )
-    started = time.monotonic()
-
-    wait_for_process_group_exit([sleeping_group_leader.pid], _SHORT_WAIT_S)
-
-    assert time.monotonic() - started >= _SHORT_WAIT_S
 
 
 # ---------------------------------------------------------------------------
@@ -731,3 +645,76 @@ def test_kill_process_group_when_refusing_group_is_gone_by_the_listing_does_not_
     kill_process_group(gone)
 
     assert killpg_warnings(recwarn) == []
+
+
+# ---------------------------------------------------------------------------
+# kill_process_group — the win32 taskkill fallback
+# ---------------------------------------------------------------------------
+
+#: A pid that no job handle is registered for, so the win32 path falls back to taskkill.
+_PLAIN_PID = 424242
+
+
+def _taskkill_exits(returncode: int) -> Callable[..., subprocess.CompletedProcess[bytes]]:
+    def fake_run(
+        args: list[str], *_args: object, **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.CalledProcessError(returncode=returncode, cmd=args)
+
+    return fake_run
+
+
+def _taskkill_cannot_start(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    raise PermissionError(13, "Permission denied")
+
+
+@pytest.mark.parametrize(
+    ("run", "warnings_raised"),
+    [
+        pytest.param(_taskkill_exits(128), [], id="tree-already-gone-stays-silent"),
+        pytest.param(
+            _taskkill_exits(5),
+            [
+                (
+                    f"taskkill failed for pid {_PLAIN_PID}: Command '['taskkill', '/F', '/T', "
+                    f"'/PID', '{_PLAIN_PID}']' returned non-zero exit status 5."
+                )
+            ],
+            id="other-failure-warns",
+        ),
+        pytest.param(
+            _taskkill_cannot_start,
+            [
+                (
+                    f"taskkill unavailable while killing pid {_PLAIN_PID}: "
+                    "[Errno 13] Permission denied"
+                )
+            ],
+            id="launch-failure-warns",
+        ),
+    ],
+)
+def test_kill_process_group_when_win32_tree_has_no_job_does_fall_back_to_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+    run: Callable[..., subprocess.CompletedProcess[bytes]],
+    warnings_raised: list[str],
+) -> None:
+    calls: list[list[str]] = []
+
+    def recording_run(
+        args: list[str], *rest: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(args)
+        return run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        kill_process_group(_PLAIN_PID)
+
+    assert calls == [["taskkill", "/F", "/T", "/PID", str(_PLAIN_PID)]]
+    assert [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)] == (
+        warnings_raised
+    )

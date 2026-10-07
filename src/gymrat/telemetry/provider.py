@@ -589,8 +589,13 @@ def session_span_dropped() -> bool:
     return _session_span_dropped
 
 
-def _reset_for_tests() -> None:
+def reset_tracing() -> None:
     """Shut down and clear the module singleton so the next configure starts fresh.
+
+    Test-only seam: production code never calls this, since a process configures
+    tracing for one session and keeps it until exit. Tests use it to isolate the
+    module singleton between cases instead of reaching into the private
+    attributes directly.
 
     The singleton is cleared before the shutdown runs, so a provider whose
     shutdown fails cannot leave stale state behind for the next configure.

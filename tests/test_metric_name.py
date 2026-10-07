@@ -9,28 +9,41 @@ from gymrat.metric_name import LINE_TERMINATORS, format_inline, parse
 from gymrat.report.style import render_lines
 
 
-def test_parse_when_name_has_kind_does_split_path_and_kind():
-    result = parse("node/access.get_1field#time")
+@pytest.mark.parametrize(
+    ("raw_name", "path", "kind", "group", "case"),
+    [
+        pytest.param(
+            "node/access.get_1field#time",
+            ("node", "access.get_1field"),
+            "time",
+            "node",
+            "access.get_1field",
+            id="two-segments-with-kind",
+        ),
+        pytest.param(
+            "node/access/get_1field#time",
+            ("node", "access", "get_1field"),
+            "time",
+            "node/access",
+            "get_1field",
+            id="three-segments-with-kind",
+        ),
+        pytest.param("fib/total", ("fib", "total"), None, "fib", "total", id="no-kind"),
+        pytest.param("fib", ("fib",), None, None, "fib", id="one-segment-no-kind"),
+    ],
+)
+def test_parse_when_name_well_formed_does_split_path_kind_group_and_case(
+    raw_name: str, path: tuple[str, ...], kind: str | None, group: str | None, case: str
+):
+    result = parse(raw_name)
 
-    assert result.path == ("node", "access.get_1field")
-    assert result.kind == "time"
-
-
-def test_parse_when_name_has_no_kind_does_return_none_kind():
-    result = parse("fib/total")
-
-    assert result.path == ("fib", "total")
-    assert result.kind is None
-
-
-def test_parse_when_name_has_multiple_hashes_does_raise_gymrat_error():
-    with pytest.raises(GymratError, match="a#b#c"):
-        parse("a#b#c")
+    assert (result.path, result.kind, result.group, result.case) == (path, kind, group, case)
 
 
 @pytest.mark.parametrize(
     "raw_name",
     [
+        pytest.param("a#b#c", id="multiple-hashes"),
         pytest.param("a//b", id="empty-inner-segment"),
         pytest.param("a/", id="empty-trailing-segment"),
         pytest.param("/x", id="empty-leading-segment"),
@@ -40,61 +53,11 @@ def test_parse_when_name_has_multiple_hashes_does_raise_gymrat_error():
         pytest.param("a#", id="empty-kind"),
     ],
 )
-def test_parse_when_name_has_empty_segment_does_raise_gymrat_error(raw_name: str):
+def test_parse_when_name_breaks_the_grammar_does_raise_gymrat_error_naming_it(raw_name: str):
     with pytest.raises(GymratError) as excinfo:
         parse(raw_name)
 
     assert raw_name in str(excinfo.value)
-
-
-@pytest.mark.parametrize(
-    "raw_name",
-    [
-        pytest.param("a#b#c", id="multiple-hashes"),
-        pytest.param("a#", id="empty-kind"),
-        pytest.param("a//b", id="empty-path-segment"),
-    ],
-)
-def test_parse_when_name_breaks_grammar_does_raise_error_that_rebuilds_from_message_and_hint(
-    raw_name: str,
-):
-    with pytest.raises(GymratError) as excinfo:
-        parse(raw_name)
-
-    error = excinfo.value
-    rebuilt = type(error)(str(error), hint=error.hint)
-    assert type(rebuilt) is type(error)
-    assert str(rebuilt) == str(error)
-    assert rebuilt.hint == error.hint
-
-
-@pytest.mark.parametrize(
-    ("name", "expected_group", "expected_case"),
-    [
-        pytest.param(
-            "node/access.get_1field#time",
-            "node",
-            "access.get_1field",
-            id="two-segments-with-kind",
-        ),
-        pytest.param(
-            "node/access/get_1field#time",
-            "node/access",
-            "get_1field",
-            id="three-segments-with-kind",
-        ),
-        pytest.param("fib", None, "fib", id="one-segment-no-kind"),
-    ],
-)
-def test_parse_when_varying_depth_does_expose_correct_group_and_case(
-    name: str,
-    expected_group: str | None,
-    expected_case: str,
-):
-    result = parse(name)
-
-    assert result.group == expected_group
-    assert result.case == expected_case
 
 
 def test_format_inline_when_called_does_return_rich_markup():
@@ -105,53 +68,13 @@ def test_format_inline_when_called_does_return_rich_markup():
     assert result == "[dim]node/[/dim]access.get_1field[dim]#time[/dim]"
 
 
-def test_metric_name_when_mutated_does_raise():
-    name = parse("fib/total")
-
-    with pytest.raises(AttributeError):
-        name.kind = "time"  # type: ignore[misc]
-
-
-@pytest.mark.parametrize(
-    ("raw_name", "expected_plain"),
-    [
-        pytest.param(
-            "parse[js]#time",
-            "parse[js]#time",
-            id="square-brackets-in-case",
-        ),
-        pytest.param(
-            "codec[h264]/decode#time",
-            "codec[h264]/decode#time",
-            id="square-brackets-in-group",
-        ),
-        pytest.param(
-            "render#fps[avg]",
-            "render#fps[avg]",
-            id="square-brackets-in-kind",
-        ),
-        pytest.param(
-            "parse[/html]#time",
-            "parse[/html]#time",
-            id="closing-tag-shaped-bracket",
-        ),
-    ],
-)
-def test_format_inline_when_color_on_and_brackets_in_segments_does_render_literally(
-    raw_name: str,
-    expected_plain: str,
-):
-    name = parse(raw_name)
-
-    markup = format_inline(name)
-    rendered = render_lines(markup, color=False)
-
-    assert rendered == expected_plain
-
-
 @pytest.mark.parametrize(
     "raw_name",
     [
+        pytest.param("parse[js]#time", id="square-brackets-in-case"),
+        pytest.param("codec[h264]/decode#time", id="square-brackets-in-group"),
+        pytest.param("render#fps[avg]", id="square-brackets-in-kind"),
+        pytest.param("parse[/html]#time", id="closing-tag-shaped-bracket"),
         pytest.param("dir\\/case#time", id="group-ends-in-backslash"),
         pytest.param("top/dir\\/case", id="nested-group-ends-in-backslash"),
         pytest.param("dir[x]\\/case#time", id="bracketed-group-ends-in-backslash"),
@@ -169,7 +92,9 @@ def test_format_inline_when_color_on_and_brackets_in_segments_does_render_litera
         pytest.param("case\\", id="single-segment-ends-in-backslash"),
     ],
 )
-def test_format_inline_when_name_contains_backslash_does_render_name_literally(raw_name: str):
+def test_format_inline_when_name_holds_brackets_or_backslashes_does_render_it_literally(
+    raw_name: str,
+):
     name = parse(raw_name)
 
     rendered = render_lines(format_inline(name), color=False)

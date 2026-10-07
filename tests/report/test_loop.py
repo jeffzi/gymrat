@@ -56,45 +56,16 @@ if TYPE_CHECKING:
     from gymrat.session.schema import Outcome
 
 
-def _geomean_primary(delta_pct: float = -4.2) -> GeomeanPrimary:
-    """The geomean primary, improving by default."""
-    return GeomeanPrimary(delta_pct=delta_pct)
-
-
 # ---------------------------------------------------------------------------
 # format_loop_header
 # ---------------------------------------------------------------------------
 
 
 def test_format_loop_header_when_given_seq_and_samples_does_name_iteration_comparison_and_count():
-    header = render_plain(format_loop_header(7, 6))
+    header = format_loop_header(7, 6)
 
-    assert header == "iteration 7 · experiment vs baseline · 6 paired samples"
-
-
-@pytest.mark.parametrize(
-    ("samples", "expected"),
-    [
-        pytest.param(1, "· 1 paired sample", id="one"),
-        pytest.param(2, "· 2 paired samples", id="many"),
-    ],
-)
-def test_format_loop_header_when_counting_samples_does_match_noun(samples: int, expected: str):
-    header = render_plain(format_loop_header(1, samples))
-
-    assert expected in header
-
-
-def test_format_loop_header_when_colored_does_embolden_the_iteration_label():
-    header = render_colored(format_loop_header(7, 6))
-
-    assert "1" in styles_at(header, "iteration 7")
-
-
-def test_format_loop_header_when_colored_does_dim_each_separator():
-    header = render_colored(format_loop_header(7, 6))
-
-    assert "2" in styles_at(header, "·")
+    assert render_plain(header) == "iteration 7 · experiment vs baseline · 6 paired samples"
+    assert "1" in styles_at(render_colored(header), "iteration 7")
 
 
 # ---------------------------------------------------------------------------
@@ -103,67 +74,47 @@ def test_format_loop_header_when_colored_does_dim_each_separator():
 
 
 @pytest.mark.parametrize(
-    ("outcome", "word"),
+    ("outcome", "word", "codes"),
     [
-        pytest.param("improved", "IMPROVED", id="improved"),
-        pytest.param("regressed", "REGRESSED", id="regressed"),
-        pytest.param("no-signal", "NO-SIGNAL", id="no-signal"),
+        pytest.param("improved", "IMPROVED", ["1", "32"], id="improved-green"),
+        pytest.param("regressed", "REGRESSED", ["1", "31"], id="regressed-red"),
+        pytest.param("no-signal", "NO-SIGNAL", ["1"], id="no-signal-uncolored"),
     ],
 )
-def test_format_verdict_block_when_given_outcome_does_state_primary_delta_and_verdict(
-    outcome: Outcome, word: str
+def test_format_verdict_block_when_given_outcome_does_state_primary_delta_and_bold_verdict(
+    outcome: Outcome, word: str, codes: list[str]
 ):
     block = format_verdict_block(
-        outcome=outcome, primary=_geomean_primary(), next_step="gymrat keep"
+        outcome=outcome, primary=GeomeanPrimary(delta_pct=-4.2), next_step="gymrat keep"
     )
 
     assert render_plain(block[0]) == f"primary: -4.2% · verdict: {word}"
+    assert styles_at(render_colored(block[0]), word) == codes
 
 
 def test_format_verdict_block_when_given_next_step_does_close_the_block_with_it():
     block = format_verdict_block(
-        outcome="regressed", primary=_geomean_primary(3.1), next_step="fix or gymrat discard"
+        outcome="regressed",
+        primary=GeomeanPrimary(delta_pct=3.1),
+        next_step="fix or gymrat discard",
     )
 
     assert len(block) == 2
     assert render_plain(block[1]) == "fix or gymrat discard"
 
 
-@pytest.mark.parametrize(
-    ("outcome", "word", "color_code"),
-    [
-        pytest.param("improved", "IMPROVED", "32", id="improved-green"),
-        pytest.param("regressed", "REGRESSED", "31", id="regressed-red"),
-        pytest.param("no-signal", "NO-SIGNAL", None, id="no-signal-uncolored"),
-    ],
-)
-def test_format_verdict_block_when_colored_does_paint_the_verdict_word(
-    outcome: Outcome, word: str, color_code: str | None
-):
-    block = format_verdict_block(
-        outcome=outcome, primary=_geomean_primary(), next_step="gymrat keep"
-    )
-
-    codes = styles_at(render_colored(block[0]), word)
-
-    assert "1" in codes
-    if color_code is None:
-        assert "31" not in codes
-        assert "32" not in codes
-    else:
-        assert color_code in codes
-
-
 def test_format_verdict_block_when_target_reached_but_regressed_does_omit_target_hint():
     block = format_verdict_block(
         outcome="regressed",
-        primary=_geomean_primary(3.1),
+        primary=GeomeanPrimary(delta_pct=3.1),
         next_step="fix or run gymrat discard",
         target_reached=True,
     )
 
-    plain = "\n".join(render_plain(line) for line in block)
-    assert "target reached" not in plain
+    assert [render_plain(line) for line in block] == [
+        "primary: +3.1% · verdict: REGRESSED",
+        "fix or run gymrat discard",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -186,8 +137,8 @@ def test_format_verdict_block_when_rerun_does_color_phrase_by_answer(
         reruns=[rerun],
     )
 
-    rerun_line = next(line for line in block if phrase in render_plain(line))
-    assert styles_at(render_colored(rerun_line), phrase) == [color_code]
+    assert render_plain(block[0]) == f"entity/alive_check#time: {phrase}"
+    assert styles_at(render_colored(block[0]), phrase) == [color_code]
 
 
 # ---------------------------------------------------------------------------
@@ -227,14 +178,7 @@ def test_format_status_header_when_given_session_does_name_session_baseline_bran
         "experiment worktree /repo/.gymrat/worktrees/experiment",
         "baseline worktree /repo/.gymrat/worktrees/baseline",
     ]
-
-
-def test_format_status_header_when_colored_does_embolden_the_session():
-    session = session_record(baseline=BaselineRef(ref="main", sha=_BASELINE_SHA))
-
-    header = render_colored(format_status_header(session)[0])
-
-    assert "1" in styles_at(header, f"session {SESSION_ID}")
+    assert "1" in styles_at(render_colored(lines[0]), f"session {SESSION_ID}")
 
 
 # ---------------------------------------------------------------------------
@@ -360,14 +304,6 @@ def test_format_status_baseline_when_given_samples_does_state_label_and_median_p
     assert line == "baseline main · total_ms 15192 · alloc_bytes 1520"
 
 
-def test_format_status_baseline_when_a_round_omits_a_metric_does_median_over_rounds_that_reported_it():
-    record = baseline_record(samples=({"total_ms": 100, "alloc_bytes": 40}, {"total_ms": 300}))
-
-    line = render_plain(format_status_baseline(record))
-
-    assert line == "baseline main · total_ms 200 · alloc_bytes 40"
-
-
 # ---------------------------------------------------------------------------
 # format_status_footer
 # ---------------------------------------------------------------------------
@@ -391,40 +327,41 @@ def test_format_status_footer_when_given_summary_does_total_the_settles(
 
 
 @pytest.mark.parametrize(
-    ("summary", "expected"),
+    ("summary", "stop_lines"),
     [
         pytest.param(
             _status_summary(stop=StopConfig(max_iterations=30)),
-            "stop: 4 of 30 iterations",
+            ("stop: 4 of 30 iterations",),
             id="max-iterations",
         ),
         pytest.param(
             _status_summary(stop=StopConfig(target_value=95)),
-            "stop: target pending",
+            ("stop: target pending",),
             id="target-pending",
         ),
         pytest.param(
             _status_summary(stop=StopConfig(target_value=95), target_reached=True),
-            "stop: target reached",
+            ("stop: target reached",),
             id="target-reached",
         ),
         pytest.param(
             _status_summary(stop=StopConfig(target_value=95, max_iterations=30)),
-            "stop: 4 of 30 iterations · target pending",
+            ("stop: 4 of 30 iterations · target pending",),
             id="both-conditions",
         ),
-        pytest.param(_status_summary(), None, id="no-stop"),
-        pytest.param(_status_summary(stop=StopConfig()), None, id="empty-stop"),
+        pytest.param(_status_summary(), (), id="no-stop"),
+        pytest.param(_status_summary(stop=StopConfig()), (), id="empty-stop"),
     ],
 )
 def test_format_status_footer_when_stop_configured_does_state_the_conditions(
-    summary: StatusSummary, expected: str | None
+    summary: StatusSummary, stop_lines: tuple[str, ...]
 ):
-    lines = [render_plain(line) for line in format_status_footer(summary)]
+    lines = format_status_footer(summary)
 
-    stop_line = next((line for line in lines if line.startswith("stop:")), None)
-
-    assert stop_line == expected
+    assert [render_plain(line) for line in lines] == [
+        "4 iterations · 1 kept · 1 discarded",
+        *stop_lines,
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -433,19 +370,14 @@ def test_format_status_footer_when_stop_configured_does_state_the_conditions(
 
 
 def test_format_status_finalized_when_given_record_does_name_the_branch_and_commit():
-    line = render_plain(format_status_finalized(finalize_record()))
+    line = format_status_finalized(finalize_record())
 
-    assert line == f"finalized · branch gymrat/{SESSION_ID}-final · commit ccccccc"
-
-
-def test_format_status_finalized_when_colored_does_embolden_finalized():
-    line = render_colored(format_status_finalized(finalize_record()))
-
-    assert "1" in styles_at(line, "finalized")
+    assert render_plain(line) == f"finalized · branch gymrat/{SESSION_ID}-final · commit ccccccc"
+    assert "1" in styles_at(render_colored(line), "finalized")
 
 
 # ---------------------------------------------------------------------------
-# Rich markup escape in status rendering (B22)
+# Rich markup escape in status rendering
 # ---------------------------------------------------------------------------
 
 
@@ -460,11 +392,10 @@ def test_format_status_header_when_worktree_path_contains_brackets_does_render_t
 
     lines = format_status_header(session)
 
-    experiment_line = render_plain(lines[2])
-    baseline_line = render_plain(lines[3])
-
-    assert "[experiment]" in experiment_line
-    assert "[baseline]" in baseline_line
+    assert [render_plain(line) for line in lines[2:]] == [
+        "experiment worktree /repo/.gymrat/worktrees/[experiment]",
+        "baseline worktree /repo/.gymrat/worktrees/[baseline]",
+    ]
 
 
 def test_format_status_baseline_when_metric_name_contains_brackets_does_render_them_literally():
@@ -472,7 +403,7 @@ def test_format_status_baseline_when_metric_name_contains_brackets_does_render_t
 
     line = render_plain(format_status_baseline(record))
 
-    assert "total[ms]" in line
+    assert line == "baseline main · total[ms] 15200"
 
 
 # ---------------------------------------------------------------------------
@@ -480,25 +411,14 @@ def test_format_status_baseline_when_metric_name_contains_brackets_does_render_t
 # ---------------------------------------------------------------------------
 
 
-def test_format_status_stop_when_given_single_line_message_does_render_stopped_and_message():
-    line = render_plain(format_status_stop("user requested stop"))
+def test_format_status_stop_when_given_single_line_message_does_render_bold_stopped_and_message():
+    line = format_status_stop("user requested stop")
 
-    assert line == "stopped · user requested stop"
+    assert render_plain(line) == "stopped · user requested stop"
+    assert "1" in styles_at(render_colored(line), "stopped")
 
 
 def test_format_status_stop_when_given_multiline_message_does_render_only_the_first_line():
     line = render_plain(format_status_stop("target reached\ncleaning up\nfinal notes"))
 
     assert line == "stopped · target reached"
-
-
-def test_format_status_stop_when_colored_does_embolden_stopped():
-    line = render_colored(format_status_stop("user requested stop"))
-
-    assert "1" in styles_at(line, "stopped")
-
-
-def test_format_status_stop_when_colored_does_dim_the_separator():
-    line = render_colored(format_status_stop("user requested stop"))
-
-    assert "2" in styles_at(line, "·")

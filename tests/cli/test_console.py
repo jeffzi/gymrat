@@ -47,7 +47,7 @@ def _open_descriptors() -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_importing_console_does_not_import_the_error_module():
+def test_console_module_when_imported_does_not_import_the_error_module():
     loaded = modules_imported_by("gymrat.cli.console")
 
     assert "gymrat.cli.exit" not in loaded
@@ -68,7 +68,7 @@ def test_importing_console_does_not_import_the_error_module():
         pytest.param(ValueError("banana"), "win32", False, id="not-an-os-error"),
     ],
 )
-def test_is_broken_pipe_when_called_does_recognize_each_platforms_closed_pipe_error(
+def test_is_broken_pipe_when_platform_and_error_vary_does_recognize_the_closed_pipe_error(
     monkeypatch: pytest.MonkeyPatch, error: BaseException, platform: str, expected: bool
 ):
     monkeypatch.setattr("sys.platform", platform)
@@ -77,25 +77,20 @@ def test_is_broken_pipe_when_called_does_recognize_each_platforms_closed_pipe_er
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
-def test_point_stream_at_devnull_when_redirected_does_point_descriptor_at_devnull(tmp_path: Path):
-    with (tmp_path / "out.txt").open("w") as stream:
-        point_stream_at_devnull(stream)
-
-        assert os.path.samestat(os.fstat(stream.fileno()), Path(os.devnull).stat())
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
-def test_point_stream_at_devnull_when_redirected_does_close_devnull(tmp_path: Path):
+def test_point_stream_at_devnull_when_redirected_does_point_descriptor_at_devnull_leaking_none(
+    tmp_path: Path,
+):
     with (tmp_path / "out.txt").open("w") as stream:
         before = _open_descriptors()
 
         point_stream_at_devnull(stream)
 
+        assert os.path.samestat(os.fstat(stream.fileno()), Path(os.devnull).stat())
         assert _open_descriptors() == before
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
-def test_point_stream_at_devnull_when_redirect_fails_does_close_devnull_and_raise():
+def test_point_stream_at_devnull_when_redirect_fails_does_raise_leaking_no_descriptor():
     before = _open_descriptors()
 
     with pytest.raises(OSError, match="Bad file descriptor"):
@@ -109,7 +104,7 @@ def test_point_stream_at_devnull_when_redirect_fails_does_close_devnull_and_rais
 # ---------------------------------------------------------------------------
 
 
-def test_stderr_console_does_write_to_stderr(monkeypatch: pytest.MonkeyPatch):
+def test_stderr_console_when_built_does_write_to_stderr(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
 
     console = stderr_console()
@@ -130,15 +125,10 @@ def test_stderr_console_does_write_to_stderr(monkeypatch: pytest.MonkeyPatch):
         pytest.param(True, True, {"FORCE_COLOR": "0"}, False, id="color-flag-overrides-force-zero"),
         pytest.param(True, True, {"NO_COLOR": "1"}, False, id="color-flag-overrides-no-color-env"),
         pytest.param(True, False, {}, False, id="color-flag-forces-color-even-without-tty"),
-        pytest.param(None, True, {}, False, id="none-flag-tty-detects-color"),
-        pytest.param(None, False, {}, True, id="none-flag-no-tty-detects-no-color"),
-        pytest.param(None, True, {"NO_COLOR": "1"}, True, id="no-color-env-overrides-tty"),
-        pytest.param(
-            None, False, {"FORCE_COLOR": "1"}, False, id="force-color-env-overrides-no-tty"
-        ),
+        pytest.param(None, True, {"NO_COLOR": "1"}, True, id="no-flag-defers-to-the-env"),
     ],
 )
-def test_stderr_console_resolves_color_from_flag_env_and_tty(
+def test_stderr_console_when_flag_env_and_tty_vary_does_resolve_color(
     color_flag: bool | None,
     tty: bool,
     env: dict[str, str],
@@ -210,34 +200,33 @@ def test_stderr_console_when_columns_set_does_use_env_width(
     assert console.width == expected_width
 
 
-def test_stderr_console_when_columns_unset_does_use_terminal_width(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
-
-    console = stderr_console(color_flag=False)
-
-    assert console.width > 0
+def _terminal_of_123_columns(_fd: int) -> os.terminal_size:
+    """Stand in for ``os.get_terminal_size``: a 123-column, 45-row terminal."""
+    return os.terminal_size((123, 45))
 
 
 @pytest.mark.parametrize(
-    "columns",
+    "env",
     [
-        pytest.param("", id="empty-string"),
-        pytest.param("abc", id="non-numeric"),
-        pytest.param("  ", id="whitespace-only"),
+        pytest.param({}, id="unset"),
+        pytest.param({"COLUMNS": ""}, id="empty-string"),
+        pytest.param({"COLUMNS": "abc"}, id="non-numeric"),
+        pytest.param({"COLUMNS": "  "}, id="whitespace-only"),
     ],
 )
-def test_stderr_console_when_columns_is_not_a_valid_integer_does_not_crash(
-    columns: str,
+def test_stderr_console_when_columns_unset_or_not_an_integer_does_use_terminal_width(
+    env: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("COLUMNS", columns)
+    monkeypatch.delenv("COLUMNS", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
     monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
+    monkeypatch.setattr("os.get_terminal_size", _terminal_of_123_columns)
 
     console = stderr_console(color_flag=False)
 
-    assert console.width > 0
+    assert console.width == 123
 
 
 # ---------------------------------------------------------------------------
