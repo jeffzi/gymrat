@@ -35,6 +35,7 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 from gymrat.supervisor.supervise import EndedBy, supervise
+from tests._config import benchless_config
 from tests.session.records._fixtures import (
     append_records,
     command_record,
@@ -47,7 +48,6 @@ from tests.supervisor._fixtures import (
     InterruptEmitsEndDriver,
     add_stop_async,
     collecting_observer,
-    default_benchless_config,
     emit_turn_end,
     events_of,
     follow_ups_with_action,
@@ -264,7 +264,7 @@ class _StubbornDriver:
         self,
         prompt: SessionPrompt,
         observer: SessionObserver,
-        abort: asyncio.Event | None = None,
+        abort: asyncio.Event,
     ) -> DriverSession:
         self.abort = abort
         return _StubbornSession(self._inner.start(prompt, observer, abort), self)
@@ -337,7 +337,7 @@ async def test_supervise_when_condition_lands_before_tool_end_does_end_run_after
         _blocked_step(),
     ])
 
-    result = await _supervise(root, driver, config=default_benchless_config(stop=case.stop))
+    result = await _supervise(root, driver, config=benchless_config(stop=case.stop))
 
     markers = _event_log_markers(root)
     ended = _ended_markers(markers)
@@ -396,7 +396,7 @@ async def test_supervise_when_nothing_new_ends_run_at_tool_end_does_complete_as_
     append_records(root, *seeded)
     driver = create_mock_driver([_append(root, *appended), _tool_end()])
 
-    result = await _supervise(root, driver, config=default_benchless_config(stop=stop))
+    result = await _supervise(root, driver, config=benchless_config(stop=stop))
 
     assert result.ended_by == "session"
     assert result.outcome.reason == "completed"
@@ -441,6 +441,48 @@ async def test_supervise_when_grown_log_fails_to_read_at_tool_end_does_end_with_
         result.outcome.cost_usd,
         result.outcome.message,
     ) == ("session", message, "error", 0.25, message)
+
+
+def _replace_log_with_directory(root: str) -> None:
+    _log_path(root).unlink()
+    _log_path(root).mkdir()
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        pytest.param(_tool_end(), id="tool-end-scan"),
+        pytest.param(TurnEndStep(), id="turn-end-settle"),
+    ],
+)
+async def test_supervise_when_log_becomes_unreadable_does_end_with_error_outcome_naming_the_log(
+    root: str, trigger: MockStep
+):
+    async def make_unreadable() -> None:
+        _replace_log_with_directory(root)
+
+    driver = create_mock_driver([ActionStep(action=make_unreadable), trigger])
+
+    result = await _supervise(root, driver)
+
+    assert (result.ended_by, result.outcome.reason) == ("session", "error")
+    assert f"Cannot read session log at {session_jsonl_path(root)}" in str(result.outcome.message)
+
+
+async def test_supervise_when_log_is_unreadable_at_launch_does_run_until_the_session_ends(
+    root: str,
+):
+    _replace_log_with_directory(root)
+
+    async def restore_log() -> None:
+        _log_path(root).rmdir()
+        append_records(root, session_record())
+
+    driver = create_mock_driver([ActionStep(action=restore_log), _tool_end()])
+
+    result = await _supervise(root, driver)
+
+    assert (result.ended_by, result.outcome.reason) == ("session", "completed")
 
 
 async def test_supervise_when_launch_read_fails_does_scan_hooks_only_after_first_clean_read(
@@ -518,7 +560,7 @@ async def test_supervise_when_first_clean_scan_finds_stop_condition_met_does_com
     ])
 
     result = await _supervise(
-        root, driver, config=default_benchless_config(stop=StopConfig(max_iterations=1))
+        root, driver, config=benchless_config(stop=StopConfig(max_iterations=1))
     )
 
     assert result.ended_by == "session"
@@ -541,7 +583,7 @@ async def test_supervise_when_stop_condition_met_after_first_clean_scan_does_end
     ])
 
     result = await _supervise(
-        root, driver, config=default_benchless_config(stop=StopConfig(max_iterations=1))
+        root, driver, config=benchless_config(stop=StopConfig(max_iterations=1))
     )
 
     assert result.ended_by == "stop-condition"
@@ -577,7 +619,7 @@ async def test_supervise_when_condition_lands_after_last_tool_end_does_end_at_tu
     driver = create_mock_driver([_tool_end(), _append(root, appended), TurnEndStep()])
 
     result = await _supervise(
-        root, driver, config=default_benchless_config(stop=stop), observer=probe.observer
+        root, driver, config=benchless_config(stop=stop), observer=probe.observer
     )
 
     assert result.ended_by == ended_by
@@ -816,7 +858,7 @@ class _SlowEndDriver:
         self,
         prompt: SessionPrompt,
         observer: SessionObserver,
-        abort: asyncio.Event | None = None,
+        abort: asyncio.Event,
     ) -> DriverSession:
         return _SlowEndSession(self._inner.start(prompt, observer, abort), self._delay_ms)
 
@@ -864,3 +906,136 @@ async def test_supervise_when_cap_ends_session_during_settle_window_does_not_rep
 
     assert result.ended_by == "wall-clock"
     assert follow_ups_with_action(probe.events, "replied") == []
+
+
+# ---------------------------------------------------------------------------
+# grace fallback when the session is ended at a turn boundary
+# ---------------------------------------------------------------------------
+
+
+class _EndIgnoringSession(DelegatingSession):
+    """Delegates everything but ``end`` to the wrapped session; ``end`` does nothing."""
+
+    @override
+    async def end(self) -> None:
+        return None
+
+
+class _AbortProbeDriver:
+    """A driver that records the abort event it was started with.
+
+    With ``ignores_end`` its sessions ignore ``end`` and settle only once the
+    abort event is set, modelling a backend that stays up after a polite end.
+    """
+
+    def __init__(self, inner: Driver, *, ignores_end: bool) -> None:
+        self._inner = inner
+        self._ignores_end = ignores_end
+        self._settling: asyncio.Task[None] | None = None
+        self.abort: asyncio.Event | None = None
+
+    def start(
+        self,
+        prompt: SessionPrompt,
+        observer: SessionObserver,
+        abort: asyncio.Event,
+    ) -> DriverSession:
+        self.abort = abort
+        session = self._inner.start(prompt, observer, abort)
+        if not self._ignores_end:
+            return session
+        self._settling = asyncio.ensure_future(self._settle_on_abort(session, abort))
+        return _EndIgnoringSession(session)
+
+    @staticmethod
+    async def _settle_on_abort(session: DriverSession, abort: asyncio.Event) -> None:
+        await abort.wait()
+        await session.interrupt()
+
+
+def _hook_failure_after_last_tool_end(root: str) -> list[MockStep]:
+    return [_tool_end(), _append(root, _FAILED_HOOK), TurnEndStep()]
+
+
+@dataclass(frozen=True)
+class _BoundaryEndCase:
+    """A script that stops at a turn end, the knobs that end the session there, and the ending."""
+
+    script: Callable[[str], list[MockStep]]
+    ended_by: str
+    max_usd: float | None = None
+    deadline_in_ms: int | None = None
+    settle_window_ms: int = 0
+
+    def deadline_ms(self) -> float | None:
+        return None if self.deadline_in_ms is None else now_ms() + self.deadline_in_ms
+
+
+_BOUNDARY_END_CASES = [
+    pytest.param(
+        _BoundaryEndCase(
+            script=lambda _root: [TurnEndStep(cost_usd=0.01)],
+            ended_by="wall-clock",
+            deadline_in_ms=50,
+            settle_window_ms=10_000,
+        ),
+        id="wall-clock-while-idle",
+    ),
+    pytest.param(
+        _BoundaryEndCase(
+            script=lambda _root: [TurnEndStep(cost_usd=5.0)],
+            ended_by="spend-cap",
+            max_usd=1.0,
+        ),
+        id="spend-cap-at-settle",
+    ),
+    pytest.param(
+        _BoundaryEndCase(script=_hook_failure_after_last_tool_end, ended_by="hook-failure"),
+        id="hook-failure-at-settle",
+    ),
+]
+
+
+@pytest.mark.parametrize("case", _BOUNDARY_END_CASES)
+async def test_supervise_when_driver_ignores_end_at_turn_boundary_does_arm_abort_after_grace(
+    root: str, case: _BoundaryEndCase
+):
+    driver = _AbortProbeDriver(create_mock_driver(case.script(root)), ignores_end=True)
+
+    result = await asyncio.wait_for(
+        _supervise(
+            root,
+            driver,
+            grace_ms=50,
+            max_usd=case.max_usd,
+            deadline_ms=case.deadline_ms(),
+            settle_window_ms=case.settle_window_ms,
+        ),
+        timeout=2.0,
+    )
+
+    assert driver.abort is not None
+    assert driver.abort.is_set()
+    assert result.ended_by == case.ended_by
+
+
+@pytest.mark.parametrize("case", _BOUNDARY_END_CASES)
+async def test_supervise_when_driver_settles_on_end_at_turn_boundary_does_not_abort(
+    root: str, case: _BoundaryEndCase
+):
+    driver = _AbortProbeDriver(create_mock_driver(case.script(root)), ignores_end=False)
+
+    result = await _supervise(
+        root,
+        driver,
+        max_usd=case.max_usd,
+        deadline_ms=case.deadline_ms(),
+        settle_window_ms=case.settle_window_ms,
+    )
+    # One loop turn lets the timers supervise cancelled on its way out finish.
+    await asyncio.sleep(0)
+
+    assert driver.abort is not None
+    assert not driver.abort.is_set()
+    assert result.ended_by == case.ended_by
+    assert asyncio.all_tasks() == {asyncio.current_task()}

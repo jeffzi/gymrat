@@ -265,6 +265,31 @@ def test_best_delta_when_rendered_with_color_does_emit_sign_dependent_styling(
     assert_has_sgr(best_lines, expected_sgr)
 
 
+@pytest.mark.parametrize(
+    ("delta_pct", "expected_sgr"),
+    [
+        pytest.param(12.0, SGR_GREEN, id="gain-green"),
+        pytest.param(-3.0, SGR_RED, id="loss-red"),
+    ],
+)
+def test_best_delta_when_primary_is_higher_is_better_does_style_a_gain_as_improvement(
+    delta_pct: float, expected_sgr: int
+) -> None:
+    kit = make_reporter(
+        read_session=make_read_session(
+            session_state(iteration_count=1, keep_count=1),
+            has_baseline=True,
+            best=BestIteration(delta_pct=delta_pct, seq=1, label="throughput", direction="higher"),
+        ),
+    )
+    fire_launch_and_bash_cycle(kit.reporter.observer)
+
+    colored = _render_content_colored(kit.reporter)
+    best_lines = _lines_containing(colored, "best")
+
+    assert_has_sgr(best_lines, expected_sgr)
+
+
 # ---------------------------------------------------------------------------
 # liveness styling
 # ---------------------------------------------------------------------------
@@ -578,6 +603,31 @@ def test_nested_phase_when_composing_does_render_arrow_line_with_preparing():
     assert "Edit" in nested_line
 
 
+def test_nested_tool_when_a_sibling_ends_does_keep_showing_the_running_tool():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    kit.clock.now = 2000
+    observer(
+        tool_start_event(
+            "Read", "nested-read-1", 2000, parent_tool_use_id="bash-1", input_summary="config.ts"
+        )
+    )
+    observer(
+        tool_start_event(
+            "Grep", "nested-grep-1", 2100, parent_tool_use_id="bash-1", input_summary="needle"
+        )
+    )
+    kit.clock.now = 5000
+    observer(tool_end_event("Grep", "nested-grep-1", 5000, parent_tool_use_id="bash-1"))
+
+    nested_line = line_after(render_frame(kit.reporter), "Bash")
+
+    _assert_is_nested_line(nested_line)
+    assert "Read" in nested_line
+    assert "config.ts" in nested_line
+
+
 def test_nested_when_no_activity_does_not_render_arrow_line():
     kit = make_reporter()
     observer = kit.reporter.observer
@@ -589,7 +639,6 @@ def test_nested_when_no_activity_does_not_render_arrow_line():
     frame = render_frame(kit.reporter)
 
     assert "↳" not in frame
-    assert "->" not in frame or "gymrat" in frame
 
 
 def test_nested_tool_when_rendered_with_color_does_emit_dim_styling():
@@ -641,8 +690,8 @@ def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_widt
     frame = render_frame(kit.reporter)
     bash_lines = _lines_containing(frame, "Bash")
 
-    assert bash_lines
-    assert "LongNestedToolName" not in bash_lines[0]
+    # "Bash" padded to the 5-column floor; counting the nested name would widen it.
+    assert [line.strip("│").strip() for line in bash_lines] == ["00:00:02  Bash   run tests  1s"]
 
 
 # ---------------------------------------------------------------------------

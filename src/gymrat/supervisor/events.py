@@ -32,7 +32,7 @@ from pydantic_core import PydanticSerializationError
 
 from gymrat.config import Effort
 from gymrat.errors import GymratError
-from gymrat.utils import abbreviate_home, fan_out
+from gymrat.utils import UNICODE_LINE_BREAKS, abbreviate_home, fan_out
 
 # ---------------------------------------------------------------------------
 # Event vocabulary
@@ -270,19 +270,6 @@ SESSION_EVENT_ADAPTER: TypeAdapter[SessionEvent] = TypeAdapter(
 _SCHEMA_KEY = LaunchEvent.model_fields["schema_version"].alias
 
 
-_UNICODE_LINE_BREAKS = str.maketrans({
-    "\u0085": "\\u0085",
-    "\u2028": "\\u2028",
-    "\u2029": "\\u2029",
-})
-"""Non-ASCII characters that ``str.splitlines`` treats as line boundaries.
-
-They occur only inside JSON strings, so writing them as ``\\uXXXX`` escapes is
-lossless and keeps one event on one line for any reader that splits with
-``str.splitlines``.
-"""
-
-
 def to_json_line(event: SessionEvent) -> str:
     """Serialize an event to a single compact JSON line with snake_case keys.
 
@@ -302,7 +289,7 @@ def to_json_line(event: SessionEvent) -> str:
         A single JSON line with no trailing newline.
     """
     try:
-        return event.model_dump_json(fallback=str).translate(_UNICODE_LINE_BREAKS)
+        return event.model_dump_json(fallback=str).translate(UNICODE_LINE_BREAKS)
     except PydanticSerializationError:
         return json.dumps(
             _null_non_finite(event.model_dump(mode="json", fallback=str)),
@@ -494,7 +481,7 @@ def _render_path(path: str, supervised_root: str | None) -> str:
         except ValueError:
             pass
         else:
-            if not rel.startswith(".."):
+            if rel != os.pardir and not rel.startswith(os.pardir + os.sep):
                 return rel.replace(os.sep, "/")
 
     return abbreviate_home(path)

@@ -123,6 +123,26 @@ def _sectioned_short_pairs_result() -> ComparisonResult:
     return replace(two_kind_result(), metrics=metrics)
 
 
+def _unstable_with_band_result() -> ComparisonResult:
+    """A banded improvement beside an unstable metric, both short a pair of the run's ten."""
+    return create_comparison_result(
+        metrics={
+            "latency#other": permutation_metric(verdict="improved", delta=-10, n=8),
+            "flaky#other": permutation_metric(verdict="unstable", delta=50, n=8),
+        },
+    )
+
+
+def _unstable_beside_wide_delta_result() -> ComparisonResult:
+    """A banded regression whose delta is wider than ``unstable``, beside an unstable metric."""
+    return create_comparison_result(
+        metrics={
+            "bloat#other": permutation_metric(verdict="regressed", delta=12345.6, n=8),
+            "flaky#other": permutation_metric(verdict="unstable", delta=50, n=8),
+        },
+    )
+
+
 @pytest.mark.parametrize(
     ("make_result", "first_row", "second_row"),
     [
@@ -131,6 +151,15 @@ def _sectioned_short_pairs_result() -> ComparisonResult:
             _undefined_ratio_result, "decode#other", "nan-delta#other", id="undefined-ratio-row"
         ),
         pytest.param(_sectioned_short_pairs_result, "  spawn", "encode", id="across-sections"),
+        pytest.param(
+            _unstable_with_band_result, "latency#other", "flaky#other", id="word-wider-than-delta"
+        ),
+        pytest.param(
+            _unstable_beside_wide_delta_result,
+            "bloat#other",
+            "flaky#other",
+            id="delta-wider-than-word",
+        ),
     ],
 )
 def test_render_report_when_rows_are_short_of_pairs_does_align_their_pair_counts(
@@ -141,17 +170,9 @@ def test_render_report_when_rows_are_short_of_pairs_does_align_their_pair_counts
     first_line = line_containing(report, first_row)
     second_line = line_containing(report, second_row)
 
-    assert offsets_of(first_line, "n=") == offsets_of(second_line, "n=")
-
-
-def _unstable_with_band_result() -> ComparisonResult:
-    """A banded improvement beside an unstable metric, both short a pair of the run's ten."""
-    return create_comparison_result(
-        metrics={
-            "latency#other": permutation_metric(verdict="improved", delta=-10, n=8),
-            "flaky#other": permutation_metric(verdict="unstable", delta=50, n=8),
-        },
-    )
+    first_offsets = offsets_of(first_line, "n=")
+    assert first_offsets != []
+    assert first_offsets == offsets_of(second_line, "n=")
 
 
 def test_render_report_when_a_row_is_unstable_does_reserve_the_band_slot_before_its_pair_count():

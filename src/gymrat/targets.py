@@ -118,7 +118,8 @@ def resolve_target(target_input: str, repo_dir: str) -> Target:
 
     Raises:
         GymratError: When the input is neither an existing directory nor a ref
-            git can verify, and when the directory probe itself fails.
+            git can verify, when git cannot be started, and when the directory
+            probe itself fails.
     """
     directory = _try_resolve_directory(target_input)
     if directory is not None:
@@ -133,7 +134,8 @@ def resolve_target(target_input: str, repo_dir: str) -> Target:
             ["rev-parse", "--verify", "--end-of-options", f"{target_input}^{{commit}}"],
             repo_dir,
         ).strip()
-    except subprocess.CalledProcessError as error:
+    except (subprocess.SubprocessError, OSError) as error:
+        # OSError is a git binary that is missing or cannot be executed.
         message = f"Cannot resolve target '{target_input}': {stderr_text_of(error)}"
         raise GymratError(message, hint=_RESOLVE_TARGET_HINT) from error
 

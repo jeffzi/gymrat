@@ -5,10 +5,12 @@ would make sense pasted unchanged into an unrelated repository.
 """
 
 import contextlib
+import json
 import math
 import os
+import secrets
+import stat
 import sys
-import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -29,10 +31,6 @@ ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 # still blow past the limit. Keep this module-private: the byte budget is an
 # internal knob, not something a caller should tune.
 _OUTPUT_LIMIT_BYTES = 8192
-
-_SIBILANT_ENDINGS = ("s", "x", "z", "ch", "sh")
-
-_VOWELS = "aeiou"  # cspell:ignore aeiou
 
 type WarnSink = Callable[[str], None]
 """Where a caller sends a complaint about output it could not read.
@@ -59,47 +57,67 @@ def abbreviate_home(path: str) -> str:
     return "~" if rel == "." else f"~/{rel}"
 
 
-def _regular_plural(noun: str) -> str:
-    """``noun`` under the regular English suffix rules.
-
-    A sibilant ending takes ``-es``; a consonant followed by ``y`` takes
-    ``-ies``; everything else takes ``-s``. Multi-word nouns inflect on their
-    last word, which the suffix tests already look at.
-
-    Args:
-        noun: The singular noun.
-
-    Returns:
-        The pluralized noun.
-    """
-    if noun.endswith(_SIBILANT_ENDINGS):
-        return f"{noun}es"
-    if len(noun) > 1 and noun.endswith("y") and noun[-2] not in _VOWELS:
-        return f"{noun[:-1]}ies"
-    return f"{noun}s"
-
-
 def pluralize(count: int, noun: str) -> str:
-    """Inflect ``noun`` for ``count`` under the regular English suffix rules.
+    """Inflect ``noun`` for ``count`` by appending ``s``.
 
     A count of one keeps ``noun`` as given; any other count — zero and
-    negatives included — takes the plural form.
+    negatives included — takes the plural form. No other suffix rule is
+    applied, so ``noun`` must be one whose plural is a plain ``s``.
 
     Args:
         count: The count that determines singular vs. plural form.
         noun: The singular form of the noun.
 
     Returns:
-        The count followed by the correctly inflected noun.
+        The count followed by the inflected noun.
     """
-    if count == 1:
-        return f"{count} {noun}"
-    return f"{count} {_regular_plural(noun)}"
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
 def first_line(text: str) -> str:
     """The first line of ``text``, discarding the rest."""
     return text.split("\n", maxsplit=1)[0]
+
+
+UNICODE_LINE_BREAKS = str.maketrans({
+    "\N{NEXT LINE}": "\\u0085",
+    "\N{LINE SEPARATOR}": "\\u2028",
+    "\N{PARAGRAPH SEPARATOR}": "\\u2029",
+})
+"""Translation table for the non-ASCII characters ``str.splitlines`` breaks on.
+
+Inside a JSON document they occur only within strings, so translating a
+serialized line through this table is lossless and keeps one document on one
+line for any reader that splits with ``str.splitlines``.
+"""
+
+
+def expected_got(phrase: str, value: object) -> str:
+    """Word a rejected value against the shape that was expected of it.
+
+    The value is shown as JSON, or through ``repr`` when JSON cannot encode it.
+    An integer with more decimal digits than the interpreter converts to text
+    is described by its bit length, and a container holding one by its type, so
+    the wording never raises and never grows with the integer.
+
+    Args:
+        phrase: What was expected, such as ``"a number"``.
+        value: The rejected value.
+
+    Returns:
+        The text ``expected {phrase}, got {value}``.
+    """
+    return f"expected {phrase}, got {_displayed(value)}"
+
+
+def _displayed(value: object) -> str:
+    with contextlib.suppress(TypeError, ValueError):
+        return json.dumps(value)
+    with contextlib.suppress(ValueError):
+        return repr(value)
+    if isinstance(value, int):
+        return f"a {value.bit_length()}-bit integer"
+    return f"a {type(value).__name__} too large to display"
 
 
 def finite_or_none(value: float) -> float | None:
@@ -287,6 +305,11 @@ def write_text_atomic(path: Path, text: str) -> None:
     full new content. On failure *path* is left untouched and the temporary
     file is removed.
 
+    The file ends up with the mode a plain write would leave: an existing
+    *path* keeps its mode, and a new one gets ``0o666`` filtered by the umask.
+    The temporary file is never more permissive than an existing *path*, so
+    the new content is not readable by anyone the old content was closed to.
+
     Args:
         path: The file to write. Its directory must already exist.
         text: The content to write.
@@ -295,13 +318,33 @@ def write_text_atomic(path: Path, text: str) -> None:
         OSError: When the temporary file cannot be created, written, synced,
             or renamed over *path*.
     """
-    fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
-    tmp_path = Path(tmp_name)
     try:
-        with os.fdopen(fd, "wb") as tmp_file:
+        target_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        target_mode = None
+    create_mode = 0o666 if target_mode is None else target_mode
+    tmp_path = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+
+    # Opened directly rather than through tempfile, which forces 0o600: here the
+    # kernel applies the umask to the requested mode, and reading the umask any
+    # other way means changing it for the whole process. Requesting the target's
+    # own mode at creation is what keeps the content out of a wider file; a
+    # chmod after the write would leave it exposed until then.
+    def create_with_mode(name: str, flags: int) -> int:
+        return os.open(name, flags, create_mode)
+
+    # Exclusive creation stays outside the cleanup below: a file that already
+    # holds the temporary name is not this call's to remove.
+    with open(tmp_path, "xb", opener=create_with_mode):
+        pass
+    try:
+        with tmp_path.open("wb") as tmp_file:
             tmp_file.write(text.encode("utf-8"))
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
+        if target_mode is not None:
+            # Restores the bits the umask removed from the requested mode.
+            tmp_path.chmod(target_mode)
         tmp_path.replace(path)
     except BaseException:
         # The original error is what the caller needs; a failed cleanup must not mask it.

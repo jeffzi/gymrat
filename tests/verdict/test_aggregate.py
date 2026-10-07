@@ -16,10 +16,10 @@ from gymrat.model import (
     MetricVerdict,
 )
 from gymrat.verdict import KindAggregate, compute_kind_aggregates
+from tests.report._verdicts import exact_verdict
 from tests.verdict._inputs import (
     MetricSpec,
     build_inputs,
-    exact_verdict,
     unstable_band_verdict,
 )
 
@@ -197,8 +197,8 @@ def test_compute_kind_aggregates_when_kind_mixes_gating_does_geomean_over_all_it
     ("bad_verdict", "reason"),
     [
         pytest.param(unstable_band_verdict(), "unstable", id="unstable"),
-        pytest.param(exact_verdict(math.nan), "undefined-ratio", id="undefined-ratio"),
-        pytest.param(exact_verdict(-150.0), "infinite-rho", id="infinite-rho"),
+        pytest.param(exact_verdict(delta=math.nan, n=1), "undefined-ratio", id="undefined-ratio"),
+        pytest.param(exact_verdict(delta=-150.0, n=1), "infinite-rho", id="infinite-rho"),
     ],
 )
 def test_compute_kind_aggregates_when_metric_excluded_does_report_it_against_the_kind_subset(

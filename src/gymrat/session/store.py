@@ -45,6 +45,7 @@ from gymrat.session.records import (
     parse_record,
 )
 from gymrat.session.schema import KeepReason
+from gymrat.utils import UNICODE_LINE_BREAKS
 
 __all__ = [
     "RequiredSession",
@@ -341,6 +342,10 @@ def _serialize_record(record: SessionLogRecord) -> str:
     succeeds, which stops a single bad measurement from leaving the whole session
     log unreadable.
 
+    Non-ASCII text is written raw except U+0085, U+2028 and U+2029, which are
+    written as JSON unicode escapes so one record stays on one line for a reader
+    that splits with ``str.splitlines``.
+
     Args:
         record: The record to serialize.
 
@@ -360,7 +365,7 @@ def _serialize_record(record: SessionLogRecord) -> str:
     except (GymratError, ValueError, TypeError) as error:
         hint = _NON_FINITE_HINT if _any_leaf(record, _is_non_finite) else _OFF_SCHEMA_HINT
         raise GymratError(_refusal(record, error), hint=hint) from error
-    return line
+    return line.translate(UNICODE_LINE_BREAKS)
 
 
 _NOT_UTF8_HINT = (
@@ -453,38 +458,35 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
         The records in file order, or an empty list when the log is absent.
 
     Raises:
-        GymratError: When a line is not JSON, when a line matches no record
-            schema, or when the first record is not a session header. Every
-            message names the log and the 1-based line at fault.
+        GymratError: When the log exists but cannot be read, such as a
+            directory or a file without read permission; when a line is not
+            JSON; when a line matches no record schema; or when the first record
+            is not a session header. Every message names the log, and a line
+            failure names the 1-based line at fault.
     """
     try:
         raw = Path(jsonl_path).read_bytes()
     except FileNotFoundError:
         return []
+    except OSError as error:
+        message = f"Cannot read session log at {jsonl_path}"
+        raise GymratError(message, hint=f"{error.strerror}.") from error
 
-    # The final element is whatever follows the last newline — either empty
-    # (when the file ends on \n) or the torn tail of a write that never
-    # finished.
-    raw_lines = raw.split(b"\n")
-    # A file whose last byte is not b"\n" ends on a line the writer never
-    # finished — a torn append or a crash mid-flush. Each record is written as
-    # a single newline-terminated write, so a line lacking the terminator was
-    # never completed and must not be trusted.
-    last_unterminated = bool(raw) and raw[-1] != ord(b"\n")
+    # Each record is written as a single newline-terminated write, so whatever
+    # follows the last newline is either empty (the file ends on \n) or the
+    # torn tail of a write that never finished — a torn append or a crash
+    # mid-flush — and must not be trusted. Either way it is dropped.
+    raw_lines = raw.split(b"\n")[:-1]
 
     records: list[SessionLogRecord] = []
-    for index, raw_line in enumerate(raw_lines):
+    for line_number, raw_line in enumerate(raw_lines, start=1):
         if raw_line.strip() == b"":
             continue
 
-        is_last_line = index == len(raw_lines) - 1
-        if is_last_line and last_unterminated:
-            break
+        at = f"{jsonl_path}:{line_number}"
 
-        at = f"{jsonl_path}:{index + 1}"
-
-        line = _decode_utf8_at(raw_line, at, index + 1)
-        value = _decode_log_line_at(line, at, index + 1)
+        line = _decode_utf8_at(raw_line, at, line_number)
+        value = _decode_log_line_at(line, at, line_number)
 
         try:
             record = parse_record(value)
@@ -641,9 +643,7 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
 def require_session(root: str, verb: str) -> RequiredSession:
     """The session open in ``root``, or the error telling the caller to open one.
 
-    ``verb`` names what the caller was about to do — "measuring an edit" — and
-    becomes the thing the hint says no session was open for, so every loop
-    command refuses in its own words while sharing one guard.
+    Every loop command refuses in its own words while sharing this one guard.
 
     Args:
         root: Repository root whose session log is read and folded.
@@ -655,7 +655,8 @@ def require_session(root: str, verb: str) -> RequiredSession:
 
     Raises:
         GymratError: When no session has been started, or when the log is
-            corrupt — every parse failure names the log and the line at fault.
+            unreadable or corrupt — every parse failure names the log and the
+            line at fault.
     """
     jsonl_path = session_jsonl_path(root)
     records = read_records(jsonl_path)
@@ -689,8 +690,8 @@ def require_open_session(root: str, verb: str) -> RequiredSession:
         The session header, folded state, log path, and records.
 
     Raises:
-        GymratError: When no session has been started, when the log is corrupt,
-            or when the session was already finalized.
+        GymratError: When no session has been started, when the log is
+            unreadable or corrupt, or when the session was already finalized.
     """
     required = require_session(root, verb)
     finalized = required.state.finalized

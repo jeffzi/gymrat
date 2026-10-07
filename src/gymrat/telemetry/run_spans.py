@@ -11,12 +11,11 @@ never pulls the SDK into ``sys.modules``.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from gymrat.supervisor.events import combine_observers
-from gymrat.telemetry.attributes import (
+from gymrat.telemetry.provider import (
     RUN_COST_USD,
     RUN_DURATION_MS,
     RUN_END_REASON,
@@ -26,6 +25,7 @@ from gymrat.telemetry.attributes import (
     SESSION_ID,
     SESSION_SPAN,
     SESSION_SPAN_KEY,
+    existing_session_span,
     run_attributes,
     run_event,
     run_span_key,
@@ -37,8 +37,6 @@ if TYPE_CHECKING:
     from gymrat.supervisor.driver import SessionPrompt
     from gymrat.supervisor.events import LaunchEvent, SessionEvent, SessionObserver
     from gymrat.supervisor.supervise import SupervisionResult
-
-_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +58,13 @@ def setup_tracing(
     branch: str,
     prompt: SessionPrompt,
     reporter_observer: SessionObserver,
+    resumed: bool = False,
 ) -> tuple[SessionPrompt, SessionObserver, TracingState]:
-    """Configure tracing and open session/run spans when the endpoint is set.
+    """Configure tracing and open the run span, and the session span on the opening launch.
+
+    The session span is emitted once per session, by the launch that opened
+    it. A resumed launch opens only its run span, parented to the session span
+    through the span context its deterministic ids reconstruct.
 
     Args:
         launch: The run's launch event: its session id goes on both spans, its
@@ -72,6 +75,8 @@ def setup_tracing(
             activates.
         reporter_observer: The reporter's event observer, combined with the
             tracing observer when tracing activates.
+        resumed: Whether the launch resumes a session an earlier launch
+            opened, in which case no session span is started.
 
     Returns:
         A three-tuple of ``(prompt, observer, state)``.  When no tracing
@@ -81,35 +86,45 @@ def setup_tracing(
         tracing is active the prompt carries a ``traceparent`` and the observer
         fans out to both the reporter and the tracing observer.
     """
-    from gymrat.telemetry.provider import configure_tracing, start_span  # noqa: PLC0415
+    from gymrat.telemetry.provider import (  # noqa: PLC0415
+        configure_tracing,
+        format_traceparent,
+        start_span,
+    )
 
     if not configure_tracing(launch.session_id):
         return prompt, reporter_observer, TracingState()
 
     from opentelemetry.trace import set_span_in_context  # noqa: PLC0415
 
-    from gymrat.telemetry.ids import format_traceparent  # noqa: PLC0415
-
-    session_span = start_span(
-        SESSION_SPAN,
-        span_key=SESSION_SPAN_KEY,
-        attributes={
-            SESSION_ID: launch.session_id,
-            SESSION_BRANCH: branch,
-        },
-    )
+    session_span = None
+    if resumed:
+        parent = existing_session_span(launch.session_id)
+    else:
+        session_span = start_span(
+            SESSION_SPAN,
+            span_key=SESSION_SPAN_KEY,
+            attributes={
+                SESSION_ID: launch.session_id,
+                SESSION_BRANCH: branch,
+            },
+        )
+        parent = session_span
     run_span = start_span(
         RUN_SPAN,
         span_key=run_span_key(launch.at),
         attributes=run_attributes(launch),
-        context=set_span_in_context(session_span),
+        context=set_span_in_context(parent),
     )
 
     # A disabled SDK (OTEL_SDK_DISABLED=true) still configures a provider but
-    # hands out non-recording spans with no trace context to propagate.
-    if not run_span.get_span_context().is_valid:
+    # opens no span: it hands back the parent's non-recording span, whose
+    # context is invalid under a fresh session span and valid under a
+    # reconstructed one.
+    if run_span is parent or not run_span.get_span_context().is_valid:
         run_span.end()
-        session_span.end()
+        if session_span is not None:
+            session_span.end()
         return prompt, reporter_observer, TracingState()
 
     prompt = replace(prompt, traceparent=format_traceparent(run_span))
@@ -156,15 +171,27 @@ def finalize_tracing(
 
 
 def create_run_span_observer(span: Span) -> SessionObserver:
-    """Return a :data:`SessionObserver` that adds span events for each supervisor event."""
+    """Mirror each supervisor event onto the run span as a span event.
+
+    A failure to mirror an event never reaches the caller, so telemetry cannot
+    end the session: it is reported the way
+    :func:`~gymrat.supervisor.events.combine_observers` reports any observer
+    failure, as one :class:`RuntimeWarning`.
+
+    Args:
+        span: The run span the events are added to.
+
+    Returns:
+        The observer mirroring each supervisor event onto ``span``.
+    """
 
     def observe(event: SessionEvent) -> None:
-        try:
-            mirrored = run_event(event)
-            if mirrored is not None:
-                name, attributes = mirrored
-                span.add_event(name, attributes=attributes, timestamp=event.at)
-        except Exception as exc:  # noqa: BLE001 — telemetry must never crash the session
-            _log.warning("span event mirroring failed: %s", exc, exc_info=True)
+        mirrored = run_event(event)
+        if mirrored is not None:
+            name, attributes = mirrored
+            span.add_event(name, attributes=attributes, timestamp=event.at)
 
-    return observe
+    # Do not catch failures in ``observe`` and log them: ``combine_observers`` reports them as a
+    # RuntimeWarning, and with no logging handler configured a logged traceback prints over the
+    # supervise dashboard.
+    return combine_observers(observe)

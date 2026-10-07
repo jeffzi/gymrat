@@ -17,7 +17,7 @@ from gymrat.session.records import (
     SessionRecord,
     wire_type,
 )
-from gymrat.telemetry.attributes import (
+from gymrat.telemetry.provider import (
     _SCALAR_TYPES,
     _SKIPPED_FIELD_NAMES,
     CAP_NAME,
@@ -46,7 +46,6 @@ from gymrat.telemetry.attributes import (
     TURN_BUDGET_EXHAUSTED,
     TURN_ORIGIN,
     TURN_SESSION_COST_USD,
-    _record_attr_name,
 )
 
 # The attribute names that are not derived from a record model's fields.
@@ -122,6 +121,6 @@ def all_attribute_names() -> frozenset[str]:
             if field_name in _SKIPPED_FIELD_NAMES:
                 continue
             if _is_scalar_type(field_info.annotation):
-                record_derived.add(_record_attr_name(record_type, field_name))
+                record_derived.add(f"gymrat.{record_type}.{field_name}")
 
     return _FIXED_ATTRS | frozenset(record_derived)

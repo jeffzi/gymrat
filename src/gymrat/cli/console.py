@@ -12,7 +12,9 @@ import os
 import sys
 from typing import IO, override
 
-from rich.console import Console
+from rich.console import Console, HighlighterType, JustifyMethod, OverflowMethod
+from rich.style import Style
+from rich.text import Text
 
 from gymrat.cli.style import CLI_THEME
 from gymrat.utils import stream_color_from_env
@@ -42,8 +44,7 @@ def apply_debug(debug: bool) -> None:  # noqa: FBT001 -- 1:1 pass-through of a c
     """Enable debug mode when a command's own ``--debug`` flag is set.
 
     Never disables debug mode: a command's local ``--debug`` defaulting to
-    ``False`` must not undo the root ``--debug`` flag already applied by
-    :func:`set_debug_mode`.
+    ``False`` must not undo the root ``--debug`` flag already applied.
 
     Args:
         debug: The command's own ``--debug`` flag.
@@ -106,8 +107,8 @@ class _ColorState:
     """Holds the ``--color`` / ``--no-color`` override for all color surfaces.
 
     The root callback and per-command callbacks write this through
-    :func:`set_color_override` so every :func:`resolve_stream_color` call shares
-    a single truth.
+    :func:`apply_command_flags` so every :func:`resolve_stream_color` call
+    shares a single truth.
     """
 
     override: bool | None = None
@@ -122,8 +123,7 @@ def apply_color_override(color: bool | None) -> None:  # noqa: FBT001 -- 1:1 pas
     """Install a subcommand's color override for every color surface.
 
     Only writes when ``color`` is not ``None`` so a subcommand that declares no
-    local ``--color`` flag does not erase a root flag already applied by
-    :func:`set_color_override`.
+    local ``--color`` flag does not erase a root flag already applied.
 
     Args:
         color: The subcommand's ``--color``/``--no-color`` flag, or ``None`` when neither was given.
@@ -133,16 +133,17 @@ def apply_color_override(color: bool | None) -> None:  # noqa: FBT001 -- 1:1 pas
 
 
 def apply_command_flags(*, debug: bool, color: bool | None) -> None:
-    """Install a command's own ``--debug`` and ``--color`` / ``--no-color`` flags.
+    """Install the root's or a command's ``--debug`` and ``--color`` / ``--no-color`` flags.
 
-    Neither undoes a root flag: debug mode is only ever switched on, and a
-    command given no color flag leaves the override alone. Once installed, a
+    A command's flags never undo the root's: debug mode is only ever switched
+    on, and a call given no color flag leaves the override alone. Once installed, a
     ``None`` override passed to :func:`resolve_stream_color` or
     :func:`stderr_console` resolves to the command's flag.
 
     Args:
-        debug: The command's own ``--debug`` flag.
-        color: The command's ``--color``/``--no-color`` flag, or ``None`` when neither was given.
+        debug: The ``--debug`` flag at this level.
+        color: The ``--color``/``--no-color`` flag at this level, or ``None``
+            when neither was given.
     """
     apply_debug(debug)
     apply_color_override(color)
@@ -178,7 +179,37 @@ def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa
 
 
 class _StderrConsole(Console):
-    """A ``Console`` that silences its own stream, not stdout, on a broken pipe."""
+    """A ``Console`` that prints ``:name:`` codes literally.
+
+    On a broken pipe it silences its own stream, not stdout.
+    """
+
+    @override
+    def render_str(
+        self,
+        text: str,
+        *,
+        style: str | Style = "",
+        justify: JustifyMethod | None = None,
+        overflow: OverflowMethod | None = None,
+        emoji: bool | None = None,
+        markup: bool | None = None,
+        highlight: bool | None = None,
+        highlighter: HighlighterType | None = None,
+    ) -> Text:
+        # Emoji codes are never expanded, whatever the call asks: the text
+        # printed here (metric names, commands, paths) routinely holds a
+        # ``:word:`` sequence, such as ``lat:100:p99``, that must stay as written.
+        return super().render_str(
+            text,
+            style=style,
+            justify=justify,
+            overflow=overflow,
+            emoji=False,
+            markup=markup,
+            highlight=highlight,
+            highlighter=highlighter,
+        )
 
     @override
     def _write_buffer(self) -> None:

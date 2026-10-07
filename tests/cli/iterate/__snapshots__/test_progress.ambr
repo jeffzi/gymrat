@@ -43,6 +43,16 @@
   ○ record
   '''
 # ---
+# name: test_frame_when_confirm_skipped_after_a_regression_does_keep_a_skipped_confirm_row
+  '''
+  iterate #1 · session test-session · 0s elapsed
+  ○ prepare
+  ○ passes
+  ✓ judged +2.0% on geomean · 1 regressed: latency
+  – confirm skipped (only if a gating metric regresses)
+  ✓ recorded regressed suggested
+  '''
+# ---
 # name: test_frame_when_confirm_unfiltered_does_show_full_suite_label
   '''
   iterate #1 · session test-session · 0s elapsed
@@ -242,7 +252,7 @@
   '[00:00:05] confirm 0/2 · regressions reproduced'
 # ---
 # name: test_plain_when_judge_finished_does_print_timestamped_line
-  '[00:00:00] judge -2.0% · 3 improve/noise'
+  '[00:00:00] judge -2.0% on geomean · no gating regression'
 # ---
 # name: test_plain_when_passes_done_does_print_timestamped_line
   '[00:00:21] passes done (20s)'

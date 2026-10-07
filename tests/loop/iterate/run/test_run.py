@@ -39,6 +39,7 @@ from gymrat.session import workspace as _workspace
 from gymrat.session.budget import Budget
 from gymrat.session.records import PairedSamples
 from gymrat.targets import InPlaceTarget
+from tests._config import resolved_config
 from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,
     BASELINE_MS,
@@ -50,7 +51,6 @@ from tests.loop.iterate._fixtures import (
     improved_rounds,
     last_iteration_of,
     plain_report,
-    resolved_config,
     rounds,
     sampling_call,
     scaled,
@@ -470,7 +470,7 @@ async def test_iterate_session_when_measuring_does_emit_judge_started_after_the_
             collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
         return collected
 
-    monkeypatch.setattr("gymrat.loop.iterate.bench.collect_samples", sample_reporting_passes)
+    monkeypatch.setattr("gymrat.loop.iterate.confirm.collect_samples", sample_reporting_passes)
     events: list[ProgressEvent] = []
 
     await iterate_session(
@@ -759,6 +759,9 @@ async def test_iterate_session_when_bench_writes_file_does_change_measured_tree(
 ):
     experiment_dir = session_record(repo).worktrees.experiment
     _ensure_dir(experiment_dir)
+    # The experiment dir sits inside the scratch repo: keep the growing session log
+    # out of the fingerprint so only the bench's write can change it.
+    _workspace.ensure_git_exclude(repo)
     write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
 
     # First run: no extra file in the experiment worktree.
@@ -795,6 +798,7 @@ async def test_iterate_session_when_after_hook_writes_file_does_not_change_measu
     # The after-hook fires after the fingerprint, so its writes must not affect measured_tree.
     experiment_dir = session_record(repo).worktrees.experiment
     _ensure_dir(experiment_dir)
+    _workspace.ensure_git_exclude(repo)
     hooks = HookScripts(repo, experiment_dir)
     write_session_log(repo, session_record(repo), (iteration_record(seq=1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())

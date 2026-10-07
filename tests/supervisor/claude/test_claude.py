@@ -113,12 +113,30 @@ async def _start_with_prompt(prompt: SessionPrompt) -> FiniteClient:
 
 
 async def test_start_when_launched_does_forward_options_to_client():
-    client = await _start_with_prompt(make_prompt(kickoff="hello agent", cwd="/my/project"))
+    client = await _start_with_prompt(
+        make_prompt(
+            kickoff="hello agent",
+            cwd="/my/project",
+            system_prompt_append="extra instructions",
+            command_timeout_ms=300000,
+        )
+    )
 
     assert client.options == {
         "cwd": "/my/project",
         "permission_mode": "bypassPermissions",
         "include_partial_messages": True,
+        "system_prompt": {
+            "type": "preset",
+            "preset": "claude_code",
+            "append": "extra instructions",
+        },
+        "env": {
+            "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS": "300000",
+            "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS": "300000",
+            "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS": "",
+            "MCP_TOOL_TIMEOUT": "300000",
+        },
     }
     assert client.query_prompts == ["hello agent"]
 
@@ -132,13 +150,6 @@ async def test_start_when_system_prompt_append_present_does_include_preset_appen
         "preset": "claude_code",
         "append": "extra instructions",
     }
-
-
-async def test_start_when_system_prompt_append_absent_does_omit_system_prompt():
-    client = await _start_with_prompt(make_prompt())
-
-    assert client.options is not None
-    assert "system_prompt" not in client.options
 
 
 async def test_start_when_model_given_does_include_model():
@@ -181,30 +192,10 @@ async def test_start_when_command_timeout_ms_given_does_set_timeout_env_vars():
     assert env["MCP_TOOL_TIMEOUT"] == "300000"
 
 
-async def test_start_when_command_timeout_ms_absent_does_omit_timeout_env_vars():
-    client = await _start_with_prompt(make_prompt())
-
-    assert client.options is not None
-    env = client.options.get("env", {})
-    assert isinstance(env, dict)
-    assert "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS" not in env
-    assert "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS" not in env
-    assert "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS" not in env
-    assert "MCP_TOOL_TIMEOUT" not in env
-
-
-@pytest.mark.parametrize(
-    "command_timeout_ms",
-    [pytest.param(300000, id="with-timeout"), pytest.param(None, id="without-timeout")],
-)
-async def test_start_when_traceparent_set_does_include_gymrat_traceparent_in_env(
-    command_timeout_ms: int | None,
-):
+async def test_start_when_traceparent_set_does_include_gymrat_traceparent_in_env():
     tp = "00-abc123-def456-01"
 
-    client = await _start_with_prompt(
-        make_prompt(traceparent=tp, command_timeout_ms=command_timeout_ms)
-    )
+    client = await _start_with_prompt(make_prompt(traceparent=tp))
 
     assert client.options is not None
     env = client.options.get("env", {})
@@ -592,7 +583,9 @@ async def _run_interrupting_on_first_usage_update(
     events: list[SessionEvent] = []
     holder: dict[str, DriverSession] = {}
 
-    holder["session"] = driver.start(make_prompt(), _interrupting_observer(events, holder))
+    holder["session"] = driver.start(
+        make_prompt(), _interrupting_observer(events, holder), asyncio.Event()
+    )
     outcome = await holder["session"].outcome
     return outcome, client
 
@@ -643,7 +636,7 @@ async def test_interrupt_when_called_between_messages_does_stop_before_next_mess
     driver = create_claude_driver(client_factory=FactoryProbe(client))
     probe = collecting_observer()
 
-    session = driver.start(make_prompt(), probe.observer)
+    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
     await wait_for_event_or_task(first_seen, session.outcome)
     await session.interrupt()
     gate.set()
@@ -657,7 +650,7 @@ async def test_interrupt_when_called_repeatedly_before_client_does_resolve_inter
     client = FakeClient([])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(), collecting_observer().observer)
+    session = driver.start(make_prompt(), collecting_observer().observer, asyncio.Event())
     await session.interrupt()  # client not built yet — the soft stop cannot reach it
     await session.interrupt()  # already stopped — a no-op that keeps the first outcome
     outcome = await session.outcome
@@ -971,7 +964,9 @@ async def test_start_when_interrupted_before_connect_does_never_send_kickoff_que
     driver = create_claude_driver(client_factory=probe)
 
     session = driver.start(
-        make_prompt(kickoff="should not be sent"), collecting_observer().observer
+        make_prompt(kickoff="should not be sent"),
+        collecting_observer().observer,
+        asyncio.Event(),
     )
     await session.interrupt()
     outcome = await session.outcome

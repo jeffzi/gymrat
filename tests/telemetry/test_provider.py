@@ -3,24 +3,24 @@
 from __future__ import annotations
 
 import importlib.metadata
-import sys
 from typing import override
 
 import pytest
 from opentelemetry.sdk.trace import SpanProcessor
 
-from gymrat.telemetry.ids import span_id_of, trace_id_of
 from gymrat.telemetry.provider import (
     configure_tracing,
     export_failed,
     flush_tracing,
+    span_id_of,
     start_span,
+    trace_id_of,
 )
 from tests.telemetry._collector import otlp_collector
+from tests.telemetry._fixtures import hide_otel_sdk, hide_otlp_exporter, memory_tracing
 from tests.telemetry._fixtures import (
     isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )
-from tests.telemetry._fixtures import memory_tracing
 from tests.telemetry._fixtures import reset_provider_quietly as _reset_provider_quietly
 
 _TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
@@ -136,26 +136,51 @@ def test_configure_tracing_when_sdk_missing_does_return_false(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    hide_otel_sdk(monkeypatch)
 
-    saved = {}
-    sdk_keys = [
-        k for k in sys.modules if k == "opentelemetry.sdk" or k.startswith("opentelemetry.sdk.")
-    ]
-    for key in sdk_keys:
-        saved[key] = sys.modules[key]
-
-    try:
-        for key in sdk_keys:
-            monkeypatch.setitem(sys.modules, key, None)
-        monkeypatch.setitem(sys.modules, "opentelemetry.sdk", None)
-        monkeypatch.setitem(sys.modules, "opentelemetry.sdk.trace", None)
-
-        result = configure_tracing(SESSION)
-    finally:
-        for key, mod in saved.items():
-            sys.modules[key] = mod
+    result = configure_tracing(SESSION)
 
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# configure_tracing — OTLP exporter import gate
+# ---------------------------------------------------------------------------
+
+
+def test_configure_tracing_when_exporter_missing_does_return_false(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    hide_otlp_exporter(monkeypatch)
+
+    result = configure_tracing(SESSION)
+
+    assert result is False
+
+
+def test_configure_tracing_when_exporter_was_missing_does_configure_later_call_afresh(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    with monkeypatch.context() as hidden:
+        hide_otlp_exporter(hidden)
+        configure_tracing(SESSION)
+    exporter = InMemorySpanExporter()
+
+    configured = configure_tracing(
+        "session-after-missing-exporter",
+        span_processor=SimpleSpanProcessor(exporter),
+    )
+    with start_span("probe"):
+        pass
+
+    trace_ids = [span.context.trace_id for span in exporter.get_finished_spans()]  # pyrefly: ignore[missing-attribute]
+    assert configured is True
+    assert trace_ids == [trace_id_of("session-after-missing-exporter")]
 
 
 # ---------------------------------------------------------------------------

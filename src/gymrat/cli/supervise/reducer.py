@@ -21,12 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, assert_never
 
-from gymrat.cli.supervise.text import (
-    NO_SESSION_TEXT,
-    format_caps,
-    format_cost,
-    loop_plain_text,
-)
+from gymrat.cli.supervise.text import NO_SESSION_TEXT, format_cost, loop_segments
 from gymrat.cli.supervise.types import (
     Capped,
     Composing,
@@ -109,6 +104,9 @@ class ReporterState:
         nested_tool_ids: Live nested tool-use ids, as
             ``(tool_use_id, parent_tool_use_id)`` pairs mapping a nested
             tool's own id to the top-level tool-use id it is nested under.
+        nested_tools: The same live nested tools, oldest start first, as
+            ``(tool_use_id, RunningTool)`` pairs, so a parent's line can fall
+            back to a sibling still running when the tool it shows ends.
         last_agent_text: The text of the last turn-end event whose origin was
             the agent, or ``None`` before any such turn has ended.
         turn_count: The number of turns that have ended so far.
@@ -135,6 +133,7 @@ class ReporterState:
     last_loop_text: str = ""
     nested: tuple[tuple[str, NestedActivity], ...] = ()
     nested_tool_ids: tuple[tuple[str, str], ...] = ()
+    nested_tools: tuple[tuple[str, RunningTool], ...] = ()
     last_agent_text: str | None = None
     turn_count: int = 0
     last_decision: str | None = None
@@ -239,26 +238,19 @@ def _phase_liveness(state: ReporterState, event: ModelPhaseEvent, at_ms: int) ->
 
 def _tool_start(state: ReporterState, event: ToolStartEvent) -> ReporterState:
     at_ms = _ms(event.at)
+    running = RunningTool(tool_name=event.tool_name, input_summary=event.input_summary, since=at_ms)
     parent_id = event.parent_tool_use_id
     if parent_id is not None:
         if pair_value(state.in_flight_tools, parent_id) is None:
             return state
-        nested = _set(
-            state.nested,
-            parent_id,
-            RunningTool(tool_name=event.tool_name, input_summary=event.input_summary, since=at_ms),
-        )
         return replace(
             state,
-            nested=nested,
+            nested=_set(state.nested, parent_id, running),
             nested_tool_ids=_set(state.nested_tool_ids, event.tool_use_id, parent_id),
+            nested_tools=_set(state.nested_tools, event.tool_use_id, running),
         )
 
-    in_flight = _set(
-        state.in_flight_tools,
-        event.tool_use_id,
-        RunningTool(tool_name=event.tool_name, input_summary=event.input_summary, since=at_ms),
-    )
+    in_flight = _set(state.in_flight_tools, event.tool_use_id, running)
     liveness = state.liveness
     if not isinstance(liveness, Capped):
         liveness = InFlight(
@@ -274,12 +266,23 @@ def _nested_tool_end(state: ReporterState, event: ToolEndEvent) -> ReporterState
     parent_id = pair_value(state.nested_tool_ids, event.tool_use_id)
     if parent_id is None:
         return state
+    tool_ids = _drop(state.nested_tool_ids, event.tool_use_id)
+    tools = _drop(state.nested_tools, event.tool_use_id)
     nested = state.nested
     if isinstance(pair_value(nested, parent_id), RunningTool):
-        nested = _drop(nested, parent_id)
-    return replace(
-        state, nested=nested, nested_tool_ids=_drop(state.nested_tool_ids, event.tool_use_id)
-    )
+        siblings = [tool for tool_id, tool in tools if pair_value(tool_ids, tool_id) == parent_id]
+        nested = _set(nested, parent_id, siblings[-1]) if siblings else _drop(nested, parent_id)
+    return replace(state, nested=nested, nested_tool_ids=tool_ids, nested_tools=tools)
+
+
+def format_caps(max_minutes: float, max_usd: float | None) -> str:
+    """Format "caps {minutes}m" alone, or with ", {cost}" appended when a spend cap is set."""
+    return f"caps {max_minutes:g}m" + ("" if max_usd is None else f", {format_cost(max_usd)}")
+
+
+def loop_plain_text(session_result: ReadSessionResult | None, max_iterations: int | None) -> str:
+    """The unstyled text of the loop summary :func:`loop_segments` describes."""
+    return "".join(segment.text for segment in loop_segments(session_result, max_iterations))
 
 
 def _next_loop_text(state: ReporterState, session_result: ReadSessionResult | None) -> str:
@@ -289,20 +292,13 @@ def _next_loop_text(state: ReporterState, session_result: ReadSessionResult | No
     return plain
 
 
-def _resolve_session_result(
-    state: ReporterState, session_result: ReadSessionResult | None
-) -> ReadSessionResult | None:
-    """The session result to fold in: the fresh read, or *state*'s prior one when unread."""
-    return session_result if session_result is not None else state.session_result
-
-
 def _apply_session_refresh(
     state: ReporterState,
     ended: ReporterState,
     session_result: ReadSessionResult | None,
 ) -> ReporterState:
     """Fold the session read every tool end asks for into *ended*."""
-    resolved = _resolve_session_result(state, session_result)
+    resolved = session_result if session_result is not None else state.session_result
     return replace(
         ended,
         session_result=resolved,
@@ -330,12 +326,18 @@ def _tool_end(
     if tracked is not None:
         liveness = _next_liveness_after_tool_end(state.liveness, in_flight, finished)
 
+    nested_tool_ids = tuple(
+        (name, parent) for name, parent in state.nested_tool_ids if parent != event.tool_use_id
+    )
     ended = replace(
         state,
         in_flight_tools=in_flight,
         nested=_drop(state.nested, event.tool_use_id),
-        nested_tool_ids=tuple(
-            (name, parent) for name, parent in state.nested_tool_ids if parent != event.tool_use_id
+        nested_tool_ids=nested_tool_ids,
+        nested_tools=tuple(
+            (name, tool)
+            for name, tool in state.nested_tools
+            if pair_value(nested_tool_ids, name) is not None
         ),
         finished_tools=(*state.finished_tools, finished)[-_MAX_FINISHED_TOOLS:],
         liveness=liveness,
@@ -357,10 +359,13 @@ def _nested_model_phase(
 ) -> ReporterState:
     if pair_value(state.in_flight_tools, parent_id) is None:
         return state
-    if event.phase == "turn_end":
-        return replace(state, nested=_drop(state.nested, parent_id))
+    # A running tool outranks every phase, turn end included: a nested turn
+    # end closes the assistant message that issued the tool call, so it
+    # arrives while that tool is still running.
     if isinstance(pair_value(state.nested, parent_id), RunningTool):
         return state
+    if event.phase == "turn_end":
+        return replace(state, nested=_drop(state.nested, parent_id))
     tool_name = event.tool_name if event.phase == "tool_input" else None
     phase = NestedPhase(phase=event.phase, since=at_ms, tool_name=tool_name)
     return replace(state, nested=_set(state.nested, parent_id, phase))
@@ -405,7 +410,10 @@ def _follow_up(
     decided = replace(state, last_decision=_follow_up_decision(state, event))
     if not wants_session_refresh(state, event):
         return decided
-    return replace(decided, session_result=_resolve_session_result(state, session_result))
+    return replace(
+        decided,
+        session_result=session_result if session_result is not None else state.session_result,
+    )
 
 
 # ---------------------------------------------------------------------------

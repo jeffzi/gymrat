@@ -281,6 +281,49 @@ def test_clear_progress_when_file_absent_does_not_raise(root: str):
     clear_progress(root)
 
 
+def test_clear_progress_when_file_absent_does_not_warn(root: str):
+    warnings: list[str] = []
+
+    clear_progress(root, warn=warnings.append)
+
+    assert warnings == []
+
+
+@pytest.fixture
+def held_open_sidecar(root: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A written sidecar whose removal fails the way a win32 sharing violation does."""
+    write_progress(root, _make_snapshot())
+    sidecar = progress_path(root)
+    original_unlink = os.unlink
+
+    def failing_unlink(path: str | os.PathLike[str], *args: object, **kwargs: object) -> None:
+        if str(path) == sidecar:
+            raise PermissionError(13, "The process cannot access the file", sidecar)
+        original_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "unlink", failing_unlink)
+    return root
+
+
+def test_clear_progress_when_unlink_raises_os_error_does_warn_instead_of_raising(
+    held_open_sidecar: str,
+):
+    warnings: list[str] = []
+
+    clear_progress(held_open_sidecar, warn=warnings.append)
+
+    assert len(warnings) == 1
+    assert progress_path(held_open_sidecar) in warnings[0]
+
+
+def test_clear_progress_when_unlink_raises_and_no_sink_given_does_not_raise(
+    held_open_sidecar: str,
+):
+    clear_progress(held_open_sidecar)
+
+    assert _progress_file(held_open_sidecar).exists()
+
+
 # ---------------------------------------------------------------------------
 # ProgressSnapshot
 # ---------------------------------------------------------------------------

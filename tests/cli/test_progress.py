@@ -93,7 +93,7 @@ def build_progress_reporter(mode: Literal["live", "plain"], console: Console) ->
         console=console,
         target_count=1,
         sample_count=3,
-        clock=Clock(),
+        clock=Clock(0.0),
         command="measure",
     )
 
@@ -116,7 +116,7 @@ def build_iterate_renderer(mode: Literal["live", "plain"], console: Console) -> 
         sample_count=5,
         metric_count=3,
         primary_metric="geomean",
-        clock=Clock(),
+        clock=Clock(0.0),
     )
 
 
@@ -143,9 +143,9 @@ def _reporter(
     sample_count: int = 3,
     command: str | None = None,
     target_labels: list[str] | None = None,
-) -> tuple[Console, Clock, ProgressReporter]:
+) -> tuple[Console, Clock[float], ProgressReporter]:
     """Wire a progress reporter to a sealed console and a hand-advanced clock."""
-    clock = Clock()
+    clock = Clock(0.0)
     console = sealed_console(width=width, height=height, get_time=clock)
     kwargs: dict[str, object] = {}
     if command is not None:
@@ -170,7 +170,7 @@ def _summary_line(console: Console) -> str:
     return visible[-1] if visible else ""
 
 
-def _run_two_passes(reporter: ProgressReporter, clock: Clock) -> None:
+def _run_two_passes(reporter: ProgressReporter, clock: Clock[float]) -> None:
     """Drive prepare plus two full 2-sample passes to completion.
 
     The shared "measure done" setup behind the summary-line tests: prepare,

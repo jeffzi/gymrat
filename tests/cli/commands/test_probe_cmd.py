@@ -50,7 +50,7 @@ from tests.cli._session import (
     last_command_record,
     plain_lines,
     records_of,
-    write_config,
+    write_bench_config,
 )
 from tests.conftest import hold_lock
 from tests.loop._probe import (
@@ -87,7 +87,7 @@ def measure(monkeypatch: pytest.MonkeyPatch) -> MeasureRecorder:
 def probe_repo(repo: str) -> str:
     """A scratch repo with an open session, a recorded baseline, and a filter template."""
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    write_config(repo, filter=FILTER)
+    write_bench_config(repo, filter=FILTER)
     return repo
 
 
@@ -391,25 +391,25 @@ def test_probe_command_when_rival_lock_held_does_exit_two_without_benching(
 
 def _no_session(repo: str) -> None:
     """A configured repository where no session was ever opened."""
-    write_config(repo, filter=FILTER)
+    write_bench_config(repo, filter=FILTER)
 
 
 def _finalized_session(repo: str) -> None:
     """A configured repository whose session was closed by a finalize record."""
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES), finalize_record()))
-    write_config(repo, filter=FILTER)
+    write_bench_config(repo, filter=FILTER)
 
 
 def _no_filter(repo: str) -> None:
     """An open session with a baseline but no filter template to scope a probe."""
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    write_config(repo)
+    write_bench_config(repo)
 
 
 def _no_baseline(repo: str) -> None:
     """An open session with a filter template but nothing recorded to compare against."""
     start_with(repo)
-    write_config(repo, filter=FILTER)
+    write_bench_config(repo, filter=FILTER)
 
 
 REFUSALS = [
@@ -518,10 +518,10 @@ def _wait_or_dump_stacks(proc: subprocess.Popen[str], timeout_s: float) -> None:
     ],
 )
 def test_probe_command_when_signalled_mid_bench_does_kill_the_bench_and_exit_128_plus_signal(
-    repo: str, signal_number: int, expected_code: int
+    repo: str, signal_number: int, expected_code: int, reap_groups: list[int]
 ):
     Path(repo, "bench.sh").write_text(_TRACKED_BENCH, encoding="utf-8")
-    write_config(repo, bench="sh bench.sh", adapter="metric-lines", timeout_seconds=300)
+    write_bench_config(repo, bench="sh bench.sh", adapter="metric-lines", timeout_seconds=300)
     run_git(["add", "bench.sh", "gymrat.toml"], repo)
     run_git(["commit", "-m", "bench harness"], repo)
     subprocess.run(  # noqa: S603
@@ -545,6 +545,7 @@ def test_probe_command_when_signalled_mid_bench_does_kill_the_bench_and_exit_128
         bench_pid = wait_for_pid_file_blocking(
             Path(experiment_worktree_dir(repo), "bench.pid"), timeout_s=60.0
         )
+        reap_groups.append(os.getpgid(bench_pid))
         proc.send_signal(signal_number)
         _wait_or_dump_stacks(proc, timeout_s=60)
     finally:

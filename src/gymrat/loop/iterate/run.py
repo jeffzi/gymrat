@@ -51,20 +51,18 @@ from gymrat.exec import (
     ExecTimeoutError,
     exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
-from gymrat.loop.iterate.bench import (
+from gymrat.loop.iterate.confirm import (
     EXPERIMENT_INDEX,
+    Confirmation,
     IterationContext,
     Judged,
+    apply_confirmation,
     bench_and_judge,
     build_iteration_comparison,
-    resolve_primary,
-    target_reached,
-)
-from gymrat.loop.iterate.confirm import (
-    Confirmation,
-    apply_confirmation,
     confirm_regressions,
     is_gating_regression,
+    resolve_primary,
+    target_reached,
 )
 from gymrat.loop.iterate.record import IterationJudgment, build_iteration_record
 from gymrat.model import is_improvement
@@ -535,7 +533,6 @@ async def _measure_and_judge(ctx: IterationContext) -> Judged:
         JudgeFinished(
             primary_delta_pct=primary.delta_pct,
             regressed=regressed_names,
-            metric_count=len(first.metric_meta),
             at_ms=monotonic_ms(),
         ),
     )

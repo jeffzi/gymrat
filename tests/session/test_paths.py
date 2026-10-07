@@ -26,6 +26,7 @@ from gymrat.session.paths import (
     git_common_dir,
     lockfile_path,
     repo_root,
+    repository_lookup_error,
     session_dir,
     session_jsonl_path,
     supervise_lockfile_path,
@@ -48,6 +49,40 @@ LOCKFILE_NAMES = [
 
 
 # ---------------------------------------------------------------------------
+# repository_lookup_error
+# ---------------------------------------------------------------------------
+
+
+def test_repository_lookup_error_when_stderr_is_fatal_not_a_repo_does_classify_as_missing():
+    cause = subprocess.CalledProcessError(
+        128,
+        ["git"],
+        stderr="fatal: not a git repository (or any of the parent directories): .git\n",
+    )
+
+    error = repository_lookup_error("/some/dir", cause)
+
+    assert isinstance(error, NotAGitRepositoryError)
+
+
+def test_repository_lookup_error_when_phrase_only_inside_path_does_not_classify_as_missing():
+    cause = subprocess.CalledProcessError(
+        128,
+        ["git"],
+        stderr="error: cannot open /tmp/not a git repository/config: No such file\n",
+    )
+
+    error = repository_lookup_error("/some/dir", cause)
+
+    assert not isinstance(error, NotAGitRepositoryError)
+    assert isinstance(error, GymratError)
+    assert str(error) == (
+        "Cannot determine the git repository at /some/dir: "
+        "error: cannot open /tmp/not a git repository/config: No such file"
+    )
+
+
+# ---------------------------------------------------------------------------
 # repo_root
 # ---------------------------------------------------------------------------
 
@@ -64,17 +99,17 @@ def test_repo_root_when_probed_from_nested_subdir_does_return_top_level(
     assert os.path.normpath(root) == os.path.normpath(repo)
 
 
-def test_repo_root_when_no_directory_given_does_use_cwd():
-    expected = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+def test_repo_root_when_no_directory_given_does_use_cwd(
+    create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+):
+    repo = create_scratch_repo()
+    nested = Path(repo) / "packages" / "core"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
 
     root = repo_root()
 
-    assert os.path.normpath(root) == os.path.normpath(expected)
+    assert os.path.normpath(root) == os.path.normpath(repo)
 
 
 def test_repo_root_when_directory_not_in_repo_does_raise_gymrat_error():
@@ -150,6 +185,44 @@ def test_repo_root_when_probed_inside_a_gymrat_worktree_does_return_the_owning_r
     root = repo_root(str(probe))
 
     assert os.path.normpath(root) == os.path.normpath(repo)
+
+
+@pytest.mark.parametrize(("worktree_name", "below"), GYMRAT_WORKTREE_PROBES)
+def test_repo_root_when_owning_checkout_is_a_linked_worktree_does_return_that_checkout(
+    create_scratch_repo: Callable[[], str], worktree_name: str, below: str
+):
+    repo = create_scratch_repo()
+    owner = _add_worktree(repo, "linked")
+    worktree = _add_worktree(owner, f".gymrat/worktrees/{worktree_name}")
+    probe = Path(worktree, below)
+    probe.mkdir(parents=True, exist_ok=True)
+
+    root = repo_root(str(probe))
+
+    assert os.path.normpath(root) == os.path.normpath(owner)
+
+
+def test_repo_root_when_directory_above_gymrat_dir_is_not_a_repository_does_return_the_toplevel(
+    tmp_path: Path,
+):
+    standalone = tmp_path / "plain" / ".gymrat" / "worktrees" / "standalone"
+    standalone.mkdir(parents=True)
+    run_git(["init"], str(standalone))
+
+    root = repo_root(str(standalone))
+
+    assert os.path.normpath(root) == os.path.normpath(standalone)
+
+
+def test_repo_root_when_directory_above_gymrat_dir_is_below_a_checkout_top_does_return_the_toplevel(
+    create_scratch_repo: Callable[[], str],
+):
+    repo = create_scratch_repo()
+    worktree = _add_worktree(repo, "packages/.gymrat/worktrees/experiment")
+
+    root = repo_root(worktree)
+
+    assert os.path.normpath(root) == os.path.normpath(worktree)
 
 
 def test_repo_root_when_gymrat_worktree_reached_through_a_symlink_does_return_the_owning_repository(

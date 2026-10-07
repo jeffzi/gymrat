@@ -7,11 +7,14 @@ filesystem: they only join a repository root with the fixed session layout.
 
 import hashlib
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
 
-from gymrat.git import repository_lookup_error, run_git
+from gymrat.errors import GymratError
+from gymrat.git import NotAGitRepositoryError, run_git
+from gymrat.utils import stderr_text_of
 
 SESSION_DIR_NAME = ".gymrat"
 SESSION_LOG_NAME = "session.jsonl"
@@ -19,6 +22,44 @@ WORKTREES_DIR_NAME = "worktrees"
 
 # First 12 hex chars of a sha256 gives a short, collision-resistant lock name.
 _DIGEST_HEX_LENGTH = 12
+
+# Git's wording when it places a directory outside every repository.
+#
+# Anchored to ``^fatal:`` so a path that embeds the phrase (e.g.
+# ``/tmp/not a git repository/config``) cannot skip the classification. The
+# ``re.MULTILINE`` flag lets ``^`` match at line boundaries within multi-line
+# stderr. ``LC_ALL=C`` in :func:`~gymrat.git.run_git` stabilizes the wording
+# across locales, so a case-insensitive flag is not needed.
+_NOT_A_REPOSITORY_RE = re.compile(r"^fatal: not a git repository", re.MULTILINE)
+
+
+def repository_lookup_error(directory: str, cause: object) -> GymratError:
+    """Classify a failed repository lookup by what git said.
+
+    Git reporting that ``directory`` is outside every repository is an answer
+    callers can act on. Every other failure — dubious ownership, an unreadable
+    ``.git``, a git that cannot run at all — is git declining to answer, and
+    carries git's own diagnostics so the reader sees the real reason rather than
+    a wrong one.
+
+    Args:
+        directory: The directory whose repository lookup failed.
+        cause: The failure to classify — typically the git exception.
+
+    Returns:
+        A :class:`~gymrat.git.NotAGitRepositoryError` when git's stderr opens
+        with its not-a-repository diagnostic, otherwise a plain
+        :class:`~gymrat.errors.GymratError` carrying git's diagnostics.
+    """
+    diagnostics = stderr_text_of(cause)
+
+    if _NOT_A_REPOSITORY_RE.search(diagnostics):
+        return NotAGitRepositoryError(
+            f"Not a git repository: {directory}",
+            hint="Run gymrat from inside a git repository.",
+        )
+
+    return GymratError(f"Cannot determine the git repository at {directory}: {diagnostics}")
 
 
 def _rev_parse(flag: str, directory: str) -> str:
@@ -89,8 +130,8 @@ def git_common_dir(root: str) -> str:
     return str(Path(root, _rev_parse("--git-common-dir", root)))
 
 
-def _names_a_gymrat_worktree(toplevel: Path) -> bool:
-    """Whether ``toplevel``'s path places it below some ``.gymrat/worktrees``.
+def _owner_candidate(toplevel: Path) -> Path | None:
+    """The directory ``toplevel``'s path names as its owning checkout.
 
     A pure path test, deliberately cheap: ``repo_root`` is on every command's hot
     path, so the git calls that confirm the ownership only run for a path shaped
@@ -100,46 +141,60 @@ def _names_a_gymrat_worktree(toplevel: Path) -> bool:
         toplevel: Top level git reported, as a path.
 
     Returns:
-        ``True`` when the session directory and worktrees names appear as
-        consecutive components with at least one component below them.
+        The directory above the innermost ``.gymrat/worktrees`` pair that has at
+        least one component below it, or ``None`` when the path holds no such
+        pair.
     """
     parts = toplevel.parts
-    return any(
-        parts[index] == SESSION_DIR_NAME and parts[index + 1] == WORKTREES_DIR_NAME
-        for index in range(len(parts) - 2)
-    )
+    for index in range(len(parts) - 3, 0, -1):
+        if parts[index] == SESSION_DIR_NAME and parts[index + 1] == WORKTREES_DIR_NAME:
+            return Path(*parts[:index])
+    return None
 
 
 def _gymrat_worktree_owner(toplevel: str) -> str | None:
-    """The repository a gymrat-created worktree at ``toplevel`` belongs to.
+    """The checkout a gymrat-created worktree at ``toplevel`` belongs to.
 
     ``gymrat start`` checks its worktrees out under ``<root>/.gymrat/worktrees``,
     so a command run from inside one has to act on ``<root>``: that is where the
     session log, the budget, and the repository lock live. A linked worktree
     anywhere else is the user's own and stays its own root.
 
-    The owner is re-resolved through git rather than taken from the common
-    directory's path, so it is byte-identical to what ``repo_root`` answers when
-    called at the root itself — the lock name digests those exact bytes.
+    The owner is read off the path and confirmed by a shared common directory,
+    never derived from the common directory's location: that location is the
+    main checkout for every linked worktree, so it cannot name an owner that is
+    itself a linked worktree.
+
+    The owner is re-resolved through git, so it is byte-identical to what
+    ``repo_root`` answers when called at the root itself — the lock name digests
+    those exact bytes.
 
     Args:
         toplevel: Top level git reported for the directory being resolved.
 
     Returns:
-        The owning repository's top-level path, or ``None`` when ``toplevel`` is
-        not a worktree gymrat created.
+        The owning checkout's top-level path, or ``None`` when ``toplevel`` is
+        not a worktree gymrat created: its path is not shaped like one, the
+        directory above ``.gymrat/worktrees`` is not a checkout's top level, or
+        that checkout belongs to another repository.
 
     Raises:
-        GymratError: When git declines to resolve the common directory or the
-            owning repository.
+        GymratError: When git declines to resolve the common directory of
+            ``toplevel``.
     """
-    top = Path(toplevel)
-    if not _names_a_gymrat_worktree(top):
+    candidate = _owner_candidate(Path(toplevel))
+    if candidate is None:
         return None
-    owner = Path(git_common_dir(toplevel)).parent
-    if not top.is_relative_to(owner / SESSION_DIR_NAME / WORKTREES_DIR_NAME):
+    try:
+        candidate_common = git_common_dir(str(candidate))
+        owner = _toplevel(str(candidate))
+    except GymratError:
         return None
-    return _toplevel(str(owner))
+    if Path(owner) != candidate:
+        return None
+    if Path(candidate_common).resolve() != Path(git_common_dir(toplevel)).resolve():
+        return None
+    return owner
 
 
 def repo_root(cwd: str | None = None) -> str:

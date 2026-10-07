@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.cli.supervise.progress import read_live_session
+from gymrat.cli.supervise.progress import create_supervise_reporter, read_live_session
 from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
 from gymrat.session.records import IterationPrimary
 from gymrat.supervisor.events import CompactionEvent, TextDeltaEvent
@@ -40,9 +40,11 @@ from tests.cli.supervise._fixtures import (
     usage_event,
 )
 from tests.session.records._fixtures import (
+    COMMIT,
     baseline_record,
     blocked_keep,
     committed_keep,
+    discard_record,
     empty_session_state,
     finalize_record,
     iteration_record,
@@ -58,6 +60,7 @@ if TYPE_CHECKING:
 
     from syrupy.assertion import SnapshotAssertion
 
+    from gymrat.model import Direction
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import PrimaryKind
     from gymrat.supervisor.events import CapAction, CapType
@@ -87,10 +90,27 @@ def test_create_reporter_when_session_read_does_expose_the_latest_session_result
     assert session_result.state == state
 
 
-def _read_back(tmp_path: Path, history: tuple[SessionLogRecord, ...]) -> ReadSessionResult:
+def _read_back(
+    tmp_path: Path, history: tuple[SessionLogRecord, ...], primary_direction: Direction = "lower"
+) -> ReadSessionResult:
     """Write a session log under ``tmp_path`` and read it back the dashboard's way."""
     write_session_log(str(tmp_path), session_record(), history)
-    return read_live_session(str(tmp_path))
+    return read_live_session(str(tmp_path), primary_direction)
+
+
+def _committed_throughput_history(*deltas: float) -> tuple[SessionLogRecord, ...]:
+    """One committed ``throughput`` iteration per delta, numbered from 1."""
+    return tuple(
+        record
+        for seq, delta_pct in enumerate(deltas, start=1)
+        for record in (
+            iteration_record(
+                seq=seq,
+                primary=IterationPrimary(kind="metric", name="throughput", delta_pct=delta_pct),
+            ),
+            committed_keep(seq),
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -114,12 +134,81 @@ def test_read_live_session_when_keeps_committed_does_report_the_best_committed_i
 
     result = _read_back(tmp_path, history)
 
-    assert (result.best, result.baseline_sha, result.has_baseline, result.stop_message) == (
-        BestIteration(delta_pct=-9.0, seq=2, label=primary_label),
-        "a" * 40,
+    assert (result.best, result.has_baseline, result.stop_message) == (
+        BestIteration(delta_pct=-9.0, seq=2, label=primary_label, baseline_sha=COMMIT),
         False,
         None,
     )
+
+
+def test_read_live_session_when_primary_is_higher_is_better_does_report_the_largest_gain(
+    tmp_path: Path,
+):
+    history = _committed_throughput_history(2.0, 9.0, -3.0)
+
+    result = _read_back(tmp_path, history, "higher")
+
+    assert result.best == BestIteration(
+        delta_pct=9.0, seq=2, label="throughput", baseline_sha=COMMIT, direction="higher"
+    )
+
+
+_PINNED_SHA = "a" * 40
+_FIRST_KEEP_SHA = "1" * 40
+
+
+@pytest.mark.parametrize(
+    ("deltas", "discarded", "expected"),
+    [
+        pytest.param((-9.0, -7.2), (), (1, _PINNED_SHA), id="no-keep-before-it"),
+        pytest.param((-7.2, -9.0), (), (2, _FIRST_KEEP_SHA), id="previous-keep"),
+        pytest.param(
+            (-7.2, -20.0, -9.0), (2,), (3, _FIRST_KEEP_SHA), id="previous-keep-across-a-discard"
+        ),
+    ],
+)
+def test_read_live_session_when_keeps_precede_the_best_does_name_its_baseline(
+    tmp_path: Path,
+    deltas: tuple[float, ...],
+    discarded: tuple[int, ...],
+    expected: tuple[int, str],
+):
+    history = tuple(
+        record
+        for seq, delta_pct in enumerate(deltas, start=1)
+        for record in (
+            iteration_record(
+                seq=seq, primary=IterationPrimary(kind="geomean", delta_pct=delta_pct)
+            ),
+            discard_record(seq) if seq in discarded else committed_keep(seq, commit=str(seq) * 40),
+        )
+    )
+
+    result = _read_back(tmp_path, history)
+
+    assert result.best is not None
+    assert (result.best.seq, result.best.baseline_sha) == expected
+
+
+def test_create_reporter_when_no_session_reader_given_does_read_with_the_primary_direction(
+    tmp_path: Path,
+):
+    write_session_log(str(tmp_path), session_record(), _committed_throughput_history(2.0, 9.0))
+    reporter = create_supervise_reporter(
+        root=str(tmp_path),
+        max_minutes=60,
+        mode="plain",
+        plain_write=lambda _line: None,
+        primary_direction="higher",
+    )
+
+    reporter.observer(launch_event(1000))
+    session_result = reporter.session_result()
+    reporter.stop()
+
+    assert session_result is not None
+    assert session_result.best is not None
+    assert session_result.best.seq == 2
 
 
 @pytest.mark.parametrize(
@@ -493,8 +582,12 @@ def test_best_when_session_has_best_fields_does_show_delta_label_sha_and_iterati
         read_session=make_read_session(
             state,
             has_baseline=True,
-            best=BestIteration(delta_pct=-6.8, seq=3, label="geomean"),
-            baseline_sha="2ec6e05abcdef1234567890abcdef1234567890a",
+            best=BestIteration(
+                delta_pct=-6.8,
+                seq=3,
+                label="geomean",
+                baseline_sha="2ec6e05abcdef1234567890abcdef1234567890a",
+            ),
         ),
     )
     fire_launch_and_bash_cycle(kit.reporter.observer)
@@ -519,8 +612,12 @@ def test_best_when_last_kept_differs_from_best_does_show_best_not_last():
         read_session=make_read_session(
             state,
             has_baseline=True,
-            best=BestIteration(delta_pct=-6.8, seq=3, label="geomean"),
-            baseline_sha="abcdef1234567890abcdef1234567890abcdef12",
+            best=BestIteration(
+                delta_pct=-6.8,
+                seq=3,
+                label="geomean",
+                baseline_sha="abcdef1234567890abcdef1234567890abcdef12",
+            ),
         ),
     )
     fire_launch_and_bash_cycle(kit.reporter.observer)
@@ -596,8 +693,12 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
         read_session=make_read_session(
             state,
             has_baseline=True,
-            best=BestIteration(delta_pct=-6.8, seq=3, label="geomean"),
-            baseline_sha="abc1234567890abcdef1234567890abcdef123456",
+            best=BestIteration(
+                delta_pct=-6.8,
+                seq=3,
+                label="geomean",
+                baseline_sha="abc1234567890abcdef1234567890abcdef123456",
+            ),
         ),
     )
     kit.reporter.observer(launch_event(1000, max_minutes=480, max_usd=10.0))

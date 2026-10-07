@@ -102,16 +102,6 @@ class _ColumnFields:
     baseline: ValueWidths
 
 
-@dataclass(frozen=True, slots=True)
-class _TableContext:
-    """Shared parameters for column width measurement and cell rendering."""
-
-    baseline_header: str
-    candidates: Sequence[CandidateComparison]
-    fields: _ColumnFields
-    grouped: bool
-
-
 def _measure_columns(
     ordered: Sequence[_ComparisonRow],
     candidate_count: int,
@@ -134,14 +124,15 @@ def _measure_columns(
 def _column_widths(
     body: Sequence[BodyLine[_ComparisonRow, _AggregateCells]],
     cells_by_name: dict[str, _MetricCells],
-    table: _TableContext,
+    baseline_header: str,
+    candidates: Sequence[CandidateComparison],
 ) -> list[int]:
     """The column widths, measured over the rows, headers and aggregates' plain text."""
     rows = list(cells_by_name.values())
     aggregate_lines = [line for line in body if isinstance(line, AggregateLine)]
     metric_width = metric_column_width(body, [row[0].cell_len for row in rows])
     baseline_width = compute_column_width(
-        cell_len(table.baseline_header), [row[1].cell_len for row in rows], VALUE_COLUMN_MIN
+        cell_len(baseline_header), [row[1].cell_len for row in rows], VALUE_COLUMN_MIN
     )
     candidate_widths = [
         compute_column_width(
@@ -150,18 +141,18 @@ def _column_widths(
             + [line.cell[index].cell_len for line in aggregate_lines],
             VALUE_COLUMN_MIN,
         )
-        for index, candidate in enumerate(table.candidates)
+        for index, candidate in enumerate(candidates)
     ]
     return [metric_width, baseline_width, *candidate_widths]
 
 
-def _metric_cells(row: _ComparisonRow, table: _TableContext) -> _MetricCells:
+def _metric_cells(row: _ComparisonRow, fields: _ColumnFields, *, grouped: bool) -> _MetricCells:
     """One metric row's cells: its name, the baseline figure, and each candidate's side."""
     return (
-        Text(row.label if table.grouped else row.name),
-        Text(join_value_cell(row.baseline, table.fields.baseline)),
+        Text(row.label if grouped else row.name),
+        Text(join_value_cell(row.baseline, fields.baseline)),
         *(
-            _candidate_cell(cell, table.fields.values[index], table.fields.verdicts[index])
+            _candidate_cell(cell, fields.values[index], fields.verdicts[index])
             for index, cell in enumerate(row.candidates)
         ),
     )
@@ -194,14 +185,11 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
         aggregates,
         lambda section: section_annotation(section, result.config_kinds),
     )
-    table = _TableContext(
-        baseline_header=baseline_header,
-        candidates=candidates,
-        fields=fields,
-        grouped=is_grouped(layout, body),
-    )
-    cells_by_name = {row.name: _metric_cells(row, table) for row in layout.ordered}
-    widths = _column_widths(body, cells_by_name, table)
+    grouped = is_grouped(layout, body)
+    cells_by_name = {
+        row.name: _metric_cells(row, fields, grouped=grouped) for row in layout.ordered
+    }
+    widths = _column_widths(body, cells_by_name, baseline_header, candidates)
 
     def cells_of(row: _ComparisonRow) -> _MetricCells:
         return cells_by_name[row.name]

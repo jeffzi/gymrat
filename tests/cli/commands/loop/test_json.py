@@ -23,6 +23,7 @@ from gymrat.session.records import (
     StopRecord,
 )
 from gymrat.session.store import append_record
+from tests._config import resolved_config
 from tests.cli._budget import install_budget
 from tests.cli._session import (
     make_discard_repo,
@@ -30,7 +31,7 @@ from tests.cli._session import (
     open_session_with_one_keep,
     runner,
     stub_resolve_config,
-    write_config,
+    write_bench_config,
 )
 from tests.loop._settle import (
     CHECKS,
@@ -39,7 +40,6 @@ from tests.loop._settle import (
     start_with,
     unimproved,
 )
-from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     AT,
     COMMIT,
@@ -168,7 +168,7 @@ def test_keep_command_when_format_json_and_iteration_unimproved_does_keep_its_ke
     start_with(repo, (unimproved(1, "no-signal"),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep", *flags, "--format", "json"])
 
@@ -283,7 +283,7 @@ def _write_status_session(repo: str, *trailing_records: SessionLogRecord) -> Non
     write_session_log(
         repo, session_record(), (iteration_record(seq=1), committed_keep(1), *trailing_records)
     )
-    write_config(repo)
+    write_bench_config(repo)
 
 
 @pytest.fixture

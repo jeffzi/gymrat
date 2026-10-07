@@ -39,6 +39,7 @@ from tests.loop._settle import (
 from tests.session.records._fixtures import (
     append_records,
     blocked_keep,
+    command_record,
     hook_record,
     iteration_record,
     log_records,
@@ -57,6 +58,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.exec import ExecOptions, ExecResult
+    from gymrat.session.records import IterationRecord, SessionLogRecord
     from gymrat.session.schema import Outcome
 
 #: The gate reason an edit made behind the measured fingerprint reads as.
@@ -100,12 +102,34 @@ def _no_fingerprint(root: str) -> None:
 
 def _failed_before_hook(root: str) -> None:
     """An improved iteration whose before hook exited non-zero."""
-    measured(root, iteration_record(seq=1), hook_record(seq=1, stage="before", exit_code=1))
+    append_records(root, hook_record(seq=1, stage="before", exit_code=1))
+    measured(root, iteration_record(seq=1))
+
+
+def _failed_before_hook_on_a_retry(root: str) -> None:
+    """An improved iteration whose before hook failed, recorded after an attempt that raised."""
+    append_records(
+        root,
+        hook_record(seq=1, stage="before"),
+        command_record(seq=1),
+        hook_record(seq=1, stage="before", exit_code=1),
+    )
+    measured(root, iteration_record(seq=1))
 
 
 def _timed_out_after_hook(root: str) -> None:
     """An improved iteration whose after hook ran past its timeout."""
     measured(root, iteration_record(seq=1), hook_record(seq=1, stage="after", timed_out=True))
+
+
+def _failed_after_hook_ahead_of_a_command_record(root: str) -> None:
+    """An improved iteration whose after hook failed, with a command record written behind it."""
+    measured(
+        root,
+        iteration_record(seq=1),
+        hook_record(seq=1, stage="after", exit_code=1),
+        command_record(seq=1),
+    )
 
 
 def _gating_block_iteration(root: str) -> None:
@@ -260,6 +284,14 @@ GATE_FAILURES = [
     pytest.param(_no_fingerprint, "fingerprint unavailable", id="fingerprint-unavailable"),
     pytest.param(_failed_before_hook, "before hook failed", id="before-hook-failed"),
     pytest.param(_timed_out_after_hook, "after hook failed", id="after-hook-timed-out"),
+    pytest.param(
+        _failed_before_hook_on_a_retry, "before hook failed", id="before-hook-failed-on-a-retry"
+    ),
+    pytest.param(
+        _failed_after_hook_ahead_of_a_command_record,
+        "after hook failed",
+        id="after-hook-failed-ahead-of-a-command-record",
+    ),
 ]
 
 
@@ -407,6 +439,71 @@ async def test_run_exit_sequence_when_a_gating_block_stands_and_the_gate_fails_d
         ),
     )
     assert status_of(experiment_worktree_dir(repo)) != ""
+
+
+# ---------------------------------------------------------------------------
+# hook records an earlier attempt at the same iteration left behind
+# ---------------------------------------------------------------------------
+
+
+#: What stands in the log ahead of a clean iteration whose seq a failed attempt already used:
+#: the failed attempt's before hook, then what closed it or what the retry ran first.
+EARLIER_ATTEMPTS = [
+    pytest.param(
+        (hook_record(seq=1, stage="before", exit_code=1), hook_record(seq=1, stage="before")),
+        id="killed-outright-then-a-passing-hook",
+    ),
+    pytest.param(
+        (hook_record(seq=1, stage="before", exit_code=1), command_record(seq=1)),
+        id="closed-by-its-command-record-then-no-hook",
+    ),
+]
+
+
+@pytest.mark.parametrize("earlier", EARLIER_ATTEMPTS)
+@pytest.mark.parametrize(
+    ("iteration", "settled"),
+    [
+        pytest.param(iteration_record(seq=1), "kept iteration 1 (checks passed)", id="keep"),
+        pytest.param(unimproved(1, "no-signal"), "discarded iteration 1 (no-signal)", id="discard"),
+    ],
+)
+async def test_run_exit_sequence_when_an_earlier_attempt_failed_its_before_hook_does_settle(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    earlier: tuple[SessionLogRecord, ...],
+    iteration: IterationRecord,
+    settled: str,
+):
+    start_with(repo)
+    # The first attempt recorded no iteration, so the retry reuses its seq.
+    append_records(repo, *earlier)
+    measured(repo, iteration, hook_record(seq=1, stage="after"))
+    checks_pass(monkeypatch)
+
+    run = await run_sequence(session_context(repo, checks=CHECKS))
+
+    assert run.report.steps[0] == ExitStep(kind="settled", text=f"settled: {settled}")
+
+
+async def test_run_exit_sequence_when_only_the_standing_attempt_failed_its_before_hook_does_leave_it(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo)
+    # The first attempt's hook passed; the retry that recorded the iteration is the one that failed.
+    append_records(
+        repo,
+        hook_record(seq=1, stage="before"),
+        hook_record(seq=1, stage="before", exit_code=1),
+    )
+    measured(repo, iteration_record(seq=1))
+    checks_pass(monkeypatch)
+
+    run = await run_sequence(session_context(repo, checks=CHECKS))
+
+    step = run.report.steps[0]
+    assert step.kind == "left"
+    assert "iteration 1 improved but before hook failed" in step.text
 
 
 # ---------------------------------------------------------------------------

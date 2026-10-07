@@ -26,14 +26,13 @@ load with them, and the exit-sequence module loads through the CLI probes, which
 import the ``supervise`` command.
 
 ``opentelemetry`` ships only with the ``otel`` extra, so modules that load
-without it — including the traceparent helpers in ``gymrat.telemetry.ids`` and
-``gymrat.telemetry.attributes`` — import it inside the functions that need it.
+without it — including the traceparent helpers in ``gymrat.telemetry.provider``
+— import it inside the functions that need it.
 """
 
 import subprocess
 import sys
 
-from tests._cli import unoptimized_env
 from tests._imports import loaded_under, modules_imported_by
 
 
@@ -44,7 +43,6 @@ def _run_probe(probe: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
-        env=unoptimized_env(),
     )
 
 
@@ -67,8 +65,6 @@ def test_importing_package_when_loaded_does_not_import_scipy_or_numpy():
         "gymrat.supervisor.tools",
         "gymrat.supervisor.hooks",
         "gymrat.telemetry",
-        "gymrat.telemetry.attributes",
-        "gymrat.telemetry.ids",
         "gymrat.telemetry.provider",
         "gymrat.telemetry.run_spans",
     )

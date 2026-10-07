@@ -75,11 +75,29 @@ def permutation_verdict(
 
 def exact_verdict(
     *,
-    verdict: Verdict = "no-signal",
+    verdict: Verdict | None = None,
     delta: float = 0.0,
     n: int = 10,
 ) -> ExactVerdict:
-    """A verdict read straight off a counted metric, with no statistics behind it."""
+    """A verdict read straight off a counted metric, with no statistics behind it.
+
+    Args:
+        verdict: The verdict to carry, or None to derive it from the sign of
+            ``delta`` as a lower-is-better metric reads it: negative improves,
+            positive regresses, zero or NaN is no signal.
+        delta: Percentage delta against the baseline.
+        n: Pair count behind the verdict.
+
+    Returns:
+        The exact verdict.
+    """
+    if verdict is None:
+        if delta < 0:
+            verdict = "improved"
+        elif delta > 0:
+            verdict = "regressed"
+        else:
+            verdict = "no-signal"
     return ExactVerdict(
         method="exact",
         verdict=verdict,

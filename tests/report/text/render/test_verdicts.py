@@ -227,6 +227,70 @@ def test_render_report_when_highlighting_does_state_noise_in_absolute_units_when
     assert highlights[0] == "≈ jittery/heap  unstable  ±381B noise on a 5B median"
 
 
+@pytest.mark.parametrize(
+    ("delta", "baseline_median", "expected"),
+    [
+        pytest.param(
+            0, 0, "≈ jittery/heap  unstable  ±6B noise on a 0B median", id="zero-baseline-median"
+        ),
+        pytest.param(
+            -100,
+            100,
+            "≈ jittery/heap  unstable  ±6B noise on a 0B candidate median",
+            id="zero-candidate-median",
+        ),
+        pytest.param(
+            0,
+            1e-310,
+            "≈ jittery/heap  unstable  ±6B noise on a 0B median",
+            id="overflowing-noise-ratio",
+        ),
+    ],
+)
+def test_render_report_when_unstable_around_zero_median_does_state_noise_in_absolute_units(
+    delta: float, baseline_median: float, expected: str
+):
+    result = create_comparison_result(
+        metrics={
+            "jittery/heap": permutation_metric(
+                verdict="unstable",
+                delta=delta,
+                baseline_median=baseline_median,
+                noise_pct=0.5,
+                noise_abs=6,
+                unit="bytes",
+            ),
+        }
+    )
+
+    highlights = [line.strip() for line in highlight_lines(render_report(result))]
+
+    assert highlights[0] == expected
+
+
+def test_render_report_when_metric_name_has_colon_word_does_print_it_literally():
+    result = create_comparison_result(
+        metrics={"lat:100:p99/time": permutation_metric(verdict="regressed", delta=2.2)}
+    )
+
+    highlights = [line.strip() for line in highlight_lines(render_report(result))]
+
+    assert highlights == ["✗ lat:100:p99/time   +2.2%"]
+
+
+def test_render_report_when_metric_name_has_colon_word_does_align_deltas_with_other_highlights():
+    result = create_comparison_result(
+        metrics={
+            "lat:100:p99/time": permutation_metric(verdict="regressed", delta=2.2),
+            "slow/time": permutation_metric(verdict="regressed", delta=1.5),
+        }
+    )
+
+    highlights = [strip_ansi(line) for line in highlight_lines(render_report(result))]
+
+    assert highlights[0].index("+2.2%") == highlights[1].index("+1.5%")
+
+
 def test_render_report_when_nothing_moved_does_omit_the_highlights_block():
     result = create_comparison_result(
         metrics={"flat/time": permutation_metric(verdict="no-signal", delta=0.2)}
@@ -357,6 +421,50 @@ def test_render_report_when_gating_multi_candidate_does_flag_only_those_that_exc
         "    ✓ memory · encode             -2.0%",
         "    ⚑ time gated geomean +4.0% exceeded --fail-on geomean:2",
     ]
+
+
+# ---------------------------------------------------------------------------
+# --fail-on regressed gate trips
+# ---------------------------------------------------------------------------
+
+
+def _gate_lines(report: str) -> list[str]:
+    return [line.strip() for line in strip_ansi(report).split("\n") if line.strip().startswith("⚑")]
+
+
+def test_render_report_when_regressed_gate_trips_on_inconclusive_metric_does_name_it():
+    result = create_comparison_result(
+        metrics={"slow/time": band_metric(verdict="regressed", delta=8, n=4)}
+    )
+
+    report = render_report(result, ReportOptions(fail_on=(RegressedFailOn(),)))
+
+    assert _gate_lines(report) == [
+        "⚑ slow/time regressed +8.0% on 4 pairs tripped --fail-on regressed"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("metric", "options"),
+    [
+        pytest.param(
+            permutation_metric(verdict="regressed", delta=8),
+            ReportOptions(fail_on=(RegressedFailOn(),)),
+            id="regression-already-shown",
+        ),
+        pytest.param(
+            band_metric(verdict="regressed", delta=8, n=4),
+            ReportOptions(),
+            id="no-regressed-condition",
+        ),
+    ],
+)
+def test_render_report_when_regressed_gate_needs_no_explanation_does_say_nothing_about_a_gate(
+    metric: MetricComparison, options: ReportOptions
+):
+    result = create_comparison_result(metrics={"slow/time": metric})
+
+    assert _gate_lines(render_report(result, options)) == []
 
 
 def test_render_report_when_gate_trips_with_color_does_paint_the_glyph_and_delta_red(

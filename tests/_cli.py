@@ -13,10 +13,3 @@ def no_color_env() -> dict[str, str]:
     env["NO_COLOR"] = "1"
     env.pop("FORCE_COLOR", None)
     return env
-
-
-def unoptimized_env() -> dict[str, str]:
-    """A child environment with the optimize flag cleared, so the child's asserts and exits run."""
-    env = dict(os.environ)
-    env.pop("PYTHONOPTIMIZE", None)  # cspell:disable-line
-    return env

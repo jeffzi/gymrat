@@ -157,9 +157,6 @@ values.
 
 ## The optimization loop
 
-For iterating on performance work, gymrat manages a session with a pinned baseline and an
-experiment worktree:
-
 ```console
 gymrat start --baseline main   # pin the baseline and open the session
 # ...edit code in the experiment worktree...
@@ -178,7 +175,7 @@ A committed `keep` advances the recorded baseline to the kept iteration's sample
 iteration measures against what was just kept.
 
 While a session is open, `start`, `iterate`, `keep`, `discard`, `status`, `stop`, `sync`,
-`finalize`, `probe`, `compare`, and `measure` each append a `command` record to
+`finalize`, `probe`, `compare`, `measure`, and `supervise` each append a `command` record to
 `.gymrat/session.jsonl`. The record holds the command's arguments, exit code, the reason for a
 non-zero exit, duration, and `origin` (`cli` or `tool`). `status` takes the repository lock briefly
 to record itself.
@@ -321,11 +318,13 @@ record and for every supervised run. One trace covers the whole session:
 - **`gymrat.run`** — one per supervised run, a child of the session span, with cost, duration, and
   model attributes.
 - **`gymrat.command.<name>`** — one per CLI command (iterate, keep, compare, …), parented under the
-  run span when the command runs inside `supervise`, under the session span otherwise. The outcome
-  records that the command appended to the session log appear as events on this span.
+  run span when the supervised agent runs the command, under the session span otherwise. The
+  outcome records that the command appended to the session log appear as events on this span.
 
-When a supervised run has Claude Code's own tracing on, each command span links to the tool-call
-span through the `TRACEPARENT` environment variable (`GYMRAT_TRACEPARENT` takes precedence).
+A command span also links to the trace context in its environment. For a command the supervised
+agent runs, the link always targets the run span, which gymrat passes as `GYMRAT_TRACEPARENT`. For
+any other command, `supervise` itself included, it targets whatever the `TRACEPARENT` environment
+variable names.
 
 `gymrat export` replays a session's logs into the same span structure after the fact:
 
@@ -400,7 +399,9 @@ below the sample floor a noise-band fallback applies. Each metric lands in one c
 - **~ within noise** — the change stays inside the noise band.
 - **? inconclusive** — fewer than 6 pairs, too few for a statistical verdict.
 
-JSON output stores the last three classes as `no-signal`.
+JSON output stores identical and within-noise as `no-signal`. An inconclusive verdict keeps the
+value the noise band gave it (`improved`, `regressed`, `unstable`, or `no-signal`), with fewer than
+6 pairs behind it.
 
 ## Contributing
 

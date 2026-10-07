@@ -167,6 +167,9 @@ def test_parse_positive_number_when_positive_decimal_does_accept(value: str, exp
         "",
         "1.",
         pytest.param("1" + "0" * 310, id="overflows-to-infinity"),
+        pytest.param("\N{ARABIC-INDIC DIGIT THREE}", id="arabic-indic-digit"),
+        pytest.param("\N{DEVANAGARI DIGIT THREE}.5", id="devanagari-digit"),
+        pytest.param("1.\N{DEVANAGARI DIGIT THREE}", id="non-ascii-fraction-digit"),
     ],
 )
 def test_parse_positive_number_when_non_positive_or_malformed_does_reject(value: str):
@@ -218,7 +221,15 @@ def test_parse_fail_on_when_geomean_percentage_does_accept(value: str, expected_
 
 @pytest.mark.parametrize(
     "value",
-    ["geomean:", "geomean:0x10", "unknown", "", " geomean:2"],
+    [
+        "geomean:",
+        "geomean:0x10",
+        "unknown",
+        "",
+        " geomean:2",
+        pytest.param("geomean:\N{ARABIC-INDIC DIGIT THREE}", id="arabic-indic-digit"),
+        pytest.param("geomean:-1.\N{DEVANAGARI DIGIT THREE}", id="devanagari-fraction-digit"),
+    ],
 )
 def test_parse_fail_on_when_not_regressed_or_geomean_does_reject(value: str):
     with pytest.raises(typer.BadParameter) as exc:

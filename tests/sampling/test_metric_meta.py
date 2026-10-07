@@ -1,15 +1,15 @@
 """Tests for metric-meta resolution: adapter defaults, then kind, then metric."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 import pytest
 
 from gymrat.adapters import Adapter, MetricDefaults
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.model import ResolvedMetricMeta
-from gymrat.sampling import resolve_metric_meta_from_samples
-from gymrat.utils import WarnSink, warn_to_stderr
+from gymrat.sampling import resolve_metric_meta, resolve_metric_meta_from_samples
 from tests.report._comparisons import metric_meta
+from tests.sampling._adapters import make_adapter
 
 
 def resolve(
@@ -21,23 +21,6 @@ def resolve(
     """Resolve the metadata of one round that reported every name in ``names``, in order."""
     samples = [[dict.fromkeys(names, 1.0)]]
     return resolve_metric_meta_from_samples(samples, config_metrics, adapter, config_kinds)
-
-
-def make_adapter(
-    defaults_fn: Callable[[str], MetricDefaults] = lambda _name: MetricDefaults(direction="lower"),
-) -> Adapter:
-    """Build a mock adapter whose per-metric defaults come from ``defaults_fn``."""
-
-    class MockAdapter:
-        name = "test-adapter"
-
-        def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
-            return {}
-
-        def defaults(self, metric_name: str) -> MetricDefaults:
-            return defaults_fn(metric_name)
-
-    return MockAdapter()
 
 
 # ---------------------------------------------------------------------------
@@ -248,3 +231,49 @@ def test_resolve_metric_meta_when_metric_leaves_gating_unset_does_take_it_from_k
     result = resolve(["bench-a/heap"], config_metrics, adapter, config_kinds)
 
     assert result == {"bench-a/heap": expected}
+
+
+# ---------------------------------------------------------------------------
+# resolve_metric_meta — one metric
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("entry", "config_kinds", "expected"),
+    [
+        pytest.param(
+            None,
+            None,
+            metric_meta("heap", direction="higher", kind="memory", unit="bytes"),
+            id="adapter-defaults",
+        ),
+        pytest.param(
+            MetricEntry(direction="lower"),
+            None,
+            metric_meta("heap", direction="lower", kind="memory", unit="bytes"),
+            id="entry-direction",
+        ),
+        pytest.param(
+            MetricEntry(exact=True),
+            {"memory": KindEntry(gating=False)},
+            metric_meta(
+                "heap", direction="higher", kind="memory", unit="bytes", gating=False, exact=True
+            ),
+            id="entry-without-direction-and-kind-gating",
+        ),
+    ],
+)
+def test_resolve_metric_meta_when_given_one_metric_does_layer_entry_over_kind_over_adapter(
+    entry: MetricEntry | None,
+    config_kinds: dict[str, KindEntry] | None,
+    expected: ResolvedMetricMeta,
+):
+    adapter = make_adapter(
+        lambda _name: MetricDefaults(
+            direction="higher", kind="memory", short_name="heap", unit="bytes"
+        )
+    )
+
+    result = resolve_metric_meta("bench-a/heap", entry, adapter, config_kinds)
+
+    assert result == expected

@@ -5,7 +5,6 @@ from typing import Any
 import pytest
 
 from gymrat.adapters import AdapterError, MetricDefaults, mitata_adapter
-from gymrat.model import MetricUnit
 from tests.adapters._inputs import LINE_BREAKS, build_stdout
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mitata.json"
@@ -85,6 +84,7 @@ def test_parse_when_alias_has_placeholders_and_args_empty_does_keep_placeholders
         pytest.param(5, "5", id="int"),
         pytest.param(5.0, "5", id="integral-float"),
         pytest.param(1.5, "1.5", id="float"),
+        pytest.param(float("inf"), "inf", id="infinite-float"),
         pytest.param(True, "true", id="bool-true"),
         pytest.param(False, "false", id="bool-false"),
         pytest.param(None, "null", id="none"),
@@ -298,6 +298,48 @@ def test_parse_when_substituted_arg_introduces_hash_does_raise_adapter_error():
 
     with pytest.raises(AdapterError):
         mitata_adapter.parse(stdout)
+
+
+# ---------------------------------------------------------------------------
+# metric names with an empty path segment
+# ---------------------------------------------------------------------------
+
+_EMPTY_SEGMENT_PREFIXES = [
+    pytest.param("a//b", {}, "a//b", id="empty-inner-segment"),
+    pytest.param("/x", {}, "/x", id="empty-leading-segment"),
+    pytest.param("x/", {}, "x/", id="empty-trailing-segment"),
+    pytest.param("", {}, "", id="empty-alias"),
+    pytest.param("op/$v", {"v": "a//b"}, "op/v=a//b", id="arg-value-with-empty-segment"),
+]
+
+
+@pytest.mark.parametrize(("alias", "args", "prefix"), _EMPTY_SEGMENT_PREFIXES)
+def test_parse_when_metric_name_has_empty_path_segment_does_warn_once_and_skip_run(
+    alias: str, args: dict[str, str], prefix: str
+):
+    stdout = build_stdout([
+        {"alias": alias, "runs": [{"args": args, "stats": {"p50": 42, "heap": {"avg": 7}}}]},
+        {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
+    ])
+    warnings: list[str] = []
+
+    result = mitata_adapter.parse(stdout, warnings.append)
+
+    assert result == {"valid#time": 1}
+    assert warnings == [f'Skipping run with an empty path segment in its metric name: "{prefix}"']
+
+
+@pytest.mark.parametrize(("alias", "args", "prefix"), _EMPTY_SEGMENT_PREFIXES)
+def test_parse_when_only_runs_with_empty_path_segment_remain_does_raise_adapter_error(
+    alias: str, args: dict[str, str], prefix: str
+):
+    stdout = build_stdout([{"alias": alias, "runs": [{"args": args, "stats": {"p50": 42}}]}])
+    warnings: list[str] = []
+
+    with pytest.raises(AdapterError, match=r"^No valid benchmark runs found$"):
+        mitata_adapter.parse(stdout, warnings.append)
+
+    assert warnings == [f'Skipping run with an empty path segment in its metric name: "{prefix}"']
 
 
 # ---------------------------------------------------------------------------
@@ -740,21 +782,6 @@ def test_defaults_when_heap_metric_does_describe_as_lower_bytes_memory(metric_na
 @pytest.mark.parametrize("metric_name", ["custom_metric", "test", "test/throughput", "test/ops"])
 def test_defaults_when_metric_unrecognized_does_return_direction_only(metric_name: str):
     assert mitata_adapter.defaults(metric_name) == MetricDefaults(direction="lower")
-
-
-@pytest.mark.parametrize(
-    ("metric_name", "unit", "kind"),
-    [
-        pytest.param("#time", "ns", "time", id="time"),
-        pytest.param("#heap", "bytes", "memory", id="heap"),
-    ],
-)
-def test_defaults_when_prefix_empty_does_fall_back_to_full_metric_name(
-    metric_name: str, unit: MetricUnit, kind: str
-):
-    assert mitata_adapter.defaults(metric_name) == MetricDefaults(
-        direction="lower", unit=unit, kind=kind, short_name=metric_name
-    )
 
 
 # ---------------------------------------------------------------------------

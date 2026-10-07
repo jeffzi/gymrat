@@ -21,7 +21,7 @@ The decisions that read the session's own state are taken here too: whether an
 unsettled iteration is kept, discarded, or left for a person, and whether the
 session is finalized once nothing needs one. One gate guards every automatic keep
 and every automatic discard: the iteration measured the tree that still stands,
-and no hook of that iteration failed. Work that fails it is left exactly as it is,
+and no hook of the attempt that recorded it failed. Work that fails it is left exactly as it is,
 named in the step so a person can pick it up; a run that settles nothing by hand
 is worth less than one that never touched what it could not vouch for.
 """
@@ -44,7 +44,13 @@ from gymrat.loop.finalize import finalize_session
 from gymrat.loop.keep import KeepOptions, keep_session
 from gymrat.session.lock import LockContentionError, is_held, read_holder
 from gymrat.session.paths import session_jsonl_path
-from gymrat.session.records import HookRecord
+from gymrat.session.records import (
+    CommandRecord,
+    DiscardRecord,
+    HookRecord,
+    IterationRecord,
+    KeepRecord,
+)
 from gymrat.session.store import fold_session, last_kept_position, read_records
 from gymrat.session.workspace import changed_file_count, worktree_fingerprint
 from gymrat.supervisor.events import FollowUpEvent
@@ -54,7 +60,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.command_run import CommandTrace
-    from gymrat.session.records import IterationRecord
+    from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import SessionObserver
     from gymrat.supervisor.supervise import EndedBy, SupervisedSession
@@ -470,9 +476,10 @@ def _discard(context: SupervisedSession, iteration: IterationRecord, *, label: s
 def _gate_reason(root: str, iteration: IterationRecord, *, experiment: str) -> str | None:
     """Why the iteration may not be settled without a person, or ``None`` when it may.
 
-    A hook that failed makes the verdict indefensible; a tree that no longer
-    matches the fingerprint holds work nobody measured. Either way the sequence
-    keeps its hands off and says which it was.
+    A hook that failed in the attempt that recorded the iteration makes the
+    verdict indefensible; a tree that no longer matches the fingerprint holds
+    work nobody measured. Either way the sequence keeps its hands off and says
+    which it was.
 
     Args:
         root: The repository the session was started in.
@@ -482,9 +489,9 @@ def _gate_reason(root: str, iteration: IterationRecord, *, experiment: str) -> s
     Returns:
         The reason wording the step reads, or ``None`` when the gate passes.
     """
-    for record in read_records(session_jsonl_path(root)):
-        if isinstance(record, HookRecord) and record.seq == iteration.seq and record.failed:
-            return f"{record.stage} hook failed"
+    failed = _failed_hook(read_records(session_jsonl_path(root)), iteration)
+    if failed is not None:
+        return f"{failed.stage} hook failed"
 
     if (
         iteration.measured_tree is None
@@ -492,3 +499,48 @@ def _gate_reason(root: str, iteration: IterationRecord, *, experiment: str) -> s
     ):
         return _NO_FINGERPRINT
     return None if standing == iteration.measured_tree else _TREE_CHANGED
+
+
+def _failed_hook(records: list[SessionLogRecord], iteration: IterationRecord) -> HookRecord | None:
+    """The failed hook of the attempt that recorded ``iteration``, or ``None``.
+
+    An attempt that died before it recorded an iteration leaves its hook records
+    behind, and the retry reuses their seq, so seq alone does not tell the two
+    apart. Position does: an attempt holds the repository lock from its before hook
+    to its iteration record, so the last iteration, keep, discard, or command
+    record ahead of the standing iteration closes whatever ran earlier, and the
+    attempt's hooks are the ones written after it. An attempt runs each stage once,
+    so a stage's last record in that stretch is the one the standing attempt wrote.
+
+    An attempt killed before its command record was written leaves nothing to
+    close it, so its failed hook counts against a retry that ran no hook of that
+    stage, and the iteration is left for a person.
+
+    Args:
+        records: The session log, in the order it was written.
+        iteration: The iteration standing in the experiment worktree.
+
+    Returns:
+        The first failed hook of the standing attempt, or ``None`` when none failed.
+    """
+    standing = max(
+        (
+            index
+            for index, record in enumerate(records)
+            if isinstance(record, IterationRecord) and record.seq == iteration.seq
+        ),
+        default=0,
+    )
+    start = max(
+        (
+            index + 1
+            for index, record in enumerate(records[:standing])
+            if isinstance(record, IterationRecord | KeepRecord | DiscardRecord | CommandRecord)
+        ),
+        default=0,
+    )
+    last_by_stage: dict[str, HookRecord] = {}
+    for record in records[start:]:
+        if isinstance(record, HookRecord) and record.seq == iteration.seq:
+            last_by_stage[record.stage] = record
+    return next((hook for hook in last_by_stage.values() if hook.failed), None)

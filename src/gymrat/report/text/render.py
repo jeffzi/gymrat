@@ -36,6 +36,7 @@ from gymrat.report.format import (
     format_pair_count,
     format_percent_delta,
     format_verdict_delta,
+    is_noise_percentage_undefined,
 )
 from gymrat.report.style import (
     SCOPE_SEPARATOR,
@@ -59,7 +60,12 @@ from gymrat.report.table.render import build_cell_dispatcher, plan_table_skeleto
 from gymrat.report.tally import verdict_summary_parts
 from gymrat.report.text.multi import render_comparison_table
 from gymrat.report.text.single import render_table
-from gymrat.report.types import DEFAULT_REPORT_OPTIONS, GeomeanFailOn, ReportOptions
+from gymrat.report.types import (
+    DEFAULT_REPORT_OPTIONS,
+    GeomeanFailOn,
+    RegressedFailOn,
+    ReportOptions,
+)
 from gymrat.report.types import candidate_at as _candidate_at
 from gymrat.utils import pluralize
 
@@ -200,9 +206,16 @@ _HIGHLIGHT_RANK: dict[DisplayClass, int | None] = {
 }
 
 
-def _highlight_weight(verdict: MetricVerdict) -> float:
+def _highlight_weight(
+    verdict: MetricVerdict, baseline_median: float | None, candidate_median: float | None
+) -> float:
     """How loud a highlight is within its class: noise for unstable, delta magnitude otherwise."""
     if verdict.verdict == "unstable":
+        # Scatter with no finite percentage of a median is unbounded relative to
+        # it: its noise_pct is only the floor, so it would otherwise rank as the
+        # quietest.
+        if is_noise_percentage_undefined(verdict.noise_abs, baseline_median, candidate_median):
+            return math.inf
         return verdict.noise_pct
     magnitude = abs(verdict.delta)
     return 0.0 if math.isnan(magnitude) else magnitude
@@ -236,7 +249,8 @@ def select_highlights(
         if rank is None:
             continue
         highlight = MetricHighlight(name=name, metric=metric, verdict=candidate.verdict)
-        ranked.append((rank, -_highlight_weight(candidate.verdict), highlight))
+        weight = _highlight_weight(candidate.verdict, metric.baseline_median, candidate.median)
+        ranked.append((rank, -weight, highlight))
 
     ranked.sort(key=operator.itemgetter(0, 1))
     return [highlight for _, _, highlight in ranked]
@@ -293,7 +307,8 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
 
     qualify = spans_many_kinds(metrics)
     labels = [highlight_label(highlight, qualify=qualify) for highlight in highlights]
-    label_widths = [cell_len(Text.from_markup(label).plain) for label in labels]
+    # Measure the text the capture console prints: it leaves `:word:` codes as typed.
+    label_widths = [cell_len(Text.from_markup(label, emoji=False).plain) for label in labels]
     name_width = max(label_widths) + _HIGHLIGHT_NAME_GUTTER
 
     entries: list[str] = []
@@ -304,8 +319,12 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
         unstable = unstable or shown == "unstable"
         style = VERDICT_STYLES[shown]
         delta = format_verdict_delta(verdict)
+        candidate = _candidate_at(highlight.metric, candidate_index)
         evidence = format_evidence(
-            verdict, highlight.metric.meta.unit, highlight.metric.baseline_median
+            verdict,
+            highlight.metric.meta.unit,
+            highlight.metric.baseline_median,
+            None if candidate is None else candidate.median,
         )
 
         label_field = f"{label}{' ' * (name_width - width)}"
@@ -324,9 +343,10 @@ def _gate_trip_lines(
 ) -> list[str]:
     """The gate-trip lines for a candidate whose gated geomean cleared a ``--fail-on`` threshold.
 
-    Only the geomean conditions gate here; the regressed condition contributes no
-    line. A kind with no gated geomean, or one aggregating nothing, never trips —
-    an informational kind cannot fail a gate it does not stand behind.
+    Only the geomean conditions gate here; the regressed condition's lines come
+    from :func:`_hidden_regression_lines`. A kind with no gated geomean, or one
+    aggregating nothing, never trips — an informational kind cannot fail a gate it
+    does not stand behind.
 
     Args:
         candidate: The candidate to check.
@@ -351,6 +371,50 @@ def _gate_trip_lines(
             f"exceeded --fail-on geomean:{pct:g}"
             for pct in thresholds
             if geomean.value >= pct
+        )
+    return lines
+
+
+def _hidden_regression_lines(
+    metrics: MetricComparisons,
+    candidate_index: int,
+    conditions: Sequence[FailOnCondition],
+) -> list[str]:
+    """The gate-trip lines for gating regressions the report does not show as regressed.
+
+    ``--fail-on regressed`` judges the stored verdict, so a gating metric that
+    regressed on fewer pairs than the permutation test needs trips the gate while
+    the report shows it as inconclusive. Naming it here keeps every exit 1
+    explained; a regression the highlights already show needs no line.
+
+    Args:
+        metrics: Every metric of the run, keyed by name.
+        candidate_index: Which candidate's verdicts to check.
+        conditions: The run's ``--fail-on`` conditions.
+
+    Returns:
+        One markup line per gating metric whose hidden regression tripped the gate.
+    """
+    if not any(isinstance(condition, RegressedFailOn) for condition in conditions):
+        return []
+    style = VERDICT_STYLES["regressed"]
+    qualify = spans_many_kinds(metrics)
+
+    lines: list[str] = []
+    for name, metric in metrics.items():
+        candidate = _candidate_at(metric, candidate_index)
+        if not metric.meta.gating or candidate is None or candidate.verdict is None:
+            continue
+        verdict = candidate.verdict
+        if verdict.verdict != "regressed" or display_class(verdict) == "regressed":
+            continue
+        label = highlight_label(
+            MetricHighlight(name=name, metric=metric, verdict=verdict), qualify=qualify
+        )
+        delta = format_percent_delta(verdict.delta)
+        lines.append(
+            f"  {markup(_GATE_TRIP_GLYPH, style)} {label} regressed {markup(delta, style)} "
+            f"on {pluralize(verdict.n, 'pair')} tripped --fail-on regressed"
         )
     return lines
 
@@ -405,7 +469,11 @@ def _render_highlights(
         block = _highlight_entries(result.metrics, index)
         blocks.append(
             HighlightBlock(
-                entries=(*block.entries, *_gate_trip_lines(candidate, conditions)),
+                entries=(
+                    *block.entries,
+                    *_hidden_regression_lines(result.metrics, index, conditions),
+                    *_gate_trip_lines(candidate, conditions),
+                ),
                 unstable=block.unstable,
                 label=candidate.label if multi else None,
             )

@@ -30,6 +30,7 @@ import pytest
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.events import TextDeltaEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
+from tests._logging import unhandled_logging
 from tests._process_helpers import (
     CleanupRegistry,
     InterruptedTerminal,
@@ -41,6 +42,7 @@ from tests._rich import (
     KEPT_LINE,
     TERMINATION_SIGNAL,
     WARNING_LINE,
+    Clock,
     cursor_hidden,
     frame_text,
     screen_lines,
@@ -49,16 +51,18 @@ from tests._rich import (
 from tests.cli.supervise._fixtures import (
     FRAME_WIDTH,
     LIVE_CLASS_PATH,
-    Clock,
     ReporterKit,
+    _throwing_read,
+    fire_launch_and_bash_cycle,
     launch_event,
     make_reporter,
     render_frame,
+    stop_built_reporters,
     tool_start_event,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from rich.console import Console
 
@@ -190,6 +194,19 @@ def test_warn_when_live_message_contains_brackets_does_print_it_verbatim(termina
     assert _screen(terminal.getvalue()) == [KEPT_LINE, "missing [banana] key"]
 
 
+def test_warn_when_session_read_keeps_failing_in_live_mode_does_print_one_line_and_no_traceback(
+    terminal: StringIO,
+):
+    kit = make_reporter(mode="live", read_session=_throwing_read)
+
+    with unhandled_logging():
+        fire_launch_and_bash_cycle(kit.reporter.observer)
+        kit.reporter.refresh_session()
+
+    kit.reporter.stop()
+    assert _screen(terminal.getvalue()) == [KEPT_LINE, "session read failed: no session file"]
+
+
 def test_render_when_plain_mode_does_not_create_live():
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         make_reporter(mode="plain", plain_write=lambda _: None)
@@ -248,11 +265,14 @@ def _mount_terminal(term: StringIO, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def terminal(monkeypatch: pytest.MonkeyPatch) -> StringIO:
+def terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[StringIO]:
     """The stderr terminal the live dashboard paints on, with one line kept above it."""
     term = StringIO()
     _mount_terminal(term, monkeypatch)
-    return term
+    yield term
+    # Stop the dashboards while stderr is still this terminal: a Live stopped
+    # after monkeypatch's undo would re-point sys.stderr at this dead buffer.
+    stop_built_reporters()
 
 
 @pytest.fixture
@@ -429,7 +449,7 @@ def test_stop_when_final_frame_fails_to_render_does_return_normally(terminal: St
     kit.reporter.stop()
 
 
-class _SetupFailingClock(Clock):
+class _SetupFailingClock(Clock[int]):
     """A clock that raises while ``failing`` is set, as a frame built during setup would."""
 
     def __init__(self) -> None:

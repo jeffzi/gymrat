@@ -89,13 +89,11 @@ class JudgeFinished:
         primary_delta_pct: The primary metric's delta as a percentage, or
             ``None`` when the iteration has no primary metric.
         regressed: Names of the metrics that regressed this iteration.
-        metric_count: Total number of metrics the judge evaluated.
         at_ms: Monotonic millisecond timestamp from the emitter's clock.
     """
 
     primary_delta_pct: float | None
     regressed: tuple[str, ...]
-    metric_count: int
     at_ms: float
 
 
@@ -122,6 +120,13 @@ class ConfirmFinished:
 
 
 @dataclass(frozen=True, slots=True)
+class ConfirmSkipped:
+    """Emitted in place of a confirmation pass when no metric calls for one."""
+
+    at_ms: float
+
+
+@dataclass(frozen=True, slots=True)
 class IterationRecorded:
     """Emitted when an iteration's outcome is recorded."""
 
@@ -141,6 +146,7 @@ type ProgressEvent = (
     | JudgeFinished
     | ConfirmStarted
     | ConfirmFinished
+    | ConfirmSkipped
     | IterationRecorded
 )
 """The union of progress events a sampling run can emit."""

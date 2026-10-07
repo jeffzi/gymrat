@@ -18,6 +18,7 @@ from gymrat.report.style import (
     AGGREGATE_LABEL_STYLE,
     GROUP_LABEL_STYLE,
     LABEL_DISPLAY_WIDTH,
+    RENDER_WIDTH,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
     format_hint,
@@ -29,9 +30,6 @@ from gymrat.report.style import (
 )
 from tests._ansi import sgr_params
 from tests.report._assertions import render_colored, render_plain
-
-_WIDTH = 80
-
 
 # ---------------------------------------------------------------------------
 # shorten_label
@@ -317,7 +315,7 @@ def test_render_lines_when_color_true_does_emit_ansi_despite_no_color_env(
 ):
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = render_lines("[red]hi[/red]", color=True, width=_WIDTH)
+    result = render_lines("[red]hi[/red]", color=True)
 
     assert "\x1b[" in result
     assert "hi" in result
@@ -328,7 +326,7 @@ def test_render_lines_when_color_false_does_suppress_ansi_despite_force_color_en
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
 
-    result = render_lines("[red]hi[/red]", color=False, width=_WIDTH)
+    result = render_lines("[red]hi[/red]", color=False)
 
     assert "\x1b[" not in result
     assert result == "hi"
@@ -339,7 +337,7 @@ def test_render_lines_when_color_none_and_no_color_env_does_render_plain(
 ):
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = render_lines("[red]hi[/red]", color=None, width=_WIDTH)
+    result = render_lines("[red]hi[/red]", color=None)
 
     assert "\x1b[" not in result
 
@@ -349,7 +347,7 @@ def test_render_lines_when_color_none_and_force_color_env_does_emit_ansi(
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
 
-    result = render_lines("[red]hi[/red]", color=None, width=_WIDTH)
+    result = render_lines("[red]hi[/red]", color=None)
 
     assert "\x1b[" in result
 
@@ -361,13 +359,13 @@ def test_render_lines_when_color_none_and_both_env_set_does_let_force_color_win(
     monkeypatch.setenv("FORCE_COLOR", "1")
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = render_lines("[red]hi[/red]", color=None, width=_WIDTH)
+    result = render_lines("[red]hi[/red]", color=None)
 
     assert "\x1b[" in result
 
 
 def test_render_lines_when_color_none_and_no_env_and_capture_does_render_plain():
-    result = render_lines("[red]hi[/red]", color=None, width=_WIDTH)
+    result = render_lines("[red]hi[/red]", color=None)
 
     assert "\x1b[" not in result
 
@@ -375,7 +373,7 @@ def test_render_lines_when_color_none_and_no_env_and_capture_does_render_plain()
 def test_render_lines_when_invoked_does_not_mutate_os_environ(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NO_COLOR", "1")
 
-    render_lines("[red]hi[/red]", color=True, width=_WIDTH)
+    render_lines("[red]hi[/red]", color=True)
 
     assert os.environ.get("NO_COLOR") == "1"
     assert "FORCE_COLOR" not in os.environ
@@ -387,29 +385,35 @@ def test_render_lines_when_invoked_does_not_mutate_os_environ(monkeypatch: pytes
 
 
 def test_render_lines_when_content_exceeds_width_does_not_soft_wrap():
-    long_line = "x" * 100
+    long_line = "x" * (RENDER_WIDTH + 100)
 
-    result = render_lines(long_line, color=False, width=10)
+    result = render_lines(long_line, color=False)
 
     assert result == long_line
 
 
 def test_render_lines_when_given_multiple_renderables_does_join_with_newlines():
-    result = render_lines("line1", "line2", color=False, width=_WIDTH)
+    result = render_lines("line1", "line2", color=False)
 
     assert result == "line1\nline2"
 
 
 def test_render_lines_when_content_shorter_than_width_does_not_emit_trailing_whitespace():
-    result = render_lines("hi", color=False, width=_WIDTH)
+    result = render_lines("hi", color=False)
 
     assert result == "hi"
 
 
 def test_render_lines_when_text_escaped_does_render_markup_metacharacters_literally():
-    result = render_lines(escape("[i]"), color=False, width=_WIDTH)
+    result = render_lines(escape("[i]"), color=False)
 
     assert result == "[i]"
+
+
+def test_render_lines_when_text_has_colon_word_does_render_it_literally():
+    result = render_lines("lat:100:p99", color=False)
+
+    assert result == "lat:100:p99"
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +431,7 @@ def test_render_lines_when_text_escaped_does_render_markup_metacharacters_litera
 def test_make_capture_console_when_color_set_does_honor_color_and_capture_output(
     color: bool, has_ansi: bool
 ):
-    console = make_capture_console(color=color, width=_WIDTH)
+    console = make_capture_console(color=color)
 
     console.print("[red]hi[/red]")
 
@@ -442,7 +446,7 @@ def test_make_capture_console_when_color_none_and_force_color_zero_does_render_p
 ):
     monkeypatch.setenv("FORCE_COLOR", "0")
 
-    console = make_capture_console(color=None, width=_WIDTH)
+    console = make_capture_console(color=None)
     console.print("[red]hi[/red]")
 
     assert isinstance(console.file, io.StringIO)
@@ -456,7 +460,7 @@ def test_make_capture_console_when_color_none_and_no_color_set_does_suppress_all
 ):
     monkeypatch.setenv("NO_COLOR", "")
 
-    console = make_capture_console(color=None, width=_WIDTH)
+    console = make_capture_console(color=None)
     console.print("[bold]hi[/bold]")
 
     assert isinstance(console.file, io.StringIO)
@@ -470,7 +474,7 @@ def test_make_capture_console_when_color_true_and_term_dumb_does_still_emit_ansi
 ):
     monkeypatch.setenv("TERM", "dumb")
 
-    console = make_capture_console(color=True, width=_WIDTH)
+    console = make_capture_console(color=True)
     console.print("[red]hi[/red]")
 
     assert isinstance(console.file, io.StringIO)
@@ -485,7 +489,7 @@ def test_make_capture_console_when_color_none_and_force_color_env_and_term_dumb_
     monkeypatch.setenv("TERM", "dumb")
     monkeypatch.setenv("FORCE_COLOR", "1")
 
-    console = make_capture_console(color=None, width=_WIDTH)
+    console = make_capture_console(color=None)
     console.print("[red]hi[/red]")
 
     assert isinstance(console.file, io.StringIO)
@@ -494,14 +498,14 @@ def test_make_capture_console_when_color_none_and_force_color_env_and_term_dumb_
     assert "hi" in captured
 
 
-def test_make_capture_console_when_term_dumb_and_explicit_width_does_honor_width(
+def test_make_capture_console_when_term_dumb_does_keep_the_render_width(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("TERM", "dumb")
 
-    console = make_capture_console(color=True, width=200)
+    console = make_capture_console(color=True)
 
-    assert console.width == 200
+    assert console.width == RENDER_WIDTH
 
 
 def test_render_lines_when_color_true_and_term_dumb_does_emit_ansi(
@@ -509,7 +513,7 @@ def test_render_lines_when_color_true_and_term_dumb_does_emit_ansi(
 ):
     monkeypatch.setenv("TERM", "dumb")
 
-    result = render_lines("[red]hi[/red]", color=True, width=_WIDTH)
+    result = render_lines("[red]hi[/red]", color=True)
 
     assert "\x1b[" in result
     assert "hi" in result

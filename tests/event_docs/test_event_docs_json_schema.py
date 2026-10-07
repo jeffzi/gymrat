@@ -15,9 +15,10 @@ get it without reaching for private state.
 from typing import Any, get_args
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from gymrat.session.records import SessionLogRecord
-from gymrat.supervisor.events import SessionEvent
+from gymrat.supervisor.events import SessionEvent, event_from_wire
 from tests._imports import modules_imported_by
 
 # ---------------------------------------------------------------------------
@@ -327,6 +328,41 @@ def test_render_json_schemas_when_called_does_not_set_default_on_schema(
     schema_prop = schemas[schema_idx]["$defs"][model_name]["properties"]["schema"]
 
     assert "default" not in schema_prop
+
+
+# ---------------------------------------------------------------------------
+# type required on every event — the schema rejects what event_from_wire rejects
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "member",
+    [pytest.param(member, id=member.__name__) for member in get_args(SessionEvent)],
+)
+def test_render_json_schemas_when_called_does_require_type_on_every_event(member: type):
+    _, supervisor_log = _schemas()
+
+    required = supervisor_log["$defs"][member.__name__].get("required", [])
+
+    assert "type" in required
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"at": 1}, id="missing-type"),
+        pytest.param({"type": "compaction", "at": 1}, id="compaction"),
+    ],
+)
+def test_supervisor_log_schema_when_validating_payload_does_agree_with_event_from_wire(
+    payload: dict[str, Any],
+):
+    _, supervisor_log = _schemas()
+    validator = Draft202012Validator(supervisor_log)
+
+    schema_accepts = validator.is_valid(payload)
+
+    assert schema_accepts == (event_from_wire(payload) is not None)
 
 
 # ---------------------------------------------------------------------------

@@ -54,19 +54,18 @@ repos:
     hooks:
       - id: check-max-lines
 
-  # Generated event docs must match the models they are rendered from
   - repo: local
     hooks:
+      # Generated event docs must match the models they are rendered from;
+      # pyproject.toml counts because the AsyncAPI file embeds the project version
       - id: check-schemas
         name: check-schemas
         entry: uv run python -m gymrat.event_docs
         language: system
         pass_filenames: false
-        files: ^(src/gymrat/(session|supervisor)/.*\.py|src/gymrat/(config|event_docs)\.py|schemas/.*|docs/event-reference\.md)$
+        files: ^(src/gymrat/(session|supervisor)/.*\.py|src/gymrat/(config|event_docs)\.py|schemas/.*|docs/event-reference\.md|pyproject\.toml)$
 
-  # Python type checking
-  - repo: local
-    hooks:
+      # Python type checking
       - id: pyrefly
         name: pyrefly
         entry: uv run pyrefly check
@@ -75,9 +74,7 @@ repos:
         pass_filenames: false
         require_serial: true
 
-  # Lockfile consistency
-  - repo: local
-    hooks:
+      # Lockfile consistency
       - id: uv-lock-check
         name: uv lock --check
         entry: uv lock --check
@@ -85,9 +82,7 @@ repos:
         always_run: true
         pass_filenames: false
 
-  # JSON, YAML, Markdown, TOML formatting
-  - repo: local
-    hooks:
+      # JSON, YAML, Markdown, TOML formatting
       - id: dprint
         name: dprint
         entry: dprint fmt --allow-no-files

@@ -22,12 +22,25 @@ if TYPE_CHECKING:
 _OK = 200
 
 
+@dataclass(frozen=True)
+class ReceivedSpan:
+    """One span the collector received: its name and its string-valued attributes."""
+
+    name: str
+    attributes: dict[str, str]
+
+
 @dataclass
 class ReceivedExport:
     """One export request the collector received."""
 
     path: str
-    span_names: list[str]
+    spans: list[ReceivedSpan]
+
+    @property
+    def span_names(self) -> list[str]:
+        """Names of the spans in this export, in request order."""
+        return [span.name for span in self.spans]
 
 
 @dataclass
@@ -38,16 +51,28 @@ class OtlpCollector:
     received: list[ReceivedExport] = field(default_factory=list)
 
     @property
+    def spans(self) -> list[ReceivedSpan]:
+        """Every span received, in arrival order."""
+        return [span for export in self.received for span in export.spans]
+
+    @property
     def span_names(self) -> list[str]:
         """Names of every span received, in arrival order."""
-        return [name for export in self.received for name in export.span_names]
+        return [span.name for span in self.spans]
 
 
-def _span_names(body: bytes) -> list[str]:
+def _received_spans(body: bytes) -> list[ReceivedSpan]:
     request = ExportTraceServiceRequest()
     request.ParseFromString(body)
     return [
-        span.name
+        ReceivedSpan(
+            name=span.name,
+            attributes={
+                attribute.key: attribute.value.string_value
+                for attribute in span.attributes
+                if attribute.value.WhichOneof("value") == "string_value"
+            },
+        )
         for resource_spans in request.resource_spans
         for scope_spans in resource_spans.scope_spans
         for span in scope_spans.spans
@@ -73,7 +98,7 @@ def otlp_collector(statuses: Iterable[int] = ()) -> Generator[OtlpCollector]:
         def do_POST(self) -> None:
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
             with lock:
-                received.append(ReceivedExport(path=self.path, span_names=_span_names(body)))
+                received.append(ReceivedExport(path=self.path, spans=_received_spans(body)))
                 status = replies.pop(0) if replies else _OK
             self.send_response(status)
             self.send_header("Content-Type", "application/x-protobuf")

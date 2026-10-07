@@ -311,4 +311,4 @@ components:
   messageTraits:
     envelope:
       description: Every record and event carries `type` (string discriminator) and `at` (integer nanoseconds
-        since the Unix epoch). Sequenced records also carry `seq` (positive integer).
+        since the Unix epoch). Sequenced records also carry `seq` (non-negative integer).

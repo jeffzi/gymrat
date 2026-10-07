@@ -274,6 +274,35 @@ def test_check_file_edit_when_worktree_symlink_points_at_main_tree_does_deny(
     assert check_file_edit(hook_input, root) == _outside(str(link))
 
 
+def _link_to_main_tree_file(link: Path, repo: Path) -> Path:
+    link.symlink_to(repo / "src" / "x.py")
+    return link
+
+
+def _link_to_main_tree_dir(link: Path, repo: Path) -> Path:
+    link.symlink_to(repo / "src", target_is_directory=True)
+    return link / "fresh.py"
+
+
+@_needs_symlinks
+@pytest.mark.parametrize(
+    "plant",
+    [
+        pytest.param(_link_to_main_tree_file, id="file-link"),
+        pytest.param(_link_to_main_tree_dir, id="directory-link-and-missing-file"),
+    ],
+)
+def test_check_file_edit_when_scratch_symlink_points_at_main_tree_does_deny(
+    tmp_path: Path, root: Path, plant: Callable[[Path, Path], Path]
+):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    path = str(plant(scratch / "link", root))
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
+
+    assert check_file_edit(hook_input, root) == _outside(path)
+
+
 @_needs_symlinks
 def test_check_file_edit_when_symlinked_spelling_of_worktree_does_allow(root: Path, worktree: Path):
     alias = root / "alias"
@@ -304,6 +333,262 @@ def test_check_file_edit_when_root_is_symlinked_spelling_does_deny_real_main_tre
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
     assert check_file_edit(hook_input, link) == _outside(path)
+
+
+# ---------------------------------------------------------------------------
+# Letter case
+# ---------------------------------------------------------------------------
+
+
+def _upper_root(repo: Path) -> Path:
+    return repo.with_name(repo.name.upper())
+
+
+def _worktree_dir(repo: Path) -> Path:
+    return Path(experiment_worktree_dir(str(repo)))
+
+
+def _worktree_relative(repo: Path) -> Path:
+    return _worktree_dir(repo).relative_to(repo)
+
+
+def _upper_worktree(repo: Path) -> Path:
+    return repo / str(_worktree_relative(repo)).upper()
+
+
+def _upper_root_worktree(repo: Path) -> Path:
+    return _upper_root(repo) / _worktree_relative(repo)
+
+
+def _fail_stat(
+    monkeypatch: pytest.MonkeyPatch,
+    names: tuple[str, ...],
+    fails: Callable[[str], bool],
+    error: OSError,
+) -> None:
+    def patch(name: str) -> None:
+        real = getattr(os, name)
+
+        def fake(path: object, *args: object, **kwargs: object) -> os.stat_result:
+            if isinstance(path, (str, bytes, os.PathLike)) and fails(os.fsdecode(path)):
+                raise error
+            return real(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, name, fake)
+
+    for name in names:
+        patch(name)
+
+
+@pytest.fixture
+def ignores_case(root: Path) -> None:
+    """Skip unless the filesystem under the repository ignores letter case."""
+    if not _upper_root(root).exists():
+        pytest.skip("needs a filesystem that ignores letter case")
+
+
+@pytest.fixture
+def honors_case(root: Path) -> None:
+    """Skip unless the filesystem under the repository tells letter cases apart."""
+    if _upper_root(root).exists():
+        pytest.skip("needs a filesystem that tells letter cases apart")
+
+
+@pytest.fixture
+def case_sensitive_stat(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every upper-case spelling of a repository directory a missing path."""
+    if sys.platform == "win32":
+        pytest.skip(
+            "the Windows path resolver does not go through os.stat or os.lstat, "
+            "so patching them does not model a volume that tells letter cases apart"
+        )
+    upper_names = {root.name.upper(), *Path(str(_worktree_relative(root)).upper()).parts}
+
+    def is_upper_spelling(path: str) -> bool:
+        return not upper_names.isdisjoint(Path(path).parts)
+
+    _fail_stat(monkeypatch, ("stat", "lstat"), is_upper_spelling, FileNotFoundError(2, "missing"))
+
+
+@pytest.mark.usefixtures("ignores_case")
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param("src/x.py", id="existing-file"),
+        pytest.param("fresh/note.py", id="missing-tail"),
+    ],
+)
+def test_check_file_edit_when_case_variant_of_main_tree_under_scratch_root_does_deny(
+    root: Path, tail: str
+):
+    scratch = Path(tempfile.gettempdir()).resolve()
+    assert root.resolve().is_relative_to(scratch), "the repository must sit under a scratch root"
+    path = str(_upper_root(root) / tail)
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
+
+    assert check_file_edit(hook_input, root) == _outside(path)
+
+
+@pytest.mark.usefixtures("ignores_case")
+@pytest.mark.parametrize(
+    "locate",
+    [
+        pytest.param(_upper_worktree, id="worktree-part"),
+        pytest.param(_upper_root_worktree, id="repository-part"),
+    ],
+)
+def test_check_file_edit_when_case_variant_of_worktree_does_allow(
+    root: Path, locate: Callable[[Path], Path]
+):
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(locate(root) / "x.py")}}
+
+    assert check_file_edit(hook_input, root) is None
+
+
+@pytest.mark.usefixtures("honors_case")
+def test_check_file_edit_when_sibling_dir_differs_by_case_does_treat_it_as_outside_repo(root: Path):
+    sibling = _upper_root(root)
+    (sibling / "src").mkdir(parents=True)
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(sibling / "src" / "x.py")}}
+
+    assert check_file_edit(hook_input, root) is None
+
+
+@pytest.mark.usefixtures("honors_case")
+def test_check_file_edit_when_existing_dir_differs_from_worktree_by_case_does_deny(root: Path):
+    lookalike = _upper_worktree(root)
+    lookalike.mkdir(parents=True)
+    path = str(lookalike / "x.py")
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
+
+    assert check_file_edit(hook_input, root) == _outside(path)
+
+
+@pytest.mark.usefixtures("case_sensitive_stat")
+def test_check_file_edit_when_case_matters_and_repo_name_differs_by_case_does_allow_as_scratch(
+    root: Path,
+):
+    path = str(_upper_root(root) / "src" / "x.py")
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
+
+    assert check_file_edit(hook_input, root) is None
+
+
+@pytest.mark.usefixtures("case_sensitive_stat")
+def test_check_file_edit_when_case_matters_and_worktree_name_differs_by_case_does_deny(root: Path):
+    path = str(_upper_worktree(root) / "x.py")
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
+
+    assert check_file_edit(hook_input, root) == _outside(path)
+
+
+def _scratch_dir(repo: Path) -> Path:
+    scratch = repo.parent / "scratch"
+    scratch.mkdir()
+    return scratch
+
+
+def _repo_root(repo: Path) -> Path:
+    return repo
+
+
+def _temp_dir(_repo: Path) -> Path:
+    return Path(tempfile.gettempdir())
+
+
+@pytest.mark.parametrize(
+    "locate",
+    [
+        pytest.param(_worktree_dir, id="worktree"),
+        pytest.param(_scratch_dir, id="scratch-dir"),
+        pytest.param(_repo_root, id="repository-root"),
+        pytest.param(_temp_dir, id="scratch-root"),
+    ],
+)
+def test_check_file_edit_when_stat_of_existing_ancestor_fails_does_deny(
+    root: Path, monkeypatch: pytest.MonkeyPatch, locate: Callable[[Path], Path]
+):
+    ancestor = os.path.realpath(locate(root))
+    path = str(Path(ancestor) / "x.py")
+    _fail_stat(monkeypatch, ("stat",), lambda path: path == ancestor, PermissionError(13, "denied"))
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
+
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == f"edits belong in the experiment worktree: {path} cannot be resolved"
+
+
+# ---------------------------------------------------------------------------
+# Names the operating system rejects
+# ---------------------------------------------------------------------------
+
+
+class _WindowsError(OSError):
+    def __init__(self, winerror: int) -> None:
+        super().__init__(22, "rejected by the operating system")
+        self.winerror = winerror
+
+
+_ERROR_INVALID_NAME = 123
+
+
+def _reject_name(monkeypatch: pytest.MonkeyPatch, rejected: Path, error: OSError) -> None:
+    def is_under_rejected(path: str) -> bool:
+        return path == str(rejected) or path.startswith(f"{rejected}{os.sep}")
+
+    _fail_stat(monkeypatch, ("stat", "lstat"), is_under_rejected, error)
+
+
+_REJECTED_COMPONENTS = [
+    pytest.param(("bad.py",), id="file-name"),
+    pytest.param(("bad", "x.py"), id="directory-name"),
+]
+
+
+@pytest.mark.parametrize("parts", _REJECTED_COMPONENTS)
+def test_check_file_edit_when_name_rejected_as_invalid_outside_worktree_does_deny_as_outside(
+    root: Path, monkeypatch: pytest.MonkeyPatch, parts: tuple[str, ...]
+):
+    rejected = Path(os.path.realpath(root)) / parts[0]
+    path = str(rejected.joinpath(*parts[1:]))
+    _reject_name(monkeypatch, rejected, _WindowsError(_ERROR_INVALID_NAME))
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
+
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(path)
+
+
+@pytest.mark.parametrize("parts", _REJECTED_COMPONENTS)
+def test_check_file_edit_when_name_rejected_as_invalid_inside_worktree_does_allow(
+    root: Path, worktree: Path, monkeypatch: pytest.MonkeyPatch, parts: tuple[str, ...]
+):
+    rejected = Path(os.path.realpath(worktree)) / parts[0]
+    path = str(rejected.joinpath(*parts[1:]))
+    _reject_name(monkeypatch, rejected, _WindowsError(_ERROR_INVALID_NAME))
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
+
+    assert check_file_edit(hook_input, root) is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(_WindowsError(5), id="access-denied"),
+        pytest.param(PermissionError(13, "denied"), id="no-windows-code"),
+    ],
+)
+def test_check_file_edit_when_examining_path_raises_other_error_does_deny_as_unresolvable(
+    root: Path, worktree: Path, monkeypatch: pytest.MonkeyPatch, error: OSError
+):
+    rejected = Path(os.path.realpath(worktree)) / "bad.py"
+    path = str(rejected)
+    _reject_name(monkeypatch, rejected, error)
+    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
+
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == f"edits belong in the experiment worktree: {path} cannot be resolved"
 
 
 # ---------------------------------------------------------------------------

@@ -71,6 +71,16 @@ def _wait_for_file(path: Path, timeout_s: float = 30.0) -> None:
         time.sleep(0.01)
 
 
+def _wait_for_ready(directory: Path, count: int, timeout_s: float = 30.0) -> None:
+    """Wait until ``count`` children have left a ``ready.<pid>`` marker in ``directory``."""
+    deadline = time.monotonic() + timeout_s
+    while len(list(directory.glob("ready.*"))) < count:
+        if time.monotonic() > deadline:
+            message = f"fewer than {count} children reached the barrier in {directory}"
+            raise AssertionError(message)
+        time.sleep(0.01)
+
+
 def _wait_until_grew_or_dead(
     path: Path, baseline: int, child: subprocess.Popen[str], timeout_s: float = 30.0
 ) -> bool:
@@ -145,6 +155,7 @@ os._exit(0)
 _RACE_CHILD = """\
 import os
 import sys
+from pathlib import Path
 
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
@@ -156,6 +167,7 @@ base = int(base_raw)
 path = session_jsonl_path(root)
 
 barrier_fd = os.open(barrier_path, os.O_RDONLY)
+Path(barrier_path).with_name(f"ready.{os.getpid()}").touch()
 os.read(barrier_fd, 1)
 os.close(barrier_fd)
 
@@ -245,7 +257,12 @@ def test_append_record_when_process_hard_exits_right_after_return_does_keep_the_
     root = str(tmp_path)
 
     child = _spawn(tmp_path, "hard_exit_child", _HARD_EXIT_CHILD, root)
-    _, stderr = child.communicate(timeout=30)
+    try:
+        _, stderr = child.communicate(timeout=30)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate()
 
     assert child.returncode == 0, stderr
     assert log_records(root) == [session_record()]
@@ -281,6 +298,7 @@ def test_append_record_when_processes_append_together_does_never_interleave_byte
     ]
     go_fd = os.open(str(barrier), os.O_RDWR)
     try:
+        _wait_for_ready(tmp_path, process_count)
         os.write(go_fd, b"\x00" * process_count)
         outcomes = [
             (child.wait(timeout=60), child.stderr.read() if child.stderr else "")

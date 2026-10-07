@@ -48,6 +48,27 @@ def test_parse_when_name_has_empty_segment_does_raise_gymrat_error(raw_name: str
 
 
 @pytest.mark.parametrize(
+    "raw_name",
+    [
+        pytest.param("a#b#c", id="multiple-hashes"),
+        pytest.param("a#", id="empty-kind"),
+        pytest.param("a//b", id="empty-path-segment"),
+    ],
+)
+def test_parse_when_name_breaks_grammar_does_raise_error_that_rebuilds_from_message_and_hint(
+    raw_name: str,
+):
+    with pytest.raises(GymratError) as excinfo:
+        parse(raw_name)
+
+    error = excinfo.value
+    rebuilt = type(error)(str(error), hint=error.hint)
+    assert type(rebuilt) is type(error)
+    assert str(rebuilt) == str(error)
+    assert rebuilt.hint == error.hint
+
+
+@pytest.mark.parametrize(
     ("name", "expected_group", "expected_case"),
     [
         pytest.param(
@@ -123,9 +144,37 @@ def test_format_inline_when_color_on_and_brackets_in_segments_does_render_litera
     name = parse(raw_name)
 
     markup = format_inline(name)
-    rendered = render_lines(markup, color=False, width=200)
+    rendered = render_lines(markup, color=False)
 
     assert rendered == expected_plain
+
+
+@pytest.mark.parametrize(
+    "raw_name",
+    [
+        pytest.param("dir\\/case#time", id="group-ends-in-backslash"),
+        pytest.param("top/dir\\/case", id="nested-group-ends-in-backslash"),
+        pytest.param("dir[x]\\/case#time", id="bracketed-group-ends-in-backslash"),
+        pytest.param("dir/case\\", id="case-ends-in-backslash-without-kind"),
+        pytest.param("dir/case\\#time", id="case-ends-in-backslash-before-kind"),
+        pytest.param("dir/case\\\\#time", id="case-ends-in-two-backslashes-before-kind"),
+        pytest.param("dir\\\\/case#time", id="group-ends-in-two-backslashes"),
+        pytest.param("di\\r/ca\\se#time", id="inner-backslashes"),
+        pytest.param("dir\\[x]/case#time", id="backslash-before-bracket-in-group"),
+        pytest.param("a\\[1]", id="backslash-before-plain-bracket-in-case"),
+        pytest.param("a\\\\[1]", id="two-backslashes-before-plain-bracket-in-case"),
+        pytest.param("dir\\[1]/case", id="backslash-before-plain-bracket-in-group"),
+        pytest.param("case#k\\[1]", id="backslash-before-plain-bracket-in-kind"),
+        pytest.param("x#time\\", id="kind-ends-in-backslash"),
+        pytest.param("case\\", id="single-segment-ends-in-backslash"),
+    ],
+)
+def test_format_inline_when_name_contains_backslash_does_render_name_literally(raw_name: str):
+    name = parse(raw_name)
+
+    rendered = render_lines(format_inline(name), color=False)
+
+    assert rendered == raw_name
 
 
 def test_line_terminators_when_scanning_every_code_point_does_match_exactly_splitlines_breaks():

@@ -22,7 +22,7 @@ from gymrat.cli.commands.measure import measure
 from gymrat.cli.commands.probe import probe
 from gymrat.cli.commands.session import finalize, start, stop, sync
 from gymrat.cli.commands.supervise import supervise_command
-from gymrat.cli.console import apply_color_override, set_debug_mode
+from gymrat.cli.console import apply_command_flags
 from gymrat.cli.exit import BUGS_URL, exit_with_error, write_stdout
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     ColorOption,
@@ -121,8 +121,7 @@ def _root(
 ) -> None:
     """Route the shared ``--debug`` and ``--color`` flags."""
     _ = version  # consumed eagerly by its callback; declared so --version is a root option
-    apply_color_override(color)
-    set_debug_mode(debug)
+    apply_command_flags(debug=debug, color=color)
 
 
 app.command("init")(init_command)

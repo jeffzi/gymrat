@@ -39,6 +39,7 @@ from gymrat.session.paths import (
 )
 from gymrat.session.records import SESSION_LOG_ADAPTER, SESSION_LOG_MODELS, wire_type
 from gymrat.supervisor.events import SESSION_EVENT_ADAPTER, SessionEvent
+from gymrat.utils import first_line
 
 SESSION_LOG_ADDRESS = f"{SESSION_DIR_NAME}/{SESSION_LOG_NAME}"
 SUPERVISOR_LOG_ADDRESS = f"{SESSION_DIR_NAME}/{supervisor_log_name('<ms>')}"
@@ -51,9 +52,6 @@ _YAML_WIDTH = 100
 # ---------------------------------------------------------------------------
 # Model registries and reader specs
 # ---------------------------------------------------------------------------
-
-#: Supervisor-log event models, in ``SessionEvent`` union order.
-SUPERVISOR_LOG_MODELS: tuple[type[BaseModel], ...] = get_args(SessionEvent)
 
 
 class _LogSpec(NamedTuple):
@@ -80,6 +78,11 @@ class _LogSpec(NamedTuple):
         """The schema file name, relative to the ``schemas/`` directory."""
         return f"{self.channel}.schema.json"
 
+    @property
+    def wire_to_class(self) -> dict[str, str]:
+        """Each model's wire type mapped to its class name, in the models' order."""
+        return {wire_type(model): model.__name__ for model in self.models}
+
 
 #: The documented logs, session log first; every artifact lists them in this order.
 _LOGS: tuple[_LogSpec, _LogSpec] = (
@@ -96,7 +99,8 @@ _LOGS: tuple[_LogSpec, _LogSpec] = (
         heading="Supervisor Log",
         title="gymrat supervisor log event",
         address=SUPERVISOR_LOG_ADDRESS,
-        models=SUPERVISOR_LOG_MODELS,
+        # Supervisor-log event models, in ``SessionEvent`` union order.
+        models=get_args(SessionEvent),
         adapter=SESSION_EVENT_ADAPTER,
     ),
 )
@@ -169,32 +173,13 @@ READERS: dict[str, ReaderSpec] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Wire-type helpers
-# ---------------------------------------------------------------------------
-
-
-def wire_type_to_class_name(
-    models: tuple[type[BaseModel], ...],
-) -> dict[str, str]:
-    """Map each model's wire type to its class name, in the models' order.
-
-    Args:
-        models: The union members documented by one log schema.
-
-    Returns:
-        The wire-type string of each model mapped to its class name.
-    """
-    return {wire_type(model): model.__name__ for model in models}
-
-
 def _summary(class_name: str, schema_def: dict[str, Any], *, first_line_only: bool) -> str:
     # A model with no docstring is summarized by its class name.
     description = schema_def.get("description")
     if not description:
         return class_name
     text = str(description)
-    return text.split("\n", maxsplit=1)[0] if first_line_only else text
+    return first_line(text) if first_line_only else text
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +246,7 @@ def render_asyncapi(
         The AsyncAPI 3.0.0 document as a nested dict, ready for YAML
         serialization.
     """
-    wire_maps = [wire_type_to_class_name(log.models) for log in _LOGS]
+    wire_maps = [log.wire_to_class for log in _LOGS]
     messages: dict[str, object] = {}
     for log, schema, wire_to_class in zip(_LOGS, schemas, wire_maps, strict=True):
         messages.update(_build_messages(wire_to_class, schema["$defs"], log.schema_file))
@@ -292,7 +277,7 @@ def render_asyncapi(
                     "description": (
                         "Every record and event carries `type` (string discriminator) "
                         "and `at` (integer nanoseconds since the Unix epoch). "
-                        "Sequenced records also carry `seq` (positive integer)."
+                        "Sequenced records also carry `seq` (non-negative integer)."
                     ),
                 },
             },
@@ -400,19 +385,10 @@ def _render_type(prop: dict[str, Any]) -> str:
 def _wrap_line(line: str) -> str:
     """Wrap a single prose line, leaving Markdown list markers and structure lines intact."""
     if line.startswith("- "):
-        return textwrap.fill(line, width=_PROSE_WIDTH, initial_indent="", subsequent_indent="  ")
+        return textwrap.fill(line, width=_PROSE_WIDTH, subsequent_indent="  ")
     if line.startswith(("|", "#", "<!--")):
         return line
     return textwrap.fill(line, width=_PROSE_WIDTH)
-
-
-def _wrap_prose(text: str) -> str:
-    """Wrap prose paragraphs at the configured width."""
-    paragraphs = text.split("\n\n")
-    wrapped = [
-        "\n".join(_wrap_line(line) for line in paragraph.split("\n")) for paragraph in paragraphs
-    ]
-    return "\n\n".join(wrapped)
 
 
 # ---------------------------------------------------------------------------
@@ -492,12 +468,12 @@ def _render_type_block(
         for nested in _collect_refs(field_schema):
             if nested in defs and nested not in rendered:
                 rendered.add(nested)
-                parts.append("")
-                parts.extend(
-                    _render_type_block(
+                parts += [
+                    "",
+                    *_render_type_block(
                         f"#### `{nested}`", nested, defs, rendered, first_line_only=False
-                    )
-                )
+                    ),
+                ]
     return parts
 
 
@@ -508,16 +484,15 @@ def _render_type_block(
 
 def _render_log_section(log: _LogSpec, defs: dict[str, dict[str, Any]]) -> str:
     """Render a ## log section with ### subsections per wire type, in the models' order."""
-    wire_to_class = wire_type_to_class_name(log.models)
+    wire_to_class = log.wire_to_class
     parts: list[str] = [f"## {log.heading}", ""]
     rendered: set[str] = set(wire_to_class.values())
 
     for wire, class_name in wire_to_class.items():
-        block = _render_type_block(
-            f"### `{wire}`", class_name, defs, rendered, first_line_only=True
-        )
-        parts.extend(block)
-        parts.append("")
+        parts += [
+            *_render_type_block(f"### `{wire}`", class_name, defs, rendered, first_line_only=True),
+            "",
+        ]
 
     return "\n".join(parts)
 
@@ -574,10 +549,7 @@ def render_reference(schemas: tuple[dict[str, Any], dict[str, Any]]) -> str:
     ]
 
     raw = "\n".join(sections)
-    wrapped = _wrap_prose(raw)
-
-    result = "\n".join(line.rstrip() for line in wrapped.split("\n"))
-    return result.rstrip("\n") + "\n"
+    return "\n".join(_wrap_line(line) for line in raw.split("\n")) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -585,9 +557,18 @@ def render_reference(schemas: tuple[dict[str, Any], dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _require_discriminator(schema_def: dict[str, Any]) -> None:
+    # A defaulted ``type`` field is optional to pydantic, but every reader dispatches on it
+    # and rejects an object without it, so the published schema must reject it too.
+    required = {*schema_def.get("required", []), "type"}
+    schema_def["required"] = [name for name in schema_def["properties"] if name in required]
+
+
 def _json_schema(log: _LogSpec) -> dict[str, Any]:
     """Render one log's JSON Schema with its draft, title, and ``$id`` metadata."""
     schema = log.adapter.json_schema()
+    for model in log.models:
+        _require_discriminator(schema["$defs"][model.__name__])
     schema["$schema"] = _DRAFT_2020_12
     schema["title"] = log.title
     schema["$id"] = f"{_SCHEMA_BASE_URL}{log.schema_file}"
@@ -602,8 +583,8 @@ def render_json_schemas() -> tuple[dict[str, Any], dict[str, Any]]:
         schema first, the supervisor-log schema second, both JSON-serializable
         draft 2020-12 JSON Schema documents.
     """
-    session_log, supervisor_log = (_json_schema(log) for log in _LOGS)
-    return session_log, supervisor_log
+    session_log, supervisor_log = _LOGS
+    return _json_schema(session_log), _json_schema(supervisor_log)
 
 
 def render_all() -> dict[str, str]:

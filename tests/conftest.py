@@ -37,7 +37,7 @@ from filelock import FileLock
 from gymrat import signals
 from gymrat.cli.console import set_color_override, set_debug_mode
 from gymrat.exec import ExecOptions
-from gymrat.session.lock import _os_lock_file, now_iso
+from gymrat.session.lock import _os_lock_file, _publish_lock_file, now_iso
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset
@@ -148,6 +148,19 @@ def hold_lock(
         holder = {"pid": os.getpid(), "command": command, "at": now_iso()}
     Path(lock_path).write_text(json.dumps(holder), encoding="utf-8")
     return lock
+
+
+def remove_lock_files(root: str) -> None:
+    """Remove the repository and supervise lock files keyed to ``root``.
+
+    The lock files live in the system temp directory, not under ``root``, and
+    persist after release (filelock preserves the file), so removing ``root``
+    leaves them behind. Each lock is three files: the holder record, the OS
+    lock, and the publish lock.
+    """
+    for lock in (lockfile_path(root), supervise_lockfile_path(root)):
+        for leftover in (lock, _os_lock_file(lock), _publish_lock_file(lock)):
+            Path(leftover).unlink(missing_ok=True)
 
 
 @pytest.fixture(autouse=True)
@@ -291,6 +304,26 @@ def stray_process_ids() -> Iterator[list[int]]:
             os.kill(pid, signal.SIGKILL)
 
 
+@pytest.fixture
+def reap_groups() -> Iterator[list[int]]:
+    """Track process-group leaders and hard-kill any survivor on teardown.
+
+    A leader that already exited still names its group, so a group whose leader
+    died while a child lives on is reaped by the leader's pid.
+    """
+    leaders: list[int] = []
+    try:
+        yield leaders
+    finally:
+        for pid in leaders:
+            try:
+                group = os.getpgid(pid)
+            except ProcessLookupError:
+                group = pid
+            with contextlib.suppress(OSError):
+                os.killpg(group, signal.SIGKILL)
+
+
 _SCRATCH_PREFIX = "gymrat-test-"
 
 
@@ -322,14 +355,23 @@ def _init_scratch_repo(prefix: str) -> str:
     return directory
 
 
-def _list_worktree_dirs(repo_dir: str, *, include_main: bool = True) -> list[str]:
+def list_worktree_dirs(repo_dir: str, *, include_main: bool = True) -> list[str]:
     """Directories git currently lists as worktrees of ``repo_dir``.
 
     ``git worktree remove`` clears a worktree's registry entry itself, so this
     only reveals pruning behavior when a directory vanished behind git's back.
-    With ``include_main=False`` the main worktree's own directory is dropped;
-    git prints resolved paths, so the main directory is matched through
-    ``os.path.realpath``.
+
+    Args:
+        repo_dir: The repository whose worktree registry is listed.
+        include_main: Whether the main worktree's own directory stays in the
+            result. Git prints resolved paths, so the main directory is matched
+            through ``os.path.realpath``.
+
+    Returns:
+        The listed directories, in git's order.
+
+    Raises:
+        subprocess.CalledProcessError: When git cannot list the registry.
     """
     output = _run_git(["worktree", "list", "--porcelain"], repo_dir)
     dirs = [
@@ -343,7 +385,7 @@ def _list_worktree_dirs(repo_dir: str, *, include_main: bool = True) -> list[str
     return dirs
 
 
-def _wait_for_worktrees(repo_dir: str, count: int, timeout_s: float = 30.0) -> list[str]:
+def wait_for_worktrees(repo_dir: str, count: int, timeout_s: float = 30.0) -> list[str]:
     """Poll until ``repo_dir`` lists at least ``count`` linked worktrees.
 
     Only for polling while another process is still adding or removing
@@ -351,7 +393,7 @@ def _wait_for_worktrees(repo_dir: str, count: int, timeout_s: float = 30.0) -> l
     and exits 128 when it meets one half-written by a concurrent ``git worktree
     add`` or half-cleared by a ``remove`` — a file of the entry it expects is
     not there. Such a read counts as "not there yet". Once no writer runs,
-    call :func:`_list_worktree_dirs` directly so a real failure stays loud.
+    call :func:`list_worktree_dirs` directly so a real failure stays loud.
 
     Args:
         repo_dir: The main worktree whose registry is polled.
@@ -368,7 +410,7 @@ def _wait_for_worktrees(repo_dir: str, count: int, timeout_s: float = 30.0) -> l
     listed: list[str] = []
     while True:
         with contextlib.suppress(subprocess.CalledProcessError):
-            listed = _list_worktree_dirs(repo_dir, include_main=False)
+            listed = list_worktree_dirs(repo_dir, include_main=False)
         if len(listed) >= count:
             return listed
         if time.monotonic() > deadline:
@@ -386,7 +428,7 @@ def _remove_stranded_worktrees(repo_dir: str) -> None:
     ``FileNotFoundError`` on POSIX and ``NotADirectoryError`` on Windows.
     """
     try:
-        stranded = _list_worktree_dirs(repo_dir, include_main=False)
+        stranded = list_worktree_dirs(repo_dir, include_main=False)
     except (subprocess.CalledProcessError, FileNotFoundError, NotADirectoryError):
         return
     for directory in stranded:
@@ -412,10 +454,8 @@ def create_scratch_repo() -> Iterator[Callable[..., str]]:
         for directory in created:
             _remove_stranded_worktrees(directory)
             shutil.rmtree(directory, ignore_errors=True)
-            # Lock files persist after release (filelock preserves the file);
-            # every process using them is dead by cleanup time.
-            for lock in (lockfile_path(directory), supervise_lockfile_path(directory)):
-                Path(lock).unlink(missing_ok=True)
+            # Every process using the locks is dead by cleanup time.
+            remove_lock_files(directory)
 
 
 @pytest.fixture
@@ -434,55 +474,44 @@ def supervise_lock(repo: str) -> Iterator[None]:
     lock.release()
 
 
-@pytest.fixture
-def list_worktree_dirs() -> Callable[..., list[str]]:
-    """Expose the worktree-listing helper to tests."""
-    return _list_worktree_dirs
-
-
-@pytest.fixture
-def wait_for_worktrees() -> Callable[..., list[str]]:
-    """Expose the race-tolerant worktree poller to tests."""
-    return _wait_for_worktrees
-
-
-@pytest.fixture
-def kill_git_during_worktree_add() -> Callable[[str], None]:
+def kill_git_during_worktree_add(repo_dir: str) -> None:
     """Install a post-checkout hook that kills git once a worktree is on disk."""
-
-    def install(repo_dir: str) -> None:
-        hook_path = Path(repo_dir) / ".git" / "hooks" / "post-checkout"
-        hook_path.parent.mkdir(parents=True, exist_ok=True)
-        hook_path.write_text(
-            '#!/bin/sh\nexec >/dev/null 2>&1\nkill -9 "$PPID"\nsleep 1\n',  # cspell:disable-line
-            encoding="utf-8",
-        )
-        hook_path.chmod(0o755)
-
-    return install
+    hook_path = Path(repo_dir) / ".git" / "hooks" / "post-checkout"
+    hook_path.parent.mkdir(parents=True, exist_ok=True)
+    hook_path.write_text(
+        '#!/bin/sh\nexec >/dev/null 2>&1\nkill -9 "$PPID"\nsleep 1\n',
+        encoding="utf-8",
+    )
+    hook_path.chmod(0o755)
 
 
-@pytest.fixture
-def register_absent_worktree() -> Callable[[str], str]:
-    """Register a worktree of a repo the way a user would, then delete its dir."""
+def register_absent_worktree(repo_dir: str) -> str:
+    """Register a worktree of a repo the way a user would, then delete its dir.
 
-    def register(repo_dir: str) -> str:
-        directory = str(Path(os.path.realpath(repo_dir)) / "absent-user-worktree")
-        _run_git(["worktree", "add", "--detach", directory, "HEAD"], repo_dir)
-        shutil.rmtree(directory, ignore_errors=True)
-        return directory
+    Args:
+        repo_dir: The repository the worktree is registered with.
 
-    return register
+    Returns:
+        The registered worktree's directory, which no longer exists.
+    """
+    directory = str(Path(os.path.realpath(repo_dir)) / "absent-user-worktree")
+    _run_git(["worktree", "add", "--detach", directory, "HEAD"], repo_dir)
+    shutil.rmtree(directory, ignore_errors=True)
+    return directory
 
 
-@pytest.fixture
-def create_in_place_target_dir() -> Callable[[str, str, str], str]:
-    """Write a bench script into a plain subdirectory of a repo."""
+def create_in_place_target_dir(repo_dir: str, name: str, bench_script: str) -> str:
+    """Write a bench script into a plain subdirectory of a repo.
 
-    def create(repo_dir: str, name: str, bench_script: str) -> str:
-        target = Path(repo_dir) / name
-        target.mkdir()
-        (target / "bench.sh").write_text(bench_script, encoding="utf-8")
-        return str(target)
+    Args:
+        repo_dir: The repository the subdirectory is created in.
+        name: The subdirectory's name.
+        bench_script: The text of the ``bench.sh`` written into it.
 
-    return create
+    Returns:
+        The subdirectory's path.
+    """
+    target = Path(repo_dir) / name
+    target.mkdir()
+    (target / "bench.sh").write_text(bench_script, encoding="utf-8")
+    return str(target)

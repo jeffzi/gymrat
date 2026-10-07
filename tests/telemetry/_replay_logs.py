@@ -14,7 +14,7 @@ from typing import Any
 from gymrat.session.records import record_to_wire
 from gymrat.supervisor.events import LaunchEvent, TurnEndEvent, to_json_line
 from tests.session.records._fixtures import AT, SESSION_ID
-from tests.supervisor._fixtures import make_launch
+from tests.supervisor._fixtures import make_launch, make_turn_end
 
 _ONE_SECOND_NS = 1_000_000_000
 
@@ -65,10 +65,4 @@ def launch_event(
 
 def turn_end(at: int = T3, cost_usd: float = 0.42) -> TurnEndEvent:
     """Build an agent turn-end event carrying ``cost_usd``."""
-    return TurnEndEvent(
-        at=at,
-        text="done",
-        cost_usd=cost_usd,
-        origin="agent",
-        budget_exhausted=False,
-    )
+    return make_turn_end(at=at, text="done", cost_usd=cost_usd)

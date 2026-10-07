@@ -30,6 +30,7 @@ from gymrat.targets import WorktreeRemovalFailure
 from gymrat.utils import warn_to_stderr
 from tests._git import EMIT_ONE_BENCH, write_committed_bench
 from tests._pipeline import install_pipeline
+from tests.conftest import create_in_place_target_dir, list_worktree_dirs
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -213,8 +214,6 @@ def _e2e_options(target: str) -> MeasureOptions:
 @_posix_only
 async def test_measure_when_in_place_target_does_bench_without_worktree(
     create_scratch_repo: Callable[[], str],
-    create_in_place_target_dir: Callable[[str, str, str], str],
-    list_worktree_dirs: Callable[..., list[str]],
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo = create_scratch_repo()
@@ -231,7 +230,6 @@ async def test_measure_when_in_place_target_does_bench_without_worktree(
 @_posix_only
 async def test_measure_when_ref_target_does_bench_in_worktree_and_sweep(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo = create_scratch_repo()
@@ -248,7 +246,6 @@ async def test_measure_when_ref_target_does_bench_in_worktree_and_sweep(
 @_posix_only
 async def test_measure_when_bench_fails_does_reject_and_remove_worktrees(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo = create_scratch_repo()

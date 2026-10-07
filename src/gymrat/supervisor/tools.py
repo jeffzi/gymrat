@@ -90,16 +90,13 @@ class ToolHost:
         text = outcome.stderr.strip() or outcome.stdout.strip() or f"gymrat {cmd} failed"
         return _result(text, is_error=True)
 
-    async def _run_command(
-        self, cmd: str, options: Sequence[str] = (), tail: Sequence[str] = ()
-    ) -> dict[str, Any]:
+    async def _run_command(self, cmd: str, args: Sequence[str] = ()) -> dict[str, Any]:
         """Run ``gymrat <cmd>`` as a child process, serializing against concurrent calls.
 
         Args:
             cmd: Subcommand to run (``"probe"`` or ``"iterate"``), also named
                 in error messages.
-            options: Flags placed before the JSON format flag.
-            tail: Arguments placed after the JSON format flag.
+            args: Arguments placed after the JSON format flag.
 
         Returns:
             MCP tool result dict with ``content`` and ``is_error``.
@@ -107,7 +104,7 @@ class ToolHost:
         if self._busy:
             return _result("a gymrat command is already running", is_error=True)
         self._busy = True
-        argv = [*self._prefix, cmd, *options, *_JSON_FORMAT_ARGS, *tail]
+        argv = [*self._prefix, cmd, *_JSON_FORMAT_ARGS, *args]
         try:
             # The origin marks the run as one the agent made through a tool, so the
             # child can tell it apart from a command a person typed.
@@ -139,9 +136,7 @@ class ToolHost:
 
         # Every option precedes the separator: names come from the agent and may
         # look like flags, and only after ``--`` does the CLI read them as names.
-        return await self._run_command(
-            "probe", options, tail=("--", *(input_data.get("names") or ()))
-        )
+        return await self._run_command("probe", (*options, "--", *(input_data.get("names") or ())))
 
     async def iterate(self, _input_data: dict[str, Any]) -> dict[str, Any]:
         """Run ``gymrat iterate`` to advance the optimization loop.

@@ -88,6 +88,52 @@ def _exclude_session_dir(entries: list[_DirtyEntry]) -> list[_DirtyEntry]:
     return [e for e in entries if not e.path.startswith(prefix) and e.path != SESSION_DIR_NAME]
 
 
+def _is_real_directory(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink()
+
+
+def _blocks_descent(path: Path) -> bool:
+    # A dangling symlink does not exist to `is_dir`, yet still occupies the name.
+    return not path.is_dir() and (path.exists() or path.is_symlink())
+
+
+def _refuse_directory_entries(root: str, experiment: str, entries: list[_DirtyEntry]) -> None:
+    """Refuse the whole sync when any entry cannot be applied as a file.
+
+    Runs before the first write: an entry that fails halfway through would
+    leave the files copied ahead of it as uncommitted experiment changes, which
+    every later sync then refuses as conflicts.
+
+    Args:
+        root: The repository root the entries are read from.
+        experiment: The experiment worktree the entries are applied to.
+        entries: The dirty main-tree entries about to be synced.
+
+    Raises:
+        GymratError: When an entry is a directory in the main tree, when a path
+            the sync writes or removes is a directory in the experiment
+            worktree, or when an ancestor of such a path exists there without
+            being a directory.
+    """
+    for entry in entries:
+        src = Path(root) / entry.path
+        if src.exists() and not (src.is_file() or src.is_symlink()):
+            _raise_file_vs_dir_error(entry.path)
+        for touched in (entry.path, entry.old_path):
+            if touched is None:
+                continue
+            if _is_real_directory(Path(experiment) / touched):
+                _raise_file_vs_dir_error(touched)
+            for ancestor in Path(touched).parents:
+                if _blocks_descent(Path(experiment) / ancestor):
+                    message = (
+                        f"Cannot sync '{touched}': '{ancestor.as_posix()}' is not a directory "
+                        "in the experiment worktree"
+                    )
+                    hint = "Settle or revert the experiment worktree first."
+                    raise GymratError(message, hint=hint)
+
+
 def _copy_entry(src: Path, dst: Path) -> None:
     """Copy a single file preserving symlinks and file-mode bits."""
     if src.is_symlink():
@@ -114,8 +160,11 @@ def sync_to_experiment(root: str) -> SyncResult:
 
     Raises:
         GymratError: When no session is open, when the experiment worktree has
-            uncommitted changes that overlap with the files to sync, when the
-            experiment worktree is missing, or when git itself fails.
+            uncommitted changes that overlap with the files to sync or with the
+            source path of a rename, when an entry is a directory on either
+            side, when a file in the experiment worktree sits where an entry
+            needs a directory, when the experiment worktree is missing, or when
+            git itself fails. Nothing is written in any of these cases.
     """
     require_open_session(root, "syncing changes")
 
@@ -135,7 +184,10 @@ def sync_to_experiment(root: str) -> SyncResult:
         "The experiment worktree may have been deleted. Run 'gymrat start' to begin a new session.",
     )
     experiment_paths = {e.path for e in experiment_entries}
-    conflicts = main_paths & experiment_paths
+    # A rename removes its source path from the experiment, so an uncommitted
+    # experiment edit there is overwritten just as one at the destination is.
+    removed_paths = {e.old_path for e in main_entries if e.old_path is not None}
+    conflicts = (main_paths | removed_paths) & experiment_paths
     if conflicts:
         listed = ", ".join(sorted(conflicts))
         message = f"Cannot sync — the experiment worktree has uncommitted changes in: {listed}"
@@ -143,19 +195,20 @@ def sync_to_experiment(root: str) -> SyncResult:
             message, hint="Settle or revert the experiment worktree first.", reason="dirty-worktree"
         )
 
+    _refuse_directory_entries(root, experiment, main_entries)
+
     for entry in main_entries:
         src = Path(root) / entry.path
         dst = Path(experiment) / entry.path
         try:
-            if not src.exists() and not src.is_symlink():
+            if src.exists() or src.is_symlink():
+                _copy_entry(src, dst)
+            else:
                 dst.unlink(missing_ok=True)
-                continue
-            _copy_entry(src, dst)
         except IsADirectoryError:
             _raise_file_vs_dir_error(entry.path)
 
         if entry.old_path is not None:
-            old_dst = Path(experiment) / entry.old_path
-            old_dst.unlink(missing_ok=True)
+            (Path(experiment) / entry.old_path).unlink(missing_ok=True)
 
     return SyncResult(files=tuple(sorted(main_paths)))

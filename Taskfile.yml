@@ -73,13 +73,33 @@ tasks:
     cmds:
       - uv run python -m gymrat.event_docs
 
+  # Requires Task >= 3.45.3, whose built-in `rm` makes the last command run on
+  # Windows as written.
   clean:
-    desc: Remove build artifacts, caches, and virtualenvs
+    desc: Remove build artifacts, caches, virtualenvs, and leaked lock files
+    deps: [_require-uv]
     cmds:
-      - cmd: rm -rf {{.CLEAN_PATHS | join " "}}
-        platforms: [darwin, linux]
-      - cmd: >-
-          powershell -NoProfile -Command
-          "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-          -Path {{.CLEAN_PATHS | join ","}}"
-        platforms: [windows]
+      # Runs before the virtualenvs go, on an interpreter outside them. Removes
+      # every `__pycache__` under src/ and tests/ with any directory that leaves
+      # empty, and the lock files gymrat and its tests leave in the system temp
+      # directory, which only Python can name the way gymrat does.
+      - |
+        uv run --no-project python - <<'PY'
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        for tree in (Path("src"), Path("tests")):
+            for cache in list(tree.rglob("__pycache__")):
+                shutil.rmtree(cache, ignore_errors=True)
+                # Only the directories above a removed cache are candidates: one
+                # that was empty beforehand is somebody's and stays.
+                for parent in cache.parents:
+                    if parent == tree or any(parent.iterdir()):
+                        break
+                    parent.rmdir()
+        for pattern in ("gymrat-lock-*", "gymrat-supervise-lock-*"):
+            for leftover in Path(tempfile.gettempdir()).glob(pattern):
+                leftover.unlink(missing_ok=True)
+        PY
+      - rm -rf {{.CLEAN_PATHS | join " "}}

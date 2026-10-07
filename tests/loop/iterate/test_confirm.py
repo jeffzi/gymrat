@@ -10,7 +10,7 @@ import pytest
 
 from gymrat.loop.iterate import confirm as confirm_module
 from gymrat.loop.iterate.confirm import scoped_bench, shell_quote_name
-from tests.loop.iterate._fixtures import resolved_config
+from tests._config import resolved_config
 
 #: The confirm-rerun template a consumer configures when their bench can be narrowed.
 FILTER = "npm run bench -- --filter {names}"

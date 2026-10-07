@@ -431,29 +431,32 @@ def test_scaffold_when_config_write_fails_does_not_leave_partial_config(
     assert tmp_files == []
 
 
-def test_scaffold_when_config_renamed_into_place_does_fsync_it_first(
+def test_scaffold_when_artifacts_renamed_into_place_does_fsync_each_first(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     real_fsync = os.fsync
     real_replace = os.replace
     synced_files: set[int] = set()
-    config_synced_at_rename: list[bool] = []
+    synced_at_rename: dict[str, bool] = {}
 
     def recording_fsync(fd: int) -> None:
         real_fsync(fd)
         synced_files.add(os.fstat(fd).st_ino)
 
     def observing_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
-        if Path(dst).name == "gymrat.toml":
-            config_synced_at_rename.append(Path(src).stat().st_ino in synced_files)
+        synced_at_rename[Path(dst).name] = Path(src).stat().st_ino in synced_files
         real_replace(src, dst)
 
     monkeypatch.setattr("os.fsync", recording_fsync)
     monkeypatch.setattr("os.replace", observing_replace)
 
-    scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+    scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
-    assert config_synced_at_rename == [True]
+    assert synced_at_rename == {
+        "gymrat.toml": True,
+        "gymrat-runbook.md": True,
+        "SKILL.md": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +464,10 @@ def test_scaffold_when_config_renamed_into_place_does_fsync_it_first(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="POSIX file modes; root bypasses them",
+)
 def test_scaffold_when_base_dir_not_writable_does_raise_gymrat_error_with_path(
     tmp_path: Path,
 ):
@@ -469,10 +475,11 @@ def test_scaffold_when_base_dir_not_writable_does_raise_gymrat_error_with_path(
     read_only.mkdir()
     read_only.chmod(0o444)
 
-    with pytest.raises(GymratError, match="locked"):
-        scaffold(str(read_only), ScaffoldRequest(bench="npm run bench"))
-
-    read_only.chmod(0o755)
+    try:
+        with pytest.raises(GymratError, match="locked"):
+            scaffold(str(read_only), ScaffoldRequest(bench="npm run bench"))
+    finally:
+        read_only.chmod(0o755)
 
 
 def test_scaffold_when_filesystem_error_does_include_hint(
@@ -492,23 +499,61 @@ def test_scaffold_when_filesystem_error_does_include_hint(
     assert exc_info.value.hint == "Read-only file system"
 
 
-def _fail_runbook_write(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make writing the runbook stub fail the way a full disk would."""
-    original_write_text = Path.write_text
+STRAY_NAME = "stray.txt"
+STRAY_CONTENT = "left by someone else\n"
 
-    def write_text_that_fails_on_runbook(self: Path, *args: object, **kwargs: object) -> int:
-        if self.name == "gymrat-runbook.md":
+
+def _fail_write_of(monkeypatch: pytest.MonkeyPatch, name: str, *, drop_stray: bool = False) -> None:
+    """Make the rename that puts the file called ``name`` in place fail like a full disk.
+
+    With ``drop_stray``, a foreign file appears beside the destination just before the failure.
+    """
+    real_replace = os.replace
+
+    def replace_that_fails_on_name(
+        src: str | os.PathLike[str], dst: str | os.PathLike[str]
+    ) -> None:
+        if Path(dst).name == name:
+            if drop_stray:
+                (Path(dst).parent / STRAY_NAME).write_text(STRAY_CONTENT, encoding="utf-8")
             msg = "No space left on device"
             raise OSError(msg)
-        return original_write_text(self, *args, **kwargs)  # pyrefly: ignore[bad-argument-type]  # forwards whatever the caller passed
+        real_replace(src, dst)
 
-    monkeypatch.setattr(Path, "write_text", write_text_that_fails_on_runbook)
+    monkeypatch.setattr("os.replace", replace_that_fails_on_name)
+
+
+def _files(base: Path) -> dict[str, str]:
+    return {
+        path.relative_to(base).as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted(base.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _tree(base: Path) -> dict[str, str | None]:
+    """Every entry under ``base``: a file maps to its text, a directory to ``None``."""
+    return {
+        path.relative_to(base).as_posix(): (
+            path.read_text(encoding="utf-8") if path.is_file() else None
+        )
+        for path in sorted(base.rglob("*"))
+    }
+
+
+def _plant_tree(base: Path, tree: dict[str, str | None]) -> None:
+    """Create the entries of ``tree`` under ``base``, parents listed before children."""
+    for relative, content in tree.items():
+        if content is None:
+            (base / relative).mkdir()
+        else:
+            (base / relative).write_text(content, encoding="utf-8")
 
 
 def test_scaffold_when_runbook_write_fails_does_raise_naming_the_artifact_with_hint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    _fail_runbook_write(monkeypatch)
+    _fail_write_of(monkeypatch, "gymrat-runbook.md")
 
     with pytest.raises(GymratError) as exc_info:
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
@@ -520,12 +565,121 @@ def test_scaffold_when_runbook_write_fails_does_raise_naming_the_artifact_with_h
 def test_scaffold_when_runbook_write_fails_does_remove_the_config_it_created(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    _fail_runbook_write(monkeypatch)
+    _fail_write_of(monkeypatch, "gymrat-runbook.md")
 
     with pytest.raises(GymratError):
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
     assert not (tmp_path / "gymrat.toml").exists()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("gymrat-runbook.md", id="runbook"),
+        pytest.param("SKILL.md", id="skill"),
+    ],
+)
+def test_scaffold_when_artifact_write_fails_does_leave_no_partial_or_temporary_file(
+    existing_config_dir: Path, monkeypatch: pytest.MonkeyPatch, name: str
+):
+    _fail_write_of(monkeypatch, name)
+
+    with pytest.raises(GymratError):
+        scaffold(str(existing_config_dir), ScaffoldRequest(install_skill=True))
+
+    assert _files(existing_config_dir) == {"gymrat.toml": EXISTING_CONFIG}
+
+
+# ---------------------------------------------------------------------------
+# a failed run removes what it created and nothing else
+# ---------------------------------------------------------------------------
+
+EXISTING_RUNBOOK = "# My Custom Runbook\n"
+BLOCKING_FILE = "not a directory\n"
+
+
+@pytest.mark.parametrize(
+    "already_there",
+    [
+        pytest.param({}, id="nothing-existed"),
+        pytest.param({"gymrat.toml": EXISTING_CONFIG}, id="config-existed"),
+        pytest.param({"gymrat-runbook.md": EXISTING_RUNBOOK}, id="runbook-existed"),
+    ],
+)
+def test_scaffold_when_skill_write_fails_does_remove_only_the_artifacts_this_run_created(
+    tmp_path: Path, already_there: dict[str, str]
+):
+    before = {".claude": BLOCKING_FILE, **already_there}
+    for relative, content in before.items():
+        (tmp_path / relative).write_text(content, encoding="utf-8")
+
+    with pytest.raises(GymratError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+
+    assert _files(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "already_there",
+    [
+        pytest.param({}, id="nothing-existed"),
+        pytest.param({".claude": None}, id="empty-claude-directory-existed"),
+        pytest.param(
+            {".claude": None, ".claude/notes.md": STRAY_CONTENT},
+            id="claude-directory-with-unrelated-file-existed",
+        ),
+    ],
+)
+def test_scaffold_when_skill_write_fails_does_remove_the_directories_this_run_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, already_there: dict[str, str | None]
+):
+    _plant_tree(tmp_path, already_there)
+    _fail_write_of(monkeypatch, "SKILL.md")
+
+    with pytest.raises(GymratError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+
+    assert _tree(tmp_path) == already_there
+
+
+def test_scaffold_when_created_directory_is_no_longer_empty_does_leave_it_and_its_ancestors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _fail_write_of(monkeypatch, "SKILL.md", drop_stray=True)
+
+    with pytest.raises(GymratError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+
+    assert _tree(tmp_path) == {
+        ".claude": None,
+        ".claude/skills": None,
+        ".claude/skills/gymrat": None,
+        f".claude/skills/gymrat/{STRAY_NAME}": STRAY_CONTENT,
+    }
+
+
+def test_scaffold_when_directory_appears_before_its_creation_does_leave_that_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Another process wins the race for ``.claude/skills``: the directory is
+    # already there when this run's own creation attempt reaches the filesystem.
+    real_mkdir = os.mkdir
+
+    def mkdir_that_loses_the_race_for_skills(
+        path: str | os.PathLike[str], mode: int = 0o777
+    ) -> None:
+        if Path(path).name == "skills":
+            real_mkdir(path, mode)
+        real_mkdir(path, mode)
+
+    monkeypatch.setattr("os.mkdir", mkdir_that_loses_the_race_for_skills)
+    _fail_write_of(monkeypatch, "SKILL.md")
+
+    with pytest.raises(GymratError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+
+    assert _tree(tmp_path) == {".claude": None, ".claude/skills": None}
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +727,22 @@ def test_scaffold_when_rollback_unlink_fails_does_propagate_original_error(
 
     with pytest.raises(GymratError, match="runbook write failed"):
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+
+def test_scaffold_when_rollback_directory_removal_fails_does_propagate_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    def exploding_rmdir(path: str | os.PathLike[str]) -> None:
+        msg = "device removed"
+        raise OSError(msg)
+
+    monkeypatch.setattr("os.rmdir", exploding_rmdir)
+    _fail_write_of(monkeypatch, "SKILL.md")
+
+    with pytest.raises(GymratError) as exc_info:
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+
+    assert exc_info.value.hint == "No space left on device"
 
 
 # ---------------------------------------------------------------------------

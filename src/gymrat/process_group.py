@@ -3,10 +3,11 @@
 A child spawned into its own session or job can leave grandchildren running
 when it is torn down, and a child that is itself a gymrat run holds benches
 that only it can reach. Teardown is therefore two steps:
-:func:`terminate_process_group` asks the tree to stop and gives it
-:data:`TERMINATE_GRACE_S` to act on that, and :func:`kill_process_group` takes
-down whatever is still standing. Neither raises into the caller: a tree that is
-already gone is silent, and any other failure surfaces as a
+:func:`terminate_process_group` asks the tree to stop, the caller gives it a
+grace to act on that (:data:`TERMINATE_GRACE_S`, less in a nested run), and
+:func:`kill_process_group` takes down whatever is still standing. Neither
+raises into the caller: a tree that is already gone is silent, and any other
+failure surfaces as a
 :class:`RuntimeWarning` — unless the caller opts into ``defer_refusal``, in
 which case a POSIX ``EPERM`` refusal is returned silently instead, and the
 caller must signal again after reaping the leader.
@@ -41,7 +42,10 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 TERMINATE_GRACE_S = 1.0
-"""Seconds a tree gets to act on a stop request before it is killed."""
+"""Seconds a tree gets to act on a stop request before the outermost gymrat run kills it.
+
+A nested run waits less, so its own teardown ends inside the wait of the run above it.
+"""
 
 _TASKKILL_GONE = 128
 """``taskkill`` exit status meaning the process was already gone."""
@@ -465,7 +469,8 @@ def _group_running(group_id: int) -> bool:
     Returns:
         ``True`` while the leader or a listed member still runs.
     """
-    if _leader_alive(group_id):
+    # A zombie leader awaiting its reap still answers ``kill`` but runs nothing.
+    if _pid_exists(group_id) and not _has_exited(group_id):
         return True
     try:
         if sys.platform == "darwin":
@@ -518,11 +523,6 @@ def _linux_group_states(group_id: int) -> list[str]:
         if int(member_group) == group_id:
             states.append(state)
     return states
-
-
-def _leader_alive(pid: int) -> bool:
-    """Whether a process with ``pid`` is still running; a zombie awaiting its reap is not."""
-    return _pid_exists(pid) and not _has_exited(pid)
 
 
 def _pid_exists(pid: int) -> bool:

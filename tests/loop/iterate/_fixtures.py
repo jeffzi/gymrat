@@ -16,17 +16,16 @@ from __future__ import annotations
 
 import itertools
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord, record_to_wire
 from gymrat.session.workspace import Worktrees
-from tests._ansi import SGR_RE
+from tests._ansi import stripped_lines
 from tests._exec_fixtures import expected_result
 from tests.session.records._fixtures import SESSION_ID, log_records
 from tests.session.records._fixtures import session_record as _session_record_defaults
@@ -84,19 +83,6 @@ def session_record(root: str) -> SessionRecord:
             baseline=str(Path(root) / "side-baseline"),
         ),
     )
-
-
-def resolved_config(**overrides: Any) -> ResolvedConfig:
-    """A settled run configuration, geomean-led unless a test names its own primary."""
-    default = ResolvedConfig(
-        bench="npm run bench",
-        adapter="metric-lines",
-        samples=10,
-        timeout_seconds=1800,
-        unstable_noise_pct=200.0,
-        primary="geomean",
-    )
-    return replace(default, **overrides) if overrides else default
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,9 +144,9 @@ class CollectSamplesRecorder:
 
 
 def install_collect_samples(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
-    """Replace ``gymrat.loop.iterate.bench.collect_samples`` with a fresh recorder."""
+    """Replace ``gymrat.loop.iterate.confirm.collect_samples`` with a fresh recorder."""
     recorder = CollectSamplesRecorder()
-    monkeypatch.setattr("gymrat.loop.iterate.bench.collect_samples", recorder)
+    monkeypatch.setattr("gymrat.loop.iterate.confirm.collect_samples", recorder)
     return recorder
 
 
@@ -233,7 +219,7 @@ def sampling_call(mock: CollectSamplesRecorder, index: int) -> SamplingCall:
 
 def trimmed_report_lines(report: str) -> list[str]:
     """The report's lines, stripped of color and of the indentation a grouped metric carries."""
-    return [SGR_RE.sub("", line).strip() for line in report.split("\n")]
+    return stripped_lines(report, keep_blank=True)
 
 
 def plain_report(report: str) -> str:

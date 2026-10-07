@@ -8,19 +8,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-from gymrat.supervisor.events import TurnEndEvent
-
-if TYPE_CHECKING:
-    from gymrat.config import BenchlessConfig
-    from gymrat.session.records import SessionLogRecord
-    from gymrat.session.store import SessionState
 from gymrat.supervisor.turns import (
     Decision,
     GuardState,
     classify,
 )
+from tests._config import benchless_config
 from tests.session.records._fixtures import session_state
-from tests.supervisor._fixtures import default_benchless_config
+from tests.supervisor._fixtures import make_turn_end
+
+if TYPE_CHECKING:
+    from gymrat.config import BenchlessConfig
+    from gymrat.session.records import SessionLogRecord
+    from gymrat.session.store import SessionState
+    from gymrat.supervisor.events import TurnEndEvent
 
 
 def turn_end(
@@ -32,7 +33,7 @@ def turn_end(
     at: int = 5_000_000_000_000,
 ) -> TurnEndEvent:
     """A turn-end event with classifier-neutral defaults."""
-    return TurnEndEvent(
+    return make_turn_end(
         at=at,
         text=text,
         cost_usd=cost_usd,
@@ -90,7 +91,7 @@ def classify_with_defaults(
 def classify_discards(records: list[SessionLogRecord]) -> Decision:
     """Runs classify with the discard-streak defaults, varying only ``records``."""
     return classify_with_defaults(
-        config=default_benchless_config(),
+        config=benchless_config(),
         state=session_state(),
         records=records,
         guards=guard_state(),

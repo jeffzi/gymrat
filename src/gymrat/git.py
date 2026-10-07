@@ -1,4 +1,4 @@
-"""Git subprocess helpers and repository-lookup classification.
+"""Git subprocess helpers.
 
 Every git call runs with an argv list rather than a shell string, so refs and
 paths containing shell metacharacters are treated as literal git arguments. The
@@ -8,7 +8,6 @@ for stable, locale-independent diagnostics that classification can key on.
 """
 
 import os
-import re
 import subprocess
 from collections.abc import Mapping, Sequence
 
@@ -29,15 +28,6 @@ _REPO_TARGETING_ENV_VARS = (
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 )
-
-# Git's wording when it places a directory outside every repository.
-#
-# Anchored to ``^fatal:`` so a path that embeds the phrase (e.g.
-# ``/tmp/not a git repository/config``) cannot skip the classification. The
-# ``re.MULTILINE`` flag lets ``^`` match at line boundaries within multi-line
-# stderr. ``LC_ALL=C`` in :func:`run_git` stabilizes the wording across locales,
-# so a case-insensitive flag is not needed.
-_NOT_A_REPOSITORY_RE = re.compile(r"^fatal: not a git repository", re.MULTILINE)
 
 
 def run_git(
@@ -123,32 +113,3 @@ class NotAGitRepositoryError(GymratError):
     declined to answer says nothing about where the directory sits and must
     never be read as "no repository here".
     """
-
-
-def repository_lookup_error(directory: str, cause: object) -> GymratError:
-    """Classify a failed repository lookup by what git said.
-
-    Git reporting that ``directory`` is outside every repository is an answer
-    callers can act on. Every other failure — dubious ownership, an unreadable
-    ``.git``, a git that cannot run at all — is git declining to answer, and
-    carries git's own diagnostics so the reader sees the real reason rather than
-    a wrong one.
-
-    Args:
-        directory: The directory whose repository lookup failed.
-        cause: The failure to classify — typically the git exception.
-
-    Returns:
-        A :class:`NotAGitRepositoryError` when git's stderr opens with its
-        not-a-repository diagnostic, otherwise a plain :class:`GymratError`
-        carrying git's diagnostics.
-    """
-    diagnostics = stderr_text_of(cause)
-
-    if _NOT_A_REPOSITORY_RE.search(diagnostics):
-        return NotAGitRepositoryError(
-            f"Not a git repository: {directory}",
-            hint="Run gymrat from inside a git repository.",
-        )
-
-    return GymratError(f"Cannot determine the git repository at {directory}: {diagnostics}")

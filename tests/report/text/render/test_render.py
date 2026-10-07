@@ -27,6 +27,7 @@ from tests.report._assertions import (
     line_containing,
     line_starting_with,
     styles_at,
+    table_rows,
 )
 from tests.report._comparisons import (
     NWayCandidate,
@@ -139,7 +140,7 @@ def test_render_report_when_variant_label_overflows_does_truncate_leaving_metric
 
     assert "feature/entity-spawn-fastpath" not in output
     assert "feature/en…-fastpath" in output
-    assert "decode/an-extremely-long-metric-name/time" in output
+    assert cells_of(table_rows(output)[1])[0].strip() == "decode/an-extremely-long-metric-name/time"
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +424,7 @@ def test_render_report_when_aligning_the_verdict_column_does_right_align_deltas_
     assert cells_of(line_starting_with(report, "improved/time"))[-1].strip() == "✓  -12.4%  ± 30.0%"
 
 
-def test_render_report_when_a_verdict_is_unstable_does_seat_the_word_without_widening_others():
+def test_render_report_when_a_verdict_is_unstable_does_widen_the_delta_field_to_the_word():
     result = create_comparison_result(
         metrics={
             "improved/time": permutation_metric(verdict="improved", delta=-12.4, unit="ns"),
@@ -435,7 +436,7 @@ def test_render_report_when_a_verdict_is_unstable_does_seat_the_word_without_wid
 
     report = render_report(result)
 
-    assert cells_of(line_starting_with(report, "improved/time"))[-1].strip() == "✓  -12.4%  ±2.5%"
+    assert cells_of(line_starting_with(report, "improved/time"))[-1].strip() == "✓    -12.4%  ±2.5%"
     assert cells_of(line_starting_with(report, "jittery/time"))[-1].strip() == "≈  unstable"
 
 

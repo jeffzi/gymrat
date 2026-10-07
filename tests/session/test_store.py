@@ -11,6 +11,8 @@ record that would not read back. The fold state machine has its own tests in
 import json
 import os
 import re
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -227,6 +229,27 @@ def test_append_record_when_delta_undefined_does_write_delta_pct_as_null(fresh_r
     assert read_records(jsonl_path) == [SESSION, record]
 
 
+@pytest.mark.parametrize(
+    "separator",
+    [
+        pytest.param("\u0085", id="next-line"),
+        pytest.param("\N{LINE SEPARATOR}", id="line-separator"),
+        pytest.param("\N{PARAGRAPH SEPARATOR}", id="paragraph-separator"),
+    ],
+)
+def test_append_record_when_text_holds_a_unicode_line_break_does_write_one_unbroken_line(
+    fresh_root: str, separator: str
+):
+    jsonl_path, header_len = _log_with_session_header(fresh_root)
+    record = BASELINE.model_copy(update={"label": f"before{separator}after"})
+
+    append_record(jsonl_path, record)
+
+    written = _appended_after_header(jsonl_path, header_len).decode("utf-8")
+    assert len(written.splitlines()) == 1
+    assert read_records(jsonl_path) == [SESSION, record]
+
+
 def test_append_record_when_final_line_torn_does_add_its_line_leaving_the_torn_bytes_intact(
     fresh_root: str,
 ):
@@ -405,6 +428,41 @@ def test_read_records_when_log_missing_does_read_as_no_session(fresh_root: str):
     assert read_records(jsonl_path) == []
 
 
+def _directory_at(jsonl_path: str) -> None:
+    Path(jsonl_path).mkdir(parents=True)
+
+
+def _without_read_permission(jsonl_path: str) -> None:
+    append_record(jsonl_path, SESSION)
+    Path(jsonl_path).chmod(0o000)
+
+
+@pytest.mark.parametrize(
+    "make_unreadable",
+    [
+        pytest.param(_directory_at, id="a-directory-at-the-path"),
+        pytest.param(
+            _without_read_permission,
+            id="a-log-without-read-permission",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                reason="mode 000 denies a read only to a non-root POSIX user",
+            ),
+        ),
+    ],
+)
+def test_read_records_when_log_exists_but_cannot_be_read_does_raise_naming_the_log(
+    fresh_root: str, make_unreadable: Callable[[str], None]
+):
+    jsonl_path = session_jsonl_path(fresh_root)
+    make_unreadable(jsonl_path)
+
+    with pytest.raises(GymratError) as excinfo:
+        read_records(jsonl_path)
+
+    assert jsonl_path in str(excinfo.value)
+
+
 def test_read_records_when_log_is_empty_does_return_no_records(fresh_root: str):
     jsonl_path = _jsonl_holding_bytes(fresh_root, b"")
 
@@ -508,6 +566,23 @@ def test_read_records_when_final_line_unterminated_does_skip_it(fresh_root: str)
     tear_final_line(jsonl_path)
 
     assert read_records(jsonl_path) == [SESSION]
+
+
+def test_read_records_when_only_line_unterminated_does_return_no_records(fresh_root: str):
+    jsonl_path = _jsonl_holding_bytes(fresh_root, _line(SESSION).encode())
+
+    assert read_records(jsonl_path) == []
+
+
+def test_read_records_when_blank_line_precedes_a_bad_line_does_count_it_in_the_line_number(
+    fresh_root: str,
+):
+    jsonl_path = _jsonl_holding(fresh_root, [_line(SESSION), "", "{"])
+
+    with pytest.raises(GymratError) as excinfo:
+        read_records(jsonl_path)
+
+    assert str(excinfo.value) == f"Invalid JSON at {jsonl_path}:3"
 
 
 def test_read_records_when_final_line_torn_mid_utf8_does_skip_it(fresh_root: str):

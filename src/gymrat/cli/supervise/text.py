@@ -37,11 +37,6 @@ def format_cost(usd: float) -> str:
     return f"${usd:.2f}"
 
 
-def format_caps(max_minutes: float, max_usd: float | None) -> str:
-    """Format "caps {minutes}m" alone, or with ", {cost}" appended when a spend cap is set."""
-    return f"caps {max_minutes:g}m" + ("" if max_usd is None else f", {format_cost(max_usd)}")
-
-
 def exit_phase_text(phase: ExitPhase | Exiting) -> str:
     """The exit-sequence phase line both dashboard modes show, without elapsed time.
 
@@ -134,8 +129,3 @@ def loop_segments(
             last.primary.delta_pct, last.outcome, unsettled=state.unsettled
         )
     return tuple(segments)
-
-
-def loop_plain_text(session_result: ReadSessionResult | None, max_iterations: int | None) -> str:
-    """The unstyled text of the loop summary :func:`loop_segments` describes."""
-    return "".join(segment.text for segment in loop_segments(session_result, max_iterations))

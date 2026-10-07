@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from gymrat.cli.supervise.text import loop_plain_text
+from gymrat.cli.supervise.reducer import loop_plain_text
 from tests.cli.supervise._fixtures import make_read_session
 from tests.session.records._fixtures import session_state
 

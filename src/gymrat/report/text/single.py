@@ -10,7 +10,7 @@ plain text sizes the columns; the grid around them is drawn by
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from rich.cells import cell_len
@@ -156,10 +156,7 @@ def render_table(result: ComparisonResult, *, color: bool | None) -> list[str]:
     grouped = is_grouped(layout, body)
 
     aggregate_lines = [line for line in body if isinstance(line, AggregateLine)]
-    aggregate_parts = [line.cell.parts for line in aggregate_lines]
-    verdict_fields = verdict_widths(
-        [row.verdict.parts for row in layout.ordered if row.verdict is not None] + aggregate_parts
-    )
+    verdict_fields = _verdict_fields(layout.ordered, [line.cell.parts for line in aggregate_lines])
 
     def metric_cells(row: _MeasuredRow) -> _MetricCells:
         return (
@@ -276,6 +273,29 @@ def _column_widths(
         value_width(2),
         compute_column_width(cell_len(headers[3]), verdict_lengths, VERDICT_COLUMN_MIN),
     ]
+
+
+def _verdict_fields(
+    rows: Sequence[_MeasuredRow], aggregate_parts: Sequence[VerdictParts]
+) -> VerdictWidths:
+    """The verdict column's widths, its delta field wide enough for any metric row's word.
+
+    A metric row's word, such as ``unstable``, is measured so the fields after
+    it line up with the other rows'. The geomean's ``no stable metrics``
+    stand-in is not: nothing follows it in its cell, so widening for it would
+    only push every metric row's delta right.
+
+    Args:
+        rows: The table's metric rows.
+        aggregate_parts: The verdict fields of the table's geomean rows.
+
+    Returns:
+        The delta and band widths every verdict cell pads to.
+    """
+    metric_parts = [row.verdict.parts for row in rows if row.verdict is not None]
+    fields = verdict_widths([*metric_parts, *aggregate_parts])
+    word_width = max((len(parts.word) for parts in metric_parts), default=0)
+    return replace(fields, delta=max(fields.delta, word_width))
 
 
 def _metric_verdict_cell(row: _MeasuredRow, verdict_fields: VerdictWidths) -> Text:

@@ -90,8 +90,8 @@ def _build_agent_row(final_text: str) -> Text:
 
     When *final_text* exceeds ``SUMMARY_MAX_CHARS`` code points, it is truncated
     with an ellipsis and a note directing the user to the event log (whose path
-    is printed on the next row).  Short messages render unchanged with
-    continuation-line indentation preserved.
+    is printed on the next row).  Every line after the first, clipped or not, is
+    indented under the row's content.
 
     Args:
         final_text: The agent's message to render, already resolved to the
@@ -101,12 +101,11 @@ def _build_agent_row(final_text: str) -> Text:
         The styled ``Text`` row for the agent summary.
     """
     label = "agent"
+    shown = final_text
     if len(final_text) > SUMMARY_MAX_CHARS:
-        clipped = f"{final_text[:SUMMARY_MAX_CHARS]}… (full message in log)"
-        return _summary_row(label, Text(clipped))
+        shown = f"{final_text[:SUMMARY_MAX_CHARS]}… (full message in log)"
     indent = " " * len(_row_prefix(label))
-    indented = final_text.replace("\n", f"\n{indent}")
-    return _summary_row(label, Text(indented))
+    return _summary_row(label, Text(shown.replace("\n", f"\n{indent}")))
 
 
 def _build_exit_rows(exit_report: ExitReport) -> list[Text]:

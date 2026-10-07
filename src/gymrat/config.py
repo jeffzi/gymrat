@@ -55,6 +55,7 @@ from gymrat.pydantic_errors import (
     phrase_for_error,
 )
 from gymrat.session.paths import repo_root
+from gymrat.utils import expected_got
 
 # ---------------------------------------------------------------------------
 # Environment variables
@@ -85,7 +86,7 @@ class EnvResult[T]:
 
 
 def _env_problem(env_var: str, phrase: str, raw: str) -> str:
-    return f"Invalid value for {env_var}: expected {phrase}, got {json.dumps(raw)}"
+    return f"Invalid value for {env_var}: {expected_got(phrase, raw)}"
 
 
 def env_string_result(env_var: str) -> EnvResult[str]:
@@ -410,11 +411,7 @@ def invalid_value_message(field_name: str, expected_phrase: str, value: object) 
         A human-readable problem string naming the field, its expected shape,
         and the actual value.
     """
-    try:
-        got = json.dumps(value)
-    except TypeError:
-        got = repr(value)
-    return f"Invalid config value for {field_name}: expected {expected_phrase}, got {got}"
+    return f"Invalid config value for {field_name}: {expected_got(expected_phrase, value)}"
 
 
 def _message_for_error(error: ErrorDetails) -> str:
@@ -472,9 +469,11 @@ def _reason(exc: OSError | ValueError) -> str:
 def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFileResult:
     """Load and validate a config file, collecting every problem.
 
-    A read failure is reported as a problem rather than raised. Decoding as
-    ``utf-8-sig`` drops the byte-order mark Windows editors prepend, which TOML
-    parsing would otherwise reject.
+    A read failure is reported as a problem rather than raised, and so is a
+    document the parser cannot finish: one with invalid syntax, with an integer
+    literal longer than the interpreter converts, or nested past its recursion
+    limit. Decoding as ``utf-8-sig`` drops the byte-order mark Windows editors
+    prepend, which TOML parsing would otherwise reject.
 
     Args:
         path: Path to the ``gymrat.toml`` file.
@@ -501,7 +500,7 @@ def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFi
 
     try:
         data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
+    except (ValueError, RecursionError) as exc:
         problem = f"Failed to parse config file at {config_path}: {exc}"
         return ConfigFileResult(config_file=None, exists=True, problems=[problem])
     config_file, problems = validate_config_file(data)

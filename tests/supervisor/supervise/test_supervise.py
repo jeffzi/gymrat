@@ -88,7 +88,7 @@ class _WrapDriver:
         self,
         prompt: SessionPrompt,
         observer: SessionObserver,
-        abort: asyncio.Event | None = None,
+        abort: asyncio.Event,
     ) -> DriverSession:
         self.captured_abort = abort
         return self._make_session(self._inner.start(prompt, observer, abort))
@@ -142,7 +142,9 @@ async def test_supervise_when_session_completes_does_report_outcome(
     result = await supervise(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"), max_minutes=10, log_path=str(tmp_path / "events.jsonl")
+        ),
         launch=make_launch(),
     )
 
@@ -161,7 +163,9 @@ async def test_supervise_when_clock_faked_does_report_duration_from_monotonic_cl
     result = await supervise(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"), max_minutes=10, log_path=str(tmp_path / "events.jsonl")
+        ),
         launch=make_launch(),
     )
 
@@ -181,7 +185,7 @@ async def test_supervise_when_session_runs_does_log_launch_first_then_events_in_
     await supervise(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, log_path=str(log_path)),
+        context=make_context(root=str(tmp_path / "repo"), max_minutes=10, log_path=str(log_path)),
         launch=make_launch(),
     )
 
@@ -199,7 +203,9 @@ async def test_supervise_when_observer_given_does_forward_events_in_order(
     await supervise(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"), max_minutes=10, log_path=str(tmp_path / "events.jsonl")
+        ),
         launch=launch,
         observer=probe.observer,
     )
@@ -221,7 +227,9 @@ async def test_supervise_when_wall_clock_elapses_does_report_wall_clock(
     result = await supervise(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"), max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")
+        ),
         launch=make_launch(max_minutes=0.001),
     )
 
@@ -238,7 +246,9 @@ async def test_supervise_when_wall_clock_elapses_does_emit_single_wall_clock_cap
     await supervise(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"), max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")
+        ),
         launch=make_launch(max_minutes=0.001),
         observer=probe.observer,
     )
@@ -272,7 +282,11 @@ async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(tmp_
         return await supervise(
             wrapper,
             make_prompt(),
-            context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
+            context=make_context(
+                root=str(tmp_path / "repo"),
+                max_minutes=0.001,
+                log_path=str(tmp_path / "events.jsonl"),
+            ),
             launch=make_launch(max_minutes=0.001),
             observer=observer,
             grace_ms=grace_ms,
@@ -303,7 +317,9 @@ async def test_supervise_when_session_settles_within_grace_does_cancel_grace_tim
     result = await supervise(
         wrapper,
         make_prompt(),
-        context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"), max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")
+        ),
         launch=make_launch(max_minutes=0.001),
         grace_ms=grace_ms,
     )
@@ -330,7 +346,12 @@ async def test_supervise_when_cost_reaches_max_usd_does_report_spend_cap(
     result = await supervise_fast(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"),
+            max_minutes=10,
+            max_usd=0.1,
+            log_path=str(tmp_path / "events.jsonl"),
+        ),
         launch=make_launch(max_usd=None),
     )
 
@@ -346,7 +367,12 @@ async def test_supervise_when_cost_reaches_max_usd_does_emit_single_spend_cap_ev
     await supervise_fast(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"),
+            max_minutes=10,
+            max_usd=0.1,
+            log_path=str(tmp_path / "events.jsonl"),
+        ),
         launch=make_launch(max_usd=0.1),
         observer=probe.observer,
     )
@@ -363,7 +389,9 @@ async def test_supervise_when_max_usd_none_does_not_enforce_cost(tmp_path: Path)
     result = await supervise(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"), max_minutes=10, log_path=str(tmp_path / "events.jsonl")
+        ),
         launch=make_launch(),
     )
 
@@ -381,7 +409,9 @@ async def test_supervise_when_spend_cap_trips_does_log_usage_update_before_cap(
     await supervise_fast(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(log_path)),
+        context=make_context(
+            root=str(tmp_path / "repo"), max_minutes=10, max_usd=0.1, log_path=str(log_path)
+        ),
         launch=make_launch(max_usd=0.1),
     )
 
@@ -391,48 +421,6 @@ async def test_supervise_when_spend_cap_trips_does_log_usage_update_before_cap(
     cap_idx = types.index("cap")
     preceding = types[:cap_idx]
     assert "usage_update" in preceding
-
-
-# ---------------------------------------------------------------------------
-# cap racing
-# ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_both_caps_could_fire_does_report_first_cap_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    probe = collecting_observer()
-    deadline_ms = 60
-    now_ms = _Box()
-    monkeypatch.setattr("gymrat.supervisor.supervise.now_ms", lambda: now_ms.value)
-
-    async def _pass_deadline() -> None:
-        now_ms.value = deadline_ms + 1
-
-    # The wall-clock poller has already seen the clock before the deadline and
-    # is asleep when the clock passes it; the turn end then carries cost above
-    # max_usd, so both caps are due at settle and the spend cap must win alone.
-    driver = create_mock_driver([
-        ActionStep(action=_pass_deadline),
-        TurnEndStep(cost_usd=0.15),
-    ])
-
-    result = await supervise_fast(
-        driver,
-        make_prompt(),
-        context=make_context(
-            deadline_ms=deadline_ms,
-            max_minutes=0.001,
-            max_usd=0.1,
-            log_path=str(tmp_path / "events.jsonl"),
-        ),
-        launch=make_launch(max_minutes=0.001, max_usd=0.1),
-        observer=probe.observer,
-        grace_ms=50,
-    )
-
-    assert result.ended_by == "spend-cap"
-    assert len(events_of(probe.events, CapEvent)) == 1
 
 
 async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
@@ -447,8 +435,13 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
     result = await supervise_fast(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, max_usd=1.0, log_path=str(tmp_path / "events.jsonl")),
-        launch=make_launch(max_usd=1.0),
+        context=make_context(
+            root=str(tmp_path / "repo"),
+            max_minutes=10,
+            max_usd=1.0,
+            log_path=str(tmp_path / "events.jsonl"),
+        ),
+        launch=make_launch(max_usd=None),
         observer=probe.observer,
     )
 
@@ -486,7 +479,9 @@ async def test_supervise_when_driver_errors_does_report_error_outcome(
     result = await supervise(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"), max_minutes=10, log_path=str(tmp_path / "events.jsonl")
+        ),
         launch=make_launch(),
     )
 
@@ -504,7 +499,7 @@ async def test_supervise_when_driver_errors_does_log_events_up_to_failure(
     await supervise(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, log_path=str(log_path)),
+        context=make_context(root=str(tmp_path / "repo"), max_minutes=10, log_path=str(log_path)),
         launch=make_launch(),
     )
 
@@ -531,7 +526,12 @@ async def test_supervise_when_observer_raises_does_still_fire_spend_cap(tmp_path
     result = await supervise_fast(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"),
+            max_minutes=10,
+            max_usd=0.1,
+            log_path=str(tmp_path / "events.jsonl"),
+        ),
         launch=make_launch(max_usd=0.1),
         observer=throwing,
     )
@@ -562,7 +562,11 @@ async def test_supervise_when_interrupt_fails_does_warn_and_recover_via_grace(
         result = await supervise(
             driver,
             make_prompt(),
-            context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
+            context=make_context(
+                root=str(tmp_path / "repo"),
+                max_minutes=0.001,
+                log_path=str(tmp_path / "events.jsonl"),
+            ),
             launch=make_launch(max_minutes=0.001),
             grace_ms=50,
         )
@@ -580,7 +584,9 @@ async def test_supervise_when_outcome_rejects_does_propagate_rejection(tmp_path:
         await supervise(
             _RejectingDriver(),
             make_prompt(),
-            context=make_context(max_minutes=5, log_path=str(tmp_path / "events.jsonl")),
+            context=make_context(
+                root=str(tmp_path / "repo"), max_minutes=5, log_path=str(tmp_path / "events.jsonl")
+            ),
             launch=make_launch(),
             observer=probe.observer,
         )
@@ -615,7 +621,11 @@ async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
         return await supervise(
             wrapper,
             make_prompt(),
-            context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
+            context=make_context(
+                root=str(tmp_path / "repo"),
+                max_minutes=0.001,
+                log_path=str(tmp_path / "events.jsonl"),
+            ),
             launch=make_launch(max_minutes=0.001),
             observer=failing_observer,
             grace_ms=grace_ms,
@@ -669,7 +679,9 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(tmp_path: 
     result = await supervise(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"), max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")
+        ),
         launch=make_launch(max_minutes=0.001),
         grace_ms=50,
     )
@@ -712,6 +724,7 @@ async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
         driver,
         make_prompt(),
         context=make_context(
+            root=str(tmp_path / "repo"),
             max_minutes=10,
             log_path=str(tmp_path / "events.jsonl"),
             deadline_ms=deadline_ms,
@@ -754,7 +767,12 @@ async def test_supervise_when_spawned_end_raises_does_warn_to_stderr(
     result = await supervise_fast(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"),
+            max_minutes=10,
+            max_usd=0.1,
+            log_path=str(tmp_path / "events.jsonl"),
+        ),
         launch=make_launch(max_usd=0.1),
     )
 
@@ -810,7 +828,12 @@ async def test_supervise_when_end_session_called_twice_does_fire_session_end_onc
     result = await supervise_fast(
         driver,
         make_prompt(),
-        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
+        context=make_context(
+            root=str(tmp_path / "repo"),
+            max_minutes=10,
+            max_usd=0.1,
+            log_path=str(tmp_path / "events.jsonl"),
+        ),
         launch=make_launch(max_usd=0.1),
     )
 

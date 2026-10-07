@@ -135,6 +135,15 @@ def bash_in_flight_state() -> ReporterState:
     return started("Bash", "bash-1", 1500)
 
 
+def nested_read_state() -> ReporterState:
+    """A Bash call in flight with a nested Read running since 2000 ms."""
+    return advance(
+        bash_in_flight_state(),
+        tool_start_event("Read", "read-1", 2000, parent_tool_use_id="bash-1"),
+        None,
+    )
+
+
 def exiting_state() -> ReporterState:
     """A state whose run-end exit sequence has been settling since 7000 ms."""
     return exit_phase(make_state(), ExitPhase(kind="settling", pid=None), 7000)
@@ -358,22 +367,112 @@ def test_advance_when_nested_tool_ends_does_not_log_it_as_a_finished_tool():
     assert after.liveness == before.liveness
 
 
-def test_advance_when_nested_tool_ends_under_a_nested_phase_does_keep_the_phase():
-    before = advance(
-        bash_in_flight_state(),
-        tool_start_event("Read", "read-1", 2000, parent_tool_use_id="bash-1"),
-        None,
-    )
-    before = advance(before, model_phase_event(2200, "turn_end", parent_tool_use_id="bash-1"), None)
-    before = advance(
-        before, model_phase_event(2300, "responding", parent_tool_use_id="bash-1"), None
-    )
+def test_advance_when_tracked_nested_tool_ends_does_stop_tracking_it():
+    before = nested_read_state()
 
     after = advance(
         before, tool_end_event("Read", "read-1", 2500, parent_tool_use_id="bash-1"), None
     )
 
-    assert (after.nested, after.nested_tool_ids) == (before.nested, ())
+    assert (dict(after.nested), dict(after.nested_tool_ids), dict(after.nested_tools)) == (
+        {},
+        {},
+        {},
+    )
+
+
+@pytest.mark.parametrize(
+    "line_setter",
+    [
+        pytest.param(
+            lambda: tool_start_event("Grep", "grep-1", 2100, parent_tool_use_id="bash-1"),
+            id="running-tool",
+        ),
+        pytest.param(
+            lambda: model_phase_event(2100, "responding", parent_tool_use_id="bash-1"),
+            id="model-phase",
+        ),
+    ],
+)
+def test_advance_when_untracked_nested_tool_ends_does_leave_the_nested_line_alone(
+    line_setter: Callable[[], SessionEvent],
+):
+    before = advance(bash_in_flight_state(), line_setter(), None)
+
+    after = advance(
+        before, tool_end_event("Read", "read-1", 2500, parent_tool_use_id="bash-1"), None
+    )
+
+    assert (set(dict(before.nested)), after.nested) == ({"bash-1"}, before.nested)
+
+
+def two_nested_tools_state() -> ReporterState:
+    """A Bash call in flight with a nested Read (2000 ms) and Grep (2100 ms) both running."""
+    state = advance(
+        bash_in_flight_state(),
+        tool_start_event("Read", "read-1", 2000, parent_tool_use_id="bash-1"),
+        None,
+    )
+    return advance(
+        state, tool_start_event("Grep", "grep-1", 2100, parent_tool_use_id="bash-1"), None
+    )
+
+
+@pytest.mark.parametrize(
+    ("ended", "still_running"),
+    [
+        pytest.param(
+            ("Read", "read-1"),
+            RunningTool(tool_name="Grep", input_summary="...", since=2100),
+            id="first-started-ends",
+        ),
+        pytest.param(
+            ("Grep", "grep-1"),
+            RunningTool(tool_name="Read", input_summary="...", since=2000),
+            id="last-started-ends",
+        ),
+    ],
+)
+def test_advance_when_one_of_two_nested_tools_ends_does_show_the_one_still_running(
+    ended: tuple[str, str], still_running: RunningTool
+):
+    before = two_nested_tools_state()
+
+    after = advance(before, tool_end_event(*ended, 2500, parent_tool_use_id="bash-1"), None)
+
+    assert dict(after.nested) == {"bash-1": still_running}
+
+
+def test_advance_when_nested_model_phase_arrives_after_a_sibling_ends_does_keep_the_running_tool():
+    before = advance(
+        two_nested_tools_state(),
+        tool_end_event("Read", "read-1", 2500, parent_tool_use_id="bash-1"),
+        None,
+    )
+
+    after = advance(
+        before, model_phase_event(2600, "responding", parent_tool_use_id="bash-1"), None
+    )
+
+    assert dict(after.nested) == {
+        "bash-1": RunningTool(tool_name="Grep", input_summary="...", since=2100)
+    }
+
+
+def test_advance_when_parent_tool_ends_does_drop_only_its_own_nested_tools():
+    before = started("Task", "task-1", 1600, base=two_nested_tools_state())
+    before = advance(
+        before, tool_start_event("Glob", "glob-1", 2200, parent_tool_use_id="task-1"), None
+    )
+
+    after = advance(before, tool_end_event("Bash", "bash-1", 3000, started_at_ms=1500), None)
+
+    glob = RunningTool(tool_name="Glob", input_summary="...", since=2200)
+    assert (dict(after.nested), dict(after.nested_tool_ids), dict(after.nested_tools)) == (
+        {"task-1": glob},
+        {"glob-1": "task-1"},
+        {"glob-1": glob},
+    )
 
 
 @pytest.mark.parametrize(
@@ -477,18 +576,44 @@ def test_advance_when_nested_model_phase_arrives_does_record_it_under_the_parent
     assert set(dict(after.nested)) == {"bash-1"}
 
 
-def test_advance_when_nested_model_phase_arrives_during_a_nested_tool_does_keep_the_tool():
-    before = advance(
-        bash_in_flight_state(),
-        tool_start_event("Read", "read-1", 2000, parent_tool_use_id="bash-1"),
+_NESTED_MODEL_PHASES = [
+    pytest.param("thinking", None, id="thinking"),
+    pytest.param("responding", None, id="responding"),
+    pytest.param("tool_input", "Edit", id="tool-input"),
+]
+
+
+@pytest.mark.parametrize(
+    ("phase", "tool_name"),
+    [*_NESTED_MODEL_PHASES, pytest.param("turn_end", None, id="turn-end")],
+)
+def test_advance_when_nested_model_phase_arrives_during_a_nested_tool_does_keep_the_tool(
+    phase: str, tool_name: str | None
+):
+    before = nested_read_state()
+
+    after = advance(
+        before,
+        model_phase_event(2500, phase, tool_name=tool_name, parent_tool_use_id="bash-1"),
         None,
     )
 
-    after = advance(
-        before, model_phase_event(2500, "responding", parent_tool_use_id="bash-1"), None
+    assert after == before
+
+
+@pytest.mark.parametrize(("phase", "tool_name"), _NESTED_MODEL_PHASES)
+def test_advance_when_nested_turn_ends_does_clear_the_nested_model_phase(
+    phase: str, tool_name: str | None
+):
+    before = advance(
+        bash_in_flight_state(),
+        model_phase_event(2000, phase, tool_name=tool_name, parent_tool_use_id="bash-1"),
+        None,
     )
 
-    assert after == before
+    after = advance(before, model_phase_event(2500, "turn_end", parent_tool_use_id="bash-1"), None)
+
+    assert (set(dict(before.nested)), dict(after.nested)) == ({"bash-1"}, {})
 
 
 def test_advance_when_nested_thinking_update_arrives_does_not_change_state():

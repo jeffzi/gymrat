@@ -52,6 +52,7 @@ skip_on_windows_or_root = pytest.mark.skipif(
 from tests._cli import ENTRY as _ENTRY
 from tests._git import EMIT_ONE_BENCH, head_of, write_committed_bench
 from tests._git import run_git as _run_git
+from tests.conftest import list_worktree_dirs
 
 
 def _point_temp_base_at(monkeypatch: pytest.MonkeyPatch, real_base: Path, shape: str) -> None:
@@ -81,7 +82,6 @@ def _point_temp_base_at(monkeypatch: pytest.MonkeyPatch, real_base: Path, shape:
 @skip_on_windows_or_root
 def test_materialize_worktree_when_temp_dir_read_only_does_fail_naming_dir_without_partial_registration(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
@@ -132,7 +132,6 @@ def test_plan_worktree_when_temp_dir_symlink_or_trailing_slash_does_plan_under_r
 @pytest.mark.parametrize("shape", ["symlink", "trailing-slash"])
 def test_cleanup_worktrees_when_temp_dir_symlink_or_trailing_slash_does_sweep_without_leftover(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     shape: str,
@@ -161,7 +160,6 @@ def test_cleanup_worktrees_when_temp_dir_symlink_or_trailing_slash_does_sweep_wi
 @skip_on_windows
 def test_compare_when_stranded_worktree_dir_preexists_does_not_sweep_or_corrupt_it(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
     tmp_path: Path,
 ):
     repo = create_scratch_repo()

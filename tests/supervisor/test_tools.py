@@ -115,7 +115,7 @@ async def test_probe_when_no_names_given_does_build_minimal_argv(
 @pytest.mark.parametrize(
     ("input_data", "expected_args"),
     [
-        pytest.param({"samples": 6}, ["--samples", "6", "--format", "json", "--"], id="samples"),
+        pytest.param({"samples": 6}, ["--format", "json", "--samples", "6", "--"], id="samples"),
         pytest.param({"names": ["a", "b"]}, ["--format", "json", "--", "a", "b"], id="names"),
     ],
 )
@@ -739,7 +739,7 @@ async def _call_via_sdk(
         pytest.param(
             "probe",
             {"names": ["a", "b"], "samples": 6},
-            ["gym", "rat", "probe", "--samples", "6", "--format", "json", "--", "a", "b"],
+            ["gym", "rat", "probe", "--format", "json", "--samples", "6", "--", "a", "b"],
             id="probe-names-and-samples",
         ),
     ],

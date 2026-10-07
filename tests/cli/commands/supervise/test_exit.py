@@ -18,14 +18,16 @@ from typing import Any
 
 import pytest
 
+from gymrat.cli.supervise.preflight import run_preflight
 from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, _live_process_groups
 from gymrat.exec import exec as run_exec
 from gymrat.session.paths import budget_path
+from gymrat.session.records import CommandRecord
 from gymrat.supervisor.events import create_event_log_writer, event_from_wire
-from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
-from gymrat.supervisor.supervise import EndedBy, SupervisionResult
+from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep, run_exit_sequence
+from gymrat.supervisor.supervise import EndedBy, SupervisionResult, supervise
 from gymrat.telemetry import run_spans
 from gymrat.telemetry.run_spans import TracingState
 from tests._process_helpers import is_alive, wait_for_pid_file, wait_until_dead
@@ -40,9 +42,12 @@ from tests.cli.commands.supervise.test_supervise import (
 )
 from tests.cli.supervise._fixtures import (
     follow_up_event,
+    install_baseline_seam,
     make_supervision_result,
     session_state_three_iterations,
 )
+from tests.session.records._fixtures import log_records
+from tests.supervisor._mock_driver import CostStep, create_mock_driver
 
 _EXIT_ERROR = "finalize failed: disk full"
 
@@ -219,6 +224,30 @@ def test_supervise_when_run_ends_does_run_the_exit_sequence_in_the_supervisor_lo
 
     supervise_loop, exit_loop = loops
     assert exit_loop is supervise_loop
+
+
+def test_supervise_when_run_completes_does_log_one_supervise_command_record_per_stage(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch)
+    seams.create_driver.return_value = create_mock_driver([CostStep(cost_usd=0.01)])
+    monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", run_preflight)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise", supervise)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.run_exit_sequence", run_exit_sequence)
+    install_baseline_seam(monkeypatch)
+
+    result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
+
+    supervise_records = [
+        (record.name, record.args)
+        for record in log_records(repo)
+        if isinstance(record, CommandRecord) and record.name == "supervise"
+    ]
+    assert result.exit_code == 0, _err_text(result)
+    assert supervise_records == [
+        ("supervise", {"stage": "preflight"}),
+        ("supervise", {"stage": "exit"}),
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -124,27 +124,35 @@ def ensure_git_exclude(root: str) -> None:
     is this checkout's business, not the project's: nothing gymrat writes should
     show up in a commit the agent under test prepares.
 
+    The file is read and appended as bytes: git gives it no encoding, so
+    whatever it already holds stays byte-for-byte as it was.
+
     Args:
         root: Repository root whose git exclude file gets the session
             directory line.
 
     Raises:
-        GymratError: When ``root`` is not a git repository.
+        GymratError: When ``root`` is not a git repository, or when the exclude
+            file exists but cannot be read.
     """
     exclude_file = Path(git_common_dir(root)) / "info" / "exclude"
-    line = f"{SESSION_DIR_NAME}/"
+    line = f"{SESSION_DIR_NAME}/".encode()
     try:
-        existing = exclude_file.read_text(encoding="utf-8")
+        existing = exclude_file.read_bytes()
     except FileNotFoundError:
-        existing = ""
+        existing = b""
+    except OSError as error:
+        message = f"Cannot read the git exclude file {exclude_file}: {error.strerror}"
+        hint = "Make it a readable file, or remove it, then run the command again."
+        raise GymratError(message, hint=hint) from error
 
-    if any(entry.strip() == line for entry in existing.split("\n")):
+    if any(entry.strip() == line for entry in existing.split(b"\n")):
         return
 
     exclude_file.parent.mkdir(parents=True, exist_ok=True)
-    separator = "" if existing == "" or existing.endswith("\n") else "\n"
-    with exclude_file.open("a", encoding="utf-8") as handle:
-        handle.write(f"{separator}{line}\n")
+    separator = b"" if existing == b"" or existing.endswith(b"\n") else b"\n"
+    with exclude_file.open("ab") as handle:
+        handle.write(separator + line + b"\n")
 
 
 def recreate_workspace(root: str, branch: str, baseline_sha: str) -> None:

@@ -7,9 +7,12 @@ broken install leaves nothing behind.
 
 The scaffold is re-runnable: an existing ``gymrat.toml`` is left byte-identical
 and reported as ``exists``, while the runbook and skill are still filled in.
-``bench`` is therefore only required when the config has to be written. If a
-later artifact write fails, a config this run created is removed so no partial
-scaffold is left — one that was already there is never touched.
+``bench`` is therefore only required when the config has to be written. Every
+artifact is written atomically, and if a write fails, each artifact this run
+created is removed so no partial scaffold is left — one that was already there
+is never touched. The directories this run created go with them, unless
+something else has put a file in one since: a directory that is no longer
+empty is left, along with its ancestors.
 """
 
 import contextlib
@@ -82,13 +85,56 @@ class ScaffoldResult:
     skill: ScaffoldArtifact
 
 
-def _write_artifact(base_dir: Path, relative: str, content: str) -> ScaffoldArtifact:
+def _make_directory(directory: Path) -> bool:
+    try:
+        directory.mkdir()
+    except OSError:
+        # A directory that is already there belongs to whoever made it, even
+        # when it appeared after this run found it missing.
+        if not directory.is_dir():
+            raise
+        return False
+    return True
+
+
+def _make_directories(directory: Path, created: list[Path]) -> None:
+    """Create ``directory`` and its missing ancestors, recording each one this call made.
+
+    A directory is recorded the moment it is made, so a failure part-way
+    through still leaves ``created`` naming everything there is to roll back.
+
+    Args:
+        directory: The directory that must exist afterwards.
+        created: Extended with each directory this call created, an ancestor
+            before its descendants.
+
+    Raises:
+        OSError: When a directory cannot be created.
+    """
+    try:
+        made = _make_directory(directory)
+    except FileNotFoundError:
+        _make_directories(directory.parent, created)
+        made = _make_directory(directory)
+    if made:
+        created.append(directory)
+
+
+def _write_artifact(
+    base_dir: Path, relative: str, content: str, created_directories: list[Path]
+) -> ScaffoldArtifact:
     """Write ``content`` to ``relative`` unless a file is already there.
+
+    The write is atomic, so a failure never leaves a truncated file that a
+    later run would take for an existing artifact.
 
     Args:
         base_dir: The project root the artifact is written into.
         relative: The artifact's path, relative to ``base_dir``.
         content: The text to write.
+        created_directories: Extended with each directory created to hold the
+            artifact, an ancestor before its descendants, including when the
+            write then fails.
 
     Returns:
         The artifact, reported as ``exists`` when a file already occupied the
@@ -102,8 +148,8 @@ def _write_artifact(base_dir: Path, relative: str, content: str) -> ScaffoldArti
         return ScaffoldArtifact(path=relative, status="exists")
 
     try:
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(content, encoding="utf-8")
+        _make_directories(full_path.parent, created_directories)
+        write_text_atomic(full_path, content)
     except OSError as exc:
         msg = f"Cannot write {relative} in {base_dir}"
         raise GymratError(msg, hint=str(exc)) from exc
@@ -183,13 +229,39 @@ def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
     ]
 
 
+def _roll_back(
+    base_dir: Path, artifacts: list[ScaffoldArtifact], created_directories: list[Path]
+) -> None:
+    """Remove the files and directories this run created, and nothing else.
+
+    A removal that fails is skipped, so the error that triggered the rollback
+    is the one that propagates. That is also what keeps a directory someone
+    else has since put a file in: removing a non-empty directory fails.
+
+    Args:
+        base_dir: The project root the artifact paths are relative to.
+        artifacts: The artifacts handled so far; only those with status
+            ``created`` are removed.
+        created_directories: The directories this run created, an ancestor
+            before its descendants.
+    """
+    for artifact in artifacts:
+        if artifact.status == "created":
+            with contextlib.suppress(OSError):
+                (base_dir / artifact.path).unlink(missing_ok=True)
+    for directory in reversed(created_directories):
+        with contextlib.suppress(OSError):
+            directory.rmdir()
+
+
 def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
     """Write the config, runbook stub, and skill file for ``base_dir``.
 
     An existing ``gymrat.toml`` is reported as ``exists`` and left
     byte-identical; the remaining artifacts are still created, which makes a
-    re-run the way to restore a deleted runbook or skill. In every failure
-    case no partial scaffold is left behind.
+    re-run the way to restore a deleted runbook or skill. A failure leaves no
+    partial scaffold behind: the files and the directories this run created
+    are removed, except a directory that is no longer empty.
 
     Args:
         base_dir: The project root to scaffold into.
@@ -221,27 +293,27 @@ def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
         msg = f"Blocked path: {paths}"
         raise GymratError(msg, hint="Remove or rename the blocking entry and re-run.")
 
-    config_artifact = (
-        ScaffoldArtifact(path=CONFIG_FILENAME, status="exists")
-        if config_content is None
-        else _write_config(base_dir, config_content)
-    )
+    artifacts: list[ScaffoldArtifact] = []
+    created_directories: list[Path] = []
     try:
-        runbook_artifact = (
-            _write_artifact(base_dir, DEFAULT_RUNBOOK_PATH, _RUNBOOK_STUB)
+        artifacts.append(
+            ScaffoldArtifact(path=CONFIG_FILENAME, status="exists")
+            if config_content is None
+            else _write_config(base_dir, config_content)
+        )
+        artifacts.append(
+            _write_artifact(base_dir, DEFAULT_RUNBOOK_PATH, _RUNBOOK_STUB, created_directories)
             if request.runbook
             else ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="declined")
         )
-        skill_artifact = (
+        artifacts.append(
             ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="declined")
             if skill_content is None
-            else _write_artifact(base_dir, SKILL_RELATIVE_PATH, skill_content)
+            else _write_artifact(base_dir, SKILL_RELATIVE_PATH, skill_content, created_directories)
         )
     except BaseException:
-        # Only roll back a config this run created; a pre-existing one is the user's.
-        if config_content is not None:
-            with contextlib.suppress(OSError):
-                config_path.unlink(missing_ok=True)
+        _roll_back(base_dir, artifacts, created_directories)
         raise
 
+    config_artifact, runbook_artifact, skill_artifact = artifacts
     return ScaffoldResult(config=config_artifact, runbook=runbook_artifact, skill=skill_artifact)
