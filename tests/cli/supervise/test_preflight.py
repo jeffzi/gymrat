@@ -15,8 +15,9 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 import typer
+from opentelemetry.trace import StatusCode
 
-from gymrat.cli.supervise.preflight import doctor_gate, run_preflight
+from gymrat.cli.supervise.preflight import PreflightFlags, doctor_gate, run_preflight
 from gymrat.config import ResolvedConfig, StopConfig
 from gymrat.doctor import (
     Check,
@@ -26,25 +27,32 @@ from gymrat.doctor import (
     create_doctor_report,
 )
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
-from gymrat.loop.finalize import finalize_session
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import StartResult, start_session
 from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import lockfile_path, session_jsonl_path
+from gymrat.session.paths import experiment_worktree_dir, lockfile_path, session_jsonl_path
 from gymrat.session.records import BaselineRecord, FinalizeRecord
 from gymrat.session.store import append_record
-from tests._git import head_of, run_git
-from tests.cli.supervise._fixtures import start_open_session
-from tests.loop.iterate._fixtures import resolved_config
+from tests._config import resolved_config
+from tests.cli._session import last_command_record
+from tests.cli.supervise._fixtures import (
+    finalized_session,
+    install_baseline_seam,
+    start_open_session,
+)
+from tests.conftest import hold_lock
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     baseline_record,
-    committed_keep,
     iteration_record,
     log_records,
     session_header_of,
     tear_final_line,
 )
+from tests.telemetry._fixtures import (
+    isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
+)
+from tests.telemetry._fixtures import memory_tracing
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -131,13 +139,17 @@ def _run_preflight(
     baseline_ref: str | None = None,
     max_minutes: float = 60,
     force: bool = False,
+    allow_dirty: bool = False,
 ) -> StartResult:
     return run_preflight(
         root=repo,
         config=config if config is not None else resolved_config(),
-        baseline_ref=baseline_ref,
-        max_minutes=max_minutes,
-        force=force,
+        flags=PreflightFlags(
+            baseline_ref=baseline_ref,
+            max_minutes=max_minutes,
+            force=force,
+            allow_dirty=allow_dirty,
+        ),
     )
 
 
@@ -178,23 +190,6 @@ def _install_doctor_seam(
         return result
 
     monkeypatch.setattr(f"{_MODULE}.build_doctor_report", fake_build)
-    return calls
-
-
-def _install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """Replace the baseline measurement path so no real bench runs.
-
-    Returns a list that records each call's keyword arguments.
-    """
-    calls: list[dict[str, Any]] = []
-
-    async def fake_measure(target: object, run_options: object) -> Any:
-        calls.append({"target": target, "run_options": run_options})
-        record = baseline_record(duration_ms=5000)
-        result = create_measurement_result(label=record.label, samples=1, rounds=record.samples)
-        return result, record
-
-    monkeypatch.setattr(f"{_MODULE}.measure_baseline", fake_measure)
     return calls
 
 
@@ -275,7 +270,7 @@ def test_preflight_when_checks_configured_does_not_warn(
 def test_preflight_when_no_session_does_open_and_print_summary_to_stdout(
     repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    _install_baseline_seam(monkeypatch)
+    install_baseline_seam(monkeypatch)
 
     result = _run_preflight(repo)
 
@@ -311,17 +306,8 @@ def test_preflight_when_open_session_and_baseline_given_does_warn_ref_ignored(
 def test_preflight_when_finalized_session_does_archive_and_open_fresh(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _install_baseline_seam(monkeypatch)
-    start_open_session(repo)
-    worktree = Path(repo) / ".gymrat" / "worktrees" / "experiment"
-    (worktree / "README.md").write_text("# edit\n", encoding="utf-8")
-
-    run_git(["add", "README.md"], str(worktree))
-    run_git(["commit", "-m", "edit"], str(worktree))
-    commit = head_of(str(worktree))
-    append_record(session_jsonl_path(repo), iteration_record(seq=1))
-    append_record(session_jsonl_path(repo), committed_keep(1, commit=commit))
-    finalize_session(repo)
+    install_baseline_seam(monkeypatch)
+    finalized_session(repo)
 
     result = _run_preflight(repo)
 
@@ -383,6 +369,25 @@ def test_preflight_when_running_does_hold_lock_from_session_through_feasibility(
     }
 
 
+def test_preflight_when_repository_lock_held_does_refuse_with_the_contention_error_without_opening_a_session(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    install_baseline_seam(monkeypatch)
+    lock_path = lockfile_path(repo)
+    blocker = hold_lock(lock_path, "iterate")
+    try:
+        with pytest.raises(GymratError) as rival:
+            acquire_lock(lock_path, "measure")
+
+        with pytest.raises(GymratError) as refused:
+            _run_preflight(repo)
+    finally:
+        blocker.release()
+
+    assert (str(refused.value), refused.value.hint) == (str(rival.value), rival.value.hint)
+    assert not Path(session_jsonl_path(repo)).exists()
+
+
 # ---------------------------------------------------------------------------
 # torn-tail repair
 # ---------------------------------------------------------------------------
@@ -395,13 +400,105 @@ def test_preflight_when_log_has_torn_tail_does_truncate_before_session_opens(
     start_open_session(repo)
     log_path = session_jsonl_path(repo)
     tear_final_line(log_path)
-    _install_baseline_seam(monkeypatch)
+    install_baseline_seam(monkeypatch)
 
     _run_preflight(repo)
 
     session_header_of(repo)
     baseline_records = [r for r in log_records(repo) if isinstance(r, BaselineRecord)]
     assert len(baseline_records) == 1
+
+
+# ---------------------------------------------------------------------------
+# command record
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_when_it_opens_a_session_does_append_a_supervise_record_for_the_preflight_stage(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    install_baseline_seam(monkeypatch)
+
+    _run_preflight(repo)
+
+    command = last_command_record(repo)
+    assert (command.name, command.args, command.exit_code) == (
+        "supervise",
+        {"stage": "preflight"},
+        0,
+    )
+
+
+def _met_stop_condition(_repo: str) -> ResolvedConfig:
+    """A config whose stop condition the seeded session already meets."""
+    return resolved_config(stop=StopConfig(max_iterations=0))
+
+
+def _dirty_working_tree(repo: str) -> ResolvedConfig:
+    """Leave an uncommitted file in the main working tree; return the default config."""
+    (Path(repo) / "uncommitted.txt").write_text("dirty\n", encoding="utf-8")
+    return resolved_config()
+
+
+def _dirty_experiment_worktree(repo: str) -> ResolvedConfig:
+    """Leave an unmeasured edit in the experiment worktree; return the default config."""
+    (Path(experiment_worktree_dir(repo)) / "scratch.txt").write_text("dirty\n", encoding="utf-8")
+    return resolved_config()
+
+
+_REFUSALS = [
+    pytest.param(_met_stop_condition, id="stop-condition"),
+    pytest.param(_dirty_working_tree, id="dirty-working-tree"),
+    pytest.param(_dirty_experiment_worktree, id="dirty-experiment-worktree"),
+]
+
+
+@pytest.mark.parametrize("refusal", _REFUSALS)
+def test_preflight_when_it_refuses_does_record_the_refusal_on_the_command_record(
+    repo: str, refusal: Callable[[str], ResolvedConfig]
+):
+    seed_session_with_baseline(repo, baseline_duration_ms=1000)
+    config = refusal(repo)
+
+    with pytest.raises(GymratError):
+        _run_preflight(repo, config=config)
+
+    command = last_command_record(repo)
+    assert (command.name, command.args, command.exit_code) == (
+        "supervise",
+        {"stage": "preflight"},
+        2,
+    )
+
+
+def test_preflight_when_tracing_enabled_does_export_a_supervise_command_span(repo: str):
+    seed_session_with_baseline(repo, baseline_duration_ms=1000)
+    session_id = session_header_of(repo).session_id
+
+    with memory_tracing(session_id) as exporter:
+        _run_preflight(repo)
+
+    names = [span.name for span in exporter.get_finished_spans()]
+    assert names.count("gymrat.command.supervise") == 1
+
+
+@pytest.mark.parametrize("refusal", _REFUSALS)
+def test_preflight_when_it_refuses_with_tracing_enabled_does_export_the_supervise_command_span_with_error_status(
+    repo: str, refusal: Callable[[str], ResolvedConfig]
+):
+    seed_session_with_baseline(repo, baseline_duration_ms=1000)
+    session_id = session_header_of(repo).session_id
+    config = refusal(repo)
+
+    with memory_tracing(session_id) as exporter, pytest.raises(GymratError):
+        _run_preflight(repo, config=config)
+
+    statuses = [
+        span.status.status_code
+        for span in exporter.get_finished_spans()
+        if span.name == "gymrat.command.supervise"
+    ]
+    assert statuses == [StatusCode.ERROR]
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +574,21 @@ def test_preflight_when_warning_raised_does_route_it_to_the_warn_sink(
     assert warnings == [expected]
 
 
+def test_preflight_when_tree_dirty_and_allowed_does_route_warning_to_the_warn_sink(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    warnings: list[str] = []
+    monkeypatch.setattr(f"{_MODULE}.warn_to_stderr", warnings.append)
+    seed_session_with_baseline(repo, baseline_duration_ms=1000)
+    _dirty_working_tree(repo)
+
+    _run_preflight(repo, config=resolved_config(checks="npm test"), allow_dirty=True)
+
+    assert warnings == [
+        "warning: working tree has 1 dirty file — proceeding because --allow-dirty was set"
+    ]
+
+
 # ---------------------------------------------------------------------------
 # baseline measurement
 # ---------------------------------------------------------------------------
@@ -485,7 +597,7 @@ def test_preflight_when_warning_raised_does_route_it_to_the_warn_sink(
 def test_preflight_when_no_baseline_record_does_measure_and_append(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    measure_calls = _install_baseline_seam(monkeypatch)
+    measure_calls = install_baseline_seam(monkeypatch)
     start_open_session(repo)
 
     _run_preflight(repo)
@@ -501,7 +613,7 @@ def test_preflight_when_no_baseline_record_does_measure_and_append(
 def test_preflight_when_baseline_already_recorded_does_not_measure(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    measure_calls = _install_baseline_seam(monkeypatch)
+    measure_calls = install_baseline_seam(monkeypatch)
     seed_session_with_baseline(repo, baseline_duration_ms=5000)
 
     _run_preflight(repo)
@@ -541,7 +653,7 @@ def test_preflight_when_session_has_baseline_does_need_one_iterate(repo: str):
 def test_preflight_when_session_lacks_baseline_does_measure_then_charge_one_iterate(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    measure_calls = _install_baseline_seam(monkeypatch)
+    measure_calls = install_baseline_seam(monkeypatch)
     seed_session_with_iteration(repo, iteration_duration_ms=2_880_000, include_baseline=False)
 
     result = _run_preflight(repo, max_minutes=50)
@@ -589,7 +701,7 @@ def test_preflight_when_no_estimate_available_does_print_info_on_stderr_and_proc
 def test_preflight_when_new_session_does_return_a_start_result(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _install_baseline_seam(monkeypatch)
+    install_baseline_seam(monkeypatch)
 
     result = _run_preflight(repo)
 

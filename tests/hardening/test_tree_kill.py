@@ -1141,17 +1141,17 @@ async def test_exec_argv_when_spawning_on_win32_does_not_ask_for_a_posix_session
 ) -> None:
     module = win32_exec(monkeypatch, win32_process_group(monkeypatch, FakeJobs()))
     spawn = asyncio.create_subprocess_exec
-    asked: list[tuple[object, object]] = []
+    asked: list[set[str]] = []
 
     async def record_spawn(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
-        asked.append((kwargs.get("start_new_session"), kwargs.get("preexec_fn")))
+        asked.append(kwargs.keys() & {"start_new_session", "preexec_fn"})
         return await spawn(*args, **kwargs)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", record_spawn)
 
     await module.exec_argv([sys.executable, "-c", "pass"], module.ExecOptions(cwd=str(tmp_path)))
 
-    assert asked == [(False, None)]
+    assert asked == [set()]
 
 
 # ---------------------------------------------------------------------------

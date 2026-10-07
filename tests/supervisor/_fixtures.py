@@ -17,7 +17,6 @@ import asyncio
 import contextlib
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, override
 
@@ -35,8 +34,7 @@ from claude_agent_sdk import (
 
 from gymrat.clock import now_ms, now_ns
 from gymrat.config import BenchlessConfig, Effort
-from gymrat.session.paths import session_jsonl_path
-from gymrat.session.store import append_record
+from gymrat.session.paths import lockfile_path
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
@@ -48,7 +46,9 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
 )
 from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult, supervise
+from tests._config import benchless_config
 from tests.session.records._fixtures import (
+    append_records,
     session_record,
     stop_record,
 )
@@ -118,10 +118,10 @@ def make_prompt(
     *,
     kickoff: str = "do the thing",
     cwd: str = "/tmp/test",
-    system_prompt_append: str | None = None,
+    system_prompt_append: str = "follow the runbook",
     model: str | None = None,
     effort: Effort | None = None,
-    command_timeout_ms: int | None = None,
+    command_timeout_ms: int = 60_000,
     max_budget_usd: float | None = None,
     traceparent: str | None = None,
 ) -> SessionPrompt:
@@ -188,15 +188,7 @@ class _InterruptEmitsEndSession(DelegatingSession):
     @override
     async def interrupt(self) -> None:
         await self._inner.interrupt()
-        self._observer(
-            TurnEndEvent(
-                at=now_ns(),
-                text="",
-                cost_usd=0.0,
-                origin="agent",
-                budget_exhausted=False,
-            )
-        )
+        self._observer(make_turn_end(cost_usd=0.0))
 
 
 class InterruptEmitsEndDriver:
@@ -216,7 +208,7 @@ class InterruptEmitsEndDriver:
         self,
         prompt: SessionPrompt,
         observer: SessionObserver,
-        abort: asyncio.Event | None = None,
+        abort: asyncio.Event,
     ) -> DriverSession:
         """Start a session that emits a ``TurnEndEvent`` on ``interrupt``."""
         inner_session = self._inner.start(prompt, observer, abort)
@@ -356,32 +348,31 @@ class FactoryProbe:
         return self._client
 
 
-def default_benchless_config(**overrides: Any) -> BenchlessConfig:
-    """A minimal ``BenchlessConfig`` for tests that need a context but not a real config.
+def make_turn_end(**overrides: Any) -> TurnEndEvent:
+    """Build an agent ``TurnEndEvent`` from shared defaults, overridden per keyword.
 
     Args:
-        **overrides: ``BenchlessConfig`` fields to set in place of the defaults,
-            such as ``stop``, ``runbook``, ``checks`` or ``timeout_seconds``.
+        **overrides: ``TurnEndEvent`` fields to set in place of the defaults.
 
     Returns:
-        A config with neutral sampling defaults, no runbook and no stop
-        conditions, except where ``overrides`` says otherwise.
+        An agent turn end with no text, stamped now, costing one cent, with
+        budget left, except where ``overrides`` says otherwise.
     """
-    default = BenchlessConfig(
-        adapter="mitata",
-        samples=1,
-        timeout_seconds=60,
-        unstable_noise_pct=5.0,
-        primary="geomean",
-    )
-    return replace(default, **overrides)
+    defaults: dict[str, Any] = {
+        "at": now_ns(),
+        "text": "",
+        "cost_usd": 0.01,
+        "origin": "agent",
+        "budget_exhausted": False,
+    }
+    return TurnEndEvent(**(defaults | overrides))
 
 
 def make_context(
     *,
-    root: str = "/tmp/test-repo",
+    root: str,
     log_path: str = "/tmp/events.jsonl",
-    lock_path: str = "/tmp/test-repo/.gymrat/lockfile",
+    lock_path: str | None = None,
     config: BenchlessConfig | None = None,
     deadline_ms: float | None = None,
     max_minutes: float = 10,
@@ -389,16 +380,27 @@ def make_context(
 ) -> SupervisedSession:
     """Build a ``SupervisedSession`` from shared defaults, overridden per keyword.
 
-    ``deadline_ms`` defaults to ``now_ms() + max_minutes * 60_000`` when not
-    supplied, matching the computation ``_run_session`` performs.
+    Args:
+        root: The repository the session runs in.
+        log_path: Where the supervisor event log is written.
+        lock_path: The repository lock the session probes, or None for the
+            lock gymrat keeps for ``root``.
+        config: The settled config, or None for the benchless defaults.
+        deadline_ms: The wall-clock deadline, or None for ``max_minutes`` from
+            now, matching the computation ``_run_session`` performs.
+        max_minutes: The wall-clock cap in minutes.
+        max_usd: The spend cap in dollars, or None for no cap.
+
+    Returns:
+        The supervised session.
     """
     if deadline_ms is None:
         deadline_ms = now_ms() + max_minutes * 60_000
     return SupervisedSession(
         root=root,
         log_path=log_path,
-        lock_path=lock_path,
-        config=config if config is not None else default_benchless_config(),
+        lock_path=lock_path if lock_path is not None else lockfile_path(root),
+        config=config if config is not None else benchless_config(),
         deadline_ms=deadline_ms,
         max_minutes=max_minutes,
         max_usd=max_usd,
@@ -417,20 +419,17 @@ def follow_ups_with_action(events: list[SessionEvent], action: str) -> list[Foll
 
 def seed_session_log(root: str) -> None:
     """Write a minimal session header so ``read_records`` / ``fold_session`` work."""
-    jsonl_path = session_jsonl_path(root)
-    Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
-    append_record(jsonl_path, session_record())
+    append_records(root, session_record())
 
 
 def seed_with_stop(root: str) -> None:
     """Seed the session log and append a stop record so the classifier sees ``ends_on_stop``."""
-    seed_session_log(root)
-    append_record(session_jsonl_path(root), stop_record())
+    append_records(root, session_record(), stop_record())
 
 
 async def add_stop_async(root: str) -> None:
     """Append a stop record so the classifier sees ``ends_on_stop`` on the next turn end."""
-    append_record(session_jsonl_path(root), stop_record())
+    append_records(root, stop_record())
 
 
 def sent_texts(session: _MockSession) -> list[str | None]:
@@ -445,16 +444,7 @@ def emit_turn_end(
     delay_ms: int | None = None,
 ) -> EmitStep:
     """Build an ``EmitStep`` for a ``TurnEndEvent`` with the fields every caller shares."""
-    return EmitStep(
-        emit=TurnEndEvent(
-            at=now_ns(),
-            text="",
-            cost_usd=cost_usd,
-            origin=origin,
-            budget_exhausted=False,
-        ),
-        delay_ms=delay_ms,
-    )
+    return EmitStep(emit=make_turn_end(cost_usd=cost_usd, origin=origin), delay_ms=delay_ms)
 
 
 async def supervise_fast(
@@ -487,12 +477,10 @@ async def run_session(
     observer: SessionObserver,
     prompt: SessionPrompt | None = None,
     abort: asyncio.Event | None = None,
-    *,
-    max_wait: float = 30.0,
 ) -> SessionOutcome:
     """Start a session and await its settled outcome."""
-    session = driver.start(prompt or make_prompt(), observer, abort)
-    return await asyncio.wait_for(session.outcome, max_wait)
+    session = driver.start(prompt or make_prompt(), observer, abort or asyncio.Event())
+    return await asyncio.wait_for(session.outcome, 30.0)
 
 
 async def run_outcome(

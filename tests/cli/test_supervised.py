@@ -21,17 +21,18 @@ from tests.cli._budget import (
     mark_tool_origin,
     set_origin,
 )
-from tests.conftest import hold_lock
+from tests.conftest import hold_lock, remove_lock_files
 
 #: A budget whose deadline is already in the past, so every liveness check against it answers false.
 EXPIRED_BUDGET = Budget(max_minutes=30, deadline_ms=1.0)
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> str:
-    """A repository root with an empty ``.gymrat`` state directory."""
+def repo(tmp_path: Path) -> Iterator[str]:
+    """A repository root with an empty ``.gymrat`` state directory, its lock files removed after."""
     (tmp_path / ".gymrat").mkdir()
-    return str(tmp_path)
+    yield str(tmp_path)
+    remove_lock_files(str(tmp_path))
 
 
 def _write_budget_directory(repo: str) -> None:

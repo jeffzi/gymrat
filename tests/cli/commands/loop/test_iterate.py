@@ -5,6 +5,7 @@ and inserts a ``budget`` key in JSON output, including on stop-condition exits.
 """
 
 import json
+import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -36,7 +37,7 @@ from tests.cli._session import (
     plain_lines,
     records_of,
     runner,
-    write_config,
+    write_bench_config,
 )
 from tests.loop.iterate._fixtures import (
     MALFORMED_LINE_WARNING,
@@ -80,6 +81,28 @@ def test_iterate_command_when_run_does_measure_the_repo_and_report_on_stdout(
     assert len(non_command) == 2
 
 
+def test_iterate_command_when_progress_sidecar_cannot_be_removed_does_warn_and_keep_the_exit_code(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_session_log(repo, iterate_session_header(repo))
+    mock = install_collect_samples(monkeypatch)
+    stub_samples(mock, repo, improved_rounds(), baseline_rounds())
+    sidecar = progress_path(repo)
+    original_unlink = os.unlink
+
+    def failing_unlink(path: str | os.PathLike[str], *args: object, **kwargs: object) -> None:
+        if str(path) == sidecar:
+            raise PermissionError(13, "The process cannot access the file", sidecar)
+        original_unlink(path, *args, **kwargs)  # type: ignore[arg-type]  # forwards whatever Path.unlink passed
+
+    monkeypatch.setattr(os, "unlink", failing_unlink)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    assert f"could not remove the progress sidecar {sidecar}" in result.stderr
+
+
 def test_iterate_command_when_stop_condition_met_does_exit_one_without_measuring(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -87,7 +110,7 @@ def test_iterate_command_when_stop_condition_met_does_exit_one_without_measuring
         repo, iterate_session_header(repo), (iteration_record(seq=1), committed_keep(1))
     )
     mock = install_collect_samples(monkeypatch)
-    write_config(repo, stop={"max_iterations": 1})
+    write_bench_config(repo, stop={"max_iterations": 1})
 
     result = runner.invoke(app, ["iterate"])
 
@@ -920,7 +943,7 @@ def supervised_repo(
     # The before hook runs in the experiment worktree, so it must exist for the hook to fire.
     Path(header.worktrees.experiment).mkdir()
     marker = Path(repo, "hook-ran")
-    write_config(repo, hooks={"before": f"touch '{marker}'"})
+    write_bench_config(repo, hooks={"before": f"touch '{marker}'"})
     install_budget(repo, monkeypatch)
     return repo
 
@@ -965,7 +988,7 @@ def test_iterate_command_when_tool_hosted_under_live_budget_does_run_the_before_
 def _unsettled(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """An open session whose last iteration was never kept or discarded."""
     write_session_log(repo, iterate_session_header(repo), (iteration_record(seq=1),))
-    write_config(repo)
+    write_bench_config(repo)
     install_budget(repo, monkeypatch)
 
 
@@ -974,7 +997,7 @@ def _stop_condition_met(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     write_session_log(
         repo, iterate_session_header(repo), (iteration_record(seq=1), committed_keep(1))
     )
-    write_config(repo, stop={"max_iterations": 1})
+    write_bench_config(repo, stop={"max_iterations": 1})
     install_budget(repo, monkeypatch)
 
 
@@ -985,7 +1008,7 @@ def _budget_exceeded(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
         iterate_session_header(repo),
         (iteration_record(seq=1, duration_ms=840_000), committed_keep(1)),
     )
-    write_config(repo)
+    write_bench_config(repo)
     install_tight_budget(repo, monkeypatch)
 
 

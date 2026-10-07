@@ -77,14 +77,15 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
     use_json = output_format == OutputFormat.json
 
     async def run() -> None:
+        root = repo_root()
+
         async def body(_trace: CommandTrace) -> tuple[StartResult, str | None]:
-            root = repo_root()
             resolved = resolve_config(flags, root)
             return start_session(root, baseline, resolved), resolved.runbook
 
-        result, runbook = await with_repo_lock("start", body, args=start_args)
+        result, runbook = await with_repo_lock("start", body, args=start_args, root=root)
         write_budget_report(
-            repo_root(),
+            root,
             use_json=use_json,
             render_json=lambda summary: render_start_json(result, runbook=runbook, budget=summary),
             text_report=format_start_summary(result, runbook),
@@ -127,12 +128,14 @@ def finalize(
     use_json = output_format == OutputFormat.json
 
     async def run() -> None:
-        async def body(_trace: CommandTrace) -> FinalizeResult:
-            return finalize_session(repo_root(), FinalizeOptions(message=message, branch=branch))
+        root = repo_root()
 
-        result = await with_repo_lock("finalize", body, args=finalize_args)
+        async def body(_trace: CommandTrace) -> FinalizeResult:
+            return finalize_session(root, FinalizeOptions(message=message, branch=branch))
+
+        result = await with_repo_lock("finalize", body, args=finalize_args, root=root)
         write_budget_report(
-            repo_root(),
+            root,
             use_json=use_json,
             render_json=lambda summary: render_finalize_json(result, budget=summary),
             text_report=result.report,
@@ -173,7 +176,7 @@ def stop(
         async def body(_trace: CommandTrace) -> StopResult:
             return stop_session(root, message)
 
-        result = await with_repo_lock("stop", body)
+        result = await with_repo_lock("stop", body, root=root)
         write_budget_report(
             root,
             use_json=use_json,
@@ -203,17 +206,19 @@ def sync(
     use_json = output_format == OutputFormat.json
 
     async def run() -> None:
-        async def body(_trace: CommandTrace) -> SyncResult:
-            return sync_to_experiment(repo_root())
+        root = repo_root()
 
-        result = await with_repo_lock("sync", body)
+        async def body(_trace: CommandTrace) -> SyncResult:
+            return sync_to_experiment(root)
+
+        result = await with_repo_lock("sync", body, root=root)
         if not result.files:
             text_report = "nothing to sync"
         else:
             header = f"Synced {pluralize(len(result.files), 'file')} to experiment worktree:"
             text_report = "\n".join([header, *(f"  {f}" for f in result.files)])
         write_budget_report(
-            repo_root(),
+            root,
             use_json=use_json,
             render_json=lambda summary: render_sync_json(result, budget=summary),
             text_report=text_report,

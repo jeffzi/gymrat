@@ -27,6 +27,19 @@ def strip_sgr(text: str) -> str:
     return SGR_RE.sub("", text)
 
 
+def stripped_lines(text: str, *, keep_blank: bool) -> list[str]:
+    """Split ``text`` into lines with SGR sequences and surrounding whitespace removed.
+
+    Args:
+        text: The rendered text, one line per newline.
+        keep_blank: Whether whitespace-only lines stay in the result, as empty strings.
+
+    Returns:
+        The stripped lines, in order.
+    """
+    return [strip_sgr(line).strip() for line in text.split("\n") if keep_blank or line.strip()]
+
+
 def normalize(text: str) -> str:
     """Strip ANSI codes then collapse whitespace, so a reflowed block matches."""
     return " ".join(strip_ansi(text).split())

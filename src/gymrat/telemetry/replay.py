@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
+from gymrat.errors import GymratError
 from gymrat.session.records import CommandRecord, SessionRecord, decode_log_line, parse_record
 from gymrat.supervisor.events import (
     LaunchEvent,
@@ -18,19 +18,20 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
     event_from_wire,
 )
-from gymrat.telemetry.attributes import (
+from gymrat.telemetry.provider import (
     RUN_COST_USD,
     RUN_SPAN,
     SESSION_SPAN,
     SESSION_SPAN_KEY,
     Attrs,
+    parse_traceparent,
     record_event,
     run_attributes,
     run_event,
     run_span_key,
+    start_command_span,
+    start_span,
 )
-from gymrat.telemetry.ids import parse_traceparent
-from gymrat.telemetry.provider import start_command_span, start_span
 from gymrat.utils import NS_PER_MS
 
 if TYPE_CHECKING:
@@ -45,8 +46,6 @@ logger = logging.getLogger(__name__)
 type _EventTuple = tuple[str, Attrs, int]
 type _NumberedRecord = tuple[int, SessionLogRecord]
 type _RunSpan = tuple[_ParsedRun, Span]
-
-_UNKNOWN_COMMAND_NAME = "unknown"
 
 
 def replay_session(
@@ -129,16 +128,18 @@ def _create_command_spans(
     session_span: Span,
     run_spans: list[_RunSpan],
 ) -> int:
-    """Create ``gymrat.command.*`` spans and attach inter-command records as events.
+    """Create ``gymrat.command.*`` spans and attach the session's records as events.
 
-    Records before the first command and after the last command are attached
-    as events on the session span.  Records between two commands are attached
-    to the later command's span.
+    Records before a command, including those before the first command, are
+    attached to that command's span, matching live emission where a command's
+    span carries the records it appended to the log. Records after the last
+    command have no owning command and are attached to the session span. The
+    session header is never an event.
 
     Args:
         numbered_records: The session's records with their log line numbers.
         session_id: The session the spans belong to.
-        session_span: The span that records outside every command attach to.
+        session_span: The span that records after the last command attach to.
         run_spans: The supervisor runs, each with its span.
 
     Returns:
@@ -146,18 +147,12 @@ def _create_command_spans(
     """
     pending_events: list[_EventTuple] = []
     cmd_count = 0
-    seen_command = False
 
     for line_number, rec in numbered_records:
         if isinstance(rec, SessionRecord):
             continue
 
         if isinstance(rec, CommandRecord):
-            if not seen_command:
-                # Pre-command records go on the session span, not on the first command.
-                _add_events(session_span, pending_events)
-                pending_events.clear()
-                seen_command = True
             cmd_count += 1
             _emit_command_span(
                 rec, line_number, session_id, session_span, run_spans, pending_events
@@ -208,13 +203,16 @@ class _ParsedRun:
         self.events: list[_EventTuple] = []
 
 
-def _read_lines(path: str) -> list[str]:
-    """Read *path* as UTF-8 text.
+def _read_lines(path: str) -> list[bytes]:
+    """Read *path* as raw lines, leaving each one to be decoded on its own.
+
+    Decoding the whole file at once would let one undecodable line, such as a
+    final record torn mid-character by a crash, hide every other line. CRLF and
+    lone CR are folded into a line feed, as text-mode reading would.
 
     Deliberately narrower than :meth:`str.splitlines`, which also breaks on
     U+0085, U+2028 and U+2029 — characters a JSON string may carry raw, so
     splitting there would tear one record into two invalid halves.
-    ``read_text`` already folds CRLF and lone CR into a line feed.
 
     Args:
         path: The file to read.
@@ -224,10 +222,11 @@ def _read_lines(path: str) -> list[str]:
         exist.
     """
     try:
-        lines = Path(path).read_text(encoding="utf-8").split("\n")
+        content = Path(path).read_bytes()
     except FileNotFoundError:
         return []
-    if lines[-1] == "":
+    lines = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
+    if lines[-1] == b"":
         lines.pop()
     return lines
 
@@ -244,10 +243,10 @@ def _read_session_log(path: str) -> list[_NumberedRecord]:
     return records
 
 
-def _parse_session_log_line(path: str, line_number: int, line: str) -> SessionLogRecord | None:
+def _parse_session_log_line(path: str, line_number: int, line: bytes) -> SessionLogRecord | None:
     """Parse one JSONL line into a typed record, or None to skip it."""
     try:
-        wire_value = decode_log_line(line)
+        wire_value = decode_log_line(line.decode("utf-8"))
     except ValueError:
         logger.warning("session log %s: skipping line %d (invalid JSON)", path, line_number)
         return None
@@ -256,26 +255,11 @@ def _parse_session_log_line(path: str, line_number: int, line: str) -> SessionLo
     try:
         return parse_record(wire_value)
     except GymratError:
-        if wire_value.get("type") != "command":
-            return None
-        cmd_name = wire_value.get("name", _UNKNOWN_COMMAND_NAME)
-        logger.warning(
-            "session log %s: command %r fell back to model_construct",
-            path,
-            cmd_name,
-        )
-        return _construct_command(wire_value)
-
-
-def _construct_command(data: dict[str, object]) -> CommandRecord:
-    """Build a CommandRecord without running model validators."""
-    filled = dict(data)
-    filled.setdefault("args", {})
-    filled.setdefault("name", _UNKNOWN_COMMAND_NAME)
-    filled.setdefault("duration_ms", 0)
-    filled.setdefault("exit_code", TOOL_FAILURE_EXIT_CODE)
-    # pyrefly: ignore[bad-argument-type] -- dict[str, object] is the wire dict shape
-    return CommandRecord.model_construct(**filled)
+        if wire_value.get("type") == "command":
+            logger.warning(
+                "session log %s: skipping line %d (invalid command record)", path, line_number
+            )
+        return None
 
 
 def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | None:
@@ -343,10 +327,10 @@ def _find_parent_run(rec: CommandRecord, run_spans: list[_RunSpan]) -> Span | No
     return None
 
 
-def _safe_json(line: str) -> dict[str, object] | None:
-    """Parse a JSON line into a dict, or None on failure."""
+def _safe_json(line: bytes) -> dict[str, object] | None:
+    """Parse a UTF-8 JSON line into a dict, or None on failure."""
     try:
-        wire_value = decode_log_line(line)
+        wire_value = decode_log_line(line.decode("utf-8"))
     except ValueError:
         return None
     return wire_value if isinstance(wire_value, dict) else None

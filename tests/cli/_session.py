@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, override
 
 import pytest
-import tomli_w
 from typer.testing import CliRunner
 
 from gymrat.config import ResolvedConfig
@@ -27,12 +26,13 @@ from gymrat.report.types import MeasurementResult
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import CommandRecord, SessionRecord
 from gymrat.session.store import append_record
-from tests._ansi import SGR_RE
+from tests._ansi import stripped_lines
+from tests._config import resolved_config
 from tests._git import head_of, run_git
 from tests._streams import RaisingStream
+from tests.config._toml import write_config
 from tests.loop._probe import install_measure
 from tests.loop._settle import start_with
-from tests.loop.iterate._fixtures import resolved_config
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     committed_keep,
@@ -124,10 +124,8 @@ def stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fake(*_a: object, **_k: object) -> ResolvedConfig:
         # A config the fake ``measure`` never actually benches against.
-        return ResolvedConfig(
+        return resolved_config(
             bench="sh bench.sh",
-            prepare=None,
-            adapter="metric-lines",
             samples=5,
             timeout_seconds=30,
             unstable_noise_pct=2.0,
@@ -167,7 +165,7 @@ def stub_measure(
 
 def plain_lines(text: str) -> list[str]:
     """The non-blank lines of ``text``, stripped of color and surrounding space."""
-    return [SGR_RE.sub("", line).strip() for line in text.split("\n") if line.strip()]
+    return stripped_lines(text, keep_blank=False)
 
 
 def always_tty(_stream: object) -> bool:
@@ -202,7 +200,7 @@ def open_session(repo: str) -> None:
 def stop_repo(repo: str) -> str:
     """A repository with a settled, configured session ready for the stop command."""
     start_with(repo, (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    write_bench_config(repo)
     return repo
 
 
@@ -251,7 +249,6 @@ def records_of(repo: str, *, commands: bool) -> list[object]:
     return [r for r in log_records(repo) if isinstance(r, CommandRecord) is commands]
 
 
-def write_config(root: str, **extra: object) -> None:
-    """Write the implicit ``gymrat.toml`` at the repository root."""
-    payload: dict[str, object] = {"bench": "npm run bench", **extra}
-    (Path(root) / "gymrat.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+def write_bench_config(root: str, **extra: object) -> None:
+    """Write the implicit ``gymrat.toml`` at the repository root, naming a bench command."""
+    write_config(Path(root), {"bench": "npm run bench", **extra})

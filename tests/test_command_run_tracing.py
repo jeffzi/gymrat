@@ -6,6 +6,9 @@ the flush before return. They share the session-seeding helpers with
 ``test_command_run``.
 """
 
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+
 import pytest
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -14,14 +17,24 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 
 from gymrat.command_run import CommandTrace, with_repo_lock
 from gymrat.errors import GymratError
-from gymrat.session.paths import repo_root, session_jsonl_path
-from gymrat.session.store import append_record
+from gymrat.session.paths import archived_session_path, repo_root, session_jsonl_path
+from gymrat.session.records import CommandRecord, SessionRecord
+from gymrat.session.store import append_record, session_header
 from tests._command_run_fixtures import ok_body as _ok_body
 from tests._command_run_fixtures import seeded_session as _seeded_session
-from tests.session.records._fixtures import iteration_record, log_records
+from tests.session.records._fixtures import (
+    baseline_record,
+    iteration_record,
+    log_records,
+    session_record,
+    write_session_log,
+)
 from tests.telemetry._fixtures import (
     isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )
+
+#: The id of the session a ``start`` opens over the previous one.
+_FRESH_SESSION_ID = "20260809-090000-b7e4"
 
 # ---------------------------------------------------------------------------
 # with_repo_lock — command span export (tracing enabled)
@@ -38,7 +51,7 @@ def _command_span(
 async def test_with_repo_lock_when_tracing_enabled_does_export_command_span(
     repo: str,
 ):
-    from gymrat.telemetry.ids import trace_id_of
+    from gymrat.telemetry.provider import trace_id_of
     from tests.telemetry._fixtures import memory_tracing
 
     header = _seeded_session(repo)
@@ -55,7 +68,7 @@ async def test_with_repo_lock_when_tracing_enabled_does_export_command_span(
 async def test_with_repo_lock_when_tracing_enabled_does_use_deterministic_span_id(
     repo: str,
 ):
-    from gymrat.telemetry.ids import span_id_of
+    from gymrat.telemetry.provider import span_id_of
     from tests.telemetry._fixtures import memory_tracing
 
     header = _seeded_session(repo)
@@ -191,7 +204,7 @@ async def test_with_repo_lock_when_gymrat_traceparent_set_does_use_as_parent(
 async def test_with_repo_lock_when_gymrat_traceparent_absent_does_parent_under_session(
     repo: str,
 ):
-    from gymrat.telemetry.ids import span_id_of, trace_id_of
+    from gymrat.telemetry.provider import span_id_of, trace_id_of
     from tests.telemetry._fixtures import memory_tracing
 
     header = _seeded_session(repo)
@@ -209,7 +222,7 @@ async def test_with_repo_lock_when_gymrat_traceparent_malformed_does_parent_unde
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from gymrat.telemetry.ids import span_id_of, trace_id_of
+    from gymrat.telemetry.provider import span_id_of, trace_id_of
     from tests.telemetry._fixtures import memory_tracing
 
     header = _seeded_session(repo)
@@ -274,6 +287,30 @@ async def test_with_repo_lock_when_traceparent_malformed_does_not_add_link(
     assert len(command_span.links) == 0
 
 
+async def test_with_repo_lock_when_otlp_exporter_missing_does_run_body_without_tracing(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    from tests.telemetry._collector import otlp_collector
+    from tests.telemetry._fixtures import hide_otlp_exporter
+
+    _seeded_session(repo)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+    hide_otlp_exporter(monkeypatch)
+
+    with otlp_collector() as collector:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint)
+        result = await with_repo_lock("measure", _ok_body)
+
+    records = log_records(repo_root())
+    assert result == "ok"
+    assert isinstance(records[-1], CommandRecord)
+    assert records[-1].name == "measure"
+    assert collector.received == []
+    assert capsys.readouterr().err == ""
+
+
 async def test_with_repo_lock_when_tracing_enabled_does_flush_before_return(
     repo: str,
 ):
@@ -281,12 +318,156 @@ async def test_with_repo_lock_when_tracing_enabled_does_flush_before_return(
 
     header = _seeded_session(repo)
 
-    with memory_tracing(header.session_id) as exporter:
+    with memory_tracing(header.session_id, buffered=True) as exporter:
         await with_repo_lock("measure", _ok_body)
 
         spans_before_exit = exporter.get_finished_spans()
 
     assert any(s.name == "gymrat.command.measure" for s in spans_before_exit)
+
+
+# ---------------------------------------------------------------------------
+# with_repo_lock — a start that opens a new session log
+# ---------------------------------------------------------------------------
+
+
+def _replace_session_log(previous: SessionRecord, fresh: SessionRecord) -> None:
+    """Archive the open session log and write a fresh one holding ``fresh`` and a baseline."""
+    root = repo_root()
+    archive = Path(archived_session_path(root, previous.session_id))
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    Path(session_jsonl_path(root)).rename(archive)
+    write_session_log(root, fresh, (baseline_record(),))
+
+
+def _start_body(previous: SessionRecord) -> Callable[[CommandTrace], Awaitable[str]]:
+    """A ``start`` body that replaces ``previous``'s log with a fresh session's."""
+
+    async def body(trace: CommandTrace) -> str:
+        _replace_session_log(previous, session_record(session_id=_FRESH_SESSION_ID))
+        return "started"
+
+    return body
+
+
+def _seeded_long_session(repo: str) -> SessionRecord:
+    """Write a session header followed by three iterations, longer than a fresh session's log."""
+    header = session_record()
+    write_session_log(repo, header, tuple(iteration_record(seq=seq) for seq in (1, 2, 3)))
+    return header
+
+
+def _start_spans(exporter: InMemorySpanExporter) -> list[ReadableSpan]:
+    """Every finished ``start`` command span."""
+    return [s for s in exporter.get_finished_spans() if s.name == "gymrat.command.start"]
+
+
+async def test_with_repo_lock_when_start_opens_a_new_session_does_key_span_on_the_log_holding_the_record(
+    repo: str,
+):
+    from gymrat.telemetry.provider import span_id_of, trace_id_of
+    from tests.telemetry._fixtures import memory_tracing
+
+    previous = _seeded_long_session(repo)
+
+    with memory_tracing(_FRESH_SESSION_ID) as exporter:
+        await with_repo_lock("start", _start_body(previous))
+
+    records = log_records(repo_root())
+    assert isinstance(records[-1], CommandRecord)
+    holder = session_header(repo_root())
+    assert holder is not None
+    spans = _start_spans(exporter)
+    assert len(spans) == 1
+    span = spans[0]
+    assert dict(span.attributes or {})["gymrat.session.id"] == holder.session_id
+    assert span.context.trace_id == trace_id_of(holder.session_id)  # pyrefly: ignore[missing-attribute]
+    assert span.context.span_id == span_id_of(holder.session_id, f"command:{len(records)}")  # pyrefly: ignore[missing-attribute]
+
+
+async def test_with_repo_lock_when_start_opens_the_first_session_does_key_span_on_it(
+    repo: str,
+):
+    from gymrat.telemetry.provider import span_id_of, trace_id_of
+    from tests.telemetry._fixtures import memory_tracing
+
+    async def first_start(trace: CommandTrace) -> str:
+        write_session_log(repo_root(), session_record(session_id=_FRESH_SESSION_ID))
+        return "started"
+
+    with memory_tracing(_FRESH_SESSION_ID) as exporter:
+        await with_repo_lock("start", first_start)
+
+    records = log_records(repo_root())
+    spans = _start_spans(exporter)
+    assert [dict(span.attributes or {})["gymrat.session.id"] for span in spans] == [
+        _FRESH_SESSION_ID
+    ]
+    assert spans[0].context.trace_id == trace_id_of(_FRESH_SESSION_ID)  # pyrefly: ignore[missing-attribute]
+    assert spans[0].context.span_id == span_id_of(_FRESH_SESSION_ID, f"command:{len(records)}")  # pyrefly: ignore[missing-attribute]
+
+
+async def test_with_repo_lock_when_start_opens_a_new_session_under_gymrat_traceparent_does_parent_on_it(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from gymrat.telemetry.provider import span_id_of
+    from tests.telemetry._fixtures import memory_tracing
+
+    previous = _seeded_long_session(repo)
+    env_trace_id = 0x0102030405060708090A0B0C0D0E0F10
+    env_span_id = 0x1112131415161718
+    monkeypatch.setenv("GYMRAT_TRACEPARENT", f"00-{env_trace_id:032x}-{env_span_id:016x}-01")
+
+    with memory_tracing(_FRESH_SESSION_ID) as exporter:
+        await with_repo_lock("start", _start_body(previous))
+
+    records = log_records(repo_root())
+    (span,) = _start_spans(exporter)
+    assert span.parent is not None
+    assert (span.parent.trace_id, span.parent.span_id) == (env_trace_id, env_span_id)
+    assert span.context.trace_id == env_trace_id  # pyrefly: ignore[missing-attribute]
+    assert dict(span.attributes or {})["gymrat.session.id"] == _FRESH_SESSION_ID
+    assert span.context.span_id == span_id_of(_FRESH_SESSION_ID, f"command:{len(records)}")  # pyrefly: ignore[missing-attribute]
+
+
+async def test_with_repo_lock_when_start_opens_a_new_session_does_add_that_logs_records_as_events(
+    repo: str,
+):
+    from gymrat.telemetry.provider import record_event
+    from tests.telemetry._fixtures import memory_tracing
+
+    previous = _seeded_long_session(repo)
+
+    with memory_tracing(_FRESH_SESSION_ID) as exporter:
+        await with_repo_lock("start", _start_body(previous))
+
+    (span,) = _start_spans(exporter)
+    event_names = [e.name for e in span.events]
+    baseline_event, _attrs = record_event(baseline_record())
+    iteration_event, _attrs = record_event(iteration_record())
+    assert baseline_event in event_names
+    assert iteration_event not in event_names
+
+
+async def test_with_repo_lock_when_start_cannot_append_its_record_does_emit_no_command_span(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from tests.telemetry._fixtures import memory_tracing
+
+    previous = _seeded_long_session(repo)
+
+    def broken_append(path: str, record: object) -> None:
+        msg = "disk full"
+        raise GymratError(msg)
+
+    monkeypatch.setattr("gymrat.command_run.append_record", broken_append)
+
+    with memory_tracing(_FRESH_SESSION_ID) as exporter:
+        await with_repo_lock("start", _start_body(previous))
+
+    assert _start_spans(exporter) == []
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +511,29 @@ async def test_with_repo_lock_when_collector_rejects_the_export_does_return_body
         True,
         True,
     )
+
+
+async def test_with_repo_lock_when_first_start_traced_only_by_endpoint_does_export_its_span_keyed_on_the_new_session(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from tests.telemetry._collector import otlp_collector
+
+    async def first_start(trace: CommandTrace) -> str:
+        write_session_log(repo_root(), session_record(session_id=_FRESH_SESSION_ID))
+        return "started"
+
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+    with otlp_collector() as collector:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint)
+        await with_repo_lock("start", first_start)
+
+    start_sessions = [
+        span.attributes.get("gymrat.session.id")
+        for span in collector.spans
+        if span.name == "gymrat.command.start"
+    ]
+    assert start_sessions == [_FRESH_SESSION_ID]
 
 
 async def test_with_repo_lock_when_endpoint_whitespace_only_does_export_nothing(

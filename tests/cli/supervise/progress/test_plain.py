@@ -13,10 +13,12 @@ import pytest
 from gymrat.supervisor.events import CompactionEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
 from gymrat.utils import NS_PER_MS
+from tests._logging import unhandled_logging
 from tests.cli.supervise._fixtures import (
     ReporterKit,
     _throwing_read,
     cap_event,
+    fire_launch_and_bash_cycle,
     follow_up_event,
     launch_event,
     make_read_session,
@@ -151,6 +153,36 @@ def test_plain_when_no_session_yet_does_not_print_loop_segment():
 
     assert plain.writes[-1] == "caps 60m"
     assert all("no session yet" not in w for w in plain.writes)
+
+
+def test_plain_when_session_read_keeps_failing_does_warn_once_and_leave_stderr_empty(
+    capsys: pytest.CaptureFixture[str],
+):
+    plain = make_plain_reporter(read_session=_throwing_read)
+
+    with unhandled_logging():
+        fire_launch_and_bash_cycle(plain.observer)
+        plain.reporter.refresh_session()
+
+    reports = [line for line in plain.writes if "session read failed" in line]
+    assert (reports, capsys.readouterr().err) == (["session read failed: no session file"], "")
+
+
+def test_plain_when_session_read_fails_again_after_recovering_does_not_warn_a_second_time():
+    recovered = make_read_session(session_state(), has_baseline=True)
+    reads = iter([_throwing_read, recovered, _throwing_read])
+
+    def read_in_turn() -> ReadSessionResult:
+        return next(reads)()
+
+    plain = make_plain_reporter(read_session=read_in_turn)
+
+    plain.reporter.refresh_session()
+    plain.reporter.refresh_session()
+    plain.reporter.refresh_session()
+
+    reports = [line for line in plain.writes if "session read failed" in line]
+    assert reports == ["session read failed: no session file"]
 
 
 def test_plain_when_capped_does_print_cap_interrupting():

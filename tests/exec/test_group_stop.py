@@ -2,7 +2,8 @@
 
 A second signal kills every live group at once, after a shortened grace that a
 nested gymrat run spends finishing its own teardown; stopping a group waits for
-every running member, not just its leader.
+every running member, not just its leader; a nested gymrat run gets to finish
+its own bench sweep before the run above it kills it.
 """
 
 import asyncio
@@ -196,7 +197,7 @@ async def test_exec_when_second_signal_arrives_before_kill_sweep_runs_does_let_n
 
 
 # ---------------------------------------------------------------------------
-# a nested run's escalation grace halves per nesting level
+# a nested run's stop and escalation graces halve per nesting level
 # ---------------------------------------------------------------------------
 
 
@@ -248,6 +249,78 @@ async def test_exec_when_second_signal_arrives_in_nested_run_does_halve_grace_pe
     assert group_wait_graces == [pytest.approx(expected_grace_s)]
 
 
+@pytest.mark.parametrize(
+    ("nesting_depth", "expected_grace_s"),
+    [
+        pytest.param(0, 1.0, id="top-level"),
+        pytest.param(1, 0.5, id="nested-once"),
+        pytest.param(2, 0.25, id="nested-twice"),
+        pytest.param(3, 0.125, id="nested-three-times"),
+    ],
+)
+async def test_kill_live_process_groups_when_run_is_nested_does_halve_grace_per_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+    group_wait_graces: list[float],
+    *,
+    nesting_depth: int,
+    expected_grace_s: float,
+) -> None:
+    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", nesting_depth)
+    task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, make_opts(stdin="go\n")))
+    await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
+
+    exec_mod.kill_live_process_groups()
+
+    await task
+    assert group_wait_graces == [pytest.approx(expected_grace_s)]
+
+
+@pytest.fixture
+def abort_wait_graces(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record the grace each aborted run's stop is given, still waiting it out for real."""
+    graces: list[float] = []
+    real_wait = exec_mod._wait_for_exit
+
+    async def record(proc: asyncio.subprocess.Process, grace_s: float) -> bool:
+        graces.append(grace_s)
+        return await real_wait(proc, grace_s)
+
+    monkeypatch.setattr(exec_mod, "_wait_for_exit", record)
+    return graces
+
+
+@pytest.mark.parametrize(
+    ("nesting_depth", "expected_grace_s"),
+    [
+        pytest.param(0, 1.0, id="top-level"),
+        pytest.param(1, 0.5, id="nested-once"),
+        pytest.param(2, 0.25, id="nested-twice"),
+        pytest.param(3, 0.125, id="nested-three-times"),
+    ],
+)
+async def test_exec_when_aborted_in_nested_run_does_halve_grace_per_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+    abort_wait_graces: list[float],
+    *,
+    nesting_depth: int,
+    expected_grace_s: float,
+) -> None:
+    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", nesting_depth)
+    abort = asyncio.Event()
+    options = make_opts(stdin="go\n", abort=abort)
+    task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, options))
+    await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
+
+    abort.set()
+
+    await task
+    assert abort_wait_graces == [pytest.approx(expected_grace_s)]
+
+
 # ---------------------------------------------------------------------------
 # stopping a group waits for every member, not just the leader
 # ---------------------------------------------------------------------------
@@ -290,3 +363,81 @@ async def test_exec_when_timed_out_and_leader_dies_before_nested_child_does_let_
     await run_exec(command, make_opts(timeout_ms=_TIMEOUT_AFTER_START_MS))
 
     assert (tmp_path / _CLEANED_MARKER).exists(), "the group was killed once its leader died"
+
+
+# ---------------------------------------------------------------------------
+# a nested gymrat run finishes its own bench sweep before it is killed
+# ---------------------------------------------------------------------------
+
+# A real nested gymrat run: it installs the termination cleanup, then runs the
+# bench named in ``argv[1]`` through ``exec``, which puts the bench in a session
+# of its own. Killing this run's group therefore never reaches the bench: only
+# the run's own sweep does.
+_NESTED_RUN_SCRIPT = """
+import asyncio, os, sys
+
+from gymrat.exec import ExecOptions, exec, kill_live_process_groups
+from gymrat.signals import install_termination_cleanup
+
+install_termination_cleanup(kill_live_process_groups)
+asyncio.run(exec(sys.argv[1], ExecOptions(cwd=os.getcwd(), stdin="go\\n")))
+"""
+
+# Upper bound for the nested run to start an interpreter, import gymrat and get
+# its bench going.
+_NESTED_START_TIMEOUT_S = 20.0
+
+# Upper bound for a stopped outer run to settle, including its grace.
+_NESTED_SETTLE_TIMEOUT_S = 10.0
+
+# How long a bench killed by the nested run's sweep may take to show as dead
+# once the outer run has settled: a kill lands in milliseconds, while a bench
+# the sweep never reached sleeps on for half a minute.
+_KILLED_BENCH_SETTLE_S = 0.5
+
+
+def nested_run_command() -> str:
+    """Return a shell command running a nested gymrat whose bench ignores SIGTERM.
+
+    Returns:
+        The command, for ``exec`` to run under ``sh -c`` with the nested run as
+        the group's leader.
+    """
+    nested_run = shlex.join([
+        sys.executable,
+        "-c",
+        _NESTED_RUN_SCRIPT,
+        _STARTED_TERM_IGNORING_COMMAND,
+    ])
+    return f"exec {nested_run}"
+
+
+async def test_kill_live_process_groups_when_nested_run_sweeps_term_ignoring_bench_does_leave_bench_dead(
+    tmp_path: Path,
+    make_opts: Callable[..., ExecOptions],
+    reap_groups: list[int],
+) -> None:
+    task = asyncio.create_task(run_exec(nested_run_command(), make_opts()))
+    bench = await wait_for_pid_file(tmp_path / _SHELL_PID_FILE, _NESTED_START_TIMEOUT_S)
+    reap_groups.append(bench)
+
+    exec_mod.kill_live_process_groups()
+
+    await asyncio.wait_for(task, _NESTED_SETTLE_TIMEOUT_S)
+    await wait_until_dead(bench, timeout_s=_KILLED_BENCH_SETTLE_S)
+
+
+async def test_exec_when_aborted_and_nested_run_sweeps_term_ignoring_bench_does_leave_bench_dead(
+    tmp_path: Path,
+    make_opts: Callable[..., ExecOptions],
+    reap_groups: list[int],
+) -> None:
+    abort = asyncio.Event()
+    task = asyncio.create_task(run_exec(nested_run_command(), make_opts(abort=abort)))
+    bench = await wait_for_pid_file(tmp_path / _SHELL_PID_FILE, _NESTED_START_TIMEOUT_S)
+    reap_groups.append(bench)
+
+    abort.set()
+
+    await asyncio.wait_for(task, _NESTED_SETTLE_TIMEOUT_S)
+    await wait_until_dead(bench, timeout_s=_KILLED_BENCH_SETTLE_S)

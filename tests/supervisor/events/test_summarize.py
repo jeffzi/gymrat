@@ -174,6 +174,46 @@ def test_summarize_input_when_path_outside_root_and_home_does_render_verbatim():
     assert result == "/etc/config.ini"
 
 
+@pytest.mark.parametrize(
+    ("file_path", "expected"),
+    [
+        pytest.param("/project/..cache/data.json", "..cache/data.json", id="directory"),
+        pytest.param("/project/..hidden", "..hidden", id="file"),
+    ],
+)
+def test_summarize_input_when_first_component_under_root_starts_with_two_dots_does_render_relative(
+    file_path: str, expected: str
+):
+    result = summarize_input(
+        {"file_path": file_path},
+        tool_name="Read",
+        supervised_root="/project",
+    )
+
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected"),
+    [
+        pytest.param("/work/sibling/main.py", "~/work/sibling/main.py", id="sibling-of-root"),
+        pytest.param("/work", "~/work", id="parent-of-root"),
+    ],
+)
+def test_summarize_input_when_path_escapes_root_to_parent_does_render_tilde_prefixed(
+    suffix: str, expected: str
+):
+    home = str(Path.home())
+
+    result = summarize_input(
+        {"file_path": f"{home}{suffix}"},
+        tool_name="Read",
+        supervised_root=f"{home}/work/project",
+    )
+
+    assert result == expected
+
+
 def test_summarize_input_when_bash_does_extract_command():
     result = summarize_input({"command": "echo hello"}, tool_name="Bash")
 

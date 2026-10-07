@@ -11,12 +11,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from gymrat.config import Effort
     from gymrat.supervisor.supervise import SupervisionResult
 
 import pytest
 from opentelemetry.trace import StatusCode
 
+from gymrat.cli.supervise.preflight import run_preflight
 from gymrat.config import SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
@@ -34,13 +37,17 @@ from tests.cli.commands.supervise.test_supervise import (
     _Seams,
     _track_cleanups,
 )
-from tests.cli.supervise._fixtures import make_supervision_result
-from tests.session.records._fixtures import SESSION_ID
+from tests.cli.supervise._fixtures import (
+    finalized_session,
+    install_baseline_seam,
+    make_supervision_result,
+)
+from tests.session.records._fixtures import SESSION_ID, session_header_of
 from tests.supervisor._fixtures import make_launch, make_prompt, noop_observer
+from tests.telemetry._fixtures import hide_otlp_exporter, memory_tracing
 from tests.telemetry._fixtures import (
     isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )
-from tests.telemetry._fixtures import memory_tracing
 
 
 def _tracing_seams(
@@ -51,6 +58,7 @@ def _tracing_seams(
     max_usd: str | None = None,
     effort: Effort | None = None,
     model: str | None = None,
+    resumed: bool = False,
 ) -> _Seams:
     """Install seams and configure tracing-relevant flags for the helper.
 
@@ -65,14 +73,14 @@ def _tracing_seams(
         result=result,
         raises=raises,
         config=_config(**cfg_kwargs),
+        resumed=resumed,
     )
 
 
 def test_supervise_when_tracing_enabled_does_export_session_and_run_spans(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from gymrat.telemetry.ids import span_id_of
-    from tests.telemetry._fixtures import memory_tracing
+    from gymrat.telemetry.provider import span_id_of
 
     seams = _tracing_seams(monkeypatch)
 
@@ -102,8 +110,6 @@ def test_supervise_when_tracing_enabled_does_export_session_and_run_spans(
 def test_supervise_when_tracing_enabled_does_set_run_end_attributes(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from tests.telemetry._fixtures import memory_tracing
-
     sup_result = make_supervision_result(
         reason="completed", ended_by="session", duration_ms=60_000, cost_usd=0.05
     )
@@ -124,10 +130,6 @@ def test_supervise_when_tracing_enabled_does_set_run_end_attributes(
 def test_supervise_when_tracing_enabled_and_outcome_error_does_set_error_status_on_run_span(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from opentelemetry.trace import StatusCode
-
-    from tests.telemetry._fixtures import memory_tracing
-
     sup_result = make_supervision_result(
         reason="error", duration_ms=5_000, cost_usd=0.03, end_reason="SDK failed"
     )
@@ -146,10 +148,6 @@ def test_supervise_when_tracing_enabled_and_outcome_error_does_set_error_status_
 def test_supervise_when_tracing_enabled_and_outcome_not_error_does_leave_status_unset(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from opentelemetry.trace import StatusCode
-
-    from tests.telemetry._fixtures import memory_tracing
-
     _tracing_seams(monkeypatch)
 
     with memory_tracing(SESSION_ID) as exporter:
@@ -164,8 +162,6 @@ def test_supervise_when_tracing_enabled_and_outcome_not_error_does_leave_status_
 def test_supervise_when_tracing_enabled_does_end_spans_after_report_and_flush(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from tests.telemetry._fixtures import memory_tracing
-
     order: list[str] = []
     _tracing_seams(monkeypatch)
     _record_stdout_writes(monkeypatch, order, "summary")
@@ -197,8 +193,7 @@ def test_supervise_when_tracing_enabled_does_end_spans_after_report_and_flush(
 def test_supervise_when_tracing_enabled_does_set_traceparent_on_prompt(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from gymrat.telemetry.ids import span_id_of
-    from tests.telemetry._fixtures import memory_tracing
+    from gymrat.telemetry.provider import span_id_of
 
     seams = _tracing_seams(monkeypatch)
 
@@ -221,8 +216,6 @@ def test_supervise_when_tracing_enabled_does_set_traceparent_on_prompt(
 def test_supervise_when_tracing_enabled_does_combine_observer_with_run_span_observer(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from tests.telemetry._fixtures import memory_tracing
-
     seams = _tracing_seams(monkeypatch)
 
     with memory_tracing(SESSION_ID):
@@ -236,8 +229,6 @@ def test_supervise_when_tracing_enabled_does_combine_observer_with_run_span_obse
 def test_supervise_when_tracing_enabled_and_max_usd_given_does_set_run_attribute(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from tests.telemetry._fixtures import memory_tracing
-
     _tracing_seams(monkeypatch)
 
     with memory_tracing(SESSION_ID) as exporter:
@@ -252,8 +243,6 @@ def test_supervise_when_tracing_enabled_and_max_usd_given_does_set_run_attribute
 def test_supervise_when_tracing_enabled_and_no_cap_model_or_effort_does_omit_their_attributes(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from tests.telemetry._fixtures import memory_tracing
-
     _tracing_seams(monkeypatch)
 
     with memory_tracing(SESSION_ID) as exporter:
@@ -269,8 +258,6 @@ def test_supervise_when_tracing_enabled_and_no_cap_model_or_effort_does_omit_the
 def test_supervise_when_tracing_enabled_and_model_set_does_set_provider_attributes(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    from tests.telemetry._fixtures import memory_tracing
-
     _tracing_seams(monkeypatch, model="opus", effort="high")
 
     with memory_tracing(SESSION_ID) as exporter:
@@ -304,6 +291,32 @@ def test_supervise_when_collector_rejects_the_export_does_exit_zero(
     )
 
 
+def test_supervise_when_tracing_enabled_and_previous_session_finalized_does_trace_the_run_under_the_new_session(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    from tests.telemetry._collector import otlp_collector
+
+    _tracing_seams(monkeypatch)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", run_preflight)
+    install_baseline_seam(monkeypatch)
+    previous_id = finalized_session(repo)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+
+    with otlp_collector() as collector:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint)
+        result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
+
+    new_id = session_header_of(repo).session_id
+    traced = sorted(
+        (span.name, span.attributes.get("gymrat.session.id"))
+        for span in collector.spans
+        if span.name in {"gymrat.run", "gymrat.command.supervise"}
+    )
+    assert result.exit_code == 0, _err_text(result)
+    assert new_id != previous_id
+    assert traced == [("gymrat.command.supervise", new_id), ("gymrat.run", new_id)]
+
+
 def test_supervise_when_tracing_disabled_does_pass_reporter_observer_directly(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -329,7 +342,7 @@ def test_supervise_when_tracing_disabled_does_not_set_traceparent_on_prompt(
 
 
 # ---------------------------------------------------------------------------
-# tracing with the OTel SDK disabled — the run continues untraced
+# an endpoint set but no tracer to be had — the run continues untraced
 # ---------------------------------------------------------------------------
 
 
@@ -338,11 +351,25 @@ def _disable_sdk_with_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
 
 
-def test_supervise_when_sdk_disabled_and_endpoint_set_does_run_untraced(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+def _hide_exporter_with_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    hide_otlp_exporter(monkeypatch)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+
+
+@pytest.mark.parametrize(
+    "without_tracer",
+    [
+        pytest.param(_disable_sdk_with_endpoint, id="sdk-disabled"),
+        pytest.param(_hide_exporter_with_endpoint, id="otlp-exporter-missing"),
+    ],
+)
+def test_supervise_when_endpoint_set_but_no_tracer_available_does_run_untraced(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    without_tracer: Callable[[pytest.MonkeyPatch], None],
 ):
     seams = _tracing_seams(monkeypatch)
-    _disable_sdk_with_endpoint(monkeypatch)
+    without_tracer(monkeypatch)
 
     result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
 
@@ -353,8 +380,12 @@ def test_supervise_when_sdk_disabled_and_endpoint_set_does_run_untraced(
     assert (result.exit_code, handed_over) == (0, [(None, seams.observer)]), _err_text(result)
 
 
+@pytest.mark.parametrize(
+    "resumed",
+    [pytest.param(False, id="opening-launch"), pytest.param(True, id="resumed-launch")],
+)
 def test_setup_tracing_when_sdk_disabled_and_endpoint_set_does_hold_no_span(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, resumed: bool
 ):
     _disable_sdk_with_endpoint(monkeypatch)
     prompt = make_prompt()
@@ -365,6 +396,7 @@ def test_setup_tracing_when_sdk_disabled_and_endpoint_set_does_hold_no_span(
         branch=f"gymrat/{SESSION_ID}",
         prompt=prompt,
         reporter_observer=observer,
+        resumed=resumed,
     )
 
     assert traced == (prompt, observer, run_spans.TracingState())
@@ -438,6 +470,29 @@ def test_supervise_when_tracing_enabled_does_export_one_session_span_parenting_o
     run_span, session_span = spans
     assert session_span.parent is None
     assert run_span.parent.span_id == session_span.context.span_id  # pyrefly: ignore[missing-attribute]
+
+
+def test_supervise_when_session_resumed_does_parent_both_run_spans_to_the_one_session_span(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    from gymrat.telemetry.provider import span_id_of
+
+    with memory_tracing(SESSION_ID) as exporter:
+        _tracing_seams(monkeypatch)
+        opening = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
+        _tracing_seams(monkeypatch, resumed=True)
+        resumed = _run("optimize it", "--max-minutes", str(_CAP_MINUTES), "--allow-dirty")
+
+    spans = exporter.get_finished_spans()
+    session_span_id = span_id_of(SESSION_ID, "session")
+    assert (opening.exit_code, resumed.exit_code) == (0, 0), _err_text(resumed)
+    assert [s.context.span_id for s in spans if s.name == "gymrat.session"] == [  # pyrefly: ignore[missing-attribute]
+        session_span_id
+    ]
+    assert [s.parent.span_id for s in spans if s.name == "gymrat.run"] == [  # pyrefly: ignore[missing-attribute]
+        session_span_id,
+        session_span_id,
+    ]
 
 
 @pytest.mark.parametrize("seam_kwargs", _OUTCOMES)

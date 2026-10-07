@@ -99,14 +99,6 @@ def test_metric_defaults_when_fields_differ_does_compare_unequal():
             "bench#heap",
             MetricDefaults(direction="lower", unit="bytes", kind="memory", short_name="bench"),
         ),
-        (
-            "#time",
-            MetricDefaults(direction="lower", unit="ns", kind="time", short_name="#time"),
-        ),
-        (
-            "#heap",
-            MetricDefaults(direction="lower", unit="bytes", kind="memory", short_name="#heap"),
-        ),
         ("foo", MetricDefaults(direction="lower")),
         ("test/throughput", MetricDefaults(direction="lower")),
     ],

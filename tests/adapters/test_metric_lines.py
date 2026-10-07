@@ -178,6 +178,8 @@ def test_parse_when_near_miss_prefix_does_warn_and_record_nothing(offending: str
         pytest.param("METRIC foo=Infinity", id="infinity"),
         pytest.param("METRIC foo=-Infinity", id="negative-infinity"),
         pytest.param("METRIC u=1_0", id="underscore-separator"),
+        pytest.param("METRIC h=0x10z", id="radix-trailing-junk"),
+        pytest.param("METRIC h=-0x10", id="signed-radix"),
     ],
 )
 def test_parse_when_metric_value_malformed_does_warn_and_skip(offending: str):
@@ -264,6 +266,44 @@ def test_parse_when_name_contains_single_hash_does_accept_it():
     result = metric_lines_adapter.parse("METRIC bench#time=42")
 
     assert result == {"bench#time": 42.0}
+
+
+# ---------------------------------------------------------------------------
+# empty path segment or empty kind in name
+# ---------------------------------------------------------------------------
+
+_EMPTY_SEGMENT = "an empty path segment"
+
+_EMPTY_PART_NAMES = [
+    pytest.param("a//b", _EMPTY_SEGMENT, id="empty-inner-segment"),
+    pytest.param("/x", _EMPTY_SEGMENT, id="empty-leading-segment"),
+    pytest.param("x/", _EMPTY_SEGMENT, id="empty-trailing-segment"),
+    pytest.param("#time", _EMPTY_SEGMENT, id="empty-path-before-kind"),
+    pytest.param("a/#time", _EMPTY_SEGMENT, id="empty-trailing-segment-before-kind"),
+    pytest.param("foo#", "an empty kind", id="empty-kind"),
+]
+
+
+@pytest.mark.parametrize(("name", "problem"), _EMPTY_PART_NAMES)
+def test_parse_when_name_has_empty_part_does_warn_and_skip(name: str, problem: str):
+    warnings: list[str] = []
+
+    result = metric_lines_adapter.parse(f"METRIC {name}=42\nMETRIC valid=1", warnings.append)
+
+    assert result == {"valid": 1.0}
+    assert warnings == [f'Skipping METRIC line with {problem} in its metric name: "{name}"']
+
+
+@pytest.mark.parametrize(("name", "problem"), _EMPTY_PART_NAMES)
+def test_parse_when_only_names_with_empty_part_remain_does_raise_adapter_error(
+    name: str, problem: str
+):
+    warnings: list[str] = []
+
+    with pytest.raises(AdapterError, match=r"^No valid METRIC lines found$"):
+        metric_lines_adapter.parse(f"METRIC {name}=42", warnings.append)
+
+    assert warnings == [f'Skipping METRIC line with {problem} in its metric name: "{name}"']
 
 
 # ---------------------------------------------------------------------------

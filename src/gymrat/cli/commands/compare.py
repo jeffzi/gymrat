@@ -122,9 +122,6 @@ def should_fail_gate(conditions: tuple[FailOnCondition, ...], result: Comparison
     Returns:
         ``True`` when any condition trips.
     """
-    if not conditions:
-        return False
-
     # Only gating metrics may be judged by a gate.
     gating = {name: metric for name, metric in result.metrics.items() if metric.meta.gating}
 

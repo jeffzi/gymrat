@@ -20,8 +20,11 @@ and then checks it in order:
 4. Anywhere else — denied.
 
 The repository check precedes the scratch check because a repository may itself
-live under a scratch root. Tools :func:`check_file_edit` does not know, such as
-Read, are always allowed.
+live under a scratch root. Each check recognizes its directory by file identity
+(device and inode) among the path's existing ancestors, not by spelling, so a
+differently cased name is the same directory exactly when the filesystem says
+it is. A path whose ancestors cannot be examined is denied. Tools
+:func:`check_file_edit` does not know, such as Read, are always allowed.
 
 What the hooks do not do:
 
@@ -70,6 +73,9 @@ _EDITING_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 # Differs from tempfile.gettempdir() on macOS, where $TMPDIR is per-user.
 _POSIX_TMP = Path("/tmp")  # noqa: S108 -- only recognized as a scratch root, never written to
 
+# The Windows error code for a file name the system rejects, such as one holding a tab.
+_ERROR_INVALID_NAME = 123
+
 
 def check_file_edit(hook_input: Mapping[str, object], root: Path) -> str | None:
     """Decide whether a file-editing tool call may write its target path.
@@ -98,10 +104,10 @@ def check_file_edit(hook_input: Mapping[str, object], root: Path) -> str | None:
     if "\0" in candidate:
         return f"{_FILE_EDIT_RULE}: {_printable(raw)} cannot be resolved"
     try:
-        resolved = os.path.realpath(candidate)
+        allowed = _may_edit(os.path.realpath(candidate), root)
     except (ValueError, OSError):
         return f"{_FILE_EDIT_RULE}: {_printable(raw)} cannot be resolved"
-    if _may_edit(resolved, root):
+    if allowed:
         return None
     return f"{_FILE_EDIT_RULE}: {_printable(raw)} is outside it"
 
@@ -123,7 +129,58 @@ def _may_edit(resolved: str, root: Path) -> bool:
 
 
 def _is_within(path: str, directory: str) -> bool:
+    """Tell whether a resolved path is a directory or lies under it, by file identity.
+
+    Spelling cannot decide this: a filesystem that ignores letter case gives
+    one directory many spellings that symlink resolution leaves alone, and one
+    that honors it keeps differently cased names apart. So the directory is
+    recognized by its device and inode among the path's existing ancestors.
+    Only the part of the directory that does not exist yet is matched by name.
+
+    Args:
+        path: The symlink-resolved path being judged.
+        directory: The symlink-resolved directory it may lie under.
+
+    Returns:
+        Whether the path is the directory or lies under it.
+
+    Raises:
+        OSError: An existing ancestor of either path could not be examined.
+    """
+    target = Path(directory)
+    candidate = Path(path)
+    for anchor in (target, *target.parents):
+        identity = _stat_if_present(anchor)
+        if identity is None:
+            continue
+        missing = _folded_parts(target.relative_to(anchor))
+        for ancestor in (candidate, *candidate.parents):
+            found = _stat_if_present(ancestor)
+            if found is not None and os.path.samestat(found, identity):
+                below = _folded_parts(candidate.relative_to(ancestor))
+                return below[: len(missing)] == missing
+        return False
+    # Nothing of the directory exists, not even its drive, so there is no
+    # identity to compare and its name is all that is left.
     return Path(os.path.normcase(path)).is_relative_to(os.path.normcase(directory))
+
+
+def _stat_if_present(path: Path) -> os.stat_result | None:
+    # A name Windows rejects as invalid can never exist, so it is as absent as
+    # a missing one. Every other OSError propagates: a path that cannot be
+    # examined must be refused, never judged as if it were absent.
+    try:
+        return path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as error:
+        if getattr(error, "winerror", None) == _ERROR_INVALID_NAME:
+            return None
+        raise
+
+
+def _folded_parts(relative: Path) -> tuple[str, ...]:
+    return tuple(os.path.normcase(part) for part in relative.parts)
 
 
 def _scratch_roots() -> list[str]:
@@ -177,7 +234,6 @@ def check_background_gymrat(hook_input: Mapping[str, object]) -> str | None:
 _REFUSED_REASON = "gymrat could not evaluate this call, so it was refused"
 
 _FILE_MATCHER = "|".join(_EDITING_TOOLS)
-_BASH_MATCHER = "Bash"
 
 
 def _deny_on(rule: Callable[[HookInput], str | None]) -> HookCallback:
@@ -228,7 +284,7 @@ def supervise_hooks_factory(root: Path) -> HooksFactory:
         return {
             "PreToolUse": [
                 HookMatcher(matcher=_FILE_MATCHER, hooks=[file_rule]),
-                HookMatcher(matcher=_BASH_MATCHER, hooks=[_deny_on(check_background_gymrat)]),
+                HookMatcher(matcher="Bash", hooks=[_deny_on(check_background_gymrat)]),
             ]
         }
 

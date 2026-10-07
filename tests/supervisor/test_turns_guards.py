@@ -21,6 +21,7 @@ from gymrat.supervisor.turns import (
     Reply,
     outcome_record_count,
 )
+from tests._config import benchless_config
 from tests.session.records._fixtures import (
     blocked_keep,
     command_record,
@@ -31,7 +32,6 @@ from tests.session.records._fixtures import (
     session_state,
     stop_record,
 )
-from tests.supervisor._fixtures import default_benchless_config
 from tests.supervisor._turn_inputs import (
     classify_discards,
     classify_with_defaults,
@@ -54,7 +54,7 @@ from tests.supervisor._turn_inputs import (
 def test_classify_when_no_new_outcome_records_since_last_reply_does_increment_no_progress(
     records: list[SessionLogRecord],
 ):
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state(replies_sent=1, no_progress_count=0, last_record_count=0)
 
@@ -82,7 +82,7 @@ def test_classify_when_no_new_outcome_records_since_last_reply_does_increment_no
 def test_classify_when_new_outcome_records_appended_does_reset_no_progress(
     records: list[SessionLogRecord],
 ):
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state(replies_sent=1, no_progress_count=2, last_record_count=0)
 
@@ -110,7 +110,7 @@ def test_classify_when_new_outcome_records_appended_does_reset_no_progress(
 def test_classify_when_outcome_record_count_grows_does_move_baseline(
     records: list[SessionLogRecord],
 ):
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state(last_record_count=0)
 
@@ -143,7 +143,7 @@ def test_classify_when_outcome_record_count_grows_does_move_baseline(
 def test_classify_when_four_stale_turns_does_end_no_progress_on_fourth(
     records_per_turn: list[list[SessionLogRecord]],
 ):
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state()
     now_ms_steps = (0.0, 1000.0, 2000.0, 3000.0)
@@ -167,7 +167,7 @@ def test_classify_when_four_stale_turns_does_end_no_progress_on_fourth(
 
 
 def test_classify_when_record_appended_mid_sequence_does_reset_no_progress_counter():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state()
     records: list[SessionLogRecord] = []
@@ -191,7 +191,7 @@ def test_classify_when_record_appended_mid_sequence_does_reset_no_progress_count
 
 
 def test_classify_when_no_progress_reaches_limit_does_end_no_progress():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     # One below the limit; classify will increment to reach it.
     guards = guard_state(
@@ -339,7 +339,7 @@ def _classify_discards_since_launch(
 ) -> Decision:
     """Runs classify on the discard-streak defaults with a launch-time record count."""
     return classify_with_defaults(
-        config=default_benchless_config(),
+        config=benchless_config(),
         state=session_state(),
         records=records,
         guards=guard_state(initial_record_count=initial_record_count),

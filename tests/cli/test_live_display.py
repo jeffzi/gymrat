@@ -22,19 +22,22 @@ import threading
 import time
 import warnings
 from io import StringIO
-from typing import TYPE_CHECKING, NamedTuple, override
+from typing import TYPE_CHECKING, Literal, NamedTuple, override
 
 import pytest
 from rich.text import Text
 
-from gymrat.cli.live_display import ErasableLive, erase_display_for_exit, mount_live
-from gymrat.signals import install_termination_cleanup
+from gymrat.cli.live_display import ErasableLive, mount_live
+from gymrat.cli.progress import ProgressReporter
+from gymrat.progress_events import PrepareStarted
+from gymrat.signals import install_termination_cleanup, write_on_exit
 from tests._process_helpers import InterruptedTerminal, ProcessExit, track_mounted_cleanups
 from tests._rich import (
     HIDE_CURSOR,
     KEPT_LINE,
     TERMINATION_SIGNAL,
     WARNING_LINE,
+    Clock,
     console_output,
     cursor_hidden,
     screen_lines,
@@ -479,7 +482,7 @@ def test_mount_live_when_live_redirects_stdio_does_hand_later_cleanups_the_real_
     assert seen == [(stdout, stderr)]
 
 
-def test_erase_display_for_exit_when_display_already_erased_does_leave_the_screen_unchanged(
+def test_erase_for_exit_when_display_already_erased_does_leave_the_screen_unchanged(
     monkeypatch: pytest.MonkeyPatch,
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
@@ -488,7 +491,7 @@ def test_erase_display_for_exit_when_display_already_erased_does_leave_the_scree
     console.print(KEPT_LINE)
     live = mounted_live(console, _rows(3))
     monkeypatch.setattr(sys, "stderr", console.file)
-    install_termination_cleanup(lambda: erase_display_for_exit(live))
+    install_termination_cleanup(lambda: write_on_exit(live.erase_for_exit()))
 
     raise_signal(TERMINATION_SIGNAL)
 
@@ -785,3 +788,33 @@ def test_mount_live_when_print_interrupted_does_erase_the_shorter_frame(
         console.print("banana")
 
     assert screen_lines(terminal.at_exit) == case.screen
+
+
+# ---------------------------------------------------------------------------
+# warn -- verbatim message
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def warn_reporters() -> Iterator[list[ProgressReporter]]:
+    """Collect the reporters a warn test builds and stop them afterwards."""
+    reporters: list[ProgressReporter] = []
+    yield reporters
+    for reporter in reporters:
+        reporter.stop()
+
+
+@pytest.mark.parametrize("mode", ["live", "plain"])
+def test_warn_when_message_has_an_emoji_code_does_print_it_verbatim(
+    warn_reporters: list[ProgressReporter], mode: Literal["live", "plain"]
+):
+    console = sealed_console()
+    reporter = ProgressReporter(
+        mode=mode, console=console, target_count=1, sample_count=3, clock=Clock(0.0)
+    )
+    warn_reporters.append(reporter)
+    reporter.report(PrepareStarted(label="bench", at_ms=0))
+
+    reporter.warn("warning: lat:100:p99")
+
+    assert "warning: lat:100:p99" in screen_lines(console_output(console))

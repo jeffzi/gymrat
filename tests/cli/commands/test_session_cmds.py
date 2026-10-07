@@ -20,6 +20,8 @@ from gymrat.loop.start import start_session
 from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import FinalizeRecord, StopRecord
 from tests._ansi import SGR_RE, strip_ansi
+from tests._config import resolved_config
+from tests._git import head_of
 from tests.cli._budget import install_budget
 from tests.cli._session import (
     FailingStdoutRunner,
@@ -30,12 +32,11 @@ from tests.cli._session import (
     open_session_with_one_keep,
     runner,
     stub_resolve_config,
-    write_config,
+    write_bench_config,
 )
 from tests.loop._settle import (
     settling_record_of,
 )
-from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import log_records, session_header_of
 
 
@@ -49,9 +50,10 @@ def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         body: Callable[..., Awaitable[T]],
         *,
         args: dict[str, object] | None = None,
+        root: str | None = None,
     ) -> T:
         lock_names.append(command)
-        return await original_with_repo_lock(command, body, args=args)
+        return await original_with_repo_lock(command, body, args=args, root=root)
 
     monkeypatch.setattr(session_commands, "with_repo_lock", recording_lock)
     return lock_names
@@ -168,7 +170,7 @@ def test_start_command_when_no_baseline_does_default_to_head(
     result = runner.invoke(app, ["start"])
 
     assert result.exit_code == 0
-    session_header_of(repo)
+    assert session_header_of(repo).baseline.sha == head_of(repo)
 
 
 def test_start_command_when_positional_ref_given_does_exit_two_with_usage_error(
@@ -375,6 +377,21 @@ def test_sync_command_when_finalized_does_record_command_trace_with_exit_two(
     assert cmd.reason == "finalized"
 
 
+def test_sync_command_when_experiment_has_uncommitted_change_to_a_synced_path_does_exit_two(
+    sync_repo: str,
+):
+    Path(sync_repo, "README.md").write_text("# from main\n", encoding="utf-8")
+    experiment_copy = Path(experiment_worktree_dir(sync_repo), "README.md")
+    experiment_copy.write_text("# from the agent\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["sync"])
+
+    assert result.exit_code == 2
+    assert "README.md" in result.stderr
+    assert last_command_record(sync_repo).reason == "dirty-worktree"
+    assert experiment_copy.read_text(encoding="utf-8") == "# from the agent\n"
+
+
 def test_sync_command_when_no_session_does_exit_two_with_a_start_hint(
     repo: str,
 ):
@@ -459,7 +476,7 @@ def test_stop_command_when_message_given_does_print_stopped_and_append_a_stop_re
 def kept_repo(repo: str) -> str:
     """A configured repository whose open session has one kept commit, ready for any session command."""
     open_session_with_one_keep(repo)
-    write_config(repo)
+    write_bench_config(repo)
     return repo
 
 
@@ -512,7 +529,7 @@ def test_stop_command_when_finalized_does_record_command_trace_with_exit_two(
     repo: str,
 ):
     close_session_with_one_keep(repo)
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["stop", "-m", "done"])
 
@@ -524,7 +541,7 @@ def test_stop_command_when_finalized_does_record_command_trace_with_exit_two(
 
 
 def test_stop_command_when_no_session_does_exit_two_with_a_start_hint(repo: str):
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["stop", "-m", "done"])
 
@@ -590,7 +607,7 @@ def test_stop_command_when_no_color_does_strip_ansi_from_stderr_error(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["stop", "--no-color", "-m", "done"])
 

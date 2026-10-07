@@ -14,6 +14,7 @@ from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotati
     ColorOption,
     DebugOption,
 )
+from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
 from gymrat.session.store import first_line_json, read_session_header
 from gymrat.utils import ENDPOINT_ENV, otlp_endpoint, warn_to_stderr
@@ -26,7 +27,9 @@ EndpointOption = Annotated[
     typer.Option("--endpoint", envvar=ENDPOINT_ENV, help="OTLP HTTP endpoint URL"),
 ]
 
-_SDK_MISSING = "OpenTelemetry SDK not available. Install with: pip install 'gymrat[otel]'"
+_OTEL_MISSING = (
+    "OpenTelemetry SDK or OTLP exporter not available. Install with: uv tool install 'gymrat[otel]'"
+)
 
 
 def _matching_supervisor_logs(session_dir: Path, session_id: str) -> list[str]:
@@ -64,7 +67,25 @@ def export_command(
     color: ColorOption = None,
     debug: DebugOption = False,  # noqa: FBT002 -- 1:1 pass-through of the --debug flag
 ) -> None:
-    """Export a finished session's spans to an OpenTelemetry collector."""
+    """Export a finished session's spans to an OpenTelemetry collector.
+
+    Replays the session log, plus every supervisor log in its directory whose
+    launch line names the same session, as spans sent over OTLP HTTP.
+
+    Args:
+        session_log: Path to the session's ``session.jsonl``, or ``None`` for
+            the current repository's session log.
+        endpoint: OTLP HTTP endpoint URL from ``--endpoint`` or
+            ``OTEL_EXPORTER_OTLP_ENDPOINT``; surrounding whitespace is trimmed,
+            and ``None`` or a blank value is an error.
+        color: The ``--color``/``--no-color`` flag, or ``None`` when neither
+            was given.
+        debug: The ``--debug`` flag; shows stack traces on errors.
+
+    Raises:
+        typer.Exit: With the tool-failure code once any failure has been
+            reported on stderr.
+    """
     apply_command_flags(debug=debug, color=color)
 
     run_guarded(lambda: _export(session_log, endpoint))
@@ -86,6 +107,7 @@ def _export(session_log: str | None, endpoint: str | None) -> None:
         configure_tracing,
         export_failed,
         flush_tracing,
+        session_span_dropped,
     )
     from gymrat.telemetry.replay import replay_session  # noqa: PLC0415
 
@@ -93,14 +115,18 @@ def _export(session_log: str | None, endpoint: str | None) -> None:
     if endpoint is None:
         exit_with_error(f"No endpoint: pass --endpoint or set {ENDPOINT_ENV}")
 
-    try:
-        if not configure_tracing(session_id, endpoint=endpoint):
-            exit_with_error(_SDK_MISSING)
-    except ImportError:
-        exit_with_error(_SDK_MISSING)
+    if not configure_tracing(session_id, endpoint=endpoint):
+        exit_with_error(_OTEL_MISSING)
 
     supervisor_logs = _matching_supervisor_logs(session_dir, session_id)
     count = replay_session(session_log, supervisor_logs)
+    if session_span_dropped():
+        msg = f"No spans recorded for session {session_id}: the tracer drops them."
+        raise GymratError(
+            msg,
+            hint="Unset OTEL_SDK_DISABLED and set OTEL_TRACES_SAMPLER to a sampler that keeps "
+            "the session trace.",
+        )
     flush_tracing()
     if export_failed():
         exit_with_error(

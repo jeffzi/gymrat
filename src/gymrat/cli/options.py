@@ -21,7 +21,9 @@ from gymrat.config import (
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
 
-_GEOMEAN_CONDITION_RE = re.compile(r"geomean:(-?\d+(?:\.\d+)?)")
+# ``[0-9]`` rather than ``\d``: ``\d`` matches every Unicode decimal digit, and
+# ``float`` converts those too, so a non-ASCII digit would parse as a number.
+_GEOMEAN_CONDITION_RE = re.compile(r"geomean:(-?[0-9]+(?:\.[0-9]+)?)")
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +154,6 @@ def parse_timeout(value: str) -> int:
 def parse_fail_on(value: str) -> FailOnCondition:
     """Parse a fail-on condition: ``regressed`` or ``geomean:<number>``.
 
-    Anything else raises a usage error naming the allowed grammar.
-
     Args:
         value: The raw ``--fail-on`` flag value.
 
@@ -161,7 +161,7 @@ def parse_fail_on(value: str) -> FailOnCondition:
         The parsed fail-on condition.
 
     Raises:
-        typer.BadParameter: When the value does not match the allowed grammar.
+        typer.BadParameter: When the value does not match the allowed grammar; the message names it.
     """
     if value == "regressed":
         return RegressedFailOn()

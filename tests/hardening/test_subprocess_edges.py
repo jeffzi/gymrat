@@ -22,7 +22,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import override
 
@@ -51,35 +51,28 @@ _LEAK_MARKERS = ("was destroyed but it is pending", "exception was never retriev
 # ---------------------------------------------------------------------------
 
 
-async def _poll_until[T](
-    fetch: Callable[[], T | None], *, timeout_s: float, timeout_message: str
-) -> T:
-    """Poll ``fetch`` every 20ms until it returns non-``None``.
-
-    Raises ``TimeoutError(timeout_message)`` if *timeout_s* elapses first.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while True:
-        value = fetch()
-        if value is not None:
-            return value
-        if loop.time() > deadline:
-            raise TimeoutError(timeout_message)
-        await asyncio.sleep(0.02)
-
-
 def file_exists(path: Path) -> bool:
     """Whether ``path`` exists (sync helper to keep the stat out of async)."""
     return path.exists()
 
 
 async def wait_for_file(path: Path, timeout_s: float = 5.0) -> None:
-    await _poll_until(
-        lambda: path if file_exists(path) else None,
-        timeout_s=timeout_s,
-        timeout_message=f"file never appeared at {path}",
-    )
+    """Poll every 20ms until ``path`` exists.
+
+    Args:
+        path: The file to wait for.
+        timeout_s: How long to poll before giving up.
+
+    Raises:
+        TimeoutError: When ``path`` has not appeared within ``timeout_s``.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while not file_exists(path):
+        if loop.time() > deadline:
+            msg = f"file never appeared at {path}"
+            raise TimeoutError(msg)
+        await asyncio.sleep(0.02)
 
 
 def make_fifo(path: Path) -> None:

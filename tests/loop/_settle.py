@@ -30,16 +30,19 @@ from gymrat.session.records import (
     IterationRecord,
     KeepChecks,
     KeepRecord,
-    MetricVerdict,
     PairedSamples,
     SessionLogRecord,
 )
 from gymrat.session.schema import Outcome
-from gymrat.session.store import append_record
+from tests._config import resolved_config
 from tests._exec_fixtures import expected_result
 from tests._git import head_of, run_git
-from tests.loop.iterate._fixtures import resolved_config
-from tests.session.records._fixtures import iteration_record, log_records
+from tests.session.records._fixtures import (
+    append_records,
+    iteration_record,
+    log_records,
+    metric_verdict,
+)
 
 CHECKS = "npm test"
 CHECKS_STDOUT = "3 tests failed"
@@ -65,9 +68,7 @@ def status_of(worktree: str) -> str:
 def start_with(repo_dir: str, history: tuple[SessionLogRecord, ...] = ()) -> None:
     """Open a session in the scratch repo and leave ``history`` behind its header."""
     start_session(repo_dir, "main", checks_config())
-    jsonl_path = session_jsonl_path(repo_dir)
-    for record in history:
-        append_record(jsonl_path, record)
+    append_records(repo_dir, *history)
 
 
 def edit_experiment(repo_dir: str) -> None:
@@ -173,26 +174,11 @@ def measured_rounds(seq: int) -> IterationRecord:
     )
 
 
-def metric(**overrides: object) -> MetricVerdict:
-    """A metric verdict the engine produces, improved and gating unless overridden."""
-    defaults: dict[str, object] = {
-        "delta_pct": -7.2,
-        "verdict": "improved",
-        "method": "permutation",
-        "p": 0.002,
-        "noise_pct": 1.4,
-        "gating": True,
-        "confirmed": False,
-    }
-    defaults.update(overrides)
-    return MetricVerdict(**defaults)  # type: ignore[arg-type]
-
-
 def undefined_delta(seq: int) -> IterationRecord:
     """An iteration numbered ``seq`` whose deltas a zero baseline median left undefined."""
     return iteration_record(
         seq=seq,
-        metrics={"total_ms": metric(delta_pct=None, verdict="no-signal")},
+        metrics={"total_ms": metric_verdict(delta_pct=None, verdict="no-signal")},
         primary=IterationPrimary(kind="geomean", delta_pct=None),
         outcome="no-signal",
     )
@@ -202,7 +188,7 @@ def confirmed_regression(seq: int) -> IterationRecord:
     """An iteration whose gating metric regressed and stayed regressed on the rerun."""
     return iteration_record(
         seq=seq,
-        metrics={"total_ms": metric(delta_pct=9.4, verdict="regressed", confirmed=True)},
+        metrics={"total_ms": metric_verdict(delta_pct=9.4, verdict="regressed", confirmed=True)},
         primary=IterationPrimary(kind="geomean", delta_pct=9.4),
         outcome="regressed",
     )
@@ -218,7 +204,7 @@ def unimproved(seq: int, outcome: Outcome) -> IterationRecord:
     delta_pct = 0.1 if no_signal else 9.4
     return iteration_record(
         seq=seq,
-        metrics={"total_ms": metric(delta_pct=delta_pct, verdict=outcome)},
+        metrics={"total_ms": metric_verdict(delta_pct=delta_pct, verdict=outcome)},
         primary=IterationPrimary(kind="geomean", delta_pct=delta_pct),
         outcome=outcome,
     )
@@ -229,8 +215,8 @@ def unmeasured_regression(seq: int) -> IterationRecord:
     return iteration_record(
         seq=seq,
         metrics={
-            "total_ms": metric(),
-            "alloc_bytes": metric(delta_pct=9.4, verdict="regressed"),
+            "total_ms": metric_verdict(),
+            "alloc_bytes": metric_verdict(delta_pct=9.4, verdict="regressed"),
         },
         primary=IterationPrimary(kind="geomean", delta_pct=9.4),
         outcome="regressed",

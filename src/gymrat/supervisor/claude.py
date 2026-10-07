@@ -362,31 +362,29 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
         "cwd": prompt.cwd,
         "permission_mode": "bypassPermissions",
         "include_partial_messages": True,
-    }
-    if prompt.system_prompt_append is not None:
-        options["system_prompt"] = {
+        "system_prompt": {
             "type": "preset",
             "preset": "claude_code",
             "append": prompt.system_prompt_append,
-        }
+        },
+    }
     if prompt.model is not None:
         options["model"] = prompt.model
     if prompt.effort is not None:
         options["effort"] = prompt.effort
-    env: dict[str, str] = _traceparent_env(prompt.traceparent)
-    if prompt.command_timeout_ms is not None:
-        # Raising the shell timeout ceiling to the wall-clock cap requires setting
-        # both the default and max tool-use timeout variables. Automatically moving
-        # a command to the background is disabled (empty string) because it would
-        # otherwise detach a long `gymrat` command into the background, where the
-        # agent can no longer observe its output or exit status.
-        timeout_ms = str(prompt.command_timeout_ms)
-        env["CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS"] = timeout_ms
-        env["CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS"] = timeout_ms
-        env["CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS"] = ""
-        env["MCP_TOOL_TIMEOUT"] = timeout_ms
-    if env:
-        options["env"] = env
+    # Raising the shell timeout ceiling to the wall-clock cap requires setting
+    # both the default and max tool-use timeout variables. Automatically moving
+    # a command to the background is disabled (empty string) because it would
+    # otherwise detach a long `gymrat` command into the background, where the
+    # agent can no longer observe its output or exit status.
+    timeout_ms = str(prompt.command_timeout_ms)
+    options["env"] = {
+        **_traceparent_env(prompt.traceparent),
+        "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS": timeout_ms,
+        "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS": timeout_ms,
+        "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS": "",
+        "MCP_TOOL_TIMEOUT": timeout_ms,
+    }
     if prompt.max_budget_usd is not None:
         options["max_budget_usd"] = prompt.max_budget_usd
     return options
@@ -430,17 +428,17 @@ class _ClaudeSession:
         client_factory: ClientFactory | None,
         prompt: SessionPrompt,
         observer: SessionObserver,
-        abort: asyncio.Event | None,
+        abort: asyncio.Event,
         factories: _OptionFactories,
     ) -> None:
         self._client_factory = client_factory
         self._prompt = prompt
         self._observer = observer
-        # No event supplied is the same as one that is never set.
-        self._abort = abort if abort is not None else asyncio.Event()
+        self._abort = abort
         self._factories = factories
         self._client: ClaudeClient | None = None
         self._abort_task: asyncio.Task[None] | None = None
+        self._disconnecting: asyncio.Task[None] | None = None
         self._cost_usd = 0.0
         self._mapper = MessageMapper(observer, prompt.cwd)
         self._turn_end_count: int = 0
@@ -464,9 +462,7 @@ class _ClaudeSession:
             await self._client.interrupt()
 
     async def send(self, text: str) -> None:
-        if self._stopped is not None or self._result_outcome is not None:
-            return
-        if self._client is None:
+        if self._stopped is not None or self._result_outcome is not None or self._client is None:
             return
         try:
             await self._client.query(text)
@@ -474,22 +470,35 @@ class _ClaudeSession:
             self._stopped = SessionOutcome(
                 reason="error", cost_usd=self._cost_usd, message=str(err)
             )
-            await _disconnect_quietly(self._client)
+            await self._disconnect()
 
     async def end(self) -> None:
         if self._stopped is not None or self._result_outcome is not None:
             return
         self._stopped = SessionOutcome(reason="completed", cost_usd=self._cost_usd)
         self._commit_cost(self._cost_usd)
-        if self._client is not None:
-            await _disconnect_quietly(self._client)
+        await self._disconnect()
 
-    async def _watch_abort(self, client: ClaudeClient) -> None:
+    async def _watch_abort(self) -> None:
         await self._abort.wait()
         self._claim_interrupted()
         # Disconnect so the streaming loop unblocks; the first stop already
         # captured the cost, so a later abort leaves it untouched.
-        await _disconnect_quietly(client)
+        await self._disconnect()
+
+    async def _disconnect(self) -> None:
+        """Disconnect the client once; every caller awaits that same disconnect.
+
+        The SDK client's ``disconnect`` is not safe to overlap: a second caller
+        resumes into state the first already cleared. The shield keeps the one
+        disconnect running when a waiting caller is cancelled, as the abort
+        watcher is at teardown.
+        """
+        if self._client is None:
+            return
+        if self._disconnecting is None:
+            self._disconnecting = asyncio.create_task(_disconnect_quietly(self._client))
+        await asyncio.shield(self._disconnecting)
 
     def _settled_or(self, default: SessionOutcome) -> SessionOutcome:
         return self._stopped if self._stopped is not None else default
@@ -534,7 +543,7 @@ class _ClaudeSession:
             options["hooks"] = hooks()
         client = factory(options)
         self._client = client
-        self._abort_task = asyncio.create_task(self._watch_abort(client))
+        self._abort_task = asyncio.create_task(self._watch_abort())
         await client.connect()
         if self._stopped is not None:
             return self._stopped
@@ -577,8 +586,7 @@ class _ClaudeSession:
             self._abort_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._abort_task
-        if self._client is not None:
-            await _disconnect_quietly(self._client)
+        await self._disconnect()
 
     def _map_message(self, message: object) -> None:
         """Dispatch one SDK message by class; messages of other classes emit nothing."""
@@ -655,7 +663,7 @@ class _ClaudeDriver:
         self,
         prompt: SessionPrompt,
         observer: SessionObserver,
-        abort: asyncio.Event | None = None,
+        abort: asyncio.Event,
     ) -> DriverSession:
         return _ClaudeSession(self._client_factory, prompt, observer, abort, self._factories)
 

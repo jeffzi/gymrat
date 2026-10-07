@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import signal
 from io import StringIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import pyte
 import pyte.modes
@@ -35,27 +35,24 @@ KEPT_LINE = "kept above"
 WARNING_LINE = "warning: banana"
 
 
-def _fixed_time() -> float:
-    """The default pinned clock for one-shot renders."""
-    return 0.0
+class Clock[T: (int, float)]:
+    """A hand-advanced clock, in whatever unit and number type the test starts it with.
 
-
-class Clock:
-    """A hand-advanced clock for deterministic ``Progress(get_time=...)`` frames.
-
-    ``Clock(start=0.0)`` starts at the given time.  Call ``tick(seconds)`` to
-    advance, or read ``.now`` directly.  Callable -- returns ``self.now`` -- so
-    it plugs into any ``get_time`` parameter.
+    A float clock in seconds plugs into ``Progress(get_time=...)`` for
+    deterministic frames; an int clock in milliseconds drives a reporter's
+    ``now``.  Call ``tick(amount)`` to advance, or read and assign ``.now``
+    directly.  Callable -- returns ``self.now``.
     """
 
-    def __init__(self, start: float = 0.0) -> None:
+    def __init__(self, start: T) -> None:
         self.now = start
 
-    def __call__(self) -> float:
+    def __call__(self) -> T:
         return self.now
 
-    def tick(self, seconds: float) -> None:
-        self.now += seconds
+    def tick(self, amount: T) -> None:
+        # pyrefly: ignore[unsupported-operation] -- T is int or float, and each adds to itself
+        self.now += amount
 
 
 def sealed_console(
@@ -63,25 +60,29 @@ def sealed_console(
     width: int = 80,
     height: int = 24,
     no_color: bool = True,
-    color_system: str | None = None,
+    color_system: Literal["auto", "standard", "truecolor"] | None = "auto",
     get_time: Callable[[], float] | None = None,
 ) -> Console:
     """A ``Console`` sealed from the developer's environment.
 
     Fixed dimensions, ``force_terminal=True``, ``legacy_windows=False``,
-    ``_environ={}``.  When *no_color* is ``True`` (default), sets
-    ``no_color=True``; when ``False``, sets ``color_system`` to the given
-    value (default ``"truecolor"``).  # cspell:disable-line
+    ``_environ={}``, writing to a ``StringIO``.
 
-    *get_time* pins the console clock. Without it, a ``Live`` refreshing on
-    this console anchors spinner animations to the wall clock, making frames
-    nondeterministic; pass the test's ``Clock`` so every paint reads it.
+    Args:
+        width: Console width in columns.
+        height: Console height in rows.
+        no_color: Whether color is off. Attributes such as bold and dim still
+            reach the output unless ``color_system`` is None.
+        color_system: The color system the console writes. None with
+            ``no_color`` set emits no SGR at all, as ``--no-color`` does.
+        get_time: Pins the console clock. Without it, a ``Live`` refreshing on
+            this console anchors spinner animations to the wall clock, making
+            frames nondeterministic; pass the test's ``Clock`` so every paint
+            reads it.
 
-    Returns a ``Console`` writing to a ``StringIO``.
+    Returns:
+        The sealed console.
     """
-    resolved_color_system = (
-        "auto" if no_color else (color_system or "truecolor")  # cspell:disable-line
-    )
     return Console(
         file=StringIO(),
         width=width,
@@ -90,7 +91,7 @@ def sealed_console(
         legacy_windows=False,
         _environ={},
         no_color=no_color or None,
-        color_system=resolved_color_system,  # type: ignore[arg-type]
+        color_system=color_system,
         theme=CLI_THEME,
         get_time=get_time,
     )
@@ -102,13 +103,20 @@ def frame_text(
     width: int = 80,
     get_time: Callable[[], float] | None = None,
 ) -> str:
-    """Render *renderable* through a throwaway non-terminal console, return plain text.
+    """Render ``renderable`` through a throwaway non-terminal console, as plain text.
 
     The console is NOT a terminal -- it is a one-shot renderer with
     ``force_terminal=False`` and ``no_color=True``.
 
-    *get_time* pins the console clock so that a ``Spinner`` picks a deterministic
-    frame rather than whatever the wall clock says. Defaults to ``_fixed_time``.
+    Args:
+        renderable: What to render.
+        width: Console width in columns.
+        get_time: Pins the console clock so that a ``Spinner`` picks a
+            deterministic frame rather than whatever the wall clock says.
+            None uses a clock stopped at zero.
+
+    Returns:
+        The rendered text, each line stripped of trailing whitespace.
     """
     buf = StringIO()
     console = Console(
@@ -118,7 +126,7 @@ def frame_text(
         no_color=True,
         legacy_windows=False,
         _environ={},
-        get_time=get_time or _fixed_time,
+        get_time=get_time or Clock(0.0),
     )
     console.print(renderable)
     return "\n".join(line.rstrip() for line in buf.getvalue().splitlines())

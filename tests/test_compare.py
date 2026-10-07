@@ -33,6 +33,7 @@ from gymrat.verdict import compute_kind_aggregates, compute_verdicts
 from tests._git import run_git as _git
 from tests._git import write_committed_bench
 from tests._pipeline import install_pipeline
+from tests.conftest import list_worktree_dirs
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -317,7 +318,6 @@ def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
 @_posix_only
 async def test_compare_when_two_refs_does_produce_comparison_and_sweep(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo = create_scratch_repo()
@@ -340,7 +340,6 @@ async def test_compare_when_two_refs_does_produce_comparison_and_sweep(
 @_posix_only
 async def test_compare_when_candidate_unresolvable_does_fail_with_nothing_on_disk(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo = create_scratch_repo()

@@ -11,9 +11,10 @@ probe, config inspection, and section builders into an assembled report. The CLI
 command layer calls it with an explicit working directory rather than reading
 ``Path.cwd()`` itself. Its bench section, built by :func:`build_bench_section`,
 validates bench configuration without executing the bench command: the adapter
-name resolves, a bench command is set, and the command's executable is on PATH.
-That section looks the executable up on ``PATH``, so it is the one builder that
-is not pure.
+name resolves, a bench command is set, and the command's executable is on PATH
+or, when given as a path, present under the repository root. That section looks
+the executable up on ``PATH`` or on disk, so it is the one builder that is not
+pure.
 
 The text renderer styles each check with a status glyph, indents continuation
 lines and hints under it, and closes with a caveat note and a status summary.
@@ -27,6 +28,7 @@ is two-space-indented and carries no ANSI whatever the color settings.
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import platform
 import re
 import shlex
@@ -56,7 +58,7 @@ from gymrat.report.style import (
     markup,
     render_lines,
 )
-from gymrat.scaffold import SKILL_RELATIVE_PATH
+from gymrat.scaffold import DEFAULT_RUNBOOK_PATH, SKILL_RELATIVE_PATH
 from gymrat.session.paths import repo_root
 
 # ---------------------------------------------------------------------------
@@ -207,7 +209,11 @@ def _skipped_section(title: str, check_name: str) -> CheckSection:
 
 
 def build_workflow_section(
-    config: BenchlessConfig, *, config_has_problems: bool, skill_file_exists: bool
+    config: BenchlessConfig,
+    *,
+    config_has_problems: bool,
+    skill_file_exists: bool,
+    config_file_exists: bool,
 ) -> CheckSection:
     """WARN for each missing workflow piece (skill file, checks, stop, runbook) with a fix hint.
 
@@ -218,6 +224,9 @@ def build_workflow_section(
         config: The resolved benchless configuration to check against.
         config_has_problems: Whether config inspection already found problems.
         skill_file_exists: Whether the project's skill file is installed.
+        config_file_exists: Whether a config file was found. It picks the runbook
+            fix: ``gymrat init`` leaves an existing config file as it is, so the
+            key has to be added to that file by hand.
 
     Returns:
         The assembled workflow check section.
@@ -225,6 +234,11 @@ def build_workflow_section(
     if config_has_problems:
         return _skipped_section(_WORKFLOW_SECTION_TITLE, _WORKFLOW_SKIP_CHECK_NAME)
 
+    runbook_fix = (
+        f'Add `runbook = "{DEFAULT_RUNBOOK_PATH}"` to gymrat.toml.'
+        if config_file_exists
+        else "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml."
+    )
     checks = [
         _presence_check(
             Check(
@@ -254,10 +268,7 @@ def build_workflow_section(
                 name="runbook",
                 status="warn",
                 detail="runbook is not configured",
-                hint=(
-                    "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml. "
-                    "Without one, supervise has no instructions to follow."
-                ),
+                hint=f"{runbook_fix} Without one, supervise has no instructions to follow.",
             ),
             present=config.runbook is not None,
             ok_detail=f"runbook: {config.runbook}",
@@ -441,16 +452,17 @@ def detect_git_environment(cwd: str) -> GitEnvironment:
 def _first_command_word(bench: str) -> str | None:
     """Extract the first real executable from a shell command string.
 
-    Skips env-var assignments (``VAR=val``). A command with shell
-    metacharacters yields no word, since the PATH check is meaningless for
-    compound shell expressions.
+    Skips env-var assignments (``VAR=val``). The executable check is
+    meaningless for compound shell expressions and for a word only the shell
+    can resolve (``~``, a variable, a command substitution), so those yield no
+    word.
 
     Args:
         bench: The shell command string to extract the first token from.
 
     Returns:
-        The first non-assignment token, or ``None`` when the command contains
-        shell metacharacters or has no executable token.
+        The first non-assignment token, or ``None`` when no executable can be
+        checked statically.
     """
     if _SHELL_OPERATOR_RE.search(bench):
         return None
@@ -460,11 +472,32 @@ def _first_command_word(bench: str) -> str | None:
     except ValueError:
         return None
 
-    return next((token for token in tokens if "=" not in token), None)
+    word = next((token for token in tokens if "=" not in token), None)
+    if word is None or word.startswith("~") or "$" in word or "`" in word:
+        return None
+    return word
+
+
+def _executable_check(executable: str, base_dir: str) -> Check:
+    """A bare name is looked up on PATH; a path is resolved against ``base_dir``."""
+    if not any(sep and sep in executable for sep in (os.sep, os.altsep)):
+        found = shutil.which(executable) is not None
+        return Check(
+            name="executable",
+            status="ok" if found else "warn",
+            detail=f"{executable} {'is available' if found else 'was not found'} on PATH",
+        )
+
+    target = Path(base_dir, executable)
+    if not target.is_file():
+        return Check(name="executable", status="warn", detail=f"{executable} was not found")
+    if not os.access(target, os.X_OK):
+        return Check(name="executable", status="warn", detail=f"{executable} is not executable")
+    return Check(name="executable", status="ok", detail=f"{executable} is executable")
 
 
 def build_bench_section(
-    *, bench: str | None, adapter: str, config_problems: bool = False
+    *, bench: str | None, adapter: str, config_problems: bool = False, base_dir: str
 ) -> CheckSection:
     """Build the "Bench" section by validating config, without running anything.
 
@@ -476,6 +509,8 @@ def build_bench_section(
         bench: The configured bench command, or ``None`` if unresolved.
         adapter: The name of the adapter to validate.
         config_problems: Whether config inspection already found problems.
+        base_dir: The directory a bench executable given as a path is resolved
+            against.
 
     Returns:
         The assembled bench check section.
@@ -507,14 +542,7 @@ def build_bench_section(
 
     executable = _first_command_word(bench)
     if executable is not None:
-        found = shutil.which(executable) is not None
-        checks.append(
-            Check(
-                name="executable",
-                status="ok" if found else "warn",
-                detail=f"{executable} {'is available' if found else 'was not found'} on PATH",
-            )
-        )
+        checks.append(_executable_check(executable, base_dir))
 
     return CheckSection(title=_BENCH_TITLE, checks=checks)
 
@@ -558,11 +586,13 @@ def build_doctor_report(flags: CliFlags, cwd: str) -> DoctorReport:
         resolved,
         config_has_problems=bool(inspection.problems),
         skill_file_exists=(Path(base_dir) / SKILL_RELATIVE_PATH).is_file(),
+        config_file_exists=inspection.config_path is not None,
     )
     bench_section = build_bench_section(
         bench=inspection.bench,
         adapter=flags.adapter or resolved.adapter,
         config_problems=bool(inspection.problems),
+        base_dir=base_dir,
     )
 
     return create_doctor_report(

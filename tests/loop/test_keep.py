@@ -56,7 +56,6 @@ from tests.loop._settle import (
     failed_checks,
     install_exec,
     measured_rounds,
-    metric,
     posix_only,
     settling_record_of,
     start_with,
@@ -70,6 +69,7 @@ from tests.session.records._fixtures import (
     committed_keep,
     iteration_record,
     log_records,
+    metric_verdict,
 )
 
 # ---------------------------------------------------------------------------
@@ -367,7 +367,9 @@ async def test_keep_session_when_log_predates_absent_field_does_block_on_confirm
         (
             iteration_record(
                 seq=1,
-                metrics={"total_ms": metric(delta_pct=9.4, verdict="regressed", confirmed=True)},
+                metrics={
+                    "total_ms": metric_verdict(delta_pct=9.4, verdict="regressed", confirmed=True)
+                },
                 primary=IterationPrimary(kind="geomean", delta_pct=9.4),
                 outcome="regressed",
                 confirm=Confirm(ran=True, filtered=("total_ms",), samples=RERUN_SAMPLES),
@@ -384,27 +386,6 @@ async def test_keep_session_when_log_predates_absent_field_does_block_on_confirm
     assert not re.search(r"not measured", result.report, re.IGNORECASE)
 
 
-async def test_keep_session_when_rerun_did_not_confirm_regression_does_keep(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(
-        repo,
-        (
-            iteration_record(
-                seq=1,
-                metrics={"total_ms": metric(delta_pct=9.4, verdict="regressed")},
-                outcome="no-signal",
-            ),
-        ),
-    )
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-
-    result = await keep_session(repo, checks_config(), KeepOptions(allow_unimproved=True))
-
-    assert result.record.status == "committed"
-
-
 async def test_keep_session_when_gating_exact_metric_regressed_does_block_though_unconfirmed(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -413,7 +394,9 @@ async def test_keep_session_when_gating_exact_metric_regressed_does_block_though
         (
             iteration_record(
                 seq=1,
-                metrics={"total_ms": metric(delta_pct=9.4, verdict="regressed", method="exact")},
+                metrics={
+                    "total_ms": metric_verdict(delta_pct=9.4, verdict="regressed", method="exact")
+                },
                 primary=IterationPrimary(kind="geomean", delta_pct=9.4),
                 outcome="regressed",
             ),
@@ -460,41 +443,6 @@ async def test_keep_session_when_rerun_never_measured_regression_does_name_metri
     assert re.search(r"not measured on the confirmation rerun", result.report, re.IGNORECASE)
     assert re.search(r"filter", result.report, re.IGNORECASE)
     assert re.search(r"discard", result.report, re.IGNORECASE)
-
-
-@pytest.mark.parametrize(
-    "confirm",
-    [
-        pytest.param(
-            Confirm(ran=True, filtered=("total_ms",), absent=(), samples=RERUN_SAMPLES),
-            id="rerun-reported-the-metric",
-        ),
-        pytest.param(
-            Confirm(ran=True, filtered=("total_ms",), samples=RERUN_SAMPLES),
-            id="log-predates-absent-field",
-        ),
-    ],
-)
-async def test_keep_session_when_rerun_measured_regression_away_does_keep(
-    repo: str, monkeypatch: pytest.MonkeyPatch, confirm: Confirm
-):
-    start_with(
-        repo,
-        (
-            iteration_record(
-                seq=1,
-                metrics={"total_ms": metric(delta_pct=9.4, verdict="no-signal")},
-                outcome="no-signal",
-                confirm=confirm,
-            ),
-        ),
-    )
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-
-    result = await keep_session(repo, checks_config(), KeepOptions(allow_unimproved=True))
-
-    assert result.record.status == "committed"
 
 
 # ---------------------------------------------------------------------------

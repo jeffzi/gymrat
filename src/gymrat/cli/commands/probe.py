@@ -47,8 +47,7 @@ _NamesArgument = Annotated[
 ]
 
 
-async def _probe_body(flags: SharedFlags, names: list[str]) -> ProbeResult:
-    root = repo_root()
+async def _probe_body(root: str, flags: SharedFlags, names: list[str]) -> ProbeResult:
     guard_supervised_origin(root, "probe")
     # Warn before the progress reporter starts, or the warning prints under a live display.
     warn_duration_over_budget(halve=True)
@@ -89,10 +88,12 @@ def probe(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
     flags = SharedFlags(samples=samples, config=config, format=output_format.value)
 
     async def run() -> None:
+        root = repo_root()
         result = await with_repo_lock(
             "probe",
-            lambda _trace: _probe_body(flags, probed),
+            lambda _trace: _probe_body(root, flags, probed),
             args={"names": probed, "samples": samples},
+            root=root,
         )
         emit_report(
             result,

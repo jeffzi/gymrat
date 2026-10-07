@@ -225,19 +225,6 @@ def _erase_rows(height: int) -> str:
     return f"\r{_ERASE_LINE}" + f"{_CURSOR_UP}{_ERASE_LINE}" * (height - 1)
 
 
-def erase_display_for_exit(live: ErasableLive) -> None:
-    """Erase a live display from the terminal on the way out of a termination handler.
-
-    Nothing is written here; the escapes go to
-    :func:`gymrat.signals.write_on_exit`, which defers them until every cleanup
-    has run.
-
-    Args:
-        live: The display to erase.
-    """
-    write_on_exit(live.erase_for_exit())
-
-
 def mount_live(live: ErasableLive) -> Callable[[], None]:
     """Start a live display and paint its first frame, erasing it on a termination signal.
 
@@ -253,7 +240,9 @@ def mount_live(live: ErasableLive) -> Callable[[], None]:
         Uninstalls the erase. Call it before stopping the display, so a signal
         from then on leaves the terminal to ``Live.stop()``.
     """
-    uninstall = install_termination_cleanup(functools.partial(erase_display_for_exit, live))
+    # The erase escapes go through write_on_exit, which defers them until every
+    # cleanup has run.
+    uninstall = install_termination_cleanup(lambda: write_on_exit(live.erase_for_exit()))
     try:
         live.start()
         live.refresh()
@@ -302,7 +291,7 @@ class LiveDisplayMixin:
     def _print_milestone(self, line: str, at_ms: float, run_start_ms: float | None) -> None:
         """Print a plain-mode milestone line behind its run-relative timestamp."""
         timestamp = format_timestamp(at_ms, run_start_ms)
-        self._console.print(f"{timestamp} {line}", highlight=False, markup=False)
+        self._console.print(f"{timestamp} {line}", highlight=False, markup=False, emoji=False)
 
     def _mount_live(self, *, transient: bool, get_renderable: Callable[[], RenderableType]) -> None:
         live = ErasableLive(
@@ -347,6 +336,7 @@ class LiveDisplayMixin:
         """Print ``message`` verbatim on its own line, above the live frame when one is up.
 
         Args:
-            message: The warning text, printed without markup or highlighting.
+            message: The warning text, printed without markup, highlighting, or
+                emoji codes.
         """
-        self._console.print(message, highlight=False, markup=False)
+        self._console.print(message, highlight=False, markup=False, emoji=False)

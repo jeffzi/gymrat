@@ -23,6 +23,7 @@ from gymrat.loop.start import start_session
 from gymrat.session.budget import write_budget
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
 from tests._ansi import strip_ansi
+from tests._config import resolved_config
 from tests._rich import unwrap_panel
 from tests.cli._budget import (
     LIVE_BUDGET,
@@ -30,7 +31,6 @@ from tests.cli._budget import (
 )
 from tests.cli._help import help_output
 from tests.cli._session import FailingStdoutRunner, closed_stdout_error, disk_full_error
-from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import log_records
 
 runner = CliRunner()

@@ -18,7 +18,7 @@ from gymrat.session.records import (
     PairedSamples,
     SessionLogRecord,
 )
-from gymrat.telemetry.attributes import (
+from gymrat.telemetry.provider import (
     command_attributes,
     record_event,
 )

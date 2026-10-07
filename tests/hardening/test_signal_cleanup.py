@@ -7,7 +7,9 @@ the guarantees that must outlive an interrupted run:
 - no bench process — nor a grandchild it spawned — survives the CLI,
 - a lock stranded by a hard kill never wedges the next run,
 - the terminal status line is cleared on a TTY and left untouched off one,
-- every worktree is swept, even when a second signal lands during cleanup.
+- every worktree is swept, even when a second signal lands during cleanup,
+- a signal that lands during the normal sweep never starts a second sweep,
+- and still reports the worktree that sweep had failed to remove.
 
 The whole module is POSIX-only: it relies on real signals, ``sh`` bench scripts,
 and process-group tree-kill. Every test that spawns a real tree registers its
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import signal
 import struct
 import subprocess
@@ -31,7 +34,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable
 
 if sys.platform != "win32":
     import fcntl
@@ -51,6 +54,7 @@ from tests._process_helpers import (
     wait_until_dead_blocking as _wait_until_dead_blocking,
 )
 from tests._rich import screen_lines
+from tests.conftest import list_worktree_dirs, register_absent_worktree, wait_for_worktrees
 from tests.hardening._bench_helpers import drain as _drain
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
@@ -77,18 +81,6 @@ echo $! > grandchild.pid
 echo 'METRIC x=1'
 wait
 """
-
-
-@pytest.fixture
-def reap_groups() -> Iterator[list[int]]:
-    """Track process-group leaders and hard-kill any survivor on teardown."""
-    leaders: list[int] = []
-    try:
-        yield leaders
-    finally:
-        for pid in leaders:
-            with contextlib.suppress(OSError):
-                os.killpg(os.getpgid(pid), signal.SIGKILL)
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +154,17 @@ def test_measure_when_prior_run_hard_killed_does_take_over_stale_lock_on_rerun(
         stderr=subprocess.PIPE,
         text=True,
     )
-    bench_pid = _wait_for_pid_file_blocking(Path(repo) / "bench.pid", timeout_s=_SETTLE_TIMEOUT_S)
-    reap_groups.append(bench_pid)
-    first.kill()  # SIGKILL runs no cleanup, so the lock is left behind
-    first.communicate(timeout=30)
+    try:
+        bench_pid = _wait_for_pid_file_blocking(
+            Path(repo) / "bench.pid", timeout_s=_SETTLE_TIMEOUT_S
+        )
+        reap_groups.append(bench_pid)
+        first.kill()  # SIGKILL runs no cleanup, so the lock is left behind
+        first.communicate(timeout=30)
+    finally:
+        if first.poll() is None:
+            first.kill()
+            first.communicate()
     with contextlib.suppress(ProcessLookupError):
         os.killpg(os.getpgid(bench_pid), signal.SIGKILL)
     _wait_until_dead_blocking(bench_pid, timeout_s=_SETTLE_TIMEOUT_S)
@@ -289,8 +288,6 @@ def test_measure_when_signalled_off_a_tty_does_not_emit_terminal_clear_codes(
 
 def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
-    wait_for_worktrees: Callable[..., list[str]],
     reap_groups: list[int],
 ):
     repo = create_scratch_repo()
@@ -335,7 +332,6 @@ def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
 
 def test_compare_when_signalled_twice_during_cleanup_does_exit_promptly(
     create_scratch_repo: Callable[[], str],
-    wait_for_worktrees: Callable[..., list[str]],
     reap_groups: list[int],
 ):
     repo = create_scratch_repo()
@@ -369,3 +365,150 @@ def test_compare_when_signalled_twice_during_cleanup_does_exit_promptly(
     # pins "promptly"; the deterministic single-signal test above owns the
     # all-worktrees-swept guarantee.
     assert proc.returncode == 130
+
+
+# ---------------------------------------------------------------------------
+# a signal during the normal sweep never starts a second one
+# ---------------------------------------------------------------------------
+
+# A stand-in ``git`` that appends each call's arguments to a log, runs the real
+# git, and sends its parent one SIGTERM as the first ``worktree remove`` ends.
+# The signal leaves before the stand-in exits, so it always lands while the CLI
+# is still inside that git call: no sleep or poll decides the timing. The
+# ``mkdir`` succeeds once, which keeps a later removal from signalling again.
+_SIGNALLING_GIT = """#!/bin/sh
+printf '%s\\n' "$*" >> "{log}"
+"{git}" "$@"
+status=$?
+if printf '%s' " $* " | grep -q " worktree remove "; then
+    mkdir "{sent}" 2>/dev/null && kill -TERM "$PPID"
+fi
+exit $status
+"""
+
+
+# The same stand-in with one more turn: the first ``worktree remove`` is refused
+# without reaching the real git, so its worktree stays on disk, and the signal
+# leaves as the second one ends. Each ``mkdir`` succeeds once, which is what
+# makes "first" and "second" hold whatever else git is asked.
+_REFUSING_THEN_SIGNALLING_GIT = """#!/bin/sh
+printf '%s\\n' "$*" >> "{log}"
+if printf '%s' " $* " | grep -q " worktree remove "; then
+    if mkdir "{refused}" 2>/dev/null; then
+        echo "fatal: the stand-in refuses this removal" >&2
+        exit 1
+    fi
+    "{git}" "$@"
+    status=$?
+    mkdir "{sent}" 2>/dev/null && kill -TERM "$PPID"
+    exit $status
+fi
+exec "{git}" "$@"
+"""
+
+
+def _install_signalling_git(directory: Path, script: str = _SIGNALLING_GIT) -> Path:
+    """Write the signalling stand-in ``git`` into a directory.
+
+    Args:
+        directory: Where the stand-in is written; put it first on ``PATH``.
+        script: The stand-in's text, with ``log``, ``git``, ``sent`` and
+            ``refused`` placeholders.
+
+    Returns:
+        The log the stand-in appends to, one git call per line.
+    """
+    real_git = shutil.which("git")
+    assert real_git is not None
+    log = directory / "git-calls.log"
+    stand_in = directory / "git"
+    stand_in.write_text(
+        script.format(
+            log=log,
+            git=real_git,
+            sent=directory / "signal-sent",
+            refused=directory / "removal-refused",
+        ),
+        encoding="utf-8",
+    )
+    stand_in.chmod(0o755)
+    return log
+
+
+def test_compare_when_signalled_during_the_normal_sweep_does_remove_each_worktree_once_without_pruning(
+    create_scratch_repo: Callable[[], str],
+    tmp_path: Path,
+):
+    repo = create_scratch_repo()
+    _write_committed_bench(repo, EMIT_ONE_BENCH)
+    _git(["switch", "-c", "candidate"], repo)
+    _git(["switch", "main"], repo)
+    absent = register_absent_worktree(repo)
+    git_log = _install_signalling_git(tmp_path)
+    env = _env()
+    env["PATH"] = f"{tmp_path}{os.pathsep}{env['PATH']}"
+
+    # ``timeout=60`` is the hang guard: ``run`` kills and reaps the CLI on expiry, so a
+    # switch to ``Popen`` needs its own kill-and-reap.
+    proc = subprocess.run(  # noqa: S603
+        [*_ENTRY, "compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    calls = git_log.read_text(encoding="utf-8").splitlines()
+    added = [call for call in calls if " worktree add " in f" {call} "]
+    removed = [call for call in calls if " worktree remove " in f" {call} "]
+    assert proc.returncode == 128 + signal.SIGTERM, proc.stderr
+    assert len(set(removed)) == len(removed) == len(added)
+    assert [call for call in calls if " worktree prune" in f" {call}"] == []
+    assert list_worktree_dirs(repo, include_main=False) == [absent]
+
+
+def test_compare_when_signalled_after_the_normal_sweep_left_a_worktree_does_name_it_without_pruning(
+    create_scratch_repo: Callable[[], str],
+    tmp_path: Path,
+):
+    repo = create_scratch_repo()
+    _write_committed_bench(repo, EMIT_ONE_BENCH)
+    _git(["switch", "-c", "candidate-one"], repo)
+    _git(["switch", "-c", "candidate-two"], repo)
+    _git(["switch", "main"], repo)
+    absent = register_absent_worktree(repo)
+    git_log = _install_signalling_git(tmp_path, _REFUSING_THEN_SIGNALLING_GIT)
+    env = _env()
+    env["PATH"] = f"{tmp_path}{os.pathsep}{env['PATH']}"
+
+    # ``timeout=60`` is the hang guard: ``run`` kills and reaps the CLI on expiry, so a
+    # switch to ``Popen`` needs its own kill-and-reap.
+    proc = subprocess.run(  # noqa: S603
+        [
+            *_ENTRY,
+            "compare",
+            "main",
+            "candidate-one",
+            "candidate-two",
+            "--bench",
+            "sh bench.sh",
+            "--samples",
+            "1",
+        ],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    calls = git_log.read_text(encoding="utf-8").splitlines()
+    removed = [call for call in calls if " worktree remove " in f" {call} "]
+    assert proc.returncode == 128 + signal.SIGTERM, proc.stderr
+    assert "cleanup did not finish:" in proc.stderr
+    assert removed[0].split()[-1] in proc.stderr
+    assert [call for call in calls if " worktree prune" in f" {call}"] == []
+    assert absent in list_worktree_dirs(repo, include_main=False)

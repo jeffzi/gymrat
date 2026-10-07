@@ -7,20 +7,20 @@ helper imported as ``tests.cli.supervise._fixtures``.
 from __future__ import annotations
 
 from datetime import UTC, datetime, tzinfo
-from io import StringIO
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    import pytest
+    from rich.console import Console, RenderableType
 
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.store import SessionState
     from gymrat.supervisor.supervise import EndedBy
 
-from rich.console import Console, RenderableType
-
-from gymrat.cli.style import CLI_THEME
 from gymrat.cli.supervise.progress import (
     IDLE_WARN_MS,
     REFRESH_MS,
@@ -28,7 +28,10 @@ from gymrat.cli.supervise.progress import (
     create_supervise_reporter,
 )
 from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
+from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import start_session
+from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.session.store import append_record
 from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     CapAction,
@@ -46,29 +49,20 @@ from gymrat.supervisor.events import (
 )
 from gymrat.supervisor.supervise import SupervisionResult
 from gymrat.utils import NS_PER_MS
-from tests._rich import frame_text
-from tests.loop.iterate._fixtures import resolved_config
+from tests._config import resolved_config
+from tests._git import head_of, run_git
+from tests._rich import Clock, console_output, frame_text, sealed_console
+from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
+    baseline_record,
+    committed_keep,
     empty_session_state,
+    iteration_record,
     make_iteration,
+    session_header_of,
     session_state,
 )
-from tests.supervisor._fixtures import make_launch
-
-# ---------------------------------------------------------------------------
-# Test doubles
-# ---------------------------------------------------------------------------
-
-
-class Clock:
-    """A mutable millisecond clock a test advances by assigning ``now``."""
-
-    def __init__(self, start: int):
-        self.now = start
-
-    def __call__(self) -> int:
-        return self.now
-
+from tests.supervisor._fixtures import make_launch, make_turn_end
 
 # ---------------------------------------------------------------------------
 # Builders
@@ -78,6 +72,37 @@ class Clock:
 def start_open_session(repo: str) -> None:
     """Start a gymrat session so the experiment worktree and session log exist."""
     start_session(repo, "main", resolved_config())
+
+
+def finalized_session(repo: str) -> str:
+    """Open a session, keep one committed edit, and finalize it; return its id."""
+    start_open_session(repo)
+    session_id = session_header_of(repo).session_id
+    worktree = experiment_worktree_dir(repo)
+    (Path(worktree) / "README.md").write_text("# edit\n", encoding="utf-8")
+    run_git(["add", "README.md"], worktree)
+    run_git(["commit", "-m", "edit"], worktree)
+    append_record(session_jsonl_path(repo), iteration_record(seq=1))
+    append_record(session_jsonl_path(repo), committed_keep(1, commit=head_of(worktree)))
+    finalize_session(repo)
+    return session_id
+
+
+def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Replace the baseline measurement path so no real bench runs.
+
+    Returns a list that records each call's keyword arguments.
+    """
+    calls: list[dict[str, Any]] = []
+
+    async def fake_measure(target: object, run_options: object) -> Any:
+        calls.append({"target": target, "run_options": run_options})
+        record = baseline_record(duration_ms=5000)
+        result = create_measurement_result(label=record.label, samples=1, rounds=record.samples)
+        return result, record
+
+    monkeypatch.setattr("gymrat.cli.supervise.preflight.measure_baseline", fake_measure)
+    return calls
 
 
 def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
@@ -109,20 +134,17 @@ def make_read_session(
     *,
     has_baseline: bool,
     best: BestIteration | None = None,
-    baseline_sha: str | None = None,
     stop_message: str | None = None,
 ) -> Callable[[], ReadSessionResult]:
     """A ``read_session`` that always returns ``state`` and ``has_baseline``.
 
-    ``best`` / ``baseline_sha`` / ``stop_message`` default to ``None`` on
-    ``ReadSessionResult`` itself, so callers that omit them still get a valid
-    result.
+    ``best`` / ``stop_message`` default to ``None`` on ``ReadSessionResult``
+    itself, so callers that omit them still get a valid result.
     """
     result = ReadSessionResult(
         state=state,
         has_baseline=has_baseline,
         best=best,
-        baseline_sha=baseline_sha,
         stop_message=stop_message,
     )
     return lambda: result
@@ -283,7 +305,7 @@ def turn_end_event(
     budget_exhausted: bool = False,
 ) -> TurnEndEvent:
     """A ``TurnEndEvent`` attributed to *origin*."""
-    return TurnEndEvent(
+    return make_turn_end(
         at=at_ms * NS_PER_MS,
         text=text,
         cost_usd=cost_usd,
@@ -335,6 +357,15 @@ FRAME_WIDTH = 100
 LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.ErasableLive"
 
 
+#: The root every built reporter carries. Both session readers are stubbed, so
+#: nothing ever reads below it.
+_UNREAD_ROOT = "repo"
+
+
+def _no_progress(_root: str) -> ProgressSnapshot | None:
+    return None
+
+
 # Every reporter make_reporter builds, so teardown can stop the live refresh
 # thread each one starts.
 _built_reporters: list[SuperviseReporter] = []
@@ -344,7 +375,7 @@ class ReporterKit(NamedTuple):
     """A live-mode reporter paired with the injectable clock that drives it."""
 
     reporter: SuperviseReporter
-    clock: Clock
+    clock: Clock[int]
 
 
 def make_reporter(
@@ -355,7 +386,6 @@ def make_reporter(
     max_iterations: int | None = None,
     read_session: Callable[[], ReadSessionResult] | None = None,
     clock_start: int = 1000,
-    root: str = "/tmp/repo",
     read_progress: Callable[[str], ProgressSnapshot | None] | None = None,
     plain_write: Callable[[str], None] | None = None,
     session_id: str = "20260813-125044-34ec",
@@ -366,7 +396,7 @@ def make_reporter(
     effort: Effort | None = None,
     idle_warn_ms: int = IDLE_WARN_MS,
     refresh_ms: int = REFRESH_MS,
-    clock: Clock | None = None,
+    clock: Clock[int] | None = None,
 ) -> ReporterKit:
     """Build a reporter with injectable dependencies for deterministic testing.
 
@@ -381,9 +411,8 @@ def make_reporter(
         read_session: Reads the current session state; defaults to an empty
             session with no baseline.
         clock_start: Start value of the ``Clock`` built when ``clock`` is omitted.
-        root: Project root whose session directory is monitored.
-        read_progress: Reads the iterate progress sidecar, or ``None`` for the
-            standard reader.
+        read_progress: Reads the iterate progress sidecar; defaults to a reader
+            that finds none, so no test reads a sidecar off the disk.
         plain_write: Line writer for plain mode, or ``None`` for the standard writer.
         session_id: Session identifier propagated to the frame.
         branch: Git branch name shown in the frame header.
@@ -407,8 +436,10 @@ def make_reporter(
         clock = Clock(clock_start)
     if read_session is None:
         read_session = make_read_session(empty_session_state(), has_baseline=False)
+    if read_progress is None:
+        read_progress = _no_progress
     reporter = create_supervise_reporter(
-        root=root,
+        root=_UNREAD_ROOT,
         max_minutes=max_minutes,
         mode=mode,
         now=clock,
@@ -448,34 +479,18 @@ def line_after(frame: str, needle: str) -> str:
     return lines[idx + 1]
 
 
-def _render_sealed(
-    renderable: RenderableType,
-    *,
-    width: int,
-    no_color: bool,
-    color_system: Literal["standard"] | None,
-) -> str:
-    """Render *renderable* through a sealed terminal console with the given color settings."""
-    buf = StringIO()
-    console = Console(
-        file=buf,
-        width=width,
-        force_terminal=True,
-        no_color=no_color,
-        color_system=color_system,
-        legacy_windows=False,
-        _environ={},
-        theme=CLI_THEME,
-    )
+def _printed(console: Console, renderable: RenderableType) -> str:
+    """Print *renderable* to a sealed console and return everything it wrote."""
     console.print(renderable)
-    return buf.getvalue()
+    return console_output(console)
 
 
 def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
     """Render ``renderable`` through a sealed console with standard color."""
-    return _render_sealed(renderable, width=width, no_color=False, color_system="standard")
+    console = sealed_console(width=width, no_color=False, color_system="standard")
+    return _printed(console, renderable)
 
 
 def render_colorless(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
     """Render ``renderable`` through a sealed terminal console with colour off, as ``--no-color`` does."""
-    return _render_sealed(renderable, width=width, no_color=True, color_system=None)
+    return _printed(sealed_console(width=width, color_system=None), renderable)

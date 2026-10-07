@@ -90,7 +90,7 @@ async def _run_turns(messages: Sequence[object], drain: int = 4) -> list[Session
     probe = collecting_observer()
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(), probe.observer)
+    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
     await _drain(drain)
     await _settle(session)
 
@@ -301,7 +301,7 @@ async def test_turn_when_budget_exhausted_does_not_settle_error():
     probe = collecting_observer()
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(), probe.observer)
+    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
     await _drain()
     outcome = await _settle(session)
 
@@ -319,7 +319,7 @@ async def test_send_when_called_does_forward_text_to_client_query():
     probe = collecting_observer()
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(kickoff="initial"), probe.observer)
+    session = driver.start(make_prompt(kickoff="initial"), probe.observer, asyncio.Event())
     await _drain()
 
     await session.send("follow up message")
@@ -341,7 +341,7 @@ async def test_send_when_query_raises_does_settle_error():
     probe = collecting_observer()
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(kickoff="initial"), probe.observer)
+    session = driver.start(make_prompt(kickoff="initial"), probe.observer, asyncio.Event())
     await _drain()
 
     await session.send("this will fail")
@@ -356,12 +356,15 @@ async def test_send_when_session_settled_does_noop():
     client = FakeClient([result])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    # We can't easily call send on the settled session through run_session,
-    # so let's use the session handle directly.
-    session = driver.start(make_prompt(), noop_observer())
+    session = driver.start(make_prompt(), noop_observer(), asyncio.Event())
     outcome = await _outcome(session)
+    queries_before = list(client.query_prompts)
+
     await session.send("should be ignored")
+    await _drain()
+
     assert outcome.reason == "error"
+    assert client.query_prompts == queries_before
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +378,7 @@ async def test_end_when_called_does_settle_completed():
     probe = collecting_observer()
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(), probe.observer)
+    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
     await _drain()
     outcome = await _settle(session)
 
@@ -389,7 +392,7 @@ async def test_end_when_called_does_emit_usage_update_with_final_cost():
     probe = collecting_observer()
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(), probe.observer)
+    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
     await _drain()
     await _settle(session)
 
@@ -402,7 +405,7 @@ async def test_end_when_called_does_disconnect_client():
     client = FakeClient([result])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(), noop_observer())
+    session = driver.start(make_prompt(), noop_observer(), asyncio.Event())
     await _drain()
     await _settle(session)
 
@@ -414,7 +417,7 @@ async def test_end_when_called_after_interrupt_does_preserve_interrupted():
     probe = collecting_observer()
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(), probe.observer)
+    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
     await session.interrupt()
     outcome = await _settle(session)
 
@@ -428,7 +431,7 @@ async def test_end_when_called_on_settled_session_does_noop():
     probe = collecting_observer()
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(), probe.observer)
+    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
     outcome = await _outcome(session)
     assert outcome.reason == "error"
 
@@ -472,7 +475,7 @@ async def test_interrupt_when_called_does_settle_interrupted():
     client = FakeClient([])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(), noop_observer())
+    session = driver.start(make_prompt(), noop_observer(), asyncio.Event())
     await session.interrupt()
     outcome = await _outcome(session)
 
@@ -483,7 +486,7 @@ async def test_interrupt_when_called_before_end_does_win():
     client = FakeClient([result_message(total_cost_usd=0.10)])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    session = driver.start(make_prompt(), noop_observer())
+    session = driver.start(make_prompt(), noop_observer(), asyncio.Event())
     await session.interrupt()
     outcome = await _settle(session)
 
@@ -500,7 +503,7 @@ async def test_options_when_max_budget_usd_set_does_include_max_budget_usd():
     probe = FactoryProbe(client)
     driver = create_claude_driver(client_factory=probe)
 
-    session = driver.start(make_prompt(max_budget_usd=5.0), noop_observer())
+    session = driver.start(make_prompt(max_budget_usd=5.0), noop_observer(), asyncio.Event())
     await _drain()
     await _settle(session)
 
@@ -513,7 +516,7 @@ async def test_options_when_max_budget_usd_absent_does_omit_key():
     probe = FactoryProbe(client)
     driver = create_claude_driver(client_factory=probe)
 
-    session = driver.start(make_prompt(), noop_observer())
+    session = driver.start(make_prompt(), noop_observer(), asyncio.Event())
     await _drain()
     await _settle(session)
 

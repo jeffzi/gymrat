@@ -13,7 +13,12 @@ from gymrat.config import (
     inspect_config,
 )
 from tests._config import benchless_config
-from tests.config._toml import write_config, write_raw
+from tests.config._toml import (
+    DEEP_NESTING_DOCUMENT,
+    DIGIT_LIMIT_DOCUMENT,
+    write_config,
+    write_raw,
+)
 
 # ---------------------------------------------------------------------------
 # inspect_config — shared helpers and fixtures
@@ -209,6 +214,27 @@ def test_inspect_config_when_file_is_invalid_toml_does_report_naming_path(
     assert result.config_path == str(config_path)
 
     assert has_problem(result.problems, re.escape(str(config_path)))
+    assert result.config is None
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param(DIGIT_LIMIT_DOCUMENT, id="integer-past-digit-limit"),
+        pytest.param(DEEP_NESTING_DOCUMENT, id="nesting-past-recursion-limit"),
+    ],
+)
+def test_inspect_config_when_parser_hits_interpreter_limit_does_report_parse_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, document: str
+):
+    config_path = write_raw(tmp_path, document)
+    monkeypatch.chdir(tmp_path)
+
+    result = inspect_config(CliFlags())
+
+    assert has_problem(
+        result.problems, re.escape(f"Failed to parse config file at {config_path}: ")
+    )
     assert result.config is None
 
 

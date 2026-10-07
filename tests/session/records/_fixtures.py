@@ -104,6 +104,20 @@ def baseline_record(**overrides: Any) -> BaselineRecord:
     return _overridden(default, overrides)
 
 
+def metric_verdict(**overrides: Any) -> MetricVerdict:
+    """A metric verdict the engine produces, improved and gating unless overridden."""
+    default = MetricVerdict(
+        delta_pct=-7.2,
+        verdict="improved",
+        method="permutation",
+        p=0.002,
+        noise_pct=1.4,
+        gating=True,
+        confirmed=False,
+    )
+    return _overridden(default, overrides)
+
+
 def iteration_record(**overrides: Any) -> IterationRecord:
     """A measured iteration numbered 1, improved unless overridden."""
     default = IterationRecord(
@@ -114,17 +128,7 @@ def iteration_record(**overrides: Any) -> IterationRecord:
             experiment=({"total_ms": 14100},),
             baseline=({"total_ms": 15200},),
         ),
-        metrics={
-            "total_ms": MetricVerdict(
-                delta_pct=-7.2,
-                verdict="improved",
-                method="permutation",
-                p=0.002,
-                noise_pct=1.4,
-                gating=True,
-                confirmed=False,
-            )
-        },
+        metrics={"total_ms": metric_verdict()},
         primary=IterationPrimary(kind="geomean", delta_pct=-7.2),
         outcome="improved",
         target_reached=False,

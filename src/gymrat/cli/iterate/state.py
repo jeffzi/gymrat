@@ -10,10 +10,11 @@ reproducible and testable without a console.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal, assert_never
+from typing import Literal, assert_never
 
 from gymrat.progress_events import (
     ConfirmFinished,
+    ConfirmSkipped,
     ConfirmStarted,
     HookFinished,
     HookStarted,
@@ -29,9 +30,6 @@ from gymrat.progress_events import (
 from gymrat.report.format import format_percent_delta
 from gymrat.utils import SamplingEta, format_duration, pluralize
 
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
 TARGETS_PER_ROUND = 2
 """Passes one sampling round runs: one against the baseline, one against the candidate."""
 
@@ -40,6 +38,9 @@ REGRESSED_NAME_CAP = 3
 
 MISSING_DELTA = "—"
 """What the judge's lines print in place of a missing or non-finite primary delta."""
+
+JudgeRole = Literal["meta", "name"]
+"""What a judge segment holds: verdict wording, or one regressed metric's name."""
 
 
 # ---------------------------------------------------------------------------
@@ -71,13 +72,16 @@ class NodeState:
         noun: Row label shown while ``status`` is ``"pending"``.
         gerund: Row label shown while ``status`` is ``"running"``.
         past: Row label shown once ``status`` is ``"done"``.
-        hint: Dim explanation shown behind a pending row, or ``""`` for none.
+        hint: Dim explanation shown behind a pending or skipped row, or
+            ``""`` for none.
         note: Dim context shown beside a running row, or ``""`` for none.
         target: In-flight target label shown while running, or ``""`` for none.
         detail: Outcome shown when done, either plain text or a
             :class:`JudgeDetail` for the judge row, or ``""`` for none.
         status: The row's lifecycle state, driving which rendering the view
-            picks. A ``"skipped"`` row is dropped from the checklist entirely.
+            picks. A ``"skipped"`` row is dropped from the checklist, except
+            the confirm row after a judge that found regressions: it stays,
+            marked skipped, to show that no rerun followed the regression.
         start_ms: Timestamp the row's current run began, or ``0.0`` before it
             has started.
         elapsed_ms: Milliseconds the row's completed run took, or ``0.0``
@@ -264,10 +268,8 @@ def advance(  # noqa: C901 -- flat match over the event union
     """
     anchored = state if state.run_start_ms is not None else replace(state, run_start_ms=event.at_ms)
     match event:
-        case HookStarted():
-            advanced = _hook_started(anchored, event)
-        case HookFinished():
-            advanced = _hook_finished(anchored, event)
+        case HookStarted() | HookFinished():
+            advanced = _hook_changed(anchored, event)
         case PrepareStarted():
             advanced = _prepare_started(anchored, event)
         case PrepareFinished():
@@ -284,6 +286,8 @@ def advance(  # noqa: C901 -- flat match over the event union
             advanced = _confirm_started(anchored, event)
         case ConfirmFinished():
             advanced = _confirm_finished(anchored, event)
+        case ConfirmSkipped():
+            advanced = _confirm_skipped(anchored)
         case IterationRecorded():
             advanced = _iteration_recorded(anchored, event)
         case _:  # pragma: no cover - exhaustive over the event union
@@ -291,19 +295,15 @@ def advance(  # noqa: C901 -- flat match over the event union
     return advanced
 
 
-def _hook_started(state: IterateState, event: HookStarted) -> IterateState:
-    if event.stage != "before":
-        return state
-    running = replace(state.nodes.before_hook, status="running", start_ms=event.at_ms)
-    return replace(state, nodes=replace(state.nodes, before_hook=running))
-
-
-def _hook_finished(state: IterateState, event: HookFinished) -> IterateState:
+def _hook_changed(state: IterateState, event: HookStarted | HookFinished) -> IterateState:
     if event.stage != "before":
         return state
     hook = state.nodes.before_hook
-    done = replace(hook, status="done", elapsed_ms=event.at_ms - hook.start_ms)
-    return replace(state, nodes=replace(state.nodes, before_hook=done))
+    if isinstance(event, HookStarted):
+        changed = replace(hook, status="running", start_ms=event.at_ms)
+    else:
+        changed = replace(hook, status="done", elapsed_ms=event.at_ms - hook.start_ms)
+    return replace(state, nodes=replace(state.nodes, before_hook=changed))
 
 
 def _prepare_started(state: IterateState, event: PrepareStarted) -> IterateState:
@@ -364,16 +364,20 @@ def _judge_finished(state: IterateState, event: JudgeFinished) -> IterateState:
         status="done",
         note="",
         elapsed_ms=event.at_ms - judge.start_ms if judge.start_ms > 0 else 0.0,
-        detail=JudgeDetail(
-            primary_metric=state.primary_metric,
-            primary_delta_pct=event.primary_delta_pct,
-            regressed_names=tuple(event.regressed),
-        ),
+        detail=_judge_detail(state, event),
     )
     confirm = (
         state.nodes.confirm if event.regressed else replace(state.nodes.confirm, status="skipped")
     )
     return replace(state, nodes=replace(state.nodes, judge=done, confirm=confirm))
+
+
+def _judge_detail(state: IterateState, event: JudgeFinished) -> JudgeDetail:
+    return JudgeDetail(
+        primary_metric=state.primary_metric,
+        primary_delta_pct=event.primary_delta_pct,
+        regressed_names=tuple(event.regressed),
+    )
 
 
 def _confirm_started(state: IterateState, event: ConfirmStarted) -> IterateState:
@@ -398,6 +402,11 @@ def _confirm_finished(state: IterateState, event: ConfirmFinished) -> IterateSta
     )
     settled = replace(state.nodes.judge, alert=False)
     return replace(state, nodes=replace(state.nodes, judge=settled, confirm=done))
+
+
+def _confirm_skipped(state: IterateState) -> IterateState:
+    skipped = replace(state.nodes.confirm, status="skipped")
+    return replace(state, nodes=replace(state.nodes, confirm=skipped))
 
 
 def _iteration_recorded(state: IterateState, event: IterationRecorded) -> IterateState:
@@ -441,10 +450,8 @@ def plain_line(before: IterateState, after: IterateState, event: ProgressEvent) 
         case PassFinished(phase="measure") if after.pass_phase.eta.completed >= after.total:
             return f"passes done ({format_duration(after.pass_phase.eta.total_time_ms)})"
         case JudgeFinished():
-            breakdown = format_judge_plain(
-                event.primary_delta_pct, event.regressed, event.metric_count
-            )
-            return f"judge {breakdown}"
+            words = "".join(text for text, _role in judge_segments(_judge_detail(before, event)))
+            return f"judge {words}"
         case ConfirmFinished():
             return f"confirm {_confirm_detail(after, reproduced=event.reproduced)}"
         case IterationRecorded():
@@ -471,32 +478,32 @@ def format_primary_delta(primary_delta_pct: float | None) -> str:
     return format_percent_delta(primary_delta_pct, missing=MISSING_DELTA)
 
 
-def format_judge_plain(
-    primary_delta_pct: float | None,
-    regressed: Sequence[str],
-    metric_count: int,
-) -> str:
-    """Format the judge result for plain (non-live) mode.
+def judge_segments(detail: JudgeDetail) -> list[tuple[str, JudgeRole]]:
+    """Split the judge's verdict into the ``(text, role)`` segments both checklist modes print.
+
+    Live mode styles each segment by its role and plain mode joins the texts,
+    so the two modes print the same words.
 
     Args:
-        primary_delta_pct: Percentage delta on the primary metric, or ``None``
-            when no delta is available. Rendered by :func:`format_primary_delta`.
-        regressed: Names of regressed metrics. At most
-            :data:`REGRESSED_NAME_CAP` names are spelled out; the rest are
-            collapsed to ``"…"``.
-        metric_count: Total number of evaluated metrics, used to derive the
-            non-regressed count.
+        detail: The judge's verdict. At most :data:`REGRESSED_NAME_CAP`
+            regressed names are spelled out; the rest are collapsed to ``"…"``.
+            The delta renders through :func:`format_primary_delta`; the
+            primary metric's name is shown only beside a printable delta.
 
     Returns:
-        A ``" · "``-joined string of the delta, non-regressed count, and
-        (when any regressed) their names.
+        The verdict's segments in print order. A ``"name"`` segment is one
+        regressed metric's name; every other segment is ``"meta"`` wording.
     """
-    delta_str = format_primary_delta(primary_delta_pct)
-    handoff: list[str] = []
-    if regressed:
-        shown = ", ".join(regressed[:REGRESSED_NAME_CAP])
-        if len(regressed) > REGRESSED_NAME_CAP:
-            shown += ", …"
-        handoff = [f"{len(regressed)} regressed: {shown}"]
-    non_regressed_count = metric_count - len(regressed)
-    return " · ".join([delta_str, f"{non_regressed_count} improve/noise", *handoff])
+    delta = format_primary_delta(detail.primary_delta_pct)
+    primary = delta if delta == MISSING_DELTA else f"{delta} on {detail.primary_metric}"
+    regressed = detail.regressed_names
+    if not regressed:
+        return [(f"{primary} · no gating regression", "meta")]
+    segments: list[tuple[str, JudgeRole]] = [(f"{primary} · {len(regressed)} regressed: ", "meta")]
+    for index, name in enumerate(regressed[:REGRESSED_NAME_CAP]):
+        if index:
+            segments.append((", ", "meta"))
+        segments.append((name, "name"))
+    if len(regressed) > REGRESSED_NAME_CAP:
+        segments.append((", …", "meta"))
+    return segments

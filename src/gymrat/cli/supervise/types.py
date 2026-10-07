@@ -10,24 +10,32 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from gymrat.model import Direction
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import CapAction, CapType
 
 
 @dataclass(frozen=True, slots=True)
 class BestIteration:
-    """The committed-keep iteration with the best primary delta.
+    """The committed-keep iteration whose primary delta improved the most.
 
     Attributes:
         delta_pct: Its primary delta, in percent.
         seq: Its sequence number.
         label: Its primary: the metric name for a named-metric primary, else
             the kind (``"geomean"``).
+        baseline_sha: The commit it was measured against: the commit of the
+            committed keep before it, or the commit the session started from
+            when no keep preceded it. ``None`` when the reader supplies none.
+        direction: Whether a lower or a higher primary is the better outcome,
+            which decides whether ``delta_pct`` is an improvement.
     """
 
     delta_pct: float
     seq: int
     label: str
+    baseline_sha: str | None = None
+    direction: Direction = "lower"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,9 +48,6 @@ class ReadSessionResult:
         best: The best committed-keep iteration. ``None`` when no keep has been
             committed. ``read_live_session`` computes it from the session
             records; injected test readers set it directly.
-        baseline_sha: The commit the session started from, taken from the
-            session record by ``read_live_session``. ``None`` before the session
-            record has been written.
         stop_message: The newest stop record's message. Holds a value only
             while the folded log ends on a stop; ``None`` once any iteration,
             keep, discard, or finalize record supersedes it.
@@ -51,7 +56,6 @@ class ReadSessionResult:
     state: SessionState
     has_baseline: bool
     best: BestIteration | None = None
-    baseline_sha: str | None = None
     stop_message: str | None = None
 
 

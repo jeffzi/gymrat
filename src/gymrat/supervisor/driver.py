@@ -22,10 +22,10 @@ class SessionPrompt:
 
     kickoff: str
     cwd: str
-    system_prompt_append: str | None = None
+    system_prompt_append: str
+    command_timeout_ms: int
     model: str | None = None
     effort: Effort | None = None
-    command_timeout_ms: int | None = None
     max_budget_usd: float | None = None
     traceparent: str | None = None
 
@@ -79,15 +79,14 @@ class Driver(Protocol):
         self,
         prompt: SessionPrompt,
         observer: SessionObserver,
-        abort: asyncio.Event | None = None,
+        abort: asyncio.Event,
     ) -> DriverSession:
         """Start a session synchronously; async work runs behind ``outcome``.
 
         Args:
             prompt: The initial prompt and any system instructions.
             observer: Callback receiving every session event.
-            abort: When set, signals the session to stop. ``None`` disables
-                external abort.
+            abort: When set, signals the session to stop.
 
         Returns:
             A live session whose ``outcome`` resolves when the agent finishes.

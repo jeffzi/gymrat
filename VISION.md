@@ -71,10 +71,10 @@ and neither does a compacted agent context. Anything a later reader must act on 
 a live process needs for itself is disposable: losing it can end a run early, and it can never lose
 history.
 
-The log is also a complete trace. Every command run inside a session records what it was asked,
-what it decided, and how long it took, refusals included, so a session can be reconstructed after
-the fact. A record of an action is not a record of progress: a busy agent checking `status` looks
-busy in the trace and nowhere else.
+The log is also a complete trace. Every command that holds the repository lock inside a session
+records what it was asked, what it decided, and how long it took, refusals included, so a session
+can be reconstructed after the fact. A record of an action is not a record of progress: a busy
+agent checking `status` looks busy in the trace and nowhere else.
 
 ## What gymrat is not
 

@@ -15,7 +15,7 @@ from gymrat import clock as _clock
 from gymrat.progress_events import PassFinished, PassStarted, ProgressEvent
 from gymrat.session.paths import progress_path
 from gymrat.session.sidecar import read_sidecar
-from gymrat.utils import MS_PER_SECOND, write_text_atomic
+from gymrat.utils import MS_PER_SECOND, WarnSink, warn_to_stderr, write_text_atomic
 
 #: A reader discards files whose mtime is older than this many seconds.
 #: 600 s (10 min) is well above the longest single benchmark pass.
@@ -82,9 +82,25 @@ def read_progress(root: str) -> ProgressSnapshot | None:
     return read_sidecar(path, ProgressSnapshot)
 
 
-def clear_progress(root: str) -> None:
-    """Remove the progress sidecar if it exists, silently succeed otherwise."""
-    Path(progress_path(root)).unlink(missing_ok=True)
+def clear_progress(root: str, warn: WarnSink = warn_to_stderr) -> None:
+    """Remove the progress sidecar, best-effort.
+
+    A missing sidecar is a silent success. A removal the OS refuses is never
+    raised: the sidecar is cleared on the way out of an iteration, where an
+    error here would replace the iteration's own outcome. On win32 a reader
+    holding the sidecar open makes the removal fail with a sharing violation.
+    A sidecar left behind is discarded by readers once it is older than
+    ``STALENESS_BOUND_SECONDS``.
+
+    Args:
+        root: Repository root under which the progress sidecar lives.
+        warn: Sink that receives the message when the removal fails.
+    """
+    path = Path(progress_path(root))
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        warn(f"warning: could not remove the progress sidecar {path}: {error}")
 
 
 @dataclass(slots=True)

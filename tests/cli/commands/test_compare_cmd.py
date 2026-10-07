@@ -34,6 +34,7 @@ from gymrat.sampling import RunOptions, SamplingOptions
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.utils import warn_to_stderr
+from tests._config import resolved_config
 from tests.cli._budget import install_budget, install_tight_budget
 from tests.cli._session import last_command_record, open_session
 from tests.report._comparisons import (
@@ -49,10 +50,9 @@ runner = CliRunner()
 
 def _resolved(bench: str = "sh bench.sh") -> ResolvedConfig:
     """A resolved config the fake ``compare`` never actually benches against."""
-    return ResolvedConfig(
+    return resolved_config(
         bench=bench,
         prepare="npm ci",
-        adapter="metric-lines",
         samples=5,
         timeout_seconds=30,
         unstable_noise_pct=2.0,

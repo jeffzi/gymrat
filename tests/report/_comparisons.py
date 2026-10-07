@@ -25,6 +25,7 @@ from gymrat.report.types import (
 from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._verdicts import (
     band_metric,
+    exact_verdict,
     geomean_of,
 )
 
@@ -130,8 +131,6 @@ def permutation_metric(
     delta: float,
     baseline_median: float = 100.0,
     baseline_spread: float = 1.0,
-    candidate_median: float | None = None,
-    candidate_spread: float = 1.0,
     p: float = 0.01,
     noise_pct: float = 2.5,
     noise_abs: float = 3.5,
@@ -141,16 +140,13 @@ def permutation_metric(
     n: int = 10,
 ) -> MetricComparison:
     """A two-sided metric whose verdict came from the permutation method."""
-    resolved_median = (
-        baseline_median * (1 + delta / 100) if candidate_median is None else candidate_median
-    )
     return MetricComparison(
         baseline_median=baseline_median,
         baseline_spread=baseline_spread,
         candidates=(
             CandidateMetric(
-                median=resolved_median,
-                spread=candidate_spread,
+                median=baseline_median * (1 + delta / 100),
+                spread=1.0,
                 verdict=PermutationVerdict(
                     method="permutation",
                     verdict=verdict,
@@ -177,29 +173,17 @@ def exact_metric(
     *,
     delta: float,
     baseline_median: float = 1000.0,
-    candidate_median: float | None = None,
     n: int = 10,
     unit: MetricUnit | None = "bytes",
 ) -> MetricComparison:
     """A counted metric, compared exactly rather than statistically."""
-    from gymrat.model import ExactVerdict, Verdict
-
-    resolved_median = (
-        baseline_median * (1 + delta / 100) if candidate_median is None else candidate_median
-    )
-    verdict: Verdict = "improved" if delta < 0 else "regressed"
     return MetricComparison(
         baseline_median=baseline_median,
         baseline_spread=None,
         candidates=(
             CandidateMetric(
-                median=resolved_median,
-                verdict=ExactVerdict(
-                    method="exact",
-                    verdict=verdict,
-                    delta=delta,
-                    n=n,
-                ),
+                median=baseline_median * (1 + delta / 100),
+                verdict=exact_verdict(delta=delta, n=n),
             ),
         ),
         meta=ResolvedMetricMeta(

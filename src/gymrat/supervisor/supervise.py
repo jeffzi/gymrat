@@ -351,6 +351,12 @@ class _Supervision:
         self._end_reason = end_reason
         if self._session is not None:
             self._spawn(self._session.end())
+            self._arm_grace()
+
+    def _arm_grace(self) -> None:
+        self._grace_timer = asyncio.get_running_loop().call_later(
+            self._config.grace_ms / MS_PER_SECOND, self._abort_event.set
+        )
 
     def _handle_log_error(self, message: str) -> None:
         self._end_session(message, ended_by="session", end_reason=message)
@@ -402,10 +408,11 @@ class _Supervision:
     def _trigger_end(
         self, event: CapEvent | FollowUpEvent, *, ended_by: EndedBy, end_reason: str
     ) -> None:
-        """Stop the running session once, emitting ``event`` to announce why.
+        """Stop the running session once.
 
-        An idle session is ended; one with a turn in flight is interrupted, with
-        grace armed so the abort event fires if the driver does not settle.
+        An idle session is ended; one with a turn in flight is interrupted.
+        Either way grace is armed, so the abort event fires if the driver does
+        not settle.
 
         Args:
             event: The cap or follow-up event announcing the end.
@@ -428,9 +435,7 @@ class _Supervision:
             self._spawn(self._session.end())
         else:
             self._interrupt_task = _fire_and_report_interrupt(self._session)
-            self._grace_timer = asyncio.get_running_loop().call_later(
-                self._config.grace_ms / MS_PER_SECOND, self._abort_event.set
-            )
+        self._arm_grace()
 
     async def _run_wall_clock(self) -> None:
         deadline = self._config.context.deadline_ms
@@ -449,8 +454,7 @@ class _Supervision:
             self._abort_event,
         )
 
-        if not self._cap_fired:
-            self._wall_task = asyncio.create_task(self._run_wall_clock())
+        self._wall_task = asyncio.create_task(self._run_wall_clock())
 
         try:
             outcome = await self._session.outcome

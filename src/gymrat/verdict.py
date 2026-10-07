@@ -56,7 +56,7 @@ from gymrat.stats import (
     percent_delta,
     sign_flip_permutation_test,
 )
-from gymrat.utils import WarnSink, pluralize, warn_to_stderr
+from gymrat.utils import WarnSink, finite_or_none, pluralize, warn_to_stderr
 
 __all__ = [
     "BAND_MIN_N",
@@ -159,7 +159,7 @@ def _fraction_of_median(numerator: float, median: float, scale: float = 1.0) -> 
     if median == 0:
         return None
     fraction = (numerator / abs(median)) * scale
-    return fraction if math.isfinite(fraction) else None
+    return finite_or_none(fraction)
 
 
 def _largest_term(*fractions: float | None) -> float:

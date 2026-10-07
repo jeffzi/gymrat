@@ -61,7 +61,7 @@ async def _run_session(
     client_factory: ClientFactory = FactoryProbe(client)
     driver = create_claude_driver(client_factory=client_factory, hooks=hooks, tools=tools)
     return await asyncio.wait_for(
-        driver.start(make_prompt(), collecting_observer().observer, None).outcome,
+        driver.start(make_prompt(), collecting_observer().observer, asyncio.Event()).outcome,
         timeout=30.0,
     )
 
@@ -93,7 +93,7 @@ async def test_start_when_hooks_given_does_call_factory_once_per_session(session
 
     for _ in range(session_count):
         await asyncio.wait_for(
-            driver.start(make_prompt(), collecting_observer().observer, None).outcome,
+            driver.start(make_prompt(), collecting_observer().observer, asyncio.Event()).outcome,
             timeout=30.0,
         )
 

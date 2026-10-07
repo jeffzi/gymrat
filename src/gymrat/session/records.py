@@ -63,6 +63,7 @@ from gymrat.session.schema import (
     Verdict,
 )
 from gymrat.session.workspace import BaselineRef, Worktrees
+from gymrat.utils import expected_got
 
 # ---------------------------------------------------------------------------
 # Validation and coercion helpers
@@ -631,7 +632,7 @@ def parse_record(value: object) -> SessionLogRecord:
             ``type``, or violates that type's schema.
     """
     if not isinstance(value, dict):
-        message = f"Invalid session record: expected a JSON object, got {json.dumps(value)}"
+        message = f"Invalid session record: {expected_got('a JSON object', value)}"
         raise GymratError(message)
     token = _wire_validation.set(True)
     try:
@@ -837,6 +838,5 @@ def _message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
         msg = error["msg"].removeprefix(VALUE_ERROR_PREFIX)
         separator = ": " if key else ""
         return f"Invalid session record: {key}{separator}{msg}"
-    phrase = phrase_for_error(error)
-    got = json.dumps(error["input"])
-    return f"Invalid session record value for {key}: expected {phrase}, got {got}"
+    detail = expected_got(phrase_for_error(error), error["input"])
+    return f"Invalid session record value for {key}: {detail}"

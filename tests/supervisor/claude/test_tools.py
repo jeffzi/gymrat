@@ -44,7 +44,7 @@ async def _start_with_tools(
     client = FiniteClient([result_message()])
     driver = create_claude_driver(client_factory=FactoryProbe(client), tools=probe)
     await asyncio.wait_for(
-        driver.start(prompt, collecting_observer().observer, abort).outcome,
+        driver.start(prompt, collecting_observer().observer, abort or asyncio.Event()).outcome,
         timeout=30.0,
     )
     return client, probe
@@ -55,7 +55,7 @@ async def test_start_when_tools_given_does_add_only_mcp_servers_to_options():
     plain_client = FiniteClient([result_message()])
     plain_driver = create_claude_driver(client_factory=FactoryProbe(plain_client))
     await asyncio.wait_for(
-        plain_driver.start(prompt, collecting_observer().observer, None).outcome,
+        plain_driver.start(prompt, collecting_observer().observer, asyncio.Event()).outcome,
         timeout=30.0,
     )
     tools_probe = ToolsFactoryProbe(_SENTINEL_SERVER)
@@ -104,14 +104,3 @@ async def test_start_when_tools_given_with_abort_does_pass_abort_to_factory():
     assert len(probe.calls) == 1
     received_abort, _ = probe.calls[0]
     assert received_abort is abort
-
-
-async def test_start_when_tools_given_without_abort_does_pass_fresh_unset_event():
-    tools_probe = ToolsFactoryProbe(_SENTINEL_SERVER)
-
-    _, probe = await _start_with_tools(make_prompt(), tools_probe, abort=None)
-
-    assert len(probe.calls) == 1
-    received_abort, _ = probe.calls[0]
-    assert isinstance(received_abort, asyncio.Event)
-    assert not received_abort.is_set()

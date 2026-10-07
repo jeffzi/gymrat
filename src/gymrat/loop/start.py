@@ -17,6 +17,7 @@ from pathlib import Path
 from gymrat import clock as _clock
 from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
+from gymrat.git import try_git
 from gymrat.session.paths import archived_session_path, session_jsonl_path
 from gymrat.session.records import SessionConfig, SessionHooks, SessionRecord
 from gymrat.session.schema import SCHEMA_VERSION
@@ -27,9 +28,15 @@ from gymrat.session.store import (
     last_kept_position,
     read_records,
 )
-from gymrat.session.workspace import BaselineRef, create_workspace, recreate_workspace
+from gymrat.session.workspace import (
+    BaselineRef,
+    WorkspaceResult,
+    create_workspace,
+    recreate_workspace,
+    remove_worktrees,
+)
 from gymrat.targets import RefTarget, resolve_target
-from gymrat.utils import MS_PER_SECOND, NS_PER_MS
+from gymrat.utils import MS_PER_SECOND, NS_PER_MS, warn_to_stderr
 
 # Ref the baseline is pinned to when the caller names none.
 DEFAULT_BASELINE_REF = "HEAD"
@@ -126,20 +133,61 @@ def _create_session(root: str, jsonl_path: str, ref: str, config: ResolvedConfig
     session_id = _new_session_id(at)
     workspace = create_workspace(root, session_id, baseline)
 
-    # pyrefly: ignore[missing-argument] -- validate_by_name=True accepts the Python name
-    session = SessionRecord(
-        type="session",
-        schema_version=SCHEMA_VERSION,
-        session_id=session_id,
-        at=at,
-        baseline=baseline,
-        branch=workspace.branch,
-        worktrees=workspace.worktrees,
-        config=_snapshot_config(config),
-    )
-    append_record(jsonl_path, session)
+    try:
+        # pyrefly: ignore[missing-argument] -- validate_by_name=True accepts the Python name
+        session = SessionRecord(
+            type="session",
+            schema_version=SCHEMA_VERSION,
+            session_id=session_id,
+            at=at,
+            baseline=baseline,
+            branch=workspace.branch,
+            worktrees=workspace.worktrees,
+            config=_snapshot_config(config),
+        )
+        append_record(jsonl_path, session)
+    except BaseException:
+        # A header that reached the log before the failure (a sync that failed
+        # after the write) names this workspace, and the next start resumes in it.
+        if not _header_landed(jsonl_path):
+            _unwind_workspace(root, workspace)
+        raise
 
     return StartResult(session=session, state=fold_session([session]), resumed=False)
+
+
+def _header_landed(jsonl_path: str) -> bool:
+    """Whether the log at ``jsonl_path`` opens a session."""
+    try:
+        return fold_session(read_records(jsonl_path)).session is not None
+    except (GymratError, OSError):
+        return False
+
+
+def _unwind_workspace(root: str, workspace: WorkspaceResult) -> None:
+    """Take back the branch and both worktrees of a session whose header never landed.
+
+    Left standing, they would make every later start refuse until the user
+    removed them by hand. ``create_workspace`` only returns once it checked out
+    both worktrees itself, so nothing here predates this start.
+
+    The worktrees go before the branch: git refuses to delete a branch one of
+    them still has checked out. A step that fails is reported as a warning — the
+    caller is about to re-raise what broke the start, and a cleanup that cannot
+    finish must not speak in its place.
+
+    Args:
+        root: The repository root.
+        workspace: The branch and worktrees ``create_workspace`` just made.
+    """
+    for warning in remove_worktrees(root, workspace.worktrees):
+        warn_to_stderr(warning)
+    error = try_git(["branch", "-D", workspace.branch], root)
+    if error is not None:
+        warn_to_stderr(
+            f"Could not delete the session branch '{workspace.branch}': {error}\n"
+            f"  delete it by hand with: git branch -D {workspace.branch}"
+        )
 
 
 def _resolve_baseline_sha(ref: str, root: str) -> str:

@@ -20,7 +20,9 @@ Every adapter satisfies the :class:`Adapter` contract. :class:`MetricDefaults` i
 what an adapter knows about a metric from its name alone. An adapter sends a
 complaint about each part of the output it cannot read cleanly to a
 :data:`~gymrat.utils.WarnSink`; most such parts (a line, a run, a benchmark, a
-duplicate name) are skipped. It raises :class:`AdapterError`, aborting the whole
+duplicate name, a metric name with an empty path segment or an empty kind) are
+skipped, so every name an adapter emits follows the grammar of
+:mod:`gymrat.metric_name`. It raises :class:`AdapterError`, aborting the whole
 parse, when the output yields no usable metric or a metric name with more than one
 ``#``.
 
@@ -51,10 +53,11 @@ from pydantic import (
 )
 
 from gymrat.errors import GymratError
-from gymrat.metric_name import LINE_TERMINATORS
+from gymrat.metric_name import LINE_TERMINATORS, MetricNameError, MultipleHashesError
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import Direction, MetricUnit
 from gymrat.pydantic_errors import describe_key, drop_prefix_errors, phrase_for_error
-from gymrat.utils import WarnSink, warn_to_stderr
+from gymrat.utils import WarnSink, expected_got, finite_or_none, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # adapter contract
@@ -145,12 +148,10 @@ def defaults_from_suffixes(metric_name: str) -> MetricDefaults:
     """Derive :class:`MetricDefaults` from a metric name by matching suffixes.
 
     Walks :data:`_METRIC_SUFFIXES` in order, so the first matching suffix wins.
-    When the prefix before the suffix is empty (the name equals the suffix, e.g.
-    ``#time``), ``short_name`` is the full metric name so the report renders a
-    visible label.
 
     Args:
-        metric_name: The metric name to match against the suffix table.
+        metric_name: The metric name to match against the suffix table. It
+            follows the metric name grammar, so a path precedes the suffix.
 
     Returns:
         Defaults for the first matching suffix, or direction-only defaults when
@@ -158,12 +159,11 @@ def defaults_from_suffixes(metric_name: str) -> MetricDefaults:
     """
     for suffix, unit, kind in _METRIC_SUFFIXES:
         if metric_name.endswith(suffix):
-            prefix = metric_name[: -len(suffix)]
             return MetricDefaults(
                 direction="lower",
                 unit=unit,
                 kind=kind,
-                short_name=metric_name if prefix == "" else prefix,
+                short_name=metric_name.removesuffix(suffix),
             )
     return MetricDefaults(direction="lower")
 
@@ -186,7 +186,7 @@ inside their line so that :meth:`parse` can reject a name holding one with
 line into fragments.
 """
 
-_RADIX_NUMBER = re.compile(r"0[xX][0-9a-fA-F]+$|0[oO][0-7]+$|0[bB][01]+$")
+_RADIX_NUMBER = re.compile(r"0[xX][0-9a-fA-F]+|0[oO][0-7]+|0[bB][01]+")
 """Unsigned hex/octal/binary literal, matching what JS ``Number()`` accepts.
 
 JS rejects a sign on these forms (``Number("-0x10")`` is NaN), so the pattern
@@ -205,7 +205,7 @@ def _js_number(raw: str) -> float | None:
     - ``0x``/``0o``/``0b`` literals are accepted the way JS accepts them.
     - Underscore separators, and the words ``inf``/``infinity``/``nan`` that
       Python's ``float`` accepts, are rejected because JS ``Number`` rejects them
-      (or yields a non-finite value that fails the ``isfinite`` guard).
+      (or yields a non-finite value, which is dropped).
 
     Args:
         raw: The value token after a METRIC line's last ``=``.
@@ -215,7 +215,7 @@ def _js_number(raw: str) -> float | None:
         non-finite.
     """
     token = raw.strip()
-    # float("1_0") succeeds and is finite, so the isfinite guard below cannot
+    # float("1_0") succeeds and is finite, so the finite check below cannot
     # catch underscore separators — reject them explicitly, alongside the
     # empty-token case, before either try block runs.
     if token == "" or "_" in token:
@@ -229,7 +229,34 @@ def _js_number(raw: str) -> float | None:
         value = float(token)
     except ValueError:
         return None
-    return value if math.isfinite(value) else None
+    return finite_or_none(value)
+
+
+def _follows_grammar(metric_name: str, warn: WarnSink) -> bool:
+    """Tell whether a METRIC line's name follows the metric name grammar, warning when not.
+
+    Args:
+        metric_name: The name read from a METRIC line; it holds no line terminator.
+        warn: The sink that receives the warning about a name to skip.
+
+    Returns:
+        ``False`` when the line is to be skipped.
+
+    Raises:
+        AdapterError: When the name carries more than one ``#``.
+    """
+    try:
+        parse_metric_name(metric_name)
+    except MultipleHashesError as exc:
+        msg = (
+            f'Metric name "{metric_name}" contains {exc.flaw}; '
+            "only a single '#' is allowed as the metric-type separator"
+        )
+        raise AdapterError(msg) from exc
+    except MetricNameError as exc:
+        warn(f'Skipping METRIC line with {exc.flaw} in its metric name: "{metric_name}"')
+        return False
+    return True
 
 
 class _MetricLinesAdapter:
@@ -242,6 +269,8 @@ class _MetricLinesAdapter:
         """Parse ``METRIC`` lines from ``stdout`` into a median-per-name metric map.
 
         Splits ``stdout`` into lines and reads each ``METRIC <name>=<value>`` line.
+        A line whose name has an empty path segment or an empty kind is skipped
+        with a warning, like a line that cannot be read at all.
 
         Args:
             stdout: The bench script's full standard output.
@@ -279,12 +308,8 @@ class _MetricLinesAdapter:
                 warn(parse_failure)
                 continue
 
-            if metric_name.count("#") > 1:
-                msg = (
-                    f"Metric name \"{metric_name}\" contains more than one '#'; "
-                    "only a single '#' is allowed as the metric-type separator"
-                )
-                raise AdapterError(msg)
+            if not _follows_grammar(metric_name, warn):
+                continue
 
             value = _js_number(after[last_eq + 1 :])
             if value is None:
@@ -473,7 +498,7 @@ def _serialize_arg_value(value: object) -> str:
         return "true" if value else "false"
     if value is None:
         return "null"
-    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+    if isinstance(value, float) and value.is_integer():
         # JS String(5.0) is "5", not "5.0"; an int falls through to str() below.
         return str(int(value))
     return str(value)
@@ -519,7 +544,6 @@ _Number = Annotated[float, Strict(), WrapValidator(_keep_integer)]
 """A JSON number; strict, so ``bool`` is rejected as JavaScript's ``typeof`` would."""
 
 _FINITE_NUMBER_PHRASE = "a finite number"
-_HEAP_LOC = ("stats", "heap")
 
 
 class _Heap(BaseModel):
@@ -565,7 +589,7 @@ def _invalid_value_tail(key: str, phrase: str, value: object) -> str:
     Returns:
         The text that follows the skipped entry's name in the warning.
     """
-    detail = f"expected {phrase}, got {json.dumps(value)}"
+    detail = expected_got(phrase, value)
     return f" with invalid {key}: {detail}" if key else f": {detail}"
 
 
@@ -618,6 +642,11 @@ def _resolve_metric_prefix(alias: str, args: dict[str, object], warn: WarnSink) 
             "(the alias or one of its argument values carries one)"
         )
         return None
+    try:
+        parse_metric_name(prefix)
+    except MetricNameError as exc:
+        warn(f"Skipping run with {exc.flaw} in its metric name: {json.dumps(prefix)}")
+        return None
     return prefix
 
 
@@ -635,7 +664,7 @@ def _record_heap_metric(
     try:
         avg = _Heap.model_validate(heap).avg
     except ValidationError as exc:
-        _warn_skip(warn, subject, _first_problem(exc, _HEAP_LOC))
+        _warn_skip(warn, subject, _first_problem(exc, ("stats", "heap")))
         return
     if avg is None:
         return
@@ -702,14 +731,13 @@ class _MitataAdapter:
         Each run yields ``<alias>#time`` from ``stats.p50`` and, when mitata
         measured it, ``<alias>#heap`` from ``stats.heap.avg``. Runs that errored,
         reported a non-finite ``p50``, resolved to a metric name carrying a line
-        terminator, or carried a malformed ``args``/``stats`` shape are skipped
-        rather than failing the parse — a single bad argument combination should
-        not discard the rest of the run — and likewise for a benchmark whose
-        ``alias``/``runs`` shape is malformed. Every skip warns through ``warn``
-        rather than vanishing silently, as does a collision between two runs
-        landing on one metric name; on a collision the last run still wins. A
-        metric prefix carrying ``#`` is the exception: ``#`` is reserved as the
-        metric-type separator, so it aborts the parse instead.
+        terminator or an empty path segment, or carried a malformed
+        ``args``/``stats`` shape are skipped rather than failing the parse — a
+        single bad argument combination should not discard the rest of the run —
+        and likewise for a benchmark whose ``alias``/``runs`` shape is
+        malformed. Every skip warns through ``warn`` rather than vanishing
+        silently, as does a collision between two runs landing on one metric
+        name; on a collision the last run still wins.
 
         Args:
             stdout: The bench script's full standard output.
@@ -722,7 +750,8 @@ class _MitataAdapter:
         Raises:
             AdapterError: When no JSON object is found, the JSON is malformed, the
                 ``benchmarks`` array is missing or empty, a substituted metric
-                prefix contains ``#``, or no run yields a usable metric.
+                prefix contains ``#`` (reserved as the metric-type separator), or
+                no run yields a usable metric.
         """
         metrics: dict[str, float] = {}
         for benchmark in _extract_benchmarks(stdout):

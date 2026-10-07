@@ -27,6 +27,11 @@ from gymrat.sampling import (
 from gymrat.targets import InPlaceTarget, RefTarget, resolve_target
 from tests._git import head_of
 from tests._git import run_git as _run_git
+from tests.conftest import (
+    kill_git_during_worktree_add,
+    list_worktree_dirs,
+    register_absent_worktree,
+)
 
 # A sha no repository holds, so ``git worktree add`` rejects it outright.
 UNKNOWN_SHA = "0" * 40
@@ -44,6 +49,23 @@ skip_on_windows_or_root = pytest.mark.skipif(
     sys.platform == "win32" or _IS_ROOT,
     reason="Windows lacks EACCES from chmod and root bypasses the mode bits",
 )
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(False, id="git-missing"),
+        pytest.param(True, id="git-not-executable", marks=skip_on_windows),
+    ]
+)
+def unusable_git(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leave ``PATH`` holding one directory where git is absent or lacks the execute bit."""
+    if request.param:
+        blocked = tmp_path / "git"
+        blocked.write_text("#!/bin/sh\n", encoding="utf-8")
+        blocked.chmod(0o644)
+    monkeypatch.setenv("PATH", str(tmp_path))
 
 
 def _plan_and_attempt_materialize(target: RefTarget, repo_dir: str) -> tuple[WorktreeInfo, bool]:
@@ -250,6 +272,14 @@ def test_resolve_target_when_input_not_a_ref_does_carry_git_stderr(
     assert exc_info.value.hint == RESOLVE_TARGET_HINT
 
 
+@pytest.mark.usefixtures("unusable_git")
+def test_resolve_target_when_git_cannot_be_started_does_raise_gymrat_error(tmp_path: Path):
+    with pytest.raises(GymratError, match=r"^Cannot resolve target 'main': .+") as exc_info:
+        resolve_target("main", str(tmp_path))
+
+    assert exc_info.value.hint == RESOLVE_TARGET_HINT
+
+
 @pytest.mark.parametrize(
     "rev",
     [pytest.param("HEAD^{tree}", id="tree"), pytest.param("HEAD:README.md", id="blob")],
@@ -363,10 +393,17 @@ def test_materialize_worktree_when_git_rejects_sha_does_raise_gymrat_error_with_
     assert "returned non-zero exit status" not in message
 
 
+@pytest.mark.usefixtures("unusable_git")
+def test_materialize_worktree_when_git_cannot_be_started_does_raise_gymrat_error(tmp_path: Path):
+    worktree = plan_worktree(RefTarget(ref="main", resolved_sha=UNKNOWN_SHA))
+
+    with pytest.raises(GymratError, match=rf"^git worktree add failed for {UNKNOWN_SHA}: .+"):
+        materialize_worktree(worktree, str(tmp_path))
+
+
 @skip_on_windows
 def test_materialize_worktree_when_add_interrupted_does_set_created_from_disk_state(
     create_scratch_repo: Callable[[], str],
-    kill_git_during_worktree_add: Callable[[str], None],
 ):
     repo = create_scratch_repo()
     kill_git_during_worktree_add(repo)
@@ -401,7 +438,6 @@ def test_cleanup_worktrees_when_given_non_empty_list_does_remove_and_report(
 
 def test_cleanup_worktrees_when_list_empty_does_leave_registry_untouched(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     repo = create_scratch_repo()
 
@@ -426,7 +462,6 @@ def test_cleanup_worktrees_when_list_empty_outside_repo_does_skip_prune_and_repo
 @skip_on_windows
 def test_cleanup_worktrees_when_add_was_killed_does_remove_like_a_normal_worktree(
     create_scratch_repo: Callable[[], str],
-    kill_git_during_worktree_add: Callable[[str], None],
 ):
     repo = create_scratch_repo()
     kill_git_during_worktree_add(repo)
@@ -456,8 +491,6 @@ def test_cleanup_worktrees_when_add_left_nothing_counts_as_neither_removed_nor_f
 
 def test_cleanup_worktrees_when_never_created_worktree_does_not_touch_unrelated_absent(
     create_scratch_repo: Callable[[], str],
-    register_absent_worktree: Callable[[str], str],
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     repo = create_scratch_repo()
     absent = register_absent_worktree(repo)
@@ -471,8 +504,6 @@ def test_cleanup_worktrees_when_never_created_worktree_does_not_touch_unrelated_
 
 def test_cleanup_worktrees_when_all_removals_succeed_leaves_unasked_registry_entries(
     create_scratch_repo: Callable[[], str],
-    register_absent_worktree: Callable[[str], str],
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     repo = create_scratch_repo()
     absent = register_absent_worktree(repo)
@@ -486,8 +517,6 @@ def test_cleanup_worktrees_when_all_removals_succeed_leaves_unasked_registry_ent
 
 def test_cleanup_worktrees_when_dir_gone_deregisters_only_that_worktree(
     create_scratch_repo: Callable[[], str],
-    register_absent_worktree: Callable[[str], str],
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     repo = create_scratch_repo()
     absent = register_absent_worktree(repo)
@@ -520,8 +549,6 @@ def test_cleanup_worktrees_when_removal_fails_reports_dir_with_git_error_text(
 
 def test_cleanup_worktrees_when_removal_fails_does_not_prune_unrelated_entries(
     create_scratch_repo: Callable[[], str],
-    register_absent_worktree: Callable[[str], str],
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     repo = create_scratch_repo()
     absent = register_absent_worktree(repo)
@@ -570,7 +597,6 @@ def test_cleanup_worktrees_when_prune_sweep_fails_reports_prune_error_not_raises
 
 def test_cleanup_worktrees_when_swept_twice_reports_removed_zero_and_no_failures(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     repo = create_scratch_repo()
     worktree = _create_head_worktree(repo)
@@ -586,8 +612,6 @@ def test_cleanup_worktrees_when_swept_twice_reports_removed_zero_and_no_failures
 
 def test_cleanup_worktrees_when_swept_twice_does_not_prune_unrelated_absent(
     create_scratch_repo: Callable[[], str],
-    register_absent_worktree: Callable[[str], str],
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     repo = create_scratch_repo()
     worktree = _create_head_worktree(repo)

@@ -2,7 +2,9 @@
 
 A dirty working tree, or an experiment worktree holding unmeasured or unsettled
 edits, stops the run before the agent starts; ``--allow-dirty`` lets only the
-working-tree case through, with a warning.
+working-tree case through, with a warning. The guards run inside the
+pre-flight, so these tests run the real pre-flight with only the baseline bench
+replaced.
 """
 
 import re
@@ -12,12 +14,23 @@ from pathlib import Path
 
 import pytest
 
+from gymrat.cli.supervise.preflight import run_preflight, validate_experiment_worktree
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
 from gymrat.session.store import append_record
 from tests.cli._session import make_discard_repo
-from tests.cli.commands.supervise.test_supervise import _err_text, _install_seams, _run
-from tests.cli.supervise._fixtures import start_open_session
+from tests.cli.commands.supervise.test_supervise import _err_text, _run, _Seams
+from tests.cli.commands.supervise.test_supervise import _install_seams as _install_command_seams
+from tests.cli.supervise._fixtures import install_baseline_seam, start_open_session
 from tests.session.records._fixtures import committed_keep, finalize_record, iteration_record
+
+
+def _install_seams(monkeypatch: pytest.MonkeyPatch) -> _Seams:
+    """Install the command seams, keeping the real pre-flight with a stand-in baseline bench."""
+    seams = _install_command_seams(monkeypatch)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", run_preflight)
+    install_baseline_seam(monkeypatch)
+    return seams
+
 
 # ---------------------------------------------------------------------------
 # dirty-tree guard
@@ -48,22 +61,6 @@ def test_supervise_when_tree_dirty_and_allowed_does_warn_and_proceed(
 
     assert result.exit_code == 0
     assert re.search(r"dirty|uncommitted|untracked", result.stderr, re.IGNORECASE)
-
-
-def test_supervise_when_tree_dirty_and_allowed_does_route_warning_to_the_warn_sink(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _install_seams(monkeypatch)
-    sink: list[str] = []
-    monkeypatch.setattr("gymrat.cli.commands.supervise.warn_to_stderr", sink.append)
-    (Path(repo) / "uncommitted.txt").write_text("dirty", encoding="utf-8")
-
-    result = _run("optimize it", "--max-minutes", "10", "--allow-dirty")
-
-    assert result.exit_code == 0
-    assert sink == [
-        "warning: working tree has 1 dirty file — proceeding because --allow-dirty was set"
-    ]
 
 
 def test_supervise_when_tree_clean_does_not_warn(repo: str, monkeypatch: pytest.MonkeyPatch):
@@ -156,10 +153,17 @@ def test_supervise_when_experiment_worktree_dirty_without_unsettled_does_exit_tw
     assert "gymrat discard" in text
 
 
+def test_validate_experiment_worktree_when_session_finalized_does_not_refuse_its_leftover_edits(
+    repo: str,
+):
+    _setup_finalized_with_dirty_worktree(repo)
+
+    validate_experiment_worktree(repo)
+
+
 @pytest.mark.parametrize(
     "setup",
     [
-        pytest.param(_setup_finalized_with_dirty_worktree, id="finalized-session"),
         pytest.param(_setup_open_session_missing_worktree, id="missing-worktree"),
         # An open session whose experiment worktree has no uncommitted changes.
         pytest.param(start_open_session, id="clean-worktree"),

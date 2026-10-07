@@ -7,8 +7,10 @@ the target is untouched, the temporary file is removed, and the ``OSError``
 propagates.
 """
 
+import datetime
 import math
 import os
+import stat
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -20,6 +22,7 @@ from gymrat.utils import (
     SamplingEta,
     abbreviate_home,
     color_from_env,
+    expected_got,
     fan_out,
     finite_or_none,
     format_clock,
@@ -78,6 +81,68 @@ def test_finite_or_none_when_value_is_finite_does_return_it_unchanged(value: flo
 )
 def test_finite_or_none_when_value_is_not_finite_does_return_none(value: float):
     assert finite_or_none(value) is None
+
+
+# ---------------------------------------------------------------------------
+# expected_got
+# ---------------------------------------------------------------------------
+
+# An integer whose decimal form has more digits than the interpreter converts.
+HUGE_INTEGER = 1 << 20_000
+
+
+@pytest.mark.parametrize(
+    ("value", "rendered"),
+    [
+        pytest.param("ten", '"ten"', id="string"),
+        pytest.param('say "hi"\n', '"say \\"hi\\"\\n"', id="string-needing-escapes"),
+        pytest.param(7, "7", id="integer"),
+        pytest.param(1.5, "1.5", id="float"),
+        pytest.param(math.nan, "NaN", id="not-a-number"),
+        pytest.param(-math.inf, "-Infinity", id="negative-infinity"),
+        pytest.param(True, "true", id="boolean"),
+        pytest.param(None, "null", id="none"),
+        pytest.param(["a", 1], '["a", 1]', id="list"),
+        pytest.param({"cmd": "x"}, '{"cmd": "x"}', id="mapping"),
+    ],
+)
+def test_expected_got_when_value_is_json_encodable_does_render_it_as_json(
+    value: object, rendered: str
+):
+    assert expected_got("a string", value) == f"expected a string, got {rendered}"
+
+
+@pytest.mark.parametrize(
+    ("value", "rendered"),
+    [
+        pytest.param(datetime.date(1979, 5, 27), "datetime.date(1979, 5, 27)", id="date"),
+        pytest.param({1}, "{1}", id="set"),
+        pytest.param([b"raw"], "[b'raw']", id="list-holding-bytes"),
+    ],
+)
+def test_expected_got_when_value_is_not_json_encodable_does_render_its_repr(
+    value: object, rendered: str
+):
+    assert expected_got("an integer", value) == f"expected an integer, got {rendered}"
+
+
+@pytest.mark.parametrize(
+    ("value", "rendered"),
+    [
+        pytest.param(HUGE_INTEGER, "a 20001-bit integer", id="integer"),
+        pytest.param(-HUGE_INTEGER, "a 20001-bit integer", id="negative-integer"),
+        pytest.param([HUGE_INTEGER], "a list too large to display", id="list-holding-it"),
+        pytest.param(
+            {"samples": HUGE_INTEGER}, "a dict too large to display", id="mapping-holding-it"
+        ),
+    ],
+)
+def test_expected_got_when_integer_exceeds_digit_limit_does_render_a_bounded_description(
+    value: object, rendered: str
+):
+    assert expected_got("a number at or below 5", value) == (
+        f"expected a number at or below 5, got {rendered}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -179,23 +244,7 @@ def test_pluralize_when_count_is_plural_does_append_s(noun: str):
     assert pluralize(2, noun) == f"2 {noun}s"
 
 
-@pytest.mark.parametrize(
-    ("noun", "expected"),
-    [
-        pytest.param("pass", "2 passes", id="ends-in-s"),
-        pytest.param("box", "2 boxes", id="ends-in-x"),
-        pytest.param("buzz", "2 buzzes", id="ends-in-z"),
-        pytest.param("branch", "2 branches", id="ends-in-ch"),
-        pytest.param("dish", "2 dishes", id="ends-in-sh"),
-        pytest.param("query", "2 queries", id="consonant-then-y"),
-        pytest.param("key", "2 keys", id="vowel-then-y"),
-    ],
-)
-def test_pluralize_when_count_is_plural_does_apply_english_suffix_rules(noun: str, expected: str):
-    assert pluralize(2, noun) == expected
-
-
-@pytest.mark.parametrize("noun", ["pass", "query", "box", "metric", "kept iteration"])
+@pytest.mark.parametrize("noun", ["metric", "kept iteration"])
 def test_pluralize_when_count_is_one_does_leave_noun_unchanged(noun: str):
     assert pluralize(1, noun) == f"1 {noun}"
 
@@ -203,13 +252,12 @@ def test_pluralize_when_count_is_one_does_leave_noun_unchanged(noun: str):
 @pytest.mark.parametrize(
     ("count", "expected"),
     [
-        pytest.param(0, "0 passes", id="zero"),
-        pytest.param(2, "2 passes", id="many"),
-        pytest.param(-1, "-1 passes", id="negative"),
+        pytest.param(0, "0 files", id="zero"),
+        pytest.param(-1, "-1 files", id="negative"),
     ],
 )
 def test_pluralize_when_count_is_not_one_does_use_the_plural_form(count: int, expected: str):
-    assert pluralize(count, "pass") == expected
+    assert pluralize(count, "file") == expected
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +399,73 @@ def test_write_text_atomic_when_renaming_does_swap_in_a_fully_synced_file_over_u
         "source_text": NEW_TEXT,
         "target_text": OLD_TEXT,
     }
+
+
+# ---------------------------------------------------------------------------
+# write_text_atomic: file mode
+# ---------------------------------------------------------------------------
+
+_posix_modes = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+
+
+@pytest.fixture(params=[pytest.param(0o022, id="umask-022"), pytest.param(0o007, id="umask-007")])
+def umask(request: pytest.FixtureRequest) -> Iterator[int]:
+    """The process umask set to each mask under test; the previous one is restored on teardown."""
+    mask: int = request.param
+    previous = os.umask(mask)
+    yield mask
+    os.umask(previous)
+
+
+@_posix_modes
+def test_write_text_atomic_when_target_absent_does_create_it_with_the_umask_mode(
+    tmp_path: Path, umask: int
+):
+    path = tmp_path / "state.json"
+
+    write_text_atomic(path, NEW_TEXT)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o666 & ~umask
+
+
+@_posix_modes
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param(0o644, id="world-readable"),
+        pytest.param(0o755, id="executable"),
+        pytest.param(0o600, id="owner-only"),
+    ],
+)
+@pytest.mark.usefixtures("umask")
+def test_write_text_atomic_when_target_exists_does_keep_its_mode(target: Path, mode: int):
+    target.chmod(mode)
+
+    write_text_atomic(target, NEW_TEXT)
+
+    assert stat.S_IMODE(target.stat().st_mode) == mode
+
+
+@_posix_modes
+@pytest.mark.usefixtures("umask")
+def test_write_text_atomic_when_target_is_owner_only_does_never_hold_new_content_in_a_wider_file(
+    target: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target.chmod(0o600)
+    real_fsync = os.fsync
+    wider_bits_when_synced: set[int] = set()
+
+    def recording_fsync(fd: int) -> None:
+        real_fsync(fd)
+        synced = os.fstat(fd)
+        if stat.S_ISREG(synced.st_mode):
+            wider_bits_when_synced.add(stat.S_IMODE(synced.st_mode) & ~0o600)
+
+    monkeypatch.setattr("os.fsync", recording_fsync)
+
+    write_text_atomic(target, NEW_TEXT)
+
+    assert wider_bits_when_synced == {0}
 
 
 # ---------------------------------------------------------------------------

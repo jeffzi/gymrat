@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -23,10 +24,12 @@ from gymrat.cli.app import app
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import record_to_wire
 from tests._ansi import SGR_RE
+from tests._cli import ENTRY, no_color_env
 from tests._imports import loaded_under, modules_imported_by
 from tests.cli._help import help_output
 from tests.session.records._fixtures import SESSION_ID, command_record, session_record
 from tests.telemetry._collector import otlp_collector
+from tests.telemetry._fixtures import hide_otel_sdk, hide_otlp_exporter
 from tests.telemetry._fixtures import (
     isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )
@@ -124,38 +127,62 @@ def test_export_when_help_does_document_options_and_positional():
 # ---------------------------------------------------------------------------
 
 
-def _invoke_export_with_missing_sdk(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Result:
-    """Invoke ``export`` with ``configure_tracing`` raising a missing-SDK ``ImportError``."""
+@pytest.mark.parametrize(
+    "hide_package",
+    [
+        pytest.param(hide_otel_sdk, id="sdk"),
+        pytest.param(hide_otlp_exporter, id="otlp-exporter"),
+    ],
+)
+def test_export_when_tracing_package_not_importable_does_exit_two_naming_otel_extra(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    hide_package: Callable[[pytest.MonkeyPatch], None],
+):
     session_log = _populate_session_dir(str(tmp_path))
     monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
+    hide_package(monkeypatch)
 
-    monkeypatch.setattr(
-        "gymrat.telemetry.provider.configure_tracing",
-        lambda *_a, **_kw: (_ for _ in ()).throw(  # pyrefly: ignore[implicit-any-lambda]
-            ImportError("No module named 'opentelemetry.sdk'")
-        ),
-    )
+    result = runner.invoke(app, ["export", session_log])
 
-    return runner.invoke(app, ["export", session_log])
+    output = _output(result)
+    assert result.exit_code == 2, output
+    assert "OpenTelemetry SDK or OTLP exporter not available" in output
+    assert "'gymrat[otel]'" in output
 
 
-def test_export_when_sdk_not_importable_does_exit_two_naming_otel_extra(
+# ---------------------------------------------------------------------------
+# tracer records nothing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        pytest.param("OTEL_SDK_DISABLED", "true", id="sdk-disabled"),
+        pytest.param("OTEL_TRACES_SAMPLER", "always_off", id="sampler-always-off"),
+    ],
+)
+def test_export_when_tracer_records_nothing_does_exit_two_without_reporting_export(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    variable: str,
+    value: str,
 ):
-    result = _invoke_export_with_missing_sdk(monkeypatch, tmp_path)
+    session_log = _populate_session_dir(str(tmp_path))
+    monkeypatch.delenv(_TRACES_ENDPOINT_ENV, raising=False)
+    monkeypatch.setenv(variable, value)
 
-    assert result.exit_code == 2
-    assert "gymrat[otel]" in _output(result)
+    with otlp_collector() as collector:
+        monkeypatch.setenv(_ENDPOINT_ENV, collector.endpoint)
+        result = runner.invoke(app, ["export", session_log])
 
-
-def test_export_when_sdk_not_importable_does_quote_extras_specifier_in_install_hint(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    result = _invoke_export_with_missing_sdk(monkeypatch, tmp_path)
-
-    assert "'gymrat[otel]'" in _output(result)
+    output = _output(result)
+    assert result.exit_code == 2, output
+    assert "No spans recorded" in output
+    assert "Unset OTEL_SDK_DISABLED and set OTEL_TRACES_SAMPLER" in output
+    assert "exported" not in output
+    assert collector.received == []
 
 
 # ---------------------------------------------------------------------------
@@ -371,10 +398,8 @@ def test_export_when_valid_session_does_exit_zero_and_print_summary(
     result = runner.invoke(app, ["export", session_log])
 
     assert result.exit_code == 0
-    output = _output(result)
-    assert "3" in output
-    assert SESSION_ID in output
-    assert _ENDPOINT in output
+    lines = _output(result).split("\n")
+    assert f"exported 3 spans for session {SESSION_ID} to {_ENDPOINT}" in lines
 
 
 def test_export_when_endpoint_flag_given_does_use_flag_over_env(
@@ -415,6 +440,31 @@ def test_export_when_endpoint_padded_does_send_spans_to_trimmed_endpoint(
     assert success_lines == [
         f"exported 3 spans for session {SESSION_ID} to {collector.endpoint}"
     ], _output(result)
+
+
+def test_export_when_final_session_line_is_torn_utf8_does_warn_and_export_the_rest(
+    tmp_path: Path,
+):
+    session_log = _populate_session_dir(str(tmp_path))
+    with Path(session_log).open("ab") as log:
+        log.write(b'{"type": "iteration", "note": "caf\xc3')
+    env = no_color_env()
+    env.pop(_TRACES_ENDPOINT_ENV, None)
+
+    with otlp_collector() as collector:
+        env[_ENDPOINT_ENV] = collector.endpoint
+        result = subprocess.run(  # noqa: S603
+            [*ENTRY, "export", session_log],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert result.returncode == 0, result.stderr
+    assert f"session log {session_log}: skipping line 3 (invalid JSON)" in result.stderr
+    assert f"exported 3 spans for session {SESSION_ID} to {collector.endpoint}" in result.stderr
+    assert len(collector.span_names) == 3
 
 
 # ---------------------------------------------------------------------------

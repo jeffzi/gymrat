@@ -27,6 +27,7 @@ from gymrat.supervisor.turns import (
     Reply,
     WaitForLock,
 )
+from tests._config import benchless_config
 from tests.session.records._fixtures import (
     command_record,
     finalize_record,
@@ -35,7 +36,6 @@ from tests.session.records._fixtures import (
     session_state,
     stop_record,
 )
-from tests.supervisor._fixtures import default_benchless_config
 from tests.supervisor._turn_inputs import (
     classify_with_defaults,
     guard_state,
@@ -98,7 +98,7 @@ def test_wait_for_lock_when_constructed_does_be_a_decision():
 
 
 def test_classify_when_stop_condition_met_via_benchless_config_does_end_finished():
-    config = default_benchless_config(stop=StopConfig(max_iterations=2))
+    config = benchless_config(stop=StopConfig(max_iterations=2))
     state = session_state(iteration_count=2)
     guards = guard_state()
 
@@ -122,7 +122,7 @@ def test_classify_when_stop_condition_met_via_benchless_config_does_end_finished
 
 
 def test_classify_when_state_finalized_does_end_finished():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state(finalized=finalize_record())
     guards = guard_state()
 
@@ -139,7 +139,7 @@ def test_classify_when_state_finalized_does_end_finished():
 
 
 def test_classify_when_ends_on_stop_does_end_finished():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state(ends_on_stop=True)
     guards = guard_state()
 
@@ -159,7 +159,7 @@ def test_classify_when_ends_on_stop_does_end_finished():
 
 
 def test_classify_when_budget_exhausted_does_end_spend_cap():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state()
 
@@ -176,7 +176,7 @@ def test_classify_when_budget_exhausted_does_end_spend_cap():
 
 
 def test_classify_when_cost_exceeds_max_usd_does_end_spend_cap():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state()
 
@@ -194,7 +194,7 @@ def test_classify_when_cost_exceeds_max_usd_does_end_spend_cap():
 
 
 def test_classify_when_budget_exhausted_but_ends_on_stop_does_end_finished():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state(ends_on_stop=True)
     guards = guard_state()
 
@@ -214,7 +214,7 @@ def test_classify_when_budget_exhausted_but_ends_on_stop_does_end_finished():
 
 
 def test_classify_when_lock_held_does_return_wait_for_lock():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state()
 
@@ -231,7 +231,7 @@ def test_classify_when_lock_held_does_return_wait_for_lock():
 
 
 def test_classify_when_lock_held_does_not_mutate_guard_counters():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state(replies_sent=5, no_progress_count=1, last_record_count=3)
     original_replies = guards.replies_sent
@@ -256,7 +256,7 @@ def test_classify_when_lock_held_does_not_mutate_guard_counters():
 
 
 def test_classify_when_replies_equal_follow_up_ceiling_does_end_follow_up_ceiling():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state(replies_sent=FOLLOW_UP_CEILING)
 
@@ -276,7 +276,7 @@ def test_classify_when_replies_equal_follow_up_ceiling_does_end_follow_up_ceilin
 
 
 def test_classify_when_no_condition_triggered_does_reply():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state()
 
@@ -297,7 +297,7 @@ def test_classify_when_no_condition_triggered_does_reply():
 
 
 def test_classify_when_replying_does_include_runbook_instruction_and_time_left():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state()
     deadline_ms = 600_000.0
@@ -326,7 +326,7 @@ def test_classify_when_replying_does_include_runbook_instruction_and_time_left()
 
 
 def test_classify_when_replying_with_after_wait_does_append_wait_finished_line():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state()
     deadline_ms = 600_000.0
@@ -357,7 +357,7 @@ def test_classify_when_replying_with_after_wait_does_append_wait_finished_line()
 
 
 def test_classify_when_time_past_deadline_does_clamp_remaining_at_zero():
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
     guards = guard_state()
 
@@ -393,7 +393,7 @@ def test_classify_when_time_past_deadline_does_clamp_remaining_at_zero():
 def test_classify_when_turn_text_and_origin_vary_does_produce_same_decision_type(
     text: str, origin: Literal["agent", "injected"]
 ):
-    config = default_benchless_config()
+    config = benchless_config()
     state = session_state()
 
     results = []
@@ -426,7 +426,7 @@ def test_classify_when_turn_text_and_origin_vary_does_produce_same_decision_type
 def test_detect_end_condition_when_stop_condition_met_does_report_stop_condition(
     cursor: int | None,
 ):
-    config = default_benchless_config(stop=StopConfig(max_iterations=2))
+    config = benchless_config(stop=StopConfig(max_iterations=2))
     state = session_state(iteration_count=2)
     records: list[SessionLogRecord] = [iteration_record(seq=1), iteration_record(seq=2)]
 
@@ -436,7 +436,7 @@ def test_detect_end_condition_when_stop_condition_met_does_report_stop_condition
 
 
 def test_detect_end_condition_when_state_is_met_but_records_are_not_does_use_state():
-    config = default_benchless_config(stop=StopConfig(max_iterations=2))
+    config = benchless_config(stop=StopConfig(max_iterations=2))
     state = session_state(iteration_count=2)
 
     result = detect_end_condition(config, [], state, cursor=0, check_stop=True)
@@ -445,7 +445,7 @@ def test_detect_end_condition_when_state_is_met_but_records_are_not_does_use_sta
 
 
 def test_detect_end_condition_when_target_reached_and_kept_does_report_stop_condition():
-    config = default_benchless_config(stop=StopConfig(target_value=1.5))
+    config = benchless_config(stop=StopConfig(target_value=1.5))
     state = session_state(iteration_count=1, target_reached_and_kept=True)
 
     result = detect_end_condition(config, [], state, cursor=0, check_stop=True)
@@ -454,7 +454,7 @@ def test_detect_end_condition_when_target_reached_and_kept_does_report_stop_cond
 
 
 def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_nothing():
-    config = default_benchless_config(stop=StopConfig(max_iterations=2))
+    config = benchless_config(stop=StopConfig(max_iterations=2))
     state = session_state(iteration_count=2)
     records: list[SessionLogRecord] = [iteration_record(seq=1), iteration_record(seq=2)]
 
@@ -498,7 +498,7 @@ def test_detect_end_condition_when_hook_failed_after_cursor_does_report_hook_fai
     records: list[SessionLogRecord], reason: str
 ):
     result = detect_end_condition(
-        default_benchless_config(), records, session_state(), cursor=0, check_stop=True
+        benchless_config(), records, session_state(), cursor=0, check_stop=True
     )
 
     assert result == EndCondition(ended_by="hook-failure", reason=reason)
@@ -528,14 +528,14 @@ def test_detect_end_condition_when_no_failure_in_scan_and_no_stop_does_report_no
     records: list[SessionLogRecord], cursor: int | None
 ):
     result = detect_end_condition(
-        default_benchless_config(), records, session_state(), cursor=cursor, check_stop=True
+        benchless_config(), records, session_state(), cursor=cursor, check_stop=True
     )
 
     assert result is None
 
 
 def test_detect_end_condition_when_hook_failed_and_stop_met_does_report_hook_failure():
-    config = default_benchless_config(stop=StopConfig(max_iterations=1))
+    config = benchless_config(stop=StopConfig(max_iterations=1))
     state = session_state(iteration_count=1)
     records: list[SessionLogRecord] = [
         iteration_record(seq=1),

@@ -1,4 +1,4 @@
-"""Behavioral tests for the git subprocess helpers and lookup classification.
+"""Behavioral tests for the git subprocess helpers.
 
 Real-subprocess tests are parallel-safe: the ``create_scratch_repo`` factory
 (see ``conftest.py``) gives every test its own temp git repository.
@@ -18,53 +18,17 @@ import pytest
 
 from gymrat import git as git_module
 from gymrat import signals
-from gymrat.errors import GymratError
 from gymrat.git import (
-    NotAGitRepositoryError,
-    repository_lookup_error,
     run_git,
     try_git,
 )
+from tests.conftest import list_worktree_dirs
 
 
 @pytest.fixture
 def scratch_repo(create_scratch_repo: Callable[[], str]) -> str:
     """A throwaway git repo on ``main`` with one committed file."""
     return create_scratch_repo()
-
-
-# ---------------------------------------------------------------------------
-# repository_lookup_error
-# ---------------------------------------------------------------------------
-
-
-def test_repository_lookup_error_when_stderr_is_fatal_not_a_repo_does_classify_as_missing():
-    cause = subprocess.CalledProcessError(
-        128,
-        ["git"],
-        stderr="fatal: not a git repository (or any of the parent directories): .git\n",
-    )
-
-    error = repository_lookup_error("/some/dir", cause)
-
-    assert isinstance(error, NotAGitRepositoryError)
-
-
-def test_repository_lookup_error_when_phrase_only_inside_path_does_not_classify_as_missing():
-    cause = subprocess.CalledProcessError(
-        128,
-        ["git"],
-        stderr="error: cannot open /tmp/not a git repository/config: No such file\n",
-    )
-
-    error = repository_lookup_error("/some/dir", cause)
-
-    assert not isinstance(error, NotAGitRepositoryError)
-    assert isinstance(error, GymratError)
-    assert str(error) == (
-        "Cannot determine the git repository at /some/dir: "
-        "error: cannot open /tmp/not a git repository/config: No such file"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +170,6 @@ def _install_sleep_post_checkout_hook(repo_dir: str, seconds: int) -> None:
 def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_until_git_exits(
     term_signal: signal.Signals,
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo = create_scratch_repo()

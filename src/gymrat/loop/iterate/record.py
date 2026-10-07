@@ -13,8 +13,7 @@ from gymrat.session.records import MetricVerdict as RecordMetricVerdict
 from gymrat.utils import finite_or_none
 
 if TYPE_CHECKING:
-    from gymrat.loop.iterate.bench import Judged
-    from gymrat.loop.iterate.confirm import Confirmation
+    from gymrat.loop.iterate.confirm import Confirmation, Judged
     from gymrat.session.schema import Outcome
 
 
@@ -74,8 +73,8 @@ def build_iteration_record(
     seq: int,
     judgment: IterationJudgment,
     *,
-    duration_ms: int | None = None,
-    measured_tree: str | None = None,
+    duration_ms: int,
+    measured_tree: str | None,
 ) -> IterationRecord:
     """Assemble the session-log record for one measured iteration.
 
@@ -86,8 +85,7 @@ def build_iteration_record(
         judged: The bench run outputs and comparison result.
         seq: The 1-based iteration sequence number.
         judgment: The outcome, primary, and optional confirmation.
-        duration_ms: Wall-clock milliseconds the iteration took, or ``None``
-            when timing is unavailable.
+        duration_ms: Wall-clock milliseconds the iteration took.
         measured_tree: The experiment worktree fingerprint at measurement time,
             or ``None`` when fingerprinting failed.
 

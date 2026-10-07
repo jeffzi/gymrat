@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from gymrat.cli.supervise.preflight import PreflightFlags
 from gymrat.clock import now_ms, now_ns
 from gymrat.errors import GymratError
 from gymrat.loop.start import StartResult
@@ -53,16 +54,22 @@ def test_supervise_when_run_does_write_budget_before_supervise(
     assert seen_budgets[0] is not None
 
 
-def test_supervise_when_run_does_write_budget_with_correct_deadline(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _install_seams(monkeypatch)
+def _capture_budget_writes(monkeypatch: pytest.MonkeyPatch) -> list[Budget]:
+    """Replace the command's budget write with a recorder; return the budgets it receives."""
     captured_budgets: list[Budget] = []
 
     def capturing_write(root: str, budget: Budget) -> None:
         captured_budgets.append(budget)
 
     monkeypatch.setattr("gymrat.cli.commands.supervise.write_budget", capturing_write)
+    return captured_budgets
+
+
+def test_supervise_when_run_does_write_budget_with_correct_deadline(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+    captured_budgets = _capture_budget_writes(monkeypatch)
     earliest_start_ms = now_ms()
 
     result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
@@ -78,35 +85,26 @@ def test_supervise_when_run_does_write_budget_with_correct_deadline(
 def test_supervise_when_preflight_records_baseline_does_start_budget_no_earlier(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    captured_budgets: list[Budget] = []
-
-    def capturing_write(root: str, budget: Budget) -> None:
-        captured_budgets.append(budget)
-
     seams = _install_seams(monkeypatch)
+    captured_budgets = _capture_budget_writes(monkeypatch)
     baseline_at = now_ns()
 
     def fake_preflight_with_baseline(
-        *,
-        root: str,
-        config: object,
-        baseline_ref: object = None,
-        max_minutes: float,
-        force: bool,
+        *, root: str, config: object, flags: PreflightFlags
     ) -> StartResult:
         record = baseline_record(at=baseline_at)
         append_record(session_jsonl_path(root), record)
         seams.preflight_calls.append({
             "root": root,
             "config": config,
-            "baseline_ref": baseline_ref,
-            "max_minutes": max_minutes,
-            "force": force,
+            "baseline_ref": flags.baseline_ref,
+            "max_minutes": flags.max_minutes,
+            "force": flags.force,
+            "allow_dirty": flags.allow_dirty,
         })
         return _make_start_result(root)
 
     monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", fake_preflight_with_baseline)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.write_budget", capturing_write)
 
     result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
 

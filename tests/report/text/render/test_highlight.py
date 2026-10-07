@@ -14,7 +14,7 @@ import pytest
 
 from gymrat.report.text.render import highlight_label, select_highlights
 from tests.report._assertions import render_colored, styles_at
-from tests.report._comparisons import kind_metric
+from tests.report._comparisons import kind_metric, permutation_metric
 from tests.report._verdicts import (
     CandidateSpec,
     approximate_metric,
@@ -54,6 +54,37 @@ def test_select_highlights_when_mixed_verdicts_does_order_regressions_then_impro
         "small-improvement/time",
         "loud-unstable/time",
         "quiet-unstable/time",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("delta", "baseline_median"),
+    [
+        pytest.param(0, 0, id="zero-baseline-median"),
+        pytest.param(-100, 100, id="zero-candidate-median"),
+        pytest.param(0, 1e-310, id="overflowing-noise-ratio"),
+    ],
+)
+def test_select_highlights_when_unstable_around_zero_median_does_rank_by_absolute_noise(
+    delta: float, baseline_median: float
+):
+    metrics: MetricComparisons = {
+        "loud-unstable/time": approximate_metric(verdict="unstable", delta=5, noise_pct=30),
+        "zero-median/heap": permutation_metric(
+            verdict="unstable",
+            delta=delta,
+            baseline_median=baseline_median,
+            noise_pct=0.5,
+            noise_abs=381,
+            unit="bytes",
+        ),
+    }
+
+    highlights = select_highlights(metrics, 0)
+
+    assert [highlight.name for highlight in highlights] == [
+        "zero-median/heap",
+        "loud-unstable/time",
     ]
 
 

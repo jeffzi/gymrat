@@ -11,7 +11,7 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
-from tests.supervisor._fixtures import default_benchless_config
+from tests._config import benchless_config
 
 # The heading the packaged SKILL.md opens its body with; proves the real
 # bundled skill text made it into the append.
@@ -45,7 +45,7 @@ def _compose_with_skill_text(
     experiment_worktree: str = _EXPERIMENT_WORKTREE,
 ) -> KickoffResult:
     monkeypatch.setattr("gymrat.supervisor.kickoff.read_bundled_skill", lambda: skill_text)
-    config = default_benchless_config(runbook=_write_runbook(tmp_path))
+    config = benchless_config(runbook=_write_runbook(tmp_path))
     return compose_kickoff(config, experiment_worktree=experiment_worktree)
 
 
@@ -67,7 +67,7 @@ def test_compose_kickoff_when_bundled_skill_missing_does_raise_before_runbook_ch
         raise GymratError(message)
 
     monkeypatch.setattr("gymrat.supervisor.kickoff.read_bundled_skill", _raise)
-    config = default_benchless_config(runbook=None)
+    config = benchless_config(runbook=None)
 
     with pytest.raises(GymratError, match="bundled skill unavailable"):
         compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
@@ -79,7 +79,7 @@ def test_compose_kickoff_when_bundled_skill_missing_does_raise_before_runbook_ch
 
 
 def test_compose_kickoff_when_no_runbook_configured_does_raise_naming_gymrat_toml():
-    config = default_benchless_config(runbook=None)
+    config = benchless_config(runbook=None)
 
     with pytest.raises(GymratError) as excinfo:
         compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
@@ -94,7 +94,7 @@ def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cau
     tmp_path: Path,
 ):
     missing = str(tmp_path / "absent-runbook.md")
-    config = default_benchless_config(runbook=missing)
+    config = benchless_config(runbook=missing)
 
     with pytest.raises(GymratError) as excinfo:
         compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
@@ -112,7 +112,7 @@ def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cau
 def test_compose_kickoff_when_skill_and_runbook_present_does_order_skill_before_runbook(
     tmp_path: Path,
 ):
-    config = default_benchless_config(runbook=_write_runbook(tmp_path))
+    config = benchless_config(runbook=_write_runbook(tmp_path))
 
     result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
@@ -126,7 +126,7 @@ def test_compose_kickoff_when_skill_and_runbook_present_does_order_skill_before_
 def test_compose_kickoff_when_bundled_skill_has_frontmatter_does_omit_it_from_append(
     tmp_path: Path,
 ):
-    config = default_benchless_config(runbook=_write_runbook(tmp_path))
+    config = benchless_config(runbook=_write_runbook(tmp_path))
 
     result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
@@ -183,7 +183,7 @@ def test_compose_kickoff_when_frontmatter_values_span_lines_does_drop_whole_bloc
 def test_compose_kickoff_when_no_prompt_given_does_return_default_mentioning_optimization(
     tmp_path: Path,
 ):
-    config = default_benchless_config(runbook=_write_runbook(tmp_path))
+    config = benchless_config(runbook=_write_runbook(tmp_path))
 
     result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
@@ -191,7 +191,7 @@ def test_compose_kickoff_when_no_prompt_given_does_return_default_mentioning_opt
 
 
 def test_compose_kickoff_when_prompt_given_does_start_with_it_verbatim(tmp_path: Path):
-    config = default_benchless_config(runbook=_write_runbook(tmp_path))
+    config = benchless_config(runbook=_write_runbook(tmp_path))
 
     result = compose_kickoff(
         config, "optimize the decoder loop", experiment_worktree=_EXPERIMENT_WORKTREE
@@ -271,7 +271,7 @@ def test_compose_kickoff_when_runbook_not_utf8_does_raise_gymrat_error_naming_pa
 ):
     runbook_path = tmp_path / "runbook.md"
     runbook_path.write_bytes(b"\x80\x81\x82 invalid utf-8")
-    config = default_benchless_config(runbook=str(runbook_path))
+    config = benchless_config(runbook=str(runbook_path))
 
     with pytest.raises(GymratError) as excinfo:
         compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
@@ -297,7 +297,7 @@ def test_compose_kickoff_when_prompt_is_default_or_given_does_end_with_preflight
     prompt: str | None,
 ):
     experiment_path = str(tmp_path / "experiment-worktree")
-    config = default_benchless_config(runbook=_write_runbook(tmp_path))
+    config = benchless_config(runbook=_write_runbook(tmp_path))
 
     result = compose_kickoff(config, prompt, experiment_worktree=experiment_path)
 
@@ -346,8 +346,7 @@ def test_compose_kickoff_when_happy_path_does_state_turn_ending_never_waits(
     result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
 
     append_lower = result.system_prompt_append.lower()
-    assert "ending a turn" in append_lower or "end" in append_lower
-    assert "never waits" in append_lower or "does not wait" in append_lower
+    assert "ending a turn never waits" in append_lower
 
 
 # ---------------------------------------------------------------------------

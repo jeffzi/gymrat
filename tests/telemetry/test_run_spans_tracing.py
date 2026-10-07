@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-
 import pytest
 
 from gymrat.supervisor.events import (
@@ -17,10 +15,12 @@ from gymrat.supervisor.events import (
     ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
+    combine_observers,
 )
 from gymrat.telemetry.provider import start_span
 from gymrat.telemetry.run_spans import create_run_span_observer
-from tests.supervisor._fixtures import make_launch
+from tests._logging import unhandled_logging
+from tests.supervisor._fixtures import collecting_observer, make_launch
 from tests.telemetry._fixtures import (
     isolate_tracing_provider as _isolate_tracing_provider,  # noqa: F401 -- registers the autouse fixture
 )
@@ -204,8 +204,6 @@ def test_create_run_span_observer_when_irrelevant_event_does_not_add_span_event(
 # Error suppression
 # ---------------------------------------------------------------------------
 
-_TRACING_LOGGER = "gymrat.telemetry.run_spans"
-
 
 class _BrokenSpan:
     def add_event(self, *_args: object, **_kwargs):
@@ -219,23 +217,26 @@ def _broken_span_turn_end_event() -> TurnEndEvent:
     )
 
 
-def test_create_run_span_observer_when_span_add_event_raises_does_not_propagate():
-    observer = create_run_span_observer(_BrokenSpan())  # pyrefly: ignore[bad-argument-type]
-
-    observer(_broken_span_turn_end_event())
-
-
-def test_create_run_span_observer_when_mirror_fails_does_log_warning(
-    caplog: pytest.LogCaptureFixture,
+def test_create_run_span_observer_when_mirror_fails_does_warn_once_and_leave_stderr_empty(
+    capsys: pytest.CaptureFixture[str],
 ):
     observer = create_run_span_observer(_BrokenSpan())  # pyrefly: ignore[bad-argument-type]
 
-    with caplog.at_level(logging.WARNING, logger=_TRACING_LOGGER):
+    with unhandled_logging(), pytest.warns(RuntimeWarning, match="boom") as caught:
         observer(_broken_span_turn_end_event())
 
-    warning_records = [
-        r for r in caplog.records if r.name == _TRACING_LOGGER and r.levelno == logging.WARNING
-    ]
-    assert len(warning_records) == 1
-    assert "boom" in warning_records[0].message
-    assert warning_records[0].exc_info is not None
+    assert (len(caught), capsys.readouterr().err) == (1, "")
+
+
+def test_create_run_span_observer_when_mirror_fails_in_a_chain_does_warn_once_and_call_remaining():
+    later = collecting_observer()
+    chain = combine_observers(
+        create_run_span_observer(_BrokenSpan()),  # pyrefly: ignore[bad-argument-type]
+        later.observer,
+    )
+    event = _broken_span_turn_end_event()
+
+    with pytest.warns(RuntimeWarning, match="boom") as caught:
+        chain(event)
+
+    assert (len(caught), later.events) == (1, [event])

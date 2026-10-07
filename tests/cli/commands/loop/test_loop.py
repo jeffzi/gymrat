@@ -20,6 +20,8 @@ text output when a live budget is present, and omit it otherwise.
 import contextlib
 import io
 import re
+import shlex
+import signal
 import subprocess
 import sys
 from collections.abc import Callable, Generator
@@ -34,9 +36,14 @@ from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import KeepRecord
 from tests._ansi import SGR_RE, strip_ansi
-from tests._cli import no_color_env
+from tests._cli import ENTRY, no_color_env
+from tests._config import resolved_config
 from tests._git import head_of
-from tests._process_helpers import run_with_closed_reader
+from tests._process_helpers import (
+    run_with_closed_reader,
+    wait_for_pid_file_blocking,
+    wait_until_dead_blocking,
+)
 from tests.cli._budget import install_budget
 from tests.cli._help import help_output
 from tests.cli._session import (
@@ -48,8 +55,9 @@ from tests.cli._session import (
     last_command_record,
     never_tty,
     open_session_with_one_keep,
+    records_of,
     runner,
-    write_config,
+    write_bench_config,
 )
 from tests.loop._settle import (
     CHECKS,
@@ -63,7 +71,6 @@ from tests.loop._settle import (
     status_of,
     unimproved,
 )
-from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     SESSION_ID,
     committed_keep,
@@ -78,7 +85,7 @@ def _start_edited_session(root: str, **config: object) -> None:
     """Open a session with one unsettled iteration, edit the experiment, and write the config."""
     start_with(root, (iteration_record(seq=1),))
     edit_experiment(root)
-    write_config(root, **config)
+    write_bench_config(root, **config)
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +114,7 @@ def test_status_command_when_given_a_bench_run_flag_does_exit_two_with_usage_err
 
 def test_status_command_when_run_does_render_the_session_on_stdout(repo: str):
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["status"])
 
@@ -119,7 +126,7 @@ def test_status_command_when_run_does_render_the_session_on_stdout(repo: str):
 
 def test_status_command_when_run_does_record_command_trace_with_exit_zero(repo: str):
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["status"])
 
@@ -133,7 +140,7 @@ def test_status_command_when_run_does_record_command_trace_with_exit_zero(repo: 
 
 def test_status_command_when_finalized_does_record_command_trace_with_exit_zero(repo: str):
     close_session_with_one_keep(repo)
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["status"])
 
@@ -148,7 +155,7 @@ def test_status_command_when_no_session_does_exit_two_with_a_start_hint(
     repo: str, has_config: bool
 ):
     if has_config:
-        write_config(repo)
+        write_bench_config(repo)
 
     result = runner.invoke(app, ["status"])
 
@@ -168,7 +175,7 @@ def test_status_command_color(
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["status", *args])
 
@@ -204,7 +211,7 @@ def test_status_command_when_run_inside_the_experiment_worktree_does_render_the_
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     header = open_session_with_one_keep(repo)
-    write_config(repo)
+    write_bench_config(repo)
     monkeypatch.chdir(experiment_worktree_dir(repo))
 
     result = runner.invoke(app, ["status"])
@@ -472,7 +479,7 @@ def test_keep_command_when_checks_pass_does_commit_and_print_the_short_commit(
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep", "-m", "cache the regex"])
 
@@ -489,7 +496,7 @@ def test_keep_command_when_committed_does_add_the_kept_baseline_to_the_status_hi
     start_with(repo, (measured_rounds(1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
     assert runner.invoke(app, ["keep"]).exit_code == 0
     short_sha = head_of(experiment_worktree_dir(repo))[:SHORT_SHA_LENGTH]
 
@@ -506,7 +513,7 @@ def test_keep_command_when_committed_does_record_command_trace_with_seq_and_exit
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep", "-m", "cache the regex"])
 
@@ -524,7 +531,7 @@ def test_keep_command_when_blocked_does_record_command_trace_with_gate_and_reaso
 ):
     start_with(repo, (iteration_record(seq=1),))
     checks_pass(monkeypatch)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep"])
 
@@ -542,7 +549,7 @@ def test_keep_command_when_checks_fail_does_record_command_trace_with_checks_fai
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_fail(monkeypatch)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep"])
 
@@ -557,7 +564,7 @@ def test_keep_command_when_finalized_does_record_command_trace_with_exit_two(
     repo: str,
 ):
     close_session_with_one_keep(repo)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep"])
 
@@ -573,7 +580,7 @@ def test_keep_command_when_nothing_to_commit_does_exit_one_recording_the_block(
 ):
     start_with(repo, (iteration_record(seq=1),))
     checks_pass(monkeypatch)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep"])
 
@@ -586,7 +593,7 @@ def test_keep_command_when_nothing_to_commit_does_exit_one_recording_the_block(
 
 def test_keep_command_when_refusing_does_print_a_report_carrying_no_hint_label(repo: str):
     start_with(repo, (iteration_record(seq=1),))
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep"])
 
@@ -608,7 +615,7 @@ def test_keep_command_when_refusing_does_take_report_color_from_the_environment(
 ):
     monkeypatch.setenv(variable, "1")
     start_with(repo, (iteration_record(seq=1),))
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep"])
 
@@ -634,7 +641,7 @@ def test_keep_command_when_outcome_not_improved_does_exit_one_refusing_with_both
     start_with(repo, (unimproved(1, "no-signal"),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep"])
 
@@ -656,7 +663,7 @@ def test_keep_command_when_allow_unimproved_does_commit_and_record_the_flag_in_a
     start_with(repo, (unimproved(1, "no-signal"),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep", "--allow-unimproved"])
 
@@ -675,7 +682,7 @@ def test_keep_command_when_checks_fail_does_exit_one_recording_the_block(
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_fail(monkeypatch)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep"])
 
@@ -686,12 +693,77 @@ def test_keep_command_when_checks_fail_does_exit_one_recording_the_block(
     assert record.reason == "checks-failed"
 
 
+_SETTLE_TIMEOUT_S = 30.0
+"""Budget for every pid-file and death-wait poll of the out-of-process keep test."""
+
+_TRACKED_CHECKS = """#!/bin/sh
+echo $$ > "{directory}/checks.pid"
+sleep 120 &
+echo $! > "{directory}/grandchild.pid"
+wait
+"""
+"""A checks script that records its own pid and a background grandchild's, then blocks.
+
+The checks never finish on their own, so ``keep`` is always mid-checks when signalled.
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
+@pytest.mark.parametrize(
+    ("signal_name", "expected_code"),
+    [
+        pytest.param("SIGTERM", 143, id="sigterm"),
+        pytest.param("SIGHUP", 129, id="sighup"),
+        pytest.param("SIGINT", 130, id="sigint"),
+    ],
+)
+def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving_no_checks_process_or_command_record(
+    signal_name: str,
+    expected_code: int,
+    repo: str,
+    tmp_path: Path,
+    reap_groups: list[int],
+):
+    start_with(repo, (iteration_record(seq=1),))
+    edit_experiment(repo)
+    script = tmp_path / "checks.sh"
+    script.write_text(_TRACKED_CHECKS.format(directory=tmp_path), encoding="utf-8")
+    write_bench_config(repo, checks=f"sh {shlex.quote(str(script))}")
+
+    proc = subprocess.Popen(  # noqa: S603
+        [*ENTRY, "keep"],
+        cwd=repo,
+        env=no_color_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        checks_pid = wait_for_pid_file_blocking(tmp_path / "checks.pid", _SETTLE_TIMEOUT_S)
+        reap_groups.append(checks_pid)
+        grandchild = wait_for_pid_file_blocking(tmp_path / "grandchild.pid", _SETTLE_TIMEOUT_S)
+        reap_groups.append(grandchild)
+        proc.send_signal(signal.Signals[signal_name])
+        proc.communicate(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+    assert proc.returncode == expected_code
+    wait_until_dead_blocking(grandchild, timeout_s=_SETTLE_TIMEOUT_S)
+    # Polled rather than checked once: a killed leader stays visible as a zombie
+    # until its parent reaps it.
+    wait_until_dead_blocking(checks_pid, timeout_s=_SETTLE_TIMEOUT_S)
+    assert records_of(repo, commands=True) == []
+
+
 def test_discard_command_when_run_does_record_command_trace_with_seq_and_force(
     repo: str,
 ):
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["discard"])
 
@@ -709,7 +781,7 @@ def test_discard_command_when_force_does_record_force_true_in_args(
 ):
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["discard", "--force"])
 
@@ -722,7 +794,7 @@ def test_discard_command_when_finalized_does_record_command_trace_with_exit_two(
     repo: str,
 ):
     close_session_with_one_keep(repo)
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["discard"])
 
@@ -736,7 +808,7 @@ def test_discard_command_when_finalized_does_record_command_trace_with_exit_two(
 def test_discard_command_when_run_does_clean_the_worktree_and_record_the_discard(repo: str):
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["discard"])
 
@@ -748,7 +820,7 @@ def test_discard_command_when_run_does_clean_the_worktree_and_record_the_discard
 
 @pytest.mark.parametrize("command", ["keep", "discard"])
 def test_settle_command_when_no_session_does_exit_two_with_a_start_hint(repo: str, command: str):
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, [command])
 
@@ -765,7 +837,7 @@ def test_status_command_when_budget_active_does_end_text_with_time_left_line(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    write_bench_config(repo)
     install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["status"])
@@ -779,7 +851,7 @@ def test_status_command_when_no_budget_does_omit_time_left_line(
     repo: str,
 ):
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["status"])
 
@@ -793,7 +865,7 @@ def test_keep_command_when_budget_active_and_committed_does_end_text_with_time_l
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     checks_pass(monkeypatch)
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
     install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["keep", "-m", "cache the regex"])
@@ -807,7 +879,7 @@ def test_keep_command_when_budget_active_and_blocked_does_end_text_with_time_lef
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (iteration_record(seq=1),))
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
     install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["keep"])
@@ -822,7 +894,7 @@ def test_discard_command_when_budget_active_does_end_text_with_time_left_line(
 ):
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
-    write_config(repo)
+    write_bench_config(repo)
     install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["discard"])
@@ -842,7 +914,7 @@ def test_keep_command_when_no_color_does_strip_ansi_from_stdout_report(
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     start_with(repo, (iteration_record(seq=1),))
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep", "--no-color"])
 
@@ -852,7 +924,7 @@ def test_keep_command_when_no_color_does_strip_ansi_from_stdout_report(
 
 def test_keep_command_when_color_does_force_ansi_on_stdout_report(repo: str):
     start_with(repo, (iteration_record(seq=1),))
-    write_config(repo, checks=CHECKS)
+    write_bench_config(repo, checks=CHECKS)
 
     result = runner.invoke(app, ["keep", "--color"])
 
@@ -928,7 +1000,7 @@ def test_discard_command_when_no_color_does_strip_ansi_from_stderr_error(
     monkeypatch.setenv("FORCE_COLOR", "1")
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["discard", "--no-color"])
 

@@ -11,6 +11,7 @@ import tomli_w
 from gymrat.config import (
     MAX_SAFE_INTEGER,
     MAX_TIMEOUT_SECONDS,
+    CliFlags,
     ConfigFile,
     ConfigFileResult,
     HooksConfig,
@@ -18,11 +19,19 @@ from gymrat.config import (
     MetricEntry,
     StopConfig,
     load_config_file_collecting,
+    resolve_config,
     validate_config_dict,
 )
 from gymrat.errors import GymratError
 from tests.adapters._inputs import LINE_BREAKS
-from tests.config._toml import write_config, write_raw
+from tests.config._toml import (
+    DEEP_NESTING_DOCUMENT,
+    DIGIT_LIMIT_DOCUMENT,
+    HUGE_HEX_BITS,
+    HUGE_HEX_LITERAL,
+    write_config,
+    write_raw,
+)
 
 # Byte-order mark that editors on Windows prepend to UTF-8 files: EF BB BF.
 UTF8_BOM = "﻿"
@@ -176,6 +185,73 @@ def test_load_config_file_when_number_key_non_finite_does_reject_as_not_a_number
     message = load_error_message(config_path)
 
     assert message == f"Invalid config value for {key}: expected a number, got {token}"
+
+
+@pytest.mark.parametrize(
+    ("document", "reason"),
+    [
+        pytest.param(DIGIT_LIMIT_DOCUMENT, "Exceeds the limit", id="integer-past-digit-limit"),
+        pytest.param(DEEP_NESTING_DOCUMENT, "", id="nesting-past-recursion-limit"),
+    ],
+)
+def test_load_config_file_collecting_when_parser_hits_interpreter_limit_does_report_parse_problem(
+    tmp_path: Path, document: str, reason: str
+):
+    config_path = write_raw(tmp_path, document)
+
+    result = load_config_file_collecting(config_path, required=False)
+
+    assert (result.config_file, result.exists, len(result.problems)) == (None, True, 1)
+    assert result.problems[0].startswith(f"Failed to parse config file at {config_path}: {reason}")
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param(DIGIT_LIMIT_DOCUMENT, id="integer-past-digit-limit"),
+        pytest.param(DEEP_NESTING_DOCUMENT, id="nesting-past-recursion-limit"),
+    ],
+)
+def test_resolve_config_when_parser_hits_interpreter_limit_does_raise_parse_problem(
+    tmp_path: Path, document: str
+):
+    config_path = write_raw(tmp_path, document)
+
+    with pytest.raises(GymratError) as exc:
+        resolve_config(CliFlags(bench="my-bench", config=str(config_path)))
+
+    assert f"Failed to parse config file at {config_path}: " in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("document", "phrase", "got"),
+    [
+        pytest.param(
+            f"samples = {HUGE_HEX_LITERAL}",
+            f"a number at or below {MAX_SAFE_INTEGER}",
+            f"a {HUGE_HEX_BITS}-bit integer",
+            id="integer-key",
+        ),
+        pytest.param(
+            f"samples = [{HUGE_HEX_LITERAL}]",
+            "an integer",
+            "a list too large to display",
+            id="array-holding-the-integer",
+        ),
+    ],
+)
+def test_load_config_file_collecting_when_integer_too_long_to_print_does_report_problem_naming_key(
+    tmp_path: Path, document: str, phrase: str, got: str
+):
+    config_path = write_raw(tmp_path, document)
+
+    result = load_config_file_collecting(config_path, required=False)
+
+    assert result == ConfigFileResult(
+        config_file=None,
+        exists=True,
+        problems=[f"Invalid config value for samples: expected {phrase}, got {got}"],
+    )
 
 
 def test_load_config_file_when_prefixed_with_bom_does_parse_as_if_absent(tmp_path: Path):

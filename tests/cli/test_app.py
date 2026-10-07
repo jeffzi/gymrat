@@ -28,7 +28,7 @@ from tests.cli._session import (
     FailingStdoutRunner,
     closed_stdout_error,
     disk_full_error,
-    write_config,
+    write_bench_config,
 )
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
@@ -223,9 +223,8 @@ def test_app_when_unknown_command_does_exit_two():
 # ---------------------------------------------------------------------------
 
 
-REPOSITORY_COMMANDS = [
-    pytest.param(["compare", "main", "main", "--bench", "sh bench.sh"], id="compare"),
-    pytest.param(["measure", "--bench", "sh bench.sh"], id="measure"),
+#: The commands that resolve the repository root themselves, before taking its lock.
+SESSION_COMMANDS = [
     pytest.param(["probe"], id="probe"),
     pytest.param(["start"], id="start"),
     pytest.param(["iterate"], id="iterate"),
@@ -236,6 +235,27 @@ REPOSITORY_COMMANDS = [
     pytest.param(["status"], id="status"),
     pytest.param(["sync"], id="sync"),
 ]
+
+REPOSITORY_COMMANDS = [
+    pytest.param(["compare", "main", "main", "--bench", "sh bench.sh"], id="compare"),
+    pytest.param(["measure", "--bench", "sh bench.sh"], id="measure"),
+    *SESSION_COMMANDS,
+]
+
+
+@pytest.mark.parametrize("argv", SESSION_COMMANDS)
+@pytest.mark.usefixtures("_in_non_repo")
+def test_app_when_run_outside_a_repository_does_exit_two_naming_the_directory(argv: list[str]):
+    cwd = os.getcwd()  # noqa: PTH109 -- the message quotes the str cwd repo discovery saw
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert (
+        strip_ansi(result.stderr).split()
+        == (f"Error: Not a git repository: {cwd} Run gymrat from inside a git repository.").split()
+    )
+    assert result.stdout == ""
 
 
 @pytest.mark.parametrize("argv", REPOSITORY_COMMANDS)
@@ -265,14 +285,15 @@ def test_app_when_repository_root_cannot_be_resolved_does_exit_two_with_git_diag
 
 @pytest.mark.parametrize("argv", REPOSITORY_COMMANDS)
 @pytest.mark.usefixtures("repo")
-def test_app_when_seam_discovery_error_carries_a_hint_does_print_message_and_hint(
+def test_app_when_repository_discovery_error_carries_a_hint_does_print_message_and_hint(
     argv: list[str], monkeypatch: pytest.MonkeyPatch
 ):
     def broken_discovery(*_args: object, **_kwargs: object) -> str:
         message = "detected dubious ownership"
         raise GymratError(message, hint="Mark the repository as safe.")
 
-    monkeypatch.setattr("gymrat.command_run.repo_root", broken_discovery)
+    # The one lookup behind every repo_root call, whichever module makes it.
+    monkeypatch.setattr("gymrat.session.paths._toplevel", broken_discovery)
 
     result = runner.invoke(app, argv)
 
@@ -299,7 +320,7 @@ def test_app_when_root_no_color_does_strip_ansi_from_status_stdout(
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["--no-color", "status"])
 
@@ -309,7 +330,7 @@ def test_app_when_root_no_color_does_strip_ansi_from_status_stdout(
 
 def test_app_when_root_color_does_force_ansi_on_status_stdout(repo: str):
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["--color", "status"])
 
@@ -322,7 +343,7 @@ def test_app_when_root_color_unset_does_leave_the_environment_to_decide(
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["status"])
 
@@ -332,7 +353,7 @@ def test_app_when_root_color_unset_does_leave_the_environment_to_decide(
 
 def test_app_when_local_no_color_beats_root_color_does_produce_plain_output(repo: str):
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["--color", "status", "--no-color"])
 
@@ -345,7 +366,7 @@ def test_app_when_subcommand_passes_none_does_not_erase_root_no_color(
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    write_bench_config(repo)
 
     result = runner.invoke(app, ["--no-color", "status"])
 

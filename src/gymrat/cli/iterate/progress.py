@@ -21,12 +21,10 @@ from rich.spinner import Spinner
 from rich.text import Text
 
 from gymrat.cli.iterate.state import (
-    MISSING_DELTA,
-    REGRESSED_NAME_CAP,
     JudgeDetail,
     advance,
-    format_primary_delta,
     initial_state,
+    judge_segments,
     plain_line,
 )
 from gymrat.cli.live_display import LiveDisplayMixin
@@ -64,6 +62,10 @@ if TYPE_CHECKING:
     from gymrat.cli.progress import _ClockColumn
 
 
+GLYPH_SKIPPED = "\N{EN DASH}"
+"""Glyph of a checklist row the iteration decided not to run."""
+
+
 # ---------------------------------------------------------------------------
 # Checklist rows
 # ---------------------------------------------------------------------------
@@ -97,6 +99,8 @@ def render_row(
             return render_running_row(node, spinner, running_ms)
         case "done":
             return render_done_row(node)
+        case "skipped":
+            return render_skipped_row(node)
         case _:
             return render_idle_row(node)
 
@@ -167,6 +171,14 @@ def render_idle_row(node: NodeState) -> Text:
     return text
 
 
+def render_skipped_row(node: NodeState) -> Text:
+    """Render a phase the iteration decided not to run: its glyph, noun, and optional hint."""
+    text = Text(f"{GLYPH_SKIPPED} {node.noun} skipped", style=STYLE_PENDING)
+    if node.hint:
+        text.append(f" ({node.hint})", style=STYLE_PENDING)
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Judge detail builder
 # ---------------------------------------------------------------------------
@@ -176,33 +188,19 @@ def build_judge_detail(detail: JudgeDetail) -> Text:
     """Build the rich Text detail for the judge's done row.
 
     Args:
-        detail: The judge's verdict. At most :data:`REGRESSED_NAME_CAP`
-            regressed names are spelled out; the rest are collapsed to ``"…"``.
-            The delta renders through :func:`format_primary_delta`; the
-            primary metric's name is shown only beside a printable delta.
+        detail: The judge's verdict, split into words by
+            :func:`~gymrat.cli.iterate.state.judge_segments`. Regressed names
+            are highlighted inline; the rest of the wording is dimmed.
 
     Returns:
         A styled ``Text`` for the judge row's detail.
     """
-    delta_str = format_primary_delta(detail.primary_delta_pct)
-    primary = delta_str if delta_str == MISSING_DELTA else f"{delta_str} on {detail.primary_metric}"
-    regressed = detail.regressed_names
-
     text = Text()
-    text.append(primary, style=STYLE_META)
-    text.append(" · ", style=STYLE_META)
-    if regressed:
-        text.append(f"{len(regressed)} regressed: ", style=STYLE_META)
-        names = [
-            Text.from_markup(format_inline(parse(name))) for name in regressed[:REGRESSED_NAME_CAP]
-        ]
-        if len(regressed) > REGRESSED_NAME_CAP:
-            names.append(Text.styled("…", STYLE_META))
-        # Text.styled, not Text(style=...): join copies the separator's base
-        # style onto the whole result, which would dim the names too.
-        text.append_text(Text.styled(", ", STYLE_META).join(names))
-    else:
-        text.append("no gating regression", style=STYLE_META)
+    for segment, role in judge_segments(detail):
+        if role == "name":
+            text.append_text(Text.from_markup(format_inline(parse(segment)), emoji=False))
+        else:
+            text.append(segment, style=STYLE_META)
     return text
 
 
@@ -235,10 +233,10 @@ class IterateRenderer(LiveDisplayMixin):
             hint.
         primary_metric: Name of the primary metric, shown in the judge hint and
             in the judge detail line.
+        clock: Monotonic clock returning seconds, behind the elapsed-time and
+            ETA display.
         verbose: When ``True`` the live display is not transient — frames
             persist after the renderer stops.
-        clock: Monotonic clock returning seconds, injected for testing. When
-            ``None`` the renderer skips elapsed-time and ETA display.
         checks_cmd: The shell command the ``record`` phase mentions will run at
             ``gymrat keep``. ``None`` omits the note.
         has_before_hook: Whether a before-hook node is included in the
@@ -257,8 +255,8 @@ class IterateRenderer(LiveDisplayMixin):
         metric_count: int,
         primary_metric: str,
         *,
+        clock: Callable[[], float],
         verbose: bool = False,
-        clock: Callable[[], float] | None = None,
         checks_cmd: str | None = None,
         has_before_hook: bool = False,
         has_after_hook: bool = False,
@@ -314,7 +312,7 @@ class IterateRenderer(LiveDisplayMixin):
 
         rows: list[RenderableType] = [self._header_text()]
         for node in self._state.nodes.all_nodes:
-            if node.status == "skipped":
+            if node.status == "skipped" and not self._skip_follows_regression(node):
                 continue
             rows.append(
                 render_row(
@@ -326,6 +324,15 @@ class IterateRenderer(LiveDisplayMixin):
             )
         return Group(*rows)
 
+    def _skip_follows_regression(self, node: NodeState) -> bool:
+        nodes = self._state.nodes
+        verdict = nodes.judge.detail
+        return (
+            node is nodes.confirm
+            and isinstance(verdict, JudgeDetail)
+            and bool(verdict.regressed_names)
+        )
+
     def _header_text(self) -> Text:
         header = Text()
         header.append(f"iterate #{self._seq}", style=STYLE_LABEL)
@@ -333,7 +340,7 @@ class IterateRenderer(LiveDisplayMixin):
         header.append(" · ", style=STYLE_META)
         header.append(f"session {self._session_id}", style=STYLE_META)
 
-        if self._start_clock_time is None or self._clock is None:
+        if self._start_clock_time is None:
             return header
         elapsed_ms = (self._clock() - self._start_clock_time) * MS_PER_SECOND
 
@@ -365,7 +372,7 @@ class IterateRenderer(LiveDisplayMixin):
     def _running_elapsed_ms(self, node: NodeState) -> float | None:
         if node is not self._state.nodes.judge or node.status != "running":
             return None
-        if self._clock is None or node.start_ms <= 0:
+        if node.start_ms <= 0:
             return None
         return self._clock() * MS_PER_SECOND - node.start_ms
 
@@ -377,7 +384,7 @@ class IterateRenderer(LiveDisplayMixin):
         """Fold the event into the checklist state, then paint or print the result."""
         before = self._state
         self._state = advance(before, event)
-        if before.run_start_ms is None and self._clock is not None:
+        if before.run_start_ms is None:
             self._start_clock_time = self._clock()
 
         if not self._is_live:

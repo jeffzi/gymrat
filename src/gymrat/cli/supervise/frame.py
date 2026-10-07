@@ -37,6 +37,7 @@ from gymrat.cli.supervise.types import (
     Waiting,
 )
 from gymrat.git import SHORT_SHA_LENGTH
+from gymrat.model import is_improvement
 from gymrat.report.format import format_percent_delta
 from gymrat.session.budget import minutes_to_ms
 from gymrat.supervisor.events import ITERATE_SUMMARY, ITERATE_TOOL
@@ -156,14 +157,12 @@ def build_best_text(session_result: ReadSessionResult | None) -> Text | None:
         return None
     best = session_result.best
     delta = format_percent_delta(best.delta_pct)
-    delta_style = STYLE_DONE if best.delta_pct < 0 else STYLE_REGRESSED
+    improved = is_improvement(best.delta_pct, best.direction)
     text = Text()
-    text.append(delta, style=delta_style)
+    text.append(delta, style=STYLE_DONE if improved else STYLE_REGRESSED)
     text.append(f" {best.label}")
-    if session_result.baseline_sha is not None:
-        text.append(
-            f" vs baseline {session_result.baseline_sha[:SHORT_SHA_LENGTH]}", style=STYLE_META
-        )
+    if best.baseline_sha is not None:
+        text.append(f" vs baseline {best.baseline_sha[:SHORT_SHA_LENGTH]}", style=STYLE_META)
     text.append(f" (iteration {best.seq})", style=STYLE_META)
     return text
 
@@ -211,14 +210,19 @@ def _build_liveness_text(
         case InFlight(tool_name=name, since=since, input_summary=summary):
             elapsed = format_duration(now - since)
             wall = _format_wall_clock(since, tz)
-            text = Text(no_wrap=True, overflow="ellipsis")
-            text.append(f"  {wall}  {name:<{tool_col}}  {summary}  {elapsed}")
-            return text
+            return Text(
+                f"  {wall}  {name:<{tool_col}}  {summary}  {elapsed}",
+                no_wrap=True,
+                overflow="ellipsis",
+            )
         case Thinking(since=since, estimated_tokens=tokens):
             elapsed = format_duration(now - since)
-            text = Text(no_wrap=True, overflow="ellipsis")
-            text.append(f"  thinking  ~{tokens:,} tokens  {elapsed}", style=STYLE_PENDING)
-            return text
+            return Text(
+                f"  thinking  ~{tokens:,} tokens  {elapsed}",
+                style=STYLE_PENDING,
+                no_wrap=True,
+                overflow="ellipsis",
+            )
         case Responding(since=since) | Composing(since=since) | Exiting(since=since):
             elapsed = format_duration(now - since)
             return Text(f"  {_pending_label(liveness)}  {elapsed}", style=STYLE_PENDING)

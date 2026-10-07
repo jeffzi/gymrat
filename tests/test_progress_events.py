@@ -36,7 +36,7 @@ def _one_of_each_event(at_ms: float) -> list[ProgressEvent]:
         HookStarted(stage="before", at_ms=at_ms),
         HookFinished(stage="after", at_ms=at_ms),
         JudgeStarted(at_ms=at_ms),
-        JudgeFinished(primary_delta_pct=1.5, regressed=(), metric_count=3, at_ms=at_ms),
+        JudgeFinished(primary_delta_pct=1.5, regressed=(), at_ms=at_ms),
         ConfirmStarted(filtered_metrics=None, at_ms=at_ms),
         ConfirmFinished(reproduced=True, at_ms=at_ms),
         IterationRecorded(seq=1, outcome="improved", at_ms=at_ms),
@@ -110,12 +110,11 @@ def test_hook_event_when_constructed_does_carry_stage(
 
 
 def test_judge_finished_when_constructed_does_carry_all_fields() -> None:
-    event = JudgeFinished(primary_delta_pct=2.5, regressed=("x", "y"), metric_count=4, at_ms=0)
-    none_delta = JudgeFinished(primary_delta_pct=None, regressed=(), metric_count=0, at_ms=0)
+    event = JudgeFinished(primary_delta_pct=2.5, regressed=("x", "y"), at_ms=0)
+    none_delta = JudgeFinished(primary_delta_pct=None, regressed=(), at_ms=0)
 
     assert event.primary_delta_pct == 2.5
     assert event.regressed == ("x", "y")
-    assert event.metric_count == 4
     assert none_delta.primary_delta_pct is None
 
 

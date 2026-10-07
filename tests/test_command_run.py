@@ -28,6 +28,7 @@ from gymrat.session.store import append_record, recover_torn_tail, session_heade
 from tests._command_run_fixtures import ok_body as _ok_body
 from tests._command_run_fixtures import seeded_session as _seeded_session
 from tests._imports import loaded_under, modules_imported_by
+from tests.conftest import remove_lock_files
 from tests.session.records._fixtures import (
     iteration_record,
     log_records,
@@ -874,7 +875,7 @@ async def test_with_repo_lock_when_span_emission_raises_does_warn_and_release_lo
 
     monkeypatch.setattr("gymrat.command_run._emit_command_span", broken_emit)
 
-    def stub_configure(_root: str, _jsonl: str) -> tuple[str, bool]:
+    def stub_configure(_root: str) -> tuple[str, bool]:
         return (header.session_id, True)
 
     monkeypatch.setattr("gymrat.command_run._maybe_configure_tracing", stub_configure)
@@ -908,9 +909,7 @@ def plain_directory(tmp_path: Path) -> Iterator[str]:
     directory = tmp_path / "plain"
     directory.mkdir()
     yield str(directory)
-    lock_path = lockfile_path(str(directory))
-    Path(lock_path).unlink(missing_ok=True)
-    Path(_os_lock_file(lock_path)).unlink(missing_ok=True)
+    remove_lock_files(str(directory))
 
 
 async def test_with_repo_lock_when_root_given_does_lock_that_repo_and_not_the_cwd_repo(

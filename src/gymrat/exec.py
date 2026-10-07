@@ -66,7 +66,7 @@ _ESCALATION_GRACE_S = 0.2
 """Seconds the outermost gymrat run's double-signal sweep waits for a re-terminated child.
 
 Kept well under :data:`TERMINATE_GRACE_S`: the user is already waiting on a second Ctrl-C.
-A nested run waits less, halved per nesting level (see :func:`_escalation_grace_s`).
+A nested run waits less, halved per nesting level (see :func:`_kill_live_process_groups_now`).
 """
 
 _NESTING_DEPTH_ENV = "GYMRAT_NESTING_DEPTH"
@@ -91,6 +91,19 @@ _NESTING_DEPTH = _read_nesting_depth()
 Read once because the environment a process starts with is fixed.
 """
 
+
+def _terminate_grace_s() -> float:
+    # A run that is itself a gymrat run answers a stop request by sweeping the
+    # benches it started in sessions of their own, and a bench that ignores the
+    # request costs that sweep its whole grace before the kill. The run above
+    # must still be waiting when that kill lands: its own kill reaches the
+    # nested run's group but not those sessions, so landing first orphans the
+    # benches. Halving per nesting level keeps every level strictly longer than
+    # the one below it at any depth, with no maximum depth to know, and leaves
+    # the outermost run on the full TERMINATE_GRACE_S.
+    return TERMINATE_GRACE_S * 0.5**_NESTING_DEPTH
+
+
 _live_process_groups: set[int] = set()
 """Process-group leader PIDs of the children :func:`spawn_contained` started and still holds.
 
@@ -100,6 +113,16 @@ owner (normal, abort, timeout, reader error, cancellation).
 :func:`kill_live_process_groups` reads it to tear down surviving groups on the
 signal path before a worktree sweep runs.
 """
+
+
+def reset() -> None:
+    """Forget every registered process group, so a later kill targets none of them.
+
+    Test-only seam: production code never calls this, since a group leaves the
+    registry when its owner settles. Tests use it to isolate the registry
+    between cases instead of reaching into the private set directly.
+    """
+    _live_process_groups.clear()
 
 
 class SpawnError(Exception):
@@ -124,20 +147,15 @@ def kill_live_process_groups() -> None:
     grace, then the stragglers are killed: a child that is itself a gymrat run
     needs that window to tear down the bench it started, and batching the
     request keeps the wait one grace long however many children are live. The
-    caller is a signal handler with no event loop left to await on, so the wait
-    blocks.
+    grace is :data:`TERMINATE_GRACE_S` for the outermost run and half as long
+    per nesting level below it, so a nested run's own sweep has killed its
+    benches before the run above kills the nested run. The caller is a signal
+    handler with no event loop left to await on, so the wait blocks.
 
     Groups are signaled without deferring a refusal: the signal path has no
     event loop to reap a leader on, so there is no later signal to defer to.
-
-    Iterates a snapshot so a run settling on another task can deregister its PID
-    mid-sweep without disturbing the loop. The process-group calls already
-    tolerate an already-dead tree and warn on other failures; the extra guard
-    keeps any other unexpected exception (for example a warning escalated to an
-    error by a warnings filter) from escaping into the signal-path cleanup that
-    calls this.
     """
-    _sweep_live_process_groups(TERMINATE_GRACE_S)
+    _sweep_live_process_groups(_terminate_grace_s())
 
 
 def _kill_live_process_groups_now() -> None:
@@ -158,6 +176,11 @@ def _kill_live_process_groups_now() -> None:
 
 
 def _sweep_live_process_groups(grace_s: float) -> None:
+    # Iterate a snapshot: a run settling on another task may deregister its PID
+    # mid-sweep. The process-group calls already tolerate an already-dead tree and
+    # warn on other failures; each suppress(Exception) guard keeps any other
+    # unexpected exception (for example a warning escalated to an error by a
+    # warnings filter) from escaping into the signal-path cleanup that calls this.
     leaders = list(_live_process_groups)
     for pid in leaders:
         with contextlib.suppress(Exception):
@@ -294,13 +317,15 @@ async def _terminate_and_reap(
 ) -> None:
     """Tear down a run that will not settle on its own, then reap the child.
 
-    The tree is first asked to stop and given :data:`TERMINATE_GRACE_S` to act
-    on the request, so a child that runs cleanup of its own — killing benches it
-    started in sessions this process cannot reach, writing a last diagnostic —
-    gets to finish. Whatever is still standing afterwards is killed, which also
-    covers a descendant that ignored the request. Dropping the stdio pipes then
-    releases the reader tasks still waiting on EOF, so the run can be
-    snapshotted without awaiting a natural end of stream.
+    The tree is first asked to stop and given a grace to act on the request,
+    so a child that runs cleanup of its own — killing benches it started in
+    sessions this process cannot reach, writing a last diagnostic — gets to
+    finish. The grace is :data:`TERMINATE_GRACE_S` for the outermost run and
+    half as long per nesting level below it, so a nested run's cleanup ends
+    before the run above it stops waiting. Whatever is still standing afterwards
+    is killed, which also covers a descendant that ignored the request. Dropping
+    the stdio pipes then releases the reader tasks still waiting on EOF, so the
+    run can be snapshotted without awaiting a natural end of stream.
 
     A group that refused a signal because its members were all still exiting is
     signaled once more after the reap, which stays silent when the group is gone
@@ -318,7 +343,7 @@ async def _terminate_and_reap(
             lands.
     """
     refused = terminate_process_group(proc.pid, defer_refusal=True)
-    exited = await _wait_for_exit(proc, TERMINATE_GRACE_S)
+    exited = await _wait_for_exit(proc, _terminate_grace_s())
     if exited and readers is not None:
         await asyncio.wait(readers, timeout=_FINAL_OUTPUT_GRACE_S)
     refused = kill_process_group(proc.pid, defer_refusal=True) or refused
@@ -403,7 +428,7 @@ async def _feed_stdin(proc: asyncio.subprocess.Process, data: str | None) -> Non
     except (BrokenPipeError, ConnectionResetError):
         pass
     finally:
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
+        with contextlib.suppress(OSError):
             stdin.close()
 
 
@@ -429,8 +454,7 @@ async def _await_normal(
 async def _cancel_all(tasks: list[asyncio.Task[object]]) -> None:
     """Cancel every task and await their settling, discarding their outcomes."""
     for task in tasks:
-        if not task.done():
-            task.cancel()
+        task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
@@ -458,11 +482,7 @@ def _containment_kwargs() -> dict[str, Any]:
         # CREATE_SUSPENDED: the child exists but runs nothing until resumed.
         # POSIX rejects ``creationflags`` outright, so only win32 passes it.
         create_suspended = 0x4
-        return {
-            "start_new_session": False,
-            "preexec_fn": None,
-            "creationflags": create_suspended,
-        }
+        return {"creationflags": create_suspended}
     return {"start_new_session": True, "preexec_fn": _child_reset_signal_mask}
 
 
@@ -511,10 +531,10 @@ async def _discard_failed_spawn(proc: asyncio.subprocess.Process) -> None:
         release_contained(proc.pid)
 
 
-async def spawn_contained[**P](
-    create_child: Callable[P, Awaitable[asyncio.subprocess.Process]],
-    *args: P.args,
-    **kwargs: P.kwargs,
+async def spawn_contained(
+    create_child: Callable[..., Awaitable[asyncio.subprocess.Process]],
+    *args: object,
+    **kwargs: object,
 ) -> asyncio.subprocess.Process:
     """Start a child that cannot outlive this process's teardown of it.
 
@@ -553,18 +573,15 @@ async def spawn_contained[**P](
     """
     with deferring_termination_signals():
         try:
-            # Every asyncio creation function forwards unknown keywords to Popen,
-            # which accepts the containment arguments; no ParamSpec can say so.
-            create_contained = cast(
-                "Callable[..., Awaitable[asyncio.subprocess.Process]]", create_child
-            )
             # The child starts one nesting level deeper, in the environment the
             # caller asked for; only an absent one inherits this process's.
             requested_env = cast("Mapping[str, str] | None", kwargs.get("env"))
             base_env = os.environ if requested_env is None else requested_env
             child_env = {**base_env, _NESTING_DEPTH_ENV: str(_NESTING_DEPTH + 1)}
             child_kwargs = {**kwargs, "env": child_env}
-            proc = await create_contained(*args, **child_kwargs, **_containment_kwargs())
+            # Every asyncio creation function forwards unknown keywords to Popen,
+            # which accepts the containment arguments.
+            proc = await create_child(*args, **child_kwargs, **_containment_kwargs())
         except (OSError, ValueError) as error:
             # ValueError covers what CPython rejects while marshalling the spawn
             # arguments, before any fork: a NUL byte in an argument, in cwd, or

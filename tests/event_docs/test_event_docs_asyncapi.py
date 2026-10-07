@@ -227,6 +227,14 @@ def test_render_asyncapi_when_called_does_have_envelope_trait():
     assert "seq" in envelope["description"]
 
 
+def test_render_asyncapi_when_called_does_describe_envelope_seq_as_non_negative():
+    doc = _render()
+
+    description = doc["components"]["messageTraits"]["envelope"]["description"]
+
+    assert "`seq` (non-negative integer)" in description
+
+
 def test_render_asyncapi_when_called_does_apply_envelope_trait_to_every_message():
     doc = _render()
 

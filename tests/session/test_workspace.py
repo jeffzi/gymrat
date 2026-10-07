@@ -12,7 +12,6 @@ import re
 import shutil
 import sys
 import tempfile
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -35,6 +34,11 @@ from gymrat.session.workspace import (
 )
 from tests._git import head_of
 from tests._git import run_git as _git
+from tests.conftest import (
+    kill_git_during_worktree_add,
+    list_worktree_dirs,
+    register_absent_worktree,
+)
 from tests.session.records._fixtures import worktrees_at
 
 SESSION_ID = "20260808-141530-a3f2"
@@ -123,8 +127,6 @@ def test_create_workspace_when_branch_already_exists_does_raise_naming_branch_an
 def test_create_workspace_when_worktree_add_dies_does_unwind_and_fail_on_that_step(
     repo: str,
     baseline: BaselineRef,
-    kill_git_during_worktree_add: Callable[[str], None],
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     # Installed after the scratch repo's own commit so only the worktree
     # checkouts under test die.
@@ -157,7 +159,6 @@ def test_create_workspace_when_registry_stale_does_leave_a_live_worktree_registe
     repo: str,
     baseline_sha: str,
     baseline: BaselineRef,
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     create_workspace(repo, SESSION_ID, baseline)
     shutil.rmtree(experiment_worktree_dir(repo))
@@ -175,7 +176,6 @@ def test_create_workspace_when_registry_stale_does_leave_a_temporarily_absent_us
     repo: str,
     baseline_sha: str,
     baseline: BaselineRef,
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     create_workspace(repo, SESSION_ID, baseline)
     shutil.rmtree(experiment_worktree_dir(repo))
@@ -253,13 +253,59 @@ def test_ensure_git_exclude_when_file_missing_does_create_it_holding_the_line(re
     assert ".gymrat/" in path.read_text(encoding="utf-8").split("\n")
 
 
+def test_ensure_git_exclude_when_file_holds_non_utf8_bytes_does_append_after_them_unchanged(
+    repo: str,
+):
+    existing = b"build/\n# \xe9\n"
+    path = _exclude_path(repo)
+    path.write_bytes(existing)
+
+    ensure_git_exclude(repo)
+
+    assert path.read_bytes() == existing + b".gymrat/\n"
+
+
+def test_ensure_git_exclude_when_last_line_is_unterminated_does_append_on_a_line_of_its_own(
+    repo: str,
+):
+    path = _exclude_path(repo)
+    path.write_bytes(b"build/")
+
+    ensure_git_exclude(repo)
+
+    assert path.read_bytes() == b"build/\n.gymrat/\n"
+
+
+def test_ensure_git_exclude_when_listed_beside_non_utf8_bytes_does_leave_file_unchanged(
+    repo: str,
+):
+    before = b"# \xe9\n.gymrat/\n"
+    path = _exclude_path(repo)
+    path.write_bytes(before)
+
+    ensure_git_exclude(repo)
+
+    assert path.read_bytes() == before
+
+
+def test_ensure_git_exclude_when_file_cannot_be_read_does_raise_naming_the_file(repo: str):
+    path = _exclude_path(repo)
+    path.unlink(missing_ok=True)
+    path.mkdir()
+
+    with pytest.raises(GymratError) as excinfo:
+        ensure_git_exclude(repo)
+
+    assert str(path) in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # remove_worktrees
 # ---------------------------------------------------------------------------
 
 
 def test_remove_worktrees_when_both_on_disk_does_remove_them_without_warning(
-    repo: str, baseline: BaselineRef, list_worktree_dirs: Callable[..., list[str]]
+    repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
 
@@ -286,8 +332,6 @@ def test_remove_worktrees_when_one_directory_already_gone_does_remove_the_other_
 def test_remove_worktrees_when_one_gone_does_deregister_by_name_only(
     repo: str,
     baseline: BaselineRef,
-    register_absent_worktree: Callable[[str], str],
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     create_workspace(repo, SESSION_ID, baseline)
     # The user's own worktree, absent only for the moment.
@@ -377,7 +421,6 @@ def test_recreate_workspace_when_experiment_gone_does_leave_absent_user_worktree
     repo: str,
     baseline_sha: str,
     baseline: BaselineRef,
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     create_workspace(repo, SESSION_ID, baseline)
     user_worktree = str(Path(repo) / "user-worktree")

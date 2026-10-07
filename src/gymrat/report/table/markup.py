@@ -478,32 +478,6 @@ class VerdictWidths:
     band: int
 
 
-def verdict_parts(verdict: MetricVerdict, samples: int, *, with_band: bool) -> VerdictParts:
-    """Take a verdict apart into the fields a verdict column pads and styles.
-
-    Args:
-        verdict: The verdict to render.
-        samples: The run's sample count, so a full-count verdict drops its ``n=N``.
-        with_band: Whether the caller shows a noise band (the compact
-            multi-candidate table drops it).
-
-    Returns:
-        The verdict's fields.
-    """
-    shown = display_class(verdict)
-    unstable = verdict.verdict == "unstable"
-    band = ""
-    if with_band and not unstable and shown != "inconclusive" and verdict.method != "exact":
-        band = format_noise_band_value(verdict.noise_pct)
-    return VerdictParts(
-        glyph=GLYPHS[shown],
-        delta="" if unstable else format_percent_delta(verdict.delta),
-        word=VERDICT_GLOSSES["unstable"] if unstable else "",
-        band=band,
-        pairs="" if verdict.n == samples else format_pair_count(verdict.n),
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class ShownVerdict:
     """A verdict's pre-split parts and display class, always present together.
@@ -520,30 +494,43 @@ class ShownVerdict:
 def shown_verdict(
     verdict: MetricVerdict | None, samples: int, *, with_band: bool
 ) -> ShownVerdict | None:
-    """Bundle a verdict's column fields with its display class.
+    """Take a verdict apart into the fields a verdict column pads and styles.
 
     Args:
         verdict: The verdict to render, or ``None`` when the metric has none.
         samples: The run's sample count, so a full-count verdict drops its ``n=N``.
-        with_band: Whether the caller shows a noise band.
+        with_band: Whether the caller shows a noise band (the compact
+            multi-candidate table drops it).
 
     Returns:
-        The bundle, or ``None`` when there is no verdict to show.
+        The verdict's fields with its display class, or ``None`` when there is
+        no verdict to show.
     """
     if verdict is None:
         return None
+    shown = display_class(verdict)
+    unstable = verdict.verdict == "unstable"
+    band = ""
+    if with_band and not unstable and shown != "inconclusive" and verdict.method != "exact":
+        band = format_noise_band_value(verdict.noise_pct)
     return ShownVerdict(
-        parts=verdict_parts(verdict, samples, with_band=with_band),
-        outcome=display_class(verdict),
+        parts=VerdictParts(
+            glyph=GLYPHS[shown],
+            delta="" if unstable else format_percent_delta(verdict.delta),
+            word=VERDICT_GLOSSES["unstable"] if unstable else "",
+            band=band,
+            pairs="" if verdict.n == samples else format_pair_count(verdict.n),
+        ),
+        outcome=shown,
     )
 
 
 def verdict_widths(cells: Sequence[VerdictParts]) -> VerdictWidths:
     """The widest delta and band a column of verdict cells holds.
 
-    The word standing in for a delta is not measured: it is wider than any
-    percentage, and sizing the field from it would push a whole column of bands
-    right for the sake of the one row that has none.
+    Only the deltas set the delta width; a word standing in for a delta is not
+    measured. A caller that wants the delta field to fit a word widens it
+    itself.
 
     Args:
         cells: The verdict cells to measure.
@@ -599,7 +586,9 @@ def verdict_cell(
         The styled cell.
     """
     if parts.word != "":
-        delta = _field(parts.word, delta_style)
+        # Padded past its end so a field after the word starts where the
+        # column's deltas end.
+        delta = _field(parts.word, delta_style).append(" " * max(0, widths.delta - len(parts.word)))
     else:
         pad = " " * max(0, widths.delta - len(parts.delta))
         delta = Text(pad).append(parts.delta, delta_style)

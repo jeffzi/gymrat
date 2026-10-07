@@ -52,8 +52,12 @@ def _session_result(*, with_best: bool) -> ReadSessionResult:
     return make_read_session(
         state,
         has_baseline=True,
-        best=BestIteration(delta_pct=-4.2, seq=3, label="wall_time"),
-        baseline_sha="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        best=BestIteration(
+            delta_pct=-4.2,
+            seq=3,
+            label="wall_time",
+            baseline_sha="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        ),
     )()
 
 
@@ -71,6 +75,33 @@ def test_summary_when_run_has_a_best_iteration_does_render_headline_best_loop_an
         "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved\n"
         f"{_LOG_ROW}"
     )
+
+
+@pytest.mark.parametrize(
+    ("delta_pct", "expected_sgr"),
+    [
+        pytest.param(12.0, SGR_GREEN, id="gain-green"),
+        pytest.param(-3.0, SGR_RED, id="loss-red"),
+    ],
+)
+def test_summary_best_row_when_primary_is_higher_is_better_does_style_a_gain_as_improvement(
+    delta_pct: float, expected_sgr: int
+) -> None:
+    session_result = make_read_session(
+        session_state_three_iterations(delta_pct, "improved", seq=3),
+        has_baseline=True,
+        best=BestIteration(delta_pct=delta_pct, seq=3, label="throughput", direction="higher"),
+    )()
+    summary = build_summary(
+        make_supervision_result(),
+        log_path=_LOG_PATH,
+        session_result=session_result,
+        exit_report=_NO_EXIT_STEPS,
+    )
+
+    colored = render_colored(summary)
+
+    assert_has_sgr(colored.splitlines()[1:2], expected_sgr)
 
 
 @pytest.mark.parametrize(
@@ -351,6 +382,25 @@ def test_summary_agent_row_when_text_exceeds_threshold_does_clip_with_ellipsis_a
     assert "…" in agent_line
     assert "(full message in log)" in agent_line
     assert len(agent_line) < len(f"  agent   {long_text}")
+
+
+def test_summary_agent_row_when_clipped_text_is_multiline_does_indent_every_continuation_line():
+    long_text = "Line one.\nLine two.\n" + "c" * (SUMMARY_MAX_CHARS + 50)
+
+    summary = build_summary(
+        make_supervision_result(reason="completed", ended_by="session"),
+        log_path=_LOG_PATH,
+        session_result=None,
+        final_text=long_text,
+        exit_report=_NO_EXIT_STEPS,
+    )
+
+    agent_rows = frame_text(summary, width=FRAME_WIDTH + 200).splitlines()[1:-2]
+
+    assert agent_rows[:2] == ["  agent   Line one.", "          Line two."]
+    assert len(agent_rows) == 3
+    assert agent_rows[2].startswith("          ccc")
+    assert agent_rows[2].endswith("(full message in log)")
 
 
 def test_summary_agent_row_when_text_below_threshold_does_not_append_log_note():

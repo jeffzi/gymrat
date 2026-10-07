@@ -20,11 +20,14 @@ from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
 from tests._git import EMIT_ONE_BENCH, write_committed_bench
 from tests._git import run_git as _git
-from tests.conftest import hold_lock
+from tests._process_helpers import wait_for_pid_file_blocking
+from tests.conftest import hold_lock, list_worktree_dirs, wait_for_worktrees
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 
-_SLOW_BENCH = "#!/bin/sh\nsleep 5\necho 'METRIC x=1'\n"
+# A bench that records its pid at ``{pid_path}`` before sleeping, so the test can
+# register it for reaping.
+_SLOW_BENCH = "#!/bin/sh\necho $$ > '{pid_path}'\nsleep 5\necho 'METRIC x=1'\n"
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +59,6 @@ def test_cli_when_outside_repo_does_measure_lock_free(tmp_path: Path):
 
 def test_cli_when_rival_lock_held_does_exit_two_naming_holder_without_benching(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
 ):
     repo = create_scratch_repo()
     write_committed_bench(repo, EMIT_ONE_BENCH)
@@ -121,11 +123,12 @@ def test_cli_when_signalled_mid_run_does_exit_128_plus_signal_number_and_sweep_w
     signal_number: int,
     expected_code: int,
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
-    wait_for_worktrees: Callable[..., list[str]],
+    tmp_path: Path,
+    reap_groups: list[int],
 ):
     repo = create_scratch_repo()
-    write_committed_bench(repo, _SLOW_BENCH, message="slow bench")
+    pid_path = tmp_path / "bench.pid"
+    write_committed_bench(repo, _SLOW_BENCH.format(pid_path=pid_path), message="slow bench")
     _git(["switch", "-c", "candidate"], repo)
     _git(["switch", "main"], repo)
 
@@ -139,6 +142,7 @@ def test_cli_when_signalled_mid_run_does_exit_128_plus_signal_number_and_sweep_w
     )
     try:
         wait_for_worktrees(repo, 1)
+        reap_groups.append(os.getpgid(wait_for_pid_file_blocking(pid_path, timeout_s=30.0)))
         proc.send_signal(signal_number)
         proc.communicate(timeout=30)
     finally:

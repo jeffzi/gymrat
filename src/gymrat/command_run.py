@@ -27,7 +27,7 @@ from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate.run import LoopStopError
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
-from gymrat.session.records import CommandRecord
+from gymrat.session.records import CommandRecord, SessionRecord
 from gymrat.session.store import (
     append_record,
     read_records,
@@ -127,6 +127,10 @@ async def with_repo_lock[T](
     session log when one exists and is non-empty.  A failure to append warns to
     stderr and never masks the body's result or exception.
 
+    With an OTLP endpoint set, the appended record is also exported as a
+    command span. Tracing is configured only then, for the session whose log
+    holds the record, so a body that opens a new session is traced under it.
+
     Args:
         command: The command name recorded in the :class:`CommandRecord`.
         body: The async callable to run under the lock.
@@ -156,9 +160,8 @@ async def with_repo_lock[T](
             return await body(trace)
 
     jsonl = session_jsonl_path(root)
-    session_id, tracing_active = _maybe_configure_tracing(root, jsonl)
-    start_ns = _clock.now_ns() if tracing_active else 0
-    pre_body_lines = _count_lines(jsonl) if tracing_active else 0
+    start_ns = _clock.now_ns()
+    pre_body_session_id, pre_body_lines = _pre_body_log(root, jsonl)
 
     release = acquire_lock(lockfile_path(root), command)
     caught: BaseException | None = None
@@ -173,7 +176,7 @@ async def with_repo_lock[T](
         elapsed_ms = int(_clock.monotonic_ms() - start)
         exit_code, reason = _resolve_exit(trace, caught)
         try:
-            _try_append_command_record(
+            appended = _try_append_command_record(
                 jsonl=jsonl,
                 command=command,
                 args=args if args is not None else {},
@@ -182,14 +185,17 @@ async def with_repo_lock[T](
                 reason=reason,
                 elapsed_ms=elapsed_ms,
             )
-            if tracing_active:
+            if appended is not None:
                 try:
-                    _emit_command_span(
-                        jsonl=jsonl,
-                        session_id=session_id,
-                        start_ns=start_ns,
-                        pre_body_lines=pre_body_lines,
-                    )
+                    _, tracing_active = _maybe_configure_tracing(root)
+                    if tracing_active:
+                        _emit_command_span(
+                            appended,
+                            jsonl=jsonl,
+                            pre_body_session_id=pre_body_session_id,
+                            start_ns=start_ns,
+                            pre_body_lines=pre_body_lines,
+                        )
                 except Exception as span_error:  # noqa: BLE001 -- must not mask the command outcome
                     warn_to_stderr(f"failed to emit command span: {span_error}")
         finally:
@@ -211,10 +217,25 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
     exit_code: Literal[0, 1, 2],
     reason: CommandReason | None,
     elapsed_ms: int,
-) -> None:
-    """Append a :class:`CommandRecord` when the session log exists and is non-empty."""
+) -> CommandRecord | None:
+    """Append a :class:`CommandRecord` when the session log exists and is non-empty.
+
+    A failure to build or append the record warns to stderr instead of raising.
+
+    Args:
+        jsonl: The session log to append to.
+        command: The command name.
+        args: The command's trace arguments.
+        seq: The iteration the command acted on, if any.
+        exit_code: The exit code the command settled with.
+        reason: Why the command settled as it did, if recorded.
+        elapsed_ms: How long the command ran, in milliseconds.
+
+    Returns:
+        The appended record, or ``None`` when nothing was appended.
+    """
     if _jsonl_is_empty(jsonl):
-        return
+        return None
 
     try:
         record = CommandRecord(
@@ -232,6 +253,8 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
         append_record(jsonl, record)
     except Exception as error:  # noqa: BLE001 -- construction or IO failure must not mask the command outcome
         warn_to_stderr(f"failed to append command record: {error}")
+        return None
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -239,10 +262,45 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
 # ---------------------------------------------------------------------------
 
 
-def _maybe_configure_tracing(root: str, jsonl: str) -> tuple[str, bool]:
+def _pre_body_log(root: str, jsonl: str) -> tuple[str, int]:
+    """Read what the command span needs from the session log before the body runs.
+
+    The span's events are the records the body appends, so the line count must
+    be taken before the body runs. Without an endpoint no span is emitted and
+    the log is not read.
+
+    Args:
+        root: The repository whose session header names the session.
+        jsonl: The session log to count lines of.
+
+    Returns:
+        The session id ``jsonl`` belongs to (empty when there is none, or no
+        endpoint) and its line count (``0`` without an endpoint).
+    """
     if otlp_endpoint(os.environ.get(ENDPOINT_ENV)) is None:
-        return "", False
-    if _jsonl_is_empty(jsonl):
+        return "", 0
+    header = session_header(root)
+    return (header.session_id if header is not None else ""), _count_lines(jsonl)
+
+
+def _maybe_configure_tracing(root: str) -> tuple[str, bool]:
+    """Configure tracing for the session whose log is at ``root`` now.
+
+    Runs after the body, so a body that opens a session (``start``, the
+    supervise preflight) traces under the session it opened, the same one
+    every later span in the process uses.
+
+    Args:
+        root: The repository whose session header names the session.
+
+    Returns:
+        The session id (empty when there is no endpoint or no session) and
+        whether a tracer provider is now active.
+
+    Raises:
+        ValueError: When tracing is already configured for another session.
+    """
+    if otlp_endpoint(os.environ.get(ENDPOINT_ENV)) is None:
         return "", False
     header = session_header(root)
     if header is None:
@@ -272,51 +330,48 @@ def _count_lines(jsonl_path: str) -> int:
 
 
 def _emit_command_span(
+    cmd_record: CommandRecord,
     *,
     jsonl: str,
-    session_id: str,
+    pre_body_session_id: str,
     start_ns: int,
     pre_body_lines: int,
 ) -> None:
-    """Create a retroactive command span with events, attributes, and links."""
-    from opentelemetry.trace import (  # noqa: PLC0415
-        NonRecordingSpan,
-        SpanContext,
-        TraceFlags,
-        set_span_in_context,
-    )
+    """Create a retroactive span for ``cmd_record``, the last record of ``jsonl``.
 
-    from gymrat.telemetry.attributes import SESSION_SPAN_KEY, record_event  # noqa: PLC0415
-    from gymrat.telemetry.ids import (  # noqa: PLC0415
+    The span belongs to the session whose log holds the record, read after the
+    body ran: a body such as ``start`` may have replaced the log it found. The
+    records the body appended to that log become the span's events.
+
+    Args:
+        cmd_record: The command record just appended to ``jsonl``.
+        jsonl: The session log holding ``cmd_record``.
+        pre_body_session_id: The session ``jsonl`` belonged to before the body ran.
+        start_ns: When the command started, in nanoseconds since the epoch.
+        pre_body_lines: How many lines ``jsonl`` held before the body ran.
+    """
+    from opentelemetry.trace import NonRecordingSpan, set_span_in_context  # noqa: PLC0415
+
+    from gymrat.telemetry.provider import (  # noqa: PLC0415
+        existing_session_span,
+        flush_tracing,
         parse_traceparent,
-        span_id_of,
-        trace_id_of,
+        record_event,
+        start_command_span,
     )
-    from gymrat.telemetry.provider import flush_tracing, start_command_span  # noqa: PLC0415
 
     records = _safe_read_records(jsonl)
-    if not records:
+    if not records or not isinstance(records[0], SessionRecord):
         return
+    session_id = records[0].session_id
+    first_body_line = pre_body_lines if session_id == pre_body_session_id else 0
 
-    cmd_record = records[-1]
-    if not isinstance(cmd_record, CommandRecord):
-        return
-
-    parent_ctx = None
     gymrat_tp = os.environ.get(TRACEPARENT_ENV)
-    if gymrat_tp:
-        parent_span_ctx = parse_traceparent(gymrat_tp)
-        if parent_span_ctx is not None:
-            parent_ctx = set_span_in_context(NonRecordingSpan(parent_span_ctx))
-
-    if parent_ctx is None:
-        session_span_ctx = SpanContext(
-            trace_id=trace_id_of(session_id),
-            span_id=span_id_of(session_id, SESSION_SPAN_KEY),
-            is_remote=False,
-            trace_flags=TraceFlags(TraceFlags.SAMPLED),
-        )
-        parent_ctx = set_span_in_context(NonRecordingSpan(session_span_ctx))
+    parent_span_ctx = parse_traceparent(gymrat_tp) if gymrat_tp else None
+    if parent_span_ctx is not None:
+        parent_ctx = set_span_in_context(NonRecordingSpan(parent_span_ctx))
+    else:
+        parent_ctx = set_span_in_context(existing_session_span(session_id))
 
     with start_command_span(
         cmd_record,
@@ -325,8 +380,9 @@ def _emit_command_span(
         context=parent_ctx,
         start_time=start_ns,
     ) as span:
-        # Outcome records appended by the body (between pre-body count and command record)
-        for record in records[pre_body_lines:-1]:
+        for record in records[first_body_line:-1]:
+            if isinstance(record, SessionRecord):
+                continue
             event_name, event_attrs = record_event(record)
             span.add_event(event_name, attributes=event_attrs, timestamp=record.at)
 

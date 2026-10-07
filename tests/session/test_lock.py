@@ -34,7 +34,8 @@ from gymrat.session.lock import (
     now_iso,
     read_holder,
 )
-from tests.conftest import hold_lock
+from gymrat.session.paths import lockfile_path, supervise_lockfile_path
+from tests.conftest import hold_lock, remove_lock_files
 
 # ---------------------------------------------------------------------------
 # Constants and helpers
@@ -350,6 +351,9 @@ def test_release_when_internal_error_does_warn_on_stderr(
     release()
 
     assert "disk went away" in capsys.readouterr().err
+    # Drop the flock for real so its file descriptor does not outlive the test.
+    monkeypatch.undo()
+    release()
 
 
 def test_release_when_called_does_not_delete_lock_file():
@@ -690,3 +694,21 @@ def test_acquire_lock_when_permission_error_does_not_raise_lock_contention_error
         acquire_lock(lock_path, "compare")
 
     assert not isinstance(caught.value, LockContentionError)
+
+
+# ---------------------------------------------------------------------------
+# remove_lock_files — the suite's own sweep of a root's lock files
+# ---------------------------------------------------------------------------
+
+
+def test_remove_lock_files_when_both_locks_were_taken_does_leave_no_file_keyed_to_the_root(
+    tmp_path: Path,
+):
+    root = str(tmp_path)
+    locks = [Path(lockfile_path(root)), Path(supervise_lockfile_path(root))]
+    for lock in locks:
+        acquire_lock(str(lock), "compare")()
+
+    remove_lock_files(root)
+
+    assert [left for lock in locks for left in lock.parent.glob(f"{lock.name}*")] == []

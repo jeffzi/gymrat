@@ -293,3 +293,31 @@ def test_stderr_console_when_stream_has_no_file_descriptor_does_exit_one_on_brok
         console.print("probe")
 
     assert exc.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# emoji codes stay literal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("markup", "highlight", "emoji"),
+    [
+        pytest.param(None, None, None, id="default-flags"),
+        pytest.param(False, False, None, id="no-markup-no-highlight"),
+        pytest.param(None, None, True, id="emoji-requested"),
+    ],
+)
+def test_stderr_console_when_text_has_an_emoji_code_does_print_it_literally(
+    markup: bool | None,
+    highlight: bool | None,
+    emoji: bool | None,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
+    console = stderr_console(color_flag=False)
+
+    with console.capture() as capture:
+        console.print("lat:100:p99", end="", markup=markup, highlight=highlight, emoji=emoji)
+
+    assert capture.get() == "lat:100:p99"

@@ -439,7 +439,7 @@ class ProgressReporter(LiveDisplayMixin):
         header = Text()
         header.append(self._command, style=STYLE_LABEL)
         sample_count = self._state.sample_count
-        label_str = ", ".join(self._target_labels) if self._target_labels else ""
+        label_str = ", ".join(self._target_labels)
         sample_str = f"{sample_count} samples" if sample_count is not None else ""
         dim_parts = [p for p in (label_str, sample_str) if p]
         if dim_parts:

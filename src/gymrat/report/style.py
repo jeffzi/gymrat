@@ -275,7 +275,7 @@ def format_hint(text: str) -> str:
 RENDER_WIDTH = 200
 
 
-def make_capture_console(*, color: bool | None, width: int) -> Console:
+def make_capture_console(*, color: bool | None) -> Console:
     """Build a rich console that captures its output to an in-memory buffer.
 
     Color is resolved without touching :data:`os.environ`:
@@ -288,13 +288,14 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
       own detection. With neither variable set, a captured buffer is not a TTY,
       so the output is plain.
 
-    Wide content is never wrapped or cropped (``soft_wrap``), so the width only
-    bounds justification, never the text.
+    Wide content is never wrapped or cropped (``soft_wrap``), so
+    :data:`RENDER_WIDTH` only bounds justification, never the text. Emoji codes
+    are off, so a ``:word:`` sequence in a metric name, kind or label prints
+    literally (``lat:100:p99`` stays as written).
 
     Args:
         color: The explicit color choice, or ``None`` to defer to the
             environment and TTY detection.
-        width: The terminal width the console renders against.
 
     Returns:
         A console whose ``file`` is an :class:`io.StringIO` holding everything
@@ -320,21 +321,18 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
     # (TERM=dumb, common in git hooks and CI) early-returns (80, 25).
     return Console(
         file=buffer,
-        width=width,
+        width=RENDER_WIDTH,
         height=25,
         force_terminal=force_terminal,
         color_system=color_system,
         legacy_windows=False,
         no_color=False,
         soft_wrap=True,
+        emoji=False,
     )
 
 
-def render_lines(
-    *renderables: RenderableType,
-    color: bool | None = None,
-    width: int = RENDER_WIDTH,
-) -> str:
+def render_lines(*renderables: RenderableType, color: bool | None = None) -> str:
     """Render ``renderables`` through a capture console and return the text.
 
     Each renderable is printed in turn through a console built by
@@ -350,13 +348,12 @@ def render_lines(
         *renderables: One or more rich renderables or markup strings to print.
         color: The explicit color choice, or ``None`` to defer to the
             environment and TTY detection.
-        width: The terminal width the console renders against.
 
     Returns:
         The rendered text, lines joined by newlines, with no trailing
         whitespace on any line and no trailing newline.
     """
-    console = make_capture_console(color=color, width=width)
+    console = make_capture_console(color=color)
     for renderable in renderables:
         # The report styles every span deliberately; rich's repr highlighter would
         # otherwise embolden bare numbers (a delta, a sample count) and split a

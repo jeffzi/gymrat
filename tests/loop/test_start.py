@@ -10,10 +10,11 @@ straight out of the worktrees git laid down.
 
 import itertools
 import json
+import os
 import re
 import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,11 @@ from gymrat.session.store import append_record, fold_session, read_records
 from gymrat.session.workspace import BaselineRef, remove_worktrees
 from tests._git import head_of
 from tests._git import run_git as _git
+from tests.conftest import (
+    create_in_place_target_dir,
+    kill_git_during_worktree_add,
+    list_worktree_dirs,
+)
 from tests.session.records._fixtures import (
     committed_keep,
     finalize_record,
@@ -44,6 +50,14 @@ from tests.session.records._fixtures import (
 
 SESSION_ID_PATTERN = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 BRANCH_PATTERN = re.compile(r"^gymrat/\d{8}-\d{6}-[0-9a-f]{4}$")
+
+# The directory a hooked checkout leaves in a worktree, closed to deletion.
+PINNED_DIR = "pinned"
+
+needs_permission_bits = pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="a read-only directory refuses new files only for a non-root POSIX user",
+)
 
 HOOKS = HooksConfig(before="npm run warm-cache", after="npm run cool-down")
 
@@ -129,10 +143,67 @@ def _close_session_with_one_keep(root: str) -> str:
     return header.session_id
 
 
+def _session_branches(root: str) -> list[str]:
+    """The session branches ``root`` still holds, one per ``gymrat/…`` ref."""
+    output = _git(["for-each-ref", "--format=%(refname:short)", "refs/heads/gymrat"], root)
+    return output.splitlines()
+
+
+def _install_git_hook(repo_dir: str, name: str, script: str) -> None:
+    hook_path = Path(repo_dir) / ".git" / "hooks" / name
+    hook_path.parent.mkdir(parents=True, exist_ok=True)
+    hook_path.write_text(f"#!/bin/sh\n{script}", encoding="utf-8")
+    hook_path.chmod(0o755)
+
+
+def _pin_worktree_contents(repo_dir: str) -> None:
+    """Install a post-checkout hook that leaves each new worktree a directory nothing can empty."""
+    _install_git_hook(
+        repo_dir,
+        "post-checkout",
+        f"mkdir {PINNED_DIR} && : > {PINNED_DIR}/file && chmod 500 {PINNED_DIR}\n",
+    )
+
+
+def _refuse_session_branch_deletion(repo_dir: str) -> None:
+    """Install a reference-transaction hook that aborts any delete of a ``gymrat/…`` branch.
+
+    Git names the ref's new value as all zeros when it deletes the ref, so the hook
+    lets the branch be created and moved and vetoes only its removal.
+    """
+    _install_git_hook(
+        repo_dir,
+        "reference-transaction",
+        '[ "$1" = prepared ] || exit 0\n'
+        "while read -r _old new ref; do\n"
+        '    if [ "${ref#refs/heads/gymrat/}" != "$ref" ] && [ -z "$(printf %s "$new" | tr -d 0)" ]; then\n'
+        "        exit 1\n"
+        "    fi\n"
+        "done\n"
+        "exit 0\n",
+    )
+
+
 @pytest.fixture
 def head_sha(repo: str) -> str:
     """The commit SHA ``repo`` starts at."""
     return head_of(repo)
+
+
+@pytest.fixture
+def read_only_log_dir(repo: str) -> Iterator[Path]:
+    """The session log's directory, refusing new files while worktrees still fit under it."""
+    log_dir = Path(session_jsonl_path(repo)).parent
+    # The worktrees' parent exists up front, so only the log itself cannot be created.
+    Path(experiment_worktree_dir(repo)).parent.mkdir(parents=True)
+    log_dir.chmod(0o500)
+    yield log_dir
+
+    log_dir.chmod(0o700)
+    for worktree in (experiment_worktree_dir(repo), baseline_worktree_dir(repo)):
+        pinned = Path(worktree) / PINNED_DIR
+        if pinned.exists():
+            pinned.chmod(0o700)
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +383,7 @@ def test_start_session_when_finalized_does_check_out_both_worktrees_at_the_pinne
 
 @pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
 def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_closed_log_back(
-    repo: str, kill_git_during_worktree_add: Callable[[str], None]
+    repo: str,
 ):
     start_session(repo, "main", CONFIG)
     closed = _close_session_with_one_keep(repo)
@@ -331,7 +402,6 @@ def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_clo
 @pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
 def test_start_session_when_putting_the_closed_log_back_fails_does_raise_the_start_failure(
     repo: str,
-    kill_git_during_worktree_add: Callable[[str], None],
     monkeypatch: pytest.MonkeyPatch,
 ):
     start_session(repo, "main", CONFIG)
@@ -387,6 +457,100 @@ def test_start_session_when_baseline_worktree_missing_and_nothing_kept_does_put_
 
 
 # ---------------------------------------------------------------------------
+# when the start fails after the workspace is built
+# ---------------------------------------------------------------------------
+
+
+@needs_permission_bits
+@pytest.mark.usefixtures("read_only_log_dir")
+def test_start_session_when_header_append_fails_does_remove_the_branch_and_worktrees_it_created(
+    repo: str,
+):
+    with pytest.raises(PermissionError):
+        start_session(repo, "main", CONFIG)
+
+    assert _session_branches(repo) == []
+    assert list_worktree_dirs(repo, include_main=False) == []
+    assert not Path(experiment_worktree_dir(repo)).exists()
+    assert not Path(baseline_worktree_dir(repo)).exists()
+
+
+@needs_permission_bits
+def test_start_session_when_earlier_start_failed_on_the_header_does_open_a_fresh_session(
+    repo: str, read_only_log_dir: Path
+):
+    with pytest.raises(PermissionError):
+        start_session(repo, "main", CONFIG)
+    read_only_log_dir.chmod(0o700)
+
+    result = start_session(repo, "main", CONFIG)
+
+    assert result.resumed is False
+    assert log_records(repo) == [result.session]
+    assert _session_branches(repo) == [result.session.branch]
+
+
+@needs_permission_bits
+@pytest.mark.usefixtures("read_only_log_dir")
+def test_start_session_when_unwinding_a_failed_start_fails_does_warn_and_raise_the_start_failure(
+    repo: str, capsys: pytest.CaptureFixture[str]
+):
+    # Neither git nor a plain delete can empty the worktrees, so the unwind's own steps fail.
+    _pin_worktree_contents(repo)
+
+    with pytest.raises(PermissionError):
+        start_session(repo, "main", CONFIG)
+
+    assert experiment_worktree_dir(repo) in capsys.readouterr().err
+
+
+@needs_permission_bits
+@pytest.mark.usefixtures("read_only_log_dir")
+def test_start_session_when_unwind_cannot_delete_the_branch_does_warn_with_the_delete_command_and_raise_the_start_failure(
+    repo: str, capsys: pytest.CaptureFixture[str]
+):
+    _refuse_session_branch_deletion(repo)
+
+    with pytest.raises(PermissionError):
+        start_session(repo, "main", CONFIG)
+
+    (branch,) = _session_branches(repo)
+    assert f"git branch -D {branch}" in capsys.readouterr().err
+
+
+def test_start_session_when_header_reached_the_log_before_the_failure_does_keep_its_workspace(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    def failing_fsync(_descriptor: int) -> None:
+        raise OSError(5, "sync failed")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+
+    with pytest.raises(OSError, match="sync failed"):
+        start_session(repo, "main", CONFIG)
+
+    header = session_header_of(repo)
+    assert _session_branches(repo) == [header.branch]
+    assert Path(experiment_worktree_dir(repo)).is_dir()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
+def test_start_session_when_resume_fails_does_leave_the_standing_worktree_and_its_work(
+    repo: str,
+):
+    start_session(repo, "main", CONFIG)
+    draft = Path(experiment_worktree_dir(repo)) / "draft.txt"
+    draft.write_text("work the agent has not kept\n", encoding="utf-8")
+    shutil.rmtree(baseline_worktree_dir(repo))
+    kill_git_during_worktree_add(repo)
+
+    with pytest.raises(GymratError):
+        start_session(repo, "main", CONFIG)
+
+    assert draft.read_text(encoding="utf-8") == "work the agent has not kept\n"
+
+
+# ---------------------------------------------------------------------------
 # when the baseline ref cannot be used
 # ---------------------------------------------------------------------------
 
@@ -402,7 +566,7 @@ def test_start_session_when_baseline_ref_does_not_resolve_does_raise_and_leave_n
 
 
 def test_start_session_when_baseline_ref_is_a_directory_does_raise_naming_the_ref(
-    repo: str, create_in_place_target_dir: Callable[[str, str, str], str]
+    repo: str,
 ):
     target_dir = create_in_place_target_dir(repo, "bench-dir", "echo hi\n")
 

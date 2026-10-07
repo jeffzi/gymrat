@@ -29,8 +29,8 @@ import statistics
 import subprocess
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal, Self
 
@@ -56,7 +56,7 @@ from gymrat.progress_events import (
     emit_progress,
 )
 from gymrat.report.text.render import format_cleanup_failures
-from gymrat.signals import install_termination_cleanup
+from gymrat.signals import install_termination_cleanup, write_on_exit
 from gymrat.stats import compute_half_range
 from gymrat.targets import RefTarget, Target, WorktreeRemovalFailure
 from gymrat.utils import MS_PER_SECOND, WarnSink, stderr_text_of, warn_to_stderr
@@ -227,12 +227,33 @@ _DEFAULT_GATING = True
 """Whether a metric gates when neither a ``metrics`` entry nor a ``kinds`` entry names it."""
 
 
-def _resolve_one_metric(
+def resolve_metric_meta(
     name: str,
     entry: MetricEntry | None,
     adapter: Adapter,
     config_kinds: dict[str, KindEntry] | None,
 ) -> ResolvedMetricMeta:
+    """Resolve one metric's metadata from its config entry, its kind and the adapter.
+
+    The adapter's defaults for the metric are the base. The ``metrics`` entry
+    overrides direction, gating and exact wherever it sets them. Gating the
+    entry leaves unset comes from the ``kinds`` entry of the metric's kind, and
+    gates by default when that is unset too.
+
+    Every reader of a metric's direction resolves it here, so a verdict and a
+    display of the same metric cannot disagree about which way is better.
+
+    Args:
+        name: The metric's full name, as the adapter reports it.
+        entry: The metric's ``metrics`` entry from config, or ``None`` when
+            config does not name it.
+        adapter: The adapter whose defaults seed the metadata.
+        config_kinds: Per-kind gating overrides from config, keyed by kind name,
+            or ``None``.
+
+    Returns:
+        The metric's resolved metadata.
+    """
     defaults = adapter.defaults(name)
     kind = defaults.kind if defaults.kind is not None else DEFAULT_METRIC_KIND
     direction = (
@@ -343,7 +364,7 @@ def resolve_metric_meta_from_samples(
         raise GymratError(message)
 
     return {
-        name: _resolve_one_metric(
+        name: resolve_metric_meta(
             name,
             config_metrics.get(name) if config_metrics is not None else None,
             adapter,
@@ -631,13 +652,14 @@ def materialize_worktree(worktree: WorktreeInfo, repo_dir: str) -> None:
         repo_dir: The repository the worktree is added to.
 
     Raises:
-        GymratError: When ``git worktree add`` fails — the planned directory may
-            exist anyway, so callers must still hand it to
-            :func:`cleanup_worktrees`.
+        GymratError: When ``git worktree add`` fails or git cannot be started —
+            the planned directory may exist anyway, so callers must still hand
+            it to :func:`cleanup_worktrees`.
     """
     try:
         run_git(["worktree", "add", "--detach", worktree.dir, worktree.sha], repo_dir)
-    except subprocess.CalledProcessError as error:
+    except (subprocess.SubprocessError, OSError) as error:
+        # OSError is a git binary that is missing or cannot be executed.
         message = f"git worktree add failed for {worktree.sha}: {stderr_text_of(error)}"
         raise GymratError(message) from error
     finally:
@@ -690,7 +712,38 @@ def _remove_worktree(worktree: WorktreeInfo, repo_dir: str) -> _RemovalOutcome:
     return "removed" if on_disk else None
 
 
-def cleanup_worktrees(worktrees: Sequence[WorktreeInfo], repo_dir: str) -> CleanupResult:
+@dataclass(slots=True)
+class _SweepLedger:
+    """The worktrees no sweep has taken yet, and what the sweeps so far have learned.
+
+    A signal can land while one sweep is inside a git call, and the sweep the
+    signal path then runs is the last thing the process does. Both sweeps write
+    to one ledger, so the second reports the worktrees the first could not
+    remove and collects the stale entry the first had met.
+
+    Attributes:
+        worktrees: The registry of claimed worktrees, emptied as sweeps take them.
+        removed: Worktrees the sweeps took off disk.
+        failures: Worktrees the sweeps left on disk, one entry each.
+        prune_owed: Whether a targeted removal came back stale and no sweep has
+            started the prune that collects it.
+    """
+
+    worktrees: list[WorktreeInfo]
+    removed: int = 0
+    failures: list[WorktreeRemovalFailure] = field(default_factory=list)
+    prune_owed: bool = False
+
+    def __iter__(self) -> Iterator[WorktreeInfo]:
+        # Each worktree leaves the registry before it is yielded, so a sweep that
+        # starts while another is inside a git call finds only the worktrees no
+        # sweep has taken: git is asked to remove each one once, and a worktree git
+        # has just removed is never re-read as a vanished one that needs a prune.
+        while self.worktrees:
+            yield self.worktrees.pop(0)
+
+
+def cleanup_worktrees(worktrees: Iterable[WorktreeInfo], repo_dir: str) -> CleanupResult:
     """Remove each of ``worktrees`` git has anything for.
 
     Never raises: callers invoke this while already handling a failed run, so a
@@ -698,27 +751,25 @@ def cleanup_worktrees(worktrees: Sequence[WorktreeInfo], repo_dir: str) -> Clean
     Everything that went wrong lands in the returned result instead.
 
     Args:
-        worktrees: The worktrees to sweep.
+        worktrees: The worktrees to sweep, each taken just before git is asked
+            to remove it. A sweep that takes over from an interrupted one
+            carries on from what that sweep had already recorded.
         repo_dir: The repository the removals and prune run against.
 
     Returns:
         A :class:`CleanupResult` counting removals, listing failures, and
         carrying any prune-sweep error.
     """
-    failures: list[WorktreeRemovalFailure] = []
-    removed = 0
-    # A worktree git may still list without a directory backing it: gone before
-    # the sweep reached it, or still there because its removal failed.
-    may_have_stale_entry = False
+    ledger = worktrees if isinstance(worktrees, _SweepLedger) else _SweepLedger([])
 
     for worktree in worktrees:
         outcome = _remove_worktree(worktree, repo_dir)
         if isinstance(outcome, WorktreeRemovalFailure):
-            failures.append(outcome)
+            ledger.failures.append(outcome)
         elif outcome == "removed":
-            removed += 1
+            ledger.removed += 1
         elif outcome == "stale":
-            may_have_stale_entry = True
+            ledger.prune_owed = True
 
     # Prune only when a targeted removal failed and may have left an entry with
     # no directory behind it. Naming each worktree already clears its own entry,
@@ -726,8 +777,15 @@ def cleanup_worktrees(worktrees: Sequence[WorktreeInfo], repo_dir: str) -> Clean
     # that may not even be a git repo — has nothing to collect. Pruning anyway
     # would deregister worktrees of the user's own that are only temporarily
     # absent: an unmounted volume, a directory moved aside.
-    prune_error = try_git(["worktree", "prune"], repo_dir) if may_have_stale_entry else None
-    return CleanupResult(removed=removed, failures=tuple(failures), prune_error=prune_error)
+    prune_error = None
+    if ledger.prune_owed:
+        # Settled before git is asked: a sweep that starts while this prune is
+        # running must not run a second one.
+        ledger.prune_owed = False
+        prune_error = try_git(["worktree", "prune"], repo_dir)
+    return CleanupResult(
+        removed=ledger.removed, failures=tuple(ledger.failures), prune_error=prune_error
+    )
 
 
 def to_context(
@@ -791,6 +849,9 @@ def resolve_label(explicit: str | None, target: Target) -> str:
     return Path(target.dir).name
 
 
+_CLEANUP_UNFINISHED = "cleanup did not finish:"
+
+
 async def run_with_worktrees[M, R](
     phase: Callable[[str, list[WorktreeInfo], asyncio.Event], Awaitable[M]],
     build_result: Callable[[M, CleanupResult], R],
@@ -799,9 +860,12 @@ async def run_with_worktrees[M, R](
 
     A termination cleanup is installed before any worktree exists, so a signal
     arriving mid-run still sweeps whatever was claimed; that cleanup aborts the
-    run and sweeps. The normal path sweeps exactly once whether the phase returns
-    or raises. When the sweep leaves worktrees behind, the phase's error is
-    re-raised wrapped with the cleanup diagnostics.
+    run, sweeps, and hands what the sweep left unfinished to the exit output.
+    The normal path sweeps exactly once whether the phase returns or raises. A
+    signal that lands during the normal path's sweep takes over only the
+    worktrees that sweep has not reached, and inherits its accounting: the exit
+    output names the worktrees that sweep could not remove, and a stale entry
+    it had met is pruned once.
 
     Args:
         phase: The work to run. It receives the repository directory, the
@@ -820,6 +884,7 @@ async def run_with_worktrees[M, R](
     """
     repo_dir = str(Path.cwd())
     worktrees: list[WorktreeInfo] = []
+    ledger = _SweepLedger(worktrees)
     abort = asyncio.Event()
 
     def terminate() -> None:
@@ -828,19 +893,24 @@ async def run_with_worktrees[M, R](
         # may not resume to process the abort before the sweep runs, so the
         # child must be dead before cleanup_worktrees touches the worktrees.
         kill_live_process_groups()
-        cleanup_worktrees(worktrees, repo_dir)
+        cleanup = cleanup_worktrees(ledger, repo_dir)
+        details = format_cleanup_failures(cleanup.failures, cleanup.prune_error)
+        if details:
+            # The process exits from the signal handler, so no caller is left
+            # to report a worktree this sweep could not remove.
+            write_on_exit("\n".join([_CLEANUP_UNFINISHED, *details]) + "\n")
 
     uninstall = install_termination_cleanup(terminate)
     try:
         measurement = await phase(repo_dir, worktrees, abort)
     except Exception as error:
-        cleanup = cleanup_worktrees(worktrees, repo_dir)
+        cleanup = cleanup_worktrees(ledger, repo_dir)
         wrapped = _with_cleanup_failures(error, cleanup)
         if wrapped is error:
             raise
         raise wrapped from error
     else:
-        cleanup = cleanup_worktrees(worktrees, repo_dir)
+        cleanup = cleanup_worktrees(ledger, repo_dir)
         return build_result(measurement, cleanup)
     finally:
         uninstall()
@@ -871,7 +941,7 @@ def _with_cleanup_failures(error: Exception, cleanup: CleanupResult) -> Exceptio
     if not details:
         return error
 
-    combined = "\n".join([str(error), "", "cleanup did not finish:", *details])
+    combined = "\n".join([str(error), "", _CLEANUP_UNFINISHED, *details])
     if isinstance(error, GymratError):
         return type(error)(combined, hint=error.hint)
     return Exception(combined)

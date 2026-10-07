@@ -1,8 +1,9 @@
 """The ``gymrat supervise`` command: a supervised agent session under caps.
 
-Guards against a dirty working tree, takes the supervise lock, resolves the JSONL
-event log, and hands a driver, reporter, and kickoff to the supervisor. Every run
-the supervisor returns from then passes through the exit sequence, which settles
+Takes the supervise lock, runs the pre-flight (which guards against a dirty
+working tree), resolves the JSONL event log, and hands a driver, reporter, and
+kickoff to the supervisor. Every run the supervisor returns from then passes
+through the exit sequence, which settles
 and (unless ``--no-finalize``) finalizes the session before the summary prints.
 The agent SDK is imported lazily inside the driver so ``gymrat --help`` stays fast.
 """
@@ -25,9 +26,11 @@ if TYPE_CHECKING:
 
     from gymrat.cli.supervise.progress import SuperviseReporter
     from gymrat.cli.supervise.types import ReadSessionResult
+    from gymrat.model import Direction
     from gymrat.supervisor.events import SessionObserver
     from gymrat.supervisor.supervise import SupervisionResult
 
+from gymrat.adapters import get_adapter
 from gymrat.cli.console import apply_command_flags, resolve_stream_color
 from gymrat.cli.exit import exit_with_error, run_guarded, write_and_flush, write_stdout
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
@@ -36,11 +39,12 @@ from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotati
     DebugOption,
 )
 from gymrat.cli.run_setup import resolve_render_mode
-from gymrat.cli.supervise.preflight import doctor_gate, run_preflight, validate_experiment_worktree
+from gymrat.cli.supervise.preflight import PreflightFlags, doctor_gate, run_preflight
 from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.cli.supervise.summary import build_summary
 from gymrat.clock import now_ms, now_ns
 from gymrat.config import (
+    GEOMEAN_PRIMARY,
     MAX_TIMEOUT_SECONDS,
     CliFlags,
     Effort,
@@ -50,8 +54,8 @@ from gymrat.config import (
 )
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.exec import kill_live_process_groups
-from gymrat.git import run_git
 from gymrat.report.style import render_lines
+from gymrat.sampling import resolve_metric_meta
 from gymrat.session.budget import (
     Budget,
     clear_budget,
@@ -66,7 +70,7 @@ from gymrat.session.paths import (
     supervise_lockfile_path,
     supervisor_log_name,
 )
-from gymrat.session.workspace import dirty_file_count, ensure_git_exclude
+from gymrat.session.workspace import dirty_file_count, ensure_git_exclude, worktree_head
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.driver import SessionPrompt
@@ -83,13 +87,15 @@ from gymrat.supervisor.hooks import supervise_hooks_factory
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
 from gymrat.supervisor.supervise import SupervisedSession, supervise
 from gymrat.supervisor.tools import gymrat_tools_factory
-from gymrat.utils import SECONDS_PER_MINUTE, abbreviate_home, pluralize, warn_to_stderr
+from gymrat.utils import SECONDS_PER_MINUTE, abbreviate_home
 
 # ---------------------------------------------------------------------------
 # Flag surface
 # ---------------------------------------------------------------------------
 
-_POSITIVE_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+# ``[0-9]`` rather than ``\d``: ``\d`` matches every Unicode decimal digit, and
+# ``float`` converts those too, so a non-ASCII digit would parse as a number.
+_POSITIVE_NUMBER_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 _POSITIVE_NUMBER_MESSAGE = "must be a positive number."
 
 
@@ -103,8 +109,8 @@ def parse_positive_number(value: str) -> float:
         The parsed number.
 
     Raises:
-        typer.BadParameter: When the value is negative, zero, not finite, or has
-            trailing garbage.
+        typer.BadParameter: When the value is not a bare decimal written in
+            ASCII digits, or is zero or not finite.
     """
     if _POSITIVE_NUMBER_RE.fullmatch(value) is None:
         raise typer.BadParameter(_POSITIVE_NUMBER_MESSAGE)
@@ -195,29 +201,6 @@ class Options:
     finalize: bool
 
 
-# ---------------------------------------------------------------------------
-# Pre-flight guards
-# ---------------------------------------------------------------------------
-
-
-def _validate_working_tree(root: str, *, allow_dirty: bool) -> int:
-    """Refuse a dirty tree unless ``allow_dirty`` was set, warning when it was."""
-    count = dirty_file_count(root)
-    if count == 0:
-        return count
-
-    if not allow_dirty:
-        message = f"Working tree has {pluralize(count, 'uncommitted file')}."
-        hint = "Commit or stash your changes, or pass --allow-dirty to proceed anyway."
-        exit_with_error(GymratError(message, hint=hint))
-
-    warn_to_stderr(
-        f"warning: working tree has {pluralize(count, 'dirty file')} — "
-        "proceeding because --allow-dirty was set"
-    )
-    return count
-
-
 def _resolve_log_path(root: str, explicit: str | None) -> str:
     """The caller's ``--log`` verbatim, or a timestamped path under the session dir.
 
@@ -255,6 +238,7 @@ class _SessionContext:
     max_iterations: int | None
     color: bool | None
     branch: str
+    resumed: bool
     finalize: bool
 
     def session_prompt(self) -> SessionPrompt:
@@ -339,24 +323,26 @@ def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], Non
     budget = Budget(max_minutes=max_minutes, deadline_ms=deadline_ms)
     Path(session_dir(root)).mkdir(parents=True, exist_ok=True)
     write_budget(root, budget)
-    uninstall = install_termination_cleanup(lambda: clear_budget(root))
-    released = False
+    release = ExitStack()
+    # Callbacks unwind last-in first-out: the budget file goes, then the hook.
+    release.callback(install_termination_cleanup(lambda: clear_budget(root)))
+    release.callback(clear_budget, root)
+    return deadline_ms, release.close
 
-    def release() -> None:
-        nonlocal released
-        if released:
-            return
-        released = True
-        try:
-            clear_budget(root)
-        finally:
-            uninstall()
 
-    return deadline_ms, release
+def _primary_direction(config: ResolvedConfig) -> Direction:
+    """Whether a lower or a higher value of the configured primary is the better outcome."""
+    if config.primary == GEOMEAN_PRIMARY:
+        return "lower"
+    entry = config.metrics.get(config.primary) if config.metrics is not None else None
+    return resolve_metric_meta(
+        config.primary, entry, get_adapter(config.adapter), config.kinds
+    ).direction
 
 
 def _create_reporter(ctx: _SessionContext, mode: Literal["live", "plain"]) -> SuperviseReporter:
     return create_supervise_reporter(
+        primary_direction=_primary_direction(ctx.config),
         root=ctx.root,
         max_minutes=ctx.launch.max_minutes,
         max_usd=ctx.launch.max_usd,
@@ -472,6 +458,7 @@ def _run_session(ctx: _SessionContext) -> None:
         prompt, observer, tracing = setup_tracing(
             launch,
             branch=ctx.branch,
+            resumed=ctx.resumed,
             prompt=ctx.session_prompt(),
             reporter_observer=reporter.observer,
         )
@@ -518,8 +505,8 @@ def _run_session(ctx: _SessionContext) -> None:
 def _execute(options: Options) -> None:
     """Run the full supervised-session pipeline.
 
-    Step order: doctor gate, working-tree guard, experiment-worktree guard,
-    supervise lock, pre-flight (session under the repository lock, stop
+    Step order: doctor gate, supervise lock, pre-flight (under the repository
+    lock: working-tree guard, experiment-worktree guard, session, stop
     condition, baseline, feasibility), then log-path resolution, kickoff,
     launch event, and the session run.
 
@@ -528,8 +515,6 @@ def _execute(options: Options) -> None:
     """
     root = repo_root()
     doctor_gate(root, color=options.color)
-    dirty_count = _validate_working_tree(root, allow_dirty=options.allow_dirty)
-    validate_experiment_worktree(root)
 
     release = acquire_lock(supervise_lockfile_path(root), "supervise")
     try:
@@ -537,24 +522,28 @@ def _execute(options: Options) -> None:
         preflight = run_preflight(
             root=root,
             config=resolved,
-            baseline_ref=options.baseline,
-            max_minutes=options.max_minutes,
-            force=options.force,
+            flags=PreflightFlags(
+                baseline_ref=options.baseline,
+                max_minutes=options.max_minutes,
+                force=options.force,
+                allow_dirty=options.allow_dirty,
+            ),
         )
-        worktrees = preflight.session.worktrees
+        dirty_count = dirty_file_count(root)
 
         log_path = _resolve_log_path(root, options.log)
         probe_event_log_path(log_path)
         kickoff = compose_kickoff(
             resolved,
             options.prompt,
-            experiment_worktree=worktrees.experiment,
+            experiment_worktree=preflight.session.worktrees.experiment,
         )
-        head_sha = run_git(["rev-parse", "HEAD"], root).strip()
+        head_sha = worktree_head(root)
 
         supervise_config = resolved.supervise or SuperviseConfig()
         model = options.model if options.model is not None else supervise_config.model
         effort = options.effort if options.effort is not None else supervise_config.effort
+        max_iterations = resolved.stop.max_iterations if resolved.stop is not None else None
 
         launch = LaunchEvent(
             at=now_ns(),
@@ -577,9 +566,10 @@ def _execute(options: Options) -> None:
                 launch=launch,
                 kickoff=kickoff,
                 config=resolved,
-                max_iterations=resolved.stop.max_iterations if resolved.stop is not None else None,
+                max_iterations=max_iterations,
                 color=options.color,
                 branch=preflight.session.branch,
+                resumed=preflight.resumed,
                 finalize=options.finalize,
             )
         )

@@ -33,7 +33,7 @@ def test_build_bench_section_when_adapter_unknown_does_fail_with_message_and_hin
     error = GymratError('Unknown adapter "bogus".', hint="valid adapters are: metric-lines, mitata")
     _patch_adapter_raises(monkeypatch, error)
 
-    section = build_bench_section(bench="node bench.js", adapter="bogus")
+    section = build_bench_section(bench="node bench.js", adapter="bogus", base_dir=".")
 
     assert len(section.checks) == 1
     check = section.checks[0]
@@ -49,7 +49,7 @@ def test_build_bench_section_when_adapter_valid_does_report_ok(
     _patch_adapter_ok(monkeypatch)
     monkeypatch.setattr("shutil.which", lambda _cmd: "/usr/bin/node")  # pyrefly: ignore
 
-    section = build_bench_section(bench="node bench.js", adapter="metric-lines")
+    section = build_bench_section(bench="node bench.js", adapter="metric-lines", base_dir=".")
 
     assert section.title == "Bench"
     adapter_check = section.checks[0]
@@ -68,7 +68,7 @@ def test_build_bench_section_when_bench_unresolved_does_fail_naming_flag_and_con
 ):
     _patch_adapter_ok(monkeypatch)
 
-    section = build_bench_section(bench=None, adapter="metric-lines")
+    section = build_bench_section(bench=None, adapter="metric-lines", base_dir=".")
 
     bench_check = next(c for c in section.checks if c.name == "bench")
     assert bench_check.status == "fail"
@@ -82,7 +82,7 @@ def test_build_bench_section_when_bench_set_does_report_ok_with_command(
     _patch_adapter_ok(monkeypatch)
     monkeypatch.setattr("shutil.which", lambda _cmd: "/usr/bin/node")  # pyrefly: ignore
 
-    section = build_bench_section(bench="node bench.js", adapter="metric-lines")
+    section = build_bench_section(bench="node bench.js", adapter="metric-lines", base_dir=".")
 
     bench_check = next(c for c in section.checks if c.name == "bench")
     assert bench_check.status == "ok"
@@ -100,7 +100,7 @@ def test_build_bench_section_when_executable_found_does_report_ok(
     _patch_adapter_ok(monkeypatch)
     monkeypatch.setattr("shutil.which", lambda _cmd: "/usr/bin/npx")  # pyrefly: ignore
 
-    section = build_bench_section(bench="npx tsx bench.ts", adapter="metric-lines")
+    section = build_bench_section(bench="npx tsx bench.ts", adapter="metric-lines", base_dir=".")
 
     exe_check = next(c for c in section.checks if c.name == "executable")
     assert exe_check.status == "ok"
@@ -113,7 +113,7 @@ def test_build_bench_section_when_executable_missing_does_warn(
     _patch_adapter_ok(monkeypatch)
     monkeypatch.setattr("shutil.which", lambda _cmd: None)  # pyrefly: ignore
 
-    section = build_bench_section(bench="node bench.js", adapter="metric-lines")
+    section = build_bench_section(bench="node bench.js", adapter="metric-lines", base_dir=".")
 
     exe_check = next(c for c in section.checks if c.name == "executable")
     assert exe_check.status == "warn"
@@ -125,7 +125,7 @@ def test_build_bench_section_when_bench_unresolved_does_not_check_executable(
 ):
     _patch_adapter_ok(monkeypatch)
 
-    section = build_bench_section(bench=None, adapter="metric-lines")
+    section = build_bench_section(bench=None, adapter="metric-lines", base_dir=".")
 
     assert not any(c.name == "executable" for c in section.checks)
 
@@ -141,7 +141,7 @@ def test_build_bench_section_when_adapter_fails_does_not_check_bench_or_executab
     error = GymratError('Unknown adapter "bogus".')
     _patch_adapter_raises(monkeypatch, error)
 
-    section = build_bench_section(bench="node bench.js", adapter="bogus")
+    section = build_bench_section(bench="node bench.js", adapter="bogus", base_dir=".")
 
     assert len(section.checks) == 1
     assert section.checks[0].name == "adapter"
@@ -153,7 +153,9 @@ def test_build_bench_section_when_adapter_fails_does_not_check_bench_or_executab
 
 
 def test_build_bench_section_when_config_problems_and_bench_none_does_skip():
-    section = build_bench_section(bench=None, adapter="metric-lines", config_problems=True)
+    section = build_bench_section(
+        bench=None, adapter="metric-lines", config_problems=True, base_dir="."
+    )
 
     assert len(section.checks) == 1
     check = section.checks[0]
@@ -169,7 +171,7 @@ def test_build_bench_section_when_config_problems_and_bench_none_does_skip():
 @pytest.mark.parametrize(
     ("bench", "expected_exe"),
     [
-        pytest.param('"path with spaces/node" bench.js', "path with spaces/node", id="quoted-exe"),
+        pytest.param('"node" bench.js', "node", id="quoted-exe"),
         pytest.param("VAR=1 make test", "make", id="env-var-prefix"),
         pytest.param("VAR=1 FOO=2 node bench.js", "node", id="multiple-env-vars"),
     ],
@@ -188,7 +190,7 @@ def test_build_bench_section_when_shell_command_does_extract_real_executable(
 
     monkeypatch.setattr("shutil.which", fake_which)
 
-    section = build_bench_section(bench=bench, adapter="metric-lines")
+    section = build_bench_section(bench=bench, adapter="metric-lines", base_dir=".")
 
     exe_check = next(c for c in section.checks if c.name == "executable")
     assert exe_check.status == "ok"
@@ -200,6 +202,9 @@ def test_build_bench_section_when_shell_command_does_extract_real_executable(
     [
         pytest.param("cd src && make bench", id="shell-operator-cd"),
         pytest.param("{ make bench; }", id="shell-brace-group"),
+        pytest.param("~/bin/bench.sh", id="home-shorthand"),
+        pytest.param("$HOME/bin/bench.sh --fast", id="variable-expansion"),
+        pytest.param("`pwd`/bench.sh", id="command-substitution"),
     ],
 )
 def test_build_bench_section_when_shell_metacharacters_does_skip_path_check(
@@ -209,7 +214,7 @@ def test_build_bench_section_when_shell_metacharacters_does_skip_path_check(
     _patch_adapter_ok(monkeypatch)
     monkeypatch.setattr("shutil.which", lambda _cmd: None)  # pyrefly: ignore
 
-    section = build_bench_section(bench=bench, adapter="metric-lines")
+    section = build_bench_section(bench=bench, adapter="metric-lines", base_dir=".")
 
     assert not any(c.name == "executable" for c in section.checks)
 
@@ -299,6 +304,8 @@ def test_build_bench_section_when_built_does_produce_the_exact_section(  # noqa:
 ):
     monkeypatch.setattr("shutil.which", lambda _cmd: on_path)  # pyrefly: ignore
 
-    section = build_bench_section(bench=bench, adapter=adapter, config_problems=config_problems)
+    section = build_bench_section(
+        bench=bench, adapter=adapter, config_problems=config_problems, base_dir="."
+    )
 
     assert section == CheckSection(title="Bench", checks=expected)

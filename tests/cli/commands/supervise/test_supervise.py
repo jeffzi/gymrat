@@ -6,9 +6,8 @@ suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``
 Git, ``repo_root``, and the supervise lock stay real; the seams the command
 composes over — config resolution, kickoff, the Claude driver, the supervisor
 run, the run-end exit sequence, the progress reporter, the git-exclude write,
-and the signal cleanup — are
-replaced at the names ``commands.supervise`` imports them under, mirroring the
-upstream test harness.
+and the signal cleanup — are replaced at the names ``commands.supervise``
+imports them under, mirroring the upstream test harness.
 """
 
 import asyncio
@@ -29,7 +28,7 @@ from typer.testing import CliRunner, Result
 from gymrat.cli.app import app
 from gymrat.cli.commands import supervise as supervise_cmd
 from gymrat.cli.exit import write_stdout
-from gymrat.cli.supervise.preflight import run_preflight
+from gymrat.cli.supervise.preflight import PreflightFlags, run_preflight
 from gymrat.cli.supervise.progress import SuperviseReporter, create_supervise_reporter
 from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.config import Effort, ResolvedConfig, StopConfig, SuperviseConfig
@@ -49,6 +48,7 @@ from gymrat.supervisor.hooks import HooksFactory, supervise_hooks_factory
 from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult
 from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
 from tests._ansi import strip_ansi
+from tests._config import resolved_config
 from tests._process_helpers import CleanupRegistry
 from tests._rich import unwrap_panel
 from tests.cli._help import help_output
@@ -60,7 +60,6 @@ from tests.cli.supervise._fixtures import (
     session_state_three_iterations,
 )
 from tests.conftest import hold_lock
-from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     empty_session_state,
     session_record,
@@ -166,7 +165,9 @@ def _config(
     return resolved_config(runbook=runbook, stop=stop, supervise=supervise)
 
 
-def _make_start_result(root: str = "/repo", branch: str | None = None) -> StartResult:
+def _make_start_result(
+    root: str = "/repo", branch: str | None = None, *, resumed: bool = False
+) -> StartResult:
     """Build a ``StartResult`` carrying sensible defaults, its session on ``branch`` when given."""
     overrides = {} if branch is None else {"branch": branch}
     rec = session_record(
@@ -176,7 +177,7 @@ def _make_start_result(root: str = "/repo", branch: str | None = None) -> StartR
     return StartResult(
         session=rec,
         state=empty_session_state(),
-        resumed=False,
+        resumed=resumed,
     )
 
 
@@ -189,6 +190,7 @@ def _install_seams(
     final_text: str | None = None,
     raises: Exception | None = None,
     branch: str | None = None,
+    resumed: bool = False,
 ) -> _Seams:
     """Replace every seam ``commands.supervise`` composes over, returning the recorders."""
     seams = _Seams()
@@ -197,22 +199,16 @@ def _install_seams(
     resolved = config if config is not None else _config()
     handed_back = result if result is not None else make_supervision_result()
 
-    def fake_preflight(
-        *,
-        root: str,
-        config: object,
-        baseline_ref: object = None,
-        max_minutes: float,
-        force: bool,
-    ) -> StartResult:
+    def fake_preflight(*, root: str, config: object, flags: PreflightFlags) -> StartResult:
         seams.preflight_calls.append({
             "root": root,
             "config": config,
-            "baseline_ref": baseline_ref,
-            "max_minutes": max_minutes,
-            "force": force,
+            "baseline_ref": flags.baseline_ref,
+            "max_minutes": flags.max_minutes,
+            "force": flags.force,
+            "allow_dirty": flags.allow_dirty,
         })
-        return _make_start_result(root, branch)
+        return _make_start_result(root, branch, resumed=resumed)
 
     def fake_compose(
         cfg: object,
@@ -322,6 +318,7 @@ def test_supervise_when_max_minutes_missing_does_exit_two_naming_the_flag(repo: 
         pytest.param("0x10", id="hex"),
         pytest.param("1e-9", id="scientific"),
         pytest.param("35792", id="over-ceiling"),
+        pytest.param("\N{ARABIC-INDIC DIGIT THREE}", id="non-ascii-digit"),
     ],
 )
 def test_supervise_when_max_minutes_invalid_does_exit_two_naming_the_flag(repo: str, value: str):
@@ -339,6 +336,7 @@ def test_supervise_when_max_minutes_invalid_does_exit_two_naming_the_flag(repo: 
         pytest.param("-5", id="negative"),
         pytest.param("0x10", id="hex"),
         pytest.param("1e-9", id="scientific"),
+        pytest.param("\N{ARABIC-INDIC DIGIT THREE}", id="non-ascii-digit"),
     ],
 )
 def test_supervise_when_max_usd_invalid_does_exit_two_naming_the_flag(repo: str, value: str):
@@ -415,8 +413,10 @@ def test_supervise_when_log_given_does_use_it_verbatim_and_skip_git_exclude(
 
 
 def test_supervise_when_log_under_home_does_abbreviate_path_in_stderr(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     _install_seams(monkeypatch)
     log_path = str(Path.home() / ".gymrat" / "supervisor-1.jsonl")
 
@@ -868,10 +868,13 @@ def test_supervise_when_session_setup_raises_does_tear_down_everything_it_armed(
             {"baseline_ref": "feature-branch"},
             id="baseline-given",
         ),
-        pytest.param("10", (), {"baseline_ref": None}, id="no-baseline-given"),
+        pytest.param(
+            "10", (), {"baseline_ref": None, "allow_dirty": False}, id="no-optional-flags"
+        ),
         pytest.param(
             "42", ("--force",), {"max_minutes": 42.0, "force": True}, id="force-and-max-minutes"
         ),
+        pytest.param("10", ("--allow-dirty",), {"allow_dirty": True}, id="allow-dirty"),
     ],
 )
 def test_supervise_when_run_does_pass_flags_to_preflight(

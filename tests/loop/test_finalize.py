@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.config import ResolvedConfig, StopConfig
+from gymrat.config import StopConfig
 from gymrat.loop.finalize import (
     FinalizeOptions,
     finalize_session,
@@ -23,8 +23,10 @@ from gymrat.loop.start import start_session
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import FinalizeRecord, SessionLogRecord
 from gymrat.session.store import append_record
+from tests._config import resolved_config
 from tests._git import head_of
 from tests._git import run_git as _git
+from tests.conftest import list_worktree_dirs
 from tests.loop._settle import capture_error
 from tests.session.records._fixtures import (
     committed_keep,
@@ -36,14 +38,8 @@ from tests.session.records._fixtures import (
 
 # A settled run config carrying the keys the session header snapshots; it drives
 # ``start_session`` without ever being benched against.
-CONFIG = ResolvedConfig(
-    bench="npm run bench",
+CONFIG = resolved_config(
     prepare="npm run build",
-    adapter="metric-lines",
-    samples=10,
-    timeout_seconds=1800,
-    unstable_noise_pct=200.0,
-    primary="geomean",
     filter="npm run bench -- {names}",
     stop=StopConfig(max_iterations=20),
 )
@@ -387,7 +383,7 @@ def test_finalize_when_committed_keeps_exist_does_append_a_finalize_record_namin
 
 
 def test_finalize_when_committed_keeps_exist_does_take_both_worktrees_off_disk_and_out_of_git(
-    kept_repo: str, list_worktree_dirs: Callable[..., list[str]]
+    kept_repo: str,
 ):
     finalize_session(kept_repo)
 

@@ -14,10 +14,11 @@ These tests patch the section builders and ``inspect_config`` at their
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from types import SimpleNamespace
 
 import pytest
@@ -31,6 +32,7 @@ from gymrat.doctor import (
     build_doctor_report,
     detect_git_environment,
 )
+from tests.config._toml import DEEP_NESTING_DOCUMENT, DIGIT_LIMIT_DOCUMENT, write_raw
 from tests.doctor._fixtures import fixed_section, patch_common_seams
 
 _MODULE = "gymrat.doctor"
@@ -248,3 +250,126 @@ def test_build_doctor_report_when_config_read_for_real_does_report_its_findings(
         section for section in report.sections if section.title == "Configuration"
     )
     assert config_section.checks == [expected]
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param(DIGIT_LIMIT_DOCUMENT, id="integer-past-digit-limit"),
+        pytest.param(DEEP_NESTING_DOCUMENT, id="nesting-past-recursion-limit"),
+    ],
+)
+def test_build_doctor_report_when_config_parser_hits_interpreter_limit_does_fail_config_check(
+    tmp_path: Path, document: str
+):
+    config_path = write_raw(tmp_path, document)
+
+    report = build_doctor_report(_flags(), str(tmp_path))
+
+    config_section = next(
+        section for section in report.sections if section.title == "Configuration"
+    )
+    [check] = config_section.checks
+    assert check.status == "fail"
+    assert check.detail.startswith(f"Failed to parse config file at {config_path}: ")
+
+
+def _check(report: DoctorReport, title: str, name: str) -> Check:
+    section = next(section for section in report.sections if section.title == title)
+    return next(check for check in section.checks if check.name == name)
+
+
+@pytest.mark.parametrize(
+    ("toml", "expected"),
+    [
+        pytest.param(
+            "samples = 5\n",
+            'Add `runbook = "gymrat-runbook.md"` to gymrat.toml. '
+            "Without one, supervise has no instructions to follow.",
+            id="config-file-lacks-the-key",
+        ),
+        pytest.param(
+            None,
+            "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml. "
+            "Without one, supervise has no instructions to follow.",
+            id="no-config-file",
+        ),
+    ],
+)
+def test_build_doctor_report_when_runbook_unset_does_hint_the_step_that_fits_the_config_file(
+    tmp_path: Path, toml: str | None, expected: str
+):
+    if toml is not None:
+        (tmp_path / "gymrat.toml").write_text(toml, encoding="utf-8")
+
+    report = build_doctor_report(_flags(), str(tmp_path))
+
+    assert _check(report, "Workflow", "runbook").hint == expected
+
+
+# ---------------------------------------------------------------------------
+# bench executable — path-shaped token, run from a subdirectory
+# ---------------------------------------------------------------------------
+
+_posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="the executable bit is a POSIX file mode"
+)
+
+
+@pytest.fixture
+def repo_subdirectory(repo: str, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A subdirectory of a scratch repository, made the process working directory."""
+    subdirectory = Path(repo) / "packages" / "app"
+    subdirectory.mkdir(parents=True)
+    monkeypatch.chdir(subdirectory)
+    return subdirectory
+
+
+@pytest.mark.parametrize(
+    ("bench", "script", "mode", "expected"),
+    [
+        pytest.param(
+            "./scripts/bench.sh",
+            "scripts/bench.sh",
+            0o755,
+            Check(name="executable", status="ok", detail="./scripts/bench.sh is executable"),
+            id="executable-under-root",
+        ),
+        pytest.param(
+            '"my scripts/bench.sh" --fast',
+            "my scripts/bench.sh",
+            0o755,
+            Check(name="executable", status="ok", detail="my scripts/bench.sh is executable"),
+            id="quoted-path-with-spaces",
+        ),
+        pytest.param(
+            "./scripts/bench.sh",
+            None,
+            None,
+            Check(name="executable", status="warn", detail="./scripts/bench.sh was not found"),
+            id="missing",
+        ),
+        pytest.param(
+            "./scripts/bench.sh",
+            "scripts/bench.sh",
+            0o644,
+            Check(name="executable", status="warn", detail="./scripts/bench.sh is not executable"),
+            id="not-executable",
+            marks=_posix_only,
+        ),
+    ],
+)
+def test_build_doctor_report_when_bench_is_a_path_does_resolve_it_against_the_repository_root(
+    repo_subdirectory: Path, bench: str, script: str | None, mode: int | None, expected: Check
+):
+    root = repo_subdirectory.parent.parent
+    (root / "gymrat.toml").write_text(f"bench = '{bench}'\n", encoding="utf-8")
+    if script is not None and mode is not None:
+        script_path = root / script
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text("#!/bin/sh\n", encoding="utf-8")
+        script_path.chmod(mode)
+
+    report = build_doctor_report(_flags(), str(repo_subdirectory))
+
+    assert _check(report, "Bench", "executable") == expected

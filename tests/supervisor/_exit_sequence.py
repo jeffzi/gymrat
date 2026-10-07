@@ -8,9 +8,10 @@ from typing import TYPE_CHECKING, NamedTuple
 from gymrat.session.paths import experiment_worktree_dir, lockfile_path
 from gymrat.session.workspace import worktree_fingerprint
 from gymrat.supervisor.exit_sequence import run_exit_sequence
+from tests._config import benchless_config
 from tests.loop._settle import edit_experiment, unimproved
 from tests.session.records._fixtures import append_records, iteration_record
-from tests.supervisor._fixtures import collecting_observer, default_benchless_config, make_context
+from tests.supervisor._fixtures import collecting_observer, make_context
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -38,7 +39,7 @@ def session_context(
         root=root,
         lock_path=lockfile_path(root),
         log_path=str(Path(root) / ".gymrat" / "supervisor.jsonl"),
-        config=default_benchless_config(timeout_seconds=timeout_seconds, checks=checks),
+        config=benchless_config(timeout_seconds=timeout_seconds, checks=checks),
     )
 
 

@@ -23,6 +23,7 @@ from gymrat.cli.iterate.state import (
 )
 from gymrat.progress_events import (
     ConfirmFinished,
+    ConfirmSkipped,
     ConfirmStarted,
     HookFinished,
     HookStarted,
@@ -185,9 +186,7 @@ def test_advance_when_final_pass_finishes_does_complete_passes_row():
 def test_advance_when_judge_finished_does_store_judge_detail_as_data():
     result = advance(
         _state(),
-        JudgeFinished(
-            primary_delta_pct=-3.2, regressed=("latency", "throughput"), metric_count=3, at_ms=6000
-        ),
+        JudgeFinished(primary_delta_pct=-3.2, regressed=("latency", "throughput"), at_ms=6000),
     )
 
     assert result.nodes.judge.detail == JudgeDetail(
@@ -209,10 +208,21 @@ def test_advance_when_judge_finished_does_skip_confirm_only_without_regression(
 ):
     result = advance(
         _state(),
-        JudgeFinished(primary_delta_pct=-2.0, regressed=regressed, metric_count=3, at_ms=6000),
+        JudgeFinished(primary_delta_pct=-2.0, regressed=regressed, at_ms=6000),
     )
 
     assert result.nodes.confirm.status == expected_status
+
+
+def test_advance_when_confirm_skipped_after_a_regression_does_mark_confirm_row_skipped():
+    state = advance(
+        _state(),
+        JudgeFinished(primary_delta_pct=-2.0, regressed=("latency",), at_ms=6000),
+    )
+
+    result = advance(state, ConfirmSkipped(at_ms=6000))
+
+    assert result.nodes.confirm.status == "skipped"
 
 
 @pytest.mark.parametrize(
@@ -274,8 +284,8 @@ def test_advance_when_iteration_recorded_does_set_record_detail(
         ),
         pytest.param(
             (),
-            JudgeFinished(primary_delta_pct=-2.0, regressed=(), metric_count=3, at_ms=6000),
-            "judge -2.0% · 3 improve/noise",
+            JudgeFinished(primary_delta_pct=-2.0, regressed=(), at_ms=6000),
+            "judge -2.0% on geomean · no gating regression",
             id="judge-finished",
         ),
         pytest.param(
@@ -312,6 +322,7 @@ def test_plain_line_when_milestone_event_does_return_line(
         pytest.param((_FIRST_PASS_STARTED,), _FIRST_PASS_FINISHED, id="non-final-pass-finished"),
         pytest.param((), JudgeStarted(at_ms=0), id="judge-started"),
         pytest.param((), ConfirmStarted(filtered_metrics=None, at_ms=5000), id="confirm-started"),
+        pytest.param((), ConfirmSkipped(at_ms=5000), id="confirm-skipped"),
     ],
 )
 def test_plain_line_when_non_milestone_event_does_return_none(
@@ -327,11 +338,11 @@ def test_plain_line_when_non_milestone_event_does_return_none(
 @pytest.mark.parametrize(
     ("delta", "expected"),
     [
-        pytest.param(2.2, "+2.2%", id="positive"),
-        pytest.param(-1.3, "-1.3%", id="negative"),
-        pytest.param(0.0, "0.0%", id="zero"),
-        pytest.param(0.04, "0.0%", id="positive-rounds-to-zero"),
-        pytest.param(-0.04, "0.0%", id="negative-rounds-to-zero"),
+        pytest.param(2.2, "+2.2% on geomean", id="positive"),
+        pytest.param(-1.3, "-1.3% on geomean", id="negative"),
+        pytest.param(0.0, "0.0% on geomean", id="zero"),
+        pytest.param(0.04, "0.0% on geomean", id="positive-rounds-to-zero"),
+        pytest.param(-0.04, "0.0% on geomean", id="negative-rounds-to-zero"),
         pytest.param(None, "—", id="missing"),
         pytest.param(math.nan, "—", id="nan"),
         pytest.param(math.inf, "—", id="positive-infinity"),
@@ -342,8 +353,8 @@ def test_plain_line_when_judge_finished_does_print_delta_like_the_report(
     delta: float | None, expected: str
 ):
     before = _state()
-    event = JudgeFinished(primary_delta_pct=delta, regressed=(), metric_count=3, at_ms=6000)
+    event = JudgeFinished(primary_delta_pct=delta, regressed=(), at_ms=6000)
 
     result = plain_line(before, advance(before, event), event)
 
-    assert result == f"judge {expected} · 3 improve/noise"
+    assert result == f"judge {expected} · no gating regression"

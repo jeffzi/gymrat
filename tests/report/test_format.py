@@ -117,6 +117,25 @@ def test_format_evidence_when_unstable_past_cap_does_state_absolute_units():
     assert format_evidence(verdict, "bytes", 5) == "±381B noise on a 5B median"
 
 
+@pytest.mark.parametrize(
+    ("baseline_median", "candidate_median", "expected"),
+    [
+        pytest.param(0, None, "±6B noise on a 0B median", id="zero-baseline-median"),
+        pytest.param(100, 0, "±6B noise on a 0B candidate median", id="zero-candidate-median"),
+        pytest.param(1e-310, None, "±6B noise on a 0B median", id="overflowing-baseline-ratio"),
+        pytest.param(
+            100, 1e-310, "±6B noise on a 0B candidate median", id="overflowing-candidate-ratio"
+        ),
+    ],
+)
+def test_format_evidence_when_unstable_around_zero_median_does_state_absolute_units(
+    baseline_median: float, candidate_median: float | None, expected: str
+):
+    verdict = permutation_verdict(verdict="unstable", noise_pct=0.5, noise_abs=6)
+
+    assert format_evidence(verdict, "bytes", baseline_median, candidate_median) == expected
+
+
 # ---------------------------------------------------------------------------
 # format_percent_delta
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ import hashlib
 import pytest
 from opentelemetry.trace import INVALID_SPAN, NonRecordingSpan, SpanContext, TraceFlags
 
-from gymrat.telemetry.ids import (
+from gymrat.telemetry.provider import (
     format_traceparent,
     parse_traceparent,
     span_id_of,

@@ -21,7 +21,13 @@ import pytest
 from gymrat.config import HooksConfig, MetricEntry, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.run import IterateOptions, derive_outcome, iterate_session
-from gymrat.progress_events import JudgeFinished, ProgressEvent
+from gymrat.progress_events import (
+    ConfirmFinished,
+    ConfirmSkipped,
+    ConfirmStarted,
+    JudgeFinished,
+    ProgressEvent,
+)
 from gymrat.report.loop import GeomeanPrimary, MetricPrimary
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
@@ -33,6 +39,7 @@ from gymrat.session.records import (
     PairedSamples,
 )
 from gymrat.session.store import append_record as append_session_record
+from tests._config import resolved_config
 from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,
     BASELINE_MS,
@@ -42,7 +49,6 @@ from tests.loop.iterate._fixtures import (
     improved_rounds,
     last_iteration_of,
     plain_report,
-    resolved_config,
     rounds,
     sampling_call,
     scaled,
@@ -69,6 +75,9 @@ if TYPE_CHECKING:
 
 #: The confirm-rerun template a consumer configures when their bench can be narrowed.
 FILTER = "npm run bench -- --filter {names}"
+
+#: The events that tell the display how the judge row and the confirm row end.
+_JUDGE_AND_CONFIRM_EVENTS = (JudgeFinished, ConfirmStarted, ConfirmFinished, ConfirmSkipped)
 
 #: The smallest positive float; dividing any ordinary median by it overflows to infinity.
 _SMALLEST_POSITIVE_FLOAT = 5e-324
@@ -448,6 +457,49 @@ async def test_iterate_session_when_exact_and_non_gating_metrics_regress_does_an
     await iterate_session(open_repo, resolved, options=IterateOptions(on_progress=events.append))
 
     assert [e.regressed for e in events if isinstance(e, JudgeFinished)] == [("total_ms",)]
+
+
+async def _judge_and_confirm_event_types(
+    repo: str, resolved: ResolvedConfig
+) -> list[type[ProgressEvent]]:
+    """Run an iteration and return the types of the events that end its judge and confirm rows."""
+    events: list[ProgressEvent] = []
+    await iterate_session(repo, resolved, options=IterateOptions(on_progress=events.append))
+    return [type(e) for e in events if isinstance(e, _JUDGE_AND_CONFIRM_EVENTS)]
+
+
+async def test_iterate_session_when_only_exact_gating_metrics_regress_does_announce_confirm_skipped(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    stub_samples(samples_mock, open_repo, _regressed_rounds(), baseline_rounds())
+    resolved = resolved_config(
+        metrics={"total_ms": MetricEntry(exact=True), "alloc_bytes": MetricEntry(gating=False)}
+    )
+
+    result = await _judge_and_confirm_event_types(open_repo, resolved)
+
+    assert result == [JudgeFinished, ConfirmSkipped]
+
+
+async def test_iterate_session_when_a_non_exact_gating_metric_regresses_does_announce_the_rerun(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    stub_runs(
+        samples_mock,
+        open_repo,
+        [
+            _regressed_run(),
+            PairedRun(
+                _filtered_rounds("alloc_bytes", scaled(BASELINE_BYTES, 1.2)),
+                _filtered_rounds("alloc_bytes", BASELINE_BYTES),
+            ),
+        ],
+    )
+    resolved = resolved_config(filter=FILTER, metrics={"total_ms": MetricEntry(exact=True)})
+
+    result = await _judge_and_confirm_event_types(open_repo, resolved)
+
+    assert result == [JudgeFinished, ConfirmStarted, ConfirmFinished]
 
 
 async def test_iterate_session_when_metric_is_exact_does_leave_it_out_of_the_filter_list(

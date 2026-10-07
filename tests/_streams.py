@@ -16,7 +16,7 @@ class FakeStream(io.StringIO):
         return self._tty
 
 
-class RaisingStream(io.StringIO):
+class RaisingStream(FakeStream):
     """A stream whose every write raises ``error``, as a closed pipe would.
 
     Args:
@@ -25,13 +25,8 @@ class RaisingStream(io.StringIO):
     """
 
     def __init__(self, error: OSError, *, tty: bool = False) -> None:
-        super().__init__()
+        super().__init__(tty=tty)
         self._error = error
-        self._tty = tty
-
-    @override
-    def isatty(self) -> bool:
-        return self._tty
 
     @override
     def write(self, s: str, /) -> int:

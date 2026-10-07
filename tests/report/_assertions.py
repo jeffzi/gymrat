@@ -7,8 +7,6 @@ import re
 from gymrat.report.style import render_lines
 from tests._ansi import SGR_RE, strip_ansi
 
-# A width wide enough that no report fragment ever soft-wraps.
-_RENDER_WIDTH = 200
 # The column separator every rendered table row is split on.
 _SEPARATOR = "│"
 # A trailing run of SGR escapes with nothing but escapes between them and the end.
@@ -24,12 +22,12 @@ DIMMED_LINE = re.compile(r"^\x1b\[2m.*\x1b\[0m$")
 
 def render_plain(*markup: str) -> str:
     """The rich ``markup`` rendered with color off, one line per argument."""
-    return render_lines(*markup, color=False, width=_RENDER_WIDTH)
+    return render_lines(*markup, color=False)
 
 
 def render_colored(*markup: str) -> str:
     """The rich ``markup`` rendered with color on, one line per argument."""
-    return render_lines(*markup, color=True, width=_RENDER_WIDTH)
+    return render_lines(*markup, color=True)
 
 
 def sgr_codes(text: str) -> set[str]:

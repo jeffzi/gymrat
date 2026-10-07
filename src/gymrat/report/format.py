@@ -205,23 +205,89 @@ def format_pair_count(n: int) -> str:
     return f"n={n}"
 
 
+def _is_ratio_undefined(noise_abs: float, median: float | None) -> bool:
+    if median is None:
+        return False
+    if median == 0:
+        return True
+    return not math.isfinite(noise_abs / abs(median) * 100)
+
+
+def is_noise_percentage_undefined(
+    noise_abs: float, baseline_median: float | None, candidate_median: float | None
+) -> bool:
+    """Whether the noise cannot be stated as a percentage of either side's median.
+
+    A median of zero has no scale to state noise against, and a median so close
+    to zero that the percentage overflows has none either. The verdict engine
+    drops such a side from the noise percentage, so the percentage left behind is
+    only the floor and understates the scatter that made the verdict unstable.
+
+    Args:
+        noise_abs: The noise in the metric's own units.
+        baseline_median: The baseline median, or ``None`` when unknown.
+        candidate_median: The candidate median, or ``None`` when unknown.
+
+    Returns:
+        ``True`` when either median is zero or the noise as a percentage of it is
+        not finite.
+    """
+    return _is_ratio_undefined(noise_abs, baseline_median) or _is_ratio_undefined(
+        noise_abs, candidate_median
+    )
+
+
+def is_noise_absolute(
+    noise_pct: float,
+    noise_abs: float,
+    baseline_median: float,
+    candidate_median: float | None = None,
+) -> bool:
+    """Whether a noise figure reads in the metric's own units rather than as a percentage.
+
+    Past :data:`_RELATIVE_SPREAD_CAP_PCT` a percentage stops being readable, and
+    when either median leaves the noise without a finite percentage (see
+    :func:`is_noise_percentage_undefined`) it is only the noise floor, standing
+    in for a scatter no percentage can express.
+
+    Args:
+        noise_pct: The noise as a percentage of the median.
+        noise_abs: The noise in the metric's own units.
+        baseline_median: The baseline median the noise is stated against.
+        candidate_median: The candidate median, or ``None`` when unknown.
+
+    Returns:
+        ``True`` when the noise belongs in absolute units.
+    """
+    return noise_pct > _RELATIVE_SPREAD_CAP_PCT or is_noise_percentage_undefined(
+        noise_abs, baseline_median, candidate_median
+    )
+
+
 def format_evidence(
     verdict: MetricVerdict,
     unit: MetricUnit | None = None,
     baseline_median: float | None = None,
+    candidate_median: float | None = None,
 ) -> str:
     """The evidence suffix for a highlighted metric.
 
     Exact entries keep ``(exact)``. Unstable entries show the noise that swamped
-    the signal — as a percentage while that stays readable, and against the
-    baseline median in the metric's own units past
-    :data:`_RELATIVE_SPREAD_CAP_PCT`. Improved/regressed/no-signal entries from
+    the signal — as a percentage while that stays readable, and in the metric's
+    own units past :data:`_RELATIVE_SPREAD_CAP_PCT` or when either median leaves
+    the noise without a finite percentage (a zero median, or one so close to zero
+    that the percentage overflows), where the percentage is only the noise floor
+    and would understate the scatter. The absolute noise is stated against the
+    baseline median, or against the candidate median when only the candidate
+    leaves the percentage undefined. Improved/regressed/no-signal entries from
     approximate methods carry no trailing evidence.
 
     Args:
         verdict: The verdict to describe.
         unit: The metric's unit, for restating noise in absolute terms.
         baseline_median: The baseline median, for the absolute restatement.
+        candidate_median: The candidate median, for the absolute restatement
+            when the noise has no finite percentage of it.
 
     Returns:
         The evidence suffix, or ``""`` when there is nothing to add.
@@ -230,7 +296,15 @@ def format_evidence(
         return "(exact)"
     if verdict.verdict != "unstable":
         return ""
-    if verdict.noise_pct > _RELATIVE_SPREAD_CAP_PCT and baseline_median is not None:
-        noise = format_value(verdict.noise_abs, unit)
-        return f"{PLUS_MINUS}{noise} noise on a {format_value(baseline_median, unit)} median"
-    return f"noise {PLUS_MINUS}{format_noise_band_value(verdict.noise_pct)}"
+    if baseline_median is None or not is_noise_absolute(
+        verdict.noise_pct, verdict.noise_abs, baseline_median, candidate_median
+    ):
+        return f"noise {PLUS_MINUS}{format_noise_band_value(verdict.noise_pct)}"
+    noise = f"{PLUS_MINUS}{format_value(verdict.noise_abs, unit)} noise"
+    if (
+        candidate_median is not None
+        and not _is_ratio_undefined(verdict.noise_abs, baseline_median)
+        and _is_ratio_undefined(verdict.noise_abs, candidate_median)
+    ):
+        return f"{noise} on a {format_value(candidate_median, unit)} candidate median"
+    return f"{noise} on a {format_value(baseline_median, unit)} median"

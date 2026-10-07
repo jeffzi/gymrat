@@ -14,38 +14,15 @@ from dataclasses import dataclass
 from gymrat.model import (
     BandVerdict,
     Direction,
-    ExactVerdict,
     MetricMeta,
     MetricVerdict,
     ResolvedMetricMeta,
-    Verdict,
 )
+from tests.report._verdicts import band_verdict, exact_verdict
 
 METRIC_BYTES_LOWER: dict[str, MetricMeta] = {
     "metric": MetricMeta(direction="lower", gating=True, exact=False, unit="bytes")
 }
-
-
-def exact_verdict(delta: float) -> ExactVerdict:
-    """An exact verdict no exclusion rule drops.
-
-    ``rho`` becomes ``1 + delta / 100`` when lower is better, so the sign of
-    ``delta`` alone decides the verdict: negative improves, positive regresses,
-    zero is no signal.
-    """
-    verdict: Verdict
-    if delta < 0:
-        verdict = "improved"
-    elif delta > 0:
-        verdict = "regressed"
-    else:
-        verdict = "no-signal"
-    return ExactVerdict(
-        method="exact",
-        verdict=verdict,
-        delta=delta,
-        n=1,
-    )
 
 
 @dataclass(frozen=True)
@@ -81,7 +58,9 @@ def _resolve_verdict(spec: MetricSpec) -> MetricVerdict | None:
     """The verdict a spec contributes, or ``None`` for the no-verdict case."""
     if spec.no_verdict:
         return None
-    return spec.verdict if spec.verdict is not None else exact_verdict(spec.delta or 0.0)
+    if spec.verdict is not None:
+        return spec.verdict
+    return exact_verdict(delta=spec.delta or 0.0, n=1)
 
 
 def build_inputs(
@@ -120,12 +99,6 @@ def create_samples(n: int, value: float) -> list[dict[str, float]]:
 
 def unstable_band_verdict() -> BandVerdict:
     """A band verdict too noisy to judge, regardless of its ratio."""
-    return BandVerdict(
-        method="band",
-        verdict="unstable",
-        usable_n=4,
-        noise_pct=250.0,
-        noise_abs=25.0,
-        delta=-50.0,
-        n=4,
+    return band_verdict(
+        verdict="unstable", usable_n=4, noise_pct=250.0, noise_abs=25.0, delta=-50.0, n=4
     )

@@ -5,6 +5,8 @@ single-flight lock for the duration. ``discard`` prompts before taking the lock
 so the repository is not held hostage to a reader who never answers; the session
 id from prompt time guards the locked revert. ``iterate`` routes SIGINT/SIGTERM
 into an abort event so an interrupted iteration abandons the current sample.
+``keep`` runs under the same termination cleanup, so a signal that lands during
+its checks kills the checks process group before the process exits.
 """
 
 from __future__ import annotations
@@ -104,12 +106,12 @@ def _subscriber_failure_sink(warn: WarnSink) -> Callable[[Exception], None]:
 
 async def _iterate_body(
     trace: CommandTrace,
+    root: str,
     flags: CliFlags,
     *,
     verbose: bool,
     resolved_color: bool,
 ) -> IterateResult:
-    root = repo_root()
     guard_supervised_origin(root, "iterate")
     resolved = resolve_config(flags, root)
     required = require_open_session(root, "iterate")
@@ -191,9 +193,10 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             result = await with_repo_lock(
                 "iterate",
                 lambda trace: _iterate_body(
-                    trace, flags, verbose=verbose, resolved_color=resolved_color
+                    trace, root, flags, verbose=verbose, resolved_color=resolved_color
                 ),
                 args=iterate_args,
+                root=root,
             )
         except LoopStopError as error:
             trailer, summary = budget_snapshot(root)
@@ -242,17 +245,23 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
     keep_args = config_trace_args(flags, message=message, allow_unimproved=allow_unimproved or None)
 
     async def run() -> None:
+        root = repo_root()
+
         async def body(trace: CommandTrace) -> KeepResult:
-            root = repo_root()
-            keep_result = await keep_session(
-                root,
-                resolve_benchless_config(flags, root),
-                KeepOptions(
-                    message=message,
-                    allow_unimproved=allow_unimproved,
-                    warn_color=resolve_stream_color(None, sys.stderr),
-                ),
-                color=resolved_color,
+            # Keep has no sample to abandon, so the abort event goes unused: the
+            # runner is here for its cleanup, which kills the checks process
+            # group before a termination signal ends the process.
+            keep_result = await run_with_signal_abort(
+                lambda _abort: keep_session(
+                    root,
+                    resolve_benchless_config(flags, root),
+                    KeepOptions(
+                        message=message,
+                        allow_unimproved=allow_unimproved,
+                        warn_color=resolve_stream_color(None, sys.stderr),
+                    ),
+                    color=resolved_color,
+                )
             )
             trace.seq = keep_result.record.seq
             if keep_result.record.status == "blocked":
@@ -260,8 +269,7 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
                 trace.reason = keep_result.record.reason
             return keep_result
 
-        result = await with_repo_lock("keep", body, args=keep_args)
-        root = repo_root()
+        result = await with_repo_lock("keep", body, args=keep_args, root=root)
         write_budget_report(
             root,
             use_json=use_json,
@@ -326,7 +334,7 @@ def discard(
                 trace.seq = discard_result.record.seq
             return discard_result
 
-        result = await with_repo_lock("discard", body, args={"force": force})
+        result = await with_repo_lock("discard", body, args={"force": force}, root=root)
         write_budget_report(
             root,
             use_json=use_json,
@@ -357,8 +365,9 @@ def status(
     flags = CliFlags(config=config)
 
     async def run() -> None:
+        root = repo_root()
+
         async def body(_trace: CommandTrace) -> str:
-            root = repo_root()
             trailer, summary = budget_snapshot(root)
             if use_json:
                 return render_status_json(status_data(root), budget=summary)
@@ -367,7 +376,7 @@ def status(
                 + trailer
             )
 
-        report = await with_repo_lock("status", body)
+        report = await with_repo_lock("status", body, root=root)
         write_stdout(report + "\n")
 
     run_cli(run)

@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
 
     from gymrat.config import Effort
+    from gymrat.model import Direction
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.records import SessionLogRecord
     from gymrat.supervisor.events import SessionEvent, SessionObserver
@@ -61,23 +62,37 @@ IDLE_WARN_MS = 30_000
 
 
 def _find_best_kept_iteration(
-    records: list[SessionLogRecord], committed_seqs: set[int]
+    records: list[SessionLogRecord], direction: Direction, pinned_sha: str | None
 ) -> BestIteration | None:
-    """Return the committed keep with the best primary delta, if any has one."""
-    candidates = [
-        (r, delta)
-        for r in records
-        if isinstance(r, IterationRecord)
-        and r.seq in committed_seqs
-        and (delta := r.primary.delta_pct) is not None
-    ]
-    if not candidates:
-        return None
+    """Return the committed keep whose primary delta improved the most, if any has one.
 
-    best, best_delta = min(candidates, key=operator.itemgetter(1))
-    return BestIteration(
-        delta_pct=best_delta, seq=best.seq, label=best.primary.name or best.primary.kind
-    )
+    Each iteration is measured against the commit of the committed keep before
+    it in the log, or against ``pinned_sha`` when none precedes it. Among equal
+    deltas the earliest iteration wins.
+    """
+    committed_seqs = {
+        r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"
+    }
+    better = operator.lt if direction == "lower" else operator.gt
+    best: BestIteration | None = None
+    baseline_sha = pinned_sha
+    for record in records:
+        if isinstance(record, KeepRecord):
+            if record.status == "committed":
+                baseline_sha = record.commit
+            continue
+        if not isinstance(record, IterationRecord) or record.seq not in committed_seqs:
+            continue
+        delta = record.primary.delta_pct
+        if delta is not None and (best is None or better(delta, best.delta_pct)):
+            best = BestIteration(
+                delta_pct=delta,
+                seq=record.seq,
+                label=record.primary.name or record.primary.kind,
+                baseline_sha=baseline_sha,
+                direction=direction,
+            )
+    return best
 
 
 def _find_stop_message(records: list[SessionLogRecord]) -> str | None:
@@ -85,11 +100,14 @@ def _find_stop_message(records: list[SessionLogRecord]) -> str | None:
     return next((r.message for r in reversed(records) if isinstance(r, StopRecord)), None)
 
 
-def read_live_session(root: str) -> ReadSessionResult:
+def read_live_session(root: str, primary_direction: Direction = "lower") -> ReadSessionResult:
     """Read and fold the live session log at ``root``.
 
     Args:
         root: The repository root whose session log to read.
+        primary_direction: Whether a lower or a higher primary is the better
+            outcome, which decides which kept iteration is the best. The
+            geomean primary is lower-is-better.
 
     Returns:
         The folded session with its baseline presence, best kept iteration, and
@@ -98,16 +116,12 @@ def read_live_session(root: str) -> ReadSessionResult:
     records = read_records(session_jsonl_path(root))
     state = fold_session(records)
     has_baseline = latest_baseline(records) is not None
-
-    committed_seqs = {
-        r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"
-    }
+    pinned_sha = state.session.baseline.sha if state.session is not None else None
 
     return ReadSessionResult(
         state=state,
         has_baseline=has_baseline,
-        best=_find_best_kept_iteration(records, committed_seqs),
-        baseline_sha=state.session.baseline.sha if state.session is not None else None,
+        best=_find_best_kept_iteration(records, primary_direction, pinned_sha),
         stop_message=_find_stop_message(records) if state.ends_on_stop else None,
     )
 
@@ -135,6 +149,7 @@ class ReporterCtx:
     live: ErasableLive | None
     tz: tzinfo | None
     idle_warn_ms: int
+    session_read_warned: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,8 +169,8 @@ class SuperviseReporter:
     ``refresh_session`` re-reads the session so ``session_result`` reflects
     writes that no event announced, such as an exit-sequence step that failed after
     writing to the session log. A successful re-read writes no plain line; a
-    failed read keeps the previous result and warns, as the event-driven
-    re-read does.
+    failed read keeps the previous result, as the event-driven re-read does.
+    Only the first failed read, from either, is reported, through ``warn``.
     """
 
     observer: SessionObserver
@@ -255,8 +270,14 @@ def _read_session(ctx: ReporterCtx) -> ReadSessionResult | None:
     try:
         return ctx.read_session_fn()
     except Exception as exc:
-        _logger.exception("session read failed")
-        ctx.warn_fn(f"session read failed: {exc}")
+        # Not logged above debug level: with no handler configured, logging
+        # would print the traceback over the dashboard on every failed read.
+        _logger.debug("session read failed", exc_info=True)
+        # Only the first failure is warned about, so a session that stays
+        # unreadable does not print a line on every re-read.
+        if not ctx.session_read_warned:
+            ctx.session_read_warned = True
+            ctx.warn_fn(f"session read failed: {exc}")
         return None
 
 
@@ -325,6 +346,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     effort: Effort | None = None,
     refresh_ms: int = REFRESH_MS,
     idle_warn_ms: int = IDLE_WARN_MS,
+    primary_direction: Direction = "lower",
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard.
 
@@ -370,6 +392,9 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         refresh_ms: Live dashboard refresh interval in milliseconds.
         idle_warn_ms: Milliseconds of inactivity before the liveness line
             escalates to alert styling.
+        primary_direction: Whether a lower or a higher primary is the better
+            outcome, passed to the default session reader to pick the best
+            kept iteration.  Unused when ``read_session`` is given.
 
     Returns:
         A fully wired reporter whose callbacks drive the dashboard lifecycle.
@@ -390,7 +415,9 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         ),
         now=now if now is not None else now_ms,
         read_session_fn=(
-            read_session if read_session is not None else functools.partial(read_live_session, root)
+            read_session
+            if read_session is not None
+            else functools.partial(read_live_session, root, primary_direction)
         ),
         read_progress_fn=read_progress if read_progress is not None else _default_read_progress,
         plain_write_fn=plain_write,
