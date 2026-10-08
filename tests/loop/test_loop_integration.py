@@ -54,6 +54,7 @@ from tests._cli import run_cli
 from tests._config import benchless_config, resolved_config
 from tests._git import run_git as _git
 from tests._git import status_of
+from tests._process_helpers import reaped
 from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project, tune_experiment
 from tests.loop._settle import checks_config, start_with
 from tests.session.records._fixtures import (
@@ -92,47 +93,55 @@ def _latency_samples(latency: int, count: int = SAMPLES) -> tuple[dict[str, floa
 # ---------------------------------------------------------------------------
 
 
+def _run_command(repo: str, argv: list[str]) -> subprocess.CompletedProcess[str]:
+    return run_cli(argv, repo, check=False, timeout=LONG_RUN_TIMEOUT)
+
+
+def _drive_session(repo: str) -> tuple[list[int], str]:
+    """Start, measure, iterate and keep one edit, then iterate and discard a second.
+
+    Each command runs as a fresh process, so every step has to rebuild the session
+    from the log on disk.
+
+    Args:
+        repo: The scratch repository holding the committed bench project.
+
+    Returns:
+        The exit code of every loop command in run order, and the colorless
+        ``status`` report taken between the keep and the second edit.
+    """
+    exit_codes = [
+        _run_command(repo, ["start", "--baseline", "main"]).returncode,
+        _run_command(repo, ["measure", "main", "--record"]).returncode,
+    ]
+    tune_experiment(repo, KEPT_LATENCY)
+    exit_codes.append(_run_command(repo, ["iterate"]).returncode)
+    exit_codes.append(_run_command(repo, ["keep", "-m", "tune latency to 90"]).returncode)
+    status_report = strip_sgr(_run_command(repo, ["status", "--no-color"]).stdout)
+    tune_experiment(repo, DISCARDED_LATENCY)
+    (Path(experiment_worktree_dir(repo)) / DISCARDED_FILE).write_text(
+        f"{DISCARD_MARKER}\n", encoding="utf-8"
+    )
+    exit_codes.append(_run_command(repo, ["iterate"]).returncode)
+    exit_codes.append(_run_command(repo, ["discard"]).returncode)
+    return exit_codes, status_report
+
+
 def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
     commit_project(repo, samples=SAMPLES)
 
-    exit_codes: list[int] = [
-        run_cli(
-            ["start", "--baseline", "main"], repo, check=False, timeout=LONG_RUN_TIMEOUT
-        ).returncode,
-        run_cli(
-            ["measure", "main", "--record"], repo, check=False, timeout=LONG_RUN_TIMEOUT
-        ).returncode,
-    ]
-    tune_experiment(repo, KEPT_LATENCY)
-    exit_codes.append(run_cli(["iterate"], repo, check=False, timeout=LONG_RUN_TIMEOUT).returncode)
-    exit_codes.append(
-        run_cli(
-            ["keep", "-m", "tune latency to 90"], repo, check=False, timeout=LONG_RUN_TIMEOUT
-        ).returncode
-    )
+    exit_codes, status_report = _drive_session(repo)
 
-    status_report = strip_sgr(
-        run_cli(["status", "--no-color"], repo, check=False, timeout=LONG_RUN_TIMEOUT).stdout
-    )
-
-    tune_experiment(repo, DISCARDED_LATENCY)
-    (Path(experiment_worktree_dir(repo)) / DISCARDED_FILE).write_text(
-        f"{DISCARD_MARKER}\n", encoding="utf-8"
-    )
-    exit_codes.append(run_cli(["iterate"], repo, check=False, timeout=LONG_RUN_TIMEOUT).returncode)
-    exit_codes.append(run_cli(["discard"], repo, check=False, timeout=LONG_RUN_TIMEOUT).returncode)
-
+    assert exit_codes == [0, 0, 0, 0, 0, 0]
     records = log_records(repo)
     session = records_of_type(repo, SessionRecord)[0]
     keep = records_of_type(repo, KeepRecord)[0]
     branch = session.branch
     kept_commit = keep.commit
     assert kept_commit is not None
-
-    assert exit_codes == [0, 0, 0, 0, 0, 0]
 
     # The log holds the session, the starting baseline, both iterations, the keep
     # with the baseline it appends, and the discard in exact order (command
@@ -200,15 +209,16 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
     tune_experiment(repo, KEPT_LATENCY)
 
     lock_path = lockfile_path(repo)
-    first = subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [*_ENTRY, "iterate"],
-        cwd=repo,
-        env=_env(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
+    with reaped(
+        subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
+            [*_ENTRY, "iterate"],
+            cwd=repo,
+            env=_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    ) as first:
         deadline = time.monotonic() + 30
         while True:
             if first.poll() is not None:
@@ -226,10 +236,6 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
         second = run_cli(["iterate"], repo, check=False, timeout=LONG_RUN_TIMEOUT)
         Path(gate_file).write_text("", encoding="utf-8")
         first_stdout, first_stderr = first.communicate(timeout=LONG_RUN_TIMEOUT)
-    finally:
-        if first.poll() is None:
-            first.kill()
-            first.communicate()
 
     assert second.returncode == 2, second.stderr
     assert second.stderr.startswith(f"Error: Lock held by PID {first.pid} (iterate, started ")

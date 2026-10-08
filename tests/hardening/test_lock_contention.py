@@ -7,9 +7,7 @@ genuine pressure:
 - a burst of real processes racing for one lockfile grants exactly one holder
   and hands every loser the contention error, with the lockfile never torn,
 - the repository lock and the supervise lock are independent, so holding one
-  never blocks the command guarded by the other,
-- ``supervise`` run outside a git repository exits cleanly, naming the
-  requirement, rather than crashing with an unhandled error.
+  never blocks the command guarded by the other.
 
 The multi-process tests are POSIX-only: they rendezvous children on a named
 pipe.
@@ -29,6 +27,7 @@ import pytest
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from tests._lock import HOLDER_AT_PATTERN
+from tests._process_helpers import reaped, spawn_child_script
 from tests.hardening._barrier import CHILD_BARRIER, create_barrier, release_together
 
 pytestmark = pytest.mark.skipif(
@@ -130,32 +129,31 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
     winner holds the lock until the parent drops the release flag, guaranteeing
     every loser contends a live holder. The lockfile is snapshotted while the
     winner still holds it, so a torn or vanished lock is caught.
+
+    Args:
+        tmp_path: Where the barrier, the result markers and the child script live.
+        lock_path: The lockfile every child races for.
+        count: How many children race.
+        command: The command name each child acquires the lock for.
+
+    Returns:
+        What the race left behind once every child exited.
     """
     barrier_path = create_barrier(tmp_path)
     results = tmp_path / "results"
     results.mkdir()
     release_flag = tmp_path / "release.flag"
-    script = tmp_path / "race_child.py"
-    script.write_text(_RACE_CHILD, encoding="utf-8")
+    child_args = (lock_path, str(barrier_path), str(results), str(release_flag), command)
 
-    children = [
-        subprocess.Popen(  # noqa: S603 -- argv is a fixed list, not shell-injected
-            [
-                sys.executable,
-                str(script),
-                lock_path,
-                str(barrier_path),
-                str(results),
-                str(release_flag),
-                command,
-            ],
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for _ in range(count)
-    ]
-
-    try:
+    with contextlib.ExitStack() as stack:
+        children = [
+            stack.enter_context(
+                reaped(
+                    spawn_child_script(tmp_path, f"race_child_{index}", _RACE_CHILD, *child_args)
+                )
+            )
+            for index in range(count)
+        ]
         release_together(
             barrier_path,
             count,
@@ -179,13 +177,6 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
         release_flag.write_text("go", encoding="utf-8")
         exit_codes = [child.wait(timeout=RACE_TIMEOUT_SECONDS) for child in children]
         child_errors = [child.stderr.read() if child.stderr else "" for child in children]
-    finally:
-        for child in children:
-            if child.poll() is None:
-                child.kill()
-                child.wait()
-            if child.stderr is not None:
-                child.stderr.close()
 
     return _RaceOutcome(
         won_pid_values=[path.read_text(encoding="utf-8").strip() for path in won],

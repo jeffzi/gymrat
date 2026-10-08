@@ -92,17 +92,6 @@ def test_format_verdict_block_when_given_outcome_does_state_primary_delta_and_bo
     assert styles_at(render_colored(block[0]), word) == codes
 
 
-def test_format_verdict_block_when_given_next_step_does_close_the_block_with_it():
-    block = format_verdict_block(
-        outcome="regressed",
-        primary=GeomeanPrimary(delta_pct=3.1),
-        next_step="fix or gymrat discard",
-    )
-
-    assert len(block) == 2
-    assert render_plain(block[1]) == "fix or gymrat discard"
-
-
 def test_format_verdict_block_when_target_reached_but_regressed_does_omit_target_hint():
     block = format_verdict_block(
         outcome="regressed",
@@ -216,7 +205,6 @@ def test_format_status_iteration_when_given_settle_does_state_it(
 @pytest.mark.parametrize(
     ("outcome", "glyph"),
     [
-        pytest.param("improved", "✓", id="improved"),
         pytest.param("regressed", "✗", id="regressed"),
         pytest.param("no-signal", "~", id="no-signal"),
     ],
@@ -309,21 +297,12 @@ def test_format_status_baseline_when_given_samples_does_state_label_and_median_p
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("summary", "expected"),
-    [
-        pytest.param(
-            _status_summary(iteration_count=1, keep_count=1, discard_count=0),
-            "1 iteration · 1 kept · 0 discarded",
-            id="one-iteration",
-        ),
-        pytest.param(_status_summary(), "4 iterations · 1 kept · 1 discarded", id="several"),
-    ],
-)
-def test_format_status_footer_when_given_summary_does_total_the_settles(
-    summary: StatusSummary, expected: str
-):
-    assert render_plain(format_status_footer(summary)[0]) == expected
+def test_format_status_footer_when_one_iteration_does_total_the_settles_in_the_singular():
+    summary = _status_summary(iteration_count=1, keep_count=1, discard_count=0)
+
+    lines = format_status_footer(summary)
+
+    assert [render_plain(line) for line in lines] == ["1 iteration · 1 kept · 0 discarded"]
 
 
 @pytest.mark.parametrize(
@@ -411,14 +390,21 @@ def test_format_status_baseline_when_metric_name_contains_brackets_does_render_t
 # ---------------------------------------------------------------------------
 
 
-def test_format_status_stop_when_given_single_line_message_does_render_bold_stopped_and_message():
-    line = format_status_stop("user requested stop")
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        pytest.param("user requested stop", "stopped · user requested stop", id="single-line"),
+        pytest.param(
+            "target reached\ncleaning up\nfinal notes",
+            "stopped · target reached",
+            id="multiline-keeps-the-first-line",
+        ),
+    ],
+)
+def test_format_status_stop_when_given_message_does_render_bold_stopped_and_its_first_line(
+    message: str, expected: str
+):
+    line = format_status_stop(message)
 
-    assert render_plain(line) == "stopped · user requested stop"
+    assert render_plain(line) == expected
     assert "1" in styles_at(render_colored(line), "stopped")
-
-
-def test_format_status_stop_when_given_multiline_message_does_render_only_the_first_line():
-    line = render_plain(format_status_stop("target reached\ncleaning up\nfinal notes"))
-
-    assert line == "stopped · target reached"

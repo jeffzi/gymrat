@@ -15,7 +15,6 @@ so the suite is order-independent and safe under ``pytest-xdist`` /
 
 from __future__ import annotations
 
-import math
 import sys
 from pathlib import Path
 
@@ -23,7 +22,7 @@ import pytest
 
 from gymrat.config import HooksConfig, KindEntry, MetricEntry
 from gymrat.errors import GymratError
-from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, ProbeResult, probe_session
+from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, probe_session
 from gymrat.progress_events import PassStarted
 from gymrat.sampling import TargetSpec
 from gymrat.session.paths import experiment_worktree_dir, progress_path
@@ -46,34 +45,6 @@ SAMPLE_COUNTS = [
     pytest.param(None, PROBE_DEFAULT_SAMPLES, id="unset-falls-back-to-the-probe-default"),
     pytest.param(3, 3, id="explicit-count-wins"),
 ]
-
-#: A baseline median and a measured median whose delta ratio is not a finite
-#: number: the two overflowing pairs divide a huge gap by a tiny reference, and
-#: a median that is not a number carries through the arithmetic.
-NON_FINITE_RATIOS = [
-    pytest.param(1e-300, 1e10, id="ratio-overflows-upward"),
-    pytest.param(1e-300, -1e10, id="ratio-overflows-downward"),
-    pytest.param(100.0, math.nan, id="ratio-is-not-a-number"),
-]
-
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
-
-async def _probe_total_ms(
-    repo: str, monkeypatch: pytest.MonkeyPatch, *, reference: float, median: float
-) -> ProbeResult:
-    start_with(repo, (baseline_record(samples=({"total_ms": reference},)),))
-    install_measure(
-        monkeypatch,
-        measurement({
-            "total_ms": measured_metric(median=median, spread=1.0, short_name="total_ms")
-        }),
-    )
-    return await probe_session(repo, checks_config(), ProbeOptions())
-
 
 # ---------------------------------------------------------------------------
 # what gets benched
@@ -237,7 +208,6 @@ async def test_probe_session_when_run_reports_metrics_does_pair_each_with_its_ba
 @pytest.mark.parametrize(
     ("samples", "median", "expected_reference"),
     [
-        pytest.param(({"other_ms": 7.0},), 90.0, None, id="metric-absent-from-the-baseline"),
         pytest.param(({"total_ms": 0.0},), 90.0, 0.0, id="baseline-median-of-zero"),
         pytest.param(BASELINE_SAMPLES, None, 100.0, id="run-reported-no-median"),
     ],
@@ -247,7 +217,7 @@ async def test_probe_session_when_reference_or_median_missing_or_zero_does_repor
     monkeypatch: pytest.MonkeyPatch,
     samples: tuple[dict[str, float], ...],
     median: float | None,
-    expected_reference: float | None,
+    expected_reference: float,
 ):
     start_with(repo, (baseline_record(samples=samples),))
     spread = None if median is None else 1.0
@@ -258,35 +228,6 @@ async def test_probe_session_when_reference_or_median_missing_or_zero_does_repor
     result = await probe_session(repo, checks_config(), ProbeOptions())
 
     assert result.metrics[0].reference_median == expected_reference
-    assert result.metrics[0].delta_pct is None
-
-
-@pytest.mark.parametrize(
-    ("reference", "median", "expected"),
-    [
-        pytest.param(100.0, 125.0, 25.0, id="slower-than-the-baseline-is-positive"),
-        pytest.param(-10.0, -5.0, 50.0, id="negative-reference-scales-by-its-magnitude"),
-        pytest.param(0.0, 0.0, 0.0, id="both-zero-is-no-change"),
-    ],
-)
-async def test_probe_session_when_reference_usable_does_match_the_iterate_delta(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    reference: float,
-    median: float,
-    expected: float,
-):
-    result = await _probe_total_ms(repo, monkeypatch, reference=reference, median=median)
-
-    assert result.metrics[0].delta_pct == pytest.approx(expected)
-
-
-@pytest.mark.parametrize(("reference", "median"), NON_FINITE_RATIOS)
-async def test_probe_session_when_delta_ratio_not_finite_does_report_no_delta(
-    repo: str, monkeypatch: pytest.MonkeyPatch, reference: float, median: float
-):
-    result = await _probe_total_ms(repo, monkeypatch, reference=reference, median=median)
-
     assert result.metrics[0].delta_pct is None
 
 

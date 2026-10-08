@@ -138,15 +138,6 @@ def test_parse_when_lines_end_on_terminator_does_split_into_metrics(stdout: str)
     assert metric_lines_adapter.parse(stdout) == {"foo": 42.0, "bar": 1.0}
 
 
-def test_parse_when_name_contains_bare_carriage_return_does_skip_and_warn():
-    warnings: list[str] = []
-
-    result = metric_lines_adapter.parse("METRIC fo\ro=42\nMETRIC valid=1", warnings.append)
-
-    assert result == {"valid": 1.0}
-    assert warnings == ["Failed to parse METRIC line: METRIC fo"]
-
-
 # ---------------------------------------------------------------------------
 # split on the last equals sign
 # ---------------------------------------------------------------------------
@@ -159,7 +150,7 @@ def test_parse_when_name_contains_bare_carriage_return_does_skip_and_warn():
         pytest.param("METRIC a=b=c=d=5", {"a=b=c=d": 5.0}, id="multiple-equals"),
     ],
 )
-def test_parse_when_value_contains_equals_does_split_at_last_equals(
+def test_parse_when_name_contains_equals_does_split_at_last_equals(
     stdout: str, expected: dict[str, float]
 ):
     assert metric_lines_adapter.parse(stdout) == expected
@@ -254,17 +245,10 @@ def test_parse_when_metric_line_malformed_does_warn_and_skip(offending: str):
     assert warnings == [f"Failed to parse METRIC line: {offending}"]
 
 
-@pytest.mark.parametrize(
-    "stdout",
-    [
-        pytest.param("METRIC x=1\nMETRIC x=\nMETRIC x=3", id="empty-value"),
-        pytest.param("METRIC x=1\nMETRIC x=   \nMETRIC x=3", id="whitespace-value"),
-    ],
-)
-def test_parse_when_value_empty_does_exclude_sample_rather_than_read_zero(stdout: str):
+def test_parse_when_value_empty_does_exclude_sample_rather_than_read_zero():
     warnings: list[str] = []
 
-    result = metric_lines_adapter.parse(stdout, warnings.append)
+    result = metric_lines_adapter.parse("METRIC x=1\nMETRIC x=\nMETRIC x=3", warnings.append)
 
     assert result == {"x": 2.0}
     assert len(warnings) == 1
@@ -285,19 +269,16 @@ def test_parse_when_name_contains_multiple_hashes_does_raise_adapter_error():
 # empty path segment or empty kind in name
 # ---------------------------------------------------------------------------
 
-_EMPTY_SEGMENT = "an empty path segment"
 
-_EMPTY_PART_NAMES = [
-    pytest.param("a//b", _EMPTY_SEGMENT, id="empty-inner-segment"),
-    pytest.param("/x", _EMPTY_SEGMENT, id="empty-leading-segment"),
-    pytest.param("x/", _EMPTY_SEGMENT, id="empty-trailing-segment"),
-    pytest.param("#time", _EMPTY_SEGMENT, id="empty-path-before-kind"),
-    pytest.param("a/#time", _EMPTY_SEGMENT, id="empty-trailing-segment-before-kind"),
-    pytest.param("foo#", "an empty kind", id="empty-kind"),
-]
-
-
-@pytest.mark.parametrize(("name", "problem"), _EMPTY_PART_NAMES)
+# Which name shape breaks which grammar rule is pinned in tests/test_metric_name.py;
+# here one name per rule proves the adapter words the warning from that rule.
+@pytest.mark.parametrize(
+    ("name", "problem"),
+    [
+        pytest.param("a//b", "an empty path segment", id="empty-path-segment"),
+        pytest.param("foo#", "an empty kind", id="empty-kind"),
+    ],
+)
 def test_parse_when_name_has_empty_part_does_warn_and_skip(name: str, problem: str):
     warnings: list[str] = []
 
@@ -307,14 +288,15 @@ def test_parse_when_name_has_empty_part_does_warn_and_skip(name: str, problem: s
     assert warnings == [f'Skipping METRIC line with {problem} in its metric name: "{name}"']
 
 
-@pytest.mark.parametrize(("name", "problem"), _EMPTY_PART_NAMES)
-def test_parse_when_only_line_has_empty_part_does_warn_and_raise(name: str, problem: str):
+def test_parse_when_only_line_has_empty_part_does_warn_and_raise():
     warnings: list[str] = []
 
     with pytest.raises(AdapterError, match=r"^No valid METRIC lines found$"):
-        metric_lines_adapter.parse(f"METRIC {name}=42", warnings.append)
+        metric_lines_adapter.parse("METRIC a//b=42", warnings.append)
 
-    assert warnings == [f'Skipping METRIC line with {problem} in its metric name: "{name}"']
+    assert warnings == [
+        'Skipping METRIC line with an empty path segment in its metric name: "a//b"'
+    ]
 
 
 # ---------------------------------------------------------------------------

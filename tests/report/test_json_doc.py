@@ -41,13 +41,12 @@ from gymrat.report.types import (
 )
 from gymrat.session.records import KeepChecks
 from gymrat.targets import WorktreeRemovalFailure
-from gymrat.verdict import GroupAggregate, KindAggregate
+from gymrat.verdict import KindAggregate
 from tests.report._comparisons import (
     NWayCandidate,
     create_candidate,
     create_comparison_result,
     exact_metric,
-    kind_metric,
     metric_meta,
     n_way_metric,
     permutation_metric,
@@ -72,60 +71,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from syrupy.assertion import SnapshotAssertion
-
-
-def _two_kind_with_exclusions() -> ComparisonResult:
-    """A run spanning a gating ``time`` kind and an informational ``memory`` kind.
-
-    ``time`` holds a grouped metric and lost two metrics to exclusion rules, so
-    its aggregate exercises groups and exclusions at once; ``memory`` holds one
-    ungrouped metric and gates nothing, so it pins the no-groups, no-gated case.
-    """
-    time_geomean = geomean_of(
-        -3.2,
-        2,
-        excluded=[
-            Exclusion(metric="jittery/time#time", reason="unstable"),
-            Exclusion(metric="broken/ratio#time", reason="undefined-ratio"),
-        ],
-    )
-    return create_comparison_result(
-        candidates=[
-            create_candidate(
-                label="experiment",
-                kinds=[
-                    KindAggregate(
-                        kind="time",
-                        geomean=time_geomean,
-                        groups=(GroupAggregate(group="entity", geomean=geomean_of(-3.1, 2)),),
-                        gated_geomean=geomean_of(-3.2, 2),
-                    ),
-                    KindAggregate(
-                        kind="memory",
-                        geomean=geomean_of(-7, 1),
-                        groups=(),
-                        gated_geomean=None,
-                    ),
-                ],
-            ),
-        ],
-        metrics={
-            "entity/alive_check#time": kind_metric(
-                kind="time",
-                short_name="alive_check",
-                verdict="improved",
-                delta=-10,
-            ),
-            "encode#memory": kind_metric(
-                kind="memory",
-                short_name="encode",
-                verdict="improved",
-                delta=-7,
-                gating=False,
-                unit="bytes",
-            ),
-        },
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -163,19 +108,20 @@ def test_render_json_when_several_candidates_does_include_all_in_order():
 # ---------------------------------------------------------------------------
 
 
-def test_render_json_when_band_verdict_does_set_band_and_null_p():
+def test_render_json_when_band_verdict_does_serialize_band_method_fields():
     result = create_comparison_result(
-        metrics={"decode/time": band_metric(verdict="no-signal", delta=-1, noise_pct=3.5)},
+        metrics={"decode/time": band_metric(verdict="no-signal", delta=-1, noise_pct=4.0)},
     )
 
     candidate = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][0]
 
     assert candidate["method"] == "band"
-    assert candidate["band"] == 3.5
+    assert candidate["band"] == 4.0
+    assert candidate["noise_pct"] == 4.0
     assert candidate["p"] is None
 
 
-def test_render_json_when_exact_verdict_does_null_noise_p_and_band():
+def test_render_json_when_exact_verdict_does_null_statistical_fields():
     result = create_comparison_result(metrics={"alloc/heap": exact_metric(delta=-7.9)})
 
     candidate = json.loads(render_json(result))["metrics"]["alloc/heap"]["candidates"][0]
@@ -284,39 +230,29 @@ def test_render_document_json_when_metric_has_no_unit_does_serialize_null_unit(
 # ---------------------------------------------------------------------------
 
 
-def test_render_json_when_candidate_spans_kinds_does_carry_one_entry_per_kind_in_field_order():
-    doc = json.loads(render_json(_two_kind_with_exclusions()))
-
-    kinds = doc["per_candidate"][0]["kinds"]
-    geomeans = [kinds[0]["geomean"], kinds[0]["groups"][0]["geomean"], kinds[0]["gated_geomean"]]
-    assert kinds == [
-        {
-            "kind": "time",
-            "has_gating": True,
-            "geomean": {
-                "value": -3.2,
-                "n": 2,
-                "excluded": [
-                    {"metric": "jittery/time#time", "reason": "unstable"},
-                    {"metric": "broken/ratio#time", "reason": "undefined-ratio"},
-                ],
-                "band": 0,
-            },
-            "groups": [
-                {"group": "entity", "geomean": {"value": -3.1, "n": 2, "excluded": [], "band": 0}},
-            ],
-            "gated_geomean": {"value": -3.2, "n": 2, "excluded": [], "band": 0},
-        },
-        {
-            "kind": "memory",
-            "has_gating": False,
-            "geomean": {"value": -7, "n": 1, "excluded": [], "band": 0},
-            "groups": [],
-            "gated_geomean": None,
-        },
+def test_render_json_when_geomean_has_exclusions_does_list_them_in_field_order():
+    excluded = [
+        Exclusion(metric="jittery/time#time", reason="unstable"),
+        Exclusion(metric="broken/ratio#time", reason="undefined-ratio"),
     ]
-    assert [list(geomean) for geomean in geomeans] == [["value", "n", "band", "excluded"]] * 3
-    assert [list(entry) for entry in kinds[0]["geomean"]["excluded"]] == [["metric", "reason"]] * 2
+    result = create_comparison_result(
+        candidates=[
+            create_candidate(
+                kinds=[
+                    KindAggregate(
+                        kind="time", geomean=geomean_of(-3.2, 2, excluded=excluded), groups=()
+                    )
+                ],
+            ),
+        ],
+    )
+
+    kinds = json.loads(render_json(result))["per_candidate"][0]["kinds"]
+
+    assert [list(entry.items()) for entry in kinds[0]["geomean"]["excluded"]] == [
+        [("metric", "jittery/time#time"), ("reason", "unstable")],
+        [("metric", "broken/ratio#time"), ("reason", "undefined-ratio")],
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -371,14 +307,23 @@ _UNMEASURED_ROW: dict[str, object] = {
 
 
 @pytest.mark.parametrize(
-    "candidates",
+    ("candidates", "expected"),
     [
-        pytest.param((_paired_candidate(), CandidateMetric()), id="empty-candidate-slice"),
-        pytest.param((_paired_candidate(),), id="fewer-slices-than-candidates"),
+        pytest.param(
+            (_paired_candidate(), CandidateMetric()),
+            _UNMEASURED_ROW,
+            id="empty-candidate-slice",
+        ),
+        pytest.param((_paired_candidate(),), _UNMEASURED_ROW, id="fewer-slices-than-candidates"),
+        pytest.param(
+            (_paired_candidate(), CandidateMetric(median=95.0, spread=3.0)),
+            {**_UNMEASURED_ROW, "median": 95.0, "spread_pct": 3.0},
+            id="measured-unpaired",
+        ),
     ],
 )
-def test_render_json_when_candidate_has_no_metric_data_does_render_an_all_null_row(
-    candidates: tuple[CandidateMetric, ...],
+def test_render_json_when_candidate_has_no_verdict_does_null_its_verdict_fields(
+    candidates: tuple[CandidateMetric, ...], expected: dict[str, object]
 ):
     metric = MetricComparison(
         baseline_median=100.0,
@@ -393,26 +338,7 @@ def test_render_json_when_candidate_has_no_metric_data_does_render_an_all_null_r
 
     beta = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][1]
 
-    assert list(beta.items()) == list(_UNMEASURED_ROW.items())
-
-
-def test_render_json_when_candidate_measured_but_unpaired_does_keep_measurements():
-    metric = MetricComparison(
-        baseline_median=100.0,
-        baseline_spread=1.0,
-        candidates=(_paired_candidate(), CandidateMetric(median=95.0, spread=3.0)),
-        meta=metric_meta("decode/time", unit="ns"),
-    )
-    result = create_comparison_result(
-        candidates=[create_candidate(label="alpha"), create_candidate(label="beta")],
-        metrics={"decode/time": metric},
-    )
-
-    beta = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][1]
-
-    assert beta["median"] == 95
-    assert beta["spread_pct"] == 3
-    assert beta["verdict"] is None
+    assert list(beta.items()) == list(expected.items())
 
 
 # ---------------------------------------------------------------------------
@@ -494,22 +420,14 @@ def test_render_json_when_serializing_does_write_compact_json_forms(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("field", "median", "spread"),
-    [("median", None, 1.0), ("spread_pct", 100.0, None)],
-)
-def test_render_measure_json_when_field_absent_does_render_null(
-    field: str,
-    median: float | None,
-    spread: float | None,
-):
+def test_render_measure_json_when_fields_absent_does_render_them_null():
     result = create_measurement_result(
-        metrics={"sparse/time": measured_metric(median=median, spread=spread, unit="ns")},
+        metrics={"sparse/time": measured_metric(median=None, spread=None, unit="ns")},
     )
 
-    doc = json.loads(render_measure_json(result))
+    entry = json.loads(render_measure_json(result))["metrics"]["sparse/time"]
 
-    assert doc["metrics"]["sparse/time"][field] is None
+    assert (entry["median"], entry["spread_pct"]) == (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +435,7 @@ def test_render_measure_json_when_field_absent_does_render_null(
 # ---------------------------------------------------------------------------
 
 
-def test_render_probe_json_when_names_given_does_report_the_scope_and_names():
+def test_render_probe_json_when_names_given_does_report_a_scoped_probe():
     result = probe_result(names=("total_ms", "decode"), samples=3)
 
     doc = json.loads(render_probe_json(result))
@@ -648,7 +566,7 @@ def _fresh_start() -> StartResult:
         ),
     ],
 )
-def test_render_start_json_when_start_varies_does_reflect_state_and_runbook(
+def test_render_start_json_when_start_varies_does_reflect_the_start_state(
     result: StartResult, runbook: str | None, expected: dict[str, object]
 ):
     doc = json.loads(render_start_json(result, runbook=runbook))
@@ -718,16 +636,18 @@ def test_render_keep_json_when_checks_recorded_does_serialize_every_checks_field
 # ---------------------------------------------------------------------------
 
 
-def test_render_finalize_json_when_rendered_does_produce_expected_keys():
+def test_render_finalize_json_when_rendered_does_copy_the_record_fields():
     record = finalize_record()
     result = FinalizeResult(record=record, report="final report text")
 
     doc = json.loads(render_finalize_json(result))
 
-    assert doc["branch"] == record.branch
-    assert doc["commit"] == record.commit
-    assert doc["message"] == record.message
-    assert doc["at"] == record.at
+    assert (doc["branch"], doc["commit"], doc["message"], doc["at"]) == (
+        record.branch,
+        record.commit,
+        record.message,
+        record.at,
+    )
 
 
 # ---------------------------------------------------------------------------

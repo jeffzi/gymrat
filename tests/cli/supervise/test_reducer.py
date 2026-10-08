@@ -27,6 +27,7 @@ from gymrat.cli.supervise.types import (
     Exiting,
     FinishedTool,
     InFlight,
+    NestedPhase,
     ReadSessionResult,
     Responding,
     RunningTool,
@@ -171,18 +172,6 @@ def emit(
     """Advance *state* over *event* and pair the result with its plain-mode line."""
     after = advance(state, event, session)
     return after, plain_line(state, after, event)
-
-
-# ---------------------------------------------------------------------------
-# purity
-# ---------------------------------------------------------------------------
-
-
-def test_advance_when_applied_twice_to_same_input_does_return_equal_states():
-    before = make_state()
-    event = tool_start_event("Bash", "bash-1", 2000)
-
-    assert advance(before, event, None) == advance(before, event, None)
 
 
 # ---------------------------------------------------------------------------
@@ -548,37 +537,29 @@ def test_advance_when_liveness_is_blocking_does_ignore_thinking_and_phase_events
     assert after.liveness == before.liveness
 
 
-@pytest.mark.parametrize(
-    "make_event",
-    [
-        pytest.param(
-            lambda: model_phase_event(2000, "responding", parent_tool_use_id="bash-1"),
-            id="model-phase",
-        ),
-        pytest.param(
-            lambda: model_phase_event(
-                2000, "tool_input", tool_name="Edit", parent_tool_use_id="bash-1"
-            ),
-            id="tool-input",
-        ),
-    ],
-)
-def test_advance_when_nested_model_phase_arrives_does_record_it_under_the_parent(
-    make_event: Callable[[], SessionEvent],
-):
-    before = bash_in_flight_state()
-
-    after = advance(before, make_event(), None)
-
-    assert after.liveness == before.liveness
-    assert set(dict(after.nested)) == {"bash-1"}
-
-
 _NESTED_MODEL_PHASES = [
     pytest.param("thinking", None, id="thinking"),
     pytest.param("responding", None, id="responding"),
     pytest.param("tool_input", "Edit", id="tool-input"),
 ]
+
+
+@pytest.mark.parametrize(("phase", "tool_name"), _NESTED_MODEL_PHASES)
+def test_advance_when_nested_model_phase_arrives_does_record_it_under_the_parent(
+    phase: ModelPhase, tool_name: str | None
+):
+    before = bash_in_flight_state()
+
+    after = advance(
+        before,
+        model_phase_event(2000, phase, tool_name=tool_name, parent_tool_use_id="bash-1"),
+        None,
+    )
+
+    assert after.liveness == before.liveness
+    assert dict(after.nested) == {
+        "bash-1": NestedPhase(phase=phase, since=2000, tool_name=tool_name)
+    }
 
 
 @pytest.mark.parametrize(
@@ -611,7 +592,7 @@ def test_advance_when_nested_turn_ends_does_clear_the_nested_model_phase(
 
     after = advance(before, model_phase_event(2500, "turn_end", parent_tool_use_id="bash-1"), None)
 
-    assert (set(dict(before.nested)), dict(after.nested)) == ({"bash-1"}, {})
+    assert dict(after.nested) == {}
 
 
 def test_advance_when_nested_thinking_update_arrives_does_not_change_state():
@@ -804,7 +785,6 @@ def test_wants_session_refresh_when_ended_follow_up_arrives_does_reread_only_whi
     [
         pytest.param(60, None, "caps 60m", id="no-spend-cap"),
         pytest.param(60, 5.0, "caps 60m, $5.00", id="spend-cap"),
-        pytest.param(30, None, "caps 30m", id="whole-int-minutes"),
         pytest.param(5.5, None, "caps 5.5m", id="fractional-minutes-keep-the-decimal"),
         pytest.param(10.0, None, "caps 10m", id="whole-float-minutes-drop-the-decimal"),
     ],

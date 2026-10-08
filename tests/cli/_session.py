@@ -1,8 +1,8 @@
 """Shared helpers for the CLI command test files.
 
 Builders and stubs used by more than one ``tests/cli`` module: the loop-command
-repos and tty stand-ins, the session-log readers, and the ``measure`` seam
-stubs.  This is test-support code, not a test module: it carries no test
+repos and tty stand-ins, the session-log readers, and the ``measure`` and
+``compare`` seam stubs.  This is test-support code, not a test module: it carries no test
 functions.
 """
 
@@ -21,7 +21,7 @@ from gymrat.config import ResolvedConfig
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import start_session
 from gymrat.measure import MeasureOptions
-from gymrat.report.types import MeasurementResult
+from gymrat.report.types import ComparisonResult, MeasurementResult
 from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import CommandRecord, SessionRecord
 from tests._config import resolved_config
@@ -31,7 +31,9 @@ from tests.config._toml import write_config
 from tests.loop._probe import install_measure
 from tests.loop._settle import (
     keep_iteration,
+    start_with,
 )
+from tests.report._comparisons import create_comparison_result
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     append_records,
@@ -154,6 +156,21 @@ def stub_measure(
     return capture_measure(monkeypatch, result)
 
 
+def stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> None:
+    """Replace the ``compare`` seam with a fake that returns a fixed comparison.
+
+    Args:
+        monkeypatch: The fixture that installs the fake.
+        result: What the fake hands back; a comparison with no regressions when ``None``.
+    """
+    handed_back = create_comparison_result() if result is None else result
+
+    async def fake_compare(_options: object) -> ComparisonResult:
+        return handed_back
+
+    monkeypatch.setattr("gymrat.compare.compare", fake_compare)
+
+
 def never_tty(_stream: object) -> bool:
     """Stand in for ``is_tty`` so the discard command takes its non-interactive path."""
     return False
@@ -164,6 +181,13 @@ def make_discard_repo(repo: str) -> str:
     start_session(repo, "main", resolved_config())
     append_records(repo, iteration_record(seq=1))
     return repo
+
+
+def open_stop_ready_session(repo: str) -> None:
+    """Open a configured session with one settled iteration, ready for the stop command."""
+    start_with(repo)
+    keep_iteration(repo, 1)
+    write_bench_config(repo)
 
 
 def open_session(repo: str) -> None:

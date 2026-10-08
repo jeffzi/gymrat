@@ -10,7 +10,8 @@ or infinite float nested in a free-form payload as ``null`` on either path,
 refusing a non-finite value in a typed float field at construction, and
 writing a value pydantic cannot serialize as its ``str()``; ``event_from_wire``
 inverts it and returns ``None`` for anything it cannot reconstruct;
-``combine_observers`` is pinned on ordering, identity, and error propagation.
+``combine_observers`` is pinned on its zero-observer no-op and on warning,
+attributed to the caller, when an observer raises.
 """
 
 import json
@@ -18,7 +19,7 @@ from collections.abc import Callable
 from functools import partial
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from gymrat.session.records import decode_log_line
 from gymrat.supervisor.events import (
@@ -124,6 +125,23 @@ _TOOL_START_INPUT_NONE = ToolStartEvent(
     at=2_000_000_000, tool_use_id="t1", tool_name="Read", input=None, input_summary="none"
 )
 _FOLLOW_UP_NO_OPTIONALS = FollowUpEvent(at=20_000_000_000, action="waiting")
+
+#: Every non-finite float, each with its parametrize id.
+_NON_FINITE_FLOATS = [
+    (float("nan"), "nan"),
+    (float("inf"), "positive-infinity"),
+    (float("-inf"), "negative-infinity"),
+]
+
+#: Text holding a lone surrogate, which forces the ASCII-escaping fallback
+#: serializer, next to a raw non-ASCII character it must escape.
+_SURROGATE_TEXT = "café \ud800"
+
+
+class _Limit(BaseModel):
+    """A model nested in a free-form payload: JSON mode keeps its float field's NaN/inf."""
+
+    max: float
 
 
 # ---------------------------------------------------------------------------
@@ -344,11 +362,7 @@ JSON_CASES = [
             },
             id=f"nested-{case_id}-as-null",
         )
-        for value, case_id in [
-            (float("nan"), "nan"),
-            (float("inf"), "positive-infinity"),
-            (float("-inf"), "negative-infinity"),
-        ]
+        for value, case_id in _NON_FINITE_FLOATS
     ),
     pytest.param(
         ToolStartEvent(
@@ -372,17 +386,12 @@ JSON_CASES = [
 
 
 @pytest.mark.parametrize(("event", "expected"), JSON_CASES)
-def test_to_json_line_when_serializing_does_use_snake_case_keys(
+def test_to_json_line_when_given_event_does_write_its_wire_object(
     event: SessionEvent, expected: dict[str, object]
 ):
     parsed = json.loads(to_json_line(event))
 
     assert parsed == expected
-
-
-#: A turn-end text holding a lone surrogate, which forces the ASCII-escaping
-#: fallback serializer, next to a raw non-ASCII character it must escape.
-_SURROGATE_TEXT = "café \ud800"
 
 
 @pytest.mark.parametrize(
@@ -414,7 +423,7 @@ _SURROGATE_TEXT = "café \ud800"
             id="paragraph-separator-escaped",
         ),
         pytest.param(
-            TextDeltaEvent(at=5_000_000_000, chunk="café \ud800"),
+            TextDeltaEvent(at=5_000_000_000, chunk=_SURROGATE_TEXT),
             '{"type":"text_delta","at":5000000000,"chunk":"caf\\u00e9 \\ud800"}',
             id="lone-surrogate-escapes-all-non-ascii",
         ),
@@ -432,120 +441,10 @@ _SURROGATE_TEXT = "café \ud800"
         ),
     ],
 )
-def test_to_json_line_when_serializing_does_write_exact_compact_line(
+def test_to_json_line_when_text_or_float_needs_escaping_does_write_exact_compact_line(
     event: SessionEvent, expected_line: str
 ):
     assert to_json_line(event) == expected_line
-
-
-# ---------------------------------------------------------------------------
-# event_from_wire — snake_case wire
-# ---------------------------------------------------------------------------
-
-ROUND_TRIP_EVENTS = [pytest.param(event, id=id_) for event, _, id_ in EVENT_SAMPLES] + [
-    pytest.param(
-        make_launch(max_usd=1.5, model="opus", dirty=DirtyInfo(file_count=4)),
-        id="launch-with-optionals",
-    ),
-    pytest.param(_FOLLOW_UP_NO_OPTIONALS, id="follow_up-no-optionals"),
-    pytest.param(
-        TextDeltaEvent(at=5_000_000_000, chunk="a\x85b\u2028c\u2029d"),
-        id="text_delta-unicode-line-breaks",
-    ),
-    pytest.param(
-        TextDeltaEvent(at=5_000_000_000, chunk="café \ud800"),
-        id="text_delta-lone-surrogate",
-    ),
-    pytest.param(_TOOL_START_INPUT_NONE, id="tool_start-input-none"),
-    pytest.param(_THINKING_UPDATE_WITH_PARENT, id="thinking_update-with-parent"),
-    pytest.param(_TOOL_START_WITH_PARENT, id="tool_start-with-parent"),
-    pytest.param(_TOOL_END_WITH_PARENT, id="tool_end-with-parent"),
-    pytest.param(_TEXT_DELTA_WITH_PARENT, id="text_delta-with-parent"),
-]
-
-
-@pytest.mark.parametrize("event", ROUND_TRIP_EVENTS)
-def test_event_from_wire_when_given_serialized_event_does_reconstruct_it(event: SessionEvent):
-    assert event_from_wire(json.loads(to_json_line(event))) == event
-
-
-@pytest.mark.parametrize(
-    "obj",
-    [
-        pytest.param([1, 2, 3], id="non-dict-list"),
-        pytest.param("nope", id="non-dict-str"),
-        pytest.param({"at": 1}, id="missing-type"),
-        pytest.param({"type": "mystery", "at": 1}, id="unknown-type"),
-        pytest.param({"type": "usage_update", "at": 6}, id="missing-required-field"),
-        pytest.param(
-            {"type": "cap", "at": 7_000_000_000, "cap": "wall-clock"}, id="cap-missing-action"
-        ),
-        pytest.param(
-            {"type": "model_phase", "at": 1_000_000_000, "phase": "unknown"},
-            id="model-phase-unknown",
-        ),
-        pytest.param({"type": "model_phase", "phase": "thinking"}, id="model-phase-missing-at"),
-        pytest.param(
-            {"type": "usage_update", "at": 6_000_000_000, "cost_usd": 0.01, "schema": 1},
-            id="schema-on-non-launch-event",
-        ),
-    ],
-)
-def test_event_from_wire_when_input_unrecognized_does_return_none(obj: object):
-    assert event_from_wire(obj) is None
-
-
-# ---------------------------------------------------------------------------
-# combine_observers
-# ---------------------------------------------------------------------------
-
-
-def test_combine_observers_when_invoked_does_call_each_with_the_identical_event():
-    first = collecting_observer()
-    second = collecting_observer()
-    combined = combine_observers(first.observer, second.observer)
-    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
-
-    combined(event)
-
-    assert first.events[0] is event
-    assert second.events[0] is event
-
-
-def test_combine_observers_when_given_no_observers_does_not_raise():
-    combined = combine_observers()
-    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
-
-    combined(event)
-
-
-def test_combine_observers_when_an_observer_raises_does_warn_and_call_remaining():
-    boom_message = "observer failure"
-
-    def boom(_: object) -> None:
-        raise RuntimeError(boom_message)
-
-    later = collecting_observer()
-    combined = combine_observers(boom, later.observer)
-    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
-
-    with pytest.warns(RuntimeWarning, match=boom_message) as caught:
-        combined(event)
-
-    assert later.events == [event]
-    assert [warning.filename for warning in caught] == [__file__]
-
-
-# ---------------------------------------------------------------------------
-# non-finite float serialization
-# ---------------------------------------------------------------------------
-
-
-_NON_FINITE_FLOATS = [
-    pytest.param(float("nan"), id="nan"),
-    pytest.param(float("inf"), id="positive-infinity"),
-    pytest.param(float("-inf"), id="negative-infinity"),
-]
 
 
 def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write_null():
@@ -553,7 +452,7 @@ def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write
         at=2_000_000_000,
         tool_use_id="t1",
         tool_name="Probe",
-        input={"weights": [float("nan"), 1.5, float("-inf")], "limit": {"max": float("inf")}},
+        input={"weights": [float("nan"), 1.5, float("-inf")], "limit": _Limit(max=float("inf"))},
         input_summary=_SURROGATE_TEXT,
     )
 
@@ -570,11 +469,100 @@ def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write
 
 
 # ---------------------------------------------------------------------------
+# event_from_wire — snake_case wire
+# ---------------------------------------------------------------------------
+
+ROUND_TRIP_EVENTS = [pytest.param(event, id=id_) for event, _, id_ in EVENT_SAMPLES] + [
+    pytest.param(
+        make_launch(max_usd=1.5, model="opus", dirty=DirtyInfo(file_count=4)),
+        id="launch-with-optionals",
+    ),
+    pytest.param(
+        TextDeltaEvent(at=5_000_000_000, chunk="a\x85b\u2028c\u2029d"),
+        id="text_delta-unicode-line-breaks",
+    ),
+    pytest.param(
+        TextDeltaEvent(at=5_000_000_000, chunk=_SURROGATE_TEXT),
+        id="text_delta-lone-surrogate",
+    ),
+    pytest.param(_TOOL_START_INPUT_NONE, id="tool_start-input-none"),
+]
+
+
+@pytest.mark.parametrize("event", ROUND_TRIP_EVENTS)
+def test_event_from_wire_when_given_serialized_event_does_reconstruct_it(event: SessionEvent):
+    assert event_from_wire(json.loads(to_json_line(event))) == event
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        pytest.param([1, 2, 3], id="non-dict-list"),
+        pytest.param({"at": 1}, id="missing-type"),
+        pytest.param({"type": "mystery", "at": 1}, id="unknown-type"),
+        pytest.param({"type": "usage_update", "at": 6}, id="missing-required-field"),
+        pytest.param(
+            {"type": "model_phase", "at": 1_000_000_000, "phase": "unknown"},
+            id="model-phase-unknown",
+        ),
+        pytest.param(
+            {"type": "usage_update", "at": 6_000_000_000, "cost_usd": 0.01, "schema": 1},
+            id="schema-on-non-launch-event",
+        ),
+    ],
+)
+def test_event_from_wire_when_input_unrecognized_does_return_none(obj: object):
+    assert event_from_wire(obj) is None
+
+
+# ---------------------------------------------------------------------------
+# combine_observers
+# ---------------------------------------------------------------------------
+
+
+def test_combine_observers_when_given_no_observers_does_not_raise():
+    combined = combine_observers()
+    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
+
+    combined(event)
+
+
+_OBSERVER_FAILURE = "observer failure"
+
+
+def _raise_observer_failure(_: object) -> None:
+    raise RuntimeError(_OBSERVER_FAILURE)
+
+
+def test_combine_observers_when_an_observer_raises_does_warn_attributed_to_caller():
+    combined = combine_observers(_raise_observer_failure)
+    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
+
+    with pytest.warns(RuntimeWarning, match=_OBSERVER_FAILURE) as caught:
+        combined(event)
+
+    assert [warning.filename for warning in caught] == [__file__]
+
+
+def test_combine_observers_when_an_observer_raises_does_call_remaining_observers():
+    later = collecting_observer()
+    combined = combine_observers(_raise_observer_failure, later.observer)
+    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
+
+    with pytest.warns(RuntimeWarning):
+        combined(event)
+
+    assert later.events == [event]
+
+
+# ---------------------------------------------------------------------------
 # non-finite floats refused at construction
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("value", _NON_FINITE_FLOATS)
+@pytest.mark.parametrize(
+    "value", [pytest.param(value, id=case_id) for value, case_id in _NON_FINITE_FLOATS]
+)
 @pytest.mark.parametrize(
     ("build", "field"),
     [

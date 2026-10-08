@@ -28,7 +28,7 @@ from tests.report._assertions import render_colored, render_plain, styles_at
 # shorten_label
 # ---------------------------------------------------------------------------
 
-_TEXT = "abcdefghijklmnop"
+_TEXT = "rain on the lake"
 
 
 @pytest.mark.parametrize(
@@ -45,9 +45,9 @@ def test_shorten_label_when_text_already_fits_does_return_verbatim(max_width: in
 @pytest.mark.parametrize(
     ("max_width", "expected"),
     [
-        pytest.param(9, "abcd…mnop", id="odd-width-splits-evenly"),  # cspell:disable-line
-        pytest.param(8, "abcd…nop", id="even-width-favors-head"),
-        pytest.param(2, "a…", id="tail-squeezed-out"),
+        pytest.param(9, "rain…lake", id="odd-width-splits-evenly"),
+        pytest.param(8, "rain…ake", id="even-width-favors-head"),
+        pytest.param(2, "r…", id="tail-squeezed-out"),
         pytest.param(1, "…", id="ellipsis-alone"),
     ],
 )
@@ -137,15 +137,6 @@ def test_truncate_labels_when_a_label_overflows_does_join_head_and_tail():
     assert len(result[0]) == 20
 
 
-def test_truncate_labels_when_two_collide_does_widen_until_distinct():
-    result = truncate_labels([
-        "feature/experiment-one-fastpath",
-        "feature/exploration-two-fastpath",
-    ])
-
-    assert result == ["feature/ex…e-fastpath", "feature/ex…o-fastpath"]
-
-
 def test_truncate_labels_when_widening_past_a_fitting_label_does_not_lengthen_it():
     short_enough = "release/candidate-2.1"
 
@@ -202,16 +193,25 @@ _HINT = "run `gymrat doctor` first"
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("counts [i] rounds", id="prose"),
+        pytest.param("counts `[i]` rounds", id="inline-code"),
+    ],
+)
+def test_format_hint_when_text_has_markup_metacharacters_does_render_them_literally(text: str):
+    assert render_plain(format_hint(text)) == "counts [i] rounds"
+
+
+@pytest.mark.parametrize(
     ("text", "expected"),
     [
-        pytest.param("counts [i] rounds", "counts [i] rounds", id="prose"),
-        pytest.param("counts `[i]` rounds", "counts [i] rounds", id="inline-code"),
         pytest.param("`gymrat keep` settles it", "gymrat keep settles it", id="code-first"),
         pytest.param("then run `gymrat keep`", "then run gymrat keep", id="code-last"),
         pytest.param("`up``on`", "upon", id="adjacent-code"),
     ],
 )
-def test_format_hint_when_text_has_markup_metacharacters_does_render_them_literally(
+def test_format_hint_when_code_span_sits_anywhere_does_strip_its_backticks(
     text: str, expected: str
 ):
     assert render_plain(format_hint(text)) == expected

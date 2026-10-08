@@ -23,19 +23,15 @@ from gymrat.cli.app import app
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import record_to_wire
 from tests._cli import ENTRY, no_color_env
+from tests._mode_bits import needs_mode_bits
 from tests.cli._session import runner
-from tests.session.records._fixtures import SESSION_ID, command_record, session_record
+from tests.session.records._fixtures import SESSION_ID, command_record
 from tests.telemetry._collector import otlp_collector
 from tests.telemetry._fixtures import hide_otel_sdk, hide_otlp_exporter
 from tests.telemetry._replay_logs import (
     T0,
-    T1,
-    T2,
-    T3,
-    replay_launch_event,
-    replay_turn_end,
-    write_records_log,
-    write_supervisor_log,
+    write_measure_command_run,
+    write_standard_run,
 )
 
 if TYPE_CHECKING:
@@ -52,7 +48,6 @@ def _output(result: Result) -> str:
 _ENDPOINT = "http://localhost:4318"
 _ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 _TIMEOUT_ENV = "OTEL_EXPORTER_OTLP_TIMEOUT"
-_TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 _SHORT_TIMEOUT_SECONDS = "0.5"
 _UNREACHABLE_ENDPOINT = "http://127.0.0.1:1"
 
@@ -68,16 +63,8 @@ def _populate_session_dir(root: str, *, session_id: str = SESSION_ID) -> str:
         The session log path.
     """
     session_log = session_jsonl_path(root)
-    header = session_record(session_id=session_id, at=T0)
-    cmd = command_record(name="measure", at=T2, duration_ms=500, exit_code=0, reason=None, seq=None)
-    write_records_log(session_log, [header, cmd])
-
-    sup_dir = str(Path(session_log).parent)
-    sup_log = str(Path(sup_dir) / "supervisor-001.jsonl")
-    write_supervisor_log(
-        sup_log, [replay_launch_event(session_id=session_id, at=T1), replay_turn_end(at=T3)]
-    )
-
+    sup_log = str(Path(session_log).parent / "supervisor-001.jsonl")
+    write_measure_command_run(session_log, sup_log, session_id=session_id)
     return session_log
 
 
@@ -129,7 +116,6 @@ def test_export_when_tracer_records_nothing_does_exit_two_without_reporting_expo
     value: str,
 ):
     session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.delenv(_TRACES_ENDPOINT_ENV, raising=False)
     monkeypatch.setenv(variable, value)
 
     with otlp_collector() as collector:
@@ -183,7 +169,6 @@ def test_export_when_endpoint_missing_or_blank_does_exit_two_naming_env_var(
     source: str | None,
 ):
     session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.delenv(_ENDPOINT_ENV, raising=False)
     args = _endpoint_args(monkeypatch, source, " \t ")
 
     result = runner.invoke(app, ["export", session_log, *args])
@@ -284,10 +269,7 @@ def test_export_when_first_record_not_session_does_exit_two_naming_its_type(
     )
 
 
-@pytest.mark.skipif(
-    not hasattr(os, "geteuid") or os.geteuid() == 0,
-    reason="requires Unix file permissions and non-root user",
-)
+@needs_mode_bits
 def test_export_when_session_log_unreadable_does_exit_two_naming_path_and_os_reason(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -313,14 +295,10 @@ def _return_one(*_args: object, **_kwargs: object) -> int:
     return 1
 
 
-def _stub_tracing(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    replay_session: Callable[..., int] = _return_one,
-) -> None:
+def _stub_tracing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub the tracing provider and replay calls the export command wires together."""
     monkeypatch.setattr("gymrat.telemetry.provider.configure_tracing", _always_true)
-    monkeypatch.setattr("gymrat.telemetry.replay.replay_session", replay_session)
+    monkeypatch.setattr("gymrat.telemetry.replay.replay_session", _return_one)
     monkeypatch.setattr("gymrat.telemetry.provider.flush_tracing", lambda: None)
 
 
@@ -329,32 +307,11 @@ def _stub_tracing(
 # ---------------------------------------------------------------------------
 
 
-def test_export_when_valid_session_does_print_the_export_summary(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
-
-    span_count = 3
-    _stub_tracing(
-        monkeypatch,
-        replay_session=lambda *_a, **_kw: span_count,  # pyrefly: ignore[implicit-any-lambda]
-    )
-
-    result = runner.invoke(app, ["export", session_log])
-
-    assert result.exit_code == 0
-    lines = _output(result).split("\n")
-    assert f"exported 3 spans for session {SESSION_ID} to {_ENDPOINT}" in lines
-
-
 def test_export_when_endpoint_flag_given_does_send_spans_to_the_flag_over_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
     session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.delenv(_TRACES_ENDPOINT_ENV, raising=False)
     monkeypatch.setenv(_ENDPOINT_ENV, _UNREACHABLE_ENDPOINT)
     monkeypatch.setenv(_TIMEOUT_ENV, _SHORT_TIMEOUT_SECONDS)
 
@@ -373,8 +330,6 @@ def test_export_when_endpoint_padded_does_send_spans_to_trimmed_endpoint(
     source: str,
 ):
     session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.delenv(_ENDPOINT_ENV, raising=False)
-    monkeypatch.delenv(_TRACES_ENDPOINT_ENV, raising=False)
 
     with otlp_collector() as collector:
         padded = f"  {collector.endpoint} "
@@ -397,7 +352,6 @@ def test_export_when_final_session_line_is_torn_utf8_does_skip_only_that_line(
     with Path(session_log).open("ab") as log:
         log.write(b'{"type": "iteration", "note": "caf\xc3')
     env = no_color_env()
-    env.pop(_TRACES_ENDPOINT_ENV, None)
 
     with otlp_collector() as collector:
         env[_ENDPOINT_ENV] = collector.endpoint
@@ -513,10 +467,7 @@ def _first_line_writer(first_line: bytes) -> Callable[[Path], None]:
 
 def _other_session_log(path: Path) -> None:
     """Write a well-formed supervisor log whose launch line names another session."""
-    write_supervisor_log(
-        str(path),
-        [replay_launch_event(session_id="other-session-id", at=T1), replay_turn_end(at=T3)],
-    )
+    write_standard_run(str(path), session_id="other-session-id")
 
 
 def _dangling_symlink(path: Path) -> None:
@@ -547,7 +498,6 @@ def test_export_when_supervisor_log_not_a_launch_of_this_session_does_skip_it_si
 ):
     session_log = _populate_session_dir(str(tmp_path))
     make_entry(Path(session_log).parent / "supervisor-002.jsonl")
-    monkeypatch.delenv(_TRACES_ENDPOINT_ENV, raising=False)
 
     with otlp_collector() as collector:
         monkeypatch.setenv(_ENDPOINT_ENV, collector.endpoint)
@@ -561,7 +511,7 @@ def test_export_when_supervisor_log_not_a_launch_of_this_session_does_skip_it_si
 
 def _deny_read(path: Path) -> None:
     """Write a supervisor log for the session, then remove every permission on it."""
-    write_supervisor_log(str(path), [replay_launch_event(), replay_turn_end()])
+    write_standard_run(str(path))
     path.chmod(0o000)
 
 
@@ -577,10 +527,7 @@ def _make_directory(path: Path) -> None:
             _deny_read,
             os.strerror(errno.EACCES),
             id="read-denied",
-            marks=pytest.mark.skipif(
-                not hasattr(os, "geteuid") or os.geteuid() == 0,
-                reason="requires Unix file permissions and non-root user",
-            ),
+            marks=needs_mode_bits,
         ),
         pytest.param(
             _make_directory,
@@ -601,7 +548,6 @@ def test_export_when_supervisor_log_unreadable_does_skip_it_with_a_warning(
     session_log = _populate_session_dir(str(tmp_path))
     unreadable = Path(session_log).parent / "supervisor-002.jsonl"
     make_unreadable(unreadable)
-    monkeypatch.delenv(_TRACES_ENDPOINT_ENV, raising=False)
 
     with otlp_collector() as collector:
         monkeypatch.setenv(_ENDPOINT_ENV, collector.endpoint)

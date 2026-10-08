@@ -27,10 +27,9 @@ import json
 import subprocess
 import sys
 import tempfile
-import typing
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, NamedTuple, get_args
 from unittest.mock import patch
 
 import pytest
@@ -52,7 +51,6 @@ from gymrat.event_docs import (
     write_all,
 )
 from gymrat.loop.status import status_session
-from gymrat.session.paths import SESSION_LOG_NAME, supervisor_log_name
 from gymrat.session.records import SessionLogRecord
 from gymrat.session.store import fold_session
 from gymrat.supervisor.events import SessionEvent, event_from_wire
@@ -87,6 +85,52 @@ _EXPECTED_KEYS = frozenset({
     _ASYNCAPI_DOC,
     _REFERENCE_DOC,
 })
+
+
+class _Channel(NamedTuple):
+    name: str
+    schema_index: int
+    members: tuple[type[BaseModel], ...]
+    schema_path: str
+    heading: str
+
+
+#: The session-log channel: ``SessionLogRecord`` members, first schema of ``render_json_schemas()``.
+_SESSION_LOG = _Channel(
+    "session-log",
+    0,
+    get_args(SessionLogRecord.__value__),
+    _SESSION_LOG_SCHEMA,
+    "## Session Log",
+)
+#: The supervisor-log channel: ``SessionEvent`` members, second schema of ``render_json_schemas()``.
+_SUPERVISOR_LOG = _Channel(
+    "supervisor-log",
+    1,
+    get_args(SessionEvent),
+    _SUPERVISOR_LOG_SCHEMA,
+    "## Supervisor Log",
+)
+_CHANNELS = (_SESSION_LOG, _SUPERVISOR_LOG)
+_CHANNEL_PARAMS = [pytest.param(channel, id=channel.name) for channel in _CHANNELS]
+
+
+def _wire_type(model: type[BaseModel]) -> str:
+    return get_args(model.model_fields["type"].annotation)[0]
+
+
+def _md_section(md: str, start_marker: str | None, stop_marker: str | None) -> str:
+    """Slice ``md`` from ``start_marker`` (or the top) to the next ``stop_marker`` (or the end).
+
+    A missing ``start_marker`` raises ``ValueError`` instead of returning a wrong slice.
+    """
+    start = md.index(start_marker) if start_marker is not None else 0
+    end = md.find(stop_marker, start + 1) if stop_marker is not None else -1
+    return md[start:end] if end != -1 else md[start:]
+
+
+def _unwrap(text: str) -> str:
+    return " ".join(text.split())
 
 
 # ---------------------------------------------------------------------------
@@ -179,44 +223,27 @@ def _render_all_with_extended_union(channel: str) -> dict[str, str]:
     return json.loads(result.stdout)
 
 
-def _log_section(reference: str, heading: str) -> str:
-    start = reference.index(f"\n{heading}\n")
-    end = reference.find("\n## ", start + 1)
-    return reference[start:end] if end != -1 else reference[start:]
-
-
-@pytest.mark.parametrize(
-    ("channel", "schema_path", "heading"),
-    [
-        pytest.param("session-log", _SESSION_LOG_SCHEMA, "## Session Log", id="session-log"),
-        pytest.param(
-            "supervisor-log",
-            _SUPERVISOR_LOG_SCHEMA,
-            "## Supervisor Log",
-            id="supervisor-log",
-        ),
-    ],
-)
+@pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
 def test_render_all_when_union_gains_model_does_document_it_in_every_generated_doc(
-    channel: str,
-    schema_path: str,
-    heading: str,
+    channel: _Channel,
 ):
-    artifacts = _render_all_with_extended_union(channel)
+    artifacts = _render_all_with_extended_union(channel.name)
 
-    defs = json.loads(artifacts[schema_path])["$defs"]
+    defs = json.loads(artifacts[channel.schema_path])["$defs"]
     summary = defs[ProbeModel.__name__]["description"].split("\n")[0]
     asyncapi = yaml.safe_load(artifacts[_ASYNCAPI_DOC])
     channels = asyncapi["channels"]
     channels_listing_probe = [
         name for name in channels if PROBE_WIRE_TYPE in channels[name]["messages"]
     ]
-    last_message = list(channels[channel]["messages"].items())[-1]
+    last_message = list(channels[channel.name]["messages"].items())[-1]
     component_summary = asyncapi["components"]["messages"][PROBE_WIRE_TYPE]["summary"]
     reference = artifacts[_REFERENCE_DOC]
     probe_heading_count = reference.count(f"\n### `{PROBE_WIRE_TYPE}`\n")
-    last_subsection = _log_section(reference, heading).rsplit("\n### ", 1)[1]
-    assert channels_listing_probe == [channel]
+    last_subsection = _md_section(reference, f"\n{channel.heading}\n", "\n## ").rsplit("\n### ", 1)[
+        1
+    ]
+    assert channels_listing_probe == [channel.name]
     assert last_message == (
         PROBE_WIRE_TYPE,
         {"$ref": f"#/components/messages/{PROBE_WIRE_TYPE}"},
@@ -231,8 +258,45 @@ def test_render_all_when_union_gains_model_does_document_it_in_every_generated_d
 # ---------------------------------------------------------------------------
 
 
-#: A minimal baseline measurement.
-_BASELINE = baseline_record()
+#: One probe record per ``SessionLogRecord`` wire type, shared by every reader probe.
+_RECORD_BY_TYPE: dict[str, SessionLogRecord] = {
+    "session": session_record(),
+    "baseline": baseline_record(),
+    "iteration": iteration_record(),
+    "keep": committed_keep(1),
+    "discard": discard_record(1),
+    "hook": hook_record(),
+    "finalize": finalize_record(),
+    "stop": stop_record(),
+    "command": command_record(),
+}
+
+#: Records each probe needs before it in a log for ``fold_session`` to accept it.
+_FOLD_CONTEXT: dict[str, tuple[SessionLogRecord, ...]] = {
+    "session": (),
+    "baseline": (session_record(),),
+    "iteration": (session_record(),),
+    "keep": (session_record(), iteration_record()),
+    "discard": (session_record(), iteration_record()),
+    "hook": (session_record(),),
+    "finalize": (session_record(), iteration_record(), committed_keep(1)),
+    "stop": (session_record(), iteration_record()),
+    "command": (session_record(),),
+}
+
+#: Records each probe needs before it in a log for ``status_session`` to render it.
+_STATUS_CONTEXT: dict[str, tuple[SessionLogRecord, ...]] = {
+    "baseline": (),
+    "iteration": (),
+    "keep": (iteration_record(),),
+    "discard": (iteration_record(),),
+    "hook": (),
+    "stop": (),
+    "command": (),
+}
+
+#: Wire types the status-history probe skips; see ``_status_history_types``.
+_STATUS_EXCLUDED = frozenset({"session", "finalize"})
 
 
 def _fold_session_types() -> set[str]:
@@ -241,23 +305,9 @@ def _fold_session_types() -> set[str]:
     A type is in the set when folding a log containing it (in valid context)
     produces a different state than folding the same log without it.
     """
-    probes: dict[str, tuple[tuple[SessionLogRecord, ...], SessionLogRecord]] = {
-        "session": ((), session_record()),
-        "iteration": ((session_record(),), iteration_record()),
-        "keep": ((session_record(), iteration_record()), committed_keep(1)),
-        "discard": ((session_record(), iteration_record()), discard_record(1)),
-        "finalize": (
-            (session_record(), iteration_record(), committed_keep(1)),
-            finalize_record(),
-        ),
-        "stop": ((session_record(), iteration_record()), stop_record()),
-        "baseline": ((session_record(),), _BASELINE),
-        "hook": ((session_record(),), hook_record()),
-        "command": ((session_record(),), command_record()),
-    }
-
     changes: set[str] = set()
-    for wire_type, (before, record) in probes.items():
+    for wire_type, record in _RECORD_BY_TYPE.items():
+        before = _FOLD_CONTEXT[wire_type]
         without = fold_session(list(before))
         with_record = fold_session([*before, record])
         if with_record != without:
@@ -278,21 +328,15 @@ def _status_history_types() -> set[str]:
     which belongs to the folded session state (already covered by the
     fold-session reader), not the ordered iteration history this reader
     builds. Probing it here would always register as a difference and produce
-    a false positive against ``READERS["status-history"].types``.
+    a false positive against ``READERS["status-history"].types``. ``session``
+    is excluded because every probe log already starts with the session header.
     """
-    probes: dict[str, tuple[tuple[SessionLogRecord, ...], SessionLogRecord]] = {
-        "baseline": ((), _BASELINE),
-        "iteration": ((), iteration_record()),
-        "keep": ((iteration_record(),), committed_keep(1)),
-        "discard": ((iteration_record(),), discard_record(1)),
-        "stop": ((), stop_record()),
-        "hook": ((), hook_record()),
-        "command": ((), command_record()),
-    }
-
     types: set[str] = set()
     with tempfile.TemporaryDirectory() as scratch:
-        for wire_type, (before, record) in probes.items():
+        for wire_type, record in _RECORD_BY_TYPE.items():
+            if wire_type in _STATUS_EXCLUDED:
+                continue
+            before = _STATUS_CONTEXT[wire_type]
             root_without = str(Path(scratch) / f"without-{wire_type}")
             root_with = str(Path(scratch) / f"with-{wire_type}")
             Path(root_without).mkdir(parents=True)
@@ -316,20 +360,8 @@ def _supervisor_guard_types() -> set[str]:
     A type is in the set when a singleton list of that record produces a count
     of 1 (not 0, which would mean the type is excluded).
     """
-    builders: dict[str, SessionLogRecord] = {
-        "session": session_record(),
-        "baseline": _BASELINE,
-        "iteration": iteration_record(),
-        "keep": committed_keep(1),
-        "discard": discard_record(1),
-        "hook": hook_record(),
-        "finalize": finalize_record(),
-        "stop": stop_record(),
-        "command": command_record(),
-    }
-
     types: set[str] = set()
-    for wire_type, record in builders.items():
+    for wire_type, record in _RECORD_BY_TYPE.items():
         if outcome_record_count([record]) > 0:
             types.add(wire_type)
     return types
@@ -337,13 +369,13 @@ def _supervisor_guard_types() -> set[str]:
 
 def _dashboard_types() -> set[str]:
     """Derive the dashboard type set from the supervisor event type union."""
-    types: set[str] = set()
-    for cls in typing.get_args(SessionEvent):
-        # Each event's wire type is its ``type`` field default.
-        field_info = cls.model_fields.get("type")
-        if field_info is not None:
-            types.add(field_info.default)
-    return types
+    return {_wire_type(model) for model in _SUPERVISOR_LOG.members}
+
+
+def test_reader_probes_when_compared_to_session_log_union_does_cover_every_wire_type():
+    union_types = {_wire_type(model) for model in _SESSION_LOG.members}
+
+    assert set(_RECORD_BY_TYPE) == union_types
 
 
 @pytest.mark.parametrize(
@@ -375,20 +407,20 @@ def _render_schemas() -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 @pytest.mark.parametrize(
-    ("schema_idx", "title", "file_name"),
+    ("channel", "title"),
     [
-        pytest.param(0, "gymrat session log record", "session-log", id="session-log"),
-        pytest.param(1, "gymrat supervisor log event", "supervisor-log", id="supervisor-log"),
+        pytest.param(_SESSION_LOG, "gymrat session log record", id="session-log"),
+        pytest.param(_SUPERVISOR_LOG, "gymrat supervisor log event", id="supervisor-log"),
     ],
 )
 def test_render_json_schemas_when_called_does_return_draft_2020_12_envelope(
-    schema_idx: int, title: str, file_name: str
+    channel: _Channel, title: str
 ):
-    schema = _render_schemas()[schema_idx]
+    schema = _render_schemas()[channel.schema_index]
 
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["title"] == title
-    assert schema["$id"] == f"https://github.com/jeffzi/gymrat/schemas/{file_name}.schema.json"
+    assert schema["$id"] == f"https://github.com/jeffzi/gymrat/{channel.schema_path}"
 
 
 # ---------------------------------------------------------------------------
@@ -411,19 +443,20 @@ def test_render_json_schemas_when_called_does_carry_description_on_launch_kickof
 
 
 @pytest.mark.parametrize(
-    ("schema_idx", "model_name", "expected_const"),
+    ("channel", "model_name", "expected_const"),
     [
-        pytest.param(0, "IterationRecord", "iteration", id="session-log-iteration"),
-        pytest.param(1, "ToolStartEvent", "tool_start", id="supervisor-log-tool-start"),
+        pytest.param(_SESSION_LOG, "IterationRecord", "iteration", id="session-log-iteration"),
+        pytest.param(
+            _SUPERVISOR_LOG, "ToolStartEvent", "tool_start", id="supervisor-log-tool-start"
+        ),
     ],
 )
 def test_render_json_schemas_when_called_does_have_const_type_discriminator(
-    schema_idx: int,
+    channel: _Channel,
     model_name: str,
     expected_const: str,
 ):
-    schemas = _render_schemas()
-    schema = schemas[schema_idx]
+    schema = _render_schemas()[channel.schema_index]
 
     model_schema = schema["$defs"][model_name]
     type_prop = model_schema["properties"]["type"]
@@ -431,25 +464,15 @@ def test_render_json_schemas_when_called_does_have_const_type_discriminator(
     assert type_prop.get("const") == expected_const
 
 
-@pytest.mark.parametrize(
-    ("schema_idx", "members"),
-    [
-        pytest.param(0, get_args(SessionLogRecord.__value__), id="session-log"),
-        pytest.param(1, get_args(SessionEvent), id="supervisor-log"),
-    ],
-)
-def test_render_json_schemas_when_called_does_map_every_type_to_its_member_def(
-    schema_idx: int,
-    members: tuple[type, ...],
-):
+@pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
+def test_render_json_schemas_when_called_does_map_every_type_to_its_member_def(channel: _Channel):
     expected_mapping = {
-        get_args(member.model_fields["type"].annotation)[0]: f"#/$defs/{member.__name__}"
-        for member in members
+        _wire_type(member): f"#/$defs/{member.__name__}" for member in channel.members
     }
 
-    schema = _render_schemas()[schema_idx]
+    schema = _render_schemas()[channel.schema_index]
 
-    assert schema["oneOf"] == [{"$ref": f"#/$defs/{member.__name__}"} for member in members]
+    assert schema["oneOf"] == [{"$ref": f"#/$defs/{member.__name__}"} for member in channel.members]
     assert schema["discriminator"] == {"propertyName": "type", "mapping": expected_mapping}
 
 
@@ -458,20 +481,20 @@ def test_render_json_schemas_when_called_does_map_every_type_to_its_member_def(
 # ---------------------------------------------------------------------------
 
 
-def test_render_json_schemas_when_called_does_set_additional_properties_false_on_records():
-    session_log, _ = _render_schemas()
+@pytest.mark.parametrize(
+    ("channel", "model_name", "expected"),
+    [
+        pytest.param(_SESSION_LOG, "IterationRecord", False, id="session-log-record"),
+        # None stands for "key absent": events accept unknown fields.
+        pytest.param(_SUPERVISOR_LOG, "ToolStartEvent", None, id="supervisor-log-event"),
+    ],
+)
+def test_render_json_schemas_when_called_does_set_additional_properties_per_log(
+    channel: _Channel, model_name: str, expected: bool | None
+):
+    model_schema = _render_schemas()[channel.schema_index]["$defs"][model_name]
 
-    iteration_schema = session_log["$defs"]["IterationRecord"]
-
-    assert iteration_schema.get("additionalProperties") is False
-
-
-def test_render_json_schemas_when_called_does_omit_additional_properties_on_events():
-    _, supervisor_log = _render_schemas()
-
-    tool_start_schema = supervisor_log["$defs"]["ToolStartEvent"]
-
-    assert "additionalProperties" not in tool_start_schema
+    assert model_schema.get("additionalProperties", None) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -480,18 +503,17 @@ def test_render_json_schemas_when_called_does_omit_additional_properties_on_even
 
 
 @pytest.mark.parametrize(
-    ("schema_idx", "model_name"),
+    ("channel", "model_name"),
     [
-        pytest.param(0, "IterationRecord", id="session-log-iteration"),
-        pytest.param(1, "LaunchEvent", id="supervisor-log-launch"),
+        pytest.param(_SESSION_LOG, "IterationRecord", id="session-log-iteration"),
+        pytest.param(_SUPERVISOR_LOG, "LaunchEvent", id="supervisor-log-launch"),
     ],
 )
 def test_render_json_schemas_when_called_does_type_at_as_integer(
-    schema_idx: int,
+    channel: _Channel,
     model_name: str,
 ):
-    schemas = _render_schemas()
-    schema = schemas[schema_idx]
+    schema = _render_schemas()[channel.schema_index]
 
     model_schema = schema["$defs"][model_name]
     at_prop = model_schema["properties"]["at"]
@@ -505,19 +527,19 @@ def test_render_json_schemas_when_called_does_type_at_as_integer(
 
 
 @pytest.mark.parametrize(
-    ("schema_idx", "model_name", "field_name"),
+    ("channel", "model_name", "field_name"),
     [
-        pytest.param(0, "SessionRecord", "schema", id="session-log-schema"),
-        pytest.param(1, "LaunchEvent", "schema", id="supervisor-log-schema"),
-        pytest.param(1, "LaunchEvent", "session_id", id="supervisor-log-session-id"),
+        pytest.param(_SESSION_LOG, "SessionRecord", "schema", id="session-log-schema"),
+        pytest.param(_SUPERVISOR_LOG, "LaunchEvent", "schema", id="supervisor-log-schema"),
+        pytest.param(_SUPERVISOR_LOG, "LaunchEvent", "session_id", id="supervisor-log-session-id"),
     ],
 )
 def test_render_json_schemas_when_called_does_require_header_field_without_default(
-    schema_idx: int,
+    channel: _Channel,
     model_name: str,
     field_name: str,
 ):
-    model_schema = _render_schemas()[schema_idx]["$defs"][model_name]
+    model_schema = _render_schemas()[channel.schema_index]["$defs"][model_name]
 
     assert field_name in model_schema["required"]
     assert "default" not in model_schema["properties"][field_name]
@@ -620,15 +642,12 @@ def test_render_json_schemas_when_called_does_not_include_null_on_optional_never
     assert "anyOf" not in field_schema
 
 
-def test_render_json_schemas_when_called_does_not_restrict_tool_start_input_away_from_null():
+def test_render_json_schemas_when_called_does_leave_tool_start_input_untyped():
     _, supervisor_log = _render_schemas()
 
-    tool_start = supervisor_log["$defs"]["ToolStartEvent"]
-    properties = tool_start["properties"]
+    input_prop = supervisor_log["$defs"]["ToolStartEvent"]["properties"]["input"]
 
-    assert "input" in properties
-    input_prop = properties["input"]
-    assert input_prop.get("type") is None
+    assert "type" not in input_prop
 
 
 # ---------------------------------------------------------------------------
@@ -676,44 +695,25 @@ def test_render_asyncapi_when_called_does_have_two_channels_with_correct_address
     assert channels["supervisor-log"]["address"] == ".gymrat/supervisor-<ms>.jsonl"
 
 
-#: Each channel with the members of the union it documents.
-_CHANNEL_MEMBERS: dict[str, tuple[type[BaseModel], ...]] = {
-    "session-log": get_args(SessionLogRecord.__value__),
-    "supervisor-log": get_args(SessionEvent),
-}
-_CHANNEL_UNIONS = [
-    pytest.param(channel, members, id=channel) for channel, members in _CHANNEL_MEMBERS.items()
-]
-
-#: Each channel's position in the pair returned by ``render_json_schemas()``.
-_SCHEMA_INDEX = {"session-log": 0, "supervisor-log": 1}
-
-
-def _wire_type(model: type[BaseModel]) -> str:
-    return get_args(model.model_fields["type"].annotation)[0]
-
-
-@pytest.mark.parametrize(("channel", "members"), _CHANNEL_UNIONS)
+@pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
 def test_render_asyncapi_when_called_does_list_channel_messages_in_union_order(
-    channel: str,
-    members: tuple[type[BaseModel], ...],
+    channel: _Channel,
 ):
     doc = _render_asyncapi_doc()
 
-    messages = doc["channels"][channel]["messages"]
+    messages = doc["channels"][channel.name]["messages"]
 
-    expected = [_wire_type(model) for model in members]
+    expected = [_wire_type(model) for model in channel.members]
     assert list(messages) == expected
     assert messages == {wt: {"$ref": f"#/components/messages/{wt}"} for wt in expected}
 
 
 def test_render_asyncapi_when_called_does_list_component_messages_in_union_order():
+    expected = [_wire_type(model) for channel in _CHANNELS for model in channel.members]
+
     doc = _render_asyncapi_doc()
 
-    messages = doc["components"]["messages"]
-
-    members = (*get_args(SessionLogRecord.__value__), *get_args(SessionEvent))
-    assert list(messages) == [_wire_type(model) for model in members]
+    assert list(doc["components"]["messages"]) == expected
 
 
 def test_render_asyncapi_when_model_has_no_description_does_use_class_name_as_summary():
@@ -725,20 +725,20 @@ def test_render_asyncapi_when_model_has_no_description_does_use_class_name_as_su
     assert doc["components"]["messages"]["keep"]["summary"] == "KeepRecord"
 
 
-@pytest.mark.parametrize(("channel", "members"), _CHANNEL_UNIONS)
+@pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
 def test_render_asyncapi_when_called_does_take_message_summary_from_schema_description_first_line(
-    channel: str,
-    members: tuple[type[BaseModel], ...],
+    channel: _Channel,
 ):
     schemas, doc = _render_with_schemas()
-    defs = schemas[_SCHEMA_INDEX[channel]]["$defs"]
+    defs = schemas[channel.schema_index]["$defs"]
 
     summaries = {
         wire_type: doc["components"]["messages"][wire_type]["summary"]
-        for wire_type in doc["channels"][channel]["messages"]
+        for wire_type in doc["channels"][channel.name]["messages"]
     }
     assert summaries == {
-        _wire_type(model): defs[model.__name__]["description"].split("\n")[0] for model in members
+        _wire_type(model): defs[model.__name__]["description"].split("\n")[0]
+        for model in channel.members
     }
 
 
@@ -751,12 +751,12 @@ def test_render_asyncapi_when_called_does_take_message_summary_from_schema_descr
     ("channel", "model"),
     [
         pytest.param(channel, model, id=_wire_type(model))
-        for channel, members in _CHANNEL_MEMBERS.items()
-        for model in members
+        for channel in _CHANNELS
+        for model in channel.members
     ],
 )
 def test_render_asyncapi_when_called_does_describe_each_message_payload(
-    channel: str,
+    channel: _Channel,
     model: type[BaseModel],
 ):
     doc = _render_asyncapi_doc()
@@ -767,7 +767,7 @@ def test_render_asyncapi_when_called_does_describe_each_message_payload(
     assert msg["title"] == model.__name__
     assert msg["payload"] == {
         "schemaFormat": "application/schema+json;version=draft-2020-12",
-        "schema": {"$ref": f"./{channel}.schema.json#/$defs/{model.__name__}"},
+        "schema": {"$ref": f"./{channel.name}.schema.json#/$defs/{model.__name__}"},
     }
     assert msg["traits"] == [{"$ref": "#/components/messageTraits/envelope"}]
 
@@ -849,20 +849,9 @@ def _render_reference_doc() -> str:
     return render_reference(schemas)
 
 
-def _intro(md: str) -> str:
-    intro_end = md.find("\n## ")
-    return md[:intro_end]
-
-
-def _section_for_type(md: str, wire_type: str) -> str:
-    start = md.find(f"\n### `{wire_type}`\n")
-    next_heading = md.find("\n### ", start + 1)
-    return md[start:next_heading] if next_heading != -1 else md[start:]
-
-
-def _readers_section(md: str) -> str:
-    readers_start = md.find("## Readers")
-    return md[readers_start:]
+def _type_section(md: str, wire_type: str) -> str:
+    # Stop at the next heading of any level so nested ``####`` tables stay out.
+    return _md_section(md, f"\n### `{wire_type}`\n", "\n#")
 
 
 # ---------------------------------------------------------------------------
@@ -884,7 +873,7 @@ def test_render_reference_when_called_does_start_with_generated_file_banner():
 def test_render_reference_when_called_does_introduce_log_conventions():
     md = _render_reference_doc()
 
-    intro = _intro(md)
+    intro = _unwrap(_md_section(md, None, "\n## "))
 
     assert [
         phrase
@@ -906,28 +895,13 @@ def test_render_reference_when_called_does_introduce_log_conventions():
 # ---------------------------------------------------------------------------
 
 
-def _wire_types(members: tuple[type[BaseModel], ...]) -> list[str]:
-    return [get_args(model.model_fields["type"].annotation)[0] for model in members]
-
-
-_SESSION_WIRE_ORDER = _wire_types(get_args(SessionLogRecord.__value__))
-
-_SUPERVISOR_WIRE_ORDER = _wire_types(get_args(SessionEvent))
-
-
-@pytest.mark.parametrize(
-    "wire_order",
-    [
-        pytest.param(_SESSION_WIRE_ORDER, id="session-log"),
-        pytest.param(_SUPERVISOR_WIRE_ORDER, id="supervisor-log"),
-    ],
-)
+@pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
 def test_render_reference_when_called_does_order_sections_per_union_declaration(
-    wire_order: list[str],
+    channel: _Channel,
 ):
     md = _render_reference_doc()
 
-    positions = [md.find(f"\n### `{wire_type}`\n") for wire_type in wire_order]
+    positions = [md.find(f"\n### `{_wire_type(model)}`\n") for model in channel.members]
 
     assert -1 not in positions
     assert positions == sorted(positions)
@@ -966,7 +940,7 @@ def test_render_reference_when_called_does_order_sections_per_union_declaration(
 def test_render_reference_when_called_does_have_field_rows(wire_type: str, fields: list[str]):
     md = _render_reference_doc()
 
-    section = _section_for_type(md, wire_type)
+    section = _type_section(md, wire_type)
 
     assert [field for field in fields if f"\n| `{field}` |" not in section] == []
 
@@ -997,7 +971,7 @@ def test_render_reference_when_called_does_mark_field_status(
 
     rows = [
         line
-        for line in _section_for_type(md, wire_type).split("\n")
+        for line in _type_section(md, wire_type).split("\n")
         if line.startswith(f"| `{field}` |")
     ]
 
@@ -1010,8 +984,6 @@ def test_render_reference_when_called_does_mark_field_status(
 
 
 def test_render_reference_when_called_does_have_nested_object_subsections():
-    headings = set(_render_reference_doc().split("\n"))
-
     nested_objects = [
         "SessionConfig",
         "SessionHooks",
@@ -1020,6 +992,9 @@ def test_render_reference_when_called_does_have_nested_object_subsections():
         "IterationPrimary",
         "DirtyInfo",
     ]
+
+    headings = set(_render_reference_doc().split("\n"))
+
     missing = [name for name in nested_objects if f"#### `{name}`" not in headings]
 
     assert missing == []
@@ -1032,12 +1007,12 @@ def test_render_reference_when_called_does_have_nested_object_subsections():
 
 @pytest.mark.parametrize("op_name", [pytest.param(name, id=name) for name in READERS])
 def test_render_reference_when_called_does_describe_each_reader_operation(op_name: str):
+    spec = READERS[op_name]
+    expected = _unwrap(f"- **{op_name}** (channel: `{spec.channel}`): {spec.description}")
+
     md = _render_reference_doc()
 
-    readers_section = _readers_section(md)
-
-    spec = READERS[op_name]
-    assert f"- **{op_name}** (channel: `{spec.channel}`): {spec.description}" in readers_section
+    assert expected in _unwrap(_md_section(md, "\n## Readers\n", None))
 
 
 # ---------------------------------------------------------------------------
@@ -1050,19 +1025,6 @@ def test_render_reference_when_called_does_end_with_single_trailing_newline():
 
     assert md.endswith("\n")
     assert not md.endswith("\n\n")
-
-
-# ---------------------------------------------------------------------------
-# asyncapi addresses derive from path naming helpers
-# ---------------------------------------------------------------------------
-
-
-def test_session_log_address_when_accessed_does_end_with_session_log_name():
-    assert SESSION_LOG_ADDRESS.endswith(SESSION_LOG_NAME)
-
-
-def test_supervisor_log_address_when_accessed_does_match_supervisor_log_name_pattern():
-    assert SUPERVISOR_LOG_ADDRESS.endswith(supervisor_log_name("<ms>"))
 
 
 # ---------------------------------------------------------------------------

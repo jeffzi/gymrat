@@ -40,6 +40,7 @@ from gymrat.session.records import (
     SessionRecord,
     StopRecord,
 )
+from gymrat.session.schema import KeepReason
 from gymrat.session.store import SessionState, append_record, read_records
 from gymrat.session.workspace import BaselineRef, Worktrees
 
@@ -201,7 +202,22 @@ def blocked_keep(seq: int, **overrides: Any) -> KeepRecord:
     return _overridden(default, overrides)
 
 
+def gate_block(seq: int, reason: KeepReason) -> KeepRecord:
+    """Build a keep a gate refused before the configured checks ever ran.
+
+    Args:
+        seq: The iteration the refused keep settles.
+        reason: The gate that refused it, such as ``"gating-regression"`` or
+            ``"nothing-measured"``.
+
+    Returns:
+        The blocked keep record, its checks configured but not run.
+    """
+    return blocked_keep(seq, reason=reason, checks=KeepChecks(configured=True))
+
+
 def discard_record(seq: int) -> DiscardRecord:
+    """A discard that settles the iteration numbered ``seq``."""
     return DiscardRecord(type="discard", seq=seq, at=AT)
 
 

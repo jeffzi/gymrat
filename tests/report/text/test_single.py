@@ -1,9 +1,12 @@
-"""Tests for grouped rendering in single-candidate, single-section comparison reports.
+"""Tests for the single-candidate comparison text report, flat and sectioned.
 
-A single-kind comparison renders flat (no section borders).  These tests verify
-that the flat renderer shows group headers with a kind suffix, indents member
-rows by the group indent, and uses case names rather than full metric names.
-Names and labels carrying square brackets print as written.
+A single-kind comparison renders flat (no section borders); several kinds render
+one bordered section each. These tests verify that group headers carry a kind
+suffix, member rows use case names in first-appearance order, pair counts align
+across rows and sections, excluded metrics are counted into an aggregate's
+provenance, a sectioned table closes on its last geomean, and the verbose
+method block closes the report. Names and labels carrying square brackets print
+as written.
 """
 
 from __future__ import annotations
@@ -14,8 +17,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat.model import Exclusion
 from gymrat.report.text.render import render_report
-from gymrat.report.types import CandidateMetric, MetricComparison
+from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
 from gymrat.verdict import GroupAggregate, KindAggregate
 
 if TYPE_CHECKING:
@@ -24,10 +28,10 @@ if TYPE_CHECKING:
     from gymrat.report.types import ComparisonResult
 from tests._ansi import strip_ansi
 from tests.report._assertions import (
-    cells_of,
     line_containing,
     line_starting_with,
     offsets_of,
+    stripped_cells,
     table_region,
     table_rows,
 )
@@ -36,12 +40,87 @@ from tests.report._comparisons import (
     create_comparison_result,
     exact_metric,
     kind_metric,
+    memory_kind,
     metric_meta,
+    other_kind,
     permutation_metric,
+    time_kind,
     two_kind_metrics,
     two_kind_result,
+    without_gated_geomean,
 )
 from tests.report._verdicts import exact_verdict, geomean_of
+
+# ---------------------------------------------------------------------------
+# group headers, case names and first-appearance order
+# ---------------------------------------------------------------------------
+
+
+def test_render_report_when_flat_body_has_groups_does_list_them_in_first_appearance_order():
+    geomean = geomean_of(-2, 5)
+    result = create_comparison_result(
+        metrics={
+            "node/get#time": kind_metric(
+                kind="time", short_name="node.get", verdict="improved", delta=-5
+            ),
+            "entity/spawn#time": kind_metric(
+                kind="time",
+                short_name="entity.spawn",
+                verdict="regressed",
+                delta=4,
+            ),
+            "node/set#time": kind_metric(
+                kind="time",
+                short_name="node.set",
+                verdict="no-signal",
+                delta=0.1,
+            ),
+            "entity/check#time": kind_metric(
+                kind="time",
+                short_name="entity.check",
+                verdict="improved",
+                delta=-3,
+            ),
+            "warmup#time": kind_metric(
+                kind="time", short_name="warmup", verdict="no-signal", delta=0.3
+            ),
+        },
+        candidates=[
+            create_candidate(
+                kinds=[
+                    KindAggregate(
+                        kind="time",
+                        geomean=geomean,
+                        groups=(
+                            GroupAggregate(group="node", geomean=geomean_of(-2.5, 2)),
+                            GroupAggregate(group="entity", geomean=geomean_of(0.5, 2)),
+                        ),
+                        gated_geomean=geomean,
+                    )
+                ]
+            )
+        ],
+    )
+
+    region = table_region(render_report(result))
+
+    assert region == [
+        "gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata",
+        "metric",
+        "<rule>",
+        "node · time",
+        "get",
+        "set",
+        "",
+        "entity · time",
+        "spawn",
+        "check",
+        "",
+        "warmup",
+        "<rule>",
+        "geomean (5 stable metrics)",
+    ]
+
 
 # ---------------------------------------------------------------------------
 # pair count alignment across rows with and without a band
@@ -219,9 +298,7 @@ def test_render_report_when_baseline_and_candidate_labels_carry_brackets_does_pr
 
     header = line_starting_with(report, "metric")
 
-    assert cells_of(header)[1].strip() == "[dim]main"
-    assert cells_of(header)[2].strip() == "[bold]turbo"
-    assert cells_of(header)[3].strip() == "vs [dim]main"
+    assert stripped_cells(header)[1:] == ["[dim]main", "[bold]turbo", "vs [dim]main"]
 
 
 def _sectioned_bracketed_result() -> ComparisonResult:
@@ -267,7 +344,7 @@ def _sectioned_bracketed_result() -> ComparisonResult:
 def test_render_report_when_sectioned_names_carry_brackets_does_print_them_literally():
     report = render_report(_sectioned_bracketed_result())
 
-    assert [cells_of(row)[0].strip() for row in table_rows(report)] == [
+    assert [stripped_cells(row)[0] for row in table_rows(report)] == [
         "[underline]time",
         "[bold]entity",
         "spawn",
@@ -277,3 +354,102 @@ def test_render_report_when_sectioned_names_carry_brackets_does_print_them_liter
         "[italic]encode",
         "geomean · [strike]memory (1)",
     ]
+
+
+# ---------------------------------------------------------------------------
+# sectioned aggregates
+# ---------------------------------------------------------------------------
+
+
+def test_render_report_when_metrics_are_excluded_does_count_them_into_the_provenance():
+    result = replace(
+        two_kind_result(),
+        candidates=(
+            create_candidate(
+                kinds=[
+                    replace(
+                        time_kind(),
+                        geomean=geomean_of(
+                            -3.2,
+                            2,
+                            excluded=[Exclusion(metric="warmup#time", reason="unstable")],
+                        ),
+                    ),
+                    memory_kind(),
+                ]
+            ),
+        ),
+    )
+
+    row = line_starting_with(render_report(result), "geomean · time")
+
+    assert stripped_cells(row)[0] == "geomean · time (2/3)"
+
+
+def _several_kinds_gate() -> ComparisonResult:
+    """The two-kind layout with the ``memory`` kind gating too."""
+    metrics = dict(two_kind_metrics())
+    encode = metrics["encode#memory"]
+    metrics["encode#memory"] = replace(encode, meta=replace(encode.meta, gating=True))
+    return create_comparison_result(
+        metrics=metrics,
+        candidates=[
+            create_candidate(
+                kinds=[time_kind(), replace(memory_kind(), gated_geomean=geomean_of(6.1, 1))]
+            )
+        ],
+    )
+
+
+def _no_kind_gates() -> ComparisonResult:
+    """The two-kind layout with no ``time`` metric gating, so no kind gates."""
+    metrics = dict(two_kind_metrics())
+    for name in ("entity/alive_check#time", "entity/spawn#time", "warmup#time"):
+        entry = metrics[name]
+        metrics[name] = replace(entry, meta=replace(entry.meta, gating=False))
+    return replace(
+        two_kind_result(),
+        metrics=metrics,
+        candidates=(create_candidate(kinds=[without_gated_geomean(time_kind()), memory_kind()]),),
+    )
+
+
+@pytest.mark.parametrize(
+    "make_result",
+    [
+        pytest.param(_several_kinds_gate, id="several-kinds-gate"),
+        pytest.param(_no_kind_gates, id="no-kind-gates"),
+    ],
+)
+def test_render_report_when_closing_a_sectioned_table_does_end_on_the_last_geomean(
+    make_result: Callable[[], ComparisonResult],
+):
+    report = render_report(make_result())
+
+    assert table_region(report)[-1] == "geomean · memory (1)"
+
+
+# ---------------------------------------------------------------------------
+# section ordering: table, summary, highlights, method block
+# ---------------------------------------------------------------------------
+
+
+def _ordered_result() -> ComparisonResult:
+    """A two-metric run whose only footer content is the permutation method line."""
+    return create_comparison_result(
+        baseline_label="main",
+        metrics={
+            "metric1/time": permutation_metric(verdict="improved", delta=-10, unit="ns"),
+            "metric2/time": permutation_metric(
+                verdict="no-signal", delta=2, gating=False, unit="ns"
+            ),
+        },
+        candidates=[create_candidate(label="faster", kinds=[other_kind(-5, 1)])],
+    )
+
+
+def test_render_report_when_verbose_does_add_the_method_block_below_a_blank_line():
+    lines = render_report(_ordered_result(), ReportOptions(verbose=True)).split("\n")
+
+    method = next(i for i, line in enumerate(lines) if "sign-flip permutation test" in line)
+    assert (lines[method - 1], method) == ("", len(lines) - 1)

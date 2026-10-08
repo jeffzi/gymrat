@@ -134,10 +134,19 @@ def test_advance_when_judge_finished_does_store_judge_detail_as_data():
     )
 
 
-def test_advance_when_confirm_started_does_set_confirm_note():
-    result = advance(_state(), ConfirmStarted(filtered_metrics=("latency", "alloc"), at_ms=5000))
+@pytest.mark.parametrize(
+    ("filtered_metrics", "expected"),
+    [
+        pytest.param(None, "full suite", id="unfiltered"),
+        pytest.param(("latency", "alloc"), "2 metrics", id="filtered"),
+    ],
+)
+def test_advance_when_confirm_started_does_set_confirm_note(
+    filtered_metrics: tuple[str, ...] | None, expected: str
+):
+    result = advance(_state(), ConfirmStarted(filtered_metrics=filtered_metrics, at_ms=5000))
 
-    assert result.nodes.confirm.note == "2 metrics"
+    assert result.nodes.confirm.note == expected
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +182,32 @@ def test_advance_when_confirm_started_does_set_confirm_note():
             id="judge-finished-missing-delta",
         ),
         pytest.param(
+            (),
+            JudgeFinished(primary_delta_pct=-6.8, regressed=("latency",), at_ms=6000),
+            "judge -6.8% on geomean · 1 regressed: latency",
+            id="judge-finished-one-regressed",
+        ),
+        pytest.param(
+            (),
+            JudgeFinished(
+                primary_delta_pct=-6.8,
+                regressed=("latency", "alloc", "throughput", "parse"),
+                at_ms=6000,
+            ),
+            "judge -6.8% on geomean · 4 regressed: latency, alloc, throughput, …",
+            id="judge-finished-more-regressed-than-cap",
+        ),
+        pytest.param(
             (ConfirmStarted(filtered_metrics=None, at_ms=5000),),
             ConfirmFinished(reproduced=True, at_ms=15000),
             "confirm 0/2 · regressions reproduced",
             id="confirm-finished",
+        ),
+        pytest.param(
+            (ConfirmStarted(filtered_metrics=None, at_ms=5000),),
+            ConfirmFinished(reproduced=False, at_ms=15000),
+            "confirm 0/2 · regressions not reproduced",
+            id="confirm-finished-not-reproduced",
         ),
         pytest.param(
             (),

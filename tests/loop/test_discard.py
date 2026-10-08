@@ -18,7 +18,7 @@ from gymrat.errors import GymratError
 from gymrat.loop.discard import discard_session
 from gymrat.loop.keep import keep_session
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
-from gymrat.session.records import IterationRecord, KeepChecks, KeepRecord, SessionLogRecord
+from gymrat.session.records import IterationRecord, KeepRecord, SessionLogRecord
 from tests._git import head_of, run_git, status_of
 from tests.loop._settle import (
     assert_settling_record,
@@ -33,9 +33,9 @@ from tests.loop._settle import (
 )
 from tests.session.records._fixtures import (
     append_records,
-    blocked_keep,
     committed_keep,
     discard_record,
+    gate_block,
     iteration_record,
     log_records,
 )
@@ -73,7 +73,7 @@ def test_discard_session_when_worktree_clean_does_record_discard_anyway(repo: st
     assert settling_record_of(repo) == result.record
 
 
-_GATING_BLOCK = blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True))
+_GATING_BLOCK = gate_block(1, "gating-regression")
 
 
 @pytest.mark.parametrize(
@@ -106,8 +106,8 @@ def test_discard_session_when_gating_block_then_nothing_measured_keep_does_repor
         repo,
         (
             confirmed_regression(1),
-            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
-            blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+            _GATING_BLOCK,
+            gate_block(2, "nothing-measured"),
         ),
     )
     edit_experiment(repo)
@@ -127,7 +127,7 @@ async def test_discard_session_when_keep_retried_after_block_does_throw_away_the
         repo,
         (
             confirmed_regression(1),
-            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+            _GATING_BLOCK,
         ),
     )
     edit_experiment(repo)
@@ -172,7 +172,6 @@ async def test_discard_session_when_keep_committed_then_agent_committed_does_res
     checks_pass(monkeypatch)
     keep_result = await keep_session(repo, checks_config())
     kept_commit = keep_result.record.commit
-
     worktree = experiment_worktree_dir(repo)
     append_records(repo, iteration_record(seq=2))
     (Path(worktree) / "post-keep.txt").write_text("after keep\n", encoding="utf-8")
@@ -195,7 +194,7 @@ NOTHING_MEASURED_HISTORIES = [
     pytest.param(
         (
             confirmed_regression(1),
-            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+            _GATING_BLOCK,
             discard_record(2),
         ),
         id="gating-block-already-discarded",
@@ -233,10 +232,10 @@ def test_discard_session_when_nothing_measured_and_agent_committed_does_report_r
     commit_experiment_directly(repo)
     worktree = experiment_worktree_dir(repo)
     (Path(worktree) / "extra.txt").write_text("more\n", encoding="utf-8")
+    baseline_sha = head_of(baseline_worktree_dir(repo))
 
     result = discard_session(repo)
 
-    baseline_sha = head_of(baseline_worktree_dir(repo))
     assert (
         result.report
         == f"Reverted 3 unmeasured edits: the experiment worktree is back at {baseline_sha[:7]}"

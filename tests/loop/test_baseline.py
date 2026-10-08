@@ -10,8 +10,6 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-import pytest
-
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.loop.baseline import measure_baseline
 from gymrat.sampling import RunOptions, SamplingOptions, TargetSpec
@@ -20,6 +18,8 @@ from tests.loop._probe import install_measure, only_call
 from tests.report._measurements import create_measurement_result
 
 if TYPE_CHECKING:
+    import pytest
+
     from gymrat.progress_events import ProgressEvent
 
 # ---------------------------------------------------------------------------
@@ -51,16 +51,8 @@ def _run_options() -> RunOptions:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "target_label",
-    [
-        pytest.param("build", id="target-label-matches-measurement"),
-        pytest.param("release", id="target-label-differs-from-measurement"),
-    ],
-)
-def test_measure_baseline_when_target_given_does_return_the_measurement_with_its_baseline_record(
+def test_measure_baseline_when_target_label_differs_does_return_the_measurement_with_a_record_labeled_by_it(
     monkeypatch: pytest.MonkeyPatch,
-    target_label: str,
 ):
     rounds: list[dict[str, float]] = [{"latency": 41}, {"latency": 43}]
     handed_back = create_measurement_result(label="build", rounds=rounds)
@@ -69,7 +61,7 @@ def test_measure_baseline_when_target_given_does_return_the_measurement_with_its
     monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
     stamp_ns = 1_700_000_000_123_456_789
     monkeypatch.setattr("gymrat.loop.baseline.now_ns", lambda: stamp_ns)
-    target = TargetSpec(label=target_label, target="main")
+    target = TargetSpec(label="release", target="main")
     run_options = _run_options()
 
     result, record = asyncio.run(measure_baseline(target, run_options))

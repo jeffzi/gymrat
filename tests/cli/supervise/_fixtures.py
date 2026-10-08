@@ -77,11 +77,14 @@ def start_open_session(repo: str) -> None:
     start_session(repo, "main", resolved_config())
 
 
-def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+def install_baseline_seam(
+    monkeypatch: pytest.MonkeyPatch, *, on_call: Callable[[], None] | None = None
+) -> list[dict[str, Any]]:
     """Replace the baseline measurement path so no real bench runs.
 
     Args:
         monkeypatch: The fixture that installs the stand-in measurement.
+        on_call: Run at the start of each measurement, to observe state while it runs.
 
     Returns:
         A list that records each call's keyword arguments.
@@ -90,6 +93,8 @@ def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any
 
     async def fake_measure(target: object, run_options: object) -> Any:
         calls.append({"target": target, "run_options": run_options})
+        if on_call is not None:
+            on_call()
         record = baseline_record(duration_ms=5000)
         result = create_measurement_result(label=record.label, samples=1, rounds=record.samples)
         return result, record
@@ -318,17 +323,37 @@ def follow_up_event(
     return FollowUpEvent(at=at_ms * NS_PER_MS, action=action, reason=reason)
 
 
-def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
+#: When :func:`fire_launch_and_bash_cycle` stamps its Bash end, in milliseconds.
+BASH_CYCLE_END_MS = 3000
+
+
+def fire_launch_and_bash_cycle(
+    observer: SessionObserver, *, clock: Clock[int] | None = None, result: str = "ok"
+) -> None:
     """Minimum event sequence that gets session state into the loop/best rows.
 
-    The Bash end triggers the reporter's session re-read.
+    Fires a launch at 1000 ms, then a Bash start at 2000 ms and its end at
+    :data:`BASH_CYCLE_END_MS`. The Bash end triggers the reporter's session
+    re-read.
 
     Args:
         observer: The reporter observer the events are fired at.
+        clock: The reporter's clock, advanced to each event's time before it
+            fires so idle timing starts from the Bash end; left alone when
+            omitted.
+        result: The Bash call's result, ``"error"`` for a failed call.
     """
-    observer(launch_event(1000))
-    observer(tool_start_event("Bash", "bash-1", 2000))
-    observer(tool_end_event("Bash", "bash-1", 3000))
+    for at_ms, event in (
+        (1000, launch_event(1000)),
+        (2000, tool_start_event("Bash", "bash-1", 2000)),
+        (
+            BASH_CYCLE_END_MS,
+            tool_end_event("Bash", "bash-1", BASH_CYCLE_END_MS, result=result),
+        ),
+    ):
+        if clock is not None:
+            clock.now = at_ms
+        observer(event)
 
 
 def fire_launch_and_bash_start(observer: SessionObserver) -> None:

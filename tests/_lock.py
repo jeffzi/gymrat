@@ -1,8 +1,10 @@
 """Repository-lock helpers shared by the lock, supervise and CLI tests."""
 
+import contextlib
 import json
 import os
 import re
+from collections.abc import Generator
 from pathlib import Path
 
 from filelock import FileLock
@@ -84,6 +86,23 @@ def hold_supervise_lock(root: str) -> FileLock:
         The acquired ``FileLock``, for the caller to release during teardown.
     """
     return hold_lock(supervise_lockfile_path(root), "supervise")
+
+
+@contextlib.contextmanager
+def held_supervise_lock(root: str) -> Generator[None]:
+    """Hold the real supervise lock for ``root`` until the block exits.
+
+    Args:
+        root: The repository whose supervise lock is held.
+
+    Yields:
+        Nothing; the lock is held while the block runs and released after it.
+    """
+    lock = hold_supervise_lock(root)
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def remove_lock_files(root: str) -> None:

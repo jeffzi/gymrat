@@ -11,11 +11,9 @@ broken. Config resolution is exercised for real where a test lays down a
 ``gymrat.toml`` and stubbed at the ``commands.loop`` seam in the subdirectory
 case, where the test observes the directory a command resolves its config from.
 
-Iterate and JSON-contract tests live in ``test_iterate`` and ``test_json``.
-
-Budget-line tests verify that loop commands append a time-left line to their
-text output when a live budget is present; ``status`` builds its own trailer, so
-it also pins the line's absence without one.
+Iterate and JSON-contract tests live in ``test_iterate`` and ``test_json``. The
+budget time-left line, ``status``'s own trailer included, is pinned with the
+other commands' in ``test_session_cmds``.
 """
 
 import contextlib
@@ -44,11 +42,11 @@ from tests._ansi import SGR_RE, strip_ansi
 from tests._cli import ENTRY, no_color_env
 from tests._git import head_of, status_of
 from tests._process_helpers import (
+    reaped,
     run_with_closed_reader,
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
 )
-from tests.cli._budget import install_budget, set_origin
 from tests.cli._session import (
     FailingStdoutRunner,
     close_session_with_one_keep,
@@ -68,13 +66,6 @@ from tests.loop._settle import (
     settling_record_of,
     start_with,
     unimproved,
-)
-from tests.loop.iterate._fixtures import (
-    baseline_rounds,
-    improved_rounds,
-    install_collect_samples,
-    iterate_session_header,
-    stub_samples,
 )
 from tests.session.records._fixtures import (
     SESSION_ID,
@@ -125,54 +116,40 @@ def _start_unedited_session(root: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _write_open_session_with_one_keep(root: str) -> str:
+    """Log an open session with one kept iteration, and return its id."""
+    write_session_log(root, session_record(), (iteration_record(seq=1), committed_keep(1)))
+    return SESSION_ID
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        pytest.param(_write_open_session_with_one_keep, id="open"),
+        pytest.param(close_session_with_one_keep, id="finalized"),
+    ],
+)
 def test_status_command_when_run_does_render_the_session_on_stdout_and_record_the_trace(
-    repo: str,
+    repo: str, arrange: Callable[[str], str]
 ):
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
+    session_id = arrange(repo)
     write_bench_config(repo)
 
     result = runner.invoke(app, ["status"])
 
     assert result.exit_code == 0
     text = strip_ansi(result.stdout)
-    assert f"session {SESSION_ID}" in text
+    assert f"session {session_id}" in text
     assert "1 kept" in text
     cmd = last_command_record(repo)
     assert (cmd.name, cmd.args, cmd.exit_code, cmd.reason) == ("status", {}, 0, None)
 
 
-def test_status_command_when_finalized_does_record_command_trace_with_exit_zero(repo: str):
-    close_session_with_one_keep(repo)
+def test_status_command_when_stdout_reader_closed_does_exit_zero_without_stderr(repo: str):
+    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
     write_bench_config(repo)
 
-    result = runner.invoke(app, ["status"])
-
-    assert result.exit_code == 0
-    cmd = last_command_record(repo)
-    assert cmd.name == "status"
-    assert cmd.exit_code == 0
-
-
-@pytest.fixture
-def keep_ready_repo(repo: str, monkeypatch: pytest.MonkeyPatch) -> str:
-    """A repository with an experiment edit whose configured checks pass, ready for any loop command."""
-    _start_edited_session(repo, checks=CHECKS)
-    checks_pass(monkeypatch)
-    return repo
-
-
-@pytest.mark.usefixtures("keep_ready_repo")
-@pytest.mark.parametrize(
-    "command",
-    [
-        pytest.param(["status", "--format", "text"], id="status-text"),
-        pytest.param(["status", "--format", "json"], id="status-json"),
-        pytest.param(["keep"], id="keep"),
-        pytest.param(["discard"], id="discard"),
-    ],
-)
-def test_loop_command_when_stdout_reader_closed_does_exit_zero_without_stderr(command: list[str]):
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, command)
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, ["status"])
 
     assert (result.exit_code, result.stderr) == (0, "")
 
@@ -326,18 +303,20 @@ def test_discard_command_when_tty_and_answer_invalid_does_ask_again(
 
 
 @pytest.mark.parametrize(
-    ("args", "is_tty_stub"),
+    ("args", "is_tty_stub", "force"),
     [
-        pytest.param(["--force"], _always_tty, id="force-long"),
-        pytest.param(["-f"], _always_tty, id="force-short"),
-        pytest.param([], never_tty, id="stdin-not-tty"),
+        pytest.param(["--force"], _always_tty, True, id="force-long"),
+        pytest.param(["-f"], _always_tty, True, id="force-short"),
+        pytest.param([], never_tty, False, id="stdin-not-tty"),
     ],
 )
-def test_discard_command_when_force_or_stdin_not_tty_does_skip_the_prompt(
+def test_discard_command_when_force_or_stdin_not_tty_does_discard_without_prompting(
+    *,
     edited_repo: str,
     monkeypatch: pytest.MonkeyPatch,
     args: list[str],
     is_tty_stub: Callable[[object], bool],
+    force: bool,
 ):
     monkeypatch.setattr("gymrat.cli.commands.loop.is_tty", is_tty_stub)
 
@@ -345,7 +324,16 @@ def test_discard_command_when_force_or_stdin_not_tty_does_skip_the_prompt(
 
     assert result.exit_code == 0
     assert _PROMPT_CHOICES not in result.stderr
+    assert re.search(r"discard", result.stdout, re.IGNORECASE)
     assert _discard_state(edited_repo) == (False, True)
+    cmd = last_command_record(edited_repo)
+    assert (cmd.name, cmd.args, cmd.seq, cmd.exit_code, cmd.reason) == (
+        "discard",
+        {"force": force},
+        1,
+        0,
+        None,
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
@@ -443,12 +431,13 @@ def test_keep_command_when_committed_does_add_the_kept_baseline_to_the_status_hi
 ):
     _start_edited_session(repo, (measured_rounds(1),), checks=CHECKS)
     checks_pass(monkeypatch)
-    runner.invoke(app, ["keep"])
+
+    keep_result = runner.invoke(app, ["keep"])
+
+    assert keep_result.exit_code == 0
     short_sha = head_of(experiment_worktree_dir(repo))[:SHORT_SHA_LENGTH]
-
-    result = runner.invoke(app, ["status"])
-
-    history = [line for line in strip_ansi(result.stdout).splitlines() if line.strip()]
+    status = runner.invoke(app, ["status"])
+    history = [line for line in strip_ansi(status.stdout).splitlines() if line.strip()]
     assert history[-2] == f"baseline {short_sha} · {KEPT_MEDIANS_LINE}"
     assert history[-1] == "1 iteration · 1 kept · 0 discarded"
 
@@ -560,25 +549,22 @@ def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving
     script.write_text(_TRACKED_CHECKS.format(directory=tmp_path), encoding="utf-8")
     _start_edited_session(repo, checks=f"sh {shlex.quote(str(script))}")
 
-    proc = subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [*ENTRY, "keep"],
-        cwd=repo,
-        env=no_color_env(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
+    with reaped(
+        subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
+            [*ENTRY, "keep"],
+            cwd=repo,
+            env=no_color_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    ) as proc:
         checks_pid = wait_for_pid_file_blocking(tmp_path / "checks.pid", _SETTLE_TIMEOUT_S)
         reap_groups.append(checks_pid)
         grandchild = wait_for_pid_file_blocking(tmp_path / "grandchild.pid", _SETTLE_TIMEOUT_S)
         reap_groups.append(grandchild)
         proc.send_signal(signal.Signals[signal_name])
         proc.communicate(timeout=30)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.communicate()
 
     assert proc.returncode == expected_code
     wait_until_dead_blocking(grandchild, timeout_s=_SETTLE_TIMEOUT_S)
@@ -588,136 +574,18 @@ def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving
     assert records_of_type(repo, CommandRecord) == []
 
 
-@pytest.mark.parametrize(
-    ("flags", "force"),
-    [
-        pytest.param([], False, id="plain"),
-        pytest.param(["--force"], True, id="force"),
-    ],
-)
-def test_discard_command_when_run_does_clean_the_worktree_and_record_the_discard_and_trace(
-    repo: str, flags: list[str], force: bool
-):
-    _start_edited_session(repo)
-
-    result = runner.invoke(app, ["discard", *flags])
-
-    assert result.exit_code == 0
-    assert status_of(experiment_worktree_dir(repo)) == ""
-    assert settling_record_of(repo).type == "discard"
-    assert re.search(r"discard", result.stdout, re.IGNORECASE)
-    cmd = last_command_record(repo)
-    assert (cmd.name, cmd.args, cmd.seq, cmd.exit_code, cmd.reason) == (
-        "discard",
-        {"force": force},
-        1,
-        0,
-        None,
-    )
-
-
-# ---------------------------------------------------------------------------
-# budget time-left line — text output
-# ---------------------------------------------------------------------------
-
-
-def _settled_session(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
-    """Log a session with one kept iteration, for status."""
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_bench_config(repo)
-
-
-def _keep_ready_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open an edited session whose checks pass, for keep."""
-    _start_edited_session(repo, checks=CHECKS)
-    checks_pass(monkeypatch)
-
-
-def _discard_ready_session(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open an edited session, for discard."""
-    _start_edited_session(repo)
-
-
-def _iterate_ready_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open a fresh session whose stubbed bench improves, iterated from the tool."""
-    write_session_log(repo, iterate_session_header(repo))
-    stub_samples(install_collect_samples(monkeypatch), repo, improved_rounds(), baseline_rounds())
-    set_origin(monkeypatch, "tool")
-
-
-def _no_budget(_repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
-    """Leave the session without a budget."""
-
-
-@pytest.mark.parametrize(
-    ("argv", "arrange", "budget", "trailers"),
-    [
-        pytest.param(["status"], _settled_session, install_budget, ["left of 30m"], id="status"),
-        pytest.param(["status"], _settled_session, _no_budget, [], id="status-no-budget"),
-        pytest.param(
-            ["keep", "-m", "cache the regex"],
-            _keep_ready_session,
-            install_budget,
-            ["left of 30m"],
-            id="keep",
-        ),
-        pytest.param(
-            ["discard"], _discard_ready_session, install_budget, ["left of 30m"], id="discard"
-        ),
-        pytest.param(
-            ["iterate", "--bench", "npm run bench"],
-            _iterate_ready_session,
-            install_budget,
-            ["left of 30m"],
-            id="iterate",
-        ),
-    ],
-)
-def test_loop_command_when_run_does_end_text_with_a_time_left_line_only_under_a_budget(
-    *,
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    argv: list[str],
-    arrange: Callable[[str, pytest.MonkeyPatch], None],
-    budget: Callable[[str, pytest.MonkeyPatch], None],
-    trailers: list[str],
-):
-    arrange(repo, monkeypatch)
-    budget(repo, monkeypatch)
-
-    result = runner.invoke(app, argv)
-
-    assert result.exit_code == 0
-    assert re.findall(r"left of \d+m", strip_ansi(result.stdout)) == trailers
-
-
 # ---------------------------------------------------------------------------
 # --color / --no-color on keep
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("argv", "env", "expect_ansi"),
-    [
-        pytest.param(["keep", "--no-color"], {"FORCE_COLOR": "1"}, False, id="no-color-flag"),
-        pytest.param(["keep", "--color"], {}, True, id="color-flag"),
-    ],
-)
-def test_keep_command_when_refusing_does_style_its_report_per_the_color_flags_and_env(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    argv: list[str],
-    env: dict[str, str],
-    expect_ansi: bool,
-):
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
+def test_keep_command_when_refusing_with_color_flag_does_style_its_report(repo: str):
     _start_unedited_session(repo)
 
-    result = runner.invoke(app, argv)
+    result = runner.invoke(app, ["keep", "--color"])
 
     assert result.exit_code == 1
-    assert bool(SGR_RE.search(result.stdout)) is expect_ansi
+    assert SGR_RE.search(result.stdout)
 
 
 #: Environment that forces color on, which a --no-color flag must outrank.
@@ -755,7 +623,6 @@ class _TerminalStderrRunner(CliRunner):
     ("args", "env", "cli_runner", "expect_ansi"),
     [
         pytest.param(["keep", "--no-color"], _FORCE_COLOR, runner, False, id="no-color-flag"),
-        pytest.param(["keep", "--color"], {}, runner, True, id="color-flag-without-tty"),
         pytest.param(["keep"], {}, _TerminalStderrRunner(), True, id="stderr-tty-stdout-piped"),
     ],
 )

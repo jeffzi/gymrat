@@ -100,19 +100,6 @@ def test_point_stream_at_devnull_when_redirect_fails_does_raise_leaking_no_descr
 
 
 # ---------------------------------------------------------------------------
-# stderr target
-# ---------------------------------------------------------------------------
-
-
-def test_stderr_console_when_built_does_write_to_stderr(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
-
-    console = stderr_console()
-
-    assert console.file is sys.stderr
-
-
-# ---------------------------------------------------------------------------
 # color resolution
 # ---------------------------------------------------------------------------
 

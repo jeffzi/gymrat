@@ -1,13 +1,12 @@
-"""Shared fixtures for the ``exec`` tests: run options and spawn recording."""
+"""Shared fixtures for the ``exec`` tests: run options."""
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from gymrat.exec import ExecOptions
-from tests._exec_fixtures import recorded_spawns
 
 
 @pytest.fixture
@@ -30,12 +29,3 @@ def make_opts(tmp_path: Path) -> Callable[..., ExecOptions]:
         )
 
     return _make
-
-
-@pytest.fixture
-async def spawned_processes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> AsyncIterator[list[asyncio.subprocess.Process]]:
-    """Record every child ``exec`` or ``exec_argv`` spawns, reaping survivors in-loop."""
-    async with recorded_spawns(monkeypatch) as processes:
-        yield processes

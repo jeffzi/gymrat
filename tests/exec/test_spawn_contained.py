@@ -14,14 +14,14 @@ import contextlib
 import errno
 import signal
 import sys
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Callable, Iterator
 from typing import NoReturn
 
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
-from tests._exec_fixtures import expected_result
+from gymrat.exec import ExecOptions
+from tests._exec_fixtures import RUNNERS, Runner, expected_result
 from tests._process_helpers import (
     KILLPG_FAILED,
     SLEEPER_ARGV,
@@ -34,16 +34,6 @@ if sys.platform == "win32":
 
 # Upper bound each awaited run or spawn gets before the test fails outright.
 _WAIT_TIMEOUT_S = 10
-
-
-async def run_argv_sleeper(options: ExecOptions) -> ExecResult | ExecTimeoutError:
-    """Run a 30 s sleep through ``exec_argv``."""
-    return await exec_argv(list(SLEEPER_ARGV), options)
-
-
-async def run_shell_sleeper(options: ExecOptions) -> ExecResult | ExecTimeoutError:
-    """Run a 30 s sleep through the shell form, ``exec``."""
-    return await exec_mod.exec("sleep 30", options)
 
 
 def _raise_on_call(error: Exception) -> Callable[[int], NoReturn]:
@@ -78,10 +68,7 @@ def _raise_on_call(error: Exception) -> Callable[[int], NoReturn]:
         ),
     ],
 )
-@pytest.mark.parametrize(
-    "run",
-    [pytest.param(run_argv_sleeper, id="exec_argv"), pytest.param(run_shell_sleeper, id="exec")],
-)
+@pytest.mark.parametrize("runner", RUNNERS)
 async def test_exec_when_containment_raises_after_spawn_does_fail_the_run_after_reaping_child(
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
@@ -89,12 +76,12 @@ async def test_exec_when_containment_raises_after_spawn_does_fail_the_run_after_
     *,
     failure: tuple[str, Callable[[int], bool]],
     expected_message: str,
-    run: Callable[[ExecOptions], Awaitable[ExecResult | ExecTimeoutError]],
+    runner: Runner,
 ) -> None:
     seam, stand_in = failure
     monkeypatch.setattr(exec_mod, seam, stand_in)
 
-    result = await asyncio.wait_for(run(make_opts()), _WAIT_TIMEOUT_S)
+    result = await asyncio.wait_for(runner.run(runner.sleeper, make_opts()), _WAIT_TIMEOUT_S)
 
     (child,) = spawned_processes
     stderr = expected_message.format(pid=child.pid) + "\n"

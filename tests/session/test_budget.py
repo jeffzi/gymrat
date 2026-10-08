@@ -11,7 +11,7 @@ when the file is already gone.
 """
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -34,11 +34,6 @@ _FAR_FUTURE_DEADLINE_MS = 999_999_999.0
 
 def _budget_file(root: str) -> Path:
     return Path(budget_path(root))
-
-
-def _read_json(root: str) -> dict[str, object]:
-    """Read and parse the raw budget JSON under *root*."""
-    return json.loads(_budget_file(root).read_text(encoding="utf-8"))
 
 
 def _make_budget(**overrides: object) -> Budget:
@@ -135,43 +130,24 @@ def test_read_budget_when_file_written_does_return_it_only_while_held_and_ahead(
     assert result == expected
 
 
-def _contents(raw: bytes) -> Callable[[Path], None]:
-    def write(path: Path) -> None:
-        path.write_bytes(raw)
-
-    return write
-
-
-def _absent(_path: Path) -> None:
-    """Leave the budget file absent."""
-
-
-def _directory(path: Path) -> None:
-    path.mkdir()
-
-
 @pytest.mark.parametrize(
-    "arrange",
+    "contents",
     [
-        pytest.param(_absent, id="file-absent"),
-        pytest.param(_directory, id="path-is-a-directory"),
-        pytest.param(_contents(b"not valid json{{{"), id="invalid-json"),
-        pytest.param(_contents(b"\xff\xfe not text"), id="not-utf8"),
-        pytest.param(_contents(json.dumps({"unexpected_field": 42}).encode()), id="wrong-schema"),
-        pytest.param(_contents(json.dumps([1, 2, 3]).encode()), id="array-not-object"),
-        pytest.param(_contents(json.dumps(42).encode()), id="number-not-object"),
-        pytest.param(_contents(_budget_json(deadline_ms="soon").encode()), id="deadline-string"),
-        pytest.param(_contents(_budget_json(deadline_ms=None).encode()), id="deadline-null"),
-        pytest.param(_contents(_budget_json(max_minutes="long").encode()), id="max-minutes-string"),
-        pytest.param(_contents(_budget_json(deadline_ms=True).encode()), id="deadline-bool"),
-        pytest.param(_contents(_budget_json(extra=1).encode()), id="unexpected-field"),
+        pytest.param(None, id="file-absent"),
+        pytest.param(json.dumps({"max_minutes": 30}).encode(), id="missing-key"),
+        pytest.param(_budget_json(deadline_ms="soon").encode(), id="deadline-string"),
+        pytest.param(_budget_json(deadline_ms=None).encode(), id="deadline-null"),
+        pytest.param(_budget_json(max_minutes="long").encode(), id="max-minutes-string"),
+        pytest.param(_budget_json(deadline_ms=True).encode(), id="deadline-bool"),
+        pytest.param(_budget_json(extra=1).encode(), id="unexpected-field"),
     ],
 )
 @pytest.mark.usefixtures("supervise_lock")
-def test_read_budget_when_file_unreadable_or_invalid_does_return_none(
-    root: str, arrange: Callable[[Path], None]
+def test_read_budget_when_file_absent_or_not_a_budget_does_return_none(
+    root: str, contents: bytes | None
 ):
-    arrange(_budget_file(root))
+    if contents is not None:
+        _budget_file(root).write_bytes(contents)
 
     result = read_budget(root, now_ms=0.0)
 

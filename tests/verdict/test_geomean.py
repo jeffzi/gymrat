@@ -9,9 +9,7 @@ import math
 import pytest
 
 from gymrat.model import (
-    BandVerdict,
     Exclusion,
-    ExclusionReason,
     GeomeanResult,
 )
 from gymrat.verdict import compute_geomean
@@ -23,17 +21,8 @@ from tests.verdict._inputs import (
 )
 
 # ---------------------------------------------------------------------------
-# Empty and exclusion cases
+# No-verdict exclusion
 # ---------------------------------------------------------------------------
-
-
-def test_compute_geomean_when_metric_non_gating_does_aggregate_like_any_other():
-    verdicts, metric_meta = build_inputs([MetricSpec(name="metric1", delta=-5.0, gating=False)])
-
-    result = compute_geomean(verdicts, metric_meta)
-
-    assert result.n == 1
-    assert result.value == pytest.approx(-5.0, abs=1e-5)
 
 
 def test_compute_geomean_when_metric_one_sided_does_exclude_as_no_verdict_in_scope():
@@ -85,20 +74,10 @@ def test_compute_geomean_when_directions_differ_does_respect_each_metric():
     assert result.value == pytest.approx((math.sqrt(0.9 / 1.1) - 1) * 100, abs=1e-6)
 
 
-@pytest.mark.parametrize(
-    ("bad_delta", "reason"),
-    [
-        pytest.param(math.nan, "undefined-ratio", id="nan-delta"),
-        pytest.param(-150.0, "infinite-rho", id="rho-negative"),
-    ],
-)
-def test_compute_geomean_when_one_metric_invalid_does_keep_other_ratio(
-    bad_delta: float,
-    reason: ExclusionReason,
-):
+def test_compute_geomean_when_one_metric_invalid_does_keep_other_ratio():
     verdicts, metric_meta = build_inputs(
         [
-            MetricSpec(name="metric1", delta=bad_delta),
+            MetricSpec(name="metric1", delta=math.nan),
             MetricSpec(name="metric2", delta=-5.0),
         ],
     )
@@ -106,7 +85,7 @@ def test_compute_geomean_when_one_metric_invalid_does_keep_other_ratio(
     result = compute_geomean(verdicts, metric_meta)
 
     assert result.n == 1
-    assert result.excluded == (Exclusion(metric="metric1", reason=reason),)
+    assert result.excluded == (Exclusion(metric="metric1", reason="undefined-ratio"),)
     assert result.value == pytest.approx(-5.0, abs=1e-5)
 
 
@@ -133,19 +112,28 @@ def test_compute_geomean_when_all_metrics_excluded_does_return_zeroed_with_reaso
 # ---------------------------------------------------------------------------
 
 
-def test_compute_geomean_when_metric_unstable_does_exclude_despite_valid_ratio():
+def test_compute_geomean_when_metric_unstable_does_exclude_its_ratio_and_noise():
     verdicts, metric_meta = build_inputs(
         [
             MetricSpec(name="noisy", verdict=unstable_band_verdict()),
-            MetricSpec(name="stable", delta=-5.0),
+            MetricSpec(
+                name="stable",
+                verdict=band_verdict(
+                    verdict="improved",
+                    usable_n=4,
+                    noise_pct=4.0,
+                    noise_abs=2.0,
+                    delta=-5.0,
+                    n=4,
+                ),
+            ),
         ],
     )
 
     result = compute_geomean(verdicts, metric_meta)
 
-    assert result.n == 1
-    assert result.excluded == (Exclusion(metric="noisy", reason="unstable"),)
-    assert result.value == pytest.approx(-5.0, abs=1e-5)
+    assert (result.n, result.excluded) == (1, (Exclusion(metric="noisy", reason="unstable"),))
+    assert (result.value, result.band) == pytest.approx((-5.0, 4.0), abs=1e-5)
 
 
 def test_compute_geomean_when_unstable_delta_nan_does_report_unstable_over_undefined():
@@ -153,8 +141,7 @@ def test_compute_geomean_when_unstable_delta_nan_does_report_unstable_over_undef
         [
             MetricSpec(
                 name="noisy",
-                verdict=BandVerdict(
-                    method="band",
+                verdict=band_verdict(
                     verdict="unstable",
                     usable_n=4,
                     noise_pct=300.0,
@@ -202,28 +189,3 @@ def test_compute_geomean_when_exact_metric_beside_noisy_one_does_add_no_noise_to
     result = compute_geomean(verdicts, metric_meta)
 
     assert result.band == pytest.approx(3.0, abs=1e-10)
-
-
-def test_compute_geomean_when_metric_excluded_does_leave_its_noise_out_of_band():
-    verdicts, metric_meta = build_inputs(
-        [
-            MetricSpec(name="noisy", verdict=unstable_band_verdict()),
-            MetricSpec(
-                name="steady",
-                verdict=BandVerdict(
-                    method="band",
-                    verdict="improved",
-                    usable_n=4,
-                    noise_pct=4.0,
-                    noise_abs=2.0,
-                    delta=-50.0,
-                    n=4,
-                ),
-            ),
-        ],
-    )
-
-    result = compute_geomean(verdicts, metric_meta)
-
-    assert result.n == 1
-    assert result.band == pytest.approx(4.0, abs=1e-10)

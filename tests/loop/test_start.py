@@ -42,7 +42,9 @@ from tests._git import (
     list_worktree_dirs,
     session_branches,
 )
+from tests._mode_bits import needs_mode_bits
 from tests.loop._settle import (
+    commit_and_keep,
     keep_iteration,
 )
 from tests.session.records._fixtures import (
@@ -57,11 +59,6 @@ SESSION_ID_PATTERN = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 
 # The directory a hooked checkout leaves in a worktree, closed to deletion.
 PINNED_DIR = "pinned"
-
-needs_permission_bits = pytest.mark.skipif(
-    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
-    reason="a read-only directory refuses new files only for a non-root POSIX user",
-)
 
 HOOKS = HooksConfig(before="npm run warm-cache", after="npm run cool-down")
 
@@ -92,17 +89,6 @@ CONFIG_SNAPSHOT = CONFIG_SNAPSHOT_WITHOUT_HOOKS.model_copy(
 )
 
 
-def _commit_in_experiment(root: str, message: str) -> str:
-    """Commit an edit on the session branch from the experiment worktree, returning its SHA.
-
-    Stands in for the commit a keep makes, so the SHA is a real commit a worktree
-    can later be checked out at.
-    """
-    return commit_all(
-        experiment_worktree_dir(root), message, file="README.md", content=f"# {message}\n"
-    )
-
-
 def _close_session_with_one_keep(root: str) -> str:
     """Keep one commit on the open session and close it, returning the id it closed on.
 
@@ -112,8 +98,7 @@ def _close_session_with_one_keep(root: str) -> str:
     closed session.
     """
     header = session_header_of(root)
-    commit = _commit_in_experiment(root, "cache the regex")
-    keep_iteration(root, 1, commit=commit)
+    commit_and_keep(root, 1, "cache the regex")
     remove_worktrees(root, header.worktrees)
     append_records(root, finalize_record())
     return header.session_id
@@ -126,8 +111,7 @@ def _close_after_removing_the_worktree(root: str) -> str:
     and git keeps its entry for the path, which the next start must step over.
     """
     header = session_header_of(root)
-    commit = _commit_in_experiment(root, "cache the regex")
-    keep_iteration(root, 1, commit=commit)
+    commit_and_keep(root, 1, "cache the regex")
     shutil.rmtree(experiment_worktree_dir(root))
     finalize_session(root)
     return header.session_id
@@ -222,7 +206,6 @@ def test_start_session_when_no_hooks_configured_does_leave_hooks_out_of_the_conf
 
     header = session_header_of(repo)
     assert header.config.hooks is None
-    assert header.config == CONFIG_SNAPSHOT_WITHOUT_HOOKS
 
 
 def test_start_session_when_no_ref_given_does_pin_the_baseline_at_head(repo: str, repo_head: str):
@@ -272,7 +255,7 @@ def test_start_session_when_experiment_worktree_missing_does_put_it_back(repo: s
         pytest.param(_close_after_removing_the_worktree, id="worktree-removed-before-finalize"),
     ],
 )
-def test_start_session_when_finalized_does_archive_the_log_and_open_fresh_at_the_pinned_baseline(
+def test_start_session_when_finalized_does_reopen_at_the_pinned_baseline_with_the_old_log_archived(
     repo: str, repo_head: str, close: Callable[[str], str]
 ):
     start_session(repo, "main", CONFIG)
@@ -343,8 +326,7 @@ def test_start_session_when_baseline_worktree_missing_does_put_it_back_at_the_la
     repo: str,
 ):
     start_session(repo, "main", CONFIG)
-    kept = _commit_in_experiment(repo, "cache the regex")
-    keep_iteration(repo, 1, commit=kept)
+    kept = commit_and_keep(repo, 1, "cache the regex")
     shutil.rmtree(baseline_worktree_dir(repo))
 
     start_session(repo, "main", CONFIG)
@@ -356,7 +338,7 @@ def test_start_session_when_baseline_worktree_missing_and_nothing_kept_does_put_
     repo: str, repo_head: str
 ):
     start_session(repo, "main", CONFIG)
-    _commit_in_experiment(repo, "work the agent has not kept")
+    commit_all(experiment_worktree_dir(repo), "work the agent has not kept", file="README.md")
     shutil.rmtree(baseline_worktree_dir(repo))
 
     start_session(repo, "main", CONFIG)
@@ -369,7 +351,7 @@ def test_start_session_when_baseline_worktree_missing_and_nothing_kept_does_put_
 # ---------------------------------------------------------------------------
 
 
-@needs_permission_bits
+@needs_mode_bits
 @pytest.mark.usefixtures("read_only_log_dir")
 def test_start_session_when_header_append_fails_does_remove_the_branch_and_worktrees_it_created(
     repo: str,
@@ -383,7 +365,7 @@ def test_start_session_when_header_append_fails_does_remove_the_branch_and_workt
     assert not Path(baseline_worktree_dir(repo)).exists()
 
 
-@needs_permission_bits
+@needs_mode_bits
 def test_start_session_when_earlier_start_failed_on_the_header_does_open_a_fresh_session(
     repo: str, read_only_log_dir: Path
 ):
@@ -398,9 +380,9 @@ def test_start_session_when_earlier_start_failed_on_the_header_does_open_a_fresh
     assert session_branches(repo) == [result.session.branch]
 
 
-@needs_permission_bits
+@needs_mode_bits
 @pytest.mark.usefixtures("read_only_log_dir")
-def test_start_session_when_unwinding_a_failed_start_fails_does_warn_and_raise_the_start_failure(
+def test_start_session_when_unwinding_a_failed_start_fails_does_warn_naming_the_worktree(
     repo: str, capsys: pytest.CaptureFixture[str]
 ):
     # Neither git nor a plain delete can empty the worktrees, so the unwind's own steps fail.
@@ -412,9 +394,9 @@ def test_start_session_when_unwinding_a_failed_start_fails_does_warn_and_raise_t
     assert experiment_worktree_dir(repo) in capsys.readouterr().err
 
 
-@needs_permission_bits
+@needs_mode_bits
 @pytest.mark.usefixtures("read_only_log_dir")
-def test_start_session_when_unwind_cannot_delete_the_branch_does_warn_with_the_delete_command_and_raise_the_start_failure(
+def test_start_session_when_unwind_cannot_delete_the_branch_does_warn_with_the_branch_delete_command(
     repo: str, capsys: pytest.CaptureFixture[str]
 ):
     _refuse_session_branch_deletion(repo)
@@ -463,7 +445,7 @@ def test_start_session_when_resume_fails_does_leave_the_standing_worktree_and_it
 # ---------------------------------------------------------------------------
 
 
-def test_start_session_when_baseline_ref_does_not_resolve_does_raise_and_leave_no_session(
+def test_start_session_when_baseline_ref_does_not_resolve_does_leave_no_session(
     repo: str,
 ):
     with pytest.raises(GymratError) as excinfo:

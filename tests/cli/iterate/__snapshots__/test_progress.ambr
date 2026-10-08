@@ -20,26 +20,6 @@
   ○ record
   '''
 # ---
-# name: test_frame_when_confirm_finished_does_show_outcome[not-reproduced]
-  '''
-  iterate #1 · session test-session · 0s elapsed
-  ○ prepare
-  ○ passes
-  ✓ judged +2.0% on geomean · 1 regressed: x
-  ✓ confirmed 0/2 · regressions not reproduced 4s
-  ○ record
-  '''
-# ---
-# name: test_frame_when_confirm_finished_does_show_outcome[reproduced]
-  '''
-  iterate #1 · session test-session · 0s elapsed
-  ○ prepare
-  ○ passes
-  ✓ judged +2.0% on geomean · 1 regressed: x
-  ✓ confirmed 0/2 · regressions reproduced 4s
-  ○ record
-  '''
-# ---
 # name: test_frame_when_confirm_finished_does_show_summary_on_node_line
   '''
   iterate #1 · session test-session · 20s elapsed
@@ -58,16 +38,6 @@
   ✓ judged +2.0% on geomean · 1 regressed: latency
   – confirm skipped (only if a gating metric regresses)
   ✓ recorded regressed suggested
-  '''
-# ---
-# name: test_frame_when_confirm_unfiltered_does_show_full_suite_label
-  '''
-  iterate #1 · session test-session · 0s elapsed
-  ○ prepare
-  ○ passes
-  ! judged +2.0% on geomean · 1 regressed: x
-  ⠋ confirming full suite                                         0/10 00:00/--:--
-  ○ record
   '''
 # ---
 # name: test_frame_when_header_before_first_pass_completes_does_show_elapsed_without_eta
@@ -186,7 +156,7 @@
     ),
   ])
 # ---
-# name: test_frame_when_judge_finished_no_regressions_does_drop_confirm_and_show_verdict
+# name: test_frame_when_judge_finished_no_regressions_does_drop_the_confirm_row
   '''
   iterate #1 · session test-session · 00:06/00:11
   ✓ prepared
@@ -235,7 +205,7 @@
   ○ record
   '''
 # ---
-# name: test_frame_when_passes_mid_run_does_show_bar_count_and_clock
+# name: test_frame_when_passes_mid_run_does_show_pass_progress
   '''
   iterate #1 · session test-session · 01:04/02:24
   ✓ prepared

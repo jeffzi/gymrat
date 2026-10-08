@@ -96,28 +96,25 @@ def test_normalize_ratio_when_delta_and_direction_given_does_return_ratio_or_rea
 
 
 @pytest.mark.parametrize(
-    ("entries", "expected_band"),
+    ("entries", "expected"),
     [
-        pytest.param([(1.5, 2.0), (2.0, 3.0)], math.hypot(2.0, 3.0) / 2.0, id="all-noisy"),
-        pytest.param([(1.5, 0.0), (2.0, 3.0)], math.hypot(0.0, 3.0) / 2.0, id="exact-beside-noisy"),
+        pytest.param([(1.5, 4.0)], (50.0, 4.0), id="single-entry"),
+        pytest.param(
+            [(1.5, 2.0), (2.0, 3.0)],
+            ((math.sqrt(3.0) - 1.0) * 100.0, math.hypot(2.0, 3.0) / 2.0),
+            id="multiple-entries",
+        ),
     ],
 )
-def test_combine_geomean_when_multiple_entries_does_return_value_and_band(
+def test_combine_geomean_when_entries_given_does_return_percent_and_band(
     entries: list[tuple[float, float]],
-    expected_band: float,
+    expected: tuple[float, float],
 ):
-    value, band = combine_geomean(entries)
-
-    assert value == pytest.approx((math.sqrt(3.0) - 1.0) * 100.0)
-    assert band == pytest.approx(expected_band)
+    assert combine_geomean(entries) == pytest.approx(expected)
 
 
 def test_combine_geomean_when_empty_does_return_zeros():
     assert combine_geomean([]) == (0.0, 0.0)
-
-
-def test_combine_geomean_when_single_entry_does_return_percent_and_own_band():
-    assert combine_geomean([(1.5, 4.0)]) == pytest.approx((50.0, 4.0))
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +224,8 @@ def test_combine_geomean_when_shuffled_does_return_same_value(
     data: st.DataObject,
 ):
     shuffled = data.draw(st.permutations(entries))
-
     original = combine_geomean(entries)
+
     permuted = combine_geomean(list(shuffled))
 
     assert permuted == pytest.approx(original, rel=1e-9, abs=1e-9)
@@ -433,8 +430,8 @@ def test_sign_flip_permutation_test_when_tied_pairs_reduce_exact_budget_does_rep
     # over all 14 pairs would produce a close but not byte-identical estimate.
     x = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_X]
     y = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_Y]
-
     no_ties = sign_flip_permutation_test(_SIX_PAIR_X, _SIX_PAIR_Y)
+
     with_ties = sign_flip_permutation_test(x, y)
 
     assert with_ties == no_ties

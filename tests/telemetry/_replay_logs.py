@@ -11,12 +11,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from gymrat.session.records import record_to_wire
+from gymrat.session.records import CommandRecord, record_to_wire
 from gymrat.supervisor.events import LaunchEvent, TurnEndEvent, to_json_line
 from tests.session.records._fixtures import (
     AT,
     BASELINE_SHA,
     SESSION_ID,
+    command_record,
+    session_record,
 )
 from tests.supervisor._fixtures import make_launch, make_turn_end
 
@@ -68,3 +70,47 @@ def replay_launch_event(
 def replay_turn_end(at: int = T3, cost_usd: float = 0.42) -> TurnEndEvent:
     """Build an agent turn-end event carrying ``cost_usd``."""
     return make_turn_end(at=at, text="done", cost_usd=cost_usd)
+
+
+def replay_command(
+    name: str,
+    *,
+    at: int = T2,
+    duration_ms: int = 500,
+    exit_code: int = 0,
+    reason: Any = None,
+    seq: int | None = None,
+    **kwargs: Any,
+) -> CommandRecord:
+    """Build a successful ``name`` command record ending at ``T2``, every field overridable."""
+    return command_record(
+        name=name,
+        at=at,
+        duration_ms=duration_ms,
+        exit_code=exit_code,
+        reason=reason,
+        seq=seq,
+        **kwargs,
+    )
+
+
+def write_standard_run(sup_log: str, *, session_id: str = SESSION_ID) -> None:
+    """Write a launch/turn-end pair spanning the standard run window (``T1`` to ``T3``)."""
+    write_supervisor_log(
+        sup_log, [replay_launch_event(session_id=session_id, at=T1), replay_turn_end(at=T3)]
+    )
+
+
+def write_measure_command_run(
+    session_log: str, sup_log: str, *, session_id: str = SESSION_ID
+) -> None:
+    """Write a session log with a single ``measure`` command, under the standard run window.
+
+    Args:
+        session_log: The session log path; its directory is created.
+        sup_log: The supervisor log path.
+        session_id: The session both logs belong to.
+    """
+    header = session_record(session_id=session_id, at=T0)
+    write_records_log(session_log, [header, replay_command("measure")])
+    write_standard_run(sup_log, session_id=session_id)

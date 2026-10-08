@@ -1,17 +1,20 @@
-"""Helpers for tests of and around ``exec``: results, spawn recording, ways to end a run, exec stand-ins."""
+"""Helpers for tests of and around ``exec``: results, spawn recording, ways to end a run, both entry points, exec stand-ins."""
 
 import asyncio
 import contextlib
 import dataclasses
 import os
 import signal
-from collections.abc import AsyncGenerator, Callable
+import sys
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
-from tests._process_helpers import capture_spawns
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
+from gymrat.exec import exec as run_exec
+from tests._process_helpers import SLEEPER_ARGV, capture_spawns
 
 type ExecTask = asyncio.Task[ExecResult | ExecTimeoutError]
 
@@ -33,19 +36,28 @@ def expected_result(stdout: str = "", stderr: str = "", exit_code: int = 0) -> E
     )
 
 
-def physical_path(path: Path) -> str:
-    """Resolve symlinks so a directory compares equal to ``pwd -P`` output.
+#: The bytes each channel of :func:`capped_result` wrote before exec's cap cut it.
+CAPPED_STDOUT_BYTES = 200_000
+CAPPED_STDERR_BYTES = 150_000
 
-    Wrapped in a sync helper so the resolution stays out of the async test body,
-    where a blocking filesystem call would trip the async-blocking-call lint.
+
+def capped_result(*, exit_code: int = 0) -> ExecResult:
+    """Build an ``ExecResult`` whose output overran exec's cap, keeping the pre-cap byte counts.
 
     Args:
-        path: The directory to resolve.
+        exit_code: The exit code the capped run reports.
 
     Returns:
-        The symlink-free absolute path, as a string.
+        A result whose short captured text sits beside ``CAPPED_STDOUT_BYTES`` and
+        ``CAPPED_STDERR_BYTES``.
     """
-    return str(path.resolve())
+    return ExecResult(
+        stdout="capped stdout",
+        stderr="capped stderr",
+        exit_code=exit_code,
+        stdout_bytes=CAPPED_STDOUT_BYTES,
+        stderr_bytes=CAPPED_STDERR_BYTES,
+    )
 
 
 async def wait_for_spawned(
@@ -131,6 +143,13 @@ def cancel_task(
     task.cancel()
 
 
+async def cancel_and_settle(task: "asyncio.Task[object]", timeout_s: float = 5) -> None:
+    """Cancel ``task`` and wait for it to finish unwinding."""
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout_s)
+
+
 def fail_stderr_read(
     task: ExecTask, proc: asyncio.subprocess.Process | None, abort: asyncio.Event
 ) -> None:
@@ -149,6 +168,74 @@ class Teardown:
 
 
 # ---------------------------------------------------------------------------
+# The two entry points, for the behaviors they share
+# ---------------------------------------------------------------------------
+
+type ExecRun = Callable[[Any, ExecOptions], Coroutine[Any, Any, ExecResult | ExecTimeoutError]]
+
+
+async def run_shell(args: Any, options: ExecOptions) -> ExecResult | ExecTimeoutError:
+    """Run ``args``, a shell command line, through ``exec``."""
+    return await run_exec(args, options)
+
+
+async def run_argv(args: Any, options: ExecOptions) -> ExecResult | ExecTimeoutError:
+    """Run ``args``, a program and its arguments, through ``exec_argv``."""
+    return await exec_argv(args, options)
+
+
+def _shell_grandchild(pid_file: Path) -> str:
+    return f"sleep 30 & echo $! > '{pid_file}'; wait"
+
+
+def _argv_grandchild(pid_file: Path) -> tuple[str, ...]:
+    script = (
+        "import subprocess, time\n"
+        f"p = subprocess.Popen({list(SLEEPER_ARGV)!r})\n"
+        f"open({str(pid_file)!r}, 'w').write(str(p.pid) + '\\n')\n"
+        "time.sleep(30)\n"
+    )
+    return (sys.executable, "-c", script)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Runner:
+    """One entry point and the arguments a shared test hands it.
+
+    Attributes:
+        run: The entry point.
+        sleeper: Arguments for a child that sleeps for 30 s without writing.
+        partial_output: Arguments for a child that writes ``line 1``, then
+            sleeps for 10 s.
+        grandchild: Builds the arguments for a child that starts a sleeping
+            grandchild, writes the grandchild's pid to the given file, then
+            sleeps for 30 s itself.
+    """
+
+    run: ExecRun
+    sleeper: str | tuple[str, ...]
+    partial_output: str | tuple[str, ...]
+    grandchild: Callable[[Path], str | tuple[str, ...]]
+
+
+RUNNERS = [
+    pytest.param(
+        Runner(run_shell, "sleep 30", "echo 'line 1'; sleep 10", _shell_grandchild),
+        id="exec",
+    ),
+    pytest.param(
+        Runner(
+            run_argv,
+            SLEEPER_ARGV,
+            (sys.executable, "-c", "import time; print('line 1', flush=True); time.sleep(10)"),
+            _argv_grandchild,
+        ),
+        id="exec_argv",
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
 # A stand-in for ``exec``
 # ---------------------------------------------------------------------------
 
@@ -157,8 +244,11 @@ class Teardown:
 class ExecRecorder:
     """A stand-in for ``exec`` that records its calls and answers with a fixed result.
 
-    Tests reach into ``calls`` to assert a command ran (or never did) and to read
-    the working directory and timeout it was handed.
+    Attributes:
+        result: What every call returns.
+        calls: Each call's command and options, in call order. Tests read it to
+            assert a command ran (or never did) and to see the working directory
+            and timeout it was handed.
     """
 
     result: ExecResult | ExecTimeoutError

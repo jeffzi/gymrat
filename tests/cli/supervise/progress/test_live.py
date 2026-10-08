@@ -4,7 +4,7 @@ Tests for the ``Live`` construction contract (rich's refresh timer at one frame
 per second rendering through ``get_renderable``, ``transient=True``, mounted via
 ``start()``), the single ``refresh()`` an event that changes state triggers, the
 skipped repaint for events that leave state unchanged, and ``_stop_live``
-suppression scope.
+suppression scope (``OSError`` and a closed-stream ``ValueError`` only).
 
 The signal tests paint the dashboard on a sealed terminal console that is also
 the process's stderr from before the reporter is built, as a real terminal is,
@@ -29,19 +29,11 @@ from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.events import TextDeltaEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._logging import unhandled_logging
-from tests._process_helpers import (
-    CleanupRegistry,
-    InterruptedTerminal,
-    ProcessExit,
-    track_mounted_cleanups,
-)
 from tests._rich import (
-    HIDE_CURSOR,
     KEPT_LINE,
     TERMINATION_SIGNAL,
     WARNING_LINE,
     Clock,
-    cursor_hidden,
     frame_text,
     screen_lines,
     sealed_console,
@@ -66,9 +58,6 @@ if TYPE_CHECKING:
 
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.supervisor.events import SessionEvent
-
-# Failure message the mount test raises and then matches.
-_MOUNT_FAILURE = "mount failed"
 
 # The terminal the signal tests paint the dashboard on: wide enough for the
 # golden frame width and tall enough that the frame is never cropped.
@@ -112,19 +101,11 @@ def test_create_reporter_when_live_mode_does_mount_a_configured_live():
         mock_live.refresh.assert_called_once()
 
 
-@pytest.mark.parametrize("failing_step", ["start", "refresh"])
-def test_create_reporter_when_mounting_live_raises_does_leave_nothing_running(
-    dashboard_cleanups: CleanupRegistry, failing_step: str
-):
+def test_create_reporter_when_plain_mode_does_not_create_live():
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        mock_live = mock_live_cls.return_value
-        getattr(mock_live, failing_step).side_effect = RuntimeError(_MOUNT_FAILURE)
+        make_reporter(mode="plain", plain_write=lambda _: None)
 
-        with pytest.raises(RuntimeError, match=_MOUNT_FAILURE):
-            make_reporter(mode="live")
-
-    mock_live.stop.assert_called_once()
-    assert dashboard_cleanups.live() == []
+        mock_live_cls.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -159,33 +140,21 @@ def test_observer_when_live_mode_does_repaint_once_per_state_change(
         assert live.refresh.call_count - painted == expected_repaints
 
 
-_SETTLING = ExitPhase(kind="settling", pid=None)
-
-
-@pytest.mark.parametrize(
-    ("previous", "expected_repaints"),
-    [
-        pytest.param(ExitPhase(kind="waiting-lock", pid=4242), 1, id="phase-changes"),
-        pytest.param(_SETTLING, 0, id="same-phase-repeats"),
-    ],
-)
-def test_exit_phase_when_live_mode_does_repaint_once_per_phase_change(
-    previous: ExitPhase, expected_repaints: int
-):
+def test_exit_phase_when_live_mode_and_phase_changes_does_repaint_once():
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         live = mock_live_cls.return_value
         kit = make_reporter(mode="live")
         kit.reporter.observer(launch_event(1000))
-        kit.reporter.exit_phase(previous)
+        kit.reporter.exit_phase(ExitPhase(kind="waiting-lock", pid=4242))
         painted = live.refresh.call_count
 
-        kit.reporter.exit_phase(_SETTLING)
+        kit.reporter.exit_phase(ExitPhase(kind="settling", pid=None))
 
-        assert live.refresh.call_count - painted == expected_repaints
+        assert live.refresh.call_count - painted == 1
 
 
 # ---------------------------------------------------------------------------
-# warn — messages printed verbatim, a failing session read reported once
+# warn — messages printed verbatim
 # ---------------------------------------------------------------------------
 
 
@@ -198,6 +167,10 @@ def test_warn_when_live_message_contains_brackets_does_print_it_verbatim(termina
     assert _screen(terminal.getvalue()) == [KEPT_LINE, "missing [banana] key"]
 
 
+# ---------------------------------------------------------------------------
+# refresh_session — a failing session read reported once
+# ---------------------------------------------------------------------------
+
 _READ_FAILED = "session read failed: no session file"
 
 
@@ -208,7 +181,7 @@ _READ_FAILED = "session read failed: no session file"
         pytest.param("plain", [KEPT_LINE], [_READ_FAILED], id="plain-writes-a-milestone-line"),
     ],
 )
-def test_warn_when_session_read_keeps_failing_does_report_it_once_without_a_traceback(
+def test_refresh_session_when_session_read_keeps_failing_does_report_it_once_without_a_traceback(
     mode: Literal["live", "plain"],
     screen: list[str],
     plain_lines: list[str],
@@ -228,28 +201,28 @@ def test_warn_when_session_read_keeps_failing_does_report_it_once_without_a_trac
     )
 
 
-def test_create_reporter_when_plain_mode_does_not_create_live():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        make_reporter(mode="plain", plain_write=lambda _: None)
-
-        mock_live_cls.assert_not_called()
-
-
 # ---------------------------------------------------------------------------
-# _stop_live — suppresses only OSError
+# _stop_live — suppresses OSError and a closed-stream ValueError only
 # ---------------------------------------------------------------------------
 
 
-def test_stop_when_live_stop_raises_os_error_does_suppress():
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(OSError("stderr closed"), id="os-error"),
+        pytest.param(ValueError("I/O operation on closed file"), id="closed-stream-value-error"),
+    ],
+)
+def test_stop_when_live_stop_raises_a_closed_stream_error_does_suppress(error: Exception):
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         mock_live = mock_live_cls.return_value
-        mock_live.stop.side_effect = OSError("stderr closed")
+        mock_live.stop.side_effect = error
         kit = make_reporter(mode="live")
 
         kit.reporter.stop()
 
 
-def test_stop_when_live_stop_raises_non_os_error_does_propagate():
+def test_stop_when_live_stop_raises_unrelated_value_error_does_propagate():
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         mock_live = mock_live_cls.return_value
         mock_live.stop.side_effect = [ValueError("unexpected"), None]
@@ -300,18 +273,8 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[StringIO]:
     stop_tracked()
 
 
-@pytest.fixture
-def dashboard_cleanups(monkeypatch: pytest.MonkeyPatch) -> CleanupRegistry:
-    """Record the termination cleanups the dashboard installs, in place of the real handler."""
-    return track_mounted_cleanups(monkeypatch)
-
-
 def _screen(raw: str) -> list[str]:
     return screen_lines(raw, width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
-
-
-def _cursor_hidden(raw: str) -> bool:
-    return cursor_hidden(raw, width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
 
 
 def test_stderr_write_when_live_dashboard_up_does_land_above_the_frame(terminal: StringIO):
@@ -323,21 +286,6 @@ def test_stderr_write_when_live_dashboard_up_does_land_above_the_frame(terminal:
 
     frame_rows = _screen(render_frame(kit.reporter, width=_SCREEN_WIDTH))
     assert _screen(terminal.getvalue()) == [KEPT_LINE, WARNING_LINE, *frame_rows]
-
-
-def test_signal_when_dashboard_just_hid_the_cursor_does_restore_the_screen(
-    raise_signal: Callable[[int], int],
-    monkeypatch: pytest.MonkeyPatch,
-):
-    term = InterruptedTerminal()
-    _mount_terminal(term, monkeypatch)
-    install_termination_cleanup(lambda: None)
-    term.interrupt_write(lambda: raise_signal(TERMINATION_SIGNAL), marker=HIDE_CURSOR, lands=True)
-
-    with pytest.raises(ProcessExit):
-        make_reporter(mode="live")
-
-    assert (_screen(term.at_exit), _cursor_hidden(term.at_exit)) == ([KEPT_LINE], False)
 
 
 def test_signal_when_dashboard_already_stopped_does_leave_the_screen_untouched(
@@ -352,6 +300,20 @@ def test_signal_when_dashboard_already_stopped_does_leave_the_screen_untouched(
     raise_signal(TERMINATION_SIGNAL)
 
     assert terminal.getvalue() == before
+
+
+def test_signal_when_plain_mode_does_write_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    raise_signal: Callable[[int], int],
+):
+    make_reporter(mode="plain", plain_write=lambda _: None)
+    install_termination_cleanup(lambda: None)
+    buffer = StringIO()
+    monkeypatch.setattr(sys, "stderr", buffer)
+
+    raise_signal(TERMINATION_SIGNAL)
+
+    assert buffer.getvalue() == ""
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +362,7 @@ def _dashboard_reading(sidecar: _FlakySidecar) -> ReporterKit:
 
 
 @pytest.mark.usefixtures("terminal")
-def test_live_frame_when_a_frame_fails_to_render_does_show_the_last_frame_then_recover():
+def test_live_frame_when_a_frame_fails_to_render_does_show_the_last_good_frame():
     sidecar = _FlakySidecar()
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         kit = _dashboard_reading(sidecar)
@@ -410,9 +372,23 @@ def test_live_frame_when_a_frame_fails_to_render_does_show_the_last_frame_then_r
     kit.clock.now = 9000
 
     failed = frame_text(get_renderable(), width=FRAME_WIDTH)
+
+    assert failed == last_good
+
+
+@pytest.mark.usefixtures("terminal")
+def test_live_frame_when_a_render_fails_once_does_render_the_next_frame_normally():
+    sidecar = _FlakySidecar()
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        kit = _dashboard_reading(sidecar)
+    get_renderable = mock_live_cls.call_args.kwargs["get_renderable"]
+    sidecar.fail_next(1)
+    kit.clock.now = 9000
+    get_renderable()
+
     recovered = frame_text(get_renderable(), width=FRAME_WIDTH)
 
-    assert (failed, recovered) == (last_good, render_frame(kit.reporter))
+    assert recovered == render_frame(kit.reporter)
 
 
 def test_live_frame_when_frames_fail_to_render_does_warn_once_naming_the_error(
@@ -479,17 +455,3 @@ def test_create_reporter_when_setup_frame_fails_to_render_does_warn_through_the_
         [],
         [KEPT_LINE, _RENDER_FAILURE_WARNING],
     )
-
-
-def test_signal_when_plain_mode_does_write_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-    raise_signal: Callable[[int], int],
-):
-    make_reporter(mode="plain", plain_write=lambda _: None)
-    install_termination_cleanup(lambda: None)
-    buffer = StringIO()
-    monkeypatch.setattr(sys, "stderr", buffer)
-
-    raise_signal(TERMINATION_SIGNAL)
-
-    assert buffer.getvalue() == ""

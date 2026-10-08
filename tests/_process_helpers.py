@@ -2,17 +2,21 @@
 
 import asyncio
 import contextlib
+import ctypes
+import dataclasses
+import importlib.util
 import os
 import pathlib
-import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterable
+import types
+from collections.abc import Callable, Generator
 from io import StringIO
 from typing import TYPE_CHECKING, Any, Literal, overload, override
 
 from gymrat import exec as gymrat_exec
+from gymrat import process_group
 
 if TYPE_CHECKING:
     import pytest
@@ -28,6 +32,28 @@ _DEFAULT_WAIT_S = 5.0
 SLEEPER_ARGV: tuple[str, ...] = (sys.executable, "-c", "import time; time.sleep(30)")
 
 KILLPG_FAILED = "killpg failed"
+
+# Stand-in win32 handles for the faked Job Object layer, which never touches a
+# real process: distinct values so a process-handle close can be told apart
+# from a job close.
+JOB_HANDLE = 777
+PROCESS_HANDLE = 4242
+
+# Hard cap on how often a faked job may be polled for its live process count.
+# The wait sleeps between polls, so the millisecond graces the job tests give
+# admit a handful of polls, and fewer still on a slow machine. Only a wait that
+# stopped honouring its deadline reaches this, and it turns that runaway loop
+# into a failure instead of a hung suite.
+_FAKE_JOB_QUERY_CAP = 200
+
+# ``ctypes.WinError`` is bound only on Windows, but the production refusal paths
+# format it into their warning, so the faked platform hands them a stand-in.
+_FAKE_WIN_ERROR = "the host refused the call"
+
+# NTSTATUS codes the faked ``NtResumeProcess`` answers with: ``STATUS_SUCCESS``
+# and the ``STATUS_ACCESS_DENIED`` a locked-down host replies with.
+_NT_STATUS_SUCCESS = 0
+_NT_STATUS_ACCESS_DENIED = 0xC0000022
 
 # A script whose process group ends up holding only a zombie once its own
 # process is killed and reaped. It forks a holder; the holder forks a member
@@ -64,6 +90,43 @@ if os.fork() == 0:
     os._exit(0)
 time.sleep(30)
 """
+
+
+# The repository root, so a child script can import the ``tests`` package
+# alongside the installed ``gymrat``.
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def spawn_child_script(
+    directory: pathlib.Path, name: str, source: str, *args: str
+) -> subprocess.Popen[str]:
+    """Write ``source`` to ``<directory>/<name>.py`` and start it as a child.
+
+    The child runs from the repository root with the root on ``PYTHONPATH``, so
+    it can import the ``tests`` package as well as ``gymrat``. Its stderr is
+    piped in text mode.
+
+    Args:
+        directory: Where the script is written.
+        name: The script's file stem.
+        source: The script's Python source.
+        *args: The script's command-line arguments.
+
+    Returns:
+        The started child.
+    """
+    script = directory / f"{name}.py"
+    script.write_text(source, encoding="utf-8")
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{_REPO_ROOT}{os.pathsep}{existing}" if existing else str(_REPO_ROOT)
+    return subprocess.Popen(  # noqa: S603 -- argv is a fixed list, not shell-injected
+        [sys.executable, str(script), *args],
+        cwd=str(_REPO_ROOT),
+        env=env,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
 
 def dead_pid() -> int:
@@ -237,6 +300,99 @@ def wait_for_pid_file_blocking(pid_path: pathlib.Path, timeout_s: float = _DEFAU
     return pid
 
 
+async def wait_for_file(path: pathlib.Path, timeout_s: float = _DEFAULT_WAIT_S) -> None:
+    """Poll until ``path`` exists.
+
+    Args:
+        path: The file to wait for.
+        timeout_s: Seconds to poll before giving up.
+
+    Raises:
+        TimeoutError: ``path`` has not appeared within ``timeout_s``.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while not await asyncio.to_thread(path.exists):
+        if loop.time() > deadline:
+            message = f"file never appeared at {path}"
+            raise TimeoutError(message)
+        await asyncio.sleep(_POLL_INTERVAL_S)
+
+
+def wait_for_file_blocking(path: pathlib.Path, timeout_s: float = _DEFAULT_WAIT_S) -> None:
+    """Block until ``path`` exists.
+
+    The synchronous twin of ``wait_for_file``, for tests that drive a
+    subprocess without an event loop.
+
+    Args:
+        path: The file to wait for.
+        timeout_s: Seconds to poll before giving up.
+
+    Raises:
+        TimeoutError: ``path`` has not appeared within ``timeout_s``.
+    """
+    deadline = time.monotonic() + timeout_s
+    while not path.exists():
+        if time.monotonic() > deadline:
+            message = f"file never appeared at {path}"
+            raise TimeoutError(message)
+        time.sleep(_POLL_INTERVAL_S)
+
+
+@contextlib.contextmanager
+def reaped[P: subprocess.Popen[Any]](proc: P) -> Generator[P]:
+    """Hand ``proc`` back, then kill and reap it on the way out if it is still running.
+
+    Whatever path the block takes, no child outlives it and none of its pipes
+    stays open: a child still running is killed and drained through
+    ``communicate``, and the pipes of one that already exited are closed.
+
+    Args:
+        proc: The child to guard.
+
+    Yields:
+        ``proc`` itself.
+    """
+    try:
+        yield proc
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
+
+
+def record_subprocess_runs(
+    monkeypatch: "pytest.MonkeyPatch",
+    run: Callable[..., subprocess.CompletedProcess[Any]] | None = None,
+) -> list[list[str]]:
+    """Stub ``subprocess.run`` to record every call's argv before handing the call to ``run``.
+
+    Args:
+        monkeypatch: Patches ``subprocess.run`` for the duration of the test.
+        run: What each recorded call returns or raises; ``None`` reports a
+            clean exit without running anything.
+
+    Returns:
+        The list each call's argv is appended to, in call order.
+    """
+    argv_calls: list[list[str]] = []
+
+    def record_run(
+        args: list[str], *rest: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[Any]:
+        argv_calls.append(args)
+        if run is None:
+            return subprocess.CompletedProcess(args, 0)
+        return run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", record_run)
+    return argv_calls
+
+
 @overload
 def run_with_closed_reader(
     argv: list[str],
@@ -323,14 +479,6 @@ def capture_spawns(
 
     monkeypatch.setattr(asyncio, attr, wrapper)
     return processes
-
-
-def kill_surviving_groups(processes: Iterable[asyncio.subprocess.Process]) -> None:
-    """SIGKILL the process group of every process in ``processes`` that is still alive."""
-    for proc in processes:
-        if proc.returncode is None and proc.pid:
-            with contextlib.suppress(OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
 
 
 def killpg_warnings(recorded: "pytest.WarningsRecorder") -> list[str]:
@@ -470,3 +618,147 @@ def record_registry_sweep(monkeypatch: "pytest.MonkeyPatch") -> list[int]:
     monkeypatch.setattr(gymrat_exec, "terminate_process_group", record)
     monkeypatch.setattr(gymrat_exec, "kill_process_group", record)
     return attempted
+
+
+# ---------------------------------------------------------------------------
+# win32 Job Objects, faked so a POSIX run reaches them
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(slots=True)
+class FakeJobs:
+    """Answers the Job Object calls of one child and records what was asked of it.
+
+    ``active_counts`` is handed out one per accounting query, so a test can walk
+    a job down to empty; once it runs out, every further query reports
+    ``final_active``.
+    """
+
+    active_counts: list[int] = dataclasses.field(default_factory=list)
+    final_active: int = 0
+    creation_granted: bool = True
+    """Whether ``CreateJobObjectW`` hands out a job, as a locked-down host would not."""
+
+    assignment_granted: bool = True
+    """Whether ``AssignProcessToJobObject`` accepts the child, as a locked-down host would not."""
+
+    resume_granted: bool = True
+    """Whether ``NtResumeProcess`` accepts the handle, as a locked-down host would not."""
+
+    queried: list[int] = dataclasses.field(default_factory=list)
+    closed: list[int] = dataclasses.field(default_factory=list)
+    terminated: list[int] = dataclasses.field(default_factory=list)
+    limited: list[tuple[int, int]] = dataclasses.field(default_factory=list)
+    """Info class and ``BasicLimitInformation.LimitFlags`` of each limits call."""
+
+    opened: dict[int, int] = dataclasses.field(default_factory=dict)
+    """Pid behind each process handle handed out by ``OpenProcess``."""
+
+    assigned: list[tuple[int, int]] = dataclasses.field(default_factory=list)
+    """Job handle and pid of each successful assignment."""
+
+    resumed: list[int] = dataclasses.field(default_factory=list)
+    """Pid behind the handle of each successful resume."""
+
+
+def fake_kernel32(jobs: FakeJobs) -> types.SimpleNamespace:
+    """A ``kernel32`` stub that grants every job call and answers queries from ``jobs``."""
+
+    def query_information_job_object(
+        job: object,
+        info_class: object,
+        info: Any,
+        *_args: object,
+    ) -> int:
+        active = jobs.active_counts.pop(0) if jobs.active_counts else jobs.final_active
+        jobs.queried.append(active)
+        assert len(jobs.queried) <= _FAKE_JOB_QUERY_CAP, (
+            "the wait polled the job past every plausible grace instead of giving up"
+        )
+        # The production call passes ``ctypes.byref(struct)``; the struct it
+        # reads the count back out of is what ``_obj`` reaches.
+        info._obj.ActiveProcesses = active
+        return 1
+
+    def close_handle(handle: int) -> int:
+        jobs.closed.append(handle)
+        return 1
+
+    def terminate_job_object(job: int, *_args: object) -> int:
+        jobs.terminated.append(job)
+        return 1
+
+    def create_job_object(*_args: object) -> int:
+        # A NULL handle is how ``CreateJobObjectW`` reports a refusal.
+        return JOB_HANDLE if jobs.creation_granted else 0
+
+    def open_process(_access: int, _inherit: bool, pid: int) -> int:
+        jobs.opened[PROCESS_HANDLE] = pid
+        return PROCESS_HANDLE
+
+    def set_information_job_object(
+        _job: int,
+        info_class: int,
+        info: Any,
+        *_args: object,
+    ) -> int:
+        # ``ctypes.byref(struct)`` again: ``_obj`` is the struct the production
+        # code filled in before handing it over.
+        jobs.limited.append((info_class, info._obj.BasicLimitInformation.LimitFlags))
+        return 1
+
+    def assign_process_to_job_object(job: int, process: int) -> int:
+        if not jobs.assignment_granted:
+            return 0
+        jobs.assigned.append((job, jobs.opened[process]))
+        return 1
+
+    return types.SimpleNamespace(
+        CreateJobObjectW=create_job_object,
+        SetInformationJobObject=set_information_job_object,
+        OpenProcess=open_process,
+        AssignProcessToJobObject=assign_process_to_job_object,
+        CloseHandle=close_handle,
+        TerminateJobObject=terminate_job_object,
+        QueryInformationJobObject=query_information_job_object,
+    )
+
+
+def fake_ntdll(jobs: FakeJobs) -> types.SimpleNamespace:
+    """An ``ntdll`` stub that resumes the process behind a handle ``jobs`` handed out."""
+
+    def resume_process(process: int) -> int:
+        if not jobs.resume_granted:
+            return _NT_STATUS_ACCESS_DENIED
+        jobs.resumed.append(jobs.opened[process])
+        return _NT_STATUS_SUCCESS
+
+    return types.SimpleNamespace(NtResumeProcess=resume_process)
+
+
+def win32_process_group(monkeypatch: "pytest.MonkeyPatch", jobs: FakeJobs) -> types.ModuleType:
+    """Load a private copy of ``gymrat.process_group`` with its win32 job path bound.
+
+    The job functions exist only under ``sys.platform == "win32"``, so reaching
+    them from a POSIX run means executing the module source again with the
+    platform faked and ``kernel32`` stubbed. The copy is the test's own; the
+    imported module keeps its POSIX bindings. The platform stays faked for the
+    rest of the test.
+
+    Args:
+        monkeypatch: Fakes the platform and the ``ctypes`` win32 bindings.
+        jobs: Answers the copy's Job Object calls and records them.
+
+    Returns:
+        The private ``gymrat.process_group`` copy.
+    """
+    windll = types.SimpleNamespace(kernel32=fake_kernel32(jobs), ntdll=fake_ntdll(jobs))
+    monkeypatch.setattr(ctypes, "windll", windll, raising=False)
+    monkeypatch.setattr(ctypes, "WinError", lambda: OSError(_FAKE_WIN_ERROR), raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    spec = importlib.util.spec_from_file_location("process_group_win32", process_group.__file__)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

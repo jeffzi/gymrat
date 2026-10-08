@@ -15,19 +15,16 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.loop.start import start_session
 from gymrat.loop.sync import SyncResult, sync_to_experiment
 from gymrat.session.paths import experiment_worktree_dir
-from tests._config import resolved_config
 from tests._git import run_git
-
-CONFIG = resolved_config(bench="echo ok", samples=1, timeout_seconds=60)
+from tests.loop._settle import start_with
 
 
 @pytest.fixture
 def session(repo: str) -> str:
     """A scratch repo with an open session."""
-    start_session(repo, None, CONFIG)
+    start_with(repo)
     return repo
 
 
@@ -70,7 +67,7 @@ def _tree_snapshot(root: str) -> dict[str, bytes | str | None]:
         ),
     ],
 )
-def test_sync_to_experiment_when_changes_present_does_copy_each_file_and_return_the_sorted_paths(
+def test_sync_to_experiment_when_changes_present_does_copy_each_changed_file(
     session: str, files: dict[str, str]
 ):
     # core.quotePath=true C-quotes non-ASCII names; pinned so a developer's global
@@ -310,29 +307,6 @@ def _nested_repository(session: str) -> str:
     return "vendor/"
 
 
-@pytest.mark.parametrize(
-    "arrange",
-    [
-        pytest.param(_readme_replaced_by_directory, id="tracked-file-became-directory"),
-        pytest.param(_nested_repository, id="nested-repository"),
-    ],
-)
-def test_sync_to_experiment_when_main_tree_entry_is_directory_does_refuse_leaving_experiment_untouched(
-    session: str,
-    arrange: Callable[[str], str],
-):
-    offending = arrange(session)
-    experiment = experiment_worktree_dir(session)
-    before = _tree_snapshot(experiment)
-
-    with pytest.raises(GymratError) as excinfo:
-        sync_to_experiment(session)
-
-    assert str(excinfo.value) == f"Cannot sync '{offending}': expected a file but found a directory"
-    assert excinfo.value.hint == SUBMODULE_HINT
-    assert _tree_snapshot(experiment) == before
-
-
 def _destination_is_directory(session: str) -> str:
     """Add a main-tree file whose path is a directory in the experiment."""
     (Path(session) / "AAA.txt").write_text("lands first\n", encoding="utf-8")
@@ -360,11 +334,13 @@ def _rename_source_is_directory(session: str) -> str:
 @pytest.mark.parametrize(
     "arrange",
     [
-        pytest.param(_destination_is_directory, id="destination"),
-        pytest.param(_rename_source_is_directory, id="rename-source"),
+        pytest.param(_readme_replaced_by_directory, id="tracked-file-became-directory"),
+        pytest.param(_nested_repository, id="nested-repository"),
+        pytest.param(_destination_is_directory, id="experiment-destination"),
+        pytest.param(_rename_source_is_directory, id="experiment-rename-source"),
     ],
 )
-def test_sync_to_experiment_when_experiment_path_is_directory_does_refuse_leaving_experiment_untouched(
+def test_sync_to_experiment_when_a_path_is_a_directory_on_either_side_does_refuse_leaving_experiment_untouched(
     session: str,
     arrange: Callable[[str], str],
 ):

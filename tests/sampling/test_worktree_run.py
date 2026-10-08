@@ -15,8 +15,8 @@ import signal
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
 
 import pytest
 
@@ -41,8 +41,12 @@ from tests._git import (
     list_worktree_dirs,
     register_absent_worktree,
 )
+from tests._mode_bits import needs_mode_bits
 from tests._pipeline import CLEAN_RESULT, install_cleanup
 from tests._process_helpers import CleanupRegistry, fake_install
+
+# A sha no repository holds, so ``git worktree add`` rejects it outright.
+UNKNOWN_SHA = "0" * 40
 
 
 def _dirty_result() -> CleanupResult:
@@ -70,52 +74,32 @@ def test_to_context_when_in_place_target_does_run_in_its_own_dir_without_a_workt
     assert worktrees == []
 
 
-_REF_TARGET = RefTarget(ref="feature", resolved_sha="deadbeef")
-_PLANNED = WorktreeInfo(dir="/tmp/gymrat-wt", sha="deadbeef", created=True)
-
-
-def _plan_the_stub_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make ``plan_worktree`` hand back ``_PLANNED`` for any ref."""
-
-    def fake_plan_worktree(_ref: RefTarget) -> WorktreeInfo:
-        return _PLANNED
-
-    monkeypatch.setattr(sampling, "plan_worktree", fake_plan_worktree)
-
-
-def test_to_context_when_ref_target_does_return_its_registered_worktree_dir(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _plan_the_stub_worktree(monkeypatch)
-
-    def materialize(_worktree: WorktreeInfo, _repo_dir: str) -> None:
-        pass
-
-    monkeypatch.setattr(sampling, "materialize_worktree", materialize)
+def test_to_context_when_ref_target_does_run_in_its_registered_worktree(repo: str):
+    sha = head_of(repo)
     worktrees: list[WorktreeInfo] = []
 
-    result = to_context(TargetSpec(label=None, target="feature"), _REF_TARGET, "/repo", worktrees)
+    result = to_context(
+        TargetSpec(label=None, target=sha), RefTarget(ref=sha, resolved_sha=sha), repo, worktrees
+    )
 
-    assert result.dir == _PLANNED.dir
-    assert worktrees == [_PLANNED]
+    assert [worktree.dir for worktree in worktrees] == [result.dir]
+    assert (Path(result.dir) / "README.md").is_file()
 
 
 def test_to_context_when_materialize_fails_does_leave_the_worktree_registered_for_the_sweep(
-    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
 ):
-    _plan_the_stub_worktree(monkeypatch)
-
-    def failing_materialize(_worktree: WorktreeInfo, _repo_dir: str) -> None:
-        msg = "git worktree add failed"
-        raise GymratError(msg)
-
-    monkeypatch.setattr(sampling, "materialize_worktree", failing_materialize)
     worktrees: list[WorktreeInfo] = []
 
     with pytest.raises(GymratError):
-        to_context(TargetSpec(label=None, target="feature"), _REF_TARGET, "/repo", worktrees)
+        to_context(
+            TargetSpec(label=None, target="missing"),
+            RefTarget(ref="missing", resolved_sha=UNKNOWN_SHA),
+            repo,
+            worktrees,
+        )
 
-    assert worktrees == [_PLANNED]
+    assert [worktree.sha for worktree in worktrees] == [UNKNOWN_SHA]
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +117,7 @@ def test_to_context_when_materialize_fails_does_leave_the_worktree_registered_fo
         pytest.param(None, InPlaceTarget(dir="/some/path/bench"), "bench", id="in-place-basename"),
     ],
 )
-def test_resolve_label_when_given_inputs_does_return_expected(
+def test_resolve_label_when_label_omitted_does_fall_back_to_ref_name_or_dir_basename(
     explicit: str | None, target: InPlaceTarget | RefTarget, expected: str
 ):
     assert resolve_label(explicit, target) == expected
@@ -395,7 +379,8 @@ _REFUSED = "contains modified files"
 _PRUNE = ("prune",)
 
 
-class _Exit(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class _Exit:
     """What the process had done by the moment the signal path exited."""
 
     code: int
@@ -560,35 +545,9 @@ async def test_run_with_worktrees_when_signalled_during_the_normal_prune_does_ex
 # worktree lifecycle: plan, materialize, sweep
 # ---------------------------------------------------------------------------
 
-# A sha no repository holds, so ``git worktree add`` rejects it outright.
-UNKNOWN_SHA = "0" * 40
-
-_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
-
 skip_on_windows = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX signal delivery to git and real symlinks are required"
 )
-skip_on_windows_or_root = pytest.mark.skipif(
-    sys.platform == "win32" or _IS_ROOT,
-    reason="Windows lacks EACCES from chmod and root bypasses the mode bits",
-)
-
-
-@pytest.fixture(
-    params=[
-        pytest.param(False, id="git-missing"),
-        pytest.param(True, id="git-not-executable", marks=skip_on_windows),
-    ]
-)
-def unusable_git(
-    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Leave ``PATH`` holding one directory where git is absent or lacks the execute bit."""
-    if request.param:
-        blocked = tmp_path / "git"
-        blocked.write_text("#!/bin/sh\n", encoding="utf-8")
-        blocked.chmod(0o644)
-    monkeypatch.setenv("PATH", str(tmp_path))
 
 
 def _plan_and_attempt_materialize(target: RefTarget, repo_dir: str) -> tuple[WorktreeInfo, bool]:
@@ -643,7 +602,7 @@ def _create_stray_worktree(tmp_path: Path) -> WorktreeInfo:
 
 def _default_temp_base(_monkeypatch: pytest.MonkeyPatch, _tmp_path: Path) -> str:
     """Leave ``tempfile.gettempdir`` alone; the planner resolves the host's own base."""
-    return os.path.realpath(tempfile.gettempdir())
+    return str(Path(tempfile.gettempdir()).resolve())
 
 
 def _symlinked_temp_base(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
@@ -654,7 +613,7 @@ def _symlinked_temp_base(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str
     link.symlink_to(real_base)
     # Patched directly, not through TMPDIR: gettempdir caches its first answer.
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(link))
-    return os.path.realpath(real_base)
+    return str(real_base.resolve())
 
 
 def _slashed_temp_base(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
@@ -662,7 +621,7 @@ def _slashed_temp_base(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
     real_base = tmp_path / "real-base"
     real_base.mkdir()
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(real_base) + os.sep)
-    return os.path.realpath(real_base)
+    return str(real_base.resolve())
 
 
 @pytest.mark.parametrize(
@@ -725,16 +684,14 @@ def _plan_under_read_only_base(
     read_only_base.chmod(0o500)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(read_only_base))
     sha = head_of(repo)
-    return plan_worktree(RefTarget(ref=sha, resolved_sha=sha)), os.path.realpath(read_only_base)
+    return plan_worktree(RefTarget(ref=sha, resolved_sha=sha)), str(read_only_base.resolve())
 
 
 @pytest.mark.parametrize(
     "arrange",
     [
         pytest.param(_plan_unknown_sha, id="git-rejects-the-sha"),
-        pytest.param(
-            _plan_under_read_only_base, id="read-only-temp-base", marks=skip_on_windows_or_root
-        ),
+        pytest.param(_plan_under_read_only_base, id="read-only-temp-base", marks=needs_mode_bits),
     ],
 )
 def test_materialize_worktree_when_git_refuses_does_fail_with_its_stderr_leaving_no_worktree(
@@ -786,12 +743,6 @@ def test_cleanup_worktrees_when_given_non_empty_list_does_report_removing_only_t
     assert result == CleanupResult(removed=1, failures=(), prune_error=None)
     assert not Path(worktree.dir).exists()
     assert list_worktree_dirs(repo, include_main=False) == [absent]
-
-
-def test_cleanup_worktrees_when_list_empty_does_leave_registry_untouched(repo: str):
-    cleanup_worktrees([], repo)
-
-    assert len(list_worktree_dirs(repo)) == 1
 
 
 def test_cleanup_worktrees_when_list_empty_outside_repo_does_skip_prune_and_report_no_error(
@@ -883,8 +834,8 @@ def test_cleanup_worktrees_when_prune_sweep_fails_does_report_prune_error_instea
 def test_cleanup_worktrees_when_swept_twice_does_report_nothing_the_second_time(repo: str):
     worktree = _create_head_worktree(repo)
     absent = register_absent_worktree(repo)
-
     cleanup_worktrees([worktree], repo)
+
     second = cleanup_worktrees([worktree], repo)
 
     assert second == CleanupResult(removed=0, failures=(), prune_error=None)

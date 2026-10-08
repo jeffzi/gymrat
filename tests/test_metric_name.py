@@ -4,8 +4,15 @@ import sys
 
 import pytest
 
-from gymrat.errors import GymratError
-from gymrat.metric_name import LINE_TERMINATORS, format_inline, parse
+from gymrat.metric_name import (
+    LINE_TERMINATORS,
+    EmptyKindError,
+    EmptyPathSegmentError,
+    MetricNameError,
+    MultipleHashesError,
+    format_inline,
+    parse,
+)
 from gymrat.report.style import render_lines
 
 
@@ -41,20 +48,22 @@ def test_parse_when_name_well_formed_does_split_path_kind_group_and_case(
 
 
 @pytest.mark.parametrize(
-    "raw_name",
+    ("raw_name", "rule_error"),
     [
-        pytest.param("a#b#c", id="multiple-hashes"),
-        pytest.param("a//b", id="empty-inner-segment"),
-        pytest.param("a/", id="empty-trailing-segment"),
-        pytest.param("/x", id="empty-leading-segment"),
-        pytest.param("", id="empty-name"),
-        pytest.param("#time", id="empty-path-before-kind"),
-        pytest.param("a/#time", id="empty-trailing-segment-before-kind"),
-        pytest.param("a#", id="empty-kind"),
+        pytest.param("a#b#c", MultipleHashesError, id="multiple-hashes"),
+        pytest.param("a//b", EmptyPathSegmentError, id="empty-inner-segment"),
+        pytest.param("a/", EmptyPathSegmentError, id="empty-trailing-segment"),
+        pytest.param("/x", EmptyPathSegmentError, id="empty-leading-segment"),
+        pytest.param("", EmptyPathSegmentError, id="empty-name"),
+        pytest.param("#time", EmptyPathSegmentError, id="empty-path-before-kind"),
+        pytest.param("a/#time", EmptyPathSegmentError, id="empty-trailing-segment-before-kind"),
+        pytest.param("a#", EmptyKindError, id="empty-kind"),
     ],
 )
-def test_parse_when_name_breaks_the_grammar_does_raise_gymrat_error_naming_it(raw_name: str):
-    with pytest.raises(GymratError) as excinfo:
+def test_parse_when_name_breaks_the_grammar_does_raise_the_rule_error_naming_it(
+    raw_name: str, rule_error: type[MetricNameError]
+):
+    with pytest.raises(rule_error) as excinfo:
         parse(raw_name)
 
     assert raw_name in str(excinfo.value)

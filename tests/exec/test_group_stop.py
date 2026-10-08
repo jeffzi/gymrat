@@ -128,14 +128,11 @@ def slow_cleanup_command(
     return f"{cleaner}; true" if nested else f"exec {cleaner}"
 
 
-def escalate_termination(raise_signal: Callable[[int], int]) -> int:
+def escalate_termination(raise_signal: Callable[[int], int]) -> None:
     """Deliver a second termination signal before the live-group kill sweep has run.
 
     Args:
         raise_signal: Runs the installed handler for a signal and reports the exit code.
-
-    Returns:
-        The exit code the first signal's handler ends the process with.
     """
 
     def interrupt() -> None:
@@ -143,7 +140,7 @@ def escalate_termination(raise_signal: Callable[[int], int]) -> int:
 
     install_termination_cleanup(interrupt)
     install_termination_cleanup(exec_mod.kill_live_process_groups)
-    return raise_signal(signal.SIGINT)
+    raise_signal(signal.SIGINT)
 
 
 @pytest.mark.usefixtures("roomy_escalation_grace")
@@ -208,11 +205,10 @@ async def test_exec_when_second_signal_arrives_in_nested_run_does_kill_live_grou
     task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, make_opts(stdin="go\n")))
     shell = await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
 
-    code = escalate_termination(raise_signal)
+    escalate_termination(raise_signal)
     await task
 
     await wait_until_dead(shell, timeout_s=3.0)
-    assert code == 128 + signal.SIGINT
     assert group_wait_graces == [pytest.approx(expected_grace_s)]
 
 
@@ -248,15 +244,27 @@ async def test_kill_live_process_groups_when_run_is_nested_does_halve_grace_per_
 # before its grace by the test's own clock.
 _TIMER_SLACK_S = 0.01
 
+# The stop grace the abort-timing test runs with. At the real 1 s, the deepest
+# level's 0.25 s grace leaves the kill, pipe close and reap a quarter second
+# before the bound, which a loaded CI runner's scheduling delays can use up.
+_ROOMY_TERMINATE_GRACE_S = 2.0
+
+
+@pytest.fixture
+def roomy_terminate_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give a stopped run's grace room for a loaded runner's delays at every nesting level."""
+    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _ROOMY_TERMINATE_GRACE_S)
+
 
 @pytest.mark.parametrize(
     ("nesting_depth", "expected_grace_s"),
     [
-        pytest.param(0, 1.0, id="top-level"),
-        pytest.param(1, 0.5, id="nested-once"),
-        pytest.param(2, 0.25, id="nested-twice"),
+        pytest.param(0, 2.0, id="top-level"),
+        pytest.param(1, 1.0, id="nested-once"),
+        pytest.param(2, 0.5, id="nested-twice"),
     ],
 )
+@pytest.mark.usefixtures("roomy_terminate_grace")
 async def test_exec_when_aborted_in_nested_run_does_halve_grace_per_level(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

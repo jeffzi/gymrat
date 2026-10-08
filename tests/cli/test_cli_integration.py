@@ -22,7 +22,7 @@ from tests._cli import run_cli
 from tests._git import EMIT_ONE_BENCH, list_worktree_dirs, wait_for_worktrees, write_committed_bench
 from tests._git import run_git as _git
 from tests._lock import FIXED_HOLDER_AT, hold_lock
-from tests._process_helpers import wait_for_pid_file_blocking
+from tests._process_helpers import reaped, wait_for_pid_file_blocking
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 
@@ -104,23 +104,20 @@ def test_cli_when_signalled_mid_run_does_exit_on_the_signal_status_leaving_no_wo
     _git(["switch", "-c", "candidate"], repo)
     _git(["switch", "main"], repo)
 
-    proc = subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [*_ENTRY, "compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
-        cwd=repo,
-        env=_env(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
+    with reaped(
+        subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
+            [*_ENTRY, "compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
+            cwd=repo,
+            env=_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    ) as proc:
         wait_for_worktrees(repo, 1)
         reap_groups.append(os.getpgid(wait_for_pid_file_blocking(pid_path, timeout_s=30.0)))
         proc.send_signal(signal_number)
         proc.communicate(timeout=30)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.communicate()
 
     assert proc.returncode == expected_code
     assert list_worktree_dirs(repo, include_main=False) == []

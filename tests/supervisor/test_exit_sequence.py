@@ -18,14 +18,18 @@ exercise the real probe hold a real OS lock through ``hold_lock``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
+from unittest.mock import create_autospec
 
 import pytest
 
+from gymrat.clock import monotonic_ms
 from gymrat.git import SHORT_SHA_LENGTH
+from gymrat.loop.finalize import finalize_session
 from gymrat.session.paths import lockfile_path, session_jsonl_path
 from gymrat.session.records import (
     CommandRecord,
@@ -37,12 +41,10 @@ from gymrat.supervisor.exit_sequence import (
     ExitReport,
     ExitStep,
 )
-from tests._files import read_bytes, read_text, write_text
 from tests._git import run_git
 from tests._lock import hold_lock
 from tests.loop._settle import (
     CHECKS,
-    checks_fail,
     checks_pass,
     commit_experiment_directly,
     edit_experiment,
@@ -62,10 +64,11 @@ from tests.session.records._fixtures import (
     tear_final_line,
 )
 from tests.supervisor._exit_sequence import (
+    KEPT_STEP,
+    NOT_FINALIZED_STEP,
     improved_iteration,
     run_sequence,
     session_context,
-    unimproved_iteration,
 )
 from tests.supervisor._fixtures import events_of
 
@@ -76,7 +79,6 @@ if TYPE_CHECKING:
 
     from gymrat.supervisor.events import SessionEvent, SessionObserver
     from gymrat.supervisor.supervise import EndedBy
-    from tests._exec_fixtures import ExecRecorder
 
 #: The skip wording when the holder record cannot be read.
 SKIP_UNKNOWN = "exit sequence skipped: gymrat is still running (PID unknown)"
@@ -86,9 +88,6 @@ CAP_NOTE = " — expected after a cap trip: the agent's last command outlives th
 
 #: A complete log line no record schema matches, so ``read_records`` refuses the log.
 UNREADABLE_LINE = '{"type": "banana"}\n'
-
-#: The step a run closes on when it would have finalized but ``--no-finalize`` was passed.
-NOT_FINALIZED_STEP = ExitStep(kind="nothing", text="session left open (--no-finalize)")
 
 
 class HeldProbe:
@@ -100,6 +99,26 @@ class HeldProbe:
     def __call__(self) -> bool:
         self.calls += 1
         return True
+
+
+class SlowHeldProbe(HeldProbe):
+    """A held-lock probe whose every call advances a fake monotonic clock by 100 ms.
+
+    Building one patches the exit sequence's clock to read that fake clock.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        super().__init__()
+        self.now_ms = 0.0
+        monkeypatch.setattr(
+            "gymrat.supervisor.exit_sequence.monotonic_ms",
+            create_autospec(monotonic_ms, side_effect=lambda: self.now_ms),
+        )
+
+    @override
+    def __call__(self) -> bool:
+        self.now_ms += 100
+        return super().__call__()
 
 
 def _make_log_unreadable(root: str) -> str:
@@ -176,20 +195,6 @@ async def test_run_exit_sequence_when_lock_held_past_the_bound_does_skip_naming_
     assert records_of_type(repo, CommandRecord) == []
 
 
-async def test_run_exit_sequence_when_lock_stays_held_does_keep_probing_until_the_bound(
-    repo: str,
-):
-    start_with(repo)
-    probe = HeldProbe()
-
-    run = await run_sequence(
-        session_context(repo), lock_poll_ms=1, lock_wait_ms=20, is_lock_held=probe
-    )
-
-    assert probe.calls > 1
-    assert run.report.steps[0].kind == "skipped"
-
-
 async def test_run_exit_sequence_when_lock_frees_mid_wait_does_proceed_to_settle(
     repo: str,
 ):
@@ -217,25 +222,27 @@ async def test_run_exit_sequence_when_no_wait_bound_given_does_bound_by_the_conf
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo)
-    now_ms = 0.0
-    calls = 0
-
-    def held_for_100_ms() -> bool:
-        nonlocal now_ms, calls
-        calls += 1
-        now_ms += 100
-        return True
-
-    monkeypatch.setattr("gymrat.supervisor.exit_sequence.monotonic_ms", lambda: now_ms)
+    probe = SlowHeldProbe(monkeypatch)
 
     run = await run_sequence(
         session_context(repo, timeout_seconds=1),
         lock_poll_ms=1,
         lock_wait_ms=None,
-        is_lock_held=held_for_100_ms,
+        is_lock_held=probe,
     )
 
-    assert (calls, run.report.steps[0].kind) == (10, "skipped")
+    assert (probe.calls, run.report.steps[0].kind) == (10, "skipped")
+
+
+async def test_run_exit_sequence_when_the_first_probe_outlasts_the_bound_does_not_probe_again(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo)
+    probe = SlowHeldProbe(monkeypatch)
+
+    await run_sequence(session_context(repo), lock_wait_ms=50, is_lock_held=probe)
+
+    assert probe.calls == 1
 
 
 @pytest.mark.parametrize(
@@ -270,7 +277,7 @@ async def test_run_exit_sequence_when_the_holder_record_is_unreadable_does_repor
 ):
     start_with(repo)
     lock_path = hold_repo_lock(repo)
-    write_text(lock_path, "not a holder record")
+    await asyncio.to_thread(Path(lock_path).write_text, "not a holder record", encoding="utf-8")
 
     run = await run_sequence(session_context(repo))
 
@@ -308,7 +315,7 @@ async def test_run_exit_sequence_when_the_log_tail_is_torn_does_repair_it_before
 
     run = await run_sequence(session_context(repo))
 
-    assert TORN_PREFIX not in read_bytes(jsonl_path)
+    assert TORN_PREFIX not in await asyncio.to_thread(Path(jsonl_path).read_bytes)
     assert run.report.error is None
 
 
@@ -427,30 +434,6 @@ async def test_run_exit_sequence_when_finalize_refuses_does_record_the_refusal_n
     assert run.report.error is None
 
 
-@pytest.mark.parametrize(
-    ("arrange", "install_checks", "trailing"),
-    [
-        pytest.param(improved_iteration, checks_pass, (NOT_FINALIZED_STEP,), id="kept"),
-        pytest.param(improved_iteration, checks_fail, (), id="left-for-a-person"),
-        pytest.param(unimproved_iteration, checks_pass, (), id="nothing-kept"),
-    ],
-)
-async def test_run_exit_sequence_when_finalize_is_off_does_note_it_only_when_it_would_have_run(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    arrange: Callable[[str], None],
-    install_checks: Callable[[pytest.MonkeyPatch], ExecRecorder],
-    trailing: tuple[ExitStep, ...],
-):
-    start_with(repo)
-    arrange(repo)
-    install_checks(monkeypatch)
-
-    run = await run_sequence(session_context(repo, checks=CHECKS), finalize=False)
-
-    assert run.report.steps[1:] == trailing
-
-
 async def test_run_exit_sequence_when_finalize_is_off_and_all_settled_does_record_one_step(
     repo: str,
 ):
@@ -503,7 +486,7 @@ class FailsOnNthEvent:
         self.events.append(event)
 
 
-async def test_run_exit_sequence_when_a_step_raises_does_report_record_and_announce_the_error(
+async def test_run_exit_sequence_when_a_step_raises_does_close_on_the_error(
     repo: str,
 ):
     start_with(repo)
@@ -514,7 +497,8 @@ async def test_run_exit_sequence_when_a_step_raises_does_report_record_and_annou
     assert run.report.steps == ()
     assert run.report.error is not None
     assert jsonl_path in run.report.error
-    recorded = json.loads(read_text(jsonl_path).splitlines()[-1])
+    log_text = await asyncio.to_thread(Path(jsonl_path).read_text, encoding="utf-8")
+    recorded = json.loads(log_text.splitlines()[-1])
     assert (recorded["name"], recorded["exit_code"]) == ("supervise", 2)
     assert [(event.action, event.reason) for event in events_of(run.events, FollowUpEvent)] == [
         ("ended", FAILED_PREFIX + run.report.error)
@@ -551,26 +535,6 @@ async def test_run_exit_sequence_when_the_lock_probe_raises_does_report_the_erro
     assert run.report == ExitReport(steps=(), error=BOOM)
 
 
-async def test_run_exit_sequence_when_the_first_probe_outlasts_the_bound_does_not_probe_again(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo)
-    now_ms = 0.0
-    calls = 0
-
-    def slow_probe() -> bool:
-        nonlocal now_ms, calls
-        calls += 1
-        now_ms += 100
-        return True
-
-    monkeypatch.setattr("gymrat.supervisor.exit_sequence.monotonic_ms", lambda: now_ms)
-
-    await run_sequence(session_context(repo), lock_wait_ms=50, is_lock_held=slow_probe)
-
-    assert calls == 1
-
-
 async def test_run_exit_sequence_when_finalize_raises_does_keep_the_settled_step_on_the_report(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -578,19 +542,19 @@ async def test_run_exit_sequence_when_finalize_raises_does_keep_the_settled_step
     improved_iteration(repo)
     checks_pass(monkeypatch)
 
-    def failing_finalize(_root: str) -> None:
-        raise RuntimeError(BOOM)
-
-    monkeypatch.setattr("gymrat.supervisor.exit_sequence.finalize_session", failing_finalize)
+    monkeypatch.setattr(
+        "gymrat.supervisor.exit_sequence.finalize_session",
+        create_autospec(finalize_session, side_effect=RuntimeError(BOOM)),
+    )
 
     run = await run_sequence(session_context(repo, checks=CHECKS), finalize=True)
 
     assert run.report == ExitReport(
-        steps=(ExitStep(kind="settled", text="settled: kept iteration 1 (checks passed)"),),
+        steps=(KEPT_STEP,),
         error=BOOM,
     )
     assert [event.reason for event in events_of(run.events, FollowUpEvent)] == [
-        "settled: kept iteration 1 (checks passed)",
+        KEPT_STEP.text,
         FAILED_PREFIX + BOOM,
     ]
 
@@ -615,18 +579,17 @@ async def test_run_exit_sequence_when_a_later_step_raises_does_close_after_the_s
     start_with(repo)
     improved_iteration(repo)
     checks_pass(monkeypatch)
-    kept = ExitStep(kind="settled", text="settled: kept iteration 1 (checks passed)")
     observer = FailsOnNthEvent(2)
 
     run = await run_sequence(session_context(repo, checks=CHECKS), finalize=False, log=observer)
 
     assert run.report.error is not None
     assert BOOM in run.report.error
-    assert run.report.steps == (kept, NOT_FINALIZED_STEP)
+    assert run.report.steps == (KEPT_STEP, NOT_FINALIZED_STEP)
     assert [
         (event.action, event.reason) for event in events_of(observer.events, FollowUpEvent)
     ] == [
-        ("ended", kept.text),
+        ("ended", KEPT_STEP.text),
         ("ended", FAILED_PREFIX + run.report.error),
     ]
 

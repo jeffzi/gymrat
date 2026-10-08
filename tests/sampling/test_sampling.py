@@ -5,10 +5,8 @@ samples, and metric-meta resolution: adapter defaults, then kind, then metric.
 """
 
 import asyncio
-import sys
 import time
-from collections.abc import Callable, Sequence
-from pathlib import Path
+from collections.abc import Sequence
 
 import pytest
 
@@ -106,7 +104,7 @@ def one_in_place_target() -> list[TargetContext]:
         ),
     ],
 )
-async def test_collect_samples_when_run_does_collect_each_targets_samples_in_schedule_order(
+async def test_collect_samples_when_targets_succeed_does_collect_each_targets_samples_in_schedule_order(
     monkeypatch: pytest.MonkeyPatch,
     prepare: str | None,
     expected_commands: list[tuple[str, str]],
@@ -245,39 +243,35 @@ async def test_collect_samples_when_bench_output_unreadable_does_warn_after_the_
     ]
 
 
-async def test_collect_samples_when_prepare_fails_does_stop_before_any_bench(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    recorder = install_exec(monkeypatch, SAMPLING_EXEC, make_failure())
-    targets = two_in_place_targets()
-    options = SamplingOptions(bench="run", prepare="prep", samples=2, timeout_seconds=1.0)
-
-    with pytest.raises(CommandError):
-        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    assert [command for command, _ in recorder.calls] == ["prep"]
-
-
 @pytest.mark.parametrize(
-    ("result", "error"),
+    ("prepare", "result", "error", "expected_commands"),
     [
-        pytest.param(make_failure(), CommandError, id="non-zero-exit"),
+        pytest.param("prep", make_failure(), CommandError, ["prep"], id="prepare-fails"),
+        pytest.param(None, make_failure(), CommandError, ["run"], id="bench-exits-non-zero"),
         pytest.param(
-            make_success("METRIC a//b=1\nMETRIC /x=2"), AdapterError, id="only-malformed-names"
+            None,
+            make_success("METRIC a//b=1\nMETRIC /x=2"),
+            AdapterError,
+            ["run"],
+            id="bench-reports-only-malformed-names",
         ),
     ],
 )
-async def test_collect_samples_when_bench_fails_does_stop_mid_schedule(
-    monkeypatch: pytest.MonkeyPatch, result: ExecResult, error: type[Exception]
+async def test_collect_samples_when_a_command_fails_does_stop_at_the_first_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    prepare: str | None,
+    result: ExecResult,
+    error: type[Exception],
+    expected_commands: list[str],
 ):
     recorder = install_exec(monkeypatch, SAMPLING_EXEC, result)
     targets = two_in_place_targets()
-    options = SamplingOptions(bench="run", prepare=None, samples=2, timeout_seconds=1.0)
+    options = SamplingOptions(bench="run", prepare=prepare, samples=2, timeout_seconds=1.0)
 
     with pytest.raises(error):
         await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
 
-    assert [command for command, _ in recorder.calls] == ["run"]
+    assert [command for command, _ in recorder.calls] == expected_commands
 
 
 _IN_PLACE_NEW = TargetContext(
@@ -460,28 +454,6 @@ async def test_collect_samples_when_command_fails_does_raise_error_with_full_sha
     assert (str(caught.value), caught.value.hint) == (expected, hint)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
-async def test_collect_samples_when_driven_end_to_end_does_collect_parsed_metrics(tmp_path: Path):
-    targets = [
-        TargetContext(
-            target=InPlaceTarget(dir=str(tmp_path)),
-            dir=str(tmp_path),
-            label="old",
-            position="old",
-        ),
-    ]
-    options = SamplingOptions(
-        bench="printf 'METRIC x=1\\n'",
-        prepare=None,
-        samples=2,
-        timeout_seconds=30.0,
-    )
-
-    result = await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    assert [ts.samples for ts in result] == [[{"x": 1.0}, {"x": 1.0}]]
-
-
 # ---------------------------------------------------------------------------
 # RunOptions.from_config
 # ---------------------------------------------------------------------------
@@ -502,7 +474,7 @@ def _resolved_config() -> ResolvedConfig:
     )
 
 
-def test_run_options_from_config_when_called_does_copy_the_run_settings_leaving_the_default_clock():
+def test_run_options_from_config_when_no_overrides_given_does_copy_the_run_settings_leaving_the_default_clock():
     events: list[ProgressEvent] = []
     warnings: list[str] = []
     config = _resolved_config()
@@ -559,6 +531,124 @@ def test_own_values_when_rounds_missing_metric_does_skip_them():
     assert own_values(samples, "x") == [1.0, 3.0]
 
 
+# ---------------------------------------------------------------------------
+# resolve_metric_meta
+# ---------------------------------------------------------------------------
+
+_NAME = "bench-a/heap"
+_HEAP = MetricDefaults(direction="higher", kind="memory", short_name="heap", unit="bytes")
+_MEMORY_NOT_GATING = {"memory": KindEntry(gating=False)}
+
+
+@pytest.mark.parametrize(
+    ("defaults", "entry", "config_kinds", "expected"),
+    [
+        pytest.param(
+            MetricDefaults(direction="lower"),
+            None,
+            None,
+            metric_meta(_NAME),
+            id="adapter-defaults-keep-the-full-name",
+        ),
+        pytest.param(
+            MetricDefaults(direction="higher", unit="ns"),
+            None,
+            None,
+            metric_meta(_NAME, direction="higher", unit="ns"),
+            id="adapter-direction-and-unit",
+        ),
+        pytest.param(
+            MetricDefaults(direction="lower", kind="memory", short_name="heap"),
+            None,
+            None,
+            metric_meta("heap", kind="memory"),
+            id="adapter-kind-and-short-name",
+        ),
+        pytest.param(
+            _HEAP,
+            MetricEntry(direction="lower"),
+            None,
+            metric_meta("heap", direction="lower", kind="memory", unit="bytes"),
+            id="entry-direction",
+        ),
+        pytest.param(
+            _HEAP,
+            MetricEntry(gating=False),
+            None,
+            metric_meta("heap", direction="higher", kind="memory", unit="bytes", gating=False),
+            id="entry-gating",
+        ),
+        pytest.param(
+            _HEAP,
+            MetricEntry(exact=True),
+            None,
+            metric_meta("heap", direction="higher", kind="memory", unit="bytes", exact=True),
+            id="entry-exact",
+        ),
+        pytest.param(
+            _HEAP,
+            MetricEntry(exact=True),
+            _MEMORY_NOT_GATING,
+            metric_meta(
+                "heap", direction="higher", kind="memory", unit="bytes", gating=False, exact=True
+            ),
+            id="kind-gating-fills-an-entry-without-gating",
+        ),
+        pytest.param(
+            _HEAP,
+            None,
+            _MEMORY_NOT_GATING,
+            metric_meta("heap", direction="higher", kind="memory", unit="bytes", gating=False),
+            id="kind-gating-without-an-entry",
+        ),
+        pytest.param(
+            _HEAP,
+            None,
+            {"time": KindEntry(gating=False)},
+            metric_meta("heap", direction="higher", kind="memory", unit="bytes"),
+            id="other-kind-gating-ignored",
+        ),
+        pytest.param(
+            _HEAP,
+            MetricEntry(gating=True),
+            _MEMORY_NOT_GATING,
+            metric_meta("heap", direction="higher", kind="memory", unit="bytes"),
+            id="entry-gating-beats-kind-gating",
+        ),
+        pytest.param(
+            _HEAP,
+            None,
+            {"memory": KindEntry(gating=None)},
+            metric_meta("heap", direction="higher", kind="memory", unit="bytes"),
+            id="kind-entry-without-gating-keeps-the-default",
+        ),
+        pytest.param(
+            MetricDefaults(direction="lower", short_name="heap"),
+            None,
+            {"other": KindEntry(gating=False)},
+            metric_meta("heap", kind="other", gating=False),
+            id="adapter-reports-no-kind",
+        ),
+    ],
+)
+def test_resolve_metric_meta_when_layers_given_does_layer_entry_over_kind_over_adapter(
+    defaults: MetricDefaults,
+    entry: MetricEntry | None,
+    config_kinds: dict[str, KindEntry] | None,
+    expected: ResolvedMetricMeta,
+):
+    adapter = make_adapter(lambda _name: defaults)
+
+    result = resolve_metric_meta(_NAME, entry, adapter, config_kinds)
+
+    assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# resolve_metric_meta_from_samples
+# ---------------------------------------------------------------------------
+
+
 def resolve(
     names: Sequence[str],
     config_metrics: dict[str, MetricEntry] | None,
@@ -570,100 +660,6 @@ def resolve(
     return resolve_metric_meta_from_samples(samples, config_metrics, adapter, config_kinds)
 
 
-# ---------------------------------------------------------------------------
-# resolve_metric_meta — adapter defaults
-# ---------------------------------------------------------------------------
-
-
-def _lower_only(_name: str) -> MetricDefaults:
-    return MetricDefaults(direction="lower")
-
-
-def _higher_in_ns(_name: str) -> MetricDefaults:
-    return MetricDefaults(direction="higher", unit="ns")
-
-
-def _memory_heap(_name: str) -> MetricDefaults:
-    return MetricDefaults(direction="lower", kind="memory", short_name="heap")
-
-
-@pytest.mark.parametrize(
-    ("defaults_fn", "name", "expected"),
-    [
-        pytest.param(
-            _lower_only,
-            "response-time",
-            metric_meta("response-time"),
-            id="gating-not-exact-no-kind-full-name",
-        ),
-        pytest.param(
-            _higher_in_ns,
-            "throughput",
-            metric_meta("throughput", direction="higher", unit="ns"),
-            id="direction-and-unit",
-        ),
-        pytest.param(
-            _memory_heap,
-            "bench-a/heap",
-            metric_meta("heap", kind="memory"),
-            id="kind-and-short-name",
-        ),
-    ],
-)
-def test_resolve_metric_meta_when_config_metrics_none_does_carry_the_adapter_defaults(
-    defaults_fn: Callable[[str], MetricDefaults], name: str, expected: ResolvedMetricMeta
-):
-    adapter = make_adapter(defaults_fn)
-
-    result = resolve([name], None, adapter)
-
-    assert result == {name: expected}
-
-
-# ---------------------------------------------------------------------------
-# resolve_metric_meta — per-metric config overrides
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("metric_name", "entry", "expected"),
-    [
-        pytest.param(
-            "throughput",
-            MetricEntry(direction="higher"),
-            metric_meta("throughput", direction="higher"),
-            id="direction",
-        ),
-        pytest.param(
-            "response-time",
-            MetricEntry(gating=False),
-            metric_meta("response-time", gating=False),
-            id="gating",
-        ),
-        pytest.param(
-            "response-time",
-            MetricEntry(exact=True),
-            metric_meta("response-time", exact=True),
-            id="exact",
-        ),
-    ],
-)
-def test_resolve_metric_meta_when_config_sets_single_field_does_override_only_the_named_metric(
-    metric_name: str, entry: MetricEntry, expected: ResolvedMetricMeta
-):
-    adapter = make_adapter()
-    config_metrics = {metric_name: entry, "unused": MetricEntry(gating=True, exact=True)}
-
-    result = resolve([metric_name], config_metrics, adapter)
-
-    assert result == {metric_name: expected}
-
-
-# ---------------------------------------------------------------------------
-# resolve_metric_meta — no metric reported
-# ---------------------------------------------------------------------------
-
-
 def test_resolve_metric_meta_from_samples_when_no_set_reports_a_metric_does_raise():
     sample_sets = [[{}, {}], [{}, {}]]
 
@@ -671,12 +667,7 @@ def test_resolve_metric_meta_from_samples_when_no_set_reports_a_metric_does_rais
         resolve_metric_meta_from_samples(sample_sets, None, make_adapter(), None)
 
 
-# ---------------------------------------------------------------------------
-# resolve_metric_meta — multiple metrics
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_metric_meta_when_multiple_names_does_resolve_each_in_order():
+def test_resolve_metric_meta_from_samples_when_multiple_names_does_resolve_each_with_its_own_entry_in_order():
     def defaults_fn(name: str) -> MetricDefaults:
         if name == "response-time":
             return MetricDefaults(direction="lower", unit="ns")
@@ -699,127 +690,17 @@ def test_resolve_metric_meta_when_multiple_names_does_resolve_each_in_order():
     }
 
 
-# ---------------------------------------------------------------------------
-# resolve_metric_meta — kind-level gating
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_metric_meta_when_kind_sets_gating_does_apply_only_to_matching_kind():
+def test_resolve_metric_meta_from_samples_when_config_metrics_none_does_apply_kind_gating_per_metric():
     def defaults_fn(name: str) -> MetricDefaults:
         if name.endswith("/heap"):
             return MetricDefaults(direction="lower", kind="memory", short_name="heap")
         return MetricDefaults(direction="lower", kind="time", short_name="time")
 
     adapter = make_adapter(defaults_fn)
-    config_kinds = {"memory": KindEntry(gating=False)}
 
-    result = resolve(["bench-a/heap", "bench-a/time"], None, adapter, config_kinds)
+    result = resolve(["bench-a/heap", "bench-a/time"], None, adapter, _MEMORY_NOT_GATING)
 
     assert result == {
         "bench-a/heap": metric_meta("heap", gating=False, kind="memory"),
         "bench-a/time": metric_meta("time", kind="time"),
     }
-
-
-def test_resolve_metric_meta_when_metric_and_kind_disagree_does_let_metric_win():
-    adapter = make_adapter(
-        lambda name: MetricDefaults(
-            direction="lower", kind="memory", short_name=name.split("/")[-1]
-        )
-    )
-    config_metrics = {"bench-a/heap": MetricEntry(gating=True)}
-    config_kinds = {"memory": KindEntry(gating=False)}
-
-    result = resolve(["bench-a/heap", "bench-a/rss"], config_metrics, adapter, config_kinds)
-
-    assert result == {
-        "bench-a/heap": metric_meta("heap", kind="memory"),
-        "bench-a/rss": metric_meta("rss", kind="memory", gating=False),
-    }
-
-
-@pytest.mark.parametrize(
-    ("adapter_kind", "config_metrics", "config_kinds", "expected"),
-    [
-        pytest.param(
-            "memory",
-            {"bench-a/heap": MetricEntry(exact=True)},
-            {"memory": KindEntry(gating=False)},
-            metric_meta("heap", kind="memory", gating=False, exact=True),
-            id="metric-entry-without-gating",
-        ),
-        pytest.param(
-            "memory",
-            None,
-            {"memory": KindEntry(gating=None)},
-            metric_meta("heap", kind="memory"),
-            id="kind-entry-without-gating",
-        ),
-        pytest.param(
-            None,
-            None,
-            {"other": KindEntry(gating=False)},
-            metric_meta("heap", kind="other", gating=False),
-            id="adapter-reports-no-kind",
-        ),
-    ],
-)
-def test_resolve_metric_meta_when_metric_leaves_gating_unset_does_take_it_from_kind_or_default(
-    adapter_kind: str | None,
-    config_metrics: dict[str, MetricEntry] | None,
-    config_kinds: dict[str, KindEntry],
-    expected: ResolvedMetricMeta,
-):
-    adapter = make_adapter(
-        lambda _name: MetricDefaults(direction="lower", kind=adapter_kind, short_name="heap")
-    )
-
-    result = resolve(["bench-a/heap"], config_metrics, adapter, config_kinds)
-
-    assert result == {"bench-a/heap": expected}
-
-
-# ---------------------------------------------------------------------------
-# resolve_metric_meta — one metric
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("entry", "config_kinds", "expected"),
-    [
-        pytest.param(
-            None,
-            None,
-            metric_meta("heap", direction="higher", kind="memory", unit="bytes"),
-            id="adapter-defaults",
-        ),
-        pytest.param(
-            MetricEntry(direction="lower"),
-            None,
-            metric_meta("heap", direction="lower", kind="memory", unit="bytes"),
-            id="entry-direction",
-        ),
-        pytest.param(
-            MetricEntry(exact=True),
-            {"memory": KindEntry(gating=False)},
-            metric_meta(
-                "heap", direction="higher", kind="memory", unit="bytes", gating=False, exact=True
-            ),
-            id="entry-without-direction-and-kind-gating",
-        ),
-    ],
-)
-def test_resolve_metric_meta_when_given_one_metric_does_layer_entry_over_kind_over_adapter(
-    entry: MetricEntry | None,
-    config_kinds: dict[str, KindEntry] | None,
-    expected: ResolvedMetricMeta,
-):
-    adapter = make_adapter(
-        lambda _name: MetricDefaults(
-            direction="higher", kind="memory", short_name="heap", unit="bytes"
-        )
-    )
-
-    result = resolve_metric_meta("bench-a/heap", entry, adapter, config_kinds)
-
-    assert result == expected

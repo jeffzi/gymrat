@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
-from typing import TYPE_CHECKING
-
 import pytest
 from opentelemetry.trace import INVALID_SPAN, NonRecordingSpan, SpanContext, TraceFlags
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
 from gymrat.telemetry.provider import (
     format_traceparent,
+    id_from_digest,
     parse_traceparent,
     span_id_of,
     trace_id_of,
@@ -24,39 +19,22 @@ from gymrat.telemetry.provider import (
 
 
 def test_trace_id_of_when_called_does_return_pinned_sha256_value() -> None:
-    expected = int.from_bytes(hashlib.sha256(b"test-session").digest()[:16], "big")
-
     result = trace_id_of("test-session")
 
-    assert result == expected
     assert result == 97386156705156847130924781873076287828
 
 
-class _ZeroHash:
-    """A ``sha256`` stand-in whose digest is all zero bytes."""
-
-    def digest(self) -> bytes:
-        return b"\x00" * 32
+# ---------------------------------------------------------------------------
+# id_from_digest
+# ---------------------------------------------------------------------------
 
 
-def _zero_hash(_data: bytes) -> _ZeroHash:
-    return _ZeroHash()
-
-
-@pytest.mark.parametrize(
-    "derive",
-    [
-        pytest.param(lambda: trace_id_of("anything"), id="trace-id"),
-        pytest.param(lambda: span_id_of("anything", "key"), id="span-id"),
-    ],
-)
-def test_id_of_when_hash_would_be_zero_does_return_one(
-    monkeypatch: pytest.MonkeyPatch, derive: Callable[[], int]
-) -> None:
+@pytest.mark.parametrize("width", [pytest.param(16, id="trace-id"), pytest.param(8, id="span-id")])
+def test_id_from_digest_when_leading_bytes_are_zero_does_return_one(width: int) -> None:
     # A zero ID is invalid in W3C Trace Context; the derivation returns 1 instead.
-    monkeypatch.setattr(hashlib, "sha256", _zero_hash)
+    digest = b"\x00" * width + b"\xff" * (32 - width)
 
-    result = derive()
+    result = id_from_digest(digest, width)
 
     assert result == 1
 
@@ -67,11 +45,8 @@ def test_id_of_when_hash_would_be_zero_does_return_one(
 
 
 def test_span_id_of_when_called_does_return_pinned_sha256_value() -> None:
-    expected = int.from_bytes(hashlib.sha256(b"test-session\x00root").digest()[:8], "big")
-
     result = span_id_of("test-session", "root")
 
-    assert result == expected
     assert result == 3890457429828929257
 
 

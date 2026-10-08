@@ -5,9 +5,9 @@ These drive the command through :class:`typer.testing.CliRunner` with the
 target defaulting to ``.``, the report going to stdout, the missing-bench error
 routing to exit 2, the ``--record`` flag that appends the run to an open
 session log as a baseline (including elapsed duration), the absent time-left
-line without a budget, and the command trace. The budget time-left line and
-the tight-budget warning are pinned with every other command's in
-``test_session_cmds``.
+line without a budget, and the command trace. The budget time-left line comes
+from the shared ``emit_report`` path, pinned through ``probe`` in
+``test_session_cmds``; the tight-budget warning is pinned there for measure.
 """
 
 import re
@@ -40,12 +40,12 @@ from tests.session.records._fixtures import (
 )
 
 # ---------------------------------------------------------------------------
-# target defaulting and report to stdout
+# target defaulting
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_in_non_repo")
-def test_measure_when_no_target_given_does_report_the_current_directory_on_stdout(
+def test_measure_when_no_target_given_does_measure_the_current_directory(
     monkeypatch: pytest.MonkeyPatch,
 ):
     captured = stub_measure(monkeypatch)
@@ -54,7 +54,6 @@ def test_measure_when_no_target_given_does_report_the_current_directory_on_stdou
 
     assert result.exit_code == 0
     assert captured[0].target == TargetSpec(label=None, target=".")
-    assert "main" in result.stdout
 
 
 # ---------------------------------------------------------------------------

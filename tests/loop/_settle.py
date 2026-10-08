@@ -93,6 +93,25 @@ def keep_iteration(
     append_records(root, iteration_record(seq=seq), committed_keep(seq, **overrides))
 
 
+def commit_and_keep(root: str, seq: int, message: str) -> str:
+    """Commit one edit in the experiment worktree and log the keep that settled it.
+
+    The experiment worktree is checked out on the session branch, so each call
+    moves that branch forward exactly as a real ``gymrat keep`` would.
+
+    Args:
+        root: The repository whose session is kept.
+        seq: The iteration number the logged iteration and keep carry.
+        message: The commit message, also recorded as the keep's message.
+
+    Returns:
+        The SHA of the commit the keep names.
+    """
+    commit = commit_all(experiment_worktree_dir(root), message, file=f"step-{seq}.txt")
+    keep_iteration(root, seq, commit=commit, message=message)
+    return commit
+
+
 def edit_experiment(repo_dir: str) -> None:
     """Leave a tracked edit and an untracked file in the experiment worktree."""
     worktree = Path(experiment_worktree_dir(repo_dir))
@@ -192,6 +211,16 @@ def confirmed_regression(seq: int) -> IterationRecord:
     return iteration_record(
         seq=seq,
         metrics={"total_ms": metric_verdict(delta_pct=9.4, verdict="regressed", confirmed=True)},
+        primary=IterationPrimary(kind="geomean", delta_pct=9.4),
+        outcome="regressed",
+    )
+
+
+def exact_regression(seq: int) -> IterationRecord:
+    """An iteration whose exact gating metric regressed, which no rerun is run to confirm."""
+    return iteration_record(
+        seq=seq,
+        metrics={"total_ms": metric_verdict(delta_pct=9.4, verdict="regressed", method="exact")},
         primary=IterationPrimary(kind="geomean", delta_pct=9.4),
         outcome="regressed",
     )

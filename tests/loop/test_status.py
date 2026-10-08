@@ -23,11 +23,6 @@ import pytest
 
 from gymrat.config import StopConfig
 from gymrat.loop.status import status_session
-from gymrat.session.records import (
-    KeepChecks,
-    SessionLogRecord,
-    SessionRecord,
-)
 from gymrat.session.workspace import BaselineRef
 from tests._ansi import (
     strip_sgr,
@@ -44,6 +39,7 @@ from tests.session.records._fixtures import (
     committed_keep,
     discard_record,
     finalize_record,
+    gate_block,
     make_iteration,
     session_record,
     stop_record,
@@ -55,6 +51,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from gymrat.config import BenchlessConfig
+    from gymrat.session.records import (
+        SessionLogRecord,
+        SessionRecord,
+    )
 
 # A 40-hex baseline sha whose first seven characters are recognizable on their own.
 _BASELINE_SHA = "a1b2c3d" + "e" * 33
@@ -169,7 +169,7 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
             (
                 make_iteration(-7.2, "improved"),
                 committed_keep(1, commit=_KEEP_COMMIT),
-                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+                gate_block(2, "nothing-measured"),
                 make_iteration(-3.1, "improved", seq=2),
             ),
             [
@@ -184,7 +184,7 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
             (
                 make_iteration(-7.2, "improved"),
                 committed_keep(1, commit=_KEEP_COMMIT),
-                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+                gate_block(2, "nothing-measured"),
             ),
             [
                 "iteration 1 · ✓ -7.2% · kept b1b2b3b",
@@ -196,7 +196,7 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
         pytest.param(
             (
                 make_iteration(9.4, "regressed"),
-                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                gate_block(1, "gating-regression"),
                 discard_record(2),
             ),
             [
@@ -225,7 +225,7 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
         pytest.param(
             (
                 make_iteration(0.1, "no-signal"),
-                blocked_keep(1, reason="not-improved", checks=KeepChecks(configured=True)),
+                gate_block(1, "not-improved"),
                 committed_keep(1, commit=_KEEP_COMMIT),
             ),
             [

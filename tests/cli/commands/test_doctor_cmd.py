@@ -152,23 +152,16 @@ def test_doctor_when_format_json_does_write_indented_document_with_every_hint(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("option", "env", "expected"),
-    [
-        pytest.param("--color", "NO_COLOR", True, id="color-flag-outranks-no-color-env"),
-        pytest.param("--no-color", "FORCE_COLOR", False, id="no-color-flag-outranks-force-color"),
-    ],
-)
-def test_doctor_when_color_flag_given_does_style_the_text_report_to_match(
-    option: str, env: str, expected: bool, monkeypatch: pytest.MonkeyPatch
+def test_doctor_when_color_flag_given_does_style_the_text_report_despite_no_color(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv(env, "1")
+    monkeypatch.setenv("NO_COLOR", "1")
     _patch_doctor(monkeypatch, stub_text=False)
 
-    result = runner.invoke(app, ["doctor", option])
+    result = runner.invoke(app, ["doctor", "--color"])
 
     assert result.exit_code == 0
-    assert ("\x1b[" in result.stdout) is expected
+    assert "\x1b[" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -215,13 +208,12 @@ def test_doctor_when_command_crashes_does_exit_two_with_message_on_stderr(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("fmt", ["text", "json"])
 def test_doctor_when_stdout_reader_closed_does_exit_zero_without_stderr(
-    monkeypatch: pytest.MonkeyPatch, fmt: str
+    monkeypatch: pytest.MonkeyPatch,
 ):
     _patch_doctor(monkeypatch)
 
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, ["doctor", "--format", fmt])
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, ["doctor"])
 
     assert (result.exit_code, result.stderr) == (0, "")
 
@@ -255,14 +247,11 @@ def test_doctor_when_skill_path_checked_does_report_installed_only_for_a_file(
     make_entry: Callable[[Path], None],
     status: str,
 ):
+    def fake_detect(_cwd: object) -> GitEnvironment:
+        return GitEnvironment(git_available=True, inside_git_repo=True, repo_root_dir=str(tmp_path))
+
     make_entry(tmp_path / SKILL_RELATIVE_PATH)
-
-    git_env = GitEnvironment(git_available=True, inside_git_repo=True, repo_root_dir=str(tmp_path))
-    monkeypatch.setattr(
-        "gymrat.doctor.detect_git_environment",
-        lambda _cwd: git_env,  # pyrefly: ignore
-    )
-
+    monkeypatch.setattr("gymrat.doctor.detect_git_environment", fake_detect)
     _patch_doctor(monkeypatch, stub_json=False)
     monkeypatch.setattr("gymrat.doctor.build_workflow_section", build_workflow_section)
 

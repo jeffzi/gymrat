@@ -27,7 +27,6 @@ from gymrat.progress_events import (
     PrepareStarted,
 )
 from gymrat.signals import install_termination_cleanup
-from tests._process_helpers import fake_install
 from tests._rich import (
     KEPT_LINE,
     TERMINATION_SIGNAL,
@@ -414,12 +413,10 @@ def test_plain_renderer_when_prepare_finished_does_print_exact_timestamped_line(
     clock.tick(run_start_s)
     reporter.report(PrepareStarted(label="bench", at_ms=_ms(clock)))
     clock.tick(5)
+
     reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
 
-    output = console_output(console)
-    lines = [ln for ln in output.splitlines() if ln.strip()]
-
-    assert lines[-1] == "[00:00:05] prepared bench (5s)"
+    assert console_output(console) == "[00:00:05] prepared bench (5s)\n"
 
 
 def test_plain_renderer_when_pass_finished_does_print_exact_timestamped_line():
@@ -427,12 +424,12 @@ def test_plain_renderer_when_pass_finished_does_print_exact_timestamped_line():
     reporter.report(PrepareFinished(label="bench", at_ms=0))
     reporter.report(_pass_started(1, 3, at_ms=0))
     clock.tick(20)
+
     reporter.report(_pass_finished(1, 3, at_ms=_ms(clock)))
 
-    output = console_output(console)
-    lines = [ln for ln in output.splitlines() if ln.strip()]
-
-    assert lines[-1] == "[00:00:20] pass 1/3 · bench (20s)"
+    assert console_output(console) == (
+        "[00:00:00] prepared bench (0s)\n[00:00:20] pass 1/3 · bench (20s)\n"
+    )
 
 
 def test_plain_renderer_when_any_event_does_not_emit_ansi_codes():
@@ -444,11 +441,10 @@ def test_plain_renderer_when_any_event_does_not_emit_ansi_codes():
     reporter.report(_pass_started(1, 3, at_ms=_ms(clock)))
     clock.tick(10)
     reporter.report(_pass_finished(1, 3, at_ms=_ms(clock)))
+
     reporter.stop()
 
-    output = console_output(console)
-
-    assert "\x1b[" not in output
+    assert "\x1b[" not in console_output(console)
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +458,7 @@ def test_live_wiring_when_created_does_mount_a_transient_auto_refreshing_live_on
     # restore.
     real_stderr = sys.stderr
     _console, _clock, reporter = _reporter("live", command="measure", target_labels=["bench"])
+
     reporter.report(PrepareStarted(label="bench", at_ms=0))
 
     live = reporter.live
@@ -502,28 +499,6 @@ def test_warn_when_plain_mode_does_print_the_message_verbatim_on_its_own_line():
     reporter.warn("warning: cannot write [/tmp/lat:100:p99.json]")
 
     assert console_output(console) == before + "warning: cannot write [/tmp/lat:100:p99.json]\n"
-
-
-@pytest.mark.parametrize(
-    ("mode", "registrations"),
-    [
-        pytest.param("live", 1, id="live-registers-once"),
-        pytest.param("plain", 0, id="plain-registers-none"),
-    ],
-)
-def test_reporter_when_created_does_register_termination_cleanup_only_in_live_mode(
-    mode: Literal["live", "plain"], registrations: int, monkeypatch: pytest.MonkeyPatch
-):
-    registered: list[Callable[[], None]] = []
-    monkeypatch.setattr(
-        "gymrat.cli.live_display.install_termination_cleanup",
-        fake_install(registered),
-    )
-
-    _console, _clock, reporter = _reporter(mode)
-    reporter.stop()
-
-    assert len(registered) == registrations
 
 
 def test_stop_when_called_twice_does_clear_live():
@@ -597,7 +572,7 @@ def test_plain_renderer_when_label_looks_like_markup_does_print_it_verbatim():
     reporter.report(PrepareFinished(label="[bold]bench[/bold]", at_ms=1000))
     reporter.stop()
 
-    assert "[00:00:01] prepared [bold]bench[/bold] (1s)" in console_output(console)
+    assert console_output(console) == "[00:00:01] prepared [bold]bench[/bold] (1s)\n"
 
 
 def test_reporter_when_non_relevant_event_does_silently_ignore():

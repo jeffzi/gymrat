@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from gymrat.errors import GymratError
+from gymrat.progress_events import PassFinished, PassStarted
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
@@ -38,6 +39,8 @@ from tests._exec_fixtures import expected_result
 from tests.session.records._fixtures import SESSION_ID, log_records, session_record
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from gymrat.exec import ExecOptions, ExecResult
 
 #: Ten rounds of a bench that stayed near 100.
@@ -190,6 +193,35 @@ def install_collect_samples(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRe
     recorder = CollectSamplesRecorder()
     monkeypatch.setattr("gymrat.loop.iterate.confirm.collect_samples", recorder)
     return recorder
+
+
+def report_a_pass_per_call(
+    monkeypatch: pytest.MonkeyPatch, recorder: CollectSamplesRecorder
+) -> None:
+    """Wrap ``recorder`` so every sampling call reports one pass the way sampling does.
+
+    The pass is reported through the ``on_progress`` the call was handed, so a
+    run that stopped forwarding sampling progress shows no pass at all.
+
+    Args:
+        monkeypatch: The patcher that installs the wrapper over ``collect_samples``.
+        recorder: The installed recorder that still answers each call.
+    """
+
+    async def sample_reporting_a_pass(
+        adapter: object,
+        targets: Sequence[TargetContext],
+        options: SamplingOptions,
+        abort: object,
+    ) -> list[TargetSamples]:
+        if options.on_progress is not None:
+            for event_type in (PassStarted, PassFinished):
+                options.on_progress(
+                    event_type(round=1, total_rounds=1, target_count=1, label="x", at_ms=0)
+                )
+        return await recorder(adapter, targets, options, abort)
+
+    monkeypatch.setattr("gymrat.loop.iterate.confirm.collect_samples", sample_reporting_a_pass)
 
 
 def _samples_by_dir(

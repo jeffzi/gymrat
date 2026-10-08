@@ -45,8 +45,16 @@ def _find_plain(parts: Sequence[str], needle: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+_TWO_CANDIDATES: MetricComparisons = {
+    "decode/time": metric_for([
+        CandidateSpec(verdict="improved", delta=-10),
+        CandidateSpec(verdict="regressed", delta=8),
+    ]),
+}
+
+
 @pytest.mark.parametrize(
-    ("metrics", "expected"),
+    ("metrics", "candidate_index", "expected"),
     [
         pytest.param(
             {
@@ -57,40 +65,36 @@ def _find_plain(parts: Sequence[str], needle: str) -> str:
                 "flat/time": approximate_metric(verdict="no-signal", delta=0.2),
                 "one-sided/time": one_sided_metric(),
             },
+            0,
             VerdictCounts(improved=2, regressed=1, unstable=1, no_signal=1),
             id="mixed-skips-no-verdict",
         ),
         pytest.param(
-            {}, VerdictCounts(improved=0, regressed=0, unstable=0, no_signal=0), id="no-metrics"
+            {},
+            0,
+            VerdictCounts(improved=0, regressed=0, unstable=0, no_signal=0),
+            id="no-metrics",
+        ),
+        pytest.param(
+            _TWO_CANDIDATES,
+            0,
+            VerdictCounts(improved=1, regressed=0, unstable=0, no_signal=0),
+            id="c0",
+        ),
+        pytest.param(
+            _TWO_CANDIDATES,
+            1,
+            VerdictCounts(improved=0, regressed=1, unstable=0, no_signal=0),
+            id="c1",
         ),
     ],
 )
-def test_count_verdicts_when_given_metrics_does_count_each_class(
-    metrics: MetricComparisons, expected: VerdictCounts
+def test_count_verdicts_when_given_metrics_does_count_each_class_for_the_named_candidate(
+    metrics: MetricComparisons, candidate_index: int, expected: VerdictCounts
 ):
-    counts = count_verdicts(metrics, 0)
+    counts = count_verdicts(metrics, candidate_index)
 
     assert counts == expected
-
-
-@pytest.mark.parametrize(
-    ("candidate_index", "expected"),
-    [
-        pytest.param(0, VerdictCounts(improved=1, regressed=0, unstable=0, no_signal=0), id="c0"),
-        pytest.param(1, VerdictCounts(improved=0, regressed=1, unstable=0, no_signal=0), id="c1"),
-    ],
-)
-def test_count_verdicts_when_candidate_named_does_count_only_that_candidate(
-    candidate_index: int, expected: VerdictCounts
-):
-    metrics: MetricComparisons = {
-        "decode/time": metric_for([
-            CandidateSpec(verdict="improved", delta=-10),
-            CandidateSpec(verdict="regressed", delta=8),
-        ]),
-    }
-
-    assert count_verdicts(metrics, candidate_index) == expected
 
 
 # ---------------------------------------------------------------------------

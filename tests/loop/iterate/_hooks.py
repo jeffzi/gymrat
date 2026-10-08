@@ -28,8 +28,11 @@ class HookScripts:
     """Builders for hook commands scoped to a scratch directory.
 
     A private counter numbers the scripts so repeated builders in one test never
-    collide on a filename. ``experiment_dir`` is the worktree an invocation runs
-    in; ``temp_dir`` holds the scripts and any parked payload files.
+    collide on a filename.
+
+    Args:
+        temp_dir: The directory holding the scripts and any parked payload files.
+        experiment_dir: The worktree an invocation runs in.
     """
 
     def __init__(self, temp_dir: str, experiment_dir: str) -> None:

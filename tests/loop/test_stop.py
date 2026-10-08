@@ -13,7 +13,7 @@ and safe under ``pytest-xdist`` / ``pytest-randomly``.
 import pytest
 
 from gymrat.loop.stop import StopResult, stop_session
-from gymrat.session.records import KeepChecks, SessionLogRecord, StopRecord
+from gymrat.session.records import SessionLogRecord, StopRecord
 from tests.loop._settle import (
     capture_error,
     confirmed_regression,
@@ -21,8 +21,8 @@ from tests.loop._settle import (
     start_with,
 )
 from tests.session.records._fixtures import (
-    blocked_keep,
     committed_keep,
+    gate_block,
     iteration_record,
     log_records,
     stop_record,
@@ -46,7 +46,7 @@ def _record_count(repo: str) -> int:
         pytest.param((), id="no-iterations"),
     ],
 )
-def test_stop_session_when_open_does_append_a_stop_record_and_return_a_report(
+def test_stop_session_when_open_does_append_a_stop_record(
     repo: str, history: tuple[SessionLogRecord, ...]
 ):
     start_with(repo, history)
@@ -82,7 +82,7 @@ _SETTLE_FIRST = "Run gymrat keep or gymrat discard before stopping."
         pytest.param(
             (
                 confirmed_regression(1),
-                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                gate_block(1, "gating-regression"),
             ),
             "Iteration 1 is blocked by a gating regression",
             _SETTLE_FIRST,

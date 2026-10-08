@@ -13,6 +13,7 @@ reports in ``worktree list``). Every repository is order-independent and safe
 under ``pytest-xdist`` / ``pytest-randomly``.
 """
 
+import asyncio
 import contextlib
 import importlib
 import json
@@ -21,7 +22,8 @@ import shutil
 import signal
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+import time
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import NoReturn
 
@@ -33,6 +35,7 @@ from gymrat.exec import reset as exec_reset
 from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset
 from gymrat.telemetry.provider import reset_tracing
+from tests._exec_fixtures import recorded_spawns
 from tests._git import head_of, init_scratch_repo, list_worktree_dirs
 from tests._lock import remove_lock_files
 
@@ -160,6 +163,32 @@ def forbid_direct_exit(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def color_env(monkeypatch: pytest.MonkeyPatch) -> Callable[[str | None, str | None], None]:
+    """Return a setter leaving exactly the given ``FORCE_COLOR`` and ``NO_COLOR`` set; ``None`` clears one."""
+
+    def apply(force_color: str | None, no_color: str | None) -> None:
+        for name, value in (("FORCE_COLOR", force_color), ("NO_COLOR", no_color)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+
+    return apply
+
+
+@pytest.fixture
+def recorded_exits(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, float]]:
+    """Stub the process exit to record each code and its ``time.monotonic`` moment, then return."""
+    exits: list[tuple[int, float]] = []
+
+    def record_exit(code: int) -> None:
+        exits.append((code, time.monotonic()))
+
+    monkeypatch.setattr(signals, "exit_process", record_exit)
+    return exits
+
+
+@pytest.fixture
 def raise_signal(monkeypatch: pytest.MonkeyPatch, forbid_direct_exit: None) -> Callable[[int], int]:
     """Stub the process exit and return a helper that runs the installed signal handler."""
     # Emitting a real signal would take the test runner down, so the helper
@@ -267,6 +296,15 @@ def stray_process_ids() -> Iterator[list[int]]:
 
 
 @pytest.fixture
+async def spawned_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[list[asyncio.subprocess.Process]]:
+    """Record every child ``exec`` or ``exec_argv`` spawns, reaping survivors in-loop."""
+    async with recorded_spawns(monkeypatch) as processes:
+        yield processes
+
+
+@pytest.fixture
 def reap_groups() -> Iterator[list[int]]:
     """Track process-group leaders and hard-kill any survivor on teardown."""
     leaders: list[int] = []
@@ -338,3 +376,26 @@ def repo(create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
 def repo_head(repo: str) -> str:
     """The commit SHA ``repo`` starts at."""
     return head_of(repo)
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(False, id="git-missing"),
+        pytest.param(
+            True,
+            id="git-not-executable",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="Windows ignores the execute bit"
+            ),
+        ),
+    ]
+)
+def unusable_git(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leave ``PATH`` holding one directory where git is absent or lacks the execute bit."""
+    if request.param:
+        blocked = tmp_path / "git"
+        blocked.write_text("#!/bin/sh\n", encoding="utf-8")
+        blocked.chmod(0o644)
+    monkeypatch.setenv("PATH", str(tmp_path))

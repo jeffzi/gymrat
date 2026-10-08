@@ -187,20 +187,22 @@ def test_parse_when_arg_value_given_does_serialize_js_style(value: Any, serializ
 # metric names carrying a line terminator
 # ---------------------------------------------------------------------------
 
+# One non-ASCII terminator per skip site catches both a missing escape and an
+# ``ensure_ascii=False`` regression; the per-character escape table is pinned once,
+# on the error-string warning below. Which characters count as line terminators is
+# pinned in tests/test_metric_name.py.
+_LINE_TERMINATOR_ALIAS = "enc\u2028ode"
+
 _ESCAPED_LINE_TERMINATORS = [
     pytest.param(line_break.char, line_break.escaped, id=line_break.name)
     for line_break in LINE_BREAKS
 ]
 
 
-@pytest.mark.parametrize(("terminator", "escaped"), _ESCAPED_LINE_TERMINATORS)
-def test_parse_when_alias_holds_line_terminator_does_warn_on_one_line_and_skip(
-    terminator: str, escaped: str
-):
-    offending = f"enc{terminator}ode"
+def test_parse_when_alias_holds_line_terminator_does_warn_on_one_line_and_skip():
     stdout = build_stdout([
         {
-            "alias": offending,
+            "alias": _LINE_TERMINATOR_ALIAS,
             "runs": [{"name": "e", "args": {}, "stats": {"p50": 42, "heap": {"avg": "bad"}}}],
         },
         {"alias": "valid", "runs": [{"name": "v", "args": {}, "stats": {"p50": 1}}]},
@@ -212,21 +214,18 @@ def test_parse_when_alias_holds_line_terminator_does_warn_on_one_line_and_skip(
     assert result == {"valid#time": 1}
     assert warnings == [
         (
-            f'Skipping run with a line terminator in its metric name: "enc{escaped}ode" '
+            'Skipping run with a line terminator in its metric name: "enc\\u2028ode" '
             "(the alias or one of its argument values carries one)"
         )
     ]
 
 
-@pytest.mark.parametrize(
-    "terminator", [pytest.param(line_break.char, id=line_break.name) for line_break in LINE_BREAKS]
-)
-def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip(terminator: str):
+def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip():
     stdout = build_stdout([
         {
             "alias": "decode/$text",
             "runs": [
-                {"name": "d1", "args": {"text": f"di{terminator}gits"}, "stats": {"p50": 10}},
+                {"name": "d1", "args": {"text": "di\u2028gits"}, "stats": {"p50": 10}},
                 {"name": "d2", "args": {"text": "words"}, "stats": {"p50": 20}},
             ],
         }
@@ -244,12 +243,6 @@ def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip(terminato
     ]
 
 
-# One non-ASCII terminator per skip site catches both a missing escape and an
-# ``ensure_ascii=False`` regression; the per-character escape table is pinned once,
-# on the error-string warning below.
-_LINE_TERMINATOR_ALIAS = "enc\u2028ode"
-
-
 @pytest.mark.parametrize(
     ("fields", "warning_template"),
     [
@@ -263,22 +256,7 @@ _LINE_TERMINATOR_ALIAS = "enc\u2028ode"
             'Skipping run of {alias} with invalid args: expected an object, got "bad"',
             id="invalid-run",
         ),
-        pytest.param(
-            {"runs": [{"args": {}, "stats": {"p50": float("nan")}}]},
-            "Skipping run of {alias} with invalid stats.p50: expected a finite number, got NaN",
-            id="non-finite-p50",
-        ),
-        pytest.param(
-            {"runs": [None]},
-            "Skipping run of {alias}: expected an object, got null",
-            id="run-not-object",
-        ),
         pytest.param({}, "Skipping benchmark {alias} with missing runs", id="runs-missing"),
-        pytest.param(
-            {"runs": 5},
-            "Skipping benchmark {alias} with invalid runs: expected an array, got 5",
-            id="runs-not-array",
-        ),
     ],
 )
 def test_parse_when_skip_warning_names_alias_holding_line_terminator_does_escape_it(
@@ -345,16 +323,17 @@ def test_parse_when_metric_prefix_contains_hash_does_raise_adapter_error(
 # metric names with an empty path segment
 # ---------------------------------------------------------------------------
 
-_EMPTY_SEGMENT_PREFIXES = [
-    pytest.param("a//b", {}, "a//b", id="empty-inner-segment"),
-    pytest.param("/x", {}, "/x", id="empty-leading-segment"),
-    pytest.param("x/", {}, "x/", id="empty-trailing-segment"),
-    pytest.param("", {}, "", id="empty-alias"),
-    pytest.param("op/$v", {"v": "a//b"}, "op/v=a//b", id="arg-value-with-empty-segment"),
-]
 
-
-@pytest.mark.parametrize(("alias", "args", "prefix"), _EMPTY_SEGMENT_PREFIXES)
+# Which name shape leaves an empty segment is pinned in tests/test_metric_name.py;
+# here the alias case and the substituted-argument case prove the adapter checks the
+# prefix after substitution.
+@pytest.mark.parametrize(
+    ("alias", "args", "prefix"),
+    [
+        pytest.param("a//b", {}, "a//b", id="alias-with-empty-segment"),
+        pytest.param("op/$v", {"v": "a//b"}, "op/v=a//b", id="arg-value-with-empty-segment"),
+    ],
+)
 def test_parse_when_metric_name_has_empty_path_segment_does_warn_once_and_skip_run(
     alias: str, args: dict[str, str], prefix: str
 ):
@@ -370,17 +349,14 @@ def test_parse_when_metric_name_has_empty_path_segment_does_warn_once_and_skip_r
     assert warnings == [f'Skipping run with an empty path segment in its metric name: "{prefix}"']
 
 
-@pytest.mark.parametrize(("alias", "args", "prefix"), _EMPTY_SEGMENT_PREFIXES)
-def test_parse_when_only_run_has_empty_path_segment_does_warn_and_raise(
-    alias: str, args: dict[str, str], prefix: str
-):
-    stdout = build_stdout([{"alias": alias, "runs": [{"args": args, "stats": {"p50": 42}}]}])
+def test_parse_when_only_run_has_empty_path_segment_does_warn_and_raise():
+    stdout = build_stdout([{"alias": "a//b", "runs": [{"args": {}, "stats": {"p50": 42}}]}])
     warnings: list[str] = []
 
     with pytest.raises(AdapterError, match=r"^No valid benchmark runs found$"):
         mitata_adapter.parse(stdout, warnings.append)
 
-    assert warnings == [f'Skipping run with an empty path segment in its metric name: "{prefix}"']
+    assert warnings == ['Skipping run with an empty path segment in its metric name: "a//b"']
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +432,6 @@ _INVALID_RUN_PREFIX = 'Skipping run of "test" with invalid'
             id="args-and-stats-invalid",
         ),
         pytest.param(None, 'Skipping run of "test": expected an object, got null', id="run-null"),
-        pytest.param(42, 'Skipping run of "test": expected an object, got 42', id="run-number"),
     ],
 )
 def test_parse_when_run_is_malformed_does_warn_once_and_keep_other_runs(
@@ -631,15 +606,6 @@ _INVALID_HEAP_PREFIX = 'Skipping heap metric of "test" with invalid'
     [
         pytest.param(
             42, f"{_INVALID_HEAP_PREFIX} stats.heap: expected an object, got 42", id="integer"
-        ),
-        pytest.param(
-            "bad", f'{_INVALID_HEAP_PREFIX} stats.heap: expected an object, got "bad"', id="string"
-        ),
-        pytest.param(
-            [1, 2], f"{_INVALID_HEAP_PREFIX} stats.heap: expected an object, got [1, 2]", id="array"
-        ),
-        pytest.param(
-            True, f"{_INVALID_HEAP_PREFIX} stats.heap: expected an object, got true", id="boolean"
         ),
         pytest.param(
             {"avg": "bad"},

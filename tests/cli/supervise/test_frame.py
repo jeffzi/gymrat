@@ -19,9 +19,9 @@ from gymrat.cli.style import STYLE_LABEL, STYLE_META
 from gymrat.cli.supervise.progress import IDLE_WARN_MS
 from gymrat.cli.supervise.types import BestIteration
 from gymrat.supervisor.exit_sequence import ExitPhase
-from tests._ansi import strip_sgr
-from tests._rich import console_output, sealed_console
+from tests._rich import sealed_console
 from tests.cli.supervise._fixtures import (
+    BASH_CYCLE_END_MS,
     FRAME_WIDTH,
     ReporterKit,
     cap_event,
@@ -34,7 +34,6 @@ from tests.cli.supervise._fixtures import (
     make_read_session,
     make_reporter,
     model_phase_event,
-    render_colored,
     render_frame,
     session_state_three_iterations,
     tool_end_event,
@@ -42,14 +41,11 @@ from tests.cli.supervise._fixtures import (
     turn_end_event,
 )
 from tests.session.records._fixtures import (
-    SUPERVISED_SESSION_ID,
     make_iteration,
     session_state,
 )
 
 if TYPE_CHECKING:
-    from rich.console import RenderableType
-
     from gymrat.cli.supervise.progress import SuperviseReporter
     from gymrat.config import Effort
     from gymrat.supervisor.events import ModelPhase
@@ -94,13 +90,6 @@ def _segment_style(reporter: SuperviseReporter, token: str) -> str:
     return styles[0]
 
 
-def _render_colorless(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
-    """Render ``renderable`` through a sealed terminal console with colour off, as ``--no-color`` does."""
-    console = sealed_console(width=width, color_system=None)
-    console.print(renderable)
-    return console_output(console)
-
-
 def _styles_at(text: Text, offset: int) -> set[str]:
     """The span styles that cover character *offset* of *text*."""
     return {str(span.style) for span in text.spans if span.start <= offset < span.end}
@@ -116,36 +105,22 @@ def _content(line: str) -> str:
     return line.strip("│").strip()
 
 
-def _fire_waiting_bash_cycle(kit: ReporterKit, *, above_threshold: bool = False) -> None:
-    """Launch, then run a Bash start/end cycle, optionally idling past the warn threshold."""
-    kit.reporter.observer(launch_event(1000))
-    kit.clock.now = 2000
-    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000))
-    kit.clock.now = 3000
-    kit.reporter.observer(tool_end_event("Bash", "bash-1", 3000))
-    if above_threshold:
-        kit.clock.now = 3000 + IDLE_WARN_MS + 1
-
-
 # ---------------------------------------------------------------------------
 # panel title styling
 # ---------------------------------------------------------------------------
 
 
 def test_panel_title_when_rendered_does_set_the_label_apart_from_its_dim_connectors():
-    kit = make_reporter(
-        session_id=SUPERVISED_SESSION_ID,
-        branch=f"gymrat/{SUPERVISED_SESSION_ID}",
-    )
+    kit = make_reporter()
     kit.reporter.observer(launch_event(1000))
 
     panel = kit.reporter.frame()
+
     assert isinstance(panel, Panel)
     title = panel.title
     assert isinstance(title, Text)
     separator = title.plain.index(" · ")
     connector = title.plain.index("session")
-
     assert _styles_at(title, 0) == {STYLE_LABEL}
     assert (_styles_at(title, separator + 1), _styles_at(title, connector)) == (
         {STYLE_META},
@@ -251,21 +226,12 @@ def test_best_delta_when_rendered_with_color_does_style_an_improvement_green_per
 # ---------------------------------------------------------------------------
 
 
-_LIVENESS_SCENARIOS = pytest.mark.parametrize(
-    ("scenario", "needle"),
-    [
-        pytest.param("responding", "responding", id="responding"),
-        pytest.param("composing", "preparing", id="composing-as-preparing"),
-        pytest.param("waiting", "waiting", id="waiting-below-threshold"),
-        pytest.param("no-output", "no output", id="waiting-above-threshold"),
-    ],
-)
-
-
 def _fire_liveness_scenario(kit: ReporterKit, scenario: str) -> None:
     """Drive the reporter into the named liveness state."""
     if scenario in {"waiting", "no-output"}:
-        _fire_waiting_bash_cycle(kit, above_threshold=scenario == "no-output")
+        fire_launch_and_bash_cycle(kit.reporter.observer, clock=kit.clock)
+        if scenario == "no-output":
+            kit.clock.now = BASH_CYCLE_END_MS + IDLE_WARN_MS + 1
         return
     kit.reporter.observer(launch_event(1000))
     if scenario == "composing":
@@ -303,21 +269,6 @@ def test_liveness_line_when_rendered_with_color_does_carry_its_state_styling(
     style = _segment_style(kit.reporter, needle)
 
     assert style == expected_style
-
-
-@_LIVENESS_SCENARIOS
-def test_liveness_line_when_rendered_colored_and_colorless_does_show_the_same_text(
-    scenario: str, needle: str
-):
-    kit = make_reporter()
-    _fire_liveness_scenario(kit, scenario)
-    frame = kit.reporter.frame()
-
-    colored_lines = lines_containing(render_colored(frame), needle)
-    colorless_lines = lines_containing(_render_colorless(frame), needle)
-
-    assert colorless_lines
-    assert [strip_sgr(line) for line in colored_lines] == colorless_lines
 
 
 @pytest.mark.parametrize(

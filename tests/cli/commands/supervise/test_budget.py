@@ -23,6 +23,7 @@ from tests.cli.commands.supervise._seams import (
     err_text,
     install_seams,
     make_start_result,
+    patch_supervise,
     run,
 )
 from tests.cli.supervise._fixtures import make_supervision_result
@@ -47,7 +48,7 @@ def test_supervise_when_run_does_write_the_capped_budget_before_supervise(
         seen_budgets.append(read_budget(repo, now_ms=now_ms()))
         return make_supervision_result()
 
-    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise", probing_supervise)
+    patch_supervise(monkeypatch, probing_supervise)
     earliest_start_ms = now_ms()
 
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
@@ -103,6 +104,15 @@ def _record_budget_release(
     uninstall is tagged too so a test can filter the log down to the budget one,
     identified after the run by :func:`_budget_uninstall_tag` rather than by its
     position in the registration order.
+
+    Args:
+        monkeypatch: The fixture the budget clear is replaced through.
+        seams: The installed seams whose cleanup installer is redirected.
+        clear_error: An error the budget clear raises after recording itself.
+
+    Returns:
+        The event log the clear and every uninstall append to, and the
+        cleanups the run registered, in registration order.
     """
     events: list[str] = []
     installed: list[Callable[[], None]] = []
@@ -129,6 +139,17 @@ def _budget_uninstall_tag(
 
     Restores the real ``clear_budget`` so each candidate can be invoked against a
     probe budget file and identified by its effect, not its registration order.
+
+    Args:
+        repo: The repository whose budget file the probe writes.
+        monkeypatch: The fixture the real budget clear is restored through.
+        installed: The cleanups the run registered, in registration order.
+
+    Returns:
+        The ``uninstall-<index>`` tag of the cleanup that removed the budget file.
+
+    Raises:
+        AssertionError: No installed cleanup removed the budget file.
     """
     monkeypatch.setattr("gymrat.cli.commands.supervise.clear_budget", clear_budget)
     write_budget(repo, Budget(max_minutes=10, deadline_ms=600_000.0))

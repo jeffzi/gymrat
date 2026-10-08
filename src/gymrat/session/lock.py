@@ -2,7 +2,7 @@
 
 A run takes the lock by acquiring a ``flock``/``LockFileEx`` on a dedicated
 ``.lock`` file next to the holder metadata path, waiting at most
-``_LOCK_ACQUIRE_TIMEOUT`` seconds for a rival to let go.  The holder record is
+``_LOCK_ACQUIRE_TIMEOUT`` seconds (by default) for a rival to let go.  The holder record is
 written to the original path as compact JSON, readable on every platform — including
 Windows, where ``LockFileEx`` creates a mandatory byte-range lock that blocks
 reads through a separate handle.
@@ -16,11 +16,10 @@ When the publish lock cannot be obtained within ``_PUBLISH_LOCK_TIMEOUT`` second
 record, a loser still reports best-effort diagnostics from whatever the file
 holds.
 
-Contention is decided within the ``_LOCK_ACQUIRE_TIMEOUT`` wait for the main
-lock: the loser reads the winner's holder record for diagnostics without needing
-liveness probes.  Crash recovery is automatic — the kernel
-releases the advisory lock when the holder exits — so a stale lockfile never
-needs manual cleanup.
+Contention is decided within the wait for the main lock: the loser reads the
+winner's holder record for diagnostics without needing liveness probes.  Crash
+recovery is automatic — the kernel releases the advisory lock when the holder
+exits — so a stale lockfile never needs manual cleanup.
 """
 
 import contextlib
@@ -176,13 +175,17 @@ def _acquire_publish_lock(pub_lock_path: str) -> FileLock:
     return pub_lock
 
 
-def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
-    """Acquire the main OS lock within ``_LOCK_ACQUIRE_TIMEOUT``, or raise a diagnostic error.
+def _acquire_os_lock(
+    lock_path: str, os_lock_path: str, *, wait: float, poll_interval: float
+) -> FileLock:
+    """Acquire the main OS lock within ``wait`` seconds, or raise a diagnostic error.
 
     Args:
         lock_path: Path to the holder-record file, read for diagnostics when
             the wait runs out.
         os_lock_path: Path to the sibling OS lock file to acquire.
+        wait: Seconds to wait for a rival to let go before declaring contention.
+        poll_interval: Seconds between lock attempts during the wait.
 
     Returns:
         The acquired ``FileLock``.
@@ -193,8 +196,8 @@ def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
     """
     lock = FileLock(
         os_lock_path,
-        timeout=_LOCK_ACQUIRE_TIMEOUT,
-        poll_interval=_LOCK_ACQUIRE_POLL_INTERVAL,
+        timeout=wait,
+        poll_interval=poll_interval,
         preserve_lock_file=True,
     )
     try:
@@ -206,7 +209,13 @@ def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
     return lock
 
 
-def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
+def acquire_lock(
+    lock_path: str,
+    command: str,
+    *,
+    wait: float = _LOCK_ACQUIRE_TIMEOUT,
+    poll_interval: float = _LOCK_ACQUIRE_POLL_INTERVAL,
+) -> ReleaseLock:
     """Take the single-flight lock at ``lock_path`` on behalf of ``command``.
 
     Args:
@@ -214,6 +223,8 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
             is acquired.
         command: Name of the command taking the lock, written into the holder
             record for diagnostics when a rival process finds it.
+        wait: Seconds to wait for a rival to let go before declaring contention.
+        poll_interval: Seconds between lock attempts during the wait.
 
     Returns:
         An idempotent zero-argument callable that releases the lock.
@@ -233,7 +244,7 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
 
     pub_lock = _acquire_publish_lock(pub_lock_path)
     try:
-        lock = _acquire_os_lock(lock_path, os_lock_path)
+        lock = _acquire_os_lock(lock_path, os_lock_path, wait=wait, poll_interval=poll_interval)
 
         holder = Path(lock_path)
         holder.write_text(record, encoding="utf-8")

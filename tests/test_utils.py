@@ -38,6 +38,7 @@ from gymrat.utils import (
     warn_to_stderr,
     write_text_atomic,
 )
+from tests._mode_bits import needs_mode_bits
 from tests._streams import FakeStream
 
 OLD_TEXT = "previous content\n"
@@ -465,10 +466,7 @@ def _fail_replace(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         pytest.param(
             _make_directory_read_only,
             id="read-only-directory",
-            marks=pytest.mark.skipif(
-                sys.platform == "win32" or os.geteuid() == 0,
-                reason="POSIX file modes, not enforced for root",
-            ),
+            marks=needs_mode_bits,
         ),
         pytest.param(_fail_fsync, id="fsync-fails"),
         pytest.param(_fail_replace, id="rename-fails"),
@@ -491,12 +489,6 @@ def test_write_text_atomic_when_write_fails_does_raise_and_leave_target_untouche
 # ---------------------------------------------------------------------------
 # SamplingEta
 # ---------------------------------------------------------------------------
-
-
-def test_sampling_eta_when_given_only_a_total_does_start_with_no_samples() -> None:
-    eta = SamplingEta(total=10)
-
-    assert (eta.completed, eta.total_time_ms, eta.total) == (0, 0.0, 10)
 
 
 def test_sampling_eta_advanced_when_called_does_return_an_accumulated_copy() -> None:
@@ -781,17 +773,12 @@ def test_stderr_text_of_when_streams_vary_does_prefer_stderr_then_stdout_then_me
     ],
 )
 def test_color_from_env_when_variables_vary_does_apply_the_shared_precedence(
-    monkeypatch: pytest.MonkeyPatch,
+    color_env: Callable[[str | None, str | None], None],
     force_color: str | None,
     no_color: str | None,
     expected: bool | None,
 ):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    if force_color is not None:
-        monkeypatch.setenv("FORCE_COLOR", force_color)
-    if no_color is not None:
-        monkeypatch.setenv("NO_COLOR", no_color)
+    color_env(force_color, no_color)
 
     assert color_from_env() is expected
 
@@ -829,18 +816,13 @@ def test_is_tty_when_called_does_reflect_the_streams_isatty(stream: object, expe
     ],
 )
 def test_stream_color_from_env_when_environment_and_tty_vary_does_let_the_environment_win(
-    monkeypatch: pytest.MonkeyPatch,
+    color_env: Callable[[str | None, str | None], None],
     force_color: str | None,
     no_color: str | None,
     tty: bool,
     expected: bool,
 ):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    if force_color is not None:
-        monkeypatch.setenv("FORCE_COLOR", force_color)
-    if no_color is not None:
-        monkeypatch.setenv("NO_COLOR", no_color)
+    color_env(force_color, no_color)
 
     assert stream_color_from_env(FakeStream(tty=tty)) is expected
 

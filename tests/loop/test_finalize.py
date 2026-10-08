@@ -14,20 +14,18 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.config import StopConfig
 from gymrat.loop.finalize import (
     FinalizeOptions,
     finalize_session,
 )
-from gymrat.loop.start import start_session
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import FinalizeRecord, SessionLogRecord
-from tests._config import resolved_config
 from tests._git import commit_all, head_of, list_worktree_dirs
 from tests._git import run_git as _git
 from tests.loop._settle import (
     capture_error,
-    keep_iteration,
+    commit_and_keep,
+    start_with,
 )
 from tests.session.records._fixtures import (
     append_records,
@@ -36,14 +34,6 @@ from tests.session.records._fixtures import (
     log_records,
     session_header_of,
     stop_record,
-)
-
-# A settled run config carrying the keys the session header snapshots; it drives
-# ``start_session`` without ever being benched against.
-CONFIG = resolved_config(
-    prepare="npm run build",
-    filter="npm run bench -- {names}",
-    stop=StopConfig(max_iterations=20),
 )
 
 
@@ -66,17 +56,10 @@ def _commit_iteration(root: str, seq: int, message: str) -> str:
     return commit
 
 
-def _keep_iteration(root: str, seq: int, message: str) -> str:
-    """Commit one edit and log the iteration and the committed keep that settled it."""
-    commit = commit_all(experiment_worktree_dir(root), message, file=f"step-{seq}.txt")
-    keep_iteration(root, seq, commit=commit, message=message)
-    return commit
-
-
 @pytest.fixture
 def session_repo(repo: str) -> str:
     """The scratch repository with an open session on ``main``."""
-    start_session(repo, "main", CONFIG)
+    start_with(repo)
     return repo
 
 
@@ -107,7 +90,7 @@ def test_finalize_session_when_nothing_kept_does_refuse_creating_no_branch_and_n
 def test_finalize_session_when_last_iteration_unsettled_does_refuse_writing_no_record(
     session_repo: str,
 ):
-    _keep_iteration(session_repo, 1, "cache the regex")
+    commit_and_keep(session_repo, 1, "cache the regex")
     append_records(session_repo, iteration_record(seq=2))
     before = len(log_records(session_repo))
 
@@ -128,7 +111,7 @@ def test_finalize_session_when_last_iteration_unsettled_does_refuse_writing_no_r
 def test_finalize_session_when_experiment_worktree_dirty_does_refuse_writing_no_record(
     session_repo: str,
 ):
-    _keep_iteration(session_repo, 1, "cache the regex")
+    commit_and_keep(session_repo, 1, "cache the regex")
     (Path(experiment_worktree_dir(session_repo)) / "scratch.txt").write_text(
         "notes\n", encoding="utf-8"
     )
@@ -151,7 +134,7 @@ def test_finalize_session_when_experiment_worktree_dirty_does_refuse_writing_no_
 def test_finalize_session_when_experiment_head_ahead_of_last_keep_does_refuse_hinting_keep_or_discard(
     session_repo: str,
 ):
-    _keep_iteration(session_repo, 1, "cache the regex")
+    commit_and_keep(session_repo, 1, "cache the regex")
     commit_all(
         experiment_worktree_dir(session_repo), "extra commit", file="extra.txt", content="extra\n"
     )
@@ -174,9 +157,8 @@ def test_finalize_session_when_experiment_head_ahead_of_last_keep_does_refuse_hi
 def test_finalize_session_when_worktree_gone_and_unkept_commits_exist_does_finalize_squashing_last_kept_tree(
     session_repo: str,
 ):
-    last_kept_commit = _keep_iteration(session_repo, 1, "cache the regex")
+    last_kept_commit = commit_and_keep(session_repo, 1, "cache the regex")
     last_kept_tree = _git(["rev-parse", f"{last_kept_commit}^{{tree}}"], session_repo)
-
     worktree = experiment_worktree_dir(session_repo)
     commit_all(worktree, "unkept commit", file="unkept.txt", content="unkept work\n")
     shutil.rmtree(worktree)
@@ -195,7 +177,7 @@ def test_finalize_session_when_worktree_gone_and_unkept_commits_exist_does_final
 
 def _keep_without_message(root: str) -> list[str]:
     """Keep one described edit and one bare commit; return the body finalize should write."""
-    _keep_iteration(root, 1, "cache the regex")
+    commit_and_keep(root, 1, "cache the regex")
     commit = _commit_iteration(root, 2, "hoist the loop")
     append_records(root, committed_keep(2, commit=commit, message=None))
     return ["cache the regex", commit[:7]]
@@ -237,7 +219,7 @@ MESSAGES = ["cache the regex", "hoist the loop"]
 def kept_repo(session_repo: str) -> str:
     """A repository whose open session has two committed keeps ready to squash."""
     for index, message in enumerate(MESSAGES):
-        _keep_iteration(session_repo, index + 1, message)
+        commit_and_keep(session_repo, index + 1, message)
     return session_repo
 
 

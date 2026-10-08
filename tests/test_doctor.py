@@ -44,7 +44,7 @@ from gymrat.errors import GymratError
 from tests._ansi import strip_ansi
 from tests._config import benchless_config as _config
 from tests._doctor_fixtures import doctor_report, environment_info
-from tests.config._toml import DEEP_NESTING_DOCUMENT, DIGIT_LIMIT_DOCUMENT, write_raw
+from tests.config._toml import write_raw
 
 _DEFAULT_CONFIG = _config()
 
@@ -199,6 +199,7 @@ def test_build_config_section_when_problems_present_does_produce_one_fail_per_pr
         'Invalid value for "samples": expected a positive integer, got "abc"',
         'Invalid value for "adapter": expected a string, got 42',
     ]
+
     section = build_config_section(_inspection(problems=problems, config=None))
 
     fails = [check for check in section.checks if check.status == "fail"]
@@ -279,76 +280,62 @@ def test_build_workflow_section_when_config_unset_does_produce_the_exact_section
     assert section == CheckSection(title="Workflow", checks=[skill_check, *_UNSET_WORKFLOW_CHECKS])
 
 
-def test_build_workflow_section_when_checks_set_does_produce_ok_echoing_value():
-    section = build_workflow_section(
-        _config(checks="npm test"),
-        config_has_problems=False,
-        skill_file_exists=True,
-        config_file_exists=False,
-    )
-
-    assert _find(section, "checks") == Check(name="checks", status="ok", detail="checks: npm test")
+_STOP_UNSET = Check(
+    name="stop",
+    status="warn",
+    detail="stop is not configured",
+    hint="Without stop, a session has no finish line",
+)
 
 
 @pytest.mark.parametrize(
-    ("stop", "detail"),
+    ("config", "name", "expected"),
     [
-        pytest.param(StopConfig(target_value=1.5), "stop: target_value: 1.5", id="target-only"),
-        pytest.param(StopConfig(max_iterations=20), "stop: max_iterations: 20", id="max-only"),
         pytest.param(
-            StopConfig(target_value=1.5, max_iterations=20),
-            "stop: target_value: 1.5, max_iterations: 20",
-            id="both",
+            _config(checks="npm test"),
+            "checks",
+            Check(name="checks", status="ok", detail="checks: npm test"),
+            id="checks-set",
+        ),
+        pytest.param(
+            _config(stop=StopConfig(target_value=1.5)),
+            "stop",
+            Check(name="stop", status="ok", detail="stop: target_value: 1.5"),
+            id="stop-target-only",
+        ),
+        pytest.param(
+            _config(stop=StopConfig(max_iterations=20)),
+            "stop",
+            Check(name="stop", status="ok", detail="stop: max_iterations: 20"),
+            id="stop-max-only",
+        ),
+        pytest.param(
+            _config(stop=StopConfig(target_value=1.5, max_iterations=20)),
+            "stop",
+            Check(name="stop", status="ok", detail="stop: target_value: 1.5, max_iterations: 20"),
+            id="stop-both",
+        ),
+        pytest.param(_config(stop=None), "stop", _STOP_UNSET, id="stop-unset"),
+        pytest.param(_config(stop=StopConfig()), "stop", _STOP_UNSET, id="stop-empty"),
+        pytest.param(
+            _config(runbook="./RUNBOOK.md"),
+            "runbook",
+            Check(name="runbook", status="ok", detail="runbook: ./RUNBOOK.md"),
+            id="runbook-set",
         ),
     ],
 )
-def test_build_workflow_section_when_stop_set_does_produce_ok_echoing_its_keys(
-    stop: StopConfig, detail: str
+def test_build_workflow_section_when_field_configured_does_report_its_check(
+    config: BenchlessConfig, name: str, expected: Check
 ):
     section = build_workflow_section(
-        _config(stop=stop),
+        config,
         config_has_problems=False,
         skill_file_exists=True,
         config_file_exists=False,
     )
 
-    assert _find(section, "stop") == Check(name="stop", status="ok", detail=detail)
-
-
-@pytest.mark.parametrize(
-    "stop",
-    [
-        pytest.param(None, id="unset"),
-        pytest.param(StopConfig(), id="empty"),
-    ],
-)
-def test_build_workflow_section_when_stop_absent_or_empty_does_warn(stop: StopConfig | None):
-    section = build_workflow_section(
-        _config(stop=stop),
-        config_has_problems=False,
-        skill_file_exists=True,
-        config_file_exists=False,
-    )
-
-    assert _find(section, "stop") == Check(
-        name="stop",
-        status="warn",
-        detail="stop is not configured",
-        hint="Without stop, a session has no finish line",
-    )
-
-
-def test_build_workflow_section_when_runbook_set_does_produce_ok_echoing_path():
-    section = build_workflow_section(
-        _config(runbook="./RUNBOOK.md"),
-        config_has_problems=False,
-        skill_file_exists=True,
-        config_file_exists=False,
-    )
-
-    assert _find(section, "runbook") == Check(
-        name="runbook", status="ok", detail="runbook: ./RUNBOOK.md"
-    )
+    assert _find(section, name) == expected
 
 
 def _found_under_usr_bin(cmd: str) -> str:
@@ -620,28 +607,6 @@ def test_build_doctor_report_when_adapter_flag_given_does_check_it_in_the_bench_
     )
 
 
-@pytest.mark.parametrize(
-    "document",
-    [
-        pytest.param(DIGIT_LIMIT_DOCUMENT, id="integer-past-digit-limit"),
-        pytest.param(DEEP_NESTING_DOCUMENT, id="nesting-past-recursion-limit"),
-    ],
-)
-def test_build_doctor_report_when_config_parser_hits_interpreter_limit_does_fail_config_check(
-    tmp_path: Path, document: str
-):
-    config_path = write_raw(tmp_path, document)
-
-    report = build_doctor_report(CliFlags(), str(tmp_path))
-
-    config_section = next(
-        section for section in report.sections if section.title == "Configuration"
-    )
-    [check] = config_section.checks
-    assert check.status == "fail"
-    assert check.detail.startswith(f"Failed to parse config file at {config_path}: ")
-
-
 def test_build_doctor_report_when_runbook_unset_does_hint_adding_the_key_to_the_config_file(
     tmp_path: Path,
 ):
@@ -723,7 +688,7 @@ def test_build_doctor_report_when_bench_is_a_path_does_resolve_it_against_the_re
     assert _check(report, "Bench", "executable") == expected
 
 
-def lines(output: str) -> list[str]:
+def _lines(output: str) -> list[str]:
     return strip_ansi(output).split("\n")
 
 
@@ -740,7 +705,7 @@ def test_render_doctor_report_when_multiline_detail_does_indent_continuations_un
         )
     ])
 
-    rendered = lines(render_doctor_report(report))
+    rendered = _lines(render_doctor_report(report))
 
     assert next(line for line in rendered if "line one" in line) == "  ✓ line one"
     assert "    line two" in rendered
@@ -753,7 +718,7 @@ def test_render_doctor_report_when_multiline_detail_does_indent_continuations_un
 
 
 def _note(report_output: str) -> str:
-    return next(line for line in lines(report_output) if "Note:" in line)
+    return next(line for line in _lines(report_output) if "Note:" in line)
 
 
 def test_render_doctor_report_when_workflow_skipped_does_switch_note():

@@ -6,7 +6,7 @@ tested beside its source in ``tests/sampling/test_worktree_run.py``.
 """
 
 import os
-import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -17,59 +17,28 @@ from tests._git import (
     head_of,
 )
 from tests._git import run_git as _run_git
+from tests._mode_bits import needs_mode_bits
 
 # Hint gymrat attaches to every unresolvable target, duplicated here so the test
 # asserts against the same string production emits.
 RESOLVE_TARGET_HINT = "Pass an existing directory, or a git ref that resolves to a commit."
-
-_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
-
-skip_on_windows = pytest.mark.skipif(
-    sys.platform == "win32", reason="Windows ignores the execute bit"
-)
-skip_on_windows_or_root = pytest.mark.skipif(
-    sys.platform == "win32" or _IS_ROOT,
-    reason="Windows lacks EACCES from chmod and root bypasses the mode bits",
-)
-
-
-@pytest.fixture(
-    params=[
-        pytest.param(False, id="git-missing"),
-        pytest.param(True, id="git-not-executable", marks=skip_on_windows),
-    ]
-)
-def unusable_git(
-    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Leave ``PATH`` holding one directory where git is absent or lacks the execute bit."""
-    if request.param:
-        blocked = tmp_path / "git"
-        blocked.write_text("#!/bin/sh\n", encoding="utf-8")
-        blocked.chmod(0o644)
-    monkeypatch.setenv("PATH", str(tmp_path))
-
 
 # ---------------------------------------------------------------------------
 # resolve_target
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_target_when_input_is_existing_directory_does_return_in_place_target(
-    tmp_path: Path,
-):
-    result = resolve_target(str(tmp_path), str(tmp_path))
-
-    assert result == InPlaceTarget(dir=os.path.realpath(tmp_path))
-
-
-def test_resolve_target_when_input_is_relative_directory_does_resolve_to_absolute(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "absolute", [pytest.param(False, id="relative"), pytest.param(True, id="absolute")]
+)
+def test_resolve_target_when_input_is_existing_directory_does_return_absolute_in_place_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, absolute: bool
 ):
     (tmp_path / "bench").mkdir()
     monkeypatch.chdir(tmp_path)
+    spelling = str(tmp_path / "bench") if absolute else "bench"
 
-    result = resolve_target("bench", str(tmp_path))
+    result = resolve_target(spelling, str(tmp_path))
 
     assert result == InPlaceTarget(dir=os.path.realpath(tmp_path / "bench"))
 
@@ -155,7 +124,7 @@ def test_resolve_target_when_input_is_non_commit_object_sha_does_reject(repo: st
         resolve_target(sha, repo)
 
 
-@skip_on_windows_or_root
+@needs_mode_bits
 def test_resolve_target_when_probe_hits_symlink_loop_does_raise_resolve_error(
     repo: str, tmp_path: Path
 ):
@@ -171,22 +140,25 @@ def test_resolve_target_when_probe_hits_symlink_loop_does_raise_resolve_error(
     assert exc_info.value.hint == RESOLVE_TARGET_HINT
 
 
-@skip_on_windows_or_root
-def test_resolve_target_when_probe_hits_unsearchable_parent_does_raise_resolve_error(
-    repo: str, tmp_path: Path
-):
+@pytest.fixture
+def unsearchable_target(tmp_path: Path) -> Iterator[Path]:
+    """A directory whose parent has no permissions, made searchable again on teardown."""
     parent = tmp_path / "parent"
     target = parent / "target"
     target.mkdir(parents=True)
     parent.chmod(0o000)
+    yield target
+    parent.chmod(0o700)
 
-    try:
-        with pytest.raises(GymratError) as exc_info:
-            resolve_target(str(target), repo)
 
-        message = str(exc_info.value)
-        assert f"Cannot resolve target '{target}'" in message
-        assert "fatal:" not in message
-        assert exc_info.value.hint == RESOLVE_TARGET_HINT
-    finally:
-        parent.chmod(0o700)
+@needs_mode_bits
+def test_resolve_target_when_probe_hits_unsearchable_parent_does_raise_resolve_error(
+    repo: str, unsearchable_target: Path
+):
+    with pytest.raises(GymratError) as exc_info:
+        resolve_target(str(unsearchable_target), repo)
+
+    message = str(exc_info.value)
+    assert f"Cannot resolve target '{unsearchable_target}'" in message
+    assert "fatal:" not in message
+    assert exc_info.value.hint == RESOLVE_TARGET_HINT

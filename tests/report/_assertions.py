@@ -39,14 +39,19 @@ def cells_of(line: str) -> list[str]:
     return line.split(_SEPARATOR)
 
 
+def stripped_cells(line: str) -> list[str]:
+    """The cells of a rendered table line, padding stripped."""
+    return [cell.strip() for cell in cells_of(line)]
+
+
+def rule_lines(report: str) -> list[str]:
+    """Every table rule of ``report``, styling stripped, in report order."""
+    return [bare for line in report.split("\n") if _RULE.match(bare := strip_ansi(line))]
+
+
 def delta_cell(line: str) -> str:
     """The last cell of a rendered table line — the delta/verdict column."""
     return cells_of(line)[-1]
-
-
-def last_table_row(report: str) -> str:
-    """The last rendered table row of a report — the row the table closes on."""
-    return table_rows(report)[-1]
 
 
 def line_starting_with(report: str, prefix: str) -> str:
@@ -130,43 +135,6 @@ def offsets_of(line: str, glyph: str) -> list[int]:
         The start offset of each occurrence, left to right.
     """
     return [match.start() for match in re.finditer(re.escape(glyph), line)]
-
-
-def separator_styles(line: str) -> list[list[str]]:
-    """The SGR parameters still open at each column separator of ``line``.
-
-    A separator that inherits its row's style reports that style here; one left in
-    the terminal's default color reports nothing.
-
-    Args:
-        line: One rendered table line, escape codes included.
-
-    Returns:
-        One list of open SGR parameters per separator, left to right.
-    """
-    closers: dict[str, re.Pattern[str]] = {
-        "0": re.compile(r"^\d+$"),
-        "22": re.compile(r"^[12]$"),
-        "23": re.compile(r"^3$"),
-        "24": re.compile(r"^4$"),
-        "39": re.compile(r"^(?:3[0-7]|9[0-7])$"),
-        "49": re.compile(r"^(?:4[0-7]|10[0-7])$"),
-    }
-    open_params: list[str] = []
-    styles: list[list[str]] = []
-    for token in re.finditer(r"\x1b\[([0-9;]*)m|│", line):
-        if token.group(0) == _SEPARATOR:
-            styles.append(list(open_params))
-            continue
-        for param in token.group(1).split(";"):
-            if param == "":
-                continue
-            closes = closers.get(param)
-            if closes is None:
-                open_params.append(param)
-            else:
-                open_params = [p for p in open_params if not closes.match(p)]
-    return styles
 
 
 def table_region(report: str) -> list[str]:

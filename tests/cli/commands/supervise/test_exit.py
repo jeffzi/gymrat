@@ -10,12 +10,12 @@ exit sequence records each call and lets a test act from inside it.
 import asyncio
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from gymrat.cli.supervise.preflight import run_preflight
 from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
@@ -28,6 +28,7 @@ from gymrat.telemetry.run_spans import TracingState
 from tests.cli.commands.supervise._seams import (
     CAP_MINUTES,
     CAP_MS,
+    Seams,
     err_text,
     install_seams,
     record_stdout_writes,
@@ -35,7 +36,6 @@ from tests.cli.commands.supervise._seams import (
 )
 from tests.cli.supervise._fixtures import (
     follow_up_event,
-    install_baseline_seam,
     make_supervision_result,
     session_state_three_iterations,
 )
@@ -139,7 +139,7 @@ def test_supervise_when_exit_sequence_warns_does_route_it_through_the_reporter_n
     assert hint not in result.stderr
 
 
-def test_supervise_when_exit_sequence_logs_an_event_does_write_it_to_the_log_and_the_observer(
+def test_supervise_when_exit_sequence_logs_an_event_does_append_it_to_the_run_log(
     repo: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     seams = install_seams(monkeypatch)
@@ -157,13 +157,15 @@ def test_supervise_when_exit_sequence_logs_an_event_does_write_it_to_the_log_and
 
     logged = [event_from_wire(json.loads(line)) for line in log_path.read_text().splitlines()]
     assert logged[-2:] == [run_event, event]
-    assert event in seams.observed_events
 
 
-def test_supervise_when_exit_sequence_logs_an_event_does_hand_it_to_the_observer_supervise_used(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
+def _untraced(_monkeypatch: pytest.MonkeyPatch, seams: Seams) -> list[object]:
+    """Leave tracing off, so supervise is handed the reporter's own observer."""
+    return seams.observed_events
+
+
+def _traced_with_its_own_observer(monkeypatch: pytest.MonkeyPatch, _seams: Seams) -> list[object]:
+    """Make tracing hand supervise an observer of its own, returning what that observer sees."""
     run_observed: list[object] = []
 
     def tracing_with_its_own_observer(
@@ -172,12 +174,29 @@ def test_supervise_when_exit_sequence_logs_an_event_does_hand_it_to_the_observer
         return prompt, run_observed.append, TracingState()
 
     monkeypatch.setattr(run_spans, "setup_tracing", tracing_with_its_own_observer)
+    return run_observed
+
+
+@pytest.mark.parametrize(
+    "observer_supervise_used",
+    [
+        pytest.param(_untraced, id="untraced"),
+        pytest.param(_traced_with_its_own_observer, id="traced"),
+    ],
+)
+def test_supervise_when_exit_sequence_logs_an_event_does_hand_it_to_the_observer_supervise_used(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    observer_supervise_used: Callable[[pytest.MonkeyPatch, Seams], list[object]],
+):
+    seams = install_seams(monkeypatch)
+    observed = observer_supervise_used(monkeypatch, seams)
     event = follow_up_event(action="ended", reason="nothing to settle")
     seams.exit_hook = lambda call: call["log"](event)
 
     run("optimize it", "--max-minutes", "10")
 
-    assert run_observed == [event]
+    assert observed == [event]
 
 
 def test_supervise_when_run_ends_does_run_the_exit_sequence_in_the_supervisor_loop(
@@ -203,12 +222,10 @@ def test_supervise_when_run_ends_does_run_the_exit_sequence_in_the_supervisor_lo
 def test_supervise_when_run_completes_does_log_one_supervise_command_record_per_stage(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    seams = install_seams(monkeypatch)
+    seams = install_seams(monkeypatch, real_preflight=True)
     seams.create_driver.return_value = create_mock_driver([CostStep(cost_usd=0.01)])
-    monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", run_preflight)
     monkeypatch.setattr("gymrat.cli.commands.supervise.supervise", supervise)
     monkeypatch.setattr("gymrat.cli.commands.supervise.run_exit_sequence", run_exit_sequence)
-    install_baseline_seam(monkeypatch)
 
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
 

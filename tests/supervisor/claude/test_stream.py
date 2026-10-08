@@ -7,8 +7,6 @@ carried onto the emitted events. The driver runs against an injected fake
 client that yields the SDK's own dataclasses.
 """
 
-from math import ceil
-
 import pytest
 from claude_agent_sdk import (
     StreamEvent,
@@ -29,93 +27,66 @@ from tests.supervisor._fixtures import (
 # ---------------------------------------------------------------------------
 
 
-async def test_start_when_thinking_blocks_stay_under_throttle_does_flush_each_at_block_stop():
-    messages = [
-        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event({
-            "type": "content_block_delta",
-            "delta": {"type": "thinking_delta", "thinking": "a" * 100},
-        }),
-        stream_event({"type": "content_block_stop"}),
-        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event({
-            "type": "content_block_delta",
-            "delta": {"type": "thinking_delta", "thinking": "abcdefgh"},
-        }),
-        stream_event({"type": "content_block_stop"}),
-    ]
-
-    events = await run_with_messages(messages)
-
-    updates = events_of(events, ThinkingUpdateEvent)
-    # Each block_start reports the running estimate with no delta; deltas under
-    # the 200-char throttle flush only at block_stop, and the second block's
-    # estimate builds on the first's.
-    assert [(u.delta, u.estimated_tokens) for u in updates] == [(0, 0), (25, 25), (0, 25), (2, 27)]
+def _thinking_start(parent: str | None = None) -> StreamEvent:
+    return stream_event(
+        {"type": "content_block_start", "content_block": {"type": "thinking"}},
+        parent_tool_use_id=parent,
+    )
 
 
-async def test_start_when_thinking_delta_crosses_throttle_does_emit_mid_block():
-    messages = [
-        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event({
-            "type": "content_block_delta",
-            "delta": {"type": "thinking_delta", "thinking": "a" * 220},
-        }),
-        stream_event({
-            "type": "content_block_delta",
-            "delta": {"type": "thinking_delta", "thinking": "a" * 30},
-        }),
-        stream_event({"type": "content_block_stop"}),
-    ]
-
-    events = await run_with_messages(messages)
-
-    updates = events_of(events, ThinkingUpdateEvent)
-    # block_start (0, 0); the first delta crosses the 200-char throttle mid-block
-    # (55, 55); the trailing 30 chars flush at block_stop (63, 8).
-    assert [(u.delta, u.estimated_tokens) for u in updates] == [
-        (0, 0),
-        (ceil(220 / 4), ceil(220 / 4)),
-        (ceil(250 / 4) - ceil(220 / 4), ceil(250 / 4)),
-    ]
+def _thinking_delta(text: str, parent: str | None = None) -> StreamEvent:
+    return stream_event(
+        {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": text}},
+        parent_tool_use_id=parent,
+    )
 
 
-async def test_start_when_thinking_deltas_accumulated_does_bound_update_count():
-    chunk = "a" * 50
-    num_chunks = 20  # 1000 chars total
-    messages = [
-        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-    ]
-    for _ in range(num_chunks):
-        messages.append(
-            stream_event({
-                "type": "content_block_delta",
-                "delta": {"type": "thinking_delta", "thinking": chunk},
-            })
-        )
-    messages.append(stream_event({"type": "content_block_stop"}))
-
-    events = await run_with_messages(messages)
-
-    updates = events_of(events, ThinkingUpdateEvent)
-    max_allowed = ceil(1000 / 200) + 2
-    assert len(updates) <= max_allowed
-    assert updates[-1].estimated_tokens == ceil(1000 / 4)
+def _block_stop(parent: str | None = None) -> StreamEvent:
+    return stream_event({"type": "content_block_stop"}, parent_tool_use_id=parent)
 
 
-async def test_start_when_thinking_delta_has_parent_does_carry_parent_tool_use_id():
-    messages = [
-        stream_event(
-            {"type": "content_block_start", "content_block": {"type": "thinking"}},
-            parent_tool_use_id="tu_42",
+# Each block start reports the running estimate with no delta. Deltas under the
+# 200-char throttle flush only at block stop; a block's estimate builds on the
+# earlier blocks' at four chars per token.
+@pytest.mark.parametrize(
+    ("messages", "expected"),
+    [
+        pytest.param(
+            [
+                _thinking_start(),
+                _thinking_delta("a" * 100),
+                _block_stop(),
+                _thinking_start(),
+                _thinking_delta("abcdefgh"),
+                _block_stop(),
+            ],
+            [(0, 0), (25, 25), (0, 25), (2, 27)],
+            id="under-throttle-flush-at-stop",
         ),
-        stream_event({"type": "content_block_stop"}, parent_tool_use_id="tu_42"),
-    ]
-
+        pytest.param(
+            [
+                _thinking_start(),
+                _thinking_delta("a" * 220),
+                _thinking_delta("a" * 30),
+                _block_stop(),
+            ],
+            [(0, 0), (55, 55), (8, 63)],
+            id="single-delta-crosses-throttle",
+        ),
+        pytest.param(
+            [_thinking_start(), *[_thinking_delta("a" * 50)] * 20, _block_stop()],
+            [(0, 0), (50, 50), (50, 100), (50, 150), (50, 200), (50, 250)],
+            id="small-deltas-accumulate-past-throttle",
+        ),
+    ],
+)
+async def test_start_when_thinking_deltas_stream_does_emit_throttled_estimates(
+    messages: list[StreamEvent], expected: list[tuple[int, int]]
+):
     events = await run_with_messages(messages)
 
     updates = events_of(events, ThinkingUpdateEvent)
-    assert updates[0].parent_tool_use_id == "tu_42"
+    assert [(u.delta, u.estimated_tokens) for u in updates] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -137,44 +108,38 @@ _TEXT_BLOCK_MESSAGES = [
     ),
     stream_event({"type": "content_block_stop"}, parent_tool_use_id="tu_x"),
 ]
+_TOOL_USE_BLOCK_MESSAGES = [
+    stream_event(
+        {"type": "content_block_start", "content_block": {"type": "tool_use", "name": "Read"}},
+        parent_tool_use_id="tu_x",
+    ),
+    stream_event({"type": "content_block_stop"}, parent_tool_use_id="tu_x"),
+]
 
 
 @pytest.mark.parametrize(
-    ("messages", "expected_phase"),
+    ("messages", "expected_phase", "expected_tool_name"),
     [
-        pytest.param(_THINKING_BLOCK_MESSAGES, "thinking", id="thinking-block-start"),
-        pytest.param(_TEXT_BLOCK_MESSAGES, "responding", id="text-block-start"),
+        pytest.param(_THINKING_BLOCK_MESSAGES, "thinking", None, id="thinking-block-start"),
+        pytest.param(_TEXT_BLOCK_MESSAGES, "responding", None, id="text-block-start"),
+        pytest.param(_TOOL_USE_BLOCK_MESSAGES, "tool_input", "Read", id="tool-use-block-start"),
         pytest.param(
             [stream_event({"type": "message_stop"}, parent_tool_use_id="tu_x")],
             "turn_end",
+            None,
             id="message-stop",
         ),
     ],
 )
 async def test_start_when_phase_event_received_does_emit_model_phase(
-    messages: list[StreamEvent], expected_phase: str
+    messages: list[StreamEvent], expected_phase: str, expected_tool_name: str | None
 ):
     events = await run_with_messages(messages)
 
     phases = events_of(events, ModelPhaseEvent)
-    assert any((p.phase, p.parent_tool_use_id) == (expected_phase, "tu_x") for p in phases)
-
-
-async def test_start_when_tool_use_block_start_does_emit_model_phase_tool_input():
-    messages = [
-        stream_event({
-            "type": "content_block_start",
-            "content_block": {"type": "tool_use", "name": "Read"},
-        }),
-        stream_event({"type": "content_block_stop"}),
+    assert [(p.phase, p.tool_name, p.parent_tool_use_id) for p in phases] == [
+        (expected_phase, expected_tool_name, "tu_x")
     ]
-
-    events = await run_with_messages(messages)
-
-    phases = events_of(events, ModelPhaseEvent)
-    tool_phases = [p for p in phases if p.phase == "tool_input"]
-    assert len(tool_phases) == 1
-    assert tool_phases[0].tool_name == "Read"
 
 
 # ---------------------------------------------------------------------------
@@ -183,18 +148,33 @@ async def test_start_when_tool_use_block_start_does_emit_model_phase_tool_input(
 
 
 @pytest.mark.parametrize(
-    "event_type",
+    "event",
     [
-        pytest.param("text_delta", id="text-delta"),
-        pytest.param("input_json_delta", id="input-json-delta"),
-        pytest.param("signature_delta", id="signature-delta"),
-        pytest.param("message_start", id="message-start"),
-        pytest.param("message_delta", id="message-delta"),
-        pytest.param("totally_unknown_type", id="unrecognized"),
+        pytest.param(
+            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}},
+            id="text-delta",
+        ),
+        pytest.param(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "input_json_delta", "partial_json": '{"a"'},
+            },
+            id="input-json-delta",
+        ),
+        pytest.param(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "signature_delta", "signature": "sig"},
+            },
+            id="signature-delta",
+        ),
+        pytest.param({"type": "message_start"}, id="message-start"),
+        pytest.param({"type": "message_delta"}, id="message-delta"),
+        pytest.param({"type": "totally_unknown_type"}, id="unrecognized"),
     ],
 )
-async def test_start_when_silent_event_type_does_emit_nothing(event_type: str):
-    messages = [stream_event({"type": event_type})]
+async def test_start_when_silent_event_type_does_emit_nothing(event: dict[str, object]):
+    messages = [stream_event(event)]
 
     events = await run_with_messages(messages)
 
@@ -208,36 +188,19 @@ async def test_start_when_silent_event_type_does_emit_nothing(event_type: str):
 
 async def test_start_when_subagent_thinking_does_not_inflate_top_level_total():
     messages = [
-        stream_event(
-            {"type": "content_block_start", "content_block": {"type": "thinking"}},
-            parent_tool_use_id=None,
-        ),
-        stream_event(
-            {
-                "type": "content_block_delta",
-                "delta": {"type": "thinking_delta", "thinking": "aaaa"},
-            },
-            parent_tool_use_id=None,
-        ),
-        stream_event({"type": "content_block_stop"}, parent_tool_use_id=None),
-        stream_event(
-            {"type": "content_block_start", "content_block": {"type": "thinking"}},
-            parent_tool_use_id="tu_sub",
-        ),
-        stream_event(
-            {
-                "type": "content_block_delta",
-                "delta": {"type": "thinking_delta", "thinking": "b" * 400},
-            },
-            parent_tool_use_id="tu_sub",
-        ),
-        stream_event({"type": "content_block_stop"}, parent_tool_use_id="tu_sub"),
+        _thinking_start(),
+        _thinking_delta("aaaa"),
+        _block_stop(),
+        _thinking_start("tu_sub"),
+        _thinking_delta("b" * 400, "tu_sub"),
+        _block_stop("tu_sub"),
+        _thinking_start(),
     ]
 
     events = await run_with_messages(messages)
 
     updates = events_of(events, ThinkingUpdateEvent)
-    top = [u for u in updates if u.parent_tool_use_id is None]
-    sub = [u for u in updates if u.parent_tool_use_id == "tu_sub"]
-    assert top[-1].estimated_tokens == ceil(4 / 4)
-    assert sub[-1].estimated_tokens == ceil(400 / 4)
+    top = [(u.delta, u.estimated_tokens) for u in updates if u.parent_tool_use_id is None]
+    sub = [(u.delta, u.estimated_tokens) for u in updates if u.parent_tool_use_id == "tu_sub"]
+    assert top == [(0, 0), (1, 1), (0, 1)]
+    assert sub == [(0, 0), (100, 100)]

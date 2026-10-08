@@ -9,12 +9,13 @@ The win32 ``taskkill`` fallback is tested in ``tests/test_process_group.py``.
 import asyncio
 import contextlib
 import dataclasses
+import errno
 import json
 import os
 import signal
 import sys
 import threading
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import create_autospec
@@ -22,22 +23,22 @@ from unittest.mock import create_autospec
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import (
-    ExecOptions,
-    ExecResult,
-    ExecTimeoutError,
-    OutputBuffer,
-    exec_argv,
-)
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, OutputBuffer
 from gymrat.exec import exec as run_exec
 from gymrat.signals import TERMINATION_SIGNALS
 from tests._exec_fixtures import (
+    RUNNERS,
+    ExecRun,
+    ExecTask,
+    Runner,
     Teardown,
+    cancel_and_settle,
     cancel_task,
     expected_result,
     fail_stderr_read,
     leave_to_timeout,
-    physical_path,
+    run_argv,
+    run_shell,
     set_abort,
     wait_for_spawned,
 )
@@ -56,7 +57,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 # Runs repeated back to back to hit the window where the timeout fires while the
-# shell is already exiting; a single run slips past it some of the time.
+# shell is already exiting; a single run slips past it some of the time. Used
+# only where asyncio reaps through a pidfd, so ``held_reaper`` cannot pin that
+# state deterministically.
 _RACE_RUNS = 40
 
 # How long asyncio's child reaper is held back once it starts waiting on a
@@ -204,60 +207,15 @@ async def test_exec_when_stdin_unread_and_large_does_settle_with_command_result(
 # ---------------------------------------------------------------------------
 
 
-async def _shell(args: Any, opts: ExecOptions) -> ExecResult | ExecTimeoutError:
-    return await run_exec(args, opts)
-
-
-async def _argv(args: Any, opts: ExecOptions) -> ExecResult | ExecTimeoutError:
-    return await exec_argv(args, opts)
-
-
-def _shell_grandchild(pid_file: Path) -> str:
-    return f"sleep 30 & echo $! > '{pid_file}'; wait"
-
-
-def _argv_grandchild(pid_file: Path) -> list[str]:
-    script = (
-        "import os, subprocess, sys, time\n"
-        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
-        f"open({str(pid_file)!r}, 'w').write(str(p.pid) + '\\n')\n"
-        "time.sleep(30)\n"
-    )
-    return [sys.executable, "-c", script]
-
-
-def _shell_partial_output() -> str:
-    return "echo 'line 1'; sleep 10"
-
-
-def _argv_partial_output() -> list[str]:
-    return [sys.executable, "-c", "import time; print('line 1', flush=True); time.sleep(10)"]
-
-
-@dataclasses.dataclass(frozen=True)
-class _Runner:
-    """One entry point and the argument shapes a shared test hands it."""
-
-    run: Callable[[Any, ExecOptions], Coroutine[Any, Any, ExecResult | ExecTimeoutError]]
-    grandchild: Callable[[Path], Any]
-    partial_output: Callable[[], Any]
-
-
-_RUNNERS = [
-    pytest.param(_Runner(_shell, _shell_grandchild, _shell_partial_output), id="exec"),
-    pytest.param(_Runner(_argv, _argv_grandchild, _argv_partial_output), id="exec_argv"),
-]
-
-
 _ECHO_STDIN_ARGV = [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read())"]
 
 
 @pytest.mark.parametrize(
     ("run", "args"),
     [
-        pytest.param(_shell, "echo out; echo err >&2; exit 3", id="exec"),
+        pytest.param(run_shell, "echo out; echo err >&2; exit 3", id="exec"),
         pytest.param(
-            _argv,
+            run_argv,
             [
                 sys.executable,
                 "-c",
@@ -269,7 +227,7 @@ _ECHO_STDIN_ARGV = [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdi
 )
 async def test_exec_when_run_to_completion_does_capture_both_streams_and_the_exit_code(
     make_opts: Callable[..., ExecOptions],
-    run: Callable[[Any, ExecOptions], Coroutine[Any, Any, ExecResult | ExecTimeoutError]],
+    run: ExecRun,
     args: Any,
 ) -> None:
     result = await run(args, make_opts())
@@ -280,8 +238,8 @@ async def test_exec_when_run_to_completion_does_capture_both_streams_and_the_exi
 @pytest.mark.parametrize(
     ("run", "args"),
     [
-        pytest.param(_shell, "cat", id="exec"),
-        pytest.param(_argv, _ECHO_STDIN_ARGV, id="exec_argv"),
+        pytest.param(run_shell, "cat", id="exec"),
+        pytest.param(run_argv, _ECHO_STDIN_ARGV, id="exec_argv"),
     ],
 )
 @pytest.mark.parametrize(
@@ -295,7 +253,7 @@ async def test_exec_when_run_to_completion_does_capture_both_streams_and_the_exi
 async def test_exec_when_stdin_given_or_omitted_does_feed_it_or_close_it(
     make_opts: Callable[..., ExecOptions],
     *,
-    run: Callable[[Any, ExecOptions], Coroutine[Any, Any, ExecResult | ExecTimeoutError]],
+    run: ExecRun,
     args: Any,
     stdin: str | None,
     expected_stdout: str,
@@ -308,21 +266,21 @@ async def test_exec_when_stdin_given_or_omitted_does_feed_it_or_close_it(
 @pytest.mark.parametrize(
     ("run", "args"),
     [
-        pytest.param(_shell, "pwd -P", id="exec"),
+        pytest.param(run_shell, "pwd -P", id="exec"),
         pytest.param(
-            _argv, [sys.executable, "-c", "import os; print(os.getcwd())"], id="exec_argv"
+            run_argv, [sys.executable, "-c", "import os; print(os.getcwd())"], id="exec_argv"
         ),
     ],
 )
 async def test_exec_when_cwd_specified_does_run_in_that_directory(
     tmp_path: Path,
     make_opts: Callable[..., ExecOptions],
-    run: Callable[[Any, ExecOptions], Coroutine[Any, Any, ExecResult | ExecTimeoutError]],
+    run: ExecRun,
     args: Any,
 ) -> None:
     result = await run(args, make_opts())
 
-    assert result == expected_result(physical_path(tmp_path) + "\n", "", 0)
+    assert result == expected_result(f"{await asyncio.to_thread(tmp_path.resolve)}\n", "", 0)
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +310,7 @@ def _nul_in_cwd(_tmp_path: Path) -> str:
     ("run", "args", "cwd", "env", "message"),
     [
         pytest.param(
-            _shell,
+            run_shell,
             "echo hello",
             _missing_dir,
             None,
@@ -360,7 +318,7 @@ def _nul_in_cwd(_tmp_path: Path) -> str:
             id="exec-cwd-missing",
         ),
         pytest.param(
-            _shell,
+            run_shell,
             "echo hello",
             _regular_file,
             None,
@@ -368,13 +326,13 @@ def _nul_in_cwd(_tmp_path: Path) -> str:
             id="exec-cwd-file",
         ),
         pytest.param(
-            _shell, "echo a\x00b", _in_tmp, None, "embedded null byte", id="exec-nul-in-command"
+            run_shell, "echo a\x00b", _in_tmp, None, "embedded null byte", id="exec-nul-in-command"
         ),
         pytest.param(
-            _shell, "echo hello", _nul_in_cwd, None, "embedded null byte", id="exec-nul-in-cwd"
+            run_shell, "echo hello", _nul_in_cwd, None, "embedded null byte", id="exec-nul-in-cwd"
         ),
         pytest.param(
-            _shell,
+            run_shell,
             "echo hello",
             _in_tmp,
             {"VAR": "a\x00b"},
@@ -382,7 +340,7 @@ def _nul_in_cwd(_tmp_path: Path) -> str:
             id="exec-nul-in-env",
         ),
         pytest.param(
-            _argv,
+            run_argv,
             ["no-such-binary-exists-anywhere"],
             _in_tmp,
             None,
@@ -390,7 +348,7 @@ def _nul_in_cwd(_tmp_path: Path) -> str:
             id="argv-binary-not-found",
         ),
         pytest.param(
-            _argv,
+            run_argv,
             ["echo", "hello"],
             _missing_dir,
             None,
@@ -398,7 +356,7 @@ def _nul_in_cwd(_tmp_path: Path) -> str:
             id="argv-cwd-missing",
         ),
         pytest.param(
-            _argv,
+            run_argv,
             ["echo", "a\x00b"],
             _in_tmp,
             None,
@@ -406,23 +364,30 @@ def _nul_in_cwd(_tmp_path: Path) -> str:
             id="argv-nul-in-argument",
         ),
         pytest.param(
-            _argv, ["echo", "hello"], _nul_in_cwd, None, "embedded null byte", id="argv-nul-in-cwd"
+            run_argv,
+            ["echo", "hello"],
+            _nul_in_cwd,
+            None,
+            "embedded null byte",
+            id="argv-nul-in-cwd",
         ),
         pytest.param(
-            _argv,
+            run_argv,
             ["echo", "hello"],
             _in_tmp,
             {"VAR": "a\x00b"},
             "embedded null byte",
             id="argv-nul-in-env",
         ),
-        pytest.param(_argv, [], _in_tmp, None, "argv is empty: no program to run", id="argv-empty"),
+        pytest.param(
+            run_argv, [], _in_tmp, None, "argv is empty: no program to run", id="argv-empty"
+        ),
     ],
 )
 async def test_exec_when_spawn_fails_does_resolve_with_the_failure_on_stderr(
     tmp_path: Path,
     *,
-    run: Callable[[Any, ExecOptions], Coroutine[Any, Any, ExecResult | ExecTimeoutError]],
+    run: ExecRun,
     args: Any,
     cwd: Callable[[Path], str],
     env: dict[str, str] | None,
@@ -435,11 +400,11 @@ async def test_exec_when_spawn_fails_does_resolve_with_the_failure_on_stderr(
     assert result == expected_result("", message.format(cwd=run_dir) + "\n", exit_code=1)
 
 
-@pytest.mark.parametrize("runner", _RUNNERS)
+@pytest.mark.parametrize("runner", RUNNERS)
 async def test_exec_when_timeout_exceeded_does_return_timeout_error_with_the_partial_output(
-    make_opts: Callable[..., ExecOptions], runner: _Runner
+    make_opts: Callable[..., ExecOptions], runner: Runner
 ) -> None:
-    result = await runner.run(runner.partial_output(), make_opts(timeout_ms=1500))
+    result = await runner.run(runner.partial_output, make_opts(timeout_ms=1500))
 
     assert result == ExecTimeoutError(
         stdout="line 1\n",
@@ -454,7 +419,7 @@ async def test_exec_when_timeout_exceeded_does_return_timeout_error_with_the_par
 _GRANDCHILD_TIMEOUT_MS = 3000
 
 
-@pytest.mark.parametrize("runner", _RUNNERS)
+@pytest.mark.parametrize("runner", RUNNERS)
 @pytest.mark.parametrize(
     "teardown",
     [
@@ -464,11 +429,11 @@ _GRANDCHILD_TIMEOUT_MS = 3000
         pytest.param(Teardown(None, cancel_task), id="cancelled"),
     ],
 )
-async def test_exec_when_torn_down_does_kill_the_whole_group_and_deregister_it(
+async def test_exec_when_torn_down_does_kill_the_whole_group(
     tmp_path: Path,
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
-    runner: _Runner,
+    runner: Runner,
     teardown: Teardown,
 ) -> None:
     abort = asyncio.Event()
@@ -489,7 +454,7 @@ async def test_exec_when_torn_down_does_kill_the_whole_group_and_deregister_it(
     assert not is_alive(grandchild)
 
 
-async def test_exec_when_event_preset_does_not_spawn_and_settles_failed(
+async def test_exec_when_abort_preset_does_settle_failed_without_spawning(
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
 ) -> None:
@@ -593,6 +558,10 @@ async def test_exec_when_output_exceeds_cap_does_stop_appending_but_keep_countin
     assert result.stdout_bytes == len(b"hello\n")
 
 
+@pytest.mark.skipif(
+    not pidfd_available(),
+    reason="held_reaper holds back the exited shell's reap, pinning this state deterministically",
+)
 async def test_exec_when_timeout_lands_as_child_exits_does_not_warn_about_killpg(
     make_opts: Callable[..., ExecOptions],
     recwarn: pytest.WarningsRecorder,
@@ -650,17 +619,31 @@ async def test_exec_when_torn_down_after_shell_exits_does_leave_reaping_to_async
     ] == []
 
 
-async def test_exec_when_cancelled_after_shell_exits_does_not_warn_about_killpg(
+@pytest.mark.parametrize(
+    "teardown",
+    [
+        pytest.param(Teardown(_TEARDOWN_TIMEOUT_MS, leave_to_timeout), id="timeout"),
+        pytest.param(Teardown(None, set_abort), id="abort"),
+        pytest.param(Teardown(None, cancel_task), id="cancelled"),
+    ],
+)
+async def test_exec_when_torn_down_after_shell_exits_does_not_warn_about_killpg(
     held_reaper: HeldReaper,
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
     recwarn: pytest.WarningsRecorder,
+    teardown: Teardown,
 ) -> None:
-    task = asyncio.create_task(run_exec("exit 0", make_opts()))
+    # The exited shell is the group's only member, a zombie nobody has reaped,
+    # which is when a group refuses the kill.
+    abort = asyncio.Event()
+    task = asyncio.create_task(
+        run_exec("exit 0", make_opts(timeout_ms=teardown.timeout_ms, abort=abort)),
+    )
     proc = await wait_for_spawned(spawned_processes)
     await wait_for_shell_exit(proc)
 
-    task.cancel()
+    teardown.trigger(task, proc, abort)
     with contextlib.suppress(asyncio.CancelledError):
         await asyncio.wait_for(task, 5)
     await asyncio.wait_for(proc.wait(), 5)
@@ -681,9 +664,7 @@ async def test_exec_when_cancelled_after_shell_exits_does_kill_live_descendants(
     grandchild = await wait_for_pid_file(tmp_path / "grandchild.pid")
     await wait_for_shell_exit(proc)
 
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await asyncio.wait_for(task, 5)
+    await cancel_and_settle(task)
 
     await wait_until_dead(grandchild, timeout_s=3.0)
     assert not is_alive(grandchild)
@@ -717,16 +698,75 @@ async def test_exec_when_cancelled_and_shell_never_reaped_does_settle_promptly_w
 # live process-group registry
 # ---------------------------------------------------------------------------
 
+_real_killpg = os.killpg
+
+# Upper bound for a run left going by a test to finish once its group is killed.
+_RUN_SETTLE_TIMEOUT_S = 5.0
+
+
+@dataclasses.dataclass
+class LiftableRefusal:
+    """Stand-in ``os.killpg`` that refuses every signal with ``EPERM`` while ``refusing`` holds.
+
+    Clearing ``refusing`` lets signals through for real, so a test can still
+    tear its run down after the refusal it asserted on.
+    """
+
+    refusing: bool = True
+
+    def __call__(self, group_pid: int, signal_number: int) -> None:
+        if self.refusing:
+            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+        _real_killpg(group_pid, signal_number)
+
+
+@pytest.fixture
+def killpg_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    spawned_processes: list[asyncio.subprocess.Process],
+) -> Iterator[LiftableRefusal]:
+    """Install a killpg stand-in a test can switch to refusing right before its act.
+
+    Depends on ``spawned_processes``, so its own teardown runs first: clearing
+    ``refusing`` here happens before ``spawned_processes`` kills any survivor's
+    group, so that cleanup kill goes through the real ``killpg``.
+    """
+    refusal = LiftableRefusal(refusing=False)
+    monkeypatch.setattr(os, "killpg", refusal)
+    yield refusal
+    refusal.refusing = False
+
+
+@pytest.fixture
+async def background_runs(
+    spawned_processes: list[asyncio.subprocess.Process],
+) -> AsyncIterator[list[ExecTask]]:
+    """Collect the runs a test leaves going, then kill every spawned group and let each run settle."""
+    runs: list[ExecTask] = []
+    yield runs
+    # An abandoned run leaves its child never reaped and its pipes open once the event
+    # loop closes, surfacing as a ResourceWarning in whatever test the garbage collector
+    # runs next. Killing through the real ``_real_killpg`` sidesteps any refusal the test
+    # installed and ends every member holding the run's pipes, so each run completes on
+    # its own. A group the test already ended is gone, or refuses while it finishes
+    # exiting.
+    for proc in spawned_processes:
+        with contextlib.suppress(OSError):
+            _real_killpg(proc.pid, signal.SIGKILL)
+    await asyncio.wait_for(asyncio.gather(*runs), _RUN_SETTLE_TIMEOUT_S)
+
 
 @pytest.mark.parametrize(
     ("run", "args", "timeout_ms"),
     [
-        pytest.param(_shell, "echo hello", None, id="exec-completes"),
-        pytest.param(_argv, [sys.executable, "-c", "pass"], None, id="exec_argv-completes"),
+        pytest.param(run_shell, "echo hello", None, id="exec-completes"),
+        pytest.param(run_argv, [sys.executable, "-c", "pass"], None, id="exec_argv-completes"),
         # Every teardown (timeout, abort, stream error, cancel) settles through the
         # same release, so the timeout stands in for all of them.
-        pytest.param(_shell, "sleep 30", 200, id="exec-torn-down"),
-        pytest.param(_argv, ["no-such-binary-exists-anywhere"], None, id="exec_argv-spawn-fails"),
+        pytest.param(run_shell, "sleep 30", 200, id="exec-torn-down"),
+        pytest.param(
+            run_argv, ["no-such-binary-exists-anywhere"], None, id="exec_argv-spawn-fails"
+        ),
     ],
 )
 @pytest.mark.usefixtures("spawned_processes")
@@ -734,7 +774,7 @@ async def test_kill_live_process_groups_when_run_has_settled_does_not_target_its
     make_opts: Callable[..., ExecOptions],
     monkeypatch: pytest.MonkeyPatch,
     *,
-    run: Callable[[Any, ExecOptions], Coroutine[Any, Any, ExecResult | ExecTimeoutError]],
+    run: ExecRun,
     args: Any,
     timeout_ms: int | None,
 ) -> None:
@@ -768,52 +808,27 @@ async def test_kill_live_process_groups_when_registry_reset_does_spare_every_ear
     tmp_path: Path,
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
+    background_runs: list[ExecTask],
 ) -> None:
-    abort = asyncio.Event()
-    earlier = [
-        asyncio.create_task(
-            run_exec(f"sleep 30 & echo $! > earlier{n}.pid; wait", make_opts(abort=abort)),
-        )
+    background_runs.extend(
+        asyncio.create_task(run_exec(f"sleep 30 & echo $! > earlier{n}.pid; wait", make_opts()))
         for n in range(2)
-    ]
+    )
     await wait_for_spawned(spawned_processes, count=2)
     earlier_grandchildren = [
         await wait_for_pid_file(tmp_path / f"earlier{n}.pid") for n in range(2)
     ]
     exec_mod.reset()
-    later = asyncio.create_task(run_exec("sleep 30 & echo $! > later.pid; wait", make_opts()))
+    background_runs.append(
+        asyncio.create_task(run_exec("sleep 30 & echo $! > later.pid; wait", make_opts())),
+    )
     await wait_for_spawned(spawned_processes, count=3)
     later_grandchild = await wait_for_pid_file(tmp_path / "later.pid")
 
     exec_mod.kill_live_process_groups()
 
-    alive_after_kill = [is_alive(pid) for pid in (*earlier_grandchildren, later_grandchild)]
-    abort.set()
-    await asyncio.gather(*earlier, later)
-    for grandchild in earlier_grandchildren:
-        await wait_until_dead(grandchild, timeout_s=3.0)
-    assert alive_after_kill == [True, True, False]
-
-
-def test_kill_live_process_groups_when_registry_empty_does_not_kill_anything(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    attempted = record_registry_sweep(monkeypatch)
-
-    exec_mod.kill_live_process_groups()
-
-    assert attempted == []
-
-
-@pytest.fixture
-def signal_guard(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Guard the fake group leaders from real signals: ``os.kill`` and ``os.killpg`` report them gone."""
-
-    def report_gone(pid: int, _sig: int) -> None:
-        raise ProcessLookupError(pid)
-
-    monkeypatch.setattr(os, "kill", report_gone)
-    monkeypatch.setattr(os, "killpg", report_gone)
+    alive = [is_alive(pid) for pid in (*earlier_grandchildren, later_grandchild)]
+    assert alive == [True, True, False]
 
 
 @pytest.mark.parametrize(
@@ -823,13 +838,15 @@ def signal_guard(monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.param(RuntimeError("unexpected"), id="runtime-error"),
     ],
 )
-@pytest.mark.usefixtures("signal_guard")
-def test_kill_live_process_groups_when_kill_raises_does_not_propagate(
+async def test_kill_live_process_groups_when_kill_raises_does_not_propagate(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
     monkeypatch: pytest.MonkeyPatch,
+    background_runs: list[ExecTask],
     exc: Exception,
 ) -> None:
-    leaders = {4242, 4343}
-    monkeypatch.setattr(exec_mod, "_live_process_groups", set(leaders))
+    background_runs.extend(asyncio.create_task(run_exec("sleep 30", make_opts())) for _ in range(2))
+    await wait_for_spawned(spawned_processes, count=2)
     monkeypatch.setattr(
         exec_mod,
         "terminate_process_group",
@@ -845,7 +862,47 @@ def test_kill_live_process_groups_when_kill_raises_does_not_propagate(
 
     exec_mod.kill_live_process_groups()
 
-    assert {call.args[0] for call in kill.call_args_list} == leaders
+    assert {call.args[0] for call in kill.call_args_list} == {
+        proc.pid for proc in spawned_processes
+    }
+
+
+async def test_kill_live_process_groups_when_running_group_refuses_signals_does_warn(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    killpg_refusal: LiftableRefusal,
+    background_runs: list[ExecTask],
+) -> None:
+    background_runs.append(asyncio.create_task(run_exec("sleep 30", make_opts())))
+    await wait_for_spawned(spawned_processes)
+    killpg_refusal.refusing = True
+
+    with pytest.warns(RuntimeWarning, match="killpg failed"):
+        exec_mod.kill_live_process_groups()
+
+
+async def test_kill_live_process_groups_when_exited_leader_group_with_live_member_refuses_does_warn(
+    tmp_path: Path,
+    spawned_processes: list[asyncio.subprocess.Process],
+    stray_process_ids: list[int],
+    make_opts: Callable[..., ExecOptions],
+    *,
+    killpg_refusal: LiftableRefusal,
+    background_runs: list[ExecTask],
+) -> None:
+    # The grandchild holds the run's stdout, so the run keeps going after the
+    # shell leading the group has exited.
+    background_runs.append(
+        asyncio.create_task(run_exec("sleep 30 & echo $! > grandchild.pid", make_opts())),
+    )
+    leader = await wait_for_spawned(spawned_processes)
+    grandchild = await wait_for_pid_file(tmp_path / "grandchild.pid")
+    stray_process_ids.append(grandchild)
+    await wait_until_dead(leader.pid)
+    killpg_refusal.refusing = True
+
+    with pytest.warns(RuntimeWarning, match="killpg failed"):
+        exec_mod.kill_live_process_groups()
 
 
 # ---------------------------------------------------------------------------

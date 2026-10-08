@@ -67,9 +67,6 @@ _WAIT_SECONDS = 5.0
 _RELEASE_DELAY_SECONDS = 0.05
 # Many refresh intervals at 100 refreshes per second: a live thread paints here.
 _QUIET_SECONDS = 0.2
-# The erase's wait for an in-flight paint, shortened so a test that outlasts it
-# does not sit through the real one.
-_SHORT_PAINT_WAIT_SECONDS = 0.05
 
 
 class _InFlight(NamedTuple):
@@ -519,7 +516,6 @@ def test_mount_live_when_refresh_thread_paint_never_finishes_does_return_after_o
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
 ):
-    monkeypatch.setattr("gymrat.cli.live_display._PAINT_WAIT_SECONDS", _SHORT_PAINT_WAIT_SECONDS)
     console = sealed_console()
     console.print(KEPT_LINE)
     live = mounted_live(console, _rows(2), auto_refresh=True)
@@ -576,7 +572,6 @@ def test_console_print_when_signal_erased_display_lock_held_does_return_within_b
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
 ):
-    monkeypatch.setattr("gymrat.cli.live_display._PAINT_WAIT_SECONDS", _SHORT_PAINT_WAIT_SECONDS)
     armed, held, release = threading.Event(), threading.Event(), threading.Event()
 
     def build_frame() -> Text:
@@ -695,17 +690,16 @@ def test_erase_for_exit_when_paint_dropped_while_earlier_paint_in_flight_does_er
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
 ):
-    # The erase waits on the display lock until the refresh has dropped its
-    # frame and let go, however late the release fires.
-    monkeypatch.setattr("gymrat.cli.live_display._PAINT_WAIT_SECONDS", _WAIT_SECONDS)
     console = sealed_console()
     console.print(KEPT_LINE)
     frame = _FrameGatedOnThread(2)
     live = mounted_live(console, frame)
+    # The erase waits on the display lock until the refresh has dropped its
+    # frame and let go, however late the release fires.
+    live.paint_wait_seconds = _WAIT_SECONDS
     monkeypatch.setattr(sys, "stderr", console.file)
     frame.resize(4)
     refresh = threading.Thread(target=live.refresh, name=_GATED_REFRESH_THREAD, daemon=True)
-    decide_landing = ErasableLive._frame_lands
 
     def release_once_erased() -> None:
         # The refresh must reach its landing decision after the erase has begun,
@@ -715,23 +709,19 @@ def test_erase_for_exit_when_paint_dropped_while_earlier_paint_in_flight_does_er
             time.sleep(_RELEASE_DELAY_SECONDS / 10)
         frame.release.set()
 
-    def signal_after_landing_decided(
-        self: ErasableLive, paint: object, buffer: list[object]
-    ) -> bool:
+    def signal_once_landing() -> None:
         # The print has rendered its four-row frame and will land it, but has
         # not written yet: the two old rows are still on screen. A refresh then
         # records the four-row frame as the one it replaces, holds the display
         # lock through the erase's wait, and drops its frame once erased.
-        lands = decide_landing(self, paint, buffer)  # pyrefly: ignore[bad-argument-type]
-        if threading.current_thread() is threading.main_thread() and not self.erased:
+        if threading.current_thread() is threading.main_thread():
             refresh.start()
             frame.entered.wait(timeout=_WAIT_SECONDS)
             threading.Thread(target=release_once_erased, daemon=True).start()
             raise_signal(TERMINATION_SIGNAL)
             raise ProcessExit
-        return lands
 
-    monkeypatch.setattr(ErasableLive, "_frame_lands", signal_after_landing_decided)
+    live.on_frame_landing = signal_once_landing
 
     try:
         with pytest.raises(ProcessExit):

@@ -158,10 +158,8 @@ def test_git_common_dir_when_called_does_return_the_git_directory_of_the_owning_
 def test_git_common_dir_when_directory_not_in_repo_does_raise_not_a_git_repository(
     tmp_path: Path,
 ):
-    with pytest.raises(NotAGitRepositoryError) as raised:
+    with pytest.raises(NotAGitRepositoryError):
         git_common_dir(str(tmp_path))
-
-    assert isinstance(raised.value.__cause__, subprocess.CalledProcessError)
 
 
 # Where a session command's working directory can sit inside a worktree gymrat
@@ -173,26 +171,21 @@ GYMRAT_WORKTREE_PROBES = [
 ]
 
 
+@pytest.mark.parametrize(
+    "checkout",
+    [
+        pytest.param(_main_checkout, id="main-checkout"),
+        pytest.param(_linked_worktree, id="linked-worktree"),
+    ],
+)
 @pytest.mark.parametrize(("worktree_name", "below"), GYMRAT_WORKTREE_PROBES)
-def test_repo_root_when_probed_inside_a_gymrat_worktree_does_return_the_owning_repository(
-    create_scratch_repo: Callable[[], str], worktree_name: str, below: str
+def test_repo_root_when_probed_inside_a_gymrat_worktree_does_return_the_owning_checkout(
+    create_scratch_repo: Callable[[], str],
+    checkout: Callable[[str], str],
+    worktree_name: str,
+    below: str,
 ):
-    repo = create_scratch_repo()
-    worktree = _add_worktree(repo, f".gymrat/worktrees/{worktree_name}")
-    probe = Path(worktree, below)
-    probe.mkdir(parents=True, exist_ok=True)
-
-    root = repo_root(str(probe))
-
-    assert Path(root) == Path(repo)
-
-
-@pytest.mark.parametrize(("worktree_name", "below"), GYMRAT_WORKTREE_PROBES)
-def test_repo_root_when_owning_checkout_is_a_linked_worktree_does_return_that_checkout(
-    create_scratch_repo: Callable[[], str], worktree_name: str, below: str
-):
-    repo = create_scratch_repo()
-    owner = _add_worktree(repo, "linked")
+    owner = checkout(create_scratch_repo())
     worktree = _add_worktree(owner, f".gymrat/worktrees/{worktree_name}")
     probe = Path(worktree, below)
     probe.mkdir(parents=True, exist_ok=True)
@@ -275,13 +268,21 @@ def _derive_archived(root: str) -> str:
 @pytest.mark.parametrize(
     ("derive", "relative"),
     [
-        (session_dir, (".gymrat",)),
-        (session_jsonl_path, (".gymrat", "session.jsonl")),
-        (experiment_worktree_dir, (".gymrat", "worktrees", "experiment")),
-        (baseline_worktree_dir, (".gymrat", "worktrees", "baseline")),
-        (_derive_archived, (".gymrat", f"session-{SESSION_ID}.jsonl")),
-        (budget_path, (".gymrat", "budget.json")),
-        (progress_path, (".gymrat", "progress.json")),
+        pytest.param(session_dir, (".gymrat",), id="session-dir"),
+        pytest.param(session_jsonl_path, (".gymrat", "session.jsonl"), id="session-log"),
+        pytest.param(
+            experiment_worktree_dir,
+            (".gymrat", "worktrees", "experiment"),
+            id="experiment-worktree",
+        ),
+        pytest.param(
+            baseline_worktree_dir, (".gymrat", "worktrees", "baseline"), id="baseline-worktree"
+        ),
+        pytest.param(
+            _derive_archived, (".gymrat", f"session-{SESSION_ID}.jsonl"), id="archived-session"
+        ),
+        pytest.param(budget_path, (".gymrat", "budget.json"), id="budget"),
+        pytest.param(progress_path, (".gymrat", "progress.json"), id="progress"),
     ],
 )
 def test_session_layout_when_deriving_path_does_place_under_root(

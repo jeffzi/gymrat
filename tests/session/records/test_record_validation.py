@@ -556,26 +556,26 @@ def test_parse_record_when_field_invalid_does_reject_with_message(value: object,
 
 
 @pytest.mark.parametrize(
-    ("value", "rule"),
+    ("value", "expected"),
     [
         pytest.param(
             patching(COMMAND_RECORD_SUCCESS, {"reason": "budget-exceeded"}),
-            "a successful command must not carry a reason",
+            "Invalid session record: command.exit_code is 0 but reason is set to "
+            "'budget-exceeded'; a successful command must not carry a reason",
             id="success-with-reason",
         ),
         pytest.param(
             omitting(COMMAND_RECORD, "reason"),
+            "Invalid session record: command.exit_code is 1 but reason is missing; "
             "a failed command must carry a reason",
             id="failure-without-reason",
         ),
     ],
 )
 def test_parse_record_when_command_exit_code_and_reason_disagree_does_reject_with_the_rule(
-    value: object, rule: str
+    value: object, expected: str
 ):
     with pytest.raises(GymratError) as exc:
         parse_record(value)
 
-    message = str(exc.value)
-    assert rule in message
-    assert "expected a valid value" not in message
+    assert str(exc.value) == expected

@@ -115,20 +115,11 @@ _CAPPED_OR_ERRORED = [
 ]
 
 
-@pytest.mark.parametrize(
-    ("reason", "ended_by", "expected"),
-    [
-        pytest.param("completed", "session", "✓ completed · 1m 0s · $0.05", id="session-end"),
-        *_CAPPED_OR_ERRORED,
-    ],
-)
-def test_summary_headline_when_run_ends_does_state_how_it_ended(
-    reason: SessionEndReason, ended_by: EndedBy, expected: str
-) -> None:
-    summary = _summary(make_supervision_result(reason=reason, ended_by=ended_by))
+def test_summary_headline_when_session_completes_does_state_completed() -> None:
+    summary = _summary(make_supervision_result(reason="completed", ended_by="session"))
 
     assert frame_text(summary, width=FRAME_WIDTH) == (
-        f"{expected}\n  loop    no session yet\n{_LOG_ROW}"
+        f"✓ completed · 1m 0s · $0.05\n  loop    no session yet\n{_LOG_ROW}"
     )
 
 
@@ -227,7 +218,7 @@ def test_summary_log_row_when_rendered_with_color_does_leave_the_path_unstyled()
         ),
     ],
 )
-def test_summary_when_final_text_multiline_does_indent_continuation_under_content(
+def test_summary_agent_row_when_final_text_given_does_indent_continuation_lines_under_content(
     final_text: str, expected_lines: list[str]
 ) -> None:
     summary = _summary(
@@ -244,30 +235,29 @@ def test_summary_when_final_text_multiline_does_indent_continuation_under_conten
 # ---------------------------------------------------------------------------
 
 
-def test_summary_agent_row_when_text_at_threshold_does_render_unchanged():
-    short_text = "x" * SUMMARY_MAX_CHARS
-
+@pytest.mark.parametrize(
+    ("final_text", "expected_agent_row"),
+    [
+        pytest.param(
+            "x" * SUMMARY_MAX_CHARS, f"  agent   {'x' * SUMMARY_MAX_CHARS}", id="at-threshold"
+        ),
+        pytest.param(
+            "a" * (SUMMARY_MAX_CHARS + 50),
+            f"  agent   {'a' * SUMMARY_MAX_CHARS}… (full message in log)",
+            id="over-threshold",
+        ),
+    ],
+)
+def test_summary_agent_row_when_text_length_varies_does_clip_only_past_the_threshold(
+    final_text: str, expected_agent_row: str
+):
     summary = _summary(
-        make_supervision_result(reason="completed", ended_by="session"), final_text=short_text
+        make_supervision_result(reason="completed", ended_by="session"), final_text=final_text
     )
 
     text = frame_text(summary, width=FRAME_WIDTH + 200)
-    agent_line = next(line for line in text.splitlines() if "agent" in line)
 
-    assert agent_line == f"  agent   {short_text}"
-    assert "(full message in log)" not in text
-
-
-def test_summary_agent_row_when_text_exceeds_threshold_does_clip_it_pointing_at_the_log():
-    long_text = "a" * (SUMMARY_MAX_CHARS + 50)
-
-    summary = _summary(
-        make_supervision_result(reason="completed", ended_by="session"), final_text=long_text
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH + 200)
-
-    assert text.splitlines()[1] == f"  agent   {'a' * SUMMARY_MAX_CHARS}… (full message in log)"
+    assert text.splitlines()[1] == expected_agent_row
 
 
 def test_summary_agent_row_when_clipped_text_is_multiline_does_indent_every_continuation_line():

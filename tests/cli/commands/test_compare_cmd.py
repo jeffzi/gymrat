@@ -6,8 +6,9 @@ cover flag parsing into the config resolver, the text and JSON report going to
 stdout, the missing-bench error routing to exit 2 on stderr, the fail-on gate
 tripping to exit 1 only after the report is printed, the empty-geomean warning,
 and the command trace. The fail-on gate evaluation is also driven directly. The
-budget time-left line and the tight-budget warning are pinned with every other
-command's in ``test_session_cmds``.
+budget time-left line comes from the shared ``emit_report`` path, pinned
+through ``probe`` in ``test_session_cmds``; the tight-budget warning is pinned
+there for compare.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from tests.cli._session import (
     last_command_record,
     open_session,
     runner,
+    stub_compare,
 )
 from tests.report._comparisons import (
     create_candidate,
@@ -60,15 +62,6 @@ def _resolved(bench: str = "sh bench.sh") -> ResolvedConfig:
     )
 
 
-def _patch_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult) -> None:
-    """Replace the ``compare`` seam with a fake returning ``result``."""
-
-    async def fake_compare(_options: object) -> ComparisonResult:
-        return result
-
-    monkeypatch.setattr("gymrat.compare.compare", fake_compare)
-
-
 def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace ``resolve_config`` with one that returns a fixed resolved config."""
 
@@ -81,11 +74,13 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
 def _stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> None:
     """Stub ``resolve_config`` and ``compare`` so invoking the command succeeds.
 
-    ``result`` becomes the comparison the fake ``compare`` returns; defaults to
-    a comparison with no regressions.
+    Args:
+        monkeypatch: The fixture that installs the fakes.
+        result: What the fake ``compare`` returns; a comparison with no
+            regressions when ``None``.
     """
     _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, create_comparison_result() if result is None else result)
+    stub_compare(monkeypatch, result)
 
 
 def _regressed_result() -> ComparisonResult:
@@ -112,7 +107,7 @@ def test_compare_when_flags_given_does_feed_them_to_resolve_config(
         return _resolved()
 
     monkeypatch.setattr("gymrat.cli.commands.compare.resolve_config", spy_resolve)
-    _patch_compare(monkeypatch, create_comparison_result())
+    stub_compare(monkeypatch)
 
     result = runner.invoke(
         app,
@@ -200,7 +195,10 @@ def test_compare_when_format_text_does_render_report_to_stdout(monkeypatch: pyte
     )
 
     assert result.exit_code == 0
-    assert "main" in result.stdout
+    assert (
+        result.stdout
+        == render_report(create_comparison_result(), ReportOptions(color=False)) + "\n"
+    )
 
 
 @pytest.mark.usefixtures("_in_non_repo")

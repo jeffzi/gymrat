@@ -19,17 +19,16 @@ parent can compare against exact expected records. The module is POSIX-only: it
 relies on real ``SIGKILL`` delivery and a named pipe to start a race together.
 """
 
+import contextlib
 import json
-import os
-import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
 
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import read_records
+from tests._process_helpers import reaped, spawn_child_script, wait_for_file_blocking
 from tests.hardening._barrier import CHILD_BARRIER, create_barrier, release_together
 from tests.session.records._fixtures import (
     append_records,
@@ -41,41 +40,6 @@ from tests.session.records._fixtures import (
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only signals and named pipes"
 )
-
-# The repository root, so a child process can import the ``tests`` package for
-# the shared record builders alongside the installed ``gymrat``.
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _child_env() -> dict[str, str]:
-    """A child environment that can import the ``tests`` package for its builders."""
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = f"{REPO_ROOT}{os.pathsep}{existing}" if existing else str(REPO_ROOT)
-    return env
-
-
-def _spawn(tmp_path: Path, name: str, source: str, *args: str) -> subprocess.Popen[str]:
-    """Write ``source`` to a script under ``tmp_path`` and launch it as a child."""
-    script = tmp_path / f"{name}.py"
-    script.write_text(source, encoding="utf-8")
-    return subprocess.Popen(  # noqa: S603 -- argv is a fixed list, not shell-injected
-        [sys.executable, str(script), *args],
-        cwd=str(REPO_ROOT),
-        env=_child_env(),
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-
-def _wait_for_file(path: Path, timeout_s: float = 30.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    while not path.exists():
-        if time.monotonic() > deadline:
-            message = f"file never appeared at {path}"
-            raise AssertionError(message)
-        time.sleep(0.01)
-
 
 # A child that appends a session header and ``clean_count`` small keeps, signals
 # it is ready, then appends one final keep whose message is huge. The huge
@@ -159,7 +123,7 @@ def test_append_record_when_hard_killed_during_a_large_append_does_leave_the_ear
     root = str(tmp_path)
     clean_count = 5
     ready_flag = tmp_path / "ready.flag"
-    child = _spawn(
+    child = spawn_child_script(
         tmp_path,
         "torn_tail_child",
         _TORN_TAIL_CHILD,
@@ -168,16 +132,10 @@ def test_append_record_when_hard_killed_during_a_large_append_does_leave_the_ear
         str(ready_flag),
         str(_HUGE_CHARS),
     )
-    try:
-        _wait_for_file(ready_flag)
+    with reaped(child):
+        wait_for_file_blocking(ready_flag, timeout_s=30.0)
         child.kill()
         child.wait(timeout=30)
-    finally:
-        if child.poll() is None:
-            child.kill()
-            child.wait()
-        if child.stderr is not None:
-            child.stderr.close()
 
     records = read_records(session_jsonl_path(root))
 
@@ -201,13 +159,8 @@ def test_append_record_when_process_hard_exits_right_after_return_does_keep_the_
 ):
     root = str(tmp_path)
 
-    child = _spawn(tmp_path, "hard_exit_child", _HARD_EXIT_CHILD, root)
-    try:
+    with reaped(spawn_child_script(tmp_path, "hard_exit_child", _HARD_EXIT_CHILD, root)) as child:
         _, stderr = child.communicate(timeout=30)
-    finally:
-        if child.poll() is None:
-            child.kill()
-            child.communicate()
 
     assert child.returncode == 0, stderr
     assert log_records(root) == [session_record()]
@@ -228,31 +181,28 @@ def test_append_record_when_processes_append_together_does_never_interleave_byte
     per_process = 150
     barrier = create_barrier(tmp_path)
 
-    children = [
-        _spawn(
-            tmp_path,
-            f"race_child_{index}",
-            _RACE_CHILD,
-            root,
-            str(barrier),
-            str(per_process),
-            str(index * per_process),
-        )
-        for index in range(process_count)
-    ]
-    try:
+    with contextlib.ExitStack() as stack:
+        children = [
+            stack.enter_context(
+                reaped(
+                    spawn_child_script(
+                        tmp_path,
+                        f"race_child_{index}",
+                        _RACE_CHILD,
+                        root,
+                        str(barrier),
+                        str(per_process),
+                        str(index * per_process),
+                    )
+                )
+            )
+            for index in range(process_count)
+        ]
         release_together(barrier, process_count)
         outcomes = [
             (child.wait(timeout=60), child.stderr.read() if child.stderr else "")
             for child in children
         ]
-    finally:
-        for child in children:
-            if child.poll() is None:
-                child.kill()
-                child.wait()
-            if child.stderr is not None:
-                child.stderr.close()
 
     assert [code for code, _ in outcomes] == [0] * process_count, [err for _, err in outcomes]
     lines = [line for line in path.read_text(encoding="utf-8").split("\n") if line]

@@ -15,7 +15,7 @@ which differs between ``measure`` (half an iterate, so per-side) and ``compare``
 """
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Literal
 from unittest.mock import create_autospec
 
@@ -28,11 +28,13 @@ from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.types import DEFAULT_REPORT_OPTIONS, ReportOptions
-from gymrat.session.budget import Budget, read_budget
+from gymrat.session.budget import Budget
 from gymrat.session.paths import repo_root
 from gymrat.session.records import IterationRecord
 from gymrat.session.store import read_records
-from tests.session.records._fixtures import iteration_record
+from tests._lock import held_supervise_lock
+from tests.cli._budget import write_budget_file
+from tests.session.records._fixtures import iteration_record, session_record, write_session_log
 
 #: The last full measurement took 48 minutes, so 24 minutes per side.
 ITERATE_MS = 2_880_000.0
@@ -44,24 +46,39 @@ MEASURE_REMAINING_MS = 720_000.0
 COMPARE_REMAINING_MS = 1_800_000.0
 
 
-def _install_over_budget_session(monkeypatch: pytest.MonkeyPatch, *, remaining_ms: float) -> None:
-    """Patch the budget report lookups onto a live budget plus one timed iteration record."""
-    records = [iteration_record(duration_ms=ITERATE_MS)]
-    budget = Budget(max_minutes=60, deadline_ms=remaining_ms)
+#: One timed iteration: the estimate every over-budget check measures against.
+_TIMED_ITERATION = (iteration_record(duration_ms=ITERATE_MS),)
 
-    def fake_repo_root(_cwd: str | None = None) -> str:
-        return "/repo"
 
-    def fake_read_budget(_root: str, **_kwargs: object) -> Budget:
-        return budget
-
-    def fake_read_records(_jsonl_path: str) -> list[IterationRecord]:
-        return records
-
+@pytest.fixture
+def session_root(repo: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """A repository under a live supervised run, with the clock frozen at 0."""
     monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0.0)
-    monkeypatch.setattr("gymrat.cli.budget_report.repo_root", fake_repo_root)
-    monkeypatch.setattr("gymrat.cli.budget_report.read_budget", fake_read_budget)
-    monkeypatch.setattr("gymrat.cli.budget_report.read_records", fake_read_records)
+    with held_supervise_lock(repo):
+        yield repo
+
+
+def _seed_session(
+    root: str,
+    *,
+    budget: Budget | None,
+    records: tuple[IterationRecord, ...] = _TIMED_ITERATION,
+) -> None:
+    """Write a session log holding ``records`` and, when one is given, the budget file.
+
+    Args:
+        root: The repository whose session state is written.
+        budget: The budget to write, or None to leave no budget file.
+        records: The iteration records appended after the session header.
+    """
+    write_session_log(root, session_record(), records)
+    if budget is not None:
+        write_budget_file(root, budget)
+
+
+def _budget_left(remaining_ms: float) -> Budget:
+    """A 60-minute budget with ``remaining_ms`` left at the frozen clock's instant."""
+    return Budget(max_minutes=60, deadline_ms=remaining_ms)
 
 
 # ---------------------------------------------------------------------------
@@ -93,22 +110,12 @@ def _emit(output_format: Literal["text", "json"]) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("color", "env", "expected"),
-    [
-        pytest.param(True, "NO_COLOR", True, id="color-flag-outranks-no-color-env"),
-        pytest.param(False, "FORCE_COLOR", False, id="no-color-flag-outranks-force-color-env"),
-    ],
-)
 def test_emit_report_when_command_color_flag_installed_does_hand_it_to_the_text_renderer(
-    color: bool, env: str, expected: bool, monkeypatch: pytest.MonkeyPatch
+    session_root: str,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv(env, "1")
-    not_a_repo = create_autospec(
-        repo_root, side_effect=NotAGitRepositoryError("not a git repository")
-    )
-    monkeypatch.setattr("gymrat.cli.budget_report.repo_root", not_a_repo)
-    apply_command_flags(debug=False, color=color)
+    monkeypatch.setenv("NO_COLOR", "1")
+    apply_command_flags(debug=False, color=True)
     rendered_with: list[bool | None] = []
 
     def render(result: str, options: ReportOptions) -> str:
@@ -119,22 +126,28 @@ def test_emit_report_when_command_color_flag_installed_does_hand_it_to_the_text_
         "report", SharedFlags(), DEFAULT_REPORT_OPTIONS, text=render, json=_render_result_json
     )
 
-    assert rendered_with == [expected]
+    assert rendered_with == [True]
 
 
 @pytest.mark.parametrize(
-    ("output_format", "expected"),
+    ("error", "output_format", "expected"),
     [
-        pytest.param("text", "report\n", id="text"),
-        pytest.param("json", '{"result": "report", "budget": null}\n', id="json"),
-    ],
-)
-@pytest.mark.parametrize(
-    "error",
-    [
-        pytest.param(NotAGitRepositoryError("not a git repository"), id="not-a-git-repository"),
-        pytest.param(GymratError("detected dubious ownership"), id="gymrat-error"),
-        pytest.param(OSError("input/output error"), id="os-error"),
+        pytest.param(
+            NotAGitRepositoryError("not a git repository"),
+            "text",
+            "report\n",
+            id="not-a-git-repository",
+        ),
+        pytest.param(
+            GymratError("detected dubious ownership"), "text", "report\n", id="gymrat-error"
+        ),
+        pytest.param(OSError("input/output error"), "text", "report\n", id="os-error"),
+        pytest.param(
+            OSError("input/output error"),
+            "json",
+            '{"result": "report", "budget": null}\n',
+            id="json-carries-no-budget",
+        ),
     ],
 )
 def test_emit_report_when_repo_root_fails_expectedly_does_write_the_report_without_a_budget(
@@ -177,17 +190,10 @@ def test_emit_report_when_repo_root_fails_unexpectedly_does_propagate(
 def test_emit_report_when_budget_active_does_write_the_report_with_the_budget(
     output_format: Literal["text", "json"],
     expected: str,
-    monkeypatch: pytest.MonkeyPatch,
+    session_root: str,
     capsys: pytest.CaptureFixture[str],
 ):
-    budget = Budget(max_minutes=60, deadline_ms=720_999.0)
-
-    def read_budget(_root: str, **_kwargs: object) -> Budget:
-        return budget
-
-    monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0.0)
-    monkeypatch.setattr("gymrat.cli.budget_report.repo_root", lambda: "/repo")
-    monkeypatch.setattr("gymrat.cli.budget_report.read_budget", read_budget)
+    _seed_session(session_root, budget=Budget(max_minutes=60, deadline_ms=720_999.0))
 
     _emit(output_format)
 
@@ -213,10 +219,11 @@ _LOOKUPS: dict[str, Callable[..., object]] = {"repo_root": repo_root, "read_reco
 def test_warn_duration_over_budget_when_a_lookup_fails_expectedly_does_stay_silent(
     lookup: str,
     error: Exception,
+    session_root: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    _install_over_budget_session(monkeypatch, remaining_ms=MEASURE_REMAINING_MS)
+    _seed_session(session_root, budget=_budget_left(MEASURE_REMAINING_MS))
     monkeypatch.setattr(
         f"gymrat.cli.budget_report.{lookup}", create_autospec(_LOOKUPS[lookup], side_effect=error)
     )
@@ -228,9 +235,9 @@ def test_warn_duration_over_budget_when_a_lookup_fails_expectedly_does_stay_sile
 
 @pytest.mark.parametrize("lookup", ["repo_root", "read_records"])
 def test_warn_duration_over_budget_when_a_lookup_fails_unexpectedly_does_propagate(
-    lookup: str, monkeypatch: pytest.MonkeyPatch
+    lookup: str, session_root: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _install_over_budget_session(monkeypatch, remaining_ms=MEASURE_REMAINING_MS)
+    _seed_session(session_root, budget=_budget_left(MEASURE_REMAINING_MS))
     monkeypatch.setattr(
         f"gymrat.cli.budget_report.{lookup}",
         create_autospec(_LOOKUPS[lookup], side_effect=RuntimeError("patched wrong")),
@@ -241,33 +248,20 @@ def test_warn_duration_over_budget_when_a_lookup_fails_unexpectedly_does_propaga
 
 
 @pytest.mark.parametrize(
-    ("remaining_ms", "lookup", "stub"),
+    ("budget", "records"),
     [
-        pytest.param(ITERATE_MS, None, None, id="fits-the-budget"),
-        pytest.param(
-            MEASURE_REMAINING_MS,
-            "read_budget",
-            create_autospec(read_budget, return_value=None),
-            id="no-budget",
-        ),
-        pytest.param(
-            MEASURE_REMAINING_MS,
-            "read_records",
-            create_autospec(read_records, return_value=[]),
-            id="no-estimate",
-        ),
+        pytest.param(_budget_left(ITERATE_MS), _TIMED_ITERATION, id="fits-the-budget"),
+        pytest.param(None, _TIMED_ITERATION, id="no-budget"),
+        pytest.param(_budget_left(MEASURE_REMAINING_MS), (), id="no-estimate"),
     ],
 )
 def test_warn_duration_over_budget_when_nothing_to_warn_about_does_stay_silent(
-    remaining_ms: float,
-    lookup: str | None,
-    stub: Callable[..., object] | None,
-    monkeypatch: pytest.MonkeyPatch,
+    budget: Budget | None,
+    records: tuple[IterationRecord, ...],
+    session_root: str,
     capsys: pytest.CaptureFixture[str],
 ):
-    _install_over_budget_session(monkeypatch, remaining_ms=remaining_ms)
-    if lookup is not None:
-        monkeypatch.setattr(f"gymrat.cli.budget_report.{lookup}", stub)
+    _seed_session(session_root, budget=budget, records=records)
 
     budget_report.warn_duration_over_budget(halve=False)
 
@@ -301,10 +295,10 @@ def test_warn_duration_over_budget_when_over_budget_does_name_the_cost_the_comma
     halve: bool,
     remaining_ms: float,
     warning: str,
-    monkeypatch: pytest.MonkeyPatch,
+    session_root: str,
     capsys: pytest.CaptureFixture[str],
 ):
-    _install_over_budget_session(monkeypatch, remaining_ms=remaining_ms)
+    _seed_session(session_root, budget=_budget_left(remaining_ms))
 
     budget_report.warn_duration_over_budget(halve=halve)
 
@@ -354,16 +348,13 @@ def test_write_budget_report_when_budget_active_or_not_does_append_it_only_if_ac
     budget: Budget | None,
     use_json: bool,
     expected: str,
-    monkeypatch: pytest.MonkeyPatch,
+    session_root: str,
     capsys: pytest.CaptureFixture[str],
 ):
-    monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0.0)
-    monkeypatch.setattr(
-        "gymrat.cli.budget_report.read_budget", create_autospec(read_budget, return_value=budget)
-    )
+    _seed_session(session_root, budget=budget, records=())
 
     budget_report.write_budget_report(
-        "/fake/root",
+        session_root,
         use_json=use_json,
         render_json=_render_json,
         text_report="benchmark results here",

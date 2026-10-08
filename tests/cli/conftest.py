@@ -8,11 +8,7 @@ import pytest
 from gymrat.loop.start import start_session
 from tests._config import resolved_config
 from tests._rich import stop_tracked
-from tests.cli._session import write_bench_config
-from tests.loop._settle import (
-    keep_iteration,
-    start_with,
-)
+from tests.cli._session import open_stop_ready_session
 
 
 @pytest.fixture(autouse=True)
@@ -31,9 +27,7 @@ def _in_non_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 @pytest.fixture
 def stop_repo(repo: str) -> str:
     """A repository with a settled, configured session ready for the stop command."""
-    start_with(repo)
-    keep_iteration(repo, 1)
-    write_bench_config(repo)
+    open_stop_ready_session(repo)
     return repo
 
 

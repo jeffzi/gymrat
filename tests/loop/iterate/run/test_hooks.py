@@ -19,12 +19,18 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.exec import FAILURE_EXIT_CODE, ExecResult
+from gymrat.exec import FAILURE_EXIT_CODE
 from gymrat.loop.iterate.run import run_hook
 from gymrat.session.records import IterationRecord, record_to_wire
 from gymrat.session.schema import HookStage
 from gymrat.session.workspace import Worktrees
-from tests._exec_fixtures import expected_result, install_exec
+from tests._exec_fixtures import (
+    CAPPED_STDERR_BYTES,
+    CAPPED_STDOUT_BYTES,
+    capped_result,
+    expected_result,
+    install_exec,
+)
 from tests.loop.iterate._hooks import HookScripts, expected_hook_record
 from tests.session.records._fixtures import SESSION_ID, iteration_record, session_record
 
@@ -127,22 +133,25 @@ async def test_run_hook_when_command_runs_does_run_in_experiment_worktree(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [
+        pytest.param(
+            ("archived the samples", "pushed the branch"),
+            "[after] archived the samples\n[after] pushed the branch",
+            id="each-line-labeled",
+        ),
+        pytest.param((), "", id="nothing-printed-reports-empty"),
+    ],
+)
 async def test_run_hook_when_command_prints_does_label_each_line_with_stage(
-    hooks: HookScripts,
+    hooks: HookScripts, lines: tuple[str, ...], expected: str
 ) -> None:
-    command = hooks.printing("archived the samples", "pushed the branch")
+    command = hooks.printing(*lines)
 
     run = await run_hook(hooks.invocation_of(command, stage="after"))
 
-    assert run.report == "[after] archived the samples\n[after] pushed the branch"
-
-
-async def test_run_hook_when_hook_prints_nothing_does_report_empty(hooks: HookScripts) -> None:
-    command = hooks.hook_command("")
-
-    run = await run_hook(hooks.invocation_of(command))
-
-    assert run.report == ""
+    assert run.report == expected
 
 
 async def test_run_hook_when_successful_hook_writes_both_channels_does_report_only_stdout(
@@ -167,7 +176,7 @@ async def test_run_hook_when_successful_hook_writes_both_channels_does_report_on
 # ---------------------------------------------------------------------------
 
 
-async def test_run_hook_when_clocks_faked_does_read_both_clocks_for_the_record(
+async def test_run_hook_when_command_finishes_does_record_elapsed_duration_and_wall_clock_stamp(
     hooks: HookScripts,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -186,7 +195,9 @@ async def test_run_hook_when_clocks_faked_does_read_both_clocks_for_the_record(
 # ---------------------------------------------------------------------------
 
 
-async def test_run_hook_when_failing_over_budget_does_cap_each_channel(hooks: HookScripts) -> None:
+async def test_run_hook_when_failing_output_exceeds_relay_limit_does_cap_each_channel(
+    hooks: HookScripts,
+) -> None:
     out_line = "a" * 100
     err_line = "b" * 100
     whole_lines = RELAY_LIMIT_BYTES // len(f"{out_line}\n".encode())
@@ -241,7 +252,7 @@ async def test_run_hook_when_hook_outruns_timeout_does_kill_it_as_timed_out(
 async def test_run_hook_when_command_not_found_does_record_shell_exit_code(
     hooks: HookScripts,
 ) -> None:
-    run = await run_hook(hooks.invocation_of("nonexistent-command-abc123xyz"))
+    run = await run_hook(hooks.invocation_of("banana"))
 
     assert run.record.exit_code == 127
 
@@ -295,19 +306,12 @@ async def test_run_hook_when_exec_output_capped_does_record_pre_cap_byte_counts(
     hooks: HookScripts,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    capped = ExecResult(
-        stdout="capped stdout",
-        stderr="capped stderr",
-        exit_code=0,
-        stdout_bytes=200_000,
-        stderr_bytes=150_000,
-    )
-    install_exec(monkeypatch, "gymrat.loop.iterate.run.exec", capped)
+    install_exec(monkeypatch, "gymrat.loop.iterate.run.exec", capped_result())
 
     run = await run_hook(hooks.invocation_of("unused-because-exec-is-mocked"))
 
-    assert run.record.stdout_bytes == 200_000
-    assert run.record.stderr_bytes == 150_000
+    assert run.record.stdout_bytes == CAPPED_STDOUT_BYTES
+    assert run.record.stderr_bytes == CAPPED_STDERR_BYTES
 
 
 # ---------------------------------------------------------------------------

@@ -9,9 +9,8 @@ byte-identical, remaining artifacts still filled in).
 """
 
 import os
-import sys
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -24,6 +23,7 @@ from gymrat.scaffold import (
     ScaffoldRequest,
     scaffold,
 )
+from tests._mode_bits import needs_mode_bits
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,11 +49,14 @@ def existing_config_dir(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_when_defaults_does_write_a_loadable_config_beside_the_runbook_stub(
+def test_scaffold_when_defaults_does_create_a_loadable_config_the_runbook_stub_and_the_skill(
     tmp_path: Path,
 ):
-    scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
+    assert result.config == ScaffoldArtifact(path="gymrat.toml", status="created")
+    assert result.runbook == ScaffoldArtifact(path="gymrat-runbook.md", status="created")
+    assert result.skill == ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="created")
     raw = (tmp_path / "gymrat.toml").read_bytes()
     assert raw == b'bench = "npm run bench"\nrunbook = "gymrat-runbook.md"\n'
     assert load_config_file_collecting(tmp_path / "gymrat.toml", required=True).problems == []
@@ -79,6 +82,8 @@ def test_scaffold_when_defaults_does_write_a_loadable_config_beside_the_runbook_
         "\n"
         "`gymrat supervise` injects this file into the agent's instructions.\n"
     )
+    skill_text = (tmp_path / SKILL_RELATIVE_PATH).read_text(encoding="utf-8")
+    assert "# Driving a gymrat optimization session" in skill_text
 
 
 # ---------------------------------------------------------------------------
@@ -366,22 +371,20 @@ def test_scaffold_when_config_write_fails_does_raise_with_the_os_reason_and_leav
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or os.geteuid() == 0,
-    reason="POSIX file modes; root bypasses them",
-)
-def test_scaffold_when_base_dir_not_writable_does_raise_gymrat_error_with_path(
-    tmp_path: Path,
-):
+@pytest.fixture
+def locked_dir(tmp_path: Path) -> Iterator[Path]:
+    """A read-only ``locked`` directory under ``tmp_path``, made writable again on teardown."""
     read_only = tmp_path / "locked"
     read_only.mkdir()
     read_only.chmod(0o444)
+    yield read_only
+    read_only.chmod(0o755)
 
-    try:
-        with pytest.raises(GymratError, match="locked"):
-            scaffold(str(read_only), ScaffoldRequest(bench="npm run bench"))
-    finally:
-        read_only.chmod(0o755)
+
+@needs_mode_bits
+def test_scaffold_when_base_dir_not_writable_does_raise_gymrat_error_with_path(locked_dir: Path):
+    with pytest.raises(GymratError, match="locked"):
+        scaffold(str(locked_dir), ScaffoldRequest(bench="npm run bench"))
 
 
 STRAY_NAME = "stray.txt"
@@ -602,20 +605,3 @@ def test_scaffold_when_rollback_directory_removal_fails_does_propagate_original_
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
     assert exc_info.value.hint == "No space left on device"
-
-
-# ---------------------------------------------------------------------------
-# returned artifact statuses (created)
-# ---------------------------------------------------------------------------
-
-
-def test_scaffold_when_skill_requested_and_absent_does_create_every_artifact(
-    tmp_path: Path,
-):
-    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
-
-    assert result.config == ScaffoldArtifact(path="gymrat.toml", status="created")
-    assert result.runbook == ScaffoldArtifact(path="gymrat-runbook.md", status="created")
-    assert result.skill == ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="created")
-    skill_text = (tmp_path / SKILL_RELATIVE_PATH).read_text(encoding="utf-8")
-    assert "# Driving a gymrat optimization session" in skill_text

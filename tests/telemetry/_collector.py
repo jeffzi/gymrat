@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Generator, Iterable
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ReceivedSpan:
     """One span the collector received: its name and its string-valued attributes."""
 
@@ -29,7 +29,7 @@ class ReceivedSpan:
     attributes: dict[str, str]
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ReceivedExport:
     """One export request the collector received."""
 
@@ -42,7 +42,7 @@ class ReceivedExport:
         return [span.name for span in self.spans]
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class OtlpCollector:
     """Handle on a running local collector."""
 

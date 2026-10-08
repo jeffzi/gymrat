@@ -7,6 +7,7 @@ import threading
 import time
 import warnings
 from collections.abc import Buffer, Callable, Iterator
+from types import FrameType
 from typing import NoReturn, override
 
 import pytest
@@ -66,12 +67,17 @@ def _warn_killpg_failed() -> None:
     warnings.warn("killpg failed", RuntimeWarning, stacklevel=1)
 
 
+def _installed_handler(signal_number: int) -> Callable[[int, FrameType | None], object]:
+    handler = signal.getsignal(signal_number)
+    if not callable(handler):
+        pytest.fail(f"no handler installed for signal {signal_number}")
+    return handler
+
+
 def _deliver(signal_number: int) -> None:
     # Runs the installed handler the way a signal arriving now would, without
     # the exit bookkeeping ``raise_signal`` adds: an ignored signal returns.
-    handler = signal.getsignal(signal_number)
-    assert callable(handler)
-    handler(signal_number, None)
+    _installed_handler(signal_number)(signal_number, None)
 
 
 def _deliver_from_thread(signal_number: int) -> None:
@@ -211,15 +217,10 @@ def test_install_termination_cleanup_when_exit_seam_replaced_after_install_does_
     def interrupt() -> None:
         if second_signal is None:
             return
-        nested = signal.getsignal(second_signal)
-        if not callable(nested):
-            pytest.fail(f"no handler installed for signal {second_signal}")
-        nested(second_signal, None)
+        _installed_handler(second_signal)(second_signal, None)
 
     install_termination_cleanup(interrupt)
-    handler = signal.getsignal(signal.SIGINT)
-    if not callable(handler):
-        pytest.fail("no handler installed for SIGINT")
+    handler = _installed_handler(signal.SIGINT)
     exits: list[int] = []
 
     def record_exit(code: int) -> NoReturn:
@@ -247,29 +248,23 @@ def test_install_termination_cleanup_when_multiple_registered_does_run_them_in_i
     assert order == ["first", "second", "third"]
 
 
-def test_install_termination_cleanup_when_uninstalled_does_exit_without_running_cleanup(
-    raise_signal: RaiseSignal,
-):
-    calls = []
-    uninstall = install_termination_cleanup(lambda: calls.append("cleanup"))
-    uninstall()
-
-    code = raise_signal(signal.SIGINT)
-
-    assert calls == []
-    assert code == 128 + signal.SIGINT
-
-
-def test_install_termination_cleanup_when_prior_run_uninstalled_does_run_only_later_cleanup(
-    raise_signal: RaiseSignal,
+@pytest.mark.parametrize(
+    ("later_cleanup", "expected_calls"),
+    [(False, []), (True, ["second"])],
+    ids=["alone", "before-a-later-install"],
+)
+def test_install_termination_cleanup_when_uninstalled_does_exit_without_running_that_cleanup(
+    raise_signal: RaiseSignal, later_cleanup: bool, expected_calls: list[str]
 ):
     calls = []
     install_termination_cleanup(lambda: calls.append("first"))()
-    install_termination_cleanup(lambda: calls.append("second"))
+    if later_cleanup:
+        install_termination_cleanup(lambda: calls.append("second"))
 
-    raise_signal(signal.SIGINT)
+    code = raise_signal(signal.SIGINT)
 
-    assert calls == ["second"]
+    assert calls == expected_calls
+    assert code == 128 + signal.SIGINT
 
 
 def test_install_termination_cleanup_when_a_cleanup_raises_does_run_remaining_cleanups(
@@ -623,20 +618,6 @@ def test_reset_when_escalation_already_ran_does_escalate_once_on_next_signal_pai
 
 
 @pytest.mark.parametrize("signal_number", _TERMINATION_SIGNALS, ids=_signal_id)
-def test_install_termination_cleanup_when_installed_again_does_keep_the_same_handler(
-    signal_number: int,
-):
-    install_termination_cleanup(_nothing)
-    handler = signal.getsignal(signal_number)
-
-    install_termination_cleanup(_nothing)
-
-    assert signal.getsignal(signal_number) is handler
-    assert callable(handler)
-    assert handler not in {signal.SIG_DFL, signal.SIG_IGN}
-
-
-@pytest.mark.parametrize("signal_number", _TERMINATION_SIGNALS, ids=_signal_id)
 def test_install_termination_cleanup_when_cycled_does_keep_the_same_handler(signal_number: int):
     install_termination_cleanup(_nothing)
     handler = signal.getsignal(signal_number)
@@ -645,6 +626,8 @@ def test_install_termination_cleanup_when_cycled_does_keep_the_same_handler(sign
         install_termination_cleanup(_nothing)()
 
     assert signal.getsignal(signal_number) is handler
+    assert callable(handler)
+    assert handler not in {signal.SIG_DFL, signal.SIG_IGN}
 
 
 # ---------------------------------------------------------------------------
@@ -704,9 +687,7 @@ def test_deferring_termination_signals_when_overlapping_deferral_still_open_does
     monkeypatch: pytest.MonkeyPatch,
 ):
     install_termination_cleanup(_nothing)
-    handler = signal.getsignal(signal.SIGINT)
-    if not callable(handler):
-        pytest.fail("no handler installed for SIGINT")
+    handler = _installed_handler(signal.SIGINT)
     exits: list[int] = []
 
     def record_exit(code: int) -> NoReturn:
@@ -732,7 +713,7 @@ def test_deferring_termination_signals_when_overlapping_deferral_still_open_does
     not hasattr(signal, "pthread_sigmask"),
     reason="Signal masking requires POSIX pthread_sigmask",
 )
-def test_deferring_termination_signals_when_mask_raises_does_handle_the_next_signal_immediately(
+def test_deferring_termination_signals_when_mask_raises_does_propagate_and_handle_the_next_signal_immediately(
     monkeypatch: pytest.MonkeyPatch, raise_signal: RaiseSignal
 ):
     cleaned: list[str] = []
@@ -743,6 +724,7 @@ def test_deferring_termination_signals_when_mask_raises_does_handle_the_next_sig
         raise OSError(message)
 
     monkeypatch.setattr(signals, "pthread_sigmask", exploding_mask)
+
     with pytest.raises(OSError, match="mask failed"):
         with signals.deferring_termination_signals():
             pass  # pragma: no cover — never reached

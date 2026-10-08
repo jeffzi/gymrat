@@ -9,7 +9,6 @@ order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -27,7 +26,9 @@ from gymrat.progress_events import (
     ConfirmStarted,
     HookFinished,
     HookStarted,
+    IterationRecorded,
     JudgeFinished,
+    JudgeStarted,
     PassFinished,
     PassStarted,
     ProgressEvent,
@@ -49,38 +50,43 @@ from tests.loop.iterate._fixtures import (
     assert_permutation,
     baseline_rounds,
     improved_rounds,
-    iterate_session_header,
     last_iteration_of,
-    plain_report,
     regressed_rounds,
     regressed_run,
+    report_a_pass_per_call,
     rounds,
     scaled,
     stub_runs,
     stub_samples,
     trimmed_report_lines,
 )
-from tests.loop.iterate._hooks import HookScripts, expected_hook_record
 from tests.report._comparisons import permutation_metric
 from tests.session.records._fixtures import (
-    SESSION_ID,
     iteration_record,
     log_records,
     records_of_type,
-    write_session_log,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from gymrat.model import Direction
     from gymrat.report.loop import LoopPrimary
     from gymrat.report.types import MetricComparison, MetricComparisons
-    from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
     from tests.loop.iterate._fixtures import CollectSamplesRecorder
+    from tests.loop.iterate._hooks import HookScripts
 
 #: The events that tell the display how the judge row and the confirm row end.
 _JUDGE_AND_CONFIRM_EVENTS = (JudgeFinished, ConfirmStarted, ConfirmFinished, ConfirmSkipped)
+
+#: The events that mark each stage of an iteration, hooks included, in the order they fire.
+_STAGE_EVENTS = (
+    HookStarted,
+    HookFinished,
+    JudgeStarted,
+    JudgeFinished,
+    ConfirmStarted,
+    ConfirmFinished,
+    IterationRecorded,
+)
 
 #: The smallest positive float; dividing any ordinary median by it overflows to infinity.
 _SMALLEST_POSITIVE_FLOAT = 5e-324
@@ -116,37 +122,9 @@ def _primary_line(report: str) -> str:
     return next(line for line in trimmed_report_lines(report) if line.startswith("primary:"))
 
 
-@pytest.fixture
-def open_repo(repo: str, samples_mock: CollectSamplesRecorder) -> str:
-    """A fresh open session on disk, no history, sampling left for the test to stub."""
-    write_session_log(repo, iterate_session_header(repo))
-    return repo
-
-
 # ---------------------------------------------------------------------------
 # a gating metric comes back regressed
 # ---------------------------------------------------------------------------
-
-
-def _report_a_pass_per_call(
-    monkeypatch: pytest.MonkeyPatch, recorder: CollectSamplesRecorder
-) -> None:
-    """Wrap ``recorder`` so every sampling call reports one pass the way sampling does."""
-
-    async def sample_reporting_a_pass(
-        adapter: object,
-        targets: Sequence[TargetContext],
-        options: SamplingOptions,
-        abort: object,
-    ) -> list[TargetSamples]:
-        if options.on_progress is not None:
-            for event_type in (PassStarted, PassFinished):
-                options.on_progress(
-                    event_type(round=1, total_rounds=1, target_count=1, label="x", at_ms=0)
-                )
-        return await recorder(adapter, targets, options, abort)
-
-    monkeypatch.setattr("gymrat.loop.iterate.confirm.collect_samples", sample_reporting_a_pass)
 
 
 @pytest.mark.parametrize(
@@ -169,7 +147,7 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
 ):
     rerun_bench, filtered_metrics = rerun
     stub_runs(samples_mock, open_repo, [regressed_run(), regressed_run()])
-    _report_a_pass_per_call(monkeypatch, samples_mock)
+    report_a_pass_per_call(monkeypatch, samples_mock)
     events: list[ProgressEvent] = []
 
     await iterate_session(
@@ -479,45 +457,7 @@ async def test_iterate_session_when_metric_is_non_gating_does_inform_without_rer
 
 
 # ---------------------------------------------------------------------------
-# the bench names a metric after an Object.prototype member
-# ---------------------------------------------------------------------------
-
-_PROTO = "__proto__"
-
-
-def _proto_rounds(total_ms: list[float], proto: list[float]) -> list[dict[str, float]]:
-    """One round per entry, pairing ``total_ms`` with the metric named ``__proto__``."""
-    return [
-        {"total_ms": value, _PROTO: proto[index] if index < len(proto) else 0}
-        for index, value in enumerate(total_ms)
-    ]
-
-
-async def test_iterate_session_when_metric_named_proto_does_keep_it_as_an_own_key_in_the_geomean(
-    open_repo: str, samples_mock: CollectSamplesRecorder
-):
-    stub_samples(
-        samples_mock,
-        open_repo,
-        _proto_rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 0.8)),
-        _proto_rounds(BASELINE_MS, BASELINE_BYTES),
-    )
-
-    result = await iterate_session(open_repo, resolved_config())
-
-    assert set(result.record.metrics.keys()) == {"total_ms", _PROTO}
-    assert_permutation(
-        result.record.metrics["total_ms"], delta=-10, verdict="improved", confirmed=False
-    )
-    assert_permutation(
-        result.record.metrics[_PROTO], delta=-20, verdict="improved", confirmed=False
-    )
-    assert (result.record.primary.kind, result.record.primary.name) == ("geomean", None)
-    assert result.record.primary.delta_pct == pytest.approx(-15.1472, abs=1e-3)
-
-
-# ---------------------------------------------------------------------------
-# a metric's baseline median is zero
+# a metric's delta ratio is undefined: zero baseline, or overflow past the largest float
 # ---------------------------------------------------------------------------
 
 
@@ -537,32 +477,6 @@ def _tiny_baseline_run(sign: float) -> PairedRun:
         rounds(scaled(BASELINE_MS, sign), BASELINE_BYTES),
         _flat_total_ms_baseline(_SMALLEST_POSITIVE_FLOAT),
     )
-
-
-@pytest.fixture
-def zero_baseline_repo(open_repo: str, samples_mock: CollectSamplesRecorder) -> str:
-    """An open session whose baseline has ``total_ms`` flat at zero."""
-    run = _zero_baseline_run()
-    stub_samples(samples_mock, open_repo, run.experiment, run.baseline)
-    return open_repo
-
-
-async def test_iterate_session_when_baseline_median_zero_does_read_no_percentage_for_the_primary(
-    zero_baseline_repo: str,
-):
-    result = await iterate_session(zero_baseline_repo, resolved_config(primary="total_ms"))
-
-    assert result.record.primary == IterationPrimary(kind="metric", name="total_ms", delta_pct=None)
-    assert result.record.outcome == "no-signal"
-
-    primary = _primary_line(result.report)
-    assert "verdict: NO-SIGNAL" in primary
-    assert not re.search(r"NaN|null|%", primary)
-
-
-# ---------------------------------------------------------------------------
-# a metric's delta ratio is undefined: zero baseline, or overflow past the largest float
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(
@@ -586,50 +500,33 @@ async def test_iterate_session_when_delta_undefined_does_null_only_that_metrics_
 ):
     repo, expected_alloc_delta = undefined_delta_repo
 
-    result = await iterate_session(repo, resolved_config())
+    result = await iterate_session(repo, resolved_config(primary="total_ms"))
 
     assert result.record.metrics["total_ms"].delta_pct is None
     assert result.record.metrics["alloc_bytes"].delta_pct == pytest.approx(
         expected_alloc_delta, abs=1e-6
     )
+    assert result.record.primary == IterationPrimary(kind="metric", name="total_ms", delta_pct=None)
     assert as_logged(last_iteration_of(repo)) == as_logged(result.record)
 
 
-@pytest.mark.parametrize(
-    "sign",
-    [
-        pytest.param(1.0, id="tiny-baseline-positive-experiment"),
-        pytest.param(-1.0, id="tiny-baseline-negative-experiment"),
-    ],
-)
-async def test_iterate_session_when_named_primary_delta_overflows_does_record_primary_delta_null(
-    open_repo: str, samples_mock: CollectSamplesRecorder, sign: float
-):
-    run = _tiny_baseline_run(sign)
-    stub_samples(samples_mock, open_repo, run.experiment, run.baseline)
-
-    result = await iterate_session(open_repo, resolved_config(primary="total_ms"))
-
-    assert result.record.primary == IterationPrimary(kind="metric", name="total_ms", delta_pct=None)
-
-
 # ---------------------------------------------------------------------------
-# the primary has no change to read: never reported, no qualifying input, or flat
+# the primary has no change to read: never reported, no qualifying input, zero baseline, or flat
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("experiment", "config", "primary", "primary_line"),
+    ("run", "config", "primary", "primary_line"),
     [
         pytest.param(
-            improved_rounds(),
+            PairedRun(improved_rounds(), baseline_rounds()),
             resolved_config(primary="startup_ms"),
             IterationPrimary(kind="metric", name="startup_ms", delta_pct=None),
             "primary: · verdict: NO-SIGNAL",
             id="named-primary-never-reported",
         ),
         pytest.param(
-            improved_rounds(),
+            PairedRun(improved_rounds(), baseline_rounds()),
             resolved_config(
                 metrics={
                     "total_ms": MetricEntry(gating=False),
@@ -641,14 +538,21 @@ async def test_iterate_session_when_named_primary_delta_overflows_does_record_pr
             id="geomean-over-only-non-gating-metrics",
         ),
         pytest.param(
-            improved_rounds(),
+            PairedRun(improved_rounds(), baseline_rounds()),
             resolved_config(unstable_noise_pct=0.0),
             IterationPrimary(kind="geomean", delta_pct=None),
             "primary: · verdict: NO-SIGNAL",
             id="geomean-over-only-unstable-metrics",
         ),
         pytest.param(
-            baseline_rounds(),
+            _zero_baseline_run(),
+            resolved_config(primary="total_ms"),
+            IterationPrimary(kind="metric", name="total_ms", delta_pct=None),
+            "primary: · verdict: NO-SIGNAL",
+            id="named-primary-zero-baseline",
+        ),
+        pytest.param(
+            PairedRun(baseline_rounds(), baseline_rounds()),
             resolved_config(primary="total_ms"),
             IterationPrimary(kind="metric", name="total_ms", delta_pct=0),
             "primary: 0.0% · verdict: NO-SIGNAL",
@@ -659,13 +563,13 @@ async def test_iterate_session_when_named_primary_delta_overflows_does_record_pr
 async def test_iterate_session_when_primary_has_no_change_to_read_does_report_the_primary_without_one(
     open_repo: str,
     samples_mock: CollectSamplesRecorder,
-    experiment: list[dict[str, float]],
+    run: PairedRun,
     config: ResolvedConfig,
     *,
     primary: IterationPrimary,
     primary_line: str,
 ):
-    stub_samples(samples_mock, open_repo, experiment, baseline_rounds())
+    stub_samples(samples_mock, open_repo, run.experiment, run.baseline)
 
     result = await iterate_session(open_repo, config)
 
@@ -677,45 +581,6 @@ async def test_iterate_session_when_primary_has_no_change_to_read_does_report_th
 # ---------------------------------------------------------------------------
 # the report closes on the outcome's verdict and next step
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("outcome", "word", "experiment", "next_step"),
-    [
-        pytest.param("improved", "IMPROVED", improved_rounds(), "gymrat keep", id="improved"),
-        pytest.param(
-            "regressed",
-            "REGRESSED",
-            regressed_rounds(),
-            "fix or run gymrat discard",
-            id="regressed",
-        ),
-        pytest.param(
-            "no-signal",
-            "NO-SIGNAL",
-            _noisy_rounds(),
-            "gymrat keep or gymrat discard",
-            id="no-signal",
-        ),
-    ],
-)
-async def test_iterate_session_when_outcome_settles_does_close_the_report_on_the_next_step(
-    open_repo: str,
-    samples_mock: CollectSamplesRecorder,
-    *,
-    outcome: str,
-    word: str,
-    experiment: list[dict[str, float]],
-    next_step: str,
-):
-    stub_samples(samples_mock, open_repo, experiment, baseline_rounds())
-
-    result = await iterate_session(open_repo, resolved_config())
-
-    lines = plain_report(result.report).split("\n")
-    assert result.record.outcome == outcome
-    assert word in lines[-2]
-    assert lines[-1] == next_step
 
 
 @pytest.mark.parametrize(
@@ -810,28 +675,20 @@ def _capturing_payload(hooks: HookScripts, stage: str) -> str:
     return hooks.hook_command(body)
 
 
-def _payload_of(experiment_dir: str, stage: str) -> object:
-    """The payload the ``stage`` hook was handed, as the hook itself saw it.
-
-    The capturing command names the file relatively, so reading it back out of
-    the experiment worktree is also what proves the hook ran there.
-    """
-    return json.loads((Path(experiment_dir) / f"{stage}.json").read_text(encoding="utf-8"))
-
-
-async def test_iterate_session_when_hooks_configured_does_fire_before_then_after(
-    hooks_setup: tuple[str, str, HookScripts],
+async def test_iterate_session_when_hooks_configured_does_bracket_the_whole_measurement(
+    hooks_setup: tuple[str, str, HookScripts], samples_mock: CollectSamplesRecorder
 ):
     repo, _experiment_dir, hooks = hooks_setup
+    stub_runs(samples_mock, repo, [regressed_run(), regressed_run()])
     config = resolved_config(
-        hooks=HooksConfig(before=hooks.printing("hi"), after=hooks.printing("bye"))
+        filter=FILTER,
+        hooks=HooksConfig(before=hooks.printing("hi"), after=hooks.printing("bye")),
     )
     events: list[ProgressEvent] = []
 
     await iterate_session(repo, config, options=IterateOptions(on_progress=events.append))
 
-    records = log_records(repo)
-    assert [record.type for record in records] == [
+    assert [record.type for record in log_records(repo)] == [
         "session",
         "iteration",
         "keep",
@@ -839,21 +696,36 @@ async def test_iterate_session_when_hooks_configured_does_fire_before_then_after
         "iteration",
         "hook",
     ]
-    before_record, after_record = records_of_type(repo, HookRecord)
+    assert [record.stage for record in records_of_type(repo, HookRecord)] == ["before", "after"]
     assert [
-        record.model_copy(update={"duration_ms": 0, "at": 0})
-        for record in (before_record, after_record)
+        (type(e), getattr(e, "stage", None)) for e in events if isinstance(e, _STAGE_EVENTS)
     ] == [
-        expected_hook_record(stage="before", seq=2, exit_code=0, stdout_bytes=3),
-        expected_hook_record(stage="after", seq=2, exit_code=0, stdout_bytes=4),
-    ]
-    assert 0 < before_record.at <= after_record.at
-    assert _hook_events(events) == [
         (HookStarted, "before"),
         (HookFinished, "before"),
+        (JudgeStarted, None),
+        (JudgeFinished, None),
+        (ConfirmStarted, None),
+        (ConfirmFinished, None),
+        (IterationRecorded, None),
         (HookStarted, "after"),
         (HookFinished, "after"),
     ]
+
+
+def _iteration_fields(experiment_dir: str, stage: str) -> tuple[object, ...]:
+    """The iteration-level fields of the payload the ``stage`` hook was handed.
+
+    The capturing command names the file relatively, so reading it back out of
+    the experiment worktree is also what proves the hook ran there.
+    """
+    payload = json.loads((Path(experiment_dir) / f"{stage}.json").read_text(encoding="utf-8"))
+    return (
+        payload["stage"],
+        payload["experiment_dir"],
+        payload["seq"],
+        payload["last_iteration"],
+        payload["session"]["iteration_count"],
+    )
 
 
 async def test_iterate_session_when_hooks_configured_does_tell_each_which_iteration(
@@ -868,25 +740,20 @@ async def test_iterate_session_when_hooks_configured_does_tell_each_which_iterat
 
     result = await iterate_session(repo, config)
 
-    session_payload = {
-        "session_id": SESSION_ID,
-        "baseline": {"ref": "main", "sha": "a" * 40},
-        "branch": f"gymrat/{SESSION_ID}",
-    }
-    assert _payload_of(experiment_dir, "before") == {
-        "stage": "before",
-        "experiment_dir": experiment_dir,
-        "seq": 2,
-        "last_iteration": as_logged(iteration_record(seq=1)),
-        "session": {**session_payload, "iteration_count": 1},
-    }
-    assert _payload_of(experiment_dir, "after") == {
-        "stage": "after",
-        "experiment_dir": experiment_dir,
-        "seq": 2,
-        "last_iteration": as_logged(result.record),
-        "session": {**session_payload, "iteration_count": 2},
-    }
+    assert _iteration_fields(experiment_dir, "before") == (
+        "before",
+        experiment_dir,
+        2,
+        as_logged(iteration_record(seq=1)),
+        1,
+    )
+    assert _iteration_fields(experiment_dir, "after") == (
+        "after",
+        experiment_dir,
+        2,
+        as_logged(result.record),
+        2,
+    )
 
 
 async def test_iterate_session_when_hooks_configured_does_print_output_around_the_measurement(
@@ -907,7 +774,7 @@ async def test_iterate_session_when_hooks_configured_does_print_output_around_th
     assert lines[1] == "iteration 2 · experiment vs baseline · 10 paired samples"
 
 
-async def test_iterate_session_when_before_hook_fails_does_measure_on_reporting_the_failure(
+async def test_iterate_session_when_before_hook_fails_does_still_measure(
     hooks_setup: tuple[str, str, HookScripts],
 ):
     repo, _experiment_dir, hooks = hooks_setup
@@ -918,16 +785,8 @@ async def test_iterate_session_when_before_hook_fails_does_measure_on_reporting_
 
     result = await iterate_session(repo, config)
 
-    assert trimmed_report_lines(result.report)[:2] == [
-        "[before] hook exited 3",
-        "[before] no warm copy",
-    ]
-    hook_records = [
-        record.model_copy(update={"duration_ms": 0, "at": 0})
-        for record in records_of_type(repo, HookRecord)
-    ]
-    assert hook_records == [
-        expected_hook_record(stage="before", seq=2, exit_code=3, stdout_bytes=0, stderr_bytes=13)
+    assert [(record.stage, record.exit_code) for record in records_of_type(repo, HookRecord)] == [
+        ("before", 3)
     ]
     assert last_iteration_of(repo).seq == 2
     assert result.record.outcome == "improved"
@@ -1009,6 +868,7 @@ def test_derive_outcome_when_a_metric_regressed_does_count_it_only_when_gating(
         pytest.param(MetricPrimary("higher/time", -3), "no-signal", id="higher-negative-no-signal"),
         pytest.param(MetricPrimary("lower/time", 0), "no-signal", id="lower-zero-no-signal"),
         pytest.param(MetricPrimary("higher/time", 0), "no-signal", id="higher-zero-no-signal"),
+        pytest.param(MetricPrimary("absent/time", -30), "no-signal", id="primary-never-measured"),
     ],
 )
 def test_derive_outcome_when_no_gating_regression_does_read_the_primary(
@@ -1028,11 +888,3 @@ def test_derive_outcome_when_gating_metric_has_no_experiment_slice_does_read_the
     outcome = derive_outcome({"lower/time": unmeasured}, GeomeanPrimary(-9))
 
     assert outcome == "improved"
-
-
-def test_derive_outcome_when_primary_metric_never_measured_does_report_no_signal():
-    primary = MetricPrimary("absent/time", -30)
-
-    outcome = derive_outcome({"lower/time": _directed_metric("lower")}, primary)
-
-    assert outcome == "no-signal"

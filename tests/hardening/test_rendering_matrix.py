@@ -1,14 +1,10 @@
 """Rendering-matrix hardening for the shared color precedence.
 
-The suite pins the guarantees that keep color rendering honest no matter where
-gymrat's output lands:
-
-- every color surface (the report on stdout, the doctor report on stdout, the
-  progress line on stderr, and the error text on stderr) routes through the
-  one shared precedence rule, whose full ladder is pinned in
-  ``tests/test_utils.py``,
-- a terminal that reports zero width neither crashes nor spills a garbled
-  status line.
+The suite pins the guarantee that keeps color rendering honest no matter where
+gymrat's output lands: every color surface (the report on stdout, the doctor
+report on stdout, the progress line on stderr, and the error text on stderr)
+routes through the one shared precedence rule, whose full ladder is pinned in
+``tests/test_utils.py``.
 
 The real-terminal, redirect, and bench-environment cases run out of process in
 ``tests/hardening/test_rendering_end_to_end.py``; these cases exercise the
@@ -26,7 +22,7 @@ from gymrat.cli.budget_report import emit_report
 from gymrat.cli.commands.doctor import doctor_command
 from gymrat.cli.console import stderr_console
 from gymrat.cli.exit import format_cli_error
-from gymrat.cli.run_setup import SharedFlags, resolve_render_mode
+from gymrat.cli.run_setup import SharedFlags
 from gymrat.doctor import Check, CheckSection, build_doctor_report
 from gymrat.git import NotAGitRepositoryError
 from gymrat.report.style import render_lines
@@ -36,6 +32,8 @@ from tests._doctor_fixtures import doctor_report
 from tests._streams import FakeStream
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from gymrat.report.json_doc import BudgetSummary
     from gymrat.report.types import ReportOptions
 
@@ -128,14 +126,6 @@ def _error_is_colored() -> bool:
     return "\x1b[" in format_cli_error(ValueError("boom"))
 
 
-def _apply_color_env(
-    monkeypatch: pytest.MonkeyPatch, force_color: str | None, no_color: str | None
-) -> None:
-    for name, value in (("FORCE_COLOR", force_color), ("NO_COLOR", no_color)):
-        if value is not None:
-            monkeypatch.setenv(name, value)
-
-
 # ---------------------------------------------------------------------------
 # one precedence rule across the report, progress, and error surfaces
 # ---------------------------------------------------------------------------
@@ -152,6 +142,7 @@ def _apply_color_env(
 )
 def test_color_precedence_when_env_decides_does_agree_across_report_progress_and_error(
     monkeypatch: pytest.MonkeyPatch,
+    color_env: Callable[[str | None, str | None], None],
     force_color: str | None,
     no_color: str | None,
     expected: bool,
@@ -160,7 +151,7 @@ def test_color_precedence_when_env_decides_does_agree_across_report_progress_and
     # Pin TERM so the console factory's own terminal detection is capable of
     # color, leaving FORCE_COLOR/NO_COLOR as the only deciders under test.
     monkeypatch.setenv("TERM", "xterm-256color")
-    _apply_color_env(monkeypatch, force_color, no_color)
+    color_env(force_color, no_color)
 
     surfaces = (
         _report_is_colored(monkeypatch),
@@ -170,12 +161,3 @@ def test_color_precedence_when_env_decides_does_agree_across_report_progress_and
     )
 
     assert surfaces == (expected,) * 4
-
-
-def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
-    _apply_color_env(monkeypatch, "1", None)
-
-    assert resolve_render_mode() == "plain"

@@ -5,7 +5,7 @@ with, and the abort event a termination signal trips.
 """
 
 import asyncio
-from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 import pytest
 
@@ -20,38 +20,33 @@ from tests._process_helpers import fake_install
 from tests._rich import track
 from tests._streams import FakeStream
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
 # ---------------------------------------------------------------------------
 # resolve_render_mode
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("tty", "expected"),
+    ("tty", "force_color", "no_color", "expected"),
     [
-        pytest.param(False, "plain", id="non-tty-plain"),
-        pytest.param(True, "live", id="tty-live"),
+        pytest.param(False, None, None, "plain", id="non-tty-plain"),
+        pytest.param(True, None, None, "live", id="tty-live"),
+        pytest.param(True, None, "1", "live", id="no-color-on-a-tty-still-live"),
+        pytest.param(False, "1", None, "plain", id="force-color-off-a-tty-still-plain"),
     ],
 )
-def test_resolve_render_mode_when_called_does_map_tty_to_strategy(
-    tty: bool,
-    expected: str,
+def test_resolve_render_mode_when_called_does_follow_the_tty_alone(
+    *,
     monkeypatch: pytest.MonkeyPatch,
+    color_env: Callable[[str | None, str | None], None],
+    tty: bool,
+    force_color: str | None,
+    no_color: str | None,
+    expected: str,
 ):
     monkeypatch.setattr("sys.stderr", FakeStream(tty=tty))
+    color_env(force_color, no_color)
 
     assert resolve_render_mode() == expected
-
-
-def test_resolve_render_mode_when_no_color_set_does_still_use_live(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
-    monkeypatch.setenv("NO_COLOR", "1")
-
-    assert resolve_render_mode() == "live"
 
 
 # ---------------------------------------------------------------------------

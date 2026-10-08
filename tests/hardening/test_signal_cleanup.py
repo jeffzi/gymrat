@@ -24,9 +24,7 @@ import json
 import os
 import shutil
 import signal
-import struct
 import subprocess
-import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -35,6 +33,7 @@ import pytest
 
 from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
+from tests._cli import run_cli
 from tests._git import (
     EMIT_ONE_BENCH,
     list_worktree_dirs,
@@ -44,6 +43,7 @@ from tests._git import (
 from tests._git import run_git as _git
 from tests._git import write_committed_bench as _write_committed_bench
 from tests._process_helpers import read_pid_file as _read_pid_file
+from tests._process_helpers import reaped
 from tests._process_helpers import (
     wait_for_pid_file_blocking as _wait_for_pid_file_blocking,
 )
@@ -51,14 +51,11 @@ from tests._process_helpers import (
     wait_until_dead_blocking as _wait_until_dead_blocking,
 )
 from tests._rich import screen_lines
-from tests.hardening._pty import drain as _drain
+from tests.hardening._pty import pty_capture
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-fcntl = pytest.importorskip("fcntl", reason="POSIX-only shell and signals")
-pty = pytest.importorskip("pty", reason="POSIX-only shell and signals")
-termios = pytest.importorskip("termios", reason="POSIX-only shell and signals")
 
 # The ANSI sequence that makes the cursor visible again; the live status line
 # hides it while it draws.
@@ -109,13 +106,8 @@ def _running_cli(
         "text": True,
         "env": _env(),
     } | popen_kwargs
-    proc = subprocess.Popen(argv, cwd=repo, **options)  # noqa: S603 -- argv is a fixed list, not shell-injected
-    try:
+    with reaped(subprocess.Popen(argv, cwd=repo, **options)) as proc:  # noqa: S603 -- argv is a fixed list, not shell-injected
         yield proc
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.communicate()
 
 
 @contextlib.contextmanager
@@ -198,14 +190,11 @@ def test_measure_when_prior_run_hard_killed_does_take_over_stale_lock_on_rerun(
     # The lock left behind above is now stale; the rerun below must take it over.
 
     (Path(repo) / "bench.sh").write_text(EMIT_ONE_BENCH, encoding="utf-8")
-    rerun = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
-        [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "2", "--format", "json"],
-        cwd=repo,
-        env=_env(),
-        capture_output=True,
-        text=True,
-        timeout=60,
+    rerun = run_cli(
+        ["measure", "--bench", "sh bench.sh", "--samples", "2", "--format", "json"],
+        repo,
         check=False,
+        timeout=60,
     )
 
     assert rerun.returncode == 0, rerun.stderr
@@ -240,8 +229,9 @@ def test_measure_when_signalled_off_a_tty_does_not_clear_a_line(
         stdout, stderr = proc.communicate(timeout=30)
 
     assert proc.returncode == 130
-    # Off a TTY the status line is never mounted, so there is nothing to erase.
-    assert "\x1b[K" not in stdout + stderr
+    # Off a TTY the status line is never mounted, so no control sequence of any
+    # kind (an erase, a cursor move, a cursor show) reaches either stream.
+    assert "\x1b[" not in stdout + stderr
 
 
 def test_measure_when_signalled_on_a_tty_does_clear_the_status_line(
@@ -249,35 +239,26 @@ def test_measure_when_signalled_on_a_tty_does_clear_the_status_line(
     reap_groups: list[int],
 ):
     repo = create_scratch_repo()
-    master, slave = pty.openpty()
 
-    # Set a known window size on the slave so Rich renders at _PTY_WIDTH x
-    # _PTY_HEIGHT instead of falling back on its defaults from a 0x0 pty.
-    ws = struct.pack("4H", _PTY_HEIGHT, _PTY_WIDTH, 0, 0)
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, ws)
-    chunks: list[bytes] = []
-    reader = threading.Thread(target=_drain, args=(master, chunks))
-
-    try:
-        with _cli_mid_bench(
+    # A known window size, so Rich renders at _PTY_WIDTH x _PTY_HEIGHT instead
+    # of falling back on its defaults from a 0x0 pty.
+    with (
+        pty_capture(size=(_PTY_HEIGHT, _PTY_WIDTH)) as terminal,
+        _cli_mid_bench(
             repo,
             reap_groups,
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
+            stdin=terminal.slave,
+            stdout=terminal.slave,
+            stderr=terminal.slave,
             text=False,
             start_new_session=True,
             close_fds=True,
-        ) as (proc, _bench_pid):
-            os.close(slave)
-            reader.start()
-            _wait_for_drawn(chunks, b"sampling")
-            proc.send_signal(signal.SIGINT)
-            proc.wait(timeout=30)
-    finally:
-        reader.join(timeout=10)
-        os.close(master)
-    output = b"".join(chunks).decode("utf-8", "replace")
+        ) as (proc, _bench_pid),
+    ):
+        _wait_for_drawn(terminal.chunks, b"sampling")
+        proc.send_signal(signal.SIGINT)
+        proc.wait(timeout=30)
+    output = terminal.output
 
     assert proc.returncode == 130
     assert "sampling" in output, f"status line never drew progress: {output!r}"

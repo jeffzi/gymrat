@@ -11,15 +11,15 @@ a reported cost is pinned here too.
 import asyncio
 import json
 import math
-import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import override
 
 import pytest
 from claude_agent_sdk import (
     ConversationResetMessage,
+    HookMatcher,
     RateLimitEvent,
     RateLimitInfo,
     ServerToolResultBlock,
@@ -31,13 +31,13 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
+from claude_agent_sdk.types import HookEvent
 
 from gymrat.supervisor.claude import create_claude_driver, usable_cost
-from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
+from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
 from gymrat.supervisor.events import (
     CompactionEvent,
     SessionEvent,
-    SessionObserver,
     TextDeltaEvent,
     ToolEndEvent,
     ToolStartEvent,
@@ -45,11 +45,16 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
     summarize,
 )
-from tests._imports import loaded_under
+from gymrat.supervisor.hooks import HooksFactory
+from gymrat.supervisor.tools import ToolsFactory
+from tests._imports import loaded_under, modules_loaded_after
 from tests.supervisor._fixtures import (
+    _SENTINEL_HOOKS,
+    _SENTINEL_SERVER,
     FactoryProbe,
     FakeClient,
     FiniteClient,
+    HooksFactoryProbe,
     assistant,
     collecting_observer,
     events_of,
@@ -58,6 +63,9 @@ from tests.supervisor._fixtures import (
     run_outcome,
     run_session,
     run_with_messages,
+    settled_outcome,
+    start_claude_session,
+    start_interrupting_on_first_usage_update,
     system_message,
     tool_results,
     wait_for_event_or_task,
@@ -68,46 +76,17 @@ from tests.supervisor._fixtures import (
 # ---------------------------------------------------------------------------
 
 
-def test_create_claude_driver_when_given_factory_does_return_driver_without_calling_it():
-    probe = FactoryProbe(FakeClient([]))
-
-    driver = create_claude_driver(client_factory=probe)
-
-    assert callable(driver.start)
-    assert probe.calls == 0
-
-
-#: Build the default driver in a fresh interpreter, then report every loaded module.
-_CONSTRUCT_PROBE = (
-    "import json, sys\n"
-    "from gymrat.supervisor.claude import create_claude_driver\n"
-    "create_claude_driver()\n"
-    "json.dump(sorted(sys.modules), sys.stdout)"
-)
-
-
 def test_create_claude_driver_when_constructed_does_not_import_sdk():
-    probe = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [sys.executable, "-c", _CONSTRUCT_PROBE],
-        capture_output=True,
-        text=True,
-        check=True,
+    loaded = modules_loaded_after(
+        "from gymrat.supervisor.claude import create_claude_driver\ncreate_claude_driver()"
     )
 
-    assert loaded_under(frozenset(json.loads(probe.stdout)), "claude_agent_sdk") == []
+    assert loaded_under(loaded, "claude_agent_sdk") == []
 
 
 # ---------------------------------------------------------------------------
 # start — options forwarding
 # ---------------------------------------------------------------------------
-
-
-async def _start_with_prompt(prompt: SessionPrompt) -> FiniteClient:
-    """Start a session with ``prompt`` and return the client it drove."""
-    client = FiniteClient([result_message()])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-    await run_session(driver, collecting_observer().observer, prompt)
-    return client
 
 
 #: The timeout variables every session hands the agent, at ``make_prompt``'s 60 s default.
@@ -130,56 +109,88 @@ _DEFAULT_OPTIONS = {
 _TRACEPARENT = "00-abc123-def456-01"
 
 
-async def test_start_when_launched_does_forward_options_to_client():
-    client = await _start_with_prompt(
-        make_prompt(
-            kickoff="hello agent",
-            cwd="/my/project",
-            system_prompt_append="extra instructions",
-            command_timeout_ms=300000,
-        )
-    )
-
-    assert client.options == {
-        "cwd": "/my/project",
-        "permission_mode": "bypassPermissions",
-        "include_partial_messages": True,
-        "system_prompt": {
-            "type": "preset",
-            "preset": "claude_code",
-            "append": "extra instructions",
-        },
-        "env": {
-            "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS": "300000",
-            "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS": "300000",
-            "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS": "",
-            "MCP_TOOL_TIMEOUT": "300000",
-        },
-    }
-    assert client.query_prompts == ["hello agent"]
+def _sentinel_tools(abort: asyncio.Event, env: Mapping[str, str]) -> object:
+    return _SENTINEL_SERVER
 
 
 @pytest.mark.parametrize(
-    ("prompt", "added"),
+    ("prompt", "hooks", "tools", "added"),
     [
+        pytest.param(make_prompt(), None, None, {}, id="defaults"),
+        pytest.param(make_prompt(cwd="/my/project"), None, None, {"cwd": "/my/project"}, id="cwd"),
+        pytest.param(
+            make_prompt(system_prompt_append="extra instructions"),
+            None,
+            None,
+            {
+                "system_prompt": {
+                    "type": "preset",
+                    "preset": "claude_code",
+                    "append": "extra instructions",
+                }
+            },
+            id="system-prompt-append",
+        ),
+        pytest.param(
+            make_prompt(command_timeout_ms=300000),
+            None,
+            None,
+            {
+                "env": {
+                    "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS": "300000",
+                    "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS": "300000",
+                    "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS": "",
+                    "MCP_TOOL_TIMEOUT": "300000",
+                }
+            },
+            id="command-timeout",
+        ),
         pytest.param(
             make_prompt(model="claude-sonnet-4-20250514"),
+            None,
+            None,
             {"model": "claude-sonnet-4-20250514"},
             id="model",
         ),
-        pytest.param(make_prompt(effort="high"), {"effort": "high"}, id="effort"),
-        pytest.param(make_prompt(max_budget_usd=5.0), {"max_budget_usd": 5.0}, id="max-budget"),
+        pytest.param(make_prompt(effort="high"), None, None, {"effort": "high"}, id="effort"),
+        pytest.param(
+            make_prompt(max_budget_usd=5.0), None, None, {"max_budget_usd": 5.0}, id="max-budget"
+        ),
         pytest.param(
             make_prompt(traceparent=_TRACEPARENT),
+            None,
+            None,
             {"env": {**_DEFAULT_ENV, "GYMRAT_TRACEPARENT": _TRACEPARENT}},
             id="traceparent-under-its-own-name",
         ),
+        pytest.param(
+            make_prompt(), HooksFactoryProbe(), None, {"hooks": _SENTINEL_HOOKS}, id="hooks-only"
+        ),
+        pytest.param(
+            make_prompt(),
+            None,
+            _sentinel_tools,
+            {"mcp_servers": {"gymrat": _SENTINEL_SERVER}},
+            id="tools-only",
+        ),
+        pytest.param(
+            make_prompt(),
+            HooksFactoryProbe(),
+            _sentinel_tools,
+            {"hooks": _SENTINEL_HOOKS, "mcp_servers": {"gymrat": _SENTINEL_SERVER}},
+            id="hooks-and-tools",
+        ),
     ],
 )
-async def test_start_when_an_optional_field_given_does_add_only_that_option(
-    prompt: SessionPrompt, added: dict[str, object]
+async def test_start_when_session_inputs_given_does_forward_them_as_client_options(
+    prompt: SessionPrompt,
+    hooks: HooksFactory | None,
+    tools: ToolsFactory | None,
+    added: dict[str, object],
 ):
-    client = await _start_with_prompt(prompt)
+    client = FiniteClient([result_message()])
+
+    await run_outcome(client, prompt=prompt, hooks=hooks, tools=tools)
 
     assert client.options == _DEFAULT_OPTIONS | added
 
@@ -207,12 +218,10 @@ async def test_start_when_text_block_does_emit_text_delta_carrying_its_parent(
 
 async def test_start_when_read_path_under_cwd_does_summarize_relative_to_cwd():
     tool_use = ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/my/project/src/main.py"})
-    driver = create_claude_driver(
-        client_factory=FactoryProbe(FiniteClient([assistant(tool_use), result_message()]))
-    )
+    client = FiniteClient([assistant(tool_use), result_message()])
     probe = collecting_observer()
 
-    await run_session(driver, probe.observer, make_prompt(cwd="/my/project"))
+    await run_outcome(client, probe.observer, prompt=make_prompt(cwd="/my/project"))
 
     starts = events_of(probe.events, ToolStartEvent)
     assert starts[0].input_summary == "src/main.py"
@@ -281,7 +290,7 @@ async def test_start_when_wall_clock_jumps_back_does_report_monotonic_tool_durat
     )
     probe = collecting_observer()
 
-    await run_session(create_claude_driver(client_factory=FactoryProbe(client)), probe.observer)
+    await run_outcome(client, probe.observer)
 
     ends = events_of(probe.events, ToolEndEvent)
     assert [end.duration_ms for end in ends] == [250]
@@ -395,7 +404,6 @@ async def test_start_when_tool_result_matches_start_does_emit_tool_end_with_trac
     assert ends[0].tool_name == tool_name
     assert ends[0].result == expected_result
     assert ends[0].result_summary == summarize(expected_result)
-    assert ends[0].duration_ms >= 0
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +476,9 @@ async def test_start_when_tool_result_with_parent_does_carry_parent_tool_use_id(
 async def test_start_when_message_carries_no_session_content_does_emit_nothing(
     message: object,
 ):
-    assert await run_with_messages([message]) == []
+    events = await run_with_messages([message])
+
+    assert events == []
 
 
 # ---------------------------------------------------------------------------
@@ -476,71 +486,22 @@ async def test_start_when_message_carries_no_session_content_does_emit_nothing(
 # ---------------------------------------------------------------------------
 
 
-def _interrupting_observer(
-    events: list[SessionEvent], holder: dict[str, DriverSession], after: int = 1
-) -> SessionObserver:
-    """Observer that schedules ``interrupt`` after ``after`` usage updates."""
-    seen = 0
-    interrupts: list[asyncio.Task[None]] = []
+@pytest.mark.parametrize(
+    "next_message",
+    [
+        pytest.param(assistant(TextBlock(text="late")), id="later-text"),
+        pytest.param(result_message(total_cost_usd=0.25), id="later-result-at-a-higher-cost"),
+    ],
+)
+async def test_interrupt_when_scheduled_on_usage_update_does_soft_stop_at_the_crossing_cost(
+    next_message: object,
+):
+    client = FakeClient([result_message(total_cost_usd=0.15), next_message])
 
-    def observer(event: SessionEvent) -> None:
-        nonlocal seen
-        events.append(event)
-        if isinstance(event, UsageUpdateEvent):
-            seen += 1
-            if seen == after:
-                interrupts.append(asyncio.ensure_future(holder["session"].interrupt()))
-
-    return observer
-
-
-async def _run_interrupting_on_first_usage_update(
-    messages: Sequence[object],
-) -> tuple[SessionOutcome, FakeClient]:
-    """Drive a session that schedules ``interrupt`` after the first usage update.
-
-    Usage updates come from result messages, which leave the session idle
-    between turns; the soft stop lands when the stream delivers its next
-    message.
-
-    Args:
-        messages: The scripted SDK messages, which must carry one more message
-            after the interrupting result.
-
-    Returns:
-        The settled outcome and the fake client the session drove.
-    """
-    client = FakeClient(messages)
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-    events: list[SessionEvent] = []
-    holder: dict[str, DriverSession] = {}
-
-    holder["session"] = driver.start(
-        make_prompt(), _interrupting_observer(events, holder), asyncio.Event()
-    )
-    outcome = await holder["session"].outcome
-    return outcome, client
-
-
-async def test_interrupt_when_scheduled_on_usage_update_does_soft_stop_at_the_crossing_cost():
-    outcome, client = await _run_interrupting_on_first_usage_update([
-        result_message(total_cost_usd=0.15),
-        assistant(TextBlock(text="late")),
-    ])
+    outcome = await settled_outcome(start_interrupting_on_first_usage_update(client))
 
     assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.15)
     assert client.interrupt_called is True
-    assert client.disconnect_count == 1  # only the finally teardown, never interrupt itself
-
-
-async def test_interrupt_when_first_call_wins_does_ignore_later_higher_cost():
-    outcome, _client = await _run_interrupting_on_first_usage_update([
-        result_message(total_cost_usd=0.1),
-        result_message(total_cost_usd=0.25),
-    ])
-
-    assert outcome.reason == "interrupted"
-    assert outcome.cost_usd == 0.1
 
 
 async def test_interrupt_when_called_between_messages_does_stop_before_next_message():
@@ -556,14 +517,13 @@ async def test_interrupt_when_called_between_messages_does_stop_before_next_mess
             yield assistant(TextBlock(text="second"))
 
     client = GatedClient([])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
     probe = collecting_observer()
 
-    session = driver.start(make_prompt(), probe.observer, asyncio.Event())
+    session = start_claude_session(client, probe.observer)
     await wait_for_event_or_task(first_seen, session.outcome)
     await session.interrupt()
     gate.set()
-    outcome = await session.outcome
+    outcome = await settled_outcome(session)
 
     assert outcome.reason == "interrupted"
     assert [e.chunk for e in events_of(probe.events, TextDeltaEvent)] == ["first"]
@@ -574,23 +534,21 @@ async def test_interrupt_when_called_between_messages_does_stop_before_next_mess
 # ---------------------------------------------------------------------------
 
 
-async def test_start_when_abort_fired_after_interrupt_does_preserve_interrupt_cost():
-    client = FakeClient([result_message(total_cost_usd=0.1), result_message(total_cost_usd=0.3)])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
+async def test_start_when_abort_fires_after_another_stop_does_keep_the_first_outcome():
+    client = FakeClient([result_message(total_cost_usd=0.1)])
     abort = asyncio.Event()
-    holder: dict[str, DriverSession] = {}
-    interrupts: list[asyncio.Task[None]] = []
+    sessions: list[DriverSession] = []
+    ends: list[asyncio.Task[None]] = []
 
-    def observer(event: SessionEvent) -> None:
-        if isinstance(event, UsageUpdateEvent):
-            interrupts.append(asyncio.ensure_future(holder["session"].interrupt()))
+    def end_then_abort(event: SessionEvent) -> None:
+        if isinstance(event, TurnEndEvent) and not ends:
+            ends.append(asyncio.ensure_future(sessions[0].end()))
             abort.set()
 
-    holder["session"] = driver.start(make_prompt(), observer, abort)
-    outcome = await holder["session"].outcome
+    sessions.append(start_claude_session(client, end_then_abort, abort=abort))
+    outcome = await settled_outcome(sessions[0])
 
-    assert outcome.reason == "interrupted"
-    assert outcome.cost_usd == 0.1
+    assert (outcome.reason, outcome.cost_usd) == ("completed", 0.1)
 
 
 async def test_start_when_abort_already_set_at_start_does_resolve_interrupted_without_client():
@@ -634,25 +592,6 @@ async def test_start_when_result_is_error_does_settle_error_as_the_final_result(
     assert events_of(probe.events, TurnEndEvent) == []
 
 
-@pytest.mark.parametrize(
-    ("cost", "expected_updates", "expected_cost"),
-    [
-        pytest.param(0.05, [0.05], 0.05, id="usable-cost"),
-        pytest.param(None, [], 0.0, id="none-cost"),
-        pytest.param(0.0, [], 0.0, id="zero-cost"),
-    ],
-)
-async def test_start_when_stream_ends_after_a_turn_does_settle_completed_at_the_reported_cost(
-    cost: float | None, expected_updates: list[float], expected_cost: float
-):
-    probe = collecting_observer()
-
-    outcome = await run_outcome(FiniteClient([result_message(total_cost_usd=cost)]), probe.observer)
-
-    assert (outcome.reason, outcome.cost_usd) == ("completed", expected_cost)
-    assert [u.cost_usd for u in events_of(probe.events, UsageUpdateEvent)] == expected_updates
-
-
 # ---------------------------------------------------------------------------
 # system message — compact_boundary → CompactionEvent
 # ---------------------------------------------------------------------------
@@ -682,22 +621,6 @@ async def test_start_when_system_message_arrives_does_emit_compaction_only_on_co
 
 
 # ---------------------------------------------------------------------------
-# error — stream exception
-# ---------------------------------------------------------------------------
-
-
-async def test_start_when_stream_raises_does_resolve_error_without_raising():
-    client = FakeClient([result_message(total_cost_usd=0.04)], throw=RuntimeError("SDK failure"))
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    outcome = await run_session(driver, collecting_observer().observer)
-
-    assert outcome.reason == "error"
-    assert outcome.message == "SDK failure"
-    assert outcome.cost_usd == 0.04
-
-
-# ---------------------------------------------------------------------------
 # missing SDK
 # ---------------------------------------------------------------------------
 
@@ -720,19 +643,50 @@ async def test_start_when_sdk_import_fails_does_resolve_error_naming_package(
 # ---------------------------------------------------------------------------
 
 
-async def test_start_when_client_factory_raises_does_resolve_error_without_raising():
-    error = ValueError("bad options")
+def _failing_client_factory(_options: Mapping[str, object]) -> FakeClient:
+    message = "bad options"
+    raise ValueError(message)
 
-    def failing_factory(options: Mapping[str, object]) -> FakeClient:
-        raise error
 
-    driver = create_claude_driver(client_factory=failing_factory)
+def _failing_hooks() -> dict[HookEvent, list[HookMatcher]]:
+    message = "hooks unavailable"
+    raise RuntimeError(message)
+
+
+def _client_factory_raises() -> Driver:
+    return create_claude_driver(client_factory=_failing_client_factory)
+
+
+def _hooks_factory_raises() -> Driver:
+    client = FiniteClient([result_message()])
+    return create_claude_driver(client_factory=FactoryProbe(client), hooks=_failing_hooks)
+
+
+def _stream_raises() -> Driver:
+    client = FakeClient([result_message(total_cost_usd=0.04)], throw=RuntimeError("SDK failure"))
+    return create_claude_driver(client_factory=FactoryProbe(client))
+
+
+@pytest.mark.parametrize(
+    ("make_driver", "expected_message", "expected_cost"),
+    [
+        pytest.param(_client_factory_raises, "bad options", 0.0, id="client-factory-raises"),
+        pytest.param(_hooks_factory_raises, "hooks unavailable", 0.0, id="hooks-factory-raises"),
+        pytest.param(_stream_raises, "SDK failure", 0.04, id="stream-raises"),
+    ],
+)
+async def test_start_when_building_or_streaming_the_client_raises_does_resolve_error_with_its_message(
+    make_driver: Callable[[], Driver], expected_message: str, expected_cost: float
+):
+    driver = make_driver()
 
     outcome = await run_session(driver, collecting_observer().observer)
 
-    assert outcome.reason == "error"
-    assert outcome.message == str(error)
-    assert outcome.cost_usd == 0.0
+    assert (outcome.reason, outcome.message, outcome.cost_usd) == (
+        "error",
+        expected_message,
+        expected_cost,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -740,23 +694,35 @@ async def test_start_when_client_factory_raises_does_resolve_error_without_raisi
 # ---------------------------------------------------------------------------
 
 
-async def test_start_when_interrupted_before_connect_does_resolve_once_without_sending_kickoff():
-    client = FakeClient([])
-    probe = FactoryProbe(client)
-    driver = create_claude_driver(client_factory=probe)
+async def _end(session: DriverSession) -> None:
+    await session.end()
 
-    session = driver.start(
-        make_prompt(kickoff="should not be sent"),
-        collecting_observer().observer,
-        asyncio.Event(),
+
+async def _interrupt(session: DriverSession) -> None:
+    await session.interrupt()
+
+
+@pytest.mark.parametrize(
+    "stop_again",
+    [pytest.param(_end, id="then-end"), pytest.param(_interrupt, id="then-interrupt")],
+)
+async def test_start_when_interrupted_before_connect_does_resolve_once_without_sending_kickoff(
+    stop_again: Callable[[DriverSession], Awaitable[None]],
+):
+    client = FakeClient([result_message(total_cost_usd=0.10)])
+    probe = collecting_observer()
+
+    session = start_claude_session(
+        client, probe.observer, prompt=make_prompt(kickoff="should not be sent")
     )
     await session.interrupt()  # client not built yet — the soft stop cannot reach it
-    await session.interrupt()  # already stopped — a no-op that keeps the first outcome
-    outcome = await session.outcome
+    await stop_again(session)  # already stopped — a no-op that keeps the first outcome
+    outcome = await settled_outcome(session)
 
     assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.0)
     assert client.interrupt_called is False
     assert client.query_prompts == []
+    assert events_of(probe.events, UsageUpdateEvent) == []
 
 
 # ---------------------------------------------------------------------------

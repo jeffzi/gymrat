@@ -2,9 +2,10 @@
 
 The reporter turns a stream of :class:`~gymrat.supervisor.events.SessionEvent`
 values into a bordered ``Live`` dashboard with time/cost/loop summary rows and a
-liveness section showing tool activity.  Every test injects the clock (``now``)
-and the session reader (``read_session``) so nothing depends on real time or
-disk.
+liveness section showing tool activity.  Reporter tests inject the clock
+(``now``) and the session reader (``read_session``) so they depend on neither
+real time nor disk.  The ``read_live_session`` tests write a session log under
+``tmp_path`` and read it back the way the dashboard does.
 
 **Live mode** tests render ``reporter.frame()`` through ``frame_text()`` from
 ``tests._rich`` at a fixed width, pinning frame content with syrupy snapshots.
@@ -26,7 +27,7 @@ import os
 import sys
 import time
 from datetime import UTC, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -42,6 +43,7 @@ from gymrat.session.records import IterationPrimary
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._rich import track
 from tests.cli.supervise._fixtures import (
+    BASH_CYCLE_END_MS,
     LIVE_CLASS_PATH,
     ReporterKit,
     _throwing_read,
@@ -150,10 +152,8 @@ def test_read_live_session_when_keeps_committed_does_report_the_best_committed_i
 
     result = _read_back(tmp_path, history)
 
-    assert (result.best, result.has_baseline, result.stop_message) == (
-        BestIteration(delta_pct=-9.0, seq=2, label=primary_label, baseline_sha=COMMIT),
-        False,
-        None,
+    assert result.best == BestIteration(
+        delta_pct=-9.0, seq=2, label=primary_label, baseline_sha=COMMIT
     )
 
 
@@ -298,16 +298,14 @@ def test_read_live_session_when_baseline_presence_varies_does_report_it(
 # ---------------------------------------------------------------------------
 
 
-def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero(
-    snapshot: SnapshotAssertion,
-):
+def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero():
     kit = make_reporter(max_minutes=60, clock_start=1000)
     kit.reporter.observer(launch_event(1000))
     kit.clock.now = 1000 + (2 * 3600) * 1000
 
     frame = render_frame(kit.reporter)
 
-    assert frame == snapshot
+    assert _content_line(frame, "cap in") == "time " + "━" * 73 + " 2h 00m  cap in 0s"
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +313,7 @@ def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero(
 # ---------------------------------------------------------------------------
 
 
-def test_frame_when_just_launched_does_show_zero_cost_and_no_best_row(
+def test_frame_when_just_launched_does_render_the_starting_layout(
     snapshot: SnapshotAssertion,
 ):
     kit = make_reporter()
@@ -331,7 +329,7 @@ def test_frame_when_just_launched_does_show_zero_cost_and_no_best_row(
 # ---------------------------------------------------------------------------
 
 
-def test_loop_when_iterations_present_does_show_counts_and_last(snapshot: SnapshotAssertion):
+def test_loop_when_iterations_present_does_show_counts_and_last():
     state = session_state_three_iterations(-3.2, "improved")
     kit = make_reporter(
         max_iterations=20,
@@ -341,7 +339,9 @@ def test_loop_when_iterations_present_does_show_counts_and_last(snapshot: Snapsh
 
     frame = render_frame(kit.reporter)
 
-    assert frame == snapshot
+    assert _content_line(frame, "loop") == (
+        "loop   3/20 iterations · 2 kept · 1 discarded · last -3.2% improved"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -430,11 +430,14 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
     kit.reporter.observer(usage_event(4.12, kit.clock.now))
 
     kit.clock.now += 1000
+    read_started_at = kit.clock.now
     kit.reporter.observer(
-        tool_start_event("Read", "read-1", kit.clock.now, input_summary="src/archetype.ts")
+        tool_start_event("Read", "read-1", read_started_at, input_summary="src/archetype.ts")
     )
     kit.clock.now += 500
-    kit.reporter.observer(tool_end_event("Read", "read-1", kit.clock.now))
+    kit.reporter.observer(
+        tool_end_event("Read", "read-1", kit.clock.now, started_at_ms=read_started_at)
+    )
 
     kit.clock.now += 200
     edit_started_at = kit.clock.now
@@ -487,23 +490,6 @@ def test_final_text_when_agent_turn_ends_does_return_its_text():
     observer(turn_end_event(3000, text="second turn summary"))
 
     assert kit.reporter.final_text() == "second turn summary"
-
-
-# ---------------------------------------------------------------------------
-# turn counting and follow-up rendering (live mode)
-# ---------------------------------------------------------------------------
-
-
-def test_follow_up_when_replied_does_show_turn_count_and_replied():
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    observer(launch_event(1000))
-    observer(turn_end_event(2000, text="done"))
-    observer(follow_up_event(3000, action="replied"))
-
-    frame = render_frame(kit.reporter)
-
-    assert _content_line(frame, "turns") == "turns  turn 1 ended · replied"
 
 
 def _content_line(frame: str, needle: str) -> str:
@@ -685,21 +671,13 @@ def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
 # above-threshold waiting — last tool context
 # ---------------------------------------------------------------------------
 
-# The clock reading right after the Bash end that both the threshold and the
-# custom idle_warn_ms tests below freeze on.
-_BASH_END_MS = 3000
-
 
 def _make_reporter_past_bash_end(
     *, idle_warn_ms: int = IDLE_WARN_MS, result: str = "ok"
 ) -> ReporterKit:
     """A reporter with the given idle-warn threshold, clock frozen right after a Bash end."""
     kit = make_reporter(idle_warn_ms=idle_warn_ms)
-    kit.reporter.observer(launch_event(1000))
-    kit.clock.now = 2000
-    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000))
-    kit.clock.now = _BASH_END_MS
-    kit.reporter.observer(tool_end_event("Bash", "bash-1", _BASH_END_MS, result=result))
+    fire_launch_and_bash_cycle(kit.reporter.observer, clock=kit.clock, result=result)
     return kit
 
 
@@ -716,7 +694,7 @@ def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
     result: str, expected_fragment: str
 ):
     kit = _make_reporter_past_bash_end(result=result)
-    kit.clock.now = _BASH_END_MS + IDLE_WARN_MS + 1
+    kit.clock.now = BASH_CYCLE_END_MS + IDLE_WARN_MS + 1
 
     frame = render_frame(kit.reporter)
 
@@ -753,7 +731,7 @@ def test_liveness_when_waiting_around_custom_idle_warn_does_show_expected_state(
 ):
     custom_ms = 100
     kit = _make_reporter_past_bash_end(idle_warn_ms=custom_ms)
-    kit.clock.now = _BASH_END_MS + custom_ms + offset
+    kit.clock.now = BASH_CYCLE_END_MS + custom_ms + offset
 
     frame = render_frame(kit.reporter)
 
@@ -1063,21 +1041,19 @@ _UNREADABLE = RuntimeError("session file unreadable")
 
 
 @pytest.mark.parametrize(
-    ("mode", "reread", "expected"),
+    ("reread", "expected"),
     [
-        pytest.param("live", _KEPT, _KEPT, id="rereads-live"),
-        pytest.param("plain", _KEPT, _KEPT, id="rereads-plain"),
-        pytest.param("live", _UNREADABLE, _EMPTY, id="reread-fails-keeps-previous-live"),
-        pytest.param("plain", _UNREADABLE, _EMPTY, id="reread-fails-keeps-previous-plain"),
+        pytest.param(_KEPT, _KEPT, id="rereads"),
+        pytest.param(_UNREADABLE, _EMPTY, id="reread-fails-keeps-previous"),
     ],
 )
 def test_refresh_session_when_called_does_reread_the_session_keeping_the_last_good_one(
-    mode: Literal["live", "plain"],
-    reread: ReadSessionResult | Exception,
-    expected: ReadSessionResult,
+    reread: ReadSessionResult | Exception, expected: ReadSessionResult
 ):
     kit = make_reporter(
-        mode=mode, read_session=Mock(side_effect=[_EMPTY, reread]), plain_write=lambda _line: None
+        mode="plain",
+        read_session=Mock(side_effect=[_EMPTY, reread]),
+        plain_write=lambda _line: None,
     )
     kit.reporter.observer(launch_event(1000))
 

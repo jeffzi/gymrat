@@ -5,12 +5,20 @@ module rather than being duplicated per test file. ``collecting_observer`` hands
 the list it fills; ``make_launch`` builds a fully-populated ``LaunchEvent`` from
 overridable defaults; ``read_log_lines`` parses a JSONL log into dicts;
 ``NotJsonEncodable`` is a value ``json.dumps`` cannot encode.
-``seed_session_log``, ``seed_with_stop``, ``add_stop_async``, and
-``_supervise`` share the turn-loop test boilerplate; ``_WrapDriver`` captures
-the abort event a supervised driver receives; ``_SENTINEL_SERVER`` is the MCP
-server config the stubbed tools and hooks factories hand back. ``result_message``,
-``system_message``, ``assistant``, ``tool_results``, and ``stream_event`` build
-the real ``claude-agent-sdk`` message dataclasses the Claude driver consumes.
+``seed_session_log``, ``seed_with_stop``, ``append_step``, ``driver_calls``,
+and ``_supervise`` share the turn-loop test boilerplate; ``LockSwitch`` is a
+repository lock a test holds and releases between driver steps; ``_WrapDriver``
+captures the abort event, observer, and session a supervised driver hands out;
+``FollowUpWatch`` lets a test await the follow-ups a supervised run emits;
+``WAIT_FINISHED_LINE`` is the line a reply closes on after a lock wait;
+``_SENTINEL_SERVER`` and ``_SENTINEL_HOOKS`` are what the stubbed tools and
+hooks factories hand back, and ``HooksFactoryProbe`` counts its calls.
+``result_message``, ``system_message``, ``assistant``, ``tool_results``, and
+``stream_event`` build the real ``claude-agent-sdk`` message dataclasses the
+Claude driver consumes. ``start_claude_session``,
+``start_interrupting_on_first_usage_update``, ``settled_outcome``,
+``start_past_turns``, and ``run_outcome`` start a Claude session over a fake
+client and await it, every wait bounded by ``SESSION_TIMEOUT_S``.
 ``wait_for_event_or_task`` waits on an event a background task should set,
 failing instead of hanging when the task settles first.
 """
@@ -18,7 +26,8 @@ failing instead of hanging when the task settles first.
 import asyncio
 import contextlib
 import json
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, override
 
@@ -26,6 +35,7 @@ import pytest
 from claude_agent_sdk import (
     AssistantMessage,
     ContentBlock,
+    HookMatcher,
     MessageOrigin,
     ResultMessage,
     StreamEvent,
@@ -33,10 +43,12 @@ from claude_agent_sdk import (
     ToolResultBlock,
     UserMessage,
 )
+from claude_agent_sdk.types import HookEvent
 
 from gymrat.clock import now_ms, now_ns
 from gymrat.config import BenchlessConfig, Effort
 from gymrat.session.paths import lockfile_path
+from gymrat.session.records import SessionLogRecord
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
@@ -46,8 +58,11 @@ from gymrat.supervisor.events import (
     SessionEvent,
     SessionObserver,
     TurnEndEvent,
+    UsageUpdateEvent,
 )
+from gymrat.supervisor.hooks import HooksFactory
 from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult, supervise
+from gymrat.supervisor.tools import ToolsFactory
 from tests._config import benchless_config
 from tests.session.records._fixtures import (
     SUPERVISED_SESSION_ID,
@@ -55,10 +70,21 @@ from tests.session.records._fixtures import (
     session_record,
     stop_record,
 )
-from tests.supervisor._mock_driver import EmitStep, _MockSession
+from tests.supervisor._mock_driver import ActionStep, EmitStep, _MockSession
 
 _SESSION_ID = "sdk-session"
 _MODEL = "claude-test"
+
+#: How long a test waits on a session's outcome before failing instead of hanging.
+SESSION_TIMEOUT_S = 30.0
+
+#: How long a test waits for a follow-up before failing instead of hanging.
+FOLLOW_UP_TIMEOUT_S = 5
+
+#: The line a reply closes on when the agent's last command was still running.
+WAIT_FINISHED_LINE = (
+    "The command you left running has finished; its record, if any, is in the session log."
+)
 
 
 class NotJsonEncodable:
@@ -310,7 +336,7 @@ class FakeClient:
     async def query(self, prompt: str) -> None:
         self.query_prompts.append(prompt)
 
-    async def receive_messages(self):
+    async def receive_messages(self) -> AsyncIterator[object]:
         for message in self.messages:
             await asyncio.sleep(0)
             yield message
@@ -427,14 +453,69 @@ def seed_with_stop(root: str) -> None:
     append_records(root, session_record(), stop_record())
 
 
-async def add_stop_async(root: str) -> None:
-    """Append a stop record so the classifier sees ``ends_on_stop`` on the next turn end."""
-    append_records(root, stop_record())
+def append_step(root: str, *records: SessionLogRecord, delay_ms: int | None = None) -> ActionStep:
+    """Build a driver step that appends ``records`` to the session log under ``root``.
+
+    Args:
+        root: The repository whose session log receives the records.
+        *records: The records to append, in order.
+        delay_ms: How long the step waits before appending, or None for no wait.
+
+    Returns:
+        The step, ready to place in a mock driver script.
+    """
+
+    async def append() -> None:
+        append_records(root, *records)
+
+    return ActionStep(action=append, delay_ms=delay_ms)
 
 
 def sent_texts(session: _MockSession) -> list[str | None]:
     """Return the text of every ``send`` call the mock session recorded."""
     return [text for call_type, text in session.calls if call_type == "send"]
+
+
+def driver_calls(session: _MockSession) -> list[str]:
+    """Return every ``send`` and ``end`` call the mock session recorded, in order."""
+    return [call for call, _ in session.calls if call in {"send", "end"}]
+
+
+@dataclass(slots=True)
+class LockSwitch:
+    """A repository lock a test holds and releases between driver steps."""
+
+    held: bool
+
+    def is_held(self) -> bool:
+        """Report whether the lock is held."""
+        return self.held
+
+    async def hold(self) -> None:
+        """Take the lock."""
+        self.held = True
+
+    async def release(self) -> None:
+        """Free the lock."""
+        self.held = False
+
+    def release_on_waiting(self, observer: SessionObserver) -> SessionObserver:
+        """Wrap ``observer`` so the lock frees once the supervisor says it is waiting on it.
+
+        Args:
+            observer: Receives every event before the lock is checked.
+
+        Returns:
+            An observer that forwards each event, then frees the lock on a
+            ``waiting`` follow-up.
+        """
+
+        def forward(event: SessionEvent) -> None:
+            observer(event)
+            if isinstance(event, FollowUpEvent) and event.action == "waiting":
+                self.held = False
+
+        return forward
 
 
 def emit_turn_end(
@@ -448,18 +529,45 @@ def emit_turn_end(
 #: can find it again in the client options.
 _SENTINEL_SERVER: dict[str, str] = {"type": "stdio", "command": "fake"}
 
+#: The hook mapping ``HooksFactoryProbe`` hands back, so a test can find it again
+#: in the client options.
+_SENTINEL_HOOKS: dict[HookEvent, list[HookMatcher]] = {
+    "PreToolUse": [HookMatcher(matcher="Bash", hooks=[])],
+}
+
+
+class HooksFactoryProbe:
+    """A stub hooks factory that counts its calls and returns ``_SENTINEL_HOOKS``."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self) -> dict[HookEvent, list[HookMatcher]]:
+        self.calls += 1
+        return _SENTINEL_HOOKS
+
+
+def _same_session(session: DriverSession, _abort: asyncio.Event) -> DriverSession:
+    return session
+
 
 class _WrapDriver:
-    """Capture the ``abort`` event the supervisor passes so tests can inspect or trigger it."""
+    """Capture what the supervisor hands a driver, and wrap the session it starts.
+
+    ``make_session`` receives the inner driver's session and the abort event,
+    and returns the session the supervisor sees; by default the inner one.
+    """
 
     def __init__(
         self,
         inner: Driver,
-        make_session: Callable[[DriverSession], DriverSession] = lambda s: s,
+        make_session: Callable[[DriverSession, asyncio.Event], DriverSession] = _same_session,
     ) -> None:
         self._inner = inner
         self._make_session = make_session
         self.captured_abort: asyncio.Event | None = None
+        self.captured_observer: SessionObserver | None = None
+        self.session: DriverSession | None = None
 
     def start(
         self,
@@ -468,7 +576,41 @@ class _WrapDriver:
         abort: asyncio.Event,
     ) -> DriverSession:
         self.captured_abort = abort
-        return self._make_session(self._inner.start(prompt, observer, abort))
+        self.captured_observer = observer
+        self.session = self._make_session(self._inner.start(prompt, observer, abort), abort)
+        return self.session
+
+
+class FollowUpWatch:
+    """An observer that records every event and lets a test await follow-ups."""
+
+    def __init__(self) -> None:
+        self.events: list[SessionEvent] = []
+        self._follow_up = asyncio.Event()
+
+    def __call__(self, event: SessionEvent) -> None:
+        self.events.append(event)
+        if isinstance(event, FollowUpEvent):
+            self._follow_up.set()
+
+    def actions(self) -> list[str]:
+        """The action of every follow-up received so far, in order."""
+        return [e.action for e in events_of(self.events, FollowUpEvent)]
+
+    async def until(self, predicate: Callable[[list[str]], bool]) -> None:
+        """Wait until ``predicate`` holds for the follow-up actions received so far.
+
+        Args:
+            predicate: Tests the follow-up actions received so far.
+
+        Raises:
+            TimeoutError: When ``predicate`` still fails after
+                ``FOLLOW_UP_TIMEOUT_S``.
+        """
+        async with asyncio.timeout(FOLLOW_UP_TIMEOUT_S):
+            while not predicate(self.actions()):
+                self._follow_up.clear()
+                await self._follow_up.wait()
 
 
 async def _supervise(
@@ -532,6 +674,11 @@ async def _supervise(
     )
 
 
+async def settled_outcome(session: DriverSession) -> SessionOutcome:
+    """Await ``session``'s outcome, failing after ``SESSION_TIMEOUT_S`` instead of hanging."""
+    return await asyncio.wait_for(session.outcome, SESSION_TIMEOUT_S)
+
+
 async def run_session(
     driver: Driver,
     observer: SessionObserver,
@@ -540,15 +687,122 @@ async def run_session(
 ) -> SessionOutcome:
     """Start a session and await its settled outcome."""
     session = driver.start(prompt or make_prompt(), observer, abort or asyncio.Event())
-    return await asyncio.wait_for(session.outcome, 30.0)
+    return await settled_outcome(session)
+
+
+def start_claude_session(
+    client: FakeClient,
+    observer: SessionObserver | None = None,
+    *,
+    prompt: SessionPrompt | None = None,
+    abort: asyncio.Event | None = None,
+    hooks: HooksFactory | None = None,
+    tools: ToolsFactory | None = None,
+) -> DriverSession:
+    """Start a Claude driver session that streams from ``client``.
+
+    Args:
+        client: The fake client the session streams from.
+        observer: Receives every session event; None discards them.
+        prompt: The prompt to start with; ``make_prompt()`` when omitted.
+        abort: The session's abort event; a fresh, never-set one when omitted.
+        hooks: The hooks factory the driver passes on, if any.
+        tools: The tools factory the driver passes on, if any.
+
+    Returns:
+        The running session.
+    """
+    driver = create_claude_driver(client_factory=FactoryProbe(client), hooks=hooks, tools=tools)
+    return driver.start(
+        prompt or make_prompt(), observer or noop_observer(), abort or asyncio.Event()
+    )
+
+
+def start_interrupting_on_first_usage_update(
+    client: FakeClient, observer: SessionObserver | None = None
+) -> DriverSession:
+    """Start a Claude session over ``client`` that schedules ``interrupt`` on its first usage update.
+
+    Usage updates come from result messages, which leave the session idle
+    between turns, so the soft stop lands when the stream delivers its next
+    message: ``client`` must carry one after the first result.
+
+    Args:
+        client: The fake client the session streams from.
+        observer: Receives every session event; None discards them.
+
+    Returns:
+        The running session.
+    """
+    forward = observer or noop_observer()
+    sessions: list[DriverSession] = []
+    interrupts: list[asyncio.Task[None]] = []
+
+    def interrupting(event: SessionEvent) -> None:
+        forward(event)
+        if isinstance(event, UsageUpdateEvent) and not interrupts:
+            interrupts.append(asyncio.ensure_future(sessions[0].interrupt()))
+
+    sessions.append(start_claude_session(client, interrupting))
+    return sessions[0]
 
 
 async def run_outcome(
-    client: FakeClient, observer: SessionObserver | None = None
+    client: FakeClient,
+    observer: SessionObserver | None = None,
+    *,
+    prompt: SessionPrompt | None = None,
+    abort: asyncio.Event | None = None,
+    hooks: HooksFactory | None = None,
+    tools: ToolsFactory | None = None,
 ) -> SessionOutcome:
-    """Drive ``client`` through a session and return its settled outcome."""
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-    return await run_session(driver, observer or noop_observer())
+    """Drive ``client`` through a Claude session and return its settled outcome.
+
+    Args:
+        client: The fake client the session streams from.
+        observer: Receives every session event; None discards them.
+        prompt: The prompt to start with; ``make_prompt()`` when omitted.
+        abort: The session's abort event; a fresh, never-set one when omitted.
+        hooks: The hooks factory the driver passes on, if any.
+        tools: The tools factory the driver passes on, if any.
+
+    Returns:
+        The settled outcome.
+    """
+    session = start_claude_session(
+        client, observer, prompt=prompt, abort=abort, hooks=hooks, tools=tools
+    )
+    return await settled_outcome(session)
+
+
+async def start_past_turns(
+    client: FakeClient, turns: int, prompt: SessionPrompt | None = None
+) -> tuple[DriverSession, list[SessionEvent]]:
+    """Start a Claude session over ``client`` and wait until it has closed ``turns`` turns.
+
+    Waiting on the turn ends themselves, not on a count of event-loop yields,
+    keeps a later ``end()`` or ``send()`` from landing before the stream has
+    drawn every result.
+
+    Args:
+        client: The fake client the session streams from.
+        turns: How many ``TurnEndEvent`` the session must emit before returning.
+        prompt: The prompt to start with; ``make_prompt()`` when omitted.
+
+    Returns:
+        The running session and the list its observer keeps appending events to.
+    """
+    events: list[SessionEvent] = []
+    turns_closed = asyncio.Event()
+
+    def observer(event: SessionEvent) -> None:
+        events.append(event)
+        if len(events_of(events, TurnEndEvent)) == turns:
+            turns_closed.set()
+
+    session = start_claude_session(client, observer, prompt=prompt)
+    await wait_for_event_or_task(turns_closed, session.outcome)
+    return session, events
 
 
 async def run_with_messages(messages: Sequence[object]) -> list[SessionEvent]:

@@ -7,7 +7,7 @@ the signal cleanup — at the names the command imports them under, and returns
 the recorders a test asserts on.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, create_autospec
@@ -26,13 +26,13 @@ from gymrat.loop.start import StartResult
 from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.claude import create_claude_driver
-from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
-from gymrat.supervisor.supervise import SupervisionResult
+from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep, run_exit_sequence
+from gymrat.supervisor.supervise import SupervisionResult, supervise
 from tests._ansi import strip_ansi
 from tests._config import resolved_config
 from tests._process_helpers import CleanupRegistry
 from tests.cli._session import runner
-from tests.cli.supervise._fixtures import make_supervision_result
+from tests.cli.supervise._fixtures import install_baseline_seam, make_supervision_result
 from tests.session.records._fixtures import empty_session_state, session_record, worktrees_at
 
 #: The wall-clock cap the ``--max-minutes``-driven tests assert against.
@@ -55,6 +55,9 @@ def _real_reporter() -> SuperviseReporter:
     can't be targeted directly by ``create_autospec``. Building a real
     (side-effect-free, plain-mode) reporter and taking its attribute gives
     ``create_autospec`` the actual production callable to bind against.
+
+    Returns:
+        A plain-mode reporter rooted at a placeholder path.
     """
     return create_supervise_reporter(root="/tmp/repo", max_minutes=1.0, mode="plain")
 
@@ -137,24 +140,29 @@ def make_start_result(
     )
 
 
-def install_seams(
+def patch_supervise(
     monkeypatch: pytest.MonkeyPatch,
-    *,
-    config: ResolvedConfig | None = None,
-    result: SupervisionResult | None = None,
-    session_result: ReadSessionResult | None = None,
-    final_text: str | None = None,
-    raises: Exception | None = None,
-    branch: str | None = None,
-    resumed: bool = False,
-) -> Seams:
-    """Replace every seam ``commands.supervise`` composes over, returning the recorders."""
-    seams = Seams()
-    seams.session_result = session_result
-    seams.final_text = final_text
-    resolved = config if config is not None else command_config()
-    handed_back = result if result is not None else make_supervision_result()
+    fake: Callable[..., Coroutine[object, object, SupervisionResult]],
+) -> None:
+    """Replace the command's supervisor run with ``fake``, called against the real signature.
 
+    The replacement is an autospec of :func:`gymrat.supervisor.supervise.supervise`
+    whose side effect is ``fake``, so a call the real function would reject fails
+    the test instead of reaching ``fake``.
+
+    Args:
+        monkeypatch: The fixture the replacement is installed through.
+        fake: The coroutine function that stands in for the supervisor run.
+    """
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.supervise",
+        create_autospec(supervise, side_effect=fake),
+    )
+
+
+def _install_fake_preflight(
+    monkeypatch: pytest.MonkeyPatch, seams: Seams, *, branch: str | None, resumed: bool
+) -> None:
     def fake_preflight(*, root: str, config: object, flags: PreflightFlags) -> StartResult:
         seams.preflight_calls.append({
             "root": root,
@@ -165,6 +173,45 @@ def install_seams(
             "allow_dirty": flags.allow_dirty,
         })
         return make_start_result(root, branch, resumed=resumed)
+
+    monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", fake_preflight)
+
+
+def install_seams(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    config: ResolvedConfig | None = None,
+    result: SupervisionResult | None = None,
+    session_result: ReadSessionResult | None = None,
+    final_text: str | None = None,
+    raises: Exception | None = None,
+    branch: str | None = None,
+    resumed: bool = False,
+    real_preflight: bool = False,
+) -> Seams:
+    """Replace every seam ``commands.supervise`` composes over, returning the recorders.
+
+    Args:
+        monkeypatch: The fixture the replacements are installed through.
+        config: The config the resolve seam returns; a default command config when omitted.
+        result: The supervision result the supervisor seam hands back.
+        session_result: What the reporter's session reader returns at first.
+        final_text: The agent's final message the reporter reports.
+        raises: An error the supervisor seam raises instead of returning ``result``.
+        branch: The session branch the fake pre-flight's start result carries.
+        resumed: Whether the fake pre-flight reports a resumed session.
+        real_preflight: Keep the real pre-flight, with only the baseline bench
+            replaced, instead of the recording fake. ``preflight_calls`` stays
+            empty then.
+
+    Returns:
+        The recorders and doubles the run is wired to.
+    """
+    seams = Seams()
+    seams.session_result = session_result
+    seams.final_text = final_text
+    resolved = config if config is not None else command_config()
+    handed_back = result if result is not None else make_supervision_result()
 
     def fake_compose(
         cfg: object,
@@ -210,12 +257,21 @@ def install_seams(
 
     monkeypatch.setattr("gymrat.cli.commands.supervise.doctor_gate", seams.doctor_gate)
     monkeypatch.setattr("gymrat.cli.commands.supervise.resolve_config", fake_resolve)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", fake_preflight)
+    if real_preflight:
+        install_baseline_seam(monkeypatch)
+    else:
+        _install_fake_preflight(monkeypatch, seams, branch=branch, resumed=resumed)
     monkeypatch.setattr("gymrat.cli.commands.supervise.compose_kickoff", fake_compose)
     monkeypatch.setattr("gymrat.cli.commands.supervise.create_claude_driver", seams.create_driver)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise", fake_supervise)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.run_exit_sequence", fake_run_exit_sequence)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.create_supervise_reporter", fake_reporter)
+    patch_supervise(monkeypatch, fake_supervise)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.run_exit_sequence",
+        create_autospec(run_exit_sequence, side_effect=fake_run_exit_sequence),
+    )
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.create_supervise_reporter",
+        create_autospec(create_supervise_reporter, side_effect=fake_reporter),
+    )
     monkeypatch.setattr(
         "gymrat.cli.commands.supervise.ensure_git_exclude", seams.ensure_git_exclude
     )

@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from gymrat.session.paths import experiment_worktree_dir, lockfile_path
 from gymrat.session.workspace import worktree_fingerprint
-from gymrat.supervisor.exit_sequence import run_exit_sequence
+from gymrat.supervisor.exit_sequence import ExitStep, run_exit_sequence
 from tests._config import benchless_config
-from tests.loop._settle import edit_experiment, unimproved
+from tests.loop._settle import edit_experiment
 from tests.session.records._fixtures import append_records, iteration_record
 from tests.supervisor._fixtures import collecting_observer, make_context
 
@@ -20,6 +20,13 @@ if TYPE_CHECKING:
     from gymrat.supervisor.events import SessionEvent, SessionObserver
     from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport
     from gymrat.supervisor.supervise import EndedBy, SupervisedSession
+
+
+#: The step a run closes on when it would have finalized but ``--no-finalize`` was passed.
+NOT_FINALIZED_STEP = ExitStep(kind="nothing", text="session left open (--no-finalize)")
+
+#: The step a run settles on when it keeps an improved iteration 1 whose checks passed.
+KEPT_STEP = ExitStep(kind="settled", text="settled: kept iteration 1 (checks passed)")
 
 
 class ExitRun(NamedTuple):
@@ -106,8 +113,3 @@ def measured(root: str, record: IterationRecord, *trailing: SessionLogRecord) ->
 def improved_iteration(root: str) -> None:
     """An improved iteration the gate lets through, so the settle step keeps it."""
     measured(root, iteration_record(seq=1))
-
-
-def unimproved_iteration(root: str) -> None:
-    """An iteration that read as no-signal, so the settle step discards it and keeps nothing."""
-    measured(root, unimproved(1, "no-signal"))

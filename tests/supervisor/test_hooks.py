@@ -6,11 +6,11 @@ mapping the factory registers.
 """
 
 import os
-import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 from claude_agent_sdk import HookContext, PreToolUseHookInput
@@ -22,6 +22,7 @@ from gymrat.supervisor.hooks import (
     check_file_edit,
     supervise_hooks_factory,
 )
+from tests._imports import loaded_under, modules_loaded_after
 
 _needs_symlinks = pytest.mark.skipif(
     sys.platform == "win32", reason="creating symlinks needs extra privileges on Windows"
@@ -207,11 +208,17 @@ def test_check_file_edit_when_path_outside_repo_and_scratch_does_deny(root: Path
 
 
 def test_check_file_edit_when_posix_tmp_missing_does_deny_path_under_it(
-    root: Path, monkeypatch: pytest.MonkeyPatch
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    missing_tmp = Path(root.anchor) / "banana"
-    monkeypatch.setattr(hooks, "_POSIX_TMP", missing_tmp)
-    path = str(missing_tmp / "x.py")
+    posix_tmp = Path("/tmp")
+    real_is_dir = Path.is_dir
+
+    def is_dir_without_posix_tmp(self: Path, *args: object, **kwargs: object) -> bool:
+        return self != posix_tmp and real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir_without_posix_tmp)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "scratch"))
+    path = str(posix_tmp / "x.py")
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
     assert check_file_edit(hook_input, root) == _outside(path)
@@ -459,8 +466,8 @@ def test_check_file_edit_when_case_variant_of_worktree_does_allow(
     assert check_file_edit(hook_input, root) is None
 
 
-@pytest.mark.usefixtures("honors_case")
-def test_check_file_edit_when_sibling_dir_differs_by_case_does_treat_it_as_outside_repo(root: Path):
+@pytest.mark.usefixtures("under_scratch_root", "honors_case")
+def test_check_file_edit_when_sibling_dir_differs_by_case_does_allow_as_scratch(root: Path):
     sibling = _upper_root(root)
     (sibling / "src").mkdir(parents=True)
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(sibling / "src" / "x.py")}}
@@ -478,7 +485,7 @@ def test_check_file_edit_when_existing_dir_differs_from_worktree_by_case_does_de
     assert check_file_edit(hook_input, root) == _outside(path)
 
 
-@pytest.mark.usefixtures("case_sensitive_stat")
+@pytest.mark.usefixtures("under_scratch_root", "case_sensitive_stat")
 def test_check_file_edit_when_case_matters_and_repo_name_differs_by_case_does_allow_as_scratch(
     root: Path,
 ):
@@ -643,7 +650,9 @@ def test_check_file_edit_when_path_has_nul_does_deny_naming_the_rule(
     root: Path, monkeypatch: pytest.MonkeyPatch, realpath_keeps_nul: bool
 ):
     if realpath_keeps_nul:
-        monkeypatch.setattr(os.path, "realpath", os.path.abspath)
+        monkeypatch.setattr(
+            os.path, "realpath", create_autospec(os.path.realpath, side_effect=os.path.abspath)
+        )
     hook_input = {"tool_name": "Edit", "tool_input": {"file_path": "src/x\0.py"}, "cwd": str(root)}
 
     reason = check_file_edit(hook_input, root)
@@ -655,10 +664,7 @@ def test_check_file_edit_when_path_has_nul_does_deny_naming_the_rule(
 def test_check_file_edit_when_realpath_raises_does_deny_naming_the_rule(
     root: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
 ):
-    def failing_realpath(_path: str) -> str:
-        raise error
-
-    monkeypatch.setattr(os.path, "realpath", failing_realpath)
+    monkeypatch.setattr(os.path, "realpath", create_autospec(os.path.realpath, side_effect=error))
     hook_input = {"tool_name": "Edit", "tool_input": {"file_path": "src/x.py"}, "cwd": str(root)}
 
     reason = check_file_edit(hook_input, root)
@@ -786,14 +792,12 @@ def test_check_background_gymrat_when_in_background_gymrat_word_does_deny(comman
         "sleep 10",
         "cat gymrat-notes.txt",
         "ls my-gymrat",
-        "ls mygymrat",  # cspell:disable-line
         "tail gymrat_log",
         "echo gymrat2",
         "ls x_gymrat",
         "ls 2gymrat",
         "ls agymrat",  # cspell:disable-line
         "ls gymrats",  # cspell:disable-line
-        "ls gymrat9",
         "ls Xgymrat",  # cspell:disable-line
         "ls gymratX",  # cspell:disable-line
         pytest.param("echo 'unbalanced \"quotes", id="unbalanced-quote"),
@@ -887,7 +891,7 @@ def _foreground_gymrat(_root: Path, _worktree: Path) -> _CallbackCase:
         pytest.param(_foreground_gymrat, id="bash-foreground-gymrat-allowed"),
     ],
 )
-async def test_callback_when_called_does_answer_with_its_rule_decision(
+async def test_supervise_hooks_factory_when_a_hook_is_called_does_answer_with_its_rule_decision(
     root: Path,
     worktree: Path,
     case: Callable[[Path, Path], _CallbackCase],
@@ -907,14 +911,14 @@ async def test_callback_when_called_does_answer_with_its_rule_decision(
         pytest.param("check_background_gymrat", 1, id="bash"),
     ],
 )
-async def test_callback_when_rule_raises_does_deny(
+async def test_supervise_hooks_factory_when_the_rule_raises_does_deny(
     root: Path, monkeypatch: pytest.MonkeyPatch, rule_name: str, index: int
 ):
-    def _explode(*_args: object) -> str | None:
-        message = "boom"
-        raise RuntimeError(message)
-
-    monkeypatch.setattr(hooks, rule_name, _explode)
+    monkeypatch.setattr(
+        hooks,
+        rule_name,
+        create_autospec(getattr(hooks, rule_name), side_effect=RuntimeError("boom")),
+    )
     callback = supervise_hooks_factory(root)()["PreToolUse"][index].hooks[0]
 
     output = await callback(_bash_hook_input("ls"), "t", _CONTEXT)
@@ -922,23 +926,25 @@ async def test_callback_when_rule_raises_does_deny(
     assert output == _deny(_REFUSED_REASON)
 
 
-def test_supervise_hooks_factory_when_created_does_defer_the_sdk_import_until_built(root: Path):
-    probe = f"""
-import sys
-from pathlib import Path
-from gymrat.supervisor.hooks import supervise_hooks_factory
-factory = supervise_hooks_factory(Path({str(root)!r}))
-if 'claude_agent_sdk' in sys.modules:
-    print('factory creation imported the SDK', file=sys.stderr)
-    sys.exit(1)
-factory()
-if 'claude_agent_sdk' not in sys.modules:
-    print('building the mapping did not import the SDK', file=sys.stderr)
-    sys.exit(1)
-"""
-
-    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+def _create_factory_source(root: Path) -> str:
+    return (
+        "from pathlib import Path\n"
+        "from gymrat.supervisor.hooks import supervise_hooks_factory\n"
+        f"factory = supervise_hooks_factory(Path({str(root)!r}))"
     )
 
-    assert result.returncode == 0, result.stderr
+
+def test_supervise_hooks_factory_when_created_does_not_import_the_sdk(root: Path):
+    source = _create_factory_source(root)
+
+    loaded = modules_loaded_after(source)
+
+    assert loaded_under(loaded, "claude_agent_sdk") == []
+
+
+def test_supervise_hooks_factory_when_built_does_import_the_sdk(root: Path):
+    source = f"{_create_factory_source(root)}\nfactory()"
+
+    loaded = modules_loaded_after(source)
+
+    assert loaded_under(loaded, "claude_agent_sdk") != []

@@ -152,7 +152,8 @@ def test_create_run_span_observer_when_mirror_fails_in_a_chain_does_contain_the_
 ):
     later = collecting_observer()
     chain = combine_observers(
-        create_run_span_observer(_BrokenSpan()),  # pyrefly: ignore[bad-argument-type]
+        # pyrefly: ignore[bad-argument-type] -- _BrokenSpan stands in for Span with add_event only
+        create_run_span_observer(_BrokenSpan()),
         later.observer,
     )
     event = make_turn_end(at=8_000_000_000, text="done", cost_usd=0.05)

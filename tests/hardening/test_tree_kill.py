@@ -1,11 +1,16 @@
 """Tree-teardown hardening: a bench in its own session dies with the run that started it.
 
-Every test drives the production chain out of process. A tool child runs
-``run_with_signal_abort`` and starts its bench through ``exec_argv``, exactly as
-a gymrat run does, so the bench lands in its own POSIX session — or its own
-Windows job — instead of in the tool child's process group. Tearing the outer
-run down has to reach it anyway, whether the teardown comes from an abort, a
-timeout, a cancellation, or a signal to the supervisor.
+The heartbeat tests drive the production chain out of process. A tool child
+runs ``run_with_signal_abort`` and starts its bench through ``exec_argv``,
+exactly as a gymrat run does, so the bench lands in its own POSIX session — or
+its own Windows job — instead of in the tool child's process group. Tearing the
+outer run down has to reach it anyway, whether the teardown comes from an
+abort, a timeout, a cancellation, or a signal to the supervisor.
+
+The win32 Job Object tests at the end run in process instead: they drive a
+private copy of ``gymrat.exec`` whose job layer is faked, so the order in which
+a child is contained, and the taskkill fallback when the host refuses a job, are
+pinned from any host.
 
 Liveness is read from heartbeat files rather than process IDs: ``os.kill(pid, 0)``
 terminates the target on Windows, so a pid probe cannot be shared across
@@ -18,7 +23,6 @@ one platform are gated one by one.
 
 import asyncio
 import contextlib
-import ctypes
 import dataclasses
 import importlib.util
 import os
@@ -27,7 +31,6 @@ import subprocess
 import sys
 import time
 import types
-import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -35,7 +38,6 @@ from typing import Any
 import pytest
 
 from gymrat import exec as gymrat_exec
-from gymrat import process_group
 from gymrat.exec import (
     ExecOptions,
     SpawnError,
@@ -45,11 +47,17 @@ from gymrat.exec import (
 )
 from tests._exec_fixtures import Teardown, cancel_task, leave_to_timeout, set_abort
 from tests._process_helpers import (
+    JOB_HANDLE,
+    PROCESS_HANDLE,
     SLEEPER_ARGV,
+    FakeJobs,
     capture_spawns,
+    reaped,
+    record_subprocess_runs,
     refuse_resume,
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
+    win32_process_group,
 )
 
 # How often a heartbeat script rewrites its file.
@@ -93,40 +101,9 @@ _LATE_ATTACH_DELAY_S = 1.0
 # really running on has to read the platform recorded before any faking.
 _HOST_IS_WINDOWS = sys.platform == "win32"
 
-# Stand-in win32 handles and pid for the job tests, which never touch a real
-# process: distinct values so a close can be told apart from a job close.
-_JOB_HANDLE = 777
-_PROCESS_HANDLE = 4242
-_CHILD_PID = 4321
-
-# Grace given to a faked job that never empties, kept far below the real one so
-# the bound is reached in milliseconds.
-_FAKE_JOB_GRACE_S = 0.05
-
-# Hard cap on how often a faked job may be polled for its live process count.
-# The wait sleeps between polls, so any grace admits a poll count of roughly
-# grace / poll period — a handful under ``_FAKE_JOB_GRACE_S``, and fewer still
-# on a slow machine. Only a wait that stopped honouring its deadline reaches
-# this, and it turns that runaway loop into a failure instead of a hung suite.
-_FAKE_JOB_QUERY_CAP = 200
-
-# ``ctypes.WinError`` is bound only on Windows, but the production refusal paths
-# format it into their warning, so the faked platform hands them a stand-in.
-_FAKE_WIN_ERROR = "the host refused the call"
-
-# Win32 ABI values, spelled out here rather than read back from the module under
-# test: a build that set the wrong ones has to fail this, not agree with itself.
-# ``JobObjectExtendedLimitInformation`` and ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``.
-_WIN32_EXTENDED_LIMIT_INFORMATION = 9
-_WIN32_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-
-# ``CREATE_SUSPENDED``: the child exists but runs no instruction until resumed.
+# ``CREATE_SUSPENDED``, spelled out here rather than read back from the module
+# under test: the child exists but runs no instruction until resumed.
 _WIN32_CREATE_SUSPENDED = 0x4
-
-# NTSTATUS codes the faked ``NtResumeProcess`` answers with: ``STATUS_SUCCESS``
-# and the ``STATUS_ACCESS_DENIED`` a locked-down host replies with.
-_NT_STATUS_SUCCESS = 0
-_NT_STATUS_ACCESS_DENIED = 0xC0000022
 
 _BEAT = '''"""Rewrite the file named in argv[1] with this pid and a rising counter."""
 
@@ -265,6 +242,12 @@ def still_beating(path: Path) -> bool:
     hands a freed pid to the next process within milliseconds, so signalling a
     pid read from a stale file can take down an unrelated process. A file that
     is still advancing belongs to a live writer, which makes its pid current.
+
+    Args:
+        path: The heartbeat file to sample.
+
+    Returns:
+        True when the file changed between the two samples.
     """
     first = read_beat(path)
     time.sleep(_BEAT_PERIOD_S * 2)
@@ -316,22 +299,20 @@ def run_signalled_supervisor(
         The pid of the intermediate tool child that started the bench.
     """
     inner_pid_file = tmp_path / "inner_tool.pid"
-    proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list, not shell-injected
-        tool_argv(
-            scripts,
-            tmp_path / "outer_tool.pid",
-            *tool_argv(
-                scripts,
-                inner_pid_file,
-                *bench_argv(scripts, bench_beat, grandchild_beat),
-            ),
-        ),
-        cwd=str(tmp_path),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+    argv = tool_argv(
+        scripts,
+        tmp_path / "outer_tool.pid",
+        *tool_argv(scripts, inner_pid_file, *bench_argv(scripts, bench_beat, grandchild_beat)),
     )
-    try:
+    with reaped(
+        subprocess.Popen(  # noqa: S603 -- argv is a fixed list, not shell-injected
+            argv,
+            cwd=str(tmp_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    ) as proc:
         wait_for_beat(bench_beat)
         wait_for_beat(grandchild_beat)
         tool_pid = wait_for_pid_file_blocking(inner_pid_file, timeout_s=_BEAT_TIMEOUT_S)
@@ -339,10 +320,6 @@ def run_signalled_supervisor(
         stop(proc)
 
         proc.communicate(timeout=_SUPERVISOR_EXIT_TIMEOUT_S)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.communicate()
     return tool_pid
 
 
@@ -497,11 +474,6 @@ async def test_exec_argv_when_torn_down_does_settle_within_the_bound_with_the_ch
 
 
 # ---------------------------------------------------------------------------
-# a child that ignores the graceful request is killed once the grace elapses
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # a signalled — or hard-killed — supervisor takes the whole tree with it
 # ---------------------------------------------------------------------------
 
@@ -617,12 +589,17 @@ async def test_exec_argv_when_containment_lands_late_does_leave_no_descendant_al
     assert survivors == [], "a descendant started before containment landed outlived the run"
 
 
+# The POSIX side of a refused resume is pinned in tests/exec/test_spawn_contained.py.
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="a refused resume leaves a real child suspended only under Job Objects",
+)
 async def test_spawn_contained_when_child_cannot_be_resumed_does_raise_with_child_torn_down(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spawned = capture_spawns(monkeypatch, "create_subprocess_exec")
-    # On win32 the child really is left suspended; elsewhere it runs, but only teardown ends it.
+    # The child really is left suspended; only teardown ends it.
     monkeypatch.setattr(gymrat_exec, "resume_process_group", refuse_resume)
 
     with pytest.raises(SpawnError, match="could not be resumed"):
@@ -632,302 +609,6 @@ async def test_spawn_contained_when_child_cannot_be_resumed_does_raise_with_chil
         )
 
     assert spawned[0].returncode is not None, "the child that could not resume was never killed"
-
-
-# ---------------------------------------------------------------------------
-# win32 Job Objects: teardown observed from a POSIX run
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass(slots=True)
-class FakeJobs:
-    """Answers the Job Object calls of one child and records what was asked of it.
-
-    ``active_counts`` is handed out one per accounting query, so a test can walk
-    a job down to empty; once it runs out, every further query reports
-    ``final_active``.
-    """
-
-    active_counts: list[int] = dataclasses.field(default_factory=list)
-    final_active: int = 0
-    creation_granted: bool = True
-    """Whether ``CreateJobObjectW`` hands out a job, as a locked-down host would not."""
-
-    assignment_granted: bool = True
-    """Whether ``AssignProcessToJobObject`` accepts the child, as a locked-down host would not."""
-
-    resume_granted: bool = True
-    """Whether ``NtResumeProcess`` accepts the handle, as a locked-down host would not."""
-
-    queried: list[int] = dataclasses.field(default_factory=list)
-    closed: list[int] = dataclasses.field(default_factory=list)
-    terminated: list[int] = dataclasses.field(default_factory=list)
-    limited: list[tuple[int, int]] = dataclasses.field(default_factory=list)
-    """Info class and ``BasicLimitInformation.LimitFlags`` of each limits call."""
-
-    opened: dict[int, int] = dataclasses.field(default_factory=dict)
-    """Pid behind each process handle handed out by ``OpenProcess``."""
-
-    assigned: list[tuple[int, int]] = dataclasses.field(default_factory=list)
-    """Job handle and pid of each successful assignment."""
-
-    resumed: list[int] = dataclasses.field(default_factory=list)
-    """Pid behind the handle of each successful resume."""
-
-
-def fake_kernel32(jobs: FakeJobs) -> types.SimpleNamespace:
-    """A ``kernel32`` stub that grants every job call and answers queries from ``jobs``."""
-
-    def query_information_job_object(
-        job: object,
-        info_class: object,
-        info: Any,
-        *_args: object,
-    ) -> int:
-        active = jobs.active_counts.pop(0) if jobs.active_counts else jobs.final_active
-        jobs.queried.append(active)
-        assert len(jobs.queried) <= _FAKE_JOB_QUERY_CAP, (
-            "the wait polled the job past every plausible grace instead of giving up"
-        )
-        # The production call passes ``ctypes.byref(struct)``; the struct it
-        # reads the count back out of is what ``_obj`` reaches.
-        info._obj.ActiveProcesses = active
-        return 1
-
-    def close_handle(handle: int) -> int:
-        jobs.closed.append(handle)
-        return 1
-
-    def terminate_job_object(job: int, *_args: object) -> int:
-        jobs.terminated.append(job)
-        return 1
-
-    def create_job_object(*_args: object) -> int:
-        # A NULL handle is how ``CreateJobObjectW`` reports a refusal.
-        return _JOB_HANDLE if jobs.creation_granted else 0
-
-    def open_process(_access: int, _inherit: bool, pid: int) -> int:
-        jobs.opened[_PROCESS_HANDLE] = pid
-        return _PROCESS_HANDLE
-
-    def set_information_job_object(
-        _job: int,
-        info_class: int,
-        info: Any,
-        *_args: object,
-    ) -> int:
-        # ``ctypes.byref(struct)`` again: ``_obj`` is the struct the production
-        # code filled in before handing it over.
-        jobs.limited.append((info_class, info._obj.BasicLimitInformation.LimitFlags))
-        return 1
-
-    def assign_process_to_job_object(job: int, process: int) -> int:
-        if not jobs.assignment_granted:
-            return 0
-        jobs.assigned.append((job, jobs.opened[process]))
-        return 1
-
-    return types.SimpleNamespace(
-        CreateJobObjectW=create_job_object,
-        SetInformationJobObject=set_information_job_object,
-        OpenProcess=open_process,
-        AssignProcessToJobObject=assign_process_to_job_object,
-        CloseHandle=close_handle,
-        TerminateJobObject=terminate_job_object,
-        QueryInformationJobObject=query_information_job_object,
-    )
-
-
-def fake_ntdll(jobs: FakeJobs) -> types.SimpleNamespace:
-    """An ``ntdll`` stub that resumes the process behind a handle ``jobs`` handed out."""
-
-    def resume_process(process: int) -> int:
-        if not jobs.resume_granted:
-            return _NT_STATUS_ACCESS_DENIED
-        jobs.resumed.append(jobs.opened[process])
-        return _NT_STATUS_SUCCESS
-
-    return types.SimpleNamespace(NtResumeProcess=resume_process)
-
-
-def win32_process_group(monkeypatch: pytest.MonkeyPatch, jobs: FakeJobs) -> types.ModuleType:
-    """Load a private copy of ``gymrat.process_group`` with its win32 job path bound.
-
-    The job functions exist only under ``sys.platform == "win32"``, so reaching
-    them from a POSIX run means executing the module source again with the
-    platform faked and ``kernel32`` stubbed. The copy is the test's own; the
-    imported module keeps its POSIX bindings.
-    """
-    windll = types.SimpleNamespace(kernel32=fake_kernel32(jobs), ntdll=fake_ntdll(jobs))
-    monkeypatch.setattr(ctypes, "windll", windll, raising=False)
-    monkeypatch.setattr(ctypes, "WinError", lambda: OSError(_FAKE_WIN_ERROR), raising=False)
-    monkeypatch.setattr(sys, "platform", "win32")
-    spec = importlib.util.spec_from_file_location("process_group_win32", process_group.__file__)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def record_subprocess_runs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """Stub ``subprocess.run`` to record every call's argv instead of running it."""
-    argv_calls: list[list[str]] = []
-
-    def record_run(args: list[str], *_args: object, **_kwargs: object) -> object:
-        argv_calls.append(args)
-        return subprocess.CompletedProcess(args, 0)
-
-    monkeypatch.setattr(subprocess, "run", record_run)
-    return argv_calls
-
-
-def test_attach_process_group_when_child_gets_a_job_does_limit_it_to_kill_on_close(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    jobs = FakeJobs()
-    module = win32_process_group(monkeypatch, jobs)
-
-    module.attach_process_group(_CHILD_PID)
-
-    assert len(jobs.limited) == 1, "the child's job was created without a limits call"
-    info_class, limit_flags = jobs.limited[0]
-    assert info_class == _WIN32_EXTENDED_LIMIT_INFORMATION
-    assert limit_flags & _WIN32_LIMIT_KILL_ON_JOB_CLOSE, (
-        "the job does not kill its members when its last handle closes"
-    )
-
-
-@pytest.mark.parametrize("entry", ["terminate_process_group", "kill_process_group"])
-def test_stop_process_group_when_job_assignment_refused_does_fall_back_to_taskkill_with_one_warning(
-    monkeypatch: pytest.MonkeyPatch,
-    recwarn: pytest.WarningsRecorder,
-    entry: str,
-) -> None:
-    jobs = FakeJobs(assignment_granted=False)
-    module = win32_process_group(monkeypatch, jobs)
-    argv_calls = record_subprocess_runs(monkeypatch)
-    module.attach_process_group(_CHILD_PID)
-
-    getattr(module, entry)(_CHILD_PID)
-
-    refusals = [w for w in recwarn if "job assignment refused" in str(w.message)]
-    assert len(refusals) == 1, "a refused assignment has to warn exactly once"
-    assert refusals[0].category is RuntimeWarning
-    assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
-        "a child that never reached a job was not torn down through taskkill"
-    )
-    assert jobs.closed == [_PROCESS_HANDLE, _JOB_HANDLE], "the refused job handle was leaked"
-
-
-async def test_exec_argv_when_run_settles_on_win32_does_hold_the_child_in_a_job_until_it_settles(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    jobs = FakeJobs()
-    group = win32_process_group(monkeypatch, jobs)
-    module = win32_exec(monkeypatch, group)
-
-    result = await module.exec_argv(
-        [sys.executable, "-c", "import os; print(os.getpid(), os.getppid())"],
-        module.ExecOptions(cwd=str(tmp_path)),
-    )
-
-    assert isinstance(result, module.ExecResult)
-    assert result.exit_code == 0
-    reporting_pid, parent_pid = (int(field) for field in result.stdout.split())
-    # A Windows virtual environment reaches the interpreter through a launcher
-    # that runs it as a child of its own, so there the pid exec spawned is the
-    # reporting process's parent — the job holds both either way. On POSIX the
-    # parent is this test process, which is never the one jobbed.
-    spawned_tree = {reporting_pid, parent_pid} if _HOST_IS_WINDOWS else {reporting_pid}
-    assert [job for job, _ in jobs.assigned] == [_JOB_HANDLE], (
-        "the spawned child never reached a job"
-    )
-    jobbed_pid = jobs.assigned[0][1]
-    assert jobbed_pid in spawned_tree, "a process outside the spawned tree was put in the job"
-    assert jobs.resumed == [jobbed_pid], "the contained child was left suspended"
-    assert jobs.closed == [_PROCESS_HANDLE, _PROCESS_HANDLE, _JOB_HANDLE], (
-        "the settled run left the child's job open, so a descendant survives it"
-    )
-
-
-def test_kill_process_group_when_host_has_no_sigkill_does_terminate_the_job(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    jobs = FakeJobs()
-    monkeypatch.delattr(signal, "SIGKILL", raising=False)
-    module = win32_process_group(monkeypatch, jobs)
-    module.attach_process_group(_CHILD_PID)
-
-    module.kill_process_group(_CHILD_PID)
-
-    assert jobs.terminated == [_JOB_HANDLE], (
-        "the kill never reached the job: a host without SIGKILL cannot be asked for one"
-    )
-
-
-@pytest.mark.parametrize("entry", ["terminate_process_group", "release_process_group"])
-def test_terminate_or_release_process_group_when_job_still_emptying_does_wait_for_its_last_process(
-    monkeypatch: pytest.MonkeyPatch,
-    entry: str,
-) -> None:
-    jobs = FakeJobs(active_counts=[2, 1, 0])
-    module = win32_process_group(monkeypatch, jobs)
-    module.attach_process_group(_CHILD_PID)
-
-    getattr(module, entry)(_CHILD_PID)
-
-    assert jobs.terminated == [_JOB_HANDLE]
-    assert jobs.queried == [2, 1, 0], "the teardown returned before the job reported itself empty"
-
-
-def test_terminate_process_group_when_job_never_empties_does_give_up_at_the_grace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    jobs = FakeJobs(final_active=1)
-    module = win32_process_group(monkeypatch, jobs)
-    monkeypatch.setattr(module, "TERMINATE_GRACE_S", _FAKE_JOB_GRACE_S)
-    module.attach_process_group(_CHILD_PID)
-    started = time.monotonic()
-
-    module.terminate_process_group(_CHILD_PID)
-
-    elapsed = time.monotonic() - started
-    assert len(jobs.queried) > 1, "the wait gave up without ever polling the job again"
-    assert elapsed < _GRACE_BOUND_S, "a job that never empties held the teardown open"
-
-
-def test_release_process_group_when_run_settles_does_terminate_and_close_the_empty_job(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    jobs = FakeJobs()
-    module = win32_process_group(monkeypatch, jobs)
-    module.attach_process_group(_CHILD_PID)
-
-    module.release_process_group(_CHILD_PID)
-
-    assert (jobs.terminated, jobs.queried) == ([_JOB_HANDLE], [0])
-    assert jobs.closed == [_PROCESS_HANDLE, _JOB_HANDLE], (
-        "the settle path left the job handle open, so a descendant survives it"
-    )
-
-
-def test_kill_process_group_when_job_already_released_does_fall_back_to_taskkill(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    jobs = FakeJobs()
-    module = win32_process_group(monkeypatch, jobs)
-    argv_calls = record_subprocess_runs(monkeypatch)
-    module.attach_process_group(_CHILD_PID)
-    module.release_process_group(_CHILD_PID)
-
-    module.kill_process_group(_CHILD_PID)
-
-    assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
-        "the released job was still on record, so the kill reached a closed handle"
-    )
-    assert jobs.terminated == [_JOB_HANDLE], "the kill reached the job after its release"
 
 
 # ---------------------------------------------------------------------------
@@ -996,127 +677,110 @@ def spawn_children_running(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(asyncio, "create_subprocess_shell", shell_running)
 
 
-def trace_containment(
-    monkeypatch: pytest.MonkeyPatch,
-    module: types.ModuleType,
-) -> list[tuple[str, int]]:
-    """Record every containment step ``module`` takes around a spawn, in order.
+@dataclasses.dataclass(slots=True)
+class ContainmentTrace:
+    """What a traced ``gymrat.exec`` copy did around each spawn."""
 
-    The recorded number is the child's creation flags for the spawn itself and
-    the pid for the seams that follow it, so a test reads both the order of the
-    steps and what each one asked for.
+    steps: list[tuple[str, int]] = dataclasses.field(default_factory=list)
+    """Every containment step in order: the spawn with the child's creation
+    flags, then each seam that follows it with the pid it was handed."""
+
+    session_requests: list[set[str]] = dataclasses.field(default_factory=list)
+    """The POSIX session arguments each spawn asked for."""
+
+
+def trace_containment(
+    monkeypatch: pytest.MonkeyPatch, module: types.ModuleType
+) -> ContainmentTrace:
+    """Record every containment step ``module`` takes around a spawn, in order.
 
     Args:
         monkeypatch: Used to wrap the spawn call and the copy's seams.
         module: The ``gymrat.exec`` copy whose spawn is traced.
 
     Returns:
-        The list the steps are appended to, in the order they happen.
+        The trace the steps and spawn arguments are recorded into as they happen.
     """
-    steps: list[tuple[str, int]] = []
+    trace = ContainmentTrace()
     spawn = asyncio.create_subprocess_exec
     attach = module.attach_process_group
     resume = module.resume_process_group
 
     async def record_spawn(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
-        steps.append(("spawn", kwargs.get("creationflags", 0)))
+        trace.steps.append(("spawn", kwargs.get("creationflags", 0)))
+        trace.session_requests.append(kwargs.keys() & {"start_new_session", "preexec_fn"})
         return await spawn(*args, **kwargs)
 
     def record_attach(pid: int) -> None:
-        steps.append(("attach", pid))
+        trace.steps.append(("attach", pid))
         attach(pid)
 
     def record_resume(pid: int) -> bool:
-        steps.append(("resume", pid))
+        trace.steps.append(("resume", pid))
         return resume(pid)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", record_spawn)
     monkeypatch.setattr(module, "attach_process_group", record_attach)
     monkeypatch.setattr(module, "resume_process_group", record_resume)
-    return steps
+    return trace
 
 
 @pytest.mark.parametrize(
-    ("resume_granted", "resumed", "warnings_raised"),
+    ("assignment_granted", "assigned_jobs", "closed"),
     [
-        pytest.param(True, [_CHILD_PID], [], id="suspended-child-is-resumed"),
+        pytest.param(
+            True,
+            [JOB_HANDLE],
+            [PROCESS_HANDLE, PROCESS_HANDLE, JOB_HANDLE],
+            id="job-granted-held-until-the-run-settles",
+        ),
         pytest.param(
             False,
             [],
-            [f"could not resume pid {_CHILD_PID}: NTSTATUS 0xC0000022"],
-            id="refused-resume-warns",
+            [PROCESS_HANDLE, JOB_HANDLE, PROCESS_HANDLE],
+            id="job-refused-released-at-once",
         ),
     ],
 )
-def test_resume_process_group_when_resume_granted_or_refused_does_close_the_child_handle(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    resume_granted: bool,
-    resumed: list[int],
-    warnings_raised: list[str],
-) -> None:
-    jobs = FakeJobs(resume_granted=resume_granted)
-    module = win32_process_group(monkeypatch, jobs)
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        result = module.resume_process_group(_CHILD_PID)
-
-    assert result is resume_granted
-    assert jobs.resumed == resumed
-    assert [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)] == (
-        warnings_raised
-    )
-    assert jobs.closed == [_PROCESS_HANDLE], "the child's handle was leaked"
-
-
-@pytest.mark.parametrize(
-    "assignment_granted",
-    [pytest.param(True, id="job-granted"), pytest.param(False, id="job-refused")],
-)
-async def test_exec_argv_when_spawning_on_win32_does_suspend_the_child_until_it_is_contained(
+async def test_exec_argv_when_run_on_win32_does_contain_the_suspended_child_until_it_settles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     recwarn: pytest.WarningsRecorder,
+    *,
     assignment_granted: bool,
+    assigned_jobs: list[int],
+    closed: list[int],
 ) -> None:
     jobs = FakeJobs(assignment_granted=assignment_granted)
     group = win32_process_group(monkeypatch, jobs)
     module = win32_exec(monkeypatch, group)
-    steps = trace_containment(monkeypatch, module)
+    trace = trace_containment(monkeypatch, module)
 
     result = await module.exec_argv(
-        [sys.executable, "-c", "pass"],
+        [sys.executable, "-c", "import os; print(os.getpid(), os.getppid())"],
         module.ExecOptions(cwd=str(tmp_path)),
     )
 
     assert result.exit_code == 0, "a contained child never ran to completion"
-    assert [name for name, _ in steps] == ["spawn", "attach", "resume"], (
+    assert [name for name, _ in trace.steps] == ["spawn", "attach", "resume"], (
         "the child was left to run before it had joined its job"
     )
-    creation_flags = steps[0][1]
+    creation_flags = trace.steps[0][1]
     assert creation_flags & _WIN32_CREATE_SUSPENDED, (
         "the child was created running, so it acts before containment lands"
     )
-    assert jobs.resumed == [steps[2][1]], "the contained child was left suspended"
-
-
-async def test_exec_argv_when_spawning_on_win32_does_not_ask_for_a_posix_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module = win32_exec(monkeypatch, win32_process_group(monkeypatch, FakeJobs()))
-    spawn = asyncio.create_subprocess_exec
-    asked: list[set[str]] = []
-
-    async def record_spawn(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
-        asked.append(kwargs.keys() & {"start_new_session", "preexec_fn"})
-        return await spawn(*args, **kwargs)
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", record_spawn)
-
-    await module.exec_argv([sys.executable, "-c", "pass"], module.ExecOptions(cwd=str(tmp_path)))
-
-    assert asked == [set()]
+    assert trace.session_requests == [set()], "a win32 spawn asked for a POSIX session"
+    child_pid = trace.steps[2][1]
+    reporting_pid, parent_pid = (int(field) for field in result.stdout.split())
+    # A Windows virtual environment reaches the interpreter through a launcher
+    # that runs it as a child of its own, so there the pid exec spawned is the
+    # reporting process's parent — the job holds both either way. On POSIX the
+    # parent is this test process, which is never the one contained.
+    spawned_tree = {reporting_pid, parent_pid} if _HOST_IS_WINDOWS else {reporting_pid}
+    assert child_pid in spawned_tree, "a process outside the spawned tree was contained"
+    assert jobs.assigned == [(job, child_pid) for job in assigned_jobs]
+    assert jobs.resumed == [child_pid], "the contained child was left suspended"
+    assert jobs.closed == closed, "the settled run left a handle open"
 
 
 # ---------------------------------------------------------------------------
@@ -1124,7 +788,7 @@ async def test_exec_argv_when_spawning_on_win32_does_not_ask_for_a_posix_session
 # ---------------------------------------------------------------------------
 
 
-async def test_spawn_contained_when_host_refuses_job_creation_does_fall_back_to_taskkill_with_one_warning(
+async def test_kill_process_group_when_job_creation_was_refused_does_fall_back_to_taskkill_with_one_warning(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     recwarn: pytest.WarningsRecorder,

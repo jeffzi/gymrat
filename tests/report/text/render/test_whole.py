@@ -9,22 +9,25 @@ entries are compared with their internal padding collapsed — that padding is
 pinned exactly by ``test_verdicts`` — so these tests pin order and content
 without re-pinning column widths a second time.
 
-A handful of representative layouts are also pinned byte for byte as golden
-outputs, colored and plain, so a change to how the table is drawn cannot shift
-a padding space, a rule dash or a style escape unnoticed.
+A handful of representative layouts are also pinned byte for byte as plain
+golden outputs, so a change to how the table is drawn cannot shift a padding
+space or a rule dash unnoticed. Color is pinned per element with ``styles_at``
+rather than as escape bytes, so a change in how rich encodes a style does not
+read as a regression.
 """
 
 from __future__ import annotations
 
 import math
 import re
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
 
 from gymrat.config import KindEntry
 from gymrat.model import Exclusion
-from gymrat.report.text.render import render_report
+from gymrat.report.text.render import render_measure_report, render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
 from gymrat.targets import WorktreeRemovalFailure
 from gymrat.verdict import GroupAggregate, KindAggregate
@@ -51,6 +54,7 @@ from tests.report._comparisons import (
     single_sample_result,
     two_kind_result,
 )
+from tests.report._measurements import two_kind_measurement
 from tests.report._verdicts import band_verdict, exact_verdict, geomean_of, permutation_verdict
 
 if TYPE_CHECKING:
@@ -199,8 +203,29 @@ def test_render_report_when_the_sole_kind_gates_nothing_does_tag_before_the_head
     ]
 
 
+@pytest.mark.parametrize(
+    "render",
+    [
+        pytest.param(
+            lambda: render_report(replace(two_kind_result(), config_kinds=None)),
+            id="compare",
+        ),
+        pytest.param(
+            lambda: render_measure_report(replace(two_kind_measurement(), config_kinds=None)),
+            id="measure",
+        ),
+    ],
+)
+def test_render_when_kind_is_informational_by_metric_overrides_does_tag_it_without_a_config_source(
+    render: Callable[[], str],
+):
+    report = render()
+
+    assert line_containing(report, "informational") == "informational — gating off"
+
+
 # ---------------------------------------------------------------------------
-# geomean value stays quiet when its metrics landed within noise
+# geomean color
 # ---------------------------------------------------------------------------
 
 
@@ -246,21 +271,22 @@ def _quiet_two_kind_result() -> ComparisonResult:
 
 
 @pytest.mark.parametrize(
-    ("label", "value"),
+    ("make_result", "label", "value", "expected"),
     [
-        pytest.param("geomean · entity", "-8.6%", id="group"),
-        pytest.param("geomean · time", "-8.5%", id="kind"),
+        pytest.param(_quiet_two_kind_result, "geomean · entity", "-8.6%", ["1"], id="quiet-group"),
+        pytest.param(_quiet_two_kind_result, "geomean · time", "-8.5%", ["1"], id="quiet-kind"),
+        pytest.param(
+            two_kind_result, "geomean · entity", "-3.1%", ["1", "32"], id="improving-group"
+        ),
+        pytest.param(two_kind_result, "geomean · time", "-3.2%", ["1", "32"], id="improving-kind"),
     ],
 )
-def test_render_report_when_quiet_metrics_and_colored_does_leave_the_geomean_uncolored(
-    label: str, value: str
+def test_render_report_when_colored_does_paint_the_geomean_by_the_verdicts_behind_it(
+    make_result: Callable[[], ComparisonResult], label: str, value: str, expected: list[str]
 ):
+    line = line_containing(render_report(make_result(), ReportOptions(color=True)), label)
 
-    line = line_containing(
-        render_report(_quiet_two_kind_result(), ReportOptions(color=True)), label
-    )
-
-    assert styles_at(line, value) == ["1"]
+    assert styles_at(line, value) == expected
 
 
 def test_render_report_when_quiet_flat_metric_and_colored_does_leave_the_geomean_uncolored():
@@ -330,7 +356,7 @@ def _time_kind_of(value: float) -> KindAggregate:
 
 
 # ---------------------------------------------------------------------------
-# whole-report assembly (golden conversions)
+# whole-report assembly
 # ---------------------------------------------------------------------------
 
 
@@ -571,27 +597,67 @@ def test_render_report_when_single_sample_does_close_on_the_hint_with_no_highlig
 
 
 @pytest.mark.parametrize(
-    ("make_result", "color"),
+    "make_result",
     [
-        pytest.param(_one_kind_result, False, id="flat-grouped-plain"),
-        pytest.param(_one_kind_result, True, id="flat-grouped-colored"),
-        pytest.param(_degenerate_result, False, id="flat-degenerate-plain"),
-        pytest.param(_two_candidate_result, False, id="flat-two-candidates-plain"),
-        pytest.param(two_kind_result, False, id="sectioned-single-candidate-plain"),
-        pytest.param(grouped_comparison, False, id="sectioned-multi-candidate-plain"),
-        pytest.param(grouped_comparison, True, id="sectioned-multi-candidate-colored"),
-        pytest.param(_non_gating_result, False, id="flat-no-stable-metrics-plain"),
+        pytest.param(_one_kind_result, id="flat-grouped-plain"),
+        pytest.param(_degenerate_result, id="flat-degenerate-plain"),
+        pytest.param(_two_candidate_result, id="flat-two-candidates-plain"),
+        pytest.param(two_kind_result, id="sectioned-single-candidate-plain"),
+        pytest.param(grouped_comparison, id="sectioned-multi-candidate-plain"),
+        pytest.param(_non_gating_result, id="flat-no-stable-metrics-plain"),
         pytest.param(
-            _non_gating_two_candidate_result,
-            False,
-            id="flat-two-candidates-no-stable-metrics-plain",
+            _non_gating_two_candidate_result, id="flat-two-candidates-no-stable-metrics-plain"
         ),
-        pytest.param(_mixed_methods_result, False, id="flat-mixed-methods-plain"),
+        pytest.param(_mixed_methods_result, id="flat-mixed-methods-plain"),
     ],
 )
 def test_render_report_when_rendered_does_match_its_golden(
-    make_result: Callable[[], ComparisonResult], color: bool, snapshot: SnapshotAssertion
+    make_result: Callable[[], ComparisonResult], snapshot: SnapshotAssertion
 ):
-    report = render_report(make_result(), ReportOptions(color=color))
+    report = render_report(make_result(), ReportOptions(color=False))
 
     assert report.split("\n") == snapshot
+
+
+# ---------------------------------------------------------------------------
+# element styling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("make_result", "needle", "marker", "expected"),
+    [
+        pytest.param(_one_kind_result, "gymrat compare", "gymrat compare", ["1"], id="title-bold"),
+        pytest.param(_one_kind_result, "gymrat compare", "·", ["2"], id="header-separator-dim"),
+        pytest.param(_one_kind_result, "metric ", "main", ["1", "4"], id="column-label-underlined"),
+        pytest.param(
+            _one_kind_result, "entity · time", "entity · time", ["1", "34"], id="group-header-blue"
+        ),
+        pytest.param(_one_kind_result, "alive_check", "✓", ["32"], id="improved-glyph-green"),
+        pytest.param(_one_kind_result, "spawn", "✗", ["31"], id="regressed-glyph-red"),
+        pytest.param(_one_kind_result, "alive_check", "±2.5%", ["2"], id="metric-band-dim"),
+        pytest.param(_one_kind_result, "geomean", "geomean", ["1"], id="aggregate-label-bold"),
+        pytest.param(two_kind_result, "geomean · time", "±2.0%", ["2"], id="aggregate-band-dim"),
+        pytest.param(_one_kind_result, "highlights", "highlights", ["1"], id="highlights-bold"),
+        pytest.param(grouped_comparison, "time", "time", ["1"], id="section-title-bold"),
+        pytest.param(
+            grouped_comparison, "alive_check", "-10.0%", ["32"], id="candidate-delta-green"
+        ),
+        pytest.param(grouped_comparison, "alive_check", "+4.0%", ["31"], id="candidate-delta-red"),
+        pytest.param(
+            grouped_comparison, "geomean · entity", "+4.0%", ["1", "31"], id="regressing-geomean"
+        ),
+        pytest.param(
+            grouped_comparison, "geomean · entity", "1 stable metric", ["2"], id="stable-count-dim"
+        ),
+        pytest.param(
+            grouped_comparison, "informational", "informational", ["2"], id="informational-dim"
+        ),
+    ],
+)
+def test_render_report_when_colored_does_style_each_element(
+    make_result: Callable[[], ComparisonResult], needle: str, marker: str, expected: list[str]
+):
+    line = line_containing(render_report(make_result(), ReportOptions(color=True)), needle)
+
+    assert styles_at(line, marker) == expected

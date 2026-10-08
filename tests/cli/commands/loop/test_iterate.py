@@ -22,7 +22,7 @@ from syrupy.assertion import SnapshotAssertion
 
 from gymrat.cli.app import app
 from gymrat.cli.iterate.progress import IterateRenderer
-from gymrat.loop.iterate.run import IterateOptions, IterateResult, LoopStopError, iterate_session
+from gymrat.loop.iterate.run import IterateOptions, IterateResult, iterate_session
 from gymrat.progress_events import (
     JudgeStarted,
     PassFinished,
@@ -32,13 +32,13 @@ from gymrat.progress_events import (
     ProgressEvent,
 )
 from gymrat.session.paths import progress_path
-from gymrat.session.records import CommandRecord, Confirm, PairedSamples
+from gymrat.session.records import CommandRecord
 from tests._ansi import (
     strip_ansi,
     stripped_lines,
 )
 from tests._cli import ENTRY, no_color_env
-from tests._process_helpers import wait_for_pid_file_blocking
+from tests._process_helpers import reaped, wait_for_pid_file_blocking
 from tests._rich import Clock, console_output, frame_text, screen_lines, sealed_console
 from tests.cli._budget import (
     SUPERVISED_HINT,
@@ -62,6 +62,8 @@ from tests.loop.iterate._fixtures import (
     improved_rounds,
     install_collect_samples,
     iterate_session_header,
+    regressed_run,
+    stub_runs,
     stub_samples,
 )
 from tests.session.records._fixtures import (
@@ -193,23 +195,6 @@ def _make_iterate_result() -> IterateResult:
     )
 
 
-def _wire_successful_iterate(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open a fresh session and stub ``iterate_session`` to succeed."""
-    write_session_log(repo, iterate_session_header(repo))
-    _install_iterate_session(
-        monkeypatch, create_autospec(iterate_session, return_value=_make_iterate_result())
-    )
-
-
-def _wire_stopping_iterate(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open a fresh session and stub ``iterate_session`` to hit the stop condition."""
-    write_session_log(repo, iterate_session_header(repo))
-    _install_iterate_session(
-        monkeypatch,
-        create_autospec(iterate_session, side_effect=LoopStopError("max iterations (3) reached")),
-    )
-
-
 #: A run up to the judge, with one measured pass the bar counts against the sample total.
 _DASHBOARD_EVENTS: tuple[ProgressEvent, ...] = (
     PrepareStarted(label="baseline", at_ms=0),
@@ -236,15 +221,8 @@ def test_iterate_command_when_live_does_show_the_session_and_time_the_judge_in_s
     assert frame_text(renderer.frame()) == snapshot
 
 
-@pytest.mark.parametrize(
-    ("flags", "transient"),
-    [
-        pytest.param(["--verbose"], False, id="verbose"),
-        pytest.param([], True, id="quiet"),
-    ],
-)
-def test_iterate_command_when_live_does_keep_the_display_only_under_verbose(
-    repo: str, monkeypatch: pytest.MonkeyPatch, flags: list[str], transient: bool
+def test_iterate_command_when_verbose_does_keep_the_live_display(
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     write_session_log(repo, iterate_session_header(repo))
     _install_live_console(monkeypatch)
@@ -261,9 +239,9 @@ def test_iterate_command_when_live_does_keep_the_display_only_under_verbose(
         monkeypatch, create_autospec(iterate_session, side_effect=note_transient)
     )
 
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", *flags])
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--verbose"])
 
-    assert (result.exit_code, mounted) == (0, [transient])
+    assert (result.exit_code, mounted) == (0, [False])
 
 
 def test_iterate_command_when_error_does_stop_the_live_display(
@@ -300,24 +278,21 @@ def test_iterate_command_when_terminated_mid_pass_does_remove_the_progress_sidec
     script.write_text(_BLOCKING_BENCH.format(directory=tmp_path), encoding="utf-8")
     start_with(repo)
     write_bench_config(repo, bench=f"sh {shlex.quote(str(script))}")
-    proc = subprocess.Popen(  # noqa: S603 -- argv is the gymrat entry point plus a fixed command
-        [*ENTRY, "iterate"],
-        cwd=repo,
-        env=no_color_env(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
+    with reaped(
+        subprocess.Popen(  # noqa: S603 -- argv is the gymrat entry point plus a fixed command
+            [*ENTRY, "iterate"],
+            cwd=repo,
+            env=no_color_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    ) as proc:
         # The pass-start event writes the sidecar before the bench runs.
         reap_groups.append(wait_for_pid_file_blocking(tmp_path / "bench.pid", _SETTLE_TIMEOUT_S))
 
         proc.send_signal(signal.SIGTERM)
         proc.communicate(timeout=_SETTLE_TIMEOUT_S)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.communicate()
 
     assert (proc.returncode, Path(progress_path(repo)).exists()) == (143, False)
 
@@ -384,29 +359,12 @@ def _warning_lines(stderr: str) -> list[str]:
 _THREE_DISK_FULL = ("disk full", "disk full", "disk full")
 
 
-def test_iterate_command_when_subscriber_raises_different_failures_does_warn_once_per_failure(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _wire_failing_subscriber(repo, monkeypatch, ("disk full", "permission denied", "disk full"))
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    assert _warning_lines(result.stderr) == ["warning: disk full", "warning: permission denied"]
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        pytest.param(["--debug", "iterate", "--bench", "npm run bench"], id="root-flag"),
-        pytest.param(["iterate", "--bench", "npm run bench", "--debug"], id="command-flag"),
-    ],
-)
 def test_iterate_command_when_debug_and_subscriber_raises_does_follow_the_warning_with_traceback(
-    repo: str, monkeypatch: pytest.MonkeyPatch, argv: list[str]
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _wire_failing_subscriber(repo, monkeypatch, _THREE_DISK_FULL)
 
-    result = runner.invoke(app, argv)
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--debug"])
 
     lines = strip_ansi(result.stderr).splitlines()
     warning_at = lines.index("warning: disk full")
@@ -414,14 +372,25 @@ def test_iterate_command_when_debug_and_subscriber_raises_does_follow_the_warnin
     assert _warning_lines(result.stderr) == ["warning: disk full"]
 
 
-def test_iterate_command_when_subscriber_raises_does_warn_without_traceback_and_keep_the_run(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("messages", "warnings"),
+    [
+        pytest.param(_THREE_DISK_FULL, ["warning: disk full"], id="same-failure"),
+        pytest.param(
+            ("disk full", "permission denied", "disk full"),
+            ["warning: disk full", "warning: permission denied"],
+            id="different-failures",
+        ),
+    ],
+)
+def test_iterate_command_when_subscriber_raises_does_warn_once_per_distinct_failure_without_failing_the_run(
+    repo: str, monkeypatch: pytest.MonkeyPatch, messages: tuple[str, ...], warnings: list[str]
 ):
-    events = _wire_failing_subscriber(repo, monkeypatch, _THREE_DISK_FULL)
+    events = _wire_failing_subscriber(repo, monkeypatch, messages)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
-    assert _warning_lines(result.stderr) == ["warning: disk full"]
+    assert _warning_lines(result.stderr) == warnings
     assert "Traceback" not in result.stderr
     assert events == list(_SUBSCRIBER_EVENTS)
     assert result.exit_code == 0
@@ -469,68 +438,86 @@ def test_iterate_command_when_live_and_adapter_warns_does_leave_the_warning_on_s
 # ---------------------------------------------------------------------------
 
 
-def test_iterate_command_when_format_json_does_emit_structured_json_on_stdout(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _wire_successful_iterate(repo, monkeypatch)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert doc["seq"] == 1
-    assert doc["outcome"] == "improved"
-    assert doc["primary"]["kind"] == "geomean"
-    assert doc["primary"]["delta_pct"] == pytest.approx(-7.2)
-    assert "metrics" in doc
-    assert doc["confirm"] is None
+def _improved_run(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the bench to read the experiment 10% faster and 20% leaner than the baseline."""
+    stub_samples(install_collect_samples(monkeypatch), repo, improved_rounds(), baseline_rounds())
 
 
-def test_iterate_command_when_format_json_does_include_confirm_when_rerun_happened(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    confirm = Confirm(
-        ran=True,
-        filtered=("total_ms",),
-        samples=PairedSamples(
-            experiment=({"total_ms": 14100},),
-            baseline=({"total_ms": 15200},),
+def _confirmed_regression(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the bench to read a 10% regression on the run and again on its confirming rerun."""
+    stub_runs(install_collect_samples(monkeypatch), repo, [regressed_run(), regressed_run()])
+
+
+@pytest.mark.parametrize(
+    ("bench", "expected"),
+    [
+        pytest.param(
+            _improved_run,
+            # The geomean of a 0.9x time and a 0.8x size: sqrt(0.72) - 1.
+            {"outcome": "improved", "delta_pct": -15.147186, "confirm": None},
+            id="no-rerun",
         ),
-        absent=None,
-    )
-    record = iteration_record(seq=1, confirm=confirm)
-    iterate_result = IterateResult(record=record, report="confirmed iteration report")
+        pytest.param(
+            _confirmed_regression,
+            {
+                "outcome": "regressed",
+                "delta_pct": 10.0,
+                "confirm": {"ran": True, "filtered": ["total_ms", "alloc_bytes"], "absent": None},
+            },
+            id="confirmed-on-rerun",
+        ),
+    ],
+)
+def test_iterate_command_when_format_json_does_emit_structured_json_on_stdout(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    bench: Callable[[str, pytest.MonkeyPatch], None],
+    expected: dict[str, object],
+):
     write_session_log(repo, iterate_session_header(repo))
-    _install_iterate_session(
-        monkeypatch, create_autospec(iterate_session, return_value=iterate_result)
-    )
+    bench(repo, monkeypatch)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
 
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
-    assert doc["confirm"] is not None
-    assert doc["confirm"]["ran"] is True
-    assert doc["confirm"]["filtered"] == ["total_ms"]
+    assert doc.keys() == {"seq", "outcome", "primary", "metrics", "confirm"}
+    assert doc["metrics"].keys() == {"total_ms", "alloc_bytes"}
+    assert (doc["seq"], doc["outcome"], doc["primary"], doc["confirm"]) == (
+        1,
+        expected["outcome"],
+        {"kind": "geomean", "delta_pct": pytest.approx(expected["delta_pct"])},
+        expected["confirm"],
+    )
+
+
+def _at_iteration_cap(repo: str) -> None:
+    """A settled session that already reached its configured cap of one iteration."""
+    write_session_log(
+        repo, iterate_session_header(repo), (iteration_record(seq=1), committed_keep(1))
+    )
+    write_bench_config(repo, stop={"max_iterations": 1})
 
 
 def test_iterate_command_when_format_json_and_stop_condition_does_emit_stop_document(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str, improved_samples_mock: CollectSamplesRecorder
 ):
-    _wire_stopping_iterate(repo, monkeypatch)
+    _at_iteration_cap(repo)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
 
     assert result.exit_code == 1
-    doc = json.loads(result.stdout)
-    assert doc["stopped"] is True
-    assert "max iterations" in doc["reason"]
+    assert json.loads(result.stdout) == {
+        "stopped": True,
+        "reason": "Stop condition met: max iterations (1 of 1)",
+    }
+    assert improved_samples_mock.call_count == 0
 
 
 def test_iterate_command_when_stop_and_format_json_and_stdout_closed_does_exit_one(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str, improved_samples_mock: CollectSamplesRecorder
 ):
-    _wire_stopping_iterate(repo, monkeypatch)
+    _at_iteration_cap(repo)
 
     result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["iterate", "--bench", "npm run bench", "--format", "json"]
@@ -539,28 +526,15 @@ def test_iterate_command_when_stop_and_format_json_and_stdout_closed_does_exit_o
     assert (result.exit_code, result.stderr) == (1, "")
 
 
-def test_iterate_command_when_stdout_reader_closed_does_exit_zero_without_stderr(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _wire_successful_iterate(repo, monkeypatch)
-
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(
-        app, ["iterate", "--bench", "npm run bench"]
-    )
-
-    assert (result.exit_code, result.stderr) == (0, "")
-
-
 # ---------------------------------------------------------------------------
 # the iterate command — budget line and JSON key
 # ---------------------------------------------------------------------------
 
 
 def test_iterate_command_when_stop_condition_and_budget_active_does_include_time_left_in_stderr(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str, monkeypatch: pytest.MonkeyPatch, improved_samples_mock: CollectSamplesRecorder
 ):
-    _wire_stopping_iterate(repo, monkeypatch)
-    install_budget(repo, monkeypatch)
+    _stop_condition_met(repo, monkeypatch)
     set_origin(monkeypatch, "tool")
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
@@ -570,10 +544,9 @@ def test_iterate_command_when_stop_condition_and_budget_active_does_include_time
 
 
 def test_iterate_command_when_stop_and_format_json_and_budget_active_does_include_budget_key(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str, monkeypatch: pytest.MonkeyPatch, improved_samples_mock: CollectSamplesRecorder
 ):
-    _wire_stopping_iterate(repo, monkeypatch)
-    install_budget(repo, monkeypatch)
+    _stop_condition_met(repo, monkeypatch)
     set_origin(monkeypatch, "tool")
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
@@ -661,11 +634,8 @@ def _unsettled(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _stop_condition_met(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A settled session that already reached its configured iteration cap."""
-    write_session_log(
-        repo, iterate_session_header(repo), (iteration_record(seq=1), committed_keep(1))
-    )
-    write_bench_config(repo, stop={"max_iterations": 1})
+    """A session at its iteration cap, under a live budget."""
+    _at_iteration_cap(repo)
     install_budget(repo, monkeypatch)
 
 

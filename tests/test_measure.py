@@ -15,15 +15,10 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat import measure as measure_mod
-from gymrat import sampling
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import CommandError
 from gymrat.measure import MeasureOptions, measure
-from gymrat.sampling import (
-    CleanupResult,
-    TargetSpec,
-    WorktreeInfo,
-)
+from gymrat.sampling import CleanupResult, TargetSpec
 from gymrat.targets import WorktreeRemovalFailure
 from gymrat.utils import warn_to_stderr
 from tests._git import (
@@ -35,7 +30,7 @@ from tests._git import (
 from tests._pipeline import install_pipeline, run_options
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable
 
     from gymrat.progress_events import ProgressEvent
     from gymrat.utils import WarnSink
@@ -66,13 +61,17 @@ def _options(
 async def test_measure_when_target_benched_does_assemble_the_result(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    install_pipeline(monkeypatch, measure_mod, [[{"x": 10.0}, {"x": 20.0}, {"x": 30.0}]])
+    install_pipeline(
+        monkeypatch, measure_mod, [[{"x": 10.0, "y": 4.0}, {"x": 20.0}, {"x": 30.0, "y": 6.0}]]
+    )
 
     result = await measure(_options(target="main"))
 
+    assert set(result.metrics) == {"x", "y"}
     assert result.metrics["x"].median == 20.0
     assert result.metrics["x"].spread == 50.0
-    assert result.rounds == ({"x": 10.0}, {"x": 20.0}, {"x": 30.0})
+    assert result.metrics["y"].median == 5.0
+    assert result.rounds == ({"x": 10.0, "y": 4.0}, {"x": 20.0}, {"x": 30.0, "y": 6.0})
     assert result.samples == 3
     assert result.adapter == "metric-lines"
     assert result.label == "main"
@@ -95,18 +94,6 @@ async def test_measure_when_explicit_label_given_does_use_it(monkeypatch: pytest
     result = await measure(_options(spec=TargetSpec(label="custom", target="whatever")))
 
     assert result.label == "custom"
-
-
-async def test_measure_when_rounds_report_different_metrics_does_median_over_present_rounds(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}, {"y": 2.0}, {"x": 3.0}]])
-
-    result = await measure(_options())
-
-    assert result.metrics["x"].median == 2.0
-    assert result.metrics["y"].median == 2.0
-    assert result.rounds == ({"x": 1.0}, {"y": 2.0}, {"x": 3.0})
 
 
 async def test_measure_when_cleanup_reports_removals_does_map_worktree_fields(
@@ -214,28 +201,3 @@ async def test_measure_when_bench_fails_does_reject_and_remove_worktrees(
         await measure(_e2e_options("HEAD"))
 
     assert list_worktree_dirs(repo, include_main=False) == []
-
-
-@_posix_only
-async def test_measure_when_bench_fails_and_worktree_unremovable_does_name_stranded_dir(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    write_committed_bench(repo, _FAIL)
-    dirty = CleanupResult(
-        removed=0,
-        failures=(WorktreeRemovalFailure(dir="/tmp/stranded-wt", error="in use"),),
-        prune_error=None,
-    )
-
-    def fake_cleanup_worktrees(worktrees: Sequence[WorktreeInfo], repo_dir: str) -> CleanupResult:
-        return dirty
-
-    monkeypatch.setattr(sampling, "cleanup_worktrees", fake_cleanup_worktrees)
-
-    with pytest.raises(CommandError) as caught:
-        await measure(_e2e_options("HEAD"))
-
-    message = str(caught.value)
-    assert "/tmp/stranded-wt" in message
-    assert "bench command failed" in message

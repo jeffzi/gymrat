@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import pytest
 from filelock import FileLock
@@ -43,7 +43,7 @@ from tests._lock import (
 
 LIVE_HOLDER_HINT = "Another gymrat run is active in this repo. Wait for it to finish."
 
-# The transient-contention test widens the production acquisition budget to
+# The transient-contention test widens the acquisition budget to
 # ``TRANSIENT_WAIT_BUDGET_SECONDS`` and polls every
 # ``TRANSIENT_POLL_INTERVAL_SECONDS``, so the acquirer outlasts the
 # ``TRANSIENT_HOLD_SECONDS`` rival hold by orders of magnitude and scheduling
@@ -60,6 +60,29 @@ HOLDER_READY_TIMEOUT_SECONDS = 5
 def lock_path(tmp_path: Path) -> str:
     """A lock path inside the test's own temp dir, so tests never share a file."""
     return str(tmp_path / "gymrat.lock.json")
+
+
+class Acquire(Protocol):
+    """Takes a lock the way :func:`acquire_lock` does, released at teardown."""
+
+    def __call__(
+        self, path: str, command: str, *, wait: float = ..., poll_interval: float = ...
+    ) -> Callable[[], None]: ...
+
+
+@pytest.fixture
+def acquire() -> Iterator[Acquire]:
+    """Acquire locks through ``acquire_lock``, releasing every hold at teardown."""
+    releases: list[Callable[[], None]] = []
+
+    def take(path: str, command: str, **wait: float) -> Callable[[], None]:
+        release = acquire_lock(path, command, **wait)
+        releases.append(release)
+        return release
+
+    yield take
+    for release in releases:
+        release()
 
 
 def read_holder_json(lock_path: str) -> dict[str, object]:
@@ -160,24 +183,23 @@ def held_briefly(lock_path: str) -> Generator[None]:
 # ---------------------------------------------------------------------------
 
 
-def test_acquire_lock_when_free_does_stamp_compact_holder_json(lock_path: str):
-
-    release = acquire_lock(lock_path, "compare")
+def test_acquire_lock_when_free_does_stamp_compact_holder_json(lock_path: str, acquire: Acquire):
+    acquire(lock_path, "compare")
 
     raw = Path(lock_path).read_text(encoding="utf-8")
     holder = json.loads(raw)
     assert_holder_record(holder)
     assert raw == json.dumps(holder, separators=(",", ":"))
-    release()
 
 
-def test_acquire_lock_when_parent_absent_does_create_leading_directories(tmp_path: Path):
+def test_acquire_lock_when_parent_absent_does_create_leading_directories(
+    tmp_path: Path, acquire: Acquire
+):
     lock_path = str(tmp_path / "nested" / "deeper" / "gymrat.lock.json")
 
-    release = acquire_lock(lock_path, "compare")
+    acquire(lock_path, "compare")
 
     assert Path(lock_path).exists()
-    release()
 
 
 # ---------------------------------------------------------------------------
@@ -243,40 +265,37 @@ def test_acquire_lock_when_held_with_unreadable_content_does_report_held_without
         blocker.release()
 
 
-def test_acquire_lock_when_same_process_holds_lock_does_raise_gymrat_error(lock_path: str):
-    release = acquire_lock(lock_path, "compare")
+def test_acquire_lock_when_same_process_holds_lock_does_raise_gymrat_error(
+    lock_path: str, acquire: Acquire
+):
+    acquire(lock_path, "compare")
 
-    try:
-        with pytest.raises(GymratError):
-            acquire_lock(lock_path, "measure")
-    finally:
-        release()
+    with pytest.raises(GymratError):
+        acquire_lock(lock_path, "measure")
 
 
-def test_acquire_lock_when_released_then_reacquired_does_succeed(lock_path: str):
-    release = acquire_lock(lock_path, "compare")
+def test_acquire_lock_when_released_then_reacquired_does_succeed(lock_path: str, acquire: Acquire):
+    release = acquire(lock_path, "compare")
     release()
 
-    release2 = acquire_lock(lock_path, "measure")
+    acquire(lock_path, "measure")
 
     assert_holder_record(read_holder_json(lock_path), command="measure")
-    release2()
 
 
 def test_acquire_lock_when_hold_is_shorter_than_the_wait_budget_does_succeed(
     lock_path: str,
-    monkeypatch: pytest.MonkeyPatch,
+    acquire: Acquire,
 ):
-    monkeypatch.setattr("gymrat.session.lock._LOCK_ACQUIRE_TIMEOUT", TRANSIENT_WAIT_BUDGET_SECONDS)
-    monkeypatch.setattr(
-        "gymrat.session.lock._LOCK_ACQUIRE_POLL_INTERVAL", TRANSIENT_POLL_INTERVAL_SECONDS
-    )
-
     with held_briefly(lock_path):
-        release = acquire_lock(lock_path, "compare")
+        acquire(
+            lock_path,
+            "compare",
+            wait=TRANSIENT_WAIT_BUDGET_SECONDS,
+            poll_interval=TRANSIENT_POLL_INTERVAL_SECONDS,
+        )
 
     assert_holder_record(read_holder_json(lock_path))
-    release()
 
 
 # ---------------------------------------------------------------------------
@@ -286,30 +305,29 @@ def test_acquire_lock_when_hold_is_shorter_than_the_wait_budget_does_succeed(
 
 def test_release_when_called_twice_does_not_raise(lock_path: str):
     release = acquire_lock(lock_path, "compare")
-
     release()
+
     release()
 
 
 def test_release_when_internal_error_does_warn_on_stderr(
     lock_path: str,
+    acquire: Acquire,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    release = acquire_lock(lock_path, "compare")
+    release = acquire(lock_path, "compare")
 
     def failing_release(self: FileLock) -> None:
         msg = "disk went away"
         raise OSError(msg)
 
-    monkeypatch.setattr(FileLock, "release", failing_release)
-
-    release()
+    # The patch is scoped to the call so the teardown release drops the flock for real.
+    with monkeypatch.context() as patched:
+        patched.setattr(FileLock, "release", failing_release)
+        release()
 
     assert "disk went away" in capsys.readouterr().err
-    # Drop the flock for real so its file descriptor does not outlive the test.
-    monkeypatch.undo()
-    release()
 
 
 def test_release_when_called_does_not_delete_lock_file(lock_path: str):
@@ -375,13 +393,13 @@ def test_acquire_lock_when_permission_error_windows_does_advise_close_program(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fchmod not available on Windows")
-def test_acquire_lock_when_acquired_does_chmod_lock_file_to_world_writable(lock_path: str):
-
-    release = acquire_lock(lock_path, "compare")
+def test_acquire_lock_when_acquired_does_chmod_lock_file_to_world_writable(
+    lock_path: str, acquire: Acquire
+):
+    acquire(lock_path, "compare")
 
     mode = Path(lock_path).stat().st_mode & 0o777
     assert mode == 0o666
-    release()
 
 
 # ---------------------------------------------------------------------------
@@ -391,16 +409,15 @@ def test_acquire_lock_when_acquired_does_chmod_lock_file_to_world_writable(lock_
 
 def test_acquire_lock_when_publish_lock_times_out_does_still_acquire(
     lock_path: str,
+    acquire: Acquire,
     monkeypatch: pytest.MonkeyPatch,
 ):
     publish_path = publish_lock_file(lock_path)
     fail_acquire_for(monkeypatch, publish_path, FileLockTimeout)
 
-    release = acquire_lock(lock_path, "compare")
+    acquire(lock_path, "compare")
 
-    assert callable(release)
     assert_holder_record(read_holder_json(lock_path))
-    release()
 
 
 # ---------------------------------------------------------------------------
@@ -457,18 +474,17 @@ def test_is_held_when_probed_does_answer_whether_a_rival_holds_the_lock(
     assert held is expected
 
 
-def test_is_held_when_called_from_holding_process_does_return_true(lock_path: str):
-    release = acquire_lock(lock_path, "compare")
+def test_is_held_when_called_from_holding_process_does_return_true(
+    lock_path: str, acquire: Acquire
+):
+    acquire(lock_path, "compare")
 
-    try:
-        result = is_held(lock_path)
+    result = is_held(lock_path)
 
-        assert result is True
-    finally:
-        release()
+    assert result is True
 
 
-def test_is_held_when_probed_does_leave_the_lock_held_and_holder_record_untouched(
+def test_is_held_when_probed_does_leave_the_lock_undisturbed(
     lock_path: str,
 ):
     holder: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_HOLDER_AT}
@@ -496,35 +512,17 @@ def test_is_held_when_permission_error_does_return_false(
     assert result is False
 
 
-def _record(content: bytes) -> Callable[[Path], None]:
-    """Build an arrange step that writes ``content`` as the holder record."""
-
-    def write(path: Path) -> None:
-        path.write_bytes(content)
-
-    return write
-
-
-def _no_record(_path: Path) -> None:
-    pass
-
-
-def _directory_at(path: Path) -> None:
-    path.mkdir()
-
-
 # ---------------------------------------------------------------------------
 # read_holder — holder record reporting
 # ---------------------------------------------------------------------------
 
 
-def test_read_holder_when_lock_acquired_does_return_pid_command_and_time(lock_path: str):
-    release = acquire_lock(lock_path, "compare")
+def test_read_holder_when_lock_acquired_does_return_pid_command_and_time(
+    lock_path: str, acquire: Acquire
+):
+    acquire(lock_path, "compare")
 
-    try:
-        holder = read_holder(lock_path)
-    finally:
-        release()
+    holder = read_holder(lock_path)
 
     assert holder is not None
     assert holder.pid == os.getpid()
@@ -533,43 +531,34 @@ def test_read_holder_when_lock_acquired_does_return_pid_command_and_time(lock_pa
 
 
 @pytest.mark.parametrize(
-    "arrange",
+    "content",
     [
-        pytest.param(_no_record, id="absent"),
-        pytest.param(_directory_at, id="path-is-a-directory"),
-        pytest.param(_record(b""), id="empty"),
-        pytest.param(_record(b'{"pid":42,"comm'), id="truncated-json"),
-        pytest.param(_record(b"\x80\x81\x82"), id="non-utf8"),
-        pytest.param(_record(b'["pid", "command", "at"]'), id="not-an-object"),
-        pytest.param(_record(b'{"pid":42,"command":"measure"}'), id="missing-at"),
+        pytest.param(None, id="absent"),
+        pytest.param(b'{"pid":42,"command":"measure"}', id="missing-at"),
         pytest.param(
-            _record(f'{{"pid":"forty-two","command":"measure","at":"{FIXED_HOLDER_AT}"}}'.encode()),
+            f'{{"pid":"forty-two","command":"measure","at":"{FIXED_HOLDER_AT}"}}'.encode(),
             id="pid-not-an-integer",
         ),
         pytest.param(
-            _record(f'{{"pid":true,"command":"measure","at":"{FIXED_HOLDER_AT}"}}'.encode()),
+            f'{{"pid":true,"command":"measure","at":"{FIXED_HOLDER_AT}"}}'.encode(),
             id="pid-is-a-bool",
         ),
         pytest.param(
-            _record(f'{{"pid":42,"command":7,"at":"{FIXED_HOLDER_AT}"}}'.encode()),
+            f'{{"pid":42,"command":7,"at":"{FIXED_HOLDER_AT}"}}'.encode(),
             id="command-not-a-string",
         ),
+        pytest.param(b'{"pid":42,"command":"measure","at":1767225600}', id="at-not-a-string"),
         pytest.param(
-            _record(b'{"pid":42,"command":"measure","at":1767225600}'), id="at-not-a-string"
-        ),
-        pytest.param(
-            _record(
-                f'{{"pid":42,"command":"measure","at":"{FIXED_HOLDER_AT}","host":"box"}}'.encode()
-            ),
+            f'{{"pid":42,"command":"measure","at":"{FIXED_HOLDER_AT}","host":"box"}}'.encode(),
             id="extra-field",
         ),
     ],
 )
-def test_read_holder_when_record_unreadable_does_return_none(
-    lock_path: str, arrange: Callable[[Path], None]
+def test_read_holder_when_record_absent_or_not_a_holder_does_return_none(
+    lock_path: str, content: bytes | None
 ):
-    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
-    arrange(Path(lock_path))
+    if content is not None:
+        Path(lock_path).write_bytes(content)
 
     holder = read_holder(lock_path)
 

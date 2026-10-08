@@ -72,6 +72,8 @@ def test_render_probe_report_when_several_metrics_does_keep_them_in_result_order
     [
         pytest.param("lower", 8.0, "+8.0%", "31", id="lower-slower-is-regressed"),
         pytest.param("higher", -10.0, "-10.0%", "31", id="higher-less-is-regressed"),
+        pytest.param("lower", -10.0, "-10.0%", "32", id="lower-faster-is-improved"),
+        pytest.param("higher", 20.0, "+20.0%", "32", id="higher-more-is-improved"),
     ],
 )
 def test_render_probe_report_when_colored_does_paint_the_delta_by_its_direction(
@@ -133,10 +135,21 @@ def _golden_probe() -> ProbeResult:
     )
 
 
-@pytest.mark.parametrize("color", [False, True], ids=["plain", "colored"])
-def test_render_probe_report_when_rendered_does_match_its_golden(
-    color: bool, snapshot: SnapshotAssertion
-):
-    report = render_probe_report(_golden_probe(), ReportOptions(color=color))
+def test_render_probe_report_when_colored_does_style_every_heading():
+    report = render_probe_report(_golden_probe(), ReportOptions(color=True))
+
+    header = line_containing(report, "gymrat probe")
+    heading = line_containing(report, "baseline")
+    assert (
+        styles_at(header, "gymrat probe"),
+        styles_at(header, "·"),
+        styles_at(header, "experiment"),
+        styles_at(heading, "time"),
+        styles_at(heading, "experiment"),
+    ) == (["1"], ["2"], ["1", "4"], ["1"], ["1", "4"])
+
+
+def test_render_probe_report_when_rendered_does_match_its_golden(snapshot: SnapshotAssertion):
+    report = render_probe_report(_golden_probe(), ReportOptions(color=False))
 
     assert report.split("\n") == snapshot

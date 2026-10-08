@@ -16,7 +16,9 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
     import pytest
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from gymrat.telemetry.provider import configure_tracing, reset_tracing
 
@@ -66,9 +68,6 @@ def memory_tracing(session_id: str, *, buffered: bool = False) -> Generator[InMe
     Raises:
         AssertionError: When tracing could not be configured.
     """
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
     exporter = InMemorySpanExporter()
     processor = (
         BatchSpanProcessor(exporter, schedule_delay_millis=60_000)

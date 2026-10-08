@@ -99,6 +99,21 @@ _TRACEPARENT_HEADER = "traceparent"
 # ---------------------------------------------------------------------------
 
 
+def id_from_digest(digest: bytes, width: int) -> int:
+    """Read the leading ``width`` bytes of ``digest`` as a W3C Trace Context ID.
+
+    Args:
+        digest: The hash digest to read.
+        width: How many leading bytes form the ID: 16 for a trace ID, 8 for a
+            span ID.
+
+    Returns:
+        The leading bytes as a big-endian integer, or ``1`` when that value is
+        zero, since an all-zero ID is invalid in W3C Trace Context.
+    """
+    return int.from_bytes(digest[:width], "big") or 1
+
+
 def trace_id_of(session_id: str) -> int:
     """Derive a deterministic 128-bit trace ID from a session identifier.
 
@@ -106,12 +121,10 @@ def trace_id_of(session_id: str) -> int:
         session_id: The session identifier to hash.
 
     Returns:
-        The first 128 bits of the identifier's SHA-256 digest, or ``1`` when
-        that value is zero, since an all-zero trace ID is invalid in W3C Trace
-        Context.
+        The first 128 bits of the identifier's SHA-256 digest, as read by
+        :func:`id_from_digest`.
     """
-    raw = int.from_bytes(hashlib.sha256(session_id.encode()).digest()[:16], "big")
-    return raw or 1
+    return id_from_digest(hashlib.sha256(session_id.encode()).digest(), 16)
 
 
 def span_id_of(session_id: str, key: str) -> int:
@@ -123,11 +136,9 @@ def span_id_of(session_id: str, key: str) -> int:
 
     Returns:
         The first 64 bits of the SHA-256 digest of the session identifier and
-        key, or ``1`` when that value is zero, since an all-zero span ID is
-        invalid in W3C Trace Context.
+        key, as read by :func:`id_from_digest`.
     """
-    raw = int.from_bytes(hashlib.sha256((session_id + "\0" + key).encode()).digest()[:8], "big")
-    return raw or 1
+    return id_from_digest(hashlib.sha256((session_id + "\0" + key).encode()).digest(), 8)
 
 
 def existing_session_span(session_id: str) -> Span:

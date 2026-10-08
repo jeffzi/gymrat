@@ -15,7 +15,7 @@ from gymrat.cli.supervised import guard_supervised_origin, is_supervised_run_liv
 from gymrat.errors import GymratError
 from gymrat.session.budget import Budget, write_budget
 from gymrat.session.paths import budget_path
-from tests._lock import hold_supervise_lock, remove_lock_files
+from tests._lock import held_supervise_lock, hold_supervise_lock, remove_lock_files
 from tests.cli._budget import (
     LIVE_BUDGET,
     SUPERVISED_HINT,
@@ -37,9 +37,8 @@ def state_dir(tmp_path: Path) -> Iterator[str]:
 @pytest.fixture
 def supervise_lock(state_dir: str) -> Iterator[None]:
     """Hold the real supervise lock for ``state_dir`` for the duration of the test."""
-    lock = hold_supervise_lock(state_dir)
-    yield
-    lock.release()
+    with held_supervise_lock(state_dir):
+        yield
 
 
 def _write_budget_directory(state_dir: str) -> None:

@@ -11,7 +11,6 @@ record that would not read back. The fold state machine has its own tests in
 import json
 import os
 import re
-import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -39,6 +38,7 @@ from gymrat.session.store import (
     require_session,
     session_header,
 )
+from tests._mode_bits import needs_mode_bits
 from tests.session._store_records import (
     BASELINE,
     FINALIZE,
@@ -279,7 +279,7 @@ _UNREADABLE_RECORDS = [
 
 
 @pytest.mark.parametrize(("record", "record_type", "hint"), _UNREADABLE_RECORDS)
-def test_append_record_when_record_unreadable_does_raise_naming_its_cause_and_leave_the_log(
+def test_append_record_when_record_unreadable_does_raise_naming_its_cause_without_writing(
     fresh_root: str, record: SessionLogRecord, record_type: str, hint: str
 ):
     jsonl_path = session_jsonl_path(fresh_root)
@@ -458,10 +458,7 @@ def _without_read_permission(jsonl_path: str) -> None:
         pytest.param(
             _without_read_permission,
             id="a-log-without-read-permission",
-            marks=pytest.mark.skipif(
-                sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
-                reason="mode 000 denies a read only to a non-root POSIX user",
-            ),
+            marks=needs_mode_bits,
         ),
     ],
 )
@@ -607,32 +604,34 @@ def test_read_session_header_when_first_line_is_session_does_return_it_without_r
     assert header == SESSION
 
 
-def test_read_session_header_when_log_absent_does_return_none(fresh_root: str):
-    jsonl_path = session_jsonl_path(fresh_root)
-
-    header = read_session_header(jsonl_path)
-
-    assert header is None
-
-
 @pytest.mark.parametrize(
     "raw",
     [
+        pytest.param(None, id="log-absent"),
         pytest.param(b"", id="an-empty-log"),
         pytest.param(b"\n" + SESSION_LINE, id="an-empty-first-line"),
         pytest.param(b"   \n", id="a-whitespace-only-first-line"),
         pytest.param("　\n".encode(), id="a-non-ascii-whitespace-first-line"),
     ],
 )
-def test_read_session_header_when_first_line_blank_does_return_none(fresh_root: str, raw: bytes):
-    jsonl_path = _jsonl_holding_bytes(fresh_root, raw)
+def test_read_session_header_when_log_absent_or_first_line_blank_does_return_none(
+    fresh_root: str, raw: bytes | None
+):
+    if raw is not None:
+        _jsonl_holding_bytes(fresh_root, raw)
 
-    header = read_session_header(jsonl_path)
+    header = read_session_header(session_jsonl_path(fresh_root))
 
     assert header is None
 
 
-@pytest.mark.parametrize("reader", [read_records, read_session_header])
+@pytest.mark.parametrize(
+    "reader",
+    [
+        pytest.param(read_records, id="read-records"),
+        pytest.param(read_session_header, id="read-session-header"),
+    ],
+)
 @pytest.mark.parametrize(
     ("lines", "message", "hint"),
     [

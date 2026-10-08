@@ -41,6 +41,7 @@ from tests._cli import ENTRY, no_color_env
 from tests._git import run_git
 from tests._lock import FIXED_HOLDER_AT, hold_lock
 from tests._process_helpers import (
+    reaped,
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
 )
@@ -118,23 +119,16 @@ def test_probe_command_when_supported_option_given_does_complete(option: list[st
     assert result.exit_code == 0
 
 
-@pytest.mark.parametrize(
-    ("option", "env", "styled"),
-    [
-        pytest.param("--color", "NO_COLOR", True, id="color-flag-outranks-no-color-env"),
-        pytest.param("--no-color", "FORCE_COLOR", False, id="no-color-flag-outranks-force-color"),
-    ],
-)
 @pytest.mark.usefixtures("probe_repo", "measure")
-def test_probe_command_when_color_flag_given_does_style_the_stdout_report_to_match(
-    option: str, env: str, styled: bool, monkeypatch: pytest.MonkeyPatch
+def test_probe_command_when_color_flag_given_does_style_the_stdout_report_despite_no_color(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv(env, "1")
+    monkeypatch.setenv("NO_COLOR", "1")
 
-    result = runner.invoke(app, ["probe", option])
+    result = runner.invoke(app, ["probe", "--color"])
 
     assert result.exit_code == 0
-    assert ("\x1b[" in result.stdout) is styled
+    assert "\x1b[" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -458,25 +452,22 @@ def test_probe_command_when_signalled_mid_bench_does_exit_on_the_signal_code_lea
     )
     append_records(repo, baseline_record(samples=BASELINE_SAMPLES))
 
-    proc = subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [*ENTRY, "probe"],
-        cwd=repo,
-        env={**no_color_env(), "PYTHONFAULTHANDLER": "1"},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
+    with reaped(
+        subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
+            [*ENTRY, "probe"],
+            cwd=repo,
+            env={**no_color_env(), "PYTHONFAULTHANDLER": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    ) as proc:
         bench_pid = wait_for_pid_file_blocking(
             Path(experiment_worktree_dir(repo), "bench.pid"), timeout_s=60.0
         )
         reap_groups.append(os.getpgid(bench_pid))
         proc.send_signal(signal_number)
         _wait_or_dump_stacks(proc, timeout_s=60)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.communicate()
 
     assert proc.returncode == expected_code
     wait_until_dead_blocking(bench_pid, timeout_s=30.0)

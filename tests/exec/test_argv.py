@@ -10,30 +10,21 @@ process groups, session leaders, and ``os.killpg`` do not exist on win32.
 """
 
 import asyncio
-import contextlib
-import dataclasses
 import errno
 import json
 import os
 import signal
 import sys
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import (
-    ExecOptions,
-    ExecResult,
-    ExecTimeoutError,
-    exec_argv,
-)
-from tests._exec_fixtures import expected_result, wait_for_spawned
+from gymrat.exec import ExecOptions, ExecResult, exec_argv
+from tests._exec_fixtures import cancel_and_settle, expected_result, wait_for_spawned
 from tests._process_helpers import (
     ZOMBIE_ONLY_GROUP_SCRIPT,
-    capture_spawns,
-    kill_surviving_groups,
     killpg_warnings,
     wait_for_pid_file,
     wait_until_dead,
@@ -75,99 +66,6 @@ def script_answering_graceful_signal(pid_file: Path) -> str:
         f"open({str(pid_file)!r}, 'w').write(str(os.getpid()) + '\\n')\n"
         "time.sleep(30)\n"
     )
-
-
-def script_leaving_grandchild_and_exiting(grandchild_pid_file: Path) -> str:
-    """Build a script that spawns a sleeping grandchild, writes its pid, then exits at once.
-
-    The grandchild stays in the child's process group and inherits its stdout,
-    so the run keeps waiting on the open pipe after the child itself is gone.
-
-    Args:
-        grandchild_pid_file: Where the script writes the grandchild's pid.
-
-    Returns:
-        The script's source, ready for ``python -c``.
-    """
-    return (
-        "import subprocess, sys\n"
-        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
-        f"open({str(grandchild_pid_file)!r}, 'w').write(str(p.pid) + '\\n')\n"
-    )
-
-
-_real_killpg = os.killpg
-
-# Upper bound for a run left going by a test to finish once its group is killed.
-_RUN_SETTLE_TIMEOUT_S = 5.0
-
-
-@dataclasses.dataclass
-class LiftableRefusal:
-    """Stand-in ``os.killpg`` that refuses every signal with ``EPERM`` while ``refusing`` holds.
-
-    Clearing ``refusing`` lets signals through for real, so a test can still
-    tear its run down after the refusal it asserted on.
-    """
-
-    refusing: bool = True
-
-    def __call__(self, group_pid: int, signal_number: int) -> None:
-        if self.refusing:
-            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
-        _real_killpg(group_pid, signal_number)
-
-
-@pytest.fixture
-def killpg_refusal(
-    monkeypatch: pytest.MonkeyPatch,
-    spawned_argv_processes: list[asyncio.subprocess.Process],
-) -> Iterator[LiftableRefusal]:
-    """Install a killpg stand-in a test can switch to refusing right before its act.
-
-    Depends on ``spawned_argv_processes``, so its own teardown runs first: clearing
-    ``refusing`` here happens before ``spawned_argv_processes`` kills any survivor's
-    group, so that cleanup kill goes through the real ``killpg``.
-    """
-    refusal = LiftableRefusal(refusing=False)
-    monkeypatch.setattr(os, "killpg", refusal)
-    yield refusal
-    refusal.refusing = False
-
-
-@pytest.fixture
-def spawned_argv_processes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[list[asyncio.subprocess.Process]]:
-    """Record every child ``exec_argv`` spawns."""
-    processes = capture_spawns(monkeypatch, "create_subprocess_exec")
-    yield processes
-    kill_surviving_groups(processes)
-
-
-@pytest.fixture
-async def background_runs(
-    spawned_argv_processes: list[asyncio.subprocess.Process],
-) -> AsyncIterator[list["asyncio.Task[ExecResult | ExecTimeoutError]"]]:
-    """Collect the runs a test leaves going, then kill every spawned group and let each run settle."""
-    runs: list[asyncio.Task[ExecResult | ExecTimeoutError]] = []
-    yield runs
-    # An abandoned run leaves its child never reaped and its pipes open once the event
-    # loop closes, surfacing as a ResourceWarning in whatever test the garbage collector
-    # runs next. Killing through the real ``_real_killpg`` sidesteps any refusal the test
-    # installed and ends every member holding the run's pipes, so each run completes on
-    # its own.
-    for proc in spawned_argv_processes:
-        with contextlib.suppress(ProcessLookupError):
-            _real_killpg(proc.pid, signal.SIGKILL)
-    await asyncio.wait_for(asyncio.gather(*runs), _RUN_SETTLE_TIMEOUT_S)
-
-
-async def cancel_and_settle(task: "asyncio.Task[object]", timeout_s: float = 5) -> None:
-    """Cancel ``task`` and wait for it to finish unwinding."""
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout_s)
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +152,7 @@ async def test_exec_argv_when_child_writes_stderr_on_graceful_request_does_captu
     assert result.stderr == "BYE\n"
 
 
-async def test_exec_argv_when_graceful_signal_refused_does_not_warn_and_still_kills_group(
+async def test_exec_argv_when_graceful_signal_refused_does_kill_group_without_warning(
     tmp_path: Path,
     make_opts: Callable[..., ExecOptions],
     monkeypatch: pytest.MonkeyPatch,
@@ -300,6 +198,7 @@ async def test_exec_argv_when_stderr_exceeds_pipe_buffer_does_capture_both_strea
     make_opts: Callable[..., ExecOptions],
 ) -> None:
     mib = 1024 * 1024
+
     result = await exec_argv(
         [
             sys.executable,
@@ -316,83 +215,34 @@ async def test_exec_argv_when_stderr_exceeds_pipe_buffer_does_capture_both_strea
 
 
 # ---------------------------------------------------------------------------
-# live process-group registry
-# ---------------------------------------------------------------------------
-
-
-async def test_kill_live_process_groups_when_running_group_refuses_signals_does_warn(
-    tmp_path: Path,
-    spawned_argv_processes: list[asyncio.subprocess.Process],
-    make_opts: Callable[..., ExecOptions],
-    killpg_refusal: LiftableRefusal,
-    background_runs: list["asyncio.Task[ExecResult | ExecTimeoutError]"],
-) -> None:
-    pid_file = tmp_path / "child.pid"
-    background_runs.append(
-        asyncio.create_task(
-            exec_argv(
-                [sys.executable, "-c", script_writing_pid_and_sleeping(pid_file)],
-                make_opts(),
-            ),
-        ),
-    )
-    await wait_for_pid_file(pid_file)
-    killpg_refusal.refusing = True
-
-    with pytest.warns(RuntimeWarning, match="killpg failed"):
-        exec_mod.kill_live_process_groups()
-
-
-async def test_kill_live_process_groups_when_exited_leader_group_with_live_member_refuses_does_warn(
-    tmp_path: Path,
-    spawned_argv_processes: list[asyncio.subprocess.Process],
-    stray_process_ids: list[int],
-    make_opts: Callable[..., ExecOptions],
-    *,
-    killpg_refusal: LiftableRefusal,
-    background_runs: list["asyncio.Task[ExecResult | ExecTimeoutError]"],
-) -> None:
-    grandchild_pid_file = tmp_path / "grandchild.pid"
-    background_runs.append(
-        asyncio.create_task(
-            exec_argv(
-                [sys.executable, "-c", script_leaving_grandchild_and_exiting(grandchild_pid_file)],
-                make_opts(),
-            ),
-        ),
-    )
-    leader = await wait_for_spawned(spawned_argv_processes, spawner="exec_argv")
-    grandchild = await wait_for_pid_file(grandchild_pid_file)
-    stray_process_ids.append(grandchild)
-    await wait_until_dead(leader.pid)
-    killpg_refusal.refusing = True
-
-    with pytest.warns(RuntimeWarning, match="killpg failed"):
-        exec_mod.kill_live_process_groups()
-
-
-# ---------------------------------------------------------------------------
 # cancellation kills the child
 # ---------------------------------------------------------------------------
 
 
 async def test_exec_argv_when_cancelled_does_keep_pid_registered_until_the_kill_lands(
     tmp_path: Path,
-    spawned_argv_processes: list[asyncio.subprocess.Process],
+    spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A pid dropped from the registry before its group is killed is a pid the
-    # interpreter-exit sweep can no longer reach, so the end state both steps
-    # share says nothing about the order they ran in.
-    registered_at_kill: list[bool] = []
+    # A pid released before its group is killed is a pid the interpreter-exit
+    # sweep can no longer reach, so the end state both steps share says nothing
+    # about the order they ran in. Releasing the child's container is the step
+    # that also drops its pid from the registry.
+    steps: list[str] = []
     real_kill = exec_mod.kill_process_group
+    real_release = exec_mod.release_process_group
 
-    def spy(pid: int, *, defer_refusal: bool = False) -> bool:
-        registered_at_kill.append(pid in exec_mod._live_process_groups)
+    def record_kill(pid: int, *, defer_refusal: bool = False) -> bool:
+        steps.append("kill")
         return real_kill(pid, defer_refusal=defer_refusal)
 
-    monkeypatch.setattr(exec_mod, "kill_process_group", spy)
+    def record_release(pid: int) -> None:
+        steps.append("release")
+        real_release(pid)
+
+    monkeypatch.setattr(exec_mod, "kill_process_group", record_kill)
+    monkeypatch.setattr(exec_mod, "release_process_group", record_release)
     pid_file = tmp_path / "child.pid"
     task = asyncio.create_task(
         exec_argv(
@@ -400,16 +250,15 @@ async def test_exec_argv_when_cancelled_does_keep_pid_registered_until_the_kill_
             make_opts(),
         ),
     )
-    proc = await wait_for_spawned(spawned_argv_processes, spawner="exec_argv")
+    proc = await wait_for_spawned(spawned_processes, spawner="exec_argv")
     await wait_for_pid_file(pid_file)
 
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    await cancel_and_settle(task)
 
     await wait_until_dead(proc.pid, timeout_s=3.0)
-    assert registered_at_kill, "the cancelled run never killed the child's group"
-    assert all(registered_at_kill), "the pid left the registry before the kill reached its group"
+    assert "kill" in steps[: steps.index("release")], (
+        "the pid left the registry before the kill reached its group"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +268,7 @@ async def test_exec_argv_when_cancelled_does_keep_pid_registered_until_the_kill_
 
 async def test_exec_argv_when_cancelled_leaving_only_a_zombie_in_group_does_not_warn_about_killpg(
     tmp_path: Path,
-    spawned_argv_processes: list[asyncio.subprocess.Process],
+    spawned_processes: list[asyncio.subprocess.Process],
     stray_process_ids: list[int],
     make_opts: Callable[..., ExecOptions],
     recwarn: pytest.WarningsRecorder,
@@ -431,7 +280,7 @@ async def test_exec_argv_when_cancelled_leaving_only_a_zombie_in_group_does_not_
             make_opts(),
         ),
     )
-    await wait_for_spawned(spawned_argv_processes, spawner="exec_argv")
+    await wait_for_spawned(spawned_processes, spawner="exec_argv")
     stray_process_ids.append(await wait_for_pid_file(holder_pid_file))
 
     await cancel_and_settle(task)

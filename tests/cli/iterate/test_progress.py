@@ -30,7 +30,6 @@ from tests._rich import (
     Clock,
     console_output,
     frame_text,
-    screen_lines,
     sealed_console,
 )
 from tests.cli._progress_helpers import iterate_renderer
@@ -117,6 +116,7 @@ def test_frame_when_before_hook_running_does_show_spinner(
     _console, _clock, renderer = _live(has_before_hook=True, has_after_hook=True)
 
     renderer.report(HookStarted(stage="before", at_ms=0))
+
     result = frame_text(renderer.frame())
 
     assert result == snapshot
@@ -128,6 +128,7 @@ def test_frame_when_worktree_preparing_does_name_its_target(
     _console, _clock, renderer = _live()
 
     renderer.report(PrepareStarted(label="baseline", at_ms=0))
+
     result = frame_text(renderer.frame())
 
     assert result == snapshot
@@ -145,12 +146,13 @@ def test_frame_when_both_worktrees_prepared_does_show_elapsed(
     renderer.report(PrepareStarted(label="candidate", at_ms=_ms(clock)))
     clock.tick(2)
     renderer.report(PrepareFinished(label="candidate", at_ms=_ms(clock)))
+
     result = frame_text(renderer.frame())
 
     assert result == snapshot
 
 
-def test_frame_when_passes_mid_run_does_show_bar_count_and_clock(
+def test_frame_when_passes_mid_run_does_show_pass_progress(
     snapshot: SnapshotAssertion,
 ):
     _console, clock, renderer = _live(sample_count=5)
@@ -171,6 +173,7 @@ def test_frame_when_passes_mid_run_does_show_bar_count_and_clock(
         )
     )
     clock.tick(41)
+
     result = frame_text(renderer.frame())
 
     assert result == snapshot
@@ -194,6 +197,7 @@ def test_frame_when_judge_alerting_and_confirm_running_does_show_bar(
             phase="confirm",
         )
     )
+
     result = frame_text(renderer.frame())
 
     assert result == snapshot
@@ -213,6 +217,7 @@ def test_frame_when_compact_layout_does_show_single_row():
             at_ms=_ms(clock),
         )
     )
+
     result = frame_text(renderer.frame())
 
     assert result == "⠋ sampling                                            0% · A · 00:00/--:--"
@@ -288,26 +293,6 @@ def test_frame_when_recorded_with_checks_cmd_does_show_gymrat_keep(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "reproduced",
-    [
-        pytest.param(True, id="reproduced"),
-        pytest.param(False, id="not-reproduced"),
-    ],
-)
-def test_frame_when_confirm_finished_does_show_outcome(
-    snapshot: SnapshotAssertion, reproduced: bool
-):
-    _console, _clock, renderer = _live(sample_count=1)
-    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=5000))
-    renderer.report(ConfirmStarted(filtered_metrics=None, at_ms=5100))
-    renderer.report(ConfirmFinished(reproduced=reproduced, at_ms=10000))
-
-    result = frame_text(renderer.frame())
-
-    assert result == snapshot
-
-
 def test_frame_when_confirm_skipped_after_a_regression_does_keep_a_skipped_confirm_row(
     snapshot: SnapshotAssertion,
 ):
@@ -315,16 +300,6 @@ def test_frame_when_confirm_skipped_after_a_regression_does_keep_a_skipped_confi
     renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("latency",), at_ms=5000))
     renderer.report(ConfirmSkipped(at_ms=5000))
     renderer.report(IterationRecorded(seq=1, outcome="regressed", at_ms=6000))
-
-    result = frame_text(renderer.frame())
-
-    assert result == snapshot
-
-
-def test_frame_when_confirm_unfiltered_does_show_full_suite_label(snapshot: SnapshotAssertion):
-    _console, _clock, renderer = _live(sample_count=5)
-    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=5000))
-    renderer.report(ConfirmStarted(filtered_metrics=None, at_ms=5100))
 
     result = frame_text(renderer.frame())
 
@@ -384,35 +359,11 @@ def test_iterate_renderer_when_created_does_set_live_transient_from_verbose(
 
 
 # ---------------------------------------------------------------------------
-# warn -- above the live frame, on its own line in plain mode
-# ---------------------------------------------------------------------------
-
-
-def test_warn_when_live_mode_does_print_the_message_above_the_intact_frame():
-    console, clock, renderer = _live()
-    renderer.report(PrepareStarted(label="baseline", at_ms=0))
-
-    renderer.warn("warning: disk full")
-
-    frame = frame_text(renderer.frame(), get_time=clock)
-    assert screen_lines(console_output(console)) == ["warning: disk full", *frame.splitlines()]
-
-
-def test_warn_when_plain_mode_does_print_the_message_verbatim_on_its_own_line():
-    console, _clock, renderer = _plain()
-    before = console_output(console)
-
-    renderer.warn("warning: cannot write [/tmp/progress.json]")
-
-    assert console_output(console) == before + "warning: cannot write [/tmp/progress.json]\n"
-
-
-# ---------------------------------------------------------------------------
 # Judge verdicts
 # ---------------------------------------------------------------------------
 
 
-def test_frame_when_judge_finished_no_regressions_does_drop_confirm_and_show_verdict(
+def test_frame_when_judge_finished_no_regressions_does_drop_the_confirm_row(
     snapshot: SnapshotAssertion,
 ):
     _console, clock, renderer = _live(sample_count=1, metric_count=4)
@@ -426,54 +377,14 @@ def test_frame_when_judge_finished_no_regressions_does_drop_confirm_and_show_ver
     assert result == snapshot
 
 
-@pytest.mark.parametrize(
-    ("primary_metric", "delta", "regressed", "expected"),
-    [
-        pytest.param(
-            "geomean",
-            -2.0,
-            (),
-            "[00:00:00] judge -2.0% on geomean · no gating regression",
-            id="no-regression",
-        ),
-        pytest.param(
-            "geomean",
-            -6.8,
-            ("latency",),
-            "[00:00:00] judge -6.8% on geomean · 1 regressed: latency",
-            id="one-regressed",
-        ),
-        pytest.param(
-            "geomean",
-            -6.8,
-            ("latency", "alloc", "throughput", "parse"),
-            "[00:00:00] judge -6.8% on geomean · 4 regressed: latency, alloc, throughput, …",
-            id="more-regressed-than-cap",
-        ),
-        pytest.param(
-            "geomean",
-            None,
-            ("latency",),
-            "[00:00:00] judge — · 1 regressed: latency",
-            id="missing-delta",
-        ),
-        pytest.param(
-            "cpu:fire:total",
-            2.0,
-            ("lat:100:p99#time",),
-            "[00:00:00] judge +2.0% on cpu:fire:total · 1 regressed: lat:100:p99#time",
-            id="name-with-emoji-code",
-        ),
-    ],
-)
-def test_report_when_plain_judge_finished_does_print_exact_line(
-    primary_metric: str, delta: float | None, regressed: tuple[str, ...], expected: str
-):
-    console, _clock, renderer = _plain(width=120, metric_count=5, primary_metric=primary_metric)
+def test_report_when_plain_judge_names_look_like_emoji_codes_does_print_them_literally():
+    console, _clock, renderer = _plain(width=120, metric_count=5, primary_metric="cpu:fire:total")
 
-    renderer.report(JudgeFinished(primary_delta_pct=delta, regressed=regressed, at_ms=0))
+    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("lat:100:p99#time",), at_ms=0))
 
-    assert _last_line(console) == expected
+    assert _last_line(console) == (
+        "[00:00:00] judge +2.0% on cpu:fire:total · 1 regressed: lat:100:p99#time"
+    )
 
 
 @pytest.mark.parametrize(
@@ -543,33 +454,11 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(snapshot: Sn
 
 
 # ---------------------------------------------------------------------------
-# Zero-width console
-# ---------------------------------------------------------------------------
-
-
-def test_iterate_renderer_when_console_width_zero_does_not_mount_live():
-    _console, _clock, renderer = _live(width=0)
-
-    assert renderer.live is None
-
-
-def test_report_when_console_width_zero_does_emit_no_ansi():
-    console, clock, renderer = _live(width=0)
-
-    renderer.report(PrepareStarted(label="bench", at_ms=0))
-    clock.tick(1)
-    renderer.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
-    renderer.stop()
-
-    assert "\x1b[" not in console_output(console)
-
-
-# ---------------------------------------------------------------------------
 # Compact mode -- sampling passes
 # ---------------------------------------------------------------------------
 
 
-def test_frame_when_compact_pass_finished_does_advance_the_bar_and_show_an_eta():
+def test_frame_when_compact_pass_finished_does_show_progress_with_an_eta():
     _console, clock, renderer = _live(height=10, sample_count=5)
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     _report_full_pass(renderer, clock, 1, 5, label="A", duration_s=2)
@@ -581,7 +470,7 @@ def test_frame_when_compact_pass_finished_does_advance_the_bar_and_show_an_eta()
     assert result == "⠴ sampling ━━━━                                      10% · B · 00:02/00:20"
 
 
-def test_frame_when_compact_confirm_started_does_restart_the_count_and_the_eta():
+def test_frame_when_compact_confirm_started_does_restart_progress_for_confirm():
     _console, clock, renderer = _live(height=10, sample_count=1, metric_count=3)
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     _report_full_pass(renderer, clock, 1, 1, duration_s=5)

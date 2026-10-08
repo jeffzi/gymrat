@@ -79,7 +79,17 @@ class ErasableLive(Live):
     Once erased, the display paints nothing more and adds its frame to nothing
     printed through its console, so no frame lands after the erase however the
     termination handler and the painting threads interleave.
+
+    Attributes:
+        paint_wait_seconds: How long :meth:`erase_for_exit` waits for an
+            in-flight paint to finish before erasing around it.
+        on_frame_landing: Called on the painting thread once a frame has
+            rendered and is committed to land, before its write reaches the
+            terminal; ``None`` calls nothing.
     """
+
+    paint_wait_seconds: float = _PAINT_WAIT_SECONDS
+    on_frame_landing: Callable[[], None] | None = None
 
     # Paints whose frame may not have reached the terminal yet, oldest first.
     _paints: tuple[_Paint, ...] = ()
@@ -157,7 +167,7 @@ class ErasableLive(Live):
         self._disable_redirect_io()
         if self._refresh_thread is not None:
             self._refresh_thread.stop()
-        if self._lock.acquire(timeout=_PAINT_WAIT_SECONDS):
+        if self._lock.acquire(timeout=self.paint_wait_seconds):
             try:
                 height = self._height_on_screen()
             finally:
@@ -186,6 +196,8 @@ class ErasableLive(Live):
         # has returned, including before rich adds the print's own segments.
         buffer.append(Segment(""))
         paint.buffer = buffer
+        if self.on_frame_landing is not None:
+            self.on_frame_landing()
         return True
 
 

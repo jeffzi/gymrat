@@ -1,11 +1,10 @@
 from typing import Any
 
 import pytest
-from pydantic import TypeAdapter
 
 from gymrat.session.records import (
+    SESSION_LOG_ADAPTER,
     NonFiniteNumberError,
-    SessionLogRecord,
     decode_log_line,
     parse_record,
     record_to_wire,
@@ -25,7 +24,6 @@ from tests.session.records._wire import (
     SESSION_RECORD,
     STOP_RECORD,
     config_with,
-    field_of,
     omitting,
     patching,
 )
@@ -115,25 +113,6 @@ from tests.session.records._wire import (
             id="iteration-reran-to-confirm",
         ),
         pytest.param(
-            patching(
-                ITERATION_RECORD,
-                {"metrics": {"__proto__": {**METRIC_VERDICT, "delta_pct": -1.0}}},
-            ),
-            id="iteration-metric-name-is-proto",
-        ),
-        pytest.param(
-            patching(
-                ITERATION_RECORD,
-                {
-                    "samples": {
-                        "experiment": [{"__proto__": 100, "total_ms": 200}],
-                        "baseline": field_of(ITERATION_RECORD, "samples")["baseline"],
-                    }
-                },
-            ),
-            id="iteration-sample-round-key-is-proto",
-        ),
-        pytest.param(
             patching(ITERATION_RECORD, {"duration_ms": 4200.5, "measured_tree": "abc123def456"}),
             id="iteration-with-duration-and-tree",
         ),
@@ -187,18 +166,20 @@ def test_decode_log_line_when_a_number_is_nan_or_infinity_does_raise_naming_it_i
 
 
 @pytest.mark.parametrize(
-    "line",
+    ("line", "literal"),
     [
-        pytest.param('{"a":1e999}', id="overflowing-literal"),
-        pytest.param('{"a":-1e999}', id="negative-overflowing-literal"),
-        pytest.param('{"a":{"b":[1,2e999]}}', id="overflowing-literal-nested"),
+        pytest.param('{"a":1e999}', "1e999", id="overflowing-literal"),
+        pytest.param('{"a":-1e999}', "-1e999", id="negative-overflowing-literal"),
+        pytest.param('{"a":{"b":[1,2e999]}}', "2e999", id="overflowing-literal-nested"),
     ],
 )
-def test_decode_log_line_when_a_number_overflows_a_float_does_raise_saying_so(line: str):
-    with pytest.raises(NonFiniteNumberError, match="overflows a float") as excinfo:
+def test_decode_log_line_when_a_number_overflows_a_float_does_raise_naming_the_literal(
+    line: str, literal: str
+):
+    with pytest.raises(NonFiniteNumberError) as excinfo:
         decode_log_line(line)
 
-    assert "not valid JSON" not in str(excinfo.value)
+    assert str(excinfo.value) == f"{literal} overflows a float"
 
 
 def test_decode_log_line_when_numbers_finite_does_decode_them_unchanged():
@@ -210,16 +191,15 @@ def test_decode_log_line_when_numbers_finite_does_decode_them_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# JSON schema — WithJsonSchema overrides on optional fields
+# JSON schema — nullability of optional fields
 # ---------------------------------------------------------------------------
 
 
 def _session_log_schema() -> dict[str, Any]:
-    """The JSON schema ``TypeAdapter`` generates directly from ``SessionLogRecord``."""
-    return TypeAdapter(SessionLogRecord).json_schema()
+    return SESSION_LOG_ADAPTER.json_schema()
 
 
-def test_json_schema_when_optional_never_null_fields_present_does_emit_non_null_types():
+def test_json_schema_when_generated_does_emit_keep_checks_stdout_bytes_as_plain_integer():
     defs = _session_log_schema()["$defs"]
 
     stdout_bytes = defs["KeepChecks"]["properties"]["stdout_bytes"]

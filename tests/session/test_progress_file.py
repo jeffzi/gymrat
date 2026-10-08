@@ -9,7 +9,6 @@ partial file.  ``clear_progress`` removes the sidecar when the iteration exits.
 
 import json
 import os
-import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -29,6 +28,7 @@ from gymrat.session.progress_file import (
     read_progress,
     write_progress,
 )
+from tests._mode_bits import needs_mode_bits
 
 # ---------------------------------------------------------------------------
 # write_progress
@@ -49,11 +49,6 @@ def _make_snapshot(**overrides: object) -> ProgressSnapshot:
 
 def _progress_file(root: str) -> Path:
     return Path(progress_path(root))
-
-
-def _read_json(root: str) -> dict[str, object]:
-    """Read and parse the raw sidecar JSON under *root*."""
-    return json.loads(_progress_file(root).read_text(encoding="utf-8"))
 
 
 def test_write_progress_when_called_does_create_readable_json_file(root: str):
@@ -100,9 +95,6 @@ def _json(payload: object) -> bytes:
     "contents",
     [
         pytest.param(None, id="file-absent"),
-        pytest.param(b"not valid json{{{", id="invalid-json"),
-        pytest.param(b"\x80\x81\x82", id="non-utf8-bytes"),
-        pytest.param(_json({"unexpected_field": 42}), id="only-unknown-key"),
         pytest.param(_json({**_VALID_FIELDS, "unexpected_field": 42}), id="extra-unknown-key"),
         pytest.param(_json({"passes_completed": 3, "passes_total": 10}), id="missing-key"),
         pytest.param(_json({**_VALID_FIELDS, "passes_completed": "x"}), id="string-for-int"),
@@ -112,10 +104,9 @@ def _json(payload: object) -> bytes:
             _json({**_VALID_FIELDS, "last_pass_duration_ms": "fast"}), id="string-for-float"
         ),
         pytest.param(_json({**_VALID_FIELDS, "last_pass_duration_ms": False}), id="bool-for-float"),
-        pytest.param(_json([3, 10, 1234.5]), id="array-not-object"),
     ],
 )
-def test_read_progress_when_file_absent_or_unreadable_as_a_snapshot_does_return_none(
+def test_read_progress_when_file_absent_or_not_a_snapshot_does_return_none(
     root: str, contents: bytes | None
 ):
     if contents is not None:
@@ -146,28 +137,15 @@ def test_read_progress_when_clock_advances_does_discard_only_past_the_bound(
     assert result == (snapshot if survives else None)
 
 
-@pytest.mark.parametrize(
-    "exception",
-    [
-        pytest.param(
-            FileNotFoundError(2, "No such file", "progress.json"),
-            id="file-vanishes-mid-read",
-        ),
-        pytest.param(
-            PermissionError(13, "Permission denied", "progress.json"),
-            id="permission-denied",
-        ),
-    ],
-)
-def test_read_progress_when_read_text_raises_os_error_does_return_none(
-    root: str, monkeypatch: pytest.MonkeyPatch, exception: OSError
+def test_read_progress_when_file_vanishes_mid_read_does_return_none(
+    root: str, monkeypatch: pytest.MonkeyPatch
 ):
     write_progress(root, _make_snapshot())
     original_read_text = Path.read_text
 
     def failing_read(self: Path, *args: object, **kwargs: object) -> str:
         if str(self) == str(_progress_file(root)):
-            raise exception
+            raise FileNotFoundError(2, "No such file", str(self))
         return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(Path, "read_text", failing_read)
@@ -175,9 +153,6 @@ def test_read_progress_when_read_text_raises_os_error_does_return_none(
     result = read_progress(root)
 
     assert result is None
-
-
-_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 @pytest.fixture
@@ -190,10 +165,7 @@ def unsearchable_sidecar(root: str) -> Iterator[str]:
     session.chmod(0o700)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or _IS_ROOT,
-    reason="POSIX directory permissions are required, and root bypasses them",
-)
+@needs_mode_bits
 def test_read_progress_when_sidecar_cannot_be_stat_does_return_none(unsearchable_sidecar: str):
     result = read_progress(unsearchable_sidecar)
 

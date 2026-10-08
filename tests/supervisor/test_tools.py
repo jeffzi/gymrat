@@ -8,7 +8,7 @@ import os
 import pathlib
 import sys
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, create_autospec
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -23,6 +23,7 @@ from gymrat.exec import (
     ExecOptions,
     ExecResult,
     ExecTimeoutError,
+    exec_argv,
 )
 from gymrat.supervisor.tools import ToolHost, gymrat_tool_definitions, gymrat_tools_factory
 from tests._cli import run_cli
@@ -60,7 +61,7 @@ def _real_host(
 @pytest.fixture
 def fake_exec() -> AsyncMock:
     """An ``exec_argv`` replacement that records calls and returns a canned result."""
-    return AsyncMock(return_value=expected_result(stdout='{"ok": true}'))
+    return create_autospec(exec_argv, return_value=expected_result(stdout='{"ok": true}'))
 
 
 @pytest.fixture
@@ -182,20 +183,28 @@ async def test_command_when_child_fails_without_document_does_return_failure_tex
     assert result == {"content": [{"type": "text", "text": expected}], "is_error": True}
 
 
-async def test_probe_when_spawn_fails_does_return_spawn_error(tmp_path: pathlib.Path) -> None:
+@pytest.fixture
+async def missing_executable(tmp_path: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """A path no executable sits at, and the text the host's spawn error gives for it."""
     missing = tmp_path / "missing-executable"
+    try:
+        await asyncio.create_subprocess_exec(str(missing))
+    except FileNotFoundError as error:
+        return missing, str(error)
+    pytest.fail(f"spawning {missing} unexpectedly succeeded")
+
+
+async def test_probe_when_spawn_fails_does_return_spawn_error(
+    tmp_path: pathlib.Path, missing_executable: tuple[pathlib.Path, str]
+) -> None:
+    missing, spawn_error = missing_executable
     host = ToolHost(
         root=str(tmp_path), abort=asyncio.Event(), extra_env={}, argv_prefix=[str(missing)]
     )
-    with pytest.raises(FileNotFoundError) as spawn_failure:
-        await asyncio.create_subprocess_exec(str(missing))
 
     result = await host.probe({})
 
-    assert result == {
-        "content": [{"type": "text", "text": str(spawn_failure.value)}],
-        "is_error": True,
-    }
+    assert result == {"content": [{"type": "text", "text": spawn_error}], "is_error": True}
 
 
 @pytest.mark.parametrize("exit_code", [0, 1])
@@ -434,11 +443,9 @@ async def test_gymrat_tool_definitions_when_called_does_describe_probe_then_iter
 @pytest.fixture
 def sdk_config(host: ToolHost, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """The SDK server config the factory builds, with its tool host replaced by ``host``."""
-
-    def _given_host(**_kwargs: object) -> ToolHost:
-        return host
-
-    monkeypatch.setattr("gymrat.supervisor.tools.ToolHost", _given_host)
+    monkeypatch.setattr(
+        "gymrat.supervisor.tools.ToolHost", create_autospec(ToolHost, return_value=host)
+    )
     return gymrat_tools_factory("unused-root")(asyncio.Event(), {})  # type: ignore[return-value]  # McpSdkServerConfig is a TypedDict
 
 
@@ -491,7 +498,7 @@ async def _call_via_sdk(
         ),
     ],
 )
-async def test_sdk_server_when_valid_arguments_given_does_run_child_with_expected_argv(
+async def test_gymrat_tools_factory_when_valid_arguments_given_does_run_child_with_expected_argv(
     sdk_config: dict[str, Any],
     fake_exec: AsyncMock,
     tool_name: str,
@@ -513,7 +520,7 @@ async def test_sdk_server_when_valid_arguments_given_does_run_child_with_expecte
         pytest.param("probe", {"names": "a"}, id="probe-string-names"),
     ],
 )
-async def test_sdk_server_when_invalid_arguments_given_does_reject_before_running_child(
+async def test_gymrat_tools_factory_when_invalid_arguments_given_does_reject_before_running_child(
     sdk_config: dict[str, Any],
     fake_exec: AsyncMock,
     tool_name: str,

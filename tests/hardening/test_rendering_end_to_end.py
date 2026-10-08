@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,12 +25,11 @@ from tests._cli import ENTRY as _ENTRY
 from tests._git import EMIT_ONE_BENCH
 from tests._git import run_git as _git
 from tests._git import write_committed_bench as _write_committed_bench
-from tests.hardening._pty import drain as _drain
+from tests._process_helpers import reaped
+from tests.hardening._pty import pty_capture
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-pty = pytest.importorskip("pty", reason="POSIX-only pty and shell bench")
 
 # A bench that records the ``NO_COLOR`` its own environment carries. The parent
 # starts with ``NO_COLOR`` unset, so a leak would show up here as ``[1]``.
@@ -71,31 +69,20 @@ def _run_report_on_pty(args: list[str], repo: str) -> tuple[int, str, str]:
     Returns:
         The exit code, the captured stderr, and the text drawn on the pty.
     """
-    master, slave = pty.openpty()
-    proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list, not shell-injected
-        [*_ENTRY, *args],
-        cwd=repo,
-        env=_neutral_env(),
-        stdin=subprocess.DEVNULL,
-        stdout=slave,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        close_fds=True,
-    )
-    os.close(slave)
-    chunks: list[bytes] = []
-    reader = threading.Thread(target=_drain, args=(master, chunks))
-    reader.start()
-    try:
-        _, stderr = proc.communicate(timeout=120)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.communicate()
-        reader.join(timeout=10)
-        os.close(master)
-    output = b"".join(chunks).decode("utf-8", "replace")
-    return proc.returncode, stderr.decode("utf-8", "replace"), output
+    with pty_capture() as terminal:
+        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list, not shell-injected
+            [*_ENTRY, *args],
+            cwd=repo,
+            env=_neutral_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=terminal.slave,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            close_fds=True,
+        )
+        with reaped(proc):
+            _, stderr = proc.communicate(timeout=120)
+    return proc.returncode, stderr.decode("utf-8", "replace"), terminal.output
 
 
 # ---------------------------------------------------------------------------

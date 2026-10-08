@@ -90,7 +90,7 @@ def baseline(repo_head: str) -> BaselineRef:
 # ---------------------------------------------------------------------------
 
 
-def test_create_workspace_when_no_session_workspace_does_build_branch_worktrees_and_descriptor(
+def test_create_workspace_when_no_session_workspace_does_build_the_session_workspace(
     repo: str, repo_head: str, baseline: BaselineRef
 ):
     result = create_workspace(repo, SESSION_ID, baseline)
@@ -119,7 +119,7 @@ def test_create_workspace_when_branch_already_exists_does_raise_naming_branch_an
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
-def test_create_workspace_when_worktree_add_dies_does_unwind_and_fail_on_that_step(
+def test_create_workspace_when_worktree_add_dies_does_raise_naming_that_step_leaving_nothing_behind(
     repo: str,
     baseline: BaselineRef,
 ):
@@ -137,23 +137,8 @@ def test_create_workspace_when_worktree_add_dies_does_unwind_and_fail_on_that_st
     assert not Path(experiment_worktree_dir(repo)).exists()
 
 
-def test_create_workspace_when_registry_entries_are_stale_does_check_out_over_them(
+def test_create_workspace_when_registry_entries_are_stale_does_check_out_over_its_own_entries_only(
     repo: str, repo_head: str, baseline: BaselineRef
-):
-    create_workspace(repo, SESSION_ID, baseline)
-    shutil.rmtree(experiment_worktree_dir(repo))
-    shutil.rmtree(baseline_worktree_dir(repo))
-
-    result = create_workspace(repo, NEXT_SESSION_ID, baseline)
-
-    assert _checked_out_ref(result.worktrees.experiment) == NEXT_BRANCH
-    assert head_of(result.worktrees.baseline) == repo_head
-
-
-def test_create_workspace_when_registry_stale_does_leave_the_users_own_worktrees_registered(
-    repo: str,
-    repo_head: str,
-    baseline: BaselineRef,
 ):
     create_workspace(repo, SESSION_ID, baseline)
     shutil.rmtree(experiment_worktree_dir(repo))
@@ -162,14 +147,16 @@ def test_create_workspace_when_registry_stale_does_leave_the_users_own_worktrees
     _git(["worktree", "add", "--detach", live, repo_head], repo)
     absent = register_absent_worktree(repo)
 
-    create_workspace(repo, NEXT_SESSION_ID, baseline)
+    result = create_workspace(repo, NEXT_SESSION_ID, baseline)
 
     registered = list_worktree_dirs(repo, include_main=False)
+    assert _checked_out_ref(result.worktrees.experiment) == NEXT_BRANCH
+    assert head_of(result.worktrees.baseline) == repo_head
     assert Path(live).exists()
     assert (live in registered, absent in registered) == (True, True)
 
 
-def test_create_workspace_when_earlier_worktree_still_on_disk_does_leave_its_work_and_name_the_path(
+def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming_the_path_with_its_work_intact(
     repo: str, baseline: BaselineRef
 ):
     # The earlier session's log is gone, so nothing told this run the workspace
@@ -272,10 +259,12 @@ def _experiment_gone(repo: str) -> None:
         pytest.param(_experiment_gone, id="one-directory-already-gone"),
     ],
 )
-def test_remove_worktrees_when_called_does_remove_both_without_warning(
+def test_remove_worktrees_when_called_does_remove_only_its_own_two_without_warning(
     repo: str, baseline: BaselineRef, arrange: Callable[[str], None]
 ):
     create_workspace(repo, SESSION_ID, baseline)
+    # The user's own worktree, absent only for the moment.
+    absent = register_absent_worktree(repo)
     arrange(repo)
 
     warnings = remove_worktrees(repo, worktrees_at(repo))
@@ -283,26 +272,10 @@ def test_remove_worktrees_when_called_does_remove_both_without_warning(
     assert warnings == []
     assert not Path(experiment_worktree_dir(repo)).exists()
     assert not Path(baseline_worktree_dir(repo)).exists()
-    assert list_worktree_dirs(repo, include_main=False) == []
+    assert list_worktree_dirs(repo, include_main=False) == [absent]
 
 
-def test_remove_worktrees_when_one_gone_does_deregister_by_name_only(
-    repo: str,
-    baseline: BaselineRef,
-):
-    create_workspace(repo, SESSION_ID, baseline)
-    # The user's own worktree, absent only for the moment.
-    absent = register_absent_worktree(repo)
-    shutil.rmtree(experiment_worktree_dir(repo))
-
-    remove_worktrees(repo, worktrees_at(repo))
-
-    listed = list_worktree_dirs(repo)
-    assert experiment_worktree_dir(repo) not in listed
-    assert absent in listed
-
-
-def test_remove_worktrees_when_git_refuses_does_warn_naming_it_and_remove_the_other(
+def test_remove_worktrees_when_git_refuses_one_does_still_remove_the_other_with_a_warning(
     repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
@@ -372,20 +345,6 @@ def test_recreate_workspace_when_experiment_gone_does_put_it_back_on_the_branch(
     repo: str, repo_head: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
-    shutil.rmtree(experiment_worktree_dir(repo))
-
-    recreate_workspace(repo, BRANCH, repo_head)
-
-    assert _checked_out_ref(experiment_worktree_dir(repo)) == BRANCH
-    assert _both_worktrees_exist(repo)
-
-
-def test_recreate_workspace_when_experiment_gone_does_leave_absent_user_worktree_registered(
-    repo: str,
-    repo_head: str,
-    baseline: BaselineRef,
-):
-    create_workspace(repo, SESSION_ID, baseline)
     user_worktree = str(Path(repo) / "user-worktree")
     _git(["worktree", "add", "--detach", user_worktree, repo_head], repo)
     shutil.rmtree(user_worktree)
@@ -393,6 +352,8 @@ def test_recreate_workspace_when_experiment_gone_does_leave_absent_user_worktree
 
     recreate_workspace(repo, BRANCH, repo_head)
 
+    assert _checked_out_ref(experiment_worktree_dir(repo)) == BRANCH
+    assert _both_worktrees_exist(repo)
     assert user_worktree in list_worktree_dirs(repo, include_main=False)
 
 
@@ -427,7 +388,7 @@ def test_recreate_workspace_when_both_on_disk_does_leave_experiment_work_untouch
 # ---------------------------------------------------------------------------
 
 
-def test_commit_workspace_when_changes_staged_and_untracked_does_commit_and_return_new_head(
+def test_commit_workspace_when_changes_staged_and_untracked_does_commit_them_returning_the_new_head(
     repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
@@ -477,7 +438,7 @@ def test_commit_workspace_when_head_unreadable_after_commit_does_raise_the_workt
     assert excinfo.value.hint == "Inspect what is standing there with: git log -1"
 
 
-def test_revert_workspace_when_worktree_dirty_does_restore_head_and_drop_untracked_files(
+def test_revert_workspace_when_worktree_dirty_does_restore_the_worktree_to_head(
     repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
@@ -623,11 +584,9 @@ def test_worktree_fingerprint_when_called_does_leave_index_untouched(
 ):
     create_workspace(repo, SESSION_ID, baseline)
     experiment = experiment_worktree_dir(repo)
-
     (Path(experiment) / "staged.txt").write_text("staged content\n", encoding="utf-8")
     _git(["add", "staged.txt"], experiment)
     (Path(experiment) / "unstaged.txt").write_text("unstaged content\n", encoding="utf-8")
-
     index_path = Path(_git(["rev-parse", "--git-path", "index"], experiment))
     index_before = index_path.read_bytes()
 

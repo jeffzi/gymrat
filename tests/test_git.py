@@ -85,14 +85,15 @@ def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
     monkeypatch.setenv("GIT_INDEX_FILE", "/nonexistent/.git/index")
     custom_index = str(tmp_path / "custom-index")
     (Path(repo) / "staged.txt").write_text("banana\n")
-
     run_git(["read-tree", "--empty"], repo, env={"GIT_INDEX_FILE": custom_index})
     run_git(
         ["update-index", "--add", "--", "staged.txt"],
         repo,
         env={"GIT_INDEX_FILE": custom_index},
     )
+
     tree_sha = run_git(["write-tree"], repo, env={"GIT_INDEX_FILE": custom_index}).strip()
+
     listing = run_git(["ls-tree", tree_sha], repo)
     real_index_status = run_git(["diff", "--cached", "--name-only"], repo)
 
@@ -106,7 +107,9 @@ def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
 
 
 def test_try_git_when_command_succeeds_does_return_none(repo: str):
-    assert try_git(["rev-parse", "HEAD"], repo) is None
+    result = try_git(["rev-parse", "HEAD"], repo)
+
+    assert result is None
 
 
 def _git_fails(_monkeypatch: pytest.MonkeyPatch) -> None:
@@ -173,7 +176,7 @@ _EXIT_POLL_INTERVAL_SECONDS = 0.01
     reason="Signal masking requires POSIX pthread_sigmask",
 )
 def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_until_git_exits(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str, recorded_exits: list[tuple[int, float]]
 ):
     # One signal suffices here: the deferred set is pinned in the signals suite.
     term_signal = signal.SIGTERM
@@ -181,14 +184,6 @@ def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_unt
     # for a mid-call signal to land.
     install_git_hook(repo, "post-checkout", f"sleep {_WORKTREE_SLEEP_SECONDS}\n")
     worktree_dir = str(Path(repo) / "wt")
-
-    exit_record: dict[str, float] = {}
-
-    def record_exit(code: int) -> None:
-        exit_record["code"] = code
-        exit_record["at"] = time.monotonic()
-
-    monkeypatch.setattr(signals, "exit_process", record_exit)
 
     sweep_record: dict[str, bool] = {}
 
@@ -209,14 +204,15 @@ def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_unt
         timer.start()
         run_git(["worktree", "add", "--detach", worktree_dir, "HEAD"], repo)
         deadline = time.monotonic() + _EXIT_POLL_TIMEOUT_SECONDS
-        while "code" not in exit_record and time.monotonic() < deadline:
+        while not recorded_exits and time.monotonic() < deadline:
             time.sleep(_EXIT_POLL_INTERVAL_SECONDS)
     finally:
         timer.cancel()
         uninstall()
 
-    assert exit_record["code"] == 128 + int(term_signal)
-    assert exit_record["at"] - started >= _WORKTREE_SLEEP_SECONDS * _DEFERRAL_ELAPSED_FRACTION
+    [(exit_code, exited_at)] = recorded_exits
+    assert exit_code == 128 + int(term_signal)
+    assert exited_at - started >= _WORKTREE_SLEEP_SECONDS * _DEFERRAL_ELAPSED_FRACTION
     assert sweep_record["worktree_materialized"]
     assert list_worktree_dirs(repo, include_main=False) == []
 

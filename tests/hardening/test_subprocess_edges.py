@@ -22,7 +22,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +34,7 @@ from gymrat.exec import ExecOptions, ExecTimeoutError
 from gymrat.exec import exec as run_exec
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.events import SessionEvent, SessionObserver, UsageUpdateEvent
-from tests._exec_fixtures import recorded_spawns
+from tests._process_helpers import wait_for_file
 from tests.supervisor._fixtures import (
     FactoryProbe,
     FakeClient,
@@ -58,37 +58,16 @@ _LEAK_MARKERS = ("was destroyed but it is pending", "exception was never retriev
 # ---------------------------------------------------------------------------
 
 
-def file_exists(path: Path) -> bool:
-    """Whether ``path`` exists (sync helper to keep the stat out of async)."""
-    return path.exists()
-
-
-async def wait_for_file(path: Path, timeout_s: float = 5.0) -> None:
-    """Poll every 20ms until ``path`` exists.
-
-    Args:
-        path: The file to wait for.
-        timeout_s: How long to poll before giving up.
-
-    Raises:
-        TimeoutError: When ``path`` has not appeared within ``timeout_s``.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while not file_exists(path):
-        if loop.time() > deadline:
-            msg = f"file never appeared at {path}"
-            raise TimeoutError(msg)
-        await asyncio.sleep(0.02)
-
-
 def install_task_leak_recorder() -> list[dict[str, object]]:
-    """Route the running loop's exception handler into a list and return it.
+    """Route the running loop's exception handler into a list.
 
     Both "Task was destroyed but it is pending!" and "Task exception was never
     retrieved" are reported through ``loop.call_exception_handler`` when the
     offending task is finalized, so recording every context the handler sees —
     then forcing a collection — captures a forgotten task deterministically.
+
+    Returns:
+        The list every context the handler sees is appended to.
     """
     loop = asyncio.get_running_loop()
     records: list[dict[str, object]] = []
@@ -107,27 +86,13 @@ def task_leak_messages(records: list[dict[str, object]]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-async def exec_children(
-    monkeypatch: pytest.MonkeyPatch,
-) -> AsyncIterator[list[asyncio.subprocess.Process]]:
-    """Record every child ``exec`` spawns and reap any survivor in-loop on teardown."""
-    async with recorded_spawns(monkeypatch) as processes:
-        yield processes
-
-
-# ---------------------------------------------------------------------------
 # aborting mid-read leaks no forgotten-task diagnostics
 # ---------------------------------------------------------------------------
 
 
 async def test_exec_when_aborted_mid_read_does_not_leak_task_diagnostics(
     tmp_path: Path,
-    exec_children: list[asyncio.subprocess.Process],
+    spawned_processes: list[asyncio.subprocess.Process],
 ) -> None:
     records = install_task_leak_recorder()
     abort = asyncio.Event()
@@ -144,7 +109,7 @@ async def test_exec_when_aborted_mid_read_does_not_leak_task_diagnostics(
     await asyncio.sleep(0)
 
     assert task_leak_messages(records) == []
-    assert exec_children  # the abort ran through a real spawned child
+    assert spawned_processes  # the abort ran through a real spawned child
 
 
 def _never_abort(_abort: asyncio.Event) -> SessionObserver:
@@ -212,6 +177,7 @@ async def test_claude_driver_when_session_settles_does_not_leak_task_diagnostics
 async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_group(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    recorded_exits: list[tuple[int, float]],
 ) -> None:
     # Widen the spawn-to-register gap so SIGTERM lands inside it.
     real_spawn = asyncio.create_subprocess_shell
@@ -226,14 +192,6 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
         return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_shell", slow_spawn)
-
-    # Prevent the handler from actually terminating the process.
-    exit_record: dict[str, object] = {}
-
-    def record_exit(code: int) -> None:
-        exit_record["code"] = code
-
-    monkeypatch.setattr(signals, "exit_process", record_exit)
 
     uninstall = signals.install_termination_cleanup(exec_mod.kill_live_process_groups)
 
@@ -272,4 +230,4 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     assert not isinstance(result, ExecTimeoutError), (
         "child was not killed by the signal handler — spawn-register window is unmasked"
     )
-    assert "code" in exit_record
+    assert recorded_exits, "the termination handler never asked the process to exit"

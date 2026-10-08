@@ -6,29 +6,25 @@ cover.
 """
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from unittest.mock import create_autospec
 
 import pytest
 
 from gymrat.cli.app import app
-from gymrat.loop.discard import DiscardResult, discard_session
-from gymrat.loop.keep import KeepResult, keep_session
 from gymrat.loop.start import start_session
+from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import (
-    DiscardRecord,
     FinalizeRecord,
-    KeepChecks,
-    KeepRecord,
     SessionLogRecord,
     StopRecord,
 )
 from tests._config import resolved_config
+from tests._git import head_of
 from tests.cli._budget import install_budget
 from tests.cli._session import (
     close_session_with_one_keep,
     make_discard_repo,
-    never_tty,
     open_session_with_one_keep,
     runner,
     stub_resolve_config,
@@ -57,47 +53,29 @@ from tests.session.records._fixtures import (
 # ---------------------------------------------------------------------------
 
 
-def _make_committed_keep_result() -> KeepResult:
-    """A ``KeepResult`` for a committed keep with checks passing."""
-    record = KeepRecord(
-        type="keep",
-        seq=1,
-        at=AT,
-        status="committed",
-        checks=KeepChecks(configured=True, passed=True, stdout_bytes=80, stderr_bytes=0),
-        commit=COMMIT,
-        message="cache the regex",
-    )
-    return KeepResult(record=record, report="committed keep report")
-
-
-def _wire_keep(repo: str, monkeypatch: pytest.MonkeyPatch, keep_result: KeepResult) -> None:
-    """Wire ``keep`` with a config resolver and a recording keep_session stub."""
-    start_session(repo, "main", resolved_config())
-    append_records(repo, iteration_record(seq=1))
-    monkeypatch.setattr(
-        "gymrat.cli.commands.loop.keep_session",
-        create_autospec(keep_session, return_value=keep_result),
-    )
-
-
 def test_keep_command_when_format_json_and_committed_does_emit_structured_json(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _wire_keep(repo, monkeypatch, _make_committed_keep_result())
+    start_with(repo, (iteration_record(seq=1),))
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    write_bench_config(repo, checks=CHECKS)
 
-    result = runner.invoke(app, ["keep", "--format", "json"])
+    result = runner.invoke(app, ["keep", "-m", "cache the regex", "--format", "json"])
 
     assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert doc["status"] == "committed"
-    assert doc["commit"] == COMMIT
-    assert doc["message"] == "cache the regex"
-    assert doc["reason"] is None
-    assert doc["checks"]["configured"] is True
-    assert doc["checks"]["passed"] is True
-    assert doc["checks"]["stdout_bytes"] == 80
-    assert doc["checks"]["stderr_bytes"] == 0
+    assert json.loads(result.stdout) == {
+        "status": "committed",
+        "reason": None,
+        "checks": {
+            "configured": True,
+            "passed": True,
+            "stdout_bytes": None,
+            "stderr_bytes": None,
+        },
+        "commit": head_of(experiment_worktree_dir(repo)),
+        "message": "cache the regex",
+    }
 
 
 @pytest.mark.parametrize(
@@ -142,63 +120,38 @@ def test_keep_command_when_format_json_and_iteration_unimproved_does_keep_its_ke
 # ---------------------------------------------------------------------------
 
 
-def _make_discard_result() -> DiscardResult:
-    """A ``DiscardResult`` for a measured discard of iteration 1."""
-    return DiscardResult(
-        record=DiscardRecord(type="discard", seq=1, at=AT),
-        report="discarded iteration 1",
-        at=AT,
-    )
-
-
-def _make_unmeasured_discard_result() -> DiscardResult:
-    """A ``DiscardResult`` for an unmeasured revert (no record)."""
-    return DiscardResult(
-        record=None,
-        report="reverted unmeasured changes",
-        at=AT,
-    )
-
-
-def _wire_discard(monkeypatch: pytest.MonkeyPatch, discard_result: DiscardResult) -> None:
-    """Wire ``discard`` with a recording discard_session stub and skip its TTY prompt."""
-    monkeypatch.setattr(
-        "gymrat.cli.commands.loop.discard_session",
-        create_autospec(discard_session, return_value=discard_result),
-    )
-    monkeypatch.setattr("gymrat.cli.commands.loop.is_tty", never_tty)
-
-
-@pytest.fixture
-def discard_repo(repo: str) -> str:
-    """A repository with an open session and one unsettled iteration to discard."""
-    return make_discard_repo(repo)
+def _unmeasured_edit(repo: str) -> None:
+    """Open a session with an edit in the experiment worktree and nothing measured."""
+    start_with(repo)
+    edit_experiment(repo)
 
 
 @pytest.mark.parametrize(
-    ("discard_result", "expected_seq", "expected_measured"),
+    ("arrange", "expected_seq", "expected_measured"),
     [
-        pytest.param(_make_discard_result(), 1, True, id="measured"),
-        pytest.param(_make_unmeasured_discard_result(), None, False, id="unmeasured"),
+        pytest.param(make_discard_repo, 1, True, id="measured"),
+        pytest.param(_unmeasured_edit, None, False, id="unmeasured"),
     ],
 )
 def test_discard_command_when_format_json_does_emit_structured_json(
-    discard_repo: str,
+    *,
+    repo: str,
     monkeypatch: pytest.MonkeyPatch,
-    discard_result: DiscardResult,
+    arrange: Callable[[str], object],
     expected_seq: int | None,
     expected_measured: bool,
 ):
-    _wire_discard(monkeypatch, discard_result)
+    arrange(repo)
+    monkeypatch.setattr("gymrat.loop.discard.now_ns", lambda: AT)
 
     result = runner.invoke(app, ["discard", "--force", "--format", "json"])
 
     assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert doc["seq"] == expected_seq
-    assert doc["at"] == AT
-    assert isinstance(doc["at"], int)
-    assert doc["measured"] is expected_measured
+    assert json.loads(result.stdout) == {
+        "seq": expected_seq,
+        "at": AT,
+        "measured": expected_measured,
+    }
 
 
 # ---------------------------------------------------------------------------

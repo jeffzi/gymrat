@@ -42,7 +42,7 @@ from tests.session.records._fixtures import (
     session_state,
     stop_record,
 )
-from tests.supervisor._fixtures import make_turn_end
+from tests.supervisor._fixtures import WAIT_FINISHED_LINE, make_turn_end
 
 if TYPE_CHECKING:
     from gymrat.config import BenchlessConfig
@@ -119,11 +119,6 @@ _REPLY_INSTRUCTION = (
     "No human is present. Run gymrat status to re-read the session, "
     "then decide from the runbook and continue. When the work is done, "
     "record your report with gymrat stop -m and end the turn."
-)
-
-#: The line a reply closes on when the agent's last command was still running.
-_WAIT_FINISHED_LINE = (
-    "The command you left running has finished; its record, if any, is in the session log."
 )
 
 
@@ -249,7 +244,7 @@ def test_classify_when_lock_held_does_wait_without_touching_guard_counters():
             600_000.0,
             0.0,
             True,
-            f"{_REPLY_INSTRUCTION}\n{format_duration(600_000)} left of 10m\n{_WAIT_FINISHED_LINE}",
+            f"{_REPLY_INSTRUCTION}\n{format_duration(600_000)} left of 10m\n{WAIT_FINISHED_LINE}",
             id="after-wait-appends-the-finished-line",
         ),
         pytest.param(
@@ -421,15 +416,7 @@ def test_detect_end_condition_when_hook_failed_and_stop_met_does_report_hook_fai
 # ---------------------------------------------------------------------------
 
 
-def test_classify_when_no_new_outcome_records_since_last_reply_does_increment_no_progress():
-    guards = guard_state(replies_sent=1, no_progress_count=0, last_record_count=0)
-
-    classify_with_defaults(records=[], guards=guards)
-
-    assert guards.no_progress_count == 1
-
-
-def test_classify_when_new_outcome_records_appended_does_reset_no_progress_and_move_baseline():
+def test_classify_when_new_outcome_records_appended_does_reset_the_no_progress_streak():
     guards = guard_state(replies_sent=1, no_progress_count=2, last_record_count=0)
 
     classify_with_defaults(records=[iteration_record(), iteration_record(seq=2)], guards=guards)

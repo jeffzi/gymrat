@@ -368,6 +368,9 @@ def single_sample_result() -> ComparisonResult:
 
     One pair leaves the band method no spread to measure, so it collapses to
     the noise floor and reports no signal whatever the deltas were.
+
+    Returns:
+        The single-sample comparison result.
     """
     return create_comparison_result(
         samples=1,
@@ -385,6 +388,9 @@ def two_kind_metrics() -> MetricComparisons:
     ``time`` holds a two-metric ``entity`` group beside an ungrouped ``warmup``,
     so its rendered section carries both a group block and a bare row; ``memory``
     holds one ungrouped metric, so its rendered section carries no group rows.
+
+    Returns:
+        The metrics keyed by full metric name.
     """
     return {
         "entity/alive_check#time": kind_metric(
@@ -413,6 +419,9 @@ def time_kind() -> KindAggregate:
     Both its geomeans carry the band propagated from the metrics behind them, and
     both sit outside it, so a section rendered from this aggregate shows a band
     beside every figure it prints.
+
+    Returns:
+        The ``time`` kind aggregate.
     """
     geomean = geomean_of(-3.2, 3, band=2)
     return KindAggregate(
@@ -428,6 +437,9 @@ def memory_kind() -> KindAggregate:
 
     Its geomean keeps the default zero band, so a section rendered from this
     aggregate shows the figure alone.
+
+    Returns:
+        The ``memory`` kind aggregate.
     """
     return KindAggregate(kind="memory", geomean=geomean_of(-7, 1), groups=(), gated_geomean=None)
 
@@ -451,6 +463,9 @@ def grouped_comparison() -> ComparisonResult:
 
     A run of a single kind renders flat and drops its group rows, so the second
     kind is what makes the ``entity`` group render at all.
+
+    Returns:
+        The two-candidate comparison result.
     """
     return create_comparison_result(
         metrics={

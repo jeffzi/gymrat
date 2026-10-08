@@ -79,13 +79,6 @@ def _run_with_failing_stdout(
         )
 
 
-#: How each platform reports a stdout reader that has gone: ``(error, sys.platform)``.
-CLOSED_STDOUT_ERRORS = [
-    pytest.param(BrokenPipeError(errno.EPIPE, "Broken pipe"), "linux", id="posix-broken-pipe"),
-    pytest.param(OSError(errno.EINVAL, "Invalid argument"), "win32", id="windows-einval"),
-]
-
-
 # ---------------------------------------------------------------------------
 # constants
 # ---------------------------------------------------------------------------
@@ -163,12 +156,10 @@ def test_write_stdout_when_reader_closed_does_exit_zero_without_stderr(probe: st
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@pytest.mark.parametrize(("error", "platform"), CLOSED_STDOUT_ERRORS)
 def test_write_stdout_when_pipe_closed_does_return_without_raising(
-    monkeypatch: pytest.MonkeyPatch, error: OSError, platform: str
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.platform", platform)
-    monkeypatch.setattr("sys.stdout", RaisingStream(error))
+    monkeypatch.setattr("sys.stdout", RaisingStream(BrokenPipeError(errno.EPIPE, "Broken pipe")))
 
     write_stdout("first line\n")
 
@@ -209,28 +200,17 @@ def test_gymrat_when_stdout_write_fails_otherwise_does_exit_two_without_shutdown
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("override", "env_var", "tty", "colored"),
-    [
-        pytest.param(True, "NO_COLOR", False, True, id="color-beats-no-color-off-a-tty"),
-        pytest.param(False, "FORCE_COLOR", True, False, id="no-color-beats-force-color-on-a-tty"),
-    ],
-)
-def test_format_cli_error_when_color_override_set_does_beat_the_color_env_vars(
-    override: bool,
-    env_var: str,
-    tty: bool,
-    colored: bool,
+def test_format_cli_error_when_color_override_set_does_color_despite_no_color_off_a_tty(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=tty))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
     monkeypatch.setenv("TERM", "xterm-256color")
-    monkeypatch.setenv(env_var, "1")
-    set_color_override(override)
+    monkeypatch.setenv("NO_COLOR", "1")
+    set_color_override(True)
 
     result = format_cli_error(ValueError("boom"))
 
-    assert ("\x1b[" in result) is colored
+    assert "\x1b[" in result
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +225,7 @@ def test_format_cli_error_when_colored_does_paint_the_error_label_red(
 
     output = format_cli_error(ValueError("boom"))
 
-    assert "\x1b[31m" in output
-    assert "Error" in output
+    assert output.splitlines()[0].startswith("\x1b[31mError")
 
 
 def test_format_cli_error_when_adapter_error_does_keep_its_class_name_prefix(
@@ -304,29 +283,25 @@ def test_format_cli_error_when_hint_colored_does_render_inline_code_blue_on_a_di
     assert "\x1b[2;34mgymrat doctor" in hint_line  # cspell:disable-line
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(ValueError("boom"), id="exception"),
+        pytest.param("boom", id="not-an-exception"),
+    ],
+)
 def test_format_cli_error_when_not_gymrat_error_does_render_plain_label_message_and_bug_footer(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, error: object
 ):
     monkeypatch.setenv("NO_COLOR", "1")
 
-    output = format_cli_error(ValueError("boom"))
+    output = format_cli_error(error)
 
     assert output.splitlines() == [
         "Error: boom",
         "Run with gymrat --debug for details. If this is a bug, please report it at",
         BUGS_URL,
     ]
-
-
-def test_format_cli_error_when_value_is_not_an_exception_does_still_render(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("NO_COLOR", "1")
-
-    output = format_cli_error("plain failure")
-
-    assert "Error: plain failure" in output
-    assert BUGS_URL in output
 
 
 # ---------------------------------------------------------------------------

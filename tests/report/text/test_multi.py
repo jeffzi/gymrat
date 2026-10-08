@@ -1,21 +1,21 @@
 """Tests for the multi-candidate comparison text report.
 
-These cover the candidate-per-column table and its per-candidate aggregate
-cells, how its cells are colored, the sectioned layout, the per-candidate
-highlights, and the verbose method footer.
+These cover the candidate-per-column table: each candidate's figures paired with
+its own verdict, the identical cell, how each cell is colored, bracketed names,
+the sectioned and grouped layouts with several candidates, the per-candidate
+summary lines, and the per-candidate highlights.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
+from rich.cells import cell_len
 
-from gymrat.model import Exclusion
 from gymrat.report.text.render import render_report
-from gymrat.report.types import ReportOptions
+from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
 from gymrat.verdict import GroupAggregate, KindAggregate
 from tests._ansi import (
     TRAILING_SGR_RUN,
@@ -26,36 +26,27 @@ from tests.report._assertions import (
     highlight_lines,
     line_containing,
     line_starting_with,
+    rule_lines,
+    stripped_cells,
     styles_at,
-    table_region,
     table_rows,
 )
 from tests.report._comparisons import (
     NWayCandidate,
     create_candidate,
     create_comparison_result,
-    memory_kind,
+    metric_meta,
     multi_candidate_result,
     n_way_kind_metric,
     n_way_metric,
     other_kind,
-    permutation_metric,
-    time_kind,
-    two_kind_metrics,
-    two_kind_result,
-    without_gated_geomean,
 )
-from tests.report._verdicts import geomean_of
+from tests.report._verdicts import band_verdict, geomean_of, permutation_verdict
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.report.types import ComparisonResult
-
-
-def _stripped_cells(line: str) -> list[str]:
-    """The cells of `line`, stripped of their padding."""
-    return [cell.strip() for cell in cells_of(line)]
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +57,7 @@ def _stripped_cells(line: str) -> list[str]:
 def test_render_report_when_many_candidates_does_pair_each_figure_with_its_own_verdict():
     row = line_starting_with(render_report(multi_candidate_result()), "decode/time")
 
-    assert _stripped_cells(row) == [
+    assert stripped_cells(row) == [
         "decode/time",
         "100ns ± 1%",
         "90ns ± 1%  ✓  -10.0%",
@@ -76,9 +67,9 @@ def test_render_report_when_many_candidates_does_pair_each_figure_with_its_own_v
 
 
 def test_render_report_when_many_candidates_does_size_the_last_column_to_fit_its_aggregate():
-    bare = strip_ansi(render_report(multi_candidate_result(2)))
-    rules = [line for line in bare.split("\n") if re.match(r"^─+┼", line)]
-    geomean_line = line_starting_with(bare, "geomean")
+    report = render_report(multi_candidate_result(2))
+    rules = rule_lines(report)
+    geomean_line = line_starting_with(strip_ansi(report), "geomean")
 
     assert rules
     for rule in rules:
@@ -104,17 +95,50 @@ def _bracketed_result() -> ComparisonResult:
 def test_render_report_when_names_carry_brackets_does_print_them_literally():
     report = strip_ansi(render_report(_bracketed_result()))
 
-    assert _stripped_cells(line_starting_with(report, "metric")) == [
+    assert stripped_cells(line_starting_with(report, "metric")) == [
         "metric",
         "main",
         "[bold]fast",
         "[dim]slow",
     ]
-    assert _stripped_cells(line_starting_with(report, "[italic]decode/time")) == [
+    assert stripped_cells(line_starting_with(report, "[italic]decode/time")) == [
         "[italic]decode/time",
         "100ns ± 1%",
         "90ns ± 1%  ✓  -10.0%",
         "104ns ± 1%  ✗  +4.0%",
+    ]
+
+
+def test_render_report_when_ties_starve_the_test_does_mark_the_candidate_cell_identical():
+    result = create_comparison_result(
+        candidates=[
+            create_candidate(label="candidate-a"),
+            create_candidate(label="candidate-b"),
+        ],
+        metrics={
+            "tied/time": MetricComparison(
+                baseline_median=100,
+                baseline_spread=1,
+                candidates=(
+                    CandidateMetric(median=100, spread=1, verdict=band_verdict(usable_n=0)),
+                    CandidateMetric(
+                        median=90,
+                        spread=1,
+                        verdict=permutation_verdict(verdict="improved", delta=-10, p=0.002),
+                    ),
+                ),
+                meta=metric_meta("tied/time", unit="ns"),
+            ),
+        },
+    )
+
+    row = line_starting_with(render_report(result), "tied/time")
+
+    assert stripped_cells(row) == [
+        "tied/time",
+        "100ns ± 1%",
+        "100ns ± 1%  =  -0.5%",
+        "90ns ± 1%  ✓  -10.0%",
     ]
 
 
@@ -177,78 +201,6 @@ def test_render_report_when_colored_does_leave_name_and_values_plain_on_a_quiet_
 # ---------------------------------------------------------------------------
 
 
-def test_render_report_when_kind_is_informational_by_metric_overrides_does_say_so():
-    report = render_report(replace(two_kind_result(), config_kinds=None))
-
-    assert line_containing(report, "informational") == "informational — gating off"
-
-
-def test_render_report_when_metrics_are_excluded_does_count_them_into_the_provenance():
-    result = replace(
-        two_kind_result(),
-        candidates=(
-            create_candidate(
-                kinds=[
-                    replace(
-                        time_kind(),
-                        geomean=geomean_of(
-                            -3.2,
-                            2,
-                            excluded=[Exclusion(metric="warmup#time", reason="unstable")],
-                        ),
-                    ),
-                    memory_kind(),
-                ]
-            ),
-        ),
-    )
-
-    row = line_starting_with(render_report(result), "geomean · time")
-
-    assert cells_of(row)[0].strip() == "geomean · time (2/3)"
-
-
-def _several_kinds_gate() -> ComparisonResult:
-    metrics = dict(two_kind_metrics())
-    encode = metrics["encode#memory"]
-    metrics["encode#memory"] = replace(encode, meta=replace(encode.meta, gating=True))
-    return create_comparison_result(
-        metrics=metrics,
-        candidates=[
-            create_candidate(
-                kinds=[time_kind(), replace(memory_kind(), gated_geomean=geomean_of(6.1, 1))]
-            )
-        ],
-    )
-
-
-def _no_kind_gates() -> ComparisonResult:
-    metrics = dict(two_kind_metrics())
-    for name in ("entity/alive_check#time", "entity/spawn#time", "warmup#time"):
-        entry = metrics[name]
-        metrics[name] = replace(entry, meta=replace(entry.meta, gating=False))
-    return replace(
-        two_kind_result(),
-        metrics=metrics,
-        candidates=(create_candidate(kinds=[without_gated_geomean(time_kind()), memory_kind()]),),
-    )
-
-
-@pytest.mark.parametrize(
-    "make_result",
-    [
-        pytest.param(_several_kinds_gate, id="several-kinds-gate"),
-        pytest.param(_no_kind_gates, id="no-kind-gates"),
-    ],
-)
-def test_render_report_when_closing_a_sectioned_table_does_end_on_the_last_geomean(
-    make_result: Callable[[], ComparisonResult],
-):
-    report = render_report(make_result())
-
-    assert table_region(report)[-1] == "geomean · memory (1)"
-
-
 def _sectioned_bracketed_result() -> ComparisonResult:
     """Two kinds, one grouped, whose baseline, kinds, group and short names read as markup tags."""
     return create_comparison_result(
@@ -300,7 +252,7 @@ def _sectioned_bracketed_result() -> ComparisonResult:
 def test_render_report_when_sectioned_names_carry_brackets_does_print_them_literally():
     report = render_report(_sectioned_bracketed_result())
 
-    assert [_stripped_cells(row)[:2] for row in table_rows(report)] == [
+    assert [stripped_cells(row)[:2] for row in table_rows(report)] == [
         ["[underline]time", "[dim]main"],
         ["[bold]entity", ""],
         ["spawn", "100ns ± 1%"],
@@ -313,52 +265,53 @@ def test_render_report_when_sectioned_names_carry_brackets_does_print_them_liter
 
 
 # ---------------------------------------------------------------------------
-# sectioned layout color
+# per-candidate summary
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("label", "value"),
-    [
-        pytest.param("geomean · entity", "-3.1%", id="sub-geomean"),
-        pytest.param("geomean · time", "-3.2%", id="kind-geomean"),
-    ],
-)
-def test_render_report_when_colored_does_paint_an_improving_aggregate_green(label: str, value: str):
-
-    line = line_containing(render_report(two_kind_result(), ReportOptions(color=True)), label)
-
-    assert styles_at(line, value) == ["1", "32"]
-
-
-# ---------------------------------------------------------------------------
-# section ordering: table, summary, highlights, method block
-# ---------------------------------------------------------------------------
-
-
-def _ordered_result() -> ComparisonResult:
-    """A two-metric run whose only footer content is the permutation method line."""
+def _two_label_result(labels: tuple[str, str]) -> ComparisonResult:
+    """One metric over two candidates labelled ``labels``, one improved and one regressed."""
     return create_comparison_result(
-        baseline_label="main",
+        candidates=[
+            create_candidate(label=labels[0], kinds=[other_kind(-10, 1)]),
+            create_candidate(label=labels[1], kinds=[other_kind(4, 1)]),
+        ],
         metrics={
-            "metric1/time": permutation_metric(verdict="improved", delta=-10, unit="ns"),
-            "metric2/time": permutation_metric(
-                verdict="no-signal", delta=2, gating=False, unit="ns"
-            ),
+            "decode/time": n_way_metric([
+                NWayCandidate(verdict="improved", delta=-10, median=90),
+                NWayCandidate(verdict="regressed", delta=4, median=104),
+            ])
         },
-        candidates=[create_candidate(label="faster", kinds=[other_kind(-5, 1)])],
     )
 
 
-def test_render_report_when_verbose_does_add_the_method_block_below_a_blank_line():
-    lines = render_report(_ordered_result(), ReportOptions(verbose=True)).split("\n")
+def test_render_report_when_ascii_labels_differ_in_length_does_pad_inside_the_bold_label():
+    report = render_report(_two_label_result(("fast", "slower")), ReportOptions(color=True))
 
-    method = next(i for i, line in enumerate(lines) if "sign-flip permutation test" in line)
-    assert (lines[method - 1], method) == ("", len(lines) - 1)
+    assert styles_at(line_containing(report, "fast  "), "fast  ") == ["1"]
+
+
+@pytest.mark.parametrize(
+    ("labels", "summary_column"),
+    [
+        pytest.param(("fast", "测试指标"), 10, id="cjk-label-widest"),
+        pytest.param(("a-longer-name", "测试"), 15, id="ascii-label-widest"),
+        pytest.param(("fast", "slower"), 8, id="ascii-only"),
+    ],
+)
+def test_render_report_when_candidate_labels_differ_in_width_does_start_every_summary_at_one_column(
+    labels: tuple[str, str],
+    summary_column: int,
+):
+    report = strip_ansi(render_report(_two_label_result(labels)))
+    summaries = [line for line in report.split("\n") if re.search(r"✓ \d+ improved", line)]
+
+    assert [line.split("  ✓")[0].rstrip() for line in summaries] == list(labels)
+    assert [cell_len(line[: line.index("✓")]) for line in summaries] == [summary_column] * 2
 
 
 # ---------------------------------------------------------------------------
-# per-candidate summary and highlights
+# per-candidate highlights
 # ---------------------------------------------------------------------------
 
 
@@ -422,7 +375,7 @@ def _flat_grouped_bracketed_result() -> ComparisonResult:
 def test_render_report_when_flat_grouped_many_candidates_does_print_group_brackets_literally():
     report = render_report(_flat_grouped_bracketed_result())
 
-    assert [_stripped_cells(row)[0] for row in table_rows(report)] == [
+    assert [stripped_cells(row)[0] for row in table_rows(report)] == [
         "metric",
         "[bold]entity · other",
         "spawn",

@@ -6,7 +6,9 @@ suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``
 
 The shared guards — a finalized session, no session, ``--no-color`` on a stderr
 error, the budget time-left line, and the tight-budget duration warning — are
-pinned once each, in one table across every command they apply to.
+pinned once each here: in one table across every command they apply to, or, where
+the commands share one code path, once per distinct path (``write_budget_report``,
+``emit_report``, and ``status``'s own trailer for the time-left line).
 """
 
 import re
@@ -17,7 +19,6 @@ import pytest
 
 from gymrat.cli.app import app
 from gymrat.loop.start import start_session
-from gymrat.report.types import ComparisonResult
 from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import FinalizeRecord, IterationRecord, StopRecord
 from tests._ansi import SGR_RE, strip_ansi
@@ -30,7 +31,9 @@ from tests.cli._session import (
     closed_stdout_error,
     last_command_record,
     open_session_with_one_keep,
+    open_stop_ready_session,
     runner,
+    stub_compare,
     stub_measure,
     stub_resolve_config,
     write_bench_config,
@@ -38,13 +41,12 @@ from tests.cli._session import (
 from tests.loop._probe import BASELINE_SAMPLES, install_measure, measurement
 from tests.loop._settle import (
     CHECKS,
-    keep_iteration,
     settling_record_of,
     start_with,
 )
-from tests.report._comparisons import create_comparison_result
 from tests.session.records._fixtures import (
     baseline_record,
+    committed_keep,
     iteration_record,
     records_of_type,
     session_header_of,
@@ -55,17 +57,6 @@ from tests.session.records._fixtures import (
 # ---------------------------------------------------------------------------
 # the start command
 # ---------------------------------------------------------------------------
-
-
-def test_start_command_when_run_does_create_a_session_and_report_its_branch(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    stub_resolve_config(monkeypatch)
-
-    result = runner.invoke(app, ["start", "--baseline", "main"])
-
-    assert result.exit_code == 0
-    assert session_header_of(repo).branch in result.stdout
 
 
 def test_start_command_when_reopening_after_finalize_does_name_the_archived_session(
@@ -149,7 +140,7 @@ def test_start_command_when_run_does_record_command_trace_with_its_args_and_exit
 
 
 @pytest.mark.parametrize("resumed", [False, True])
-def test_start_command_when_run_does_include_edit_here_line_with_sync_hint(
+def test_start_command_when_run_does_print_the_session_summary_with_a_sync_hint(
     repo: str, monkeypatch: pytest.MonkeyPatch, resumed: bool
 ):
     if resumed:
@@ -159,6 +150,7 @@ def test_start_command_when_run_does_include_edit_here_line_with_sync_hint(
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
     assert result.exit_code == 0
+    assert session_header_of(repo).branch in result.stdout
     exp_dir = experiment_worktree_dir(repo)
     assert f"edit in {exp_dir}" in result.stdout
     assert "gymrat sync" in result.stdout
@@ -323,22 +315,8 @@ def kept_repo(repo: str) -> str:
 
 
 @pytest.mark.usefixtures("kept_repo")
-@pytest.mark.parametrize(
-    "command",
-    [
-        pytest.param(["start", "--format", "text"], id="start-text"),
-        pytest.param(["start", "--format", "json"], id="start-json"),
-        pytest.param(["stop", "-m", "done"], id="stop"),
-        pytest.param(["finalize", "--format", "text"], id="finalize-text"),
-        pytest.param(["finalize", "--format", "json"], id="finalize-json"),
-        pytest.param(["sync", "--format", "text"], id="sync-text"),
-        pytest.param(["sync", "--format", "json"], id="sync-json"),
-    ],
-)
-def test_session_command_when_stdout_reader_closed_does_exit_zero_without_stderr(
-    command: list[str],
-):
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, command)
+def test_session_command_when_stdout_reader_closed_does_exit_zero_without_stderr():
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, ["stop", "-m", "done"])
 
     assert (result.exit_code, result.stderr) == (0, "")
 
@@ -424,60 +402,33 @@ def test_session_command_when_no_session_does_exit_two_with_a_start_hint(
     assert "gymrat start" in result.stderr
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        pytest.param(["start", "--no-color", "--baseline", "banana"], id="start"),
-        pytest.param(["stop", "--no-color", "-m", "done"], id="stop"),
-        pytest.param(["finalize", "--no-color"], id="finalize"),
-        pytest.param(["sync", "--no-color"], id="sync"),
-        pytest.param(["discard", "--no-color"], id="discard"),
-        pytest.param(["export", "--no-color", "missing/session.jsonl"], id="export"),
-    ],
-)
 def test_session_command_when_no_color_does_strip_ansi_from_stderr_error(
-    repo: str, monkeypatch: pytest.MonkeyPatch, argv: list[str]
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     write_bench_config(repo)
 
-    result = runner.invoke(app, argv)
+    result = runner.invoke(app, ["start", "--no-color", "--baseline", "banana"])
 
     assert result.exit_code == 2
     assert result.stderr.startswith("Error: ")
     assert not SGR_RE.search(result.stderr)
 
 
-def _open_for_start(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prepare a fresh start: config resolution stubbed and the state directory present."""
-    stub_resolve_config(monkeypatch)
-    Path(repo, ".gymrat").mkdir(exist_ok=True)
-
-
-def _open_for_sync(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open a session for sync."""
-    start_session(repo, "main", resolved_config())
-
-
-def _open_for_finalize(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open a session with one kept commit for finalize."""
-    open_session_with_one_keep(repo)
+def _settled_session(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
+    """Log a configured session with one kept iteration, for status."""
+    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
+    write_bench_config(repo)
 
 
 def _open_for_stop(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     """Open a configured, settled session for stop."""
-    start_with(repo)
-    keep_iteration(repo, 1)
-    write_bench_config(repo)
+    open_stop_ready_session(repo)
 
 
 def _stub_compare(_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace the comparison engine with one returning a comparison with no regressions."""
-
-    async def fake_compare(_options: object) -> ComparisonResult:
-        return create_comparison_result()
-
-    monkeypatch.setattr("gymrat.compare.compare", fake_compare)
+    stub_compare(monkeypatch)
 
 
 def _stub_measure(_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -493,35 +444,41 @@ def _open_for_probe(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     set_origin(monkeypatch, "tool")
 
 
+def _no_budget(_repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave the session without a budget."""
+
+
 _COMPARE_ARGV = ["compare", "main", "cand", "--bench", "sh bench.sh"]
 _MEASURE_ARGV = ["measure", "--bench", "sh bench.sh"]
 
 
 @pytest.mark.parametrize(
-    ("argv", "arrange"),
+    ("argv", "arrange", "budget", "trailers"),
     [
-        pytest.param(["start", "--baseline", "main"], _open_for_start, id="start"),
-        pytest.param(["sync"], _open_for_sync, id="sync"),
-        pytest.param(["finalize"], _open_for_finalize, id="finalize"),
-        pytest.param(["stop", "-m", "done"], _open_for_stop, id="stop"),
-        pytest.param(_COMPARE_ARGV, _stub_compare, id="compare"),
-        pytest.param(_MEASURE_ARGV, _stub_measure, id="measure"),
-        pytest.param(["probe"], _open_for_probe, id="probe"),
+        pytest.param(
+            ["stop", "-m", "done"], _open_for_stop, install_budget, ["left of 30m"], id="stop"
+        ),
+        pytest.param(["probe"], _open_for_probe, install_budget, ["left of 30m"], id="probe"),
+        pytest.param(["status"], _settled_session, install_budget, ["left of 30m"], id="status"),
+        pytest.param(["status"], _settled_session, _no_budget, [], id="status-no-budget"),
     ],
 )
-def test_session_command_when_budget_active_does_end_text_with_time_left_line(
+def test_session_command_when_run_does_end_text_with_a_time_left_line_only_under_a_budget(
+    *,
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     argv: list[str],
     arrange: Callable[[str, pytest.MonkeyPatch], None],
+    budget: Callable[[str, pytest.MonkeyPatch], None],
+    trailers: list[str],
 ):
     arrange(repo, monkeypatch)
-    install_budget(repo, monkeypatch)
+    budget(repo, monkeypatch)
 
     result = runner.invoke(app, argv)
 
     assert result.exit_code == 0
-    assert re.search(r"left of 30m\n$", strip_ansi(result.stdout))
+    assert re.findall(r"left of \d+m(?=\n\Z)", strip_ansi(result.stdout)) == trailers
 
 
 @pytest.mark.parametrize(

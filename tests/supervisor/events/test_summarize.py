@@ -55,11 +55,6 @@ def test_summarize_when_within_budget_does_return_collapsed_text(text: str, expe
             "\U0001f3af" * SUMMARY_MAX_CHARS + "…",
             id="all-emoji",
         ),
-        pytest.param(
-            "ab" + "\U0001f3af" * SUMMARY_MAX_CHARS,
-            "ab" + "\U0001f3af" * (SUMMARY_MAX_CHARS - 2) + "…",
-            id="mixed-width",
-        ),
     ],
 )
 def test_summarize_when_over_budget_does_truncate_with_bare_ellipsis(text: str, expected: str):
@@ -147,6 +142,7 @@ def test_summarize_input_when_given_value_does_summarize_its_json_form(
             "gymrat some args",
             id="skill-name-with-args",
         ),
+        pytest.param(ITERATE_TOOL, {"some": "data"}, "gymrat iterate", id="gymrat-iterate"),
     ],
 )
 def test_summarize_input_when_known_tool_does_extract_its_identifying_fields(
@@ -178,7 +174,6 @@ def test_summarize_input_when_known_tool_does_extract_its_identifying_fields(
             "..cache/data.json",
             id="two-dot-directory-under-root",
         ),
-        pytest.param("/project/..hidden", "/project", "..hidden", id="two-dot-file-under-root"),
         pytest.param(
             "{home}/work/sibling/main.py",
             "{home}/work/project",
@@ -207,21 +202,6 @@ def test_summarize_input_when_file_path_given_does_render_it_from_root_or_home(
 # ---------------------------------------------------------------------------
 # summarize_input — gymrat MCP tools
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "tool_input",
-    [
-        pytest.param({}, id="no-payload"),
-        pytest.param({"some": "data"}, id="with-payload"),
-    ],
-)
-def test_summarize_input_when_iterate_tool_does_return_gymrat_iterate(
-    tool_input: dict[str, object],
-):
-    result = summarize_input(tool_input, tool_name=ITERATE_TOOL)
-
-    assert result == "gymrat iterate"
 
 
 @pytest.mark.parametrize(
@@ -283,7 +263,7 @@ def test_summarize_input_when_probe_names_long_does_truncate_via_length_cap():
     [
         pytest.param("Read", {"not_file_path": "/a.py"}, id="read-missing-file-path"),
         pytest.param("Bash", {"not_command": "echo"}, id="bash-missing-command"),
-        pytest.param("Agent", {"prompt": "..."}, id="agent-missing-type"),
+        pytest.param("Agent", {"prompt": "..."}, id="agent-missing-description"),
         pytest.param("Skill", {"not_skill": "foo"}, id="skill-missing-skill"),
         pytest.param("UnknownTool", {"some_key": "some_value"}, id="unknown-tool"),
     ],

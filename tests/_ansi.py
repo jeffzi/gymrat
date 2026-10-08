@@ -11,13 +11,9 @@ SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
 TRAILING_SGR_RUN = re.compile(r"(?:\x1b\[[0-9;]*m)*$")
 """Matches the run of SGR escapes a string ends on, with nothing between them."""
 
-SGR_BOLD = 1
-SGR_DIM = 2
 SGR_RED = 31
 SGR_GREEN = 32
 SGR_YELLOW = 33
-SGR_BLUE = 34
-SGR_CYAN = 36
 
 
 def strip_ansi(text: str) -> str:

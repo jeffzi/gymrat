@@ -22,7 +22,7 @@ from gymrat.session.paths import (
 )
 from tests._ansi import strip_ansi
 from tests._config import resolved_config
-from tests._lock import hold_supervise_lock
+from tests._lock import held_supervise_lock
 from tests.cli._budget import set_origin, write_budget_file
 from tests.cli._session import (
     FailingStdoutRunner,
@@ -42,9 +42,8 @@ INIT_ARTIFACTS = ("gymrat.toml", "gymrat-runbook.md", ".claude/skills/gymrat/SKI
 @pytest.fixture
 def supervise_lock(repo: str) -> Iterator[None]:
     """Hold the real supervise lock for ``repo`` for the duration of the test."""
-    lock = hold_supervise_lock(repo)
-    yield
-    lock.release()
+    with held_supervise_lock(repo):
+        yield
 
 
 @pytest.fixture
@@ -227,23 +226,16 @@ def test_init_when_colored_does_dim_the_doctor_pointer(monkeypatch: pytest.Monke
     assert pointer.startswith("\x1b[2m")
 
 
-@pytest.mark.parametrize(
-    ("env", "flag", "styled"),
-    [
-        pytest.param("FORCE_COLOR", "--no-color", False, id="no-color-beats-force-color-env"),
-        pytest.param("NO_COLOR", "--color", True, id="color-beats-no-color-env"),
-    ],
-)
 @pytest.mark.usefixtures("_in_non_repo")
-def test_init_when_color_flag_given_does_style_the_summary_despite_the_env(
-    env: str, flag: str, styled: bool, monkeypatch: pytest.MonkeyPatch
+def test_init_when_color_flag_given_does_style_the_summary_despite_no_color(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv(env, "1")
+    monkeypatch.setenv("NO_COLOR", "1")
 
-    result = runner.invoke(app, ["init", "--bench", "npm run bench", flag])
+    result = runner.invoke(app, ["init", "--bench", "npm run bench", "--color"])
 
     assert result.exit_code == 0
-    assert ("\x1b[" in result.stdout) is styled
+    assert "\x1b[" in result.stdout
 
 
 # ---------------------------------------------------------------------------

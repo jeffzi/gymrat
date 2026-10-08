@@ -5,6 +5,7 @@ import ctypes
 import dataclasses
 import errno
 import os
+import signal
 import struct
 import subprocess
 import sys
@@ -23,21 +24,29 @@ from gymrat.process_group import (
     wait_for_process_group_exit_async,
 )
 from tests._process_helpers import (
-    KILLPG_FAILED as _KILLPG_FAILED,
-)
-from tests._process_helpers import (
+    JOB_HANDLE,
+    PROCESS_HANDLE,
     ZOMBIE_ONLY_GROUP_SCRIPT,
+    FakeJobs,
     dead_pid,
     is_alive,
     killpg_warnings,
+    record_subprocess_runs,
     wait_for_pid_file,
     wait_for_pid_file_blocking,
     wait_until_dead,
     wait_until_dead_blocking,
+    win32_process_group,
+)
+from tests._process_helpers import (
+    KILLPG_FAILED as _KILLPG_FAILED,
 )
 
-if sys.platform == "win32":
-    pytest.skip("POSIX-only zombie and reap semantics", allow_module_level=True)
+# The win32 Job Object tests at the end fake the platform and run everywhere;
+# every test before them needs real POSIX process groups.
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only zombie and reap semantics"
+)
 
 # The C signature of ``sysctl``, so a stand-in receives real pointers to write through.
 _SysctlFunction = ctypes.CFUNCTYPE(
@@ -185,14 +194,16 @@ class ReapedMidProbe:
         raise ChildProcessError(id_val)
 
 
-_real_killpg = os.killpg
+def refuse_all_but_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``os.killpg`` refuse every signal with ``EPERM``, but let the ``0`` probe through."""
+    real_killpg = os.killpg
 
+    def refuse(group_pid: int, signal_number: int) -> None:
+        if signal_number != 0:
+            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+        real_killpg(group_pid, signal_number)
 
-def refuse_all_but_probe(group_pid: int, signal_number: int) -> None:
-    """Stand in for ``os.killpg``: refuse every signal with ``EPERM``, but let the ``0`` probe through."""
-    if signal_number != 0:
-        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
-    _real_killpg(group_pid, signal_number)
+    monkeypatch.setattr(os, "killpg", refuse)
 
 
 @dataclasses.dataclass
@@ -304,6 +315,7 @@ def exiting_child() -> Iterator[subprocess.Popen[bytes]]:
     proc.wait()
 
 
+@_POSIX_ONLY
 def test_wait_for_process_group_exit_when_leader_reaped_during_probe_does_return_before_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -324,6 +336,7 @@ def _parent_process(_leader: subprocess.Popen[bytes]) -> int:
     return os.getppid()
 
 
+@_POSIX_ONLY
 @pytest.mark.parametrize(
     "leader_of",
     [
@@ -342,6 +355,7 @@ def test_wait_for_process_group_exit_when_leader_running_does_wait_out_timeout(
     assert time.monotonic() - started >= _SHORT_WAIT_S
 
 
+@_POSIX_ONLY
 async def test_wait_for_process_group_exit_when_leader_is_zombie_does_return_without_reaping(
     exiting_child: subprocess.Popen[bytes],
 ) -> None:
@@ -354,6 +368,7 @@ async def test_wait_for_process_group_exit_when_leader_is_zombie_does_return_wit
     assert exiting_child.wait() == _CHILD_STATUS
 
 
+@_POSIX_ONLY
 def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_wait_for_member(
     group_with_lingering_member: LingeringGroup,
 ) -> None:
@@ -362,6 +377,7 @@ def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_
     assert not is_alive(group_with_lingering_member.member_pid)
 
 
+@_POSIX_ONLY
 @pytest.mark.parametrize(
     ("listed", "timeout_s", "waits"),
     [
@@ -480,12 +496,20 @@ def _empty_sysctl(_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(process_group, "_c_library", lambda: StubCLibrary(failure_errno=None))
 
 
-def _undecodable_sysctl(_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def listed(_group_id: int) -> list[tuple[int, int]]:
-        raise struct.error
+# A record size too small to reach ``p_flag``/``p_stat``, as a layout that does
+# not match the platform's would be: even with the listing headroom, decoding
+# the one record reads past the buffer.
+_MISMATCHED_RECORD_SIZE = 4
 
+
+def _undecodable_sysctl(_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(process_group, "_darwin_group_members", listed)
+    monkeypatch.setattr(process_group, "_DARWIN_KINFO_PROC_SIZE", _MISMATCHED_RECORD_SIZE)
+    monkeypatch.setattr(
+        process_group,
+        "_c_library",
+        lambda: StubCLibrary(failure_errno=None, listing=bytes(_MISMATCHED_RECORD_SIZE)),
+    )
 
 
 _GROUPS_WITHOUT_LISTING = [
@@ -504,6 +528,7 @@ _LEADER_OUTCOMES = [
 ]
 
 
+@_POSIX_ONLY
 @pytest.mark.parametrize("hide_members", _GROUPS_WITHOUT_LISTING)
 @pytest.mark.parametrize(("exited", "timeout_s", "waits"), _LEADER_OUTCOMES)
 def test_wait_for_process_group_exit_when_listing_unavailable_does_wait_on_the_leader(
@@ -524,6 +549,7 @@ def test_wait_for_process_group_exit_when_listing_unavailable_does_wait_on_the_l
     assert (time.monotonic() - started >= _SHORT_WAIT_S) is waits
 
 
+@_POSIX_ONLY
 @pytest.mark.parametrize(("exited", "timeout_s", "waits"), _LEADER_OUTCOMES)
 async def test_wait_for_process_group_exit_async_when_listing_unavailable_does_wait_on_the_leader(
     tmp_path: Path,
@@ -546,6 +572,7 @@ async def test_wait_for_process_group_exit_async_when_listing_unavailable_does_w
 _PARTIAL_RECORD = bytes(16)
 
 
+@_POSIX_ONLY
 @pytest.mark.parametrize(
     ("listing", "still_running"),
     [
@@ -589,6 +616,7 @@ def test_wait_for_process_group_exit_when_darwin_leader_exited_does_wait_only_fo
 # ---------------------------------------------------------------------------
 
 
+@_POSIX_ONLY
 def test_kill_process_group_when_live_member_refuses_does_warn(
     sleeping_group_leader: subprocess.Popen[bytes],
     monkeypatch: pytest.MonkeyPatch,
@@ -602,6 +630,7 @@ def test_kill_process_group_when_live_member_refuses_does_warn(
         kill_process_group(sleeping_group_leader.pid)
 
 
+@_POSIX_ONLY
 async def test_kill_process_group_when_only_a_zombie_member_is_left_does_not_warn(
     orphaned_zombie_group: int,
     recwarn: pytest.WarningsRecorder,
@@ -611,6 +640,7 @@ async def test_kill_process_group_when_only_a_zombie_member_is_left_does_not_war
     assert killpg_warnings(recwarn) == []
 
 
+@_POSIX_ONLY
 @pytest.mark.parametrize(
     "hide_members",
     [
@@ -625,13 +655,14 @@ def test_kill_process_group_when_refusing_group_cannot_be_shown_settled_does_war
     monkeypatch: pytest.MonkeyPatch,
     hide_members: Callable[[Path, pytest.MonkeyPatch], None],
 ) -> None:
-    monkeypatch.setattr(os, "killpg", refuse_all_but_probe)
+    refuse_all_but_probe(monkeypatch)
     hide_members(tmp_path, monkeypatch)
 
     with pytest.warns(RuntimeWarning, match=_KILLPG_FAILED):
         kill_process_group(sleeping_group_leader.pid)
 
 
+@_POSIX_ONLY
 @pytest.mark.skipif(sys.platform != "darwin", reason="only macOS lists a refusing group's members")
 def test_kill_process_group_when_refusing_group_is_gone_by_the_listing_does_not_warn(
     monkeypatch: pytest.MonkeyPatch,
@@ -640,7 +671,7 @@ def test_kill_process_group_when_refusing_group_is_gone_by_the_listing_does_not_
     # The refusal stands in for a group whose last zombie is reaped between the
     # signal and the listing: by then the kernel no longer knows the group.
     gone = dead_pid()
-    monkeypatch.setattr(os, "killpg", refuse_all_but_probe)
+    refuse_all_but_probe(monkeypatch)
 
     kill_process_group(gone)
 
@@ -668,6 +699,7 @@ def _taskkill_cannot_start(*_args: object, **_kwargs: object) -> subprocess.Comp
     raise PermissionError(13, "Permission denied")
 
 
+@_POSIX_ONLY
 @pytest.mark.parametrize(
     ("run", "warnings_raised"),
     [
@@ -699,15 +731,7 @@ def test_kill_process_group_when_win32_tree_has_no_job_does_fall_back_to_taskkil
     run: Callable[..., subprocess.CompletedProcess[bytes]],
     warnings_raised: list[str],
 ) -> None:
-    calls: list[list[str]] = []
-
-    def recording_run(
-        args: list[str], *rest: object, **kwargs: object
-    ) -> subprocess.CompletedProcess[bytes]:
-        calls.append(args)
-        return run(args, *rest, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", recording_run)
+    calls = record_subprocess_runs(monkeypatch, run)
     monkeypatch.setattr(sys, "platform", "win32")
 
     with warnings.catch_warnings(record=True) as caught:
@@ -718,3 +742,171 @@ def test_kill_process_group_when_win32_tree_has_no_job_does_fall_back_to_taskkil
     assert [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)] == (
         warnings_raised
     )
+
+
+# ---------------------------------------------------------------------------
+# win32 Job Objects, reached from any host through a faked platform
+# ---------------------------------------------------------------------------
+
+# A stand-in pid for the job tests, which never touch a real process.
+_CHILD_PID = 4321
+
+# Win32 ABI values, spelled out here rather than read back from the module under
+# test: a build that set the wrong ones has to fail this, not agree with itself.
+# ``JobObjectExtendedLimitInformation`` and ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``.
+_WIN32_EXTENDED_LIMIT_INFORMATION = 9
+_WIN32_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+# Grace given to a faked job that never empties, kept far below the real one so
+# the bound is reached in milliseconds.
+_FAKE_JOB_GRACE_S = 0.05
+
+# Upper bound for a teardown whose faked job never empties: the faked grace plus
+# scheduling slack, far below the real grace a wait ignoring the faked one takes.
+_FAKE_JOB_GRACE_BOUND_S = 1.5
+
+
+def test_attach_process_group_when_child_gets_a_job_does_limit_it_to_kill_on_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = FakeJobs()
+    module = win32_process_group(monkeypatch, jobs)
+
+    module.attach_process_group(_CHILD_PID)
+
+    assert len(jobs.limited) == 1, "the child's job was created without a limits call"
+    info_class, limit_flags = jobs.limited[0]
+    assert info_class == _WIN32_EXTENDED_LIMIT_INFORMATION
+    assert limit_flags & _WIN32_LIMIT_KILL_ON_JOB_CLOSE, (
+        "the job does not kill its members when its last handle closes"
+    )
+
+
+@pytest.mark.parametrize("entry", ["terminate_process_group", "kill_process_group"])
+def test_terminate_or_kill_process_group_when_job_assignment_refused_does_fall_back_to_taskkill_with_one_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+    entry: str,
+) -> None:
+    jobs = FakeJobs(assignment_granted=False)
+    module = win32_process_group(monkeypatch, jobs)
+    argv_calls = record_subprocess_runs(monkeypatch)
+    module.attach_process_group(_CHILD_PID)
+
+    getattr(module, entry)(_CHILD_PID)
+
+    refusals = [w for w in recwarn if "job assignment refused" in str(w.message)]
+    assert len(refusals) == 1, "a refused assignment has to warn exactly once"
+    assert refusals[0].category is RuntimeWarning
+    assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
+        "a child that never reached a job was not torn down through taskkill"
+    )
+    assert jobs.closed == [PROCESS_HANDLE, JOB_HANDLE], "the refused job handle was leaked"
+
+
+def test_kill_process_group_when_host_has_no_sigkill_does_terminate_the_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = FakeJobs()
+    monkeypatch.delattr(signal, "SIGKILL", raising=False)
+    module = win32_process_group(monkeypatch, jobs)
+    module.attach_process_group(_CHILD_PID)
+
+    module.kill_process_group(_CHILD_PID)
+
+    assert jobs.terminated == [JOB_HANDLE], (
+        "the kill never reached the job: a host without SIGKILL cannot be asked for one"
+    )
+
+
+@pytest.mark.parametrize(
+    ("entry", "closed"),
+    [
+        # A terminated job stays on record, so a later kill can still reach it.
+        pytest.param("terminate_process_group", [PROCESS_HANDLE], id="terminate-keeps-the-job"),
+        pytest.param(
+            "release_process_group", [PROCESS_HANDLE, JOB_HANDLE], id="release-closes-the-job"
+        ),
+    ],
+)
+def test_terminate_or_release_process_group_when_job_still_emptying_does_wait_for_its_last_process(
+    monkeypatch: pytest.MonkeyPatch,
+    entry: str,
+    closed: list[int],
+) -> None:
+    jobs = FakeJobs(active_counts=[2, 1, 0])
+    module = win32_process_group(monkeypatch, jobs)
+    module.attach_process_group(_CHILD_PID)
+
+    getattr(module, entry)(_CHILD_PID)
+
+    assert jobs.terminated == [JOB_HANDLE]
+    assert jobs.queried == [2, 1, 0], "the teardown returned before the job reported itself empty"
+    assert jobs.closed == closed, "the settle path left the job handle open"
+
+
+def test_terminate_process_group_when_job_never_empties_does_give_up_at_the_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = FakeJobs(final_active=1)
+    module = win32_process_group(monkeypatch, jobs)
+    monkeypatch.setattr(module, "TERMINATE_GRACE_S", _FAKE_JOB_GRACE_S)
+    module.attach_process_group(_CHILD_PID)
+    started = time.monotonic()
+
+    module.terminate_process_group(_CHILD_PID)
+
+    elapsed = time.monotonic() - started
+    assert len(jobs.queried) > 1, "the wait gave up without ever polling the job again"
+    assert elapsed < _FAKE_JOB_GRACE_BOUND_S, "a job that never empties held the teardown open"
+
+
+def test_kill_process_group_when_job_already_released_does_fall_back_to_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = FakeJobs()
+    module = win32_process_group(monkeypatch, jobs)
+    argv_calls = record_subprocess_runs(monkeypatch)
+    module.attach_process_group(_CHILD_PID)
+    module.release_process_group(_CHILD_PID)
+
+    module.kill_process_group(_CHILD_PID)
+
+    assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
+        "the released job was still on record, so the kill reached a closed handle"
+    )
+    assert jobs.terminated == [JOB_HANDLE], "the kill reached the job after its release"
+
+
+@pytest.mark.parametrize(
+    ("resume_granted", "resumed", "warnings_raised"),
+    [
+        pytest.param(True, [_CHILD_PID], [], id="suspended-child-is-resumed"),
+        pytest.param(
+            False,
+            [],
+            [f"could not resume pid {_CHILD_PID}: NTSTATUS 0xC0000022"],
+            id="refused-resume-warns",
+        ),
+    ],
+)
+def test_resume_process_group_when_resume_granted_or_refused_does_close_the_child_handle(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    resume_granted: bool,
+    resumed: list[int],
+    warnings_raised: list[str],
+) -> None:
+    jobs = FakeJobs(resume_granted=resume_granted)
+    module = win32_process_group(monkeypatch, jobs)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = module.resume_process_group(_CHILD_PID)
+
+    assert result is resume_granted
+    assert jobs.resumed == resumed
+    assert [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)] == (
+        warnings_raised
+    )
+    assert jobs.closed == [PROCESS_HANDLE], "the child's handle was leaked"
