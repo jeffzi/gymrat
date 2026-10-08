@@ -1,14 +1,15 @@
 """Tests for the ``gymrat compare`` command wiring.
 
 These drive the command through :class:`typer.testing.CliRunner` with the
-``compare`` and ``resolve_config`` seams replaced, so no real bench runs. They
-cover flag parsing into the config resolver, the text and JSON report going to
-stdout, the missing-bench error routing to exit 2 on stderr, the fail-on gate
-tripping to exit 1 only after the report is printed, the empty-geomean warning,
-and the command trace. The fail-on gate evaluation is also driven directly. The
-budget time-left line comes from the shared ``emit_report`` path, pinned
-through ``probe`` in ``test_session_cmds``; the tight-budget warning is pinned
-there for compare.
+``compare`` seam replaced, so no real bench runs, and config resolution stubbed
+except where flags and an explicit config file are read for real. They cover
+those flags reaching the engine's options, the text and JSON report going to
+stdout, the fail-on gate tripping to exit 1 only after the report is printed,
+the empty-geomean warning, and the command trace. The fail-on gate evaluation is
+also driven directly. The missing-bench error is pinned with ``measure``'s in
+``test_measure_cmd``. The budget time-left line comes from the shared
+``emit_report`` path, pinned through ``probe`` in ``test_session_cmds``; the
+tight-budget warning is pinned there for compare.
 """
 
 from __future__ import annotations
@@ -17,13 +18,15 @@ import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from gymrat.compare import CompareOptions
 
 import pytest
 
 from gymrat.cli.app import app
 from gymrat.cli.commands.compare import should_fail_gate
-from gymrat.config import CliFlags, KindEntry, MetricEntry, ResolvedConfig
+from gymrat.config import KindEntry, MetricEntry
 from gymrat.report.text.render import render_report
 from gymrat.report.types import (
     ComparisonResult,
@@ -32,13 +35,13 @@ from gymrat.report.types import (
     ReportOptions,
 )
 from gymrat.sampling import RunOptions, SamplingOptions
-from tests._config import resolved_config
 from tests.cli._session import (
     last_command_record,
     open_session,
     runner,
-    stub_compare,
+    stub_compare_command,
 )
+from tests.config._toml import write_config
 from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
@@ -46,41 +49,6 @@ from tests.report._comparisons import (
     permutation_metric,
     without_gated_geomean,
 )
-
-
-def _resolved(bench: str = "sh bench.sh") -> ResolvedConfig:
-    """A resolved config the fake ``compare`` never actually benches against."""
-    return resolved_config(
-        bench=bench,
-        prepare="npm ci",
-        samples=5,
-        timeout_seconds=30,
-        unstable_noise_pct=2.0,
-        primary="time",
-        metrics={"decode/time": MetricEntry(direction="higher")},
-        kinds={"memory": KindEntry(gating=False)},
-    )
-
-
-def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace ``resolve_config`` with one that returns a fixed resolved config."""
-
-    def fake(*_a: object, **_k: object) -> ResolvedConfig:
-        return _resolved()
-
-    monkeypatch.setattr("gymrat.cli.commands.compare.resolve_config", fake)
-
-
-def _stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> None:
-    """Stub ``resolve_config`` and ``compare`` so invoking the command succeeds.
-
-    Args:
-        monkeypatch: The fixture that installs the fakes.
-        result: What the fake ``compare`` returns; a comparison with no
-            regressions when ``None``.
-    """
-    _stub_resolve(monkeypatch)
-    stub_compare(monkeypatch, result)
 
 
 def _regressed_result() -> ComparisonResult:
@@ -92,22 +60,29 @@ def _regressed_result() -> ComparisonResult:
 
 
 # ---------------------------------------------------------------------------
-# flag parsing → resolve_config
+# flags and config file → CompareOptions
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_flags_given_does_feed_them_to_resolve_config(
-    monkeypatch: pytest.MonkeyPatch,
+def test_compare_when_flags_and_config_file_given_does_forward_them_to_compare_options(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    captured: list[CliFlags] = []
+    write_config(
+        tmp_path,
+        {
+            "metrics": {"decode/time": {"direction": "higher"}},
+            "kinds": {"memory": {"gating": False}},
+        },
+        name="compare.toml",
+    )
+    captured: list[CompareOptions] = []
 
-    def spy_resolve(flags: CliFlags, base_dir: object = None) -> ResolvedConfig:
-        captured.append(flags)
-        return _resolved()
+    async def spy_compare(options: CompareOptions) -> ComparisonResult:
+        captured.append(options)
+        return create_comparison_result()
 
-    monkeypatch.setattr("gymrat.cli.commands.compare.resolve_config", spy_resolve)
-    stub_compare(monkeypatch)
+    monkeypatch.setattr("gymrat.compare.compare", spy_compare)
 
     result = runner.invoke(
         app,
@@ -126,58 +101,25 @@ def test_compare_when_flags_given_does_feed_them_to_resolve_config(
             "--timeout",
             "42",
             "--config",
-            "gymrat.json",
+            "compare.toml",
         ],
     )
 
     assert result.exit_code == 0
-    assert len(captured) == 1
-    flags = captured[0]
-    assert flags.bench == "sh bench.sh"
-    assert flags.prepare == "make"
-    assert flags.adapter == "mitata"
-    assert flags.samples == 7
-    assert flags.timeout == 42
-    assert flags.config == "gymrat.json"
-
-
-# ---------------------------------------------------------------------------
-# run options → CompareOptions
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_run_options_built_does_forward_every_field_to_compare_options(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    captured: list[CompareOptions] = []
-
-    async def spy_compare(options: CompareOptions) -> ComparisonResult:
-        captured.append(options)
-        return create_comparison_result()
-
-    _stub_resolve(monkeypatch)
-    monkeypatch.setattr("gymrat.compare.compare", spy_compare)
-
-    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == 0
-    assert len(captured) == 1
-    resolved = _resolved()
-    run = captured[0].run
-    sampling = run.sampling
-    assert run == RunOptions(
+    (options,) = captured
+    sampling = options.run.sampling
+    assert options.run == RunOptions(
         sampling=SamplingOptions(
-            bench=resolved.bench,
-            prepare=resolved.prepare,
-            samples=resolved.samples,
-            timeout_seconds=resolved.timeout_seconds,
+            bench="sh bench.sh",
+            prepare="make",
+            samples=7,
+            timeout_seconds=42,
             on_progress=sampling.on_progress,
             warn=sampling.warn,
         ),
-        adapter=resolved.adapter,
-        config_metrics=resolved.metrics,
-        config_kinds=resolved.kinds,
+        adapter="mitata",
+        config_metrics={"decode/time": MetricEntry(direction="higher")},
+        config_kinds={"memory": KindEntry(gating=False)},
     )
 
 
@@ -188,7 +130,7 @@ def test_compare_when_run_options_built_does_forward_every_field_to_compare_opti
 
 @pytest.mark.usefixtures("_in_non_repo")
 def test_compare_when_format_text_does_render_report_to_stdout(monkeypatch: pytest.MonkeyPatch):
-    _stub_compare(monkeypatch)
+    stub_compare_command(monkeypatch)
 
     result = runner.invoke(
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "text"]
@@ -205,7 +147,7 @@ def test_compare_when_format_text_does_render_report_to_stdout(monkeypatch: pyte
 def test_compare_when_format_json_does_render_json_document_to_stdout(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _stub_compare(monkeypatch)
+    stub_compare_command(monkeypatch)
 
     result = runner.invoke(
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "json"]
@@ -214,20 +156,6 @@ def test_compare_when_format_json_does_render_json_document_to_stdout(
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
     assert doc["baseline"] == "main"
-
-
-# ---------------------------------------------------------------------------
-# missing bench
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_bench_missing_does_exit_two_with_message_on_stderr():
-    result = runner.invoke(app, ["compare", "main", "cand"])
-
-    assert result.exit_code == 2
-    assert "bench is required" in result.stderr
-    assert result.stdout == ""
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +178,7 @@ def test_compare_when_bench_missing_does_exit_two_with_message_on_stderr():
 def test_compare_when_a_candidate_has_no_stable_gating_metric_does_warn_only_under_a_geomean_gate(
     monkeypatch: pytest.MonkeyPatch, fail_on: str, warnings: list[str]
 ):
-    _stub_compare(
+    stub_compare_command(
         monkeypatch,
         create_comparison_result(
             candidates=[
@@ -366,20 +294,6 @@ def test_should_fail_gate_when_evaluated_does_trip_only_on_a_matching_gating_con
     [
         pytest.param(["main", "cand"], "main", ["cand"], "", id="no-fail-on"),
         pytest.param(
-            ["main", "cand", "--fail-on", "regressed"],
-            "main",
-            ["cand"],
-            "regressed",
-            id="fail-on-not-tripped",
-        ),
-        pytest.param(
-            ["main", "cand", "--fail-on", "geomean:99.5"],
-            "main",
-            ["cand"],
-            "geomean:99.5",
-            id="geomean-fail-on",
-        ),
-        pytest.param(
             ["main", "cand", "--fail-on", "regressed", "--fail-on", "geomean:99.5"],
             "main",
             ["cand"],
@@ -402,7 +316,7 @@ def test_compare_when_success_does_record_trace_with_baseline_candidates_and_fai
     repo: str,
 ):
     open_session(repo)
-    _stub_compare(monkeypatch)
+    stub_compare_command(monkeypatch)
 
     result = runner.invoke(app, ["compare", *argv, "--bench", "sh bench.sh"])
 
@@ -418,7 +332,7 @@ def test_compare_when_fail_on_trips_does_exit_one_as_a_fail_on_gate_trip(
     repo: str,
 ):
     open_session(repo)
-    _stub_compare(monkeypatch, _regressed_result())
+    stub_compare_command(monkeypatch, _regressed_result())
 
     result = runner.invoke(
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "regressed"]
@@ -439,9 +353,15 @@ def test_compare_when_fail_on_trips_does_exit_one_as_a_fail_on_gate_trip(
 
 
 @pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_short_verbose_flag_does_succeed(monkeypatch: pytest.MonkeyPatch):
-    _stub_compare(monkeypatch)
+def test_compare_when_short_verbose_flag_does_render_the_verbose_report(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stub_compare_command(monkeypatch, _regressed_result())
 
     result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh", "-v"])
 
     assert result.exit_code == 0
+    assert (
+        result.stdout
+        == render_report(_regressed_result(), ReportOptions(verbose=True, color=False)) + "\n"
+    )

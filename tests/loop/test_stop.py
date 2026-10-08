@@ -62,7 +62,7 @@ def test_stop_session_when_open_does_append_a_stop_record(
 
 
 # ---------------------------------------------------------------------------
-# when the last iteration is unsettled
+# when the session cannot be stopped: unsettled, blocked, or already stopped
 # ---------------------------------------------------------------------------
 
 

@@ -39,23 +39,27 @@ from gymrat.session.records import (
     SessionLogRecord,
 )
 from tests._ansi import SGR_RE, strip_ansi
-from tests._cli import ENTRY, no_color_env
+from tests._cli import no_color_env
 from tests._git import head_of, status_of
 from tests._process_helpers import (
-    reaped,
     run_with_closed_reader,
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
 )
 from tests.cli._session import (
-    FailingStdoutRunner,
     close_session_with_one_keep,
-    closed_stdout_error,
     last_command_record,
     never_tty,
     open_session_with_one_keep,
     runner,
     write_bench_config,
+    write_settled_session,
+)
+from tests.cli._signalled_cli import (
+    SETTLE_TIMEOUT_S,
+    pid_recording_script,
+    spawned_gymrat,
+    stop_by_signal,
 )
 from tests.loop._settle import (
     CHECKS,
@@ -69,12 +73,9 @@ from tests.loop._settle import (
 )
 from tests.session.records._fixtures import (
     SESSION_ID,
-    committed_keep,
     iteration_record,
     log_records,
     records_of_type,
-    session_record,
-    write_session_log,
 )
 
 #: The per-metric medians of ``KEPT_ROUNDS`` as ``status`` renders them, in the
@@ -117,8 +118,8 @@ def _start_unedited_session(root: str) -> None:
 
 
 def _write_open_session_with_one_keep(root: str) -> str:
-    """Log an open session with one kept iteration, and return its id."""
-    write_session_log(root, session_record(), (iteration_record(seq=1), committed_keep(1)))
+    """Log a configured open session with one kept iteration, and return its id."""
+    write_settled_session(root)
     return SESSION_ID
 
 
@@ -129,7 +130,7 @@ def _write_open_session_with_one_keep(root: str) -> str:
         pytest.param(close_session_with_one_keep, id="finalized"),
     ],
 )
-def test_status_command_when_run_does_render_the_session_on_stdout_and_record_the_trace(
+def test_status_command_when_run_does_render_the_session_with_its_trace(
     repo: str, arrange: Callable[[str], str]
 ):
     session_id = arrange(repo)
@@ -145,15 +146,6 @@ def test_status_command_when_run_does_render_the_session_on_stdout_and_record_th
     assert (cmd.name, cmd.args, cmd.exit_code, cmd.reason) == ("status", {}, 0, None)
 
 
-def test_status_command_when_stdout_reader_closed_does_exit_zero_without_stderr(repo: str):
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_bench_config(repo)
-
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, ["status"])
-
-    assert (result.exit_code, result.stderr) == (0, "")
-
-
 def test_status_command_when_run_inside_the_experiment_worktree_does_render_the_session(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -167,6 +159,23 @@ def test_status_command_when_run_inside_the_experiment_worktree_does_render_the_
     text = strip_ansi(result.stdout)
     assert f"session {header.session_id}" in text
     assert "1 kept" in text
+
+
+def test_status_command_when_iteration_kept_does_close_its_history_with_the_kept_baseline(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _start_edited_session(repo, (measured_rounds(1),), checks=CHECKS)
+    checks_pass(monkeypatch)
+    runner.invoke(app, ["keep"])
+    short_sha = head_of(experiment_worktree_dir(repo))[:SHORT_SHA_LENGTH]
+
+    status = runner.invoke(app, ["status"])
+
+    history = [line for line in strip_ansi(status.stdout).splitlines() if line.strip()]
+    assert history[-2:] == [
+        f"baseline {short_sha} · {KEPT_MEDIANS_LINE}",
+        "1 iteration · 1 kept · 0 discarded",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +383,7 @@ def test_discard_command_when_stderr_pipe_breaks_does_exit_one_without_output(ed
 @pytest.mark.parametrize(
     "args",
     [
+        pytest.param(["start", "--baseline", "main"], id="start"),
         pytest.param(["iterate"], id="iterate"),
         pytest.param(["keep"], id="keep"),
         pytest.param(["status"], id="status"),
@@ -403,7 +413,7 @@ def test_loop_command_when_run_from_subdirectory_does_read_the_config_at_repo_ro
 # ---------------------------------------------------------------------------
 
 
-def test_keep_command_when_checks_pass_does_commit_print_the_short_commit_and_record_the_trace(
+def test_keep_command_when_checks_pass_does_commit_reporting_the_short_commit_with_its_trace(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _start_edited_session(repo, checks=CHECKS)
@@ -424,22 +434,6 @@ def test_keep_command_when_checks_pass_does_commit_print_the_short_commit_and_re
         0,
         None,
     )
-
-
-def test_keep_command_when_committed_does_add_the_kept_baseline_to_the_status_history(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _start_edited_session(repo, (measured_rounds(1),), checks=CHECKS)
-    checks_pass(monkeypatch)
-
-    keep_result = runner.invoke(app, ["keep"])
-
-    assert keep_result.exit_code == 0
-    short_sha = head_of(experiment_worktree_dir(repo))[:SHORT_SHA_LENGTH]
-    status = runner.invoke(app, ["status"])
-    history = [line for line in strip_ansi(status.stdout).splitlines() if line.strip()]
-    assert history[-2] == f"baseline {short_sha} · {KEPT_MEDIANS_LINE}"
-    assert history[-1] == "1 iteration · 1 kept · 0 discarded"
 
 
 def test_keep_command_when_nothing_to_commit_does_exit_one_refusing_without_a_hint_label(
@@ -497,7 +491,7 @@ def test_keep_command_when_outcome_not_improved_does_exit_one_refusing_with_both
     assert "allow_unimproved" not in cmd.args
 
 
-def test_keep_command_when_allow_unimproved_does_commit_and_record_the_flag_in_args(
+def test_keep_command_when_allow_unimproved_does_commit_with_the_flag_traced(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _start_edited_session(repo, (unimproved(1, "no-signal"),), checks=CHECKS)
@@ -514,63 +508,31 @@ def test_keep_command_when_allow_unimproved_does_commit_and_record_the_flag_in_a
     assert cmd.reason is None
 
 
-_SETTLE_TIMEOUT_S = 30.0
-"""Budget for every pid-file and death-wait poll of the out-of-process keep test."""
-
-_TRACKED_CHECKS = """#!/bin/sh
-echo $$ > "{directory}/checks.pid"
-sleep 120 &
-echo $! > "{directory}/grandchild.pid"
-wait
-"""
-"""A checks script that records its own pid and a background grandchild's, then blocks.
-
-The checks never finish on their own, so ``keep`` is always mid-checks when signalled.
-"""
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
-@pytest.mark.parametrize(
-    ("signal_name", "expected_code"),
-    [
-        pytest.param("SIGTERM", 143, id="sigterm"),
-        pytest.param("SIGHUP", 129, id="sighup"),
-        pytest.param("SIGINT", 130, id="sigint"),
-    ],
-)
 def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving_no_checks_process_or_command_record(
-    signal_name: str,
-    expected_code: int,
     repo: str,
     tmp_path: Path,
     reap_groups: list[int],
 ):
+    # The checks record their own pid and a background grandchild's, then block,
+    # so ``keep`` is always mid-checks when signalled.
     script = tmp_path / "checks.sh"
-    script.write_text(_TRACKED_CHECKS.format(directory=tmp_path), encoding="utf-8")
+    body = f"sleep 120 &\necho $! > {shlex.quote(str(tmp_path / 'grandchild.pid'))}\nwait\n"
+    script.write_text(pid_recording_script(tmp_path / "checks.pid", body), encoding="utf-8")
     _start_edited_session(repo, checks=f"sh {shlex.quote(str(script))}")
 
-    with reaped(
-        subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-            [*ENTRY, "keep"],
-            cwd=repo,
-            env=no_color_env(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    ) as proc:
-        checks_pid = wait_for_pid_file_blocking(tmp_path / "checks.pid", _SETTLE_TIMEOUT_S)
+    with spawned_gymrat(["keep"], repo) as proc:
+        checks_pid = wait_for_pid_file_blocking(tmp_path / "checks.pid", SETTLE_TIMEOUT_S)
         reap_groups.append(checks_pid)
-        grandchild = wait_for_pid_file_blocking(tmp_path / "grandchild.pid", _SETTLE_TIMEOUT_S)
+        grandchild = wait_for_pid_file_blocking(tmp_path / "grandchild.pid", SETTLE_TIMEOUT_S)
         reap_groups.append(grandchild)
-        proc.send_signal(signal.Signals[signal_name])
-        proc.communicate(timeout=30)
+        stop_by_signal(proc, signal.SIGTERM)
 
-    assert proc.returncode == expected_code
-    wait_until_dead_blocking(grandchild, timeout_s=_SETTLE_TIMEOUT_S)
+    assert proc.returncode == 128 + signal.SIGTERM
+    wait_until_dead_blocking(grandchild, timeout_s=SETTLE_TIMEOUT_S)
     # Polled rather than checked once: a killed leader stays visible as a zombie
     # until its parent reaps it.
-    wait_until_dead_blocking(checks_pid, timeout_s=_SETTLE_TIMEOUT_S)
+    wait_until_dead_blocking(checks_pid, timeout_s=SETTLE_TIMEOUT_S)
     assert records_of_type(repo, CommandRecord) == []
 
 

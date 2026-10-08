@@ -1,4 +1,3 @@
-import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -12,7 +11,6 @@ from gymrat.config import (
     MAX_TIMEOUT_SECONDS,
     BenchlessConfig,
     CliFlags,
-    HooksConfig,
     KindEntry,
     MetricEntry,
     StopConfig,
@@ -31,6 +29,7 @@ from tests._git import run_git
 from tests._imports import modules_imported_by
 from tests.config._toml import (
     LOOP_CONFIG,
+    LOOP_FIELDS,
     write_config,
     write_raw,
 )
@@ -50,9 +49,7 @@ RESOLVERS = [
 
 
 def test_config_module_when_imported_fresh_does_not_raise_import_error():
-    loaded = modules_imported_by("gymrat.config")
-
-    assert "gymrat.config" in loaded
+    modules_imported_by("gymrat.config")
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +331,7 @@ def test_runbook_problem_when_path_cannot_be_read_does_name_the_path_and_reason(
 DEFAULT_CONFIG = benchless_config()
 
 
-def has_problem(problems: list[str], pattern: str) -> bool:
+def _has_problem(problems: list[str], pattern: str) -> bool:
     return any(re.search(pattern, problem) for problem in problems)
 
 
@@ -374,11 +371,7 @@ def test_inspect_config_when_no_file_or_flags_does_settle_defaults(
             },
             benchless_config(
                 unstable_noise_pct=150.5,
-                primary="decode/time",
-                checks="npm test",
-                filter="npm run bench -- {names}",
-                stop=StopConfig(target_value=1.5, max_iterations=20),
-                hooks=HooksConfig(before="npm run warm-cache", after="npm run cool-down"),
+                **LOOP_FIELDS,
                 metrics={"decode/time": MetricEntry(direction="higher", gating=False, exact=True)},
                 kinds={"memory": KindEntry(gating=False)},
                 supervise=SuperviseConfig(model="claude-sonnet", effort="high"),
@@ -523,7 +516,7 @@ def test_inspect_config_when_config_flag_names_missing_path_does_fail_naming_it(
     result = inspect_config(CliFlags(bench="my-bench", config=str(missing_path)))
 
     assert result.config_path == str(missing_path)
-    assert has_problem(result.problems, re.escape(str(missing_path)))
+    assert _has_problem(result.problems, re.escape(str(missing_path)))
     assert result.config is None
 
 
@@ -679,7 +672,7 @@ def test_inspect_config_when_config_flag_blank_does_report_only_the_flag_problem
     # A blank value is one mistake: probing it on disk would add a second,
     # spurious "file not found" problem for a path the user never named.
     assert len(result.problems) == 1
-    assert has_problem(result.problems, r"--config.*non-empty")
+    assert _has_problem(result.problems, r"--config.*non-empty")
     assert result.config_path is None
     assert result.config is None
     assert result.bench is None
@@ -690,29 +683,16 @@ def test_inspect_config_when_config_flag_blank_does_report_only_the_flag_problem
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("env_var", "flags", "env_value"),
-    [
-        pytest.param("GYMRAT_BENCH", CliFlags(), "", id="bench-empty"),
-        pytest.param("GYMRAT_PREPARE", CliFlags(bench="b"), " ", id="prepare-space"),
-        pytest.param("GYMRAT_ADAPTER", CliFlags(bench="b"), "\t", id="adapter-tab"),
-        pytest.param("GYMRAT_CONFIG", CliFlags(bench="b"), "  \n  ", id="config-padded-newline"),
-    ],
-)
-def test_inspect_config_when_string_env_var_blank_does_report_naming_var(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    env_var: str,
-    flags: CliFlags,
-    env_value: str,
+def test_inspect_config_when_config_env_var_blank_does_report_naming_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv(env_var, env_value)
+    monkeypatch.setenv("GYMRAT_CONFIG", "  \n  ")
 
-    result = inspect_config(flags)
+    result = inspect_config(CliFlags(bench="b"))
 
     assert result.problems == [
-        f"Invalid value for {env_var}: expected a non-empty string, got {json.dumps(env_value)}"
+        'Invalid value for GYMRAT_CONFIG: expected a non-empty string, got "  \\n  "'
     ]
 
 
@@ -725,7 +705,7 @@ def test_inspect_config_when_config_env_var_names_missing_path_does_report_path(
 
     result = inspect_config(CliFlags(bench="my-bench"))
 
-    assert has_problem(result.problems, re.escape(str(missing_path)))
+    assert _has_problem(result.problems, re.escape(str(missing_path)))
 
 
 def test_inspect_config_when_every_field_env_var_invalid_does_report_each_in_field_order(

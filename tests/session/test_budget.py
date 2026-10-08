@@ -36,14 +36,9 @@ def _budget_file(root: str) -> Path:
     return Path(budget_path(root))
 
 
-def _make_budget(**overrides: object) -> Budget:
+def _make_budget(*, max_minutes: float = 30, deadline_ms: float = 1_800_000.0) -> Budget:
     """Build a Budget with sensible defaults, overridable per-field."""
-    defaults: dict[str, object] = {
-        "max_minutes": 30,
-        "deadline_ms": 1_800_000.0,
-    }
-    defaults.update(overrides)
-    return Budget(**defaults)  # type: ignore[arg-type]
+    return Budget(max_minutes=max_minutes, deadline_ms=deadline_ms)
 
 
 def _budget_json(**overrides: object) -> str:
@@ -133,7 +128,6 @@ def test_read_budget_when_file_written_does_return_it_only_while_held_and_ahead(
 @pytest.mark.parametrize(
     "contents",
     [
-        pytest.param(None, id="file-absent"),
         pytest.param(json.dumps({"max_minutes": 30}).encode(), id="missing-key"),
         pytest.param(_budget_json(deadline_ms="soon").encode(), id="deadline-string"),
         pytest.param(_budget_json(deadline_ms=None).encode(), id="deadline-null"),
@@ -143,11 +137,8 @@ def test_read_budget_when_file_written_does_return_it_only_while_held_and_ahead(
     ],
 )
 @pytest.mark.usefixtures("supervise_lock")
-def test_read_budget_when_file_absent_or_not_a_budget_does_return_none(
-    root: str, contents: bytes | None
-):
-    if contents is not None:
-        _budget_file(root).write_bytes(contents)
+def test_read_budget_when_file_not_a_budget_does_return_none(root: str, contents: bytes):
+    _budget_file(root).write_bytes(contents)
 
     result = read_budget(root, now_ms=0.0)
 

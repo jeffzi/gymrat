@@ -205,43 +205,29 @@ def test_configure_tracing_when_called_does_name_and_version_the_service():
     )
 
 
-def test_configure_tracing_when_called_twice_does_reuse_provider(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    exporter = InMemorySpanExporter()
-    configure_tracing(SESSION, span_processor=SimpleSpanProcessor(exporter))
-
-    result = configure_tracing(SESSION)
-    with start_span("probe"):
-        pass
+def test_configure_tracing_when_called_twice_does_reuse_provider():
+    with memory_tracing(SESSION) as exporter:
+        result = configure_tracing(SESSION)
+        with start_span("probe"):
+            pass
 
     assert result is True
     assert [span.name for span in exporter.get_finished_spans()] == ["probe"]
 
 
-def test_configure_tracing_when_already_configured_with_span_processor_does_raise(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-
-    configure_tracing(SESSION, span_processor=SimpleSpanProcessor(InMemorySpanExporter()))
-
-    with pytest.raises(ValueError, match="span_processor"):
+def test_configure_tracing_when_already_configured_with_span_processor_does_raise():
+    with (
+        memory_tracing(SESSION),
+        pytest.raises(ValueError, match="span_processor"),
+    ):
         configure_tracing(
             SESSION,
             span_processor=SimpleSpanProcessor(InMemorySpanExporter()),
         )
 
 
-def test_configure_tracing_when_called_with_different_session_id_does_raise(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-
-    configure_tracing(SESSION, span_processor=SimpleSpanProcessor(InMemorySpanExporter()))
-
-    with pytest.raises(ValueError, match="session_id"):
+def test_configure_tracing_when_called_with_different_session_id_does_raise():
+    with memory_tracing(SESSION), pytest.raises(ValueError, match="session_id"):
         configure_tracing("other-session")
 
 

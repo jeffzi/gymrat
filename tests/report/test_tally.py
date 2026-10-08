@@ -20,11 +20,9 @@ from tests.report._assertions import (
     render_colored,
     render_plain,
 )
+from tests.report._comparisons import NWayCandidate, n_way_metric, permutation_metric
 from tests.report._verdicts import (
-    CandidateSpec,
-    approximate_metric,
     band_metric,
-    metric_for,
     one_sided_metric,
 )
 
@@ -46,9 +44,9 @@ def _find_plain(parts: Sequence[str], needle: str) -> str:
 
 
 _TWO_CANDIDATES: MetricComparisons = {
-    "decode/time": metric_for([
-        CandidateSpec(verdict="improved", delta=-10),
-        CandidateSpec(verdict="regressed", delta=8),
+    "decode/time": n_way_metric([
+        NWayCandidate(verdict="improved", delta=-10, median=90),
+        NWayCandidate(verdict="regressed", delta=8, median=108),
     ]),
 }
 
@@ -58,11 +56,11 @@ _TWO_CANDIDATES: MetricComparisons = {
     [
         pytest.param(
             {
-                "faster/time": approximate_metric(verdict="improved", delta=-10),
-                "also-faster/time": approximate_metric(verdict="improved", delta=-5),
-                "slower/time": approximate_metric(verdict="regressed", delta=8),
-                "jittery/time": approximate_metric(verdict="unstable", delta=5, noise_pct=300),
-                "flat/time": approximate_metric(verdict="no-signal", delta=0.2),
+                "faster/time": permutation_metric(verdict="improved", delta=-10),
+                "also-faster/time": permutation_metric(verdict="improved", delta=-5),
+                "slower/time": permutation_metric(verdict="regressed", delta=8),
+                "jittery/time": permutation_metric(verdict="unstable", delta=5, noise_pct=300),
+                "flat/time": permutation_metric(verdict="no-signal", delta=0.2),
                 "one-sided/time": one_sided_metric(),
             },
             0,
@@ -102,10 +100,10 @@ def test_count_verdicts_when_given_metrics_does_count_each_class_for_the_named_c
 # ---------------------------------------------------------------------------
 
 _MIXED: MetricComparisons = {
-    "faster/time": approximate_metric(verdict="improved", delta=-10),
-    "slower/time": approximate_metric(verdict="regressed", delta=8),
-    "jittery/time": approximate_metric(verdict="unstable", delta=5, noise_pct=300),
-    "flat/time": approximate_metric(verdict="no-signal", delta=0.2),
+    "faster/time": permutation_metric(verdict="improved", delta=-10),
+    "slower/time": permutation_metric(verdict="regressed", delta=8),
+    "jittery/time": permutation_metric(verdict="unstable", delta=5, noise_pct=300),
+    "flat/time": permutation_metric(verdict="no-signal", delta=0.2),
     "tied/heap": band_metric(n=10, usable_n=0),
     "single-pair/time": band_metric(n=1, noise_pct=0.5),
 }
@@ -127,7 +125,7 @@ def test_verdict_summary_parts_when_mixed_does_render_every_class_with_its_count
 @pytest.mark.parametrize("label", ["regressed", "identical"])
 def test_verdict_summary_parts_when_zero_count_does_dim_the_part(label: str):
     only_improved: MetricComparisons = {
-        "faster/time": approximate_metric(verdict="improved", delta=-10)
+        "faster/time": permutation_metric(verdict="improved", delta=-10)
     }
 
     parts = verdict_summary_parts(only_improved, 0)
@@ -138,11 +136,11 @@ def test_verdict_summary_parts_when_zero_count_does_dim_the_part(label: str):
 
 def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_width():
     metrics: MetricComparisons = {
-        f"improved-{i}/time": approximate_metric(verdict="improved", delta=-(i + 1))
+        f"improved-{i}/time": permutation_metric(verdict="improved", delta=-(i + 1))
         for i in range(10)
     }
-    metrics["regressed/time"] = approximate_metric(verdict="regressed", delta=5)
-    metrics["noisy/time"] = approximate_metric(verdict="unstable", delta=3, noise_pct=300)
+    metrics["regressed/time"] = permutation_metric(verdict="regressed", delta=5)
+    metrics["noisy/time"] = permutation_metric(verdict="unstable", delta=3, noise_pct=300)
 
     parts = verdict_summary_parts(metrics, 0)
 

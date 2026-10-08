@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from gymrat.loop.probe import ProbeMetric, ProbeResult
-from tests.report._comparisons import metric_meta
+from tests.report._verdicts import metric_meta
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

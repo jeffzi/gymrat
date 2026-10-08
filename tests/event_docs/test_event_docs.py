@@ -93,6 +93,7 @@ class _Channel(NamedTuple):
     members: tuple[type[BaseModel], ...]
     schema_path: str
     heading: str
+    address: str
 
 
 #: The session-log channel: ``SessionLogRecord`` members, first schema of ``render_json_schemas()``.
@@ -102,6 +103,7 @@ _SESSION_LOG = _Channel(
     get_args(SessionLogRecord.__value__),
     _SESSION_LOG_SCHEMA,
     "## Session Log",
+    ".gymrat/session.jsonl",
 )
 #: The supervisor-log channel: ``SessionEvent`` members, second schema of ``render_json_schemas()``.
 _SUPERVISOR_LOG = _Channel(
@@ -110,6 +112,7 @@ _SUPERVISOR_LOG = _Channel(
     get_args(SessionEvent),
     _SUPERVISOR_LOG_SCHEMA,
     "## Supervisor Log",
+    ".gymrat/supervisor-<ms>.jsonl",
 )
 _CHANNELS = (_SESSION_LOG, _SUPERVISOR_LOG)
 _CHANNEL_PARAMS = [pytest.param(channel, id=channel.name) for channel in _CHANNELS]
@@ -424,44 +427,34 @@ def test_render_json_schemas_when_called_does_return_draft_2020_12_envelope(
 
 
 # ---------------------------------------------------------------------------
-# field descriptions
-# ---------------------------------------------------------------------------
-
-
-def test_render_json_schemas_when_called_does_carry_description_on_launch_kickoff_summary():
-    _, supervisor_log = _render_schemas()
-
-    launch_schema = supervisor_log["$defs"]["LaunchEvent"]
-    kickoff_prop = launch_schema["properties"]["kickoff_summary"]
-
-    assert "description" in kickoff_prop
-
-
-# ---------------------------------------------------------------------------
-# type discriminator — const on each member's type field
+# member defs — const discriminator, additionalProperties per log, at as integer
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("channel", "model_name", "expected_const"),
+    ("channel", "model_name", "expected_const", "expected_additional"),
     [
-        pytest.param(_SESSION_LOG, "IterationRecord", "iteration", id="session-log-iteration"),
         pytest.param(
-            _SUPERVISOR_LOG, "ToolStartEvent", "tool_start", id="supervisor-log-tool-start"
+            _SESSION_LOG, "IterationRecord", "iteration", False, id="session-log-iteration"
+        ),
+        # None stands for "key absent": events accept unknown fields.
+        pytest.param(
+            _SUPERVISOR_LOG, "ToolStartEvent", "tool_start", None, id="supervisor-log-tool-start"
         ),
     ],
 )
-def test_render_json_schemas_when_called_does_have_const_type_discriminator(
+def test_render_json_schemas_when_called_does_shape_member_def_per_log(
     channel: _Channel,
     model_name: str,
     expected_const: str,
+    expected_additional: bool | None,
 ):
-    schema = _render_schemas()[channel.schema_index]
+    model_schema = _render_schemas()[channel.schema_index]["$defs"][model_name]
 
-    model_schema = schema["$defs"][model_name]
-    type_prop = model_schema["properties"]["type"]
-
-    assert type_prop.get("const") == expected_const
+    properties = model_schema["properties"]
+    assert properties["type"].get("const") == expected_const
+    assert model_schema.get("additionalProperties") is expected_additional
+    assert properties["at"].get("type") == "integer"
 
 
 @pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
@@ -474,51 +467,6 @@ def test_render_json_schemas_when_called_does_map_every_type_to_its_member_def(c
 
     assert schema["oneOf"] == [{"$ref": f"#/$defs/{member.__name__}"} for member in channel.members]
     assert schema["discriminator"] == {"propertyName": "type", "mapping": expected_mapping}
-
-
-# ---------------------------------------------------------------------------
-# additionalProperties — present on record models, absent on event models
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("channel", "model_name", "expected"),
-    [
-        pytest.param(_SESSION_LOG, "IterationRecord", False, id="session-log-record"),
-        # None stands for "key absent": events accept unknown fields.
-        pytest.param(_SUPERVISOR_LOG, "ToolStartEvent", None, id="supervisor-log-event"),
-    ],
-)
-def test_render_json_schemas_when_called_does_set_additional_properties_per_log(
-    channel: _Channel, model_name: str, expected: bool | None
-):
-    model_schema = _render_schemas()[channel.schema_index]["$defs"][model_name]
-
-    assert model_schema.get("additionalProperties", None) is expected
-
-
-# ---------------------------------------------------------------------------
-# at typed as integer
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("channel", "model_name"),
-    [
-        pytest.param(_SESSION_LOG, "IterationRecord", id="session-log-iteration"),
-        pytest.param(_SUPERVISOR_LOG, "LaunchEvent", id="supervisor-log-launch"),
-    ],
-)
-def test_render_json_schemas_when_called_does_type_at_as_integer(
-    channel: _Channel,
-    model_name: str,
-):
-    schema = _render_schemas()[channel.schema_index]
-
-    model_schema = schema["$defs"][model_name]
-    at_prop = model_schema["properties"]["at"]
-
-    assert at_prop.get("type") == "integer"
 
 
 # ---------------------------------------------------------------------------
@@ -608,46 +556,78 @@ def test_render_json_schemas_when_called_does_type_bounded_int_with_minimum(
 
 
 # ---------------------------------------------------------------------------
-# supervisor-log schema — optional-never-null fields have no null type
+# supervisor-log field keywords — descriptions carried, never-null fields have no
+# null branch, free-form input stays untyped
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("model_name", "field_name"),
+    ("model_name", "field_name", "keyword", "present"),
     [
-        pytest.param("FollowUpEvent", "reason", id="follow_up-reason"),
-        pytest.param("FollowUpEvent", "text", id="follow_up-text"),
-        pytest.param("LaunchEvent", "effort", id="launch-effort"),
-        pytest.param("LaunchEvent", "max_usd", id="launch-max_usd"),
-        pytest.param("LaunchEvent", "model", id="launch-model"),
-        pytest.param("ModelPhaseEvent", "tool_name", id="model_phase-tool_name"),
-        pytest.param("ModelPhaseEvent", "parent_tool_use_id", id="model_phase-parent_tool_use_id"),
         pytest.param(
-            "ThinkingUpdateEvent", "parent_tool_use_id", id="thinking_update-parent_tool_use_id"
+            "LaunchEvent",
+            "kickoff_summary",
+            "description",
+            True,
+            id="launch-kickoff_summary-described",
         ),
-        pytest.param("ToolStartEvent", "parent_tool_use_id", id="tool_start-parent_tool_use_id"),
-        pytest.param("ToolEndEvent", "parent_tool_use_id", id="tool_end-parent_tool_use_id"),
-        pytest.param("TextDeltaEvent", "parent_tool_use_id", id="text_delta-parent_tool_use_id"),
+        pytest.param("FollowUpEvent", "reason", "anyOf", False, id="follow_up-reason-never-null"),
+        pytest.param("FollowUpEvent", "text", "anyOf", False, id="follow_up-text-never-null"),
+        pytest.param("LaunchEvent", "effort", "anyOf", False, id="launch-effort-never-null"),
+        pytest.param("LaunchEvent", "max_usd", "anyOf", False, id="launch-max_usd-never-null"),
+        pytest.param("LaunchEvent", "model", "anyOf", False, id="launch-model-never-null"),
+        pytest.param(
+            "ModelPhaseEvent", "tool_name", "anyOf", False, id="model_phase-tool_name-never-null"
+        ),
+        pytest.param(
+            "ModelPhaseEvent",
+            "parent_tool_use_id",
+            "anyOf",
+            False,
+            id="model_phase-parent_tool_use_id-never-null",
+        ),
+        pytest.param(
+            "ThinkingUpdateEvent",
+            "parent_tool_use_id",
+            "anyOf",
+            False,
+            id="thinking_update-parent_tool_use_id-never-null",
+        ),
+        pytest.param(
+            "ToolStartEvent",
+            "parent_tool_use_id",
+            "anyOf",
+            False,
+            id="tool_start-parent_tool_use_id-never-null",
+        ),
+        pytest.param(
+            "ToolEndEvent",
+            "parent_tool_use_id",
+            "anyOf",
+            False,
+            id="tool_end-parent_tool_use_id-never-null",
+        ),
+        pytest.param(
+            "TextDeltaEvent",
+            "parent_tool_use_id",
+            "anyOf",
+            False,
+            id="text_delta-parent_tool_use_id-never-null",
+        ),
+        pytest.param("ToolStartEvent", "input", "type", False, id="tool_start-input-untyped"),
     ],
 )
-def test_render_json_schemas_when_called_does_not_include_null_on_optional_never_null_field(
+def test_render_json_schemas_when_called_does_shape_supervisor_field_keyword(
     model_name: str,
     field_name: str,
+    keyword: str,
+    present: bool,
 ):
     _, supervisor_log = _render_schemas()
 
-    model_schema = supervisor_log["$defs"][model_name]
-    field_schema = model_schema["properties"][field_name]
+    field_schema = supervisor_log["$defs"][model_name]["properties"][field_name]
 
-    assert "anyOf" not in field_schema
-
-
-def test_render_json_schemas_when_called_does_leave_tool_start_input_untyped():
-    _, supervisor_log = _render_schemas()
-
-    input_prop = supervisor_log["$defs"]["ToolStartEvent"]["properties"]["input"]
-
-    assert "type" not in input_prop
+    assert (keyword in field_schema) is present
 
 
 # ---------------------------------------------------------------------------
@@ -686,26 +666,23 @@ def test_render_asyncapi_when_called_does_return_valid_asyncapi_300_envelope():
 # ---------------------------------------------------------------------------
 
 
-def test_render_asyncapi_when_called_does_have_two_channels_with_correct_addresses():
+def test_render_asyncapi_when_called_does_list_each_channel_address_and_messages_in_union_order():
     doc = _render_asyncapi_doc()
 
-    channels = doc["channels"]
-    assert set(channels) == {"session-log", "supervisor-log"}
-    assert channels["session-log"]["address"] == ".gymrat/session.jsonl"
-    assert channels["supervisor-log"]["address"] == ".gymrat/supervisor-<ms>.jsonl"
-
-
-@pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
-def test_render_asyncapi_when_called_does_list_channel_messages_in_union_order(
-    channel: _Channel,
-):
-    doc = _render_asyncapi_doc()
-
-    messages = doc["channels"][channel.name]["messages"]
-
-    expected = [_wire_type(model) for model in channel.members]
-    assert list(messages) == expected
-    assert messages == {wt: {"$ref": f"#/components/messages/{wt}"} for wt in expected}
+    channels = {
+        name: (spec["address"], list(spec["messages"].items()))
+        for name, spec in doc["channels"].items()
+    }
+    assert channels == {
+        channel.name: (
+            channel.address,
+            [
+                (wt, {"$ref": f"#/components/messages/{wt}"})
+                for wt in map(_wire_type, channel.members)
+            ],
+        )
+        for channel in _CHANNELS
+    }
 
 
 def test_render_asyncapi_when_called_does_list_component_messages_in_union_order():
@@ -725,23 +702,6 @@ def test_render_asyncapi_when_model_has_no_description_does_use_class_name_as_su
     assert doc["components"]["messages"]["keep"]["summary"] == "KeepRecord"
 
 
-@pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
-def test_render_asyncapi_when_called_does_take_message_summary_from_schema_description_first_line(
-    channel: _Channel,
-):
-    schemas, doc = _render_with_schemas()
-    defs = schemas[channel.schema_index]["$defs"]
-
-    summaries = {
-        wire_type: doc["components"]["messages"][wire_type]["summary"]
-        for wire_type in doc["channels"][channel.name]["messages"]
-    }
-    assert summaries == {
-        _wire_type(model): defs[model.__name__]["description"].split("\n")[0]
-        for model in channel.members
-    }
-
-
 # ---------------------------------------------------------------------------
 # components.messages — one per record/event type
 # ---------------------------------------------------------------------------
@@ -759,12 +719,14 @@ def test_render_asyncapi_when_called_does_describe_each_message_payload(
     channel: _Channel,
     model: type[BaseModel],
 ):
-    doc = _render_asyncapi_doc()
+    schemas, doc = _render_with_schemas()
 
     msg = doc["components"]["messages"][_wire_type(model)]
 
+    description = schemas[channel.schema_index]["$defs"][model.__name__]["description"]
     assert msg["contentType"] == "application/json"
     assert msg["title"] == model.__name__
+    assert msg["summary"] == description.split("\n")[0]
     assert msg["payload"] == {
         "schemaFormat": "application/schema+json;version=draft-2020-12",
         "schema": {"$ref": f"./{channel.name}.schema.json#/$defs/{model.__name__}"},
@@ -961,7 +923,6 @@ def test_render_reference_when_called_does_have_table_header_with_four_columns()
     [
         pytest.param("iteration", "seq", "required", id="required"),
         pytest.param("iteration", "duration_ms", "optional", id="optional"),
-        pytest.param("tool_start", "type", "required", id="const-discriminator"),
     ],
 )
 def test_render_reference_when_called_does_mark_field_status(

@@ -84,14 +84,11 @@ def _session_result(*, with_best: bool) -> ReadSessionResult:
     )()
 
 
-def test_summary_when_run_has_a_best_iteration_does_render_headline_best_loop_and_log():
-    summary = _summary(
-        make_supervision_result(reason="interrupted", ended_by="wall-clock", cost_usd=0.16),
-        session_result=_session_result(with_best=True),
-    )
+def test_summary_when_run_has_a_best_iteration_does_render_the_best_row():
+    summary = _summary(session_result=_session_result(with_best=True))
 
     assert frame_text(summary, width=FRAME_WIDTH) == (
-        "! interrupted by wall-clock cap · 1m 0s · $0.16\n"
+        "✓ completed · 1m 0s · $0.05\n"
         "  best    -4.2% wall_time vs baseline a1b2c3d (iteration 3)\n"
         "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved\n"
         f"{_LOG_ROW}"

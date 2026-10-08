@@ -11,7 +11,6 @@ from __future__ import annotations
 import errno
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -22,7 +21,7 @@ import pytest
 from gymrat.cli.app import app
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import record_to_wire
-from tests._cli import ENTRY, no_color_env
+from tests._cli import no_color_env, run_cli
 from tests._mode_bits import needs_mode_bits
 from tests.cli._session import runner
 from tests.session.records._fixtures import SESSION_ID, command_record
@@ -355,12 +354,12 @@ def test_export_when_final_session_line_is_torn_utf8_does_skip_only_that_line(
 
     with otlp_collector() as collector:
         env[_ENDPOINT_ENV] = collector.endpoint
-        result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-            [*ENTRY, "export", session_log],
-            env=env,
-            capture_output=True,
-            text=True,
+        result = run_cli(
+            ["export", session_log],
+            tmp_path,
             check=False,
+            timeout=60,
+            env=env,
         )
 
     assert result.returncode == 0, result.stderr

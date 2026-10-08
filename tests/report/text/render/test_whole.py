@@ -13,7 +13,9 @@ A handful of representative layouts are also pinned byte for byte as plain
 golden outputs, so a change to how the table is drawn cannot shift a padding
 space or a rule dash unnoticed. Color is pinned per element with ``styles_at``
 rather than as escape bytes, so a change in how rich encodes a style does not
-read as a regression.
+read as a regression. The run header, column labels, section and group titles
+and aggregate rows are styled here; verdict-cell colors live in
+``test_verdicts`` and multi-candidate cell colors in ``test_multi``.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from gymrat.model import Exclusion
 from gymrat.report.text.render import render_measure_report, render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
 from gymrat.targets import WorktreeRemovalFailure
-from gymrat.verdict import GroupAggregate, KindAggregate
+from gymrat.verdict import KindAggregate
 from tests.report._assertions import (
     cells_of,
     highlight_lines,
@@ -44,6 +46,7 @@ from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
     exact_metric,
+    gating_kind,
     grouped_comparison,
     kind_metric,
     memory_kind,
@@ -95,18 +98,7 @@ def _one_kind_result() -> ComparisonResult:
                 kind="time", short_name="entity.spawn", verdict="regressed", delta=4
             ),
         },
-        candidates=[
-            create_candidate(
-                kinds=[
-                    KindAggregate(
-                        kind="time",
-                        geomean=geomean,
-                        groups=(GroupAggregate(group="entity", geomean=geomean),),
-                        gated_geomean=geomean,
-                    )
-                ]
-            )
-        ],
+        candidates=[create_candidate(kinds=[gating_kind("time", geomean, {"entity": geomean})])],
     )
 
 
@@ -225,7 +217,7 @@ def test_render_when_kind_is_informational_by_metric_overrides_does_tag_it_witho
 
 
 # ---------------------------------------------------------------------------
-# geomean color
+# geomean color scenarios (styled in the element styling table)
 # ---------------------------------------------------------------------------
 
 
@@ -256,12 +248,7 @@ def _quiet_two_kind_result() -> ComparisonResult:
         candidates=[
             create_candidate(
                 kinds=[
-                    KindAggregate(
-                        kind="time",
-                        geomean=time_geomean,
-                        groups=(GroupAggregate(group="entity", geomean=geomean_of(-8.6, 2)),),
-                        gated_geomean=time_geomean,
-                    ),
+                    gating_kind("time", time_geomean, {"entity": geomean_of(-8.6, 2)}),
                     memory_kind(),
                 ]
             )
@@ -270,37 +257,16 @@ def _quiet_two_kind_result() -> ComparisonResult:
     )
 
 
-@pytest.mark.parametrize(
-    ("make_result", "label", "value", "expected"),
-    [
-        pytest.param(_quiet_two_kind_result, "geomean · entity", "-8.6%", ["1"], id="quiet-group"),
-        pytest.param(_quiet_two_kind_result, "geomean · time", "-8.5%", ["1"], id="quiet-kind"),
-        pytest.param(
-            two_kind_result, "geomean · entity", "-3.1%", ["1", "32"], id="improving-group"
-        ),
-        pytest.param(two_kind_result, "geomean · time", "-3.2%", ["1", "32"], id="improving-kind"),
-    ],
-)
-def test_render_report_when_colored_does_paint_the_geomean_by_the_verdicts_behind_it(
-    make_result: Callable[[], ComparisonResult], label: str, value: str, expected: list[str]
-):
-    line = line_containing(render_report(make_result(), ReportOptions(color=True)), label)
-
-    assert styles_at(line, value) == expected
-
-
-def test_render_report_when_quiet_flat_metric_and_colored_does_leave_the_geomean_uncolored():
-    result = create_comparison_result(
+def _quiet_flat_result() -> ComparisonResult:
+    """A flat run whose one metric landed within noise, under the default geomean."""
+    return create_comparison_result(
         metrics={"faster/time": permutation_metric(verdict="no-signal", delta=-0.5)}
     )
 
-    line = line_containing(render_report(result, ReportOptions(color=True)), "geomean")
 
-    assert styles_at(line, "-5.8%") == ["1"]
-
-
-def test_render_report_when_colored_does_judge_each_candidate_column_by_its_own_verdicts():
-    result = create_comparison_result(
+def _per_candidate_geomean_result() -> ComparisonResult:
+    """Two candidates over a grouped ``time`` kind: one within noise, one improved."""
+    return create_comparison_result(
         metrics={
             "entity/alive_check#time": n_way_kind_metric(
                 kind="time",
@@ -324,34 +290,19 @@ def test_render_report_when_colored_does_judge_each_candidate_column_by_its_own_
             create_candidate(
                 label="candidate-a",
                 kinds=[
-                    _time_kind_of(-9),
+                    gating_kind("time", geomean_of(-9, 1), {"entity": geomean_of(-9, 1)}),
                     KindAggregate(kind="memory", geomean=geomean_of(-1, 1), groups=()),
                 ],
             ),
             create_candidate(
                 label="candidate-b",
                 kinds=[
-                    _time_kind_of(-12),
+                    gating_kind("time", geomean_of(-12, 1), {"entity": geomean_of(-12, 1)}),
                     KindAggregate(kind="memory", geomean=geomean_of(-2, 1), groups=()),
                 ],
             ),
         ],
         config_kinds={"memory": KindEntry(gating=False)},
-    )
-
-    line = line_containing(render_report(result, ReportOptions(color=True)), "geomean · time")
-
-    assert styles_at(line, "-9.0%") == ["1"]
-    assert styles_at(line, "-12.0%") == ["1", "32"]
-
-
-def _time_kind_of(value: float) -> KindAggregate:
-    geomean = geomean_of(value, 1)
-    return KindAggregate(
-        kind="time",
-        geomean=geomean,
-        groups=(GroupAggregate(group="entity", geomean=geomean),),
-        gated_geomean=geomean,
     )
 
 
@@ -360,7 +311,7 @@ def _time_kind_of(value: float) -> KindAggregate:
 # ---------------------------------------------------------------------------
 
 
-def _representative_result() -> ComparisonResult:
+def _grouped_exact_mix_result() -> ComparisonResult:
     return create_comparison_result(
         metrics={
             "decode/text=digits#time": MetricComparison(
@@ -416,8 +367,8 @@ def _representative_result() -> ComparisonResult:
     )
 
 
-def test_render_report_when_representative_does_assemble_the_whole_report():
-    report = render_report(_representative_result())
+def test_render_report_when_grouped_run_mixes_methods_does_rank_highlights_without_footers():
+    report = render_report(_grouped_exact_mix_result())
 
     assert table_region(report) == [
         _HEADER,
@@ -633,19 +584,39 @@ def test_render_report_when_rendered_does_match_its_golden(
         pytest.param(
             _one_kind_result, "entity · time", "entity · time", ["1", "34"], id="group-header-blue"
         ),
-        pytest.param(_one_kind_result, "alive_check", "✓", ["32"], id="improved-glyph-green"),
-        pytest.param(_one_kind_result, "spawn", "✗", ["31"], id="regressed-glyph-red"),
-        pytest.param(_one_kind_result, "alive_check", "±2.5%", ["2"], id="metric-band-dim"),
         pytest.param(_one_kind_result, "geomean", "geomean", ["1"], id="aggregate-label-bold"),
         pytest.param(two_kind_result, "geomean · time", "±2.0%", ["2"], id="aggregate-band-dim"),
         pytest.param(_one_kind_result, "highlights", "highlights", ["1"], id="highlights-bold"),
         pytest.param(grouped_comparison, "time", "time", ["1"], id="section-title-bold"),
+        pytest.param(_quiet_flat_result, "geomean", "-5.8%", ["1"], id="quiet-flat-geomean"),
         pytest.param(
-            grouped_comparison, "alive_check", "-10.0%", ["32"], id="candidate-delta-green"
+            _quiet_two_kind_result, "geomean · entity", "-8.6%", ["1"], id="quiet-group-geomean"
         ),
-        pytest.param(grouped_comparison, "alive_check", "+4.0%", ["31"], id="candidate-delta-red"),
+        pytest.param(
+            _quiet_two_kind_result, "geomean · time", "-8.5%", ["1"], id="quiet-kind-geomean"
+        ),
+        pytest.param(
+            two_kind_result, "geomean · entity", "-3.1%", ["1", "32"], id="improving-group-geomean"
+        ),
+        pytest.param(
+            two_kind_result, "geomean · time", "-3.2%", ["1", "32"], id="improving-kind-geomean"
+        ),
         pytest.param(
             grouped_comparison, "geomean · entity", "+4.0%", ["1", "31"], id="regressing-geomean"
+        ),
+        pytest.param(
+            _per_candidate_geomean_result,
+            "geomean · time",
+            "-9.0%",
+            ["1"],
+            id="quiet-candidate-geomean",
+        ),
+        pytest.param(
+            _per_candidate_geomean_result,
+            "geomean · time",
+            "-12.0%",
+            ["1", "32"],
+            id="improving-candidate-geomean",
         ),
         pytest.param(
             grouped_comparison, "geomean · entity", "1 stable metric", ["2"], id="stable-count-dim"
@@ -661,3 +632,23 @@ def test_render_report_when_colored_does_style_each_element(
     line = line_containing(render_report(make_result(), ReportOptions(color=True)), needle)
 
     assert styles_at(line, marker) == expected
+
+
+def test_render_report_when_colored_does_leave_a_dotted_variant_name_out_of_dimming():
+    result = create_comparison_result(
+        baseline_label="main·1",  # cspell:disable-line
+        candidates=[create_candidate(label="perf·2")],  # cspell:disable-line
+    )
+
+    header = line_containing(render_report(result, ReportOptions(color=True)), "gymrat compare")
+
+    assert styles_at(header, "main·1") == ["1", "4"]  # cspell:disable-line
+    assert styles_at(header, "perf·2") == ["1", "4"]  # cspell:disable-line
+
+
+def test_render_report_when_colored_does_leave_a_dotted_adapter_name_out_of_dimming():
+    result = create_comparison_result(adapter="metric·lines")  # cspell:disable-line
+
+    header = line_containing(render_report(result, ReportOptions(color=True)), "gymrat compare")
+
+    assert "adapter: metric·lines" in header  # cspell:disable-line

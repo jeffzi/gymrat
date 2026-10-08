@@ -30,7 +30,7 @@ import pytest
 
 from gymrat import exec as exec_mod
 from gymrat import signals
-from gymrat.exec import ExecOptions, ExecTimeoutError
+from gymrat.exec import FAILURE_EXIT_CODE, ExecOptions, ExecResult
 from gymrat.exec import exec as run_exec
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.events import SessionEvent, SessionObserver, UsageUpdateEvent
@@ -170,10 +170,6 @@ async def test_claude_driver_when_session_settles_does_not_leak_task_diagnostics
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
 async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_group(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -218,6 +214,9 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
         sender.join(timeout=6.0)
         assert not sender.is_alive(), "SIGTERM sender thread outlived its join window"
         uninstall()
+        # Recorded before the sweep below, which would otherwise hide a child
+        # the termination handler left running.
+        survivors = [proc.pid for proc in spawned if proc.returncode is None]
         for proc in spawned:
             if proc.returncode is not None or not proc.pid:
                 continue
@@ -227,7 +226,15 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     # The signal mask around spawn+register must cover the gap: a SIGTERM
     # landing before registration still finds the child in the live-groups
     # registry and kills it, so exec settles as a normal result, not a timeout.
-    assert not isinstance(result, ExecTimeoutError), (
+    # An empty stderr rules out the spawn-failure result, which carries the
+    # spawn error's message under the same failure code.
+    assert isinstance(result, ExecResult), (
         "child was not killed by the signal handler — spawn-register window is unmasked"
+    )
+    assert (result.exit_code, result.stderr) == (FAILURE_EXIT_CODE, "")
+    assert spawned
+    assert survivors == []
+    assert all(proc.returncode is not None and proc.returncode < 0 for proc in spawned), (
+        f"child was not killed by a signal: {[proc.returncode for proc in spawned]}"
     )
     assert recorded_exits, "the termination handler never asked the process to exit"

@@ -258,14 +258,12 @@ async def test_run_exit_sequence_when_skipping_does_note_a_cap_trip_only_for_cap
     repo: str, ended_by: EndedBy, note: str
 ):
     start_with(repo)
-    probe = HeldProbe()
 
     run = await run_sequence(
-        session_context(repo), ended_by=ended_by, lock_wait_ms=0, is_lock_held=probe
+        session_context(repo), ended_by=ended_by, lock_wait_ms=0, is_lock_held=lambda: True
     )
 
     assert run.report.steps == (ExitStep(kind="skipped", text=SKIP_UNKNOWN + note),)
-    assert probe.calls == 1
     assert run.phases == [ExitPhase(kind="waiting-lock", pid=None)]
     assert [(event.action, event.reason) for event in events_of(run.events, FollowUpEvent)] == [
         ("ended", SKIP_UNKNOWN + note)
@@ -434,7 +432,7 @@ async def test_run_exit_sequence_when_finalize_refuses_does_record_the_refusal_n
     assert run.report.error is None
 
 
-async def test_run_exit_sequence_when_finalize_is_off_and_all_settled_does_record_one_step(
+async def test_run_exit_sequence_when_finalize_is_off_and_all_settled_does_leave_the_session_open(
     repo: str,
 ):
     start_with(repo)

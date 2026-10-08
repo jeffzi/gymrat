@@ -7,28 +7,23 @@ its own bench sweep before the run above it kills it.
 """
 
 import asyncio
+import dataclasses
 import shlex
 import signal
 import sys
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from gymrat import exec as exec_mod
+from gymrat import process_group
 from gymrat.exec import ExecOptions
 from gymrat.exec import exec as run_exec
 from gymrat.signals import install_termination_cleanup
 from tests._exec_fixtures import ExecTask, Teardown, leave_to_timeout, set_abort
 from tests._process_helpers import wait_for_pid_file, wait_until_dead
-
-# exec drives POSIX process groups (killpg) and sh-only shell syntax; neither
-# works under cmd.exe, so the whole module is POSIX-only.
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX-only shell and process groups"
-)
-
 
 # ---------------------------------------------------------------------------
 # a second termination signal kills every live group at once
@@ -167,18 +162,30 @@ async def test_exec_when_second_signal_arrives_before_kill_sweep_runs_does_let_t
 # ---------------------------------------------------------------------------
 
 
+# How far past its grace a group wait may run on the fake clock: one poll of the
+# group, which the wait sleeps between checks.
+_GROUP_POLL_S = 0.01
+
+
+@dataclasses.dataclass
+class FakeClock:
+    """Stand-in for the ``time`` module the process-group waits read, advancing only when slept."""
+
+    now: float = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
 @pytest.fixture
-def group_wait_graces(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Record the grace each signal-path group wait is given, still waiting it out for real."""
-    graces: list[float] = []
-    real_wait = exec_mod.wait_for_process_group_exit
-
-    def record(leaders: Iterable[int], timeout_s: float) -> None:
-        graces.append(timeout_s)
-        real_wait(leaders, timeout_s)
-
-    monkeypatch.setattr(exec_mod, "wait_for_process_group_exit", record)
-    return graces
+def group_wait_clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+    """Run the signal path's group wait on a fake clock, so a grace is waited out without sleeping."""
+    clock = FakeClock()
+    monkeypatch.setattr(process_group, "time", clock)
+    return clock
 
 
 @pytest.mark.parametrize(
@@ -196,7 +203,7 @@ async def test_exec_when_second_signal_arrives_in_nested_run_does_kill_live_grou
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
     raise_signal: Callable[[int], int],
-    group_wait_graces: list[float],
+    group_wait_clock: FakeClock,
     *,
     nesting_depth: int,
     expected_grace_s: float,
@@ -209,7 +216,7 @@ async def test_exec_when_second_signal_arrives_in_nested_run_does_kill_live_grou
     await task
 
     await wait_until_dead(shell, timeout_s=3.0)
-    assert group_wait_graces == [pytest.approx(expected_grace_s)]
+    assert group_wait_clock.now == pytest.approx(expected_grace_s, abs=_GROUP_POLL_S)
 
 
 @pytest.mark.parametrize(
@@ -225,7 +232,7 @@ async def test_kill_live_process_groups_when_run_is_nested_does_halve_grace_per_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
-    group_wait_graces: list[float],
+    group_wait_clock: FakeClock,
     *,
     nesting_depth: int,
     expected_grace_s: float,
@@ -237,7 +244,7 @@ async def test_kill_live_process_groups_when_run_is_nested_does_halve_grace_per_
     exec_mod.kill_live_process_groups()
 
     await task
-    assert group_wait_graces == [pytest.approx(expected_grace_s)]
+    assert group_wait_clock.now == pytest.approx(expected_grace_s, abs=_GROUP_POLL_S)
 
 
 # asyncio may fire a timer up to a clock tick early, so a wait can end a hair

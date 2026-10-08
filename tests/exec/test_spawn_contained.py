@@ -13,8 +13,7 @@ import asyncio
 import contextlib
 import errno
 import signal
-import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from typing import NoReturn
 
 import pytest
@@ -25,12 +24,8 @@ from tests._exec_fixtures import RUNNERS, Runner, expected_result
 from tests._process_helpers import (
     KILLPG_FAILED,
     SLEEPER_ARGV,
-    record_registry_sweep,
     refuse_resume,
 )
-
-if sys.platform == "win32":
-    pytest.skip("POSIX-only process groups", allow_module_level=True)
 
 # Upper bound each awaited run or spawn gets before the test fails outright.
 _WAIT_TIMEOUT_S = 10
@@ -217,13 +212,14 @@ def _teardown_succeeds(_monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.usefixtures("spawned_processes")
 async def test_kill_live_process_groups_when_spawn_contained_failed_does_not_target_the_child(
     monkeypatch: pytest.MonkeyPatch,
+    record_killpg: Callable[[], list[int]],
     install_teardown_failure: Callable[[pytest.MonkeyPatch], None],
 ) -> None:
     monkeypatch.setattr(exec_mod, "resume_process_group", refuse_resume)
     install_teardown_failure(monkeypatch)
     with contextlib.suppress(exec_mod.SpawnError):
         await _spawn_contained_sleeper()
-    attempted = record_registry_sweep(monkeypatch)
+    attempted = record_killpg()
 
     exec_mod.kill_live_process_groups()
 
@@ -231,11 +227,9 @@ async def test_kill_live_process_groups_when_spawn_contained_failed_does_not_tar
 
 
 @pytest.fixture
-def sigterm_ignored() -> Iterator[None]:
+def sigterm_ignored() -> None:
     """Ignore SIGTERM in this process, so a child spawned meanwhile inherits ignoring it."""
-    previous = signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    yield
-    signal.signal(signal.SIGTERM, previous)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 
 @pytest.mark.usefixtures("sigterm_ignored")

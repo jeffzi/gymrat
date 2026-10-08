@@ -6,15 +6,6 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from gymrat.config import KindEntry
-from gymrat.model import (
-    ApproximateVerdict,
-    BandVerdict,
-    Direction,
-    Exclusion,
-    MetricUnit,
-    PermutationVerdict,
-    ResolvedMetricMeta,
-)
 from gymrat.report.types import (
     CandidateComparison,
     CandidateMetric,
@@ -25,13 +16,23 @@ from gymrat.report.types import (
 from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._verdicts import (
     band_metric,
+    band_verdict,
     exact_verdict,
     geomean_of,
+    metric_meta,
+    permutation_verdict,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
+    from gymrat.model import (
+        ApproximateVerdict,
+        Direction,
+        Exclusion,
+        GeomeanResult,
+        MetricUnit,
+    )
     from gymrat.targets import WorktreeRemovalFailure
 
 
@@ -40,23 +41,30 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def metric_meta(
-    short_name: str,
-    *,
-    direction: Direction = "lower",
-    gating: bool = True,
-    exact: bool = False,
-    kind: str = "other",
-    unit: MetricUnit | None = None,
-) -> ResolvedMetricMeta:
-    """A metric meta block, defaulting to a lower-is-better, gating, non-exact "other" metric."""
-    return ResolvedMetricMeta(
-        direction=direction,
-        gating=gating,
-        exact=exact,
-        unit=unit,
+def gating_kind(
+    kind: str,
+    geomean: GeomeanResult,
+    groups: Mapping[str, GeomeanResult] | None = None,
+) -> KindAggregate:
+    """A gating kind aggregate whose gated geomean is its section geomean.
+
+    Args:
+        kind: The kind's name.
+        geomean: The section geomean, which the kind also gates on.
+        groups: Each group's geomean keyed by group name, in display order;
+            ``None`` gives a kind with no groups.
+
+    Returns:
+        The kind aggregate.
+    """
+    return KindAggregate(
         kind=kind,
-        short_name=short_name,
+        geomean=geomean,
+        groups=tuple(
+            GroupAggregate(group=group, geomean=group_geomean)
+            for group, group_geomean in (groups or {}).items()
+        ),
+        gated_geomean=geomean,
     )
 
 
@@ -82,8 +90,7 @@ def other_kind(
     Returns:
         The kind aggregate, its gated geomean equal to its section geomean.
     """
-    geomean = geomean_of(value, n, band=band, excluded=excluded)
-    return KindAggregate(kind="other", geomean=geomean, groups=(), gated_geomean=geomean)
+    return gating_kind("other", geomean_of(value, n, band=band, excluded=excluded))
 
 
 def create_candidate(
@@ -162,25 +169,17 @@ def permutation_metric(
             CandidateMetric(
                 median=baseline_median * (1 + delta / 100),
                 spread=1.0,
-                verdict=PermutationVerdict(
-                    method="permutation",
+                verdict=permutation_verdict(
                     verdict=verdict,
+                    delta=delta,
+                    n=n,
                     p=p,
                     noise_pct=noise_pct,
                     noise_abs=noise_abs,
-                    delta=delta,
-                    n=n,
                 ),
             ),
         ),
-        meta=ResolvedMetricMeta(
-            direction=direction,
-            gating=gating,
-            exact=False,
-            unit=unit,
-            kind="other",
-            short_name="time",
-        ),
+        meta=metric_meta("time", direction=direction, gating=gating, unit=unit),
     )
 
 
@@ -201,14 +200,7 @@ def exact_metric(
                 verdict=exact_verdict(delta=delta, n=n),
             ),
         ),
-        meta=ResolvedMetricMeta(
-            direction="lower",
-            gating=True,
-            exact=True,
-            unit=unit,
-            kind="other",
-            short_name="heap",
-        ),
+        meta=metric_meta("heap", exact=True, unit=unit),
     )
 
 
@@ -230,26 +222,16 @@ def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricComparison:
             CandidateMetric(
                 median=candidate.median,
                 spread=1.0,
-                verdict=PermutationVerdict(
-                    method="permutation",
+                verdict=permutation_verdict(
                     verdict=candidate.verdict,
-                    p=0.01,
-                    noise_pct=2.5,
-                    noise_abs=3.5,
                     delta=candidate.delta,
-                    n=10,
+                    p=0.01,
+                    noise_abs=3.5,
                 ),
             )
             for candidate in candidates
         ),
-        meta=ResolvedMetricMeta(
-            direction="lower",
-            gating=True,
-            exact=False,
-            unit="ns",
-            kind="other",
-            short_name="time",
-        ),
+        meta=metric_meta("time", unit="ns"),
     )
 
 
@@ -272,28 +254,12 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
         CandidateMetric(
             median=90.0,
             spread=1.0,
-            verdict=PermutationVerdict(
-                method="permutation",
-                verdict="improved",
-                p=0.002,
-                noise_pct=2.5,
-                noise_abs=2.5,
-                delta=-10,
-                n=10,
-            ),
+            verdict=permutation_verdict(verdict="improved", delta=-10, p=0.002),
         ),
         CandidateMetric(
             median=104.0,
             spread=1.0,
-            verdict=PermutationVerdict(
-                method="permutation",
-                verdict="regressed",
-                p=0.002,
-                noise_pct=2.5,
-                noise_abs=2.5,
-                delta=4,
-                n=10,
-            ),
+            verdict=permutation_verdict(verdict="regressed", delta=4, p=0.002),
         ),
     ]
     if candidate_count == 3:
@@ -302,14 +268,8 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
             CandidateMetric(
                 median=150.0,
                 spread=3.0,
-                verdict=BandVerdict(
-                    method="band",
-                    verdict="unstable",
-                    usable_n=3,
-                    noise_pct=30,
-                    noise_abs=30,
-                    delta=50,
-                    n=10,
+                verdict=band_verdict(
+                    verdict="unstable", delta=50, usable_n=3, noise_pct=30, noise_abs=30
                 ),
             )
         )
@@ -321,14 +281,7 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
                 baseline_median=100.0,
                 baseline_spread=1.0,
                 candidates=tuple(metric_candidates),
-                meta=ResolvedMetricMeta(
-                    direction="lower",
-                    gating=True,
-                    exact=False,
-                    unit="ns",
-                    kind="other",
-                    short_name="decode/time",
-                ),
+                meta=metric_meta("decode/time", unit="ns"),
             ),
         },
     )
@@ -423,12 +376,8 @@ def time_kind() -> KindAggregate:
     Returns:
         The ``time`` kind aggregate.
     """
-    geomean = geomean_of(-3.2, 3, band=2)
-    return KindAggregate(
-        kind="time",
-        geomean=geomean,
-        groups=(GroupAggregate(group="entity", geomean=geomean_of(-3.1, 2, band=1.5)),),
-        gated_geomean=geomean,
+    return gating_kind(
+        "time", geomean_of(-3.2, 3, band=2), {"entity": geomean_of(-3.1, 2, band=1.5)}
     )
 
 
@@ -491,24 +440,14 @@ def grouped_comparison() -> ComparisonResult:
             create_candidate(
                 label="candidate-a",
                 kinds=[
-                    KindAggregate(
-                        kind="time",
-                        geomean=geomean_of(-10, 1),
-                        groups=(GroupAggregate(group="entity", geomean=geomean_of(-10, 1)),),
-                        gated_geomean=geomean_of(-10, 1),
-                    ),
+                    gating_kind("time", geomean_of(-10, 1), {"entity": geomean_of(-10, 1)}),
                     memory_kind(),
                 ],
             ),
             create_candidate(
                 label="candidate-b",
                 kinds=[
-                    KindAggregate(
-                        kind="time",
-                        geomean=geomean_of(4, 1),
-                        groups=(GroupAggregate(group="entity", geomean=geomean_of(4, 1)),),
-                        gated_geomean=geomean_of(4, 1),
-                    ),
+                    gating_kind("time", geomean_of(4, 1), {"entity": geomean_of(4, 1)}),
                     KindAggregate(
                         kind="memory",
                         geomean=geomean_of(-2, 1),

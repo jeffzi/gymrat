@@ -182,7 +182,11 @@ _REPLY_INSTRUCTION = (
             End(reason="spend-cap"),
             id="spend-cap-before-lock",
         ),
-        pytest.param({"lock_held": True}, WaitForLock(), id="lock-held"),
+        pytest.param(
+            {"lock_held": True, "guards": guard_state(replies_sent=FOLLOW_UP_CEILING)},
+            WaitForLock(),
+            id="lock-before-follow-up-ceiling",
+        ),
         pytest.param(
             {
                 "guards": guard_state(

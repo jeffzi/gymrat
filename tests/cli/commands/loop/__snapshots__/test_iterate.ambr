@@ -1,5 +1,5 @@
 # serializer version: 1
-# name: test_iterate_command_when_live_does_show_the_session_and_time_the_judge_in_seconds
+# name: test_iterate_command_when_live_does_render_the_session_dashboard_timing_the_judge_in_seconds
   '''
   iterate #1 · session 20260808-141530-a3f2 · 00:00/00:09
   ✓ prepared 1s

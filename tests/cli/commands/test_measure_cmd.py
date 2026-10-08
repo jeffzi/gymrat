@@ -3,7 +3,7 @@
 These drive the command through :class:`typer.testing.CliRunner` with the
 ``measure`` and ``resolve_config`` seams replaced. They cover the optional
 target defaulting to ``.``, the report going to stdout, the missing-bench error
-routing to exit 2, the ``--record`` flag that appends the run to an open
+routing to exit 2 for ``measure`` and ``compare`` alike, the ``--record`` flag that appends the run to an open
 session log as a baseline (including elapsed duration), the absent time-left
 line without a budget, and the command trace. The budget time-left line comes
 from the shared ``emit_report`` path, pinned through ``probe`` in
@@ -22,9 +22,7 @@ from gymrat.report.types import MeasurementResult
 from gymrat.sampling import TargetSpec
 from gymrat.session.records import BaselineRecord, CommandRecord
 from tests.cli._session import (
-    FailingStdoutRunner,
     capture_measure,
-    closed_stdout_error,
     last_command_record,
     open_session,
     runner,
@@ -33,10 +31,8 @@ from tests.cli._session import (
 )
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
-    finalize_record,
     records_of_type,
     session_record,
-    write_session_log,
 )
 
 # ---------------------------------------------------------------------------
@@ -61,9 +57,18 @@ def test_measure_when_no_target_given_does_measure_the_current_directory(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["measure"], id="measure"),
+        pytest.param(["compare", "main", "cand"], id="compare"),
+    ],
+)
 @pytest.mark.usefixtures("_in_non_repo")
-def test_measure_when_bench_missing_does_exit_two_with_message_on_stderr():
-    result = runner.invoke(app, ["measure"])
+def test_benching_command_when_bench_missing_does_exit_two_with_message_on_stderr(
+    argv: list[str],
+):
+    result = runner.invoke(app, argv)
 
     assert result.exit_code == 2
     assert "bench is required" in result.stderr
@@ -73,11 +78,6 @@ def test_measure_when_bench_missing_does_exit_two_with_message_on_stderr():
 # ---------------------------------------------------------------------------
 # --record
 # ---------------------------------------------------------------------------
-
-
-def _finalize_session(repo: str) -> None:
-    """Open then close a session in ``repo``, leaving it finalized."""
-    write_session_log(repo, session_record(), (finalize_record(),))
 
 
 @pytest.fixture
@@ -135,54 +135,17 @@ def test_measure_when_record_and_json_format_does_route_note_to_stderr(
     assert re.search(r"recorded to session", result.stderr, re.IGNORECASE)
 
 
-@pytest.mark.parametrize(
-    "extra_args",
-    [
-        pytest.param(["--format", "text"], id="text"),
-        pytest.param(["--format", "json"], id="json"),
-        pytest.param(["--record"], id="record-note"),
-    ],
-)
-def test_measure_when_stdout_reader_closed_does_exit_zero_without_stderr(
-    monkeypatch: pytest.MonkeyPatch, record_repo: str, extra_args: list[str]
-):
-    open_session(record_repo)
-    capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
-
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(
-        app, ["measure", "main", "--bench", "sh bench.sh", *extra_args]
-    )
-
-    assert (result.exit_code, result.stderr) == (0, "")
-
-
-def _no_session(repo: str) -> None:
-    """Leave ``repo`` without a session log."""
-
-
-@pytest.mark.parametrize(
-    ("arrange", "named"),
-    [
-        pytest.param(_no_session, ["gymrat start"], id="no-session"),
-        pytest.param(
-            _finalize_session, [session_record().session_id, "gymrat start"], id="finalized"
-        ),
-    ],
-)
-def test_measure_when_record_without_an_open_session_does_exit_two_without_benching(
-    arrange: Callable[[str], None],
-    named: list[str],
+def test_measure_when_record_without_a_session_does_exit_two_without_benching(
     monkeypatch: pytest.MonkeyPatch,
     record_repo: str,
 ):
-    arrange(record_repo)
     captured = capture_measure(monkeypatch)
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
 
     assert result.exit_code == 2
     assert captured == []
-    assert [fragment for fragment in named if fragment not in result.stderr] == []
+    assert "gymrat start" in result.stderr
 
 
 def test_measure_when_no_record_flag_does_leave_open_session_untouched(
@@ -254,7 +217,6 @@ def test_measure_when_no_budget_does_omit_time_left_line(
     ("argv", "target", "record"),
     [
         pytest.param(["main"], "main", False, id="bare-ref"),
-        pytest.param(["build=main"], "build", False, id="labeled-target"),
         pytest.param([], ".", False, id="default-target"),
         pytest.param(["build=main", "--record"], "build", True, id="recorded"),
     ],

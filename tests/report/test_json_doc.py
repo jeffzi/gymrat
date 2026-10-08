@@ -3,8 +3,7 @@
 These cover the compare document (``render_json``), the measure document
 (``render_measure_json``), and the probe document (``render_probe_json``),
 including their schema shapes, per-metric and per-candidate serialization,
-worktree sections, non-finite handling, and the no-ANSI guarantee under forced
-color. They also cover the loop commands' start, keep, finalize, and sync
+worktree sections, and non-finite handling. They also cover the loop commands' start, keep, finalize, and sync
 documents (``render_start_json``, ``render_keep_json``,
 ``render_finalize_json``, ``render_sync_json``): their schema shapes, the
 resumed and archived start variants, the runbook and budget fields, and the
@@ -23,7 +22,7 @@ from gymrat.loop.finalize import FinalizeResult
 from gymrat.loop.keep import KeepResult
 from gymrat.loop.start import StartResult
 from gymrat.loop.sync import SyncResult
-from gymrat.model import Exclusion, PermutationVerdict
+from gymrat.model import Exclusion
 from gymrat.report.json_doc import (
     BudgetSummary,
     render_finalize_json,
@@ -266,15 +265,7 @@ def test_render_json_when_baseline_unmeasured_does_render_null_baseline_fields()
         baseline_spread=None,
         candidates=(
             CandidateMetric(
-                verdict=PermutationVerdict(
-                    method="permutation",
-                    verdict="improved",
-                    p=0.01,
-                    noise_pct=2.5,
-                    noise_abs=3.5,
-                    delta=-5,
-                    n=10,
-                ),
+                verdict=permutation_verdict(verdict="improved", delta=-5, p=0.01, noise_abs=3.5),
             ),
         ),
         meta=metric_meta("sparse/time", unit="ns"),
@@ -288,8 +279,6 @@ def test_render_json_when_baseline_unmeasured_does_render_null_baseline_fields()
 
     assert serialized["baseline"]["median"] is None
     assert serialized["baseline"]["spread_pct"] is None
-    assert serialized["candidates"][0]["median"] is None
-    assert serialized["candidates"][0]["spread_pct"] is None
 
 
 #: A candidate row with no measurement behind it, in the key order the document writes.

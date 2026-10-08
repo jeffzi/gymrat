@@ -55,7 +55,7 @@ def delta_cell(line: str) -> str:
 
 
 def line_starting_with(report: str, prefix: str) -> str:
-    """The single rendered line starting with ``prefix``, or a failure naming the report."""
+    """The first rendered line starting with ``prefix``, or a failure naming the report."""
     for candidate in report.split("\n"):
         if candidate.startswith(prefix):
             return candidate
@@ -138,7 +138,27 @@ def offsets_of(line: str, glyph: str) -> list[int]:
 
 
 def table_region(report: str) -> list[str]:
-    """The table region of a report: its shape down to the last table row."""
+    """The table region of a report: its shape down to the last table row.
+
+    Escape codes are stripped before each line is encoded, so a colored and a
+    plain render of the same report have the same shape.
+
+    Args:
+        report: The rendered report, lines joined by newlines.
+
+    Returns:
+        One entry per line from the top of the report through the last line
+        holding a ``│`` cell separator:
+
+        - a rule line (dashes running into ``┼``) becomes ``"<rule>"``;
+        - a border line (only ``─`` and ``┬``) becomes ``"<border>"``;
+        - any other line without a cell separator, such as the run header or a
+          section heading, keeps its text with trailing spaces removed;
+        - a table row becomes its first cell, stripped.
+
+    Raises:
+        AssertionError: No line of ``report`` holds a cell separator.
+    """
     lines = report.split("\n")
     last = -1
     for index, line in enumerate(lines):

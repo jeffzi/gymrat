@@ -1,8 +1,11 @@
 """Writers for the ``gymrat.toml`` the config resolution tests read back."""
 
 from pathlib import Path
+from typing import TypedDict
 
 import tomli_w
+
+from gymrat.config import HooksConfig, StopConfig
 
 #: Bit length of the hexadecimal literal in ``HUGE_HEX_LITERAL``.
 HUGE_HEX_BITS = 20_000
@@ -28,6 +31,26 @@ LOOP_CONFIG: dict[str, object] = {
     "stop": {"target_value": 1.5, "max_iterations": 20},
     "hooks": {"before": "npm run warm-cache", "after": "npm run cool-down"},
 }
+
+
+class LoopFields(TypedDict):
+    """The config fields ``LOOP_CONFIG`` parses to, keyed by field name."""
+
+    checks: str
+    filter: str
+    primary: str
+    stop: StopConfig
+    hooks: HooksConfig
+
+
+#: What ``LOOP_CONFIG`` parses and settles to, ready to splat into a config.
+LOOP_FIELDS = LoopFields(
+    checks="npm test",
+    filter="npm run bench -- {names}",
+    primary="decode/time",
+    stop=StopConfig(target_value=1.5, max_iterations=20),
+    hooks=HooksConfig(before="npm run warm-cache", after="npm run cool-down"),
+)
 
 
 def write_raw(directory: Path, text: str, *, name: str = "gymrat.toml") -> Path:

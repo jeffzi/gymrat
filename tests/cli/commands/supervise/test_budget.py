@@ -1,7 +1,7 @@
 """Budget lifecycle tests for the ``gymrat supervise`` command.
 
-Shares its seam-installation harness with :mod:`tests.cli.commands.supervise.test_supervise`,
-which owns the ``CliRunner`` wiring these tests reuse.
+Drives the command through the seam kit in :mod:`tests.cli.commands.supervise._seams`,
+which the other ``gymrat supervise`` command tests share.
 """
 
 from collections.abc import Callable
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from gymrat.cli.supervise.preflight import PreflightFlags
-from gymrat.clock import now_ms, now_ns
+from gymrat.clock import now_ms
 from gymrat.errors import GymratError
 from gymrat.loop.start import StartResult
 from gymrat.session.budget import Budget, clear_budget, read_budget, write_budget
@@ -72,17 +72,20 @@ def _capture_budget_writes(monkeypatch: pytest.MonkeyPatch) -> list[Budget]:
     return captured_budgets
 
 
-def test_supervise_when_preflight_records_baseline_does_start_budget_no_earlier(
+def test_supervise_when_preflight_records_baseline_does_start_the_budget_once_it_is_recorded(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     install_seams(monkeypatch)
     captured_budgets = _capture_budget_writes(monkeypatch)
-    baseline_at = now_ns()
+    clock_ms = [1_000_000.0]
+    monkeypatch.setattr("gymrat.cli.commands.supervise.now_ms", lambda: clock_ms[0])
 
     def fake_preflight_with_baseline(
         *, root: str, config: object, flags: PreflightFlags
     ) -> StartResult:
-        append_records(root, baseline_record(at=baseline_at))
+        # The baseline bench takes a minute, so a budget started before it ends a minute early.
+        clock_ms[0] += 60_000
+        append_records(root, baseline_record(at=int(clock_ms[0]) * 1_000_000))
         return make_start_result(root)
 
     monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", fake_preflight_with_baseline)
@@ -90,9 +93,7 @@ def test_supervise_when_preflight_records_baseline_does_start_budget_no_earlier(
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
 
     assert result.exit_code == 0
-    assert len(captured_budgets) == 1
-    baseline_epoch_ms = baseline_at // 1_000_000
-    assert captured_budgets[0].deadline_ms >= baseline_epoch_ms + CAP_MS
+    assert [budget.deadline_ms for budget in captured_budgets] == [1_060_000.0 + CAP_MS]
 
 
 def _record_budget_release(
@@ -195,20 +196,3 @@ def test_supervise_when_clear_budget_raises_does_still_uninstall_the_budget_clea
     assert "Error: budget file locked" in err_text(result)
     budget_tag = _budget_uninstall_tag(repo, monkeypatch, installed)
     assert [event for event in events if event in ("clear", budget_tag)] == ["clear", budget_tag]
-
-
-def test_supervise_when_run_does_clear_budget_before_stopping_reporter(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
-    budget_gone_at_stop: list[bool] = []
-
-    def probing_stop() -> None:
-        budget_gone_at_stop.append(not Path(budget_path(repo)).exists())
-
-    seams.reporter_stop.side_effect = probing_stop
-
-    result = run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 0
-    assert budget_gone_at_stop == [True]

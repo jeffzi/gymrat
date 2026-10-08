@@ -15,9 +15,10 @@ that misses the end sits out the delay and reports a plain session ending.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 import pytest
 
@@ -30,6 +31,7 @@ from gymrat.supervisor.events import (
     SessionEvent,
     TextDeltaEvent,
     ToolEndEvent,
+    TurnEndEvent,
     UsageUpdateEvent,
 )
 from tests._config import benchless_config
@@ -47,12 +49,14 @@ from tests.supervisor._fixtures import (
     FollowUpWatch,
     InterruptEmitsEndDriver,
     LockSwitch,
+    SupervisorClock,
     _supervise,
     _WrapDriver,
     append_step,
     collecting_observer,
     driver_calls,
     emit_turn_end,
+    events_log_path,
     events_of,
     follow_ups_with_action,
     read_log_lines,
@@ -70,6 +74,7 @@ if TYPE_CHECKING:
 
     from gymrat.session.records import SessionLogRecord
     from gymrat.supervisor.driver import Driver, DriverSession
+    from gymrat.supervisor.supervise import SupervisionResult
     from tests.supervisor._mock_driver import MockStep
 
 
@@ -137,10 +142,6 @@ def session_dir_access(root: str) -> Iterator[_SessionDirAccess]:
     access.allow()
 
 
-def _events_path(root: str) -> str:
-    return str(Path(root).parent / "events.jsonl")
-
-
 def _log_path(root: str) -> Path:
     return Path(session_jsonl_path(root))
 
@@ -178,7 +179,7 @@ def _blocked_step() -> EmitStep:
 def _event_log_markers(root: str) -> list[str]:
     """Label each logged event as ``tool_end:<id>``, ``follow_up:<action>:<reason>``, or its type."""
     markers: list[str] = []
-    for line in read_log_lines(_events_path(root)):
+    for line in read_log_lines(events_log_path(root)):
         match line["type"]:
             case "tool_end":
                 markers.append(f"tool_end:{line['tool_use_id']}")
@@ -434,22 +435,6 @@ async def test_supervise_when_two_tool_ends_find_the_log_unreadable_does_end_onc
     assert driver_calls(inner.sessions[0]) == ["end"]
 
 
-async def test_supervise_when_log_is_unreadable_at_launch_does_run_until_the_session_ends(
-    root: str,
-):
-    _replace_log_with_directory(root)
-
-    async def restore_log() -> None:
-        _log_path(root).rmdir()
-        append_records(root, session_record())
-
-    driver = create_mock_driver([ActionStep(action=restore_log), _tool_end()])
-
-    result = await _supervise(root, driver)
-
-    assert (result.ended_by, result.outcome.reason) == ("session", "completed")
-
-
 async def test_supervise_when_launch_read_fails_does_scan_hooks_only_after_first_clean_read(
     root: str,
 ):
@@ -484,6 +469,8 @@ def _deny_log_at_launch(_root: str, access: _SessionDirAccess) -> None:
 def _repair_log(root: str, access: _SessionDirAccess, *records: SessionLogRecord) -> ActionStep:
     async def repair() -> None:
         access.allow()
+        with contextlib.suppress(NotADirectoryError):
+            _log_path(root).rmdir()
         _overwrite_log(root, b"")
         append_records(root, session_record(), *records)
 
@@ -492,6 +479,7 @@ def _repair_log(root: str, access: _SessionDirAccess, *records: SessionLogRecord
 
 _LAUNCH_READ_FAILURES = [
     pytest.param(_corrupt_log_at_launch, id="log-unparsable"),
+    pytest.param(_directory_at_log, id="log-is-a-directory"),
     pytest.param(_deny_log_at_launch, id="log-stat-denied", marks=needs_mode_bits),
 ]
 
@@ -792,15 +780,25 @@ class _SlowEndSession(DelegatingSession):
         await self._inner.end()
 
 
-async def test_supervise_when_wall_clock_passes_after_spend_cap_fired_does_emit_one_cap(root: str):
+async def test_supervise_when_wall_clock_passes_after_spend_cap_fired_does_emit_one_cap(
+    root: str, monkeypatch: pytest.MonkeyPatch
+):
+    clock = SupervisorClock(monkeypatch, now_ms())
+    deadline_ms = clock.now_ms + 60_000
     probe = collecting_observer()
+
+    def pass_deadline_on_cap(event: SessionEvent) -> None:
+        probe.observer(event)
+        if isinstance(event, CapEvent):
+            clock.jump_to(deadline_ms)
+
     driver = _WrapDriver(
         create_mock_driver([TurnEndStep(cost_usd=5.0)]),
         lambda session, _abort: _SlowEndSession(session, 300),
     )
 
     result = await _supervise(
-        root, driver, observer=probe.observer, max_usd=1.0, deadline_ms=now_ms() + 100
+        root, driver, observer=pass_deadline_on_cap, max_usd=1.0, deadline_ms=deadline_ms
     )
 
     caps = [(cap.cap, cap.action) for cap in events_of(probe.events, CapEvent)]
@@ -834,12 +832,13 @@ async def test_supervise_when_cap_ends_session_during_settle_window_does_not_rep
 class _AbortSettledSession(DelegatingSession):
     """A session that ignores ``end`` and settles only once the abort event is set.
 
-    Models a backend that stays up after a polite end.
+    Models a backend that stays up after a polite end. ``settling`` is the task
+    that interrupts the inner session on abort, for the test to await.
     """
 
     def __init__(self, inner: DriverSession, abort: asyncio.Event) -> None:
         super().__init__(inner)
-        self._settling = asyncio.ensure_future(self._settle_on_abort(abort))
+        self.settling = asyncio.ensure_future(self._settle_on_abort(abort))
 
     async def _settle_on_abort(self, abort: asyncio.Event) -> None:
         await abort.wait()
@@ -861,11 +860,40 @@ class _BoundaryEndCase:
     script: Callable[[str], list[MockStep]]
     ended_by: str
     max_usd: float | None = None
-    deadline_in_ms: int | None = None
+    deadline_after_turn_end: bool = False
     settle_window_ms: int = 0
 
-    def deadline_ms(self) -> float | None:
-        return None if self.deadline_in_ms is None else now_ms() + self.deadline_in_ms
+
+async def _supervise_boundary_case(
+    root: str, driver: Driver, case: _BoundaryEndCase, monkeypatch: pytest.MonkeyPatch
+) -> SupervisionResult:
+    """Supervise ``driver`` under ``case``'s caps, its deadline passing only after a turn end.
+
+    Args:
+        root: The repository the session runs in.
+        driver: The agent driver to supervise.
+        case: The script's caps and settle window.
+        monkeypatch: Patches the supervisor's wall clock.
+
+    Returns:
+        How the supervised session ended.
+    """
+    clock = SupervisorClock(monkeypatch, now_ms())
+    deadline_ms = clock.now_ms + 60_000
+
+    def pass_deadline_on_turn_end(event: SessionEvent) -> None:
+        if case.deadline_after_turn_end and isinstance(event, TurnEndEvent):
+            clock.jump_to(deadline_ms)
+
+    return await _supervise(
+        root,
+        driver,
+        grace_ms=50,
+        max_usd=case.max_usd,
+        deadline_ms=deadline_ms,
+        observer=pass_deadline_on_turn_end,
+        settle_window_ms=case.settle_window_ms,
+    )
 
 
 _BOUNDARY_END_CASES = [
@@ -873,7 +901,7 @@ _BOUNDARY_END_CASES = [
         _BoundaryEndCase(
             script=lambda _root: [TurnEndStep(cost_usd=0.01)],
             ended_by="wall-clock",
-            deadline_in_ms=50,
+            deadline_after_turn_end=True,
             settle_window_ms=10_000,
         ),
         id="wall-clock-while-idle",
@@ -895,21 +923,14 @@ _BOUNDARY_END_CASES = [
 
 @pytest.mark.parametrize("case", _BOUNDARY_END_CASES)
 async def test_supervise_when_driver_ignores_end_at_turn_boundary_does_arm_abort_after_grace(
-    root: str, case: _BoundaryEndCase
+    root: str, case: _BoundaryEndCase, monkeypatch: pytest.MonkeyPatch
 ):
     driver = _WrapDriver(create_mock_driver(case.script(root)), _AbortSettledSession)
 
     result = await asyncio.wait_for(
-        _supervise(
-            root,
-            driver,
-            grace_ms=50,
-            max_usd=case.max_usd,
-            deadline_ms=case.deadline_ms(),
-            settle_window_ms=case.settle_window_ms,
-        ),
-        timeout=2.0,
+        _supervise_boundary_case(root, driver, case, monkeypatch), timeout=2.0
     )
+    await cast("_AbortSettledSession", driver.session).settling
 
     assert driver.captured_abort is not None
     assert driver.captured_abort.is_set()
@@ -918,18 +939,11 @@ async def test_supervise_when_driver_ignores_end_at_turn_boundary_does_arm_abort
 
 @pytest.mark.parametrize("case", _BOUNDARY_END_CASES)
 async def test_supervise_when_driver_settles_on_end_at_turn_boundary_does_not_abort(
-    root: str, case: _BoundaryEndCase
+    root: str, case: _BoundaryEndCase, monkeypatch: pytest.MonkeyPatch
 ):
     driver = _WrapDriver(create_mock_driver(case.script(root)))
 
-    result = await _supervise(
-        root,
-        driver,
-        grace_ms=50,
-        max_usd=case.max_usd,
-        deadline_ms=case.deadline_ms(),
-        settle_window_ms=case.settle_window_ms,
-    )
+    result = await _supervise_boundary_case(root, driver, case, monkeypatch)
     # Outlast the grace period, so a grace timer left armed would set the abort.
     await asyncio.sleep(0.15)
 

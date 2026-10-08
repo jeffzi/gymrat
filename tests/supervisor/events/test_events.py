@@ -53,8 +53,8 @@ from tests.supervisor._fixtures import (
 # Event vocabulary — at: int (nanoseconds)
 # ---------------------------------------------------------------------------
 
-# One instance per event type, shared between the type-literal, JSON-serialization,
-# and wire-round-trip tests below so each event's fields are declared exactly once.
+# One instance per event type, shared between the JSON-serialization and
+# wire-round-trip tests below so each event's fields are declared exactly once.
 _THINKING_UPDATE = ThinkingUpdateEvent(at=1_000_000_000, estimated_tokens=100, delta=10)
 _TOOL_START = ToolStartEvent(
     at=2_000_000_000, tool_use_id="t1", tool_name="Read", input={"path": "/x"}, input_summary="/x"
@@ -79,23 +79,26 @@ _TURN_END = TurnEndEvent(
 )
 _FOLLOW_UP = FollowUpEvent(at=13_000_000_000, action="replied", reason="user asked", text="hello")
 _COMPACTION = CompactionEvent(at=14_000_000_000)
+_LAUNCH_WITH_OPTIONALS = make_launch(
+    max_usd=1.5, model="opus", effort="high", dirty=DirtyInfo(file_count=4)
+)
 
-#: Every event sample with its type literal and a unique parametrize id.
-#: The two ``model_phase`` variants carry phase-specific ids so pytest's
-#: strict parametrize-id uniqueness check passes.
-EVENT_SAMPLES: list[tuple[SessionEvent, str, str]] = [
-    (_THINKING_UPDATE, "thinking_update", "thinking_update"),
-    (_TOOL_START, "tool_start", "tool_start"),
-    (_TOOL_END, "tool_end", "tool_end"),
-    (_TEXT_DELTA, "text_delta", "text_delta"),
-    (_USAGE_UPDATE, "usage_update", "usage_update"),
-    (_CAP, "cap", "cap"),
-    (_MODEL_PHASE_THINKING, "model_phase", "model_phase-thinking"),
-    (_MODEL_PHASE_TOOL_INPUT, "model_phase", "model_phase-tool_input"),
-    (make_launch(), "launch", "launch"),
-    (_TURN_END, "turn_end", "turn_end"),
-    (_FOLLOW_UP, "follow_up", "follow_up"),
-    (_COMPACTION, "compaction", "compaction"),
+#: Every event sample with a unique parametrize id. The two ``model_phase``
+#: variants carry phase-specific ids so pytest's strict parametrize-id
+#: uniqueness check passes.
+EVENT_SAMPLES: list[tuple[SessionEvent, str]] = [
+    (_THINKING_UPDATE, "thinking_update"),
+    (_TOOL_START, "tool_start"),
+    (_TOOL_END, "tool_end"),
+    (_TEXT_DELTA, "text_delta"),
+    (_USAGE_UPDATE, "usage_update"),
+    (_CAP, "cap"),
+    (_MODEL_PHASE_THINKING, "model_phase-thinking"),
+    (_MODEL_PHASE_TOOL_INPUT, "model_phase-tool_input"),
+    (make_launch(), "launch"),
+    (_TURN_END, "turn_end"),
+    (_FOLLOW_UP, "follow_up"),
+    (_COMPACTION, "compaction"),
 ]
 
 # Sub-agent events: the samples above with a ``parent_tool_use_id`` set.
@@ -247,7 +250,7 @@ JSON_CASES = [
         id="launch-no-optionals",
     ),
     pytest.param(
-        make_launch(max_usd=1.5, model="opus", effort="high", dirty=DirtyInfo(file_count=4)),
+        _LAUNCH_WITH_OPTIONALS,
         {
             "type": "launch",
             "at": 1_000_000_000_000,
@@ -441,7 +444,7 @@ def test_to_json_line_when_given_event_does_write_its_wire_object(
         ),
     ],
 )
-def test_to_json_line_when_text_or_float_needs_escaping_does_write_exact_compact_line(
+def test_to_json_line_when_text_or_float_value_given_does_write_exact_compact_line(
     event: SessionEvent, expected_line: str
 ):
     assert to_json_line(event) == expected_line
@@ -472,11 +475,8 @@ def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write
 # event_from_wire — snake_case wire
 # ---------------------------------------------------------------------------
 
-ROUND_TRIP_EVENTS = [pytest.param(event, id=id_) for event, _, id_ in EVENT_SAMPLES] + [
-    pytest.param(
-        make_launch(max_usd=1.5, model="opus", dirty=DirtyInfo(file_count=4)),
-        id="launch-with-optionals",
-    ),
+ROUND_TRIP_EVENTS = [pytest.param(event, id=id_) for event, id_ in EVENT_SAMPLES] + [
+    pytest.param(_LAUNCH_WITH_OPTIONALS, id="launch-with-optionals"),
     pytest.param(
         TextDeltaEvent(at=5_000_000_000, chunk="a\x85b\u2028c\u2029d"),
         id="text_delta-unicode-line-breaks",
@@ -534,24 +534,15 @@ def _raise_observer_failure(_: object) -> None:
     raise RuntimeError(_OBSERVER_FAILURE)
 
 
-def test_combine_observers_when_an_observer_raises_does_warn_attributed_to_caller():
-    combined = combine_observers(_raise_observer_failure)
+def test_combine_observers_when_an_observer_raises_does_warn_from_caller_and_keep_dispatching():
+    later = collecting_observer()
+    combined = combine_observers(_raise_observer_failure, later.observer)
     event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
 
     with pytest.warns(RuntimeWarning, match=_OBSERVER_FAILURE) as caught:
         combined(event)
 
     assert [warning.filename for warning in caught] == [__file__]
-
-
-def test_combine_observers_when_an_observer_raises_does_call_remaining_observers():
-    later = collecting_observer()
-    combined = combine_observers(_raise_observer_failure, later.observer)
-    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
-
-    with pytest.warns(RuntimeWarning):
-        combined(event)
-
     assert later.events == [event]
 
 

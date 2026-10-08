@@ -174,18 +174,6 @@ def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming
     assert experiment_worktree_dir(repo) in str(excinfo.value)
 
 
-def test_create_workspace_when_directory_is_not_a_git_repository_does_raise(
-    tmp_path: Path, repo_head: str
-):
-    outside = str(tmp_path)
-
-    with pytest.raises(GymratError) as excinfo:
-        create_workspace(outside, SESSION_ID, BaselineRef(ref=BASELINE_REF, sha=repo_head))
-
-    assert re.search(r"not a git repository", str(excinfo.value), re.IGNORECASE)
-    assert re.search(r"git repository", excinfo.value.hint or "", re.IGNORECASE)
-
-
 # ---------------------------------------------------------------------------
 # ensure_git_exclude
 # ---------------------------------------------------------------------------

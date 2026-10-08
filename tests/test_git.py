@@ -22,6 +22,7 @@ from gymrat.git import (
     try_git,
 )
 from tests._git import install_git_hook, list_worktree_dirs
+from tests._signal_masking import needs_signal_masking
 
 # ---------------------------------------------------------------------------
 # run_git
@@ -69,36 +70,19 @@ def test_run_git_when_alternate_object_dirs_set_does_not_read_objects_through_th
         run_git(["cat-file", "-e", blob], repo)
 
 
-def test_run_git_when_extra_env_passed_does_apply_it_to_child_process(repo: str):
-    result = run_git(
-        ["var", "GIT_AUTHOR_IDENT"],
-        repo,
-        env={"GIT_AUTHOR_NAME": "Banana", "GIT_AUTHOR_EMAIL": "banana@example.com"},
-    )
-
-    assert "Banana" in result
-
-
 def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
     repo: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("GIT_INDEX_FILE", "/nonexistent/.git/index")
-    custom_index = str(tmp_path / "custom-index")
+    custom_env = {"GIT_INDEX_FILE": str(tmp_path / "custom-index")}
     (Path(repo) / "staged.txt").write_text("banana\n")
-    run_git(["read-tree", "--empty"], repo, env={"GIT_INDEX_FILE": custom_index})
-    run_git(
-        ["update-index", "--add", "--", "staged.txt"],
-        repo,
-        env={"GIT_INDEX_FILE": custom_index},
-    )
+    run_git(["read-tree", "--empty"], repo, env=custom_env)
 
-    tree_sha = run_git(["write-tree"], repo, env={"GIT_INDEX_FILE": custom_index}).strip()
+    run_git(["update-index", "--add", "--", "staged.txt"], repo, env=custom_env)
+    tree_sha = run_git(["write-tree"], repo, env=custom_env).strip()
 
-    listing = run_git(["ls-tree", tree_sha], repo)
-    real_index_status = run_git(["diff", "--cached", "--name-only"], repo)
-
-    assert "staged.txt" in listing
-    assert real_index_status == ""
+    assert "staged.txt" in run_git(["ls-tree", tree_sha], repo)
+    assert run_git(["diff", "--cached", "--name-only"], repo) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -171,10 +155,7 @@ _EXIT_POLL_TIMEOUT_SECONDS = 2.0
 _EXIT_POLL_INTERVAL_SECONDS = 0.01
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
+@needs_signal_masking
 def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_until_git_exits(
     repo: str, recorded_exits: list[tuple[int, float]]
 ):

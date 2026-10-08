@@ -13,6 +13,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -173,7 +174,11 @@ def _traced_with_its_own_observer(monkeypatch: pytest.MonkeyPatch, _seams: Seams
     ) -> tuple[object, ...]:
         return prompt, run_observed.append, TracingState()
 
-    monkeypatch.setattr(run_spans, "setup_tracing", tracing_with_its_own_observer)
+    monkeypatch.setattr(
+        run_spans,
+        "setup_tracing",
+        create_autospec(run_spans.setup_tracing, side_effect=tracing_with_its_own_observer),
+    )
     return run_observed
 
 

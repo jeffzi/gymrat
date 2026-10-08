@@ -1,14 +1,15 @@
-"""Command-level tests for start, finalize, stop, sync, and subdirectory resolution.
+"""Command-level tests for start, finalize, stop, and sync.
 
 Each command is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
 suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 
 The shared guards — a finalized session, no session, ``--no-color`` on a stderr
-error, the budget time-left line, and the tight-budget duration warning — are
-pinned once each here: in one table across every command they apply to, or, where
-the commands share one code path, once per distinct path (``write_budget_report``,
-``emit_report``, and ``status``'s own trailer for the time-left line).
+error, a closed stdout, the budget time-left line, and the tight-budget duration
+warning — are pinned once each here: in one table across every command they
+apply to, or, where the commands share one code path, once per distinct path
+(``write_budget_report``, ``emit_report``, and ``status``'s own trailer for the
+time-left line). The closed-stdout table also covers ``doctor`` and ``init``.
 """
 
 import re
@@ -25,18 +26,21 @@ from tests._ansi import SGR_RE, strip_ansi
 from tests._config import resolved_config
 from tests._git import head_of
 from tests.cli._budget import install_budget, install_tight_budget, set_origin
+from tests.cli._doctor_seams import patch_doctor
 from tests.cli._session import (
     FailingStdoutRunner,
     close_session_with_one_keep,
     closed_stdout_error,
     last_command_record,
+    open_session,
     open_session_with_one_keep,
     open_stop_ready_session,
     runner,
     stub_compare,
+    stub_config,
     stub_measure,
-    stub_resolve_config,
     write_bench_config,
+    write_settled_session,
 )
 from tests.loop._probe import BASELINE_SAMPLES, install_measure, measurement
 from tests.loop._settle import (
@@ -46,7 +50,6 @@ from tests.loop._settle import (
 )
 from tests.session.records._fixtures import (
     baseline_record,
-    committed_keep,
     iteration_record,
     records_of_type,
     session_header_of,
@@ -63,7 +66,7 @@ def test_start_command_when_reopening_after_finalize_does_name_the_archived_sess
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     closed_id = close_session_with_one_keep(repo)
-    stub_resolve_config(monkeypatch)
+    stub_config(monkeypatch, "session", resolved_config())
 
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
@@ -102,7 +105,7 @@ def test_start_command_when_run_does_show_a_runbook_row_only_when_configured(
 ):
     if resumed:
         start_session(repo, "main", resolved_config())
-    stub_resolve_config(monkeypatch, runbook=runbook)
+    stub_config(monkeypatch, "session", resolved_config(runbook=runbook))
 
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
@@ -112,31 +115,19 @@ def test_start_command_when_run_does_show_a_runbook_row_only_when_configured(
     ] == rows
 
 
-@pytest.mark.parametrize(
-    ("overrides", "args"),
-    [
-        pytest.param([], [("baseline", "main")], id="baseline-only"),
-        pytest.param(
-            ["--bench", "sh run.sh", "--samples", "5"],
-            [("bench", "sh run.sh"), ("samples", 5), ("baseline", "main")],
-            id="config-overrides",
-        ),
-    ],
-)
-def test_start_command_when_run_does_record_command_trace_with_its_args_and_exit_zero(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    overrides: list[str],
-    args: list[tuple[str, object]],
+def test_start_command_when_config_overrides_given_does_record_them_in_its_trace(
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    stub_resolve_config(monkeypatch)
+    stub_config(monkeypatch, "session", resolved_config())
 
-    result = runner.invoke(app, ["start", "--baseline", "main", *overrides])
+    result = runner.invoke(
+        app, ["start", "--baseline", "main", "--bench", "sh run.sh", "--samples", "5"]
+    )
 
     assert result.exit_code == 0
     cmd = last_command_record(repo)
     assert (cmd.name, cmd.exit_code, cmd.reason) == ("start", 0, None)
-    assert list(cmd.args.items()) == args
+    assert list(cmd.args.items()) == [("bench", "sh run.sh"), ("samples", 5), ("baseline", "main")]
 
 
 @pytest.mark.parametrize("resumed", [False, True])
@@ -145,7 +136,7 @@ def test_start_command_when_run_does_print_the_session_summary_with_a_sync_hint(
 ):
     if resumed:
         start_session(repo, "main", resolved_config())
-    stub_resolve_config(monkeypatch)
+    stub_config(monkeypatch, "session", resolved_config())
 
     result = runner.invoke(app, ["start", "--baseline", "main"])
 
@@ -154,12 +145,19 @@ def test_start_command_when_run_does_print_the_session_summary_with_a_sync_hint(
     exp_dir = experiment_worktree_dir(repo)
     assert f"edit in {exp_dir}" in result.stdout
     assert "gymrat sync" in result.stdout
+    cmd = last_command_record(repo)
+    assert (cmd.name, cmd.args, cmd.exit_code, cmd.reason) == (
+        "start",
+        {"baseline": "main"},
+        0,
+        None,
+    )
 
 
 def test_start_command_when_no_baseline_does_default_to_head(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    stub_resolve_config(monkeypatch)
+    stub_config(monkeypatch, "session", resolved_config())
 
     result = runner.invoke(app, ["start"])
 
@@ -196,18 +194,7 @@ def test_finalize_command_when_run_does_finalize_onto_the_final_branch(
     assert final_branch in result.stdout
 
 
-def test_finalize_command_when_message_given_does_commit_with_it(repo: str):
-    open_session_with_one_keep(repo)
-
-    result = runner.invoke(app, ["finalize", "-m", "squash the tuning session"])
-
-    assert result.exit_code == 0
-    record = settling_record_of(repo)
-    assert isinstance(record, FinalizeRecord)
-    assert record.message == "squash the tuning session"
-
-
-def test_finalize_command_when_run_does_record_command_trace_with_branch_and_message(
+def test_finalize_command_when_branch_and_message_given_does_carry_them_into_its_records(
     repo: str,
 ):
     open_session_with_one_keep(repo)
@@ -215,32 +202,16 @@ def test_finalize_command_when_run_does_record_command_trace_with_branch_and_mes
     result = runner.invoke(app, ["finalize", "--branch", "perf/regex", "-m", "squash the session"])
 
     assert result.exit_code == 0
+    record = settling_record_of(repo)
+    assert isinstance(record, FinalizeRecord)
+    assert (record.branch, record.message) == ("perf/regex", "squash the session")
     cmd = last_command_record(repo)
-    assert cmd.name == "finalize"
-    assert cmd.args == {"branch": "perf/regex", "message": "squash the session"}
-    assert cmd.exit_code == 0
-    assert cmd.reason is None
-
-
-# ---------------------------------------------------------------------------
-# the loop commands, run from a subdirectory of the repository
-# ---------------------------------------------------------------------------
-
-
-def test_start_command_when_run_from_subdirectory_does_open_the_session_with_the_root_config(
-    create_scratch_repo: Callable[[], str],
-    monkeypatch: pytest.MonkeyPatch,
-):
-    root = create_scratch_repo()
-    write_bench_config(root, bench="sh root-bench.sh")
-    nested = Path(root) / "packages" / "core"
-    nested.mkdir(parents=True)
-    monkeypatch.chdir(nested)
-
-    result = runner.invoke(app, ["start", "--baseline", "main"])
-
-    assert result.exit_code == 0, result.stderr
-    assert session_header_of(root).config.bench == "sh root-bench.sh"
+    assert (cmd.name, cmd.args, cmd.exit_code, cmd.reason) == (
+        "finalize",
+        {"branch": "perf/regex", "message": "squash the session"},
+        0,
+        None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -304,21 +275,6 @@ def test_stop_command_when_message_given_does_stop_the_session_with_it(
     stop_records = records_of_type(stop_repo, StopRecord)
     assert len(stop_records) == 1
     assert stop_records[0].message == "switched to a different approach"
-
-
-@pytest.fixture
-def kept_repo(repo: str) -> str:
-    """A configured repository whose open session has one kept commit, ready for any session command."""
-    open_session_with_one_keep(repo)
-    write_bench_config(repo)
-    return repo
-
-
-@pytest.mark.usefixtures("kept_repo")
-def test_session_command_when_stdout_reader_closed_does_exit_zero_without_stderr():
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, ["stop", "-m", "done"])
-
-    assert (result.exit_code, result.stderr) == (0, "")
 
 
 @pytest.mark.parametrize(
@@ -417,8 +373,7 @@ def test_session_command_when_no_color_does_strip_ansi_from_stderr_error(
 
 def _settled_session(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     """Log a configured session with one kept iteration, for status."""
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_bench_config(repo)
+    write_settled_session(repo)
 
 
 def _open_for_stop(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
@@ -446,6 +401,56 @@ def _open_for_probe(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _no_budget(_repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     """Leave the session without a budget."""
+
+
+def _open_and_stub_measure(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open a session and replace the measurement engine and config resolution."""
+    open_session(repo)
+    stub_measure(monkeypatch)
+
+
+def _stub_doctor(_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace every doctor seam with a canned stand-in."""
+    patch_doctor(monkeypatch)
+
+
+def _nothing_to_arrange(_repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave the repository as the fixture made it."""
+
+
+_MEASURE_MAIN = ["measure", "main", "--bench", "sh bench.sh"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "arrange"),
+    [
+        pytest.param(["stop", "-m", "done"], _open_for_stop, id="stop"),
+        pytest.param(["status"], _settled_session, id="status"),
+        pytest.param(
+            [*_MEASURE_MAIN, "--format", "text"], _open_and_stub_measure, id="measure-text"
+        ),
+        pytest.param(
+            [*_MEASURE_MAIN, "--format", "json"], _open_and_stub_measure, id="measure-json"
+        ),
+        pytest.param(
+            [*_MEASURE_MAIN, "--record"], _open_and_stub_measure, id="measure-record-note"
+        ),
+        pytest.param(["doctor"], _stub_doctor, id="doctor"),
+        pytest.param(["init", "--bench", "npm run bench"], _nothing_to_arrange, id="init"),
+    ],
+)
+def test_command_when_stdout_reader_closed_does_exit_zero_without_stderr(
+    *,
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    arrange: Callable[[str, pytest.MonkeyPatch], None],
+):
+    arrange(repo, monkeypatch)
+
+    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, argv)
+
+    assert (result.exit_code, result.stderr) == (0, "")
 
 
 _COMPARE_ARGV = ["compare", "main", "cand", "--bench", "sh bench.sh"]

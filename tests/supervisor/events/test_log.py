@@ -30,18 +30,21 @@ from tests.supervisor._fixtures import read_log_lines
 # ---------------------------------------------------------------------------
 
 
-def test_create_event_log_writer_when_observing_events_does_append_one_line_each(
+def test_create_event_log_writer_when_observing_events_does_append_one_utf8_lf_line_each(
     tmp_path: Path,
 ):
     log_path = tmp_path / "events.jsonl"
     writer = create_event_log_writer(log_path)
-    event1 = UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01)
-    event2 = UsageUpdateEvent(at=2_000_000_000_000, cost_usd=0.02)
+    events = [
+        UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01),
+        TextDeltaEvent(at=2_000_000_000_000, chunk="café"),
+    ]
 
-    writer(event1)
-    writer(event2)
+    for event in events:
+        writer(event)
 
-    assert read_log_lines(log_path) == [json.loads(to_json_line(e)) for e in (event1, event2)]
+    expected = "".join(to_json_line(event) + "\n" for event in events)
+    assert log_path.read_bytes() == expected.encode("utf-8")
 
 
 def test_create_event_log_writer_when_created_does_not_create_the_parent_before_a_write(
@@ -75,18 +78,6 @@ def test_create_event_log_writer_when_write_fails_does_raise_gymrat_error_naming
 
     with pytest.raises(GymratError, match=re.escape(str(log_path))):
         writer(UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01))
-
-
-def test_create_event_log_writer_when_event_holds_non_ascii_text_does_write_utf8_line_with_newline(
-    tmp_path: Path,
-):
-    log_path = tmp_path / "events.jsonl"
-    writer = create_event_log_writer(log_path)
-    event = TextDeltaEvent(at=1_000_000_000_000, chunk="café")
-
-    writer(event)
-
-    assert log_path.read_bytes() == (to_json_line(event) + "\n").encode("utf-8")
 
 
 # ---------------------------------------------------------------------------

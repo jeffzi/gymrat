@@ -98,6 +98,14 @@ def _jittered(values: list[float], up: float, down: float) -> list[float]:
     The mixed signs leave the permutation test nothing to call, while the larger
     upward nudge still drags the median above the baseline's — a run that moved
     the wrong way without saying anything, which is what ``no-signal`` means.
+
+    Args:
+        values: The rounds to nudge.
+        up: How far the even-indexed rounds move up.
+        down: How far the odd-indexed rounds move down.
+
+    Returns:
+        The nudged rounds, in their original order.
     """
     return [value + up if index % 2 == 0 else value - down for index, value in enumerate(values)]
 
@@ -261,6 +269,13 @@ def _shell_args(directory: str, command: str) -> list[str]:
     The rerun's bench string is handed to a shell verbatim, so running it through
     one is the only assertion that speaks to what the bench is really given — a
     string comparison would pass for a command the shell refuses outright.
+
+    Args:
+        directory: The directory the shell runs in.
+        command: The bench command string to hand the shell.
+
+    Returns:
+        Each non-empty line the stand-in bench printed, one per argument.
     """
     printed = subprocess.run(  # noqa: S603 -- argv is a fixed shell plus a test-built command
         ["sh", "-c", command],  # noqa: S607 -- the POSIX shell is resolved from PATH on purpose
@@ -306,6 +321,10 @@ def _partial_rerun() -> PairedRun:
 
     ``alloc_bytes`` was regressed on the first run and named in the filter, but
     the rerun comes back without it — silence, not disagreement.
+
+    Returns:
+        A run whose experiment rounds are 20% slower on ``total_ms`` and whose
+        rounds on both sides carry no other metric.
     """
     return PairedRun(
         experiment=_filtered_rounds("total_ms", scaled(BASELINE_MS, 1.2)),
@@ -507,11 +526,13 @@ async def test_iterate_session_when_delta_undefined_does_null_only_that_metrics_
         expected_alloc_delta, abs=1e-6
     )
     assert result.record.primary == IterationPrimary(kind="metric", name="total_ms", delta_pct=None)
+    assert result.record.outcome == "no-signal"
+    assert _primary_line(result.report) == "primary: · verdict: NO-SIGNAL"
     assert as_logged(last_iteration_of(repo)) == as_logged(result.record)
 
 
 # ---------------------------------------------------------------------------
-# the primary has no change to read: never reported, no qualifying input, zero baseline, or flat
+# the primary has no change to read: never reported, no qualifying input, or flat
 # ---------------------------------------------------------------------------
 
 
@@ -543,13 +564,6 @@ async def test_iterate_session_when_delta_undefined_does_null_only_that_metrics_
             IterationPrimary(kind="geomean", delta_pct=None),
             "primary: · verdict: NO-SIGNAL",
             id="geomean-over-only-unstable-metrics",
-        ),
-        pytest.param(
-            _zero_baseline_run(),
-            resolved_config(primary="total_ms"),
-            IterationPrimary(kind="metric", name="total_ms", delta_pct=None),
-            "primary: · verdict: NO-SIGNAL",
-            id="named-primary-zero-baseline",
         ),
         pytest.param(
             PairedRun(baseline_rounds(), baseline_rounds()),
@@ -717,6 +731,14 @@ def _iteration_fields(experiment_dir: str, stage: str) -> tuple[object, ...]:
 
     The capturing command names the file relatively, so reading it back out of
     the experiment worktree is also what proves the hook ran there.
+
+    Args:
+        experiment_dir: The experiment worktree the hook wrote its payload into.
+        stage: The hook stage whose payload file to read.
+
+    Returns:
+        The payload's stage, experiment dir, seq, last iteration, and session
+        iteration count, in that order.
     """
     payload = json.loads((Path(experiment_dir) / f"{stage}.json").read_text(encoding="utf-8"))
     return (

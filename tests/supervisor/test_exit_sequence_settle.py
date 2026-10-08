@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.exec import ExecOptions, ExecResult
-    from gymrat.session.records import IterationRecord, SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import Outcome
 
 #: The gate reason an edit made behind the measured fingerprint reads as.
@@ -439,29 +439,20 @@ EARLIER_ATTEMPTS = [
 
 
 @pytest.mark.parametrize("earlier", EARLIER_ATTEMPTS)
-@pytest.mark.parametrize(
-    ("iteration", "settled"),
-    [
-        pytest.param(iteration_record(seq=1), "kept iteration 1 (checks passed)", id="keep"),
-        pytest.param(unimproved(1, "no-signal"), "discarded iteration 1 (no-signal)", id="discard"),
-    ],
-)
 async def test_run_exit_sequence_when_an_earlier_attempt_failed_its_before_hook_does_settle(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    earlier: tuple[SessionLogRecord, ...],
-    iteration: IterationRecord,
-    settled: str,
+    repo: str, monkeypatch: pytest.MonkeyPatch, earlier: tuple[SessionLogRecord, ...]
 ):
     start_with(repo)
     # The first attempt recorded no iteration, so the retry reuses its seq.
     append_records(repo, *earlier)
-    measured(repo, iteration, hook_record(seq=1, stage="after"))
+    measured(repo, iteration_record(seq=1), hook_record(seq=1, stage="after"))
     checks_pass(monkeypatch)
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
-    assert run.report.steps[0] == ExitStep(kind="settled", text=f"settled: {settled}")
+    assert run.report.steps[0] == ExitStep(
+        kind="settled", text="settled: kept iteration 1 (checks passed)"
+    )
 
 
 # ---------------------------------------------------------------------------

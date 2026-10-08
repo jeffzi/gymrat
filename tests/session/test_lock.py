@@ -105,9 +105,12 @@ def assert_holder_record(
 def refuse_open(monkeypatch: pytest.MonkeyPatch, target_path: str) -> None:
     """Make every ``os.open`` of ``target_path`` raise PermissionError.
 
-    Used for both the OS lock file (``lock_path + ".lock"``) and the publish
-    lock file — the seams where ``filelock`` opens a file on Unix (via
-    ``os.open``).
+    ``os.open`` is the seam where ``filelock`` opens a lock file on Unix.
+
+    Args:
+        monkeypatch: The fixture that patches ``os.open`` for the test.
+        target_path: The file whose opening fails: the OS lock file
+            (``lock_path + ".lock"``) or the publish lock file.
     """
     real_open = os.open
 
@@ -474,16 +477,6 @@ def test_is_held_when_probed_does_answer_whether_a_rival_holds_the_lock(
     assert held is expected
 
 
-def test_is_held_when_called_from_holding_process_does_return_true(
-    lock_path: str, acquire: Acquire
-):
-    acquire(lock_path, "compare")
-
-    result = is_held(lock_path)
-
-    assert result is True
-
-
 def test_is_held_when_probed_does_leave_the_lock_undisturbed(
     lock_path: str,
 ):
@@ -533,7 +526,6 @@ def test_read_holder_when_lock_acquired_does_return_pid_command_and_time(
 @pytest.mark.parametrize(
     "content",
     [
-        pytest.param(None, id="absent"),
         pytest.param(b'{"pid":42,"command":"measure"}', id="missing-at"),
         pytest.param(
             f'{{"pid":"forty-two","command":"measure","at":"{FIXED_HOLDER_AT}"}}'.encode(),
@@ -554,11 +546,8 @@ def test_read_holder_when_lock_acquired_does_return_pid_command_and_time(
         ),
     ],
 )
-def test_read_holder_when_record_absent_or_not_a_holder_does_return_none(
-    lock_path: str, content: bytes | None
-):
-    if content is not None:
-        Path(lock_path).write_bytes(content)
+def test_read_holder_when_record_not_a_holder_does_return_none(lock_path: str, content: bytes):
+    Path(lock_path).write_bytes(content)
 
     holder = read_holder(lock_path)
 

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import ctypes
 import dataclasses
+import errno
 import importlib.util
 import os
 import pathlib
@@ -15,7 +16,6 @@ from collections.abc import Callable, Generator
 from io import StringIO
 from typing import TYPE_CHECKING, Any, Literal, overload, override
 
-from gymrat import exec as gymrat_exec
 from gymrat import process_group
 
 if TYPE_CHECKING:
@@ -137,7 +137,7 @@ def dead_pid() -> int:
 
 
 def _has_exited(pid: int) -> bool:
-    """Whether ``pid`` has exited: a zombie waiting to be reaped, or already reaped.
+    """Probe whether ``pid`` has exited, counting a zombie as exited.
 
     ``os.kill(pid, 0)`` still succeeds for a zombie, so a grandchild killed with
     its process group looks alive until whoever inherited it calls ``wait``.
@@ -145,6 +145,13 @@ def _has_exited(pid: int) -> bool:
     as alive makes every kill assertion race against an unrelated reaper. The
     reap can also land between that probe and this check, so a process whose
     entry has already vanished counts as exited too.
+
+    Args:
+        pid: The process to probe.
+
+    Returns:
+        True when ``pid`` is a zombie waiting to be reaped or is no longer
+        listed; always False on Windows, which has no zombie state.
     """
     if sys.platform == "win32":
         # Windows has no zombie state: a handle outlives the process, the pid does not.
@@ -544,18 +551,80 @@ class CleanupRegistry:
         return list(self._live)
 
 
-def track_mounted_cleanups(monkeypatch: "pytest.MonkeyPatch") -> CleanupRegistry:
-    """Swap the cleanup installer ``mount_live`` uses for a registry a test can read.
+def track_cleanups(monkeypatch: "pytest.MonkeyPatch", module: str) -> CleanupRegistry:
+    """Swap the cleanup installer ``module`` imported for a registry a test can read.
 
     Args:
         monkeypatch: The fixture that installs the swap.
+        module: The dotted name of the module whose ``install_termination_cleanup``
+            binding is swapped, e.g. ``"gymrat.sampling"``.
 
     Returns:
-        The registry recording every erase cleanup a display mounts.
+        The registry recording every cleanup ``module`` installs.
     """
     registry = CleanupRegistry()
-    monkeypatch.setattr("gymrat.cli.live_display.install_termination_cleanup", registry.install)
+    monkeypatch.setattr(f"{module}.install_termination_cleanup", registry.install)
     return registry
+
+
+_REAL_KILLPG = os.killpg
+
+
+def _refuse_every_signal(_signal_number: int) -> bool:
+    return True
+
+
+@dataclasses.dataclass
+class KillpgRefusal:
+    """Stand-in ``os.killpg`` that refuses with ``EPERM`` every signal ``refuses`` accepts.
+
+    Each signal it is handed lands in ``signals``. A signal it does not refuse,
+    or any signal once ``refusing`` is cleared, goes to the real ``killpg``, so a
+    test can still tear its run down after the refusal it asserted on.
+    """
+
+    refuses: Callable[[int], bool] = _refuse_every_signal
+    """Whether to refuse a given signal number."""
+    refusing: bool = True
+    """Whether refusals are switched on at all."""
+    signals: list[int] = dataclasses.field(default_factory=list)
+    """Every signal number handed to the stand-in, in call order."""
+
+    def __call__(self, group_pid: int, signal_number: int) -> None:
+        """Refuse or forward one ``killpg`` call.
+
+        Args:
+            group_pid: The process group to signal.
+            signal_number: The signal to send.
+
+        Raises:
+            PermissionError: When refusals are on and ``refuses`` accepts the signal.
+        """
+        self.signals.append(signal_number)
+        if self.refusing and self.refuses(signal_number):
+            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+        _REAL_KILLPG(group_pid, signal_number)
+
+
+def refuse_killpg(
+    monkeypatch: "pytest.MonkeyPatch",
+    refuses: Callable[[int], bool] = _refuse_every_signal,
+    *,
+    refusing: bool = True,
+) -> KillpgRefusal:
+    """Install a :class:`KillpgRefusal` as ``os.killpg``.
+
+    Args:
+        monkeypatch: The fixture that installs the swap.
+        refuses: Whether to refuse a given signal number; refuses every one by default.
+        refusing: Whether refusals start switched on.
+
+    Returns:
+        The installed stand-in, for reading ``signals`` or switching ``refusing``.
+    """
+    refusal = KillpgRefusal(refuses=refuses, refusing=refusing)
+    monkeypatch.setattr(os, "killpg", refusal)
+    return refusal
 
 
 class ProcessExit(BaseException):
@@ -605,19 +674,6 @@ class InterruptedTerminal(StringIO):
         handler()
         self.at_exit = self.getvalue()
         raise ProcessExit
-
-
-def record_registry_sweep(monkeypatch: "pytest.MonkeyPatch") -> list[int]:
-    """Stand in for the group signals ``kill_live_process_groups`` sends, recording each pid."""
-    attempted: list[int] = []
-
-    def record(pid: int, *_args: object, **_kwargs: object) -> bool:
-        attempted.append(pid)
-        return True
-
-    monkeypatch.setattr(gymrat_exec, "terminate_process_group", record)
-    monkeypatch.setattr(gymrat_exec, "kill_process_group", record)
-    return attempted
 
 
 # ---------------------------------------------------------------------------

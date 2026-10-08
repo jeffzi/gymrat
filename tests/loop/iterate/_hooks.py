@@ -83,10 +83,6 @@ class HookScripts:
         data_path.write_bytes(content.encode())
         return f"sys.{channel}.buffer.write(open({json.dumps(str(data_path))}, 'rb').read())\n"
 
-    def printing_content_of(self, file_name: str, content: str) -> str:
-        """A command that prints parked ``content`` verbatim on stdout."""
-        return self.hook_command("import sys\n" + self.printing_line(file_name, "stdout", content))
-
     def failing_content_of(self, stem: str, stdout: str, stderr: str) -> str:
         """A command that prints parked text on both channels and then exits 3."""
         body = (

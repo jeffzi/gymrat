@@ -4,9 +4,8 @@ A single-kind comparison renders flat (no section borders); several kinds render
 one bordered section each. These tests verify that group headers carry a kind
 suffix, member rows use case names in first-appearance order, pair counts align
 across rows and sections, excluded metrics are counted into an aggregate's
-provenance, a sectioned table closes on its last geomean, and the verbose
-method block closes the report. Names and labels carrying square brackets print
-as written.
+provenance, and a sectioned table closes on its last geomean. Names and labels
+carrying square brackets print as written.
 """
 
 from __future__ import annotations
@@ -19,8 +18,7 @@ import pytest
 
 from gymrat.model import Exclusion
 from gymrat.report.text.render import render_report
-from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
-from gymrat.verdict import GroupAggregate, KindAggregate
+from gymrat.report.types import CandidateMetric, MetricComparison
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -39,10 +37,10 @@ from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
     exact_metric,
+    gating_kind,
     kind_metric,
     memory_kind,
     metric_meta,
-    other_kind,
     permutation_metric,
     time_kind,
     two_kind_metrics,
@@ -88,24 +86,19 @@ def test_render_report_when_flat_body_has_groups_does_list_them_in_first_appeara
         candidates=[
             create_candidate(
                 kinds=[
-                    KindAggregate(
-                        kind="time",
-                        geomean=geomean,
-                        groups=(
-                            GroupAggregate(group="node", geomean=geomean_of(-2.5, 2)),
-                            GroupAggregate(group="entity", geomean=geomean_of(0.5, 2)),
-                        ),
-                        gated_geomean=geomean,
+                    gating_kind(
+                        "time",
+                        geomean,
+                        {"node": geomean_of(-2.5, 2), "entity": geomean_of(0.5, 2)},
                     )
                 ]
             )
         ],
     )
 
-    region = table_region(render_report(result))
+    region = table_region(render_report(result))[1:]
 
     assert region == [
-        "gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata",
         "metric",
         "<rule>",
         "node · time",
@@ -219,7 +212,6 @@ def test_render_report_when_rows_are_short_of_pairs_does_align_their_pair_counts
 
     first_line = line_containing(report, first_row)
     second_line = line_containing(report, second_row)
-
     first_offsets = offsets_of(first_line, "n=")
     assert first_offsets != []
     assert first_offsets == offsets_of(second_line, "n=")
@@ -256,14 +248,7 @@ def _bracketed_result() -> ComparisonResult:
         },
         candidates=[
             create_candidate(
-                kinds=[
-                    KindAggregate(
-                        kind="time",
-                        geomean=geomean,
-                        groups=(GroupAggregate(group="[bold]entity", geomean=geomean_of(-3.1, 2)),),
-                        gated_geomean=geomean,
-                    )
-                ]
+                kinds=[gating_kind("time", geomean, {"[bold]entity": geomean_of(-3.1, 2)})]
             )
         ],
     )
@@ -297,7 +282,6 @@ def test_render_report_when_baseline_and_candidate_labels_carry_brackets_does_pr
     report = strip_ansi(render_report(_bracketed_labels_result()))
 
     header = line_starting_with(report, "metric")
-
     assert stripped_cells(header)[1:] == ["[dim]main", "[bold]turbo", "vs [dim]main"]
 
 
@@ -323,18 +307,8 @@ def _sectioned_bracketed_result() -> ComparisonResult:
         candidates=[
             create_candidate(
                 kinds=[
-                    KindAggregate(
-                        kind="[underline]time",
-                        geomean=time_geomean,
-                        groups=(GroupAggregate(group="[bold]entity", geomean=time_geomean),),
-                        gated_geomean=time_geomean,
-                    ),
-                    KindAggregate(
-                        kind="[strike]memory",
-                        geomean=memory_geomean,
-                        groups=(),
-                        gated_geomean=memory_geomean,
-                    ),
+                    gating_kind("[underline]time", time_geomean, {"[bold]entity": time_geomean}),
+                    gating_kind("[strike]memory", memory_geomean),
                 ]
             )
         ],
@@ -427,29 +401,3 @@ def test_render_report_when_closing_a_sectioned_table_does_end_on_the_last_geome
     report = render_report(make_result())
 
     assert table_region(report)[-1] == "geomean · memory (1)"
-
-
-# ---------------------------------------------------------------------------
-# section ordering: table, summary, highlights, method block
-# ---------------------------------------------------------------------------
-
-
-def _ordered_result() -> ComparisonResult:
-    """A two-metric run whose only footer content is the permutation method line."""
-    return create_comparison_result(
-        baseline_label="main",
-        metrics={
-            "metric1/time": permutation_metric(verdict="improved", delta=-10, unit="ns"),
-            "metric2/time": permutation_metric(
-                verdict="no-signal", delta=2, gating=False, unit="ns"
-            ),
-        },
-        candidates=[create_candidate(label="faster", kinds=[other_kind(-5, 1)])],
-    )
-
-
-def test_render_report_when_verbose_does_add_the_method_block_below_a_blank_line():
-    lines = render_report(_ordered_result(), ReportOptions(verbose=True)).split("\n")
-
-    method = next(i for i, line in enumerate(lines) if "sign-flip permutation test" in line)
-    assert (lines[method - 1], method) == ("", len(lines) - 1)

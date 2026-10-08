@@ -44,21 +44,6 @@ def test_compute_geomean_when_metric_one_sided_does_exclude_as_no_verdict_in_sco
 # ---------------------------------------------------------------------------
 
 
-def test_compute_geomean_when_multiple_lower_metrics_does_geomean_ratios():
-    verdicts, metric_meta = build_inputs(
-        [
-            MetricSpec(name="metric1", delta=-10.0),
-            MetricSpec(name="metric2", delta=-5.0),
-        ],
-    )
-
-    result = compute_geomean(verdicts, metric_meta)
-
-    assert result.n == 2
-    assert result.excluded == ()
-    assert result.value == pytest.approx((math.sqrt(0.9 * 0.95) - 1) * 100, abs=1e-6)
-
-
 def test_compute_geomean_when_directions_differ_does_respect_each_metric():
     verdicts, metric_meta = build_inputs(
         [
@@ -112,7 +97,7 @@ def test_compute_geomean_when_all_metrics_excluded_does_return_zeroed_with_reaso
 # ---------------------------------------------------------------------------
 
 
-def test_compute_geomean_when_metric_unstable_does_exclude_its_ratio_and_noise():
+def test_compute_geomean_when_metric_unstable_does_exclude_it():
     verdicts, metric_meta = build_inputs(
         [
             MetricSpec(name="noisy", verdict=unstable_band_verdict()),

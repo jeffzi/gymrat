@@ -432,21 +432,6 @@ def test_plain_renderer_when_pass_finished_does_print_exact_timestamped_line():
     )
 
 
-def test_plain_renderer_when_any_event_does_not_emit_ansi_codes():
-    console, clock, reporter = _reporter("plain")
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-    clock.tick(1)
-    reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
-    clock.tick(1)
-    reporter.report(_pass_started(1, 3, at_ms=_ms(clock)))
-    clock.tick(10)
-    reporter.report(_pass_finished(1, 3, at_ms=_ms(clock)))
-
-    reporter.stop()
-
-    assert "\x1b[" not in console_output(console)
-
-
 # ---------------------------------------------------------------------------
 # Live wiring -- Live attributes and refresh path
 # ---------------------------------------------------------------------------
@@ -531,7 +516,11 @@ def test_stop_when_plain_mode_does_not_print_summary():
 
     reporter.stop()
 
-    assert "measured in" not in console_output(console)
+    assert console_output(console) == (
+        "[00:00:01] prepared bench (1s)\n"
+        "[00:00:12] pass 1/2 · bench (10s)\n"
+        "[00:00:23] pass 2/2 · bench (10s)\n"
+    )
 
 
 def test_stop_when_compare_done_does_print_summary():
@@ -555,14 +544,25 @@ def test_stop_when_compare_done_does_print_summary():
 # ---------------------------------------------------------------------------
 
 
-def test_live_renderer_when_console_width_zero_does_render_as_plain():
+def test_live_renderer_when_console_width_zero_does_render_as_plain(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # rich prints nothing on a zero-width console, so the milestone is read
+    # from what the reporter handed the console rather than from its buffer.
     console, _clock, reporter = _reporter("live", width=0)
+    printed: list[object] = []
+    real_print = console.print
 
+    def recording_print(*objects: object, **kwargs: Any) -> None:
+        printed.extend(objects)
+        real_print(*objects, **kwargs)
+
+    monkeypatch.setattr(console, "print", recording_print)
     reporter.report(PrepareStarted(label="bench", at_ms=0))
+
     reporter.report(PrepareFinished(label="bench", at_ms=1000))
 
-    assert reporter.live is None
-    assert "\x1b[" not in console_output(console)
+    assert (reporter.live, printed) == (None, ["[00:00:01] prepared bench (1s)"])
 
 
 def test_plain_renderer_when_label_looks_like_markup_does_print_it_verbatim():

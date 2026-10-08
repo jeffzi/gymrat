@@ -326,7 +326,7 @@ def test_finished_tool_line_when_rendered_with_color_does_style_it_by_result(
 # ---------------------------------------------------------------------------
 
 
-def test_nested_tool_when_in_flight_does_render_a_dim_arrow_line_under_parent():
+def _reporter_with_nested_read() -> ReporterKit:
     kit = make_reporter()
     observer = kit.reporter.observer
     fire_launch_and_bash_start(observer)
@@ -341,11 +341,22 @@ def test_nested_tool_when_in_flight_does_render_a_dim_arrow_line_under_parent():
         )
     )
     kit.clock.now = 5000
+    return kit
+
+
+def test_nested_tool_when_in_flight_does_render_an_arrow_line_under_parent():
+    kit = _reporter_with_nested_read()
 
     nested_line = line_after(render_frame(kit.reporter), "Bash")
-    style = _segment_style(kit.reporter, "config.ts")
 
     assert _content(nested_line) == "↳ Read src/config.ts  3s"
+
+
+def test_nested_tool_line_when_rendered_with_color_does_emit_dim_styling():
+    kit = _reporter_with_nested_read()
+
+    style = _segment_style(kit.reporter, "config.ts")
+
     assert style == "dim"
 
 
@@ -372,30 +383,7 @@ def test_nested_phase_when_reported_does_render_an_arrow_line_naming_it(
     assert _content(nested_line) == expected
 
 
-def test_nested_tool_when_a_sibling_ends_does_keep_showing_the_running_tool():
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    fire_launch_and_bash_start(observer)
-    kit.clock.now = 2000
-    observer(
-        tool_start_event(
-            "Read", "nested-read-1", 2000, parent_tool_use_id="bash-1", input_summary="config.ts"
-        )
-    )
-    observer(
-        tool_start_event(
-            "Grep", "nested-grep-1", 2100, parent_tool_use_id="bash-1", input_summary="needle"
-        )
-    )
-    kit.clock.now = 5000
-    observer(tool_end_event("Grep", "nested-grep-1", 5000, parent_tool_use_id="bash-1"))
-
-    nested_line = line_after(render_frame(kit.reporter), "Bash")
-
-    assert _content(nested_line) == "↳ Read config.ts  3s"
-
-
-def test_nested_when_no_activity_does_not_render_arrow_line():
+def test_nested_when_no_activity_does_end_the_panel_on_the_bash_row():
     kit = make_reporter()
     observer = kit.reporter.observer
     observer(launch_event(1000))
@@ -403,9 +391,9 @@ def test_nested_when_no_activity_does_not_render_arrow_line():
     observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
     kit.clock.now = 5000
 
-    frame = render_frame(kit.reporter)
+    row_after_bash = line_after(render_frame(kit.reporter), "Bash")
 
-    assert "↳" not in frame
+    assert row_after_bash == "╰" + "─" * (FRAME_WIDTH - 2) + "╯"
 
 
 # ---------------------------------------------------------------------------

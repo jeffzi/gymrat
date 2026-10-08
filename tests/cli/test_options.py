@@ -105,9 +105,9 @@ def test_parse_max_minutes_when_within_ceiling_does_accept():
     assert parse_max_minutes("10") == 10.0
 
 
-def test_parse_max_minutes_when_non_positive_does_reject_before_bounding():
+def test_parse_max_minutes_when_overflowing_to_infinity_does_reject_before_bounding():
     with pytest.raises(typer.BadParameter) as exc:
-        parse_max_minutes("0")
+        parse_max_minutes("1" + "0" * 310)
 
     assert exc.value.message == _POSITIVE_NUMBER_MESSAGE
 

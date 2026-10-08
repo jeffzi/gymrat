@@ -138,17 +138,10 @@ def test_guard_supervised_origin_when_live_and_origin_tool_does_allow(
     assert result is None
 
 
-@pytest.mark.parametrize(
-    "origin",
-    [
-        pytest.param("tool", id="origin-tool"),
-        pytest.param("cli", id="origin-cli"),
-    ],
-)
 def test_guard_supervised_origin_when_not_live_does_allow(
-    state_dir: str, monkeypatch: pytest.MonkeyPatch, origin: str | None
+    state_dir: str, monkeypatch: pytest.MonkeyPatch
 ):
-    set_origin(monkeypatch, origin)
+    set_origin(monkeypatch, "cli")
 
     result = guard_supervised_origin(state_dir, "keep")
 

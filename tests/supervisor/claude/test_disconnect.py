@@ -10,7 +10,7 @@ already cleared.
 import asyncio
 import contextlib
 import warnings
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Sequence
 from typing import TypedDict, override
 
 import pytest
@@ -22,10 +22,11 @@ from tests.supervisor._fixtures import (
     FakeClient,
     FiniteClient,
     assistant,
+    end_and_settle,
     result_message,
+    run_interrupting_on_first_usage_update,
     settled_outcome,
     start_claude_session,
-    start_interrupting_on_first_usage_update,
     start_past_turns,
 )
 
@@ -88,7 +89,7 @@ class _RacingClient(FakeClient):
         await super().query(prompt)
 
     @override
-    async def receive_messages(self):
+    async def receive_messages(self) -> AsyncIterator[object]:
         for message in self.messages:
             await asyncio.sleep(0)
             yield message
@@ -157,8 +158,9 @@ async def _start_past_first_turn(client: FakeClient) -> DriverSession:
 async def _end_by_end_call(client: FakeClient) -> SessionOutcome:
     """Run a session over ``client`` and end it with ``end()`` after its first turn."""
     session = await _start_past_first_turn(client)
-    await session.end()
-    return await _outcome(session)
+    outcome = await end_and_settle(session)
+    await _drain()
+    return outcome
 
 
 async def _end_by_abort(client: FakeClient) -> SessionOutcome:
@@ -173,12 +175,10 @@ async def _end_by_abort(client: FakeClient) -> SessionOutcome:
 
 
 async def _end_by_interrupt(client: FakeClient) -> SessionOutcome:
-    """Run a session over ``client`` and interrupt it on its first usage update.
-
-    The soft stop lands when the stream delivers its next message, so
-    ``client`` must carry one after the first turn.
-    """
-    return await _outcome(start_interrupting_on_first_usage_update(client))
+    """Run a session over ``client`` and interrupt it on its first usage update."""
+    outcome = await run_interrupting_on_first_usage_update(client)
+    await _drain()
+    return outcome
 
 
 async def _end_by_send(client: FakeClient) -> SessionOutcome:

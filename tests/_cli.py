@@ -18,15 +18,21 @@ def no_color_env() -> dict[str, str]:
 
 
 def run_cli(
-    args: list[str], cwd: str | Path, *, check: bool = True, timeout: float
+    args: list[str],
+    cwd: str | Path,
+    *,
+    check: bool = True,
+    timeout: float,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run one gymrat command out of process in ``cwd``, color off, blocking until it ends.
+    """Run one gymrat command out of process in ``cwd``, blocking until it ends.
 
     Args:
         args: The command line after the program name.
         cwd: The directory the command runs in.
         check: Whether a non-zero exit fails the caller.
         timeout: Seconds the command may run before ``TimeoutExpired``.
+        env: The child's environment; ``None`` means :func:`no_color_env`.
 
     Returns:
         The finished child with text-decoded stdout and stderr.
@@ -39,7 +45,7 @@ def run_cli(
         return subprocess.run(  # noqa: S603 -- fixed interpreter plus test-chosen args
             [*ENTRY, *args],
             cwd=cwd,
-            env=no_color_env(),
+            env=no_color_env() if env is None else env,
             capture_output=True,
             text=True,
             timeout=timeout,

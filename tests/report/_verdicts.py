@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from gymrat.model import (
@@ -29,6 +28,26 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Standalone verdict builders
 # ---------------------------------------------------------------------------
+
+
+def metric_meta(
+    short_name: str,
+    *,
+    direction: Direction = "lower",
+    gating: bool = True,
+    exact: bool = False,
+    kind: str = "other",
+    unit: MetricUnit | None = None,
+) -> ResolvedMetricMeta:
+    """A metric meta block, defaulting to a lower-is-better, gating, non-exact "other" metric."""
+    return ResolvedMetricMeta(
+        direction=direction,
+        gating=gating,
+        exact=exact,
+        unit=unit,
+        kind=kind,
+        short_name=short_name,
+    )
 
 
 def band_verdict(
@@ -61,7 +80,7 @@ def permutation_verdict(
     noise_pct: float = 2.5,
     noise_abs: float = 2.5,
 ) -> PermutationVerdict:
-    """A verdict the sign-flip permutation test test produced."""
+    """A verdict the sign-flip permutation test produced."""
     return PermutationVerdict(
         method="permutation",
         verdict=verdict,
@@ -147,7 +166,6 @@ def band_metric(
     Returns:
         The metric comparison, judged for a single candidate.
     """
-    resolved_usable = n if usable_n is None else usable_n
     return MetricComparison(
         baseline_median=100.0,
         baseline_spread=5.0,
@@ -155,94 +173,17 @@ def band_metric(
             CandidateMetric(
                 median=100.0 + delta,
                 spread=4.0,
-                verdict=BandVerdict(
-                    method="band",
+                verdict=band_verdict(
                     verdict=verdict,
-                    usable_n=resolved_usable,
-                    noise_pct=noise_pct,
-                    noise_abs=3.5,
                     delta=delta,
                     n=n,
+                    usable_n=n if usable_n is None else usable_n,
+                    noise_pct=noise_pct,
+                    noise_abs=3.5,
                 ),
             ),
         ),
-        meta=ResolvedMetricMeta(
-            direction="lower",
-            gating=True,
-            exact=False,
-            unit=unit,
-            kind="other",
-            short_name="time",
-        ),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class CandidateSpec:
-    """One candidate's permutation outcome against the shared baseline."""
-
-    verdict: ApproximateVerdict
-    delta: float
-    noise_pct: float = 2.5
-
-
-def metric_for(
-    candidates: Sequence[CandidateSpec],
-    direction: Direction = "lower",
-) -> MetricComparison:
-    """A metric judged once per candidate against the shared baseline.
-
-    The baseline median and spread are carried once, so the candidate entries
-    differ only in what the pairwise verdict engine returned for each of them.
-
-    Args:
-        candidates: Each candidate's permutation outcome, in candidate order.
-        direction: Which way is better for the metric.
-
-    Returns:
-        The metric comparison.
-    """
-    return MetricComparison(
-        baseline_median=100.0,
-        baseline_spread=1.0,
-        candidates=tuple(
-            CandidateMetric(
-                median=100.0 + candidate.delta,
-                spread=1.0,
-                verdict=PermutationVerdict(
-                    method="permutation",
-                    verdict=candidate.verdict,
-                    p=0.01,
-                    noise_pct=candidate.noise_pct,
-                    noise_abs=candidate.noise_pct,
-                    delta=candidate.delta,
-                    n=10,
-                ),
-            )
-            for candidate in candidates
-        ),
-        meta=ResolvedMetricMeta(
-            direction=direction,
-            gating=True,
-            exact=False,
-            unit=None,
-            kind="other",
-            short_name="time",
-        ),
-    )
-
-
-def approximate_metric(
-    *,
-    verdict: ApproximateVerdict,
-    delta: float,
-    noise_pct: float = 2.5,
-    direction: Direction = "lower",
-) -> MetricComparison:
-    """A single-candidate metric whose verdict came from the permutation method."""
-    return metric_for(
-        [CandidateSpec(verdict=verdict, delta=delta, noise_pct=noise_pct)],
-        direction,
+        meta=metric_meta("time", unit=unit),
     )
 
 
@@ -252,12 +193,5 @@ def one_sided_metric() -> MetricComparison:
         baseline_median=100.0,
         baseline_spread=1.0,
         candidates=(CandidateMetric(),),
-        meta=ResolvedMetricMeta(
-            direction="lower",
-            gating=False,
-            exact=False,
-            unit=None,
-            kind="other",
-            short_name="time",
-        ),
+        meta=metric_meta("time", gating=False),
     )

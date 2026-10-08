@@ -111,9 +111,21 @@ def test_repo_root_when_no_directory_given_does_use_cwd(
     assert Path(root) == Path(repo)
 
 
-def test_repo_root_when_directory_not_in_repo_does_raise_gymrat_error(tmp_path: Path):
-    with pytest.raises(GymratError, match=r"(?i)git repository"):
-        repo_root(str(tmp_path))
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        pytest.param(repo_root, id="repo-root"),
+        pytest.param(git_common_dir, id="git-common-dir"),
+    ],
+)
+def test_repository_lookup_when_directory_not_in_repo_does_raise_not_a_git_repository(
+    tmp_path: Path, lookup: Callable[[str], str]
+):
+    with pytest.raises(NotAGitRepositoryError) as excinfo:
+        lookup(str(tmp_path))
+
+    assert str(excinfo.value) == f"Not a git repository: {tmp_path}"
+    assert excinfo.value.hint == "Run gymrat from inside a git repository."
 
 
 def _add_worktree(repo: str, relative: str) -> str:
@@ -153,13 +165,6 @@ def test_git_common_dir_when_called_does_return_the_git_directory_of_the_owning_
     common = git_common_dir(directory)
 
     assert Path(common).resolve() == Path(repo, ".git").resolve()
-
-
-def test_git_common_dir_when_directory_not_in_repo_does_raise_not_a_git_repository(
-    tmp_path: Path,
-):
-    with pytest.raises(NotAGitRepositoryError):
-        git_common_dir(str(tmp_path))
 
 
 # Where a session command's working directory can sit inside a worktree gymrat

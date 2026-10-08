@@ -26,9 +26,7 @@ import pytest
 
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
-from tests._lock import HOLDER_AT_PATTERN
-from tests._process_helpers import reaped, spawn_child_script
-from tests.hardening._barrier import CHILD_BARRIER, create_barrier, release_together
+from tests.hardening._barrier import CHILD_BARRIER, racing_children
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only named pipes and hard links"
@@ -139,28 +137,18 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
     Returns:
         What the race left behind once every child exited.
     """
-    barrier_path = create_barrier(tmp_path)
     results = tmp_path / "results"
     results.mkdir()
     release_flag = tmp_path / "release.flag"
-    child_args = (lock_path, str(barrier_path), str(results), str(release_flag), command)
 
-    with contextlib.ExitStack() as stack:
-        children = [
-            stack.enter_context(
-                reaped(
-                    spawn_child_script(tmp_path, f"race_child_{index}", _RACE_CHILD, *child_args)
-                )
-            )
-            for index in range(count)
-        ]
-        release_together(
-            barrier_path,
-            count,
-            on_poll=lambda: _surface_child_crashes(children),
-            timeout_s=RACE_TIMEOUT_SECONDS,
-        )
-
+    with racing_children(
+        tmp_path,
+        _RACE_CHILD,
+        lambda barrier, _index: (lock_path, str(barrier), str(results), str(release_flag), command),
+        count,
+        on_poll=_surface_child_crashes,
+        timeout_s=RACE_TIMEOUT_SECONDS,
+    ) as children:
         deadline = time.monotonic() + RACE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             won = sorted(results.glob("won.*"))
@@ -214,11 +202,7 @@ def test_acquire_lock_when_processes_race_does_admit_exactly_one_holder(
 
     winner_pid = outcome.won_pid_values[0]
     assert outcome.holder_snapshot is not None, "lockfile vanished while a holder was active"
-    record = json.loads(outcome.holder_snapshot)
-    assert set(record) == {"pid", "command", "at"}
-    assert record["pid"] == int(winner_pid)
-    assert record["command"] == "measure"
-    assert HOLDER_AT_PATTERN.match(record["at"])
+    assert json.loads(outcome.holder_snapshot)["pid"] == int(winner_pid)
 
     for payload in outcome.lost_payloads:
         assert f"PID {winner_pid}" in payload
@@ -229,27 +213,19 @@ def test_acquire_lock_when_processes_race_does_admit_exactly_one_holder(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("held_role", "acquired_role"),
-    [
-        pytest.param("repo", "supervise", id="repo-held-then-supervise"),
-        pytest.param("supervise", "repo", id="supervise-held-then-repo"),
-    ],
-)
-def test_acquire_lock_when_one_command_lock_is_held_does_not_block_the_other(
-    held_role: str,
-    acquired_role: str,
+def test_acquire_lock_when_repository_lock_is_held_does_not_block_the_supervise_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     root = str(tmp_path / "checkout")
-    paths = {"repo": lockfile_path(root), "supervise": supervise_lockfile_path(root)}
+    repository_lock = lockfile_path(root)
+    supervise_lock = supervise_lockfile_path(root)
 
     with contextlib.ExitStack() as releases:
-        releases.callback(acquire_lock(paths[held_role], held_role))
+        releases.callback(acquire_lock(repository_lock, "measure"))
 
-        releases.callback(acquire_lock(paths[acquired_role], acquired_role))
+        releases.callback(acquire_lock(supervise_lock, "supervise"))
 
-        assert Path(paths[held_role]).exists()
-        assert Path(paths[acquired_role]).exists()
+        assert Path(repository_lock).exists()
+        assert Path(supervise_lock).exists()

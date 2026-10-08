@@ -250,12 +250,11 @@ def test_summarize_input_when_probe_tool_does_build_cli_summary(
 def test_summarize_input_when_probe_names_long_does_truncate_via_length_cap():
     long_names = [f"exercise_{i}" for i in range(100)]
     tool_input: dict[str, object] = {"names": long_names}
+    full_command = " ".join(["gymrat", "probe", *long_names])
 
     result = summarize_input(tool_input, tool_name=PROBE_TOOL)
 
-    assert len(result) <= SUMMARY_MAX_CHARS + 1  # +1 for the ellipsis character
-    assert result.startswith("gymrat probe exercise_0")
-    assert result.endswith("…")
+    assert result == f"{full_command[:SUMMARY_MAX_CHARS]}…"
 
 
 @pytest.mark.parametrize(

@@ -33,13 +33,6 @@ from tests.cli._session import (
     closed_stdout_error,
     disk_full_error,
     runner,
-    write_bench_config,
-)
-from tests.session.records._fixtures import (
-    committed_keep,
-    iteration_record,
-    session_record,
-    write_session_log,
 )
 
 DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
@@ -50,8 +43,13 @@ def _help_output(*command: str) -> str:
     """Help text of ``gymrat *command`` rendered wide and ANSI-stripped.
 
     Ambient color splits a token across escape sequences and a narrow terminal
-    wraps it across lines; both break a plain substring match. No arguments
-    captures the root ``gymrat --help``.
+    wraps it across lines; both break a plain substring match.
+
+    Args:
+        *command: The subcommand path; empty for the root help.
+
+    Returns:
+        The ANSI-stripped help text.
     """
     result = runner.invoke(app, [*command, "--help"], env={"COLUMNS": "200"})
     assert result.exit_code == 0
@@ -297,12 +295,10 @@ def test_app_when_repository_discovery_error_carries_a_hint_does_print_message_a
         ),
     ],
 )
+@pytest.mark.usefixtures("status_repo")
 def test_app_when_color_flags_given_does_style_status_stdout_accordingly(
-    repo: str, argv: list[str], expect_sgr: bool
+    argv: list[str], expect_sgr: bool
 ):
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_bench_config(repo)
-
     result = runner.invoke(app, argv)
 
     assert result.exit_code == 0
@@ -397,7 +393,6 @@ def test_app_when_command_help_does_document_its_options(command: str):
 
 def test_app_when_commands_registered_does_match_the_tested_command_list():
     assert [command.name for command in app.registered_commands] == _ALL_COMMANDS
-    assert list(_HELP_OPTIONS) == _ALL_COMMANDS
 
 
 # ---------------------------------------------------------------------------
@@ -406,14 +401,14 @@ def test_app_when_commands_registered_does_match_the_tested_command_list():
 
 
 def test_main_module_when_help_does_show_same_description_and_epilogue_as_cli_app():
-    module_result = _run_module("gymrat", "--help")
-    app_result = _run_module("gymrat.cli.app", "--help")
+    app_text = normalize(_run_module("gymrat.cli.app", "--help").stdout)
 
-    assert module_result.returncode == 0, module_result.stderr
-    module_text = normalize(module_result.stdout)
-    app_text = normalize(app_result.stdout)
-    assert "Usage: gymrat [" in module_text
-    assert module_text == app_text
+    module_result = _run_module("gymrat", "--help")
+
+    assert (module_result.returncode, normalize(module_result.stdout)) == (0, app_text), (
+        module_result.stderr
+    )
+    assert "Usage: gymrat [" in app_text
 
 
 @pytest.mark.parametrize("module", ["gymrat", "gymrat.cli.app"])

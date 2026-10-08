@@ -166,18 +166,6 @@ def test_emit_report_when_repo_root_fails_expectedly_does_write_the_report_witho
     assert capsys.readouterr().out == expected
 
 
-def test_emit_report_when_repo_root_fails_unexpectedly_does_propagate(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr(
-        "gymrat.cli.budget_report.repo_root",
-        create_autospec(repo_root, side_effect=RuntimeError("patched wrong")),
-    )
-
-    with pytest.raises(RuntimeError, match="patched wrong"):
-        _emit("text")
-
-
 @pytest.mark.parametrize(
     ("output_format", "expected"),
     [
@@ -233,9 +221,26 @@ def test_warn_duration_over_budget_when_a_lookup_fails_expectedly_does_stay_sile
     assert capsys.readouterr().err == ""
 
 
-@pytest.mark.parametrize("lookup", ["repo_root", "read_records"])
-def test_warn_duration_over_budget_when_a_lookup_fails_unexpectedly_does_propagate(
-    lookup: str, session_root: str, monkeypatch: pytest.MonkeyPatch
+# ---------------------------------------------------------------------------
+# emit_report and warn_duration_over_budget: unexpected failures propagate
+# ---------------------------------------------------------------------------
+
+
+def _warn() -> None:
+    """Run the ``measure`` over-budget check."""
+    budget_report.warn_duration_over_budget(halve=True)
+
+
+@pytest.mark.parametrize(
+    ("helper", "lookup"),
+    [
+        pytest.param(lambda: _emit("text"), "repo_root", id="emit-report-repo-root"),
+        pytest.param(_warn, "repo_root", id="warn-repo-root"),
+        pytest.param(_warn, "read_records", id="warn-read-records"),
+    ],
+)
+def test_budget_helper_when_a_lookup_fails_unexpectedly_does_propagate(
+    helper: Callable[[], None], lookup: str, session_root: str, monkeypatch: pytest.MonkeyPatch
 ):
     _seed_session(session_root, budget=_budget_left(MEASURE_REMAINING_MS))
     monkeypatch.setattr(
@@ -244,7 +249,7 @@ def test_warn_duration_over_budget_when_a_lookup_fails_unexpectedly_does_propaga
     )
 
     with pytest.raises(RuntimeError, match="patched wrong"):
-        budget_report.warn_duration_over_budget(halve=True)
+        helper()
 
 
 @pytest.mark.parametrize(

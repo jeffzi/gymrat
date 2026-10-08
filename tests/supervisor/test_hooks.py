@@ -6,17 +6,25 @@ mapping the factory registers.
 """
 
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast, override
 from unittest.mock import create_autospec
 
 import pytest
-from claude_agent_sdk import HookContext, PreToolUseHookInput
+from claude_agent_sdk import (
+    HookCallback,
+    HookContext,
+    HookInput,
+    HookMatcher,
+    PreToolUseHookInput,
+)
+from claude_agent_sdk.types import HookEvent
 
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
-from gymrat.supervisor import hooks
 from gymrat.supervisor.hooks import (
     check_background_gymrat,
     check_file_edit,
@@ -843,43 +851,83 @@ def test_check_background_gymrat_when_not_a_background_gymrat_command_does_allow
 # ---------------------------------------------------------------------------
 
 
-def test_supervise_hooks_factory_when_built_does_register_edit_and_bash_matchers(root: Path):
-    mapping = supervise_hooks_factory(root)()
+def _matchers_for(mapping: dict[HookEvent, list[HookMatcher]], tool_name: str) -> list[HookMatcher]:
+    """The ``PreToolUse`` matchers whose pattern routes ``tool_name`` to their hooks.
 
-    assert list(mapping) == ["PreToolUse"]
-    assert [matcher.matcher for matcher in mapping["PreToolUse"]] == [
-        "Edit|Write|MultiEdit|NotebookEdit",
-        "Bash",
+    Args:
+        mapping: The hooks mapping a factory built.
+        tool_name: The tool the agent calls.
+
+    Returns:
+        Every matcher whose pattern matches the whole tool name.
+    """
+    return [
+        matcher
+        for matcher in mapping["PreToolUse"]
+        if matcher.matcher is not None and re.fullmatch(matcher.matcher, tool_name)
     ]
 
 
-#: Which ``PreToolUse`` matcher a case calls, the input it hands it, and the answer expected.
-_CallbackCase = tuple[int, PreToolUseHookInput, dict[str, object]]
+def _callback_for(root: Path, tool_name: str) -> HookCallback:
+    """The one hook callback the factory's mapping routes ``tool_name`` to.
+
+    Args:
+        root: The repository root the factory confines edits to.
+        tool_name: The tool the agent calls.
+
+    Returns:
+        The first hook of the single matcher that routes the tool.
+    """
+    (matcher,) = _matchers_for(supervise_hooks_factory(root)(), tool_name)
+    return matcher.hooks[0]
+
+
+def test_supervise_hooks_factory_when_built_does_route_each_guarded_tool_to_one_matcher(
+    root: Path,
+):
+    mapping = supervise_hooks_factory(root)()
+
+    routed = {
+        tool: len(_matchers_for(mapping, tool))
+        for tool in ("Edit", "Write", "MultiEdit", "NotebookEdit", "Bash", "Read")
+    }
+
+    assert list(mapping) == ["PreToolUse"]
+    assert routed == {
+        "Edit": 1,
+        "Write": 1,
+        "MultiEdit": 1,
+        "NotebookEdit": 1,
+        "Bash": 1,
+        "Read": 0,
+    }
+
+
+#: The input a case hands the hook its tool routes to, and the answer expected.
+_CallbackCase = tuple[PreToolUseHookInput, dict[str, object]]
 
 
 def _write_outside(root: Path, _worktree: Path) -> _CallbackCase:
     path = str(root / "x.py")
     return (
-        0,
         _pre_tool_use("Write", {"file_path": path}),
         _deny(f"edits belong in the experiment worktree: {path} is outside it"),
     )
 
 
 def _write_inside(_root: Path, worktree: Path) -> _CallbackCase:
-    return 0, _pre_tool_use("Write", {"file_path": str(worktree / "x.py")}), {}
+    return _pre_tool_use("Write", {"file_path": str(worktree / "x.py")}), {}
 
 
 def _background_gymrat(_root: Path, _worktree: Path) -> _CallbackCase:
     return (
-        1,
         _bash_hook_input("gymrat keep -m x", run_in_background=True),
         _deny(_BACKGROUND_REASON),
     )
 
 
 def _foreground_gymrat(_root: Path, _worktree: Path) -> _CallbackCase:
-    return 1, _bash_hook_input("gymrat keep -m x"), {}
+    return _bash_hook_input("gymrat keep -m x"), {}
 
 
 @pytest.mark.parametrize(
@@ -896,32 +944,30 @@ async def test_supervise_hooks_factory_when_a_hook_is_called_does_answer_with_it
     worktree: Path,
     case: Callable[[Path, Path], _CallbackCase],
 ):
-    index, hook_input, expected = case(root, worktree)
-    callback = supervise_hooks_factory(root)()["PreToolUse"][index].hooks[0]
+    hook_input, expected = case(root, worktree)
+    callback = _callback_for(root, hook_input["tool_name"])
 
     output = await callback(hook_input, "tool-1", _CONTEXT)
 
     assert output == expected
 
 
-@pytest.mark.parametrize(
-    ("rule_name", "index"),
-    [
-        pytest.param("check_file_edit", 0, id="file"),
-        pytest.param("check_background_gymrat", 1, id="bash"),
-    ],
-)
-async def test_supervise_hooks_factory_when_the_rule_raises_does_deny(
-    root: Path, monkeypatch: pytest.MonkeyPatch, rule_name: str, index: int
-):
-    monkeypatch.setattr(
-        hooks,
-        rule_name,
-        create_autospec(getattr(hooks, rule_name), side_effect=RuntimeError("boom")),
-    )
-    callback = supervise_hooks_factory(root)()["PreToolUse"][index].hooks[0]
+class _UnreadableInput(dict[str, object]):
+    """A hook payload whose every lookup fails, so any rule reading it raises."""
 
-    output = await callback(_bash_hook_input("ls"), "t", _CONTEXT)
+    @override
+    def get(self, *_args: object) -> object:
+        msg = "boom"
+        raise RuntimeError(msg)
+
+
+@pytest.mark.parametrize(
+    "tool_name", [pytest.param("Write", id="file"), pytest.param("Bash", id="bash")]
+)
+async def test_supervise_hooks_factory_when_the_rule_raises_does_deny(root: Path, tool_name: str):
+    callback = _callback_for(root, tool_name)
+
+    output = await callback(cast("HookInput", _UnreadableInput()), "t", _CONTEXT)
 
     assert output == _deny(_REFUSED_REASON)
 

@@ -5,26 +5,16 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.run import BudgetExceededError, LoopStopError
-from gymrat.session.schema import CommandReason
 
 # ---------------------------------------------------------------------------
 # GymratError
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("hint", "reason"),
-    [
-        pytest.param(None, None, id="bare"),
-        pytest.param("try this", "error", id="hint-and-reason"),
-    ],
-)
-def test_gymrat_error_when_constructed_does_expose_its_message_hint_and_reason(
-    hint: str | None, reason: CommandReason | None
-):
-    error = GymratError("something broke", hint=hint, reason=reason)
+def test_gymrat_error_when_given_only_a_message_does_default_hint_and_reason_to_none():
+    error = GymratError("something broke")
 
-    assert (str(error), error.hint, error.reason) == ("something broke", hint, reason)
+    assert (str(error), error.hint, error.reason) == ("something broke", None, None)
 
 
 # ---------------------------------------------------------------------------

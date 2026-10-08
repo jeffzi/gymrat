@@ -51,21 +51,6 @@ SAMPLE_COUNTS = [
 # ---------------------------------------------------------------------------
 
 
-async def test_probe_session_when_no_names_does_bench_the_whole_bench_in_the_experiment_worktree(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    config = checks_config(bench="npm run bench", filter=FILTER)
-    recorder = install_measure(monkeypatch, measurement())
-
-    result = await probe_session(repo, config, ProbeOptions())
-
-    forwarded = only_call(recorder)
-    assert forwarded.target == TargetSpec(label="experiment", target=experiment_worktree_dir(repo))
-    assert forwarded.run.sampling.bench == "npm run bench"
-    assert result.names == ()
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX quoting only")
 async def test_probe_session_when_names_given_does_bench_the_filter_scoped_command(
     repo: str, monkeypatch: pytest.MonkeyPatch
@@ -135,11 +120,13 @@ async def test_probe_session_when_sampling_does_take_the_count_from_options_neve
     assert result.samples == expected
 
 
-async def test_probe_session_when_run_starts_does_take_the_rest_of_the_options_from_config(
+async def test_probe_session_when_no_names_does_bench_the_whole_bench_in_the_experiment_worktree_with_options_from_config(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
     config = checks_config(
+        bench="npm run bench",
+        filter=FILTER,
         prepare="npm ci",
         adapter="mitata",
         timeout_seconds=900,
@@ -150,13 +137,15 @@ async def test_probe_session_when_run_starts_does_take_the_rest_of_the_options_f
 
     result = await probe_session(repo, config, ProbeOptions())
 
-    assert (result.label, result.adapter) == ("experiment", "mitata")
-    forwarded = only_call(recorder).run
-    assert forwarded.sampling.prepare == "npm ci"
-    assert forwarded.adapter == "mitata"
-    assert forwarded.sampling.timeout_seconds == 900
-    assert forwarded.config_metrics == config.metrics
-    assert forwarded.config_kinds == config.kinds
+    assert (result.label, result.adapter, result.names) == ("experiment", "mitata", ())
+    forwarded = only_call(recorder)
+    assert forwarded.target == TargetSpec(label="experiment", target=experiment_worktree_dir(repo))
+    assert forwarded.run.sampling.bench == "npm run bench"
+    assert forwarded.run.sampling.prepare == "npm ci"
+    assert forwarded.run.adapter == "mitata"
+    assert forwarded.run.sampling.timeout_seconds == 900
+    assert forwarded.run.config_metrics == config.metrics
+    assert forwarded.run.config_kinds == config.kinds
 
 
 async def test_probe_session_when_callbacks_given_does_forward_them_to_the_run(

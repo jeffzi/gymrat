@@ -46,11 +46,13 @@ from tests.supervisor._fixtures import (
     FollowUpWatch,
     InterruptEmitsEndDriver,
     LockSwitch,
+    SupervisorClock,
     _supervise,
     append_step,
     collecting_observer,
     driver_calls,
     emit_turn_end,
+    events_log_path,
     events_of,
     follow_ups_with_action,
     make_launch,
@@ -97,7 +99,7 @@ async def test_supervise_when_turn_end_with_stop_record_does_log_a_finished_end(
     assert [(e.action, e.reason, e.text) for e in events_of(probe.events, FollowUpEvent)] == [
         ("ended", "finished", None)
     ]
-    lines = read_log_lines(tmp_path / "events.jsonl")
+    lines = read_log_lines(events_log_path(root))
     assert [
         (line["type"], line.get("action"), line.get("reason"))
         for line in lines
@@ -170,28 +172,19 @@ async def test_supervise_when_lock_file_held_does_wait_until_released(
 ):
     lock = hold_lock(str(tmp_path / "lockfile"))
     watch = FollowUpWatch()
-    released = False
 
     async def release_after_waiting() -> None:
-        nonlocal released
         await watch.until(lambda seen: "waiting" in seen)
         lock.release()
-        released = True
 
-    _background_task: asyncio.Task[None] | None = None
+    driver = create_mock_driver([TurnEndStep(cost_usd=0.01, origin="agent")])
 
-    async def schedule_release() -> None:
-        nonlocal _background_task
-        _background_task = asyncio.create_task(release_after_waiting())
+    # The group fails the test when the release never happens, instead of
+    # leaving supervision waiting on a lock nobody frees.
+    async with asyncio.TaskGroup() as group:
+        group.create_task(release_after_waiting())
+        result = await _supervise(root, driver, observer=watch, is_lock_held=None)
 
-    driver = create_mock_driver([
-        ActionStep(action=schedule_release),
-        TurnEndStep(cost_usd=0.01, origin="agent"),
-    ])
-
-    result = await _supervise(root, driver, observer=watch, is_lock_held=None)
-
-    assert released
     assert result.ended_by == "session"
     assert "waiting" in watch.actions()
 
@@ -296,11 +289,20 @@ async def test_supervise_when_turn_end_arrives_while_waiting_on_the_lock_does_fo
 async def test_supervise_when_lock_retaken_during_the_poll_settle_does_wait_again(
     root: str, agent_steps: list[MockStep], actions: list[str], calls: list[str]
 ):
-    # The probes answer the first settle, the lock poll, and the poll's own
-    # settle; the lock stays held after that until the script frees it.
-    probes = iter([True, False, True])
+    # The lock reads free exactly once, on the first probe after the supervisor
+    # says it is waiting, and is held again by the time the poll settles; after
+    # that it stays held until the script frees it.
     lock = LockSwitch(held=True)
     watch = FollowUpWatch()
+    freed_once = False
+
+    def is_held_but_briefly_free_after_waiting() -> bool:
+        nonlocal freed_once
+        if not freed_once and watch.actions() == ["waiting"]:
+            freed_once = True
+            return False
+        return lock.is_held()
+
     driver = create_mock_driver([
         emit_turn_end(),
         ActionStep(action=lambda: watch.until(lambda seen: seen.count("waiting") == 2)),
@@ -312,7 +314,7 @@ async def test_supervise_when_lock_retaken_during_the_poll_settle_does_wait_agai
 
     async with asyncio.timeout(FOLLOW_UP_TIMEOUT_S):
         result = await _supervise(
-            root, driver, observer=watch, is_lock_held=lambda: next(probes, lock.is_held())
+            root, driver, observer=watch, is_lock_held=is_held_but_briefly_free_after_waiting
         )
 
     assert result.ended_by == "session"
@@ -357,10 +359,6 @@ async def test_supervise_when_a_guard_trips_does_end_as_guard_naming_it(
     result = await _supervise(root, driver)
 
     assert (result.ended_by, result.end_reason) == ("guard", end_reason)
-
-
-_WALL_CLOCK_MAX_MINUTES = 0.001
-"""A deadline low enough that the wall-clock poll fires on its first check."""
 
 
 # ---------------------------------------------------------------------------
@@ -461,6 +459,14 @@ async def test_supervise_when_a_passive_event_arrives_during_settle_does_still_r
 # ---------------------------------------------------------------------------
 
 
+_WALL_CLOCK_MAX_MINUTES = 0.001
+"""The wall-clock cap the launch event and the turn classifier see.
+
+The patched clock reaching the explicit deadline, not this value, decides when
+the cap fires.
+"""
+
+
 def _tool_starts(events: list[SessionEvent]) -> list[ToolStartEvent]:
     return events_of(events, ToolStartEvent)
 
@@ -499,10 +505,8 @@ async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_
     reached: Callable[[list[SessionEvent]], Sequence[SessionEvent]],
 ):
     probe = collecting_observer()
-    clock = [now_ms()]
-    deadline_ms = clock[0] + 60_000
-    monkeypatch.setattr("gymrat.supervisor.supervise.now_ms", lambda: clock[0])
-
+    clock = SupervisorClock(monkeypatch, now_ms())
+    deadline_ms = clock.now_ms + 60_000
     state_reached = asyncio.Event()
 
     def observe(event: SessionEvent) -> None:
@@ -510,19 +514,14 @@ async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_
         if reached(probe.events):
             state_reached.set()
 
-    async def pass_deadline_once_reached() -> None:
-        async with asyncio.timeout(5):
-            await state_reached.wait()
-        clock[0] = deadline_ms
-
     inner = create_mock_driver([
         first_step,
-        ActionStep(action=pass_deadline_once_reached),
+        clock.jump_step(deadline_ms, after=state_reached),
         CostStep(cost_usd=0.01, delay_ms=60_000),
     ])
     driver = InterruptEmitsEndDriver(inner)
 
-    result = await _supervise(
+    await _supervise(
         root,
         driver,
         max_minutes=_WALL_CLOCK_MAX_MINUTES,
@@ -535,7 +534,6 @@ async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_
     caps = events_of(probe.events, CapEvent)
     cap_idx = probe.events.index(caps[0])
     follow_ups_after_cap = events_of(probe.events[cap_idx + 1 :], FollowUpEvent)
-    assert result.ended_by == "wall-clock"
     assert [cap.cap for cap in caps] == ["wall-clock"]
     assert probe.events.index(reached(probe.events)[0]) < cap_idx
     assert follow_ups_after_cap == []

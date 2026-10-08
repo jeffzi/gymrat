@@ -12,7 +12,6 @@ name (the dict key), not from the ``short_name`` field.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import pytest
 from rich.text import Text
@@ -32,10 +31,7 @@ from gymrat.report.table.markup import (
     verdict_cell,
 )
 from tests.report._comparisons import create_candidate, memory_kind, time_kind
-from tests.report._verdicts import geomean_of
-
-if TYPE_CHECKING:
-    from gymrat.report.table.markup import SectionLayout
+from tests.report._verdicts import geomean_of, metric_meta
 
 # ---------------------------------------------------------------------------
 # styled verdict cell
@@ -134,7 +130,7 @@ def test_verdict_cell_when_fields_padded_to_widths_does_style_only_field_text(
         ),
     ],
 )
-def test_scoped_geomean_label_when_subset_given_does_count_the_subset(
+def test_scoped_geomean_label_when_exclusions_vary_does_count_kept_metrics_against_total(
     scope: str, geomean: GeomeanResult, expected: str
 ):
     assert scoped_geomean_label(scope, geomean) == expected
@@ -157,7 +153,7 @@ def test_scoped_geomean_label_when_subset_given_does_count_the_subset(
         pytest.param(geomean_of(value=float("nan"), n=0), "bold", id="no-stable-metrics"),
     ],
 )
-def test_geomean_value_style_when_value_given_does_style_against_band(
+def test_geomean_value_style_when_value_inside_or_beyond_band_does_color_only_beyond_it(
     geomean: GeomeanResult, expected: str
 ):
     assert geomean_value_style(geomean, []) == expected
@@ -187,23 +183,8 @@ def _measure(name: str, group: str | None, metric: _FakeMetric) -> _Row:
     return _Row(name=name, group=group)
 
 
-def _metric(*, kind: str = "time", short_name: str = "x") -> _FakeMetric:
-    return _FakeMetric(
-        meta=ResolvedMetricMeta(
-            direction="lower",
-            gating=True,
-            exact=False,
-            unit=None,
-            kind=kind,
-            short_name=short_name,
-        ),
-    )
-
-
-def _group_blocks(layout: SectionLayout[_Row]) -> list[GroupBlock[_Row]]:
-    """The ``GroupBlock``s in the layout's first section."""
-    section = layout.sections[0]
-    return [block for block in section.blocks if isinstance(block, GroupBlock)]
+def _metric(*, kind: str = "time") -> _FakeMetric:
+    return _FakeMetric(meta=metric_meta("x", kind=kind))
 
 
 def test_plan_sections_when_group_members_interleave_does_gather_them_in_the_first_block():

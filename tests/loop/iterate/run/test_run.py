@@ -10,7 +10,6 @@ order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 from __future__ import annotations
 
 import asyncio
-import itertools
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,6 +27,7 @@ from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmSkipped,
     ConfirmStarted,
+    HookStarted,
     IterationRecorded,
     JudgeFinished,
     JudgeStarted,
@@ -40,6 +40,7 @@ from gymrat.session.budget import Budget
 from gymrat.session.records import PairedSamples
 from gymrat.targets import InPlaceTarget
 from tests._config import resolved_config
+from tests.adapters._inputs import VALID_ADAPTERS_HINT
 from tests.loop.iterate._fixtures import (
     MALFORMED_LINE_WARNING,
     as_logged,
@@ -106,7 +107,7 @@ _STOP_HINT = "The loop is done. Report what the session measured instead of meas
         pytest.param(
             (iteration_record(seq=1), committed_keep(1)),
             resolved_config(adapter="banana"),
-            ('Unknown adapter: "banana".', "valid adapters are: metric-lines, mitata", None),
+            ('Unknown adapter: "banana".', VALID_ADAPTERS_HINT, None),
             id="adapter-unknown",
         ),
         pytest.param(
@@ -195,9 +196,10 @@ async def test_iterate_session_when_no_stop_configured_does_measure_past_a_kept_
 async def test_iterate_session_when_measuring_does_record_the_paired_iteration_after_last_settled(
     settled: str, samples_mock: CollectSamplesRecorder
 ):
+    worktrees = iterate_session_header(settled).worktrees
+
     result = await iterate_session(settled, resolved_config())
 
-    worktrees = iterate_session_header(settled).worktrees
     assert samples_mock.calls[0].targets == [
         TargetContext(
             target=InPlaceTarget(dir=worktrees.baseline),
@@ -240,7 +242,6 @@ async def test_iterate_session_when_primary_is_named_metric_does_report_its_delt
     assert result.record.primary.kind == "metric"
     assert result.record.primary.name == "total_ms"
     assert result.record.primary.delta_pct == pytest.approx(-10, abs=1e-6)
-    assert "primary: -10.0% · verdict: IMPROVED" in result.report.split("\n")
 
 
 @pytest.mark.parametrize("color", [False, True])
@@ -290,16 +291,34 @@ async def test_iterate_session_when_improved_does_judge_after_the_bench_then_rec
 
 async def test_iterate_session_when_measuring_does_exclude_the_after_hook_from_duration_ms(
     hooks_setup: tuple[str, str, HookScripts],
+    samples_mock: CollectSamplesRecorder,
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo, _experiment_dir, hooks = hooks_setup
-    # The iteration's start and end reads land 500 apart; the after hook reads
-    # only once the iteration has taken its end tick.
-    ticks = itertools.count(start=1_000.0, step=500.0)
-    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
+    # The clock stands still except where the test moves it: the bench takes
+    # 500 ms, and the after hook takes far longer once it starts.
+    now_ms = [1_000.0]
+    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: now_ms[0])
+
+    async def bench_taking_500_ms(
+        adapter: object,
+        targets: Sequence[TargetContext],
+        options: SamplingOptions,
+        abort: object,
+    ) -> list[TargetSamples]:
+        now_ms[0] += 500.0
+        return await samples_mock(adapter, targets, options, abort)
+
+    def slow_after_hook(event: ProgressEvent) -> None:
+        if isinstance(event, HookStarted) and event.stage == "after":
+            now_ms[0] += 60_000.0
+
+    monkeypatch.setattr("gymrat.loop.iterate.confirm.collect_samples", bench_taking_500_ms)
     config = resolved_config(hooks=HooksConfig(after=hooks.printing("bye")))
 
-    result = await iterate_session(repo, config)
+    result = await iterate_session(
+        repo, config, options=IterateOptions(on_progress=slow_after_hook)
+    )
 
     assert result.record.duration_ms == 500
 
@@ -309,15 +328,12 @@ async def test_iterate_session_when_measuring_does_exclude_the_after_hook_from_d
 # ---------------------------------------------------------------------------
 
 
-def _ensure_dir(path: str) -> None:
-    Path(path).mkdir(parents=True, exist_ok=True)
-
-
 async def test_iterate_session_when_bench_writes_file_does_fingerprint_the_tree_it_left(
-    settled: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
+    hooks_setup: tuple[str, str, HookScripts],
+    samples_mock: CollectSamplesRecorder,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    experiment_dir = iterate_session_header(settled).worktrees.experiment
-    _ensure_dir(experiment_dir)
+    settled, experiment_dir, _hooks = hooks_setup
     # The experiment dir sits inside the scratch repo: keep the growing session log
     # out of the fingerprint so only the bench's write can change it.
     _workspace.ensure_git_exclude(settled)
@@ -367,13 +383,9 @@ async def test_iterate_session_when_fingerprint_fails_does_omit_measured_tree_wi
     settled: str,
     samples_mock: CollectSamplesRecorder,
     capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    def no_fingerprint(directory: Path) -> str | None:
-        return None
-
-    monkeypatch.setattr("gymrat.session.workspace.worktree_fingerprint", no_fingerprint)
-
+    # The session names an experiment worktree that was never created, so git
+    # has no tree there to fingerprint.
     result = await iterate_session(settled, resolved_config())
 
     assert result.record.measured_tree is None

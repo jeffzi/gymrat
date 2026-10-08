@@ -123,7 +123,7 @@ def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cau
 # ---------------------------------------------------------------------------
 
 
-def test_compose_kickoff_when_skill_and_runbook_present_does_put_the_skill_body_before_runbook(
+def test_compose_kickoff_when_skill_and_runbook_present_does_append_the_skill_body_without_frontmatter_before_the_runbook(
     tmp_path: Path,
 ):
     config = benchless_config(runbook=_write_runbook(tmp_path))
@@ -131,20 +131,11 @@ def test_compose_kickoff_when_skill_and_runbook_present_does_put_the_skill_body_
     result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
     append = result.system_prompt_append
+    prelude = append.partition(SKILL_MARKER)[0]
     assert SKILL_MARKER in append
     assert RUNBOOK_CONTENT in append
     assert f"## Runbook: {config.runbook}" in append
     assert append.index(SKILL_MARKER) < append.index("## Runbook:")
-
-
-def test_compose_kickoff_when_bundled_skill_has_frontmatter_does_drop_it_from_the_append(
-    tmp_path: Path,
-):
-    config = benchless_config(runbook=_write_runbook(tmp_path))
-
-    result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
-
-    prelude = result.system_prompt_append.partition(SKILL_MARKER)[0]
     assert "---" not in prelude
     assert "name: gymrat" not in prelude
     assert "description:" not in prelude
@@ -211,13 +202,20 @@ def test_compose_kickoff_when_prompt_is_default_or_given_does_lead_the_kickoff_a
     result = compose_kickoff(config, prompt, experiment_worktree=experiment_path)
 
     trailing = result.kickoff.split("\n\n")[-1]
-    kickoff_lower = result.kickoff.lower()
     assert result.kickoff.startswith(opening)
     assert "session" in trailing.lower()
     assert "baseline" in trailing.lower()
     assert experiment_path in trailing
     assert "step" in trailing.lower()
     assert "runbook" in trailing.lower()
+
+
+def test_compose_kickoff_when_composed_does_keep_tool_names_out_of_the_kickoff(tmp_path: Path):
+    config = benchless_config(runbook=_write_runbook(tmp_path))
+
+    result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
+
+    kickoff_lower = result.kickoff.lower()
     assert "tool" not in kickoff_lower
     assert "`probe`" not in kickoff_lower
 

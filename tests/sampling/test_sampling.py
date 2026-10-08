@@ -33,8 +33,9 @@ from gymrat.sampling import (
     resolve_metric_meta_from_samples,
 )
 from gymrat.targets import InPlaceTarget, RefTarget
+from tests._config import resolved_config
 from tests._exec_fixtures import expected_result, install_exec
-from tests.report._comparisons import metric_meta
+from tests.report._verdicts import metric_meta
 from tests.sampling._adapters import make_adapter
 
 REF_HINT = (
@@ -80,6 +81,11 @@ def one_in_place_target() -> list[TargetContext]:
     return [
         TargetContext(target=InPlaceTarget(dir="/a"), dir="/a", label="old", position="old"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# collect_samples
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -186,39 +192,6 @@ async def test_collect_samples_when_clock_omitted_does_stamp_monotonic_milliseco
     assert [e.at_ms for e in events] == [2500.0, 2500.0]
 
 
-@pytest.mark.parametrize(
-    ("prepare", "expected_events"),
-    [
-        pytest.param(
-            None,
-            [PassStarted(round=1, total_rounds=1, target_count=1, label="old", at_ms=0.0)],
-            id="bench-fails",
-        ),
-        pytest.param("prep", [PrepareStarted(label="old", at_ms=0.0)], id="prepare-fails"),
-    ],
-)
-async def test_collect_samples_when_command_fails_does_emit_its_start_but_never_its_finish(
-    monkeypatch: pytest.MonkeyPatch,
-    prepare: str | None,
-    expected_events: list[ProgressEvent],
-):
-    install_exec(monkeypatch, SAMPLING_EXEC, make_failure())
-    events: list[ProgressEvent] = []
-    options = SamplingOptions(
-        bench="run",
-        prepare=prepare,
-        samples=1,
-        timeout_seconds=1.0,
-        on_progress=events.append,
-        clock=lambda: 0.0,
-    )
-
-    with pytest.raises(CommandError):
-        await collect_samples(metric_lines_adapter, one_in_place_target(), options, asyncio.Event())
-
-    assert events == expected_events
-
-
 async def test_collect_samples_when_bench_output_unreadable_does_warn_after_the_pass_finished(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -244,34 +217,64 @@ async def test_collect_samples_when_bench_output_unreadable_does_warn_after_the_
 
 
 @pytest.mark.parametrize(
-    ("prepare", "result", "error", "expected_commands"),
+    ("prepare", "result", "error", "expected_commands", "expected_events"),
     [
-        pytest.param("prep", make_failure(), CommandError, ["prep"], id="prepare-fails"),
-        pytest.param(None, make_failure(), CommandError, ["run"], id="bench-exits-non-zero"),
+        pytest.param(
+            "prep",
+            make_failure(),
+            CommandError,
+            ["prep"],
+            [PrepareStarted(label="old", at_ms=0.0)],
+            id="prepare-fails",
+        ),
+        pytest.param(
+            None,
+            make_failure(),
+            CommandError,
+            ["run"],
+            [PassStarted(round=1, total_rounds=2, target_count=2, label="old", at_ms=0.0)],
+            id="bench-exits-non-zero",
+        ),
         pytest.param(
             None,
             make_success("METRIC a//b=1\nMETRIC /x=2"),
             AdapterError,
             ["run"],
+            [
+                PassStarted(round=1, total_rounds=2, target_count=2, label="old", at_ms=0.0),
+                PassFinished(round=1, total_rounds=2, target_count=2, label="old", at_ms=0.0),
+            ],
             id="bench-reports-only-malformed-names",
         ),
     ],
 )
-async def test_collect_samples_when_a_command_fails_does_stop_at_the_first_failure(
+async def test_collect_samples_when_a_command_fails_does_stop_at_it_with_progress_up_to_the_failure(
     monkeypatch: pytest.MonkeyPatch,
+    *,
     prepare: str | None,
     result: ExecResult,
     error: type[Exception],
     expected_commands: list[str],
+    expected_events: list[ProgressEvent],
 ):
     recorder = install_exec(monkeypatch, SAMPLING_EXEC, result)
-    targets = two_in_place_targets()
-    options = SamplingOptions(bench="run", prepare=prepare, samples=2, timeout_seconds=1.0)
+    events: list[ProgressEvent] = []
+    options = SamplingOptions(
+        bench="run",
+        prepare=prepare,
+        samples=2,
+        timeout_seconds=1.0,
+        on_progress=events.append,
+        clock=lambda: 0.0,
+    )
 
     with pytest.raises(error):
-        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+        await collect_samples(
+            metric_lines_adapter, two_in_place_targets(), options, asyncio.Event()
+        )
 
     assert [command for command, _ in recorder.calls] == expected_commands
+    assert events == expected_events
 
 
 _IN_PLACE_NEW = TargetContext(
@@ -438,7 +441,8 @@ def _timed_out(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -
         ),
     ],
 )
-async def test_collect_samples_when_command_fails_does_raise_error_with_full_shape(  # noqa: PLR0917 -- one parameter per failure axis plus the fixture
+async def test_collect_samples_when_command_fails_does_raise_error_with_full_shape(
+    *,
     result: ExecResult | ExecTimeoutError,
     target: TargetContext,
     options: SamplingOptions,
@@ -461,14 +465,13 @@ async def test_collect_samples_when_command_fails_does_raise_error_with_full_sha
 
 def _resolved_config() -> ResolvedConfig:
     """A resolved configuration with every run setting away from its default."""
-    return ResolvedConfig(
+    return resolved_config(
         bench="run",
         prepare="prep",
         adapter="mitata",
         samples=7,
         timeout_seconds=25,
         unstable_noise_pct=5.0,
-        primary="geomean",
         metrics={"decode/time": MetricEntry(direction="higher")},
         kinds={"memory": KindEntry(gating=False)},
     )
@@ -500,6 +503,11 @@ def test_run_options_from_config_when_bench_and_samples_given_does_override_the_
     run = RunOptions.from_config(_resolved_config(), samples=3, bench="run --filter a")
 
     assert (run.sampling.bench, run.sampling.samples) == ("run --filter a", 3)
+
+
+# ---------------------------------------------------------------------------
+# sample summaries
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

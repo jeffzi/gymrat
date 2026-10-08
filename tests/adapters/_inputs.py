@@ -9,9 +9,13 @@ import.
 :data:`LINE_BREAKS` lists every character ``str.splitlines`` breaks on, shared by
 the adapter tests that check a metric name holding one is rejected.
 
+:data:`VALID_ADAPTERS_HINT` is the hint ``get_adapter`` attaches to an
+unknown-adapter error, shared by every test that surfaces that error.
+
 This is test-support code, not a test module: ``test_mitata``,
-``test_adapters`` and ``tests/config/test_config_load.py`` import it. It
-carries no test functions of its own.
+``test_adapters``, ``tests/config/test_config_load.py``,
+``tests/test_doctor.py`` and ``tests/loop/iterate/run/test_run.py`` import
+it. It carries no test functions of its own.
 """
 
 import json
@@ -45,6 +49,9 @@ LINE_BREAKS = (
 
 ``metric_name.LINE_TERMINATORS`` must match exactly this set.
 """
+
+VALID_ADAPTERS_HINT = "valid adapters are: metric-lines, mitata"
+"""The hint on an unknown-adapter error, listing every built-in adapter."""
 
 
 def build_stdout(benchmarks: list[Any]) -> str:

@@ -93,11 +93,28 @@ def keep_iteration(
     append_records(root, iteration_record(seq=seq), committed_keep(seq, **overrides))
 
 
-def commit_and_keep(root: str, seq: int, message: str) -> str:
-    """Commit one edit in the experiment worktree and log the keep that settled it.
+def commit_iteration(root: str, seq: int, message: str) -> str:
+    """Commit one edit in the experiment worktree and log the iteration behind it.
 
     The experiment worktree is checked out on the session branch, so each call
-    moves that branch forward exactly as a real ``gymrat keep`` would.
+    moves that branch forward exactly as a real ``gymrat keep`` would. The keep
+    record is left to the caller.
+
+    Args:
+        root: The repository whose session the edit belongs to.
+        seq: The iteration number the logged iteration carries.
+        message: The commit message.
+
+    Returns:
+        The SHA of the new commit.
+    """
+    commit = commit_all(experiment_worktree_dir(root), message, file=f"step-{seq}.txt")
+    append_records(root, iteration_record(seq=seq))
+    return commit
+
+
+def commit_and_keep(root: str, seq: int, message: str) -> str:
+    """Commit one edit, log its iteration, and log the keep that settled it.
 
     Args:
         root: The repository whose session is kept.
@@ -107,8 +124,8 @@ def commit_and_keep(root: str, seq: int, message: str) -> str:
     Returns:
         The SHA of the commit the keep names.
     """
-    commit = commit_all(experiment_worktree_dir(root), message, file=f"step-{seq}.txt")
-    keep_iteration(root, seq, commit=commit, message=message)
+    commit = commit_iteration(root, seq, message)
+    append_records(root, committed_keep(seq, commit=commit, message=message))
     return commit
 
 

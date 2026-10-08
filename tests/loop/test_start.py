@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.config import HooksConfig, StopConfig
+from gymrat.config import HooksConfig, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import StartResult, start_session
@@ -90,12 +90,18 @@ CONFIG_SNAPSHOT = CONFIG_SNAPSHOT_WITHOUT_HOOKS.model_copy(
 
 
 def _close_session_with_one_keep(root: str) -> str:
-    """Keep one commit on the open session and close it, returning the id it closed on.
+    """Keep one commit on the open session and close it.
 
     Mirrors what a real finalize leaves behind — worktrees off disk and a finalize
     record ending the log — by committing a keep, taking the worktrees down, and
     appending a finalize record, so the next ``start_session`` meets a settled,
     closed session.
+
+    Args:
+        root: The repository whose open session is closed.
+
+    Returns:
+        The id of the session it closed.
     """
     header = session_header_of(root)
     commit_and_keep(root, 1, "cache the regex")
@@ -109,6 +115,12 @@ def _close_after_removing_the_worktree(root: str) -> str:
 
     With the directory gone first, ``git worktree remove`` finds nothing to take
     and git keeps its entry for the path, which the next start must step over.
+
+    Args:
+        root: The repository whose open session is closed.
+
+    Returns:
+        The id of the session it closed.
     """
     header = session_header_of(root)
     commit_and_keep(root, 1, "cache the regex")
@@ -131,6 +143,9 @@ def _refuse_session_branch_deletion(repo_dir: str) -> None:
 
     Git names the ref's new value as all zeros when it deletes the ref, so the hook
     lets the branch be created and moved and vetoes only its removal.
+
+    Args:
+        repo_dir: The repository the hook is installed in.
     """
     install_git_hook(
         repo_dir,
@@ -166,10 +181,17 @@ def read_only_log_dir(repo: str) -> Iterator[Path]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("config", "snapshot"),
+    [
+        pytest.param(CONFIG, CONFIG_SNAPSHOT, id="hooks-configured"),
+        pytest.param(CONFIG_WITHOUT_HOOKS, CONFIG_SNAPSHOT_WITHOUT_HOOKS, id="no-hooks"),
+    ],
+)
 def test_start_session_when_no_session_yet_does_write_header_naming_baseline_branch_worktrees_and_config(
-    repo: str, repo_head: str
+    repo: str, repo_head: str, config: ResolvedConfig, snapshot: SessionConfig
 ):
-    result = start_session(repo, "main", CONFIG)
+    result = start_session(repo, "main", config)
 
     header = session_header_of(repo)
     assert result == StartResult(session=header, state=fold_session([header]), resumed=False)
@@ -180,7 +202,7 @@ def test_start_session_when_no_session_yet_does_write_header_naming_baseline_bra
     assert header.worktrees == worktrees_at(repo)
     assert Path(experiment_worktree_dir(repo)).exists()
     assert Path(baseline_worktree_dir(repo)).exists()
-    assert header.config == CONFIG_SNAPSHOT
+    assert header.config == snapshot
 
 
 def test_start_session_when_new_does_mint_the_session_id_from_the_instant_the_header_stamps(
@@ -197,15 +219,6 @@ def test_start_session_when_new_does_mint_the_session_id_from_the_instant_the_he
     header = session_header_of(repo)
     assert header.at == instant_ns
     assert header.session_id.startswith("20240305-060708-")
-
-
-def test_start_session_when_no_hooks_configured_does_leave_hooks_out_of_the_config_snapshot(
-    repo: str,
-):
-    start_session(repo, "main", CONFIG_WITHOUT_HOOKS)
-
-    header = session_header_of(repo)
-    assert header.config.hooks is None
 
 
 def test_start_session_when_no_ref_given_does_pin_the_baseline_at_head(repo: str, repo_head: str):

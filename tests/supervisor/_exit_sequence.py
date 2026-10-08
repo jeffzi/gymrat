@@ -41,7 +41,17 @@ class ExitRun(NamedTuple):
 def session_context(
     root: str, *, timeout_seconds: int = 60, checks: str | None = None
 ) -> SupervisedSession:
-    """A supervised session rooted at ``root``, pointed at that repository's lock."""
+    """Build a supervised session rooted at ``root``, pointed at that repository's lock.
+
+    Args:
+        root: The repository the session runs in.
+        timeout_seconds: The config's command timeout, which also bounds the
+            exit sequence's lock wait.
+        checks: The checks command, or None for none configured.
+
+    Returns:
+        The supervised session.
+    """
     return make_context(
         root=root,
         lock_path=lockfile_path(root),

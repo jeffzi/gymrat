@@ -15,22 +15,16 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat import compare as compare_mod
-from gymrat.adapters import get_adapter
 from gymrat.compare import CompareOptions, compare
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
-from gymrat.sampling import (
-    CleanupResult,
-    TargetSpec,
-    resolve_metric_meta_from_samples,
-)
-from gymrat.targets import WorktreeRemovalFailure
+from gymrat.progress_events import PrepareStarted
+from gymrat.sampling import TargetSpec
 from gymrat.utils import warn_to_stderr
-from gymrat.verdict import compute_kind_aggregates, compute_verdicts
 from tests._git import list_worktree_dirs, write_committed_bench
 from tests._git import run_git as _git
-from tests._pipeline import install_pipeline, run_options
+from tests._pipeline import DIRTY_RESULT, install_pipeline, run_options
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -79,17 +73,19 @@ async def test_compare_when_candidates_judged_does_use_shared_baseline(
 
     result = await compare(_options(candidate_targets=("a", "b")))
 
-    meta = resolve_metric_meta_from_samples(
-        [baseline, cand_a, cand_b], None, get_adapter("metric-lines"), None
-    )
-    verdicts_a = compute_verdicts(baseline, cand_a, meta)
-    verdicts_b = compute_verdicts(baseline, cand_b, meta)
-    assert result.metrics["x"].candidates[0].verdict == verdicts_a["x"]
-    assert result.metrics["x"].candidates[1].verdict == verdicts_b["x"]
-    assert [c.kinds for c in result.candidates] == [
-        tuple(compute_kind_aggregates(verdicts_a, meta)),
-        tuple(compute_kind_aggregates(verdicts_b, meta)),
+    # Against the shared baseline (median 10.35) a moves about +97% and b about
+    # -51%; judging b against a instead would put b near -75%.
+    outcomes = [
+        None if candidate.verdict is None else (candidate.verdict.verdict, candidate.verdict.delta)
+        for candidate in result.metrics["x"].candidates
     ]
+    assert outcomes == [
+        ("regressed", pytest.approx(96.6, abs=0.1)),
+        ("improved", pytest.approx(-51.4, abs=0.1)),
+    ]
+    assert [candidate.kinds[0].geomean.value for candidate in result.candidates] == pytest.approx(
+        [96.6, -51.4], abs=0.1
+    )
 
 
 async def test_compare_when_metric_on_one_side_only_does_include_it_with_that_sides_median(
@@ -128,7 +124,7 @@ async def test_compare_when_a_round_is_one_sided_does_send_the_dropped_window_wa
 
     await compare(_options(warn=warnings.append))
 
-    assert warnings == ["x: dropped 1 paired window where the metric was measured on only one side"]
+    assert [warning.split(": ", 1)[0] for warning in warnings] == ["x"]
 
 
 async def test_compare_when_metric_named_like_dict_method_does_treat_as_ordinary_key(
@@ -177,45 +173,39 @@ async def test_compare_when_explicit_labels_given_does_flow_to_result(
 async def test_compare_when_pipeline_completes_does_assemble_result_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    dirty = CleanupResult(
-        removed=2,
-        failures=(WorktreeRemovalFailure(dir="/tmp/wt", error="busy"),),
-        prune_error="could not prune",
-    )
     install_pipeline(
-        monkeypatch, compare_mod, [[{"x": 1.0}, {"x": 2.0}], [{"x": 3.0}, {"x": 4.0}]], dirty
+        monkeypatch,
+        compare_mod,
+        [[{"x": 1.0}, {"x": 2.0}], [{"x": 3.0}, {"x": 4.0}]],
+        DIRTY_RESULT,
     )
 
     result = await compare(_options())
 
-    assert result.worktrees_removed == 2
-    assert result.worktrees_left_behind == (WorktreeRemovalFailure(dir="/tmp/wt", error="busy"),)
-    assert result.worktree_prune_error == "could not prune"
+    assert result.worktrees_removed == DIRTY_RESULT.removed
+    assert result.worktrees_left_behind == DIRTY_RESULT.failures
+    assert result.worktree_prune_error == DIRTY_RESULT.prune_error
     assert result.samples == 4
     assert result.adapter == "metric-lines"
 
 
-async def test_compare_when_progress_and_warn_given_does_forward_to_sampling(
+async def test_compare_when_progress_and_warn_given_does_deliver_sampling_events_and_warnings(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    captured = install_pipeline(
-        monkeypatch, compare_mod, [[{"x": 1.0}, {"x": 2.0}], [{"x": 3.0}, {"x": 4.0}]]
+    event = PrepareStarted(label="base", at_ms=0.0)
+    install_pipeline(
+        monkeypatch,
+        compare_mod,
+        [[{"x": 1.0}, {"x": 2.0}], [{"x": 3.0}, {"x": 4.0}]],
+        progress_event=event,
+        warning="banana",
     )
-    steps: list[object] = []
+    steps: list[ProgressEvent] = []
     warnings: list[str] = []
-    options = _options(on_progress=steps.append, warn=warnings.append)
 
-    await compare(options)
+    await compare(_options(on_progress=steps.append, warn=warnings.append))
 
-    forwarded = captured.options
-    assert forwarded is not None
-    sampling = options.run.sampling
-    assert forwarded.on_progress is sampling.on_progress
-    assert forwarded.warn is sampling.warn
-    assert forwarded.bench == "run"
-    assert forwarded.prepare == "prep"
-    assert forwarded.samples == 4
-    assert forwarded.timeout_seconds == 1.0
+    assert (steps, warnings) == ([event], ["banana"])
 
 
 async def test_compare_when_config_overrides_given_does_apply_them_to_the_result(

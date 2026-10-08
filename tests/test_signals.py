@@ -16,6 +16,7 @@ from rich.file_proxy import FileProxy
 
 from gymrat import signals
 from gymrat.signals import install_termination_cleanup
+from tests._signal_masking import needs_signal_masking
 from tests._streams import RecordingStream
 
 # Invokes the handler installed for a signal and returns the code it would exit
@@ -191,7 +192,7 @@ def _disarm_stranded_exits() -> Iterator[None]:
 
 
 @pytest.mark.parametrize("signal_number", _TERMINATION_SIGNALS, ids=_signal_id)
-def test_install_termination_cleanup_when_signal_received_does_run_cleanup_and_exit_128_plus_signal_number(
+def test_install_termination_cleanup_when_signal_received_does_exit_128_plus_signal_number_after_running_cleanup(
     raise_signal: RaiseSignal, signal_number: int
 ):
     calls = []
@@ -487,10 +488,7 @@ def test_install_termination_cleanup_when_second_signal_arrives_during_exit_outp
     assert exit_delay < _SECOND_SIGNAL_EXIT_CEILING_S
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
+@needs_signal_masking
 def test_install_termination_cleanup_when_writing_exit_output_does_block_termination_signals_on_writer_thread(
     raise_signal: RaiseSignal, monkeypatch: pytest.MonkeyPatch
 ):
@@ -648,10 +646,7 @@ def test_reset_when_called_during_deferral_does_handle_next_signal_immediately(
     assert code == 128 + signal.SIGINT
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
+@needs_signal_masking
 def test_deferring_termination_signals_when_entered_does_block_them_until_exit():
     before = signal.pthread_sigmask(signal.SIG_BLOCK, [])
 
@@ -662,10 +657,7 @@ def test_deferring_termination_signals_when_entered_does_block_them_until_exit()
     assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == before
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
+@needs_signal_masking
 def test_deferring_termination_signals_when_overlapping_deferrals_exit_out_of_order_does_restore_the_mask_once_both_exit():
     # Two coroutines on one event loop overlap their deferrals this way: the one
     # that entered first exits first, while the other is still inside its own.
@@ -709,25 +701,34 @@ def test_deferring_termination_signals_when_overlapping_deferral_still_open_does
     assert (exits_while_second_open, exits) == ([], [128 + signal.SIGINT])
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
-def test_deferring_termination_signals_when_mask_raises_does_propagate_and_handle_the_next_signal_immediately(
-    monkeypatch: pytest.MonkeyPatch, raise_signal: RaiseSignal
-):
-    cleaned: list[str] = []
-    install_termination_cleanup(lambda: cleaned.append("cleanup"))
+@pytest.fixture
+def exploding_mask(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every ``pthread_sigmask`` call in the signals module raise ``OSError``."""
 
-    def exploding_mask(*args: object, **kwargs: object) -> None:
+    def explode(*args: object, **kwargs: object) -> None:
         message = "mask failed"
         raise OSError(message)
 
-    monkeypatch.setattr(signals, "pthread_sigmask", exploding_mask)
+    monkeypatch.setattr(signals, "pthread_sigmask", explode)
 
+
+@needs_signal_masking
+@pytest.mark.usefixtures("exploding_mask")
+def test_deferring_termination_signals_when_mask_raises_does_propagate_the_error():
     with pytest.raises(OSError, match="mask failed"):
         with signals.deferring_termination_signals():
             pass  # pragma: no cover — never reached
+
+
+@needs_signal_masking
+@pytest.mark.usefixtures("exploding_mask")
+def test_deferring_termination_signals_when_mask_raised_does_handle_the_next_signal_immediately(
+    raise_signal: RaiseSignal,
+):
+    cleaned: list[str] = []
+    install_termination_cleanup(lambda: cleaned.append("cleanup"))
+    with contextlib.suppress(OSError), signals.deferring_termination_signals():
+        pass  # pragma: no cover — never reached
 
     code = raise_signal(signal.SIGINT)
 

@@ -293,11 +293,6 @@ def trimmed_report_lines(report: str) -> list[str]:
     return stripped_lines(report, keep_blank=True)
 
 
-def plain_report(report: str) -> str:
-    """The report stripped of color, as a terminal's visible text would read."""
-    return "\n".join(trimmed_report_lines(report))
-
-
 def as_logged(value: SessionLogRecord) -> object:
     """A record after the round trip through the wire the session log puts it through.
 

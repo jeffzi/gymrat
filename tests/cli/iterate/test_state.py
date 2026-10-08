@@ -71,8 +71,6 @@ def _apply(state: IterateState, *events: ProgressEvent) -> IterateState:
     return state
 
 
-_INITIAL = _state()
-
 # A single round against two targets: the phase total is two passes.
 _FIRST_PASS_STARTED = _pass_started(1, 1, target_count=2, label="baseline", at_ms=0)
 _FIRST_PASS_FINISHED = _pass_finished(1, 1, target_count=2, label="baseline", at_ms=10000)

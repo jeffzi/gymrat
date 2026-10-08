@@ -1,27 +1,27 @@
-"""Live-wiring, render-refresh, and signal-erase tests.
+"""Live-wiring, render-refresh, warning, and termination-signal tests.
 
 Tests for the ``Live`` construction contract (rich's refresh timer at one frame
-per second rendering through ``get_renderable``, ``transient=True``, mounted via
-``start()``), the single ``refresh()`` an event that changes state triggers, the
-skipped repaint for events that leave state unchanged, and ``_stop_live``
-suppression scope (``OSError`` and a closed-stream ``ValueError`` only).
+per second rendering through ``get_renderable``, ``transient=True``, rich's
+stderr redirect left on), the single ``refresh()`` an event that changes state
+triggers, the skipped repaint for events that leave state unchanged, and
+``_stop_live`` suppression scope (``OSError`` and a closed-stream ``ValueError``
+only).
 
-The signal tests paint the dashboard on a sealed terminal console that is also
-the process's stderr from before the reporter is built, as a real terminal is,
-so the dashboard's stderr redirect is in effect when a signal lands. They run
-the installed termination handler with the process exit stubbed out, then
-replay what reached the terminal through a ``pyte`` screen: the screen a user
-is left with after ``os._exit``. The dashboard's erase is handed to the
-handler, which writes it together with any warnings a later cleanup raises, so
-the tests read the screen once the handler has run.
+The ``terminal`` fixture makes a sealed terminal console the dashboard's
+console and the process's stderr, with one line kept above the dashboard. The
+warning tests patch out the ``Live`` class so no frame is painted, and replay
+what the dashboard printed through a ``pyte`` screen. The signal tests check
+that a stopped or plain-mode reporter leaves the terminal alone when a
+termination signal lands; erasing a mounted dashboard is tested with the
+display itself, in ``tests/cli/test_live_display.py``.
 """
 
 from __future__ import annotations
 
 import sys
 from io import StringIO
-from typing import TYPE_CHECKING, Literal, override
-from unittest.mock import patch
+from typing import TYPE_CHECKING, override
+from unittest.mock import DEFAULT, patch
 
 import pytest
 
@@ -32,7 +32,6 @@ from tests._logging import unhandled_logging
 from tests._rich import (
     KEPT_LINE,
     TERMINATION_SIGNAL,
-    WARNING_LINE,
     Clock,
     frame_text,
     screen_lines,
@@ -87,7 +86,6 @@ def test_create_reporter_when_color_false_does_build_colorless_console():
 
 def test_create_reporter_when_live_mode_does_mount_a_configured_live():
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        mock_live = mock_live_cls.return_value
         kit = make_reporter(mode="live")
 
         call_kwargs = mock_live_cls.call_args.kwargs
@@ -97,8 +95,8 @@ def test_create_reporter_when_live_mode_does_mount_a_configured_live():
             kit.reporter
         )
         assert call_kwargs.get("transient") is True
-        mock_live.start.assert_called_once()
-        mock_live.refresh.assert_called_once()
+        # rich's stderr redirect is what lands a stray stderr write above the frame
+        assert call_kwargs.get("redirect_stderr", True) is True
 
 
 def test_create_reporter_when_plain_mode_does_not_create_live():
@@ -159,10 +157,10 @@ def test_exit_phase_when_live_mode_and_phase_changes_does_repaint_once():
 
 
 def test_warn_when_live_message_contains_brackets_does_print_it_verbatim(terminal: StringIO):
-    kit = make_reporter(mode="live")
+    with patch(LIVE_CLASS_PATH, autospec=True):
+        kit = make_reporter(mode="live")
 
-    kit.reporter.warn("missing [banana] key")
-    kit.reporter.stop()
+        kit.reporter.warn("missing [banana] key")
 
     assert _screen(terminal.getvalue()) == [KEPT_LINE, "missing [banana] key"]
 
@@ -174,31 +172,17 @@ def test_warn_when_live_message_contains_brackets_does_print_it_verbatim(termina
 _READ_FAILED = "session read failed: no session file"
 
 
-@pytest.mark.parametrize(
-    ("mode", "screen", "plain_lines"),
-    [
-        pytest.param("live", [KEPT_LINE, _READ_FAILED], [], id="live-prints-above-the-frame"),
-        pytest.param("plain", [KEPT_LINE], [_READ_FAILED], id="plain-writes-a-milestone-line"),
-    ],
-)
 def test_refresh_session_when_session_read_keeps_failing_does_report_it_once_without_a_traceback(
-    mode: Literal["live", "plain"],
-    screen: list[str],
-    plain_lines: list[str],
     terminal: StringIO,
 ):
-    writes: list[str] = []
-    kit = make_reporter(mode=mode, read_session=_throwing_read, plain_write=writes.append)
+    with patch(LIVE_CLASS_PATH, autospec=True):
+        kit = make_reporter(mode="live", read_session=_throwing_read)
 
-    with unhandled_logging():
-        fire_launch_and_bash_cycle(kit.reporter.observer)
-        kit.reporter.refresh_session()
-    kit.reporter.stop()
+        with unhandled_logging():
+            fire_launch_and_bash_cycle(kit.reporter.observer)
+            kit.reporter.refresh_session()
 
-    assert (_screen(terminal.getvalue()), [line for line in writes if "failed" in line]) == (
-        screen,
-        plain_lines,
-    )
+    assert _screen(terminal.getvalue()) == [KEPT_LINE, _READ_FAILED]
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +217,7 @@ def test_stop_when_live_stop_raises_unrelated_value_error_does_propagate():
 
 
 # ---------------------------------------------------------------------------
-# Termination signal — erase the dashboard without waiting on its lock
+# Termination signal — a stopped or plain reporter leaves the terminal alone
 # ---------------------------------------------------------------------------
 
 
@@ -275,17 +259,6 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[StringIO]:
 
 def _screen(raw: str) -> list[str]:
     return screen_lines(raw, width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
-
-
-def test_stderr_write_when_live_dashboard_up_does_land_above_the_frame(terminal: StringIO):
-    kit = make_reporter(mode="live")
-    kit.reporter.observer(launch_event(1000))
-
-    sys.stderr.write(f"{WARNING_LINE}\n")
-    sys.stderr.flush()
-
-    frame_rows = _screen(render_frame(kit.reporter, width=_SCREEN_WIDTH))
-    assert _screen(terminal.getvalue()) == [KEPT_LINE, WARNING_LINE, *frame_rows]
 
 
 def test_signal_when_dashboard_already_stopped_does_leave_the_screen_untouched(
@@ -361,62 +334,25 @@ def _dashboard_reading(sidecar: _FlakySidecar) -> ReporterKit:
     return kit
 
 
-@pytest.mark.usefixtures("terminal")
-def test_live_frame_when_a_frame_fails_to_render_does_show_the_last_good_frame():
+def test_live_frame_when_frames_fail_then_recover_does_hold_the_last_good_frame_warning_once(
+    terminal: StringIO,
+):
     sidecar = _FlakySidecar()
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         kit = _dashboard_reading(sidecar)
     get_renderable = mock_live_cls.call_args.kwargs["get_renderable"]
     last_good = frame_text(get_renderable(), width=FRAME_WIDTH)
-    sidecar.fail_next(1)
+    sidecar.fail_next(2)
     kit.clock.now = 9000
 
-    failed = frame_text(get_renderable(), width=FRAME_WIDTH)
-
-    assert failed == last_good
-
-
-@pytest.mark.usefixtures("terminal")
-def test_live_frame_when_a_render_fails_once_does_render_the_next_frame_normally():
-    sidecar = _FlakySidecar()
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        kit = _dashboard_reading(sidecar)
-    get_renderable = mock_live_cls.call_args.kwargs["get_renderable"]
-    sidecar.fail_next(1)
-    kit.clock.now = 9000
-    get_renderable()
-
+    failed = [frame_text(get_renderable(), width=FRAME_WIDTH) for _ in range(2)]
     recovered = frame_text(get_renderable(), width=FRAME_WIDTH)
 
-    assert recovered == render_frame(kit.reporter)
-
-
-def test_live_frame_when_frames_fail_to_render_does_warn_once_naming_the_error(
-    terminal: StringIO,
-):
-    sidecar = _FlakySidecar()
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        _dashboard_reading(sidecar)
-    get_renderable = mock_live_cls.call_args.kwargs["get_renderable"]
-    sidecar.fail_next(2)
-
-    get_renderable()
-    get_renderable()
-
-    assert _screen(terminal.getvalue()) == [KEPT_LINE, _RENDER_FAILURE_WARNING]
-
-
-def test_stop_when_plain_mode_frame_would_fail_does_not_warn():
-    sidecar = _FlakySidecar()
-    sidecar.fail_next(None)
-    plain_lines: list[str] = []
-    kit = make_reporter(mode="plain", read_progress=sidecar, plain_write=plain_lines.append)
-    kit.reporter.observer(launch_event(1000))
-    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
-
-    kit.reporter.stop()
-
-    assert plain_lines == ["caps 480m"]
+    assert (failed, recovered, _screen(terminal.getvalue())) == (
+        [last_good, last_good],
+        render_frame(kit.reporter),
+        [KEPT_LINE, _RENDER_FAILURE_WARNING],
+    )
 
 
 def test_stop_when_final_frame_fails_to_render_does_return_normally(terminal: StringIO):
@@ -427,29 +363,32 @@ def test_stop_when_final_frame_fails_to_render_does_return_normally(terminal: St
     kit.reporter.stop()
 
 
-class _SetupFailingClock(Clock[int]):
-    """A clock that raises while ``failing`` is set, as a frame built during setup would."""
+class _FailingClock(Clock[int]):
+    """A clock that raises on every read, so any frame built from it fails."""
 
     def __init__(self) -> None:
         super().__init__(1000)
-        self.failing = True
 
     @override
     def __call__(self) -> int:
-        if self.failing:
-            raise RuntimeError(_RENDER_FAILURE)
-        return super().__call__()
+        raise RuntimeError(_RENDER_FAILURE)
+
+
+def _build_a_frame_on_construction(
+    *_args: object, get_renderable: Callable[[], object], **_kwargs: object
+) -> object:
+    # rich builds a first frame while a Live is being constructed.
+    get_renderable()
+    return DEFAULT
 
 
 def test_create_reporter_when_setup_frame_fails_to_render_does_warn_through_the_dashboard(
     terminal: StringIO,
 ):
-    clock = _SetupFailingClock()
     plain_lines: list[str] = []
-    kit = make_reporter(mode="live", clock=clock, plain_write=plain_lines.append)
-    clock.failing = False
 
-    kit.reporter.stop()
+    with patch(LIVE_CLASS_PATH, autospec=True, side_effect=_build_a_frame_on_construction):
+        make_reporter(mode="live", clock=_FailingClock(), plain_write=plain_lines.append)
 
     assert (plain_lines, _screen(terminal.getvalue())) == (
         [],

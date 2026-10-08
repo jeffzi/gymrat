@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from mcp.types import CallToolResult
 
 import pytest
+from claude_agent_sdk import create_sdk_mcp_server
 from mcp import Client
 from mcp.types import TextContent
 
@@ -123,7 +124,7 @@ async def test_probe_when_exit_2_with_stderr_does_return_error_with_stderr(
 
 
 @pytest.mark.parametrize("command", ["probe", "iterate"])
-async def test_command_when_exit_2_with_no_output_does_return_fallback_naming_it(
+async def test_tool_host_when_exit_2_with_no_output_does_return_fallback_naming_the_command(
     tmp_path: pathlib.Path, command: str
 ) -> None:
     host = _real_host(tmp_path, script="import sys; sys.exit(2)")
@@ -170,7 +171,7 @@ async def test_probe_when_abort_already_set_does_return_killed_without_running_c
         ),
     ],
 )
-async def test_command_when_child_fails_without_document_does_return_failure_text(
+async def test_tool_host_when_child_fails_without_document_does_return_failure_text(
     tmp_path: pathlib.Path,
     command: str,
     script: str,
@@ -441,12 +442,9 @@ async def test_gymrat_tool_definitions_when_called_does_describe_probe_then_iter
 
 
 @pytest.fixture
-def sdk_config(host: ToolHost, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """The SDK server config the factory builds, with its tool host replaced by ``host``."""
-    monkeypatch.setattr(
-        "gymrat.supervisor.tools.ToolHost", create_autospec(ToolHost, return_value=host)
-    )
-    return gymrat_tools_factory("unused-root")(asyncio.Event(), {})  # type: ignore[return-value]  # McpSdkServerConfig is a TypedDict
+def sdk_config(host: ToolHost) -> dict[str, Any]:
+    """An SDK server config exposing ``host``'s tool definitions."""
+    return create_sdk_mcp_server("gymrat", "0.1.0", gymrat_tool_definitions(host))  # type: ignore[return-value]  # McpSdkServerConfig is a TypedDict
 
 
 async def _call_via_sdk(
@@ -498,7 +496,7 @@ async def _call_via_sdk(
         ),
     ],
 )
-async def test_gymrat_tools_factory_when_valid_arguments_given_does_run_child_with_expected_argv(
+async def test_gymrat_tool_definitions_when_valid_arguments_given_does_run_child_with_expected_argv(
     sdk_config: dict[str, Any],
     fake_exec: AsyncMock,
     tool_name: str,
@@ -520,7 +518,7 @@ async def test_gymrat_tools_factory_when_valid_arguments_given_does_run_child_wi
         pytest.param("probe", {"names": "a"}, id="probe-string-names"),
     ],
 )
-async def test_gymrat_tools_factory_when_invalid_arguments_given_does_reject_before_running_child(
+async def test_gymrat_tool_definitions_when_invalid_arguments_given_does_reject_before_running_child(
     sdk_config: dict[str, Any],
     fake_exec: AsyncMock,
     tool_name: str,
@@ -532,7 +530,7 @@ async def test_gymrat_tools_factory_when_invalid_arguments_given_does_reject_bef
     fake_exec.assert_not_called()
 
 
-async def test_gymrat_tools_factory_when_called_does_run_tools_in_the_root_with_the_env(
+async def test_gymrat_tools_factory_when_called_does_build_the_gymrat_sdk_server_running_tools_with_the_env(
     create_scratch_repo: Callable[[], str],
 ) -> None:
     factory = gymrat_tools_factory(create_scratch_repo())
@@ -540,7 +538,9 @@ async def test_gymrat_tools_factory_when_called_does_run_tools_in_the_root_with_
 
     result = await _call_via_sdk(config, "probe", {})
 
-    assert (config["type"], config["name"], result.is_error) == ("sdk", "gymrat", True)
+    assert config["type"] == "sdk"
+    assert config["name"] == "gymrat"
+    assert result.is_error is True
     assert result.content == [
         TextContent(
             type="text",

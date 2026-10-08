@@ -89,10 +89,13 @@ def _session(root: str) -> SessionRecord:
 
 
 def four_iterations() -> tuple[SessionLogRecord, ...]:
-    """Four measured iterations: one kept, one discarded, one blocked, one unsettled.
+    """Build a session history of four measured iterations, each settled differently.
 
     The first iteration is kept, the second discarded, the third's keep is refused
     by the checks gate, and the fourth is still waiting to be settled.
+
+    Returns:
+        The records in log order, opening on a baseline and a hook record.
     """
     return (
         BASELINE,

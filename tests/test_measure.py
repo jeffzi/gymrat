@@ -18,8 +18,8 @@ from gymrat import measure as measure_mod
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import CommandError
 from gymrat.measure import MeasureOptions, measure
-from gymrat.sampling import CleanupResult, TargetSpec
-from gymrat.targets import WorktreeRemovalFailure
+from gymrat.progress_events import PrepareStarted
+from gymrat.sampling import TargetSpec
 from gymrat.utils import warn_to_stderr
 from tests._git import (
     EMIT_ONE_BENCH,
@@ -27,7 +27,7 @@ from tests._git import (
     list_worktree_dirs,
     write_committed_bench,
 )
-from tests._pipeline import install_pipeline, run_options
+from tests._pipeline import DIRTY_RESULT, install_pipeline, run_options
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -39,13 +39,11 @@ if TYPE_CHECKING:
 def _options(
     *,
     target: str = "main",
-    spec: TargetSpec | None = None,
     on_progress: Callable[[ProgressEvent], None] | None = None,
     warn: WarnSink = warn_to_stderr,
     config_metrics: dict[str, MetricEntry] | None = None,
     config_kinds: dict[str, KindEntry] | None = None,
 ) -> MeasureOptions:
-    resolved_spec = spec if spec is not None else TargetSpec(label=None, target=target)
     return MeasureOptions(
         run=run_options(
             samples=3,
@@ -54,7 +52,7 @@ def _options(
             config_metrics=config_metrics,
             config_kinds=config_kinds,
         ),
-        target=resolved_spec,
+        target=TargetSpec(label=None, target=target),
     )
 
 
@@ -88,50 +86,31 @@ async def test_measure_when_target_sampled_does_give_it_no_comparison_position(
     assert [ctx.position for ctx in captured.contexts] == [None]
 
 
-async def test_measure_when_explicit_label_given_does_use_it(monkeypatch: pytest.MonkeyPatch):
-    install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}]])
-
-    result = await measure(_options(spec=TargetSpec(label="custom", target="whatever")))
-
-    assert result.label == "custom"
-
-
 async def test_measure_when_cleanup_reports_removals_does_map_worktree_fields(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    dirty = CleanupResult(
-        removed=1,
-        failures=(WorktreeRemovalFailure(dir="/tmp/wt", error="busy"),),
-        prune_error="could not prune",
-    )
-    install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}]], cleanup=dirty)
+    install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}]], cleanup=DIRTY_RESULT)
 
     result = await measure(_options())
 
-    assert result.worktrees_removed == 1
-    assert result.worktrees_left_behind == (WorktreeRemovalFailure(dir="/tmp/wt", error="busy"),)
-    assert result.worktree_prune_error == "could not prune"
+    assert result.worktrees_removed == DIRTY_RESULT.removed
+    assert result.worktrees_left_behind == DIRTY_RESULT.failures
+    assert result.worktree_prune_error == DIRTY_RESULT.prune_error
 
 
-async def test_measure_when_progress_and_warn_given_does_forward_to_sampling(
+async def test_measure_when_progress_and_warn_given_does_deliver_sampling_events_and_warnings(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    captured = install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}]])
-    steps: list[object] = []
+    event = PrepareStarted(label="main", at_ms=0.0)
+    install_pipeline(
+        monkeypatch, measure_mod, [[{"x": 1.0}]], progress_event=event, warning="banana"
+    )
+    steps: list[ProgressEvent] = []
     warnings: list[str] = []
-    options = _options(on_progress=steps.append, warn=warnings.append)
 
-    await measure(options)
+    await measure(_options(on_progress=steps.append, warn=warnings.append))
 
-    forwarded = captured.options
-    assert forwarded is not None
-    sampling = options.run.sampling
-    assert forwarded.on_progress is sampling.on_progress
-    assert forwarded.warn is sampling.warn
-    assert forwarded.bench == "run"
-    assert forwarded.prepare == "prep"
-    assert forwarded.samples == 3
-    assert forwarded.timeout_seconds == 1.0
+    assert (steps, warnings) == ([event], ["banana"])
 
 
 async def test_measure_when_config_overrides_given_does_apply_them_to_the_result(

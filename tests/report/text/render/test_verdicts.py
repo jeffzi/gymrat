@@ -7,9 +7,10 @@ footer. The report is driven end to end where the assembled output is the
 behavior, and through the footer and selection functions where their own rules
 are.
 
-The colored report is covered too: how verdict cells, the run and column
-headers, and the highlights block are painted, and how the color option
-overrides ``FORCE_COLOR``.
+The colored report is covered too: how verdict cells, the ``vs`` column header
+and the highlights block are painted, and how the color option overrides
+``FORCE_COLOR``. The run header's colors live with the other element styles in
+``test_whole``.
 """
 
 from __future__ import annotations
@@ -36,11 +37,13 @@ from tests.report._assertions import (
     styles_at,
 )
 from tests.report._comparisons import (
+    NWayCandidate,
     create_candidate,
     create_comparison_result,
     exact_metric,
     grouped_comparison,
     memory_kind,
+    n_way_metric,
     other_kind,
     permutation_metric,
     time_kind,
@@ -48,11 +51,8 @@ from tests.report._comparisons import (
     without_gated_geomean,
 )
 from tests.report._verdicts import (
-    CandidateSpec,
-    approximate_metric,
     band_metric,
     geomean_of,
-    metric_for,
     one_sided_metric,
 )
 
@@ -90,16 +90,16 @@ def test_render_report_when_ties_starve_the_test_does_mark_the_row_identical():
 
 def test_select_highlights_when_mixed_verdicts_does_rank_movers_only():
     metrics: MetricComparisons = {
-        "small-improvement/time": approximate_metric(verdict="improved", delta=-4),
-        "quiet-unstable/time": approximate_metric(verdict="unstable", delta=6, noise_pct=210),
-        "small-regression/time": approximate_metric(verdict="regressed", delta=3),
-        "big-regression/ops": approximate_metric(
+        "small-improvement/time": permutation_metric(verdict="improved", delta=-4),
+        "quiet-unstable/time": permutation_metric(verdict="unstable", delta=6, noise_pct=210),
+        "small-regression/time": permutation_metric(verdict="regressed", delta=3),
+        "big-regression/ops": permutation_metric(
             verdict="regressed", delta=-12, direction="higher"
         ),
-        "within-noise/time": approximate_metric(verdict="no-signal", delta=0.4),
-        "big-improvement/time": approximate_metric(verdict="improved", delta=-20),
+        "within-noise/time": permutation_metric(verdict="no-signal", delta=0.4),
+        "big-improvement/time": permutation_metric(verdict="improved", delta=-20),
         "one-sided/time": one_sided_metric(),
-        "loud-unstable/time": approximate_metric(verdict="unstable", delta=5, noise_pct=300),
+        "loud-unstable/time": permutation_metric(verdict="unstable", delta=5, noise_pct=300),
         "tied/heap": band_metric(n=10, usable_n=0),
         "single-pair/time": band_metric(n=1, noise_pct=0.5),
         "short-improved/time": band_metric(verdict="improved", delta=-10, n=4),
@@ -117,23 +117,13 @@ def test_select_highlights_when_mixed_verdicts_does_rank_movers_only():
     ]
 
 
-@pytest.mark.parametrize(
-    ("delta", "baseline_median"),
-    [
-        pytest.param(0, 0, id="zero-baseline-median"),
-        pytest.param(-100, 100, id="zero-candidate-median"),
-        pytest.param(0, 1e-310, id="overflowing-noise-ratio"),
-    ],
-)
-def test_select_highlights_when_unstable_around_zero_median_does_rank_by_absolute_noise(
-    delta: float, baseline_median: float
-):
+def test_select_highlights_when_unstable_around_zero_median_does_rank_by_absolute_noise():
     metrics: MetricComparisons = {
-        "loud-unstable/time": approximate_metric(verdict="unstable", delta=5, noise_pct=30),
+        "loud-unstable/time": permutation_metric(verdict="unstable", delta=5, noise_pct=30),
         "zero-median/heap": permutation_metric(
             verdict="unstable",
-            delta=delta,
-            baseline_median=baseline_median,
+            delta=-100,
+            baseline_median=100,
             noise_pct=0.5,
             noise_abs=381,
             unit="bytes",
@@ -150,9 +140,9 @@ def test_select_highlights_when_unstable_around_zero_median_does_rank_by_absolut
 
 def test_select_highlights_when_equal_magnitude_does_keep_declaration_order():
     metrics: MetricComparisons = {
-        "second-listed/ops": approximate_metric(verdict="regressed", delta=-5, direction="higher"),
-        "third-listed/time": approximate_metric(verdict="regressed", delta=5),
-        "first-listed/time": approximate_metric(verdict="regressed", delta=9),
+        "second-listed/ops": permutation_metric(verdict="regressed", delta=-5, direction="higher"),
+        "third-listed/time": permutation_metric(verdict="regressed", delta=5),
+        "first-listed/time": permutation_metric(verdict="regressed", delta=9),
     }
 
     highlights = select_highlights(metrics, 0)
@@ -166,9 +156,9 @@ def test_select_highlights_when_equal_magnitude_does_keep_declaration_order():
 
 def test_select_highlights_when_selected_does_carry_the_candidate_verdict_of_its_metric():
     metrics: MetricComparisons = {
-        "slower/time": metric_for([
-            CandidateSpec(verdict="improved", delta=-10),
-            CandidateSpec(verdict="regressed", delta=8),
+        "slower/time": n_way_metric([
+            NWayCandidate(verdict="improved", delta=-10, median=90),
+            NWayCandidate(verdict="regressed", delta=8, median=108),
         ]),
     }
 
@@ -191,13 +181,13 @@ def test_select_highlights_when_multiple_candidates_does_rank_each_by_its_own_ve
     candidate_index: int, expected: list[str]
 ):
     metrics: MetricComparisons = {
-        "a/time": metric_for([
-            CandidateSpec(verdict="improved", delta=-4),
-            CandidateSpec(verdict="regressed", delta=3),
+        "a/time": n_way_metric([
+            NWayCandidate(verdict="improved", delta=-4, median=96),
+            NWayCandidate(verdict="regressed", delta=3, median=103),
         ]),
-        "b/time": metric_for([
-            CandidateSpec(verdict="regressed", delta=6),
-            CandidateSpec(verdict="no-signal", delta=0.2),
+        "b/time": n_way_metric([
+            NWayCandidate(verdict="regressed", delta=6, median=106),
+            NWayCandidate(verdict="no-signal", delta=0.2, median=100.2),
         ]),
     }
 
@@ -239,88 +229,22 @@ def test_render_report_when_metric_name_has_colon_word_does_align_deltas_with_ot
 
 
 # ---------------------------------------------------------------------------
-# highlights color
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("index", "marker", "expected"),
-    [
-        pytest.param(0, "✗", ["31"], id="regressed-glyph-red"),
-        pytest.param(0, "+2.4%", ["31"], id="regressed-delta-red"),
-        pytest.param(0, "slower/", ["2"], id="name-prefix-dim"),
-        pytest.param(1, "✓", ["32"], id="improved-glyph-green"),
-        pytest.param(1, "-17.5%", ["32"], id="improved-delta-green"),
-    ],
-)
-def test_render_report_when_colored_does_paint_each_highlight_by_its_verdict(
-    index: int, marker: str, expected: list[str]
-):
-    entry = highlight_lines(render_report(_colorful_result(), ReportOptions(color=True)))[index]
-
-    assert styles_at(entry, marker) == expected
-
-
-def test_render_report_when_colored_does_dim_the_kind_suffix_of_a_highlighted_name():
-    result = create_comparison_result(
-        metrics={"slow#time": permutation_metric(verdict="regressed", delta=4)}
-    )
-
-    entry = highlight_lines(render_report(result, ReportOptions(color=True)))[0]
-
-    assert styles_at(entry, "#time") == ["2"]
-
-
-def test_render_report_when_colored_does_embolden_each_candidate_label_in_the_highlights():
-    entry = highlight_lines(render_report(grouped_comparison(), ReportOptions(color=True)))[0]
-
-    assert styles_at(entry, "candidate-a") == ["1"]
-
-
-def test_render_report_when_colored_does_style_the_verdict_word_not_a_matching_name():
-    result = create_comparison_result(
-        metrics={
-            "unstable-parse/time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10)
-        }
-    )
-    entry = highlight_lines(render_report(result, ReportOptions(color=True)))[0]
-
-    assert strip_ansi(entry).strip() == "≈ unstable-parse/time  unstable  noise ±30.0%"
-    assert "33" in styles_at(entry, "≈")
-    assert "33" in styles_at(entry, "unstable", last=True)
-
-
-def test_render_report_when_colored_does_dim_the_evidence_suffixes():
-    result = create_comparison_result(
-        metrics={
-            "cheaper#heap": exact_metric(delta=-7.9),
-            "jittery#time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10),
-        }
-    )
-    highlights = highlight_lines(render_report(result, ReportOptions(color=True)))
-    exact_entry = next(line for line in highlights if "cheaper#heap" in strip_ansi(line))
-    unstable_entry = next(line for line in highlights if "jittery#time" in strip_ansi(line))
-
-    assert "2" in styles_at(exact_entry, "(exact)")
-    assert "2" in styles_at(unstable_entry, "noise")
-
-
-def test_render_report_when_colored_does_dim_the_futility_note():
-    result = create_comparison_result(
-        metrics={"jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10)}
-    )
-    note = line_containing(render_report(result, ReportOptions(color=True)), "won't stabilize")
-
-    assert "2" in styles_at(note, "unstable metrics")
-
-
-# ---------------------------------------------------------------------------
 # --fail-on geomean gate trips
 # ---------------------------------------------------------------------------
 
 
-def _tripping_result() -> ComparisonResult:
-    """A two-kind run whose gating ``time`` kind regressed past a 2% threshold."""
+def _tripping_result(geomean: float = 3.1, gated: float = 3.1) -> ComparisonResult:
+    """A two-kind run whose gating ``time`` kind carries the given geomeans.
+
+    The defaults regress the kind past a 2% threshold on both figures.
+
+    Args:
+        geomean: The ``time`` kind's overall geomean, in percent.
+        gated: The ``time`` kind's gated geomean, in percent.
+
+    Returns:
+        The comparison result.
+    """
     return replace(
         two_kind_result(),
         candidates=(
@@ -328,30 +252,14 @@ def _tripping_result() -> ComparisonResult:
                 kinds=[
                     replace(
                         time_kind(),
-                        geomean=geomean_of(3.1, 3),
-                        gated_geomean=geomean_of(3.1, 3),
+                        geomean=geomean_of(geomean, 3),
+                        gated_geomean=geomean_of(gated, 3),
                     ),
                     memory_kind(),
                 ]
             ),
         ),
     )
-
-
-def test_render_report_when_gate_trips_does_flag_the_trip_in_the_highlights():
-    highlights = [
-        line.strip()
-        for line in highlight_lines(
-            render_report(_tripping_result(), ReportOptions(fail_on=(GeomeanFailOn(pct=2),)))
-        )
-    ]
-
-    assert highlights == [
-        "✗ time · entity.spawn         +4.0%",
-        "✓ time · entity.alive_check  -10.0%",
-        "✓ memory · encode             -7.0%",
-        "⚑ time gated geomean +3.1% exceeded --fail-on geomean:2",
-    ]
 
 
 def _gate_lines(report: str) -> list[str]:
@@ -409,14 +317,21 @@ def test_render_report_when_no_gate_trips_or_needs_explaining_does_say_nothing_a
     assert _gate_lines(report) == []
 
 
+_TRIP_ENTRIES = [
+    "✗ time · entity.spawn         +4.0%",
+    "✓ time · entity.alive_check  -10.0%",
+    "✓ memory · encode             -7.0%",
+]
+
+
 @pytest.mark.parametrize(
     ("geomean", "gated", "expected"),
     [
-        pytest.param(5, 1, [], id="overall-trips-gated-does-not"),
+        pytest.param(5, 1, _TRIP_ENTRIES, id="overall-trips-gated-does-not"),
         pytest.param(
             1,
             5,
-            ["⚑ time gated geomean +5.0% exceeded --fail-on geomean:2"],
+            [*_TRIP_ENTRIES, "⚑ time gated geomean +5.0% exceeded --fail-on geomean:2"],
             id="gated-trips-overall-does-not",
         ),
     ],
@@ -424,21 +339,7 @@ def test_render_report_when_no_gate_trips_or_needs_explaining_does_say_nothing_a
 def test_render_report_when_gating_does_judge_on_the_gated_geomean(
     geomean: float, gated: float, expected: list[str]
 ):
-    result = replace(
-        two_kind_result(),
-        candidates=(
-            create_candidate(
-                kinds=[
-                    replace(
-                        time_kind(),
-                        geomean=geomean_of(geomean, 3),
-                        gated_geomean=geomean_of(gated, 3),
-                    ),
-                    memory_kind(),
-                ]
-            ),
-        ),
-    )
+    result = _tripping_result(geomean, gated)
 
     highlights = [
         line.strip()
@@ -447,7 +348,7 @@ def test_render_report_when_gating_does_judge_on_the_gated_geomean(
         )
     ]
 
-    assert [line for line in highlights if line.startswith("⚑")] == expected
+    assert highlights == expected
 
 
 def test_render_report_when_gating_multi_candidate_does_flag_only_those_that_exceeded():
@@ -483,18 +384,6 @@ def test_render_report_when_regressed_gate_trips_on_inconclusive_metric_does_nam
     ]
 
 
-def test_render_report_when_gate_trips_with_color_does_paint_the_trip_red():
-    line = line_containing(
-        render_report(
-            _tripping_result(), ReportOptions(fail_on=(GeomeanFailOn(pct=2),), color=True)
-        ),
-        "⚑",
-    )
-
-    assert "31" in styles_at(line, "⚑")
-    assert "31" in styles_at(line, "+3.1%")
-
-
 # ---------------------------------------------------------------------------
 # method footer
 # ---------------------------------------------------------------------------
@@ -526,7 +415,7 @@ def _band_lines_for(metrics: MetricComparisons) -> list[str]:
 
 
 def test_footer_lines_when_colored_does_dim_the_descriptive_verdict_line():
-    metrics: MetricComparisons = {"a/time": approximate_metric(verdict="improved", delta=-10)}
+    metrics: MetricComparisons = {"a/time": permutation_metric(verdict="improved", delta=-10)}
 
     verdict_line = next(
         line for line in _verbose_lines(metrics) if "permutation" in render_plain(line)
@@ -589,7 +478,7 @@ _DROPPED_ROUNDS = (
             {
                 "decode/time": band_metric(n=3),
                 "encode/time": band_metric(n=5),
-                "parse/time": approximate_metric(verdict="improved", delta=-10),
+                "parse/time": permutation_metric(verdict="improved", delta=-10),
             },
             4,
             [SAMPLE_SHORTAGE_HINT_PLAIN],
@@ -599,7 +488,7 @@ _DROPPED_ROUNDS = (
             {
                 "entity.alive_check/heap": band_metric(n=10, usable_n=3),
                 "iteration.columns/heap": band_metric(n=8, usable_n=2),
-                "parse/time": approximate_metric(verdict="improved", delta=-10),
+                "parse/time": permutation_metric(verdict="improved", delta=-10),
             },
             4,
             [],
@@ -609,14 +498,14 @@ _DROPPED_ROUNDS = (
             {
                 "decode/time": band_metric(n=3),
                 "entity.alive_check/heap": band_metric(n=10, usable_n=3),
-                "parse/time": approximate_metric(verdict="improved", delta=-10),
+                "parse/time": permutation_metric(verdict="improved", delta=-10),
             },
             4,
             [SAMPLE_SHORTAGE_HINT_PLAIN],
             id="shortage-and-ties-different-metrics",
         ),
         pytest.param(
-            {"parse/time": approximate_metric(verdict="improved", delta=-10)},
+            {"parse/time": permutation_metric(verdict="improved", delta=-10)},
             4,
             [],
             id="permutation-carried-every-metric",
@@ -633,7 +522,7 @@ _DROPPED_ROUNDS = (
         pytest.param(
             {
                 "a/time": band_metric(n=3),
-                "b/time": approximate_metric(verdict="improved", delta=-10),
+                "b/time": permutation_metric(verdict="improved", delta=-10),
             },
             10,
             [_DROPPED_ROUNDS],
@@ -646,7 +535,7 @@ _DROPPED_ROUNDS = (
             id="floor-reached-but-fewer-paired",
         ),
         pytest.param(
-            {"a/time": approximate_metric(verdict="improved", delta=-10)},
+            {"a/time": permutation_metric(verdict="improved", delta=-10)},
             10,
             [],
             id="enough-samples-and-every-metric-tested",
@@ -698,7 +587,7 @@ def test_render_report_when_methods_differ_does_name_each_with_its_pair_counts()
     assert permutation_line == (
         "verdicts: sign-flip permutation test on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05"
     )
-    assert "n=4" in band_line
+    assert band_line == "noise band ±(half-range × K) — n=4 below permutation floor (6 pairs)"
     assert report.index(permutation_line) < report.index(band_line)
 
 
@@ -841,20 +730,23 @@ def _colorful_result() -> ComparisonResult:
 
 
 @pytest.mark.parametrize(
-    ("metric", "glyph", "code"),
+    ("metric", "marker", "code"),
     [
+        pytest.param("faster/time", "✓", "32", id="improved-green"),
+        pytest.param("slower/time", "✗", "31", id="regressed-red"),
         pytest.param("jittery/time", "≈", "33", id="unstable-yellow"),
         pytest.param("tied/heap", "=", "36", id="identical-cyan"),
         pytest.param("flat/time", "~", "2", id="within-noise-dim"),
         pytest.param("single-pair/time", "?", "2", id="inconclusive-dim"),
+        pytest.param("faster/time", "±2.5%", "2", id="noise-band-dim"),
     ],
 )
 def test_render_report_when_colored_does_paint_only_the_verdict_cell(
-    metric: str, glyph: str, code: str
+    metric: str, marker: str, code: str
 ):
     row = line_containing(render_report(_colorful_result(), ReportOptions(color=True)), metric)
 
-    assert code in styles_at(row, glyph)
+    assert styles_at(row, marker) == [code]
     assert "\x1b[" not in "│".join(cells_of(row)[:-1])
 
 
@@ -878,24 +770,95 @@ def test_render_report_when_colored_does_embolden_the_baseline_after_the_vs_pref
     assert styles_at(cell, baseline, last=True) == ["1", "4"]
 
 
-def test_render_report_when_colored_does_leave_a_dotted_variant_name_out_of_dimming():
-    result = create_comparison_result(
-        baseline_label="main·1",  # cspell:disable-line
-        candidates=[create_candidate(label="perf·2")],  # cspell:disable-line
+# ---------------------------------------------------------------------------
+# highlights color
+# ---------------------------------------------------------------------------
+
+
+_COLORED = ReportOptions(color=True)
+_COLORED_GATE = ReportOptions(fail_on=(GeomeanFailOn(pct=2),), color=True)
+
+
+def _kind_suffixed_result() -> ComparisonResult:
+    """One regressed metric whose name carries a ``#time`` kind suffix."""
+    return create_comparison_result(
+        metrics={"slow#time": permutation_metric(verdict="regressed", delta=4)}
     )
 
-    header = line_containing(render_report(result, ReportOptions(color=True)), "gymrat compare")
 
-    assert styles_at(header, "main·1") == ["1", "4"]  # cspell:disable-line
-    assert styles_at(header, "perf·2") == ["1", "4"]  # cspell:disable-line
+def _evidence_result() -> ComparisonResult:
+    """An exact metric and an unstable one, each highlighted with an evidence suffix."""
+    return create_comparison_result(
+        metrics={
+            "cheaper#heap": exact_metric(delta=-7.9),
+            "jittery#time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10),
+        }
+    )
 
 
-def test_render_report_when_colored_does_leave_a_dotted_adapter_name_out_of_dimming():
-    result = create_comparison_result(adapter="metric·lines")  # cspell:disable-line
+@pytest.mark.parametrize(
+    ("make_result", "options", "needle", "marker", "expected"),
+    [
+        pytest.param(_colorful_result, _COLORED, "slower", "✗", ["31"], id="regressed-glyph-red"),
+        pytest.param(
+            _colorful_result, _COLORED, "slower", "+2.4%", ["31"], id="regressed-delta-red"
+        ),
+        pytest.param(_colorful_result, _COLORED, "slower", "slower/", ["2"], id="name-prefix-dim"),
+        pytest.param(_colorful_result, _COLORED, "faster", "✓", ["32"], id="improved-glyph-green"),
+        pytest.param(
+            _colorful_result, _COLORED, "faster", "-17.5%", ["32"], id="improved-delta-green"
+        ),
+        pytest.param(_kind_suffixed_result, _COLORED, "slow", "#time", ["2"], id="kind-suffix-dim"),
+        pytest.param(
+            grouped_comparison,
+            _COLORED,
+            "candidate-a",
+            "candidate-a",
+            ["1"],
+            id="candidate-label-bold",
+        ),
+        pytest.param(
+            _evidence_result, _COLORED, "cheaper", "(exact)", ["2"], id="exact-suffix-dim"
+        ),
+        pytest.param(_evidence_result, _COLORED, "jittery", "noise", ["2"], id="noise-suffix-dim"),
+        pytest.param(
+            _evidence_result,
+            _COLORED,
+            "won't stabilize",
+            "unstable metrics",
+            ["2"],
+            id="futility-note-dim",
+        ),
+        pytest.param(_tripping_result, _COLORED_GATE, "⚑", "⚑", ["31"], id="gate-trip-flag-red"),
+        pytest.param(
+            _tripping_result, _COLORED_GATE, "⚑", "+3.1%", ["31"], id="gate-trip-figure-red"
+        ),
+    ],
+)
+def test_render_report_when_colored_does_paint_each_highlight_element(
+    make_result: Callable[[], ComparisonResult],
+    options: ReportOptions,
+    needle: str,
+    marker: str,
+    expected: list[str],
+):
+    highlights = "\n".join(highlight_lines(render_report(make_result(), options)))
 
-    header = line_containing(render_report(result, ReportOptions(color=True)), "gymrat compare")
+    assert styles_at(line_containing(highlights, needle), marker) == expected
 
-    assert "adapter: metric·lines" in header  # cspell:disable-line
+
+def test_render_report_when_colored_does_style_the_verdict_word_not_a_matching_name():
+    result = create_comparison_result(
+        metrics={
+            "unstable-parse/time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10)
+        }
+    )
+
+    entry = highlight_lines(render_report(result, ReportOptions(color=True)))[0]
+
+    assert strip_ansi(entry).strip() == "≈ unstable-parse/time  unstable  noise ±30.0%"
+    assert "33" in styles_at(entry, "≈")
+    assert "33" in styles_at(entry, "unstable", last=True)
 
 
 # ---------------------------------------------------------------------------

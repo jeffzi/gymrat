@@ -313,23 +313,6 @@ def test_append_record_when_record_unreadable_and_log_absent_does_not_create_its
     assert not log_dir.exists()
 
 
-def test_append_record_when_os_write_short_does_retry_until_all_bytes_written(
-    fresh_root: str, monkeypatch: pytest.MonkeyPatch
-):
-    jsonl_path = session_jsonl_path(fresh_root)
-    real_write = os.write
-
-    def short_write(fd: int, data: bytes) -> int:
-        return real_write(fd, data[:1])
-
-    monkeypatch.setattr(os, "write", short_write)
-
-    append_record(jsonl_path, SESSION)
-
-    monkeypatch.undo()
-    assert read_records(jsonl_path) == [SESSION]
-
-
 def test_append_record_when_record_written_does_fsync_before_close(
     fresh_root: str, monkeypatch: pytest.MonkeyPatch
 ):

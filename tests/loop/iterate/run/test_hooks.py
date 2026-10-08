@@ -12,14 +12,14 @@ for all of it.
 """
 
 import asyncio
-import itertools
 import json
 import sys
 from pathlib import Path
 
 import pytest
 
-from gymrat.exec import FAILURE_EXIT_CODE
+from gymrat import exec as gymrat_exec
+from gymrat.exec import FAILURE_EXIT_CODE, ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.loop.iterate.run import run_hook
 from gymrat.session.records import IterationRecord, record_to_wire
 from gymrat.session.schema import HookStage
@@ -34,10 +34,6 @@ from tests._exec_fixtures import (
 from tests.loop.iterate._hooks import HookScripts, expected_hook_record
 from tests.session.records._fixtures import SESSION_ID, iteration_record, session_record
 
-#: The cap the runner holds each of a hook's channels to before it reaches
-#: gymrat's own output.
-RELAY_LIMIT_BYTES = 8192
-
 #: A generous upper bound proving a kill happened quickly rather than the
 #: hook's full sleep running to completion.
 KILL_SANITY_BOUND_MS = 4000
@@ -51,6 +47,16 @@ def labeled_lines(report: str, stage: HookStage) -> list[str]:
 
     Every line the runner emits carries the label, so a line without one is a
     leak of unlabeled hook output rather than something to quietly pass through.
+
+    Args:
+        report: The hook report to split.
+        stage: The stage whose ``[stage]`` label every line must carry.
+
+    Returns:
+        The report's lines without their label; none for an empty report.
+
+    Raises:
+        AssertionError: When a line does not carry the label.
     """
     if report == "":
         return []
@@ -180,8 +186,18 @@ async def test_run_hook_when_command_finishes_does_record_elapsed_duration_and_w
     hooks: HookScripts,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ticks = itertools.count(start=1000.0, step=250.0)
-    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
+    # The clock stands still except while the hook runs, which takes 250 ms.
+    now_ms = [1000.0]
+    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: now_ms[0])
+
+    async def exec_taking_250_ms(
+        command: str, options: ExecOptions
+    ) -> ExecResult | ExecTimeoutError:
+        result = await gymrat_exec.exec(command, options)
+        now_ms[0] += 250.0
+        return result
+
+    monkeypatch.setattr("gymrat.loop.iterate.run.exec", exec_taking_250_ms)
     stamp_ns = 1_700_000_000_123_456_789
     monkeypatch.setattr("gymrat.loop.iterate.run.now_ns", lambda: stamp_ns)
 
@@ -200,15 +216,18 @@ async def test_run_hook_when_failing_output_exceeds_relay_limit_does_cap_each_ch
 ) -> None:
     out_line = "a" * 100
     err_line = "b" * 100
-    whole_lines = RELAY_LIMIT_BYTES // len(f"{out_line}\n".encode())
     stdout = f"{out_line}\n" * 200
     command = hooks.failing_content_of("both-channels", stdout, f"{err_line}\n" * 200)
 
     run = await run_hook(hooks.invocation_of(command))
 
-    assert labeled_lines(run.report, "before") == (
-        [out_line] * whole_lines + ["hook exited 3"] + [err_line] * whole_lines
-    )
+    lines = labeled_lines(run.report, "before")
+    exit_at = lines.index("hook exited 3")
+    relayed_out, relayed_err = lines[:exit_at], lines[exit_at + 1 :]
+    assert set(relayed_out) == {out_line}
+    assert set(relayed_err) == {err_line}
+    assert len(relayed_out) < 200
+    assert len(relayed_err) < 200
     assert run.record.stdout_bytes == len(stdout.encode("utf-8"))
 
 

@@ -3,24 +3,28 @@
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING
+
+import pytest
 
 from gymrat.loop.iterate.confirm import shell_quote_name
-
-if TYPE_CHECKING:
-    import pytest
 
 # ---------------------------------------------------------------------------
 # shell_quote_name on Windows
 # ---------------------------------------------------------------------------
 
 
-def test_shell_quote_name_when_win32_does_wrap_the_name_in_double_quotes(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param("decode large payload", '"decode large payload"', id="spaces-quoted"),
+        pytest.param("total_ms", "total_ms", id="bare-word-unquoted"),
+    ],
+)
+def test_shell_quote_name_when_win32_does_quote_only_names_cmd_would_split(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: str
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
-    value = "decode large payload"
 
     result = shell_quote_name(value)
 
-    assert result == '"decode large payload"'
+    assert result == expected

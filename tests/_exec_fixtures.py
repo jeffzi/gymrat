@@ -143,11 +143,16 @@ def cancel_task(
     task.cancel()
 
 
+async def settle(task: "asyncio.Task[object]", timeout_s: float = 5) -> None:
+    """Wait for ``task`` to finish unwinding, treating its cancellation as done."""
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout_s)
+
+
 async def cancel_and_settle(task: "asyncio.Task[object]", timeout_s: float = 5) -> None:
     """Cancel ``task`` and wait for it to finish unwinding."""
     task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout_s)
+    await settle(task, timeout_s)
 
 
 def fail_stderr_read(
@@ -184,7 +189,8 @@ async def run_argv(args: Any, options: ExecOptions) -> ExecResult | ExecTimeoutE
     return await exec_argv(args, options)
 
 
-def _shell_grandchild(pid_file: Path) -> str:
+def shell_grandchild(pid_file: Path) -> str:
+    """A shell command that backgrounds a ``sleep``, writes its pid to ``pid_file``, and waits."""
     return f"sleep 30 & echo $! > '{pid_file}'; wait"
 
 
@@ -220,7 +226,7 @@ class Runner:
 
 RUNNERS = [
     pytest.param(
-        Runner(run_shell, "sleep 30", "echo 'line 1'; sleep 10", _shell_grandchild),
+        Runner(run_shell, "sleep 30", "echo 'line 1'; sleep 10", shell_grandchild),
         id="exec",
     ),
     pytest.param(

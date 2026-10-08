@@ -1,7 +1,9 @@
 import json
+import math
 import sys
 from collections.abc import Callable
 from dataclasses import fields
+from datetime import date
 from operator import attrgetter
 from pathlib import Path
 
@@ -16,7 +18,6 @@ from gymrat.config import (
     HooksConfig,
     KindEntry,
     MetricEntry,
-    StopConfig,
     SuperviseConfig,
     load_config_file_collecting,
     validate_config_dict,
@@ -29,12 +30,13 @@ from tests.config._toml import (
     HUGE_HEX_BITS,
     HUGE_HEX_LITERAL,
     LOOP_CONFIG,
+    LOOP_FIELDS,
     write_config,
     write_raw,
 )
 
 # Byte-order mark that editors on Windows prepend to UTF-8 files: EF BB BF.
-UTF8_BOM = "﻿"
+UTF8_BOM = "\N{BYTE ORDER MARK}"
 
 # Every character `str.splitlines` breaks on. Any of these embedded in a config
 # key would split the key, and every message naming it, across lines, so a key
@@ -137,13 +139,7 @@ def load_error_message(config_path: Path) -> str:
         pytest.param('runbook = "RUNBOOK.md"', ConfigFile(runbook="RUNBOOK.md"), id="runbook"),
         pytest.param(
             tomli_w.dumps(LOOP_CONFIG),
-            ConfigFile(
-                checks="npm test",
-                filter="npm run bench -- {names}",
-                primary="decode/time",
-                stop=StopConfig(target_value=1.5, max_iterations=20),
-                hooks=HooksConfig(before="npm run warm-cache", after="npm run cool-down"),
-            ),
+            ConfigFile(**LOOP_FIELDS),
             id="loop-keys",
         ),
         pytest.param('filter = ""', ConfigFile(filter=""), id="empty-filter"),
@@ -205,30 +201,6 @@ def test_load_config_file_collecting_when_toml_invalid_does_report_parse_problem
         exists=True,
         problems=[f"Failed to parse config file at {config_path}: {reason}"],
     )
-
-
-@pytest.mark.parametrize(
-    ("prefix", "key", "literal", "token"),
-    [
-        pytest.param("unstable_noise_pct = ", "unstable_noise_pct", "nan", "NaN", id="nan"),
-        pytest.param("unstable_noise_pct = ", "unstable_noise_pct", "inf", "Infinity", id="inf"),
-        pytest.param(
-            "unstable_noise_pct = ", "unstable_noise_pct", "-inf", "-Infinity", id="negative-inf"
-        ),
-        pytest.param("unstable_noise_pct = ", "unstable_noise_pct", "false", "false", id="boolean"),
-        pytest.param(
-            "[stop]\ntarget_value = ", "stop.target_value", "nan", "NaN", id="stop-target-value"
-        ),
-    ],
-)
-def test_load_config_file_collecting_when_number_key_non_finite_or_boolean_does_reject_as_not_a_number(
-    tmp_path: Path, prefix: str, key: str, literal: str, token: str
-):
-    config_path = write_raw(tmp_path, f"{prefix}{literal}")
-
-    message = load_error_message(config_path)
-
-    assert message == f"Invalid config value for {key}: expected a number, got {token}"
 
 
 @pytest.mark.parametrize(
@@ -408,8 +380,23 @@ _EFFORT_LEVELS = "'low', 'medium', 'high', 'xhigh' or 'max'"
         _wrong_type({"samples": 0}, "samples", "a number at or above 1", "0"),
         _wrong_type({"timeout_seconds": -1}, "timeout_seconds", "a number at or above 1", "-1"),
         _wrong_type({"timeout_seconds": True}, "timeout_seconds", "an integer", "true"),
+        _wrong_type(
+            {"samples": date(1979, 5, 27)},
+            "samples",
+            "an integer",
+            "datetime.date(1979, 5, 27)",
+        ),
         # unstable_noise_pct
         _wrong_type({"unstable_noise_pct": "loud"}, "unstable_noise_pct", "a number", '"loud"'),
+        *(
+            _wrong_type({"unstable_noise_pct": value}, "unstable_noise_pct", "a number", got)
+            for value, got in (
+                (math.nan, "NaN"),
+                (math.inf, "Infinity"),
+                (-math.inf, "-Infinity"),
+                (False, "false"),
+            )
+        ),
         _wrong_type(
             {"unstable_noise_pct": 0.25}, "unstable_noise_pct", "a number at or above 0.5", "0.25"
         ),
@@ -438,6 +425,7 @@ _EFFORT_LEVELS = "'low', 'medium', 'high', 'xhigh' or 'max'"
         ),
         # stop fields
         _wrong_type({"stop": {"target_value": "fast"}}, "stop.target_value", "a number", '"fast"'),
+        _wrong_type({"stop": {"target_value": math.nan}}, "stop.target_value", "a number", "NaN"),
         _wrong_type(
             {"stop": {"max_iterations": 0}}, "stop.max_iterations", "a number at or above 1", "0"
         ),
@@ -474,22 +462,6 @@ def test_load_config_file_collecting_when_multiple_fields_invalid_does_report_ev
         problems=[
             "Invalid config value for bench: expected a string, got 42",
             "Invalid config value for samples: expected a number at or above 1, got 0",
-        ],
-    )
-
-
-def test_load_config_file_collecting_when_value_is_toml_date_does_report_problem_not_crash(
-    tmp_path: Path,
-):
-    config_path = write_raw(tmp_path, "samples = 1979-05-27")
-
-    result = load_config_file_collecting(config_path, required=False)
-
-    assert result == ConfigFileResult(
-        config_file=None,
-        exists=True,
-        problems=[
-            "Invalid config value for samples: expected an integer, got datetime.date(1979, 5, 27)"
         ],
     )
 

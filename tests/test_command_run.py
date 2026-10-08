@@ -17,7 +17,6 @@ from opentelemetry.trace import StatusCode
 
 from gymrat.command_run import CommandTrace, command_origin, with_repo_lock
 from gymrat.errors import GymratError
-from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate.run import LoopStopError
 from gymrat.session.lock import is_held
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
@@ -61,19 +60,9 @@ async def _ok_body(trace: CommandTrace) -> str:
     return "ok"
 
 
-def _not_a_repo(*_args: object, **_kwargs: object) -> str:
-    message = "nope"
-    raise NotAGitRepositoryError(message)
-
-
 def _broken_append(path: str, record: object) -> None:
     msg = "disk full"
     raise GymratError(msg)
-
-
-def _broken_record(*_args: object, **_kwargs: object) -> None:
-    msg = "record construction failed"
-    raise ValueError(msg)
 
 
 def _last_command_record() -> CommandRecord:
@@ -133,28 +122,18 @@ async def test_with_repo_lock_when_inside_repo_does_scope_the_lock_to_the_body(
 
 
 async def test_with_repo_lock_when_outside_repo_does_run_body_without_a_lock_or_a_record(
-    monkeypatch: pytest.MonkeyPatch,
+    plain_directory: str, monkeypatch: pytest.MonkeyPatch
 ):
-    acquired: list[object] = []
-    appended: list[object] = []
-
-    def spy_acquire(*args: object, **_kwargs: object) -> Callable[[], None]:
-        acquired.append(args)
-        return lambda: None
-
-    def spy_append(path: str, record: object) -> None:
-        appended.append(record)
-
-    monkeypatch.setattr("gymrat.command_run.repo_root", _not_a_repo)
-    monkeypatch.setattr("gymrat.command_run.acquire_lock", spy_acquire)
-    monkeypatch.setattr("gymrat.command_run.append_record", spy_append)
+    monkeypatch.chdir(plain_directory)
 
     async def body(trace: CommandTrace) -> str:
         return "ran"
 
     result = await with_repo_lock("compare", body)
 
-    assert (result, acquired, appended) == ("ran", [], [])
+    assert result == "ran"
+    assert not await asyncio.to_thread(Path(lockfile_path(plain_directory)).exists)
+    assert not await asyncio.to_thread(Path(session_jsonl_path(plain_directory)).exists)
 
 
 async def test_with_repo_lock_when_session_log_torn_does_repair_it_under_the_lock_before_the_body(
@@ -195,27 +174,16 @@ async def test_with_repo_lock_when_session_log_torn_does_repair_it_under_the_loc
 
 
 async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_running_body_locking_or_recording(
-    monkeypatch: pytest.MonkeyPatch,
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
+    header = _seeded_session(repo)
     git_error = GymratError("detected dubious ownership", hint="banana hint")
 
     def broken_git(*_args: object, **_kwargs: object) -> str:
         raise git_error
 
-    acquired: list[object] = []
-    appended: list[object] = []
-    called: list[bool] = []
-
-    def spy_acquire(*args: object, **_kwargs: object) -> Callable[[], None]:
-        acquired.append(args)
-        return lambda: None
-
-    def spy_append(path: str, record: object) -> None:
-        appended.append(record)
-
     monkeypatch.setattr("gymrat.command_run.repo_root", broken_git)
-    monkeypatch.setattr("gymrat.command_run.acquire_lock", spy_acquire)
-    monkeypatch.setattr("gymrat.command_run.append_record", spy_append)
+    called: list[bool] = []
 
     async def body(trace: CommandTrace) -> str:
         called.append(True)
@@ -226,8 +194,8 @@ async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_runnin
 
     assert exc.value is git_error
     assert called == []
-    assert acquired == []
-    assert appended == []
+    assert not await asyncio.to_thread(Path(lockfile_path(repo_root())).exists)
+    assert log_records(repo_root()) == [header]
 
 
 # ---------------------------------------------------------------------------
@@ -235,37 +203,64 @@ async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_runnin
 # ---------------------------------------------------------------------------
 
 
+#: The traceparent an outer caller hands down through ``TRACEPARENT``.
+_OUTER_TRACEPARENT = "00-abc-def-01"
+
+
 @pytest.mark.parametrize(
-    ("args", "expected_args"),
+    ("args", "env", "expected"),
     [
-        pytest.param(None, {}, id="args-none"),
-        pytest.param({"samples": 5}, {"samples": 5}, id="args-given"),
+        pytest.param(None, {}, ({}, "cli", None), id="args-none"),
+        pytest.param({"samples": 5}, {}, ({"samples": 5}, "cli", None), id="args-given"),
+        pytest.param(None, {"GYMRAT_COMMAND_ORIGIN": "tool"}, ({}, "tool", None), id="origin-tool"),
+        pytest.param(
+            None,
+            {"TRACEPARENT": _OUTER_TRACEPARENT},
+            ({}, "cli", _OUTER_TRACEPARENT),
+            id="traceparent-only",
+        ),
+        pytest.param(
+            None,
+            {"TRACEPARENT": _OUTER_TRACEPARENT, "GYMRAT_TRACEPARENT": "00-123-456-01"},
+            ({}, "cli", "00-123-456-01"),
+            id="gymrat-traceparent-wins",
+        ),
+        pytest.param(
+            None,
+            {"TRACEPARENT": _OUTER_TRACEPARENT, "GYMRAT_TRACEPARENT": ""},
+            ({}, "cli", _OUTER_TRACEPARENT),
+            id="empty-gymrat-traceparent-falls-back",
+        ),
     ],
 )
 async def test_with_repo_lock_when_body_succeeds_does_append_its_command_record(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     args: dict[str, object] | None,
-    expected_args: dict[str, object],
+    env: dict[str, str],
+    expected: tuple[dict[str, object], str, str | None],
 ):
     _seeded_session(repo)
     frozen_ns = 1_000_000_000
     monotonic_readings = iter([100.0, 350.0])
-    monkeypatch.delenv("GYMRAT_COMMAND_ORIGIN", raising=False)
-    monkeypatch.setattr("gymrat.command_run._clock.now_ns", lambda: frozen_ns)
-    monkeypatch.setattr("gymrat.command_run._clock.monotonic_ms", lambda: next(monotonic_readings))
+    for name in ("GYMRAT_COMMAND_ORIGIN", "TRACEPARENT", "GYMRAT_TRACEPARENT"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr("gymrat.clock.now_ns", lambda: frozen_ns)
+    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(monotonic_readings))
 
     await with_repo_lock("measure", _ok_body, args=args)
 
     cmd = _last_command_record()
-    assert cmd.name == "measure"
-    assert cmd.args == expected_args
-    assert cmd.exit_code == 0
-    assert cmd.reason is None
-    assert cmd.at == frozen_ns
-    assert cmd.duration_ms == 250
-    assert cmd.origin == "cli"
-    assert cmd.traceparent is None
+    assert (cmd.name, cmd.exit_code, cmd.reason, cmd.at, cmd.duration_ms) == (
+        "measure",
+        0,
+        None,
+        frozen_ns,
+        250,
+    )
+    assert (cmd.args, cmd.origin, cmd.traceparent) == expected
 
 
 async def _gate_body(trace: CommandTrace) -> str:
@@ -377,44 +372,6 @@ async def test_with_repo_lock_when_body_ends_does_record_its_exit_code_reason_an
     assert (cmd.exit_code, cmd.reason, cmd.seq) == recorded
 
 
-@pytest.mark.parametrize(
-    ("gymrat_traceparent", "expected"),
-    [
-        pytest.param(None, "00-abc-def-01", id="traceparent-only"),
-        pytest.param("00-123-456-01", "00-123-456-01", id="gymrat-one-wins"),
-        pytest.param("", "00-abc-def-01", id="empty-gymrat-one-falls-back"),
-    ],
-)
-async def test_with_repo_lock_when_traceparent_vars_vary_does_record_the_effective_one(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    gymrat_traceparent: str | None,
-    expected: str,
-):
-    _seeded_session(repo)
-    monkeypatch.setenv("TRACEPARENT", "00-abc-def-01")
-    if gymrat_traceparent is not None:
-        monkeypatch.setenv("GYMRAT_TRACEPARENT", gymrat_traceparent)
-
-    await with_repo_lock("measure", _ok_body)
-
-    cmd = _last_command_record()
-    assert cmd.traceparent == expected
-
-
-async def test_with_repo_lock_when_command_origin_env_is_tool_does_record_tool_origin(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _seeded_session(repo)
-    monkeypatch.setenv("GYMRAT_COMMAND_ORIGIN", "tool")
-
-    await with_repo_lock("measure", _ok_body)
-
-    cmd = _last_command_record()
-    assert cmd.origin == "tool"
-
-
 # ---------------------------------------------------------------------------
 # with_repo_lock — no append without session log
 # ---------------------------------------------------------------------------
@@ -442,18 +399,18 @@ async def _failing_body(trace: CommandTrace) -> str:
 
 
 @pytest.mark.parametrize(
-    ("target", "stand_in", "warning"),
+    ("command", "append", "warning"),
     [
         pytest.param(
-            "gymrat.command_run.append_record",
+            "measure",
             _broken_append,
-            "failed to append command record: disk full\n",
+            "failed to append command record: disk full",
             id="append-fails",
         ),
         pytest.param(
-            "gymrat.command_run.CommandRecord",
-            _broken_record,
-            "failed to append command record: record construction failed\n",
+            "",
+            None,
+            "failed to append command record: 1 validation error for CommandRecord",
             id="record-construction-fails",
         ),
     ],
@@ -470,22 +427,23 @@ async def test_with_repo_lock_when_recording_fails_does_keep_the_body_outcome_wi
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     *,
-    target: str,
-    stand_in: Callable[..., None],
+    command: str,
+    append: Callable[[str, object], None] | None,
     warning: str,
     body: Callable[[CommandTrace], Awaitable[str]],
     raised: type[BaseException] | None,
     returned: list[str],
 ):
     _seeded_session(repo)
-    monkeypatch.setattr(target, stand_in)
+    if append is not None:
+        monkeypatch.setattr("gymrat.command_run.append_record", append)
     outcome: list[str] = []
 
     with pytest.raises(raised) if raised is not None else contextlib.nullcontext():
-        outcome.append(await with_repo_lock("measure", body))
+        outcome.append(await with_repo_lock(command, body))
 
     assert outcome == returned
-    assert capsys.readouterr().err == warning
+    assert capsys.readouterr().err.splitlines()[0] == warning
     assert not is_held(lockfile_path(repo_root()))
 
 
@@ -567,10 +525,15 @@ async def test_with_repo_lock_when_root_given_does_operate_on_that_repo_not_the_
     assert log_records(cwd_repo) == [cwd_header]
 
 
-async def test_with_repo_lock_when_root_is_not_a_repository_does_still_hold_its_lock(
+async def test_with_repo_lock_when_root_is_not_a_repository_does_hold_its_lock_without_consulting_git(
     plain_directory: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    def broken_git(*_args: object, **_kwargs: object) -> str:
+        message = "detected dubious ownership"
+        raise GymratError(message)
+
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("gymrat.command_run.repo_root", broken_git)
     held: dict[str, bool] = {}
 
     async def body(trace: CommandTrace) -> str:
@@ -581,24 +544,6 @@ async def test_with_repo_lock_when_root_is_not_a_repository_does_still_hold_its_
 
     assert result == "ran"
     assert held["target"] is True
-
-
-async def test_with_repo_lock_when_root_given_and_git_fails_otherwise_does_still_run_body(
-    plain_directory: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    def broken_git(*_args: object, **_kwargs: object) -> str:
-        message = "detected dubious ownership"
-        raise GymratError(message)
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("gymrat.command_run.repo_root", broken_git)
-
-    async def body(trace: CommandTrace) -> str:
-        return "ran"
-
-    result = await with_repo_lock("supervise", body, root=plain_directory)
-
-    assert result == "ran"
 
 
 # ---------------------------------------------------------------------------

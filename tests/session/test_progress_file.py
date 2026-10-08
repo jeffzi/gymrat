@@ -11,6 +11,7 @@ import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -19,6 +20,7 @@ from gymrat.progress_events import (
     PassFinished,
     PassStarted,
     PrepareStarted,
+    ProgressEvent,
 )
 from gymrat.session.paths import progress_path, session_dir
 from gymrat.session.progress_file import (
@@ -35,16 +37,18 @@ from tests._mode_bits import needs_mode_bits
 # ---------------------------------------------------------------------------
 
 
-_VALID_FIELDS: dict[str, object] = {
-    "passes_completed": 3,
-    "passes_total": 10,
-    "last_pass_duration_ms": 1234.5,
-}
-
-
-def _make_snapshot(**overrides: object) -> ProgressSnapshot:
+def _make_snapshot(
+    *, passes_completed: int = 3, passes_total: int = 10, last_pass_duration_ms: float = 1234.5
+) -> ProgressSnapshot:
     """Build a ProgressSnapshot with sensible defaults, overridable per-field."""
-    return ProgressSnapshot(**(_VALID_FIELDS | overrides))  # type: ignore[arg-type]
+    return ProgressSnapshot(
+        passes_completed=passes_completed,
+        passes_total=passes_total,
+        last_pass_duration_ms=last_pass_duration_ms,
+    )
+
+
+_VALID_FIELDS: dict[str, object] = _make_snapshot().model_dump()
 
 
 def _progress_file(root: str) -> Path:
@@ -137,24 +141,6 @@ def test_read_progress_when_clock_advances_does_discard_only_past_the_bound(
     assert result == (snapshot if survives else None)
 
 
-def test_read_progress_when_file_vanishes_mid_read_does_return_none(
-    root: str, monkeypatch: pytest.MonkeyPatch
-):
-    write_progress(root, _make_snapshot())
-    original_read_text = Path.read_text
-
-    def failing_read(self: Path, *args: object, **kwargs: object) -> str:
-        if str(self) == str(_progress_file(root)):
-            raise FileNotFoundError(2, "No such file", str(self))
-        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(Path, "read_text", failing_read)
-
-    result = read_progress(root)
-
-    assert result is None
-
-
 @pytest.fixture
 def unsearchable_sidecar(root: str) -> Iterator[str]:
     """A written sidecar whose session directory denies search, so the file cannot be stat'd."""
@@ -200,10 +186,10 @@ def held_open_sidecar(root: str, monkeypatch: pytest.MonkeyPatch) -> str:
     sidecar = progress_path(root)
     original_unlink = os.unlink
 
-    def failing_unlink(path: str | os.PathLike[str], *args: object, **kwargs: object) -> None:
+    def failing_unlink(path: str | os.PathLike[str], *args: Any, **kwargs: Any) -> None:
         if str(path) == sidecar:
             raise PermissionError(13, "The process cannot access the file", sidecar)
-        original_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+        original_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "unlink", failing_unlink)
     return root
@@ -220,12 +206,12 @@ def test_clear_progress_when_unlink_raises_os_error_does_warn_instead_of_raising
     assert progress_path(held_open_sidecar) in warnings[0]
 
 
-def test_clear_progress_when_unlink_raises_and_no_sink_given_does_not_raise(
-    held_open_sidecar: str,
+def test_clear_progress_when_unlink_raises_and_no_sink_given_does_warn_on_stderr(
+    held_open_sidecar: str, capsys: pytest.CaptureFixture[str]
 ):
     clear_progress(held_open_sidecar)
 
-    assert _progress_file(held_open_sidecar).exists()
+    assert progress_path(held_open_sidecar) in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -299,11 +285,11 @@ def test_sidecar_writer_when_pass_finished_does_increment_completed_and_record_d
 )
 def test_sidecar_writer_when_non_pass_event_does_not_write(
     root: str,
-    event: object,
+    event: ProgressEvent,
 ):
     writer = SidecarWriter(root)
 
-    writer(event)  # type: ignore[arg-type]
+    writer(event)
 
     assert read_progress(root) is None
 

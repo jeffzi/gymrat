@@ -1,12 +1,9 @@
-"""Canonical session-record builders shared by the store tests.
+"""Canonical session-record builders shared across the test suite.
 
 Each builder returns a fully-populated record with the same defaults the real
 session writes, and takes keyword overrides for the fields a test cares about.
-Optional fields default to ``None`` on the underlying dataclasses, so passing a
-keyword of ``None`` erases the builder's default for that field.
-
-The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.session.records._fixtures``.
+Optional fields default to ``None`` on the underlying pydantic models, so passing
+a keyword of ``None`` erases the builder's default for that field.
 """
 
 from dataclasses import replace

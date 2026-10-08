@@ -38,17 +38,14 @@ from gymrat.stats import (
         pytest.param(-10.0, -5.0, 50.0, id="negative-reference-toward-zero-is-positive"),
         pytest.param(-10.0, -15.0, -50.0, id="negative-reference-away-from-zero-is-negative"),
         pytest.param(0.0, 0.0, 0.0, id="both-zero"),
+        pytest.param(0.0, 5.0, math.nan, id="only-reference-zero-value-positive"),
+        pytest.param(0.0, -5.0, math.nan, id="only-reference-zero-value-negative"),
     ],
 )
-def test_percent_delta_when_reference_defined_does_scale_by_reference_magnitude(
+def test_percent_delta_when_reference_given_does_scale_by_magnitude_or_return_nan_when_undefined(
     reference: float, value: float, expected: float
 ):
-    assert percent_delta(reference, value) == pytest.approx(expected)
-
-
-@pytest.mark.parametrize("value", [5.0, -5.0])
-def test_percent_delta_when_only_reference_zero_does_return_nan(value: float):
-    assert math.isnan(percent_delta(0.0, value))
+    assert percent_delta(reference, value) == pytest.approx(expected, nan_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +101,7 @@ def test_normalize_ratio_when_delta_and_direction_given_does_return_ratio_or_rea
             ((math.sqrt(3.0) - 1.0) * 100.0, math.hypot(2.0, 3.0) / 2.0),
             id="multiple-entries",
         ),
+        pytest.param([], (0.0, 0.0), id="empty"),
     ],
 )
 def test_combine_geomean_when_entries_given_does_return_percent_and_band(
@@ -111,10 +109,6 @@ def test_combine_geomean_when_entries_given_does_return_percent_and_band(
     expected: tuple[float, float],
 ):
     assert combine_geomean(entries) == pytest.approx(expected)
-
-
-def test_combine_geomean_when_empty_does_return_zeros():
-    assert combine_geomean([]) == (0.0, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +148,9 @@ def test_compute_half_range_when_shifted_does_return_same_value(values: list[flo
 )
 @example(values=[1.0, float("nan"), 3.0])
 @example(values=[1.0, float("inf"), 3.0])
-def test_compute_half_range_when_non_finite_present_does_return_nan(values: list[float]):
+def test_compute_half_range_when_any_floats_does_return_nan_exactly_when_non_finite_present(
+    values: list[float],
+):
     has_non_finite = any(not math.isfinite(value) for value in values)
 
     assert math.isnan(compute_half_range(values)) == has_non_finite

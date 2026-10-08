@@ -32,6 +32,7 @@ from tests._process_helpers import (
     is_alive,
     killpg_warnings,
     record_subprocess_runs,
+    refuse_killpg,
     wait_for_pid_file,
     wait_for_pid_file_blocking,
     wait_until_dead,
@@ -97,7 +98,7 @@ _STAT_TAIL = "0 -1 4194560 120 0 0 0 3 1 0 0 20 0 1 0 5000"
 _CUT_NAME = b"bench-costs-5" + "€".encode()[:2]
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class FakeProcess:
     """A process listed in a fake ``/proc``, in the group ``group_id`` (``_FAKE_GROUP`` by default)."""
 
@@ -119,7 +120,7 @@ class FakeProcess:
 _ZOMBIE_LEADER = FakeProcess(_FAKE_GROUP, state="Z")
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True, slots=True)
 class ProbedLeader:
     """Stand-in ``os`` whose probes find every process present, and exited when ``exited`` is set.
 
@@ -157,7 +158,7 @@ class ProbedLeader:
         return types.SimpleNamespace(si_pid=id_val, si_status=0, si_code=1)
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class LingeringGroup:
     """A process group whose leader has exited while another member still runs."""
 
@@ -194,16 +195,8 @@ class ReapedMidProbe:
         raise ChildProcessError(id_val)
 
 
-def refuse_all_but_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make ``os.killpg`` refuse every signal with ``EPERM``, but let the ``0`` probe through."""
-    real_killpg = os.killpg
-
-    def refuse(group_pid: int, signal_number: int) -> None:
-        if signal_number != 0:
-            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
-        real_killpg(group_pid, signal_number)
-
-    monkeypatch.setattr(os, "killpg", refuse)
+def _refuses_all_but_probe(signal_number: int) -> bool:
+    return signal_number != 0
 
 
 @dataclasses.dataclass
@@ -459,7 +452,7 @@ def test_wait_for_process_group_exit_when_linux_zombie_leader_does_wait_only_for
 
     wait_for_process_group_exit([_FAKE_GROUP], timeout_s)
 
-    assert (time.monotonic() - started >= _SHORT_WAIT_S) is waits
+    assert (time.monotonic() - started >= timeout_s) is waits
 
 
 def _without_proc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -496,27 +489,10 @@ def _empty_sysctl(_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(process_group, "_c_library", lambda: StubCLibrary(failure_errno=None))
 
 
-# A record size too small to reach ``p_flag``/``p_stat``, as a layout that does
-# not match the platform's would be: even with the listing headroom, decoding
-# the one record reads past the buffer.
-_MISMATCHED_RECORD_SIZE = 4
-
-
-def _undecodable_sysctl(_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(process_group, "_DARWIN_KINFO_PROC_SIZE", _MISMATCHED_RECORD_SIZE)
-    monkeypatch.setattr(
-        process_group,
-        "_c_library",
-        lambda: StubCLibrary(failure_errno=None, listing=bytes(_MISMATCHED_RECORD_SIZE)),
-    )
-
-
 _GROUPS_WITHOUT_LISTING = [
     pytest.param(_without_proc, id="proc-unreadable"),
     pytest.param(_malformed_proc, id="stat-line-malformed"),
     pytest.param(_failing_sysctl, id="sysctl-failing"),
-    pytest.param(_undecodable_sysctl, id="sysctl-records-undecodable"),
     pytest.param(_platform_without_listing, id="platform-without-listing"),
 ]
 
@@ -546,7 +522,7 @@ def test_wait_for_process_group_exit_when_listing_unavailable_does_wait_on_the_l
 
     wait_for_process_group_exit([_FAKE_GROUP], timeout_s)
 
-    assert (time.monotonic() - started >= _SHORT_WAIT_S) is waits
+    assert (time.monotonic() - started >= timeout_s) is waits
 
 
 @_POSIX_ONLY
@@ -565,7 +541,7 @@ async def test_wait_for_process_group_exit_async_when_listing_unavailable_does_w
 
     await wait_for_process_group_exit_async(_FAKE_GROUP, timeout_s)
 
-    assert (time.monotonic() - started >= _SHORT_WAIT_S) is waits
+    assert (time.monotonic() - started >= timeout_s) is waits
 
 
 # A few bytes past the last whole record, as a listing cut mid-record reports them.
@@ -574,29 +550,40 @@ _PARTIAL_RECORD = bytes(16)
 
 @_POSIX_ONLY
 @pytest.mark.parametrize(
-    ("listing", "still_running"),
+    ("listing", "timeout_s", "still_running"),
     [
-        pytest.param(_PARTIAL_RECORD, False, id="shorter-than-a-record"),
+        pytest.param(_PARTIAL_RECORD, _LONG_WAIT_S, False, id="shorter-than-a-record"),
         pytest.param(
             darwin_record(0, _DARWIN_SZOMB) + _PARTIAL_RECORD,
+            _LONG_WAIT_S,
             False,
             id="zombie-record-then-partial",
         ),
         pytest.param(
             darwin_record(0, _DARWIN_RUNNING) + _PARTIAL_RECORD,
+            _SHORT_WAIT_S,
             True,
             id="running-record-then-partial",
         ),
-        pytest.param(darwin_record(0, _DARWIN_SZOMB), False, id="whole-zombie-record"),
-        pytest.param(darwin_record(0, _DARWIN_RUNNING), True, id="whole-running-record"),
         pytest.param(
-            darwin_record(_DARWIN_P_WEXIT, _DARWIN_RUNNING), False, id="whole-exiting-record"
+            darwin_record(0, _DARWIN_SZOMB), _LONG_WAIT_S, False, id="whole-zombie-record"
+        ),
+        pytest.param(
+            darwin_record(0, _DARWIN_RUNNING), _SHORT_WAIT_S, True, id="whole-running-record"
+        ),
+        pytest.param(
+            darwin_record(_DARWIN_P_WEXIT, _DARWIN_RUNNING),
+            _LONG_WAIT_S,
+            False,
+            id="whole-exiting-record",
         ),
     ],
 )
 def test_wait_for_process_group_exit_when_darwin_leader_exited_does_wait_only_for_whole_running_records(
     monkeypatch: pytest.MonkeyPatch,
     listing: bytes,
+    *,
+    timeout_s: float,
     still_running: bool,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "darwin")
@@ -606,9 +593,9 @@ def test_wait_for_process_group_exit_when_darwin_leader_exited_does_wait_only_fo
     monkeypatch.setattr(process_group, "os", ProbedLeader(exited=True))
     started = time.monotonic()
 
-    wait_for_process_group_exit([_FAKE_GROUP], _SHORT_WAIT_S)
+    wait_for_process_group_exit([_FAKE_GROUP], timeout_s)
 
-    assert (time.monotonic() - started >= _SHORT_WAIT_S) == still_running
+    assert (time.monotonic() - started >= timeout_s) is still_running
 
 
 # ---------------------------------------------------------------------------
@@ -621,10 +608,7 @@ def test_kill_process_group_when_live_member_refuses_does_warn(
     sleeping_group_leader: subprocess.Popen[bytes],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def raise_eperm(group_pid: int, sig: int) -> None:
-        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
-
-    monkeypatch.setattr(os, "killpg", raise_eperm)
+    refuse_killpg(monkeypatch)
 
     with pytest.warns(RuntimeWarning, match=_KILLPG_FAILED):
         kill_process_group(sleeping_group_leader.pid)
@@ -646,7 +630,6 @@ async def test_kill_process_group_when_only_a_zombie_member_is_left_does_not_war
     [
         pytest.param(_failing_sysctl, id="listing-fails"),
         pytest.param(_empty_sysctl, id="listing-empty-but-group-exists"),
-        pytest.param(_undecodable_sysctl, id="listing-records-undecodable"),
     ],
 )
 def test_kill_process_group_when_refusing_group_cannot_be_shown_settled_does_warn(
@@ -655,7 +638,7 @@ def test_kill_process_group_when_refusing_group_cannot_be_shown_settled_does_war
     monkeypatch: pytest.MonkeyPatch,
     hide_members: Callable[[Path, pytest.MonkeyPatch], None],
 ) -> None:
-    refuse_all_but_probe(monkeypatch)
+    refuse_killpg(monkeypatch, _refuses_all_but_probe)
     hide_members(tmp_path, monkeypatch)
 
     with pytest.warns(RuntimeWarning, match=_KILLPG_FAILED):
@@ -671,7 +654,7 @@ def test_kill_process_group_when_refusing_group_is_gone_by_the_listing_does_not_
     # The refusal stands in for a group whose last zombie is reaped between the
     # signal and the listing: by then the kernel no longer knows the group.
     gone = dead_pid()
-    refuse_all_but_probe(monkeypatch)
+    refuse_killpg(monkeypatch, _refuses_all_but_probe)
 
     kill_process_group(gone)
 
@@ -890,7 +873,7 @@ def test_kill_process_group_when_job_already_released_does_fall_back_to_taskkill
         ),
     ],
 )
-def test_resume_process_group_when_resume_granted_or_refused_does_close_the_child_handle(
+def test_resume_process_group_when_child_suspended_does_report_the_outcome_without_leaking_its_handle(
     monkeypatch: pytest.MonkeyPatch,
     *,
     resume_granted: bool,

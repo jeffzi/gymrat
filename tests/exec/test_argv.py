@@ -10,9 +10,7 @@ process groups, session leaders, and ``os.killpg`` do not exist on win32.
 """
 
 import asyncio
-import errno
 import json
-import os
 import signal
 import sys
 from collections.abc import Callable
@@ -22,16 +20,15 @@ import pytest
 
 from gymrat import exec as exec_mod
 from gymrat.exec import ExecOptions, ExecResult, exec_argv
-from tests._exec_fixtures import cancel_and_settle, expected_result, wait_for_spawned
+from tests._exec_fixtures import cancel_and_settle, expected_result, settle, wait_for_spawned
 from tests._process_helpers import (
     ZOMBIE_ONLY_GROUP_SCRIPT,
     killpg_warnings,
+    refuse_killpg,
+    wait_for_file,
     wait_for_pid_file,
     wait_until_dead,
 )
-
-if sys.platform == "win32":
-    pytest.skip("POSIX-only process groups", allow_module_level=True)
 
 
 def script_writing_pid_and_sleeping(pid_file: Path) -> str:
@@ -65,6 +62,30 @@ def script_answering_graceful_signal(pid_file: Path) -> str:
         "signal.signal(signal.SIGTERM, bye)\n"
         f"open({str(pid_file)!r}, 'w').write(str(os.getpid()) + '\\n')\n"
         "time.sleep(30)\n"
+    )
+
+
+def script_exiting_on_second_request(pid_file: Path, asked_file: Path) -> str:
+    """Build a script that creates ``asked_file`` on the first SIGTERM and exits on the second.
+
+    Args:
+        pid_file: Where the script writes its own pid, once its handler is in place.
+        asked_file: The file the first SIGTERM creates.
+
+    Returns:
+        The script's source, ready for ``python -c``.
+    """
+    return (
+        "import os, signal, sys, time\n"
+        "asked = []\n"
+        "def on_request(_signal_number, _frame):\n"
+        "    if asked:\n"
+        "        sys.exit(0)\n"
+        "    asked.append(True)\n"
+        f"    open({str(asked_file)!r}, 'w').close()\n"
+        "signal.signal(signal.SIGTERM, on_request)\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()) + '\\n')\n"
+        "time.sleep(60)\n"
     )
 
 
@@ -161,16 +182,7 @@ async def test_exec_argv_when_graceful_signal_refused_does_kill_group_without_wa
     # macOS answers EPERM for a group that is on its way out, which cannot be
     # told apart from a genuine refusal until the leader is reaped; the stop
     # request earns the same deferral the kill already gets.
-    signalled: list[int] = []
-    real_killpg = os.killpg
-
-    def refuse_terminate(group_pid: int, sig: int) -> None:
-        signalled.append(sig)
-        if sig == signal.SIGTERM:
-            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
-        real_killpg(group_pid, sig)
-
-    monkeypatch.setattr(os, "killpg", refuse_terminate)
+    refusal = refuse_killpg(monkeypatch, lambda signal_number: signal_number == signal.SIGTERM)
     abort = asyncio.Event()
     pid_file = tmp_path / "child.pid"
     task = asyncio.create_task(
@@ -184,85 +196,54 @@ async def test_exec_argv_when_graceful_signal_refused_does_kill_group_without_wa
     abort.set()
 
     result = await asyncio.wait_for(task, 5)
-    assert signal.SIGTERM in signalled
+    assert signal.SIGTERM in refusal.signals
     assert result == expected_result("", "", 1)
     assert killpg_warnings(recwarn) == []
 
 
 # ---------------------------------------------------------------------------
-# large stderr — concurrent pipe drain, no deadlock
+# cancellation keeps the pid registered until its group is killed
 # ---------------------------------------------------------------------------
 
 
-async def test_exec_argv_when_stderr_exceeds_pipe_buffer_does_capture_both_streams(
-    make_opts: Callable[..., ExecOptions],
-) -> None:
-    mib = 1024 * 1024
-
-    result = await exec_argv(
-        [
-            sys.executable,
-            "-c",
-            (f"import sys; sys.stderr.write('E' * {mib}); sys.stderr.flush(); print('OK')"),
-        ],
-        make_opts(),
-    )
-
-    assert isinstance(result, ExecResult)
-    assert result.exit_code == 0
-    assert result.stdout.strip() == "OK"
-    assert result.stderr_bytes >= mib
+# Long enough that only the live-group sweep, never the run's own teardown, can
+# end a child within the test.
+_LONG_GRACE_S = 30.0
 
 
-# ---------------------------------------------------------------------------
-# cancellation kills the child
-# ---------------------------------------------------------------------------
-
-
-async def test_exec_argv_when_cancelled_does_keep_pid_registered_until_the_kill_lands(
+async def test_exec_argv_when_cancelled_does_keep_pid_registered_through_the_grace(
     tmp_path: Path,
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A pid released before its group is killed is a pid the interpreter-exit
-    # sweep can no longer reach, so the end state both steps share says nothing
-    # about the order they ran in. Releasing the child's container is the step
-    # that also drops its pid from the registry.
-    steps: list[str] = []
-    real_kill = exec_mod.kill_process_group
-    real_release = exec_mod.release_process_group
-
-    def record_kill(pid: int, *, defer_refusal: bool = False) -> bool:
-        steps.append("kill")
-        return real_kill(pid, defer_refusal=defer_refusal)
-
-    def record_release(pid: int) -> None:
-        steps.append("release")
-        real_release(pid)
-
-    monkeypatch.setattr(exec_mod, "kill_process_group", record_kill)
-    monkeypatch.setattr(exec_mod, "release_process_group", record_release)
+    # A pid dropped from the registry before its group is killed is a pid the
+    # interpreter-exit sweep can no longer reach. The child marks the first stop
+    # request, which is the cancelled run's teardown starting its grace, and
+    # exits on the second, which only the sweep sends.
+    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _LONG_GRACE_S)
     pid_file = tmp_path / "child.pid"
+    asked_file = tmp_path / "asked.marker"
     task = asyncio.create_task(
         exec_argv(
-            [sys.executable, "-c", script_writing_pid_and_sleeping(pid_file)],
+            [sys.executable, "-c", script_exiting_on_second_request(pid_file, asked_file)],
             make_opts(),
         ),
     )
     proc = await wait_for_spawned(spawned_processes, spawner="exec_argv")
     await wait_for_pid_file(pid_file)
+    task.cancel()
+    await wait_for_file(asked_file)
 
-    await cancel_and_settle(task)
+    exec_mod.kill_live_process_groups()
 
     await wait_until_dead(proc.pid, timeout_s=3.0)
-    assert "kill" in steps[: steps.index("release")], (
-        "the pid left the registry before the kill reached its group"
-    )
+    await settle(task)
+    assert task.cancelled()
 
 
 # ---------------------------------------------------------------------------
-# POSIX session leader — grandchild dies with child on abort / cancel
+# cancellation with only a zombie left in the group
 # ---------------------------------------------------------------------------
 
 

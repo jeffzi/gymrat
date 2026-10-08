@@ -25,7 +25,7 @@ from tests._git import run_git as _git
 from tests.loop._settle import (
     capture_error,
     commit_and_keep,
-    start_with,
+    commit_iteration,
 )
 from tests.session.records._fixtures import (
     append_records,
@@ -42,25 +42,6 @@ def _last_record(root: str) -> SessionLogRecord:
     records = log_records(root)
     assert records, f"expected a record in {session_jsonl_path(root)}"
     return records[-1]
-
-
-def _commit_iteration(root: str, seq: int, message: str) -> str:
-    """Commit one edit in the experiment worktree and log the iteration behind it.
-
-    The experiment worktree is checked out on the session branch, so each call
-    moves that branch forward exactly as a real ``gymrat keep`` would. The keep
-    record is left to the caller.
-    """
-    commit = commit_all(experiment_worktree_dir(root), message, file=f"step-{seq}.txt")
-    append_records(root, iteration_record(seq=seq))
-    return commit
-
-
-@pytest.fixture
-def session_repo(repo: str) -> str:
-    """The scratch repository with an open session on ``main``."""
-    start_with(repo)
-    return repo
 
 
 # ---------------------------------------------------------------------------
@@ -178,14 +159,14 @@ def test_finalize_session_when_worktree_gone_and_unkept_commits_exist_does_final
 def _keep_without_message(root: str) -> list[str]:
     """Keep one described edit and one bare commit; return the body finalize should write."""
     commit_and_keep(root, 1, "cache the regex")
-    commit = _commit_iteration(root, 2, "hoist the loop")
+    commit = commit_iteration(root, 2, "hoist the loop")
     append_records(root, committed_keep(2, commit=commit, message=None))
     return ["cache the regex", commit[:7]]
 
 
 def _keep_without_message_or_commit(root: str) -> list[str]:
     """Keep one iteration with neither message nor commit; return the expected body."""
-    _commit_iteration(root, 1, "cache the regex")
+    commit_iteration(root, 1, "cache the regex")
     append_records(root, committed_keep(1, commit=None, message=None))
     return ["(no message)"]
 

@@ -7,11 +7,12 @@ termination — never from a result message alone.
 
 import math
 from collections.abc import Awaitable, Callable, Sequence
+from operator import methodcaller
 
 import pytest
 from claude_agent_sdk import MessageOrigin, ResultMessage, TextBlock
 
-from gymrat.supervisor.driver import DriverSession, SessionOutcome
+from gymrat.supervisor.driver import DriverSession
 from gymrat.supervisor.events import (
     SessionEvent,
     TurnEndEvent,
@@ -22,6 +23,7 @@ from tests.supervisor._fixtures import (
     FiniteClient,
     assistant,
     collecting_observer,
+    end_and_settle,
     events_of,
     make_prompt,
     result_message,
@@ -36,17 +38,11 @@ from tests.supervisor._fixtures import (
 # ---------------------------------------------------------------------------
 
 
-async def _settle(session: DriverSession) -> SessionOutcome:
-    """End the session and await its settled outcome."""
-    await session.end()
-    return await settled_outcome(session)
-
-
 async def _run_turns(messages: Sequence[object]) -> list[SessionEvent]:
     """Run a session until every scripted result closed its turn, end it, and return its events."""
     turns = sum(isinstance(message, ResultMessage) for message in messages)
     session, events = await start_past_turns(FakeClient(messages), turns)
-    await _settle(session)
+    await end_and_settle(session)
     return events
 
 
@@ -129,28 +125,15 @@ async def test_start_when_result_carries_origin_does_report_turn_origin(
 # ---------------------------------------------------------------------------
 
 
-async def test_start_when_two_results_with_rising_cost_does_record_each_results_cost():
-    messages = [
-        result_message(total_cost_usd=0.05),
-        result_message(total_cost_usd=0.15),
-    ]
-
-    events = await _run_turns(messages)
-
-    usage_updates = events_of(events, UsageUpdateEvent)
-    assert [u.cost_usd for u in usage_updates] == [0.05, 0.15, 0.15]
-    turn_ends = events_of(events, TurnEndEvent)
-    assert [turn_end.cost_usd for turn_end in turn_ends] == [0.05, 0.15]
-
-
 @pytest.mark.parametrize(
     ("costs", "usage_costs", "turn_end_costs"),
     [
+        pytest.param([0.05, 0.15], [0.05, 0.15, 0.15], [0.05, 0.15], id="rising-usable-costs"),
         pytest.param([0.05, math.nan], [0.05, 0.05], [0.05, 0.05], id="nan-after-a-usable-cost"),
         pytest.param([None], [0.0], [0.0], id="none-before-any-cost"),
     ],
 )
-async def test_start_when_result_cost_is_unusable_does_keep_running_cost(
+async def test_start_when_results_report_costs_does_track_the_running_cost(
     costs: list[float | None], usage_costs: list[float], turn_end_costs: list[float]
 ):
     messages = [result_message(total_cost_usd=cost) for cost in costs]
@@ -176,7 +159,7 @@ async def test_start_when_budget_exhausted_does_flag_the_turn_end_without_settli
     )
     session, events = await start_past_turns(FakeClient([result]), turns=1)
 
-    outcome = await _settle(session)
+    outcome = await end_and_settle(session)
 
     turn_ends = events_of(events, TurnEndEvent)
     assert [(t.budget_exhausted, t.cost_usd) for t in turn_ends] == [(True, 1.50)]
@@ -193,7 +176,7 @@ async def test_send_when_called_does_forward_text_to_client_query():
     session, _ = await start_past_turns(client, turns=1, prompt=make_prompt(kickoff="initial"))
 
     await session.send("follow up message")
-    await _settle(session)
+    await end_and_settle(session)
 
     assert client.query_prompts == ["initial", "follow up message"]
 
@@ -208,21 +191,19 @@ async def test_end_when_called_does_settle_completed_at_the_running_cost():
         FakeClient([result_message(total_cost_usd=0.20)]), turns=1
     )
 
-    outcome = await _settle(session)
+    outcome = await end_and_settle(session)
 
     assert (outcome.reason, outcome.cost_usd) == ("completed", 0.20)
     assert [u.cost_usd for u in events_of(events, UsageUpdateEvent)] == [0.20, 0.20]
 
 
-async def _send(session: DriverSession) -> None:
-    await session.send("should be ignored")
-
-
-async def _end(session: DriverSession) -> None:
-    await session.end()
-
-
-@pytest.mark.parametrize("call", [pytest.param(_send, id="send"), pytest.param(_end, id="end")])
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(methodcaller("send", "should be ignored"), id="send"),
+        pytest.param(methodcaller("end"), id="end"),
+    ],
+)
 async def test_session_when_already_settled_does_ignore_later_calls(
     call: Callable[[DriverSession], Awaitable[None]],
 ):

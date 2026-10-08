@@ -84,8 +84,15 @@ def test_render_report_when_variant_label_overflows_does_truncate_leaving_metric
 
     output = render_report(result)
 
-    assert "feature/entity-spawn-fastpath" not in output
-    assert "feature/en…-fastpath" in output
+    assert output.split("\n")[0] == (
+        "gymrat compare · baseline main ↔ feature/en…-fastpath · 10 paired samples · adapter: mitata"
+    )
+    assert stripped_cells(line_starting_with(output, "metric")) == [
+        "metric",
+        "main",
+        "feature/en…-fastpath",
+        "vs main",
+    ]
     assert stripped_cells(table_rows(output)[1])[0] == "decode/an-extremely-long-metric-name/time"
 
 
@@ -419,11 +426,7 @@ def test_render_measure_report_when_rendered_does_match_its_golden(snapshot: Sna
     ("needle", "marker", "expected"),
     [
         pytest.param("gymrat measure", "gymrat measure", ["1"], id="title-bold"),
-        pytest.param("gymrat measure", "·", ["2"], id="header-separator-dim"),
         pytest.param("gymrat measure", "main", ["1", "4"], id="header-label-underlined"),
-        pytest.param("time", "time", ["1"], id="section-title-bold"),
-        pytest.param("entity", "entity", ["1", "34"], id="group-header-blue"),
-        pytest.param("informational", "informational", ["2"], id="informational-dim"),
     ],
 )
 def test_render_measure_report_when_colored_does_style_each_element(

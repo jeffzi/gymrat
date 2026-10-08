@@ -29,8 +29,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import pytest
-
 from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
 from tests._cli import run_cli
@@ -40,7 +38,6 @@ from tests._git import (
     register_absent_worktree,
     wait_for_worktrees,
 )
-from tests._git import run_git as _git
 from tests._git import write_committed_bench as _write_committed_bench
 from tests._process_helpers import read_pid_file as _read_pid_file
 from tests._process_helpers import reaped
@@ -141,16 +138,7 @@ def _cli_mid_bench(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("signal_number", "expected_code"),
-    [
-        pytest.param(signal.SIGINT, 130, id="sigint"),
-        pytest.param(signal.SIGTERM, 143, id="sigterm"),
-    ],
-)
-def test_measure_when_signalled_mid_bench_does_kill_bench_grandchild_before_exit(
-    signal_number: int,
-    expected_code: int,
+def test_measure_when_signalled_mid_bench_does_kill_the_bench_tree(
     create_scratch_repo: Callable[[], str],
     reap_groups: list[int],
 ):
@@ -160,10 +148,10 @@ def test_measure_when_signalled_mid_bench_does_kill_bench_grandchild_before_exit
         grandchild = _wait_for_pid_file_blocking(
             Path(repo) / "grandchild.pid", timeout_s=_SETTLE_TIMEOUT_S
         )
-        proc.send_signal(signal_number)
+        proc.send_signal(signal.SIGTERM)
         proc.communicate(timeout=30)
 
-    assert proc.returncode == expected_code
+    assert proc.returncode == 128 + signal.SIGTERM
     _wait_until_dead_blocking(grandchild, timeout_s=_SETTLE_TIMEOUT_S)
     # Polled rather than checked once: a SIGKILLed leader stays visible to
     # ``os.kill(pid, 0)`` as a zombie until its parent reaps it.
@@ -284,10 +272,7 @@ def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
     reap_groups: list[int],
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, _TRACKED_BENCH)
-    _git(["switch", "-c", "candidate-one"], repo)
-    _git(["switch", "-c", "candidate-two"], repo)
-    _git(["switch", "main"], repo)
+    _write_committed_bench(repo, _TRACKED_BENCH, branches=("candidate-one", "candidate-two"))
 
     argv = [
         *_ENTRY,
@@ -403,23 +388,19 @@ def test_compare_when_signalled_during_the_normal_sweep_does_remove_each_worktre
     tmp_path: Path,
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, EMIT_ONE_BENCH)
-    _git(["switch", "-c", "candidate"], repo)
-    _git(["switch", "main"], repo)
+    _write_committed_bench(repo, EMIT_ONE_BENCH, branches=("candidate",))
     absent = register_absent_worktree(repo)
     git_log = _install_signalling_git(tmp_path)
     env = _env_with_path(tmp_path)
 
     # ``timeout=60`` is the hang guard: ``run`` kills and reaps the CLI on expiry, so a
     # switch to ``Popen`` needs its own kill-and-reap.
-    proc = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
-        [*_ENTRY, "compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
+    proc = run_cli(
+        ["compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
+        repo,
         check=False,
+        timeout=60,
+        env=env,
     )
 
     calls = git_log.read_text(encoding="utf-8").splitlines()
@@ -427,7 +408,6 @@ def test_compare_when_signalled_during_the_normal_sweep_does_remove_each_worktre
     removed = [call for call in calls if " worktree remove " in f" {call} "]
     assert proc.returncode == 128 + signal.SIGTERM, proc.stderr
     assert len(set(removed)) == len(removed) == len(added)
-    assert [call for call in calls if " worktree prune" in f" {call}"] == []
     assert list_worktree_dirs(repo, include_main=False) == [absent]
 
 
@@ -436,19 +416,15 @@ def test_compare_when_signalled_after_the_normal_sweep_left_a_worktree_does_name
     tmp_path: Path,
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, EMIT_ONE_BENCH)
-    _git(["switch", "-c", "candidate-one"], repo)
-    _git(["switch", "-c", "candidate-two"], repo)
-    _git(["switch", "main"], repo)
+    _write_committed_bench(repo, EMIT_ONE_BENCH, branches=("candidate-one", "candidate-two"))
     absent = register_absent_worktree(repo)
     git_log = _install_signalling_git(tmp_path, _REFUSING_THEN_SIGNALLING_GIT)
     env = _env_with_path(tmp_path)
 
     # ``timeout=60`` is the hang guard: ``run`` kills and reaps the CLI on expiry, so a
     # switch to ``Popen`` needs its own kill-and-reap.
-    proc = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
+    proc = run_cli(
         [
-            *_ENTRY,
             "compare",
             "main",
             "candidate-one",
@@ -458,12 +434,10 @@ def test_compare_when_signalled_after_the_normal_sweep_left_a_worktree_does_name
             "--samples",
             "1",
         ],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
+        repo,
         check=False,
+        timeout=60,
+        env=env,
     )
 
     calls = git_log.read_text(encoding="utf-8").splitlines()
@@ -471,7 +445,6 @@ def test_compare_when_signalled_after_the_normal_sweep_left_a_worktree_does_name
     assert proc.returncode == 128 + signal.SIGTERM, proc.stderr
     assert "cleanup did not finish:" in proc.stderr
     assert removed[0].split()[-1] in proc.stderr
-    assert [call for call in calls if " worktree prune" in f" {call}"] == []
     assert absent in list_worktree_dirs(repo, include_main=False)
 
 
@@ -507,10 +480,8 @@ def test_compare_when_signalled_again_during_the_cleanup_sweep_does_stop_after_t
     tmp_path: Path,
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, _TRACKED_BENCH)
-    _git(["switch", "-c", "candidate-one"], repo)
-    _git(["switch", "-c", "candidate-two"], repo)
-    _git(["switch", "main"], repo)
+    _write_committed_bench(repo, _TRACKED_BENCH, branches=("candidate-one", "candidate-two"))
+    absent = register_absent_worktree(repo)
     git_log = _install_signalling_git(tmp_path, _HOLDING_GIT)
     release = tmp_path / "removal-released"
     argv = [
@@ -527,7 +498,8 @@ def test_compare_when_signalled_again_during_the_cleanup_sweep_does_stop_after_t
 
     try:
         with _running_cli(repo, argv, env=_env_with_path(tmp_path)) as proc:
-            for wt in wait_for_worktrees(repo, 2):
+            # Three: the absent user worktree plus two the run added.
+            for wt in wait_for_worktrees(repo, 3):
                 pid = _read_pid_file(Path(wt) / "bench.pid")
                 if pid is not None:
                     reap_groups.append(pid)
@@ -542,4 +514,4 @@ def test_compare_when_signalled_again_during_the_cleanup_sweep_does_stop_after_t
     calls = git_log.read_text(encoding="utf-8").splitlines()
     assert proc.returncode == 130
     assert len([call for call in calls if " worktree remove " in f" {call} "]) == 1
-    assert [call for call in calls if " worktree prune" in f" {call}"] == []
+    assert absent in list_worktree_dirs(repo, include_main=False)

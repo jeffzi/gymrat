@@ -54,7 +54,6 @@ from tests.session.records._fixtures import (
     committed_keep,
     finalize_record,
     iteration_record,
-    log_records,
     records_of_type,
     session_header_of,
     tear_final_line,
@@ -312,19 +311,23 @@ def test_preflight_when_log_has_torn_tail_does_truncate_before_session_opens(
 # ---------------------------------------------------------------------------
 
 
-def test_preflight_when_it_opens_a_session_does_append_a_supervise_record_for_the_preflight_stage(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+def test_preflight_when_it_succeeds_does_report_the_supervise_command_for_the_preflight_stage(
+    repo: str,
 ):
-    install_baseline_seam(monkeypatch)
+    seed_session_with_baseline(repo, baseline_duration_ms=1000)
+    session_id = session_header_of(repo).session_id
 
-    _run_preflight(repo)
+    with memory_tracing(session_id) as exporter:
+        _run_preflight(repo)
 
     command = last_command_record(repo)
+    command_spans = spans_by_prefix(exporter.get_finished_spans(), "gymrat.command.")
     assert (command.name, command.args, command.exit_code) == (
         "supervise",
         {"stage": "preflight"},
         0,
     )
+    assert [span.name for span in command_spans] == ["gymrat.command.supervise"]
 
 
 def _met_stop_condition(_repo: str) -> ResolvedConfig:
@@ -364,17 +367,6 @@ _REFUSALS = [
         id="dirty-experiment-worktree",
     ),
 ]
-
-
-def test_preflight_when_tracing_enabled_does_export_a_supervise_command_span(repo: str):
-    seed_session_with_baseline(repo, baseline_duration_ms=1000)
-    session_id = session_header_of(repo).session_id
-
-    with memory_tracing(session_id) as exporter:
-        _run_preflight(repo)
-
-    command_spans = spans_by_prefix(exporter.get_finished_spans(), "gymrat.command.")
-    assert [span.name for span in command_spans] == ["gymrat.command.supervise"]
 
 
 @pytest.mark.parametrize(("refusal", "expected_message", "expected_hint"), _REFUSALS)
@@ -503,18 +495,11 @@ def _open_session_missing_worktree(repo: str) -> None:
     shutil.rmtree(experiment_worktree_dir(repo))
 
 
-@pytest.mark.parametrize(
-    "setup",
-    [
-        pytest.param(_open_session_missing_worktree, id="missing-worktree"),
-        pytest.param(start_open_session, id="clean-worktree"),
-    ],
-)
-def test_preflight_when_experiment_worktree_guard_finds_no_issue_does_proceed(
-    repo: str, monkeypatch: pytest.MonkeyPatch, setup: Callable[[str], None]
+def test_preflight_when_experiment_worktree_missing_does_proceed(
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     install_baseline_seam(monkeypatch)
-    setup(repo)
+    _open_session_missing_worktree(repo)
 
     result = _run_preflight(repo)
 
@@ -555,22 +540,25 @@ def test_preflight_when_baseline_already_recorded_does_not_measure(
 # ---------------------------------------------------------------------------
 
 
-def test_preflight_when_cap_cannot_fit_one_iterate_does_raise_with_arithmetic_and_hint_leaving_the_session_open(
-    repo: str,
-):
+def test_preflight_when_cap_cannot_fit_one_iterate_does_refuse_with_the_arithmetic(repo: str):
     seed_session_with_baseline(repo, baseline_duration_ms=1_440_000)
 
     with pytest.raises(GymratError) as exc:
         _run_preflight(repo, max_minutes=30)
 
-    text = str(exc.value)
-    assert "24m" in text
-    assert "48m" in text
-    assert "30m" in text
-    assert exc.value.hint is not None
-    assert "--max-minutes" in exc.value.hint
-    assert "--force" in exc.value.hint
-    assert not any(isinstance(record, FinalizeRecord) for record in log_records(repo))
+    assert (str(exc.value), exc.value.hint) == (
+        "the baseline took 24m; one iterate needs about 48m; the 30m cap cannot fit one.",
+        "Raise --max-minutes, or pass --force to launch anyway.",
+    )
+
+
+def test_preflight_when_cap_cannot_fit_one_iterate_does_leave_the_session_open(repo: str):
+    seed_session_with_baseline(repo, baseline_duration_ms=1_440_000)
+
+    with pytest.raises(GymratError):
+        _run_preflight(repo, max_minutes=30)
+
+    assert records_of_type(repo, FinalizeRecord) == []
 
 
 def test_preflight_when_session_has_baseline_does_need_one_iterate(repo: str):

@@ -86,7 +86,6 @@ if TYPE_CHECKING:
 
     from syrupy.assertion import SnapshotAssertion
 
-    from gymrat.model import Direction
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import PrimaryKind
     from gymrat.supervisor.events import CapAction, CapType, ModelPhase
@@ -108,12 +107,10 @@ def test_session_result_when_a_tool_ends_does_return_the_latest_read():
     assert session_result.state == state
 
 
-def _read_back(
-    tmp_path: Path, history: tuple[SessionLogRecord, ...], primary_direction: Direction = "lower"
-) -> ReadSessionResult:
+def _read_back(tmp_path: Path, history: tuple[SessionLogRecord, ...]) -> ReadSessionResult:
     """Write a session log under ``tmp_path`` and read it back the dashboard's way."""
     write_session_log(str(tmp_path), session_record(), history)
-    return read_live_session(str(tmp_path), primary_direction)
+    return read_live_session(str(tmp_path), "lower")
 
 
 def _committed_throughput_history(*deltas: float) -> tuple[SessionLogRecord, ...]:
@@ -157,18 +154,6 @@ def test_read_live_session_when_keeps_committed_does_report_the_best_committed_i
     )
 
 
-def test_read_live_session_when_primary_is_higher_is_better_does_report_the_largest_gain(
-    tmp_path: Path,
-):
-    history = _committed_throughput_history(2.0, 9.0, -3.0)
-
-    result = _read_back(tmp_path, history, "higher")
-
-    assert result.best == BestIteration(
-        delta_pct=9.0, seq=2, label="throughput", baseline_sha=COMMIT, direction="higher"
-    )
-
-
 _FIRST_KEEP_SHA = "1" * 40
 
 
@@ -208,7 +193,9 @@ def test_read_live_session_when_keeps_precede_the_best_does_name_its_baseline(
 def test_create_reporter_when_no_session_reader_given_does_read_with_the_primary_direction(
     tmp_path: Path,
 ):
-    write_session_log(str(tmp_path), session_record(), _committed_throughput_history(2.0, 9.0))
+    write_session_log(
+        str(tmp_path), session_record(), _committed_throughput_history(2.0, 9.0, -3.0)
+    )
     reporter = track(
         create_supervise_reporter(
             root=str(tmp_path),
@@ -224,8 +211,9 @@ def test_create_reporter_when_no_session_reader_given_does_read_with_the_primary
     reporter.stop()
 
     assert session_result is not None
-    assert session_result.best is not None
-    assert session_result.best.seq == 2
+    assert session_result.best == BestIteration(
+        delta_pct=9.0, seq=2, label="throughput", baseline_sha=COMMIT, direction="higher"
+    )
 
 
 @pytest.mark.parametrize(
@@ -309,7 +297,7 @@ def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero():
 
 
 # ---------------------------------------------------------------------------
-# cost row
+# starting layout
 # ---------------------------------------------------------------------------
 
 
@@ -511,7 +499,7 @@ def _liveness_rows(frame: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_liveness_when_four_tools_finish_does_show_only_last_three(snapshot: SnapshotAssertion):
+def test_liveness_when_four_tools_finish_does_show_only_last_three():
     kit = make_reporter()
     kit.reporter.observer(launch_event(1000))
 
@@ -527,7 +515,12 @@ def test_liveness_when_four_tools_finish_does_show_only_last_three(snapshot: Sna
 
     frame = render_frame(kit.reporter)
 
-    assert frame == snapshot
+    assert _liveness_rows(frame) == [
+        "waiting  0s",
+        "00:00:05  Read   src/c.ts  <1s",
+        "00:00:04  Bash   npm test  <1s",
+        "00:00:03  Edit   src/b.ts  <1s",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -681,24 +674,13 @@ def _make_reporter_past_bash_end(
     return kit
 
 
-@pytest.mark.parametrize(
-    ("result", "expected_fragment"),
-    [
-        pytest.param("ok", "no output for 30s (last tool: Bash at 00:00:03)", id="ok-tool"),
-        pytest.param(
-            "error", "no output for 30s (last tool: Bash ✗ at 00:00:03)", id="errored-tool"
-        ),
-    ],
-)
-def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
-    result: str, expected_fragment: str
-):
-    kit = _make_reporter_past_bash_end(result=result)
+def test_liveness_when_waiting_past_threshold_after_errored_tool_does_mark_it_in_the_context():
+    kit = _make_reporter_past_bash_end(result="error")
     kit.clock.now = BASH_CYCLE_END_MS + IDLE_WARN_MS + 1
 
     frame = render_frame(kit.reporter)
 
-    assert _content_line(frame, "no output") == expected_fragment
+    assert _content_line(frame, "no output") == "no output for 30s (last tool: Bash ✗ at 00:00:03)"
 
 
 def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
@@ -726,7 +708,7 @@ def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
         pytest.param(-1, "waiting  0s", id="below-custom-idle-warn"),
     ],
 )
-def test_liveness_when_waiting_around_custom_idle_warn_does_show_expected_state(
+def test_liveness_when_waiting_around_custom_idle_warn_does_escalate_only_past_it(
     offset: int, expected_state: str
 ):
     custom_ms = 100
@@ -751,7 +733,9 @@ def test_liveness_when_waiting_around_custom_idle_warn_does_show_expected_state(
         pytest.param("turn_end", "waiting  0s", id="turn_end"),
     ],
 )
-def test_liveness_when_model_phase_does_show_expected_state(phase: ModelPhase, expected: str):
+def test_liveness_when_model_phase_reported_does_show_the_phase_with_its_elapsed(
+    phase: ModelPhase, expected: str
+):
     kit = make_reporter()
     observer = kit.reporter.observer
     observer(launch_event(1000))
@@ -901,7 +885,7 @@ def test_liveness_when_non_iterate_tool_in_flight_does_show_its_summary_without_
 # ---------------------------------------------------------------------------
 
 
-def test_liveness_when_follow_up_does_not_change_liveness():
+def test_liveness_when_follow_up_replied_does_show_it_on_the_turns_row():
     kit = make_reporter()
     observer = kit.reporter.observer
     observer(launch_event(1000))

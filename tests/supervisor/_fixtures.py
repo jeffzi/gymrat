@@ -6,19 +6,22 @@ the list it fills; ``make_launch`` builds a fully-populated ``LaunchEvent`` from
 overridable defaults; ``read_log_lines`` parses a JSONL log into dicts;
 ``NotJsonEncodable`` is a value ``json.dumps`` cannot encode.
 ``seed_session_log``, ``seed_with_stop``, ``append_step``, ``driver_calls``,
-and ``_supervise`` share the turn-loop test boilerplate; ``LockSwitch`` is a
-repository lock a test holds and releases between driver steps; ``_WrapDriver``
+``events_log_path``, and ``_supervise`` share the turn-loop test boilerplate;
+``LockSwitch`` is a repository lock a test holds and releases between driver
+steps; ``SupervisorClock`` is the supervisor's wall clock, moved by hand; ``_WrapDriver``
 captures the abort event, observer, and session a supervised driver hands out;
 ``FollowUpWatch`` lets a test await the follow-ups a supervised run emits;
 ``WAIT_FINISHED_LINE`` is the line a reply closes on after a lock wait;
 ``_SENTINEL_SERVER`` and ``_SENTINEL_HOOKS`` are what the stubbed tools and
-hooks factories hand back, and ``HooksFactoryProbe`` counts its calls.
+hooks factories hand back; ``HooksFactoryProbe`` counts its calls and
+``ToolsFactoryProbe`` records the context of each.
 ``result_message``, ``system_message``, ``assistant``, ``tool_results``, and
 ``stream_event`` build the real ``claude-agent-sdk`` message dataclasses the
 Claude driver consumes. ``start_claude_session``,
-``start_interrupting_on_first_usage_update``, ``settled_outcome``,
+``run_interrupting_on_first_usage_update``, ``settled_outcome``,
 ``start_past_turns``, and ``run_outcome`` start a Claude session over a fake
-client and await it, every wait bounded by ``SESSION_TIMEOUT_S``.
+client and await it, every wait bounded by ``SESSION_TIMEOUT_S``;
+``end_and_settle`` ends a running session and awaits its outcome.
 ``wait_for_event_or_task`` waits on an event a background task should set,
 failing instead of hanging when the task settles first.
 """
@@ -30,6 +33,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, override
+from unittest.mock import create_autospec
 
 import pytest
 from claude_agent_sdk import (
@@ -547,6 +551,17 @@ class HooksFactoryProbe:
         return _SENTINEL_HOOKS
 
 
+class ToolsFactoryProbe:
+    """A stub tools factory that records each call's context and returns ``_SENTINEL_SERVER``."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[asyncio.Event, Mapping[str, str]]] = []
+
+    def __call__(self, abort: asyncio.Event, env: Mapping[str, str]) -> object:
+        self.calls.append((abort, env))
+        return _SENTINEL_SERVER
+
+
 def _same_session(session: DriverSession, _abort: asyncio.Event) -> DriverSession:
     return session
 
@@ -613,6 +628,54 @@ class FollowUpWatch:
                 await self._follow_up.wait()
 
 
+class SupervisorClock:
+    """The wall clock the supervisor reads, standing still until a test moves it.
+
+    Moving the clock only once a prerequisite is observed orders a wall-clock
+    cap after that prerequisite, instead of racing a real-time deadline.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, start_ms: int) -> None:
+        self.now_ms = start_ms
+        monkeypatch.setattr(
+            "gymrat.supervisor.supervise.now_ms",
+            create_autospec(now_ms, side_effect=lambda: self.now_ms),
+        )
+
+    def jump_to(self, to_ms: int) -> None:
+        """Move the clock to ``to_ms``."""
+        self.now_ms = to_ms
+
+    def jump_step(self, to_ms: int, *, after: asyncio.Event | None = None) -> ActionStep:
+        """Build a driver step that moves the clock to ``to_ms``.
+
+        Args:
+            to_ms: Where the clock lands.
+            after: An event the step waits on before moving the clock, or None
+                to move it at once.
+
+        Returns:
+            The step, ready to place in a mock driver script.
+
+        Raises:
+            TimeoutError: When ``after`` is still unset after
+                ``FOLLOW_UP_TIMEOUT_S``.
+        """
+
+        async def jump() -> None:
+            if after is not None:
+                async with asyncio.timeout(FOLLOW_UP_TIMEOUT_S):
+                    await after.wait()
+            self.jump_to(to_ms)
+
+        return ActionStep(action=jump)
+
+
+def events_log_path(root: str) -> Path:
+    """The supervisor event log ``_supervise`` writes for the repository at ``root``."""
+    return Path(root).parent / "events.jsonl"
+
+
 async def _supervise(
     root: str,
     driver: Driver,
@@ -657,7 +720,7 @@ async def _supervise(
         make_prompt(cwd=root),
         context=make_context(
             root=root,
-            log_path=str(Path(root).parent / "events.jsonl"),
+            log_path=str(events_log_path(root)),
             lock_path=str(Path(root).parent / "lockfile"),
             config=config,
             deadline_ms=deadline_ms,
@@ -685,7 +748,17 @@ async def run_session(
     prompt: SessionPrompt | None = None,
     abort: asyncio.Event | None = None,
 ) -> SessionOutcome:
-    """Start a session and await its settled outcome."""
+    """Start a session on ``driver`` and await its settled outcome.
+
+    Args:
+        driver: The driver that starts the session.
+        observer: Receives every session event.
+        prompt: The prompt to start with, or None for ``make_prompt()``.
+        abort: The session's abort event, or None for a fresh, never-set one.
+
+    Returns:
+        The settled outcome.
+    """
     session = driver.start(prompt or make_prompt(), observer, abort or asyncio.Event())
     return await settled_outcome(session)
 
@@ -718,33 +791,45 @@ def start_claude_session(
     )
 
 
-def start_interrupting_on_first_usage_update(
-    client: FakeClient, observer: SessionObserver | None = None
-) -> DriverSession:
-    """Start a Claude session over ``client`` that schedules ``interrupt`` on its first usage update.
+async def end_and_settle(session: DriverSession) -> SessionOutcome:
+    """End ``session`` and await its settled outcome.
+
+    Args:
+        session: The running session to end.
+
+    Returns:
+        The settled outcome.
+    """
+    await session.end()
+    return await settled_outcome(session)
+
+
+async def run_interrupting_on_first_usage_update(client: FakeClient) -> SessionOutcome:
+    """Run a Claude session over ``client`` that interrupts itself on its first usage update.
 
     Usage updates come from result messages, which leave the session idle
     between turns, so the soft stop lands when the stream delivers its next
-    message: ``client`` must carry one after the first result.
+    message. The interrupt is awaited once the outcome settles, so an
+    exception it raises fails the test instead of being lost.
 
     Args:
-        client: The fake client the session streams from.
-        observer: Receives every session event; None discards them.
+        client: The fake client the session streams from; it must carry a
+            message after the first result.
 
     Returns:
-        The running session.
+        The settled outcome.
     """
-    forward = observer or noop_observer()
     sessions: list[DriverSession] = []
     interrupts: list[asyncio.Task[None]] = []
 
     def interrupting(event: SessionEvent) -> None:
-        forward(event)
         if isinstance(event, UsageUpdateEvent) and not interrupts:
             interrupts.append(asyncio.ensure_future(sessions[0].interrupt()))
 
     sessions.append(start_claude_session(client, interrupting))
-    return sessions[0]
+    outcome = await settled_outcome(sessions[0])
+    await asyncio.gather(*interrupts)
+    return outcome
 
 
 async def run_outcome(

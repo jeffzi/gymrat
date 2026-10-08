@@ -9,7 +9,7 @@ from gymrat.report.types import (
     MeasurementResult,
     MetricMeasurement,
 )
-from tests.report._comparisons import metric_meta
+from tests.report._verdicts import metric_meta
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -79,12 +79,7 @@ def create_measurement_result(
     )
 
 
-def two_kind_measurement(
-    *,
-    worktrees_removed: int = 0,
-    worktrees_left_behind: Sequence[WorktreeRemovalFailure] = (),
-    worktree_prune_error: str | None = None,
-) -> MeasurementResult:
+def two_kind_measurement() -> MeasurementResult:
     """A measurement spanning a gating ``time`` kind and an informational ``memory`` kind."""
     return create_measurement_result(
         metrics={
@@ -109,7 +104,4 @@ def two_kind_measurement(
             ),
         },
         config_kinds={"memory": KindEntry(gating=False)},
-        worktrees_removed=worktrees_removed,
-        worktrees_left_behind=worktrees_left_behind,
-        worktree_prune_error=worktree_prune_error,
     )

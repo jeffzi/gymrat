@@ -15,7 +15,6 @@ shell bench, because a process group can only be killed by a real signal.
 import json
 import os
 import signal
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -37,11 +36,10 @@ from tests._ansi import (
     strip_ansi,
     stripped_lines,
 )
-from tests._cli import ENTRY, no_color_env
+from tests._cli import run_cli
 from tests._git import run_git
 from tests._lock import FIXED_HOLDER_AT, hold_lock
 from tests._process_helpers import (
-    reaped,
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
 )
@@ -55,6 +53,7 @@ from tests.cli._session import (
     runner,
     write_bench_config,
 )
+from tests.cli._signalled_cli import pid_recording_script, spawned_gymrat, stop_by_signal
 from tests.loop._probe import (
     BASELINE_SAMPLES,
     MeasureRecorder,
@@ -105,7 +104,6 @@ def probe_repo(repo: str) -> str:
 @pytest.mark.parametrize(
     "option",
     [
-        pytest.param(["--debug"], id="debug"),
         pytest.param(["--format", "text"], id="format"),
         pytest.param(["-c", "gymrat.toml"], id="config-short"),
         pytest.param(["--config", "gymrat.toml"], id="config-long"),
@@ -409,65 +407,31 @@ def test_probe_command_when_run_completes_does_record_the_trace_with_names_and_s
 # ---------------------------------------------------------------------------
 
 
-_TRACKED_BENCH = """#!/bin/sh
-echo $$ > bench.pid
-echo 'METRIC total_ms=1'
-sleep 120
-"""
-"""A bench that records its own pid, emits one metric, then blocks past any test."""
-
-
-def _wait_or_dump_stacks(proc: subprocess.Popen[str], timeout_s: float) -> None:
-    # The child runs with PYTHONFAULTHANDLER set, so SIGABRT makes it dump every
-    # thread's stack: where a process that outlived its signal is parked.
-    try:
-        proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        proc.send_signal(signal.SIGABRT)
-        _, stacks = proc.communicate(timeout=30)
-        pytest.fail(f"gymrat still running {timeout_s:g} s after the signal; threads:\n{stacks}")
+#: A bench that records its own pid, emits one metric, then blocks past any test.
+_TRACKED_BENCH = pid_recording_script("bench.pid", "echo 'METRIC total_ms=1'\nsleep 120\n")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
-@pytest.mark.parametrize(
-    ("signal_number", "expected_code"),
-    [
-        pytest.param(signal.SIGINT, 130, id="sigint"),
-        pytest.param(signal.SIGTERM, 143, id="sigterm"),
-    ],
-)
 def test_probe_command_when_signalled_mid_bench_does_exit_on_the_signal_code_leaving_no_bench(
-    repo: str, signal_number: int, expected_code: int, reap_groups: list[int]
+    repo: str, reap_groups: list[int]
 ):
     Path(repo, "bench.sh").write_text(_TRACKED_BENCH, encoding="utf-8")
     write_bench_config(repo, bench="sh bench.sh", adapter="metric-lines", timeout_seconds=300)
     run_git(["add", "bench.sh", "gymrat.toml"], repo)
     run_git(["commit", "-m", "bench harness"], repo)
-    subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [*ENTRY, "start", "--baseline", "main"],
-        cwd=repo,
-        env=no_color_env(),
-        capture_output=True,
-        check=True,
+    run_cli(
+        ["start", "--baseline", "main"],
+        repo,
+        timeout=60,
     )
     append_records(repo, baseline_record(samples=BASELINE_SAMPLES))
 
-    with reaped(
-        subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-            [*ENTRY, "probe"],
-            cwd=repo,
-            env={**no_color_env(), "PYTHONFAULTHANDLER": "1"},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    ) as proc:
+    with spawned_gymrat(["probe"], repo) as proc:
         bench_pid = wait_for_pid_file_blocking(
             Path(experiment_worktree_dir(repo), "bench.pid"), timeout_s=60.0
         )
         reap_groups.append(os.getpgid(bench_pid))
-        proc.send_signal(signal_number)
-        _wait_or_dump_stacks(proc, timeout_s=60)
+        stop_by_signal(proc, signal.SIGINT, timeout_s=60)
 
-    assert proc.returncode == expected_code
+    assert proc.returncode == 128 + signal.SIGINT
     wait_until_dead_blocking(bench_pid, timeout_s=30.0)

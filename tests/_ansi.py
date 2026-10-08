@@ -60,11 +60,39 @@ def sgr_params(text: str) -> str:
     return match.group(1)
 
 
+_EXTENDED_COLOR_INTRODUCERS = frozenset({"38", "48", "58"})
+"""SGR codes that open a 256-color or truecolor run instead of naming an attribute."""
+
+_EXTENDED_COLOR_LENGTHS = {"5": 3, "2": 5}
+"""Parameters an extended color run spans, by its mode: ``38;5;n`` or ``38;2;r;g;b``."""
+
+
+def _sgr_attributes(params: list[str]) -> list[str]:
+    attributes: list[str] = []
+    index = 0
+    while index < len(params):
+        param = params[index]
+        mode = params[index + 1] if index + 1 < len(params) else ""
+        if param in _EXTENDED_COLOR_INTRODUCERS and mode in _EXTENDED_COLOR_LENGTHS:
+            span = _EXTENDED_COLOR_LENGTHS[mode]
+            attributes.append(";".join(params[index : index + span]))
+            index += span
+            continue
+        attributes.append(param)
+        index += 1
+    return attributes
+
+
 def sgr_codes(text: str) -> set[str]:
-    """Every SGR parameter code present in ``text``, resets left out."""
+    """Every SGR code present in ``text``, resets left out.
+
+    An extended color run stays one code (``"38;2;255;0;0"``), so its numeric
+    components never read as attributes such as ``2`` (dim).
+    """
     codes: set[str] = set()
     for escape in SGR_RE.finditer(text):
-        codes.update(param for param in escape.group(1).split(";") if param not in {"", "0"})
+        params = escape.group(1).split(";")
+        codes.update(code for code in _sgr_attributes(params) if code not in {"", "0"})
     return codes
 
 

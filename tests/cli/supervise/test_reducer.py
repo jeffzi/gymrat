@@ -325,22 +325,25 @@ def test_advance_when_more_tools_finish_than_the_bound_does_keep_only_the_most_r
     ]
 
 
-def test_advance_when_bash_tool_ends_does_take_the_passed_session_result():
-    before = started("Bash", "bash-1")
-    session = read_result()
-
-    after = advance(before, tool_end_event("Bash", "bash-1", 3000), session)
-
-    assert after.session_result is session
+_EARLIER_READ = read_result()
+_LATER_READ = read_result(loop_session(), has_baseline=True)
 
 
-def test_advance_when_tracked_non_bash_tool_ends_does_keep_the_previous_session_result():
-    session = read_result()
-    before = started("Read", "read-1", base=make_state(session_result=session))
+@pytest.mark.parametrize(
+    ("passed", "expected"),
+    [
+        pytest.param(_LATER_READ, _LATER_READ, id="session-passed"),
+        pytest.param(None, _EARLIER_READ, id="no-session-passed-keeps-the-earlier-read"),
+    ],
+)
+def test_advance_when_tracked_tool_ends_does_resolve_the_session_from_the_passed_read(
+    passed: ReadSessionResult | None, expected: ReadSessionResult
+):
+    before = started("Read", "read-1", base=make_state(session_result=_EARLIER_READ))
 
-    after = advance(before, tool_end_event("Read", "read-1", 3000), None)
+    after = advance(before, tool_end_event("Read", "read-1", 3000), passed)
 
-    assert after.session_result is session
+    assert after.session_result is expected
 
 
 def test_advance_when_tracked_nested_tool_ends_does_retire_it():
@@ -707,10 +710,6 @@ def test_advance_when_ended_follow_up_arrives_while_exiting_does_record_the_exit
     assert after.last_decision == expected
 
 
-_EARLIER_READ = read_result()
-_LATER_READ = read_result(loop_session(), has_baseline=True)
-
-
 @pytest.mark.parametrize(
     ("passed", "expected"),
     [
@@ -737,12 +736,7 @@ def test_advance_when_ended_follow_up_arrives_while_exiting_does_take_the_passed
     ("event", "expected"),
     [
         pytest.param(launch_event(1000), True, id="launch"),
-        pytest.param(tool_end_event("Bash", "bash-1", 3000), True, id="top-level-bash"),
-        pytest.param(
-            tool_end_event("Read", "nested-read", 3000, parent_tool_use_id="bash-1"),
-            True,
-            id="nested-read",
-        ),
+        pytest.param(tool_end_event("Read", "read-1", 3000), True, id="tool-end"),
         pytest.param(usage_event(1.0), False, id="usage-update"),
         pytest.param(tool_start_event("Bash", "bash-2", 2000), False, id="tool-start"),
     ],
@@ -750,8 +744,7 @@ def test_advance_when_ended_follow_up_arrives_while_exiting_does_take_the_passed
 def test_wants_session_refresh_when_event_arrives_does_match_the_reread_contract(
     event: SessionEvent, expected: bool
 ):
-    state = started("Bash", "bash-1")
-    state = started("Read", "read-1", base=state)
+    state = make_state()
 
     assert wants_session_refresh(state, event) is expected
 

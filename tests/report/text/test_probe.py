@@ -112,6 +112,18 @@ def test_render_probe_report_when_reference_zero_does_leave_the_delta_unstyled(
     assert "\x1b[" not in delta_cell(row)
 
 
+def test_render_probe_report_when_colored_does_style_the_title_and_experiment_labels():
+    report = render_probe_report(_golden_probe(), ReportOptions(color=True))
+
+    header = line_containing(report, "gymrat probe")
+    heading = line_containing(report, "baseline")
+    assert (
+        styles_at(header, "gymrat probe"),
+        styles_at(header, "experiment"),
+        styles_at(heading, "experiment"),
+    ) == (["1"], ["1", "4"], ["1", "4"])
+
+
 # ---------------------------------------------------------------------------
 # whole report — golden
 # ---------------------------------------------------------------------------
@@ -133,20 +145,6 @@ def _golden_probe() -> ProbeResult:
             probe_metric("cold_start_ns", reference_median=None, delta_pct=None, unit="ns"),
         ]
     )
-
-
-def test_render_probe_report_when_colored_does_style_every_heading():
-    report = render_probe_report(_golden_probe(), ReportOptions(color=True))
-
-    header = line_containing(report, "gymrat probe")
-    heading = line_containing(report, "baseline")
-    assert (
-        styles_at(header, "gymrat probe"),
-        styles_at(header, "·"),
-        styles_at(header, "experiment"),
-        styles_at(heading, "time"),
-        styles_at(heading, "experiment"),
-    ) == (["1"], ["2"], ["1", "4"], ["1"], ["1", "4"])
 
 
 def test_render_probe_report_when_rendered_does_match_its_golden(snapshot: SnapshotAssertion):

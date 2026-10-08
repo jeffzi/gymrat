@@ -2,14 +2,14 @@
 
 Real-subprocess tests are parallel-safe under ``pytest-xdist``: every run gets
 its own directory via the ``tmp_path`` fixture, and POSIX-only shell constructs
-(``$$``, ``>&2``, ``for``/``do``/``done``) mean the module is skipped on win32.
+(``$$``, ``>&2``, ``for``/``do``/``done``) mean the directory is not collected
+on win32.
 The win32 ``taskkill`` fallback is tested in ``tests/test_process_group.py``.
 """
 
 import asyncio
 import contextlib
 import dataclasses
-import errno
 import json
 import os
 import signal
@@ -18,7 +18,6 @@ import threading
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import create_autospec
 
 import pytest
 
@@ -40,20 +39,17 @@ from tests._exec_fixtures import (
     run_argv,
     run_shell,
     set_abort,
+    settle,
+    shell_grandchild,
     wait_for_spawned,
 )
 from tests._process_helpers import (
+    KillpgRefusal,
     is_alive,
     killpg_warnings,
-    record_registry_sweep,
+    refuse_killpg,
     wait_for_pid_file,
     wait_until_dead,
-)
-
-# exec drives POSIX process groups (killpg) and sh-only shell syntax; neither
-# works under cmd.exe, so the whole module is POSIX-only.
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX-only shell and process groups"
 )
 
 # Runs repeated back to back to hit the window where the timeout fires while the
@@ -168,6 +164,11 @@ def held_reaper(monkeypatch: pytest.MonkeyPatch) -> Iterator[HeldReaper]:
     reaper.release.set()
 
 
+# ---------------------------------------------------------------------------
+# captured output and stdin delivery
+# ---------------------------------------------------------------------------
+
+
 async def test_exec_when_multi_byte_char_split_across_reads_does_decode_single_char(
     make_opts: Callable[..., ExecOptions],
 ) -> None:
@@ -209,11 +210,20 @@ async def test_exec_when_stdin_unread_and_large_does_settle_with_command_result(
 
 _ECHO_STDIN_ARGV = [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read())"]
 
+# Larger than any OS pipe buffer: a child writing this much to stderr before
+# stdout blocks unless both pipes are drained at once.
+_MIB = 1024 * 1024
+
 
 @pytest.mark.parametrize(
-    ("run", "args"),
+    ("run", "args", "expected"),
     [
-        pytest.param(run_shell, "echo out; echo err >&2; exit 3", id="exec"),
+        pytest.param(
+            run_shell,
+            "echo out; echo err >&2; exit 3",
+            expected_result("out\n", "err\n", 3),
+            id="exec",
+        ),
         pytest.param(
             run_argv,
             [
@@ -221,18 +231,30 @@ _ECHO_STDIN_ARGV = [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdi
                 "-c",
                 "import sys; print('out'); print('err', file=sys.stderr); sys.exit(3)",
             ],
+            expected_result("out\n", "err\n", 3),
             id="exec_argv",
+        ),
+        pytest.param(
+            run_argv,
+            [
+                sys.executable,
+                "-c",
+                f"import sys; sys.stderr.write('E' * {_MIB}); sys.stderr.flush(); print('OK')",
+            ],
+            expected_result("OK\n", "E" * _MIB, 0),
+            id="exec_argv-stderr-exceeds-pipe-buffer",
         ),
     ],
 )
-async def test_exec_when_run_to_completion_does_capture_both_streams_and_the_exit_code(
+async def test_exec_when_run_to_completion_does_capture_the_full_result(
     make_opts: Callable[..., ExecOptions],
     run: ExecRun,
     args: Any,
+    expected: ExecResult,
 ) -> None:
     result = await run(args, make_opts())
 
-    assert result == expected_result("out\n", "err\n", 3)
+    assert result == expected
 
 
 @pytest.mark.parametrize(
@@ -400,6 +422,11 @@ async def test_exec_when_spawn_fails_does_resolve_with_the_failure_on_stderr(
     assert result == expected_result("", message.format(cwd=run_dir) + "\n", exit_code=1)
 
 
+# ---------------------------------------------------------------------------
+# timeout, abort, and teardown of a running child
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.parametrize("runner", RUNNERS)
 async def test_exec_when_timeout_exceeded_does_return_timeout_error_with_the_partial_output(
     make_opts: Callable[..., ExecOptions], runner: Runner
@@ -448,8 +475,7 @@ async def test_exec_when_torn_down_does_kill_the_whole_group(
 
     teardown.trigger(task, proc, abort)
 
-    with contextlib.suppress(asyncio.CancelledError):
-        await asyncio.wait_for(task, 5)
+    await settle(task)
     await wait_until_dead(grandchild, timeout_s=3.0)
     assert not is_alive(grandchild)
 
@@ -494,6 +520,11 @@ async def test_exec_when_run_settles_does_close_stdio_pipes(
     assert proc.stderr.at_eof()
 
 
+# ---------------------------------------------------------------------------
+# failures that settle as exit code 1
+# ---------------------------------------------------------------------------
+
+
 async def test_exec_when_child_killed_by_signal_does_report_exit_one(
     make_opts: Callable[..., ExecOptions],
 ) -> None:
@@ -514,8 +545,7 @@ async def test_exec_when_stream_read_fails_does_settle_as_failure(
 ) -> None:
     task = asyncio.create_task(run_exec("sleep 0.5", make_opts()))
     proc = await wait_for_spawned(spawned_processes)
-    pipe = proc.stdout if stream == "stdout" else proc.stderr
-    assert pipe is not None
+    pipe: asyncio.StreamReader = getattr(proc, stream)
 
     pipe.set_exception(RuntimeError("stream exploded"))
 
@@ -525,6 +555,11 @@ async def test_exec_when_stream_read_fails_does_settle_as_failure(
     assert result.stderr == "stream exploded\n"
     # The diagnostic text is internal, not command output — byte count stays zero.
     assert result.stderr_bytes == 0
+
+
+# ---------------------------------------------------------------------------
+# output cap
+# ---------------------------------------------------------------------------
 
 
 def test_output_buffer_when_chunk_crosses_the_cap_does_keep_it_whole(
@@ -556,6 +591,11 @@ async def test_exec_when_output_exceeds_cap_does_stop_appending_but_keep_countin
     assert result.exit_code == 0
     assert result.stdout == ""
     assert result.stdout_bytes == len(b"hello\n")
+
+
+# ---------------------------------------------------------------------------
+# a timeout racing the shell's exit
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(
@@ -608,8 +648,7 @@ async def test_exec_when_torn_down_after_shell_exits_does_leave_reaping_to_async
     await wait_for_shell_exit(proc)
 
     teardown.trigger(task, proc, abort)
-    with contextlib.suppress(asyncio.CancelledError):
-        await asyncio.wait_for(task, 5)
+    await settle(task)
     await asyncio.wait_for(proc.wait(), 5)
 
     assert [
@@ -644,8 +683,7 @@ async def test_exec_when_torn_down_after_shell_exits_does_not_warn_about_killpg(
     await wait_for_shell_exit(proc)
 
     teardown.trigger(task, proc, abort)
-    with contextlib.suppress(asyncio.CancelledError):
-        await asyncio.wait_for(task, 5)
+    await settle(task)
     await asyncio.wait_for(proc.wait(), 5)
 
     assert killpg_warnings(recwarn) == []
@@ -704,35 +742,18 @@ _real_killpg = os.killpg
 _RUN_SETTLE_TIMEOUT_S = 5.0
 
 
-@dataclasses.dataclass
-class LiftableRefusal:
-    """Stand-in ``os.killpg`` that refuses every signal with ``EPERM`` while ``refusing`` holds.
-
-    Clearing ``refusing`` lets signals through for real, so a test can still
-    tear its run down after the refusal it asserted on.
-    """
-
-    refusing: bool = True
-
-    def __call__(self, group_pid: int, signal_number: int) -> None:
-        if self.refusing:
-            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
-        _real_killpg(group_pid, signal_number)
-
-
 @pytest.fixture
 def killpg_refusal(
     monkeypatch: pytest.MonkeyPatch,
     spawned_processes: list[asyncio.subprocess.Process],
-) -> Iterator[LiftableRefusal]:
+) -> Iterator[KillpgRefusal]:
     """Install a killpg stand-in a test can switch to refusing right before its act.
 
     Depends on ``spawned_processes``, so its own teardown runs first: clearing
     ``refusing`` here happens before ``spawned_processes`` kills any survivor's
     group, so that cleanup kill goes through the real ``killpg``.
     """
-    refusal = LiftableRefusal(refusing=False)
-    monkeypatch.setattr(os, "killpg", refusal)
+    refusal = refuse_killpg(monkeypatch, refusing=False)
     yield refusal
     refusal.refusing = False
 
@@ -772,36 +793,18 @@ async def background_runs(
 @pytest.mark.usefixtures("spawned_processes")
 async def test_kill_live_process_groups_when_run_has_settled_does_not_target_its_group(
     make_opts: Callable[..., ExecOptions],
-    monkeypatch: pytest.MonkeyPatch,
+    record_killpg: Callable[[], list[int]],
     *,
     run: ExecRun,
     args: Any,
     timeout_ms: int | None,
 ) -> None:
     await run(args, make_opts(timeout_ms=timeout_ms))
-    attempted = record_registry_sweep(monkeypatch)
+    attempted = record_killpg()
 
     exec_mod.kill_live_process_groups()
 
     assert attempted == []
-
-
-async def test_kill_live_process_groups_when_child_alive_does_kill_group_and_descendants(
-    tmp_path: Path,
-    spawned_processes: list[asyncio.subprocess.Process],
-    make_opts: Callable[..., ExecOptions],
-) -> None:
-    task = asyncio.create_task(
-        run_exec("sleep 30 & echo $! > grandchild.pid; wait", make_opts()),
-    )
-    await wait_for_spawned(spawned_processes)
-    grandchild = await wait_for_pid_file(tmp_path / "grandchild.pid")
-
-    exec_mod.kill_live_process_groups()
-
-    await wait_until_dead(grandchild, timeout_s=3.0)
-    await task
-    assert not is_alive(grandchild)
 
 
 async def test_kill_live_process_groups_when_registry_reset_does_spare_every_earlier_child(
@@ -811,7 +814,7 @@ async def test_kill_live_process_groups_when_registry_reset_does_spare_every_ear
     background_runs: list[ExecTask],
 ) -> None:
     background_runs.extend(
-        asyncio.create_task(run_exec(f"sleep 30 & echo $! > earlier{n}.pid; wait", make_opts()))
+        asyncio.create_task(run_exec(shell_grandchild(tmp_path / f"earlier{n}.pid"), make_opts()))
         for n in range(2)
     )
     await wait_for_spawned(spawned_processes, count=2)
@@ -820,57 +823,47 @@ async def test_kill_live_process_groups_when_registry_reset_does_spare_every_ear
     ]
     exec_mod.reset()
     background_runs.append(
-        asyncio.create_task(run_exec("sleep 30 & echo $! > later.pid; wait", make_opts())),
+        asyncio.create_task(run_exec(shell_grandchild(tmp_path / "later.pid"), make_opts())),
     )
     await wait_for_spawned(spawned_processes, count=3)
     later_grandchild = await wait_for_pid_file(tmp_path / "later.pid")
 
     exec_mod.kill_live_process_groups()
 
+    await asyncio.wait_for(background_runs[-1], _RUN_SETTLE_TIMEOUT_S)
     alive = [is_alive(pid) for pid in (*earlier_grandchildren, later_grandchild)]
     assert alive == [True, True, False]
 
 
-@pytest.mark.parametrize(
-    "exc",
-    [
-        pytest.param(OSError("no such process"), id="oserror"),
-        pytest.param(RuntimeError("unexpected"), id="runtime-error"),
-    ],
-)
-async def test_kill_live_process_groups_when_kill_raises_does_not_propagate(
+async def test_kill_live_process_groups_when_killpg_raises_does_signal_every_group_without_propagating(
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
     monkeypatch: pytest.MonkeyPatch,
     background_runs: list[ExecTask],
-    exc: Exception,
 ) -> None:
+    # No grace, so the sweep reaches its kills without waiting on groups that
+    # every signal fails to reach.
     background_runs.extend(asyncio.create_task(run_exec("sleep 30", make_opts())) for _ in range(2))
     await wait_for_spawned(spawned_processes, count=2)
-    monkeypatch.setattr(
-        exec_mod,
-        "terminate_process_group",
-        create_autospec(exec_mod.terminate_process_group, return_value=False),
-    )
-    monkeypatch.setattr(
-        exec_mod,
-        "wait_for_process_group_exit",
-        create_autospec(exec_mod.wait_for_process_group_exit, return_value=None),
-    )
-    kill = create_autospec(exec_mod.kill_process_group, side_effect=exc)
-    monkeypatch.setattr(exec_mod, "kill_process_group", kill)
+    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", 0)
+    killed: list[int] = []
+
+    def raise_after_recording(group_pid: int, signal_number: int) -> None:
+        if signal_number == signal.SIGKILL:
+            killed.append(group_pid)
+        raise RuntimeError(group_pid)
+
+    monkeypatch.setattr(os, "killpg", raise_after_recording)
 
     exec_mod.kill_live_process_groups()
 
-    assert {call.args[0] for call in kill.call_args_list} == {
-        proc.pid for proc in spawned_processes
-    }
+    assert sorted(killed) == sorted(proc.pid for proc in spawned_processes)
 
 
 async def test_kill_live_process_groups_when_running_group_refuses_signals_does_warn(
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
-    killpg_refusal: LiftableRefusal,
+    killpg_refusal: KillpgRefusal,
     background_runs: list[ExecTask],
 ) -> None:
     background_runs.append(asyncio.create_task(run_exec("sleep 30", make_opts())))
@@ -887,7 +880,7 @@ async def test_kill_live_process_groups_when_exited_leader_group_with_live_membe
     stray_process_ids: list[int],
     make_opts: Callable[..., ExecOptions],
     *,
-    killpg_refusal: LiftableRefusal,
+    killpg_refusal: KillpgRefusal,
     background_runs: list[ExecTask],
 ) -> None:
     # The grandchild holds the run's stdout, so the run keeps going after the
@@ -910,10 +903,6 @@ async def test_kill_live_process_groups_when_exited_leader_group_with_live_membe
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
 async def test_exec_when_spawned_does_unblock_termination_signals_in_child(
     make_opts: Callable[..., ExecOptions],
 ) -> None:

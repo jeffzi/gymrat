@@ -1,10 +1,11 @@
 """Tests for the CLI error rendering and exit routing.
 
-These cover stdout writing, the error formatter and the exit path, plus the
-import-latency guard. Run-setup tests live in ``test_run_setup.py``; flag parser
-tests live in ``test_options.py``; stream-helper and stderr-console tests live in
-``test_console.py``; budget report tests live in ``test_budget_report.py``; lock
-and trace tests live in ``tests/test_command_run.py``.
+These cover stdout writing, the error formatter and the exit path. Run-setup
+tests live in ``test_run_setup.py``; flag parser tests live in ``test_options.py``;
+stream-helper and stderr-console tests live in ``test_console.py``; budget report
+tests live in ``test_budget_report.py``; lock and trace tests live in
+``tests/test_command_run.py``; import-latency tests live in
+``tests/test_import_latency.py``.
 """
 
 import errno

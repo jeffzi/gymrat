@@ -193,25 +193,16 @@ _HINT = "run `gymrat doctor` first"
 
 
 @pytest.mark.parametrize(
-    "text",
-    [
-        pytest.param("counts [i] rounds", id="prose"),
-        pytest.param("counts `[i]` rounds", id="inline-code"),
-    ],
-)
-def test_format_hint_when_text_has_markup_metacharacters_does_render_them_literally(text: str):
-    assert render_plain(format_hint(text)) == "counts [i] rounds"
-
-
-@pytest.mark.parametrize(
     ("text", "expected"),
     [
         pytest.param("`gymrat keep` settles it", "gymrat keep settles it", id="code-first"),
         pytest.param("then run `gymrat keep`", "then run gymrat keep", id="code-last"),
         pytest.param("`up``on`", "upon", id="adjacent-code"),
+        pytest.param("counts [i] rounds", "counts [i] rounds", id="brackets-in-prose"),
+        pytest.param("counts `[i]` rounds", "counts [i] rounds", id="brackets-in-code"),
     ],
 )
-def test_format_hint_when_code_span_sits_anywhere_does_strip_its_backticks(
+def test_format_hint_when_given_text_does_strip_backticks_and_keep_brackets_literal(
     text: str, expected: str
 ):
     assert render_plain(format_hint(text)) == expected

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 def _run_options() -> RunOptions:
-    """Run options with every field set away from its default, so a dropped field shows."""
+    """Run options the baseline must hand to the measurement engine as the same object."""
     warnings: list[str] = []
     events: list[ProgressEvent] = []
     return RunOptions(

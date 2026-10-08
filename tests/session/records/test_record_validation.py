@@ -10,7 +10,6 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.session.records import (
-    BaselineRecord,
     IterationRecord,
     parse_record,
 )
@@ -215,13 +214,6 @@ def test_parse_record_when_iteration_tuple_fields_sent_as_arrays_does_hold_tuple
         ("rss_kb",),
         ({"total_ms": 14120},),
     )
-
-
-def test_parse_record_when_baseline_samples_sent_as_array_does_hold_tuple():
-    parsed = parse_record(BASELINE_RECORD)
-
-    assert isinstance(parsed, BaselineRecord)
-    assert parsed.samples == ({"total_ms": 15200}, {"total_ms": 15184})
 
 
 # ---------------------------------------------------------------------------

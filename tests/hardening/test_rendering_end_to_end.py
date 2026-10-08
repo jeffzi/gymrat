@@ -22,8 +22,8 @@ import pytest
 
 from tests._ansi import strip_ansi
 from tests._cli import ENTRY as _ENTRY
+from tests._cli import run_cli
 from tests._git import EMIT_ONE_BENCH
-from tests._git import run_git as _git
 from tests._git import write_committed_bench as _write_committed_bench
 from tests._process_helpers import reaped
 from tests.hardening._pty import pty_capture
@@ -107,9 +107,7 @@ def test_report_when_stdout_is_a_real_tty_does_render_styled(
     create_scratch_repo: Callable[[], str], args: list[str], title: str
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, EMIT_ONE_BENCH)
-    _git(["switch", "-c", "candidate"], repo)
-    _git(["switch", "main"], repo)
+    _write_committed_bench(repo, EMIT_ONE_BENCH, branches=("candidate",))
 
     returncode, stderr, output = _run_report_on_pty(args, repo)
 
@@ -124,14 +122,12 @@ def test_measure_report_when_stdout_is_redirected_does_render_plain(
     repo = create_scratch_repo()
     _write_committed_bench(repo, EMIT_ONE_BENCH)
 
-    result = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
-        [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "1"],
-        cwd=repo,
-        env=_neutral_env(),
-        capture_output=True,
-        text=True,
-        timeout=120,
+    result = run_cli(
+        ["measure", "--bench", "sh bench.sh", "--samples", "1"],
+        repo,
         check=False,
+        timeout=120,
+        env=_neutral_env(),
     )
 
     assert result.returncode == 0, result.stderr
@@ -153,14 +149,12 @@ def test_measure_when_no_color_flag_does_not_leak_no_color_into_the_bench_env(
     env = _neutral_env()
     env["GYMRAT_TEST_PROBE"] = str(probe)
 
-    result = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
-        [*_ENTRY, "measure", "--no-color", "--bench", "sh bench.sh", "--samples", "1"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
+    result = run_cli(
+        ["measure", "--no-color", "--bench", "sh bench.sh", "--samples", "1"],
+        repo,
         check=False,
+        timeout=120,
+        env=env,
     )
 
     assert result.returncode == 0, result.stderr

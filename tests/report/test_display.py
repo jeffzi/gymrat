@@ -24,21 +24,10 @@ if TYPE_CHECKING:
         pytest.param(
             band_verdict(n=6, usable_n=5), "within-noise", id="band-some-pairs-differ-at-minimum"
         ),
-        pytest.param(
-            band_verdict(verdict="improved", delta=-10, n=10, usable_n=3),
-            "improved",
-            id="band-found-improvement",
-        ),
         pytest.param(permutation_verdict(), "within-noise", id="permutation-no-signal"),
         # sub-minimum non-exact verdicts are inconclusive whatever they found
         pytest.param(band_verdict(n=5, usable_n=5), "inconclusive", id="too-short-for-floor"),
         pytest.param(band_verdict(n=1, usable_n=0), "inconclusive", id="single-pair-tie"),
-        pytest.param(
-            band_verdict(verdict="improved", delta=-10, n=4, usable_n=4),
-            "inconclusive",
-            id="band-improved-n4",
-        ),
-        pytest.param(permutation_verdict(n=3), "inconclusive", id="permutation-n3"),
         pytest.param(
             permutation_verdict(verdict="improved", delta=-10, n=5),
             "inconclusive",

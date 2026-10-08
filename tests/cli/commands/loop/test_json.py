@@ -27,8 +27,9 @@ from tests.cli._session import (
     make_discard_repo,
     open_session_with_one_keep,
     runner,
-    stub_resolve_config,
+    stub_config,
     write_bench_config,
+    write_settled_session,
 )
 from tests.loop._settle import (
     CHECKS,
@@ -44,8 +45,6 @@ from tests.session.records._fixtures import (
     append_records,
     committed_keep,
     iteration_record,
-    session_record,
-    write_session_log,
 )
 
 # ---------------------------------------------------------------------------
@@ -159,21 +158,6 @@ def test_discard_command_when_format_json_does_emit_structured_json(
 # ---------------------------------------------------------------------------
 
 
-def _write_status_session(repo: str, *trailing_records: SessionLogRecord) -> None:
-    """A configured session with one kept iteration, followed by ``trailing_records``."""
-    write_session_log(
-        repo, session_record(), (iteration_record(seq=1), committed_keep(1), *trailing_records)
-    )
-    write_bench_config(repo)
-
-
-@pytest.fixture
-def status_repo(repo: str) -> str:
-    """A repository with a configured session and one kept iteration."""
-    _write_status_session(repo)
-    return repo
-
-
 _FINALIZE = FinalizeRecord(
     type="finalize",
     at=AT,
@@ -199,7 +183,7 @@ _FINALIZE = FinalizeRecord(
 def test_status_command_when_format_json_does_emit_structured_json_on_stdout(
     repo: str, trailing: tuple[SessionLogRecord, ...], finalized: bool, stopped: bool
 ):
-    _write_status_session(repo, *trailing)
+    write_settled_session(repo, *trailing)
 
     result = runner.invoke(app, ["status", "--format", "json"])
 
@@ -214,6 +198,7 @@ def test_status_command_when_format_json_does_emit_structured_json_on_stdout(
     assert doc["discard_count"] == 0
     assert doc["unsettled"] is False
     assert (doc["finalized"], doc["stopped"]) == (finalized, stopped)
+    assert "budget" not in doc
 
 
 # ---------------------------------------------------------------------------
@@ -233,16 +218,6 @@ def test_status_command_when_format_json_and_budget_active_does_include_budget_o
     assert "budget" in doc
     assert doc["budget"]["cap_minutes"] == 30
     assert isinstance(doc["budget"]["remaining_seconds"], int)
-
-
-def test_status_command_when_format_json_and_no_budget_does_omit_budget_key(
-    status_repo: str,
-):
-    result = runner.invoke(app, ["status", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert "budget" not in doc
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +252,7 @@ def test_stop_command_when_format_json_does_emit_structured_json_with_at_and_mes
 def test_start_command_when_format_json_and_fresh_does_emit_structured_json(
     repo: str, monkeypatch: pytest.MonkeyPatch, runbook: str | None
 ):
-    stub_resolve_config(monkeypatch, runbook=runbook)
+    stub_config(monkeypatch, "session", resolved_config(runbook=runbook))
 
     result = runner.invoke(app, ["start", "--baseline", "main", "--format", "json"])
 
@@ -301,7 +276,7 @@ def test_start_command_when_format_json_and_resumed_does_set_resumed_true_with_c
     start_session(repo, "main", resolved_config())
     append_records(repo, iteration_record(seq=1))
     append_records(repo, committed_keep(1))
-    stub_resolve_config(monkeypatch)
+    stub_config(monkeypatch, "session", resolved_config())
 
     result = runner.invoke(app, ["start", "--baseline", "main", "--format", "json"])
 
@@ -316,7 +291,7 @@ def test_start_command_when_format_json_and_archived_does_include_archived_sessi
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     closed_id = close_session_with_one_keep(repo)
-    stub_resolve_config(monkeypatch)
+    stub_config(monkeypatch, "session", resolved_config())
 
     result = runner.invoke(app, ["start", "--baseline", "main", "--format", "json"])
 

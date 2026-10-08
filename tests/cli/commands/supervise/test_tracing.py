@@ -12,12 +12,17 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from opentelemetry.trace import SpanContext
+
+    from gymrat.supervisor.supervise import SupervisionResult
+
 import pytest
 from opentelemetry.trace import StatusCode
 
 from gymrat.config import SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.supervisor.driver import SessionPrompt
+from gymrat.supervisor.events import LaunchEvent
 from gymrat.telemetry import provider
 from gymrat.telemetry.provider import export_failed, span_id_of
 from tests.cli._session import close_session_with_one_keep
@@ -26,15 +31,23 @@ from tests.cli.commands.supervise._seams import (
     command_config,
     err_text,
     install_seams,
+    patch_supervise,
     record_stdout_writes,
     run,
 )
 from tests.cli.supervise._fixtures import (
+    follow_up_event,
     make_supervision_result,
 )
 from tests.session.records._fixtures import SESSION_ID, session_header_of
 from tests.telemetry._collector import otlp_collector
 from tests.telemetry._fixtures import hide_otlp_exporter, memory_tracing, span_by_name
+
+
+def _span_id(context: SpanContext | None) -> int | None:
+    """The span id ``context`` carries, or ``None`` when the span has no such context."""
+    return None if context is None else context.span_id
+
 
 # ---------------------------------------------------------------------------
 # span export — one session span parenting one run span, on every outcome
@@ -97,6 +110,7 @@ def test_supervise_when_tracing_enabled_does_export_one_quiet_session_span_paren
     run_span = span_by_name(spans, "gymrat.run")
     session_span = span_by_name(spans, "gymrat.session")
     launch = seams.supervise_calls[0]["launch"]
+    assert isinstance(launch, LaunchEvent)
     assert session_span.parent is None
     assert session_span.context.span_id == span_id_of(SESSION_ID, "session")
     assert dict(session_span.attributes or {}) == {
@@ -105,11 +119,11 @@ def test_supervise_when_tracing_enabled_does_export_one_quiet_session_span_paren
     }
     assert (session_span.status.status_code, session_span.events) == (StatusCode.UNSET, ())
     assert run_span.parent.span_id == session_span.context.span_id
-    assert run_span.context.span_id == span_id_of(SESSION_ID, f"run:{launch.at}")  # pyrefly: ignore[missing-attribute]
+    assert run_span.context.span_id == span_id_of(SESSION_ID, f"run:{launch.at}")
     assert (run_span.status.status_code, run_span.events) == (run_status, ())
     assert dict(run_span.attributes or {}) == {
         "gymrat.session.id": SESSION_ID,
-        "gymrat.run.head_sha": launch.head_sha,  # pyrefly: ignore[missing-attribute]
+        "gymrat.run.head_sha": launch.head_sha,
         "gymrat.run.max_minutes": CAP_MINUTES,
         "gen_ai.provider.name": "anthropic",
         **outcome_attributes,
@@ -126,13 +140,36 @@ def test_supervise_when_tracing_enabled_does_hand_supervise_the_run_span_context
         run("optimize it", "--max-minutes", str(CAP_MINUTES))
 
     call = seams.supervise_calls[0]
-    run_span_id = span_id_of(SESSION_ID, f"run:{call['launch'].at}")  # pyrefly: ignore[missing-attribute]
+    launch = call["launch"]
+    assert isinstance(launch, LaunchEvent)
+    run_span_id = span_id_of(SESSION_ID, f"run:{launch.at}")
     prompt = call["prompt"]
     assert isinstance(prompt, SessionPrompt)
     assert prompt.traceparent is not None
     assert prompt.traceparent.startswith("00-")
     assert f"{run_span_id:016x}" in prompt.traceparent
     assert call["observer"] is not seams.observer
+
+
+def test_supervise_when_tracing_enabled_does_still_hand_every_event_to_the_reporter(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = install_seams(monkeypatch)
+    event = follow_up_event(action="replied")
+
+    async def emitting_supervise(*args: object, **kwargs: object) -> SupervisionResult:
+        seams.record_supervise_call(args, kwargs)
+        observer = kwargs["observer"]
+        assert callable(observer)
+        observer(event)
+        return make_supervision_result()
+
+    patch_supervise(monkeypatch, emitting_supervise)
+
+    with memory_tracing(SESSION_ID):
+        result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
+
+    assert (result.exit_code, seams.observed_events) == (0, [event])
 
 
 def test_supervise_when_session_resumed_does_parent_both_run_spans_to_the_one_session_span(
@@ -147,10 +184,8 @@ def test_supervise_when_session_resumed_does_parent_both_run_spans_to_the_one_se
     spans = exporter.get_finished_spans()
     session_span_id = span_id_of(SESSION_ID, "session")
     assert (opening.exit_code, resumed.exit_code) == (0, 0), err_text(resumed)
-    assert [s.context.span_id for s in spans if s.name == "gymrat.session"] == [  # pyrefly: ignore[missing-attribute]
-        session_span_id
-    ]
-    assert [s.parent.span_id for s in spans if s.name == "gymrat.run"] == [  # pyrefly: ignore[missing-attribute]
+    assert [_span_id(s.context) for s in spans if s.name == "gymrat.session"] == [session_span_id]
+    assert [_span_id(s.parent) for s in spans if s.name == "gymrat.run"] == [
         session_span_id,
         session_span_id,
     ]
@@ -279,8 +314,8 @@ def test_supervise_when_endpoint_set_but_no_tracer_available_does_run_untraced(
 
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
 
-    handed_over = [
-        (call["prompt"].traceparent, call["observer"])  # pyrefly: ignore[missing-attribute]
-        for call in seams.supervise_calls
-    ]
-    assert (result.exit_code, handed_over) == (0, [(None, seams.observer)]), err_text(result)
+    assert result.exit_code == 0, err_text(result)
+    (call,) = seams.supervise_calls
+    prompt = call["prompt"]
+    assert isinstance(prompt, SessionPrompt)
+    assert (prompt.traceparent, call["observer"]) == (None, seams.observer)

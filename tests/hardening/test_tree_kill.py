@@ -45,7 +45,7 @@ from gymrat.exec import (
     release_contained,
     spawn_contained,
 )
-from tests._exec_fixtures import Teardown, cancel_task, leave_to_timeout, set_abort
+from tests._exec_fixtures import Teardown, cancel_task, leave_to_timeout, set_abort, settle
 from tests._process_helpers import (
     JOB_HANDLE,
     PROCESS_HANDLE,
@@ -92,7 +92,7 @@ _CANCEL_BOUND_S = 2.5
 
 _SUPERVISOR_EXIT_TIMEOUT_S = 30.0
 
-# How long the late-containment test holds the job assignment back. A venv
+# How long the late-containment rows hold the job assignment back. A venv
 # launcher starts its real interpreter within tens of milliseconds, so a full
 # second guarantees the interpreter exists before the launcher joins the job.
 _LATE_ATTACH_DELAY_S = 1.0
@@ -387,8 +387,7 @@ async def test_exec_argv_when_outer_run_torn_down_does_leave_no_bench_alive(
 
     teardown.trigger(task, None, abort)
 
-    with contextlib.suppress(asyncio.CancelledError):
-        await asyncio.wait_for(task, _SETTLE_TIMEOUT_S)
+    await settle(task, _SETTLE_TIMEOUT_S)
     assert await asyncio.to_thread(heartbeat_stopped, bench_beat), "the bench outlived the run"
     assert await asyncio.to_thread(heartbeat_stopped, grandchild_beat), (
         "the bench's grandchild outlived the run"
@@ -514,65 +513,56 @@ def test_supervisor_when_killed_without_cleanup_does_leave_no_bench_alive(
 
 
 # ---------------------------------------------------------------------------
-# win32 Job Objects: orphaned descendants and the taskkill fallback
+# win32 Job Objects: orphaned descendants, late containment, and a refused resume
 # ---------------------------------------------------------------------------
 
 
-def delay_attach(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Delay ``attach_process_group`` so descendants can start before containment lands."""
+def delay_attach(monkeypatch: pytest.MonkeyPatch, delay_s: float) -> None:
+    """Delay ``attach_process_group`` so descendants can start before containment lands.
+
+    Args:
+        monkeypatch: Used to wrap ``gymrat.exec``'s attach seam.
+        delay_s: Seconds each attach is held back; ``0`` lets it land at once.
+    """
     attach = gymrat_exec.attach_process_group
 
     def attach_late(pid: int) -> None:
-        time.sleep(_LATE_ATTACH_DELAY_S)
+        time.sleep(delay_s)
         attach(pid)
 
     monkeypatch.setattr(gymrat_exec, "attach_process_group", attach_late)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Job Objects are win32-only")
-async def test_exec_argv_when_child_already_exited_does_kill_orphaned_grandchild(
-    tmp_path: Path,
-    scripts: dict[str, Path],
-    reap_beats: list[Path],
-) -> None:
-    beat = tmp_path / "grandchild.beat"
-    reap_beats.append(beat)
-    abort = asyncio.Event()
-    task = asyncio.create_task(
-        exec_argv(
-            [sys.executable, str(scripts["orphan"]), str(beat)],
-            ExecOptions(cwd=str(tmp_path), abort=abort),
-        ),
-    )
-    await asyncio.to_thread(wait_for_beat, beat)
-
-    abort.set()
-
-    await asyncio.wait_for(task, _SETTLE_TIMEOUT_S)
-    assert await asyncio.to_thread(heartbeat_stopped, beat), (
-        "a grandchild whose parent had already exited outlived the run"
-    )
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="Job Objects are win32-only")
 @pytest.mark.parametrize(
-    "tree",
+    ("tree", "attach_delay_s"),
     [
-        pytest.param(("bench", "bench.beat", "grandchild.beat"), id="live-descendants"),
-        pytest.param(("orphan", "grandchild.beat"), id="descendant-whose-parent-exited"),
+        pytest.param(("orphan", "grandchild.beat"), 0, id="descendant-whose-parent-exited"),
+        pytest.param(
+            ("bench", "bench.beat", "grandchild.beat"),
+            _LATE_ATTACH_DELAY_S,
+            id="live-descendants-contained-late",
+        ),
+        pytest.param(
+            ("orphan", "grandchild.beat"),
+            _LATE_ATTACH_DELAY_S,
+            id="descendant-whose-parent-exited-contained-late",
+        ),
     ],
 )
-async def test_exec_argv_when_containment_lands_late_does_leave_no_descendant_alive(
+async def test_exec_argv_when_child_contained_does_leave_no_descendant_alive(
     tmp_path: Path,
     scripts: dict[str, Path],
     reap_beats: list[Path],
     monkeypatch: pytest.MonkeyPatch,
+    *,
     tree: tuple[str, ...],
+    attach_delay_s: float,
 ) -> None:
     script, *beat_names = tree
     beats = [tmp_path / name for name in beat_names]
     reap_beats.extend(beats)
-    delay_attach(monkeypatch)
+    delay_attach(monkeypatch, attach_delay_s)
     abort = asyncio.Event()
     task = asyncio.create_task(
         exec_argv(
@@ -586,7 +576,7 @@ async def test_exec_argv_when_containment_lands_late_does_leave_no_descendant_al
 
     await asyncio.wait_for(task, _SETTLE_TIMEOUT_S)
     survivors = [b.name for b in beats if not await asyncio.to_thread(heartbeat_stopped, b)]
-    assert survivors == [], "a descendant started before containment landed outlived the run"
+    assert survivors == [], "a descendant of the contained child outlived the run"
 
 
 # The POSIX side of a refused resume is pinned in tests/exec/test_spawn_contained.py.
@@ -726,16 +716,18 @@ def trace_containment(
 
 
 @pytest.mark.parametrize(
-    ("assignment_granted", "assigned_jobs", "closed"),
+    ("assignment_granted", "warning", "assigned_jobs", "closed"),
     [
         pytest.param(
             True,
+            None,
             [JOB_HANDLE],
             [PROCESS_HANDLE, PROCESS_HANDLE, JOB_HANDLE],
             id="job-granted-held-until-the-run-settles",
         ),
         pytest.param(
             False,
+            "job assignment refused",
             [],
             [PROCESS_HANDLE, JOB_HANDLE, PROCESS_HANDLE],
             id="job-refused-released-at-once",
@@ -745,9 +737,9 @@ def trace_containment(
 async def test_exec_argv_when_run_on_win32_does_contain_the_suspended_child_until_it_settles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    recwarn: pytest.WarningsRecorder,
     *,
     assignment_granted: bool,
+    warning: str | None,
     assigned_jobs: list[int],
     closed: list[int],
 ) -> None:
@@ -755,11 +747,17 @@ async def test_exec_argv_when_run_on_win32_does_contain_the_suspended_child_unti
     group = win32_process_group(monkeypatch, jobs)
     module = win32_exec(monkeypatch, group)
     trace = trace_containment(monkeypatch, module)
-
-    result = await module.exec_argv(
-        [sys.executable, "-c", "import os; print(os.getpid(), os.getppid())"],
-        module.ExecOptions(cwd=str(tmp_path)),
+    expect_warning = (
+        pytest.warns(RuntimeWarning, match=warning)
+        if warning is not None
+        else contextlib.nullcontext()
     )
+
+    with expect_warning:
+        result = await module.exec_argv(
+            [sys.executable, "-c", "import os; print(os.getpid(), os.getppid())"],
+            module.ExecOptions(cwd=str(tmp_path)),
+        )
 
     assert result.exit_code == 0, "a contained child never ran to completion"
     assert [name for name, _ in trace.steps] == ["spawn", "attach", "resume"], (

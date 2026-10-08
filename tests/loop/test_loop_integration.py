@@ -197,6 +197,23 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
 # ---------------------------------------------------------------------------
 
 
+def _wait_until_lock_held(first: subprocess.Popen[str], lock_path: str) -> None:
+    """Block until ``first`` holds the repository lock, failing the test if it never does."""
+    deadline = time.monotonic() + 30
+    while True:
+        if first.poll() is not None:
+            pytest.fail(f"first iterate exited early: {first.communicate()}")
+        if time.monotonic() > deadline:
+            first.kill()
+            pytest.fail("first iterate never grabbed the lock")
+        # A pure read on purpose: probing with flock would itself take the
+        # lock whenever it is still free, stealing it from the first run.
+        holder = read_holder(lock_path)
+        if holder is not None and holder.pid == first.pid:
+            return
+        time.sleep(0.025)
+
+
 def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
     create_scratch_repo: Callable[[], str],
     tmp_path: Path,
@@ -219,19 +236,7 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
             text=True,
         )
     ) as first:
-        deadline = time.monotonic() + 30
-        while True:
-            if first.poll() is not None:
-                pytest.fail(f"first iterate exited early: {first.communicate()}")
-            if time.monotonic() > deadline:
-                first.kill()
-                pytest.fail("first iterate never grabbed the lock")
-            # A pure read on purpose: probing with flock would itself take the
-            # lock whenever it is still free, stealing it from the first run.
-            holder = read_holder(lock_path)
-            if holder is not None and holder.pid == first.pid:
-                break
-            time.sleep(0.025)
+        _wait_until_lock_held(first, lock_path)
 
         second = run_cli(["iterate"], repo, check=False, timeout=LONG_RUN_TIMEOUT)
         Path(gate_file).write_text("", encoding="utf-8")

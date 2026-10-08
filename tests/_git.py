@@ -28,11 +28,23 @@ def head_of(worktree: str) -> str:
     return run_git(["rev-parse", "HEAD"], worktree)
 
 
-def write_committed_bench(repo: str, script: str, *, message: str = "add bench") -> None:
-    """Drop ``script`` as ``bench.sh`` and commit it so every ref can run it."""
+def write_committed_bench(
+    repo: str, script: str, *, message: str = "add bench", branches: tuple[str, ...] = ()
+) -> None:
+    """Drop ``script`` as ``bench.sh`` and commit it so every ref can run it.
+
+    Args:
+        repo: The repository to commit into.
+        script: The bench script's contents.
+        message: The commit message.
+        branches: Branches to create at the new commit; ``repo`` stays on its
+            current branch.
+    """
     (Path(repo) / "bench.sh").write_text(script, encoding="utf-8")
     run_git(["add", "bench.sh"], repo)
     run_git(["commit", "-m", message], repo)
+    for branch in branches:
+        run_git(["branch", branch], repo)
 
 
 def status_of(worktree: str) -> str:
@@ -43,7 +55,7 @@ def status_of(worktree: str) -> str:
 def commit_all(
     worktree: str, message: str, *, file: str | None = None, content: str | None = None
 ) -> str:
-    """Stage everything in ``worktree`` and commit it, returning the new commit's SHA.
+    """Stage everything in ``worktree`` and commit it.
 
     Args:
         worktree: The checkout the commit is made in.

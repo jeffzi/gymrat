@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from gymrat.session.records import KeepChecks, SessionLogRecord
+from gymrat.session.records import SessionLogRecord
 from gymrat.session.store import (
     SessionState,
     fold_session,
@@ -27,6 +27,7 @@ from tests.session.records._fixtures import (
     committed_keep,
     discard_record,
     empty_session_state,
+    gate_block,
     session_state,
     stop_record,
 )
@@ -179,7 +180,7 @@ _ITERATION_1_UNSETTLED = session_state(
             [
                 SESSION,
                 ITERATION_1,
-                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+                gate_block(2, "nothing-measured"),
             ],
             session_state(
                 session=SESSION,
@@ -194,7 +195,7 @@ _ITERATION_1_UNSETTLED = session_state(
             [
                 SESSION,
                 ITERATION_1,
-                blocked_keep(1, reason="not-improved", checks=KeepChecks(configured=True)),
+                gate_block(1, "not-improved"),
             ],
             _ITERATION_1_UNSETTLED,
             id="a-keep-the-outcome-gate-refused",
@@ -203,7 +204,7 @@ _ITERATION_1_UNSETTLED = session_state(
             [
                 SESSION,
                 ITERATION_1,
-                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                gate_block(1, "gating-regression"),
             ],
             session_state(
                 session=SESSION,
@@ -236,8 +237,8 @@ def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
             [
                 SESSION,
                 ITERATION_1,
-                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
-                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+                gate_block(1, "gating-regression"),
+                gate_block(2, "nothing-measured"),
             ],
             True,
             id="a-retried-keep-that-refused-for-want-of-a-measurement",
@@ -246,9 +247,9 @@ def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
             [
                 SESSION,
                 ITERATION_1,
-                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
-                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
-                blocked_keep(3, reason="nothing-measured", checks=KeepChecks(configured=True)),
+                gate_block(1, "gating-regression"),
+                gate_block(2, "nothing-measured"),
+                gate_block(3, "nothing-measured"),
             ],
             True,
             id="a-second-refusal-on-top-of-the-first",
@@ -257,7 +258,7 @@ def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
             [
                 SESSION,
                 ITERATION_1,
-                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                gate_block(1, "gating-regression"),
                 ITERATION_2,
             ],
             False,
@@ -267,8 +268,8 @@ def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
             [
                 SESSION,
                 ITERATION_1,
-                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
-                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+                gate_block(1, "gating-regression"),
+                gate_block(2, "nothing-measured"),
                 ITERATION_2,
                 committed_keep(2),
             ],
@@ -279,7 +280,7 @@ def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
             [
                 SESSION,
                 ITERATION_1,
-                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                gate_block(1, "gating-regression"),
                 discard_record(2),
             ],
             False,
@@ -319,7 +320,7 @@ def test_fold_session_when_records_replayed_does_report_ends_on_gating_block(
                 ITERATION_1,
                 committed_keep(1),
                 stop_record(),
-                blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
+                gate_block(2, "nothing-measured"),
             ],
             True,
             id="a-stop-followed-by-a-nothing-measured-refusal",
@@ -404,7 +405,7 @@ def test_fold_session_when_stop_appended_does_change_only_ends_on_stop():
             [
                 SESSION,
                 ITERATION_1,
-                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
+                gate_block(1, "gating-regression"),
             ],
             command_record(),
             id="a-command-after-a-gating-block-preserves-ends-on-gating-block",

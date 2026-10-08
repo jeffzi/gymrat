@@ -13,17 +13,18 @@ import sys
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any, override
+from unittest.mock import create_autospec
 
 import pytest
 from typer.testing import CliRunner
 
-from gymrat.config import ResolvedConfig
+from gymrat.config import KindEntry, MetricEntry, ResolvedConfig, resolve_config
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import start_session
 from gymrat.measure import MeasureOptions
 from gymrat.report.types import ComparisonResult, MeasurementResult
 from gymrat.session.paths import experiment_worktree_dir
-from gymrat.session.records import CommandRecord, SessionRecord
+from gymrat.session.records import CommandRecord, SessionLogRecord, SessionRecord
 from tests._config import resolved_config
 from tests._git import commit_all
 from tests._streams import RaisingStream
@@ -37,6 +38,7 @@ from tests.report._comparisons import create_comparison_result
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     append_records,
+    committed_keep,
     iteration_record,
     log_records,
     session_header_of,
@@ -91,43 +93,54 @@ class FailingStdoutRunner(CliRunner):
                 sys.stdout = captured_stdout
 
 
-class ResolverRecorder:
-    """A stand-in for a config resolver recording ``(flags, base_dir)`` per call."""
+#: The config the stubbed ``measure`` command resolves; its fake engine never benches against it.
+MEASURE_CONFIG = resolved_config(
+    bench="sh bench.sh",
+    samples=5,
+    timeout_seconds=30,
+    unstable_noise_pct=2.0,
+    primary="time",
+)
 
-    def __init__(self, result: object) -> None:
-        self.result = result
-        self.calls: list[tuple[object, str | Path | None]] = []
+#: The config the stubbed ``compare`` command resolves; its fake engine never benches against it.
+COMPARE_CONFIG = resolved_config(
+    bench="sh bench.sh",
+    prepare="npm ci",
+    samples=5,
+    timeout_seconds=30,
+    unstable_noise_pct=2.0,
+    primary="time",
+    metrics={"decode/time": MetricEntry(direction="higher")},
+    kinds={"memory": KindEntry(gating=False)},
+)
 
-    def __call__(self, flags: object, base_dir: str | Path | None = None) -> object:
-        self.calls.append((flags, base_dir))
-        return self.result
 
+def stub_config(
+    monkeypatch: pytest.MonkeyPatch, command: str, config: ResolvedConfig
+) -> ResolvedConfig:
+    """Replace a command's config resolution with one that hands back ``config``.
 
-def stub_resolve_config(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> object:
-    """Pin what ``start`` reads by replacing its ``resolve_config`` with a fixed config."""
-    config = resolved_config(**overrides)
+    The stand-in keeps the real resolver's signature, so a call the real
+    ``resolve_config`` would reject fails the test.
 
-    def fake(*_a: object, **_k: object) -> object:
-        return config
+    Args:
+        monkeypatch: The fixture that installs the stand-in.
+        command: The module under ``gymrat.cli.commands`` whose resolver is replaced.
+        config: What every resolution hands back.
 
-    monkeypatch.setattr("gymrat.cli.commands.session.resolve_config", fake)
+    Returns:
+        ``config``, for a test that asserts against it.
+    """
+    monkeypatch.setattr(
+        f"gymrat.cli.commands.{command}.resolve_config",
+        create_autospec(resolve_config, return_value=config),
+    )
     return config
 
 
 def stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace the ``measure`` command's config resolution with a fixed config."""
-
-    def fake(*_a: object, **_k: object) -> ResolvedConfig:
-        # A config the fake ``measure`` never actually benches against.
-        return resolved_config(
-            bench="sh bench.sh",
-            samples=5,
-            timeout_seconds=30,
-            unstable_noise_pct=2.0,
-            primary="time",
-        )
-
-    monkeypatch.setattr("gymrat.cli.commands.measure.resolve_config", fake)
+    """Replace the ``measure`` command's config resolution with ``MEASURE_CONFIG``."""
+    stub_config(monkeypatch, "measure", MEASURE_CONFIG)
 
 
 def capture_measure(
@@ -154,6 +167,20 @@ def stub_measure(
     """Stub both config resolution and the ``measure`` seam; return captured options."""
     stub_resolve(monkeypatch)
     return capture_measure(monkeypatch, result)
+
+
+def stub_compare_command(
+    monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None
+) -> None:
+    """Stub both config resolution and the ``compare`` seam, so invoking ``compare`` succeeds.
+
+    Args:
+        monkeypatch: The fixture that installs the fakes.
+        result: What the fake ``compare`` hands back; a comparison with no
+            regressions when ``None``.
+    """
+    stub_config(monkeypatch, "compare", COMPARE_CONFIG)
+    stub_compare(monkeypatch, result)
 
 
 def stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> None:
@@ -187,6 +214,14 @@ def open_stop_ready_session(repo: str) -> None:
     """Open a configured session with one settled iteration, ready for the stop command."""
     start_with(repo)
     keep_iteration(repo, 1)
+    write_bench_config(repo)
+
+
+def write_settled_session(repo: str, *trailing_records: SessionLogRecord) -> None:
+    """Log a configured session with one kept iteration, followed by ``trailing_records``."""
+    write_session_log(
+        repo, session_record(), (iteration_record(seq=1), committed_keep(1), *trailing_records)
+    )
     write_bench_config(repo)
 
 

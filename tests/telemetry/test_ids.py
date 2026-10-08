@@ -201,4 +201,6 @@ def test_parse_traceparent_when_valid_does_return_remote_span_context(
     ],
 )
 def test_parse_traceparent_when_malformed_does_return_none(header: str) -> None:
-    assert parse_traceparent(header) is None
+    result = parse_traceparent(header)
+
+    assert result is None

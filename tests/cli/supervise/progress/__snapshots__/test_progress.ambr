@@ -22,16 +22,3 @@
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   '''
 # ---
-# name: test_liveness_when_four_tools_finish_does_show_only_last_three
-  '''
-  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
-  │ time                                                                           4s  cap in 7h 59m │
-  │ cost $0.00                                                                                       │
-  │ loop   no session yet                                                                            │
-  │   waiting  0s                                                                                    │
-  │   00:00:05  Read   src/c.ts  <1s                                                                 │
-  │   00:00:04  Bash   npm test  <1s                                                                 │
-  │   00:00:03  Edit   src/b.ts  <1s                                                                 │
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-  '''
-# ---

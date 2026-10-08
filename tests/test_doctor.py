@@ -13,8 +13,9 @@ collected in order, that config problems and adapter flags reach the bench
 section, and that ``detect_git_environment`` maps git-missing, outside-repo,
 and unresolvable root to distinct ``GitEnvironment`` outcomes without raising.
 
-The text and JSON renderers render a real ``DoctorReport`` and assert its
-lines, glyphs, hint indentation, caveat note, and summary directly.
+The text renderer is pinned by one golden per named scenario (glyphs, hint
+and multi-line indentation, caveat note, summary counts); the JSON renderer
+by its exact document.
 """
 
 import sys
@@ -41,9 +42,9 @@ from gymrat.doctor import (
     render_doctor_report,
 )
 from gymrat.errors import GymratError
-from tests._ansi import strip_ansi
 from tests._config import benchless_config as _config
 from tests._doctor_fixtures import doctor_report, environment_info
+from tests.adapters._inputs import VALID_ADAPTERS_HINT
 from tests.config._toml import write_raw
 
 _DEFAULT_CONFIG = _config()
@@ -110,7 +111,7 @@ def _find(section: CheckSection, name: str) -> Check:
         pytest.param([], (0, 0, 0), False, id="no-sections"),
     ],
 )
-def test_create_doctor_report_when_statuses_vary_does_count_each_and_flag_failures(
+def test_create_doctor_report_when_statuses_vary_does_aggregate_the_status_summary(
     sections: list[CheckSection], counts: tuple[int, int, int], has_failures: bool
 ):
     report = create_doctor_report(environment_info(), sections)
@@ -423,7 +424,7 @@ _ADAPTER_OK = Check(name="adapter", status="ok", detail="adapter: metric-lines")
                     name="adapter",
                     status="fail",
                     detail='Unknown adapter: "banana".',
-                    hint="valid adapters are: metric-lines, mitata",
+                    hint=VALID_ADAPTERS_HINT,
                 )
             ],
             id="adapter-unknown",
@@ -498,10 +499,6 @@ _MODULE = "gymrat.doctor"
 # ---------------------------------------------------------------------------
 
 
-def _try_git_ok(*_args: object, **_kwargs: object) -> None:
-    return None
-
-
 def test_detect_git_environment_when_git_missing_does_report_unavailable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -522,8 +519,6 @@ def test_detect_git_environment_when_root_unresolvable_does_report_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    monkeypatch.setattr(f"{_MODULE}.try_git", _try_git_ok)
-
     def fake_repo_root(cwd: str | None = None) -> str:
         msg = "cannot resolve"
         raise GymratError(msg)
@@ -532,9 +527,9 @@ def test_detect_git_environment_when_root_unresolvable_does_report_error(
 
     result = detect_git_environment(str(tmp_path))
 
-    assert result.git_available is True
-    assert result.repo_root_dir is None
-    assert result.git_error is not None
+    assert result == GitEnvironment(
+        git_available=True, inside_git_repo=True, git_error="cannot resolve"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -603,7 +598,7 @@ def test_build_doctor_report_when_adapter_flag_given_does_check_it_in_the_bench_
         name="adapter",
         status="fail",
         detail='Unknown adapter: "banana".',
-        hint="valid adapters are: metric-lines, mitata",
+        hint=VALID_ADAPTERS_HINT,
     )
 
 
@@ -688,94 +683,13 @@ def test_build_doctor_report_when_bench_is_a_path_does_resolve_it_against_the_re
     assert _check(report, "Bench", "executable") == expected
 
 
-def _lines(output: str) -> list[str]:
-    return strip_ansi(output).split("\n")
-
-
 # ---------------------------------------------------------------------------
-# section and check rendering
-# ---------------------------------------------------------------------------
-
-
-def test_render_doctor_report_when_multiline_detail_does_indent_continuations_under_glyph():
-    report = doctor_report([
-        CheckSection(
-            title="Bench",
-            checks=[Check("bench", "ok", "line one\nline two\nline three")],
-        )
-    ])
-
-    rendered = _lines(render_doctor_report(report))
-
-    assert next(line for line in rendered if "line one" in line) == "  ✓ line one"
-    assert "    line two" in rendered
-    assert "    line three" in rendered
-
-
-# ---------------------------------------------------------------------------
-# caveat note
-# ---------------------------------------------------------------------------
-
-
-def _note(report_output: str) -> str:
-    return next(line for line in _lines(report_output) if "Note:" in line)
-
-
-def test_render_doctor_report_when_workflow_skipped_does_switch_note():
-    report = doctor_report([
-        CheckSection(
-            title="Workflow",
-            checks=[Check("workflow", "ok", "Skipped — fix config errors first")],
-        )
-    ])
-
-    note = _note(render_doctor_report(report))
-
-    assert "skipped" in note.lower()
-    assert "skill file location" not in note
-
-
-# ---------------------------------------------------------------------------
-# summary line
-# ---------------------------------------------------------------------------
-
-
-def test_render_doctor_report_when_multiple_per_status_does_pluralize_counts():
-    report = doctor_report([
-        CheckSection(
-            title="All",
-            checks=[
-                Check("a", "ok", ""),
-                Check("b", "warn", ""),
-                Check("c", "warn", ""),
-                Check("d", "fail", ""),
-                Check("e", "fail", ""),
-                Check("f", "fail", ""),
-            ],
-        )
-    ])
-
-    output = strip_ansi(render_doctor_report(report))
-
-    assert "1 ok" in output
-    assert "2 warnings" in output
-    assert "3 failures" in output
-
-
-# ---------------------------------------------------------------------------
-# color handling
+# text rendering — one golden per named scenario
 # ---------------------------------------------------------------------------
 
 
 # CSI introducer; present in the output iff any ANSI escape was emitted.
 _ESCAPE_PREFIX = "\x1b["
-
-
-def _two_status_report() -> DoctorReport:
-    """A report with one passing and one failing check."""
-    return doctor_report([
-        CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
-    ])
 
 
 def _mixed_status_report() -> DoctorReport:
@@ -808,13 +722,52 @@ def _warning_only_report() -> DoctorReport:
     ])
 
 
-@pytest.mark.parametrize("color", [True, False], ids=["color-on", "color-off"])
+def _multiline_detail_report() -> DoctorReport:
+    """A report with one check whose detail spans three lines."""
+    return doctor_report([
+        CheckSection(
+            title="Bench",
+            checks=[Check("bench", "ok", "line one\nline two\nline three")],
+        )
+    ])
+
+
+def _workflow_skipped_report() -> DoctorReport:
+    """A report whose workflow checks were skipped behind config errors."""
+    return doctor_report([
+        CheckSection(
+            title="Workflow",
+            checks=[Check("workflow", "ok", "Skipped — fix config errors first")],
+        )
+    ])
+
+
+def _plural_counts_report() -> DoctorReport:
+    """A report with one passing, two warning and three failing checks."""
+    return doctor_report([
+        CheckSection(
+            title="All",
+            checks=[
+                Check("a", "ok", ""),
+                Check("b", "warn", ""),
+                Check("c", "warn", ""),
+                Check("d", "fail", ""),
+                Check("e", "fail", ""),
+                Check("f", "fail", ""),
+            ],
+        )
+    ])
+
+
 @pytest.mark.parametrize(
-    "make_report",
+    ("make_report", "color"),
     [
-        pytest.param(_two_status_report, id="ok-and-fail"),
-        pytest.param(_mixed_status_report, id="ok-warn-fail"),
-        pytest.param(_warning_only_report, id="warn-only"),
+        pytest.param(_mixed_status_report, False, id="ok-warn-fail-color-off"),
+        pytest.param(_mixed_status_report, True, id="ok-warn-fail-color-on"),
+        pytest.param(_warning_only_report, False, id="warn-only-color-off"),
+        pytest.param(_multiline_detail_report, False, id="multiline-detail-color-off"),
+        pytest.param(_workflow_skipped_report, False, id="workflow-skipped-color-off"),
+        pytest.param(_plural_counts_report, False, id="plural-counts-color-off"),
     ],
 )
 def test_render_doctor_report_when_rendered_does_match_the_snapshot(
@@ -832,101 +785,40 @@ def test_render_doctor_report_when_rendered_does_match_the_snapshot(
 # ---------------------------------------------------------------------------
 
 
-def _failing_repo_report() -> DoctorReport:
-    return doctor_report(
-        [
-            CheckSection(
-                title="Environment",
-                checks=[
-                    Check("git", "ok", "available"),
-                    Check("repo", "fail", "not in repo", hint="run inside repo"),
-                ],
-            )
-        ],
-        gymrat_version="1.0.0",
-    )
+def test_render_doctor_json_when_rendered_does_emit_two_space_indented_document():
+    report = _warning_only_report()
 
+    output = render_doctor_json(report)
 
-@pytest.mark.parametrize(
-    ("build_report", "expected"),
-    [
-        pytest.param(
-            _warning_only_report,
-            [
-                "{",
-                '  "environment": {',
-                '    "gymrat_version": "0.5.0",',
-                '    "python_version": "3.13.0",',
-                '    "platform": "darwin"',
-                "  },",
-                '  "sections": [',
-                "    {",
-                '      "title": "Environment",',
-                '      "checks": [',
-                "        {",
-                '          "name": "git",',
-                '          "status": "ok",',
-                '          "detail": "git 2.45.0",',
-                '          "hint": null',
-                "        },",
-                "        {",
-                '          "name": "skill",',
-                '          "status": "warn",',
-                '          "detail": "skill not installed",',
-                '          "hint": "run gymrat init"',
-                "        }",
-                "      ]",
-                "    }",
-                "  ],",
-                '  "ok_count": 1,',
-                '  "warn_count": 1,',
-                '  "fail_count": 0,',
-                '  "has_failures": false',
-                "}",
-            ],
-            id="warnings-only-count-without-failing",
-        ),
-        pytest.param(
-            _failing_repo_report,
-            [
-                "{",
-                '  "environment": {',
-                '    "gymrat_version": "1.0.0",',
-                '    "python_version": "3.13.0",',
-                '    "platform": "darwin"',
-                "  },",
-                '  "sections": [',
-                "    {",
-                '      "title": "Environment",',
-                '      "checks": [',
-                "        {",
-                '          "name": "git",',
-                '          "status": "ok",',
-                '          "detail": "available",',
-                '          "hint": null',
-                "        },",
-                "        {",
-                '          "name": "repo",',
-                '          "status": "fail",',
-                '          "detail": "not in repo",',
-                '          "hint": "run inside repo"',
-                "        }",
-                "      ]",
-                "    }",
-                "  ],",
-                '  "ok_count": 1,',
-                '  "warn_count": 0,',
-                '  "fail_count": 1,',
-                '  "has_failures": true',
-                "}",
-            ],
-            id="failure-flags-the-report",
-        ),
-    ],
-)
-def test_render_doctor_json_when_rendered_does_emit_two_space_indented_document(
-    build_report: Callable[[], DoctorReport], expected: list[str]
-):
-    output = render_doctor_json(build_report())
-
-    assert output.split("\n") == expected
+    assert output.split("\n") == [
+        "{",
+        '  "environment": {',
+        '    "gymrat_version": "0.5.0",',
+        '    "python_version": "3.13.0",',
+        '    "platform": "darwin"',
+        "  },",
+        '  "sections": [',
+        "    {",
+        '      "title": "Environment",',
+        '      "checks": [',
+        "        {",
+        '          "name": "git",',
+        '          "status": "ok",',
+        '          "detail": "git 2.45.0",',
+        '          "hint": null',
+        "        },",
+        "        {",
+        '          "name": "skill",',
+        '          "status": "warn",',
+        '          "detail": "skill not installed",',
+        '          "hint": "run gymrat init"',
+        "        }",
+        "      ]",
+        "    }",
+        "  ],",
+        '  "ok_count": 1,',
+        '  "warn_count": 1,',
+        '  "fail_count": 0,',
+        '  "has_failures": false',
+        "}",
+    ]

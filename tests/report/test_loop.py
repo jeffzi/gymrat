@@ -61,7 +61,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def test_format_loop_header_when_given_seq_and_samples_does_name_iteration_comparison_and_count():
+def test_format_loop_header_when_given_seq_and_samples_does_state_bold_iteration_comparison_and_count():
     header = format_loop_header(7, 6)
 
     assert render_plain(header) == "iteration 7 · experiment vs baseline · 6 paired samples"
@@ -156,17 +156,54 @@ def _status_summary(**overrides: Any) -> StatusSummary:
 # ---------------------------------------------------------------------------
 
 
-def test_format_status_header_when_given_session_does_name_session_baseline_branch_worktrees_adapter():
-    session = session_record(baseline=BaselineRef(ref="main", sha=_BASELINE_SHA))
+@pytest.mark.parametrize(
+    ("worktrees", "expected_worktree_lines"),
+    [
+        pytest.param(
+            Worktrees(
+                experiment="/repo/.gymrat/worktrees/experiment",
+                baseline="/repo/.gymrat/worktrees/baseline",
+            ),
+            [
+                "experiment worktree /repo/.gymrat/worktrees/experiment",
+                "baseline worktree /repo/.gymrat/worktrees/baseline",
+            ],
+            id="plain-paths",
+        ),
+        pytest.param(
+            Worktrees(
+                experiment="/repo/.gymrat/worktrees/[experiment]",
+                baseline="/repo/.gymrat/worktrees/[baseline]",
+            ),
+            [
+                "experiment worktree /repo/.gymrat/worktrees/[experiment]",
+                "baseline worktree /repo/.gymrat/worktrees/[baseline]",
+            ],
+            id="bracketed-paths-render-literally",
+        ),
+    ],
+)
+def test_format_status_header_when_given_session_does_name_session_baseline_branch_worktrees_adapter(
+    worktrees: Worktrees, expected_worktree_lines: list[str]
+):
+    session = session_record(
+        baseline=BaselineRef(ref="main", sha=_BASELINE_SHA), worktrees=worktrees
+    )
 
     lines = format_status_header(session)
 
     assert [render_plain(line) for line in lines] == [
         f"session {SESSION_ID} · baseline main@a1b2c3d · adapter metric-lines",
         f"branch gymrat/{SESSION_ID}",
-        "experiment worktree /repo/.gymrat/worktrees/experiment",
-        "baseline worktree /repo/.gymrat/worktrees/baseline",
+        *expected_worktree_lines,
     ]
+
+
+def test_format_status_header_when_colored_does_bold_the_session():
+    session = session_record(baseline=BaselineRef(ref="main", sha=_BASELINE_SHA))
+
+    lines = format_status_header(session)
+
     assert "1" in styles_at(render_colored(lines[0]), f"session {SESSION_ID}")
 
 
@@ -176,47 +213,52 @@ def test_format_status_header_when_given_session_does_name_session_baseline_bran
 
 
 @pytest.mark.parametrize(
-    ("settle", "expected"),
+    ("entry", "expected"),
     [
         pytest.param(
-            SettleKept(commit=_KEEP_COMMIT),
+            _status_iteration(SettleKept(commit=_KEEP_COMMIT)),
             "iteration 1 · ✓ -7.2% · kept b1b2b3b",
             id="kept-with-commit",
         ),
-        pytest.param(SettleKept(), "iteration 1 · ✓ -7.2% · kept", id="kept-pending"),
-        pytest.param(SettleDiscarded(), "iteration 1 · ✓ -7.2% · discarded", id="discarded"),
-        pytest.param(SettleUnsettled(), "iteration 1 · ✓ -7.2% · unsettled", id="unsettled"),
         pytest.param(
-            SettleKeepBlocked(reason="checks-failed"),
+            _status_iteration(SettleKept()), "iteration 1 · ✓ -7.2% · kept", id="kept-pending"
+        ),
+        pytest.param(
+            _status_iteration(SettleDiscarded()),
+            "iteration 1 · ✓ -7.2% · discarded",
+            id="discarded",
+        ),
+        pytest.param(
+            _status_iteration(SettleUnsettled()),
+            "iteration 1 · ✓ -7.2% · unsettled",
+            id="unsettled",
+        ),
+        pytest.param(
+            _status_iteration(SettleKeepBlocked(reason="checks-failed")),
             "iteration 1 · ✓ -7.2% · keep-blocked (checks-failed)",
             id="blocked-with-reason",
         ),
         pytest.param(
-            SettleKeepBlocked(), "iteration 1 · ✓ -7.2% · keep-blocked", id="blocked-no-reason"
+            _status_iteration(SettleKeepBlocked()),
+            "iteration 1 · ✓ -7.2% · keep-blocked",
+            id="blocked-no-reason",
+        ),
+        pytest.param(
+            replace(_status_iteration(SettleUnsettled()), outcome="regressed"),
+            "iteration 1 · ✗ -7.2% · unsettled",
+            id="regressed-glyph",
+        ),
+        pytest.param(
+            replace(_status_iteration(SettleUnsettled()), outcome="no-signal"),
+            "iteration 1 · ~ -7.2% · unsettled",
+            id="no-signal-glyph",
         ),
     ],
 )
-def test_format_status_iteration_when_given_settle_does_state_it(
-    settle: SettleState, expected: str
+def test_format_status_iteration_when_outcome_or_settle_varies_does_state_its_glyph_and_settle(
+    entry: StatusIteration, expected: str
 ):
-    assert render_plain(format_status_iteration(_status_iteration(settle))) == expected
-
-
-@pytest.mark.parametrize(
-    ("outcome", "glyph"),
-    [
-        pytest.param("regressed", "✗", id="regressed"),
-        pytest.param("no-signal", "~", id="no-signal"),
-    ],
-)
-def test_format_status_iteration_when_given_outcome_does_mark_it_with_glyph(
-    outcome: Outcome, glyph: str
-):
-    entry = replace(_status_iteration(SettleUnsettled()), outcome=outcome)
-
-    assert (
-        render_plain(format_status_iteration(entry)) == f"iteration 1 · {glyph} -7.2% · unsettled"
-    )
+    assert render_plain(format_status_iteration(entry)) == expected
 
 
 def test_format_status_iteration_when_delta_unmeasured_does_state_no_percentage():
@@ -279,17 +321,32 @@ def test_baseline_medians_when_given_record_does_median_each_metric_over_its_rou
 # ---------------------------------------------------------------------------
 
 
-def test_format_status_baseline_when_given_samples_does_state_label_and_median_per_metric():
-    record = baseline_record(
-        samples=(
-            {"total_ms": 15200, "alloc_bytes": 1500},
-            {"total_ms": 15184, "alloc_bytes": 1540},
-        )
-    )
+@pytest.mark.parametrize(
+    ("samples", "expected"),
+    [
+        pytest.param(
+            (
+                {"total_ms": 15200, "alloc_bytes": 1500},
+                {"total_ms": 15184, "alloc_bytes": 1540},
+            ),
+            "baseline main · total_ms 15192 · alloc_bytes 1520",
+            id="two-metrics",
+        ),
+        pytest.param(
+            ({"total[ms]": 15200},),
+            "baseline main · total[ms] 15200",
+            id="bracketed-name-renders-literally",
+        ),
+    ],
+)
+def test_format_status_baseline_when_given_samples_does_state_label_and_median_per_metric(
+    samples: tuple[Mapping[str, float], ...], expected: str
+):
+    record = baseline_record(samples=samples)
 
     line = render_plain(format_status_baseline(record))
 
-    assert line == "baseline main · total_ms 15192 · alloc_bytes 1520"
+    assert line == expected
 
 
 # ---------------------------------------------------------------------------
@@ -348,41 +405,11 @@ def test_format_status_footer_when_stop_configured_does_state_the_conditions(
 # ---------------------------------------------------------------------------
 
 
-def test_format_status_finalized_when_given_record_does_name_the_branch_and_commit():
+def test_format_status_finalized_when_given_record_does_state_bold_finalized_branch_and_commit():
     line = format_status_finalized(finalize_record())
 
     assert render_plain(line) == f"finalized · branch gymrat/{SESSION_ID}-final · commit ccccccc"
     assert "1" in styles_at(render_colored(line), "finalized")
-
-
-# ---------------------------------------------------------------------------
-# Rich markup escape in status rendering
-# ---------------------------------------------------------------------------
-
-
-def test_format_status_header_when_worktree_path_contains_brackets_does_render_them_literally():
-    session = session_record(
-        baseline=BaselineRef(ref="main", sha=_BASELINE_SHA),
-        worktrees=Worktrees(
-            experiment="/repo/.gymrat/worktrees/[experiment]",
-            baseline="/repo/.gymrat/worktrees/[baseline]",
-        ),
-    )
-
-    lines = format_status_header(session)
-
-    assert [render_plain(line) for line in lines[2:]] == [
-        "experiment worktree /repo/.gymrat/worktrees/[experiment]",
-        "baseline worktree /repo/.gymrat/worktrees/[baseline]",
-    ]
-
-
-def test_format_status_baseline_when_metric_name_contains_brackets_does_render_them_literally():
-    record = baseline_record(samples=({"total[ms]": 15200},))
-
-    line = render_plain(format_status_baseline(record))
-
-    assert line == "baseline main · total[ms] 15200"
 
 
 # ---------------------------------------------------------------------------

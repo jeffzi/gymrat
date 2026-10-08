@@ -480,7 +480,7 @@ def _group_running(group_id: int) -> bool:
         if sys.platform == "linux":
             return any(state not in _LINUX_GONE_STATES for state in _linux_group_states(group_id))
     # A listing that fails or cannot be parsed leaves the leader alone to decide.
-    except (OSError, ValueError, struct.error):
+    except (OSError, ValueError):
         return False
     return False
 
@@ -625,7 +625,7 @@ def _darwin_group_settled(group_id: int) -> bool:
     """
     try:
         members = _darwin_group_members(group_id)
-    except (OSError, struct.error):
+    except OSError:
         return False
     if members:
         return all(_darwin_member_gone(flag, state) for flag, state in members)
@@ -689,9 +689,6 @@ def _darwin_group_members(group_id: int) -> list[tuple[int, int]]:
     Raises:
         OSError: ``sysctl`` failed, including a group that outgrew its headroom
             between the size query and the read.
-        struct.error: A record is too short for the fields decoded from it, which
-            happens only when ``_DARWIN_KINFO_PROC_SIZE`` does not match the
-            platform's layout.
     """
     mib = (ctypes.c_int * (len(_DARWIN_PROC_PGRP_MIB) + 1))(*_DARWIN_PROC_PGRP_MIB, group_id)
     capacity = _sysctl(mib, None, 0) + _DARWIN_LISTING_HEADROOM * _DARWIN_KINFO_PROC_SIZE

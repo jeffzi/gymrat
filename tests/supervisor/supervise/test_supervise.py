@@ -27,9 +27,11 @@ from gymrat.supervisor.events import (
 from gymrat.supervisor.supervise import supervise
 from tests.supervisor._fixtures import (
     DelegatingSession,
+    SupervisorClock,
     _supervise,
     _WrapDriver,
     collecting_observer,
+    events_log_path,
     events_of,
     make_context,
     make_launch,
@@ -111,6 +113,7 @@ class _RejectingDriver:
 async def test_supervise_when_session_completes_does_report_outcome_with_events_in_order(
     tmp_path: Path,
 ):
+    root = str(tmp_path / "repo")
     probe = collecting_observer()
     launch = make_launch()
     text = TextDeltaEvent(at=2_000_000_000_000, chunk="hello")
@@ -121,14 +124,14 @@ async def test_supervise_when_session_completes_does_report_outcome_with_events_
     ])
 
     result = await _supervise(
-        str(tmp_path / "repo"), driver, launch=launch, observer=probe.observer, is_lock_held=None
+        root, driver, launch=launch, observer=probe.observer, is_lock_held=None
     )
 
     assert (result.ended_by, result.outcome) == (
         "session",
         SessionOutcome(reason="completed", cost_usd=0.12),
     )
-    assert [line["type"] for line in read_log_lines(tmp_path / "events.jsonl")] == [
+    assert [line["type"] for line in read_log_lines(events_log_path(root))] == [
         "launch",
         "text_delta",
         "usage_update",
@@ -252,6 +255,7 @@ async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(tmp_
 async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
     tmp_path: Path,
 ):
+    root = str(tmp_path / "repo")
     probe = collecting_observer()
     driver = create_mock_driver([
         CostStep(cost_usd=5.0),
@@ -259,7 +263,7 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
     ])
 
     result = await _supervise(
-        str(tmp_path / "repo"),
+        root,
         driver,
         max_usd=1.0,
         launch=make_launch(max_usd=None),
@@ -272,7 +276,7 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
     assert caps[0].cap == "spend-cap"
     assert caps[0].action == "ending"
     assert result.outcome.cost_usd == 5.0
-    types = [line["type"] for line in read_log_lines(tmp_path / "events.jsonl")]
+    types = [line["type"] for line in read_log_lines(events_log_path(root))]
     assert types.index("usage_update") < types.index("cap")
 
 
@@ -297,37 +301,23 @@ def _error_steps() -> list[MockStep]:
 async def test_supervise_when_driver_errors_does_report_error_with_events_logged_up_to_failure(
     tmp_path: Path,
 ):
+    root = str(tmp_path / "repo")
     driver = create_mock_driver(_error_steps())
 
-    result = await _supervise(str(tmp_path / "repo"), driver, is_lock_held=None)
+    result = await _supervise(root, driver, is_lock_held=None)
 
     assert result.outcome.reason == "error"
     assert result.outcome.message == "kaboom"
     assert result.ended_by == "session"
-    types = [line["type"] for line in read_log_lines(tmp_path / "events.jsonl")]
+    types = [line["type"] for line in read_log_lines(events_log_path(root))]
     assert types[0] == "launch"
     assert "text_delta" in types
     assert "usage_update" in types
 
 
 # ---------------------------------------------------------------------------
-# cap robustness
+# cap robustness: a failing interrupt or session outcome
 # ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_observer_raises_does_still_fire_spend_cap(tmp_path: Path):
-    observer_message = "observer boom"
-
-    def throwing(event: SessionEvent) -> None:
-        if event.type == "usage_update":
-            raise RuntimeError(observer_message)
-
-    driver = create_mock_driver([CostStep(cost_usd=0.5), TurnEndStep(cost_usd=0.5)])
-
-    with pytest.warns(RuntimeWarning, match=observer_message):
-        result = await _supervise(str(tmp_path / "repo"), driver, max_usd=0.1, observer=throwing)
-
-    assert result.ended_by == "spend-cap"
 
 
 #: Far under the mock step's 60 s delay, so only the grace abort can end the run in time.
@@ -383,6 +373,21 @@ async def test_supervise_when_outcome_rejects_does_propagate_rejection(tmp_path:
 # ---------------------------------------------------------------------------
 # observer resilience: the cap fires even when an observer raises
 # ---------------------------------------------------------------------------
+
+
+async def test_supervise_when_observer_raises_does_still_fire_spend_cap(tmp_path: Path):
+    observer_message = "observer boom"
+
+    def throwing(event: SessionEvent) -> None:
+        if event.type == "usage_update":
+            raise RuntimeError(observer_message)
+
+    driver = create_mock_driver([CostStep(cost_usd=0.5), TurnEndStep(cost_usd=0.5)])
+
+    with pytest.warns(RuntimeWarning, match=observer_message):
+        result = await _supervise(str(tmp_path / "repo"), driver, max_usd=0.1, observer=throwing)
+
+    assert result.ended_by == "spend-cap"
 
 
 async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
@@ -471,16 +476,11 @@ async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
 ):
     start_ms = 1_000_000
     deadline_ms = start_ms + 10 * 60 * 1000
-    clock = [start_ms]
-    monkeypatch.setattr("gymrat.supervisor.supervise.now_ms", lambda: clock[0])
-
-    async def pass_deadline() -> None:
-        clock[0] = deadline_ms
-
+    clock = SupervisorClock(monkeypatch, start_ms)
     # Only a poll that rereads the clock sees the jump; a single sleep to the
     # deadline would leave the run waiting ten real minutes.
     driver = create_mock_driver([
-        ActionStep(action=pass_deadline),
+        clock.jump_step(deadline_ms),
         CostStep(cost_usd=0.01, delay_ms=60_000),
     ])
 
@@ -524,7 +524,7 @@ async def test_supervise_when_spawned_end_raises_does_warn_to_stderr(
     driver = _WrapDriver(inner, lambda session, _abort: _EndThenRaiseSession(session))
 
     result = await _supervise(str(tmp_path / "repo"), driver, max_usd=0.1)
-
+    # Yield once so the background end's done-callback reports its failure.
     await asyncio.sleep(0)
 
     assert result.ended_by == "spend-cap"

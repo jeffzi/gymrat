@@ -185,4 +185,6 @@ def test_command_attributes_when_called_does_map_fields_and_scalar_args_only(
 def test_record_event_when_called_does_return_the_event_name_and_its_scalar_attributes(
     record: SessionLogRecord, expected: tuple[str, dict[str, object]]
 ):
-    assert record_event(record) == expected
+    result = record_event(record)
+
+    assert result == expected

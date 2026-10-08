@@ -10,6 +10,7 @@ safe under ``pytest-xdist`` / ``pytest-randomly``. Every git operation is real.
 """
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -52,9 +53,22 @@ def _assert_reverted(worktree: str) -> None:
     assert status_of(worktree) == ""
 
 
-def test_discard_session_when_unsettled_edit_does_settle_the_edit_as_discarded(repo: str):
+def _leave_worktree_clean(repo_dir: str) -> None:
+    """Leave the experiment worktree untouched."""
+
+
+@pytest.mark.parametrize(
+    "arrange_worktree",
+    [
+        pytest.param(edit_experiment, id="dirty-edit"),
+        pytest.param(_leave_worktree_clean, id="clean-worktree"),
+    ],
+)
+def test_discard_session_when_iteration_unsettled_does_settle_it_as_discarded(
+    repo: str, arrange_worktree: Callable[[str], None]
+):
     start_with(repo, (iteration_record(seq=1),))
-    edit_experiment(repo)
+    arrange_worktree(repo)
 
     result = discard_session(repo)
 
@@ -63,14 +77,6 @@ def test_discard_session_when_unsettled_edit_does_settle_the_edit_as_discarded(r
     assert_settling_record(result.record, discard_record(1))
     assert settling_record_of(repo) == result.record
     assert result.at == result.record.at
-
-
-def test_discard_session_when_worktree_clean_does_record_discard_anyway(repo: str):
-    start_with(repo, (iteration_record(seq=1),))
-
-    result = discard_session(repo)
-
-    assert settling_record_of(repo) == result.record
 
 
 _GATING_BLOCK = gate_block(1, "gating-regression")
@@ -99,27 +105,6 @@ def test_discard_session_when_gating_block_stands_does_throw_away_the_edit_numbe
     assert log_records(repo)[-2:] == [_GATING_BLOCK, result.record]
 
 
-def test_discard_session_when_gating_block_then_nothing_measured_keep_does_report_reverted_iteration(
-    repo: str,
-):
-    start_with(
-        repo,
-        (
-            confirmed_regression(1),
-            _GATING_BLOCK,
-            gate_block(2, "nothing-measured"),
-        ),
-    )
-    edit_experiment(repo)
-
-    result = discard_session(repo)
-
-    # The report names iteration 1 — the one whose edit was actually thrown away —
-    # not the nothing-measured keep's number (2) or the discard's own seq (3).
-    assert re.search(r"iteration 1\b", result.report, re.IGNORECASE)
-    assert not re.search(r"iteration [23]\b", result.report, re.IGNORECASE)
-
-
 async def test_discard_session_when_keep_retried_after_block_does_throw_away_the_edit_after_the_refusal(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -141,10 +126,14 @@ async def test_discard_session_when_keep_retried_after_block_does_throw_away_the
     assert isinstance(refusal, KeepRecord)
     assert (refusal.status, refusal.reason) == ("blocked", "nothing-measured")
     assert discard == result.record
+    # The report names iteration 1 — the one whose edit was actually thrown away —
+    # not the nothing-measured keep's number (2) or the discard's own seq (3).
+    assert re.search(r"iteration 1\b", result.report, re.IGNORECASE)
+    assert not re.search(r"iteration [23]\b", result.report, re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
-# discard_session resets to last kept commit or baseline SHA (D6)
+# discard_session resets to last kept commit or baseline SHA
 # ---------------------------------------------------------------------------
 
 

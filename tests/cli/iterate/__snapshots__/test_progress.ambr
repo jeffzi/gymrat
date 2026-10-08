@@ -30,6 +30,16 @@
   ○ record
   '''
 # ---
+# name: test_frame_when_confirm_runs_after_an_alerting_judge_does_show_its_progress_row
+  '''
+  iterate #1 · session test-session · 6s elapsed
+  ○ prepare
+  ○ passes
+  ! judged +2.5% on geomean · 1 regressed: latency
+  ⠴ confirming 1 metric · baseline                                0/10 00:06/--:--
+  ○ record
+  '''
+# ---
 # name: test_frame_when_confirm_skipped_after_a_regression_does_keep_a_skipped_confirm_row
   '''
   iterate #1 · session test-session · 0s elapsed
@@ -55,41 +65,23 @@
   iterate #3 · session abc-123
   ○ prepare
   ○ passes
-  ○ judge (4 metrics · geomean primary)
+  ○ judge (4 metrics · cpu:fire:total primary)
   ○ confirm (only if a gating metric regresses)
-  ○ record
-  '''
-# ---
-# name: test_frame_when_judge_alerting_and_confirm_running_does_show_bar
-  '''
-  iterate #1 · session test-session · 6s elapsed
-  ○ prepare
-  ○ passes
-  ! judged +2.5% on geomean · 1 regressed: latency
-  ⠴ confirming 1 metric · baseline                                0/10 00:06/--:--
   ○ record
   '''
 # ---
 # name: test_frame_when_judge_finished_after_started_does_show_elapsed
   '''
-  iterate #1 · session test-session · 00:10/00:15
+  iterate #1 · session test-session · 10s elapsed
   ✓ prepared
-  ○ passes
-  ✓ judged -3.2% on geomean · 1 regressed: latency 4s
+  ✓ sampled 2 passes 5s
+  ✓ judged -3.2% on cpu:fire:total · 1 regressed: lat:100:p99#time 4s
   ○ confirm (only if a gating metric regresses)
   ○ record
   '''
 # ---
 # name: test_frame_when_judge_finished_does_style_regressed_names_in_judge_row[one]
   list([
-    tuple(
-      '✓ ',
-      'green',
-    ),
-    tuple(
-      'judged ',
-      '',
-    ),
     tuple(
       '-3.2% on geomean · 1 regressed: ',
       'dim',
@@ -102,14 +94,6 @@
 # ---
 # name: test_frame_when_judge_finished_does_style_regressed_names_in_judge_row[several-capped-with-bracket]
   list([
-    tuple(
-      '✓ ',
-      'green',
-    ),
-    tuple(
-      'judged ',
-      '',
-    ),
     tuple(
       '-3.2% on geomean · 4 regressed: node/',
       'dim',
@@ -143,14 +127,6 @@
 # name: test_frame_when_judge_finished_does_style_regressed_names_in_judge_row[zero]
   list([
     tuple(
-      '✓ ',
-      'green',
-    ),
-    tuple(
-      'judged ',
-      '',
-    ),
-    tuple(
       '-3.2% on geomean · no gating regression',
       'dim',
     ),
@@ -158,49 +134,19 @@
 # ---
 # name: test_frame_when_judge_finished_no_regressions_does_drop_the_confirm_row
   '''
-  iterate #1 · session test-session · 00:06/00:11
+  iterate #1 · session test-session · 6s elapsed
   ✓ prepared
-  ○ passes
+  ✓ sampled 2 passes 5s
   ✓ judged -2.0% on geomean · no gating regression
   ○ record
   '''
 # ---
 # name: test_frame_when_judge_started_does_show_running_with_elapsed
   '''
-  iterate #1 · session test-session · 00:09/00:14
+  iterate #1 · session test-session · 9s elapsed
   ✓ prepared
-  ○ passes
-  ⠴ judging 3 metrics · geomean primary 3s
-  ○ confirm (only if a gating metric regresses)
-  ○ record
-  '''
-# ---
-# name: test_frame_when_metric_name_has_emoji_code_does_print_the_name_literally[finished]
-  '''
-  iterate #1 · session test-session · 0s elapsed
-  ○ prepare
-  ○ passes
-  ✓ judged +2.0% on cpu:fire:total · 1 regressed: lat:100:p99#time
-  ○ confirm (only if a gating metric regresses)
-  ○ record
-  '''
-# ---
-# name: test_frame_when_metric_name_has_emoji_code_does_print_the_name_literally[pending]
-  '''
-  iterate #1 · session test-session
-  ○ prepare
-  ○ passes
-  ○ judge (3 metrics · cpu:fire:total primary)
-  ○ confirm (only if a gating metric regresses)
-  ○ record
-  '''
-# ---
-# name: test_frame_when_metric_name_has_emoji_code_does_print_the_name_literally[running]
-  '''
-  iterate #1 · session test-session · 0s elapsed
-  ○ prepare
-  ○ passes
-  ⠋ judging 3 metrics · cpu:fire:total primary
+  ✓ sampled 2 passes 5s
+  ⠴ judging 3 metrics · cpu:fire:total primary 3s
   ○ confirm (only if a gating metric regresses)
   ○ record
   '''

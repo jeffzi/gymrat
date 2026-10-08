@@ -29,7 +29,7 @@ from rich.text import Text
 
 from gymrat.cli.live_display import ErasableLive, mount_live
 from gymrat.signals import install_termination_cleanup, write_on_exit
-from tests._process_helpers import InterruptedTerminal, ProcessExit, track_mounted_cleanups
+from tests._process_helpers import InterruptedTerminal, ProcessExit, track_cleanups
 from tests._rich import (
     HIDE_CURSOR,
     KEPT_LINE,
@@ -275,21 +275,6 @@ def _signal_mid_paint(
     return console, log, frame
 
 
-def test_mount_live_when_signal_arrives_does_show_cursor(
-    monkeypatch: pytest.MonkeyPatch,
-    mounted_live: Callable[..., ErasableLive],
-    raise_signal: Callable[[int], int],
-):
-    console = sealed_console()
-    mounted_live(console, _rows(3))
-    monkeypatch.setattr(sys, "stderr", console.file)
-    hidden_before = cursor_hidden(console_output(console))
-
-    raise_signal(TERMINATION_SIGNAL)
-
-    assert (hidden_before, cursor_hidden(console_output(console))) == (True, False)
-
-
 @pytest.mark.parametrize(
     ("row_count", "redirect_stderr"),
     [
@@ -298,7 +283,7 @@ def test_mount_live_when_signal_arrives_does_show_cursor(
         pytest.param(3, True, id="live-redirects-stderr"),
     ],
 )
-def test_mount_live_when_signal_arrives_does_blank_every_frame_row(
+def test_mount_live_when_signal_arrives_does_blank_every_frame_row_with_the_cursor_shown(
     monkeypatch: pytest.MonkeyPatch,
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
@@ -312,7 +297,8 @@ def test_mount_live_when_signal_arrives_does_blank_every_frame_row(
 
     raise_signal(TERMINATION_SIGNAL)
 
-    assert screen_lines(console_output(console)) == [KEPT_LINE]
+    out = console_output(console)
+    assert (screen_lines(out), cursor_hidden(out)) == ([KEPT_LINE], False)
 
 
 def test_mount_live_when_signal_lands_before_first_paint_does_restore_the_screen(
@@ -374,7 +360,7 @@ def test_mount_live_when_mounting_raises_does_roll_back_the_mount(
     message: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    registry = track_mounted_cleanups(monkeypatch)
+    registry = track_cleanups(monkeypatch, "gymrat.cli.live_display")
     live = build_live()
     threads_before = set(threading.enumerate())
 

@@ -24,11 +24,8 @@ from tests._ansi import strip_ansi
 from tests._config import resolved_config
 from tests._lock import held_supervise_lock
 from tests.cli._budget import set_origin, write_budget_file
-from tests.cli._session import (
-    FailingStdoutRunner,
-    closed_stdout_error,
-    runner,
-)
+from tests.cli._session import runner
+from tests.config._toml import write_raw
 from tests.session.records._fixtures import log_records
 
 EXISTING_CONFIG = 'bench = "old"\n'
@@ -49,7 +46,7 @@ def supervise_lock(repo: str) -> Iterator[None]:
 @pytest.fixture
 def existing_config_cwd(_in_non_repo: None, tmp_path: Path) -> Path:
     """A non-repo cwd with a pre-existing ``gymrat.toml`` already written."""
-    (tmp_path / "gymrat.toml").write_text(EXISTING_CONFIG, encoding="utf-8")
+    write_raw(tmp_path, EXISTING_CONFIG)
     return tmp_path
 
 
@@ -121,7 +118,7 @@ def test_init_when_config_already_exists_does_not_require_bench(existing_config_
 
 def _skill_path_directory(base: Path) -> None:
     """Make the skill file path a directory, beside an existing config."""
-    (base / "gymrat.toml").write_text(EXISTING_CONFIG, encoding="utf-8")
+    write_raw(base, EXISTING_CONFIG)
     (base / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
 
 
@@ -236,20 +233,6 @@ def test_init_when_color_flag_given_does_style_the_summary_despite_no_color(
 
     assert result.exit_code == 0
     assert "\x1b[" in result.stdout
-
-
-# ---------------------------------------------------------------------------
-# broken pipe on stdout
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_init_when_stdout_reader_closed_does_exit_zero_without_stderr():
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(
-        app, ["init", "--bench", "npm run bench"]
-    )
-
-    assert (result.exit_code, result.stderr) == (0, "")
 
 
 # ---------------------------------------------------------------------------

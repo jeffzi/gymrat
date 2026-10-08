@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 import pytest
 
 from gymrat.supervisor.events import (
@@ -142,7 +144,7 @@ def test_create_run_span_observer_when_event_observed_does_mirror_only_the_run_m
 
 
 class _BrokenSpan:
-    def add_event(self, *_args: object, **_kwargs):
+    def add_event(self, *_args: object, **_kwargs: object) -> NoReturn:
         msg = "boom"
         raise RuntimeError(msg)
 

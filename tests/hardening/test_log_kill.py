@@ -19,7 +19,6 @@ parent can compare against exact expected records. The module is POSIX-only: it
 relies on real ``SIGKILL`` delivery and a named pipe to start a race together.
 """
 
-import contextlib
 import json
 import sys
 from pathlib import Path
@@ -29,7 +28,7 @@ import pytest
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import read_records
 from tests._process_helpers import reaped, spawn_child_script, wait_for_file_blocking
-from tests.hardening._barrier import CHILD_BARRIER, create_barrier, release_together
+from tests.hardening._barrier import CHILD_BARRIER, racing_children
 from tests.session.records._fixtures import (
     append_records,
     committed_keep,
@@ -179,26 +178,13 @@ def test_append_record_when_processes_append_together_does_never_interleave_byte
     append_records(root, session_record())
     process_count = 4
     per_process = 150
-    barrier = create_barrier(tmp_path)
 
-    with contextlib.ExitStack() as stack:
-        children = [
-            stack.enter_context(
-                reaped(
-                    spawn_child_script(
-                        tmp_path,
-                        f"race_child_{index}",
-                        _RACE_CHILD,
-                        root,
-                        str(barrier),
-                        str(per_process),
-                        str(index * per_process),
-                    )
-                )
-            )
-            for index in range(process_count)
-        ]
-        release_together(barrier, process_count)
+    with racing_children(
+        tmp_path,
+        _RACE_CHILD,
+        lambda barrier, index: (root, str(barrier), str(per_process), str(index * per_process)),
+        process_count,
+    ) as children:
         outcomes = [
             (child.wait(timeout=60), child.stderr.read() if child.stderr else "")
             for child in children

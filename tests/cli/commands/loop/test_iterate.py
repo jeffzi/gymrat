@@ -6,10 +6,8 @@ and inserts a ``budget`` key in JSON output, including on stop-condition exits.
 
 import json
 import os
-import re
 import shlex
 import signal
-import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -37,8 +35,7 @@ from tests._ansi import (
     strip_ansi,
     stripped_lines,
 )
-from tests._cli import ENTRY, no_color_env
-from tests._process_helpers import reaped, wait_for_pid_file_blocking
+from tests._process_helpers import wait_for_pid_file_blocking
 from tests._rich import Clock, console_output, frame_text, screen_lines, sealed_console
 from tests.cli._budget import (
     SUPERVISED_HINT,
@@ -52,6 +49,12 @@ from tests.cli._session import (
     last_command_record,
     runner,
     write_bench_config,
+)
+from tests.cli._signalled_cli import (
+    SETTLE_TIMEOUT_S,
+    pid_recording_script,
+    spawned_gymrat,
+    stop_by_signal,
 )
 from tests.loop._settle import start_with
 from tests.loop.iterate._fixtures import (
@@ -78,7 +81,7 @@ from tests.session.records._fixtures import (
 # ---------------------------------------------------------------------------
 
 
-def test_iterate_command_when_run_does_measure_the_repo_report_on_stdout_and_record_the_trace(
+def test_iterate_command_when_run_does_report_the_measured_iteration_with_its_trace(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     write_session_log(repo, iterate_session_header(repo))
@@ -98,7 +101,7 @@ def test_iterate_command_when_run_does_measure_the_repo_report_on_stdout_and_rec
     assert (cmd.args["bench"], cmd.args["samples"]) == ("npm run bench", 10)
 
 
-def test_iterate_command_when_progress_sidecar_cannot_be_removed_does_warn_and_keep_the_exit_code(
+def test_iterate_command_when_progress_sidecar_cannot_be_removed_does_still_succeed_with_a_warning(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     write_session_log(repo, iterate_session_header(repo))
@@ -205,7 +208,7 @@ _DASHBOARD_EVENTS: tuple[ProgressEvent, ...] = (
 )
 
 
-def test_iterate_command_when_live_does_show_the_session_and_time_the_judge_in_seconds(
+def test_iterate_command_when_live_does_render_the_session_dashboard_timing_the_judge_in_seconds(
     repo: str, monkeypatch: pytest.MonkeyPatch, snapshot: SnapshotAssertion
 ):
     write_session_log(repo, iterate_session_header(repo))
@@ -260,39 +263,21 @@ def test_iterate_command_when_error_does_stop_the_live_display(
     assert (result.exit_code, renderer.live) == (2, None)
 
 
-_SETTLE_TIMEOUT_S = 30.0
-"""Budget for the pid-file wait and the exit of the out-of-process iterate test."""
-
-_BLOCKING_BENCH = """#!/bin/sh
-echo $$ > "{directory}/bench.pid"
-exec sleep 120
-"""
-"""A bench that records its pid and never finishes, so ``iterate`` is mid-pass when signalled."""
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 def test_iterate_command_when_terminated_mid_pass_does_remove_the_progress_sidecar(
     repo: str, tmp_path: Path, reap_groups: list[int]
 ):
     script = tmp_path / "bench.sh"
-    script.write_text(_BLOCKING_BENCH.format(directory=tmp_path), encoding="utf-8")
+    script.write_text(
+        pid_recording_script(tmp_path / "bench.pid", "exec sleep 120\n"), encoding="utf-8"
+    )
     start_with(repo)
     write_bench_config(repo, bench=f"sh {shlex.quote(str(script))}")
-    with reaped(
-        subprocess.Popen(  # noqa: S603 -- argv is the gymrat entry point plus a fixed command
-            [*ENTRY, "iterate"],
-            cwd=repo,
-            env=no_color_env(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    ) as proc:
+    with spawned_gymrat(["iterate"], repo) as proc:
         # The pass-start event writes the sidecar before the bench runs.
-        reap_groups.append(wait_for_pid_file_blocking(tmp_path / "bench.pid", _SETTLE_TIMEOUT_S))
+        reap_groups.append(wait_for_pid_file_blocking(tmp_path / "bench.pid", SETTLE_TIMEOUT_S))
 
-        proc.send_signal(signal.SIGTERM)
-        proc.communicate(timeout=_SETTLE_TIMEOUT_S)
+        stop_by_signal(proc, signal.SIGTERM)
 
     assert (proc.returncode, Path(progress_path(repo)).exists()) == (143, False)
 
@@ -531,18 +516,6 @@ def test_iterate_command_when_stop_and_format_json_and_stdout_closed_does_exit_o
 # ---------------------------------------------------------------------------
 
 
-def test_iterate_command_when_stop_condition_and_budget_active_does_include_time_left_in_stderr(
-    repo: str, monkeypatch: pytest.MonkeyPatch, improved_samples_mock: CollectSamplesRecorder
-):
-    _stop_condition_met(repo, monkeypatch)
-    set_origin(monkeypatch, "tool")
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    assert result.exit_code == 1
-    assert re.search(r"left of 30m", result.stderr)
-
-
 def test_iterate_command_when_stop_and_format_json_and_budget_active_does_include_budget_key(
     repo: str, monkeypatch: pytest.MonkeyPatch, improved_samples_mock: CollectSamplesRecorder
 ):
@@ -590,7 +563,7 @@ def supervised_repo(
 
 
 @pytest.mark.parametrize("output_format", ["text", "json"])
-def test_iterate_command_when_supervised_run_live_does_refuse_without_running_and_record_it(
+def test_iterate_command_when_supervised_run_live_does_refuse_as_a_recorded_no_op(
     supervised_repo: str, output_format: str, improved_samples_mock: CollectSamplesRecorder
 ):
     before = records_of_type(supervised_repo, CommandRecord, matching=False)
@@ -651,34 +624,34 @@ def _budget_exceeded(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 #: Every readiness setup, the ``(exit_code, reason, seq)`` the tool-hosted run
-#: records for it, and a phrase of the refusal it prints.
+#: records for it, and the phrases of the refusal it prints.
 READINESS = [
     pytest.param(
-        _unsettled, (2, "unsettled", 1), "Iteration 1 has not been settled", id="unsettled"
+        _unsettled, (2, "unsettled", 1), ("Iteration 1 has not been settled",), id="unsettled"
     ),
     pytest.param(
         _stop_condition_met,
         (1, "stop-condition", 1),
-        "Stop condition met: max iterations (1 of 1)",
+        ("Stop condition met: max iterations (1 of 1)", "left of 30m"),
         id="stop-condition",
     ),
     pytest.param(
         _budget_exceeded,
         (1, "budget-exceeded", 1),
-        "the cap would cut this one off",
+        ("the cap would cut this one off",),
         id="budget-exceeded",
     ),
 ]
 
 
-@pytest.mark.parametrize(("setup", "expected", "phrase"), READINESS)
+@pytest.mark.parametrize(("setup", "expected", "phrases"), READINESS)
 def test_iterate_command_when_tool_hosted_in_unready_state_does_refuse_with_its_own_reason(
     *,
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     setup: Callable[[str, pytest.MonkeyPatch], None],
     expected: tuple[int, str, int],
-    phrase: str,
+    phrases: tuple[str, ...],
     improved_samples_mock: CollectSamplesRecorder,
 ):
     setup(repo, monkeypatch)
@@ -688,7 +661,8 @@ def test_iterate_command_when_tool_hosted_in_unready_state_does_refuse_with_its_
 
     cmd = last_command_record(repo)
     assert (result.exit_code, cmd.reason, cmd.seq) == expected
-    assert phrase in " ".join(stripped_lines(result.stderr, keep_blank=False))
+    stderr = " ".join(stripped_lines(result.stderr, keep_blank=False))
+    assert [phrase for phrase in phrases if phrase not in stderr] == []
     assert improved_samples_mock.call_count == 0
 
 

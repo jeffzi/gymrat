@@ -45,7 +45,6 @@ def _text_cells(line: BodyLine[str, str]) -> tuple[Text, ...]:
             raise AssertionError(msg)
 
 
-@pytest.mark.parametrize("color", [False, True])
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
@@ -100,9 +99,9 @@ def _text_cells(line: BodyLine[str, str]) -> tuple[Text, ...]:
         ),
     ],
 )
-def test_render_body_when_text_cells_does_draw_rows_and_rules(
-    body: list[BodyLine[str, str]], expected: list[str], color: bool
+def test_render_body_when_rules_placed_does_draw_each_between_its_rows(
+    body: list[BodyLine[str, str]], expected: list[str]
 ):
-    lines = render_body(body, [8, 6], _text_cells, color=color)
+    lines = render_body(body, [8, 6], _text_cells, color=False)
 
     assert lines == expected

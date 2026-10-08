@@ -103,7 +103,7 @@ def _doctor_report_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
     return "\x1b[" in stdout.getvalue()
 
 
-def _progress_is_colored() -> bool:
+def _progress_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
     """Whether the progress surface would paint color for the environment.
 
     Builds the console through the real stderr factory — the one every progress
@@ -112,17 +112,29 @@ def _progress_is_colored() -> bool:
     shared precedence, fails this probe where a bare ``resolve_stream_color``
     call would keep passing.
 
+    Args:
+        monkeypatch: Unused; taken so every surface probe shares one signature.
+
     Returns:
         Whether a styled print on the stderr console carries ANSI.
     """
+    del monkeypatch
     console = stderr_console()
     with console.capture() as capture:
         console.print("probe", style="red", end="")
     return "\x1b[" in capture.get()
 
 
-def _error_is_colored() -> bool:
-    """Whether the stderr error surface would paint its label for the environment."""
+def _error_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
+    """Whether the stderr error surface would paint its label for the environment.
+
+    Args:
+        monkeypatch: Unused; taken so every surface probe shares one signature.
+
+    Returns:
+        Whether the formatted error carries ANSI.
+    """
+    del monkeypatch
     return "\x1b[" in format_cli_error(ValueError("boom"))
 
 
@@ -132,32 +144,36 @@ def _error_is_colored() -> bool:
 
 
 # Environment states where the variables alone decide the outcome, so terminal
-# detection never enters into it and all the surfaces must agree.
+# detection never enters into it and every surface must give the same answer.
 @pytest.mark.parametrize(
-    ("force_color", "no_color", "expected"),
+    ("force_and_no_color", "expected"),
     [
-        pytest.param("1", None, True, id="force-on"),
-        pytest.param(None, "1", False, id="no-color-suppresses"),
+        pytest.param(("1", None), True, id="force-on"),
+        pytest.param((None, "1"), False, id="no-color-suppresses"),
     ],
 )
-def test_color_precedence_when_env_decides_does_agree_across_report_progress_and_error(
+@pytest.mark.parametrize(
+    "is_colored",
+    [
+        pytest.param(_report_is_colored, id="report"),
+        pytest.param(_doctor_report_is_colored, id="doctor-report"),
+        pytest.param(_progress_is_colored, id="progress"),
+        pytest.param(_error_is_colored, id="error"),
+    ],
+)
+def test_color_surface_when_env_decides_does_follow_the_shared_precedence(
     monkeypatch: pytest.MonkeyPatch,
     color_env: Callable[[str | None, str | None], None],
-    force_color: str | None,
-    no_color: str | None,
+    is_colored: Callable[[pytest.MonkeyPatch], bool],
+    force_and_no_color: tuple[str | None, str | None],
     expected: bool,
 ):
     monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
     # Pin TERM so the console factory's own terminal detection is capable of
     # color, leaving FORCE_COLOR/NO_COLOR as the only deciders under test.
     monkeypatch.setenv("TERM", "xterm-256color")
-    color_env(force_color, no_color)
+    color_env(*force_and_no_color)
 
-    surfaces = (
-        _report_is_colored(monkeypatch),
-        _doctor_report_is_colored(monkeypatch),
-        _progress_is_colored(),
-        _error_is_colored(),
-    )
+    colored = is_colored(monkeypatch)
 
-    assert surfaces == (expected,) * 4
+    assert colored is expected

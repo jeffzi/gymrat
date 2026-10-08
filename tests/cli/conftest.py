@@ -8,7 +8,7 @@ import pytest
 from gymrat.loop.start import start_session
 from tests._config import resolved_config
 from tests._rich import stop_tracked
-from tests.cli._session import open_stop_ready_session
+from tests.cli._session import open_stop_ready_session, write_settled_session
 
 
 @pytest.fixture(autouse=True)
@@ -35,4 +35,11 @@ def stop_repo(repo: str) -> str:
 def sync_repo(repo: str) -> str:
     """A repository with an open session, ready for sync tests."""
     start_session(repo, "main", resolved_config())
+    return repo
+
+
+@pytest.fixture
+def status_repo(repo: str) -> str:
+    """A repository with a configured session and one kept iteration."""
+    write_settled_session(repo)
     return repo

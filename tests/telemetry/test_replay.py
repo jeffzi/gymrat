@@ -15,14 +15,8 @@ from opentelemetry.trace import StatusCode
 
 from gymrat.command_run import CommandTrace, with_repo_lock
 from gymrat.session.paths import session_jsonl_path
-from gymrat.session.records import HookRecord, record_to_wire
-from gymrat.supervisor.events import (
-    CapEvent,
-    CompactionEvent,
-    FollowUpEvent,
-    UsageUpdateEvent,
-    to_json_line,
-)
+from gymrat.session.records import record_to_wire
+from gymrat.supervisor.events import UsageUpdateEvent, to_json_line
 from gymrat.telemetry.provider import span_id_of, trace_id_of
 from gymrat.telemetry.replay import replay_session
 from tests.session.records._fixtures import (
@@ -171,34 +165,6 @@ def test_replay_session_when_usage_update_in_supervisor_does_set_cost_usd(
 
     run_span = span_by_name(spans, "gymrat.run")
     assert run_span.attributes["gymrat.run.cost_usd"] == pytest.approx(1.23)
-
-
-def test_replay_session_when_supervisor_events_present_does_mirror_onto_run_span(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    header = session_record(at=T0)
-    write_records_log(session_log, [header])
-    write_supervisor_log(
-        sup_log,
-        [
-            replay_launch_event(at=T1),
-            replay_turn_end(at=T2),
-            FollowUpEvent(at=T3, action="replied", reason="continue"),
-            CapEvent(at=T4, cap="wall-clock", action="interrupting"),
-            CompactionEvent(at=T5),
-        ],
-    )
-
-    spans = _replay(session_log, sup_log)
-
-    run_span = span_by_name(spans, "gymrat.run")
-    assert [ev.name for ev in run_span.events] == [
-        "gymrat.turn_end",
-        "gymrat.follow_up",
-        "gymrat.cap",
-        "gymrat.compaction",
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -360,18 +326,6 @@ def _event_carriers(spans: tuple[Any, ...], event_names: tuple[str, ...]) -> dic
     }
 
 
-_PRE_COMMAND_HOOK = HookRecord(
-    type="hook",
-    at=T1,
-    stage="before",
-    seq=1,
-    exit_code=0,
-    duration_ms=50,
-    stdout_bytes=10,
-    timed_out=False,
-)
-
-
 @pytest.mark.parametrize(
     ("records", "owner", "event_names"),
     [
@@ -386,7 +340,11 @@ _PRE_COMMAND_HOOK = HookRecord(
             id="between-commands-go-to-the-next",
         ),
         pytest.param(
-            [baseline_record(at=T1), _PRE_COMMAND_HOOK, replay_command("measure", duration_ms=100)],
+            [
+                baseline_record(at=T1),
+                hook_record(at=T1),
+                replay_command("measure", duration_ms=100),
+            ],
             "gymrat.command.measure",
             ("gymrat.baseline", "gymrat.hook"),
             id="before-the-first-command-go-to-it",

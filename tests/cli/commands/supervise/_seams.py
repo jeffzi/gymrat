@@ -21,17 +21,16 @@ from gymrat.cli.supervise.preflight import PreflightFlags, doctor_gate
 from gymrat.cli.supervise.progress import SuperviseReporter, create_supervise_reporter
 from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.config import ResolvedConfig, StopConfig, SuperviseConfig
-from gymrat.errors import GymratError
 from gymrat.loop.start import StartResult
 from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep, run_exit_sequence
+from gymrat.supervisor.kickoff import compose_kickoff
 from gymrat.supervisor.supervise import SupervisionResult, supervise
 from tests._ansi import strip_ansi
 from tests._config import resolved_config
-from tests._process_helpers import CleanupRegistry
-from tests.cli._session import runner
+from tests.cli._session import runner, stub_config
 from tests.cli.supervise._fixtures import install_baseline_seam, make_supervision_result
 from tests.session.records._fixtures import empty_session_state, session_record, worktrees_at
 
@@ -108,10 +107,6 @@ class Seams:
     def record_supervise_call(self, args: tuple[object, ...], kwargs: dict[str, object]) -> None:
         call = {**kwargs, **dict(zip(("driver", "prompt"), args, strict=False))}
         self.supervise_calls.append(call)
-
-    def installed_cleanups(self) -> list[Callable[[], None]]:
-        """Return every termination cleanup the run installed, in install order."""
-        return [call.args[0] for call in self.install_cleanup.call_args_list]
 
 
 def command_config(
@@ -217,7 +212,7 @@ def install_seams(
         cfg: object,
         prompt: object = None,
         *,
-        experiment_worktree: object = None,
+        experiment_worktree: object,
     ) -> SimpleNamespace:
         seams.compose_calls.append((cfg, prompt))
         return SimpleNamespace(kickoff="begin optimization", system_prompt_append="system prompt")
@@ -252,16 +247,16 @@ def install_seams(
             final_text=lambda: seams.final_text,
         )
 
-    def fake_resolve(_flags: object, _base_dir: object = None) -> ResolvedConfig:
-        return resolved
-
     monkeypatch.setattr("gymrat.cli.commands.supervise.doctor_gate", seams.doctor_gate)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.resolve_config", fake_resolve)
+    stub_config(monkeypatch, "supervise", resolved)
     if real_preflight:
         install_baseline_seam(monkeypatch)
     else:
         _install_fake_preflight(monkeypatch, seams, branch=branch, resumed=resumed)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.compose_kickoff", fake_compose)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.compose_kickoff",
+        create_autospec(compose_kickoff, side_effect=fake_compose),
+    )
     monkeypatch.setattr("gymrat.cli.commands.supervise.create_claude_driver", seams.create_driver)
     patch_supervise(monkeypatch, fake_supervise)
     monkeypatch.setattr(
@@ -279,15 +274,6 @@ def install_seams(
         "gymrat.cli.commands.supervise.install_termination_cleanup", seams.install_cleanup
     )
     return seams
-
-
-def track_cleanups(monkeypatch: pytest.MonkeyPatch) -> CleanupRegistry:
-    """Swap the command's cleanup installer for a registry a test can read at any point."""
-    registry = CleanupRegistry()
-    monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.install_termination_cleanup", registry.install
-    )
-    return registry
 
 
 def record_stdout_writes(monkeypatch: pytest.MonkeyPatch, order: list[str], label: str) -> None:
@@ -308,8 +294,3 @@ def run(*args: str) -> Result:
 def err_text(result: Result) -> str:
     """The combined stdout+stderr of a run, for flag-name and message probes."""
     return strip_ansi((result.stdout or "") + (result.stderr or ""))
-
-
-def exploding_setup_tracing(*_args: object, **_kwargs: object) -> tuple[object, ...]:
-    """Stand in for the tracing setup, failing the way a bad exporter does."""
-    raise GymratError(TRACING_FAILURE)

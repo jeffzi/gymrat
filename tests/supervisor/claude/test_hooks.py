@@ -8,16 +8,15 @@ options is pinned with the other options in ``test_claude.py``.
 """
 
 import asyncio
-from collections.abc import Mapping
 
 import pytest
 
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.driver import SessionPrompt
 from tests.supervisor._fixtures import (
-    _SENTINEL_SERVER,
     FiniteClient,
     HooksFactoryProbe,
+    ToolsFactoryProbe,
     collecting_observer,
     make_prompt,
     result_message,
@@ -39,18 +38,6 @@ async def test_start_when_hooks_given_does_call_factory_once_per_session():
     assert probe.calls == 2
 
 
-class ToolsFactoryProbe:
-    """A stub tools factory that records each call and returns a sentinel."""
-
-    def __init__(self, sentinel: object) -> None:
-        self._sentinel = sentinel
-        self.calls: list[tuple[asyncio.Event, Mapping[str, str]]] = []
-
-    def __call__(self, abort: asyncio.Event, env: Mapping[str, str]) -> object:
-        self.calls.append((abort, env))
-        return self._sentinel
-
-
 @pytest.mark.parametrize(
     ("prompt", "env"),
     [
@@ -65,7 +52,7 @@ class ToolsFactoryProbe:
 async def test_start_when_tools_given_does_call_the_factory_with_the_session_context(
     prompt: SessionPrompt, env: dict[str, str]
 ):
-    probe = ToolsFactoryProbe(_SENTINEL_SERVER)
+    probe = ToolsFactoryProbe()
     abort = asyncio.Event()
 
     await run_outcome(FiniteClient([result_message()]), prompt=prompt, abort=abort, tools=probe)

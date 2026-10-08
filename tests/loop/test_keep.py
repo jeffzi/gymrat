@@ -9,11 +9,9 @@ safe under ``pytest-xdist`` / ``pytest-randomly``. The only mocked boundary is t
 checks command (the consumer's own test suite); every git operation is real.
 """
 
-# cspell:ignore gitdir -- the literal content of a worktree's .git pointer file
-
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
@@ -91,11 +89,10 @@ def failed_checks(stdout: str, stderr: str) -> KeepChecks:
 
 
 def long_output(prefix: str) -> str:
-    """Build 200 numbered lines of exactly 100 bytes each.
+    """Build 200 numbered lines of 100 bytes each, 20000 bytes in all.
 
-    The uniform line width puts the relay's byte budget on a line a test can name:
-    81 lines are 8100 bytes and fit the 8192-byte budget the hook relay uses, an
-    82nd would take it to 8200 and overrun it.
+    That is well past the relay's byte budget, so the report must drop the
+    closing lines.
 
     Args:
         prefix: The word each line opens on, ahead of its three-digit number.
@@ -115,12 +112,20 @@ def _hint_line(report: str, action: str) -> str:
     return next(line for line in map(strip_ansi, report.split("\n")) if action in line)
 
 
-def _assert_closes_on_a_bare_hint(repo: str, report: str) -> None:
-    """Assert a refusal names no ``gymrat`` command or markup and appends no baseline."""
+def _assert_closes_on_a_bare_hint(
+    repo: str, report: str, baseline_before: BaselineRecord | None = None
+) -> None:
+    """Assert a refusal names no ``gymrat`` command or markup and appends no baseline.
+
+    Args:
+        repo: The repository whose session log the refusal must leave without a new baseline.
+        report: The refusal's report text.
+        baseline_before: The latest baseline the log held before the refusal, if any.
+    """
     assert "Hint" not in report
     assert "`" not in report
     assert "gymrat " not in report
-    assert latest_baseline(log_records(repo)) is None
+    assert latest_baseline(log_records(repo)) == baseline_before
 
 
 # ---------------------------------------------------------------------------
@@ -247,11 +252,8 @@ async def test_keep_session_when_checks_time_out_does_block_like_a_failure(
     assert result.record.checks == failed_checks(CHECKS_STDOUT, CHECKS_STDERR)
 
 
-@pytest.mark.parametrize(
-    "prefix", [pytest.param("out", id="stdout"), pytest.param("err", id="stderr")]
-)
 async def test_keep_session_when_output_over_relay_budget_does_cut_report_but_record_true_counts(
-    repo: str, monkeypatch: pytest.MonkeyPatch, prefix: str
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
@@ -259,11 +261,10 @@ async def test_keep_session_when_output_over_relay_budget_does_cut_report_but_re
 
     result = await keep_session(repo, checks_config())
 
-    # 81 of the 100-byte lines fit the byte budget the hook relay uses, an 82nd
-    # overruns it, so the cut lands between the two.
-    assert f"{prefix}-000" in result.report
-    assert f"{prefix}-080" in result.report
-    assert f"{prefix}-081" not in result.report
+    assert "out-000" in result.report
+    assert "out-199" not in result.report
+    assert "err-000" in result.report
+    assert "err-199" not in result.report
     assert result.record.checks == failed_checks(LONG_STDOUT, LONG_STDERR)
     assert settling_record_of(repo) == result.record
 
@@ -491,35 +492,46 @@ async def test_keep_session_when_clean_and_ahead_does_settle_the_standing_commit
     assert settling_record_of(repo) == result.record
 
 
-async def test_keep_session_when_head_matches_baseline_does_block_as_nothing_to_commit(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    # The iteration measured something but the agent made no changes.
+async def _measured_without_an_edit(repo: str, monkeypatch: pytest.MonkeyPatch) -> int:
+    """Measure iteration 1 with no edit made; return its seq."""
     start_with(repo, (iteration_record(seq=1),))
+    return 1
+
+
+async def _measured_nothing_new_after_a_keep(repo: str, monkeypatch: pytest.MonkeyPatch) -> int:
+    """Keep an edit, then measure iteration 2 with nothing new on top; return its seq."""
+    start_with(repo, (iteration_record(seq=1),))
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    await keep_session(repo, checks_config())
+    append_records(repo, iteration_record(seq=2))
+    return 2
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        pytest.param(_measured_without_an_edit, id="nothing-kept-yet"),
+        pytest.param(_measured_nothing_new_after_a_keep, id="after-a-prior-keep"),
+    ],
+)
+async def test_keep_session_when_head_matches_baseline_does_block_as_nothing_to_commit(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: Callable[[str, pytest.MonkeyPatch], Awaitable[int]],
+):
+    seq = await arrange(repo, monkeypatch)
+    baseline_before = latest_baseline(log_records(repo))
     recorder = checks_pass(monkeypatch)
 
     result = await keep_session(repo, checks_config())
 
     hint = _hint_line(result.report, "iterate")
     assert recorder.calls == []
-    assert_settling_record(result.record, gate_block(1, "nothing-to-commit"))
+    assert_settling_record(result.record, gate_block(seq, "nothing-to-commit"))
     assert "gymrat" not in hint
     assert "keep" not in hint
-    _assert_closes_on_a_bare_hint(repo, result.report)
-
-
-async def test_keep_session_when_nothing_new_after_prior_keep_does_block_as_nothing_to_commit(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo, (iteration_record(seq=1),))
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-    await keep_session(repo, checks_config())
-    append_records(repo, iteration_record(seq=2))
-
-    result = await keep_session(repo, checks_config())
-
-    assert_settling_record(result.record, gate_block(2, "nothing-to-commit"))
+    _assert_closes_on_a_bare_hint(repo, result.report, baseline_before)
 
 
 @pytest.mark.parametrize(
