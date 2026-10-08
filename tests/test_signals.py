@@ -683,6 +683,55 @@ def test_deferring_termination_signals_when_entered_does_block_them_until_exit()
     not hasattr(signal, "pthread_sigmask"),
     reason="Signal masking requires POSIX pthread_sigmask",
 )
+def test_deferring_termination_signals_when_overlapping_deferrals_exit_out_of_order_does_restore_the_mask_once_both_exit():
+    # Two coroutines on one event loop overlap their deferrals this way: the one
+    # that entered first exits first, while the other is still inside its own.
+    before = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    first = signals.deferring_termination_signals()
+    second = signals.deferring_termination_signals()
+    first.__enter__()
+    second.__enter__()
+    first.__exit__(None, None, None)
+    while_second_open = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+
+    second.__exit__(None, None, None)
+
+    assert while_second_open >= signals.TERMINATION_SIGNALS
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == before
+
+
+def test_deferring_termination_signals_when_overlapping_deferral_still_open_does_handle_the_signal_once_it_exits(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_termination_cleanup(_nothing)
+    handler = signal.getsignal(signal.SIGINT)
+    if not callable(handler):
+        pytest.fail("no handler installed for SIGINT")
+    exits: list[int] = []
+
+    def record_exit(code: int) -> NoReturn:
+        exits.append(code)
+        raise _ReplacedExitError
+
+    monkeypatch.setattr(signals, "exit_process", record_exit)
+    first = signals.deferring_termination_signals()
+    second = signals.deferring_termination_signals()
+    first.__enter__()
+    second.__enter__()
+    first.__exit__(None, None, None)
+    handler(signal.SIGINT, None)
+    exits_while_second_open = list(exits)
+
+    with contextlib.suppress(_ReplacedExitError):
+        second.__exit__(None, None, None)
+
+    assert (exits_while_second_open, exits) == ([], [128 + signal.SIGINT])
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="Signal masking requires POSIX pthread_sigmask",
+)
 def test_deferring_termination_signals_when_mask_raises_does_handle_the_next_signal_immediately(
     monkeypatch: pytest.MonkeyPatch, raise_signal: RaiseSignal
 ):

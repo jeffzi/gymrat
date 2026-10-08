@@ -116,11 +116,10 @@ def _line(record: SessionLogRecord) -> str:
 
 
 def _jsonl_holding(root: str, lines: list[str]) -> str:
-    """Write a session log holding exactly ``lines``, each on its own line."""
-    jsonl_path = session_jsonl_path(root)
-    Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(jsonl_path).write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
-    return jsonl_path
+    """Write a session log holding exactly ``lines``, each ending in a bare line feed."""
+    # Bytes, not text: a text-mode write on win32 turns each "\n" into "\r\n",
+    # which is not what the store writes.
+    return _jsonl_holding_bytes(root, "".join(f"{line}\n" for line in lines).encode())
 
 
 def _jsonl_holding_bytes(root: str, raw: bytes) -> str:
