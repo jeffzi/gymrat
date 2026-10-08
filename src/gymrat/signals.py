@@ -89,10 +89,33 @@ _escalating: bool = False
 # blocks OS delivery to the main thread, but a non-main thread's C handler can
 # still set the pending-signal flag. ``time.sleep`` and asyncio event loops call
 # ``PyErr_CheckSignals()`` which processes that flag regardless of the mask.
-# The deferral flag makes the Python-level handler store the signal instead of
-# processing it; the stored signal is replayed when deferral ends.
-_deferring: bool = False
+# While any deferral is open the Python-level handler stores the signal instead
+# of processing it; the stored signal is replayed once the last one closes.
+#
+# A count rather than a flag: deferrals overlap without nesting when two
+# coroutines on one event loop each hold one across an ``await``, so the first
+# to exit is not necessarily the last one open. The lock guards the count
+# against deferrals on other threads; the handler only reads it, so a signal
+# landing while this thread holds the lock cannot deadlock.
+_open_deferrals: int = 0
+_open_deferrals_lock = threading.Lock()
 _deferred_signal: int | None = None
+
+
+class _ThreadMaskHold(threading.local):
+    """This thread's open deferrals, and the signal mask the first one replaced.
+
+    ``pthread_sigmask`` is per thread, so the mask is blocked by the first
+    deferral a thread opens and restored only when its last one closes, in
+    whatever order they close.
+    """
+
+    def __init__(self) -> None:
+        self.depth = 0
+        self.saved_mask: list[int] = []
+
+
+_thread_mask_hold = _ThreadMaskHold()
 
 # Terminal output cleanups hand over through ``write_on_exit``, written ahead of
 # the collected warnings once every cleanup has run.
@@ -116,12 +139,12 @@ def reset() -> None:
     it to isolate module-global state between cases instead of reaching into the
     private attributes directly.
     """
-    global _handled_signal, _escalating, _deferring, _deferred_signal  # noqa: PLW0603 - module-level state the reset owns
+    global _handled_signal, _escalating, _open_deferrals, _deferred_signal  # noqa: PLW0603 - module-level state the reset owns
     _registry.clear()
     _escalations.clear()
     _handled_signal = None
     _escalating = False
-    _deferring = False
+    _open_deferrals = 0
     _deferred_signal = None
     _installed_signals.clear()
     _exit_output.clear()
@@ -228,7 +251,7 @@ def _handler(signal_number: int, _frame: FrameType | None) -> None:
     if _escalating:
         return
 
-    if _deferring:
+    if _open_deferrals:
         _deferred_signal = signal_number
         return
 
@@ -246,38 +269,69 @@ def _ensure_handlers_installed() -> None:
         _installed_signals.add(signal_number)
 
 
+def _hold_thread_mask() -> bool:
+    """Block termination signals on this thread unless a deferral here already does.
+
+    Returns:
+        Whether this call counted towards the thread's hold, and so must be
+        matched by :func:`_release_thread_mask`.
+    """
+    if pthread_sigmask is None:
+        return False
+    hold = _thread_mask_hold
+    if hold.depth == 0:
+        hold.saved_mask = pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
+    hold.depth += 1
+    return True
+
+
+def _release_thread_mask() -> None:
+    hold = _thread_mask_hold
+    hold.depth -= 1
+    if hold.depth == 0 and pthread_sigmask is not None:
+        pthread_sigmask(signal.SIG_SETMASK, hold.saved_mask)
+
+
 @contextmanager
 def deferring_termination_signals() -> Generator[None]:
     """Defer termination signals for the duration of the wrapped call.
 
     A termination signal delivered while the wrapped code is running must not
     fire the process's termination cleanup mid-call. The deferral works at two
-    levels: ``pthread_sigmask`` blocks OS-level delivery to the main thread
-    (where available), and a Python-level flag makes the handler store the
-    signal instead of processing it. The second level is needed because in
-    multi-threaded programs a non-main thread can receive the OS signal, set
-    CPython's pending-signal flag, and ``PyErr_CheckSignals()`` on the main
-    thread then runs the handler despite the mask.
+    levels: ``pthread_sigmask`` blocks OS-level delivery to the calling thread
+    (where available), and a Python-level count of open deferrals makes the
+    handler store the signal instead of processing it. The second level is
+    needed because in multi-threaded programs a non-main thread can receive the
+    OS signal, set CPython's pending-signal flag, and ``PyErr_CheckSignals()``
+    on the main thread then runs the handler despite the mask.
 
-    Any signal stored during deferral is replayed when the context exits, so a
-    registered handler runs only after the wrapped code completes.
+    Deferrals may overlap in any order, as two coroutines on one event loop do
+    when each holds one across an ``await``: the thread's mask is restored when
+    its last open deferral exits, and any signal stored meanwhile is replayed
+    when the last open deferral in the process exits, so a registered handler
+    runs only after every wrapped call completes.
     """
-    global _deferring, _deferred_signal  # noqa: PLW0603
+    global _open_deferrals, _deferred_signal  # noqa: PLW0603 - module-level state the deferral owns
 
-    previous: list[int] | None = None
+    with _open_deferrals_lock:
+        _open_deferrals += 1
+    holding_mask = False
     try:
-        _deferring = True
-        if pthread_sigmask is not None:
-            previous = pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
+        holding_mask = _hold_thread_mask()
         yield
     finally:
-        _deferring = False
-        if previous is not None and pthread_sigmask is not None:
-            pthread_sigmask(signal.SIG_SETMASK, previous)
-        deferred = _deferred_signal
-        _deferred_signal = None
-        if deferred is not None:
-            _handler(deferred, None)
+        with _open_deferrals_lock:
+            # Floored at zero: reset() may have cleared the count while this
+            # deferral was still open.
+            _open_deferrals = max(0, _open_deferrals - 1)
+            last_open = _open_deferrals == 0
+        if holding_mask:
+            _release_thread_mask()
+        if last_open:
+            deferred = _deferred_signal
+            _deferred_signal = None
+            if deferred is not None:
+                _handler(deferred, None)
 
 
 def install_termination_cleanup(cleanup: Callable[[], None]) -> Callable[[], None]:
