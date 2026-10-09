@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 
 from gymrat.clock import now_ms
-from tests.supervisor._fixtures import SupervisorClock, seed_session_log
+from tests.session.records._fixtures import append_records, session_record
+from tests.supervisor._fixtures import SupervisorClock
+
+
+def seed_session_log(root: str) -> None:
+    """Write a minimal session header so ``read_records`` / ``fold_session`` work."""
+    append_records(root, session_record())
 
 
 @pytest.fixture

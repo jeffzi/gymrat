@@ -24,6 +24,7 @@ from claude_agent_sdk import (
     RateLimitInfo,
     ServerToolResultBlock,
     ServerToolUseBlock,
+    SystemMessage,
     TaskStartedMessage,
     TextBlock,
     ThinkingBlock,
@@ -48,14 +49,9 @@ from tests._clock import install_monotonic_clock
 from tests._imports import loaded_under, modules_loaded_after
 from tests._rich import Clock
 from tests.supervisor._fixtures import (
-    _SENTINEL_HOOKS,
-    _SENTINEL_SERVER,
-    TRACEPARENT,
     FactoryProbe,
     FakeClient,
     FiniteClient,
-    HooksFactoryProbe,
-    ToolsFactoryProbe,
     assistant,
     collecting_observer,
     events_of,
@@ -67,10 +63,25 @@ from tests.supervisor._fixtures import (
     run_with_messages,
     settled_outcome,
     start_claude_session,
-    system_message,
-    tool_results,
     wait_for_event_or_task,
 )
+
+# ---------------------------------------------------------------------------
+# SDK message builders
+# ---------------------------------------------------------------------------
+
+
+def system_message(
+    *, subtype: str = "init", data: dict[str, object] | None = None
+) -> SystemMessage:
+    """Build an SDK ``SystemMessage`` carrying ``data`` (empty when omitted)."""
+    return SystemMessage(subtype=subtype, data=data if data is not None else {})
+
+
+def tool_results(*blocks: ToolResultBlock, parent_tool_use_id: str | None = None) -> UserMessage:
+    """Build an SDK ``UserMessage`` carrying tool results, as the CLI delivers them."""
+    return UserMessage(content=list(blocks), parent_tool_use_id=parent_tool_use_id)
+
 
 # ---------------------------------------------------------------------------
 # construction and lazy loading
@@ -88,6 +99,42 @@ def test_create_claude_driver_when_constructed_does_not_import_sdk():
 # ---------------------------------------------------------------------------
 # start — options forwarding
 # ---------------------------------------------------------------------------
+
+
+#: A W3C trace context a prompt can carry for the driver to hand the agent.
+TRACEPARENT = "00-abc123-def456-01"
+
+#: The MCP server config ``ToolsFactoryProbe`` hands back, so a test can find it
+#: again in the client options.
+_SENTINEL_SERVER: dict[str, str] = {"type": "stdio", "command": "fake"}
+
+#: The hook mapping ``HooksFactoryProbe`` hands back, so a test can find it again
+#: in the client options.
+_SENTINEL_HOOKS: dict[HookEvent, list[HookMatcher]] = {
+    "PreToolUse": [HookMatcher(matcher="Bash", hooks=[])],
+}
+
+
+class HooksFactoryProbe:
+    """A stub hooks factory that counts its calls and returns ``_SENTINEL_HOOKS``."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self) -> dict[HookEvent, list[HookMatcher]]:
+        self.calls += 1
+        return _SENTINEL_HOOKS
+
+
+class ToolsFactoryProbe:
+    """A stub tools factory that records each call's context and returns ``_SENTINEL_SERVER``."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[asyncio.Event, Mapping[str, str]]] = []
+
+    def __call__(self, abort: asyncio.Event, env: Mapping[str, str]) -> object:
+        self.calls.append((abort, env))
+        return _SENTINEL_SERVER
 
 
 #: The timeout variables every session hands the agent, at ``make_prompt``'s 60 s default.
@@ -197,6 +244,41 @@ async def test_start_when_session_inputs_given_does_forward_them_as_client_optio
 
     assert client.options is not None
     assert {key: client.options[key] for key in added} == added
+
+
+async def test_start_when_hooks_given_does_call_factory_once_per_session():
+    probe = HooksFactoryProbe()
+    driver = create_claude_driver(
+        client_factory=lambda _options: FiniteClient([result_message()]),
+        hooks=probe,
+    )
+
+    await run_session(driver, collecting_observer().observer)
+    await run_session(driver, collecting_observer().observer)
+
+    assert probe.calls == 2
+
+
+@pytest.mark.parametrize(
+    ("prompt", "env"),
+    [
+        pytest.param(
+            make_prompt(traceparent=TRACEPARENT),
+            {"GYMRAT_TRACEPARENT": TRACEPARENT},
+            id="traceparent",
+        ),
+        pytest.param(make_prompt(), {}, id="no-traceparent"),
+    ],
+)
+async def test_start_when_tools_given_does_call_factory_with_the_session_context(
+    prompt: SessionPrompt, env: dict[str, str]
+):
+    probe = ToolsFactoryProbe()
+    abort = asyncio.Event()
+
+    await run_outcome(FiniteClient([result_message()]), prompt=prompt, abort=abort, tools=probe)
+
+    assert probe.calls == [(abort, env)]
 
 
 # ---------------------------------------------------------------------------

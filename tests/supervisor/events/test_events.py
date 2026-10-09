@@ -12,15 +12,25 @@ writing a value pydantic cannot serialize as its ``str()``; ``event_from_wire``
 inverts it and returns ``None`` for anything it cannot reconstruct;
 ``combine_observers`` is pinned on warning, attributed to the caller, when an
 observer raises.
+
+The event-log writer, ``create_event_log_writer``, appends one ``to_json_line``
+line per event to a log file; its tests pin the file-writing side effects, the
+lazy directory creation (including re-creation after the directory is removed),
+and the failure surface, alongside the up-front write check
+``probe_event_log_path``.
 """
 
 import json
+import re
+import shutil
 from collections.abc import Callable
 from functools import partial
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from gymrat.errors import GymratError
 from gymrat.session.records import decode_log_line
 from gymrat.supervisor.events import (
     CapEvent,
@@ -36,7 +46,9 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
     UsageUpdateEvent,
     combine_observers,
+    create_event_log_writer,
     event_from_wire,
+    probe_event_log_path,
     to_json_line,
 )
 from tests.session.records._fixtures import (
@@ -47,6 +59,7 @@ from tests.supervisor._fixtures import (
     make_launch,
     make_turn_end,
     raising_observer,
+    read_log_lines,
 )
 
 # ---------------------------------------------------------------------------
@@ -559,3 +572,124 @@ def test_event_when_float_field_is_non_finite_does_raise(
 ):
     with pytest.raises(ValidationError, match="finite number"):
         build(**{field: value})
+
+
+# ---------------------------------------------------------------------------
+# create_event_log_writer
+# ---------------------------------------------------------------------------
+
+
+def test_create_event_log_writer_when_observing_events_does_append_one_utf8_lf_line_each(
+    tmp_path: Path,
+):
+    log_path = tmp_path / "events.jsonl"
+    writer = create_event_log_writer(log_path)
+    events = [
+        UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01),
+        TextDeltaEvent(at=2_000_000_000_000, chunk="café"),
+    ]
+    expected = "".join(to_json_line(event) + "\n" for event in events)
+
+    for event in events:
+        writer(event)
+
+    assert log_path.read_bytes() == expected.encode("utf-8")
+
+
+def test_create_event_log_writer_when_created_does_not_create_the_parent_before_a_write(
+    tmp_path: Path,
+):
+    log_path = tmp_path / "nested" / "events.jsonl"
+
+    create_event_log_writer(log_path)
+
+    assert not log_path.parent.exists()
+
+
+def test_create_event_log_writer_when_parent_missing_does_create_tree_on_first_write(
+    tmp_path: Path,
+):
+    log_path = tmp_path / "nested" / "deep" / "events.jsonl"
+    writer = create_event_log_writer(log_path)
+    event = UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01)
+
+    writer(event)
+
+    assert read_log_lines(log_path) == [json.loads(to_json_line(event))]
+
+
+def test_create_event_log_writer_when_write_fails_does_raise_gymrat_error_naming_path_from_os_error(
+    tmp_path: Path,
+):
+    log_path = tmp_path / "a-directory"
+    log_path.mkdir()
+    writer = create_event_log_writer(log_path)
+
+    with pytest.raises(GymratError, match=re.escape(str(log_path))) as exc_info:
+        writer(UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01))
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+
+
+# ---------------------------------------------------------------------------
+# event log directory re-creation
+# ---------------------------------------------------------------------------
+
+
+def test_create_event_log_writer_when_parent_removed_after_first_write_does_recreate_on_next(
+    tmp_path: Path,
+):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    log_path = log_dir / "events.jsonl"
+    writer = create_event_log_writer(log_path)
+    writer(UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01))
+    shutil.rmtree(log_dir)
+    event = UsageUpdateEvent(at=2_000_000_000_000, cost_usd=0.02)
+
+    writer(event)
+
+    assert read_log_lines(log_path) == [json.loads(to_json_line(event))]
+
+
+# ---------------------------------------------------------------------------
+# probe_event_log_path — up-front write check
+# ---------------------------------------------------------------------------
+
+
+def _log_under_a_file(tmp_path: Path) -> Path:
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("I am a file", encoding="utf-8")
+    return blocker / "events.jsonl"
+
+
+def _log_at_a_directory(tmp_path: Path) -> Path:
+    log_path = tmp_path / "a-directory"
+    log_path.mkdir()
+    return log_path
+
+
+@pytest.mark.parametrize(
+    "build_log_path",
+    [
+        pytest.param(_log_under_a_file, id="parent-is-a-file"),
+        pytest.param(_log_at_a_directory, id="path-is-a-directory"),
+    ],
+)
+def test_probe_event_log_path_when_not_writable_does_raise_gymrat_error_naming_path_from_os_error(
+    tmp_path: Path, build_log_path: Callable[[Path], Path]
+):
+    log_path = build_log_path(tmp_path)
+
+    with pytest.raises(GymratError, match=re.escape(str(log_path))) as exc_info:
+        probe_event_log_path(log_path)
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+
+
+def test_probe_event_log_path_when_parent_missing_does_create_it(tmp_path: Path):
+    log_path = tmp_path / "nested" / "events.jsonl"
+
+    probe_event_log_path(log_path)
+
+    assert log_path.parent.is_dir()

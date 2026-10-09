@@ -1,29 +1,9 @@
-"""Shared builders and probes for the supervisor event tests.
+"""Shared builders, doubles and runners for the supervisor test suites.
 
-These helpers are reused across the supervisor suites, so they live in one
-module rather than being duplicated per test file. ``collecting_observer`` hands back an appending observer paired with
-the list it fills; ``make_launch`` builds a fully-populated ``LaunchEvent`` from
-overridable defaults; ``read_log_lines`` parses a JSONL log into dicts;
-``NotJsonEncodable`` is a value ``json.dumps`` cannot encode.
-``seed_session_log``, ``append_step``, ``driver_calls``,
-``events_log_path``, and ``_supervise`` share the turn-loop test boilerplate;
-``LockSwitch`` is a repository lock a test holds and releases between driver
-steps; ``SupervisorClock`` is the supervisor's wall clock, moved by hand; ``_WrapDriver``
-captures the abort event, observer, and session a supervised driver hands out;
-``FollowUpWatch`` lets a test await the follow-ups a supervised run emits;
-``WAIT_FINISHED_LINE`` is the line a reply closes on after a lock wait;
-``_SENTINEL_SERVER`` and ``_SENTINEL_HOOKS`` are what the stubbed tools and
-hooks factories hand back; ``HooksFactoryProbe`` counts its calls and
-``ToolsFactoryProbe`` records the context of each.
-``result_message``, ``system_message``, ``assistant``, ``tool_results``, and
-``stream_event`` build the real ``claude-agent-sdk`` message dataclasses the
-Claude driver consumes. ``start_claude_session``,
-``run_interrupting_on_first_usage_update``, ``settled_outcome``,
-``start_past_turns``, and ``run_outcome`` start a Claude session over a fake
-client and await it, every wait bounded by ``SESSION_TIMEOUT_S``;
-``end_and_settle`` ends a running session and awaits its outcome.
-``wait_for_event_or_task`` waits on an event a background task should set,
-failing instead of hanging when the task settles first.
+The supervisor suites — the orchestrator, the Claude driver, the event log and
+the command line that wraps them — build the same events, prompts and contexts,
+script the same mock and fake drivers, and run the supervisor the same way.
+Those pieces live here once instead of being copied into each test file.
 """
 
 import asyncio
@@ -39,15 +19,9 @@ import pytest
 from claude_agent_sdk import (
     AssistantMessage,
     ContentBlock,
-    HookMatcher,
     MessageOrigin,
     ResultMessage,
-    StreamEvent,
-    SystemMessage,
-    ToolResultBlock,
-    UserMessage,
 )
-from claude_agent_sdk.types import HookEvent
 
 from gymrat.clock import now_ms, now_ns
 from gymrat.config import BenchlessConfig, Effort
@@ -72,9 +46,7 @@ from tests._config import benchless_config
 from tests.session.records._fixtures import (
     SUPERVISED_SESSION_ID,
     append_records,
-    session_record,
 )
-from tests.supervisor._mock_driver import ActionStep, EmitStep, _MockSession
 
 _SESSION_ID = "sdk-session"
 _MODEL = "claude-test"
@@ -150,10 +122,6 @@ def read_log_lines(log_path: str | Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
-#: A W3C trace context a prompt can carry for the driver to hand the agent.
-TRACEPARENT = "00-abc123-def456-01"
-
-
 def make_prompt(
     *,
     kickoff: str = "do the thing",
@@ -203,6 +171,216 @@ def raising_observer(message: str, *, on: type[SessionEvent] | None = None) -> S
             raise RuntimeError(message)
 
     return _observer
+
+
+# ---------------------------------------------------------------------------
+# scripted mock driver
+# ---------------------------------------------------------------------------
+
+# ``create_mock_driver`` builds a ``Driver`` whose ``start`` runs a script of
+# steps in order on the running event loop, without a real agent backend. A
+# step emits an event, awaits an async action, reports a cost, or simulates a
+# turn boundary. Each step's optional ``delay_ms`` races a timer against the
+# abort — the driver's own ``interrupt`` or the external abort event — so a
+# delayed step yields the moment the session is interrupted or aborted.
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EmitStep:
+    """Delivers ``emit`` to the observer, optionally after ``delay_ms``."""
+
+    emit: SessionEvent
+    delay_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ActionStep:
+    """Awaits ``action``, optionally after ``delay_ms``."""
+
+    action: Callable[[], Awaitable[None]]
+    delay_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CostStep:
+    """Sets the running cost to ``cost_usd`` and emits a usage update."""
+
+    cost_usd: float
+    delay_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TurnEndStep:
+    """Simulates a turn boundary.
+
+    Emits a ``TurnEndEvent`` and blocks until the supervisor calls ``send``
+    or ``end``, or the session is interrupted.
+    """
+
+    text: str = ""
+    cost_usd: float | None = None
+    origin: Literal["agent", "injected"] = "agent"
+    budget_exhausted: bool = False
+    delay_ms: int | None = None
+
+
+MockStep = EmitStep | ActionStep | CostStep | TurnEndStep
+"""A single step in a mock driver script."""
+
+
+class _MockSession:
+    """Runs a mock script as a task; ``outcome`` settles when the script returns."""
+
+    def __init__(
+        self,
+        steps: Sequence[MockStep],
+        observer: SessionObserver,
+        external_abort: asyncio.Event | None,
+    ) -> None:
+        self._observer = observer
+        self._external = external_abort
+        self._abort = asyncio.Event()
+        self._cost_usd = 0.0
+        self._turn_gate = asyncio.Event()
+        self._end_requested = False
+        self._settled = False
+        self.calls: list[tuple[str, str | None]] = []
+        self._script: asyncio.Task[SessionOutcome] = asyncio.ensure_future(self._run(steps))
+
+    @property
+    def outcome(self) -> Awaitable[SessionOutcome]:
+        return self._script
+
+    async def interrupt(self) -> None:
+        if not self._settled:
+            self.calls.append(("interrupt", None))
+        self._abort.set()
+        self._turn_gate.set()
+
+    async def send(self, text: str) -> None:
+        if self._settled:
+            return
+        self.calls.append(("send", text))
+        self._turn_gate.set()
+
+    async def end(self) -> None:
+        if self._settled:
+            return
+        self.calls.append(("end", None))
+        self._end_requested = True
+        self._turn_gate.set()
+
+    def _aborted(self) -> bool:
+        return self._abort.is_set() or (self._external is not None and self._external.is_set())
+
+    def _ended(self) -> bool:
+        return self._end_requested or self._aborted()
+
+    def _interrupted(self) -> SessionOutcome:
+        return SessionOutcome(reason="interrupted", cost_usd=self._cost_usd)
+
+    async def _delay(self, ms: int) -> None:
+        """Wait up to ``ms`` milliseconds, returning early when the abort fires."""
+        if self._aborted():
+            return
+        waiters = [asyncio.ensure_future(self._abort.wait())]
+        if self._external is not None:
+            waiters.append(asyncio.ensure_future(self._external.wait()))
+        try:
+            await asyncio.wait(waiters, timeout=ms / 1000, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+
+    async def _execute(self, step: MockStep) -> None:
+        match step:
+            case EmitStep():
+                if not self._aborted():
+                    self._observer(step.emit)
+            case ActionStep():
+                await step.action()
+            case CostStep():
+                if self._aborted():
+                    return
+                self._cost_usd = step.cost_usd
+                self._observer(UsageUpdateEvent(at=now_ns(), cost_usd=step.cost_usd))
+            case TurnEndStep():
+                if self._aborted():
+                    return
+                if step.cost_usd is not None:
+                    self._cost_usd = step.cost_usd
+                self._observer(
+                    TurnEndEvent(
+                        at=now_ns(),
+                        text=step.text,
+                        cost_usd=self._cost_usd,
+                        origin=step.origin,
+                        budget_exhausted=step.budget_exhausted,
+                    )
+                )
+                self._turn_gate.clear()
+                await self._turn_gate.wait()
+
+    async def _run(self, steps: Sequence[MockStep]) -> SessionOutcome:
+        for step in steps:
+            # Yield between steps so an interrupt scheduled by the prior step's
+            # observer is applied before the successor runs. The supervisor fires
+            # ``interrupt`` as a task, so its abort lands on the next loop turn.
+            await asyncio.sleep(0)
+
+            if self._ended():
+                break
+
+            if step.delay_ms is not None and step.delay_ms > 0:
+                await self._delay(step.delay_ms)
+
+            if self._ended():
+                break
+
+            try:
+                await self._execute(step)
+            except Exception as error:  # noqa: BLE001 - the mock's contract turns any action failure into an error outcome
+                self._settled = True
+                return SessionOutcome(reason="error", cost_usd=self._cost_usd, message=str(error))
+
+            if self._aborted():
+                self._settled = True
+                return self._interrupted()
+
+        self._settled = True
+        if self._aborted():
+            return self._interrupted()
+        return SessionOutcome(reason="completed", cost_usd=self._cost_usd)
+
+
+class _MockDriver:
+    def __init__(self, steps: Sequence[MockStep]) -> None:
+        self._steps = steps
+        self.sessions: list[_MockSession] = []
+
+    def start(
+        self,
+        prompt: SessionPrompt,
+        observer: SessionObserver,
+        abort: asyncio.Event | None = None,
+    ) -> DriverSession:
+        session = _MockSession(self._steps, observer, abort)
+        self.sessions.append(session)
+        return session
+
+
+def create_mock_driver(steps: Sequence[MockStep]) -> _MockDriver:
+    """Return a driver that runs ``steps`` in order on each ``start``.
+
+    Args:
+        steps: The scripted steps every started session plays in order.
+
+    Returns:
+        A driver satisfying the :class:`Driver` protocol, whose ``.sessions``
+        list holds each started session for assertions on ``send`` and ``end``
+        calls.
+    """
+    return _MockDriver(tuple(steps))
 
 
 # ---------------------------------------------------------------------------
@@ -314,32 +492,10 @@ def result_message(
     )
 
 
-def system_message(
-    *, subtype: str = "init", data: dict[str, object] | None = None
-) -> SystemMessage:
-    """Build an SDK ``SystemMessage`` carrying ``data`` (empty when omitted)."""
-    return SystemMessage(subtype=subtype, data=data if data is not None else {})
-
-
 def assistant(*blocks: ContentBlock, parent_tool_use_id: str | None = None) -> AssistantMessage:
     """Build an SDK ``AssistantMessage`` carrying the given content blocks."""
     return AssistantMessage(
         content=list(blocks), model=_MODEL, parent_tool_use_id=parent_tool_use_id
-    )
-
-
-def tool_results(*blocks: ToolResultBlock, parent_tool_use_id: str | None = None) -> UserMessage:
-    """Build an SDK ``UserMessage`` carrying tool results, as the CLI delivers them."""
-    return UserMessage(content=list(blocks), parent_tool_use_id=parent_tool_use_id)
-
-
-def stream_event(event: dict[str, object], *, parent_tool_use_id: str | None = None) -> StreamEvent:
-    """Build an SDK ``StreamEvent`` wrapping one raw API stream event."""
-    return StreamEvent(
-        uuid="event-uuid",
-        session_id=_SESSION_ID,
-        event=event,
-        parent_tool_use_id=parent_tool_use_id,
     )
 
 
@@ -492,11 +648,6 @@ def follow_ups_with_action(events: list[SessionEvent], action: str) -> list[Foll
     return [e for e in events_of(events, FollowUpEvent) if e.action == action]
 
 
-def seed_session_log(root: str) -> None:
-    """Write a minimal session header so ``read_records`` / ``fold_session`` work."""
-    append_records(root, session_record())
-
-
 def append_step(root: str, *records: SessionLogRecord, delay_ms: int | None = None) -> ActionStep:
     """Build a driver step that appends ``records`` to the session log under ``root``.
 
@@ -574,44 +725,11 @@ def blocked_step() -> EmitStep:
     return EmitStep(emit=TextDeltaEvent(at=now_ns(), chunk="late"), delay_ms=_BLOCKED_MS)
 
 
-#: The MCP server config a stubbed tools or hooks factory hands back, so a test
-#: can find it again in the client options.
-_SENTINEL_SERVER: dict[str, str] = {"type": "stdio", "command": "fake"}
-
-#: The hook mapping ``HooksFactoryProbe`` hands back, so a test can find it again
-#: in the client options.
-_SENTINEL_HOOKS: dict[HookEvent, list[HookMatcher]] = {
-    "PreToolUse": [HookMatcher(matcher="Bash", hooks=[])],
-}
-
-
-class HooksFactoryProbe:
-    """A stub hooks factory that counts its calls and returns ``_SENTINEL_HOOKS``."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def __call__(self) -> dict[HookEvent, list[HookMatcher]]:
-        self.calls += 1
-        return _SENTINEL_HOOKS
-
-
-class ToolsFactoryProbe:
-    """A stub tools factory that records each call's context and returns ``_SENTINEL_SERVER``."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[asyncio.Event, Mapping[str, str]]] = []
-
-    def __call__(self, abort: asyncio.Event, env: Mapping[str, str]) -> object:
-        self.calls.append((abort, env))
-        return _SENTINEL_SERVER
-
-
 def _same_session(session: DriverSession, _abort: asyncio.Event) -> DriverSession:
     return session
 
 
-class _WrapDriver:
+class WrapDriver:
     """Capture what the supervisor hands a driver, and wrap the session it starts.
 
     ``make_session`` receives the inner driver's session and the abort event,
@@ -731,7 +849,7 @@ class SupervisorClock:
             observer: Receives every event first, or None to forward nothing.
 
         Returns:
-            The forwarding observer, ready to hand to ``_supervise``.
+            The forwarding observer, ready to hand to ``run_supervised``.
         """
 
         def observe(event: SessionEvent) -> None:
@@ -768,18 +886,18 @@ class SupervisorClock:
 
 
 def events_log_path(root: str) -> Path:
-    """The supervisor event log ``_supervise`` writes for the repository at ``root``."""
+    """The supervisor event log ``run_supervised`` writes for the repository at ``root``."""
     return Path(root).parent / "events.jsonl"
 
 
 def event_log_markers(root: str) -> list[str]:
-    """Label each event ``_supervise`` logged for ``root``, in log order.
+    """Label each event ``run_supervised`` logged for ``root``, in log order.
 
     A ``tool_end`` line becomes ``tool_end:<id>``, a ``follow_up`` line becomes
     ``follow_up:<action>:<reason>``, and every other line becomes its type.
 
     Args:
-        root: The repository root ``_supervise`` ran against.
+        root: The repository root ``run_supervised`` ran against.
 
     Returns:
         One marker per logged event.
@@ -797,11 +915,11 @@ def event_log_markers(root: str) -> list[str]:
 
 
 def lock_file_path(root: str) -> Path:
-    """The repository lock file ``_supervise`` probes for the repository at ``root``."""
+    """The repository lock file ``run_supervised`` probes for the repository at ``root``."""
     return Path(root).parent / "lockfile"
 
 
-async def _supervise(
+async def run_supervised(
     root: str,
     driver: Driver,
     *,

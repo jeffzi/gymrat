@@ -7,6 +7,11 @@ with ``SessionState`` fixtures and record lists from the session record models.
 The guards' record accounting is covered too: which records count as progress
 for the no-progress guard (outcome records only), and the consecutive-discard
 streak, which skips the records already present when the session launched.
+
+The file also pins ``detect_end_condition`` from ``gymrat.supervisor.end_scan``:
+which stop conditions end the session (and when ``check_stop`` silences them),
+which hook failures end it and with what reason (a hook failure wins over a met
+stop condition), and how the scan cursor bounds the hook-failure scan.
 """
 
 from __future__ import annotations

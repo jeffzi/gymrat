@@ -42,7 +42,7 @@ from tests.cli.supervise._fixtures import (
 from tests.session.records._fixtures import (
     records_of_type,
 )
-from tests.supervisor._mock_driver import CostStep, create_mock_driver
+from tests.supervisor._fixtures import CostStep, create_mock_driver
 
 _EXIT_ERROR = "finalize failed: disk full"
 

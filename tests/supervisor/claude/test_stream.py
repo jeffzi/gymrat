@@ -19,8 +19,20 @@ from gymrat.supervisor.events import (
 from tests.supervisor._fixtures import (
     events_of,
     run_with_messages,
-    stream_event,
 )
+
+_SESSION_ID = "sdk-session"
+
+
+def stream_event(event: dict[str, object], *, parent_tool_use_id: str | None = None) -> StreamEvent:
+    """Build an SDK ``StreamEvent`` wrapping one raw API stream event."""
+    return StreamEvent(
+        uuid="event-uuid",
+        session_id=_SESSION_ID,
+        event=event,
+        parent_tool_use_id=parent_tool_use_id,
+    )
+
 
 # ---------------------------------------------------------------------------
 # stream events — thinking deltas with throttling
@@ -94,26 +106,20 @@ async def test_start_when_thinking_deltas_stream_does_emit_throttled_estimates(
 # ---------------------------------------------------------------------------
 
 
-_THINKING_BLOCK_MESSAGES = [
-    stream_event(
-        {"type": "content_block_start", "content_block": {"type": "thinking"}},
-        parent_tool_use_id="tu_x",
-    ),
-    stream_event({"type": "content_block_stop"}, parent_tool_use_id="tu_x"),
-]
+_THINKING_BLOCK_MESSAGES = [_thinking_start("tu_x"), _block_stop("tu_x")]
 _TEXT_BLOCK_MESSAGES = [
     stream_event(
         {"type": "content_block_start", "content_block": {"type": "text"}},
         parent_tool_use_id="tu_x",
     ),
-    stream_event({"type": "content_block_stop"}, parent_tool_use_id="tu_x"),
+    _block_stop("tu_x"),
 ]
 _TOOL_USE_BLOCK_MESSAGES = [
     stream_event(
         {"type": "content_block_start", "content_block": {"type": "tool_use", "name": "Read"}},
         parent_tool_use_id="tu_x",
     ),
-    stream_event({"type": "content_block_stop"}, parent_tool_use_id="tu_x"),
+    _block_stop("tu_x"),
 ]
 
 

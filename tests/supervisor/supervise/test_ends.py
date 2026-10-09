@@ -44,28 +44,27 @@ from tests.session.records._fixtures import (
     session_state,
 )
 from tests.supervisor._fixtures import (
+    ActionStep,
     DelegatingSession,
+    EmitStep,
     FollowUpWatch,
     InterruptEmitsEndDriver,
     LockSwitch,
+    MockStep,
     SupervisorClock,
-    _supervise,
-    _WrapDriver,
+    TurnEndStep,
+    WrapDriver,
     append_step,
     blocked_step,
     collecting_observer,
+    create_mock_driver,
     driver_calls,
     emit_turn_end,
     event_log_markers,
     events_of,
     follow_ups_with_action,
+    run_supervised,
     sent_texts,
-)
-from tests.supervisor._mock_driver import (
-    ActionStep,
-    EmitStep,
-    TurnEndStep,
-    create_mock_driver,
 )
 
 if TYPE_CHECKING:
@@ -74,13 +73,14 @@ if TYPE_CHECKING:
     from gymrat.session.records import SessionLogRecord
     from gymrat.supervisor.driver import Driver, DriverSession
     from gymrat.supervisor.supervise import SupervisionResult
-    from tests.supervisor._mock_driver import MockStep
 
 
 def _scanned_reason(
     records: list[SessionLogRecord], *, stop: StopConfig | None = None, iteration_count: int = 0
 ) -> str:
-    """The reason the end-condition scan gives for ``records``; its wording is pinned in ``test_turns.py``.
+    """The reason the end-condition scan gives for ``records``.
+
+    The reason's wording is pinned in ``tests/supervisor/test_turns.py``.
 
     Args:
         records: The session log records the scan reads.
@@ -179,9 +179,9 @@ class _StubbornSession(DelegatingSession):
         return None
 
 
-def _stubborn(inner: Driver) -> _WrapDriver:
+def _stubborn(inner: Driver) -> WrapDriver:
     """Wrap ``inner`` so every session it starts ignores ``interrupt`` and ``end``."""
-    return _WrapDriver(inner, lambda session, _abort: _StubbornSession(session))
+    return WrapDriver(inner, lambda session, _abort: _StubbornSession(session))
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +235,7 @@ async def test_supervise_when_condition_lands_before_tool_end_does_end_run_after
         blocked_step(),
     ])
 
-    result = await _supervise(root, driver, config=benchless_config(stop=case.stop))
+    result = await run_supervised(root, driver, config=benchless_config(stop=case.stop))
 
     markers = event_log_markers(root)
     ended = _ended_markers(markers)
@@ -278,19 +278,15 @@ async def test_supervise_when_nothing_new_ends_run_at_tool_end_does_complete_as_
     append_records(root, *seeded)
     driver = create_mock_driver([append_step(root, *appended), _tool_end()])
 
-    result = await _supervise(root, driver, config=benchless_config(stop=stop))
+    result = await run_supervised(root, driver, config=benchless_config(stop=stop))
 
     assert result.ended_by == "session"
     assert result.outcome.reason == "completed"
 
 
-def _replace_log_with_directory(root: str) -> None:
+def _directory_at_log(root: str, _access: _SessionDirAccess) -> None:
     _log_path(root).unlink()
     _log_path(root).mkdir()
-
-
-def _directory_at_log(root: str, _access: _SessionDirAccess) -> None:
-    _replace_log_with_directory(root)
 
 
 def _append_invalid_json(root: str, _access: _SessionDirAccess) -> None:
@@ -353,7 +349,7 @@ async def test_supervise_when_log_becomes_unreadable_does_end_with_error_outcome
         trigger,
     ])
 
-    result = await _supervise(root, driver)
+    result = await run_supervised(root, driver)
 
     assert (result.ended_by, result.outcome.reason, result.outcome.cost_usd) == (
         "session",
@@ -366,7 +362,7 @@ async def test_supervise_when_log_becomes_unreadable_does_end_with_error_outcome
 
 async def test_supervise_when_two_tool_ends_find_the_log_unreadable_does_end_once(root: str):
     watch = FollowUpWatch()
-    driver: _WrapDriver | None = None
+    driver: WrapDriver | None = None
 
     async def break_log() -> None:
         _append_log_bytes(root, b"not valid json\n")
@@ -382,19 +378,23 @@ async def test_supervise_when_two_tool_ends_find_the_log_unreadable_does_end_onc
         ActionStep(action=deliver_two_tool_ends),
         TurnEndStep(),
     ])
-    driver = _WrapDriver(inner)
+    driver = WrapDriver(inner)
 
-    result = await _supervise(root, driver, observer=watch)
+    result = await run_supervised(root, driver, observer=watch)
 
     assert result.outcome.reason == "error"
     assert watch.actions() == ["ended"]
     assert driver_calls(inner.sessions[0]) == ["end"]
 
 
-async def test_supervise_when_launch_read_fails_does_scan_hooks_only_after_first_clean_read(
-    root: str,
-):
+def _corrupt_log_at_launch(root: str, _access: _SessionDirAccess) -> None:
     _overwrite_log(root, b"not valid json\n")
+
+
+async def test_supervise_when_launch_read_fails_does_scan_hooks_only_after_first_clean_read(
+    root: str, session_dir_access: _SessionDirAccess
+):
+    _corrupt_log_at_launch(root, session_dir_access)
 
     async def repair_with_failed_hook() -> None:
         _overwrite_log(root, b"")
@@ -408,18 +408,10 @@ async def test_supervise_when_launch_read_fails_does_scan_hooks_only_after_first
         blocked_step(),
     ])
 
-    result = await _supervise(root, driver)
+    result = await run_supervised(root, driver)
 
     assert result.ended_by == "hook-failure"
     assert result.end_reason == _LATER_FAILED_HOOK_REASON
-
-
-def _corrupt_log_at_launch(root: str, _access: _SessionDirAccess) -> None:
-    _overwrite_log(root, b"not valid json\n")
-
-
-def _deny_log_at_launch(_root: str, access: _SessionDirAccess) -> None:
-    access.deny()
 
 
 def _repair_log(root: str, access: _SessionDirAccess, *records: SessionLogRecord) -> ActionStep:
@@ -436,7 +428,7 @@ def _repair_log(root: str, access: _SessionDirAccess, *records: SessionLogRecord
 _LAUNCH_READ_FAILURES = [
     pytest.param(_corrupt_log_at_launch, id="log-unparsable"),
     pytest.param(_directory_at_log, id="log-is-a-directory"),
-    pytest.param(_deny_log_at_launch, id="log-stat-denied", marks=needs_mode_bits),
+    pytest.param(_deny_session_dir, id="log-stat-denied", marks=needs_mode_bits),
 ]
 
 
@@ -452,7 +444,7 @@ async def test_supervise_when_first_clean_scan_finds_stop_condition_met_does_com
         _tool_end(),
     ])
 
-    result = await _supervise(
+    result = await run_supervised(
         root, driver, config=benchless_config(stop=StopConfig(max_iterations=1))
     )
 
@@ -475,7 +467,7 @@ async def test_supervise_when_stop_condition_met_after_first_clean_scan_does_end
         blocked_step(),
     ])
 
-    result = await _supervise(
+    result = await run_supervised(
         root, driver, config=benchless_config(stop=StopConfig(max_iterations=1))
     )
 
@@ -511,7 +503,7 @@ async def test_supervise_when_condition_lands_after_last_tool_end_does_end_at_tu
     probe = collecting_observer()
     driver = create_mock_driver([_tool_end(), append_step(root, appended), TurnEndStep()])
 
-    result = await _supervise(
+    result = await run_supervised(
         root, driver, config=benchless_config(stop=stop), observer=probe.observer
     )
 
@@ -539,7 +531,7 @@ async def test_supervise_when_lock_held_at_detection_does_end_at_first_tool_end_
         blocked_step(),
     ])
 
-    result = await _supervise(root, driver, is_lock_held=lock.is_held)
+    result = await run_supervised(root, driver, is_lock_held=lock.is_held)
 
     markers = event_log_markers(root)
     ended = _ended_markers(markers)
@@ -560,7 +552,7 @@ async def test_supervise_when_end_pending_and_lock_free_at_agent_turn_end_does_e
         TurnEndStep(),
     ])
 
-    result = await _supervise(root, driver, is_lock_held=lock.is_held)
+    result = await run_supervised(root, driver, is_lock_held=lock.is_held)
 
     assert result.ended_by == "hook-failure"
     assert result.end_reason == _FAILED_HOOK_REASON
@@ -575,7 +567,7 @@ async def test_supervise_when_end_pending_and_lock_held_at_agent_turn_end_does_w
     probe = collecting_observer()
     driver = create_mock_driver([append_step(root, _FAILED_HOOK), _tool_end(), TurnEndStep()])
 
-    result = await _supervise(
+    result = await run_supervised(
         root, driver, observer=lock.release_on_waiting(probe.observer), is_lock_held=lock.is_held
     )
 
@@ -600,7 +592,7 @@ async def test_supervise_when_end_pending_at_injected_turn_end_with_reply_outsta
         blocked_step(),
     ])
 
-    result = await _supervise(root, driver, is_lock_held=lock.is_held)
+    result = await run_supervised(root, driver, is_lock_held=lock.is_held)
 
     assert result.ended_by == "hook-failure"
     assert result.outcome.reason == "interrupted"
@@ -625,7 +617,7 @@ async def test_supervise_when_condition_end_already_fired_does_not_detect_at_lat
         ])
     )
 
-    result = await _supervise(root, driver, grace_ms=200)
+    result = await run_supervised(root, driver, grace_ms=200)
 
     assert result.end_reason == _FAILED_HOOK_REASON
     assert _ended_markers(event_log_markers(root)) == [f"follow_up:ended:{_FAILED_HOOK_REASON}"]
@@ -650,7 +642,7 @@ async def test_supervise_when_cap_already_fired_does_not_detect_at_later_tool_en
         ])
     )
 
-    result = await _supervise(root, driver, observer=note_cap, max_usd=1.0)
+    result = await run_supervised(root, driver, observer=note_cap, max_usd=1.0)
 
     assert result.ended_by == "spend-cap"
     assert f"follow_up:ended:{_FAILED_HOOK_REASON}" not in event_log_markers(root)
@@ -692,7 +684,7 @@ async def test_supervise_when_spend_cap_reached_at_turn_end_with_condition_pendi
     probe = collecting_observer()
     driver = create_mock_driver(script(root, lock, turn))
 
-    result = await _supervise(
+    result = await run_supervised(
         root, driver, observer=probe.observer, is_lock_held=lock.is_held, max_usd=max_usd
     )
 
@@ -718,7 +710,7 @@ async def test_supervise_when_wall_clock_fires_while_end_pending_does_report_the
         ])
     )
 
-    result = await _supervise(
+    result = await run_supervised(
         root,
         driver,
         is_lock_held=lock.is_held,
@@ -784,7 +776,7 @@ async def _supervise_boundary_case(
     Returns:
         How the supervised session ended.
     """
-    return await _supervise(
+    return await run_supervised(
         root,
         driver,
         grace_ms=50,
@@ -824,7 +816,7 @@ _BOUNDARY_END_CASES = [
 async def test_supervise_when_driver_ignores_end_at_turn_boundary_does_arm_abort_after_grace(
     root: str, case: _BoundaryEndCase, supervisor_clock: SupervisorClock
 ):
-    driver = _WrapDriver(create_mock_driver(case.script(root)), _AbortSettledSession)
+    driver = WrapDriver(create_mock_driver(case.script(root)), _AbortSettledSession)
 
     result = await asyncio.wait_for(
         _supervise_boundary_case(root, driver, case, supervisor_clock), timeout=2.0
@@ -839,7 +831,7 @@ async def test_supervise_when_driver_ignores_end_at_turn_boundary_does_arm_abort
 async def test_supervise_when_driver_settles_on_end_at_turn_boundary_does_not_abort(
     root: str, case: _BoundaryEndCase, supervisor_clock: SupervisorClock
 ):
-    driver = _WrapDriver(create_mock_driver(case.script(root)))
+    driver = WrapDriver(create_mock_driver(case.script(root)))
 
     result = await _supervise_boundary_case(root, driver, case, supervisor_clock)
     # Outlast the grace period, so a grace timer left armed would set the abort.

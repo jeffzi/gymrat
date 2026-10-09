@@ -7,7 +7,7 @@ supervisor-classifier wiring: scheduling, lock polling, guard propagation, and
 the follow-up events that each decision emits through the combined observer and
 into the JSONL log.
 
-Unless otherwise noted, tests run through ``_supervise``, which passes
+Unless otherwise noted, tests run through ``run_supervised``, which passes
 ``settle_window_ms=0`` and ``lock_poll_ms=1`` to keep runs instantaneous and
 injects ``is_lock_held`` as a callable to avoid filesystem contention.
 
@@ -43,30 +43,28 @@ from tests.session.records._fixtures import (
 from tests.supervisor._fixtures import (
     FOLLOW_UP_TIMEOUT_S,
     WAIT_FINISHED_LINE,
+    ActionStep,
+    EmitStep,
     FollowUpWatch,
     InterruptEmitsEndDriver,
     LockSwitch,
+    MockStep,
     SlowEndSession,
     SupervisorClock,
-    _supervise,
-    _WrapDriver,
+    TurnEndStep,
+    WrapDriver,
     append_step,
     blocked_step,
     collecting_observer,
+    create_mock_driver,
     driver_calls,
     emit_turn_end,
     event_log_markers,
     events_of,
     follow_ups_with_action,
     lock_file_path,
+    run_supervised,
     sent_texts,
-)
-from tests.supervisor._mock_driver import (
-    ActionStep,
-    EmitStep,
-    MockStep,
-    TurnEndStep,
-    create_mock_driver,
 )
 
 if TYPE_CHECKING:
@@ -85,7 +83,7 @@ async def test_supervise_when_turn_end_with_stop_record_does_log_a_finished_end(
     probe = collecting_observer()
     driver = create_mock_driver([TurnEndStep(cost_usd=0.01)])
 
-    result = await _supervise(root, driver, observer=probe.observer)
+    result = await run_supervised(root, driver, observer=probe.observer)
 
     assert (result.ended_by, result.end_reason, result.outcome.reason) == (
         "session",
@@ -122,7 +120,7 @@ async def test_supervise_when_injected_turn_end_arrives_while_reply_outstanding_
     ])
     probe = collecting_observer()
 
-    result = await _supervise(root, driver, observer=probe.observer)
+    result = await run_supervised(root, driver, observer=probe.observer)
 
     assert result.ended_by == "session"
     assert [e.action for e in events_of(probe.events, FollowUpEvent)] == ["replied", "ended"]
@@ -145,7 +143,7 @@ async def test_supervise_when_lock_held_does_wait_then_reply_with_the_after_wait
         TurnEndStep(cost_usd=0.01, origin="agent"),
     ])
 
-    result = await _supervise(
+    result = await run_supervised(
         root, driver, observer=lock.release_on_waiting(probe.observer), is_lock_held=lock.is_held
     )
 
@@ -175,7 +173,7 @@ async def test_supervise_when_lock_file_held_does_wait_until_released(root: str)
     # leaving supervision waiting on a lock nobody frees.
     async with asyncio.TaskGroup() as group:
         group.create_task(release_after_waiting())
-        result = await _supervise(root, driver, observer=watch, is_lock_held=None)
+        result = await run_supervised(root, driver, observer=watch, is_lock_held=None)
 
     assert result.ended_by == "session"
     assert "waiting" in watch.actions()
@@ -232,7 +230,7 @@ async def test_supervise_when_turn_end_arrives_while_waiting_on_the_lock_does_fo
         TurnEndStep(cost_usd=0.01),
     ])
 
-    result = await _supervise(
+    result = await run_supervised(
         root, driver, observer=watch, settle_window_ms=50, is_lock_held=lock.is_held
     )
     # Let the run's cancelled tasks finish unwinding, so only a leaked poll remains.
@@ -285,7 +283,7 @@ async def test_supervise_when_lock_retaken_during_the_poll_settle_does_wait_agai
     ])
 
     async with asyncio.timeout(FOLLOW_UP_TIMEOUT_S):
-        result = await _supervise(
+        result = await run_supervised(
             root, driver, observer=watch, is_lock_held=is_held_but_briefly_free_after_waiting
         )
 
@@ -328,7 +326,7 @@ async def test_supervise_when_a_guard_trips_does_end_as_guard_naming_it(
 ):
     driver = create_mock_driver(steps(root))
 
-    result = await _supervise(root, driver)
+    result = await run_supervised(root, driver)
 
     assert (result.ended_by, result.end_reason) == ("guard", end_reason)
 
@@ -380,7 +378,7 @@ async def test_supervise_when_agent_acts_while_a_reply_is_pending_does_cancel_it
         TurnEndStep(cost_usd=0.01, origin="agent"),
     ])
 
-    result = await _supervise(
+    result = await run_supervised(
         root,
         driver,
         observer=probe.observer,
@@ -418,7 +416,7 @@ async def test_supervise_when_a_passive_event_arrives_during_settle_does_still_r
         TurnEndStep(cost_usd=0.01, origin="agent"),
     ])
 
-    result = await _supervise(root, driver, observer=probe.observer, settle_window_ms=50)
+    result = await run_supervised(root, driver, observer=probe.observer, settle_window_ms=50)
 
     replied = follow_ups_with_action(probe.events, "replied")
     assert result.ended_by == "session"
@@ -491,7 +489,7 @@ async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_
     ])
     driver = InterruptEmitsEndDriver(inner)
 
-    await _supervise(
+    await run_supervised(
         root,
         driver,
         max_minutes=_WALL_CLOCK_MAX_MINUTES,
@@ -512,12 +510,12 @@ async def test_supervise_when_cap_ends_session_during_settle_window_does_not_rep
     root: str, supervisor_clock: SupervisorClock
 ):
     probe = collecting_observer()
-    driver = _WrapDriver(
+    driver = WrapDriver(
         create_mock_driver([TurnEndStep(cost_usd=0.01)]),
         lambda session, _abort: SlowEndSession(session, 400),
     )
 
-    result = await _supervise(
+    result = await run_supervised(
         root,
         driver,
         observer=supervisor_clock.jump_on(TurnEndEvent, probe.observer),
