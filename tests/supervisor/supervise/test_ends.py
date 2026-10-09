@@ -56,10 +56,9 @@ from tests.supervisor._fixtures import (
     collecting_observer,
     driver_calls,
     emit_turn_end,
-    events_log_path,
+    event_log_markers,
     events_of,
     follow_ups_with_action,
-    read_log_lines,
     sent_texts,
 )
 from tests.supervisor._mock_driver import (
@@ -164,20 +163,6 @@ def _tool_end(tool_use_id: str = "t1", tool_name: str = "Bash") -> EmitStep:
     )
 
 
-def _event_log_markers(root: str) -> list[str]:
-    """Label each logged event as ``tool_end:<id>``, ``follow_up:<action>:<reason>``, or its type."""
-    markers: list[str] = []
-    for line in read_log_lines(events_log_path(root)):
-        match line["type"]:
-            case "tool_end":
-                markers.append(f"tool_end:{line['tool_use_id']}")
-            case "follow_up":
-                markers.append(f"follow_up:{line['action']}:{line.get('reason')}")
-            case other:
-                markers.append(str(other))
-    return markers
-
-
 def _ended_markers(markers: list[str]) -> list[str]:
     return [marker for marker in markers if marker.startswith("follow_up:ended:")]
 
@@ -252,7 +237,7 @@ async def test_supervise_when_condition_lands_before_tool_end_does_end_run_after
 
     result = await _supervise(root, driver, config=benchless_config(stop=case.stop))
 
-    markers = _event_log_markers(root)
+    markers = event_log_markers(root)
     ended = _ended_markers(markers)
     assert result.ended_by == case.ended_by
     assert result.end_reason == case.reason
@@ -556,7 +541,7 @@ async def test_supervise_when_lock_held_at_detection_does_end_at_first_tool_end_
 
     result = await _supervise(root, driver, is_lock_held=lock.is_held)
 
-    markers = _event_log_markers(root)
+    markers = event_log_markers(root)
     ended = _ended_markers(markers)
     assert result.ended_by == "hook-failure"
     assert result.outcome.reason == "interrupted"
@@ -619,7 +604,7 @@ async def test_supervise_when_end_pending_at_injected_turn_end_with_reply_outsta
 
     assert result.ended_by == "hook-failure"
     assert result.outcome.reason == "interrupted"
-    assert ("end", None) not in driver.sessions[0].calls
+    assert "end" not in driver_calls(driver.sessions[0])
 
 
 # ---------------------------------------------------------------------------
@@ -643,7 +628,7 @@ async def test_supervise_when_condition_end_already_fired_does_not_detect_at_lat
     result = await _supervise(root, driver, grace_ms=200)
 
     assert result.end_reason == _FAILED_HOOK_REASON
-    assert _ended_markers(_event_log_markers(root)) == [f"follow_up:ended:{_FAILED_HOOK_REASON}"]
+    assert _ended_markers(event_log_markers(root)) == [f"follow_up:ended:{_FAILED_HOOK_REASON}"]
 
 
 async def test_supervise_when_cap_already_fired_does_not_detect_at_later_tool_end(root: str):
@@ -668,7 +653,7 @@ async def test_supervise_when_cap_already_fired_does_not_detect_at_later_tool_en
     result = await _supervise(root, driver, observer=note_cap, max_usd=1.0)
 
     assert result.ended_by == "spend-cap"
-    assert f"follow_up:ended:{_FAILED_HOOK_REASON}" not in _event_log_markers(root)
+    assert f"follow_up:ended:{_FAILED_HOOK_REASON}" not in event_log_markers(root)
 
 
 def _hook_failure_pending_from_tool_end(

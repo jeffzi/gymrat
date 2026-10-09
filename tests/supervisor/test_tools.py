@@ -7,11 +7,12 @@ import json
 import os
 import pathlib
 import sys
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, create_autospec
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from claude_agent_sdk import McpSdkServerConfig
     from mcp.types import CallToolResult
@@ -321,33 +322,41 @@ def _block_first_call(fake_exec: AsyncMock) -> asyncio.Future[ExecResult]:
     return blocker
 
 
-async def test_iterate_when_a_call_is_running_does_refuse_the_concurrent_one(
-    host: ToolHost,
-    fake_exec: AsyncMock,
-) -> None:
+@dataclass(frozen=True)
+class _BusyHost:
+    host: ToolHost
+    release: Callable[[], Awaitable[None]]
+
+
+@pytest.fixture
+async def busy_host(host: ToolHost, fake_exec: AsyncMock) -> AsyncIterator[_BusyHost]:
+    """A host with a ``probe`` call still running; teardown lets that call finish."""
     blocker = _block_first_call(fake_exec)
     first = asyncio.create_task(host.probe({}))
     await asyncio.sleep(0)
 
-    refused = await host.iterate({})
-    blocker.set_result(expected_result(stdout='{"ok": true}'))
-    await first
+    async def release() -> None:
+        if not blocker.done():
+            blocker.set_result(expected_result(stdout='{"ok": true}'))
+        await first
+
+    yield _BusyHost(host, release)
+    await release()
+
+
+async def test_iterate_when_a_call_is_running_does_refuse_the_concurrent_one(
+    busy_host: _BusyHost,
+) -> None:
+    refused = await busy_host.host.iterate({})
 
     _assert_busy(refused)
 
 
-async def test_probe_when_concurrent_refused_does_not_leave_host_busy(
-    host: ToolHost,
-    fake_exec: AsyncMock,
-) -> None:
-    blocker = _block_first_call(fake_exec)
-    first = asyncio.create_task(host.probe({}))
-    await asyncio.sleep(0)
-    await host.iterate({})
-    blocker.set_result(expected_result(stdout='{"ok": true}'))
-    await first
+async def test_probe_when_concurrent_refused_does_not_leave_host_busy(busy_host: _BusyHost) -> None:
+    await busy_host.host.iterate({})
+    await busy_host.release()
 
-    after = await host.probe({})
+    after = await busy_host.host.probe({})
 
     assert after["is_error"] is False
 

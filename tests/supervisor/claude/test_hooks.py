@@ -3,8 +3,9 @@
 The driver is exercised through an injected fake client (same pattern as
 ``test_claude.py``). Stub hooks and tools factories replace the real ones, so
 these tests verify that each factory is called once per session start with the
-session's context. What the factories build landing in the client options is
-pinned with the other forwarded options in ``test_claude.py``.
+session's context, and that the tools it builds are mounted on the client. The
+hooks landing in the client options, and both factories together, are pinned
+with the other forwarded options in ``test_claude.py``.
 """
 
 import asyncio
@@ -14,6 +15,8 @@ import pytest
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.driver import SessionPrompt
 from tests.supervisor._fixtures import (
+    _SENTINEL_SERVER,
+    TRACEPARENT,
     FiniteClient,
     HooksFactoryProbe,
     ToolsFactoryProbe,
@@ -38,26 +41,26 @@ async def test_start_when_hooks_given_does_call_factory_once_per_session():
     assert probe.calls == 2
 
 
-_TRACEPARENT = "00-abc123-def456-01"
-
-
 @pytest.mark.parametrize(
     ("prompt", "env"),
     [
         pytest.param(
-            make_prompt(traceparent=_TRACEPARENT),
-            {"GYMRAT_TRACEPARENT": _TRACEPARENT},
+            make_prompt(traceparent=TRACEPARENT),
+            {"GYMRAT_TRACEPARENT": TRACEPARENT},
             id="traceparent",
         ),
         pytest.param(make_prompt(), {}, id="no-traceparent"),
     ],
 )
-async def test_start_when_tools_given_does_build_them_from_the_session_context(
+async def test_start_when_tools_given_does_mount_them_built_from_the_session_context(
     prompt: SessionPrompt, env: dict[str, str]
 ):
+    client = FiniteClient([result_message()])
     probe = ToolsFactoryProbe()
     abort = asyncio.Event()
 
-    await run_outcome(FiniteClient([result_message()]), prompt=prompt, abort=abort, tools=probe)
+    await run_outcome(client, prompt=prompt, abort=abort, tools=probe)
 
     assert probe.calls == [(abort, env)]
+    assert client.options is not None
+    assert client.options["mcp_servers"] == {"gymrat": _SENTINEL_SERVER}

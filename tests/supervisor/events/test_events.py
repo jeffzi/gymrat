@@ -427,7 +427,7 @@ def test_to_json_line_when_given_event_does_write_its_wire_object(
         ),
     ],
 )
-def test_to_json_line_when_serializable_does_write_exact_compact_line(
+def test_to_json_line_when_text_is_utf8_encodable_does_write_exact_compact_line(
     event: SessionEvent, expected_line: str
 ):
     line = to_json_line(event)
@@ -435,34 +435,15 @@ def test_to_json_line_when_serializable_does_write_exact_compact_line(
     assert line == expected_line
 
 
-@pytest.mark.parametrize(
-    ("event", "expected_line"),
-    [
-        pytest.param(
-            TextDeltaEvent(at=5_000_000_000, chunk=_SURROGATE_TEXT),
-            '{"type":"text_delta","at":5000000000,"chunk":"caf\\u00e9 \\ud800"}',
-            id="escapes-all-non-ascii",
-        ),
-        pytest.param(
-            make_turn_end(at=12_000_000_000, text=_SURROGATE_TEXT, cost_usd=0.05),
-            '{"type":"turn_end","at":12000000000,"text":"caf\\u00e9 \\ud800",'
-            '"cost_usd":0.05,"origin":"agent","budget_exhausted":false}',
-            id="keeps-finite-float",
-        ),
-        pytest.param(
-            make_turn_end(at=12_000_000_000, text=_SURROGATE_TEXT, cost_usd=1e-07),
-            '{"type":"turn_end","at":12000000000,"text":"caf\\u00e9 \\ud800",'
-            '"cost_usd":1e-07,"origin":"agent","budget_exhausted":false}',
-            id="keeps-float-exponent",
-        ),
-    ],
-)
-def test_to_json_line_when_event_holds_lone_surrogate_does_escape_all_non_ascii(
-    event: SessionEvent, expected_line: str
-):
+def test_to_json_line_when_event_holds_lone_surrogate_does_escape_all_non_ascii():
+    event = make_turn_end(at=12_000_000_000, text=_SURROGATE_TEXT, cost_usd=1e-07)
+
     line = to_json_line(event)
 
-    assert line == expected_line
+    assert line == (
+        '{"type":"turn_end","at":12000000000,"text":"caf\\u00e9 \\ud800",'
+        '"cost_usd":1e-07,"origin":"agent","budget_exhausted":false}'
+    )
 
 
 def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write_null():

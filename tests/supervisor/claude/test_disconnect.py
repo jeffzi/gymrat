@@ -10,7 +10,7 @@ already cleared.
 import asyncio
 import contextlib
 import warnings
-from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Sequence
+from collections.abc import Awaitable, Callable, Generator, Sequence
 from typing import TypedDict, override
 
 import pytest
@@ -77,16 +77,10 @@ class _RacingClient(FakeClient):
         after_turn: Sequence[object] = (),
     ) -> None:
         super().__init__([*messages, *after_turn], fail_follow_up=fail_follow_up)
-        self._finite = finite
+        if finite:
+            # Released from the start, so the stream ends once the script is spent.
+            self._released.set()
         self._stream: _Stream | None = _Stream(self._released)
-
-    @override
-    async def receive_messages(self) -> AsyncIterator[object]:
-        for message in self.messages:
-            await asyncio.sleep(0)
-            yield message
-        if not self._finite:
-            await self._released.wait()
 
     @override
     async def disconnect(self) -> None:

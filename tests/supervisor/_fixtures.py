@@ -150,6 +150,10 @@ def read_log_lines(log_path: str | Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
+#: A W3C trace context a prompt can carry for the driver to hand the agent.
+TRACEPARENT = "00-abc123-def456-01"
+
+
 def make_prompt(
     *,
     kickoff: str = "do the thing",
@@ -766,6 +770,30 @@ class SupervisorClock:
 def events_log_path(root: str) -> Path:
     """The supervisor event log ``_supervise`` writes for the repository at ``root``."""
     return Path(root).parent / "events.jsonl"
+
+
+def event_log_markers(root: str) -> list[str]:
+    """Label each event ``_supervise`` logged for ``root``, in log order.
+
+    A ``tool_end`` line becomes ``tool_end:<id>``, a ``follow_up`` line becomes
+    ``follow_up:<action>:<reason>``, and every other line becomes its type.
+
+    Args:
+        root: The repository root ``_supervise`` ran against.
+
+    Returns:
+        One marker per logged event.
+    """
+    markers: list[str] = []
+    for line in read_log_lines(events_log_path(root)):
+        match line["type"]:
+            case "tool_end":
+                markers.append(f"tool_end:{line['tool_use_id']}")
+            case "follow_up":
+                markers.append(f"follow_up:{line['action']}:{line.get('reason')}")
+            case other:
+                markers.append(str(other))
+    return markers
 
 
 def lock_file_path(root: str) -> Path:

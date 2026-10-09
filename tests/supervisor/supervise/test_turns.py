@@ -55,11 +55,10 @@ from tests.supervisor._fixtures import (
     collecting_observer,
     driver_calls,
     emit_turn_end,
-    events_log_path,
+    event_log_markers,
     events_of,
     follow_ups_with_action,
     lock_file_path,
-    read_log_lines,
     sent_texts,
 )
 from tests.supervisor._mock_driver import (
@@ -96,12 +95,11 @@ async def test_supervise_when_turn_end_with_stop_record_does_log_a_finished_end(
     assert [(e.action, e.reason, e.text) for e in events_of(probe.events, FollowUpEvent)] == [
         ("ended", "finished", None)
     ]
-    lines = read_log_lines(events_log_path(root))
     assert [
-        (line["type"], line.get("action"), line.get("reason"))
-        for line in lines
-        if line["type"] in {"turn_end", "follow_up"}
-    ] == [("turn_end", None, None), ("follow_up", "ended", "finished")]
+        marker
+        for marker in event_log_markers(root)
+        if marker == "turn_end" or marker.startswith("follow_up:")
+    ] == ["turn_end", "follow_up:ended:finished"]
 
 
 # ---------------------------------------------------------------------------

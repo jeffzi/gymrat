@@ -196,13 +196,22 @@ def test_compose_kickoff_when_prompt_is_default_or_given_does_lead_the_kickoff_a
     result = compose_kickoff(config, prompt, experiment_worktree=experiment_path)
 
     trailing = result.kickoff.split("\n\n")[-1]
-    kickoff_lower = result.kickoff.lower()
     assert result.kickoff.startswith(opening)
     assert "session" in trailing.lower()
     assert "baseline" in trailing.lower()
     assert experiment_path in trailing
     assert "step" in trailing.lower()
     assert "runbook" in trailing.lower()
+
+
+def test_compose_kickoff_when_composed_does_leave_tool_guidance_out_of_the_kickoff(
+    tmp_path: Path,
+):
+    config = benchless_config(runbook=_write_runbook(tmp_path))
+
+    result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
+
+    kickoff_lower = result.kickoff.lower()
     assert "tool" not in kickoff_lower
     assert "`probe`" not in kickoff_lower
 

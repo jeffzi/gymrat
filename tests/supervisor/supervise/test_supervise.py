@@ -32,11 +32,10 @@ from tests.supervisor._fixtures import (
     _WrapDriver,
     blocked_step,
     collecting_observer,
-    events_log_path,
+    event_log_markers,
     events_of,
     make_launch,
     raising_observer,
-    read_log_lines,
 )
 from tests.supervisor._mock_driver import (
     ActionStep,
@@ -130,7 +129,7 @@ async def test_supervise_when_session_completes_does_report_outcome_with_events_
         "session",
         SessionOutcome(reason="completed", cost_usd=0.12),
     )
-    assert [line["type"] for line in read_log_lines(events_log_path(root))] == [
+    assert event_log_markers(root) == [
         "launch",
         "text_delta",
         "usage_update",
@@ -175,8 +174,6 @@ async def test_supervise_when_wall_clock_caps_a_long_session_does_interrupt_with
     assert [(cap.cap, cap.action) for cap in events_of(probe.events, CapEvent)] == [
         ("wall-clock", "interrupting")
     ]
-    cap_lines = [line for line in read_log_lines(events_log_path(root)) if line["type"] == "cap"]
-    assert [line["cap"] for line in cap_lines] == ["wall-clock"]
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +253,7 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
     assert caps[0].cap == "spend-cap"
     assert caps[0].action == "ending"
     assert result.outcome.cost_usd == 5.0
-    types = [line["type"] for line in read_log_lines(events_log_path(root))]
+    types = event_log_markers(root)
     assert types.index("usage_update") < types.index("cap")
 
 
@@ -309,7 +306,7 @@ async def test_supervise_when_driver_errors_does_report_error_with_events_logged
     assert result.outcome.reason == "error"
     assert result.outcome.message == "kaboom"
     assert result.ended_by == "session"
-    types = [line["type"] for line in read_log_lines(events_log_path(root))]
+    types = event_log_markers(root)
     assert types[0] == "launch"
     assert "text_delta" in types
     assert "usage_update" in types

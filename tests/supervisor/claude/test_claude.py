@@ -13,7 +13,6 @@ import json
 import math
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
 from operator import methodcaller
 from typing import override
 
@@ -45,10 +44,13 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
     UsageUpdateEvent,
 )
+from tests._clock import install_monotonic_clock
 from tests._imports import loaded_under, modules_loaded_after
+from tests._rich import Clock
 from tests.supervisor._fixtures import (
     _SENTINEL_HOOKS,
     _SENTINEL_SERVER,
+    TRACEPARENT,
     FactoryProbe,
     FakeClient,
     FiniteClient,
@@ -105,16 +107,21 @@ _DEFAULT_OPTIONS = {
     "env": _DEFAULT_ENV,
 }
 
-_TRACEPARENT = "00-abc123-def456-01"
-
 #: No hooks or tools factory: the session mounts neither.
 _NO_FACTORIES = (None, None)
+
+
+async def test_start_when_no_optional_input_given_does_pass_the_default_client_options():
+    client = FiniteClient([result_message()])
+
+    await run_outcome(client, prompt=make_prompt())
+
+    assert client.options == _DEFAULT_OPTIONS
 
 
 @pytest.mark.parametrize(
     ("prompt", "factories", "added"),
     [
-        pytest.param(make_prompt(), _NO_FACTORIES, {}, id="defaults"),
         pytest.param(
             make_prompt(cwd="/my/project"), _NO_FACTORIES, {"cwd": "/my/project"}, id="cwd"
         ),
@@ -154,9 +161,9 @@ _NO_FACTORIES = (None, None)
             make_prompt(max_budget_usd=5.0), _NO_FACTORIES, {"max_budget_usd": 5.0}, id="max-budget"
         ),
         pytest.param(
-            make_prompt(traceparent=_TRACEPARENT),
+            make_prompt(traceparent=TRACEPARENT),
             _NO_FACTORIES,
-            {"env": {**_DEFAULT_ENV, "GYMRAT_TRACEPARENT": _TRACEPARENT}},
+            {"env": {**_DEFAULT_ENV, "GYMRAT_TRACEPARENT": TRACEPARENT}},
             id="traceparent-under-its-own-name",
         ),
         pytest.param(
@@ -164,12 +171,6 @@ _NO_FACTORIES = (None, None)
             (HooksFactoryProbe, None),
             {"hooks": _SENTINEL_HOOKS},
             id="hooks",
-        ),
-        pytest.param(
-            make_prompt(),
-            (None, ToolsFactoryProbe),
-            {"mcp_servers": {"gymrat": _SENTINEL_SERVER}},
-            id="tools",
         ),
         pytest.param(
             make_prompt(),
@@ -194,7 +195,8 @@ async def test_start_when_session_inputs_given_does_forward_them_as_client_optio
         tools=tools() if tools is not None else None,
     )
 
-    assert client.options == _DEFAULT_OPTIONS | added
+    assert client.options is not None
+    assert {key: client.options[key] for key in added} == added
 
 
 # ---------------------------------------------------------------------------
@@ -230,27 +232,25 @@ async def test_start_when_tool_result_has_no_matching_start_does_use_fallback_fi
     assert ends[0].duration_ms == 0
 
 
-@dataclass(slots=True)
-class _FakeClocks:
-    """Mutable readings for the duration clock and the wall clock."""
-
-    monotonic_ms: float = 0.0
-    wall_ns: int = 0
-
-
 class _ClockedClient(FiniteClient):
     """A finite client that sets both fake clocks before yielding each message."""
 
-    def __init__(self, steps: Sequence[tuple[float, int, object]], clocks: _FakeClocks) -> None:
+    def __init__(
+        self,
+        steps: Sequence[tuple[float, int, object]],
+        monotonic: Clock[float],
+        wall_ns: Clock[int],
+    ) -> None:
         super().__init__([message for _, _, message in steps])
         self._steps = steps
-        self._clocks = clocks
+        self._monotonic = monotonic
+        self._wall_ns = wall_ns
 
     @override
     async def receive_messages(self) -> AsyncIterator[object]:
         for monotonic_ms, wall_ns, message in self._steps:
-            self._clocks.monotonic_ms = monotonic_ms
-            self._clocks.wall_ns = wall_ns
+            self._monotonic.now = monotonic_ms
+            self._wall_ns.now = wall_ns
             await asyncio.sleep(0)
             yield message
 
@@ -258,10 +258,10 @@ class _ClockedClient(FiniteClient):
 async def test_start_when_wall_clock_jumps_back_does_report_monotonic_tool_duration(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    clocks = _FakeClocks()
-    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: clocks.monotonic_ms)
-    monkeypatch.setattr("time.time_ns", lambda: clocks.wall_ns)
-    monkeypatch.setattr("time.time", lambda: clocks.wall_ns / 1_000_000_000)
+    monotonic = install_monotonic_clock(monkeypatch)
+    wall_ns = Clock(0)
+    monkeypatch.setattr("time.time_ns", wall_ns)
+    monkeypatch.setattr("time.time", lambda: wall_ns.now / 1_000_000_000)
     one_hour_ns = 3_600 * 1_000_000_000
     start_wall_ns = 1_700_000_000 * 1_000_000_000
     client = _ClockedClient(
@@ -277,7 +277,8 @@ async def test_start_when_wall_clock_jumps_back_does_report_monotonic_tool_durat
                 tool_results(ToolResultBlock(tool_use_id="tu_1", content="done")),
             ),
         ],
-        clocks,
+        monotonic,
+        wall_ns,
     )
     probe = collecting_observer()
 
