@@ -3,9 +3,10 @@
 Tests for the ``Live`` construction contract (rich's refresh timer at one frame
 per second rendering through ``get_renderable``, ``transient=True``, rich's
 stderr redirect left on), the single ``refresh()`` an event that changes state
-triggers, the skipped repaint for events that leave state unchanged, the repaint
-a session refresh triggers only when the re-read succeeds, and ``_stop_live``
-suppression scope (``OSError`` and a closed-stream ``ValueError`` only).
+triggers, the skipped repaint for events that leave state unchanged, the session
+refresh that re-reads the session, keeping the last good read when one fails and
+repainting only when the re-read succeeds, and ``_stop_live`` suppression scope
+(``OSError`` and a closed-stream ``ValueError`` only).
 
 The ``terminal`` fixture makes a sealed terminal console the dashboard's
 console and the process's stderr, with one line kept above the dashboard. The
@@ -163,21 +164,26 @@ def test_exit_phase_when_live_mode_and_phase_changes_does_repaint_once(mock_live
 
 
 @pytest.mark.parametrize(
-    ("reread", "expected_repaints"),
+    ("reread", "expected_session", "expected_repaints"),
     [
-        pytest.param(KEPT_READ, 1, id="reread"),
-        pytest.param(RuntimeError("session file unreadable"), 0, id="reread-fails"),
+        pytest.param(KEPT_READ, KEPT_READ, 1, id="reread"),
+        pytest.param(
+            RuntimeError("session file unreadable"), EMPTY_READ, 0, id="reread-fails-keeps-previous"
+        ),
     ],
 )
-def test_refresh_session_when_live_does_repaint_only_after_a_successful_reread(
-    mock_live_cls: MagicMock, reread: ReadSessionResult | Exception, expected_repaints: int
+def test_refresh_session_when_live_does_update_and_repaint_only_after_a_successful_reread(
+    mock_live_cls: MagicMock,
+    reread: ReadSessionResult | Exception,
+    expected_session: ReadSessionResult,
+    expected_repaints: int,
 ):
     kit = _launched_live(read_session=Mock(side_effect=[EMPTY_READ, reread]))
     repaints = _repaints_from_now(mock_live_cls)
 
     kit.reporter.refresh_session()
 
-    assert repaints() == expected_repaints
+    assert (kit.reporter.session_result(), repaints()) == (expected_session, expected_repaints)
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 import pytest
-from rich.panel import Panel
+from rich.box import ROUNDED
 from rich.style import Style
 
 from gymrat.cli.style import STYLE_LABEL, STYLE_META
@@ -41,7 +41,7 @@ from tests.session.records._fixtures import (
 )
 
 if TYPE_CHECKING:
-    from rich.console import RenderableType
+    from rich.segment import Segment
 
     from gymrat.cli.supervise.progress import SuperviseReporter
 
@@ -50,42 +50,41 @@ if TYPE_CHECKING:
 # helpers
 # ---------------------------------------------------------------------------
 
+# The panel's border rows open on these corners; every other row is content.
+_TOP_LEFT = ROUNDED.top_left
+_BOTTOM_LEFT = ROUNDED.bottom_left
 
-def _panel(reporter: SuperviseReporter) -> Panel:
-    """Return the reporter's current frame, which must be a panel.
-
-    Args:
-        reporter: The reporter whose current frame is returned.
-
-    Returns:
-        The frame.
-
-    Raises:
-        TypeError: When the frame is not a panel.
-    """
-    panel = reporter.frame()
-    if not isinstance(panel, Panel):
-        msg = f"frame is a {type(panel).__name__}, not a Panel"
-        raise TypeError(msg)
-    return panel
+# Rich lays the panel's border style under its title, so the label keeps its own
+# style on top of the border's.
+_RENDERED_LABEL_STYLE = str(Style.parse(STYLE_META) + Style.parse(STYLE_LABEL))
 
 
-def _styles_of(renderable: RenderableType, token: str) -> list[str]:
-    """The styles of the segments holding *token*, rendered through a color-enabled console."""
-    console = color_console()
+def _is_border(line: list[Segment], corner: str) -> bool:
+    """Whether a rendered *line* is the panel border row that opens on *corner*."""
+    return "".join(segment.text for segment in line).startswith(corner)
+
+
+def _styles_of(lines: list[list[Segment]], token: str) -> list[str]:
+    """The styles of the segments of *lines* holding *token*, ``"none"`` when unstyled."""
     return [
         str(segment.style or Style.null())
-        for line in console.render_lines(renderable, console.options)
+        for line in lines
         for segment in line
         if token in segment.text
     ]
 
 
+def _frame_lines(reporter: SuperviseReporter) -> list[list[Segment]]:
+    """The reporter's current frame as rendered lines, through a color-enabled console."""
+    console = color_console()
+    return console.render_lines(reporter.frame(), console.options)
+
+
 def _segment_style(reporter: SuperviseReporter, token: str) -> str:
     """Return the style of the one rendered content segment whose text holds *token*.
 
-    Renders the panel's inner content, so the border styling stays out of the
-    result, through a color-enabled console at the frame width.
+    The panel's top and bottom border rows are left out, so the title and
+    border styling stay out of the result.
 
     Args:
         reporter: The reporter whose current frame is rendered.
@@ -97,7 +96,12 @@ def _segment_style(reporter: SuperviseReporter, token: str) -> str:
     Raises:
         AssertionError: When no segment, or more than one, holds *token*.
     """
-    styles = _styles_of(_panel(reporter).renderable, token)
+    content = [
+        line
+        for line in _frame_lines(reporter)
+        if not _is_border(line, _TOP_LEFT) and not _is_border(line, _BOTTOM_LEFT)
+    ]
+    styles = _styles_of(content, token)
     if len(styles) != 1:
         msg = f"expected one segment holding {token!r}, found {len(styles)}"
         raise AssertionError(msg)
@@ -113,15 +117,9 @@ def _title_styles(reporter: SuperviseReporter, token: str) -> set[str]:
 
     Returns:
         Each distinct segment style as rich spells it, ``"none"`` when unstyled.
-
-    Raises:
-        TypeError: When the panel has no title.
     """
-    title = _panel(reporter).title
-    if title is None:
-        msg = "the frame panel has no title"
-        raise TypeError(msg)
-    return set(_styles_of(title, token))
+    title_rows = [line for line in _frame_lines(reporter) if _is_border(line, _TOP_LEFT)]
+    return set(_styles_of(title_rows, token))
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +133,11 @@ def test_panel_title_when_rendered_does_set_the_label_apart_from_its_dim_connect
 
     styles = {token: _title_styles(kit.reporter, token) for token in ("supervise", "·", "session")}
 
-    assert styles == {"supervise": {STYLE_LABEL}, "·": {STYLE_META}, "session": {STYLE_META}}
+    assert styles == {
+        "supervise": {_RENDERED_LABEL_STYLE},
+        "·": {STYLE_META},
+        "session": {STYLE_META},
+    }
 
 
 # ---------------------------------------------------------------------------

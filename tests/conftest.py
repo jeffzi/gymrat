@@ -37,7 +37,7 @@ from gymrat.signals import reset as signals_reset
 from gymrat.telemetry.provider import reset_tracing
 from tests._exec_fixtures import recorded_spawns
 from tests._git import head_of, init_scratch_repo, list_worktree_dirs
-from tests._lock import remove_lock_files
+from tests._lock import held_supervise_lock, remove_lock_files
 
 #: Names a test may inherit from the launching shell, value unchanged. An
 #: allowlisted name the shell does not export stays absent. ``PATH`` and
@@ -82,12 +82,15 @@ PINNED_ENV = {
 
 
 def _live_environ() -> dict[str, str]:
-    """Return the process's real environment block.
+    """Read the environment a child process inherits.
 
     ``os.environ`` is a snapshot taken at interpreter start, and native code can
     write the real environment behind it: pytest imports ``readline`` before any
     ``pytest_configure``, and GNU readline then exports ``LINES`` and
     ``COLUMNS``. A child inherits the real block, so it reports those names too.
+
+    Returns:
+        The process's real environment block, as a fresh child reports it.
     """
     probe = "import json, os; print(json.dumps(dict(os.environ)))"
     output = subprocess.run(  # noqa: S603 -- argv is sys.executable with a fixed probe, not shell-injected
@@ -332,6 +335,9 @@ def _remove_stranded_worktrees(repo_dir: str) -> None:
     left to list, so the repository is skipped rather than failing teardown for
     every repository after it. Starting git in the vanished directory fails with
     ``FileNotFoundError`` on POSIX and ``NotADirectoryError`` on Windows.
+
+    Args:
+        repo_dir: The scratch repository whose registered worktrees are removed.
     """
     try:
         stranded = list_worktree_dirs(repo_dir, include_main=False)
@@ -370,6 +376,25 @@ def repo(create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
     root = create_scratch_repo()
     monkeypatch.chdir(root)
     return root
+
+
+@pytest.fixture
+def root(tmp_path: Path) -> Iterator[str]:
+    """A fake repo root with the .gymrat session directory, its lock files removed at teardown."""
+    session = tmp_path / ".gymrat"
+    session.mkdir()
+    yield str(tmp_path)
+    remove_lock_files(str(tmp_path))
+
+
+@pytest.fixture
+def supervise_lock(root: str, request: pytest.FixtureRequest) -> Iterator[None]:
+    """Hold the real supervise lock for ``root``, unless the test parametrizes it ``False``."""
+    if getattr(request, "param", True):
+        with held_supervise_lock(root):
+            yield
+    else:
+        yield
 
 
 @pytest.fixture

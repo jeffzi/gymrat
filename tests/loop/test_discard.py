@@ -20,7 +20,7 @@ from gymrat.loop.discard import discard_session
 from gymrat.loop.keep import keep_session
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
 from gymrat.session.records import IterationRecord, KeepRecord, SessionLogRecord
-from tests._git import head_of, run_git, status_of
+from tests._git import commit_all, head_of, status_of
 from tests.loop._settle import (
     assert_settling_record,
     checks_config,
@@ -156,9 +156,7 @@ async def test_discard_session_when_keep_committed_then_agent_committed_does_res
     kept_commit = keep_result.record.commit
     worktree = experiment_worktree_dir(repo)
     append_records(repo, iteration_record(seq=2))
-    (Path(worktree) / "post-keep.txt").write_text("after keep\n", encoding="utf-8")
-    run_git(["add", "-A"], worktree)
-    run_git(["commit", "-m", "agent commit after keep"], worktree)
+    commit_all(worktree, "agent commit after keep", file="post-keep.txt", content="after keep\n")
 
     discard_session(repo)
 

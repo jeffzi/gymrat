@@ -51,6 +51,7 @@ from tests.supervisor._fixtures import (
     _supervise,
     _WrapDriver,
     append_step,
+    blocked_step,
     collecting_observer,
     driver_calls,
     emit_turn_end,
@@ -63,7 +64,6 @@ from tests.supervisor._fixtures import (
 )
 from tests.supervisor._mock_driver import (
     ActionStep,
-    CostStep,
     EmitStep,
     MockStep,
     TurnEndStep,
@@ -489,7 +489,7 @@ async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_
     inner = create_mock_driver([
         first_step,
         supervisor_clock.jump_step(supervisor_clock.deadline_ms, after=state_reached),
-        CostStep(cost_usd=0.01, delay_ms=60_000),
+        blocked_step(),
     ])
     driver = InterruptEmitsEndDriver(inner)
 

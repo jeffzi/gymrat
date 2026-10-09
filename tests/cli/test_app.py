@@ -35,10 +35,9 @@ from tests.cli._session import (
     FailingStdoutRunner,
     disk_full_error,
     leave_as_is,
-    open_probe_session,
+    open_stubbed_probe_session,
     open_unedited_session,
     runner,
-    stub_probe_measure,
 )
 
 DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
@@ -279,12 +278,6 @@ def _real_doctor_text(_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_doctor(monkeypatch, stub_text=False)
 
 
-def _open_for_probe(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open a session with a recorded baseline and stub the measurement engine."""
-    open_probe_session(repo)
-    stub_probe_measure(monkeypatch)
-
-
 def _open_unedited_session(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     """Open a session with one unsettled iteration and checks, and edit nothing, so keep refuses."""
     open_unedited_session(repo)
@@ -295,7 +288,7 @@ def _open_unedited_session(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     [
         pytest.param(["doctor", "--color"], _real_doctor_text, 0, id="doctor"),
         pytest.param(["init", "--bench", "npm run bench", "--color"], leave_as_is, 0, id="init"),
-        pytest.param(["probe", "--color"], _open_for_probe, 0, id="probe"),
+        pytest.param(["probe", "--color"], open_stubbed_probe_session, 0, id="probe"),
         pytest.param(["keep", "--color"], _open_unedited_session, 1, id="keep-refusing"),
     ],
 )

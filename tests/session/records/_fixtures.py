@@ -372,6 +372,25 @@ def records_of_type(
     return [record for record in log_records(root) if isinstance(record, record_type) is matching]
 
 
+def last_command_record(root: str) -> CommandRecord:
+    """Read the session log and return the last ``CommandRecord``.
+
+    Args:
+        root: The repository whose session log is read.
+
+    Returns:
+        The last command record in the log.
+
+    Raises:
+        AssertionError: The log holds no command record.
+    """
+    for record in reversed(log_records(root)):
+        if isinstance(record, CommandRecord):
+            return record
+    msg = "no CommandRecord found in session log"
+    raise AssertionError(msg)
+
+
 def session_header_of(root: str) -> SessionRecord:
     """The session header ``root``'s log opens with, failing when there is none."""
     records = log_records(root)

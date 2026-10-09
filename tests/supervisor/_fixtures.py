@@ -61,6 +61,7 @@ from gymrat.supervisor.events import (
     LaunchEvent,
     SessionEvent,
     SessionObserver,
+    TextDeltaEvent,
     TurnEndEvent,
     UsageUpdateEvent,
 )
@@ -83,6 +84,9 @@ SESSION_TIMEOUT_S = 30.0
 
 #: How long a test waits for a follow-up before failing instead of hanging.
 FOLLOW_UP_TIMEOUT_S = 5
+
+#: A step delay long enough that only an end or a cap, never the script, cuts it short.
+_BLOCKED_MS = 60_000
 
 #: The line a reply closes on when the agent's last command was still running.
 WAIT_FINISHED_LINE = (
@@ -329,7 +333,9 @@ class FakeClient:
     ``asyncio.sleep(0)`` handshake so an observer-scheduled interrupt or an
     abort lands deterministically between messages.  After the scripted
     messages, the stream blocks until ``disconnect`` releases it, mirroring
-    the real SDK whose ``receive_messages`` iterator never terminates.
+    the real SDK whose ``receive_messages`` iterator never terminates.  With
+    ``fail_follow_up``, every ``query`` after the kickoff raises
+    ``RuntimeError("connection lost")``.
     """
 
     def __init__(
@@ -337,9 +343,11 @@ class FakeClient:
         messages: Sequence[object],
         *,
         throw: Exception | None = None,
+        fail_follow_up: bool = False,
     ) -> None:
         self.messages = messages
         self.throw = throw
+        self.fail_follow_up = fail_follow_up
         self.options: dict[str, object] | None = None
         self.query_prompts: list[str] = []
         self.interrupt_called = False
@@ -350,6 +358,9 @@ class FakeClient:
         return None
 
     async def query(self, prompt: str) -> None:
+        if self.fail_follow_up and self.query_prompts:
+            message = "connection lost"
+            raise RuntimeError(message)
         self.query_prompts.append(prompt)
 
     async def receive_messages(self) -> AsyncIterator[object]:
@@ -536,6 +547,11 @@ def emit_turn_end(
     return EmitStep(emit=make_turn_end(cost_usd=cost_usd, origin=origin))
 
 
+def blocked_step() -> EmitStep:
+    """Build a script tail that only an end or a cap can cut short."""
+    return EmitStep(emit=TextDeltaEvent(at=now_ns(), chunk="late"), delay_ms=_BLOCKED_MS)
+
+
 #: The MCP server config a stubbed tools or hooks factory hands back, so a test
 #: can find it again in the client options.
 _SENTINEL_SERVER: dict[str, str] = {"type": "stdio", "command": "fake"}
@@ -578,6 +594,7 @@ class _WrapDriver:
 
     ``make_session`` receives the inner driver's session and the abort event,
     and returns the session the supervisor sees; by default the inner one.
+    ``abort`` and ``observer`` fail the test when the driver never started.
     """
 
     def __init__(
@@ -587,9 +604,23 @@ class _WrapDriver:
     ) -> None:
         self._inner = inner
         self._make_session = make_session
-        self.captured_abort: asyncio.Event | None = None
-        self.captured_observer: SessionObserver | None = None
+        self._abort: asyncio.Event | None = None
+        self._observer: SessionObserver | None = None
         self.session: DriverSession | None = None
+
+    @property
+    def abort(self) -> asyncio.Event:
+        """The abort event the supervisor handed the driver."""
+        if self._abort is None:
+            pytest.fail("the driver never started, so no abort event was captured")
+        return self._abort
+
+    @property
+    def observer(self) -> SessionObserver:
+        """The observer the supervisor handed the driver."""
+        if self._observer is None:
+            pytest.fail("the driver never started, so no observer was captured")
+        return self._observer
 
     def start(
         self,
@@ -597,8 +628,8 @@ class _WrapDriver:
         observer: SessionObserver,
         abort: asyncio.Event,
     ) -> DriverSession:
-        self.captured_abort = abort
-        self.captured_observer = observer
+        self._abort = abort
+        self._observer = observer
         self.session = self._make_session(self._inner.start(prompt, observer, abort), abort)
         return self.session
 
@@ -851,6 +882,23 @@ async def end_and_settle(session: DriverSession) -> SessionOutcome:
     """
     await session.end()
     return await settled_outcome(session)
+
+
+def abort_on_first_usage_update(abort: asyncio.Event) -> SessionObserver:
+    """Build an observer that sets ``abort`` on the first usage update it receives.
+
+    Args:
+        abort: The session's abort event.
+
+    Returns:
+        The observer to start the session with.
+    """
+
+    def observer(event: SessionEvent) -> None:
+        if isinstance(event, UsageUpdateEvent):
+            abort.set()
+
+    return observer
 
 
 async def run_interrupting_on_first_usage_update(client: FakeClient) -> SessionOutcome:

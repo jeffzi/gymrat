@@ -22,6 +22,7 @@ from gymrat.sampling import TargetSpec
 from gymrat.utils import warn_to_stderr
 from tests._git import (
     EMIT_ONE_BENCH,
+    FAILING_BENCH,
     create_in_place_target_dir,
     list_worktree_dirs,
     write_committed_bench,
@@ -116,9 +117,6 @@ async def test_measure_when_config_overrides_given_does_apply_them_to_the_result
 # ---------------------------------------------------------------------------
 
 
-_FAIL = "#!/bin/sh\nexit 1\n"
-
-
 def _e2e_options(target: str) -> MeasureOptions:
     return MeasureOptions(
         run=run_options(samples=2, bench="sh bench.sh", prepare=None, timeout_seconds=30.0),
@@ -156,7 +154,7 @@ async def test_measure_when_ref_target_does_bench_in_a_disposable_worktree(
 async def test_measure_when_bench_fails_does_fail_with_nothing_on_disk(
     repo: str,
 ):
-    write_committed_bench(repo, _FAIL)
+    write_committed_bench(repo, FAILING_BENCH)
 
     with pytest.raises(CommandError, match=r'^bench command failed \("'):
         await measure(_e2e_options("HEAD"))

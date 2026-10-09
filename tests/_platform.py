@@ -17,3 +17,5 @@ needs_symlinks = pytest.mark.skipif(
 needs_posix_worktrees = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only worktrees and gating"
 )
+
+needs_named_pipes = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only named pipes")

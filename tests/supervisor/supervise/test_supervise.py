@@ -11,14 +11,12 @@ stay deterministic under ``pytest-randomly`` and ``pytest-xdist``.
 import asyncio
 import time
 from collections.abc import Awaitable, Callable, Coroutine
-from pathlib import Path
 from typing import override
 from unittest.mock import create_autospec
 
 import pytest
 
 from gymrat.clock import monotonic_ms
-from gymrat.session.paths import lockfile_path
 from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
     CapEvent,
@@ -26,19 +24,17 @@ from gymrat.supervisor.events import (
     SessionObserver,
     TextDeltaEvent,
 )
-from gymrat.supervisor.supervise import supervise
 from tests.supervisor._fixtures import (
     DelegatingSession,
     SlowEndSession,
     SupervisorClock,
     _supervise,
     _WrapDriver,
+    blocked_step,
     collecting_observer,
     events_log_path,
     events_of,
-    make_context,
     make_launch,
-    make_prompt,
     read_log_lines,
 )
 from tests.supervisor._mock_driver import (
@@ -169,43 +165,27 @@ async def test_supervise_when_session_spans_time_does_report_duration_from_monot
 
 
 async def test_supervise_when_wall_clock_caps_a_long_session_does_interrupt_with_one_wall_clock_cap(
-    tmp_path: Path,
+    root: str,
 ):
-    root = str(tmp_path)
     probe = collecting_observer()
     # A single step delayed far past the cap, so the wall-clock cap always wins.
-    driver = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
-    log_path = tmp_path / "supervisor-events.jsonl"
+    driver = create_mock_driver([blocked_step()])
 
-    result = await supervise(
-        driver=driver,
-        prompt=make_prompt(cwd=root),
-        context=make_context(
-            root=root, lock_path=lockfile_path(root), max_minutes=0.001, log_path=str(log_path)
-        ),
-        launch=make_launch(max_minutes=0.001),
-        observer=probe.observer,
-        grace_ms=50,
+    result = await _supervise(
+        root, driver, max_minutes=0.001, observer=probe.observer, grace_ms=50, is_lock_held=None
     )
 
     assert (result.ended_by, result.outcome.reason) == ("wall-clock", "interrupted")
     assert [(cap.cap, cap.action) for cap in events_of(probe.events, CapEvent)] == [
         ("wall-clock", "interrupting")
     ]
-    cap_lines = [line for line in read_log_lines(log_path) if line["type"] == "cap"]
+    cap_lines = [line for line in read_log_lines(events_log_path(root)) if line["type"] == "cap"]
     assert [line["cap"] for line in cap_lines] == ["wall-clock"]
 
 
 # ---------------------------------------------------------------------------
 # grace fallback
 # ---------------------------------------------------------------------------
-
-
-def _abort_of(wrapper: _WrapDriver) -> asyncio.Event:
-    """The abort event ``wrapper`` captured, failing the test if the driver never started."""
-    if wrapper.captured_abort is None:
-        pytest.fail("the driver never started, so no abort event was captured")
-    return wrapper.captured_abort
 
 
 def _abort_bound_driver() -> tuple[_WrapDriver, list[float]]:
@@ -218,7 +198,7 @@ def _abort_bound_driver() -> tuple[_WrapDriver, list[float]]:
     aborted_at: list[float] = []
 
     async def wait_for_abort() -> None:
-        await _abort_of(wrapper).wait()
+        await wrapper.abort.wait()
         aborted_at.append(time.perf_counter())
 
     wrapper = _WrapDriver(create_mock_driver([ActionStep(action=wait_for_abort)]))
@@ -232,7 +212,7 @@ async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(root
 
     def observer(event: SessionEvent) -> None:
         if isinstance(event, CapEvent):
-            at_cap.append((time.perf_counter(), _abort_of(wrapper).is_set()))
+            at_cap.append((time.perf_counter(), wrapper.abort.is_set()))
 
     result = await asyncio.wait_for(
         _supervise(
@@ -344,7 +324,7 @@ async def test_supervise_when_driver_errors_does_report_error_with_events_logged
 # ---------------------------------------------------------------------------
 
 
-#: Far under the mock step's 60 s delay, so only the grace abort can end the run in time.
+#: Far under the blocked step's delay, so only the grace abort can end the run in time.
 _GRACE_RECOVERY_TIMEOUT_S = 5
 
 
@@ -360,7 +340,7 @@ async def test_supervise_when_interrupt_fails_does_recover_via_grace_with_a_warn
     capsys: pytest.CaptureFixture[str],
     make_session: Callable[[DriverSession], DriverSession],
 ):
-    inner = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
+    inner = create_mock_driver([blocked_step()])
     driver = _WrapDriver(inner, lambda session, _abort: make_session(session))
 
     async with asyncio.timeout(_GRACE_RECOVERY_TIMEOUT_S):
@@ -469,7 +449,7 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(root: str)
         slow_session = _SlowInterruptSession(inner)
         return slow_session
 
-    inner = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
+    inner = create_mock_driver([blocked_step()])
     driver = _WrapDriver(inner, wrap)
 
     result = await _supervise(
@@ -499,7 +479,7 @@ async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
     # deadline would leave the run waiting a real minute.
     driver = create_mock_driver([
         supervisor_clock.jump_step(supervisor_clock.deadline_ms),
-        CostStep(cost_usd=0.01, delay_ms=60_000),
+        blocked_step(),
     ])
 
     result = await _supervise(

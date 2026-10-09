@@ -42,7 +42,6 @@ from tests._doctor_fixtures import single_check_report
 from tests._lock import FIXED_HOLDER_AT, hold_lock
 from tests.cli._session import (
     close_session_with_one_keep,
-    last_command_record,
     make_discard_repo,
 )
 from tests.cli.supervise._fixtures import (
@@ -55,6 +54,7 @@ from tests.session.records._fixtures import (
     committed_keep,
     finalize_record,
     iteration_record,
+    last_command_record,
     records_of_type,
     session_header_of,
     tear_final_line,

@@ -11,7 +11,6 @@ when the file is already gone.
 """
 
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -26,7 +25,6 @@ from gymrat.session.budget import (
 )
 from gymrat.session.paths import budget_path
 from gymrat.session.records import SessionLogRecord
-from tests._lock import held_supervise_lock
 from tests.session.records._fixtures import baseline_record, iteration_record
 
 _FAR_FUTURE_DEADLINE_MS = 999_999_999.0
@@ -88,16 +86,6 @@ def test_write_budget_when_called_does_write_compact_json_bytes(root: str):
 # ---------------------------------------------------------------------------
 # read_budget
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def supervise_lock(root: str, request: pytest.FixtureRequest) -> Iterator[None]:
-    """Hold the real supervise lock for ``root``, unless the test parametrizes it ``False``."""
-    if getattr(request, "param", True):
-        with held_supervise_lock(root):
-            yield
-    else:
-        yield
 
 
 _WRITTEN = _make_budget(deadline_ms=5000.0)

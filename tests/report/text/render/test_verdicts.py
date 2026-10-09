@@ -25,7 +25,7 @@ from gymrat.report.style import format_hint
 from gymrat.report.text.render import footer_lines, render_report, select_highlights
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn, ReportOptions
 from gymrat.targets import WorktreeRemovalFailure
-from tests._ansi import sgr_codes, strip_ansi
+from tests._ansi import strip_ansi
 from tests.report._assertions import (
     cells_of,
     delta_cell,
@@ -371,7 +371,7 @@ def test_footer_lines_when_colored_does_dim_the_descriptive_verdict_line():
         line for line in _verbose_lines(metrics) if "permutation" in render_plain(line)
     )
 
-    assert "2" in sgr_codes(render_colored(verdict_line))
+    assert styles_at(render_colored(verdict_line), "verdicts:") == ["2"]
 
 
 def test_footer_lines_when_verbose_does_close_on_the_sample_shortage_hint():
@@ -552,10 +552,14 @@ def test_render_report_when_methods_differ_does_name_each_with_its_pair_counts()
 def test_render_report_when_cleanup_removed_everything_cleanly_does_suppress_the_footer():
     result = create_comparison_result(worktrees_removed=3, worktrees_left_behind=[])
 
-    output = render_report(result)
+    footer = render_report(result).split("\n\n")[-1].split("\n")
 
-    assert "worktree" not in output
-    assert "left behind" not in output
+    assert footer == [
+        (
+            "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   "
+            "= 0 identical   ~ 0 within noise   ? 0 inconclusive"
+        ),
+    ]
 
 
 @pytest.mark.parametrize(

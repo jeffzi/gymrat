@@ -17,13 +17,20 @@ import pytest
 from gymrat.errors import GymratError
 from gymrat.loop.sync import sync_to_experiment
 from gymrat.session.paths import experiment_worktree_dir
-from tests._git import run_git
+from tests._git import commit_all, run_git
 
 
 def _tree_snapshot(root: str) -> dict[str, bytes | str | None]:
-    # Maps every path under root to its bytes (file), link target (symlink) or
-    # None (directory), so two snapshots compare equal only for identical trees.
-    # The worktree's own `.git` pointer file is not part of the synced content.
+    """Snapshot the tree under ``root``, so two snapshots compare equal only for identical trees.
+
+    Args:
+        root: The directory walked. The worktree's own `.git` pointer file is
+            skipped: it is not part of the synced content.
+
+    Returns:
+        Every path under ``root`` mapped to its bytes (file), link target
+        (symlink) or ``None`` (directory).
+    """
     snapshot: dict[str, bytes | str | None] = {}
     for path in sorted(Path(root).rglob("*")):
         relative = path.relative_to(root).as_posix()
@@ -331,8 +338,7 @@ def _rename_source_is_directory(session_repo: str) -> str:
     run_git(["rm", "README.md"], experiment)
     (Path(experiment) / "README.md").mkdir()
     (Path(experiment) / "README.md" / "inner.txt").write_text("inside\n", encoding="utf-8")
-    run_git(["add", "README.md"], experiment)
-    run_git(["commit", "-m", "replace file with directory"], experiment)
+    commit_all(experiment, "replace file with directory")
     return "README.md"
 
 

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -184,15 +185,25 @@ def _session_log_schema() -> dict[str, Any]:
     return SESSION_LOG_ADAPTER.json_schema()
 
 
-def test_json_schema_when_generated_does_type_null_only_on_the_delta_pct_fields():
-    defs = _session_log_schema()["$defs"]
-
-    nullable = {
+def _schema_fields_where(predicate: Callable[[dict[str, Any]], bool]) -> set[tuple[str, str]]:
+    return {
         (model, field)
-        for model, definition in defs.items()
+        for model, definition in _session_log_schema()["$defs"].items()
         for field, prop in definition.get("properties", {}).items()
-        if prop.get("type") == "null" or {"type": "null"} in prop.get("anyOf", [])
+        if predicate(prop)
     }
+
+
+def _is_nullable(prop: dict[str, Any]) -> bool:
+    return prop.get("type") == "null" or {"type": "null"} in prop.get("anyOf", [])
+
+
+def _lacks_description(prop: dict[str, Any]) -> bool:
+    return "description" not in prop
+
+
+def test_json_schema_when_generated_does_type_null_only_on_the_delta_pct_fields():
+    nullable = _schema_fields_where(_is_nullable)
 
     assert nullable == {("IterationPrimary", "delta_pct"), ("MetricVerdict", "delta_pct")}
 
@@ -203,16 +214,9 @@ def test_json_schema_when_generated_does_type_null_only_on_the_delta_pct_fields(
 
 
 def test_json_schema_when_generated_does_carry_descriptions_on_every_field():
-    defs = _session_log_schema()["$defs"]
+    missing = _schema_fields_where(_lacks_description)
 
-    missing = [
-        f"{model}.{field}"
-        for model, definition in defs.items()
-        for field, prop in definition.get("properties", {}).items()
-        if "description" not in prop
-    ]
-
-    assert not missing, f"Fields without description: {missing}"
+    assert missing == set()
 
 
 # ---------------------------------------------------------------------------

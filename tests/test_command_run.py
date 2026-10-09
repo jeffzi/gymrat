@@ -8,6 +8,7 @@ of the CLI package.
 
 import asyncio
 import contextlib
+import itertools
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
@@ -65,9 +66,9 @@ def _broken_append(path: str, record: object) -> None:
     raise GymratError(msg)
 
 
-def _last_command_record() -> CommandRecord:
-    """Read the current session log and return its last record, asserted to be a command."""
-    cmd = log_records(repo_root())[-1]
+def _closing_command_record(root: str) -> CommandRecord:
+    """Return the final record of ``root``'s session log, failing unless it is a command record."""
+    cmd = log_records(root)[-1]
     assert isinstance(cmd, CommandRecord)
     return cmd
 
@@ -248,7 +249,7 @@ async def test_with_repo_lock_when_body_succeeds_does_append_its_command_record(
 ):
     _seeded_session(repo)
     frozen_ns = 1_000_000_000
-    monotonic_readings = iter([100.0, 350.0])
+    monotonic_readings = itertools.chain([100.0], itertools.repeat(350.0))
     for name in ("GYMRAT_COMMAND_ORIGIN", "TRACEPARENT", "GYMRAT_TRACEPARENT"):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
@@ -258,7 +259,7 @@ async def test_with_repo_lock_when_body_succeeds_does_append_its_command_record(
 
     await with_repo_lock("measure", _ok_body, args=args)
 
-    cmd = _last_command_record()
+    cmd = _closing_command_record(repo_root())
     assert (cmd.name, cmd.exit_code, cmd.reason, cmd.at, cmd.duration_ms) == (
         "measure",
         0,
@@ -372,7 +373,7 @@ async def test_with_repo_lock_when_body_ends_does_record_its_exit_code_and_reaso
     with pytest.raises(raised) if raised is not None else contextlib.nullcontext():
         await with_repo_lock("iterate", body)
 
-    cmd = _last_command_record()
+    cmd = _closing_command_record(repo_root())
     assert (cmd.exit_code, cmd.reason) == recorded
 
 
@@ -393,7 +394,7 @@ async def test_with_repo_lock_when_body_sets_seq_does_record_it(
     with pytest.raises(raised) if raised is not None else contextlib.nullcontext():
         await with_repo_lock("iterate", body)
 
-    assert _last_command_record().seq == 7
+    assert _closing_command_record(repo_root()).seq == 7
 
 
 # ---------------------------------------------------------------------------
@@ -496,10 +497,9 @@ async def test_with_repo_lock_when_root_given_does_operate_on_that_repo_not_the_
 
     result = await with_repo_lock("measure", body, args={"samples": 5}, root=target_repo)
 
-    cmd = log_records(target_repo)[-1]
+    cmd = _closing_command_record(target_repo)
     assert result == "ran"
     assert seen == {"log": intact_log, "held": (True, False)}
-    assert isinstance(cmd, CommandRecord)
     assert (cmd.name, cmd.args) == ("measure", {"samples": 5})
     assert log_records(cwd_repo) == [cwd_header]
 

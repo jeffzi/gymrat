@@ -26,7 +26,7 @@ from gymrat.measure import MeasureOptions
 from gymrat.progress_events import ProgressEvent
 from gymrat.report.types import ComparisonResult, MeasurementResult
 from gymrat.session.paths import experiment_worktree_dir
-from gymrat.session.records import CommandRecord, SessionLogRecord, SessionRecord
+from gymrat.session.records import SessionLogRecord, SessionRecord
 from tests._config import resolved_config
 from tests._git import commit_all
 from tests._streams import RaisingStream
@@ -45,7 +45,6 @@ from tests.session.records._fixtures import (
     baseline_record,
     committed_keep,
     iteration_record,
-    log_records,
     session_header_of,
     session_record,
     write_session_log,
@@ -258,6 +257,12 @@ def stub_probe_measure(
     return install_measure(monkeypatch, measurement(adapter="metric-lines"), progress=progress)
 
 
+def open_stubbed_probe_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open a probe-ready session and stub the measurement engine: an arrange-table row."""
+    open_probe_session(repo)
+    stub_probe_measure(monkeypatch)
+
+
 def start_edited_session(
     root: str,
     history: tuple[SessionLogRecord, ...] = (iteration_record(seq=1),),
@@ -300,26 +305,6 @@ def close_session_with_one_keep(root: str) -> str:
     header = open_session_with_one_keep(root)
     finalize_session(root)
     return header.session_id
-
-
-def last_command_record(root: str) -> CommandRecord:
-    """Read the session log and return the last ``CommandRecord``.
-
-    Args:
-        root: The repository whose session log is read.
-
-    Returns:
-        The last command record in the log.
-
-    Raises:
-        AssertionError: The log holds no command record.
-    """
-    records = log_records(root)
-    for record in reversed(records):
-        if isinstance(record, CommandRecord):
-            return record
-    msg = "no CommandRecord found in session log"
-    raise AssertionError(msg)
 
 
 def write_bench_config(root: str, **extra: object) -> None:

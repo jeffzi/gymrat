@@ -253,16 +253,12 @@ def test_start_span_when_no_span_key_does_use_random_span_id():
 class _ShutdownFailingSpanProcessor(SpanProcessor):
     """Span processor whose flushes time out and whose first ``shutdown`` raises.
 
-    The first shutdown records what :func:`export_failed` and
-    :func:`session_span_dropped` report while it runs, which tells whether the
-    module state was cleared before the shutdown began.
     Later shutdowns are no-ops so the provider's ``atexit`` handler — left
     registered when the first shutdown raises — stays quiet at interpreter exit.
     """
 
     def __init__(self) -> None:
         self._shut_down = False
-        self.flags_during_shutdown: tuple[bool, bool] | None = None
 
     @override
     def force_flush(self, timeout_millis: int = 30000) -> bool:
@@ -273,36 +269,31 @@ class _ShutdownFailingSpanProcessor(SpanProcessor):
         if self._shut_down:
             return
         self._shut_down = True
-        self.flags_during_shutdown = (export_failed(), session_span_dropped())
         msg = "exporter shutdown failed"
         raise RuntimeError(msg)
 
 
-def _configure_with_failing_shutdown(
-    monkeypatch: pytest.MonkeyPatch,
-) -> _ShutdownFailingSpanProcessor:
+def _configure_with_failing_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
     """Configure tracing on a failing-shutdown processor, with export and session-drop flags set."""
     arm_placeholder_endpoint(monkeypatch)
-    processor = _ShutdownFailingSpanProcessor()
-    configure_tracing(SESSION, span_processor=processor)
+    configure_tracing(SESSION, span_processor=_ShutdownFailingSpanProcessor())
     flush_tracing()
     # An unsampled parent makes the default parent-based sampler drop the session span.
     unsampled = NonRecordingSpan(
         SpanContext(trace_id=1, span_id=1, is_remote=True, trace_flags=TraceFlags(0))
     )
     start_span(SESSION_SPAN, span_key=SESSION_SPAN_KEY, context=set_span_in_context(unsampled))
-    return processor
 
 
 def test_reset_tracing_when_shutdown_raises_does_propagate_with_flags_cleared(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    processor = _configure_with_failing_shutdown(monkeypatch)
+    _configure_with_failing_shutdown(monkeypatch)
 
     with pytest.raises(RuntimeError, match="shutdown failed"):
         reset_tracing()
 
-    assert processor.flags_during_shutdown == (False, False)
+    assert (export_failed(), session_span_dropped()) == (False, False)
 
 
 def test_configure_tracing_when_previous_reset_raised_does_configure_afresh(

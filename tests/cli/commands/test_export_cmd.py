@@ -119,6 +119,7 @@ def test_export_when_tracer_records_nothing_does_exit_two_without_reporting_expo
 
     with otlp_collector() as collector:
         monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
+
         result = runner.invoke(app, ["export", session_log])
 
     output = _output(result)
@@ -318,6 +319,7 @@ def test_export_when_endpoint_padded_does_send_spans_to_trimmed_endpoint(
     with otlp_collector() as collector:
         padded = f"  {collector.endpoint} "
         args = _endpoint_args(monkeypatch, source, padded)
+
         result = runner.invoke(app, ["export", session_log, *args])
 
     success_lines = [line for line in result.stderr.splitlines() if line.startswith("exported ")]
@@ -339,6 +341,7 @@ def test_export_when_final_session_line_is_torn_utf8_does_skip_only_that_line(
 
     with otlp_collector() as collector:
         env[ENDPOINT_ENV] = collector.endpoint
+
         result = run_cli(
             ["export", session_log],
             tmp_path,
@@ -407,6 +410,7 @@ def test_export_when_collector_rejects_a_batch_does_exit_two_naming_endpoint(
 
     with otlp_collector(statuses=[400]) as collector:
         monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
+
         result = runner.invoke(app, ["export", session_log])
 
     output = _output(result)
@@ -433,6 +437,7 @@ def test_export_when_no_session_log_argument_does_use_repo_session_path(
 
     with otlp_collector() as collector:
         monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
+
         result = runner.invoke(app, ["export"])
 
     assert result.exit_code == 0, _output(result)
@@ -489,6 +494,7 @@ def test_export_when_supervisor_log_not_a_launch_of_this_session_does_skip_it_si
 
     with otlp_collector() as collector:
         monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
+
         result = runner.invoke(app, ["export", session_log])
 
     assert result.exit_code == 0, _output(result)
@@ -539,6 +545,7 @@ def test_export_when_supervisor_log_unreadable_does_skip_it_with_a_warning(
 
     with otlp_collector() as collector:
         monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
+
         result = runner.invoke(app, ["export", session_log])
 
     warning_lines = [line for line in result.stderr.splitlines() if line.startswith("warning: ")]

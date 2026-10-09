@@ -35,7 +35,6 @@ from gymrat.cli.supervise.types import (
     Thinking,
     Waiting,
 )
-from gymrat.session.records import IterationPrimary
 from gymrat.supervisor.events import (
     CompactionEvent,
     TextDeltaEvent,
@@ -61,7 +60,6 @@ from tests.session.records._fixtures import (
     SUPERVISED_SESSION_ID,
     empty_session_state,
     finalize_record,
-    iteration_record,
     make_iteration,
     session_state,
 )
@@ -95,16 +93,11 @@ def make_state(**changes: Any) -> ReporterState:
 
 def loop_session() -> SessionState:
     """A session with two iterations, one kept and one discarded, last regressed."""
-    return replace(
-        empty_session_state(),
+    return session_state(
         iteration_count=2,
         keep_count=1,
         discard_count=1,
-        last_iteration=iteration_record(
-            seq=1,
-            primary=IterationPrimary(kind="geomean", delta_pct=3.2),
-            outcome="regressed",
-        ),
+        last_iteration=make_iteration(3.2, "regressed"),
     )
 
 
@@ -903,13 +896,7 @@ def test_plain_line_when_no_session_has_been_read_does_not_return_the_loop_line(
             id="unsettled",
         ),
         pytest.param(
-            session_state(
-                iteration_count=3,
-                keep_count=2,
-                discard_count=1,
-                last_iteration=make_iteration(-5.0, "improved"),
-                finalized=finalize_record(),
-            ),
+            replace(session_state_three_iterations(-5.0, "improved"), finalized=finalize_record()),
             True,
             None,
             "3 iterations · finalized",

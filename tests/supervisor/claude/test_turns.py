@@ -8,7 +8,6 @@ termination — never from a result message alone.
 import math
 from collections.abc import Awaitable, Callable, Sequence
 from operator import methodcaller
-from typing import override
 
 import pytest
 from claude_agent_sdk import MessageOrigin, ResultMessage, TextBlock
@@ -37,17 +36,6 @@ from tests.supervisor._fixtures import (
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-class _FailingFollowUpClient(FakeClient):
-    """A client whose every ``query`` after the kickoff raises."""
-
-    @override
-    async def query(self, prompt: str) -> None:
-        if self.query_prompts:
-            message = "connection lost"
-            raise RuntimeError(message)
-        await super().query(prompt)
 
 
 async def _run_turns(messages: Sequence[object]) -> list[SessionEvent]:
@@ -195,7 +183,7 @@ async def test_send_when_called_does_forward_text_to_client_query():
 
 async def test_send_when_client_query_fails_does_settle_error_with_its_message():
     session, _ = await start_past_turns(
-        _FailingFollowUpClient([result_message(total_cost_usd=0.01)]), turns=1
+        FakeClient([result_message(total_cost_usd=0.01)], fail_follow_up=True), turns=1
     )
 
     await session.send("follow up message")
@@ -228,7 +216,7 @@ async def test_end_when_called_does_settle_completed_at_the_running_cost():
         pytest.param(methodcaller("end"), id="end"),
     ],
 )
-async def test_start_when_settled_by_an_error_result_does_ignore_later_session_calls(
+async def test_send_or_end_when_session_settled_by_an_error_result_does_nothing(
     call: Callable[[DriverSession], Awaitable[None]],
 ):
     result = result_message(subtype="error", is_error=True, result="fatal", total_cost_usd=0.10)

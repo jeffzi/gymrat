@@ -20,13 +20,11 @@ relies on real ``SIGKILL`` delivery and a named pipe to start a race together.
 """
 
 import json
-import sys
 from pathlib import Path
-
-import pytest
 
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import read_records
+from tests._platform import needs_named_pipes
 from tests._process_helpers import reaped, spawn_child_script, wait_for_file_blocking
 from tests.hardening._barrier import CHILD_BARRIER, racing_children
 from tests.session.records._fixtures import (
@@ -36,9 +34,7 @@ from tests.session.records._fixtures import (
     session_record,
 )
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX-only signals and named pipes"
-)
+pytestmark = needs_named_pipes
 
 # A child that appends a session header and ``clean_count`` small keeps, signals
 # it is ready, then appends one final keep whose message is huge. The huge

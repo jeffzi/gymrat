@@ -544,6 +544,9 @@ def reporter_with_nested_read() -> ReporterKit:
 
     The Bash call starts at 1500 ms, the nested Read at 2000 ms, and the clock
     stands at 5000 ms.
+
+    Returns:
+        The reporter together with the clock that drives it.
     """
     kit = make_reporter()
     fire_launch_and_bash_start(kit.reporter.observer)

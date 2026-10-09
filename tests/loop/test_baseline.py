@@ -14,6 +14,7 @@ from gymrat.config import KindEntry, MetricEntry
 from gymrat.loop.baseline import measure_baseline
 from gymrat.sampling import TargetSpec
 from gymrat.session.records import BaselineRecord
+from tests._clock import install_monotonic_clock
 from tests._pipeline import run_options
 from tests.loop._probe import install_measure, only_call
 from tests.report._measurements import create_measurement_result
@@ -55,9 +56,8 @@ def test_measure_baseline_when_target_label_differs_does_return_the_measurement_
 ):
     rounds: list[dict[str, float]] = [{"latency": 41}, {"latency": 43}]
     handed_back = create_measurement_result(label="build", rounds=rounds)
-    recorder = install_measure(monkeypatch, handed_back)
-    ticks = iter([1_000.0, 1_500.0])
-    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
+    clock = install_monotonic_clock(monkeypatch)
+    recorder = install_measure(monkeypatch, handed_back, on_call=lambda: clock.tick(500.0))
     stamp_ns = 1_700_000_000_123_456_789
     monkeypatch.setattr("gymrat.loop.baseline.now_ns", lambda: stamp_ns)
     target = TargetSpec(label="release", target="main")

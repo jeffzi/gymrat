@@ -14,19 +14,17 @@ case attaches stdout to a real pty, so the module is POSIX-only.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
-from tests._ansi import strip_ansi
-from tests._cli import ENTRY as _ENTRY
+from tests._ansi import SGR_RE, strip_ansi
 from tests._cli import run_cli
-from tests._git import EMIT_ONE_BENCH
+from tests._git import BENCH_ONCE_FLAGS, EMIT_ONE_BENCH
 from tests._git import write_committed_bench as _write_committed_bench
-from tests._process_helpers import reaped
+from tests.cli._signalled_cli import spawned_gymrat
 from tests.hardening._pty import pty_capture
 
 if TYPE_CHECKING:
@@ -70,19 +68,20 @@ def _run_report_on_pty(args: list[str], repo: str) -> tuple[int, str, str]:
     Returns:
         The exit code, the captured stderr, and the text drawn on the pty.
     """
-    with pty_capture() as terminal:
-        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list, not shell-injected
-            [*_ENTRY, *args],
-            cwd=repo,
+    with (
+        pty_capture() as terminal,
+        spawned_gymrat(
+            args,
+            repo,
             env=_neutral_env(),
             stdin=subprocess.DEVNULL,
             stdout=terminal.slave,
-            stderr=subprocess.PIPE,
+            text=False,
             start_new_session=True,
             close_fds=True,
-        )
-        with reaped(proc):
-            _, stderr = proc.communicate(timeout=120)
+        ) as proc,
+    ):
+        _, stderr = proc.communicate(timeout=120)
     return proc.returncode, stderr.decode("utf-8", "replace"), terminal.output
 
 
@@ -94,13 +93,9 @@ def _run_report_on_pty(args: list[str], repo: str) -> tuple[int, str, str]:
 @pytest.mark.parametrize(
     ("args", "title"),
     [
+        pytest.param(["measure", *BENCH_ONCE_FLAGS], "gymrat measure", id="measure"),
         pytest.param(
-            ["measure", "--bench", "sh bench.sh", "--samples", "1"], "gymrat measure", id="measure"
-        ),
-        pytest.param(
-            ["compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
-            "gymrat compare",
-            id="compare",
+            ["compare", "main", "candidate", *BENCH_ONCE_FLAGS], "gymrat compare", id="compare"
         ),
     ],
 )
@@ -114,7 +109,7 @@ def test_report_when_stdout_is_a_real_tty_does_render_styled(
 
     assert returncode == 0, stderr
     assert title in strip_ansi(output)
-    assert re.search(r"\x1b\[[0-9;]*m", output)
+    assert SGR_RE.search(output)
 
 
 def test_measure_report_when_stdout_is_redirected_does_render_plain(
@@ -124,7 +119,7 @@ def test_measure_report_when_stdout_is_redirected_does_render_plain(
     _write_committed_bench(repo, EMIT_ONE_BENCH)
 
     result = run_cli(
-        ["measure", "--bench", "sh bench.sh", "--samples", "1"],
+        ["measure", *BENCH_ONCE_FLAGS],
         repo,
         check=False,
         timeout=120,
@@ -151,7 +146,7 @@ def test_measure_when_no_color_flag_does_not_leak_no_color_into_the_bench_env(
     env["GYMRAT_TEST_PROBE"] = str(probe)
 
     result = run_cli(
-        ["measure", "--no-color", "--bench", "sh bench.sh", "--samples", "1"],
+        ["measure", "--no-color", *BENCH_ONCE_FLAGS],
         repo,
         check=False,
         timeout=120,

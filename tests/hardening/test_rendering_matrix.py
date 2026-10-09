@@ -13,7 +13,6 @@ public rendering surfaces in process and run everywhere.
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 from unittest.mock import create_autospec
 
@@ -28,6 +27,7 @@ from gymrat.git import NotAGitRepositoryError
 from gymrat.report.style import render_lines
 from gymrat.report.types import DEFAULT_REPORT_OPTIONS
 from gymrat.session.paths import repo_root
+from tests._ansi import SGR_RE
 from tests._doctor_fixtures import doctor_report
 from tests._streams import FakeStream
 
@@ -36,10 +36,6 @@ if TYPE_CHECKING:
 
     from gymrat.report.json_doc import BudgetSummary
     from gymrat.report.types import ReportOptions
-
-# A Select Graphic Rendition sequence: color and text attributes, as opposed to
-# the cursor control a live display also writes.
-_SGR = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _render_probe_text(result: str, options: ReportOptions) -> str:
@@ -127,7 +123,7 @@ def _progress_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
     reporter = begin_run(SharedFlags(), 1)
     reporter.stop()
 
-    return _SGR.search(stderr.getvalue()) is not None
+    return SGR_RE.search(stderr.getvalue()) is not None
 
 
 def _error_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:

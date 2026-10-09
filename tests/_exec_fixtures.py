@@ -9,6 +9,7 @@ import sys
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -248,7 +249,7 @@ RUNNERS = [
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ExecRecorder:
-    """A stand-in for ``exec`` that records its calls and answers with a fixed result.
+    """The calls a stand-in for ``exec`` received and the fixed result it answers with.
 
     Attributes:
         result: What every call returns.
@@ -260,7 +261,16 @@ class ExecRecorder:
     result: ExecResult | ExecTimeoutError
     calls: list[tuple[str, ExecOptions]] = dataclasses.field(default_factory=list)
 
-    async def __call__(self, command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:
+    async def record(self, command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:
+        """Record one call and answer it.
+
+        Args:
+            command: The shell command line ``exec`` was asked to run.
+            options: The options it was handed.
+
+        Returns:
+            The recorder's fixed result.
+        """
         self.calls.append((command, options))
         return self.result
 
@@ -268,7 +278,10 @@ class ExecRecorder:
 def install_exec(
     monkeypatch: pytest.MonkeyPatch, target: str, result: ExecResult | ExecTimeoutError
 ) -> ExecRecorder:
-    """Replace the ``exec`` a module calls with a recorder answering ``result``.
+    """Replace the ``exec`` a module calls with a stand-in answering ``result``.
+
+    The stand-in carries the real ``exec`` signature, so a call the real one
+    would reject fails the test.
 
     Args:
         monkeypatch: Patches ``target`` for the duration of the test.
@@ -277,8 +290,8 @@ def install_exec(
         result: What every call returns.
 
     Returns:
-        The recorder now standing in for ``exec``.
+        The recorder holding the calls the stand-in received.
     """
     recorder = ExecRecorder(result)
-    monkeypatch.setattr(target, recorder)
+    monkeypatch.setattr(target, create_autospec(run_exec, side_effect=recorder.record))
     return recorder

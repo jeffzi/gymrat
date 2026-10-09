@@ -12,19 +12,19 @@ pinned there for measure.
 
 import re
 from collections.abc import Callable
+from unittest.mock import create_autospec
 
 import pytest
 
 from gymrat.cli.app import app
 from gymrat.errors import GymratError
-from gymrat.measure import MeasureOptions
+from gymrat.measure import MeasureOptions, measure
 from gymrat.report.types import MeasurementResult
 from gymrat.sampling import TargetSpec
 from gymrat.session.records import BaselineRecord, CommandRecord
 from tests._clock import install_monotonic_clock
 from tests.cli._session import (
     capture_measure,
-    last_command_record,
     open_session,
     runner,
     stub_measure,
@@ -32,6 +32,7 @@ from tests.cli._session import (
 )
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
+    last_command_record,
     records_of_type,
     session_record,
 )
@@ -181,7 +182,9 @@ def test_measure_when_record_does_write_duration_ms_to_baseline(
         clock.tick(500.0)
         return measured
 
-    monkeypatch.setattr("gymrat.measure.measure", measure_for_half_a_second)
+    monkeypatch.setattr(
+        "gymrat.measure.measure", create_autospec(measure, side_effect=measure_for_half_a_second)
+    )
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
 
@@ -237,7 +240,9 @@ def test_measure_when_bench_fails_does_record_trace_with_exit_two_error(
         msg = "bench exploded"
         raise GymratError(msg)
 
-    monkeypatch.setattr("gymrat.measure.measure", failing_measure)
+    monkeypatch.setattr(
+        "gymrat.measure.measure", create_autospec(measure, side_effect=failing_measure)
+    )
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
 

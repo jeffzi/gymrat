@@ -33,12 +33,13 @@ from gymrat import signals
 from gymrat.exec import FAILURE_EXIT_CODE, ExecOptions, ExecResult
 from gymrat.exec import exec as run_exec
 from gymrat.supervisor.claude import create_claude_driver
-from gymrat.supervisor.events import SessionEvent, SessionObserver, UsageUpdateEvent
+from gymrat.supervisor.events import SessionObserver
 from tests._process_helpers import wait_for_file
 from tests.supervisor._fixtures import (
     FactoryProbe,
     FakeClient,
     FiniteClient,
+    abort_on_first_usage_update,
     collecting_observer,
     make_prompt,
     result_message,
@@ -117,16 +118,6 @@ def _never_abort(_abort: asyncio.Event) -> SessionObserver:
     return collecting_observer().observer
 
 
-def _abort_on_usage(abort: asyncio.Event) -> SessionObserver:
-    """An observer that fires the abort on the first cost update, mid-read."""
-
-    def observer(event: SessionEvent) -> None:
-        if isinstance(event, UsageUpdateEvent):
-            abort.set()
-
-    return observer
-
-
 @pytest.mark.parametrize(
     ("make_client", "observer_for", "reason"),
     [
@@ -140,7 +131,7 @@ def _abort_on_usage(abort: asyncio.Event) -> SessionObserver:
             # The stream hangs after the cost update, so the abort is what unblocks it:
             # the watch task starts, fires, then teardown cancels it on the settle path.
             lambda: FakeClient([result_message(total_cost_usd=0.1)]),
-            _abort_on_usage,
+            abort_on_first_usage_update,
             "interrupted",
             id="abort-fires-mid-read",
         ),

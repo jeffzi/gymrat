@@ -4,6 +4,7 @@ from collections.abc import Callable
 from functools import partial
 from importlib import resources
 from importlib.resources.abc import Traversable
+from pathlib import Path
 from typing import NoReturn
 from unittest.mock import create_autospec
 
@@ -24,10 +25,8 @@ def _assert_reinstall_error(error: GymratError, cause_type: type[BaseException])
     assert isinstance(error.__cause__, cause_type)
 
 
-def _install_package_root(monkeypatch: pytest.MonkeyPatch, resource: Traversable) -> None:
-    """Make the package-data lookup resolve every path to ``resource``."""
-    root = create_autospec(Traversable, instance=True)
-    root.joinpath.return_value = resource
+def _install_package_root(monkeypatch: pytest.MonkeyPatch, root: Traversable) -> None:
+    """Make the package-data lookup answer with ``root`` as the package root."""
 
     def package_root(_package: str) -> Traversable:
         return root
@@ -40,45 +39,72 @@ def _install_package_root(monkeypatch: pytest.MonkeyPatch, resource: Traversable
 # ---------------------------------------------------------------------------
 
 
-def _missing_file() -> Traversable:
-    """A package-data path that resolves but holds no file."""
-    return resources.files("gymrat") / "skills" / "gymrat" / "does-not-exist.md"
+def _skill_path(package_root: Path) -> Path:
+    """Where the skill file sits under a package root on disk."""
+    return package_root / "skills" / "gymrat" / "SKILL.md"
 
 
-def _failing_read(error: Exception) -> Callable[[], Traversable]:
-    """Build a factory for a resolved resource whose read raises ``error``."""
+def _missing_file(package_root: Path) -> tuple[Traversable, Traversable]:
+    """Build a real package root that holds no skill file.
 
-    def build() -> Traversable:
-        resource = create_autospec(Traversable, instance=True)
-        resource.read_text.side_effect = error
-        return resource
+    Args:
+        package_root: Empty directory standing in for the installed package.
 
-    return build
+    Returns:
+        The package root and the skill file location under it.
+    """
+    return package_root, _skill_path(package_root)
+
+
+def _undecodable_file(package_root: Path) -> tuple[Traversable, Traversable]:
+    """Build a real package root whose skill file is not valid UTF-8.
+
+    Args:
+        package_root: Empty directory standing in for the installed package.
+
+    Returns:
+        The package root and the skill file location under it.
+    """
+    skill = _skill_path(package_root)
+    skill.parent.mkdir(parents=True)
+    skill.write_bytes(b"\xff")
+    return package_root, skill
+
+
+def _corrupt_archive(_package_root: Path) -> tuple[Traversable, Traversable]:
+    """Build a package root inside an archive that fails on read.
+
+    Every traversal from the root, by ``joinpath`` or by ``/``, lands on the one resource.
+
+    Args:
+        _package_root: Unused; an archive has no directory on disk.
+
+    Returns:
+        The same resource twice: it is its own root and its own resolved location.
+    """
+    resource = create_autospec(Traversable, instance=True)
+    resource.joinpath.return_value = resource
+    resource.__truediv__.return_value = resource
+    resource.read_text.side_effect = zipfile.BadZipFile("Bad magic number")
+    return resource, resource
 
 
 @pytest.mark.parametrize(
-    ("build_resource", "cause_type"),
+    ("build_package", "cause_type"),
     [
         pytest.param(_missing_file, FileNotFoundError, id="missing-file"),
-        pytest.param(
-            _failing_read(UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")),
-            UnicodeDecodeError,
-            id="bad-encoding",
-        ),
-        pytest.param(
-            _failing_read(zipfile.BadZipFile("Bad magic number")),
-            zipfile.BadZipFile,
-            id="corrupt-archive",
-        ),
+        pytest.param(_undecodable_file, UnicodeDecodeError, id="bad-encoding"),
+        pytest.param(_corrupt_archive, zipfile.BadZipFile, id="corrupt-archive"),
     ],
 )
 def test_read_bundled_skill_when_read_fails_does_raise_naming_the_resolved_location(
-    build_resource: Callable[[], Traversable],
+    build_package: Callable[[Path], tuple[Traversable, Traversable]],
     cause_type: type[BaseException],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ):
-    resource = build_resource()
-    _install_package_root(monkeypatch, resource)
+    root, resource = build_package(tmp_path)
+    _install_package_root(monkeypatch, root)
 
     with pytest.raises(GymratError) as caught:
         read_bundled_skill()

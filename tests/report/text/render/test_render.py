@@ -53,8 +53,10 @@ def test_render_report_when_header_override_given_does_replace_the_compare_heade
 
     output = render_report(result, ReportOptions(header="iteration 3 · experiment vs baseline"))
 
-    assert strip_ansi(output).split("\n")[0] == "iteration 3 · experiment vs baseline"
-    assert "gymrat compare" not in strip_ansi(output)
+    assert strip_ansi(output).split("\n")[:2] == [
+        "iteration 3 · experiment vs baseline",
+        "metric                      │ main         │ perf/faster-decode │ vs main",
+    ]
 
 
 # ---------------------------------------------------------------------------

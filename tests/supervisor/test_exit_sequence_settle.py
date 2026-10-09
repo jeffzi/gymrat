@@ -21,7 +21,7 @@ import pytest
 
 from gymrat.exec import exec as exec_command
 from gymrat.session.paths import experiment_worktree_dir
-from gymrat.session.records import CommandRecord, DiscardRecord, KeepChecks, KeepRecord
+from gymrat.session.records import DiscardRecord, KeepChecks, KeepRecord
 from gymrat.session.workspace import worktree_fingerprint
 from gymrat.supervisor.exit_sequence import ExitStep
 from tests._exec_fixtures import (
@@ -47,6 +47,7 @@ from tests.session.records._fixtures import (
     command_record,
     hook_record,
     iteration_record,
+    last_command_record,
     records_of_type,
 )
 from tests.supervisor._exit_sequence import (
@@ -262,7 +263,7 @@ async def test_run_exit_sequence_when_the_checks_fail_does_leave_the_iteration_f
         ),
     )
     assert status_of(experiment_worktree_dir(repo)) != ""
-    command = records_of_type(repo, CommandRecord)[-1]
+    command = last_command_record(repo)
     assert (command.exit_code, command.reason, command.seq) == (1, "checks-failed", 1)
 
 
@@ -278,7 +279,7 @@ async def test_run_exit_sequence_when_the_agent_committed_nothing_does_report_it
     assert run.report.steps[0] == ExitStep(
         kind="settled", text="settled: iteration 1 had nothing to commit"
     )
-    command = records_of_type(repo, CommandRecord)[-1]
+    command = last_command_record(repo)
     assert (command.exit_code, command.reason, command.seq) == (0, None, 1)
 
 

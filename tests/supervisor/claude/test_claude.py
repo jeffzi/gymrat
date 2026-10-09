@@ -640,7 +640,7 @@ async def test_start_when_building_or_streaming_the_client_raises_does_resolve_e
 # ---------------------------------------------------------------------------
 
 
-async def test_start_when_interrupted_before_connect_does_resolve_interrupted_without_sending_kickoff():
+async def test_interrupt_when_called_before_connect_does_resolve_interrupted_without_sending_kickoff():
     client = FakeClient([result_message(total_cost_usd=0.10)])
     probe = collecting_observer()
     session = start_claude_session(
@@ -663,7 +663,7 @@ async def test_start_when_interrupted_before_connect_does_resolve_interrupted_wi
         pytest.param(methodcaller("interrupt"), id="then-interrupt"),
     ],
 )
-async def test_start_when_stopped_again_after_interrupt_before_connect_does_keep_the_first_outcome(
+async def test_end_or_interrupt_when_already_interrupted_before_connect_does_keep_the_first_outcome(
     stop_again: Callable[[DriverSession], Awaitable[None]],
 ):
     client = FakeClient([result_message(total_cost_usd=0.10)])

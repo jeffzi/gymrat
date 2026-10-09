@@ -77,9 +77,8 @@ def other_kind(
 ) -> KindAggregate:
     """The single-kind ``other`` aggregate every default here describes.
 
-    It gates, holds no groups, and shares one aggregate between its section and
-    gated geomeans, so a caller excluding metrics or widening the band writes
-    that only once.
+    It gates and holds no groups, so a caller excluding metrics or widening the
+    band writes that only once.
 
     Args:
         value: The geomean delta, in percent.

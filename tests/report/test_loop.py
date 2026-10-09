@@ -244,11 +244,6 @@ def test_format_status_iteration_when_outcome_varies_does_paint_the_outcome_glyp
             id="discarded",
         ),
         pytest.param(
-            _status_iteration(SettleUnsettled()),
-            "iteration 1 · ✓ -7.2% · unsettled",
-            id="unsettled",
-        ),
-        pytest.param(
             _status_iteration(SettleKeepBlocked(reason="checks-failed")),
             "iteration 1 · ✓ -7.2% · keep-blocked (checks-failed)",
             id="blocked-with-reason",
@@ -258,11 +253,6 @@ def test_format_status_iteration_when_outcome_varies_does_paint_the_outcome_glyp
             "iteration 1 · ✓ -7.2% · keep-blocked",
             id="blocked-no-reason",
         ),
-        pytest.param(
-            replace(_status_iteration(SettleUnsettled()), delta_pct=None, outcome="no-signal"),
-            "iteration 1 · ~ · unsettled",
-            id="delta-unmeasured-states-no-percentage",
-        ),
     ],
 )
 def test_format_status_iteration_when_settle_varies_does_state_the_settle(
@@ -271,6 +261,14 @@ def test_format_status_iteration_when_settle_varies_does_state_the_settle(
     line = format_status_iteration(entry)
 
     assert render_plain(line) == expected
+
+
+def test_format_status_iteration_when_delta_unmeasured_does_omit_the_percentage():
+    entry = replace(_status_iteration(SettleUnsettled()), delta_pct=None, outcome="no-signal")
+
+    line = format_status_iteration(entry)
+
+    assert render_plain(line) == "iteration 1 · ~ · unsettled"
 
 
 # ---------------------------------------------------------------------------

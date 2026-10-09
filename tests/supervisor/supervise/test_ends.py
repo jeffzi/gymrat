@@ -29,7 +29,6 @@ from gymrat.supervisor.end_scan import detect_end_condition
 from gymrat.supervisor.events import (
     CapEvent,
     SessionEvent,
-    TextDeltaEvent,
     ToolEndEvent,
     TurnEndEvent,
     UsageUpdateEvent,
@@ -53,6 +52,7 @@ from tests.supervisor._fixtures import (
     _supervise,
     _WrapDriver,
     append_step,
+    blocked_step,
     collecting_observer,
     driver_calls,
     emit_turn_end,
@@ -76,10 +76,6 @@ if TYPE_CHECKING:
     from gymrat.supervisor.driver import Driver, DriverSession
     from gymrat.supervisor.supervise import SupervisionResult
     from tests.supervisor._mock_driver import MockStep
-
-
-_BLOCKED_MS = 5_000
-"""A step delay long enough that only an end, never the script, cuts it short."""
 
 
 def _scanned_reason(
@@ -168,10 +164,6 @@ def _tool_end(tool_use_id: str = "t1", tool_name: str = "Bash") -> EmitStep:
     )
 
 
-def _blocked_step() -> EmitStep:
-    return EmitStep(emit=TextDeltaEvent(at=now_ns(), chunk="late"), delay_ms=_BLOCKED_MS)
-
-
 def _event_log_markers(root: str) -> list[str]:
     """Label each logged event as ``tool_end:<id>``, ``follow_up:<action>:<reason>``, or its type."""
     markers: list[str] = []
@@ -255,7 +247,7 @@ async def test_supervise_when_condition_lands_before_tool_end_does_end_run_after
     driver = create_mock_driver([
         append_step(root, *case.appended),
         _tool_end(tool_name=case.tool_name),
-        _blocked_step(),
+        blocked_step(),
     ])
 
     result = await _supervise(root, driver, config=benchless_config(stop=case.stop))
@@ -395,10 +387,10 @@ async def test_supervise_when_two_tool_ends_find_the_log_unreadable_does_end_onc
         _append_log_bytes(root, b"not valid json\n")
 
     async def deliver_two_tool_ends() -> None:
-        if driver is None or driver.captured_observer is None:
-            pytest.fail("the driver never started, so no observer was captured")
-        driver.captured_observer(_tool_end("t1").emit)
-        driver.captured_observer(_tool_end("t2").emit)
+        if driver is None:
+            pytest.fail("the driver was never built, so no observer was captured")
+        driver.observer(_tool_end("t1").emit)
+        driver.observer(_tool_end("t2").emit)
 
     inner = create_mock_driver([
         ActionStep(action=break_log),
@@ -428,7 +420,7 @@ async def test_supervise_when_launch_read_fails_does_scan_hooks_only_after_first
         _tool_end("t1"),
         append_step(root, _LATER_FAILED_HOOK),
         _tool_end("t2"),
-        _blocked_step(),
+        blocked_step(),
     ])
 
     result = await _supervise(root, driver)
@@ -495,7 +487,7 @@ async def test_supervise_when_stop_condition_met_after_first_clean_scan_does_end
         _tool_end("t1"),
         append_step(root, iteration_record(seq=1)),
         _tool_end("t2"),
-        _blocked_step(),
+        blocked_step(),
     ])
 
     result = await _supervise(
@@ -559,7 +551,7 @@ async def test_supervise_when_lock_held_at_detection_does_end_at_first_tool_end_
         _tool_end("t1"),
         ActionStep(action=lock.release),
         _tool_end("t2"),
-        _blocked_step(),
+        blocked_step(),
     ])
 
     result = await _supervise(root, driver, is_lock_held=lock.is_held)
@@ -620,7 +612,7 @@ async def test_supervise_when_end_pending_at_injected_turn_end_with_reply_outsta
         emit_turn_end(origin="injected"),
         ActionStep(action=lock.release),
         _tool_end("t2"),
-        _blocked_step(),
+        blocked_step(),
     ])
 
     result = await _supervise(root, driver, is_lock_held=lock.is_held)
@@ -644,7 +636,7 @@ async def test_supervise_when_condition_end_already_fired_does_not_detect_at_lat
             _tool_end("t1"),
             append_step(root, _LATER_FAILED_HOOK),
             _tool_end("t2"),
-            _blocked_step(),
+            blocked_step(),
         ])
     )
 
@@ -737,7 +729,7 @@ async def test_supervise_when_wall_clock_fires_while_end_pending_does_report_the
             _tool_end(),
             ActionStep(action=lock.release),
             supervisor_clock.jump_step(supervisor_clock.deadline_ms),
-            _blocked_step(),
+            blocked_step(),
         ])
     )
 
@@ -854,8 +846,7 @@ async def test_supervise_when_driver_ignores_end_at_turn_boundary_does_arm_abort
     )
     await cast("_AbortSettledSession", driver.session).settling
 
-    assert driver.captured_abort is not None
-    assert driver.captured_abort.is_set()
+    assert driver.abort.is_set()
     assert result.ended_by == case.ended_by
 
 
@@ -869,7 +860,6 @@ async def test_supervise_when_driver_settles_on_end_at_turn_boundary_does_not_ab
     # Outlast the grace period, so a grace timer left armed would set the abort.
     await asyncio.sleep(0.15)
 
-    assert driver.captured_abort is not None
-    assert not driver.captured_abort.is_set()
+    assert not driver.abort.is_set()
     assert result.ended_by == case.ended_by
     assert asyncio.all_tasks() == {asyncio.current_task()}

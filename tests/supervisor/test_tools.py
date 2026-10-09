@@ -30,6 +30,7 @@ from gymrat.exec import (
 from gymrat.supervisor.tools import ToolHost, gymrat_tool_definitions, gymrat_tools_factory
 from tests._cli import run_cli
 from tests._exec_fixtures import expected_result
+from tests._platform import needs_posix_worktrees
 from tests.loop._bench import FILTER_TEMPLATE, commit_project, config_text
 
 # ---------------------------------------------------------------------------
@@ -83,22 +84,14 @@ def host(request: pytest.FixtureRequest, tmp_path: pathlib.Path, fake_exec: Asyn
 # ---------------------------------------------------------------------------
 
 
-async def test_probe_when_called_does_run_in_the_root(
+@pytest.mark.parametrize("host", [{"GYMRAT_TRACEPARENT": "00-abc-def-01"}], indirect=True)
+async def test_probe_when_called_does_run_in_the_root_with_the_composed_child_env(
     tmp_path: pathlib.Path, host: ToolHost, fake_exec: AsyncMock
 ) -> None:
     await host.probe({})
 
     opts: ExecOptions = fake_exec.call_args[0][1]
     assert opts.cwd == str(tmp_path)
-
-
-@pytest.mark.parametrize("host", [{"GYMRAT_TRACEPARENT": "00-abc-def-01"}], indirect=True)
-async def test_probe_when_called_does_compose_the_child_env(
-    host: ToolHost, fake_exec: AsyncMock
-) -> None:
-    await host.probe({})
-
-    opts: ExecOptions = fake_exec.call_args[0][1]
     assert opts.env is not None
     assert opts.env["GYMRAT_COMMAND_ORIGIN"] == "tool"
     assert opts.env["NO_COLOR"] == "1"
@@ -530,7 +523,18 @@ async def test_gymrat_tool_definitions_when_invalid_arguments_given_does_reject_
     fake_exec.assert_not_called()
 
 
-async def test_gymrat_tools_factory_when_called_does_build_the_gymrat_sdk_server_running_tools_with_the_env(
+def test_gymrat_tools_factory_when_called_does_build_the_gymrat_sdk_server(
+    tmp_path: pathlib.Path,
+) -> None:
+    factory = gymrat_tools_factory(str(tmp_path))
+
+    config = cast("McpSdkServerConfig", factory(asyncio.Event(), {}))
+
+    assert config["type"] == "sdk"
+    assert config["name"] == "gymrat"
+
+
+async def test_gymrat_tools_factory_when_a_tool_is_called_does_run_it_with_the_env(
     create_scratch_repo: Callable[[], str],
 ) -> None:
     factory = gymrat_tools_factory(create_scratch_repo())
@@ -538,8 +542,6 @@ async def test_gymrat_tools_factory_when_called_does_build_the_gymrat_sdk_server
 
     result = await _call_via_sdk(config, "probe", {})
 
-    assert config["type"] == "sdk"
-    assert config["name"] == "gymrat"
     assert result.is_error is True
     assert result.content == [
         TextContent(
@@ -566,8 +568,6 @@ async def test_gymrat_tools_factory_when_abort_set_does_kill_the_tool_call(
 # real CLI integration
 # ---------------------------------------------------------------------------
 
-pytestmark_posix = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees")
-
 
 def _started_repo(create_scratch_repo: Callable[[], str], *, filter_template: str | None) -> str:
     """A scratch repository with a bench project, an open session, and a recorded baseline."""
@@ -578,7 +578,7 @@ def _started_repo(create_scratch_repo: Callable[[], str], *, filter_template: st
     return repo
 
 
-@pytestmark_posix
+@needs_posix_worktrees
 async def test_probe_when_real_cli_given_names_and_samples_does_return_scoped_json_document(
     create_scratch_repo: Callable[[], str],
 ) -> None:
@@ -609,7 +609,7 @@ def _config_flag_names(repo: str) -> list[str]:
     return ["--config", str(_scoped_config_path(repo))]
 
 
-@pytestmark_posix
+@needs_posix_worktrees
 @pytest.mark.parametrize(
     "names_of",
     [
@@ -635,7 +635,7 @@ async def test_probe_when_real_cli_given_option_like_names_does_return_the_cli_r
     assert "Usage:" not in text
 
 
-@pytestmark_posix
+@needs_posix_worktrees
 async def test_iterate_when_real_cli_on_scratch_repo_does_return_json_document(
     create_scratch_repo: Callable[[], str],
 ) -> None:

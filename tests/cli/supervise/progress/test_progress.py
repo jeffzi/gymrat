@@ -15,9 +15,8 @@ model phase transitions, nested subagent lines and the tool-name column, the
 iterate sidecar and MCP tool detection, and the follow-up transition. The panel
 title's model and effort text is pinned here too; the frame's styling is pinned
 in ``test_frame.py``. During the run-end exit sequence the reporter shows each
-exit phase as the liveness line, and a session refresh re-reads the session,
-keeping the last good read when one fails. The reducer transitions behind them
-are pinned in ``test_reducer.py``.
+exit phase as the liveness line. The reducer transitions behind them are pinned
+in ``test_reducer.py``.
 
 **Plain mode** tests assert on the recorded milestone lines.
 """
@@ -45,9 +44,6 @@ from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._rich import track
 from tests.cli.supervise._fixtures import (
     BASH_CYCLE_END_MS,
-    EMPTY_READ,
-    FRAME_WIDTH,
-    KEPT_READ,
     ReporterKit,
     _throwing_read,
     cap_event,
@@ -98,7 +94,7 @@ if TYPE_CHECKING:
     from gymrat.config import Effort
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import PrimaryKind
-    from gymrat.supervisor.events import ModelPhase, SessionEvent
+    from gymrat.supervisor.events import ModelPhase
 
 
 # ---------------------------------------------------------------------------
@@ -379,31 +375,6 @@ def test_best_when_kept_iteration_exists_does_show_the_best_row():
 
 
 # ---------------------------------------------------------------------------
-# session re-read
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("event", "expected_reads"),
-    [
-        pytest.param(tool_start_event("Read", "read-1", 2000), 0, id="tool-start"),
-        pytest.param(tool_end_event("Read", "read-1", 3000), 1, id="tool-end"),
-    ],
-)
-def test_observer_when_tool_event_arrives_does_reread_only_on_the_end(
-    event: SessionEvent, expected_reads: int
-):
-    read = Mock(return_value=read_result())
-    kit = make_reporter(read_session=read)
-    kit.reporter.observer(launch_event(1000))
-    reads_before = read.call_count
-
-    kit.reporter.observer(event)
-
-    assert read.call_count - reads_before == expected_reads
-
-
-# ---------------------------------------------------------------------------
 # full dashboard golden snapshot
 # ---------------------------------------------------------------------------
 
@@ -486,14 +457,16 @@ def test_cap_when_fired_does_show_action_with_cap_type():
 # ---------------------------------------------------------------------------
 
 
-def test_final_text_when_agent_turn_ends_does_return_its_text():
+def test_final_text_when_several_agent_turns_ended_does_return_the_latest_text():
     kit = make_reporter()
     observer = kit.reporter.observer
     observer(launch_event(1000))
     observer(turn_end_event(2000, text="first turn summary"))
     observer(turn_end_event(3000, text="second turn summary"))
 
-    assert kit.reporter.final_text() == "second turn summary"
+    text = kit.reporter.final_text()
+
+    assert text == "second turn summary"
 
 
 def _liveness_rows(frame: str) -> list[str]:
@@ -578,16 +551,6 @@ def test_nested_phase_when_reported_does_render_an_arrow_line_naming_it(
     nested_line = line_after(render_frame(kit.reporter), "Bash")
 
     assert row_content(nested_line) == expected
-
-
-def test_nested_when_no_activity_does_end_the_panel_on_the_bash_row():
-    kit = make_reporter()
-    fire_launch_and_iterate_start(kit)
-    kit.clock.now = 5000
-
-    row_after_bash = line_after(render_frame(kit.reporter), "Bash")
-
-    assert row_after_bash == "╰" + "─" * (FRAME_WIDTH - 2) + "╯"
 
 
 # ---------------------------------------------------------------------------
@@ -801,14 +764,14 @@ def test_liveness_when_iterate_tool_has_sidecar_does_show_its_passes(
     assert content_line(frame, "passes") == expected_row
 
 
-def test_liveness_when_iterate_tool_has_no_sidecar_does_show_plain_elapsed():
+def test_liveness_when_iterate_tool_has_no_sidecar_or_nested_activity_does_show_only_plain_elapsed():
     kit = make_reporter(read_progress=lambda _root: None)
     fire_launch_and_iterate_start(kit)
     kit.clock.now = 7000
 
     frame = render_frame(kit.reporter)
 
-    assert content_line(frame, "Bash") == "00:00:02  Bash   gymrat iterate  5s"
+    assert _liveness_rows(frame) == ["00:00:02  Bash   gymrat iterate  5s"]
 
 
 # ---------------------------------------------------------------------------
@@ -996,28 +959,3 @@ def test_liveness_when_exit_phase_reported_does_show_the_phase_with_advancing_el
     frame = render_frame(kit.reporter)
 
     assert _liveness_rows(frame) == [expected_line]
-
-
-_UNREADABLE = RuntimeError("session file unreadable")
-
-
-@pytest.mark.parametrize(
-    ("reread", "expected"),
-    [
-        pytest.param(KEPT_READ, KEPT_READ, id="rereads"),
-        pytest.param(_UNREADABLE, EMPTY_READ, id="reread-fails-keeps-previous"),
-    ],
-)
-def test_refresh_session_when_called_does_reread_the_session_keeping_the_last_good_one(
-    reread: ReadSessionResult | Exception, expected: ReadSessionResult
-):
-    kit = make_reporter(
-        mode="plain",
-        read_session=Mock(side_effect=[EMPTY_READ, reread]),
-        plain_write=lambda _line: None,
-    )
-    kit.reporter.observer(launch_event(1000))
-
-    kit.reporter.refresh_session()
-
-    assert kit.reporter.session_result() == expected

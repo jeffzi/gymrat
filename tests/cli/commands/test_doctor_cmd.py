@@ -1,8 +1,9 @@
 """Tests for the ``gymrat doctor`` command wiring.
 
 These drive the assembled app through :class:`typer.testing.CliRunner` with the
-section builders, both renderers, and ``inspect_config`` replaced; the tests
-that read the rendered report or the JSON document keep the real renderer. They cover
+report builder and both renderers replaced; the tests that depend on what the
+real report finds keep the real builder, and those that read the JSON document
+keep the real renderer. They cover
 the exit-code contract (a missing ``--config`` surfacing as a config failure
 rather than a crash), the JSON path, and ``--no-color`` leaving the color env
 untouched; ``--color`` is pinned with every command's in ``test_app``.
@@ -12,43 +13,30 @@ import json
 import os
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 
 from gymrat.cli.app import app
-from gymrat.config import inspect_config
-from gymrat.doctor import (
-    GitEnvironment,
-    build_config_section,
-    build_workflow_section,
-)
+from gymrat.doctor import GitEnvironment, detect_git_environment
 from gymrat.scaffold import SKILL_RELATIVE_PATH
 from tests.cli._doctor_seams import patch_doctor
 from tests.cli._session import runner
+from tests.config._toml import write_config
 
 # ---------------------------------------------------------------------------
 # exit-code contract
 # ---------------------------------------------------------------------------
 
 
-def _keep_the_stubbed_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Leave the stubbed config inspection and config section in place."""
-
-
-def _inspect_the_real_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Restore the real config inspection and config section over the stubs."""
-    monkeypatch.setattr("gymrat.doctor.inspect_config", inspect_config)
-    monkeypatch.setattr("gymrat.doctor.build_config_section", build_config_section)
-
-
 @pytest.mark.parametrize(
-    ("bench_fail", "config_seams", "argv", "exit_code"),
+    ("bench_fail", "real_report", "argv", "exit_code"),
     [
-        pytest.param(False, _keep_the_stubbed_config, ["doctor"], 0, id="no-failures-exit-zero"),
-        pytest.param(True, _keep_the_stubbed_config, ["doctor"], 1, id="failures-exit-one"),
+        pytest.param(False, False, ["doctor"], 0, id="no-failures-exit-zero"),
+        pytest.param(True, False, ["doctor"], 1, id="failures-exit-one"),
         pytest.param(
             False,
-            _inspect_the_real_config,
+            True,
             ["doctor", "--config", "missing/gymrat.toml"],
             1,
             id="missing-config-is-a-config-failure",
@@ -58,15 +46,15 @@ def _inspect_the_real_config(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_doctor_when_report_written_does_exit_on_its_failures_after_writing_it(
     *,
     bench_fail: bool,
-    config_seams: Callable[[pytest.MonkeyPatch], None],
+    real_report: bool,
     argv: list[str],
     exit_code: int,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
+    # Outside a repository the real report can fail on nothing but the config.
     monkeypatch.chdir(tmp_path)
-    patch_doctor(monkeypatch, bench_fail=bench_fail)
-    config_seams(monkeypatch)
+    patch_doctor(monkeypatch, bench_fail=bench_fail, real_report=real_report)
 
     result = runner.invoke(app, argv)
 
@@ -127,7 +115,7 @@ def test_doctor_when_no_color_flag_does_leave_the_color_env_as_it_was(
 def test_doctor_when_command_crashes_does_exit_two_with_message_on_stderr(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    patch_doctor(monkeypatch, env_error=RuntimeError("unexpected doctor crash"))
+    patch_doctor(monkeypatch, report_error=RuntimeError("unexpected doctor crash"))
 
     result = runner.invoke(app, ["doctor"])
 
@@ -164,13 +152,14 @@ def test_doctor_when_skill_path_checked_does_report_installed_only_for_a_file(
     make_entry: Callable[[Path], None],
     status: str,
 ):
-    def fake_detect(_cwd: object) -> GitEnvironment:
-        return GitEnvironment(git_available=True, inside_git_repo=True, repo_root_dir=str(tmp_path))
-
+    git_env = GitEnvironment(git_available=True, inside_git_repo=True, repo_root_dir=str(tmp_path))
     make_entry(tmp_path / SKILL_RELATIVE_PATH)
-    monkeypatch.setattr("gymrat.doctor.detect_git_environment", fake_detect)
-    patch_doctor(monkeypatch, stub_json=False)
-    monkeypatch.setattr("gymrat.doctor.build_workflow_section", build_workflow_section)
+    write_config(tmp_path, {"bench": "npm run bench"})
+    monkeypatch.setattr(
+        "gymrat.doctor.detect_git_environment",
+        create_autospec(detect_git_environment, return_value=git_env),
+    )
+    patch_doctor(monkeypatch, real_report=True, stub_json=False)
 
     result = runner.invoke(app, ["doctor", "--format", "json"])
 

@@ -293,12 +293,13 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n(
 
 
 @pytest.mark.parametrize(
-    ("meta", "samples_a", "samples_b", "expected"),
+    ("meta", "samples_a", "samples_b", "expected_delta", "expected"),
     [
         pytest.param(
             METRIC_APPROX_LOWER,
             samples(100.0, 110.0),
             samples(30.0, 50.0),
+            (40 - 105) / 105 * 100,
             "improved",
             id="exceeds-band",
         ),
@@ -306,13 +307,25 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n(
             METRIC_APPROX_LOWER,
             create_samples(2, 100.0),
             samples(99.8, 99.6),
+            -0.3,
             "no-signal",
             id="within-band",
+        ),
+        # Candidate median 110 with half-range 50: a +10% delta inside a
+        # 1.5 * 50 / 110 ~= 68.2% band.
+        pytest.param(
+            METRIC_APPROX_LOWER,
+            create_samples(2, 100.0),
+            samples(60.0, 160.0),
+            10.0,
+            "no-signal",
+            id="within-spread-band",
         ),
         pytest.param(
             METRIC_APPROX_HIGHER,
             create_samples(2, 50.0),
             create_samples(2, 100.0),
+            100.0,
             "improved",
             id="higher-improved",
         ),
@@ -320,6 +333,7 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n(
             METRIC_APPROX_HIGHER,
             create_samples(2, 100.0),
             create_samples(2, 50.0),
+            -50.0,
             "regressed",
             id="higher-regressed",
         ),
@@ -329,24 +343,15 @@ def test_compute_verdicts_when_band_does_classify(
     meta: dict[str, MetricMeta],
     samples_a: list[dict[str, float]],
     samples_b: list[dict[str, float]],
+    expected_delta: float,
     expected: str,
 ):
     result = run(samples_a, samples_b, meta)
 
     verdict = result["metric"]
     assert verdict.method == "band"
+    assert verdict.delta == pytest.approx(expected_delta, abs=1e-5)
     assert verdict.verdict == expected
-
-
-def test_compute_verdicts_when_band_spread_high_does_report_no_signal():
-    # Candidate median 110 with half-range 50: a +10% delta inside a
-    # 1.5 * 50 / 110 ~= 68.2% band.
-    result = run(create_samples(2, 100.0), samples(60.0, 160.0), METRIC_APPROX_LOWER)
-
-    verdict = get_band(result)
-    assert verdict.delta == pytest.approx(10.0, abs=1e-5)
-    assert verdict.noise_pct == pytest.approx(150 * 50 / 110, abs=1e-5)
-    assert verdict.verdict == "no-signal"
 
 
 def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_report_no_signal():
@@ -369,6 +374,14 @@ def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_report_no_si
         pytest.param(get_band, samples(80.0, 120.0), samples(90.0, 110.0), 30.0, id="band-spread"),
         pytest.param(
             get_band, create_samples(2, 100.0), samples(100.0, 100.1), 0.5, id="band-floor"
+        ),
+        # The candidate side's spread (half-range 50 over median 110) sets the band.
+        pytest.param(
+            get_band,
+            create_samples(2, 100.0),
+            samples(60.0, 160.0),
+            150 * 50 / 110,
+            id="band-candidate-spread",
         ),
         pytest.param(
             get_band,

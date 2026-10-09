@@ -375,9 +375,13 @@ STRAY_CONTENT = "left by someone else\n"
 
 
 def _fail_write_of(monkeypatch: pytest.MonkeyPatch, name: str, *, drop_stray: bool = False) -> None:
-    """Make the rename that puts the file called ``name`` in place fail like a full disk.
+    """Make the rename that puts one scaffolded file in place fail like a full disk.
 
-    With ``drop_stray``, a foreign file appears beside the destination just before the failure.
+    Args:
+        monkeypatch: Patches ``os.replace`` for the test.
+        name: File name whose rename into place fails.
+        drop_stray: Whether a foreign file appears beside the destination just before the
+            failure.
     """
     real_replace = os.replace
 

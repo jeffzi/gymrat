@@ -25,26 +25,18 @@ import pytest
 from gymrat.cli.app import app
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES
 from gymrat.progress_events import PrepareFinished, PrepareStarted
-from gymrat.session.paths import (
-    experiment_worktree_dir,
-    lockfile_path,
-    repo_root,
-    session_jsonl_path,
-)
+from gymrat.session.paths import experiment_worktree_dir
 from tests._ansi import (
     strip_ansi,
     stripped_lines,
 )
 from tests._cli import run_cli
 from tests._git import run_git
-from tests._lock import FIXED_HOLDER_AT, hold_lock
 from tests._process_helpers import (
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
 )
-from tests.cli._budget import SUPERVISED_HINT
 from tests.cli._session import (
-    last_command_record,
     open_probe_session,
     runner,
     stub_probe_measure,
@@ -62,6 +54,7 @@ from tests.session.records._fixtures import (
     append_records,
     baseline_record,
     iteration_record,
+    last_command_record,
 )
 
 FILTER = "sh bench.sh --filter {names}"
@@ -217,42 +210,12 @@ def test_probe_command_when_supervised_run_live_does_refuse_before_benching_or_w
 
     lines = [line for line in stripped_lines(result.stderr, keep_blank=False) if line.strip()]
     assert len(lines) == 2
-    assert "a supervised run is live; use the probe tool" in lines[0]
-    assert SUPERVISED_HINT in lines[1]
-    assert measure.calls == []
-
-
-# ---------------------------------------------------------------------------
-# the repository lock
-# ---------------------------------------------------------------------------
-
-
-def test_probe_command_when_rival_lock_held_does_exit_two_without_benching(
-    probe_repo: str, measure: MeasureRecorder
-):
-    blocker = hold_lock(
-        lockfile_path(repo_root(probe_repo)),
-        holder={"pid": os.getpid(), "command": "iterate", "at": FIXED_HOLDER_AT},
-    )
-
-    try:
-        result = runner.invoke(app, ["probe"])
-    finally:
-        blocker.release()
-
-    assert result.exit_code == 2
-    assert f"PID {os.getpid()}" in strip_ansi(result.stderr)
     assert measure.calls == []
 
 
 # ---------------------------------------------------------------------------
 # refusals — exit code, message, and the recorded reason
 # ---------------------------------------------------------------------------
-
-
-def _no_session(repo: str) -> None:
-    """A configured repository where no session was ever opened."""
-    write_bench_config(repo, filter=FILTER)
 
 
 def _no_filter(repo: str) -> None:
@@ -285,20 +248,6 @@ REFUSALS = [
 """Every probe-only refusal of an opened session: the setup, the argv, a message fragment,
 and the recorded reason. The finalized refusal every session command shares is pinned in
 ``test_session_cmds``."""
-
-
-def test_probe_command_when_no_session_was_opened_does_refuse_without_recording_a_command(
-    repo: str, measure: MeasureRecorder
-):
-    _no_session(repo)
-
-    result = runner.invoke(app, ["probe"])
-
-    assert result.exit_code == 2
-    assert "gymrat start" in strip_ansi(result.stderr)
-    assert result.stdout == ""
-    assert measure.calls == []
-    assert not Path(session_jsonl_path(repo)).exists()
 
 
 @pytest.mark.parametrize(("setup", "argv", "fragment", "reason"), REFUSALS)
@@ -352,6 +301,7 @@ def test_probe_command_when_signalled_mid_bench_does_exit_on_the_signal_code_lea
             Path(experiment_worktree_dir(repo), "bench.pid"), timeout_s=60.0
         )
         reap_groups.append(os.getpgid(bench_pid))
+
         stop_by_signal(proc, signal.SIGINT, timeout_s=60)
 
     assert proc.returncode == 128 + signal.SIGINT

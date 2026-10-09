@@ -28,7 +28,6 @@ import typer
 from gymrat.adapters import MetricDefaults, get_adapter
 from gymrat.cli.app import app
 from gymrat.cli.commands import supervise as supervise_cmd
-from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.cli.supervise.preflight import run_preflight
 from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.config import (
@@ -64,6 +63,7 @@ from tests.cli.commands.supervise._seams import (
     CAP_MS,
     command_config,
     err_text,
+    force_render_mode,
     install_seams,
     run,
 )
@@ -239,10 +239,7 @@ def test_supervise_when_stdout_reader_closed_and_preflight_fails_does_exit_two(
 ):
     install_seams(monkeypatch, config=replace(command_config(), checks="npm test"))
     monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", run_preflight)
-    monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.resolve_render_mode",
-        create_autospec(resolve_render_mode, return_value="live"),
-    )
+    force_render_mode(monkeypatch, "live")
 
     result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["supervise", "optimize it", "--max-minutes", "10"]
@@ -305,10 +302,7 @@ def test_supervise_when_plain_and_session_has_branch_does_print_no_title(
     build_reporter = supervise_cmd.create_supervise_reporter
     seams = install_seams(monkeypatch, branch="banana")
     monkeypatch.setattr("gymrat.cli.commands.supervise.create_supervise_reporter", build_reporter)
-    monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.resolve_render_mode",
-        create_autospec(resolve_render_mode, return_value="plain"),
-    )
+    force_render_mode(monkeypatch, "plain")
     seams.supervise_hook = lambda call: call["observer"](call["launch"])
 
     result = run("optimize it", "--max-minutes", "10")

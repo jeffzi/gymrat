@@ -7,8 +7,20 @@ import tempfile
 import time
 from pathlib import Path
 
+#: A bench script that exits non-zero without reporting a metric.
+FAILING_BENCH = "#!/bin/sh\nexit 1\n"
+
+#: The flags that run the bench ``write_committed_bench`` commits, once.
+BENCH_ONCE_FLAGS = ("--bench", "sh bench.sh", "--samples", "1")
+
+
+def emit_bench(value: int) -> str:
+    """A bench script that reports the metric ``x`` as ``value`` and exits cleanly."""
+    return f"#!/bin/sh\necho 'METRIC x={value}'\n"
+
+
 #: A bench script that reports one metric line and exits cleanly.
-EMIT_ONE_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
+EMIT_ONE_BENCH = emit_bench(1)
 
 
 def run_git(args: list[str], cwd: str) -> str:

@@ -5,32 +5,29 @@ median with the reference median from the newest recorded baseline. It is a
 read-only command: nothing is appended to the session log, no hook runs, and the
 progress sidecar stays untouched.
 
-The one boundary these tests stub is the measurement engine — it shells out to
-the consumer's bench script, which no test here can run. Everything around it
-(the session guard, the baseline lookup, the pairing arithmetic) runs for real
-against a throwaway repository from the shared ``create_scratch_repo`` factory,
-so the suite is order-independent and safe under ``pytest-xdist`` /
-``pytest-randomly``.
+The one boundary these tests stub is the process spawn — the ``exec`` the sampler
+runs the consumer's prepare and bench commands through, which no test here can
+run. Everything around it (the session guard, the baseline lookup, the
+measurement engine, the pairing arithmetic) runs for real against a throwaway
+repository from the shared ``create_scratch_repo`` factory, so the suite is
+order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from gymrat.config import HooksConfig, KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, probe_session
-from gymrat.progress_events import PassStarted
-from gymrat.sampling import TargetSpec
+from gymrat.progress_events import PassFinished, PassStarted
 from gymrat.session.paths import experiment_worktree_dir, progress_path
-from tests.loop._probe import (
-    BASELINE_SAMPLES,
-    install_measure,
-    measurement,
-    only_call,
-)
+from tests._exec_fixtures import expected_result, install_exec
+from tests.loop._probe import BASELINE_SAMPLES, install_measure, measurement
 from tests.loop._settle import checks_config, start_with
 from tests.loop.iterate._fixtures import (
     FILTER,
@@ -38,12 +35,28 @@ from tests.loop.iterate._fixtures import (
 from tests.report._measurements import measured_metric
 from tests.session.records._fixtures import baseline_record, log_records
 
+if TYPE_CHECKING:
+    from gymrat.progress_events import ProgressEvent
+    from tests._exec_fixtures import ExecRecorder
+
 #: The sample count a probe requests and the count it should end up taking:
 #: unset falls back to the probe default, an explicit count always wins.
 SAMPLE_COUNTS = [
     pytest.param(None, PROBE_DEFAULT_SAMPLES, id="unset-falls-back-to-the-probe-default"),
     pytest.param(3, 3, id="explicit-count-wins"),
 ]
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _install_bench(
+    monkeypatch: pytest.MonkeyPatch, stdout: str = "METRIC total_ms=90"
+) -> ExecRecorder:
+    """Answer every command the sampler spawns with a zero exit printing ``stdout``."""
+    return install_exec(monkeypatch, "gymrat.sampling.exec", expected_result(stdout))
+
 
 # ---------------------------------------------------------------------------
 # what gets benched
@@ -56,13 +69,13 @@ async def test_probe_session_when_names_given_does_bench_the_filter_scoped_comma
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
     config = checks_config(filter=FILTER)
     names = ("total_ms", "alloc_bytes")
-    recorder = install_measure(monkeypatch, measurement())
+    recorder = _install_bench(monkeypatch)
 
     result = await probe_session(repo, config, ProbeOptions(names=names))
 
-    assert (
-        only_call(recorder).run.sampling.bench == "npm run bench -- --filter total_ms alloc_bytes"
-    )
+    assert {command for command, _ in recorder.calls} == {
+        "npm run bench -- --filter total_ms alloc_bytes"
+    }
     assert result.names == names
 
 
@@ -70,7 +83,7 @@ async def test_probe_session_when_names_given_without_a_filter_does_refuse_befor
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    recorder = install_measure(monkeypatch, measurement())
+    recorder = _install_bench(monkeypatch)
 
     with pytest.raises(GymratError) as excinfo:
         await probe_session(repo, checks_config(filter=None), ProbeOptions(names=("total_ms",)))
@@ -86,7 +99,7 @@ async def test_probe_session_when_no_baseline_recorded_does_refuse_before_benchi
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo)
-    recorder = install_measure(monkeypatch, measurement())
+    recorder = _install_bench(monkeypatch)
 
     with pytest.raises(GymratError) as excinfo:
         await probe_session(repo, checks_config(), ProbeOptions())
@@ -107,13 +120,11 @@ async def test_probe_session_when_sampling_does_take_the_count_from_options_neve
     repo: str, monkeypatch: pytest.MonkeyPatch, requested: int | None, expected: int
 ):
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    recorder = install_measure(monkeypatch, measurement())
+    recorder = _install_bench(monkeypatch)
 
-    result = await probe_session(
-        repo, checks_config(adapter="mitata", samples=10), ProbeOptions(samples=requested)
-    )
+    result = await probe_session(repo, checks_config(samples=10), ProbeOptions(samples=requested))
 
-    assert only_call(recorder).run.sampling.samples == expected
+    assert len(recorder.calls) == expected
     assert result.samples == expected
 
 
@@ -125,43 +136,49 @@ async def test_probe_session_when_no_names_does_bench_the_whole_bench_in_the_exp
         bench="npm run bench",
         filter=FILTER,
         prepare="npm ci",
-        adapter="mitata",
         timeout_seconds=900,
-        metrics={"total_ms": MetricEntry(direction="lower", gating=True, exact=False)},
+        metrics={"total_ms": MetricEntry(direction="higher")},
         kinds={"memory": KindEntry(gating=False)},
     )
-    recorder = install_measure(monkeypatch, measurement(adapter="metric-lines"))
+    recorder = _install_bench(monkeypatch, "METRIC total_ms=90\nMETRIC alloc#heap=50")
 
     result = await probe_session(repo, config, ProbeOptions())
 
-    assert (result.label, result.adapter, result.names) == ("experiment", "mitata", ())
-    forwarded = only_call(recorder)
-    assert forwarded.target == TargetSpec(label="experiment", target=experiment_worktree_dir(repo))
-    assert forwarded.run.sampling.bench == "npm run bench"
-    assert forwarded.run.sampling.prepare == "npm ci"
-    assert forwarded.run.adapter == "mitata"
-    assert forwarded.run.sampling.timeout_seconds == 900
-    assert forwarded.run.config_metrics == config.metrics
-    assert forwarded.run.config_kinds == config.kinds
+    assert (result.label, result.adapter, result.names) == ("experiment", "metric-lines", ())
+    assert [command for command, _ in recorder.calls] == [
+        "npm ci",
+        *["npm run bench"] * PROBE_DEFAULT_SAMPLES,
+    ]
+    assert {(options.cwd, options.timeout_ms) for _, options in recorder.calls} == {
+        (experiment_worktree_dir(repo), 900_000)
+    }
+    assert [
+        (metric.name, metric.meta.direction, metric.meta.gating) for metric in result.metrics
+    ] == [
+        ("total_ms", "higher", True),
+        ("alloc#heap", "lower", False),
+    ]
 
 
 async def test_probe_session_when_callbacks_given_does_forward_them_to_the_run(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    event = PassStarted(round=1, total_rounds=1, target_count=1, label="experiment", at_ms=0)
-    install_measure(
-        monkeypatch, measurement(), progress=(event,), warnings=("bench output looked odd",)
-    )
-    events: list[object] = []
+    _install_bench(monkeypatch, "METRIC banana=ripe\nMETRIC total_ms=90")
+    events: list[ProgressEvent] = []
     warnings: list[str] = []
 
     await probe_session(
-        repo, checks_config(), ProbeOptions(on_progress=events.append, warn=warnings.append)
+        repo,
+        checks_config(),
+        ProbeOptions(samples=1, on_progress=events.append, warn=warnings.append),
     )
 
-    assert events == [event]
-    assert warnings == ["bench output looked odd"]
+    assert [replace(event, at_ms=0) for event in events] == [
+        PassStarted(round=1, total_rounds=1, target_count=1, label="experiment", at_ms=0),
+        PassFinished(round=1, total_rounds=1, target_count=1, label="experiment", at_ms=0),
+    ]
+    assert warnings == ["Failed to parse METRIC line: METRIC banana=ripe"]
 
 
 # ---------------------------------------------------------------------------
@@ -173,46 +190,52 @@ async def test_probe_session_when_run_reports_metrics_does_pair_each_with_its_ba
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    alloc = measured_metric(
-        median=50.0, spread=1.0, short_name="alloc_bytes", kind="memory", unit="bytes", gating=False
-    )
-    total = measured_metric(median=90.0, spread=2.0, short_name="total_ms")
-    install_measure(monkeypatch, measurement({"total_ms": total, "alloc_bytes": alloc}))
+    _install_bench(monkeypatch, "METRIC total_ms=90\nMETRIC alloc#heap=50")
 
     result = await probe_session(repo, checks_config(), ProbeOptions())
 
-    assert [metric.name for metric in result.metrics] == ["total_ms", "alloc_bytes"]
-    assert (result.metrics[0].median, result.metrics[0].spread) == (90.0, 2.0)
+    assert [metric.name for metric in result.metrics] == ["total_ms", "alloc#heap"]
+    assert (result.metrics[0].median, result.metrics[0].spread) == (90.0, 0.0)
     assert result.metrics[0].reference_median == 100.0
     assert result.metrics[0].delta_pct == pytest.approx(-10.0)
-    assert result.metrics[0].meta == total.meta
-    assert result.metrics[1].meta == alloc.meta
+    assert (result.metrics[1].median, result.metrics[1].meta.kind) == (50.0, "memory")
 
 
 @pytest.mark.parametrize(
-    ("samples", "median", "expected_reference"),
+    ("samples", "expected_reference"),
     [
-        pytest.param(({"total_ms": 0.0},), 90.0, 0.0, id="baseline-median-of-zero"),
-        pytest.param(BASELINE_SAMPLES, None, 100.0, id="run-reported-no-median"),
-        pytest.param(({"other_ms": 1.0},), 90.0, None, id="baseline-lacks-the-metric"),
+        pytest.param(({"total_ms": 0.0},), 0.0, id="baseline-median-of-zero"),
+        pytest.param(({"other_ms": 1.0},), None, id="baseline-lacks-the-metric"),
     ],
 )
-async def test_probe_session_when_reference_or_median_missing_or_zero_does_report_no_delta(
+async def test_probe_session_when_reference_missing_or_zero_does_report_no_delta(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     samples: tuple[dict[str, float], ...],
-    median: float | None,
     expected_reference: float | None,
 ):
     start_with(repo, (baseline_record(samples=samples),))
-    spread = None if median is None else 1.0
-    install_measure(
-        monkeypatch, measurement({"total_ms": measured_metric(median=median, spread=spread)})
-    )
+    _install_bench(monkeypatch)
 
     result = await probe_session(repo, checks_config(), ProbeOptions())
 
     assert result.metrics[0].reference_median == expected_reference
+    assert result.metrics[0].delta_pct is None
+
+
+async def test_probe_session_when_run_reported_no_median_does_report_no_delta(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
+    # No output a bench can print makes the engine hand back a metric without
+    # a median, so this one case replaces the engine itself.
+    install_measure(
+        monkeypatch, measurement({"total_ms": measured_metric(median=None, spread=None)})
+    )
+
+    result = await probe_session(repo, checks_config(), ProbeOptions())
+
+    assert result.metrics[0].reference_median == 100.0
     assert result.metrics[0].delta_pct is None
 
 
@@ -229,7 +252,7 @@ async def test_probe_session_when_run_completes_does_not_touch_the_session_log_o
         hooks=HooksConfig(before="npm run warm-cache", after="npm run cool-down")
     )
     before = log_records(repo)
-    install_measure(monkeypatch, measurement())
+    _install_bench(monkeypatch)
 
     await probe_session(repo, config, ProbeOptions())
 

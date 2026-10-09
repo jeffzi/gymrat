@@ -45,7 +45,7 @@ def _top_level_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # How long the cleaner takes to clean up once asked to stop: well past the few
-# milliseconds a kill lands in, well inside the one-second grace a stop allows.
+# milliseconds a kill lands in, well inside the grace the stop tests run with.
 _CLEANUP_S = 0.5
 
 # The same for a stop escalated by a second signal: well inside the escalation
@@ -251,10 +251,15 @@ async def test_kill_live_process_groups_when_run_is_nested_does_halve_grace_per_
 # before its grace by the test's own clock.
 _TIMER_SLACK_S = 0.01
 
-# The stop grace the abort-timing test runs with. At the real 1 s, the nested
-# level's 0.5 s grace leaves the kill, pipe close and reap half a second before
-# the bound, which a loaded CI runner's scheduling delays can use up.
+# The stop grace the stop-timing tests run with. The real 1 s leaves the kill,
+# pipe close and reap, or a cleaner's half-second cleanup, only half a second
+# to spare, which a loaded CI runner's scheduling delays can use up.
 _ROOMY_TERMINATE_GRACE_S = 2.0
+
+# How deep the abort-timing test nests its run. Three levels scale the grace to
+# an eighth, so the kill, pipe close and reap have seven eighths of the roomy
+# grace before the bound.
+_ABORT_NESTING_DEPTH = 3
 
 
 @pytest.fixture
@@ -269,10 +274,10 @@ async def test_exec_when_aborted_in_nested_run_does_wait_the_nested_grace(
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
 ) -> None:
-    # One level down is enough: the halving per level is pinned on the fake
-    # clock above, so this only shows the abort path waits the scaled grace.
-    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", 1)
-    nested_grace_s = _ROOMY_TERMINATE_GRACE_S / 2
+    # The halving per level is pinned on the fake clock above, so this only
+    # shows the abort path waits the scaled grace.
+    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", _ABORT_NESTING_DEPTH)
+    nested_grace_s = _ROOMY_TERMINATE_GRACE_S * 0.5**_ABORT_NESTING_DEPTH
     abort = asyncio.Event()
     options = make_opts(stdin="go\n", abort=abort)
     task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, options))
@@ -284,8 +289,8 @@ async def test_exec_when_aborted_in_nested_run_does_wait_the_nested_grace(
     elapsed = time.monotonic() - started
 
     # The group ignores the polite request, so it stands for the whole grace;
-    # the unscaled grace, twice as long, would outlast the bound.
-    assert nested_grace_s - _TIMER_SLACK_S <= elapsed < 2 * nested_grace_s
+    # the unscaled grace would outlast the bound.
+    assert nested_grace_s - _TIMER_SLACK_S <= elapsed < _ROOMY_TERMINATE_GRACE_S
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +313,7 @@ def _sweep_live_groups(
         pytest.param(Teardown(_TIMEOUT_AFTER_START_MS, leave_to_timeout), id="timeout"),
     ],
 )
+@pytest.mark.usefixtures("roomy_terminate_grace")
 async def test_exec_when_leader_dies_before_nested_child_does_let_child_clean_up(
     tmp_path: Path,
     make_opts: Callable[..., ExecOptions],

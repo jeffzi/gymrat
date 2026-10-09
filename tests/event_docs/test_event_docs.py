@@ -31,7 +31,6 @@ from typing import Any, NamedTuple, get_args
 from unittest.mock import patch
 
 import pytest
-import yaml
 from jsonschema import Draft7Validator, Draft202012Validator
 from pydantic import BaseModel
 
@@ -57,7 +56,6 @@ from tests._ansi import normalize
 from tests._cli import run_module
 from tests._config import benchless_config
 from tests._imports import loaded_under, modules_imported_by
-from tests.event_docs._extended_unions import PROBE_WIRE_TYPE, ProbeModel
 from tests.session.records._fixtures import (
     baseline_record,
     command_record,
@@ -195,46 +193,6 @@ def test_render_all_when_compared_to_committed_artifacts_does_match_byte_for_byt
         f"{rel_path} is stale — committed file differs from render_all() output. "
         "Run `task schemas` to regenerate."
     )
-
-
-# ---------------------------------------------------------------------------
-# union-driven docs — a model added to a union is documented with no generator edit
-# ---------------------------------------------------------------------------
-
-
-def _render_all_with_extended_union(channel: str) -> dict[str, str]:
-    result = run_module("tests.event_docs._extended_unions", channel, cwd=_REPO_ROOT, check=True)
-    return json.loads(result.stdout)
-
-
-@pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
-def test_render_all_when_union_gains_model_does_document_it_in_every_generated_doc(
-    channel: _Channel,
-):
-    artifacts = _render_all_with_extended_union(channel.name)
-
-    defs = json.loads(artifacts[channel.schema_path])["$defs"]
-    summary = defs[ProbeModel.__name__]["description"].split("\n")[0]
-    asyncapi = yaml.safe_load(artifacts[_ASYNCAPI_DOC])
-    channels = asyncapi["channels"]
-    channels_listing_probe = [
-        name for name in channels if PROBE_WIRE_TYPE in channels[name]["messages"]
-    ]
-    last_message = list(channels[channel.name]["messages"].items())[-1]
-    component_summary = asyncapi["components"]["messages"][PROBE_WIRE_TYPE]["summary"]
-    reference = artifacts[_REFERENCE_DOC]
-    probe_heading_count = reference.count(f"\n### `{PROBE_WIRE_TYPE}`\n")
-    last_subsection = _md_section(reference, f"\n{channel.heading}\n", "\n## ").rsplit("\n### ", 1)[
-        1
-    ]
-    assert channels_listing_probe == [channel.name]
-    assert last_message == (
-        PROBE_WIRE_TYPE,
-        {"$ref": f"#/components/messages/{PROBE_WIRE_TYPE}"},
-    )
-    assert component_summary == summary
-    assert probe_heading_count == 1
-    assert last_subsection.startswith(f"`{PROBE_WIRE_TYPE}`\n")
 
 
 # ---------------------------------------------------------------------------
@@ -571,12 +529,17 @@ def _render_asyncapi_doc() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def test_render_asyncapi_when_called_does_describe_the_logs_and_their_envelope():
+def test_render_asyncapi_when_called_does_describe_the_logs_in_info():
     doc = _render_asyncapi_doc()
 
     assert doc["info"]["title"] == "gymrat logs"
     assert doc["info"]["version"] == importlib.metadata.version("gymrat")
     assert len(doc["info"]["description"]) > 0
+
+
+def test_render_asyncapi_when_called_does_document_seq_in_envelope_trait():
+    doc = _render_asyncapi_doc()
+
     envelope = doc["components"]["messageTraits"]["envelope"]["description"]
     assert "`seq` (non-negative integer)" in envelope
 
@@ -586,7 +549,7 @@ def test_render_asyncapi_when_called_does_describe_the_logs_and_their_envelope()
 # ---------------------------------------------------------------------------
 
 
-def test_render_asyncapi_when_called_does_list_each_channel_address_and_messages_in_union_order():
+def test_render_asyncapi_when_called_does_list_each_channel_in_union_order():
     doc = _render_asyncapi_doc()
 
     channels = {

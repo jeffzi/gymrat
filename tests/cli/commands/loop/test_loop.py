@@ -30,11 +30,13 @@ import sys
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any, override
+from unittest.mock import create_autospec
 
 import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
+from gymrat.clock import now_ns
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import (
@@ -44,6 +46,7 @@ from gymrat.session.records import (
     SessionLogRecord,
     StopRecord,
 )
+from gymrat.utils import is_tty
 from tests._ansi import SGR_RE, strip_ansi
 from tests._cli import no_color_env
 from tests._git import head_of, status_of
@@ -54,7 +57,6 @@ from tests._process_helpers import (
 )
 from tests.cli._session import (
     close_session_with_one_keep,
-    last_command_record,
     leave_as_is,
     make_discard_repo,
     never_tty,
@@ -86,6 +88,7 @@ from tests.session.records._fixtures import (
     COMMIT,
     SESSION_ID,
     iteration_record,
+    last_command_record,
     log_records,
     records_of_type,
 )
@@ -218,7 +221,9 @@ def narrow_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def tty_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the discard command believe stdin is a terminal."""
-    monkeypatch.setattr("gymrat.cli.commands.loop.is_tty", _always_tty)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.loop.is_tty", create_autospec(is_tty, side_effect=_always_tty)
+    )
 
 
 @pytest.mark.usefixtures("narrow_terminal", "tty_stdin")
@@ -315,7 +320,9 @@ def test_discard_command_when_force_or_stdin_not_tty_does_discard_without_prompt
     is_tty_stub: Callable[[object], bool],
     force: bool,
 ):
-    monkeypatch.setattr("gymrat.cli.commands.loop.is_tty", is_tty_stub)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.loop.is_tty", create_autospec(is_tty, side_effect=is_tty_stub)
+    )
 
     result = runner.invoke(app, ["discard", *args], input="n\n")
 
@@ -503,6 +510,7 @@ def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving
         reap_groups.append(checks_pid)
         grandchild = wait_for_pid_file_blocking(tmp_path / "grandchild.pid", SETTLE_TIMEOUT_S)
         reap_groups.append(grandchild)
+
         stop_by_signal(proc, signal.SIGTERM)
 
     assert proc.returncode == 128 + signal.SIGTERM
@@ -646,7 +654,7 @@ def test_discard_command_when_format_json_does_emit_structured_json(
     expected_measured: bool,
 ):
     arrange(repo)
-    monkeypatch.setattr("gymrat.loop.discard.now_ns", lambda: AT)
+    monkeypatch.setattr("gymrat.loop.discard.now_ns", create_autospec(now_ns, return_value=AT))
 
     result = runner.invoke(app, ["discard", "--force", "--format", "json"])
 

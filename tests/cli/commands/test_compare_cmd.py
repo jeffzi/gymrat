@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from functools import partial
 from typing import TYPE_CHECKING, Any
+from unittest.mock import create_autospec
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -27,6 +28,7 @@ import pytest
 
 from gymrat.cli.app import app
 from gymrat.cli.commands.compare import should_fail_gate
+from gymrat.compare import compare
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.report.json_doc import render_json
 from gymrat.report.text.render import render_report
@@ -38,7 +40,6 @@ from gymrat.report.types import (
 )
 from gymrat.sampling import RunOptions, SamplingOptions
 from tests.cli._session import (
-    last_command_record,
     open_session,
     runner,
     stub_compare_command,
@@ -51,6 +52,7 @@ from tests.report._comparisons import (
     permutation_metric,
     without_gated_geomean,
 )
+from tests.session.records._fixtures import last_command_record
 
 
 def _regressed_result() -> ComparisonResult:
@@ -84,7 +86,7 @@ def test_compare_when_flags_and_config_file_given_does_forward_them_to_compare_o
         captured.append(options)
         return create_comparison_result()
 
-    monkeypatch.setattr("gymrat.compare.compare", spy_compare)
+    monkeypatch.setattr("gymrat.compare.compare", create_autospec(compare, side_effect=spy_compare))
 
     result = runner.invoke(
         app,

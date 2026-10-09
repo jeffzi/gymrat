@@ -21,7 +21,13 @@ from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
 from gymrat.progress_events import PrepareStarted
 from gymrat.sampling import TargetSpec
 from gymrat.utils import warn_to_stderr
-from tests._git import list_worktree_dirs, write_committed_bench
+from tests._git import (
+    EMIT_ONE_BENCH,
+    FAILING_BENCH,
+    emit_bench,
+    list_worktree_dirs,
+    write_committed_bench,
+)
 from tests._git import run_git as _git
 from tests._pipeline import DIRTY_RESULT, install_pipeline, run_options
 from tests._platform import needs_posix_shell
@@ -204,15 +210,8 @@ async def test_compare_when_config_overrides_given_does_apply_them_to_the_result
 # ---------------------------------------------------------------------------
 
 
-_FAIL = "#!/bin/sh\nexit 1\n"
-
-
-def _emit(value: int) -> str:
-    return f"#!/bin/sh\necho 'METRIC x={value}'\n"
-
-
 def _commit_bench(repo: str, value: int) -> None:
-    write_committed_bench(repo, _emit(value), message=f"bench emits {value}")
+    write_committed_bench(repo, emit_bench(value), message=f"bench emits {value}")
 
 
 def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
@@ -246,9 +245,14 @@ async def test_compare_when_two_refs_given_does_compare_them_in_disposable_workt
 @pytest.mark.parametrize(
     ("baseline_bench", "candidate_bench", "header"),
     [
-        pytest.param(_FAIL, _emit(2), 'bench command failed (old, "main"', id="baseline-fails"),
         pytest.param(
-            _emit(1), _FAIL, 'bench command failed (new, "candidate"', id="candidate-fails"
+            FAILING_BENCH, emit_bench(2), 'bench command failed (old, "main"', id="baseline-fails"
+        ),
+        pytest.param(
+            EMIT_ONE_BENCH,
+            FAILING_BENCH,
+            'bench command failed (new, "candidate"',
+            id="candidate-fails",
         ),
     ],
 )

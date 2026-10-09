@@ -36,7 +36,14 @@ from gymrat.session.records import (
 from gymrat.session.workspace import Worktrees
 from tests._ansi import stripped_lines
 from tests._exec_fixtures import expected_result
-from tests.session.records._fixtures import SESSION_ID, log_records, session_record
+from tests.session.records._fixtures import (
+    SESSION_ID,
+    committed_keep,
+    iteration_record,
+    log_records,
+    session_record,
+    write_session_log,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -118,6 +125,38 @@ def iterate_session_header(root: str, *, experiment: str | None = None) -> Sessi
             baseline=str(Path(root) / "side-baseline"),
         ),
     )
+
+
+#: Fourteen minutes: an iteration longer than what the budget-refusal tests leave on the clock.
+OUTLASTING_ITERATION_MS = 840_000
+
+
+def settled_history(*, duration_ms: int | None = None) -> tuple[SessionLogRecord, ...]:
+    """The history of a settled session: one measured iteration and the keep that settled it.
+
+    Args:
+        duration_ms: How long the iteration is recorded to have taken; None leaves it unrecorded.
+
+    Returns:
+        The iteration record and its committed keep, in log order.
+    """
+    timing = {} if duration_ms is None else {"duration_ms": duration_ms}
+    return (iteration_record(seq=1, **timing), committed_keep(1))
+
+
+def write_iterate_session(root: str, history: tuple[SessionLogRecord, ...] = ()) -> SessionRecord:
+    """Write an open iterate session log: the side-worktree header, then ``history``.
+
+    Args:
+        root: The repository whose session log is written.
+        history: The records that follow the header; empty leaves a fresh session.
+
+    Returns:
+        The session header written.
+    """
+    header = iterate_session_header(root)
+    write_session_log(root, header, history)
+    return header
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +318,11 @@ def stub_samples(
         return _samples_by_dir(targets, by_dir, "stub_samples")
 
     mock._answer = answer
+
+
+def stub_improved_samples(mock: CollectSamplesRecorder, root: str) -> None:
+    """Answer every sampling call with an experiment 10% faster and 20% leaner than the baseline."""
+    stub_samples(mock, root, improved_rounds(), baseline_rounds())
 
 
 def stub_runs(

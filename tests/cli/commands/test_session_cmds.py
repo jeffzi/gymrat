@@ -17,14 +17,12 @@ import json
 import re
 from collections.abc import Callable
 from pathlib import Path
-from unittest.mock import create_autospec
 
 import pytest
 
 from gymrat.cli.app import app
-from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.loop.start import start_session
-from gymrat.session.paths import experiment_worktree_dir, progress_path
+from gymrat.session.paths import experiment_worktree_dir, progress_path, session_jsonl_path
 from gymrat.session.records import CommandRecord, FinalizeRecord, IterationRecord, StopRecord
 from tests._ansi import SGR_RE, strip_ansi, stripped_lines
 from tests._config import resolved_config
@@ -35,21 +33,19 @@ from tests.cli._session import (
     FailingStdoutRunner,
     close_session_with_one_keep,
     closed_stdout_error,
-    last_command_record,
     leave_as_is,
-    open_probe_session,
     open_session,
     open_session_with_one_keep,
     open_stop_ready_session,
+    open_stubbed_probe_session,
     runner,
     stub_compare,
     stub_config,
     stub_measure,
-    stub_probe_measure,
     write_bench_config,
     write_settled_session,
 )
-from tests.cli.commands.supervise._seams import install_seams
+from tests.cli.commands.supervise._seams import force_render_mode, install_seams
 from tests.loop._settle import (
     CHECKS,
     settling_record_of,
@@ -59,6 +55,7 @@ from tests.session.records._fixtures import (
     append_records,
     committed_keep,
     iteration_record,
+    last_command_record,
     records_of_type,
     session_header_of,
 )
@@ -332,6 +329,7 @@ def test_session_command_when_finalized_does_refuse_as_finalized(
         pytest.param(["keep"], _configure, id="keep"),
         pytest.param(["discard"], _configure, id="discard"),
         pytest.param(["iterate", "--bench", "npm run bench"], _write_no_config, id="iterate"),
+        pytest.param(["probe"], _configure, id="probe"),
     ],
 )
 def test_session_command_when_no_session_does_exit_two_with_a_start_hint(
@@ -341,8 +339,9 @@ def test_session_command_when_no_session_does_exit_two_with_a_start_hint(
 
     result = runner.invoke(app, argv)
 
-    assert result.exit_code == 2
+    assert (result.exit_code, result.stdout) == (2, "")
     assert "gymrat start" in result.stderr
+    assert not Path(session_jsonl_path(repo)).exists()
 
 
 def test_session_command_when_no_color_does_strip_ansi_from_stderr_error(
@@ -375,8 +374,7 @@ def _stub_measure(_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _open_for_probe(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Open a session with a baseline and stub the engine, run as the supervised tool."""
-    open_probe_session(repo)
-    stub_probe_measure(monkeypatch)
+    open_stubbed_probe_session(repo, monkeypatch)
     set_origin(monkeypatch, "tool")
 
 
@@ -400,10 +398,7 @@ def _stub_doctor(_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
 def _supervise_live(_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace every supervise seam and force the live dashboard."""
     install_seams(monkeypatch)
-    monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.resolve_render_mode",
-        create_autospec(resolve_render_mode, return_value="live"),
-    )
+    force_render_mode(monkeypatch, "live")
 
 
 _MEASURE_MAIN = ["measure", "main", "--bench", "sh bench.sh"]
@@ -447,8 +442,7 @@ def test_command_when_stdout_reader_closed_does_exit_zero_without_stderr(
 
 def _live_budget_for_probe(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """A probe-ready session with a stubbed engine, under a live budget."""
-    open_probe_session(repo)
-    stub_probe_measure(monkeypatch)
+    open_stubbed_probe_session(repo, monkeypatch)
     install_budget(repo, monkeypatch)
 
 

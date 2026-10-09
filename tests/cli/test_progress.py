@@ -449,14 +449,13 @@ def test_report_when_plain_mode_prepare_finished_does_print_exact_timestamped_li
 # ---------------------------------------------------------------------------
 
 
-def test_report_when_first_event_in_live_mode_does_mount_a_transient_auto_refreshing_live():
+def test_progress_reporter_when_built_in_live_mode_does_mount_a_transient_auto_refreshing_live():
     # redirect_stderr=False leaves sys.stderr as the real stream: this display
     # never swaps in rich's FileProxy, so there is nothing for the erase to
     # restore.
     real_stderr = sys.stderr
-    _console, _clock, reporter = _reporter("live", command="measure", target_labels=["bench"])
 
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
+    _console, _clock, reporter = _reporter("live", command="measure", target_labels=["bench"])
 
     live = reporter.live
     assert live is not None

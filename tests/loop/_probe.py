@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from tests.report._measurements import create_measurement_result, measured_metric
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     import pytest
 
@@ -51,6 +51,8 @@ class MeasureRecorder:
         result: The measurement every call hands back.
         progress: Events each call reports through the progress callback it was handed.
         warnings: Messages each call sends through the warn sink it was handed.
+        on_call: Run at the start of each call, before anything is recorded: where
+            a test advances a clock to give the measurement a duration.
     """
 
     def __init__(
@@ -58,13 +60,17 @@ class MeasureRecorder:
         result: MeasurementResult,
         progress: Sequence[ProgressEvent] = (),
         warnings: Sequence[str] = (),
+        on_call: Callable[[], None] | None = None,
     ) -> None:
         self.result = result
         self.progress = tuple(progress)
         self.warnings = tuple(warnings)
+        self.on_call = on_call
         self.calls: list[MeasureOptions] = []
 
     async def __call__(self, options: MeasureOptions) -> MeasurementResult:
+        if self.on_call is not None:
+            self.on_call()
         self.calls.append(options)
         sampling = options.run.sampling
         if sampling.on_progress is not None:
@@ -81,6 +87,7 @@ def install_measure(
     *,
     progress: Sequence[ProgressEvent] = (),
     warnings: Sequence[str] = (),
+    on_call: Callable[[], None] | None = None,
 ) -> MeasureRecorder:
     """Replace ``gymrat.measure.measure`` with a recorder answering ``result``.
 
@@ -89,11 +96,12 @@ def install_measure(
         result: The measurement every call hands back.
         progress: Events each call reports through the progress callback it was handed.
         warnings: Messages each call sends through the warn sink it was handed.
+        on_call: Run at the start of each call, before anything is recorded.
 
     Returns:
         The installed recorder.
     """
-    recorder = MeasureRecorder(result, progress, warnings)
+    recorder = MeasureRecorder(result, progress, warnings, on_call)
     monkeypatch.setattr("gymrat.measure.measure", recorder)
     return recorder
 

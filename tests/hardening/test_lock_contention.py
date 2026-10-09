@@ -26,11 +26,10 @@ import pytest
 
 from gymrat.session.lock import acquire_lock, is_held
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
+from tests._platform import needs_named_pipes
 from tests.hardening._barrier import CHILD_BARRIER, racing_children
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX-only named pipes and hard links"
-)
+pytestmark = needs_named_pipes
 
 # Ceiling for a race to resolve and for children to exit once released; generous
 # enough to absorb CI scheduling jitter without masking a real deadlock.

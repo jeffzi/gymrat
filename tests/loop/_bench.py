@@ -53,21 +53,21 @@ def bench_script(gate_file: str | None = None) -> str:
     Returns:
         The bench script's Python source.
     """
-    lines = ["import os", "import sys"]
+    lines = ["import sys"]
+    if gate_file is not None:
+        lines.append("import time")
+    lines.append("from pathlib import Path")
     if gate_file is not None:
         lines += [
-            "import time",
-            f"gate = {json.dumps(gate_file)}",
+            f"gate = Path({json.dumps(gate_file)})",
             "deadline = time.monotonic() + 60",
-            "while not os.path.exists(gate) and time.monotonic() < deadline:",
+            "while not gate.exists() and time.monotonic() < deadline:",
             "    time.sleep(0.025)",
         ]
     lines += [
-        f"tuning = {json.dumps(TUNING_FILE)}",
-        "if os.path.exists(tuning):",
-        '    with open(tuning, encoding="utf-8") as handle:',
-        "        tuned = handle.read().strip()",
-        "else:",
+        "try:",
+        f'    tuned = Path({json.dumps(TUNING_FILE)}).read_text(encoding="utf-8").strip()',
+        "except FileNotFoundError:",
         f'    tuned = "{BASELINE_LATENCY}"',
         'sys.stdout.write("METRIC latency=" + tuned + "\\n")',
     ]

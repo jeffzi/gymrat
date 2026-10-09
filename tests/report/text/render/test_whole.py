@@ -533,11 +533,13 @@ def test_render_report_when_single_sample_does_mark_verdicts_inconclusive():
     report = render_report(single_sample_result())
 
     assert cells_of(line_starting_with(report, "decode/time"))[-1].strip() == "?  -0.4%"
-    assert "highlights" not in report
-    assert line_starting_with(report, "✓ 0 improved") == (
-        "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   "
-        "= 0 identical   ~ 0 within noise   ? 2 inconclusive"
-    )
+    assert report.split("\n\n")[1:] == [
+        (
+            "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   "
+            "= 0 identical   ~ 0 within noise   ? 2 inconclusive"
+        ),
+        "re-run with gymrat compare --samples 6 or more for statistical verdicts",
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -54,6 +54,7 @@ from tests.adapters._inputs import VALID_ADAPTERS_HINT, unknown_adapter_message
 from tests.loop.iterate._fixtures import (
     FILTER,
     MALFORMED_LINE_WARNING,
+    OUTLASTING_ITERATION_MS,
     as_logged,
     assert_permutation,
     baseline_rounds,
@@ -64,9 +65,11 @@ from tests.loop.iterate._fixtures import (
     regressed_run,
     report_a_pass_per_call,
     run_before_each_call,
+    settled_history,
+    stub_improved_samples,
     stub_runs,
-    stub_samples,
     trimmed_report_lines,
+    write_iterate_session,
 )
 from tests.loop.iterate._hooks import HookScripts
 from tests.session._budget import install_budget
@@ -76,7 +79,6 @@ from tests.session.records._fixtures import (
     iteration_record,
     log_records,
     records_of_type,
-    write_session_log,
 )
 
 if TYPE_CHECKING:
@@ -162,7 +164,7 @@ async def test_iterate_session_when_not_ready_to_measure_does_refuse_before_samp
     config: ResolvedConfig,
     refusal: tuple[str, str, str | None],
 ):
-    write_session_log(repo, iterate_session_header(repo), history)
+    write_iterate_session(repo, history)
 
     with pytest.raises(GymratError) as exc:
         await iterate_session(repo, config)
@@ -206,8 +208,8 @@ async def test_iterate_session_when_stop_condition_no_longer_applies_does_measur
     config: ResolvedConfig,
     expected_seq: int,
 ):
-    write_session_log(repo, iterate_session_header(repo), history)
-    stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
+    write_iterate_session(repo, history)
+    stub_improved_samples(samples_mock, repo)
 
     result = await iterate_session(repo, config)
 
@@ -577,12 +579,8 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_
     repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
     hooks = HookScripts.for_root(repo)
-    write_session_log(
-        repo,
-        iterate_session_header(repo),
-        (iteration_record(seq=1, duration_ms=840_000), committed_keep(1)),
-    )
-    stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
+    write_iterate_session(repo, settled_history(duration_ms=OUTLASTING_ITERATION_MS))
+    stub_improved_samples(samples_mock, repo)
 
     # Live budget with 12 min left, but last iteration took 14 min.
     install_budget(repo, monkeypatch, deadline_ms=720_000.0, frozen_now_ms=0)
@@ -619,11 +617,7 @@ async def test_iterate_session_when_stop_condition_met_does_report_stop_before_b
 ):
     # The last iteration took 14 minutes against 12 left, so the budget check
     # would refuse on its own: only the stop check running first names max iterations.
-    write_session_log(
-        repo,
-        iterate_session_header(repo),
-        (iteration_record(seq=1, duration_ms=840_000), committed_keep(1)),
-    )
+    write_iterate_session(repo, settled_history(duration_ms=OUTLASTING_ITERATION_MS))
     install_budget(repo, monkeypatch, deadline_ms=720_000.0, frozen_now_ms=0)
     config = resolved_config(stop=StopConfig(max_iterations=1))
 

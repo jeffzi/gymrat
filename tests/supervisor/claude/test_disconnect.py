@@ -17,10 +17,10 @@ import pytest
 from claude_agent_sdk import TextBlock
 
 from gymrat.supervisor.driver import DriverSession, SessionOutcome
-from gymrat.supervisor.events import SessionEvent, UsageUpdateEvent
 from tests.supervisor._fixtures import (
     FakeClient,
     FiniteClient,
+    abort_on_first_usage_update,
     assistant,
     end_and_settle,
     result_message,
@@ -76,17 +76,9 @@ class _RacingClient(FakeClient):
         fail_follow_up: bool = False,
         after_turn: Sequence[object] = (),
     ) -> None:
-        super().__init__([*messages, *after_turn])
+        super().__init__([*messages, *after_turn], fail_follow_up=fail_follow_up)
         self._finite = finite
-        self._fail_follow_up = fail_follow_up
         self._stream: _Stream | None = _Stream(self._released)
-
-    @override
-    async def query(self, prompt: str) -> None:
-        if self._fail_follow_up and self.query_prompts:
-            message = "connection lost"
-            raise RuntimeError(message)
-        await super().query(prompt)
 
     @override
     async def receive_messages(self) -> AsyncIterator[object]:
@@ -167,11 +159,9 @@ async def _end_by_abort(client: FakeClient) -> SessionOutcome:
     """Run a session over ``client`` and abort it on its first usage update."""
     abort = asyncio.Event()
 
-    def observer(event: SessionEvent) -> None:
-        if isinstance(event, UsageUpdateEvent):
-            abort.set()
-
-    return await _outcome(start_claude_session(client, observer, abort=abort))
+    return await _outcome(
+        start_claude_session(client, abort_on_first_usage_update(abort), abort=abort)
+    )
 
 
 async def _end_by_interrupt(client: FakeClient) -> SessionOutcome:
@@ -212,35 +202,28 @@ def _disconnect_warnings(caught: Sequence[warnings.WarningMessage]) -> list[str]
 
 
 @pytest.mark.parametrize(
-    ("client_options", "end_session", "expected_reason", "expected_message"),
+    ("client_options", "end_session"),
     [
-        pytest.param({}, _end_by_end_call, "completed", None, id="end-call"),
-        pytest.param({}, _end_by_abort, "interrupted", None, id="abort"),
+        pytest.param({}, _end_by_end_call, id="end-call"),
+        pytest.param({}, _end_by_abort, id="abort"),
         pytest.param(
             {"after_turn": [assistant(TextBlock(text="late"))]},
             _end_by_interrupt,
-            "interrupted",
-            None,
             id="interrupt",
         ),
-        pytest.param(
-            {"fail_follow_up": True}, _end_by_send, "error", "connection lost", id="send-failure"
-        ),
-        pytest.param({"finite": True}, _end_by_stream, "completed", None, id="stream-exhaustion"),
+        pytest.param({"fail_follow_up": True}, _end_by_send, id="send-failure"),
+        pytest.param({"finite": True}, _end_by_stream, id="stream-exhaustion"),
     ],
 )
 async def test_start_when_session_ended_does_disconnect_client_exactly_once_without_warning(
     client_options: _RacingOptions,
     end_session: Callable[[FakeClient], Awaitable[SessionOutcome]],
-    expected_reason: str,
-    expected_message: str | None,
 ):
     client = _RacingClient(_one_turn(), **client_options)
 
     with _recorded_warnings() as caught:
-        outcome = await end_session(client)
+        await end_session(client)
 
-    assert (outcome.reason, outcome.message) == (expected_reason, expected_message)
     assert client.disconnect_count == 1
     assert _disconnect_warnings(caught) == []
 

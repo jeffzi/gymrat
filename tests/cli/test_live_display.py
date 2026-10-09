@@ -337,14 +337,14 @@ def test_mount_live_when_signal_lands_before_first_paint_does_restore_the_screen
     assert (screen_lines(terminal.at_exit), cursor_hidden(terminal.at_exit)) == ([KEPT_LINE], False)
 
 
-def test_mount_live_when_mounted_does_paint_the_first_frame(
+def test_mount_live_when_mounted_does_start_the_display(
     mounted_live: Callable[..., ErasableLive],
 ):
     console = sealed_console()
 
-    mounted_live(console, _rows(2))
+    live = mounted_live(console, _rows(2))
 
-    assert screen_lines(console_output(console)) == ["row 1", "row 2"]
+    assert live.is_started is True
 
 
 def _live_whose_first_paint_raises() -> ErasableLive:

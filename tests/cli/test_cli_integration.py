@@ -6,18 +6,15 @@ run. ``python -m gymrat.cli.app`` stands in for the ``gymrat`` console script.
 Signal-driven cleanup is pinned in :mod:`tests.hardening.test_signal_cleanup`.
 """
 
-import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from gymrat.session.paths import lockfile_path, repo_root
 from tests._cli import no_color_env as _env
 from tests._cli import run_cli
 from tests._git import EMIT_ONE_BENCH, list_worktree_dirs, write_committed_bench
-from tests._lock import FIXED_HOLDER_AT, hold_lock
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 
@@ -35,37 +32,6 @@ def test_cli_when_outside_repo_does_measure_lock_free(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     assert "x                │ 1 ± 0%" in result.stdout.splitlines()
-
-
-# ---------------------------------------------------------------------------
-# rival lock
-# ---------------------------------------------------------------------------
-
-
-def test_cli_when_rival_lock_held_does_exit_two_naming_holder_without_benching(
-    create_scratch_repo: Callable[[], str],
-):
-    repo = create_scratch_repo()
-    write_committed_bench(repo, EMIT_ONE_BENCH)
-    lock_path = lockfile_path(repo_root(repo))
-    blocker = hold_lock(
-        lock_path,
-        holder={"pid": os.getpid(), "command": "measure", "at": FIXED_HOLDER_AT},
-    )
-
-    try:
-        result = run_cli(
-            ["compare", "main", "main", "--bench", "sh bench.sh", "--samples", "1"],
-            repo,
-            check=False,
-            timeout=60,
-        )
-
-        assert result.returncode == 2
-        assert f"PID {os.getpid()}" in result.stderr
-        assert list_worktree_dirs(repo, include_main=False) == []
-    finally:
-        blocker.release()
 
 
 # ---------------------------------------------------------------------------

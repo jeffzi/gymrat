@@ -29,15 +29,7 @@ from tests.report._comparisons import (
 from tests.report._verdicts import one_sided_metric
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from gymrat.report.types import MetricComparisons
-
-
-def _find_plain(parts: Sequence[str], needle: str) -> str:
-    matches = [part for part in parts if needle in render_plain(part)]
-    assert len(matches) == 1, f"expected exactly one part containing {needle!r}, got {matches}"
-    return matches[0]
 
 
 # ---------------------------------------------------------------------------
@@ -115,15 +107,21 @@ def test_verdict_summary_parts_when_mixed_does_render_every_class_with_its_count
     ]
 
 
-@pytest.mark.parametrize("label", ["regressed", "identical"])
-def test_verdict_summary_parts_when_zero_count_does_dim_the_part(label: str):
+def test_verdict_summary_parts_when_zero_count_does_dim_the_part():
     only_improved: MetricComparisons = {
         "faster/time": permutation_metric(verdict="improved", delta=-10)
     }
 
     parts = verdict_summary_parts(only_improved, 0)
 
-    assert "2" in sgr_codes(render_colored(_find_plain(parts, label)))
+    assert [(render_plain(part), sorted(sgr_codes(render_colored(part)))) for part in parts] == [
+        ("✓ 1 improved", ["32"]),
+        ("✗ 0 regressed", ["2"]),
+        ("≈ 0 unstable", ["2"]),
+        ("= 0 identical", ["2"]),
+        ("~ 0 within noise", ["2"]),
+        ("? 0 inconclusive", ["2"]),
+    ]
 
 
 def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_width():
@@ -136,7 +134,11 @@ def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_widt
 
     parts = verdict_summary_parts(metrics, 0)
 
-    assert render_plain(_find_plain(parts, "improved")) == "✓ 10 improved"
-    assert render_plain(_find_plain(parts, "regressed")) == "✗  1 regressed"
-    assert render_plain(_find_plain(parts, "unstable")) == "≈  1 unstable"
-    assert render_plain(_find_plain(parts, "within noise")) == "~  0 within noise"
+    assert [render_plain(part) for part in parts] == [
+        "✓ 10 improved",
+        "✗  1 regressed",
+        "≈  1 unstable",
+        "=  0 identical",
+        "~  0 within noise",
+        "?  0 inconclusive",
+    ]
