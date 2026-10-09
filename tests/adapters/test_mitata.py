@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from gymrat.adapters import AdapterError, mitata_adapter
-from tests.adapters._inputs import LINE_BREAKS, build_stdout
+from tests.adapters._inputs import LINE_BREAKS, VALID_BENCHMARK, benchmark, build_stdout
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mitata.json"
 
@@ -13,15 +13,12 @@ _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mitata.json"
 # basic JSON parsing
 # ---------------------------------------------------------------------------
 
-_BASIC_FIXTURE = build_stdout([
-    {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 42}}]}
-])
+_BASIC_FIXTURE = build_stdout([benchmark("encode", p50=42)])
 
 
 @pytest.mark.parametrize(
     "stdout",
     [
-        pytest.param(_BASIC_FIXTURE, id="no-preamble-or-trailer"),
         pytest.param(f"preamble\n{_BASIC_FIXTURE}\ntrailer", id="preamble-and-trailer"),
         pytest.param(f"cpu: {{model}}\n{_BASIC_FIXTURE}\nfooter: {{info}}", id="braces-both-sides"),
         pytest.param(f'weight: 5" tall\n{_BASIC_FIXTURE}', id="stray-quote-before"),
@@ -45,7 +42,7 @@ def test_parse_when_json_surrounded_by_text_does_extract_metrics(stdout: str):
 def test_parse_when_a_payload_string_carries_braces_or_quotes_does_read_the_whole_object(
     alias: str,
 ):
-    payload = build_stdout([{"alias": alias, "runs": [{"args": {}, "stats": {"p50": 42}}]}])
+    payload = build_stdout([benchmark(alias, p50=42)])
 
     assert mitata_adapter.parse(payload) == {f"{alias}#time": 42}
 
@@ -72,7 +69,7 @@ def test_parse_when_pathological_nesting_does_raise_adapter_error_not_recursion_
 
 def test_parse_when_decoy_precedes_real_object_does_prefer_the_benchmarks_carrier():
     decoy = json.dumps({"foo": "bar"})
-    real = build_stdout([{"alias": "a", "runs": [{"args": {}, "stats": {"p50": 1}}]}])
+    real = build_stdout([benchmark("a")])
 
     assert mitata_adapter.parse(f"{decoy}\n{real}") == {"a#time": 1}
 
@@ -136,9 +133,7 @@ def test_parse_when_several_candidates_fail_does_report_longest_candidates_error
 def test_parse_when_alias_has_placeholders_does_substitute_arg_values(
     alias: str, args: dict[str, Any], p50: int, metric_name: str
 ):
-    stdout = build_stdout([
-        {"alias": alias, "runs": [{"name": alias, "args": args, "stats": {"p50": p50}}]}
-    ])
+    stdout = build_stdout([benchmark(alias, p50=p50, args=args)])
 
     assert mitata_adapter.parse(stdout) == {metric_name: p50}
 
@@ -159,9 +154,7 @@ def test_parse_when_alias_has_placeholders_does_substitute_arg_values(
     ],
 )
 def test_parse_when_arg_value_given_does_serialize_js_style(value: Any, serialized: str):
-    stdout = build_stdout([
-        {"alias": "b/$v", "runs": [{"name": "b", "args": {"v": value}, "stats": {"p50": 1}}]}
-    ])
+    stdout = build_stdout([benchmark("b/$v", args={"v": value})])
 
     assert mitata_adapter.parse(stdout) == {f"b/v={serialized}#time": 1}
 
@@ -189,13 +182,10 @@ _ESCAPED_LINE_TERMINATORS = [
         pytest.param("decode/$text", {"text": "di\u2028gits"}, '"decode/$text"', id="arg-value"),
     ],
 )
-def test_parse_when_metric_name_holds_line_terminator_does_warn_on_one_line_and_skip_run(
+def test_parse_when_metric_name_holds_line_terminator_does_skip_run_with_one_line_warning(
     alias: str, args: dict[str, str], warned_alias: str
 ):
-    stdout = build_stdout([
-        {"alias": alias, "runs": [{"args": args, "stats": {"p50": 42}}]},
-        {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
-    ])
+    stdout = build_stdout([benchmark(alias, p50=42, args=args), VALID_BENCHMARK])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -230,7 +220,7 @@ def test_parse_when_skip_warning_names_alias_holding_line_terminator_does_escape
 ):
     stdout = build_stdout([
         {"alias": _LINE_TERMINATOR_ALIAS, **fields},
-        {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
+        VALID_BENCHMARK,
     ])
     warnings: list[str] = []
 
@@ -249,7 +239,7 @@ def test_parse_when_skip_warning_names_alias_holding_line_terminator_does_escape
 def test_parse_when_reserved_hash_name_holds_line_terminator_does_raise_on_one_line(
     alias: str, args: dict[str, str]
 ):
-    stdout = build_stdout([{"alias": alias, "runs": [{"args": args, "stats": {"p50": 42}}]}])
+    stdout = build_stdout([benchmark(alias, p50=42, args=args)])
 
     with pytest.raises(AdapterError) as exc_info:
         mitata_adapter.parse(stdout)
@@ -274,7 +264,7 @@ def test_parse_when_reserved_hash_name_holds_line_terminator_does_raise_on_one_l
 def test_parse_when_metric_prefix_contains_hash_does_raise_adapter_error(
     alias: str, args: dict[str, str], prefix: str
 ):
-    stdout = build_stdout([{"alias": alias, "runs": [{"args": args, "stats": {"p50": 42}}]}])
+    stdout = build_stdout([benchmark(alias, p50=42, args=args)])
 
     with pytest.raises(AdapterError) as exc_info:
         mitata_adapter.parse(stdout)
@@ -300,12 +290,12 @@ def test_parse_when_metric_prefix_contains_hash_does_raise_adapter_error(
         pytest.param("op/$v", {"v": "a//b"}, "op/v=a//b", id="arg-value-with-empty-segment"),
     ],
 )
-def test_parse_when_metric_name_has_empty_path_segment_does_warn_once_and_skip_run(
+def test_parse_when_metric_name_has_empty_path_segment_does_skip_run_with_one_warning(
     alias: str, args: dict[str, str], prefix: str
 ):
     stdout = build_stdout([
-        {"alias": alias, "runs": [{"args": args, "stats": {"p50": 42, "heap": {"avg": 7}}}]},
-        {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
+        benchmark(alias, args=args, stats={"p50": 42, "heap": {"avg": 7}}),
+        VALID_BENCHMARK,
     ])
     warnings: list[str] = []
 
@@ -390,7 +380,7 @@ _INVALID_RUN_PREFIX = 'Skipping run of "test" with invalid'
         pytest.param(None, 'Skipping run of "test": expected an object, got null', id="run-null"),
     ],
 )
-def test_parse_when_run_is_malformed_does_warn_once_and_keep_other_runs(
+def test_parse_when_run_is_malformed_does_skip_only_the_bad_run_with_one_warning(
     bad_run: object, warning: str
 ):
     stdout = build_stdout([{"alias": "test", "runs": [bad_run, {"args": {}, "stats": {"p50": 5}}]}])
@@ -402,7 +392,7 @@ def test_parse_when_run_is_malformed_does_warn_once_and_keep_other_runs(
     assert warnings == [warning]
 
 
-def test_parse_when_run_args_missing_does_treat_as_empty_and_not_warn():
+def test_parse_when_run_args_missing_does_read_args_as_empty_without_warning():
     stdout = build_stdout([{"alias": "test", "runs": [{"stats": {"p50": 5}}]}])
     warnings: list[str] = []
 
@@ -451,19 +441,17 @@ _INVALID_ALIAS_WARNING = "Skipping benchmark with invalid alias: expected a stri
         ),
     ],
 )
-def test_parse_when_benchmark_is_malformed_does_warn_once_and_keep_other_benchmarks(
-    bad_benchmark: object, warning: str
+def test_parse_when_benchmark_is_malformed_does_skip_only_the_bad_benchmark_with_one_warning(
+    bad_benchmark: object, warning: str, capsys: pytest.CaptureFixture[str]
 ):
-    stdout = build_stdout([
-        bad_benchmark,
-        {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
-    ])
+    stdout = build_stdout([bad_benchmark, VALID_BENCHMARK])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
     assert result == {"valid#time": 1}
     assert warnings == [warning]
+    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------
@@ -489,17 +477,16 @@ def test_parse_when_benchmark_is_malformed_does_warn_once_and_keep_other_benchma
             id="alias-missing-placeholder",
         ),
         pytest.param(
-            build_stdout([
-                {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 1}}]},
-                {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 2}}]},
-            ]),
+            build_stdout([benchmark("encode", p50=1), benchmark("encode", p50=2)]),
             "encode#time",
             2,
             id="two-benchmarks-share-alias",
         ),
     ],
 )
-def test_parse_when_metric_names_collide_does_warn_and_keep_last(stdout: str, name: str, kept: int):
+def test_parse_when_metric_names_collide_does_keep_last_value_with_warning(
+    stdout: str, name: str, kept: int
+):
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -519,12 +506,7 @@ def test_parse_when_metric_names_collide_does_warn_and_keep_last(stdout: str, na
 
 
 def test_parse_when_heap_avg_present_does_emit_heap_metric_keeping_integers():
-    stdout = build_stdout([
-        {
-            "alias": "test",
-            "runs": [{"name": "test", "args": {}, "stats": {"p50": 42, "heap": {"avg": 1024}}}],
-        }
-    ])
+    stdout = build_stdout([benchmark("test", stats={"p50": 42, "heap": {"avg": 1024}})])
 
     result = mitata_adapter.parse(stdout)
 
@@ -540,9 +522,7 @@ def test_parse_when_heap_avg_present_does_emit_heap_metric_keeping_integers():
     ],
 )
 def test_parse_when_heap_avg_not_given_does_skip_heap_metric_silently(stats: dict[str, Any]):
-    stdout = build_stdout([
-        {"alias": "test", "runs": [{"name": "test", "args": {}, "stats": stats}]}
-    ])
+    stdout = build_stdout([benchmark("test", stats=stats)])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -582,15 +562,10 @@ _INVALID_HEAP_PREFIX = 'Skipping heap metric of "test" with invalid'
         ),
     ],
 )
-def test_parse_when_heap_is_malformed_does_warn_once_and_keep_time_metric(
+def test_parse_when_heap_is_malformed_does_keep_time_metric_with_one_warning(
     heap_value: object, warning: str
 ):
-    stdout = build_stdout([
-        {
-            "alias": "test",
-            "runs": [{"name": "test", "args": {}, "stats": {"p50": 42, "heap": heap_value}}],
-        }
-    ])
+    stdout = build_stdout([benchmark("test", stats={"p50": 42, "heap": heap_value})])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -621,7 +596,7 @@ def test_parse_when_heap_is_malformed_does_warn_once_and_keep_time_metric(
             id="benchmarks-array-empty",
         ),
         pytest.param(
-            build_stdout([{"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {}}]}]),
+            build_stdout([benchmark("test", stats={})]),
             r"^No valid benchmark runs found$",
             id="no-valid-stats",
         ),
@@ -676,7 +651,7 @@ def test_parse_when_stdout_has_no_usable_payload_does_raise_adapter_error(
         ),
     ],
 )
-def test_parse_when_run_has_error_field_does_warn_once_and_keep_other_runs(
+def test_parse_when_run_has_error_field_does_skip_only_the_errored_run_with_one_warning(
     alias: str, runs: list[dict[str, Any]], metrics: dict[str, float], warning: str
 ):
     stdout = build_stdout([{"alias": alias, "runs": runs}])

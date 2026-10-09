@@ -17,7 +17,6 @@ POSIX-only: the flows lean on real subprocesses, worktrees, and file gating.
 import asyncio
 import re
 import subprocess
-import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -54,8 +53,15 @@ from tests._cli import run_cli
 from tests._config import benchless_config, resolved_config
 from tests._git import run_git as _git
 from tests._git import status_of
+from tests._platform import needs_posix_worktrees
 from tests._process_helpers import reaped
-from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project, tune_experiment
+from tests.loop._bench import (
+    BASELINE_LATENCY,
+    LONG_RUN_TIMEOUT,
+    TUNING_FILE,
+    commit_project,
+    tune_experiment,
+)
 from tests.loop._settle import checks_config, start_with
 from tests.session.records._fixtures import (
     finalize_record,
@@ -63,10 +69,7 @@ from tests.session.records._fixtures import (
     records_of_type,
 )
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees and gating")
-
-#: Generous budget: every command creates real worktrees and spawns real benches.
-LONG_RUN_TIMEOUT = 180
+pytestmark = needs_posix_worktrees
 
 #: Paired samples per iteration — a real measurement, but few enough to stay quick.
 SAMPLES = 5

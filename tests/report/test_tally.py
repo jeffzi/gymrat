@@ -20,11 +20,13 @@ from tests.report._assertions import (
     render_colored,
     render_plain,
 )
-from tests.report._comparisons import NWayCandidate, n_way_metric, permutation_metric
-from tests.report._verdicts import (
-    band_metric,
-    one_sided_metric,
+from tests.report._comparisons import (
+    NWayCandidate,
+    every_class_metrics,
+    n_way_metric,
+    permutation_metric,
 )
+from tests.report._verdicts import one_sided_metric
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -77,13 +79,13 @@ _TWO_CANDIDATES: MetricComparisons = {
             _TWO_CANDIDATES,
             0,
             VerdictCounts(improved=1, regressed=0, unstable=0, no_signal=0),
-            id="c0",
+            id="first-candidate-counts-its-improvement",
         ),
         pytest.param(
             _TWO_CANDIDATES,
             1,
             VerdictCounts(improved=0, regressed=1, unstable=0, no_signal=0),
-            id="c1",
+            id="second-candidate-counts-its-regression",
         ),
     ],
 )
@@ -99,18 +101,9 @@ def test_count_verdicts_when_given_metrics_does_count_each_class_for_the_named_c
 # verdict_summary_parts
 # ---------------------------------------------------------------------------
 
-_MIXED: MetricComparisons = {
-    "faster/time": permutation_metric(verdict="improved", delta=-10),
-    "slower/time": permutation_metric(verdict="regressed", delta=8),
-    "jittery/time": permutation_metric(verdict="unstable", delta=5, noise_pct=300),
-    "flat/time": permutation_metric(verdict="no-signal", delta=0.2),
-    "tied/heap": band_metric(n=10, usable_n=0),
-    "single-pair/time": band_metric(n=1, noise_pct=0.5),
-}
-
 
 def test_verdict_summary_parts_when_mixed_does_render_every_class_with_its_count_color():
-    parts = verdict_summary_parts(_MIXED, 0)
+    parts = verdict_summary_parts(every_class_metrics(), 0)
 
     assert [(render_plain(part), sorted(sgr_codes(render_colored(part)))) for part in parts] == [
         ("✓ 1 improved", ["32"]),
@@ -129,9 +122,8 @@ def test_verdict_summary_parts_when_zero_count_does_dim_the_part(label: str):
     }
 
     parts = verdict_summary_parts(only_improved, 0)
-    part = _find_plain(parts, label)
 
-    assert "2" in sgr_codes(render_colored(part))
+    assert "2" in sgr_codes(render_colored(_find_plain(parts, label)))
 
 
 def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_width():

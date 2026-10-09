@@ -5,28 +5,25 @@ which the other ``gymrat supervise`` command tests share.
 """
 
 from collections.abc import Callable
-from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.cli.supervise.preflight import PreflightFlags
+from gymrat.cli.supervise.preflight import PreflightFlags, run_preflight
 from gymrat.clock import now_ms
 from gymrat.errors import GymratError
+from gymrat.exec import kill_live_process_groups
 from gymrat.loop.start import StartResult
 from gymrat.session.budget import Budget, clear_budget, read_budget, write_budget
-from gymrat.session.paths import budget_path
-from gymrat.supervisor.supervise import SupervisionResult
+from tests._process_helpers import CleanupRegistry, track_cleanups
 from tests.cli.commands.supervise._seams import (
     CAP_MINUTES,
     CAP_MS,
-    Seams,
     err_text,
     install_seams,
     make_start_result,
-    patch_supervise,
     run,
 )
-from tests.cli.supervise._fixtures import make_supervision_result
 from tests.session.records._fixtures import (
     append_records,
     baseline_record,
@@ -42,13 +39,7 @@ def test_supervise_when_run_does_write_the_capped_budget_before_supervise(
 ):
     seams = install_seams(monkeypatch)
     seen_budgets: list[Budget | None] = []
-
-    async def probing_supervise(*args: object, **kwargs: object) -> SupervisionResult:
-        seams.record_supervise_call(args, kwargs)
-        seen_budgets.append(read_budget(repo, now_ms=now_ms()))
-        return make_supervision_result()
-
-    patch_supervise(monkeypatch, probing_supervise)
+    seams.supervise_hook = lambda _call: seen_budgets.append(read_budget(repo, now_ms=now_ms()))
     earliest_start_ms = now_ms()
 
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
@@ -68,7 +59,10 @@ def _capture_budget_writes(monkeypatch: pytest.MonkeyPatch) -> list[Budget]:
     def capturing_write(root: str, budget: Budget) -> None:
         captured_budgets.append(budget)
 
-    monkeypatch.setattr("gymrat.cli.commands.supervise.write_budget", capturing_write)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.write_budget",
+        create_autospec(write_budget, side_effect=capturing_write),
+    )
     return captured_budgets
 
 
@@ -77,89 +71,61 @@ def test_supervise_when_preflight_records_baseline_does_start_the_budget_once_it
 ):
     install_seams(monkeypatch)
     captured_budgets = _capture_budget_writes(monkeypatch)
-    clock_ms = [1_000_000.0]
-    monkeypatch.setattr("gymrat.cli.commands.supervise.now_ms", lambda: clock_ms[0])
+    clock_ms = [1_000_000]
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.now_ms",
+        create_autospec(now_ms, side_effect=lambda: clock_ms[0]),
+    )
 
     def fake_preflight_with_baseline(
         *, root: str, config: object, flags: PreflightFlags
     ) -> StartResult:
         # The baseline bench takes a minute, so a budget started before it ends a minute early.
         clock_ms[0] += 60_000
-        append_records(root, baseline_record(at=int(clock_ms[0]) * 1_000_000))
+        append_records(root, baseline_record(at=clock_ms[0] * 1_000_000))
         return make_start_result(root)
 
-    monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", fake_preflight_with_baseline)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.run_preflight",
+        create_autospec(run_preflight, side_effect=fake_preflight_with_baseline),
+    )
 
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
 
     assert result.exit_code == 0
-    assert [budget.deadline_ms for budget in captured_budgets] == [1_060_000.0 + CAP_MS]
+    assert [budget.deadline_ms for budget in captured_budgets] == [1_060_000 + CAP_MS]
 
 
-def _record_budget_release(
-    monkeypatch: pytest.MonkeyPatch, seams: Seams, *, clear_error: Exception | None = None
-) -> tuple[list[str], list[Callable[[], None]]]:
-    """Record the budget clear and every registered cleanup's uninstall, tagged by index.
+def _record_hooks_armed_at_clear(
+    monkeypatch: pytest.MonkeyPatch, *, clear_error: Exception | None = None
+) -> tuple[CleanupRegistry, list[list[Callable[[], None]]]]:
+    """Track the run's cleanups and snapshot the budget hooks still armed at each budget clear.
 
-    The run also registers the process-kill cleanup through the same seam; its
-    uninstall is tagged too so a test can filter the log down to the budget one,
-    identified after the run by :func:`_budget_uninstall_tag` rather than by its
-    position in the registration order.
+    The process-kill cleanup is left out of each snapshot, so a snapshot holds
+    only the budget's own termination hook while that hook is armed.
 
     Args:
-        monkeypatch: The fixture the budget clear is replaced through.
-        seams: The installed seams whose cleanup installer is redirected.
-        clear_error: An error the budget clear raises after recording itself.
+        monkeypatch: The fixture the cleanup installer and budget clear are replaced through.
+        clear_error: An error the budget clear raises after taking its snapshot.
 
     Returns:
-        The event log the clear and every uninstall append to, and the
-        cleanups the run registered, in registration order.
+        The registry of the run's armed cleanups, and one snapshot per budget clear.
     """
-    events: list[str] = []
-    installed: list[Callable[[], None]] = []
-
-    def fake_install(cleanup: Callable[[], None]) -> Callable[[], None]:
-        tag = f"uninstall-{len(installed)}"
-        installed.append(cleanup)
-        return lambda: events.append(tag)
+    registry = track_cleanups(monkeypatch, "gymrat.cli.commands.supervise")
+    armed_at_clear: list[list[Callable[[], None]]] = []
 
     def fake_clear(root: str) -> None:
-        events.append("clear")
+        armed_at_clear.append([
+            live for live in registry.live() if live is not kill_live_process_groups
+        ])
         if clear_error is not None:
             raise clear_error
 
-    seams.install_cleanup.side_effect = fake_install
-    monkeypatch.setattr("gymrat.cli.commands.supervise.clear_budget", fake_clear)
-    return events, installed
-
-
-def _budget_uninstall_tag(
-    repo: str, monkeypatch: pytest.MonkeyPatch, installed: list[Callable[[], None]]
-) -> str:
-    """The uninstall tag of whichever installed cleanup clears the budget file.
-
-    Restores the real ``clear_budget`` so each candidate can be invoked against a
-    probe budget file and identified by its effect, not its registration order.
-
-    Args:
-        repo: The repository whose budget file the probe writes.
-        monkeypatch: The fixture the real budget clear is restored through.
-        installed: The cleanups the run registered, in registration order.
-
-    Returns:
-        The ``uninstall-<index>`` tag of the cleanup that removed the budget file.
-
-    Raises:
-        AssertionError: No installed cleanup removed the budget file.
-    """
-    monkeypatch.setattr("gymrat.cli.commands.supervise.clear_budget", clear_budget)
-    write_budget(repo, Budget(max_minutes=10, deadline_ms=600_000.0))
-    for index, cleanup in enumerate(installed):
-        cleanup()
-        if not Path(budget_path(repo)).exists():
-            return f"uninstall-{index}"
-    msg = "no installed cleanup removed the budget file"
-    raise AssertionError(msg)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.clear_budget",
+        create_autospec(clear_budget, side_effect=fake_clear),
+    )
+    return registry, armed_at_clear
 
 
 @pytest.mark.parametrize(
@@ -172,27 +138,27 @@ def _budget_uninstall_tag(
 def test_supervise_when_run_ends_does_clear_budget_then_uninstall_its_cleanup_once(
     repo: str, monkeypatch: pytest.MonkeyPatch, raises: Exception | None, expected_exit: int
 ):
-    seams = install_seams(monkeypatch, raises=raises)
-    events, installed = _record_budget_release(monkeypatch, seams)
+    install_seams(monkeypatch, raises=raises)
+    registry, armed_at_clear = _record_hooks_armed_at_clear(monkeypatch)
 
     result = run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == expected_exit
-    budget_tag = _budget_uninstall_tag(repo, monkeypatch, installed)
-    assert [event for event in events if event in ("clear", budget_tag)] == ["clear", budget_tag]
+    assert [len(armed) for armed in armed_at_clear] == [1]
+    assert registry.live() == []
 
 
 def test_supervise_when_clear_budget_raises_does_still_uninstall_the_budget_cleanup(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    seams = install_seams(monkeypatch)
-    events, installed = _record_budget_release(
-        monkeypatch, seams, clear_error=OSError("budget file locked")
+    install_seams(monkeypatch)
+    registry, armed_at_clear = _record_hooks_armed_at_clear(
+        monkeypatch, clear_error=OSError("budget file locked")
     )
 
     result = run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 2
     assert "Error: budget file locked" in err_text(result)
-    budget_tag = _budget_uninstall_tag(repo, monkeypatch, installed)
-    assert [event for event in events if event in ("clear", budget_tag)] == ["clear", budget_tag]
+    assert [len(armed) for armed in armed_at_clear] == [1]
+    assert registry.live() == []

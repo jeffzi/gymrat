@@ -7,19 +7,18 @@ quoted. Large payloads are parked in files beside the script rather than baked
 into the source, so a channel far larger than a source literal wants to be
 still reaches the runner byte for byte.
 
-The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.loop.iterate._hooks``.
+The ``_`` prefix marks a shared helper rather than a test module; it is
+imported as ``tests.loop.iterate._hooks``.
 """
 
 import json
 import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from gymrat.loop.iterate.run import HookInvocation
 from gymrat.session.records import HookRecord
-from gymrat.session.workspace import Worktrees
-from tests.session.records._fixtures import SESSION_ID, session_record
+from tests.loop.iterate._fixtures import iterate_session_header
 
 Channel = Literal["stdout", "stderr"]
 
@@ -39,6 +38,23 @@ class HookScripts:
         self.temp_dir = temp_dir
         self.experiment_dir = experiment_dir
         self._count = 0
+
+    @classmethod
+    def for_root(cls, root: str) -> Self:
+        """A builder whose scripts sit in ``root`` and whose worktree is the session's side one.
+
+        Creates the experiment worktree directory named by
+        :func:`iterate_session_header` so an invocation can run in it.
+
+        Args:
+            root: The repository the side worktrees sit under.
+
+        Returns:
+            The builder scoped to ``root``.
+        """
+        experiment_dir = iterate_session_header(root).worktrees.experiment
+        Path(experiment_dir).mkdir(parents=True, exist_ok=True)
+        return cls(root, experiment_dir)
 
     def hook_command(self, body: str) -> str:
         """Write ``body`` as a script and give back the command that runs it."""
@@ -95,13 +111,7 @@ class HookScripts:
 
     def invocation_of(self, command: str, **overrides: Any) -> HookInvocation:
         """A ``before`` invocation on the scratch worktree, overridable field by field."""
-        session = session_record(
-            session_id=SESSION_ID,
-            worktrees=Worktrees(
-                experiment=self.experiment_dir,
-                baseline=str(Path(self.temp_dir) / "side-baseline"),
-            ),
-        )
+        session = iterate_session_header(self.temp_dir, experiment=self.experiment_dir)
         fields: dict[str, Any] = {
             "command": command,
             "stage": "before",

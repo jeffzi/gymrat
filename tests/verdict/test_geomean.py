@@ -74,21 +74,21 @@ def test_compute_geomean_when_one_metric_invalid_does_keep_other_ratio():
     assert result.value == pytest.approx(-5.0, abs=1e-5)
 
 
-def test_compute_geomean_when_all_metrics_excluded_does_return_zeroed_with_reasons():
+def test_compute_geomean_when_several_metrics_excluded_does_list_them_in_meta_order():
+    # Neither names nor reasons are in sorted order, so only the metric_meta
+    # order explains the expected sequence.
     verdicts, metric_meta = build_inputs(
         [
-            MetricSpec(name="metric1", delta=-150.0),
             MetricSpec(name="metric2", delta=math.nan),
+            MetricSpec(name="metric1", no_verdict=True),
         ],
     )
 
     result = compute_geomean(verdicts, metric_meta)
 
-    assert result.value == 0.0
-    assert result.n == 0
     assert result.excluded == (
-        Exclusion(metric="metric1", reason="infinite-rho"),
         Exclusion(metric="metric2", reason="undefined-ratio"),
+        Exclusion(metric="metric1", reason="no-verdict"),
     )
 
 

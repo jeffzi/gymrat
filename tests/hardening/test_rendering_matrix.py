@@ -2,7 +2,7 @@
 
 The suite pins the guarantee that keeps color rendering honest no matter where
 gymrat's output lands: every color surface (the report on stdout, the doctor
-report on stdout, the progress line on stderr, and the error text on stderr)
+report on stdout, the progress reporter on stderr, and the error text on stderr)
 routes through the one shared precedence rule, whose full ladder is pinned in
 ``tests/test_utils.py``.
 
@@ -13,6 +13,7 @@ public rendering surfaces in process and run everywhere.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import create_autospec
 
@@ -20,9 +21,8 @@ import pytest
 
 from gymrat.cli.budget_report import emit_report
 from gymrat.cli.commands.doctor import doctor_command
-from gymrat.cli.console import stderr_console
 from gymrat.cli.exit import format_cli_error
-from gymrat.cli.run_setup import SharedFlags
+from gymrat.cli.run_setup import SharedFlags, begin_run
 from gymrat.doctor import Check, CheckSection, build_doctor_report
 from gymrat.git import NotAGitRepositoryError
 from gymrat.report.style import render_lines
@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 
     from gymrat.report.json_doc import BudgetSummary
     from gymrat.report.types import ReportOptions
+
+# A Select Graphic Rendition sequence: color and text attributes, as opposed to
+# the cursor control a live display also writes.
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _render_probe_text(result: str, options: ReportOptions) -> str:
@@ -104,25 +108,26 @@ def _doctor_report_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
 
 
 def _progress_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
-    """Whether the progress surface would paint color for the environment.
+    """Whether the run's progress reporter paints color on a terminal stderr.
 
-    Builds the console through the real stderr factory — the one every progress
-    renderer receives — and checks whether a styled print carries ANSI. A
-    surface that stops going through the factory, or a factory that breaks the
-    shared precedence, fails this probe where a bare ``resolve_stream_color``
-    call would keep passing.
+    Builds the reporter the way a run does, through ``begin_run``, and stops it
+    so it prints its closing timing line. A reporter that stops building its
+    console through the shared stderr factory fails this probe. The live
+    display's cursor control is not color, so only an SGR sequence counts.
 
     Args:
-        monkeypatch: Unused; taken so every surface probe shares one signature.
+        monkeypatch: Replaces stderr with a terminal the probe can read back.
 
     Returns:
-        Whether a styled print on the stderr console carries ANSI.
+        Whether the progress output on stderr carries an SGR sequence.
     """
-    del monkeypatch
-    console = stderr_console()
-    with console.capture() as capture:
-        console.print("probe", style="red", end="")
-    return "\x1b[" in capture.get()
+    stderr = FakeStream(tty=True)
+    monkeypatch.setattr("sys.stderr", stderr)
+
+    reporter = begin_run(SharedFlags(), 1)
+    reporter.stop()
+
+    return _SGR.search(stderr.getvalue()) is not None
 
 
 def _error_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:

@@ -40,6 +40,7 @@ from tests.report._comparisons import (
     NWayCandidate,
     create_candidate,
     create_comparison_result,
+    every_class_metrics,
     exact_metric,
     grouped_comparison,
     memory_kind,
@@ -88,109 +89,98 @@ def test_render_report_when_ties_starve_the_test_does_mark_the_row_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_select_highlights_when_mixed_verdicts_does_rank_movers_only():
-    metrics: MetricComparisons = {
-        "small-improvement/time": permutation_metric(verdict="improved", delta=-4),
-        "quiet-unstable/time": permutation_metric(verdict="unstable", delta=6, noise_pct=210),
-        "small-regression/time": permutation_metric(verdict="regressed", delta=3),
-        "big-regression/ops": permutation_metric(
-            verdict="regressed", delta=-12, direction="higher"
-        ),
-        "within-noise/time": permutation_metric(verdict="no-signal", delta=0.4),
-        "big-improvement/time": permutation_metric(verdict="improved", delta=-20),
-        "one-sided/time": one_sided_metric(),
-        "loud-unstable/time": permutation_metric(verdict="unstable", delta=5, noise_pct=300),
-        "tied/heap": band_metric(n=10, usable_n=0),
-        "single-pair/time": band_metric(n=1, noise_pct=0.5),
-        "short-improved/time": band_metric(verdict="improved", delta=-10, n=4),
-    }
-
-    highlights = select_highlights(metrics, 0)
-
-    assert [highlight.name for highlight in highlights] == [
-        "big-regression/ops",
-        "small-regression/time",
-        "big-improvement/time",
-        "small-improvement/time",
-        "loud-unstable/time",
-        "quiet-unstable/time",
-    ]
-
-
-def test_select_highlights_when_unstable_around_zero_median_does_rank_by_absolute_noise():
-    metrics: MetricComparisons = {
-        "loud-unstable/time": permutation_metric(verdict="unstable", delta=5, noise_pct=30),
-        "zero-median/heap": permutation_metric(
-            verdict="unstable",
-            delta=-100,
-            baseline_median=100,
-            noise_pct=0.5,
-            noise_abs=381,
-            unit="bytes",
-        ),
-    }
-
-    highlights = select_highlights(metrics, 0)
-
-    assert [highlight.name for highlight in highlights] == [
-        "zero-median/heap",
-        "loud-unstable/time",
-    ]
-
-
-def test_select_highlights_when_equal_magnitude_does_keep_declaration_order():
-    metrics: MetricComparisons = {
-        "second-listed/ops": permutation_metric(verdict="regressed", delta=-5, direction="higher"),
-        "third-listed/time": permutation_metric(verdict="regressed", delta=5),
-        "first-listed/time": permutation_metric(verdict="regressed", delta=9),
-    }
-
-    highlights = select_highlights(metrics, 0)
-
-    assert [highlight.name for highlight in highlights] == [
-        "first-listed/time",
-        "second-listed/ops",
-        "third-listed/time",
-    ]
-
-
-def test_select_highlights_when_selected_does_carry_the_candidate_verdict_of_its_metric():
-    metrics: MetricComparisons = {
-        "slower/time": n_way_metric([
-            NWayCandidate(verdict="improved", delta=-10, median=90),
-            NWayCandidate(verdict="regressed", delta=8, median=108),
-        ]),
-    }
-
-    highlights = select_highlights(metrics, 1)
-
-    (highlight,) = highlights
-    assert highlight.name == "slower/time"
-    assert highlight.metric is metrics["slower/time"]
-    assert highlight.verdict is metrics["slower/time"].candidates[1].verdict
+#: Two candidates whose verdicts on ``a/time`` and ``b/time`` rank differently.
+_TWO_CANDIDATE_METRICS: MetricComparisons = {
+    "a/time": n_way_metric([
+        NWayCandidate(verdict="improved", delta=-4, median=96),
+        NWayCandidate(verdict="regressed", delta=3, median=103),
+    ]),
+    "b/time": n_way_metric([
+        NWayCandidate(verdict="regressed", delta=6, median=106),
+        NWayCandidate(verdict="no-signal", delta=0.2, median=100.2),
+    ]),
+}
 
 
 @pytest.mark.parametrize(
-    ("candidate_index", "expected"),
+    ("metrics", "candidate_index", "expected"),
     [
-        pytest.param(0, ["b/time", "a/time"], id="c0"),
-        pytest.param(1, ["a/time"], id="c1"),
+        pytest.param(
+            {
+                "small-improvement/time": permutation_metric(verdict="improved", delta=-4),
+                "quiet-unstable/time": permutation_metric(
+                    verdict="unstable", delta=6, noise_pct=210
+                ),
+                "small-regression/time": permutation_metric(verdict="regressed", delta=3),
+                "big-regression/ops": permutation_metric(
+                    verdict="regressed", delta=-12, direction="higher"
+                ),
+                "within-noise/time": permutation_metric(verdict="no-signal", delta=0.4),
+                "big-improvement/time": permutation_metric(verdict="improved", delta=-20),
+                "one-sided/time": one_sided_metric(),
+                "loud-unstable/time": permutation_metric(
+                    verdict="unstable", delta=5, noise_pct=300
+                ),
+                "tied/heap": band_metric(n=10, usable_n=0),
+                "single-pair/time": band_metric(n=1, noise_pct=0.5),
+                "short-improved/time": band_metric(verdict="improved", delta=-10, n=4),
+            },
+            0,
+            [
+                "big-regression/ops",
+                "small-regression/time",
+                "big-improvement/time",
+                "small-improvement/time",
+                "loud-unstable/time",
+                "quiet-unstable/time",
+            ],
+            id="mixed-verdicts-rank-movers-only",
+        ),
+        pytest.param(
+            {
+                "loud-unstable/time": permutation_metric(verdict="unstable", delta=5, noise_pct=30),
+                "zero-median/heap": permutation_metric(
+                    verdict="unstable",
+                    delta=-100,
+                    baseline_median=100,
+                    noise_pct=0.5,
+                    noise_abs=381,
+                    unit="bytes",
+                ),
+            },
+            0,
+            ["zero-median/heap", "loud-unstable/time"],
+            id="unstable-around-zero-median-ranks-by-absolute-noise",
+        ),
+        pytest.param(
+            {
+                "second-listed/ops": permutation_metric(
+                    verdict="regressed", delta=-5, direction="higher"
+                ),
+                "third-listed/time": permutation_metric(verdict="regressed", delta=5),
+                "first-listed/time": permutation_metric(verdict="regressed", delta=9),
+            },
+            0,
+            ["first-listed/time", "second-listed/ops", "third-listed/time"],
+            id="equal-magnitude-keeps-declaration-order",
+        ),
+        pytest.param(
+            _TWO_CANDIDATE_METRICS,
+            0,
+            ["b/time", "a/time"],
+            id="first-candidate-ranks-by-its-own-verdicts",
+        ),
+        pytest.param(
+            _TWO_CANDIDATE_METRICS,
+            1,
+            ["a/time"],
+            id="second-candidate-ranks-by-its-own-verdicts",
+        ),
     ],
 )
-def test_select_highlights_when_multiple_candidates_does_rank_each_by_its_own_verdicts(
-    candidate_index: int, expected: list[str]
+def test_select_highlights_when_verdicts_vary_does_rank_the_candidate_movers(
+    metrics: MetricComparisons, candidate_index: int, expected: list[str]
 ):
-    metrics: MetricComparisons = {
-        "a/time": n_way_metric([
-            NWayCandidate(verdict="improved", delta=-4, median=96),
-            NWayCandidate(verdict="regressed", delta=3, median=103),
-        ]),
-        "b/time": n_way_metric([
-            NWayCandidate(verdict="regressed", delta=6, median=106),
-            NWayCandidate(verdict="no-signal", delta=0.2, median=100.2),
-        ]),
-    }
-
     highlights = select_highlights(metrics, candidate_index)
 
     assert [highlight.name for highlight in highlights] == expected
@@ -229,7 +219,7 @@ def test_render_report_when_metric_name_has_colon_word_does_align_deltas_with_ot
 
 
 # ---------------------------------------------------------------------------
-# --fail-on geomean gate trips
+# --fail-on gate trips
 # ---------------------------------------------------------------------------
 
 
@@ -245,20 +235,13 @@ def _tripping_result(geomean: float = 3.1, gated: float = 3.1) -> ComparisonResu
     Returns:
         The comparison result.
     """
-    return replace(
-        two_kind_result(),
-        candidates=(
-            create_candidate(
-                kinds=[
-                    replace(
-                        time_kind(),
-                        geomean=geomean_of(geomean, 3),
-                        gated_geomean=geomean_of(gated, 3),
-                    ),
-                    memory_kind(),
-                ]
+    return two_kind_result(
+        kinds=[
+            replace(
+                time_kind(), geomean=geomean_of(geomean, 3), gated_geomean=geomean_of(gated, 3)
             ),
-        ),
+            memory_kind(),
+        ]
     )
 
 
@@ -268,29 +251,29 @@ def _gate_lines(report: str) -> list[str]:
 
 def _informational_kind_result() -> ComparisonResult:
     """A two-kind run whose second kind gates nothing, so it has no gated geomean."""
-    return replace(
-        two_kind_result(),
-        candidates=(
-            create_candidate(kinds=[time_kind(), without_gated_geomean(other_kind(9, 1))]),
-        ),
-    )
+    return two_kind_result(kinds=[time_kind(), without_gated_geomean(other_kind(9, 1))])
 
 
 @pytest.mark.parametrize(
-    ("result", "options"),
+    ("result", "options", "expected"),
     [
-        pytest.param(_tripping_result(), ReportOptions(), id="no-conditions"),
+        pytest.param(_tripping_result(), ReportOptions(), [], id="no-conditions"),
         pytest.param(
             _tripping_result(),
             ReportOptions(fail_on=(GeomeanFailOn(pct=10),)),
+            [],
             id="threshold-beyond",
         ),
         pytest.param(
-            _tripping_result(), ReportOptions(fail_on=(RegressedFailOn(),)), id="only-regressed"
+            _tripping_result(),
+            ReportOptions(fail_on=(RegressedFailOn(),)),
+            [],
+            id="only-regressed",
         ),
         pytest.param(
             _informational_kind_result(),
             ReportOptions(fail_on=(GeomeanFailOn(pct=2),)),
+            [],
             id="informational-kind",
         ),
         pytest.param(
@@ -298,6 +281,7 @@ def _informational_kind_result() -> ComparisonResult:
                 metrics={"slow/time": permutation_metric(verdict="regressed", delta=8)}
             ),
             ReportOptions(fail_on=(RegressedFailOn(),)),
+            [],
             id="regression-already-shown",
         ),
         pytest.param(
@@ -305,50 +289,37 @@ def _informational_kind_result() -> ComparisonResult:
                 metrics={"slow/time": band_metric(verdict="regressed", delta=8, n=4)}
             ),
             ReportOptions(),
+            [],
             id="no-regressed-condition",
         ),
-    ],
-)
-def test_render_report_when_no_gate_trips_or_needs_explaining_does_say_nothing_about_a_gate(
-    result: ComparisonResult, options: ReportOptions
-):
-    report = render_report(result, options)
-
-    assert _gate_lines(report) == []
-
-
-_TRIP_ENTRIES = [
-    "✗ time · entity.spawn         +4.0%",
-    "✓ time · entity.alive_check  -10.0%",
-    "✓ memory · encode             -7.0%",
-]
-
-
-@pytest.mark.parametrize(
-    ("geomean", "gated", "expected"),
-    [
-        pytest.param(5, 1, _TRIP_ENTRIES, id="overall-trips-gated-does-not"),
         pytest.param(
-            1,
-            5,
-            [*_TRIP_ENTRIES, "⚑ time gated geomean +5.0% exceeded --fail-on geomean:2"],
+            create_comparison_result(
+                metrics={"slow/time": band_metric(verdict="regressed", delta=8, n=4)}
+            ),
+            ReportOptions(fail_on=(RegressedFailOn(),)),
+            ["⚑ slow/time regressed +8.0% on 4 pairs tripped --fail-on regressed"],
+            id="regressed-trips-on-inconclusive",
+        ),
+        pytest.param(
+            _tripping_result(5, 1),
+            ReportOptions(fail_on=(GeomeanFailOn(pct=2),)),
+            [],
+            id="overall-trips-gated-does-not",
+        ),
+        pytest.param(
+            _tripping_result(1, 5),
+            ReportOptions(fail_on=(GeomeanFailOn(pct=2),)),
+            ["⚑ time gated geomean +5.0% exceeded --fail-on geomean:2"],
             id="gated-trips-overall-does-not",
         ),
     ],
 )
-def test_render_report_when_gating_does_judge_on_the_gated_geomean(
-    geomean: float, gated: float, expected: list[str]
+def test_render_report_when_gate_conditions_vary_does_list_only_tripped_gates(
+    result: ComparisonResult, options: ReportOptions, expected: list[str]
 ):
-    result = _tripping_result(geomean, gated)
+    report = render_report(result, options)
 
-    highlights = [
-        line.strip()
-        for line in highlight_lines(
-            render_report(result, ReportOptions(fail_on=(GeomeanFailOn(pct=2),)))
-        )
-    ]
-
-    assert highlights == expected
+    assert _gate_lines(report) == expected
 
 
 def test_render_report_when_gating_multi_candidate_does_flag_only_those_that_exceeded():
@@ -356,31 +327,10 @@ def test_render_report_when_gating_multi_candidate_does_flag_only_those_that_exc
         render_report(grouped_comparison(), ReportOptions(fail_on=(GeomeanFailOn(pct=2),)))
     )
 
-    assert highlights == [
-        "  candidate-a",
-        "    ✓ time · entity.alive_check  -10.0%",
-        "    ✓ memory · encode             -7.0%",
-        "  candidate-b",
-        "    ✗ time · entity.alive_check   +4.0%",
-        "    ✓ memory · encode             -2.0%",
-        "    ⚑ time gated geomean +4.0% exceeded --fail-on geomean:2",
-    ]
-
-
-# ---------------------------------------------------------------------------
-# --fail-on regressed gate trips
-# ---------------------------------------------------------------------------
-
-
-def test_render_report_when_regressed_gate_trips_on_inconclusive_metric_does_name_it():
-    result = create_comparison_result(
-        metrics={"slow/time": band_metric(verdict="regressed", delta=8, n=4)}
-    )
-
-    report = render_report(result, ReportOptions(fail_on=(RegressedFailOn(),)))
-
-    assert _gate_lines(report) == [
-        "⚑ slow/time regressed +8.0% on 4 pairs tripped --fail-on regressed"
+    assert [line.strip() for line in highlights if line.strip().startswith(("candidate", "⚑"))] == [
+        "candidate-a",
+        "candidate-b",
+        "⚑ time gated geomean +4.0% exceeded --fail-on geomean:2",
     ]
 
 
@@ -568,6 +518,9 @@ def _mixed_method_result() -> ComparisonResult:
 
     ``decode/time`` paired on 10 of the 12 rounds — enough for the permutation
     test — while ``encode/time`` paired on 4 and fell back to the noise band.
+
+    Returns:
+        The comparison result.
     """
     return create_comparison_result(
         samples=12,
@@ -699,14 +652,7 @@ def test_render_report_when_a_cleanup_reason_has_whitespace_runs_does_collapse_e
 def _colorful_result() -> ComparisonResult:
     """A run whose rows cover every verdict class, plus a geomean figure."""
     return create_comparison_result(
-        metrics={
-            "faster/time": permutation_metric(verdict="improved", delta=-17.5, unit="ns"),
-            "slower/time": permutation_metric(verdict="regressed", delta=2.4, unit="ns"),
-            "flat/time": permutation_metric(verdict="no-signal", delta=0.3, unit="ns"),
-            "tied/heap": band_metric(verdict="no-signal", delta=-0.5, n=10, usable_n=0),
-            "single-pair/time": band_metric(delta=-0.4, noise_pct=0.5, n=1, unit="ns"),
-            "jittery/time": permutation_metric(verdict="unstable", delta=-50, noise_pct=30),
-        },
+        metrics=every_class_metrics(),
         candidates=[
             create_candidate(
                 kinds=[

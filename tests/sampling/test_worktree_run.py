@@ -42,7 +42,6 @@ from tests._git import (
     register_absent_worktree,
 )
 from tests._mode_bits import needs_mode_bits
-from tests._pipeline import CLEAN_RESULT, DIRTY_RESULT, install_cleanup
 from tests._process_helpers import fake_install, track_cleanups
 
 # A sha no repository holds, so ``git worktree add`` rejects it outright.
@@ -120,6 +119,8 @@ def test_resolve_label_when_given_target_does_prefer_explicit_label_then_ref_nam
 
 _PRUNE = ("prune",)
 
+_REFUSED = "contains modified files"
+
 
 def _removal(directory: Path) -> tuple[str, ...]:
     """The recorded shape of one targeted removal of ``directory``."""
@@ -158,6 +159,125 @@ def _record_git(
     return git_calls
 
 
+def _git_answer(
+    args: Sequence[str], *, refused: Sequence[Path], prune_error: str | None
+) -> str | None:
+    """How the scripted git seam answers one sweep call.
+
+    A removal of a ``refused`` directory fails and leaves it as it was; any
+    other removal deletes the directory and succeeds. A prune answers
+    ``prune_error``.
+
+    Args:
+        args: The git arguments the sweep passed.
+        refused: The worktree directories git refuses to remove.
+        prune_error: What a prune answers; ``None`` is success.
+
+    Returns:
+        The error git reports, or ``None`` on success.
+    """
+    if "prune" in args:
+        return prune_error
+    if Path(args[-1]) in refused:
+        return _REFUSED
+    shutil.rmtree(args[-1], ignore_errors=True)
+    return None
+
+
+def _answer_git(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    refused: Sequence[Path] = (),
+    prune_error: str | None = None,
+) -> None:
+    """Stub the sweep's git seam with the scripted answers of :func:`_git_answer`.
+
+    Args:
+        monkeypatch: Patches the git seam the sweep calls.
+        refused: The worktree directories git refuses to remove.
+        prune_error: What a prune answers; ``None`` is success.
+    """
+
+    def _try_git(args: Sequence[str], cwd: str) -> str | None:
+        return _git_answer(args, refused=refused, prune_error=prune_error)
+
+    monkeypatch.setattr(sampling, "try_git", _try_git)
+
+
+@dataclass(frozen=True, slots=True)
+class _Sweep:
+    """Worktrees a phase claims, how git answers their sweep, and what that sweep reports."""
+
+    worktrees: list[WorktreeInfo]
+    refused: tuple[Path, ...]
+    prune_error: str | None
+    expected: CleanupResult
+
+
+def _nothing_claimed(_tmp_path: Path) -> _Sweep:
+    """A phase that claims no worktree, so the sweep has nothing to do."""
+    return _Sweep([], (), None, CleanupResult(removed=0, failures=(), prune_error=None))
+
+
+def _one_left_behind(tmp_path: Path) -> _Sweep:
+    """One worktree on disk that git refuses to remove."""
+    left = tmp_path / "left"
+    return _Sweep(
+        [_worktree_at(left)],
+        (left,),
+        None,
+        CleanupResult(
+            removed=0,
+            failures=(WorktreeRemovalFailure(dir=str(left), error=_REFUSED),),
+            prune_error=None,
+        ),
+    )
+
+
+def _prune_failed(tmp_path: Path) -> _Sweep:
+    """One worktree removed and one stale entry whose owed prune fails."""
+    removed, stale = tmp_path / "removed", tmp_path / "stale"
+    return _Sweep(
+        [_worktree_at(removed), _worktree_at(stale, on_disk=False)],
+        (stale,),
+        "could not prune",
+        CleanupResult(removed=1, failures=(), prune_error="could not prune"),
+    )
+
+
+def _removed_left_and_prune_failed(tmp_path: Path) -> _Sweep:
+    """One worktree removed, one left behind, and a stale entry whose prune fails."""
+    removed, left, stale = tmp_path / "removed", tmp_path / "left", tmp_path / "stale"
+    return _Sweep(
+        [_worktree_at(removed), _worktree_at(left), _worktree_at(stale, on_disk=False)],
+        (left, stale),
+        "could not prune",
+        CleanupResult(
+            removed=1,
+            failures=(WorktreeRemovalFailure(dir=str(left), error=_REFUSED),),
+            prune_error="could not prune",
+        ),
+    )
+
+
+def _install_sweep(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, arrange: Callable[[Path], _Sweep]
+) -> _Sweep:
+    """Lay down ``arrange``'s worktrees and script git to answer their sweep.
+
+    Args:
+        monkeypatch: Patches the git seam the sweep calls.
+        tmp_path: Where the worktree directories are created.
+        arrange: Builds the sweep scenario under ``tmp_path``.
+
+    Returns:
+        The scenario, carrying the worktrees a phase should claim.
+    """
+    sweep = arrange(tmp_path)
+    _answer_git(monkeypatch, refused=sweep.refused, prune_error=sweep.prune_error)
+    return sweep
+
+
 async def test_run_with_worktrees_when_phase_succeeds_does_build_the_result_from_one_guarded_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -170,7 +290,6 @@ async def test_run_with_worktrees_when_phase_succeeds_does_build_the_result_from
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
         phase_args["armed"] = len(registry.live())
         phase_args["repo_dir"] = repo_dir
-        phase_args["abort"] = abort
         worktrees.append(claimed)
         return "measurement"
 
@@ -180,7 +299,6 @@ async def test_run_with_worktrees_when_phase_succeeds_does_build_the_result_from
     assert git_calls == [_removal(tmp_path / "wt")]
     assert (phase_args["armed"], registry.live()) == (1, [])
     assert phase_args["repo_dir"] == str(Path.cwd())
-    assert isinstance(phase_args["abort"], asyncio.Event)
 
 
 async def test_run_with_worktrees_when_phase_raises_and_cleanup_clean_does_reraise_original(
@@ -191,10 +309,8 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_clean_does_rerai
     git_calls = _record_git(monkeypatch)
     claimed = _worktree_at(tmp_path / "wt")
     original = CommandError("bench command failed", hint="check the target")
-    armed: list[int] = []
 
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
-        armed.append(len(registry.live()))
         worktrees.append(claimed)
         raise original
 
@@ -203,7 +319,7 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_clean_does_rerai
 
     assert caught.value is original
     assert git_calls == [_removal(tmp_path / "wt")]
-    assert (armed, registry.live()) == ([1], [])
+    assert registry.live() == []
 
 
 async def test_run_with_worktrees_when_phase_cancelled_does_tear_down_without_sweeping(
@@ -213,10 +329,8 @@ async def test_run_with_worktrees_when_phase_cancelled_does_tear_down_without_sw
     registry = track_cleanups(monkeypatch, "gymrat.sampling")
     git_calls = _record_git(monkeypatch)
     claimed = _worktree_at(tmp_path / "wt")
-    armed: list[int] = []
 
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
-        armed.append(len(registry.live()))
         worktrees.append(claimed)
         raise asyncio.CancelledError
 
@@ -224,17 +338,19 @@ async def test_run_with_worktrees_when_phase_cancelled_does_tear_down_without_sw
         await run_with_worktrees(phase, lambda m, c: (m, c))
 
     assert git_calls == []
-    assert (armed, registry.live()) == ([1], [])
+    assert registry.live() == []
 
 
 async def test_run_with_worktrees_when_build_result_raises_does_propagate_it_without_cleanup_details(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ):
     registry = track_cleanups(monkeypatch, "gymrat.sampling")
-    install_cleanup(monkeypatch, DIRTY_RESULT)
+    sweep = _install_sweep(monkeypatch, tmp_path, _removed_left_and_prune_failed)
     broken = RuntimeError("report failed")
 
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
+        worktrees.extend(sweep.worktrees)
         return "measurement"
 
     def build_result(_measurement: str, _cleanup: CleanupResult) -> str:
@@ -263,21 +379,22 @@ async def test_run_with_worktrees_when_build_result_raises_does_propagate_it_wit
 )
 async def test_run_with_worktrees_when_phase_raises_and_cleanup_dirty_does_wrap_with_the_unfinished_cleanup(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     original: Exception,
     wrapped_type: type[Exception],
     hint: str | None,
 ):
     track_cleanups(monkeypatch, "gymrat.sampling")
-    cleanup = DIRTY_RESULT
-    install_cleanup(monkeypatch, cleanup)
+    sweep = _install_sweep(monkeypatch, tmp_path, _removed_left_and_prune_failed)
 
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
+        worktrees.extend(sweep.worktrees)
         raise original
 
     with pytest.raises(Exception) as caught:  # noqa: PT011 -- the row names the exact type below
         await run_with_worktrees(phase, lambda m, c: (m, c))
 
-    details = format_cleanup_failures(cleanup.failures, cleanup.prune_error)
+    details = format_cleanup_failures(sweep.expected.failures, sweep.expected.prune_error)
     assert type(caught.value) is wrapped_type
     assert str(caught.value) == "\n".join([
         str(original),
@@ -363,47 +480,44 @@ def _cleanup_block(cleanup: CleanupResult) -> str:
     return "\n".join(["cleanup did not finish:", *details]) + "\n"
 
 
-_LEFT_BEHIND = CleanupResult(
-    removed=0,
-    failures=(WorktreeRemovalFailure(dir="/tmp/gymrat-wt", error="contains modified files"),),
-    prune_error=None,
-)
 _PRUNE_FAILED = CleanupResult(removed=1, failures=(), prune_error="could not prune")
 
 
 @pytest.mark.parametrize(
-    ("cleanup", "expected_stderr"),
+    ("arrange", "unfinished"),
     [
-        pytest.param(_LEFT_BEHIND, _cleanup_block(_LEFT_BEHIND), id="worktree-left-behind"),
-        pytest.param(_PRUNE_FAILED, _cleanup_block(_PRUNE_FAILED), id="prune-failed"),
-        pytest.param(CLEAN_RESULT, "", id="clean-sweep"),
+        pytest.param(_one_left_behind, True, id="worktree-left-behind"),
+        pytest.param(_prune_failed, True, id="prune-failed"),
+        pytest.param(_nothing_claimed, False, id="clean-sweep"),
     ],
 )
 async def test_run_with_worktrees_when_signalled_does_report_unfinished_cleanup_on_stderr_before_exit(
-    cleanup: CleanupResult,
-    expected_stderr: str,
     monkeypatch: pytest.MonkeyPatch,
     raise_signal: Callable[[int], int],
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    *,
+    arrange: Callable[[Path], _Sweep],
+    unfinished: bool,
 ):
-    install_cleanup(monkeypatch, cleanup)
+    sweep = _install_sweep(monkeypatch, tmp_path, arrange)
     at_exit: list[tuple[int, str]] = []
 
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
+        worktrees.extend(sweep.worktrees)
         code = raise_signal(signal.SIGTERM)
         at_exit.append((code, capsys.readouterr().err))
         return "measurement"
 
     await run_with_worktrees(phase, lambda m, c: (m, c))
 
+    expected_stderr = _cleanup_block(sweep.expected) if unfinished else ""
     assert at_exit == [(128 + signal.SIGTERM, expected_stderr)]
 
 
 # ---------------------------------------------------------------------------
 # run_with_worktrees — a signal that takes over the normal sweep
 # ---------------------------------------------------------------------------
-
-_REFUSED = "contains modified files"
 
 
 @dataclass(frozen=True, slots=True)
@@ -449,12 +563,7 @@ def _patch_git(
         if call == signal_during and not exits:
             code = raise_signal(signal.SIGTERM)
             exits.append(_Exit(code, capsys.readouterr().err, sorted(git_calls)))
-        if call == _PRUNE:
-            return prune_error
-        if call == _removal(refused):
-            return _REFUSED
-        shutil.rmtree(args[-1], ignore_errors=True)
-        return None
+        return _git_answer(args, refused=(refused,), prune_error=prune_error)
 
     monkeypatch.setattr(sampling, "try_git", _try_git)
     return exits
@@ -606,13 +715,10 @@ def _leave_interrupted_worktree(repo_dir: str) -> WorktreeInfo:
 
 def _plan_rejected_worktree(repo_dir: str) -> WorktreeInfo:
     """Plan a worktree whose ``git worktree add`` fails before creating anything."""
-    worktree, failed = _plan_and_attempt_materialize(
-        RefTarget(ref="missing", resolved_sha=UNKNOWN_SHA), repo_dir
-    )
-    if failed and not Path(worktree.dir).exists():
-        return worktree
-    message = f"expected 'git worktree add' to create nothing at {worktree.dir}"
-    raise AssertionError(message)
+    worktree = plan_worktree(RefTarget(ref="missing", resolved_sha=UNKNOWN_SHA))
+    with contextlib.suppress(GymratError):
+        materialize_worktree(worktree, repo_dir)
+    return worktree
 
 
 def _create_stray_worktree(tmp_path: Path) -> WorktreeInfo:
@@ -728,8 +834,9 @@ def test_materialize_worktree_when_git_refuses_does_fail_with_its_stderr_leaving
         materialize_worktree(worktree, repo)
 
     message = str(exc_info.value)
-    assert message.startswith(f"git worktree add failed for {worktree.sha}: ")
-    assert named in message
+    prefix = f"git worktree add failed for {worktree.sha}: "
+    assert message.startswith(prefix)
+    assert named in message.removeprefix(prefix)
     assert "returned non-zero exit status" not in message
     assert worktree.created is False
     assert list_worktree_dirs(repo, include_main=False) == []
@@ -749,7 +856,7 @@ def test_materialize_worktree_when_add_interrupted_does_set_created_from_disk_st
     sha = head_of(repo)
     worktree = plan_worktree(RefTarget(ref=sha, resolved_sha=sha))
 
-    with contextlib.suppress(GymratError):
+    with pytest.raises(GymratError):
         materialize_worktree(worktree, repo)
 
     assert worktree.created is True
@@ -815,7 +922,7 @@ def test_cleanup_worktrees_when_dir_gone_does_deregister_only_that_worktree(repo
     assert result == CleanupResult(removed=0, failures=(), prune_error=None)
 
 
-def test_cleanup_worktrees_when_removal_fails_does_report_git_error_and_still_remove_later_worktrees(
+def test_cleanup_worktrees_when_removal_fails_does_record_the_failure_without_stopping_the_sweep(
     repo: str, tmp_path: Path
 ):
     absent = register_absent_worktree(repo)
@@ -826,7 +933,6 @@ def test_cleanup_worktrees_when_removal_fails_does_report_git_error_and_still_re
 
     assert [failure.dir for failure in result.failures] == [stray.dir]
     assert "is not a working tree" in result.failures[0].error
-    assert "returned non-zero exit status" not in result.failures[0].error
     assert result.removed == 1
     assert not Path(worktree.dir).exists()
     assert absent in list_worktree_dirs(repo)

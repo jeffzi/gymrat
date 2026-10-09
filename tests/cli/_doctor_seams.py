@@ -1,8 +1,16 @@
 """The stand-ins the ``gymrat doctor`` command tests install over every doctor seam."""
 
+from unittest.mock import create_autospec
+
 import pytest
 
-from gymrat.doctor import Check, CheckSection
+from gymrat.doctor import (
+    Check,
+    CheckSection,
+    build_environment_section,
+    render_doctor_json,
+    render_doctor_report,
+)
 from tests._doctor_fixtures import patch_common_seams
 
 
@@ -25,20 +33,18 @@ def patch_doctor(
     """
     patch_common_seams(monkeypatch, config_failure=False, bench_fail=bench_fail, problems=[])
 
-    def env_section(*_a: object, **_k: object) -> CheckSection:
-        if env_error is not None:
-            raise env_error
-        return CheckSection(title="Environment", checks=[Check("git", "ok", "available")])
-
-    monkeypatch.setattr("gymrat.doctor.build_environment_section", env_section)
-
-    def fake_text(_report: object, **_kwargs: object) -> str:
-        return "doctor text report"
-
-    def fake_json(_report: object) -> str:
-        return '{"doctor": true}'
-
+    env_section = CheckSection(title="Environment", checks=[Check("git", "ok", "available")])
+    monkeypatch.setattr(
+        "gymrat.doctor.build_environment_section",
+        create_autospec(build_environment_section, return_value=env_section, side_effect=env_error),
+    )
     if stub_text:
-        monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_report", fake_text)
+        monkeypatch.setattr(
+            "gymrat.cli.commands.doctor.render_doctor_report",
+            create_autospec(render_doctor_report, return_value="doctor text report"),
+        )
     if stub_json:
-        monkeypatch.setattr("gymrat.cli.commands.doctor.render_doctor_json", fake_json)
+        monkeypatch.setattr(
+            "gymrat.cli.commands.doctor.render_doctor_json",
+            create_autospec(render_doctor_json, return_value='{"doctor": true}'),
+        )

@@ -43,6 +43,8 @@ from gymrat.report.loop import (
 from gymrat.session.workspace import BaselineRef, Worktrees
 from tests.report._assertions import render_colored, render_plain, styles_at
 from tests.session.records._fixtures import (
+    RECOGNIZABLE_BASELINE_SHA,
+    RECOGNIZABLE_KEEP_COMMIT,
     SESSION_ID,
     baseline_record,
     finalize_record,
@@ -61,7 +63,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def test_format_loop_header_when_given_seq_and_samples_does_state_bold_iteration_comparison_and_count():
+def test_format_loop_header_when_given_seq_and_samples_does_render_the_header_line():
     header = format_loop_header(7, 6)
 
     assert render_plain(header) == "iteration 7 · experiment vs baseline · 6 paired samples"
@@ -81,7 +83,7 @@ def test_format_loop_header_when_given_seq_and_samples_does_state_bold_iteration
         pytest.param("no-signal", "NO-SIGNAL", ["1"], id="no-signal-uncolored"),
     ],
 )
-def test_format_verdict_block_when_given_outcome_does_state_primary_delta_and_bold_verdict(
+def test_format_verdict_block_when_given_outcome_does_render_the_verdict_line(
     outcome: Outcome, word: str, codes: list[str]
 ):
     block = format_verdict_block(
@@ -134,11 +136,6 @@ def test_format_verdict_block_when_rerun_does_color_phrase_by_answer(
 # status formatters
 # ---------------------------------------------------------------------------
 
-# A 40-hex baseline sha whose first seven characters are recognizable on their own.
-_BASELINE_SHA = "a1b2c3d" + "e" * 33
-# A 40-hex keep-commit sha whose first seven characters are recognizable on their own.
-_KEEP_COMMIT = "b1b2b3b" + "c" * 33
-
 
 def _status_iteration(settle: SettleState) -> StatusIteration:
     """An improved iteration numbered 1, settled the way ``settle`` says."""
@@ -183,11 +180,11 @@ def _status_summary(**overrides: Any) -> StatusSummary:
         ),
     ],
 )
-def test_format_status_header_when_given_session_does_name_session_baseline_branch_worktrees_adapter(
+def test_format_status_header_when_given_session_does_name_bold_session_baseline_branch_worktrees_adapter(
     worktrees: Worktrees, expected_worktree_lines: list[str]
 ):
     session = session_record(
-        baseline=BaselineRef(ref="main", sha=_BASELINE_SHA), worktrees=worktrees
+        baseline=BaselineRef(ref="main", sha=RECOGNIZABLE_BASELINE_SHA), worktrees=worktrees
     )
 
     lines = format_status_header(session)
@@ -197,13 +194,6 @@ def test_format_status_header_when_given_session_does_name_session_baseline_bran
         f"branch gymrat/{SESSION_ID}",
         *expected_worktree_lines,
     ]
-
-
-def test_format_status_header_when_colored_does_bold_the_session():
-    session = session_record(baseline=BaselineRef(ref="main", sha=_BASELINE_SHA))
-
-    lines = format_status_header(session)
-
     assert "1" in styles_at(render_colored(lines[0]), f"session {SESSION_ID}")
 
 
@@ -213,10 +203,35 @@ def test_format_status_header_when_colored_does_bold_the_session():
 
 
 @pytest.mark.parametrize(
+    ("outcome", "expected", "glyph", "glyph_codes"),
+    [
+        pytest.param(
+            "improved", "iteration 1 · ✓ -7.2% · unsettled", "✓", ["1", "32"], id="improved-green"
+        ),
+        pytest.param(
+            "regressed", "iteration 1 · ✗ -7.2% · unsettled", "✗", ["1", "31"], id="regressed-red"
+        ),
+        pytest.param(
+            "no-signal", "iteration 1 · ~ -7.2% · unsettled", "~", ["1"], id="no-signal-uncolored"
+        ),
+    ],
+)
+def test_format_status_iteration_when_outcome_varies_does_paint_the_outcome_glyph(
+    outcome: Outcome, expected: str, glyph: str, glyph_codes: list[str]
+):
+    entry = replace(_status_iteration(SettleUnsettled()), outcome=outcome)
+
+    line = format_status_iteration(entry)
+
+    assert render_plain(line) == expected
+    assert styles_at(render_colored(line), glyph) == glyph_codes
+
+
+@pytest.mark.parametrize(
     ("entry", "expected"),
     [
         pytest.param(
-            _status_iteration(SettleKept(commit=_KEEP_COMMIT)),
+            _status_iteration(SettleKept(commit=RECOGNIZABLE_KEEP_COMMIT)),
             "iteration 1 · ✓ -7.2% · kept b1b2b3b",
             id="kept-with-commit",
         ),
@@ -244,42 +259,18 @@ def test_format_status_header_when_colored_does_bold_the_session():
             id="blocked-no-reason",
         ),
         pytest.param(
-            replace(_status_iteration(SettleUnsettled()), outcome="regressed"),
-            "iteration 1 · ✗ -7.2% · unsettled",
-            id="regressed-glyph",
-        ),
-        pytest.param(
-            replace(_status_iteration(SettleUnsettled()), outcome="no-signal"),
-            "iteration 1 · ~ -7.2% · unsettled",
-            id="no-signal-glyph",
+            replace(_status_iteration(SettleUnsettled()), delta_pct=None, outcome="no-signal"),
+            "iteration 1 · ~ · unsettled",
+            id="delta-unmeasured-states-no-percentage",
         ),
     ],
 )
-def test_format_status_iteration_when_outcome_or_settle_varies_does_state_its_glyph_and_settle(
+def test_format_status_iteration_when_settle_varies_does_state_the_settle(
     entry: StatusIteration, expected: str
 ):
-    assert render_plain(format_status_iteration(entry)) == expected
+    line = format_status_iteration(entry)
 
-
-def test_format_status_iteration_when_delta_unmeasured_does_state_no_percentage():
-    entry = replace(_status_iteration(SettleUnsettled()), delta_pct=None, outcome="no-signal")
-
-    assert render_plain(format_status_iteration(entry)) == "iteration 1 · ~ · unsettled"
-
-
-@pytest.mark.parametrize(
-    ("outcome", "glyph", "color_code"),
-    [
-        pytest.param("improved", "✓", "32", id="improved-green"),
-        pytest.param("regressed", "✗", "31", id="regressed-red"),
-    ],
-)
-def test_format_status_iteration_when_colored_does_paint_the_glyph(
-    outcome: Outcome, glyph: str, color_code: str
-):
-    entry = replace(_status_iteration(SettleUnsettled()), outcome=outcome)
-
-    assert color_code in styles_at(render_colored(format_status_iteration(entry)), glyph)
+    assert render_plain(line) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -354,14 +345,6 @@ def test_format_status_baseline_when_given_samples_does_state_label_and_median_p
 # ---------------------------------------------------------------------------
 
 
-def test_format_status_footer_when_one_iteration_does_total_the_settles_in_the_singular():
-    summary = _status_summary(iteration_count=1, keep_count=1, discard_count=0)
-
-    lines = format_status_footer(summary)
-
-    assert [render_plain(line) for line in lines] == ["1 iteration · 1 kept · 0 discarded"]
-
-
 @pytest.mark.parametrize(
     ("summary", "stop_lines"),
     [
@@ -405,7 +388,7 @@ def test_format_status_footer_when_stop_configured_does_state_the_conditions(
 # ---------------------------------------------------------------------------
 
 
-def test_format_status_finalized_when_given_record_does_state_bold_finalized_branch_and_commit():
+def test_format_status_finalized_when_given_record_does_render_the_finalized_line():
     line = format_status_finalized(finalize_record())
 
     assert render_plain(line) == f"finalized · branch gymrat/{SESSION_ID}-final · commit ccccccc"
@@ -428,7 +411,7 @@ def test_format_status_finalized_when_given_record_does_state_bold_finalized_bra
         ),
     ],
 )
-def test_format_status_stop_when_given_message_does_render_bold_stopped_and_its_first_line(
+def test_format_status_stop_when_given_message_does_render_the_stopped_line(
     message: str, expected: str
 ):
     line = format_status_stop(message)

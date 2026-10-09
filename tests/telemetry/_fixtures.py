@@ -2,7 +2,9 @@
 
 The ``memory_tracing`` context manager wires an in-memory exporter so tests
 can inspect finished spans without a collector; ``hide_otlp_exporter`` and
-``hide_otel_sdk`` make the optional tracing packages fail to import.
+``hide_otel_sdk`` make the optional tracing packages fail to import,
+``arm_placeholder_endpoint`` sets an endpoint so tracing is asked for, and
+``disable_otel_sdk`` turns the SDK off while that endpoint is set.
 """
 
 from __future__ import annotations
@@ -21,6 +23,10 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcess
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from gymrat.telemetry.provider import configure_tracing, reset_tracing
+from gymrat.utils import ENDPOINT_ENV
+
+#: An OTLP endpoint that turns tracing on; nothing is ever exported to it.
+PLACEHOLDER_ENDPOINT = "http://localhost:4318"
 
 
 def _hide_package(monkeypatch: pytest.MonkeyPatch, package: str, submodule: str) -> None:
@@ -52,9 +58,34 @@ def hide_otel_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
     _hide_package(monkeypatch, "opentelemetry.sdk", "trace")
 
 
+def arm_placeholder_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point ``OTEL_EXPORTER_OTLP_ENDPOINT`` at :data:`PLACEHOLDER_ENDPOINT` so tracing is asked for.
+
+    Args:
+        monkeypatch: Sets the endpoint variable for the rest of the test.
+    """
+    monkeypatch.setenv(ENDPOINT_ENV, PLACEHOLDER_ENDPOINT)
+
+
+def disable_otel_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set ``OTEL_SDK_DISABLED`` while an OTLP endpoint is set, so tracing is asked for but off.
+
+    Args:
+        monkeypatch: Sets ``OTEL_SDK_DISABLED=true`` and points
+            ``OTEL_EXPORTER_OTLP_ENDPOINT`` at :data:`PLACEHOLDER_ENDPOINT`.
+    """
+    monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
+    arm_placeholder_endpoint(monkeypatch)
+
+
 @contextmanager
 def memory_tracing(session_id: str, *, buffered: bool = False) -> Generator[InMemorySpanExporter]:
     """Configure tracing with an in-memory exporter for testing.
+
+    For the duration of the block, ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set to
+    :data:`PLACEHOLDER_ENDPOINT`, because code that gates tracing on that
+    variable (the command runner) must see tracing as on. The variable's
+    previous value, or its absence, is restored on exit.
 
     Args:
         session_id: The session the traced spans belong to.
@@ -74,14 +105,18 @@ def memory_tracing(session_id: str, *, buffered: bool = False) -> Generator[InMe
         if buffered
         else SimpleSpanProcessor(exporter)
     )
-    os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4318"
+    previous_endpoint = os.environ.get(ENDPOINT_ENV)
+    os.environ[ENDPOINT_ENV] = PLACEHOLDER_ENDPOINT
     try:
         if not configure_tracing(session_id, span_processor=processor):
             msg = "tracing was not configured"
             raise AssertionError(msg)
         yield exporter
     finally:
-        os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
+        if previous_endpoint is None:
+            os.environ.pop(ENDPOINT_ENV, None)
+        else:
+            os.environ[ENDPOINT_ENV] = previous_endpoint
         reset_tracing()
 
 

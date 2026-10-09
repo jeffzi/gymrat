@@ -27,9 +27,8 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.clock import monotonic_ms
+from gymrat.clock import monotonic_ms, now_ns
 from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.loop.finalize import finalize_session
 from gymrat.session.paths import lockfile_path, session_jsonl_path
 from gymrat.session.records import (
     CommandRecord,
@@ -539,10 +538,9 @@ async def test_run_exit_sequence_when_finalize_raises_does_keep_the_settled_step
     start_with(repo)
     improved_iteration(repo)
     checks_pass(monkeypatch)
-
     monkeypatch.setattr(
-        "gymrat.supervisor.exit_sequence.finalize_session",
-        create_autospec(finalize_session, side_effect=RuntimeError(BOOM)),
+        "gymrat.loop.finalize.now_ns",
+        create_autospec(now_ns, side_effect=RuntimeError(BOOM)),
     )
 
     run = await run_sequence(session_context(repo, checks=CHECKS), finalize=True)

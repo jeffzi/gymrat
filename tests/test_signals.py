@@ -268,19 +268,6 @@ def test_install_termination_cleanup_when_uninstalled_does_exit_without_running_
     assert code == 128 + signal.SIGINT
 
 
-def test_install_termination_cleanup_when_a_cleanup_raises_does_run_remaining_cleanups(
-    raise_signal: RaiseSignal,
-):
-    survivors = []
-    install_termination_cleanup(_boom)
-    install_termination_cleanup(lambda: survivors.append("survivor"))
-
-    code = raise_signal(signal.SIGINT)
-
-    assert survivors == ["survivor"]
-    assert code == 128 + signal.SIGINT
-
-
 def test_install_termination_cleanup_when_second_signal_arrives_during_cleanup_does_escalate_instead_of_remaining_cleanups(
     raise_signal: RaiseSignal,
 ):
@@ -381,7 +368,7 @@ def _nothing() -> None:
         pytest.param(
             (_boom, _write_erase_notice),
             ["live display erased\ntermination cleanup failed: cleanup boom\n"],
-            id="output-then-failures-in-one-write",
+            id="remaining-cleanups-run-then-failures-in-one-write",
         ),
         pytest.param((_warn_killpg_failed,), ["killpg failed\n"], id="a-cleanup-warns"),
         pytest.param((_nothing,), [], id="nothing-pending"),

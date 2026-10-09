@@ -212,7 +212,9 @@ def _parse_readme_attribute_names() -> frozenset[str]:
     return frozenset(names)
 
 
-def test_all_attribute_names_when_compared_to_readme_table_does_match_exactly() -> None:
+def test_readme_attribute_reference_when_parsed_does_list_exactly_the_emitted_attribute_names() -> (
+    None
+):
     readme_names = _parse_readme_attribute_names()
     code_names = all_attribute_names()
 

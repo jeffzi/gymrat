@@ -645,8 +645,8 @@ _HUNDRED_A_LINE = "a" * 100 + "\n"
             "a short line\nand another\n", "a short line\nand another\n", id="within-budget"
         ),
         pytest.param(
-            "café résumé naïve €42",  # cspell:disable-line
-            "café résumé naïve €42",  # cspell:disable-line
+            "café ✓ €42",
+            "café ✓ €42",
             id="multi-byte-within-budget",
         ),
         pytest.param(

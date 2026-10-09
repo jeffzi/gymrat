@@ -8,13 +8,12 @@ combination, and the untraced path. They share the seam infrastructure from
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from unittest.mock import create_autospec
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from opentelemetry.trace import SpanContext
-
-    from gymrat.supervisor.supervise import SupervisionResult
 
 import pytest
 from opentelemetry.trace import StatusCode
@@ -31,7 +30,6 @@ from tests.cli.commands.supervise._seams import (
     command_config,
     err_text,
     install_seams,
-    patch_supervise,
     record_stdout_writes,
     run,
 )
@@ -41,7 +39,13 @@ from tests.cli.supervise._fixtures import (
 )
 from tests.session.records._fixtures import SESSION_ID, session_header_of
 from tests.telemetry._collector import otlp_collector
-from tests.telemetry._fixtures import hide_otlp_exporter, memory_tracing, span_by_name
+from tests.telemetry._fixtures import (
+    arm_placeholder_endpoint,
+    disable_otel_sdk,
+    hide_otlp_exporter,
+    memory_tracing,
+    span_by_name,
+)
 
 
 def _span_id(context: SpanContext | None) -> int | None:
@@ -148,7 +152,6 @@ def test_supervise_when_tracing_enabled_does_hand_supervise_the_run_span_context
     assert prompt.traceparent is not None
     assert prompt.traceparent.startswith("00-")
     assert f"{run_span_id:016x}" in prompt.traceparent
-    assert call["observer"] is not seams.observer
 
 
 def test_supervise_when_tracing_enabled_does_still_hand_every_event_to_the_reporter(
@@ -156,15 +159,7 @@ def test_supervise_when_tracing_enabled_does_still_hand_every_event_to_the_repor
 ):
     seams = install_seams(monkeypatch)
     event = follow_up_event(action="replied")
-
-    async def emitting_supervise(*args: object, **kwargs: object) -> SupervisionResult:
-        seams.record_supervise_call(args, kwargs)
-        observer = kwargs["observer"]
-        assert callable(observer)
-        observer(event)
-        return make_supervision_result()
-
-    patch_supervise(monkeypatch, emitting_supervise)
+    seams.supervise_hook = lambda call: call["observer"](event)
 
     with memory_tracing(SESSION_ID):
         result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
@@ -198,16 +193,18 @@ def test_supervise_when_tracing_enabled_does_flush_after_printing_the_summary(
     install_seams(monkeypatch)
     record_stdout_writes(monkeypatch, order, "summary")
 
-    original_flush = None
-
-    def tracking_flush() -> None:
-        order.append("flush")
-        if original_flush is not None:
-            original_flush()
-
     with memory_tracing(SESSION_ID):
-        original_flush = provider.flush_tracing
-        monkeypatch.setattr(provider, "flush_tracing", tracking_flush)
+        real_flush = provider.flush_tracing
+
+        def tracking_flush() -> None:
+            order.append("flush")
+            real_flush()
+
+        monkeypatch.setattr(
+            provider,
+            "flush_tracing",
+            create_autospec(provider.flush_tracing, side_effect=tracking_flush),
+        )
 
         result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
 
@@ -287,20 +284,15 @@ def test_supervise_when_tracing_enabled_and_previous_session_finalized_does_trac
 # ---------------------------------------------------------------------------
 
 
-def _disable_sdk_with_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-
-
 def _hide_exporter_with_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     hide_otlp_exporter(monkeypatch)
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    arm_placeholder_endpoint(monkeypatch)
 
 
 @pytest.mark.parametrize(
     "without_tracer",
     [
-        pytest.param(_disable_sdk_with_endpoint, id="sdk-disabled"),
+        pytest.param(disable_otel_sdk, id="sdk-disabled"),
         pytest.param(_hide_exporter_with_endpoint, id="otlp-exporter-missing"),
     ],
 )
@@ -318,4 +310,4 @@ def test_supervise_when_endpoint_set_but_no_tracer_available_does_run_untraced(
     (call,) = seams.supervise_calls
     prompt = call["prompt"]
     assert isinstance(prompt, SessionPrompt)
-    assert (prompt.traceparent, call["observer"]) == (None, seams.observer)
+    assert prompt.traceparent is None

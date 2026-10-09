@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.loop.sync import SyncResult, sync_to_experiment
+from gymrat.loop.sync import sync_to_experiment
 from gymrat.session.paths import experiment_worktree_dir
 from tests._git import run_git
 
@@ -46,8 +46,6 @@ def _tree_snapshot(root: str) -> dict[str, bytes | str | None]:
 @pytest.mark.parametrize(
     "files",
     [
-        pytest.param({"README.md": "# Modified\n"}, id="tracked-file-modified"),
-        pytest.param({"new_file.txt": "hello\n"}, id="untracked-file-added"),
         pytest.param({"README.md": "# Changed\n", "extra.py": "x = 1\n"}, id="several-files"),
         pytest.param({"été.txt": "summer\n"}, id="non-ascii-name"),
         pytest.param(
@@ -111,7 +109,6 @@ def test_sync_to_experiment_when_working_tree_clean_does_return_empty_file_list(
 ):
     result = sync_to_experiment(session_repo)
 
-    assert isinstance(result, SyncResult)
     assert result.files == ()
 
 

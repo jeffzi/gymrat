@@ -18,18 +18,18 @@ are covered here too.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.clock import now_ms, now_ns
+from gymrat.clock import now_ns
 from gymrat.supervisor.events import (
     CapEvent,
     CompactionEvent,
     FollowUpEvent,
     TextDeltaEvent,
     ToolStartEvent,
+    TurnEndEvent,
     UsageUpdateEvent,
 )
 from gymrat.supervisor.turns import CONSECUTIVE_DISCARD_LIMIT
@@ -46,8 +46,10 @@ from tests.supervisor._fixtures import (
     FollowUpWatch,
     InterruptEmitsEndDriver,
     LockSwitch,
+    SlowEndSession,
     SupervisorClock,
     _supervise,
+    _WrapDriver,
     append_step,
     collecting_observer,
     driver_calls,
@@ -55,9 +57,8 @@ from tests.supervisor._fixtures import (
     events_log_path,
     events_of,
     follow_ups_with_action,
-    make_launch,
+    lock_file_path,
     read_log_lines,
-    seed_with_stop,
     sent_texts,
 )
 from tests.supervisor._mock_driver import (
@@ -71,7 +72,6 @@ from tests.supervisor._mock_driver import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from pathlib import Path
 
     from gymrat.supervisor.events import SessionEvent
 
@@ -81,11 +81,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-async def test_supervise_when_turn_end_with_stop_record_does_log_a_finished_end(
-    tmp_path: Path,
-):
-    root = str(tmp_path / "repo")
-    seed_with_stop(root)
+async def test_supervise_when_turn_end_with_stop_record_does_log_a_finished_end(root: str):
+    append_records(root, stop_record())
     probe = collecting_observer()
     driver = create_mock_driver([TurnEndStep(cost_usd=0.01)])
 
@@ -166,11 +163,8 @@ async def test_supervise_when_lock_held_does_wait_then_reply_with_the_after_wait
     assert replies[0].endswith(WAIT_FINISHED_LINE)
 
 
-async def test_supervise_when_lock_file_held_does_wait_until_released(
-    root: str,
-    tmp_path: Path,
-):
-    lock = hold_lock(str(tmp_path / "lockfile"))
+async def test_supervise_when_lock_file_held_does_wait_until_released(root: str):
+    lock = hold_lock(str(lock_file_path(root)))
     watch = FollowUpWatch()
 
     async def release_after_waiting() -> None:
@@ -194,37 +188,18 @@ async def test_supervise_when_lock_file_held_does_wait_until_released(
 # ---------------------------------------------------------------------------
 
 
-@dataclass(slots=True)
-class _ProbedLock(LockSwitch):
-    """A lock switch that records every task whose probe found it free."""
-
-    free_probers: set[asyncio.Task[Any] | None] = field(default_factory=set)
-
-    @override
-    def is_held(self) -> bool:
-        if not self.held:
-            self.free_probers.add(asyncio.current_task())
-        return self.held
-
-
 @pytest.mark.parametrize(
-    ("waits_before_release", "stop_before_release", "actions", "calls", "free_probers"),
+    ("waits_before_release", "stop_before_release", "actions", "calls"),
     [
         pytest.param(
-            1,
-            False,
-            ["waiting", "replied", "ended"],
-            ["send", "end"],
-            2,
-            id="freed-during-settle",
+            1, False, ["waiting", "replied", "ended"], ["send", "end"], id="freed-during-settle"
         ),
-        pytest.param(1, True, ["waiting", "ended"], ["end"], 1, id="freed-during-settle-with-stop"),
+        pytest.param(1, True, ["waiting", "ended"], ["end"], id="freed-during-settle-with-stop"),
         pytest.param(
             2,
             False,
             ["waiting", "waiting", "replied", "ended"],
             ["send", "end"],
-            2,
             id="freed-after-the-newer-turn-waits",
         ),
     ],
@@ -236,14 +211,11 @@ async def test_supervise_when_turn_end_arrives_while_waiting_on_the_lock_does_fo
     stop_before_release: bool,
     actions: list[str],
     calls: list[str],
-    free_probers: int,
 ):
     # The stop record for the reply cases lands well after the release, so a
-    # superseded lock poll left pending would follow up a second time in between.
-    # A superseded poll also probes the freed lock from its own task, long before
-    # the 50 ms settle ends the session, so counting the tasks that find the lock
-    # free catches it even where the end guard hides a second end.
-    lock = _ProbedLock(held=True)
+    # superseded lock poll left pending would follow up a second time in between,
+    # or outlive the run as a stray task.
+    lock = LockSwitch(held=True)
     watch = FollowUpWatch()
 
     async def release_lock() -> None:
@@ -265,11 +237,13 @@ async def test_supervise_when_turn_end_arrives_while_waiting_on_the_lock_does_fo
     result = await _supervise(
         root, driver, observer=watch, settle_window_ms=50, is_lock_held=lock.is_held
     )
+    # Let the run's cancelled tasks finish unwinding, so only a leaked poll remains.
+    await asyncio.sleep(0.05)
 
     assert result.ended_by == "session"
     assert watch.actions() == actions
     assert driver_calls(driver.sessions[0]) == calls
-    assert len(lock.free_probers) == free_probers
+    assert asyncio.all_tasks() == {asyncio.current_task()}
 
 
 @pytest.mark.parametrize(
@@ -500,13 +474,11 @@ def _replied_follow_ups(events: list[SessionEvent]) -> list[FollowUpEvent]:
 )
 async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_up(
     root: str,
-    monkeypatch: pytest.MonkeyPatch,
+    supervisor_clock: SupervisorClock,
     first_step: MockStep,
     reached: Callable[[list[SessionEvent]], Sequence[SessionEvent]],
 ):
     probe = collecting_observer()
-    clock = SupervisorClock(monkeypatch, now_ms())
-    deadline_ms = clock.now_ms + 60_000
     state_reached = asyncio.Event()
 
     def observe(event: SessionEvent) -> None:
@@ -516,7 +488,7 @@ async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_
 
     inner = create_mock_driver([
         first_step,
-        clock.jump_step(deadline_ms, after=state_reached),
+        supervisor_clock.jump_step(supervisor_clock.deadline_ms, after=state_reached),
         CostStep(cost_usd=0.01, delay_ms=60_000),
     ])
     driver = InterruptEmitsEndDriver(inner)
@@ -525,8 +497,7 @@ async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_
         root,
         driver,
         max_minutes=_WALL_CLOCK_MAX_MINUTES,
-        deadline_ms=deadline_ms,
-        launch=make_launch(max_minutes=_WALL_CLOCK_MAX_MINUTES),
+        deadline_ms=supervisor_clock.deadline_ms,
         observer=observe,
         grace_ms=50,
     )
@@ -537,3 +508,27 @@ async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_
     assert [cap.cap for cap in caps] == ["wall-clock"]
     assert probe.events.index(reached(probe.events)[0]) < cap_idx
     assert follow_ups_after_cap == []
+
+
+async def test_supervise_when_cap_ends_session_during_settle_window_does_not_reply(
+    root: str, supervisor_clock: SupervisorClock
+):
+    probe = collecting_observer()
+    driver = _WrapDriver(
+        create_mock_driver([TurnEndStep(cost_usd=0.01)]),
+        lambda session, _abort: SlowEndSession(session, 400),
+    )
+
+    result = await _supervise(
+        root,
+        driver,
+        observer=supervisor_clock.jump_on(TurnEndEvent, probe.observer),
+        deadline_ms=supervisor_clock.deadline_ms,
+        settle_window_ms=150,
+    )
+
+    # A cap that lands while the settle is in flight ends the session rather
+    # than interrupting a turn, so "ending" shows the cap hit the settle window.
+    caps = [(cap.cap, cap.action) for cap in events_of(probe.events, CapEvent)]
+    assert (result.ended_by, caps) == ("wall-clock", [("wall-clock", "ending")])
+    assert follow_ups_with_action(probe.events, "replied") == []

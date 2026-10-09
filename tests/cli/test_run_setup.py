@@ -16,8 +16,7 @@ from gymrat.cli.run_setup import (
     resolve_render_mode,
     run_with_signal_abort,
 )
-from tests._process_helpers import fake_install
-from tests._rich import track
+from tests._rich import TERMINATION_SIGNAL, track
 from tests._streams import FakeStream
 
 # ---------------------------------------------------------------------------
@@ -76,13 +75,10 @@ def test_begin_run_when_stderr_tty_varies_does_return_a_reporter_live_only_on_a_
 # ---------------------------------------------------------------------------
 
 
-async def test_run_with_signal_abort_when_cleanup_invoked_does_kill_groups_before_setting_abort(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_run_with_signal_abort_when_termination_signal_received_does_kill_groups_before_setting_abort(
+    monkeypatch: pytest.MonkeyPatch, raise_signal: Callable[[int], int]
 ):
-    captured_cleanup: list[Callable[[], None]] = []
     captured_abort: list[asyncio.Event] = []
-    monkeypatch.setattr(run_setup, "install_termination_cleanup", fake_install(captured_cleanup))
-
     observed: dict[str, bool] = {}
 
     def _kill() -> None:
@@ -93,7 +89,7 @@ async def test_run_with_signal_abort_when_cleanup_invoked_does_kill_groups_befor
 
     async def execute(abort: asyncio.Event) -> str:
         captured_abort.append(abort)
-        captured_cleanup[0]()
+        raise_signal(TERMINATION_SIGNAL)
         observed["abort_after_cleanup"] = abort.is_set()
         return "done"
 

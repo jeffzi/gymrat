@@ -47,6 +47,12 @@ AT = 1_786_198_530_000_000_000
 #: A commit SHA fixture records point at; not a real commit.
 COMMIT = "b" * 40
 
+#: A 40-hex baseline SHA whose first seven characters are recognizable on their own.
+RECOGNIZABLE_BASELINE_SHA = "a1b2c3d" + "e" * 33
+
+#: A 40-hex keep-commit SHA whose first seven characters are recognizable on their own.
+RECOGNIZABLE_KEEP_COMMIT = "b1b2b3b" + "c" * 33
+
 #: The squash commit SHA finalize fixtures point at; distinct from COMMIT.
 SQUASH_COMMIT = "c" * 40
 

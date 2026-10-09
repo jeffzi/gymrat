@@ -202,7 +202,7 @@ _HINT = "run `gymrat doctor` first"
         pytest.param("counts `[i]` rounds", "counts [i] rounds", id="brackets-in-code"),
     ],
 )
-def test_format_hint_when_given_text_does_strip_backticks_and_keep_brackets_literal(
+def test_format_hint_when_given_text_does_render_code_spans_as_literal_text(
     text: str, expected: str
 ):
     assert render_plain(format_hint(text)) == expected

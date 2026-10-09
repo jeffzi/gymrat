@@ -11,8 +11,8 @@ a run open long enough for a second command to collide with it without betting o
 a sleep outlasting the first run. Python has no ``Atomics.wait``, so the gate is
 a plain poll loop.
 
-The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.loop._bench``.
+The ``_`` prefix marks a shared helper rather than a test module; it is
+imported as ``tests.loop._bench``.
 """
 
 import json
@@ -23,6 +23,9 @@ import tomli_w
 
 from gymrat.session.paths import experiment_worktree_dir
 from tests._git import run_git
+
+#: Generous budget for a CLI run that creates real worktrees and spawns real benches.
+LONG_RUN_TIMEOUT = 180
 
 #: The bench script every worktree runs.
 BENCH_FILE = "bench.py"

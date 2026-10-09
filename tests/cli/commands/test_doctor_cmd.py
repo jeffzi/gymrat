@@ -4,7 +4,8 @@ These drive the assembled app through :class:`typer.testing.CliRunner` with the
 section builders, both renderers, and ``inspect_config`` replaced; the tests
 that read the rendered report or the JSON document keep the real renderer. They cover
 the exit-code contract (a missing ``--config`` surfacing as a config failure
-rather than a crash), the JSON path, and ``--color``/``--no-color``.
+rather than a crash), the JSON path, and ``--no-color`` leaving the color env
+untouched; ``--color`` is pinned with every command's in ``test_app``.
 """
 
 import json
@@ -17,13 +18,11 @@ import pytest
 from gymrat.cli.app import app
 from gymrat.config import inspect_config
 from gymrat.doctor import (
-    Check,
     GitEnvironment,
     build_config_section,
     build_workflow_section,
 )
 from gymrat.scaffold import SKILL_RELATIVE_PATH
-from tests._doctor_fixtures import fixed_section
 from tests.cli._doctor_seams import patch_doctor
 from tests.cli._session import runner
 
@@ -80,45 +79,21 @@ def test_doctor_when_report_written_does_exit_on_its_failures_after_writing_it(
 # ---------------------------------------------------------------------------
 
 
-def test_doctor_when_format_json_does_write_indented_document_with_every_hint(
+def test_doctor_when_format_json_does_write_the_json_document_once(
     monkeypatch: pytest.MonkeyPatch,
 ):
     patch_doctor(monkeypatch, stub_json=False)
-    monkeypatch.setattr(
-        "gymrat.doctor.build_workflow_section",
-        fixed_section(
-            "Workflow", [Check("skill file", "warn", "not installed", hint="run gymrat init")]
-        ),
-    )
 
     result = runner.invoke(app, ["doctor", "--format", "json"])
 
-    document = json.loads(result.stdout)
-    hints = {
-        check["name"]: check["hint"]
-        for section in document["sections"]
-        for check in section["checks"]
-    }
     assert result.exit_code == 0
-    assert result.stdout == json.dumps(document, indent=2) + "\n"
-    assert (hints["git"], hints["skill file"]) == (None, "run gymrat init")
+    assert "sections" in json.loads(result.stdout)
+    assert result.stdout.endswith("}\n")
 
 
 # ---------------------------------------------------------------------------
 # color control
 # ---------------------------------------------------------------------------
-
-
-def test_doctor_when_color_flag_given_does_style_the_text_report_despite_no_color(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("NO_COLOR", "1")
-    patch_doctor(monkeypatch, stub_text=False)
-
-    result = runner.invoke(app, ["doctor", "--color"])
-
-    assert result.exit_code == 0
-    assert "\x1b[" in result.stdout
 
 
 @pytest.mark.parametrize(

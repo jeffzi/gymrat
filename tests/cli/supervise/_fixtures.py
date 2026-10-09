@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     import pytest
-    from rich.console import RenderableType
+    from rich.console import Console, RenderableType
 
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
@@ -125,6 +125,32 @@ def session_state_three_iterations(delta_pct: float, outcome: str, *, seq: int =
     )
 
 
+def read_result(
+    state: SessionState | None = None,
+    *,
+    has_baseline: bool = False,
+    best: BestIteration | None = None,
+    stop_message: str | None = None,
+) -> ReadSessionResult:
+    """A session read result.
+
+    Args:
+        state: The session state the result carries; the empty session when omitted.
+        has_baseline: Whether the session has recorded a baseline.
+        best: The best iteration, if any.
+        stop_message: The stop-condition message, if any.
+
+    Returns:
+        The read result.
+    """
+    return ReadSessionResult(
+        state=state if state is not None else empty_session_state(),
+        has_baseline=has_baseline,
+        best=best,
+        stop_message=stop_message,
+    )
+
+
 def make_read_session(
     state: SessionState,
     *,
@@ -143,13 +169,18 @@ def make_read_session(
     Returns:
         A callable returning one fixed ``ReadSessionResult``.
     """
-    result = ReadSessionResult(
-        state=state,
-        has_baseline=has_baseline,
-        best=best,
-        stop_message=stop_message,
-    )
+    result = read_result(state, has_baseline=has_baseline, best=best, stop_message=stop_message)
     return lambda: result
+
+
+#: A session read of a session with a baseline and no iteration yet.
+EMPTY_READ = read_result(has_baseline=True)
+
+#: A session read of a session whose one iteration was kept as an improvement.
+KEPT_READ = read_result(
+    session_state(iteration_count=1, keep_count=1, last_iteration=make_iteration(-2.0, "improved")),
+    has_baseline=True,
+)
 
 
 def make_supervision_result(
@@ -193,9 +224,9 @@ def _throwing_read() -> ReadSessionResult:
 # Event firers
 # ---------------------------------------------------------------------------
 
-# Default timestamp of a tool start; a tool end's default duration is measured
-# from it, so the two stay in sync.
-_DEFAULT_TOOL_START_TS = 2000
+#: Default timestamp of a tool start, in milliseconds; a tool end's default
+#: duration is measured from it, so the two stay in sync.
+TOOL_START_MS = 2000
 
 
 def launch_event(
@@ -225,7 +256,7 @@ def launch_event(
 def tool_start_event(
     tool_name: str,
     tool_use_id: str,
-    at_ms: int = _DEFAULT_TOOL_START_TS,
+    at_ms: int = TOOL_START_MS,
     *,
     input_summary: str = "...",
     parent_tool_use_id: str | None = None,
@@ -247,7 +278,7 @@ def tool_end_event(
     at_ms: int = 3000,
     *,
     result: str = "ok",
-    started_at_ms: int = _DEFAULT_TOOL_START_TS,
+    started_at_ms: int = TOOL_START_MS,
     parent_tool_use_id: str | None = None,
 ) -> ToolEndEvent:
     """A ``ToolEndEvent`` whose duration is measured from *started_at_ms*."""
@@ -370,6 +401,36 @@ def fire_launch_and_bash_start(observer: SessionObserver) -> None:
     observer(tool_start_event("Bash", "bash-1", 1500))
 
 
+def fire_launch_and_iterate_start(kit: ReporterKit, *, tool_name: str = "Bash") -> None:
+    """Fire a launch at 1000 ms, then an iterate call at 2000 ms, leaving it in flight.
+
+    Args:
+        kit: The reporter the events are fired at; its clock is moved to 2000 ms.
+        tool_name: The tool that runs the iterate call.
+    """
+    kit.reporter.observer(launch_event(1000))
+    kit.clock.now = 2000
+    kit.reporter.observer(
+        tool_start_event(tool_name, "bash-1", 2000, input_summary="gymrat iterate")
+    )
+
+
+def fire_launch_and_edit_cycle(kit: ReporterKit, *, result: str = "ok") -> None:
+    """Fire a launch at 1000 ms, then an Edit of ``src/archetype.ts`` from 2000 to 3000 ms.
+
+    Args:
+        kit: The reporter the events are fired at; its clock is moved to each event's time.
+        result: The Edit call's result, ``"error"`` for a failed call.
+    """
+    kit.reporter.observer(launch_event(1000))
+    kit.clock.now = 2000
+    kit.reporter.observer(
+        tool_start_event("Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    )
+    kit.clock.now = 3000
+    kit.reporter.observer(tool_end_event("Edit", "edit-1", 3000, result=result))
+
+
 # ---------------------------------------------------------------------------
 # Reporter setup
 # ---------------------------------------------------------------------------
@@ -478,6 +539,28 @@ def make_reporter(
     return ReporterKit(track(reporter), clock)
 
 
+def reporter_with_nested_read() -> ReporterKit:
+    """A reporter whose in-flight Bash call runs a nested Read of ``src/config.ts``.
+
+    The Bash call starts at 1500 ms, the nested Read at 2000 ms, and the clock
+    stands at 5000 ms.
+    """
+    kit = make_reporter()
+    fire_launch_and_bash_start(kit.reporter.observer)
+    kit.clock.now = 2000
+    kit.reporter.observer(
+        tool_start_event(
+            "Read",
+            "nested-read-1",
+            2000,
+            parent_tool_use_id="bash-1",
+            input_summary="src/config.ts",
+        )
+    )
+    kit.clock.now = 5000
+    return kit
+
+
 def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> str:
     """Render the reporter's current frame through a non-terminal console."""
     return frame_text(reporter.frame(), width=width)
@@ -490,9 +573,14 @@ def line_after(frame: str, needle: str) -> str:
     return lines[idx + 1]
 
 
+def color_console(*, width: int = FRAME_WIDTH) -> Console:
+    """A sealed console with standard color, *width* columns wide."""
+    return sealed_console(width=width, no_color=False, color_system="standard")
+
+
 def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
     """Render ``renderable`` through a sealed console with standard color."""
-    console = sealed_console(width=width, no_color=False, color_system="standard")
+    console = color_console(width=width)
     console.print(renderable)
     return console_output(console)
 
@@ -500,3 +588,15 @@ def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> s
 def lines_containing(frame: str, needle: str) -> list[str]:
     """Return the raw lines of *frame* whose text, color codes stripped, contains *needle*."""
     return [line for line in frame.splitlines() if needle in strip_sgr(line)]
+
+
+def row_content(line: str) -> str:
+    """Strip the panel's side borders and padding from one frame row."""
+    return line.strip("│").strip()
+
+
+def content_line(frame: str, needle: str) -> str:
+    """The sole frame row containing *needle*, with panel border and padding stripped."""
+    lines = lines_containing(frame, needle)
+    assert len(lines) == 1, f"expected exactly one line containing {needle!r}, got {lines}"
+    return row_content(lines[0])

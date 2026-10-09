@@ -30,6 +30,7 @@ from gymrat.session.store import (
     RequiredSession,
     append_record,
     first_line_json,
+    fold_session,
     latest_baseline,
     read_records,
     read_session_header,
@@ -49,12 +50,12 @@ from tests.session._store_records import (
 )
 from tests.session.records._fixtures import (
     TORN_PREFIX,
+    append_records,
     blocked_keep,
     command_record,
     committed_keep,
     discard_record,
     iteration_record,
-    session_state,
     stop_record,
     tear_final_line,
     write_session_log,
@@ -358,23 +359,11 @@ def test_recover_torn_tail_when_final_line_unterminated_does_truncate_to_the_las
     assert Path(jsonl_path).read_bytes() == expected
 
 
-def test_recover_torn_tail_when_torn_tail_removed_does_let_a_later_append_read_back(
-    fresh_root: str,
-):
-    jsonl_path = _jsonl_holding_bytes(fresh_root, TORN_MID_UTF8)
-    recover_torn_tail(jsonl_path)
-
-    append_record(jsonl_path, ITERATION_1)
-
-    assert read_records(jsonl_path) == [SESSION, ITERATION_1]
-
-
 def test_recover_torn_tail_when_log_ends_in_a_newline_does_leave_it_byte_identical(
     fresh_root: str,
 ):
     jsonl_path = session_jsonl_path(fresh_root)
-    append_record(jsonl_path, SESSION)
-    append_record(jsonl_path, ITERATION_1)
+    write_session_log(fresh_root, SESSION, (ITERATION_1,))
     before = Path(jsonl_path).read_bytes()
 
     recover_torn_tail(jsonl_path)
@@ -407,22 +396,34 @@ def _only_line_unterminated(root: str) -> str:
     return _jsonl_holding_bytes(root, _line(SESSION).encode())
 
 
+def _torn_final_line(root: str) -> str:
+    jsonl_path = _jsonl_holding(root, [_line(SESSION)])
+    tear_final_line(jsonl_path)
+    return jsonl_path
+
+
+def _torn_mid_utf8(root: str) -> str:
+    return _jsonl_holding_bytes(root, TORN_MID_UTF8)
+
+
 @pytest.mark.parametrize(
-    "make_log",
+    ("make_log", "expected"),
     [
-        pytest.param(_no_log, id="log-missing"),
-        pytest.param(_empty_log, id="log-empty"),
-        pytest.param(_only_line_unterminated, id="only-line-unterminated"),
+        pytest.param(_no_log, [], id="log-missing"),
+        pytest.param(_empty_log, [], id="log-empty"),
+        pytest.param(_only_line_unterminated, [], id="only-line-unterminated"),
+        pytest.param(_torn_final_line, [SESSION], id="final-line-unterminated"),
+        pytest.param(_torn_mid_utf8, [SESSION], id="final-line-torn-mid-utf8"),
     ],
 )
-def test_read_records_when_log_holds_no_complete_line_does_return_no_records(
-    fresh_root: str, make_log: Callable[[str], str]
+def test_read_records_when_log_missing_or_final_line_unterminated_does_return_only_complete_lines(
+    fresh_root: str, make_log: Callable[[str], str], expected: list[SessionLogRecord]
 ):
     jsonl_path = make_log(fresh_root)
 
     records = read_records(jsonl_path)
 
-    assert records == []
+    assert records == expected
 
 
 def _directory_at(jsonl_path: str) -> None:
@@ -469,8 +470,7 @@ def test_read_records_when_log_holds_appended_records_does_return_them_in_file_o
         committed_keep(1),
         discard_record(2),
     ]
-    for record in written:
-        append_record(jsonl_path, record)
+    append_records(fresh_root, *written)
 
     records = read_records(jsonl_path)
 
@@ -479,38 +479,39 @@ def test_read_records_when_log_holds_appended_records_does_return_them_in_file_o
 
 _NOT_JSON_HINT = "is not a JSON object."
 _NEVER_STORED = "holds a number the session log never stores"
-_NAN_CAUSE = "NaN is a non-finite number, which is not valid JSON."
 
 
-def _with_delta(literal: str) -> str:
-    return with_raw_number(_line(ITERATION_1), ("primary", "delta_pct"), literal)
+def _not_json_hint(line_number: int) -> str:
+    """The exact hint pattern for a line that is not a JSON object."""
+    return re.escape(f"Line {line_number} {_NOT_JSON_HINT}")
+
+
+def _never_stored_nan_hint(line_number: int) -> str:
+    """The hint pattern for a line holding NaN.
+
+    The store owns the line number and the "never stores" framing; the cause
+    after the colon is the decoder's wording, pinned in ``test_records.py``, so
+    only its mention of NaN is checked here.
+    """
+    return rf"Line {line_number} {re.escape(_NEVER_STORED)}: .*\bNaN\b.*"
 
 
 @pytest.mark.parametrize(
-    ("lines", "line_number", "cause"),
+    ("lines", "line_number", "hint_pattern"),
     [
-        pytest.param([_line(SESSION), "{not json", "{}"], 2, _NOT_JSON_HINT, id="malformed-json"),
-        pytest.param([_line(SESSION), "", "{"], 3, _NOT_JSON_HINT, id="after-a-blank-line"),
-        pytest.param(
-            [_line(SESSION), _with_delta("NaN"), "{}"],
-            2,
-            f"{_NEVER_STORED}: {_NAN_CAUSE}",
-            id="nan-literal",
-        ),
+        pytest.param([_line(SESSION), "", "{"], 3, _not_json_hint(3), id="after-a-blank-line"),
     ],
 )
 def test_read_records_when_a_line_is_not_json_does_raise_naming_the_line_and_its_cause(
-    fresh_root: str, lines: list[str], line_number: int, cause: str
+    fresh_root: str, lines: list[str], line_number: int, hint_pattern: str
 ):
     jsonl_path = _jsonl_holding(fresh_root, lines)
 
     with pytest.raises(GymratError) as excinfo:
         read_records(jsonl_path)
 
-    assert (str(excinfo.value), excinfo.value.hint) == (
-        f"Invalid JSON at {jsonl_path}:{line_number}",
-        f"Line {line_number} {cause}",
-    )
+    assert str(excinfo.value) == f"Invalid JSON at {jsonl_path}:{line_number}"
+    assert re.fullmatch(hint_pattern, str(excinfo.value.hint))
 
 
 def test_read_records_when_a_line_matches_no_schema_does_raise_naming_line_and_field(
@@ -525,33 +526,6 @@ def test_read_records_when_a_line_matches_no_schema_does_raise_naming_line_and_f
 
     assert f"{jsonl_path}:2" in str(excinfo.value)
     assert re.search(r"\bmetrics\b", str(excinfo.value))
-
-
-def _torn_final_line(root: str) -> str:
-    jsonl_path = _jsonl_holding(root, [_line(SESSION)])
-    tear_final_line(jsonl_path)
-    return jsonl_path
-
-
-def _torn_mid_utf8(root: str) -> str:
-    return _jsonl_holding_bytes(root, TORN_MID_UTF8)
-
-
-@pytest.mark.parametrize(
-    "make_log",
-    [
-        pytest.param(_torn_final_line, id="final-line-unterminated"),
-        pytest.param(_torn_mid_utf8, id="final-line-torn-mid-utf8"),
-    ],
-)
-def test_read_records_when_final_line_torn_does_skip_it(
-    fresh_root: str, make_log: Callable[[str], str]
-):
-    jsonl_path = make_log(fresh_root)
-
-    records = read_records(jsonl_path)
-
-    assert records == [SESSION]
 
 
 def test_read_records_when_complete_line_fails_to_decode_does_raise_naming_path_and_line(
@@ -616,24 +590,24 @@ def test_read_session_header_when_log_absent_or_first_line_blank_does_return_non
     ],
 )
 @pytest.mark.parametrize(
-    ("lines", "message", "hint"),
+    ("lines", "message", "hint_pattern"),
     [
         pytest.param(
             ["{not json", _line(ITERATION_1)],
             "Invalid JSON at {path}:1",
-            f"Line 1 {_NOT_JSON_HINT}",
+            _not_json_hint(1),
             id="not-json",
         ),
         pytest.param(
             [with_raw_number(_line(SESSION), ("schema",), "NaN")],
             "Invalid JSON at {path}:1",
-            f"Line 1 {_NEVER_STORED}: {_NAN_CAUSE}",
+            _never_stored_nan_hint(1),
             id="non-finite-number",
         ),
         pytest.param(
             [_line(ITERATION_1), _line(SESSION)],
             "Expected session header at {path}:1, got a iteration record",
-            "The session log is corrupt; start a new session.",
+            re.escape("The session log is corrupt; start a new session."),
             id="not-a-session-record",
         ),
     ],
@@ -643,14 +617,15 @@ def test_session_log_reader_when_first_line_unusable_does_raise_naming_line_one(
     reader: Callable[[str], object],
     lines: list[str],
     message: str,
-    hint: str,
+    hint_pattern: str,
 ):
     jsonl_path = _jsonl_holding(fresh_root, lines)
 
     with pytest.raises(GymratError) as excinfo:
         reader(jsonl_path)
 
-    assert (str(excinfo.value), excinfo.value.hint) == (message.format(path=jsonl_path), hint)
+    assert str(excinfo.value) == message.format(path=jsonl_path)
+    assert re.fullmatch(hint_pattern, str(excinfo.value.hint))
 
 
 # ---------------------------------------------------------------------------
@@ -737,20 +712,13 @@ def test_latest_baseline_when_records_scanned_does_return_the_newest_baseline(
 
 def test_require_session_when_log_holds_a_session_does_hand_back_the_full_handoff(fresh_root: str):
     jsonl_path = session_jsonl_path(fresh_root)
-    append_record(jsonl_path, SESSION)
-    append_record(jsonl_path, ITERATION_1)
+    write_session_log(fresh_root, SESSION, (ITERATION_1,))
 
     required = require_session(fresh_root, "measuring an edit")
 
     assert required == RequiredSession(
         session=SESSION,
-        state=session_state(
-            session=SESSION,
-            iteration_count=1,
-            last_iteration=ITERATION_1,
-            unsettled=True,
-            last_seq=1,
-        ),
+        state=fold_session([SESSION, ITERATION_1]),
         jsonl_path=jsonl_path,
         records=[SESSION, ITERATION_1],
     )

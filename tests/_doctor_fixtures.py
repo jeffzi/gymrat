@@ -5,11 +5,9 @@ its own. :func:`environment_info` builds the version and platform context a
 doctor report opens with, and :func:`doctor_report` and
 :func:`single_check_report` build whole reports on it, for
 ``tests/test_doctor.py``, ``tests/cli/supervise/test_preflight.py`` and
-``tests/hardening/test_rendering_matrix.py``. :func:`patch_common_seams` and
-:func:`fixed_section` patch the config-inspection, config-section,
-workflow-section, and bench-section seams on ``gymrat.doctor`` for
-``tests/cli/commands/test_doctor_cmd.py``, which still owns its own
-environment/git seams and its own ``problems`` wording.
+``tests/hardening/test_rendering_matrix.py``. :func:`patch_common_seams`
+installs fixed config-inspection, config, workflow and bench sections over the
+matching seams on ``gymrat.doctor``.
 """
 
 from __future__ import annotations
@@ -17,14 +15,22 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from unittest.mock import create_autospec
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     import pytest
 
-from gymrat.config import ConfigInspection
-from gymrat.doctor import Check, CheckSection, DoctorReport, EnvironmentInfo, create_doctor_report
+from gymrat.config import ConfigInspection, inspect_config
+from gymrat.doctor import (
+    Check,
+    CheckSection,
+    DoctorReport,
+    EnvironmentInfo,
+    build_bench_section,
+    build_config_section,
+    build_workflow_section,
+    create_doctor_report,
+)
 from tests._config import benchless_config
 
 _MODULE = "gymrat.doctor"
@@ -62,15 +68,6 @@ def single_check_report(check: Check, title: str = "Environment") -> DoctorRepor
     return doctor_report([CheckSection(title=title, checks=[check])])
 
 
-def fixed_section(title: str, checks: list[Check]) -> Callable[..., CheckSection]:
-    """Build a section-builder stand-in that always returns the same section."""
-
-    def build(*_a: object, **_k: object) -> CheckSection:
-        return CheckSection(title=title, checks=checks)
-
-    return build
-
-
 def patch_common_seams(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -98,10 +95,9 @@ def patch_common_seams(
         bench="node bench.js",
     )
 
-    def fake_inspect(*_a: object, **_k: object) -> ConfigInspection:
-        return inspection
-
-    monkeypatch.setattr(f"{_MODULE}.inspect_config", fake_inspect)
+    monkeypatch.setattr(
+        f"{_MODULE}.inspect_config", create_autospec(inspect_config, return_value=inspection)
+    )
 
     config_checks = (
         [Check("config", "fail", "not found", hint="create gymrat.json")]
@@ -109,12 +105,21 @@ def patch_common_seams(
         else [Check("config", "ok", "/project/gymrat.json")]
     )
     monkeypatch.setattr(
-        f"{_MODULE}.build_config_section", fixed_section("Configuration", config_checks)
+        f"{_MODULE}.build_config_section",
+        create_autospec(
+            build_config_section,
+            return_value=CheckSection(title="Configuration", checks=config_checks),
+        ),
     )
 
     monkeypatch.setattr(
         f"{_MODULE}.build_workflow_section",
-        fixed_section("Workflow", [Check("skill file", "ok", "found")]),
+        create_autospec(
+            build_workflow_section,
+            return_value=CheckSection(
+                title="Workflow", checks=[Check("skill file", "ok", "found")]
+            ),
+        ),
     )
 
     bench_calls: list[dict[str, object]] = []
@@ -128,6 +133,9 @@ def patch_common_seams(
         bench_calls.append({"bench": bench, "adapter": adapter, **kwargs})
         return CheckSection(title="Bench", checks=[bench_check])
 
-    monkeypatch.setattr(f"{_MODULE}.build_bench_section", bench_section)
+    monkeypatch.setattr(
+        f"{_MODULE}.build_bench_section",
+        create_autospec(build_bench_section, side_effect=bench_section),
+    )
 
     return SimpleNamespace(bench_calls=bench_calls)

@@ -23,7 +23,7 @@ from gymrat.exec import FAILURE_EXIT_CODE, ExecOptions, ExecResult, ExecTimeoutE
 from gymrat.loop.iterate.run import run_hook
 from gymrat.session.records import IterationRecord, record_to_wire
 from gymrat.session.schema import HookStage
-from gymrat.session.workspace import Worktrees
+from tests._clock import install_monotonic_clock
 from tests._exec_fixtures import (
     CAPPED_STDERR_BYTES,
     CAPPED_STDOUT_BYTES,
@@ -32,7 +32,7 @@ from tests._exec_fixtures import (
     install_exec,
 )
 from tests.loop.iterate._hooks import HookScripts, expected_hook_record
-from tests.session.records._fixtures import SESSION_ID, iteration_record, session_record
+from tests.session.records._fixtures import SESSION_ID, iteration_record
 
 #: A generous upper bound proving a kill happened quickly rather than the
 #: hook's full sleep running to completion.
@@ -73,9 +73,7 @@ def labeled_lines(report: str, stage: HookStage) -> list[str]:
 @pytest.fixture
 def hooks(tmp_path: Path) -> HookScripts:
     """A ``HookScripts`` builder scoped to a fresh scratch directory."""
-    experiment_dir = tmp_path / "side-experiment"
-    experiment_dir.mkdir()
-    return HookScripts(str(tmp_path), str(experiment_dir))
+    return HookScripts.for_root(str(tmp_path))
 
 
 # ---------------------------------------------------------------------------
@@ -182,19 +180,18 @@ async def test_run_hook_when_successful_hook_writes_both_channels_does_report_on
 # ---------------------------------------------------------------------------
 
 
-async def test_run_hook_when_command_finishes_does_record_elapsed_duration_and_wall_clock_stamp(
+async def test_run_hook_when_command_finishes_does_stamp_the_record_with_its_timing(
     hooks: HookScripts,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The clock stands still except while the hook runs, which takes 250 ms.
-    now_ms = [1000.0]
-    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: now_ms[0])
+    clock = install_monotonic_clock(monkeypatch)
 
     async def exec_taking_250_ms(
         command: str, options: ExecOptions
     ) -> ExecResult | ExecTimeoutError:
         result = await gymrat_exec.exec(command, options)
-        now_ms[0] += 250.0
+        clock.tick(250.0)
         return result
 
     monkeypatch.setattr("gymrat.loop.iterate.run.exec", exec_taking_250_ms)
@@ -281,15 +278,8 @@ async def test_run_hook_when_worktree_vanished_does_report_instead_of_raising(
 ) -> None:
     command = hooks.printing("never runs")
     vanished_dir = str(Path(hooks.temp_dir) / "vanished")
-    session = session_record(
-        session_id=SESSION_ID,
-        worktrees=Worktrees(
-            experiment=vanished_dir,
-            baseline=str(Path(hooks.temp_dir) / "side-baseline"),
-        ),
-    )
 
-    run = await run_hook(hooks.invocation_of(command, session=session))
+    run = await run_hook(HookScripts(hooks.temp_dir, vanished_dir).invocation_of(command))
 
     lines = labeled_lines(run.report, "before")
     assert lines[0] == f"hook exited {FAILURE_EXIT_CODE}"

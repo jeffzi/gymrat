@@ -14,23 +14,23 @@ The dirty-tree guards belong to the pre-flight and are tested in
 flag's forwarding to the pre-flight is pinned.
 """
 
-import asyncio
 import os
 import re
 import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 from unittest.mock import create_autospec
 
 import pytest
 import typer
 
-from gymrat.adapters import MetricDefaults
+from gymrat.adapters import MetricDefaults, get_adapter
 from gymrat.cli.app import app
 from gymrat.cli.commands import supervise as supervise_cmd
+from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.cli.supervise.preflight import run_preflight
+from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.config import (
     MetricEntry,
     ResolvedConfig,
@@ -46,19 +46,15 @@ from gymrat.session.paths import (
     lockfile_path,
     supervise_lockfile_path,
 )
-from gymrat.session.workspace import ensure_git_exclude
 from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.hooks import HooksFactory, supervise_hooks_factory
-from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult
+from gymrat.supervisor.supervise import SupervisedSession
 from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
 from gymrat.telemetry.run_spans import setup_tracing
 from gymrat.utils import abbreviate_home
 from tests._ansi import strip_ansi
 from tests._lock import FIXED_HOLDER_AT, hold_lock
 from tests._process_helpers import track_cleanups
-from tests._rich import (
-    unwrap_panel,
-)
 from tests.cli._session import (
     FailingStdoutRunner,
     closed_stdout_error,
@@ -66,33 +62,22 @@ from tests.cli._session import (
 from tests.cli.commands.supervise._seams import (
     CAP_MINUTES,
     CAP_MS,
-    TRACING_FAILURE,
     command_config,
     err_text,
     install_seams,
-    patch_supervise,
     run,
 )
-from tests.cli.supervise._fixtures import (
-    make_supervision_result,
-)
 from tests.sampling._adapters import make_adapter
-from tests.supervisor._mock_driver import CostStep, create_mock_driver
 
-# The message the budget-initialization seam fails with when a test makes it explode.
+# The messages the budget-initialization and tracing-setup seams fail with when a
+# test makes them explode.
 _BUDGET_FAILURE = "budget write failed"
+_TRACING_FAILURE = "tracing exporter unreachable"
 
 
 # ---------------------------------------------------------------------------
 # flag parsing
 # ---------------------------------------------------------------------------
-
-
-def test_supervise_when_max_minutes_missing_does_exit_two_naming_the_flag(repo: str):
-    result = run("my prompt")
-
-    assert result.exit_code == 2
-    assert "--max-minutes" in err_text(result)
 
 
 def test_supervise_when_run_does_hand_supervise_its_capped_session(
@@ -133,7 +118,6 @@ def test_supervise_when_no_log_given_does_report_the_session_dir_log_in_a_plain_
 
     assert result.exit_code == 0
     assert re.search(r"\.gymrat[/\\]supervisor-\d+\.jsonl", result.stderr)
-    assert result.stdout.splitlines()[0] == "✓ completed · 1m 0s · $0.05"
     assert result.stdout.count(".jsonl") == 1
     assert "\x1b[" not in result.stdout
 
@@ -163,7 +147,6 @@ def test_supervise_when_log_path_resolved_does_git_exclude_the_session_dir_only_
     repo: str, monkeypatch: pytest.MonkeyPatch, log_args: list[str], excluded: bool
 ):
     install_seams(monkeypatch)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.ensure_git_exclude", ensure_git_exclude)
     exclude_file = Path(repo, ".git", "info", "exclude")
 
     result = run("optimize it", "--max-minutes", "10", *log_args)
@@ -251,25 +234,15 @@ def test_supervise_when_log_path_is_long_does_print_it_unwrapped(
     )
 
 
-def test_supervise_when_stdout_reader_closed_does_exit_zero_without_stderr(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    install_seams(monkeypatch, config=replace(command_config(), checks="npm test"))
-    monkeypatch.setattr("gymrat.cli.commands.supervise.resolve_render_mode", lambda: "live")
-
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(
-        app, ["supervise", "optimize it", "--max-minutes", "10"]
-    )
-
-    assert (result.exit_code, result.stderr) == (0, "")
-
-
 def test_supervise_when_stdout_reader_closed_and_preflight_fails_does_exit_two(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     install_seams(monkeypatch, config=replace(command_config(), checks="npm test"))
     monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", run_preflight)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.resolve_render_mode", lambda: "live")
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.resolve_render_mode",
+        create_autospec(resolve_render_mode, return_value="live"),
+    )
 
     result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["supervise", "optimize it", "--max-minutes", "10"]
@@ -282,20 +255,6 @@ def test_supervise_when_stdout_reader_closed_and_preflight_fails_does_exit_two(
 # ---------------------------------------------------------------------------
 # driver, kickoff, and reporter wiring
 # ---------------------------------------------------------------------------
-
-
-def test_supervise_when_driver_session_completes_does_end_the_run_by_session(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    commands_supervise = supervise_cmd.supervise
-    seams = install_seams(monkeypatch)
-    seams.create_driver.return_value = create_mock_driver([CostStep(cost_usd=0.01)])
-    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise", commands_supervise)
-
-    result = run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 0
-    assert seams.exit_calls[0]["ended_by"] == "session"
 
 
 @pytest.mark.parametrize(
@@ -316,26 +275,28 @@ def test_supervise_when_run_does_compose_kickoff_with_the_prompt_given(
     assert seams.compose_calls[0][1] == prompt
 
 
-def test_supervise_when_max_minutes_fractional_does_forward_it_without_flooring_to_reporter(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("branch", "max_minutes", "reporter_key", "expected"),
+    [
+        pytest.param(None, "5.5", "max_minutes", 5.5, id="fractional-max-minutes"),
+        pytest.param("banana", "10", "branch", "banana", id="session-branch"),
+    ],
+)
+def test_supervise_when_run_does_hand_the_reporter_the_cap_and_branch_unaltered(
+    *,
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    branch: str | None,
+    max_minutes: str,
+    reporter_key: str,
+    expected: object,
 ):
-    seams = install_seams(monkeypatch)
+    seams = install_seams(monkeypatch, branch=branch)
 
-    result = run("optimize it", "--max-minutes", "5.5")
+    result = run("optimize it", "--max-minutes", max_minutes)
 
     assert result.exit_code == 0
-    assert seams.reporter_calls[0]["max_minutes"] == 5.5
-
-
-def test_supervise_when_session_has_branch_does_hand_it_to_the_reporter(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch, branch="banana")
-
-    result = run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 0
-    assert seams.reporter_calls[0]["branch"] == "banana"
+    assert seams.reporter_calls[0][reporter_key] == expected
 
 
 def test_supervise_when_plain_and_session_has_branch_does_print_no_title(
@@ -344,14 +305,11 @@ def test_supervise_when_plain_and_session_has_branch_does_print_no_title(
     build_reporter = supervise_cmd.create_supervise_reporter
     seams = install_seams(monkeypatch, branch="banana")
     monkeypatch.setattr("gymrat.cli.commands.supervise.create_supervise_reporter", build_reporter)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.resolve_render_mode", lambda: "plain")
-
-    async def launching_supervise(*args: object, **kwargs: Any) -> SupervisionResult:
-        seams.record_supervise_call(args, kwargs)
-        kwargs["observer"](kwargs["launch"])
-        return make_supervision_result()
-
-    patch_supervise(monkeypatch, launching_supervise)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.resolve_render_mode",
+        create_autospec(resolve_render_mode, return_value="plain"),
+    )
+    seams.supervise_hook = lambda call: call["observer"](call["launch"])
 
     result = run("optimize it", "--max-minutes", "10")
 
@@ -413,7 +371,10 @@ def test_supervise_when_run_starts_does_build_the_reporter_before_installing_any
         armed_at_build.append(registry.live())
         return build_reporter(**kwargs)
 
-    monkeypatch.setattr("gymrat.cli.commands.supervise.create_supervise_reporter", probing_reporter)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.create_supervise_reporter",
+        create_autospec(create_supervise_reporter, side_effect=probing_reporter),
+    )
 
     result = run("optimize it", "--max-minutes", "10")
 
@@ -427,13 +388,9 @@ def test_supervise_when_session_runs_does_arm_the_kill_cleanup_only_for_its_dura
     seams = install_seams(monkeypatch)
     registry = track_cleanups(monkeypatch, "gymrat.cli.commands.supervise")
     armed_during_run: list[bool] = []
-
-    async def probing_supervise(*args: object, **kwargs: object) -> SupervisionResult:
-        seams.record_supervise_call(args, kwargs)
-        armed_during_run.append(any(live is kill_live_process_groups for live in registry.live()))
-        return make_supervision_result()
-
-    patch_supervise(monkeypatch, probing_supervise)
+    seams.supervise_hook = lambda _call: armed_during_run.append(
+        any(live is kill_live_process_groups for live in registry.live())
+    )
 
     result = run("optimize it", "--max-minutes", "10")
 
@@ -454,7 +411,7 @@ def test_supervise_when_session_runs_does_arm_the_kill_cleanup_only_for_its_dura
         pytest.param(
             "gymrat.telemetry.run_spans.setup_tracing",
             setup_tracing,
-            TRACING_FAILURE,
+            _TRACING_FAILURE,
             id="tracing-setup",
         ),
     ],
@@ -529,7 +486,6 @@ def test_supervise_when_preflight_raises_does_exit_two_with_message(
 ):
     install_seams(monkeypatch)
     msg = "cap too small"
-
     monkeypatch.setattr(
         "gymrat.cli.commands.supervise.run_preflight",
         create_autospec(run_preflight, side_effect=GymratError(msg)),
@@ -562,24 +518,8 @@ def test_supervise_when_config_resolved_does_reach_every_consumer(
 
 
 # ---------------------------------------------------------------------------
-# --effort flag parsing and resolution
+# --effort resolution
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "bad_value",
-    [
-        pytest.param("banana", id="unknown-word"),
-        pytest.param("HIGH", id="wrong-case"),
-        pytest.param("", id="empty-string"),
-    ],
-)
-def test_supervise_when_effort_invalid_does_exit_two_with_choice_message(repo: str, bad_value: str):
-    result = run("optimize it", "--max-minutes", "10", "--effort", bad_value)
-    flat = unwrap_panel(err_text(result))
-
-    assert result.exit_code == 2
-    assert f"{bad_value!r} is not one of 'low', 'medium', 'high', 'xhigh', 'max'." in flat
 
 
 @pytest.mark.parametrize(
@@ -634,36 +574,35 @@ def test_supervise_when_run_from_subdirectory_does_pass_factories_for_repo_root(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     seams = install_seams(monkeypatch)
-    tools_factory_roots: list[str] = []
+    built_tools: dict[Path, ToolsFactory] = {}
     built_hooks: dict[Path, HooksFactory] = {}
-    real_tools_factory = gymrat_tools_factory
-    real_hooks_factory = supervise_hooks_factory
 
-    def _recording_tools_factory(root: str) -> ToolsFactory:
-        tools_factory_roots.append(root)
-        return real_tools_factory(root)
+    def _record_tools(root: str) -> ToolsFactory:
+        built_tools[Path(root).resolve()] = gymrat_tools_factory(root)
+        return built_tools[Path(root).resolve()]
 
     def _record_hooks(root: Path) -> HooksFactory:
-        built_hooks[root.resolve()] = real_hooks_factory(root)
+        built_hooks[root.resolve()] = supervise_hooks_factory(root)
         return built_hooks[root.resolve()]
 
     monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.gymrat_tools_factory", _recording_tools_factory
+        "gymrat.cli.commands.supervise.gymrat_tools_factory",
+        create_autospec(gymrat_tools_factory, side_effect=_record_tools),
     )
-    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise_hooks_factory", _record_hooks)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.supervise_hooks_factory",
+        create_autospec(supervise_hooks_factory, side_effect=_record_hooks),
+    )
     (Path(repo) / "docs").mkdir()
     monkeypatch.chdir(Path(repo) / "docs")
 
     result = run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
-    assert [Path(root).resolve() for root in tools_factory_roots] == [Path(repo).resolve()]
+    assert list(built_tools) == [Path(repo).resolve()]
     assert list(built_hooks) == [Path(repo).resolve()]
     call_kwargs = seams.create_driver.call_args.kwargs
-    tools = call_kwargs.get("tools")
-    assert callable(tools), "create_claude_driver must receive a tools callable"
-    server_config: dict[str, Any] = tools(asyncio.Event(), {})  # type: ignore[assignment]  # McpSdkServerConfig is a TypedDict
-    assert server_config["name"] == "gymrat"
+    assert call_kwargs.get("tools") is built_tools[Path(repo).resolve()]
     assert call_kwargs.get("hooks") is built_hooks[Path(repo).resolve()]
 
 
@@ -700,7 +639,10 @@ def test_supervise_when_adapter_defaults_to_higher_does_build_reporter_with_the_
 ):
     config = replace(command_config(), primary=primary, metrics=metrics)
     adapters = {config.adapter: make_adapter(lambda _name: MetricDefaults(direction="higher"))}
-    monkeypatch.setattr("gymrat.cli.commands.supervise.get_adapter", adapters.__getitem__)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.get_adapter",
+        create_autospec(get_adapter, side_effect=adapters.__getitem__),
+    )
     seams = install_seams(monkeypatch, config=config)
 
     result = run("optimize it", "--max-minutes", "10")

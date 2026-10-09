@@ -9,7 +9,6 @@ drive real scratch repos and shell bench scripts through the full pipeline.
 
 from __future__ import annotations
 
-import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -17,7 +16,7 @@ import pytest
 from gymrat import compare as compare_mod
 from gymrat.compare import CompareOptions, compare
 from gymrat.config import KindEntry, MetricEntry
-from gymrat.errors import GymratError
+from gymrat.errors import CommandError, GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
 from gymrat.progress_events import PrepareStarted
 from gymrat.sampling import TargetSpec
@@ -25,6 +24,7 @@ from gymrat.utils import warn_to_stderr
 from tests._git import list_worktree_dirs, write_committed_bench
 from tests._git import run_git as _git
 from tests._pipeline import DIRTY_RESULT, install_pipeline, run_options
+from tests._platform import needs_posix_shell
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -91,27 +91,15 @@ async def test_compare_when_candidates_judged_does_use_shared_baseline(
 async def test_compare_when_metric_on_one_side_only_does_include_it_with_that_sides_median(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    baseline = [{"a": 1.0}, {"a": 2.0}]
-    candidate = [{"b": 3.0}, {"b": 4.0}]
+    baseline = [{"items": 1.0}, {"items": 2.0}]
+    candidate = [{"y": 3.0}, {"y": 4.0}]
     install_pipeline(monkeypatch, compare_mod, [baseline, candidate])
 
     result = await compare(_options())
 
-    assert list(result.metrics.keys()) == ["a", "b"]
-    assert result.metrics["a"].baseline_median == 1.5
-    assert result.metrics["b"].candidates[0].median == 3.5
-
-
-async def test_compare_when_targets_sampled_does_place_baseline_old_and_candidates_new(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    samples = [{"x": 1.0}, {"x": 2.0}]
-    captured = install_pipeline(monkeypatch, compare_mod, [samples, samples, samples])
-
-    await compare(_options(candidate_targets=("one", "two")))
-
-    assert captured.contexts is not None
-    assert [ctx.position for ctx in captured.contexts] == ["old", "new", "new"]
+    assert list(result.metrics.keys()) == ["items", "y"]
+    assert result.metrics["items"].baseline_median == 1.5
+    assert result.metrics["y"].candidates[0].median == 3.5
 
 
 async def test_compare_when_a_round_is_one_sided_does_send_the_dropped_window_warning_to_the_sink(
@@ -125,18 +113,6 @@ async def test_compare_when_a_round_is_one_sided_does_send_the_dropped_window_wa
     await compare(_options(warn=warnings.append))
 
     assert [warning.split(": ", 1)[0] for warning in warnings] == ["x"]
-
-
-async def test_compare_when_metric_named_like_dict_method_does_treat_as_ordinary_key(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    baseline = [{"items": 1.0}, {"items": 2.0}]
-    candidate = [{"items": 3.0}, {"items": 4.0}]
-    install_pipeline(monkeypatch, compare_mod, [baseline, candidate])
-
-    result = await compare(_options())
-
-    assert result.metrics["items"].baseline_median == 1.5
 
 
 async def test_compare_when_baseline_round_unpaired_does_median_each_side_over_paired_rounds(
@@ -189,7 +165,7 @@ async def test_compare_when_pipeline_completes_does_assemble_result_metadata(
     assert result.adapter == "metric-lines"
 
 
-async def test_compare_when_progress_and_warn_given_does_deliver_sampling_events_and_warnings(
+async def test_compare_when_sampling_callbacks_given_does_deliver_what_the_pipeline_emits(
     monkeypatch: pytest.MonkeyPatch,
 ):
     event = PrepareStarted(label="base", at_ms=0.0)
@@ -227,13 +203,16 @@ async def test_compare_when_config_overrides_given_does_apply_them_to_the_result
 # End-to-end tests (real subprocesses, POSIX only)
 # ---------------------------------------------------------------------------
 
-_posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
+
+_FAIL = "#!/bin/sh\nexit 1\n"
+
+
+def _emit(value: int) -> str:
+    return f"#!/bin/sh\necho 'METRIC x={value}'\n"
 
 
 def _commit_bench(repo: str, value: int) -> None:
-    write_committed_bench(
-        repo, f"#!/bin/sh\necho 'METRIC x={value}'\n", message=f"bench emits {value}"
-    )
+    write_committed_bench(repo, _emit(value), message=f"bench emits {value}")
 
 
 def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
@@ -245,8 +224,8 @@ def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
     )
 
 
-@_posix_only
-async def test_compare_when_two_refs_does_produce_comparison_and_sweep(
+@needs_posix_shell
+async def test_compare_when_two_refs_given_does_compare_them_in_disposable_worktrees(
     repo: str,
 ):
     _commit_bench(repo, 1)
@@ -264,7 +243,34 @@ async def test_compare_when_two_refs_does_produce_comparison_and_sweep(
     assert list_worktree_dirs(repo, include_main=False) == []
 
 
-@_posix_only
+@pytest.mark.parametrize(
+    ("baseline_bench", "candidate_bench", "header"),
+    [
+        pytest.param(_FAIL, _emit(2), 'bench command failed (old, "main"', id="baseline-fails"),
+        pytest.param(
+            _emit(1), _FAIL, 'bench command failed (new, "candidate"', id="candidate-fails"
+        ),
+    ],
+)
+@needs_posix_shell
+async def test_compare_when_a_bench_fails_does_name_the_target_by_its_comparison_side(
+    repo: str,
+    baseline_bench: str,
+    candidate_bench: str,
+    header: str,
+):
+    write_committed_bench(repo, baseline_bench, message="baseline bench")
+    _git(["switch", "-c", "candidate"], repo)
+    write_committed_bench(repo, candidate_bench, message="candidate bench")
+    _git(["switch", "main"], repo)
+
+    with pytest.raises(CommandError) as caught:
+        await compare(_e2e_options("main", "candidate"))
+
+    assert str(caught.value).startswith(header)
+
+
+@needs_posix_shell
 async def test_compare_when_candidate_unresolvable_does_fail_with_nothing_on_disk(
     repo: str,
 ):

@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.session.lock import acquire_lock
+from gymrat.session.lock import acquire_lock, is_held
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from tests.hardening._barrier import CHILD_BARRIER, racing_children
 
@@ -160,7 +160,10 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
 
         won = sorted(results.glob("won.*"))
         lost = sorted(results.glob("lost.*"))
-        snapshot = Path(lock_path).read_text(encoding="utf-8") if Path(lock_path).exists() else None
+        try:
+            snapshot = Path(lock_path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            snapshot = None
 
         release_flag.write_text("go", encoding="utf-8")
         exit_codes = [child.wait(timeout=RACE_TIMEOUT_SECONDS) for child in children]
@@ -227,5 +230,4 @@ def test_acquire_lock_when_repository_lock_is_held_does_not_block_the_supervise_
 
         releases.callback(acquire_lock(supervise_lock, "supervise"))
 
-        assert Path(repository_lock).exists()
-        assert Path(supervise_lock).exists()
+        assert (is_held(repository_lock), is_held(supervise_lock)) == (True, True)

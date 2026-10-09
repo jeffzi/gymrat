@@ -46,17 +46,26 @@ if TYPE_CHECKING:
         pytest.param(-1735, "ns", "-1.7µs", id="neg-us"),
         pytest.param(-2_000_000_000, "ns", "-2.0s", id="neg-s"),
         pytest.param(-999.5, "bytes", "-1.0KB", id="neg-rounds-onto-kb"),
-        pytest.param(0, None, "0", id="no-unit-zero"),
-        pytest.param(1200, None, "1200", id="no-unit-thousands"),
-        pytest.param(1_100_000, None, "1100000", id="no-unit-millions"),
-        pytest.param(1199.6, None, "1200", id="no-unit-rounds-up"),
-        pytest.param(1199.4, None, "1199", id="no-unit-rounds-down"),
     ],
 )
 def test_format_value_when_finite_does_scale_to_its_unit_tier(
-    value: float, unit: MetricUnit | None, expected: str
+    value: float, unit: MetricUnit, expected: str
 ):
     assert format_value(value, unit) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param(0, "0", id="zero"),
+        pytest.param(1200, "1200", id="thousands"),
+        pytest.param(1_100_000, "1100000", id="millions"),
+        pytest.param(1199.6, "1200", id="rounds-up"),
+        pytest.param(1199.4, "1199", id="rounds-down"),
+    ],
+)
+def test_format_value_when_unitless_does_round_to_an_integer(value: float, expected: str):
+    assert format_value(value, None) == expected
 
 
 @pytest.mark.parametrize(

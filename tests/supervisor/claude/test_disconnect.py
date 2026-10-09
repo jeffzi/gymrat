@@ -246,27 +246,22 @@ async def test_start_when_session_ended_does_disconnect_client_exactly_once_with
 
 
 @pytest.mark.parametrize(
-    ("client", "end_session", "expected_reason"),
+    ("client_cls", "end_session", "expected_reason"),
     [
+        pytest.param(_DisconnectFailingClient, _end_by_end_call, "completed", id="end-call"),
+        pytest.param(_DisconnectFailingClient, _end_by_abort, "interrupted", id="abort"),
         pytest.param(
-            _DisconnectFailingClient(_one_turn()), _end_by_end_call, "completed", id="end-call"
-        ),
-        pytest.param(
-            _DisconnectFailingClient(_one_turn()), _end_by_abort, "interrupted", id="abort"
-        ),
-        pytest.param(
-            _FiniteDisconnectFailingClient(_one_turn()),
-            _end_by_stream,
-            "completed",
-            id="stream-exhaustion",
+            _FiniteDisconnectFailingClient, _end_by_stream, "completed", id="stream-exhaustion"
         ),
     ],
 )
 async def test_start_when_disconnect_raises_does_keep_the_settled_outcome_with_one_warning(
-    client: FakeClient,
+    client_cls: type[FakeClient],
     end_session: Callable[[FakeClient], Awaitable[SessionOutcome]],
     expected_reason: str,
 ):
+    client = client_cls(_one_turn())
+
     with _recorded_warnings() as caught:
         outcome = await end_session(client)
 

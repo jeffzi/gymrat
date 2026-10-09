@@ -223,7 +223,18 @@ def beat_pid(path: Path) -> int | None:
 
 
 def wait_for_beat(path: Path, timeout_s: float = _BEAT_TIMEOUT_S) -> str:
-    """Poll ``path`` until a heartbeat lands there, then return it."""
+    """Poll ``path`` until a heartbeat lands there, then return it.
+
+    Args:
+        path: The heartbeat file to poll.
+        timeout_s: How long to wait for a heartbeat before giving up, in seconds.
+
+    Returns:
+        The heartbeat text read from ``path``.
+
+    Raises:
+        AssertionError: No heartbeat landed at ``path`` within ``timeout_s``.
+    """
     deadline = time.monotonic() + timeout_s
     while True:
         beat = read_beat(path)
@@ -667,7 +678,7 @@ def spawn_children_running(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(asyncio, "create_subprocess_shell", shell_running)
 
 
-@dataclasses.dataclass(slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class ContainmentTrace:
     """What a traced ``gymrat.exec`` copy did around each spawn."""
 

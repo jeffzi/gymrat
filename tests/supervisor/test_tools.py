@@ -7,12 +7,13 @@ import json
 import os
 import pathlib
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, create_autospec
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from claude_agent_sdk import McpSdkServerConfig
     from mcp.types import CallToolResult
 
 import pytest
@@ -82,14 +83,22 @@ def host(request: pytest.FixtureRequest, tmp_path: pathlib.Path, fake_exec: Asyn
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("host", [{"GYMRAT_TRACEPARENT": "00-abc-def-01"}], indirect=True)
-async def test_probe_when_called_does_run_in_the_root_with_tool_origin_no_color_and_extra_env(
+async def test_probe_when_called_does_run_in_the_root(
     tmp_path: pathlib.Path, host: ToolHost, fake_exec: AsyncMock
 ) -> None:
     await host.probe({})
 
     opts: ExecOptions = fake_exec.call_args[0][1]
     assert opts.cwd == str(tmp_path)
+
+
+@pytest.mark.parametrize("host", [{"GYMRAT_TRACEPARENT": "00-abc-def-01"}], indirect=True)
+async def test_probe_when_called_does_compose_the_child_env(
+    host: ToolHost, fake_exec: AsyncMock
+) -> None:
+    await host.probe({})
+
+    opts: ExecOptions = fake_exec.call_args[0][1]
     assert opts.env is not None
     assert opts.env["GYMRAT_COMMAND_ORIGIN"] == "tool"
     assert opts.env["NO_COLOR"] == "1"
@@ -111,30 +120,6 @@ async def test_probe_when_extra_env_names_a_fixed_variable_does_let_extra_env_wi
 # ---------------------------------------------------------------------------
 # result mapping
 # ---------------------------------------------------------------------------
-
-
-async def test_probe_when_exit_2_with_stderr_does_return_error_with_stderr(
-    tmp_path: pathlib.Path,
-) -> None:
-    host = _real_host(tmp_path, script="import sys; sys.stderr.write('bad config'); sys.exit(2)")
-
-    result = await host.probe({})
-
-    assert result == {"content": [{"type": "text", "text": "bad config"}], "is_error": True}
-
-
-@pytest.mark.parametrize("command", ["probe", "iterate"])
-async def test_tool_host_when_exit_2_with_no_output_does_return_fallback_naming_the_command(
-    tmp_path: pathlib.Path, command: str
-) -> None:
-    host = _real_host(tmp_path, script="import sys; sys.exit(2)")
-
-    result = await getattr(host, command)({})
-
-    assert result == {
-        "content": [{"type": "text", "text": f"gymrat {command} exited 2 with no output"}],
-        "is_error": True,
-    }
 
 
 async def test_probe_when_abort_already_set_does_return_killed_without_running_child(
@@ -159,6 +144,24 @@ async def test_probe_when_abort_already_set_does_return_killed_without_running_c
 @pytest.mark.parametrize(
     ("command", "script", "expected"),
     [
+        pytest.param(
+            "probe",
+            "import sys; sys.stderr.write('bad config'); sys.exit(2)",
+            "bad config",
+            id="probe-exit-2-stderr",
+        ),
+        pytest.param(
+            "probe",
+            "import sys; sys.exit(2)",
+            "gymrat probe exited 2 with no output",
+            id="probe-exit-2-no-output",
+        ),
+        pytest.param(
+            "iterate",
+            "import sys; sys.exit(2)",
+            "gymrat iterate exited 2 with no output",
+            id="iterate-exit-2-no-output",
+        ),
         pytest.param(
             "probe",
             "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
@@ -223,39 +226,41 @@ async def test_probe_when_json_object_padded_with_whitespace_does_return_documen
 
 
 @pytest.mark.parametrize(
-    ("stdout", "exit_code"),
+    ("run", "expected"),
     [
-        pytest.param('{"kind": "probe", ', 0, id="truncated-object-exit-0"),
-        pytest.param('{"ok": true}', 3, id="object-exit-3"),
-        pytest.param("[1, 2]", 0, id="array-exit-0"),
+        pytest.param(
+            expected_result(stdout='{"kind": "probe", ', stderr="broken run"),
+            "broken run",
+            id="truncated-object-exit-0",
+        ),
+        pytest.param(
+            expected_result(stdout='{"ok": true}', stderr="broken run", exit_code=3),
+            "broken run",
+            id="object-exit-3",
+        ),
+        pytest.param(
+            expected_result(stdout="[1, 2]", stderr="broken run"),
+            "broken run",
+            id="array-exit-0",
+        ),
+        pytest.param(
+            expected_result(stdout='{"kind": "probe", '),
+            '{"kind": "probe",',
+            id="truncated-object-no-stderr",
+        ),
     ],
 )
-async def test_probe_when_stdout_is_not_a_document_does_return_stderr_error(
+async def test_probe_when_stdout_is_not_a_document_does_return_the_error_output(
     host: ToolHost,
     fake_exec: AsyncMock,
-    stdout: str,
-    exit_code: int,
+    run: ExecResult,
+    expected: str,
 ) -> None:
-    fake_exec.return_value = expected_result(
-        stdout=stdout, stderr="broken run", exit_code=exit_code
-    )
+    fake_exec.return_value = run
 
     result = await host.probe({})
 
-    assert result["is_error"] is True
-    assert _text_of(result) == "broken run"
-
-
-async def test_probe_when_invalid_json_and_no_stderr_does_return_stdout_error(
-    host: ToolHost,
-    fake_exec: AsyncMock,
-) -> None:
-    fake_exec.return_value = expected_result(stdout='{"kind": "probe", ', exit_code=0)
-
-    result = await host.probe({})
-
-    assert result["is_error"] is True
-    assert _text_of(result) == '{"kind": "probe",'
+    assert result == {"content": [{"type": "text", "text": expected}], "is_error": True}
 
 
 @pytest.mark.parametrize(
@@ -289,16 +294,11 @@ async def test_probe_when_run_times_out_does_return_timeout_error(
 # ---------------------------------------------------------------------------
 
 
-async def _wait_for_gate(gate: pathlib.Path, *, timeout: float = 5.0) -> None:  # noqa: ASYNC109 -- gate-file poll with cooperative yields, not a deadline
-    """Poll until a gate file exists, raising on timeout."""
-    elapsed = 0.0
-    step = 0.05
-    while not gate.exists():  # noqa: ASYNC240 -- brief sync check between async yields
-        await asyncio.sleep(step)
-        elapsed += step
-        if elapsed >= timeout:
-            msg = f"gate file {gate} not created within {timeout}s"
-            raise TimeoutError(msg)
+async def _wait_for_gate(gate: pathlib.Path) -> None:
+    """Poll until a gate file exists, raising ``TimeoutError`` after five seconds."""
+    async with asyncio.timeout(5.0):
+        while not await asyncio.to_thread(gate.exists):  # noqa: ASYNC110 -- a child process creates the gate file, which no asyncio.Event can observe
+            await asyncio.sleep(0.05)
 
 
 def _assert_busy(result: dict[str, Any]) -> None:
@@ -442,13 +442,13 @@ async def test_gymrat_tool_definitions_when_called_does_describe_probe_then_iter
 
 
 @pytest.fixture
-def sdk_config(host: ToolHost) -> dict[str, Any]:
+def sdk_config(host: ToolHost) -> McpSdkServerConfig:
     """An SDK server config exposing ``host``'s tool definitions."""
-    return create_sdk_mcp_server("gymrat", "0.1.0", gymrat_tool_definitions(host))  # type: ignore[return-value]  # McpSdkServerConfig is a TypedDict
+    return create_sdk_mcp_server("gymrat", "0.1.0", gymrat_tool_definitions(host))
 
 
 async def _call_via_sdk(
-    sdk_config: dict[str, Any], tool_name: str, arguments: dict[str, Any]
+    sdk_config: McpSdkServerConfig, tool_name: str, arguments: dict[str, Any]
 ) -> CallToolResult:
     """Call *tool_name* through an in-memory MCP client on the SDK server."""
     async with Client(sdk_config["instance"]) as client:
@@ -497,7 +497,7 @@ async def _call_via_sdk(
     ],
 )
 async def test_gymrat_tool_definitions_when_valid_arguments_given_does_run_child_with_expected_argv(
-    sdk_config: dict[str, Any],
+    sdk_config: McpSdkServerConfig,
     fake_exec: AsyncMock,
     tool_name: str,
     arguments: dict[str, Any],
@@ -519,7 +519,7 @@ async def test_gymrat_tool_definitions_when_valid_arguments_given_does_run_child
     ],
 )
 async def test_gymrat_tool_definitions_when_invalid_arguments_given_does_reject_before_running_child(
-    sdk_config: dict[str, Any],
+    sdk_config: McpSdkServerConfig,
     fake_exec: AsyncMock,
     tool_name: str,
     arguments: dict[str, Any],
@@ -534,7 +534,7 @@ async def test_gymrat_tools_factory_when_called_does_build_the_gymrat_sdk_server
     create_scratch_repo: Callable[[], str],
 ) -> None:
     factory = gymrat_tools_factory(create_scratch_repo())
-    config: dict[str, Any] = factory(asyncio.Event(), {"GYMRAT_SAMPLES": "banana"})  # type: ignore[assignment]  # McpSdkServerConfig is a TypedDict
+    config = cast("McpSdkServerConfig", factory(asyncio.Event(), {"GYMRAT_SAMPLES": "banana"}))
 
     result = await _call_via_sdk(config, "probe", {})
 
@@ -554,7 +554,7 @@ async def test_gymrat_tools_factory_when_abort_set_does_kill_the_tool_call(
 ) -> None:
     abort = asyncio.Event()
     abort.set()
-    config: dict[str, Any] = gymrat_tools_factory(str(tmp_path))(abort, {})  # type: ignore[assignment]  # McpSdkServerConfig is a TypedDict
+    config = cast("McpSdkServerConfig", gymrat_tools_factory(str(tmp_path))(abort, {}))
 
     result = await _call_via_sdk(config, "probe", {})
 

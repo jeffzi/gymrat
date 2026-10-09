@@ -83,12 +83,14 @@ IMPORT_ENV = _current()
 
 @pytest.fixture(autouse=True)
 def observe_teardown(request):
+    '''Record FORCE_COLOR as each test's teardown sees it.'''
     yield
     SEEN_AT_TEARDOWN[request.node.name] = os.environ.get("FORCE_COLOR")
 
 
 @pytest.fixture
 def patched(monkeypatch):
+    '''Patch GYMRAT_PATCHED, then record GYMRAT_DIRECT as teardown sees it.'''
     monkeypatch.setenv("GYMRAT_PATCHED", "1")
     yield
     SEEN_AT_TEARDOWN["patched"] = os.environ.get("GYMRAT_DIRECT")

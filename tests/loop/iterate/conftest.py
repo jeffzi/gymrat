@@ -1,7 +1,5 @@
 """Shared fixtures for the iterate run tests."""
 
-from pathlib import Path
-
 import pytest
 
 from tests.loop.iterate._fixtures import (
@@ -42,6 +40,5 @@ def settled(repo: str, samples_mock: CollectSamplesRecorder) -> str:
 @pytest.fixture
 def hooks_setup(settled: str) -> tuple[str, str, HookScripts]:
     """A settled session, its experiment worktree, and a hook-script builder scoped to it."""
-    experiment_dir = iterate_session_header(settled).worktrees.experiment
-    Path(experiment_dir).mkdir(parents=True, exist_ok=True)
-    return settled, experiment_dir, HookScripts(settled, experiment_dir)
+    hooks = HookScripts.for_root(settled)
+    return settled, hooks.experiment_dir, hooks

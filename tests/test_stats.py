@@ -62,59 +62,6 @@ def test_compute_half_range_when_empty_does_raise_valueerror():
         compute_half_range([])
 
 
-# ---------------------------------------------------------------------------
-# normalize_ratio
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("delta", "direction", "expected"),
-    [
-        pytest.param(50.0, "lower", pytest.approx(1.5), id="lower-formula"),
-        pytest.param(50.0, "higher", pytest.approx(1.0 / 1.5), id="higher-formula"),
-        pytest.param(float("nan"), "lower", "undefined-ratio", id="delta-nan"),
-        pytest.param(-100.0, "lower", "infinite-rho", id="lower-rho-zero"),
-        pytest.param(-200.0, "lower", "infinite-rho", id="lower-rho-negative"),
-        pytest.param(-100.0, "higher", "infinite-rho", id="higher-divide-by-zero"),
-        pytest.param(math.inf, "lower", "infinite-rho", id="lower-rho-infinite"),
-    ],
-)
-def test_normalize_ratio_when_delta_and_direction_given_does_return_ratio_or_reason(
-    delta: float,
-    direction: Direction,
-    expected: object,
-):
-    assert normalize_ratio(delta, direction) == expected
-
-
-# ---------------------------------------------------------------------------
-# combine_geomean
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("entries", "expected"),
-    [
-        pytest.param([(1.5, 4.0)], (50.0, 4.0), id="single-entry"),
-        pytest.param(
-            [(1.5, 2.0), (2.0, 3.0)],
-            ((math.sqrt(3.0) - 1.0) * 100.0, math.hypot(2.0, 3.0) / 2.0),
-            id="multiple-entries",
-        ),
-        pytest.param([], (0.0, 0.0), id="empty"),
-    ],
-)
-def test_combine_geomean_when_entries_given_does_return_percent_and_band(
-    entries: list[tuple[float, float]],
-    expected: tuple[float, float],
-):
-    assert combine_geomean(entries) == pytest.approx(expected)
-
-
-# ---------------------------------------------------------------------------
-# Property-based invariants
-# ---------------------------------------------------------------------------
-
 _bounded_floats = st.floats(
     min_value=-1e6,
     max_value=1e6,
@@ -156,6 +103,31 @@ def test_compute_half_range_when_any_floats_does_return_nan_exactly_when_non_fin
     assert math.isnan(compute_half_range(values)) == has_non_finite
 
 
+# ---------------------------------------------------------------------------
+# normalize_ratio
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("delta", "direction", "expected"),
+    [
+        pytest.param(50.0, "lower", pytest.approx(1.5), id="lower-formula"),
+        pytest.param(50.0, "higher", pytest.approx(1.0 / 1.5), id="higher-formula"),
+        pytest.param(float("nan"), "lower", "undefined-ratio", id="delta-nan"),
+        pytest.param(-100.0, "lower", "infinite-rho", id="lower-rho-zero"),
+        pytest.param(-200.0, "lower", "infinite-rho", id="lower-rho-negative"),
+        pytest.param(-100.0, "higher", "infinite-rho", id="higher-divide-by-zero"),
+        pytest.param(math.inf, "lower", "infinite-rho", id="lower-rho-infinite"),
+    ],
+)
+def test_normalize_ratio_when_delta_and_direction_given_does_return_ratio_or_reason(
+    delta: float,
+    direction: Direction,
+    expected: object,
+):
+    assert normalize_ratio(delta, direction) == expected
+
+
 _positive_factor_deltas = st.floats(
     min_value=-99.0,
     max_value=1e6,
@@ -188,6 +160,30 @@ def test_normalize_ratio_when_round_tripped_does_preserve_percent_delta(
 
     assert isinstance(renormalized_rho, float)
     assert math.isclose(renormalized_rho, rho, rel_tol=1e-9, abs_tol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# combine_geomean
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("entries", "expected"),
+    [
+        pytest.param([(1.5, 4.0)], (50.0, 4.0), id="single-entry"),
+        pytest.param(
+            [(1.5, 2.0), (2.0, 3.0)],
+            ((math.sqrt(3.0) - 1.0) * 100.0, math.hypot(2.0, 3.0) / 2.0),
+            id="multiple-entries",
+        ),
+        pytest.param([], (0.0, 0.0), id="empty"),
+    ],
+)
+def test_combine_geomean_when_entries_given_does_return_percent_and_band(
+    entries: list[tuple[float, float]],
+    expected: tuple[float, float],
+):
+    assert combine_geomean(entries) == pytest.approx(expected)
 
 
 _positive_rho = st.floats(
@@ -343,6 +339,27 @@ def test_sign_flip_permutation_test_when_paired_samples_does_return_pinned_p(
     assert sign_flip_permutation_test(x, y) == pytest.approx(expected_p)
 
 
+def test_sign_flip_permutation_test_when_tied_pairs_reduce_exact_budget_does_report_exact_p():
+    # Tied pairs reduce the effective budget, keeping the path exact.
+    #
+    # Eight extreme tied pairs plus the standard six differing pairs give 14
+    # total.  2**14 > RESAMPLE_BUDGET would push scipy onto the Monte Carlo
+    # path, but tied pairs contribute the same value to both sides under every
+    # flip, so the effective space is 2**6 = 64 <= RESAMPLE_BUDGET — exact
+    # enumeration.
+    #
+    # Extreme tied values sit outside the differing-pair range and do not shift
+    # medians, so the exact p equals the ties-free six-pair p of 0.25.  An MC
+    # path over all 14 pairs would produce a close but not byte-identical
+    # estimate.
+    x = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_X]
+    y = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_Y]
+
+    p = sign_flip_permutation_test(x, y)
+
+    assert p == 0.25
+
+
 # ---------------------------------------------------------------------------
 # sign_flip_permutation_test — degenerate guards (no scipy invocation)
 # ---------------------------------------------------------------------------
@@ -368,7 +385,7 @@ def test_sign_flip_permutation_test_when_nothing_to_test_does_return_p_one(
 
 
 # ---------------------------------------------------------------------------
-# Property-based invariants
+# sign_flip_permutation_test — p-value range
 # ---------------------------------------------------------------------------
 
 # Positive-only samples keep both baseline medians strictly positive, so the
@@ -405,29 +422,3 @@ def test_sign_flip_permutation_test_when_any_positive_pairs_does_return_p_in_uni
     p = sign_flip_permutation_test(x, y)
 
     assert 0.0 < p <= 1.0
-
-
-# ---------------------------------------------------------------------------
-# Spec-pinned regression cases
-# ---------------------------------------------------------------------------
-
-
-def test_sign_flip_permutation_test_when_tied_pairs_reduce_exact_budget_does_report_exact_p():
-    # Tied pairs reduce the effective budget, keeping the path exact.
-    #
-    # Eight extreme tied pairs plus the standard six differing pairs give 14
-    # total.  2**14 > RESAMPLE_BUDGET would push scipy onto the Monte Carlo
-    # path, but tied pairs contribute the same value to both sides under every
-    # flip, so the effective space is 2**6 = 64 <= RESAMPLE_BUDGET — exact
-    # enumeration.
-    #
-    # Extreme tied values sit outside the differing-pair range and do not shift
-    # medians, so the exact p equals the ties-free six-pair p.  An MC path
-    # over all 14 pairs would produce a close but not byte-identical estimate.
-    x = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_X]
-    y = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_Y]
-    no_ties = sign_flip_permutation_test(_SIX_PAIR_X, _SIX_PAIR_Y)
-
-    with_ties = sign_flip_permutation_test(x, y)
-
-    assert with_ties == no_ties

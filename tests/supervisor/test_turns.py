@@ -468,7 +468,9 @@ def test_classify_when_four_stale_turns_does_end_no_progress_on_fourth():
 def test_outcome_record_count_when_records_vary_does_exclude_command_records(
     records: list[SessionLogRecord], expected: int
 ):
-    assert outcome_record_count(records) == expected
+    count = outcome_record_count(records)
+
+    assert count == expected
 
 
 # ---------------------------------------------------------------------------

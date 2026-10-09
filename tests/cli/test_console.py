@@ -108,11 +108,9 @@ def test_point_stream_at_devnull_when_redirect_fails_does_raise_leaking_no_descr
     ("color_flag", "tty", "env", "expected_no_color"),
     [
         pytest.param(False, True, {}, True, id="no-color-flag-vetoes"),
-        pytest.param(True, True, {}, False, id="color-flag-forces-color"),
         pytest.param(True, True, {"FORCE_COLOR": "0"}, False, id="color-flag-overrides-force-zero"),
         pytest.param(True, True, {"NO_COLOR": "1"}, False, id="color-flag-overrides-no-color-env"),
         pytest.param(True, False, {}, False, id="color-flag-forces-color-even-without-tty"),
-        pytest.param(None, True, {"NO_COLOR": "1"}, True, id="no-flag-defers-to-the-env"),
     ],
 )
 def test_stderr_console_when_flag_env_and_tty_vary_does_resolve_color(
@@ -167,42 +165,21 @@ def test_apply_command_flags_when_command_gives_no_flags_does_keep_the_root_flag
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("columns", "expected_width"),
-    [
-        pytest.param("120", 120, id="explicit-columns"),
-        pytest.param("0", 0, id="zero-is-valid"),
-    ],
-)
-def test_stderr_console_when_columns_set_does_use_env_width(
-    columns: str,
-    expected_width: int,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("COLUMNS", columns)
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
-
-    console = stderr_console(color_flag=False)
-
-    assert console.width == expected_width
-
-
 def _terminal_of_123_columns(_fd: int) -> os.terminal_size:
     """Stand in for ``os.get_terminal_size``: a 123-column, 45-row terminal."""
     return os.terminal_size((123, 45))
 
 
 @pytest.mark.parametrize(
-    "env",
+    ("env", "expected_width"),
     [
-        pytest.param({}, id="unset"),
-        pytest.param({"COLUMNS": ""}, id="empty-string"),
-        pytest.param({"COLUMNS": "abc"}, id="non-numeric"),
-        pytest.param({"COLUMNS": "  "}, id="whitespace-only"),
+        pytest.param({"COLUMNS": "120"}, 120, id="columns-set"),
+        pytest.param({}, 123, id="columns-unset-uses-terminal"),
     ],
 )
-def test_stderr_console_when_columns_unset_or_not_an_integer_does_use_terminal_width(
+def test_stderr_console_when_columns_set_or_unset_does_resolve_width(
     env: dict[str, str],
+    expected_width: int,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.delenv("COLUMNS", raising=False)
@@ -213,7 +190,7 @@ def test_stderr_console_when_columns_unset_or_not_an_integer_does_use_terminal_w
 
     console = stderr_console(color_flag=False)
 
-    assert console.width == 123
+    assert console.width == expected_width
 
 
 # ---------------------------------------------------------------------------

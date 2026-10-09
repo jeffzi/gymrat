@@ -14,15 +14,10 @@ from dataclasses import dataclass
 from gymrat.model import (
     BandVerdict,
     Direction,
-    MetricMeta,
     MetricVerdict,
     ResolvedMetricMeta,
 )
-from tests.report._verdicts import band_verdict, exact_verdict
-
-METRIC_BYTES_LOWER: dict[str, MetricMeta] = {
-    "metric": MetricMeta(direction="lower", gating=True, exact=False, unit="bytes")
-}
+from tests.report._verdicts import band_verdict, exact_verdict, metric_meta
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,37 +60,22 @@ def build_inputs(
 ) -> tuple[dict[str, MetricVerdict], dict[str, ResolvedMetricMeta]]:
     """Verdicts and metadata keyed by metric name, in the order the specs are listed."""
     verdicts: dict[str, MetricVerdict] = {}
-    metric_meta: dict[str, ResolvedMetricMeta] = {}
+    meta_by_name: dict[str, ResolvedMetricMeta] = {}
 
     for spec in specs:
         verdict = _resolve_verdict(spec)
         if verdict is not None:
             verdicts[spec.name] = verdict
 
-        metric_meta[spec.name] = ResolvedMetricMeta(
+        meta_by_name[spec.name] = metric_meta(
+            spec.name,
             direction=spec.direction,
             gating=spec.gating,
             exact=verdict is not None and verdict.method == "exact",
-            unit=None,
             kind=spec.kind,
-            short_name=spec.name,
         )
 
-    return verdicts, metric_meta
-
-
-def noop_warn(_message: str) -> None:
-    """Swallow divergence warnings so these cases stay silent on stderr."""
-
-
-def samples(*values: float) -> list[dict[str, float]]:
-    """Build round dicts keying each value under the default ``"metric"`` name."""
-    return [{"metric": value} for value in values]
-
-
-def create_samples(n: int, value: float) -> list[dict[str, float]]:
-    """Build *n* single-metric sample rounds, each recording *value* under ``"metric"``."""
-    return samples(*[value] * n)
+    return verdicts, meta_by_name
 
 
 def unstable_band_verdict() -> BandVerdict:

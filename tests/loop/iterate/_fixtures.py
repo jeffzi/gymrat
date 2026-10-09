@@ -8,8 +8,8 @@ order. A side that landed in the wrong half of the record could then only have
 come from the wrong worktree, which is what lets the assertions downstream read
 as evidence.
 
-The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.loop.iterate._fixtures``.
+The ``_`` prefix marks a shared helper rather than a test module; it is
+imported as ``tests.loop.iterate._fixtures``.
 """
 
 from __future__ import annotations
@@ -39,9 +39,12 @@ from tests._exec_fixtures import expected_result
 from tests.session.records._fixtures import SESSION_ID, log_records, session_record
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
     from gymrat.exec import ExecOptions, ExecResult
+
+#: Where ``iterate_session`` looks up ``collect_samples``, the one sampling seam the stubs replace.
+COLLECT_SAMPLES_TARGET = "gymrat.loop.iterate.confirm.collect_samples"
 
 #: Ten rounds of a bench that stayed near 100.
 BASELINE_MS: list[float] = [100, 101, 99, 100, 102, 98, 100, 101, 99, 100]
@@ -93,7 +96,7 @@ def improved_rounds() -> list[dict[str, float]]:
     return rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 0.8))
 
 
-def iterate_session_header(root: str) -> SessionRecord:
+def iterate_session_header(root: str, *, experiment: str | None = None) -> SessionRecord:
     """A session header whose worktrees sit beside the default paths.
 
     Placing the worktrees on ``side-experiment`` / ``side-baseline`` rather than
@@ -102,6 +105,8 @@ def iterate_session_header(root: str) -> SessionRecord:
 
     Args:
         root: The repository the worktrees sit under.
+        experiment: The experiment worktree to name instead of
+            ``<root>/side-experiment``; None keeps the side path.
 
     Returns:
         The session header naming the side worktrees.
@@ -109,7 +114,7 @@ def iterate_session_header(root: str) -> SessionRecord:
     return session_record(
         session_id=SESSION_ID,
         worktrees=Worktrees(
-            experiment=str(Path(root) / "side-experiment"),
+            experiment=str(Path(root) / "side-experiment") if experiment is None else experiment,
             baseline=str(Path(root) / "side-baseline"),
         ),
     )
@@ -191,8 +196,35 @@ def assert_permutation(
 def install_collect_samples(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
     """Replace ``gymrat.loop.iterate.confirm.collect_samples`` with a fresh recorder."""
     recorder = CollectSamplesRecorder()
-    monkeypatch.setattr("gymrat.loop.iterate.confirm.collect_samples", recorder)
+    monkeypatch.setattr(COLLECT_SAMPLES_TARGET, recorder)
     return recorder
+
+
+def run_before_each_call(
+    monkeypatch: pytest.MonkeyPatch,
+    recorder: CollectSamplesRecorder,
+    before: Callable[[SamplingOptions], Awaitable[None]],
+) -> None:
+    """Wrap ``recorder`` so every sampling call first runs ``before``, then is answered.
+
+    Args:
+        monkeypatch: The patcher that installs the wrapper over ``collect_samples``.
+        recorder: The installed recorder that still answers each call.
+        before: The work a call does before its samples come back, such as
+            advancing a fake clock or writing into the worktree. It is handed
+            the options the call was given.
+    """
+
+    async def sample_after_before(
+        adapter: object,
+        targets: Sequence[TargetContext],
+        options: SamplingOptions,
+        abort: object,
+    ) -> list[TargetSamples]:
+        await before(options)
+        return await recorder(adapter, targets, options, abort)
+
+    monkeypatch.setattr(COLLECT_SAMPLES_TARGET, sample_after_before)
 
 
 def report_a_pass_per_call(
@@ -208,20 +240,14 @@ def report_a_pass_per_call(
         recorder: The installed recorder that still answers each call.
     """
 
-    async def sample_reporting_a_pass(
-        adapter: object,
-        targets: Sequence[TargetContext],
-        options: SamplingOptions,
-        abort: object,
-    ) -> list[TargetSamples]:
+    async def report_a_pass(options: SamplingOptions) -> None:
         if options.on_progress is not None:
             for event_type in (PassStarted, PassFinished):
                 options.on_progress(
                     event_type(round=1, total_rounds=1, target_count=1, label="x", at_ms=0)
                 )
-        return await recorder(adapter, targets, options, abort)
 
-    monkeypatch.setattr("gymrat.loop.iterate.confirm.collect_samples", sample_reporting_a_pass)
+    run_before_each_call(monkeypatch, recorder, report_a_pass)
 
 
 def _samples_by_dir(
@@ -230,10 +256,12 @@ def _samples_by_dir(
     """Answer each target with the rounds ``by_dir`` holds for its worktree directory."""
     collected: list[TargetSamples] = []
     for ctx in targets:
-        if ctx.dir not in by_dir:
+        try:
+            samples = by_dir[ctx.dir]
+        except KeyError as error:
             message = f"{stub}: unrecognized worktree dir {ctx.dir}"
-            raise AssertionError(message)
-        collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
+            raise AssertionError(message) from error
+        collected.append(TargetSamples(ctx=ctx, samples=samples))
     return collected
 
 
@@ -276,10 +304,11 @@ def stub_runs(
     def answer(targets: list[TargetContext]) -> list[TargetSamples]:
         index = state["index"]
         state["index"] = index + 1
-        if index >= len(runs):
+        try:
+            run = runs[index]
+        except IndexError as error:
             message = f"unexpected sampling call {index + 1}"
-            raise AssertionError(message)
-        run = runs[index]
+            raise AssertionError(message) from error
         if isinstance(run, GymratError):
             raise run
         by_dir = {worktrees.experiment: run.experiment, worktrees.baseline: run.baseline}

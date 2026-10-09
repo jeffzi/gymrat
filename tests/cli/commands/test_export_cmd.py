@@ -1,7 +1,7 @@
 """Tests for the ``gymrat export`` command wiring.
 
-These drive the assembled app through :class:`typer.testing.CliRunner` with the
-telemetry replay, tracing provider, and session store replaced. They cover
+These drive the assembled app through :class:`typer.testing.CliRunner` against a
+local OTLP collector, on session logs written to a temporary directory. They cover
 the argument/option contract, error exits, supervisor log selection, and the
 success path with its printed summary.
 """
@@ -15,18 +15,20 @@ import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import create_autospec
 
 import pytest
 
 from gymrat.cli.app import app
-from gymrat.session.paths import session_jsonl_path
+from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.session.records import record_to_wire
+from gymrat.utils import ENDPOINT_ENV
 from tests._cli import no_color_env, run_cli
 from tests._mode_bits import needs_mode_bits
 from tests.cli._session import runner
 from tests.session.records._fixtures import SESSION_ID, command_record
 from tests.telemetry._collector import otlp_collector
-from tests.telemetry._fixtures import hide_otel_sdk, hide_otlp_exporter
+from tests.telemetry._fixtures import arm_placeholder_endpoint, hide_otel_sdk, hide_otlp_exporter
 from tests.telemetry._replay_logs import (
     T0,
     write_measure_command_run,
@@ -44,8 +46,6 @@ def _output(result: Result) -> str:
     return result.stdout + result.stderr
 
 
-_ENDPOINT = "http://localhost:4318"
-_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 _TIMEOUT_ENV = "OTEL_EXPORTER_OTLP_TIMEOUT"
 _SHORT_TIMEOUT_SECONDS = "0.5"
 _UNREACHABLE_ENDPOINT = "http://127.0.0.1:1"
@@ -85,7 +85,7 @@ def test_export_when_tracing_package_not_importable_does_exit_two_naming_otel_ex
     hide_package: Callable[[pytest.MonkeyPatch], None],
 ):
     session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
+    arm_placeholder_endpoint(monkeypatch)
     hide_package(monkeypatch)
 
     result = runner.invoke(app, ["export", session_log])
@@ -118,7 +118,7 @@ def test_export_when_tracer_records_nothing_does_exit_two_without_reporting_expo
     monkeypatch.setenv(variable, value)
 
     with otlp_collector() as collector:
-        monkeypatch.setenv(_ENDPOINT_ENV, collector.endpoint)
+        monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
         result = runner.invoke(app, ["export", session_log])
 
     output = _output(result)
@@ -150,7 +150,7 @@ def _endpoint_args(monkeypatch: pytest.MonkeyPatch, source: str | None, endpoint
         return []
     if source == "flag":
         return ["--endpoint", endpoint]
-    monkeypatch.setenv(_ENDPOINT_ENV, endpoint)
+    monkeypatch.setenv(ENDPOINT_ENV, endpoint)
     return []
 
 
@@ -203,7 +203,7 @@ def test_export_when_session_log_missing_or_blank_does_exit_two_reporting_no_ses
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
+    arm_placeholder_endpoint(monkeypatch)
     session_log = session_jsonl_path(str(tmp_path))
     arrange(Path(session_log))
 
@@ -234,7 +234,7 @@ def test_export_when_first_line_corrupt_does_exit_two_naming_line(
     first_line: bytes,
     expected_fragments: tuple[str, ...],
 ):
-    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
+    arm_placeholder_endpoint(monkeypatch)
     session_log = session_jsonl_path(str(tmp_path))
     Path(session_log).parent.mkdir(parents=True, exist_ok=True)
     Path(session_log).write_bytes(first_line)
@@ -251,7 +251,7 @@ def test_export_when_first_record_not_session_does_exit_two_naming_its_type(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
+    arm_placeholder_endpoint(monkeypatch)
     session_log = session_jsonl_path(str(tmp_path))
     command_line = json.dumps(record_to_wire(command_record(name="measure", at=T0)))
     Path(session_log).parent.mkdir(parents=True, exist_ok=True)
@@ -274,7 +274,7 @@ def test_export_when_session_log_unreadable_does_exit_two_naming_path_and_os_rea
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
+    arm_placeholder_endpoint(monkeypatch)
     Path(session_log).chmod(0o000)
 
     result = runner.invoke(app, ["export", session_log])
@@ -284,21 +284,6 @@ def test_export_when_session_log_unreadable_does_exit_two_naming_path_and_os_rea
     assert session_log in output
     assert "Permission denied" in output
     assert "No session found" not in output
-
-
-def _always_true(*_args: object, **_kwargs: object) -> bool:
-    return True
-
-
-def _return_one(*_args: object, **_kwargs: object) -> int:
-    return 1
-
-
-def _stub_tracing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stub the tracing provider and replay calls the export command wires together."""
-    monkeypatch.setattr("gymrat.telemetry.provider.configure_tracing", _always_true)
-    monkeypatch.setattr("gymrat.telemetry.replay.replay_session", _return_one)
-    monkeypatch.setattr("gymrat.telemetry.provider.flush_tracing", lambda: None)
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +296,7 @@ def test_export_when_endpoint_flag_given_does_send_spans_to_the_flag_over_env(
     tmp_path: Path,
 ):
     session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.setenv(_ENDPOINT_ENV, _UNREACHABLE_ENDPOINT)
+    monkeypatch.setenv(ENDPOINT_ENV, _UNREACHABLE_ENDPOINT)
     monkeypatch.setenv(_TIMEOUT_ENV, _SHORT_TIMEOUT_SECONDS)
 
     with otlp_collector() as collector:
@@ -353,7 +338,7 @@ def test_export_when_final_session_line_is_torn_utf8_does_skip_only_that_line(
     env = no_color_env()
 
     with otlp_collector() as collector:
-        env[_ENDPOINT_ENV] = collector.endpoint
+        env[ENDPOINT_ENV] = collector.endpoint
         result = run_cli(
             ["export", session_log],
             tmp_path,
@@ -390,7 +375,7 @@ def test_export_when_collector_unreachable_does_exit_two_naming_endpoint(
     tmp_path: Path,
 ):
     session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.setenv(_ENDPOINT_ENV, _UNREACHABLE_ENDPOINT)
+    monkeypatch.setenv(ENDPOINT_ENV, _UNREACHABLE_ENDPOINT)
     monkeypatch.setenv(_TIMEOUT_ENV, _SHORT_TIMEOUT_SECONDS)
     started = time.monotonic()
 
@@ -421,7 +406,7 @@ def test_export_when_collector_rejects_a_batch_does_exit_two_naming_endpoint(
     monkeypatch.setenv("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", batch_size)
 
     with otlp_collector(statuses=[400]) as collector:
-        monkeypatch.setenv(_ENDPOINT_ENV, collector.endpoint)
+        monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
         result = runner.invoke(app, ["export", session_log])
 
     output = _output(result)
@@ -441,13 +426,17 @@ def test_export_when_no_session_log_argument_does_use_repo_session_path(
     tmp_path: Path,
 ):
     _populate_session_dir(str(tmp_path))
-    monkeypatch.setattr("gymrat.cli.commands.export.repo_root", lambda: str(tmp_path))
-    monkeypatch.setenv(_ENDPOINT_ENV, _ENDPOINT)
-    _stub_tracing(monkeypatch)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.export.repo_root",
+        create_autospec(repo_root, return_value=str(tmp_path)),
+    )
 
-    result = runner.invoke(app, ["export"])
+    with otlp_collector() as collector:
+        monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
+        result = runner.invoke(app, ["export"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, _output(result)
+    assert f"exported 3 spans for session {SESSION_ID} to {collector.endpoint}" in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +488,7 @@ def test_export_when_supervisor_log_not_a_launch_of_this_session_does_skip_it_si
     make_entry(Path(session_log).parent / "supervisor-002.jsonl")
 
     with otlp_collector() as collector:
-        monkeypatch.setenv(_ENDPOINT_ENV, collector.endpoint)
+        monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
         result = runner.invoke(app, ["export", session_log])
 
     assert result.exit_code == 0, _output(result)
@@ -549,7 +538,7 @@ def test_export_when_supervisor_log_unreadable_does_skip_it_with_a_warning(
     make_unreadable(unreadable)
 
     with otlp_collector() as collector:
-        monkeypatch.setenv(_ENDPOINT_ENV, collector.endpoint)
+        monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
         result = runner.invoke(app, ["export", session_log])
 
     warning_lines = [line for line in result.stderr.splitlines() if line.startswith("warning: ")]

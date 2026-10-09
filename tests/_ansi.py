@@ -88,6 +88,12 @@ def sgr_codes(text: str) -> set[str]:
 
     An extended color run stays one code (``"38;2;255;0;0"``), so its numeric
     components never read as attributes such as ``2`` (dim).
+
+    Args:
+        text: Rendered output to scan.
+
+    Returns:
+        The SGR codes present, each extended color run as one code.
     """
     codes: set[str] = set()
     for escape in SGR_RE.finditer(text):

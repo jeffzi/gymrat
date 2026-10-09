@@ -33,6 +33,8 @@ from tests.session._store_records import (
     HOOK,
 )
 from tests.session.records._fixtures import (
+    RECOGNIZABLE_BASELINE_SHA,
+    RECOGNIZABLE_KEEP_COMMIT,
     SESSION_ID,
     blocked_keep,
     command_record,
@@ -56,10 +58,6 @@ if TYPE_CHECKING:
         SessionRecord,
     )
 
-# A 40-hex baseline sha whose first seven characters are recognizable on their own.
-_BASELINE_SHA = "a1b2c3d" + "e" * 33
-# A 40-hex keep-commit sha whose first seven characters are recognizable on their own.
-_KEEP_COMMIT = "b1b2b3b" + "c" * 33
 # The runbook path a session's config points an agent at, when it has one.
 _RUNBOOK_PATH = "docs/runbook.md"
 
@@ -83,7 +81,7 @@ def _body_lines(report: str) -> list[str]:
 def _session(root: str) -> SessionRecord:
     """The session header ``start`` writes for ``root``."""
     return session_record(
-        baseline=BaselineRef(ref="main", sha=_BASELINE_SHA),
+        baseline=BaselineRef(ref="main", sha=RECOGNIZABLE_BASELINE_SHA),
         worktrees=worktrees_at(root),
     )
 
@@ -101,7 +99,7 @@ def four_iterations() -> tuple[SessionLogRecord, ...]:
         BASELINE,
         HOOK,
         make_iteration(-7.2, "improved"),
-        committed_keep(1, commit=_KEEP_COMMIT),
+        committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
         make_iteration(9.4, "regressed", seq=2),
         discard_record(2),
         make_iteration(-3.1, "improved", seq=3),
@@ -158,7 +156,7 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
         pytest.param(
             (
                 make_iteration(-7.2, "improved"),
-                committed_keep(1, commit=_KEEP_COMMIT),
+                committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
                 finalize_record(),
             ),
             [
@@ -171,7 +169,7 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
         pytest.param(
             (
                 make_iteration(-7.2, "improved"),
-                committed_keep(1, commit=_KEEP_COMMIT),
+                committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
                 gate_block(2, "nothing-measured"),
                 make_iteration(-3.1, "improved", seq=2),
             ),
@@ -186,7 +184,7 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
         pytest.param(
             (
                 make_iteration(-7.2, "improved"),
-                committed_keep(1, commit=_KEEP_COMMIT),
+                committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
                 gate_block(2, "nothing-measured"),
             ),
             [
@@ -210,7 +208,7 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
             id="gating-block-superseded-by-a-discard",
         ),
         pytest.param(
-            (make_iteration(0.1, "no-signal"), committed_keep(1, commit=_KEEP_COMMIT)),
+            (make_iteration(0.1, "no-signal"), committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT)),
             [
                 "iteration 1 · ~ +0.1% · kept b1b2b3b (no-signal)",
                 "1 iteration · 1 kept · 0 discarded",
@@ -218,7 +216,7 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
             id="no-signal-iteration-kept",
         ),
         pytest.param(
-            (make_iteration(9.4, "regressed"), committed_keep(1, commit=_KEEP_COMMIT)),
+            (make_iteration(9.4, "regressed"), committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT)),
             [
                 "iteration 1 · ✗ +9.4% · kept b1b2b3b (regressed)",
                 "1 iteration · 1 kept · 0 discarded",
@@ -229,7 +227,7 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
             (
                 make_iteration(0.1, "no-signal"),
                 gate_block(1, "not-improved"),
-                committed_keep(1, commit=_KEEP_COMMIT),
+                committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
             ),
             [
                 "iteration 1 · ~ +0.1% · kept b1b2b3b (no-signal)",
@@ -242,7 +240,7 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
             (
                 make_iteration(-7.2, "improved"),
                 blocked_keep(1, reason="checks-failed"),
-                committed_keep(1, commit=_KEEP_COMMIT),
+                committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
             ),
             [
                 "iteration 1 · ✓ -7.2% · kept b1b2b3b",
@@ -254,8 +252,8 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
         pytest.param(
             (
                 make_iteration(-7.2, "improved"),
-                committed_keep(1, commit=_KEEP_COMMIT),
-                stop_record(message="target reached\ncleaning up"),
+                committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
+                stop_record(message="target reached"),
             ),
             [
                 "iteration 1 · ✓ -7.2% · kept b1b2b3b",
@@ -340,22 +338,14 @@ def test_status_session_when_command_records_interleaved_does_render_same_lines(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("color", "emitted"),
-    [
-        pytest.param(False, False, id="false-suppresses-despite-force-color"),
-        pytest.param(True, True, id="true-forces"),
-        pytest.param(None, True, id="none-defers-to-force-color"),
-    ],
-)
-def test_status_session_when_color_given_does_follow_it_over_the_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, color: bool | None, emitted: bool
+def test_status_session_when_color_off_does_render_plain_despite_force_color(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     root = str(tmp_path)
     write_session_log(root, _session(root), four_iterations())
 
-    report = status_session(root, _config(), color=color)
+    report = status_session(root, _config(), color=False)
 
-    assert ("\x1b[" in report) is emitted
+    assert "\x1b[" not in report

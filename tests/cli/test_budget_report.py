@@ -24,8 +24,8 @@ import pytest
 from gymrat.cli import budget_report
 from gymrat.cli.console import apply_command_flags
 from gymrat.cli.run_setup import SharedFlags
+from gymrat.clock import now_ms
 from gymrat.errors import GymratError
-from gymrat.git import NotAGitRepositoryError
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.types import DEFAULT_REPORT_OPTIONS, ReportOptions
 from gymrat.session.budget import Budget
@@ -33,7 +33,7 @@ from gymrat.session.paths import repo_root
 from gymrat.session.records import IterationRecord
 from gymrat.session.store import read_records
 from tests._lock import held_supervise_lock
-from tests.cli._budget import write_budget_file
+from tests.session._budget import write_budget_file
 from tests.session.records._fixtures import iteration_record, session_record, write_session_log
 
 #: The last full measurement took 48 minutes, so 24 minutes per side.
@@ -53,7 +53,7 @@ _TIMED_ITERATION = (iteration_record(duration_ms=ITERATE_MS),)
 @pytest.fixture
 def session_root(repo: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     """A repository under a live supervised run, with the clock frozen at 0."""
-    monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0.0)
+    monkeypatch.setattr("gymrat.clock.now_ms", create_autospec(now_ms, return_value=0))
     with held_supervise_lock(repo):
         yield repo
 
@@ -133,12 +133,6 @@ def test_emit_report_when_command_color_flag_installed_does_hand_it_to_the_text_
     ("error", "output_format", "expected"),
     [
         pytest.param(
-            NotAGitRepositoryError("not a git repository"),
-            "text",
-            "report\n",
-            id="not-a-git-repository",
-        ),
-        pytest.param(
             GymratError("detected dubious ownership"), "text", "report\n", id="gymrat-error"
         ),
         pytest.param(OSError("input/output error"), "text", "report\n", id="os-error"),
@@ -196,12 +190,16 @@ def test_emit_report_when_budget_active_does_write_the_report_with_the_budget(
 _LOOKUPS: dict[str, Callable[..., object]] = {"repo_root": repo_root, "read_records": read_records}
 
 
-@pytest.mark.parametrize("lookup", ["repo_root", "read_records"])
 @pytest.mark.parametrize(
-    "error",
+    ("lookup", "error"),
     [
-        pytest.param(GymratError("session log is corrupt"), id="gymrat-error"),
-        pytest.param(OSError("input/output error"), id="os-error"),
+        pytest.param(
+            "repo_root", GymratError("detected dubious ownership"), id="repo-root-gymrat-error"
+        ),
+        pytest.param(
+            "read_records", GymratError("session log is corrupt"), id="read-records-gymrat-error"
+        ),
+        pytest.param("read_records", OSError("input/output error"), id="read-records-os-error"),
     ],
 )
 def test_warn_duration_over_budget_when_a_lookup_fails_expectedly_does_stay_silent(

@@ -31,10 +31,7 @@ from gymrat.supervisor.hooks import (
     supervise_hooks_factory,
 )
 from tests._imports import loaded_under, modules_loaded_after
-
-_needs_symlinks = pytest.mark.skipif(
-    sys.platform == "win32", reason="creating symlinks needs extra privileges on Windows"
-)
+from tests._platform import needs_symlinks
 
 
 def _outside(path: str) -> str:
@@ -76,7 +73,9 @@ def test_check_file_edit_when_path_in_worktree_does_allow(
 ):
     hook_input = {"tool_name": tool_name, "tool_input": {path_key: str(worktree / "x.py")}}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
 @pytest.mark.parametrize(("tool_name", "path_key"), _EDITING_TOOLS)
@@ -86,7 +85,9 @@ def test_check_file_edit_when_path_in_main_tree_does_deny(
     path = str(root / "src" / "x.py")
     hook_input = {"tool_name": tool_name, "tool_input": {path_key: path}}
 
-    assert check_file_edit(hook_input, root) == _outside(path)
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(path)
 
 
 def test_check_file_edit_when_notebook_path_outside_and_file_path_inside_does_deny(
@@ -98,7 +99,9 @@ def test_check_file_edit_when_notebook_path_outside_and_file_path_inside_does_de
         "tool_input": {"notebook_path": path, "file_path": str(worktree / "nb.ipynb")},
     }
 
-    assert check_file_edit(hook_input, root) == _outside(path)
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(path)
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +112,9 @@ def test_check_file_edit_when_notebook_path_outside_and_file_path_inside_does_de
 def test_check_file_edit_when_path_is_worktree_dir_does_allow(root: Path, worktree: Path):
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(worktree)}}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
 def test_check_file_edit_when_sibling_dir_shares_worktree_name_prefix_does_deny(
@@ -118,7 +123,9 @@ def test_check_file_edit_when_sibling_dir_shares_worktree_name_prefix_does_deny(
     path = str(worktree.parent / f"{worktree.name}-old" / "x.py")
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) == _outside(path)
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(path)
 
 
 def _baseline_file(repo: Path) -> Path:
@@ -142,7 +149,9 @@ def test_check_file_edit_when_path_elsewhere_under_session_dir_does_deny(
     path = str(locate(root))
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) == _outside(path)
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(path)
 
 
 # ---------------------------------------------------------------------------
@@ -155,13 +164,17 @@ def test_check_file_edit_when_relative_path_and_cwd_in_worktree_does_allow(
 ):
     hook_input = {"tool_name": "Edit", "tool_input": {"file_path": "x.py"}, "cwd": str(worktree)}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
 def test_check_file_edit_when_relative_path_and_cwd_at_repo_root_does_deny(root: Path):
     hook_input = {"tool_name": "Edit", "tool_input": {"file_path": "src/x.py"}, "cwd": str(root)}
 
-    assert check_file_edit(hook_input, root) == _outside("src/x.py")
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside("src/x.py")
 
 
 @pytest.mark.parametrize(
@@ -177,7 +190,9 @@ def test_check_file_edit_when_relative_path_and_no_usable_cwd_does_resolve_again
     relative = str(worktree.relative_to(root) / "x.py")
     hook_input = {"tool_name": "Edit", "tool_input": {"file_path": relative}, **extra}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
 # ---------------------------------------------------------------------------
@@ -205,14 +220,18 @@ def test_check_file_edit_when_path_under_a_scratch_root_outside_repo_does_allow(
 ):
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
 def test_check_file_edit_when_path_outside_repo_and_scratch_does_deny(root: Path):
     path = str(Path(root.anchor) / "banana" / "x.py")
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) == _outside(path)
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(path)
 
 
 def test_check_file_edit_when_posix_tmp_missing_does_deny_path_under_it(
@@ -224,12 +243,16 @@ def test_check_file_edit_when_posix_tmp_missing_does_deny_path_under_it(
     def is_dir_without_posix_tmp(self: Path, *args: object, **kwargs: object) -> bool:
         return self != posix_tmp and real_is_dir(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "is_dir", is_dir_without_posix_tmp)
+    monkeypatch.setattr(
+        Path, "is_dir", create_autospec(real_is_dir, side_effect=is_dir_without_posix_tmp)
+    )
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "scratch"))
     path = str(posix_tmp / "x.py")
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) == _outside(path)
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(path)
 
 
 def _allowed(_path: str) -> None:
@@ -265,10 +288,12 @@ def test_check_file_edit_when_path_under_the_temp_env_does_trust_it_only_on_wind
     path = str(temp / "notes.txt")
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) == expected(path)
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == expected(path)
 
 
-@_needs_symlinks
+@needs_symlinks
 def test_check_file_edit_when_windows_and_temp_env_is_symlink_does_allow_its_target(
     tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -279,7 +304,9 @@ def test_check_file_edit_when_windows_and_temp_env_is_symlink_does_allow_its_tar
     monkeypatch.setenv("TEMP", str(link))
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(target / "x.py")}}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +314,7 @@ def test_check_file_edit_when_windows_and_temp_env_is_symlink_does_allow_its_tar
 # ---------------------------------------------------------------------------
 
 
-@_needs_symlinks
+@needs_symlinks
 def test_check_file_edit_when_worktree_symlink_points_at_main_tree_does_deny(
     root: Path, worktree: Path
 ):
@@ -295,7 +322,9 @@ def test_check_file_edit_when_worktree_symlink_points_at_main_tree_does_deny(
     link.symlink_to(root / "src" / "x.py")
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(link)}}
 
-    assert check_file_edit(hook_input, root) == _outside(str(link))
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(str(link))
 
 
 def _link_to_main_tree_file(link: Path, repo: Path) -> Path:
@@ -308,7 +337,7 @@ def _link_to_main_tree_dir(link: Path, repo: Path) -> Path:
     return link / "fresh.py"
 
 
-@_needs_symlinks
+@needs_symlinks
 @pytest.mark.parametrize(
     "plant",
     [
@@ -324,19 +353,23 @@ def test_check_file_edit_when_scratch_symlink_points_at_main_tree_does_deny(
     path = str(plant(scratch / "link", root))
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) == _outside(path)
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(path)
 
 
-@_needs_symlinks
+@needs_symlinks
 def test_check_file_edit_when_symlinked_spelling_of_worktree_does_allow(root: Path, worktree: Path):
     alias = root / "alias"
     alias.symlink_to(worktree, target_is_directory=True)
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(alias / "x.py")}}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
-@_needs_symlinks
+@needs_symlinks
 def test_check_file_edit_when_root_is_symlinked_spelling_does_allow_real_worktree_path(
     tmp_path: Path, root: Path, worktree: Path
 ):
@@ -344,10 +377,12 @@ def test_check_file_edit_when_root_is_symlinked_spelling_does_allow_real_worktre
     link.symlink_to(root, target_is_directory=True)
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(worktree / "x.py")}}
 
-    assert check_file_edit(hook_input, link) is None
+    reason = check_file_edit(hook_input, link)
+
+    assert reason is None
 
 
-@_needs_symlinks
+@needs_symlinks
 def test_check_file_edit_when_root_is_symlinked_spelling_does_deny_real_main_tree_path(
     tmp_path: Path, root: Path
 ):
@@ -356,7 +391,9 @@ def test_check_file_edit_when_root_is_symlinked_spelling_does_deny_real_main_tre
     path = str(root / "src" / "x.py")
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, link) == _outside(path)
+    reason = check_file_edit(hook_input, link)
+
+    assert reason == _outside(path)
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +435,7 @@ def _fail_stat(
                 raise error
             return real(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, name, fake)
+        monkeypatch.setattr(os, name, create_autospec(real, side_effect=fake))
 
     for name in names:
         patch(name)
@@ -455,7 +492,9 @@ def test_check_file_edit_when_case_variant_of_main_tree_under_scratch_root_does_
     path = str(_upper_root(root) / tail)
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) == _outside(path)
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(path)
 
 
 @pytest.mark.usefixtures("ignores_case")
@@ -471,7 +510,9 @@ def test_check_file_edit_when_case_variant_of_worktree_does_allow(
 ):
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(locate(root) / "x.py")}}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
 @pytest.mark.usefixtures("under_scratch_root", "honors_case")
@@ -480,7 +521,9 @@ def test_check_file_edit_when_sibling_dir_differs_by_case_does_allow_as_scratch(
     (sibling / "src").mkdir(parents=True)
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(sibling / "src" / "x.py")}}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
 @pytest.mark.usefixtures("honors_case")
@@ -490,7 +533,9 @@ def test_check_file_edit_when_existing_dir_differs_from_worktree_by_case_does_de
     path = str(lookalike / "x.py")
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) == _outside(path)
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(path)
 
 
 @pytest.mark.usefixtures("under_scratch_root", "case_sensitive_stat")
@@ -500,7 +545,9 @@ def test_check_file_edit_when_case_matters_and_repo_name_differs_by_case_does_al
     path = str(_upper_root(root) / "src" / "x.py")
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
 @pytest.mark.usefixtures("case_sensitive_stat")
@@ -508,7 +555,9 @@ def test_check_file_edit_when_case_matters_and_worktree_name_differs_by_case_doe
     path = str(_upper_worktree(root) / "x.py")
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) == _outside(path)
+    reason = check_file_edit(hook_input, root)
+
+    assert reason == _outside(path)
 
 
 def _scratch_dir(repo: Path) -> Path:
@@ -597,7 +646,9 @@ def test_check_file_edit_when_name_rejected_as_invalid_inside_worktree_does_allo
     _reject_name(monkeypatch, rejected, _WindowsError(_ERROR_INVALID_NAME))
     hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
 @pytest.mark.parametrize(
@@ -729,7 +780,9 @@ def test_check_file_edit_when_tool_not_an_editing_tool_does_allow(
 ):
     hook_input = {"tool_name": tool_name, "tool_input": tool_input}
 
-    assert check_file_edit(hook_input, root) is None
+    reason = check_file_edit(hook_input, root)
+
+    assert reason is None
 
 
 # ---------------------------------------------------------------------------
@@ -791,7 +844,9 @@ def _deny(reason: str) -> dict[str, object]:
 def test_check_background_gymrat_when_in_background_gymrat_word_does_deny(command: str):
     hook_input = _bash(command, run_in_background=True)
 
-    assert check_background_gymrat(hook_input) == _BACKGROUND_REASON
+    reason = check_background_gymrat(hook_input)
+
+    assert reason == _BACKGROUND_REASON
 
 
 @pytest.mark.parametrize(
@@ -818,7 +873,9 @@ def test_check_background_gymrat_when_in_background_without_gymrat_word_does_all
 ):
     hook_input = _bash(command, run_in_background=True)
 
-    assert check_background_gymrat(hook_input) is None
+    reason = check_background_gymrat(hook_input)
+
+    assert reason is None
 
 
 @pytest.mark.parametrize(
@@ -843,7 +900,9 @@ def test_check_background_gymrat_when_in_background_without_gymrat_word_does_all
 def test_check_background_gymrat_when_not_a_background_gymrat_command_does_allow(
     hook_input: dict[str, object],
 ):
-    assert check_background_gymrat(hook_input) is None
+    reason = check_background_gymrat(hook_input)
+
+    assert reason is None
 
 
 # ---------------------------------------------------------------------------
@@ -891,7 +950,6 @@ def test_supervise_hooks_factory_when_built_does_route_each_guarded_tool_to_one_
         tool: len(_matchers_for(mapping, tool))
         for tool in ("Edit", "Write", "MultiEdit", "NotebookEdit", "Bash", "Read")
     }
-
     assert list(mapping) == ["PreToolUse"]
     assert routed == {
         "Edit": 1,

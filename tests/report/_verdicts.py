@@ -59,7 +59,20 @@ def band_verdict(
     noise_pct: float = 2.5,
     noise_abs: float = 2.5,
 ) -> BandVerdict:
-    """A noise-band verdict, tied pairs and all."""
+    """A noise-band verdict, the method used when too few pairs remain for a permutation test.
+
+    Args:
+        verdict: The approximate outcome.
+        delta: The percentage delta between the paired medians.
+        n: The total pair count.
+        usable_n: How many pairs survived tie-dropping; below 6 the
+            permutation test is starved and the band decides.
+        noise_pct: The noise band, in percent of the baseline median.
+        noise_abs: The noise band, in the metric's own units.
+
+    Returns:
+        The band verdict.
+    """
     return BandVerdict(
         method="band",
         verdict=verdict,
@@ -80,7 +93,19 @@ def permutation_verdict(
     noise_pct: float = 2.5,
     noise_abs: float = 2.5,
 ) -> PermutationVerdict:
-    """A verdict the sign-flip permutation test produced."""
+    """A verdict the sign-flip permutation test produced.
+
+    Args:
+        verdict: The approximate outcome.
+        delta: The percentage delta between the paired medians.
+        n: The paired sample count.
+        p: The permutation test's p-value; below 0.05 the shift is significant.
+        noise_pct: The noise band, in percent of the baseline median.
+        noise_abs: The noise band, in the metric's own units.
+
+    Returns:
+        The permutation verdict.
+    """
     return PermutationVerdict(
         method="permutation",
         verdict=verdict,
@@ -132,7 +157,17 @@ def geomean_of(
     band: float = 0.0,
     excluded: Sequence[Exclusion] = (),
 ) -> GeomeanResult:
-    """A geomean over ``n`` metrics, with no exclusions and no band unless overridden."""
+    """A geomean over ``n`` metrics, with no exclusions and no band unless overridden.
+
+    Args:
+        value: The geometric-mean delta, in percent.
+        n: How many metrics contribute to ``value``.
+        band: The instability band around ``value``, in percent; 0 means no band.
+        excluded: The metrics left out of the aggregate, with their reasons.
+
+    Returns:
+        The geomean result.
+    """
     return GeomeanResult(value=value, n=n, band=band, excluded=tuple(excluded))
 
 

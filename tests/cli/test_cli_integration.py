@@ -1,13 +1,12 @@
 """End-to-end CLI tests over real subprocesses, repos, and shell bench scripts.
 
 These exercise paths :class:`typer.testing.CliRunner` cannot reach: running the
-installed entry module out of process so the real lock, worktree lifecycle, and
-signal-driven cleanup all run. ``python -m gymrat.cli.app`` stands in for the
-``gymrat`` console script.
+installed entry module out of process so the real lock and worktree lifecycle
+run. ``python -m gymrat.cli.app`` stands in for the ``gymrat`` console script.
+Signal-driven cleanup is pinned in :mod:`tests.hardening.test_signal_cleanup`.
 """
 
 import os
-import signal
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -17,10 +16,8 @@ import pytest
 from gymrat.session.paths import lockfile_path, repo_root
 from tests._cli import no_color_env as _env
 from tests._cli import run_cli
-from tests._git import EMIT_ONE_BENCH, list_worktree_dirs, wait_for_worktrees, write_committed_bench
+from tests._git import EMIT_ONE_BENCH, list_worktree_dirs, write_committed_bench
 from tests._lock import FIXED_HOLDER_AT, hold_lock
-from tests._process_helpers import wait_for_pid_file_blocking
-from tests.cli._signalled_cli import pid_recording_script, spawned_gymrat, stop_by_signal
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 
@@ -69,33 +66,6 @@ def test_cli_when_rival_lock_held_does_exit_two_naming_holder_without_benching(
         assert list_worktree_dirs(repo, include_main=False) == []
     finally:
         blocker.release()
-
-
-# ---------------------------------------------------------------------------
-# signal-driven shutdown
-# ---------------------------------------------------------------------------
-
-
-def test_cli_when_signalled_mid_run_does_exit_on_the_signal_status_leaving_no_worktree(
-    create_scratch_repo: Callable[[], str],
-    tmp_path: Path,
-    reap_groups: list[int],
-):
-    repo = create_scratch_repo()
-    pid_path = tmp_path / "bench.pid"
-    # The bench records its pid before sleeping, so the test can register it for reaping.
-    slow_bench = pid_recording_script(pid_path, "sleep 5\necho 'METRIC x=1'\n")
-    write_committed_bench(repo, slow_bench, message="slow bench", branches=("candidate",))
-
-    with spawned_gymrat(
-        ["compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"], repo
-    ) as proc:
-        wait_for_worktrees(repo, 1)
-        reap_groups.append(os.getpgid(wait_for_pid_file_blocking(pid_path, timeout_s=30.0)))
-        stop_by_signal(proc, signal.SIGHUP)
-
-    assert proc.returncode == 128 + signal.SIGHUP
-    assert list_worktree_dirs(repo, include_main=False) == []
 
 
 # ---------------------------------------------------------------------------

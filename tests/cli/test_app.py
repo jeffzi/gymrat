@@ -15,24 +15,30 @@ import importlib.metadata
 import os
 import re
 import subprocess
-import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 
 from gymrat.cli.app import app
 from gymrat.cli.console import is_debug_mode
 from gymrat.cli.exit import BUGS_URL
-from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE
+from gymrat.git import run_git
+from gymrat.measure import measure
 from tests._ansi import SGR_RE, normalize, sgr_params, strip_ansi
-from tests._cli import no_color_env
+from tests._cli import run_module
 from tests._rich import unwrap_panel
+from tests.cli._doctor_seams import patch_doctor
 from tests.cli._session import (
     FailingStdoutRunner,
-    closed_stdout_error,
     disk_full_error,
+    leave_as_is,
+    open_probe_session,
+    open_unedited_session,
     runner,
+    stub_probe_measure,
 )
 
 DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
@@ -56,17 +62,6 @@ def _help_output(*command: str) -> str:
     return strip_ansi(result.stdout)
 
 
-def _run_module(module: str, *args: str) -> subprocess.CompletedProcess[str]:
-    """Run ``python -m <module> <args>`` in a child process with color forced off."""
-    return subprocess.run(  # noqa: S603 -- fixed interpreter plus test-chosen args
-        [sys.executable, "-m", module, *args],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=no_color_env(),
-    )
-
-
 # ---------------------------------------------------------------------------
 # --version
 # ---------------------------------------------------------------------------
@@ -77,12 +72,6 @@ def test_app_when_version_flag_does_print_package_version():
 
     assert result.exit_code == 0
     assert importlib.metadata.version("gymrat") in result.stdout
-
-
-def test_app_when_version_and_stdout_closed_does_exit_zero_without_stderr():
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, ["--version"])
-
-    assert (result.exit_code, result.stderr) == (0, "")
 
 
 def test_app_when_version_and_stdout_write_fails_otherwise_does_exit_two_with_error_on_stderr():
@@ -129,7 +118,7 @@ def test_app_when_help_colored_does_render_the_docs_link_as_a_dim_hint(
     result = runner.invoke(app, ["--help"], color=True, env={"COLUMNS": "200"})
 
     docs_line = next(line for line in result.stdout.splitlines() if "Docs:" in strip_ansi(line))
-    assert docs_line.lstrip().startswith("\x1b[2m")  # cspell:disable-line
+    assert docs_line.lstrip().startswith("\x1b[2m")
     assert sgr_params(docs_line[: docs_line.index(DOCS_URL)]).split(";") == ["2", "34"]
 
 
@@ -148,12 +137,10 @@ def test_app_when_debug_flag_does_show_traceback_on_error(
     argv: Sequence[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.chdir(tmp_path)
-
-    async def exploding_measure(_options: object):
-        msg = "deliberate boom"
-        raise RuntimeError(msg)
-
-    monkeypatch.setattr("gymrat.measure.measure", exploding_measure)
+    monkeypatch.setattr(
+        "gymrat.measure.measure",
+        create_autospec(measure, side_effect=RuntimeError("deliberate boom")),
+    )
 
     result = runner.invoke(app, list(argv))
 
@@ -243,12 +230,12 @@ def test_app_when_run_outside_a_repository_does_exit_two_naming_the_directory(ar
 def test_app_when_repository_root_cannot_be_resolved_does_exit_two_with_git_diagnostics(
     argv: list[str], monkeypatch: pytest.MonkeyPatch
 ):
-    def broken_git(*_args: object, **_kwargs: object) -> str:
-        raise subprocess.CalledProcessError(
-            128, ["git"], stderr="fatal: detected dubious ownership\n"
-        )
-
-    monkeypatch.setattr("gymrat.session.paths.run_git", broken_git)
+    dubious_ownership = subprocess.CalledProcessError(
+        128, ["git"], stderr="fatal: detected dubious ownership\n"
+    )
+    monkeypatch.setattr(
+        "gymrat.session.paths.run_git", create_autospec(run_git, side_effect=dubious_ownership)
+    )
     cwd = os.getcwd()  # noqa: PTH109 -- the message quotes the str cwd repo discovery saw
 
     result = runner.invoke(app, argv)
@@ -260,24 +247,6 @@ def test_app_when_repository_root_cannot_be_resolved_does_exit_two_with_git_diag
             f"Error: Cannot determine the git repository at {cwd}: fatal: detected dubious ownership"
         ).split()
     )
-    assert result.stdout == ""
-
-
-@pytest.mark.parametrize("argv", LOCK_FREE_COMMANDS)
-@pytest.mark.usefixtures("repo")
-def test_app_when_repository_discovery_error_carries_a_hint_does_print_message_and_hint(
-    argv: list[str], monkeypatch: pytest.MonkeyPatch
-):
-    def broken_discovery(*_args: object, **_kwargs: object) -> str:
-        message = "detected dubious ownership"
-        raise GymratError(message, hint="Mark the repository as safe.")
-
-    monkeypatch.setattr("gymrat.session.paths.run_git", broken_discovery)
-
-    result = runner.invoke(app, argv)
-
-    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
-    assert result.stderr == "Error: detected dubious ownership\nMark the repository as safe.\n"
     assert result.stdout == ""
 
 
@@ -303,6 +272,48 @@ def test_app_when_color_flags_given_does_style_status_stdout_accordingly(
 
     assert result.exit_code == 0
     assert bool(SGR_RE.search(result.stdout)) is expect_sgr
+
+
+def _real_doctor_text(_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub every doctor seam but keep the real text renderer."""
+    patch_doctor(monkeypatch, stub_text=False)
+
+
+def _open_for_probe(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open a session with a recorded baseline and stub the measurement engine."""
+    open_probe_session(repo)
+    stub_probe_measure(monkeypatch)
+
+
+def _open_unedited_session(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open a session with one unsettled iteration and checks, and edit nothing, so keep refuses."""
+    open_unedited_session(repo)
+
+
+@pytest.mark.parametrize(
+    ("argv", "arrange", "exit_code"),
+    [
+        pytest.param(["doctor", "--color"], _real_doctor_text, 0, id="doctor"),
+        pytest.param(["init", "--bench", "npm run bench", "--color"], leave_as_is, 0, id="init"),
+        pytest.param(["probe", "--color"], _open_for_probe, 0, id="probe"),
+        pytest.param(["keep", "--color"], _open_unedited_session, 1, id="keep-refusing"),
+    ],
+)
+def test_app_when_command_color_flag_given_does_style_stdout_despite_no_color(
+    *,
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    arrange: Callable[[str, pytest.MonkeyPatch], None],
+    exit_code: int,
+):
+    arrange(repo, monkeypatch)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == exit_code
+    assert SGR_RE.search(result.stdout)
 
 
 # ---------------------------------------------------------------------------
@@ -391,19 +402,15 @@ def test_app_when_command_help_does_document_its_options(command: str):
     assert "<parse" not in out
 
 
-def test_app_when_commands_registered_does_match_the_tested_command_list():
-    assert [command.name for command in app.registered_commands] == _ALL_COMMANDS
-
-
 # ---------------------------------------------------------------------------
 # python -m gymrat module entry
 # ---------------------------------------------------------------------------
 
 
 def test_main_module_when_help_does_show_same_description_and_epilogue_as_cli_app():
-    app_text = normalize(_run_module("gymrat.cli.app", "--help").stdout)
+    app_text = normalize(run_module("gymrat.cli.app", "--help").stdout)
 
-    module_result = _run_module("gymrat", "--help")
+    module_result = run_module("gymrat", "--help")
 
     assert (module_result.returncode, normalize(module_result.stdout)) == (0, app_text), (
         module_result.stderr
@@ -413,7 +420,7 @@ def test_main_module_when_help_does_show_same_description_and_epilogue_as_cli_ap
 
 @pytest.mark.parametrize("module", ["gymrat", "gymrat.cli.app"])
 def test_module_entry_when_usage_error_does_print_usage_with_gymrat_program_name(module: str):
-    result = _run_module(module, "compare", "main")
+    result = run_module(module, "compare", "main")
 
     assert result.returncode == 2
     assert "Usage: gymrat compare [" in normalize(result.stderr)

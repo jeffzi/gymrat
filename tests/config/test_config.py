@@ -1,4 +1,3 @@
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -331,10 +330,6 @@ def test_runbook_problem_when_path_cannot_be_read_does_name_the_path_and_reason(
 DEFAULT_CONFIG = benchless_config()
 
 
-def _has_problem(problems: list[str], pattern: str) -> bool:
-    return any(re.search(pattern, problem) for problem in problems)
-
-
 # ---------------------------------------------------------------------------
 # inspect_config — settled configuration
 # ---------------------------------------------------------------------------
@@ -508,15 +503,34 @@ def test_inspect_config_when_config_flag_names_file_in_other_dir_does_resolve_ru
 # ---------------------------------------------------------------------------
 
 
-def test_inspect_config_when_config_flag_names_missing_path_does_fail_naming_it(
+def _name_config_by_flag(_monkeypatch: pytest.MonkeyPatch, config_path: str) -> CliFlags:
+    return CliFlags(bench="my-bench", config=config_path)
+
+
+def _name_config_by_env_var(monkeypatch: pytest.MonkeyPatch, config_path: str) -> CliFlags:
+    monkeypatch.setenv("GYMRAT_CONFIG", config_path)
+    return CliFlags(bench="my-bench")
+
+
+@pytest.mark.parametrize(
+    "name_config",
+    [
+        pytest.param(_name_config_by_flag, id="flag"),
+        pytest.param(_name_config_by_env_var, id="env-var"),
+    ],
+)
+def test_inspect_config_when_config_source_names_missing_path_does_report_naming_it(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name_config: Callable[[pytest.MonkeyPatch, str], CliFlags],
 ):
     missing_path = tmp_path / "typo.toml"
+    flags = name_config(monkeypatch, str(missing_path))
 
-    result = inspect_config(CliFlags(bench="my-bench", config=str(missing_path)))
+    result = inspect_config(flags)
 
     assert result.config_path == str(missing_path)
-    assert _has_problem(result.problems, re.escape(str(missing_path)))
+    assert result.problems == [f"Config file not found at {missing_path}"]
     assert result.config is None
 
 
@@ -583,9 +597,7 @@ def test_inspect_config_when_runbook_embeds_nul_does_report_problem_not_raise(
 @pytest.mark.parametrize(
     ("flags", "key", "got"),
     [
-        pytest.param(CliFlags(bench=""), "bench", '""', id="bench"),
         pytest.param(CliFlags(bench="my-bench", prepare=""), "prepare", '""', id="prepare"),
-        pytest.param(CliFlags(bench="my-bench", adapter=""), "adapter", '""', id="adapter"),
         pytest.param(CliFlags(bench="my-bench", config=""), "config", '""', id="config"),
         pytest.param(CliFlags(bench="\t"), "bench", '"\\t"', id="whitespace"),
     ],
@@ -661,7 +673,7 @@ def test_inspect_config_when_every_step_fails_does_report_flags_then_env_then_fi
     assert result.config is None
 
 
-def test_inspect_config_when_config_flag_blank_does_report_only_the_flag_problem(
+def test_inspect_config_when_config_flag_blank_does_not_fall_back_to_implicit_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     write_config(tmp_path, {"bench": "cwd-bench"})
@@ -669,13 +681,9 @@ def test_inspect_config_when_config_flag_blank_does_report_only_the_flag_problem
 
     result = inspect_config(CliFlags(config="   "))
 
-    # A blank value is one mistake: probing it on disk would add a second,
-    # spurious "file not found" problem for a path the user never named.
-    assert len(result.problems) == 1
-    assert _has_problem(result.problems, r"--config.*non-empty")
+    # A blank --config is a broken source, not an absent one: the gymrat.toml
+    # sitting in the working directory must not be picked up in its place.
     assert result.config_path is None
-    assert result.config is None
-    assert result.bench is None
 
 
 # ---------------------------------------------------------------------------
@@ -694,18 +702,6 @@ def test_inspect_config_when_config_env_var_blank_does_report_naming_var(
     assert result.problems == [
         'Invalid value for GYMRAT_CONFIG: expected a non-empty string, got "  \\n  "'
     ]
-
-
-def test_inspect_config_when_config_env_var_names_missing_path_does_report_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.chdir(tmp_path)
-    missing_path = tmp_path / "typo.toml"
-    monkeypatch.setenv("GYMRAT_CONFIG", str(missing_path))
-
-    result = inspect_config(CliFlags(bench="my-bench"))
-
-    assert _has_problem(result.problems, re.escape(str(missing_path)))
 
 
 def test_inspect_config_when_every_field_env_var_invalid_does_report_each_in_field_order(

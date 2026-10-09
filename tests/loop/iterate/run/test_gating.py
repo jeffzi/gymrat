@@ -1,14 +1,17 @@
-"""Gating, confirmation-rerun, and hook behavior of ``iterate_session``.
+"""How ``iterate_session`` judges an edit, and ``derive_outcome`` beneath it.
+
+Covers gating and the confirmation rerun, metrics whose delta is undefined, the
+primary and what it reads when there is no change, and the outcome and closing
+report the verdicts add up to.
 
 The one boundary these tests mock is sampling; everything downstream — verdicts,
-the confirmation rerun, aggregation, the record, the report, and the real hook
-subprocesses — runs against a throwaway repository. The suite is
-order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
+the confirmation rerun, aggregation, the record, the report — runs against a
+throwaway repository. The suite is order-independent and safe under
+``pytest-xdist`` / ``pytest-randomly``.
 """
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from dataclasses import replace
@@ -17,18 +20,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config import HooksConfig, MetricEntry, ResolvedConfig, StopConfig
+from gymrat.config import MetricEntry, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.run import IterateOptions, derive_outcome, iterate_session
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmSkipped,
     ConfirmStarted,
-    HookFinished,
-    HookStarted,
-    IterationRecorded,
     JudgeFinished,
-    JudgeStarted,
     PassFinished,
     PassStarted,
     ProgressEvent,
@@ -36,7 +35,6 @@ from gymrat.progress_events import (
 from gymrat.report.loop import GeomeanPrimary, MetricPrimary
 from gymrat.session.records import (
     Confirm,
-    HookRecord,
     IterationPrimary,
     PairedSamples,
 )
@@ -46,7 +44,6 @@ from tests.loop.iterate._fixtures import (
     BASELINE_MS,
     FILTER,
     PairedRun,
-    as_logged,
     assert_permutation,
     baseline_rounds,
     improved_rounds,
@@ -62,9 +59,7 @@ from tests.loop.iterate._fixtures import (
 )
 from tests.report._comparisons import permutation_metric
 from tests.session.records._fixtures import (
-    iteration_record,
     log_records,
-    records_of_type,
 )
 
 if TYPE_CHECKING:
@@ -72,21 +67,9 @@ if TYPE_CHECKING:
     from gymrat.report.loop import LoopPrimary
     from gymrat.report.types import MetricComparison, MetricComparisons
     from tests.loop.iterate._fixtures import CollectSamplesRecorder
-    from tests.loop.iterate._hooks import HookScripts
 
 #: The events that tell the display how the judge row and the confirm row end.
 _JUDGE_AND_CONFIRM_EVENTS = (JudgeFinished, ConfirmStarted, ConfirmFinished, ConfirmSkipped)
-
-#: The events that mark each stage of an iteration, hooks included, in the order they fire.
-_STAGE_EVENTS = (
-    HookStarted,
-    HookFinished,
-    JudgeStarted,
-    JudgeFinished,
-    ConfirmStarted,
-    ConfirmFinished,
-    IterationRecorded,
-)
 
 #: The smallest positive float; dividing any ordinary median by it overflows to infinity.
 _SMALLEST_POSITIVE_FLOAT = 5e-324
@@ -158,7 +141,7 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
     report_a_pass_per_call(monkeypatch, samples_mock)
     events: list[ProgressEvent] = []
 
-    await iterate_session(
+    result = await iterate_session(
         open_repo,
         resolved_config(filter=filter_template),
         options=IterateOptions(on_progress=events.append),
@@ -179,24 +162,12 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
         for e in events
         if isinstance(e, (PassStarted, PassFinished)) and e.phase == "confirm"
     ] == [PassStarted, PassFinished]
-
-
-async def test_iterate_session_when_rerun_agrees_does_confirm_the_regression(
-    open_repo: str, samples_mock: CollectSamplesRecorder
-):
-    rerun = PairedRun(
-        experiment=_filtered_rounds("total_ms", scaled(BASELINE_MS, 1.2)),
-        baseline=_filtered_rounds("total_ms", BASELINE_MS),
-    )
-    stub_runs(samples_mock, open_repo, [regressed_run(), rerun])
-    resolved = _total_ms_gating_config()
-
-    result = await iterate_session(open_repo, resolved)
-
     assert result.record.confirm == Confirm(
         ran=True,
-        filtered=("total_ms",),
-        samples=PairedSamples(experiment=tuple(rerun.experiment), baseline=tuple(rerun.baseline)),
+        filtered=("total_ms", "alloc_bytes"),
+        samples=PairedSamples(
+            experiment=tuple(regressed_rounds()), baseline=tuple(baseline_rounds())
+        ),
     )
     assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="regressed", confirmed=True
@@ -312,89 +283,63 @@ async def test_iterate_session_when_metric_name_needs_quoting_does_pass_it_as_on
 
 
 # ---------------------------------------------------------------------------
-# the rerun never measures one of the regressed metrics
+# the rerun never measures some or all of the regressed metrics
 # ---------------------------------------------------------------------------
 
 
-def _partial_rerun() -> PairedRun:
-    """The rerun a filtered bench reports when it only ever emits ``total_ms``.
-
-    ``alloc_bytes`` was regressed on the first run and named in the filter, but
-    the rerun comes back without it — silence, not disagreement.
-
-    Returns:
-        A run whose experiment rounds are 20% slower on ``total_ms`` and whose
-        rounds on both sides carry no other metric.
-    """
-    return PairedRun(
-        experiment=_filtered_rounds("total_ms", scaled(BASELINE_MS, 1.2)),
-        baseline=_filtered_rounds("total_ms", BASELINE_MS),
-    )
-
-
-@pytest.fixture
-def partial_rerun_repo(
-    open_repo: str, samples_mock: CollectSamplesRecorder
-) -> tuple[str, PairedRun]:
-    """An open session whose rerun measured one of two regressed metrics, and that rerun."""
-    partial = _partial_rerun()
-    stub_runs(samples_mock, open_repo, [regressed_run(), partial])
-    return open_repo, partial
-
-
-async def test_iterate_session_when_rerun_silent_on_metric_does_keep_it_regressed_as_absent(
-    partial_rerun_repo: tuple[str, PairedRun],
+@pytest.mark.parametrize(
+    ("rerun", "absent", "rerun_lines"),
+    [
+        pytest.param(
+            PairedRun(
+                experiment=_filtered_rounds("total_ms", scaled(BASELINE_MS, 1.2)),
+                baseline=_filtered_rounds("total_ms", BASELINE_MS),
+            ),
+            ("alloc_bytes",),
+            ["total_ms: regression confirmed on rerun", "alloc_bytes: not measured on rerun"],
+            id="silent-on-one-metric",
+        ),
+        pytest.param(
+            PairedRun([{} for _ in range(10)], [{} for _ in range(10)]),
+            ("total_ms", "alloc_bytes"),
+            ["total_ms: not measured on rerun", "alloc_bytes: not measured on rerun"],
+            id="no-parsable-metrics",
+        ),
+    ],
+)
+async def test_iterate_session_when_rerun_skips_a_metric_does_keep_it_regressed_as_absent(
+    open_repo: str,
+    samples_mock: CollectSamplesRecorder,
+    rerun: PairedRun,
+    absent: tuple[str, ...],
+    rerun_lines: list[str],
 ):
-    repo, partial = partial_rerun_repo
+    stub_runs(samples_mock, open_repo, [regressed_run(), rerun])
     expected_confirm = Confirm(
         ran=True,
         filtered=("total_ms", "alloc_bytes"),
-        samples=PairedSamples(
-            experiment=tuple(partial.experiment), baseline=tuple(partial.baseline)
-        ),
-        absent=("alloc_bytes",),
+        samples=PairedSamples(experiment=tuple(rerun.experiment), baseline=tuple(rerun.baseline)),
+        absent=absent,
     )
 
-    result = await iterate_session(repo, resolved_config(filter=FILTER))
+    result = await iterate_session(open_repo, resolved_config(filter=FILTER))
 
+    assert result.record.confirm == expected_confirm
+    assert last_iteration_of(open_repo).confirm == expected_confirm
+    assert result.record.samples == PairedSamples(
+        experiment=tuple(regressed_rounds()), baseline=tuple(baseline_rounds())
+    )
+    assert {name: metric.verdict for name, metric in result.record.metrics.items()} == {
+        "total_ms": "regressed",
+        "alloc_bytes": "regressed",
+    }
     assert_permutation(
         result.record.metrics["alloc_bytes"], delta=10, verdict="regressed", confirmed=False
     )
     assert result.record.outcome == "regressed"
-    assert result.record.confirm == expected_confirm
-    assert last_iteration_of(repo).confirm == expected_confirm
-    lines = trimmed_report_lines(result.report)
-    assert "alloc_bytes: not measured on rerun" in lines
-    assert "total_ms: regression confirmed on rerun" in lines
-    assert "alloc_bytes: regression not confirmed on rerun" not in lines
-
-
-# ---------------------------------------------------------------------------
-# the confirmation rerun produces no parsable metrics at all
-# ---------------------------------------------------------------------------
-
-
-async def test_iterate_session_when_rerun_produces_no_parsable_metrics_does_treat_all_filtered_as_absent(
-    open_repo: str, samples_mock: CollectSamplesRecorder
-):
-    empty_rerun = PairedRun([{} for _ in range(10)], [{} for _ in range(10)])
-    stub_runs(samples_mock, open_repo, [regressed_run(), empty_rerun])
-
-    result = await iterate_session(open_repo, resolved_config(filter=FILTER))
-
-    assert result.record.confirm is not None
-    assert result.record.confirm.ran is True
-    assert result.record.confirm.absent is not None
-    assert set(result.record.confirm.absent) == {"total_ms", "alloc_bytes"}
-    # The iteration carries the first run's samples, not the empty rerun's.
-    assert result.record.samples == PairedSamples(
-        experiment=tuple(regressed_rounds()),
-        baseline=tuple(baseline_rounds()),
-    )
-    # Both regressions stand (the gate fails closed on absent metrics).
-    assert result.record.metrics["total_ms"].verdict == "regressed"
-    assert result.record.metrics["alloc_bytes"].verdict == "regressed"
-    assert result.record.outcome == "regressed"
+    assert [
+        line for line in trimmed_report_lines(result.report) if line.endswith("on rerun")
+    ] == rerun_lines
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +473,6 @@ async def test_iterate_session_when_delta_undefined_does_null_only_that_metrics_
     assert result.record.primary == IterationPrimary(kind="metric", name="total_ms", delta_pct=None)
     assert result.record.outcome == "no-signal"
     assert _primary_line(result.report) == "primary: · verdict: NO-SIGNAL"
-    assert as_logged(last_iteration_of(repo)) == as_logged(result.record)
 
 
 # ---------------------------------------------------------------------------
@@ -650,7 +594,7 @@ async def test_iterate_session_when_primary_has_no_change_to_read_does_report_th
         ),
     ],
 )
-async def test_iterate_session_when_target_configured_does_record_whether_it_is_reached(
+async def test_iterate_session_when_target_configured_does_close_the_report_on_the_judged_outcome(
     open_repo: str,
     samples_mock: CollectSamplesRecorder,
     experiment: list[dict[str, float]],
@@ -667,185 +611,6 @@ async def test_iterate_session_when_target_configured_does_record_whether_it_is_
     assert result.record.target_reached is reached
     assert result.record.outcome == outcome
     assert trimmed_report_lines(result.report)[-len(report_tail) :] == report_tail
-
-
-# ---------------------------------------------------------------------------
-# the config declares a command for a stage (hooks)
-# ---------------------------------------------------------------------------
-
-
-def _hook_events(events: list[ProgressEvent]) -> list[tuple[type[HookStarted | HookFinished], str]]:
-    """Each hook event's type and stage, in the order they were emitted."""
-    return [(type(e), e.stage) for e in events if isinstance(e, (HookStarted, HookFinished))]
-
-
-def _capturing_payload(hooks: HookScripts, stage: str) -> str:
-    """A hook command filing the payload it was handed away where assertions can read it."""
-    body = (
-        "import sys, pathlib\n"
-        "data = sys.stdin.buffer.read()\n"
-        f"pathlib.Path({json.dumps(stage + '.json')}).write_bytes(data)\n"
-    )
-    return hooks.hook_command(body)
-
-
-async def test_iterate_session_when_hooks_configured_does_bracket_the_whole_measurement(
-    hooks_setup: tuple[str, str, HookScripts], samples_mock: CollectSamplesRecorder
-):
-    repo, _experiment_dir, hooks = hooks_setup
-    stub_runs(samples_mock, repo, [regressed_run(), regressed_run()])
-    config = resolved_config(
-        filter=FILTER,
-        hooks=HooksConfig(before=hooks.printing("hi"), after=hooks.printing("bye")),
-    )
-    events: list[ProgressEvent] = []
-
-    await iterate_session(repo, config, options=IterateOptions(on_progress=events.append))
-
-    assert [record.type for record in log_records(repo)] == [
-        "session",
-        "iteration",
-        "keep",
-        "hook",
-        "iteration",
-        "hook",
-    ]
-    assert [record.stage for record in records_of_type(repo, HookRecord)] == ["before", "after"]
-    assert [
-        (type(e), getattr(e, "stage", None)) for e in events if isinstance(e, _STAGE_EVENTS)
-    ] == [
-        (HookStarted, "before"),
-        (HookFinished, "before"),
-        (JudgeStarted, None),
-        (JudgeFinished, None),
-        (ConfirmStarted, None),
-        (ConfirmFinished, None),
-        (IterationRecorded, None),
-        (HookStarted, "after"),
-        (HookFinished, "after"),
-    ]
-
-
-def _iteration_fields(experiment_dir: str, stage: str) -> tuple[object, ...]:
-    """The iteration-level fields of the payload the ``stage`` hook was handed.
-
-    The capturing command names the file relatively, so reading it back out of
-    the experiment worktree is also what proves the hook ran there.
-
-    Args:
-        experiment_dir: The experiment worktree the hook wrote its payload into.
-        stage: The hook stage whose payload file to read.
-
-    Returns:
-        The payload's stage, experiment dir, seq, last iteration, and session
-        iteration count, in that order.
-    """
-    payload = json.loads((Path(experiment_dir) / f"{stage}.json").read_text(encoding="utf-8"))
-    return (
-        payload["stage"],
-        payload["experiment_dir"],
-        payload["seq"],
-        payload["last_iteration"],
-        payload["session"]["iteration_count"],
-    )
-
-
-async def test_iterate_session_when_hooks_configured_does_tell_each_which_iteration(
-    hooks_setup: tuple[str, str, HookScripts],
-):
-    repo, experiment_dir, hooks = hooks_setup
-    config = resolved_config(
-        hooks=HooksConfig(
-            before=_capturing_payload(hooks, "before"), after=_capturing_payload(hooks, "after")
-        )
-    )
-
-    result = await iterate_session(repo, config)
-
-    assert _iteration_fields(experiment_dir, "before") == (
-        "before",
-        experiment_dir,
-        2,
-        as_logged(iteration_record(seq=1)),
-        1,
-    )
-    assert _iteration_fields(experiment_dir, "after") == (
-        "after",
-        experiment_dir,
-        2,
-        as_logged(result.record),
-        2,
-    )
-
-
-async def test_iterate_session_when_hooks_configured_does_print_output_around_the_measurement(
-    hooks_setup: tuple[str, str, HookScripts],
-):
-    repo, _experiment_dir, hooks = hooks_setup
-    config = resolved_config(
-        hooks=HooksConfig(
-            before=hooks.printing("warmed the cache"), after=hooks.printing("archived the samples")
-        )
-    )
-
-    result = await iterate_session(repo, config)
-
-    lines = trimmed_report_lines(result.report)
-    assert lines[0] == "[before] warmed the cache"
-    assert lines[-1] == "[after] archived the samples"
-    assert lines[1] == "iteration 2 · experiment vs baseline · 10 paired samples"
-
-
-async def test_iterate_session_when_before_hook_fails_does_still_measure(
-    hooks_setup: tuple[str, str, HookScripts],
-):
-    repo, _experiment_dir, hooks = hooks_setup
-    before = hooks.hook_command(
-        'import sys\nsys.stderr.buffer.write(b"no warm copy\\n")\nsys.exit(3)\n'
-    )
-    config = resolved_config(hooks=HooksConfig(before=before))
-
-    result = await iterate_session(repo, config)
-
-    assert [(record.stage, record.exit_code) for record in records_of_type(repo, HookRecord)] == [
-        ("before", 3)
-    ]
-    assert last_iteration_of(repo).seq == 2
-    assert result.record.outcome == "improved"
-
-
-@pytest.mark.parametrize(
-    ("with_after", "expected_stages", "expected_events"),
-    [
-        pytest.param(False, [], [], id="no-hooks"),
-        pytest.param(
-            True,
-            ["after"],
-            [(HookStarted, "after"), (HookFinished, "after")],
-            id="only-after",
-        ),
-    ],
-)
-async def test_iterate_session_when_before_stage_absent_does_run_nothing_for_it(
-    hooks_setup: tuple[str, str, HookScripts],
-    *,
-    with_after: bool,
-    expected_stages: list[str],
-    expected_events: list[tuple[type[HookStarted | HookFinished], str]],
-):
-    repo, _experiment_dir, hooks = hooks_setup
-    hooks_config = HooksConfig(after=hooks.printing("bye")) if with_after else None
-    config = resolved_config(hooks=hooks_config)
-    events: list[ProgressEvent] = []
-
-    result = await iterate_session(repo, config, options=IterateOptions(on_progress=events.append))
-
-    assert [record.stage for record in records_of_type(repo, HookRecord)] == expected_stages
-    assert _hook_events(events) == expected_events
-    before_lines = [
-        line for line in trimmed_report_lines(result.report) if line.startswith("[before]")
-    ]
-    assert before_lines == []
 
 
 # ---------------------------------------------------------------------------
@@ -901,7 +666,9 @@ def test_derive_outcome_when_no_gating_regression_does_read_the_primary(
         "higher/time": _directed_metric("higher"),
     }
 
-    assert derive_outcome(metrics, primary) == expected
+    outcome = derive_outcome(metrics, primary)
+
+    assert outcome == expected
 
 
 def test_derive_outcome_when_gating_metric_has_no_experiment_slice_does_read_the_primary():

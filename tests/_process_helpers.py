@@ -567,7 +567,8 @@ def track_cleanups(monkeypatch: "pytest.MonkeyPatch", module: str) -> CleanupReg
     return registry
 
 
-_REAL_KILLPG = os.killpg
+# The real ``os.killpg``, captured at import so a stand-in can still reach it.
+REAL_KILLPG = os.killpg
 
 
 def _refuse_every_signal(_signal_number: int) -> bool:
@@ -603,7 +604,7 @@ class KillpgRefusal:
         self.signals.append(signal_number)
         if self.refusing and self.refuses(signal_number):
             raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
-        _REAL_KILLPG(group_pid, signal_number)
+        REAL_KILLPG(group_pid, signal_number)
 
 
 def refuse_killpg(

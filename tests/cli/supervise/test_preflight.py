@@ -10,6 +10,7 @@ point, with seams patched at the names ``preflight`` imports them under.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -38,7 +39,7 @@ from gymrat.session.records import BaselineRecord, FinalizeRecord
 from tests._ansi import strip_ansi
 from tests._config import resolved_config
 from tests._doctor_fixtures import single_check_report
-from tests._lock import hold_lock
+from tests._lock import FIXED_HOLDER_AT, hold_lock
 from tests.cli._session import (
     close_session_with_one_keep,
     last_command_record,
@@ -270,18 +271,21 @@ def test_preflight_when_repository_lock_held_does_refuse_with_the_contention_err
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     install_baseline_seam(monkeypatch)
-    lock_path = lockfile_path(repo)
-    blocker = hold_lock(lock_path, "iterate")
-    try:
-        with pytest.raises(GymratError) as rival:
-            acquire_lock(lock_path, "measure")
+    blocker = hold_lock(
+        lockfile_path(repo),
+        holder={"pid": os.getpid(), "command": "iterate", "at": FIXED_HOLDER_AT},
+    )
 
+    try:
         with pytest.raises(GymratError) as refused:
             _run_preflight(repo)
     finally:
         blocker.release()
 
-    assert (str(refused.value), refused.value.hint) == (str(rival.value), rival.value.hint)
+    assert (str(refused.value), refused.value.hint) == (
+        f"Lock held by PID {os.getpid()} (iterate, started {FIXED_HOLDER_AT})",
+        "Another gymrat run is active in this repo. Wait for it to finish.",
+    )
     assert not Path(session_jsonl_path(repo)).exists()
 
 
@@ -436,23 +440,21 @@ def _leave_tree_clean(_repo: str) -> None:
         ),
     ],
 )
-def test_preflight_when_warning_raised_does_route_it_to_the_warn_sink(
+def test_preflight_when_warning_raised_does_print_it_to_stderr(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     *,
     arrange: Callable[[str], object],
     config_overrides: dict[str, Any],
     preflight_kwargs: dict[str, Any],
     expected: str,
 ):
-    warnings: list[str] = []
-    monkeypatch.setattr(f"{_MODULE}.warn_to_stderr", warnings.append)
     seed_session_with_baseline(repo, baseline_duration_ms=1000)
     arrange(repo)
 
     _run_preflight(repo, config=resolved_config(**config_overrides), **preflight_kwargs)
 
-    assert warnings == [expected]
+    assert capsys.readouterr().err.splitlines() == [expected]
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +542,9 @@ def test_preflight_when_baseline_already_recorded_does_not_measure(
 # ---------------------------------------------------------------------------
 
 
-def test_preflight_when_cap_cannot_fit_one_iterate_does_refuse_with_the_arithmetic(repo: str):
+def test_preflight_when_cap_cannot_fit_one_iterate_does_refuse_with_the_arithmetic_leaving_the_session_open(
+    repo: str,
+):
     seed_session_with_baseline(repo, baseline_duration_ms=1_440_000)
 
     with pytest.raises(GymratError) as exc:
@@ -550,14 +554,6 @@ def test_preflight_when_cap_cannot_fit_one_iterate_does_refuse_with_the_arithmet
         "the baseline took 24m; one iterate needs about 48m; the 30m cap cannot fit one.",
         "Raise --max-minutes, or pass --force to launch anyway.",
     )
-
-
-def test_preflight_when_cap_cannot_fit_one_iterate_does_leave_the_session_open(repo: str):
-    seed_session_with_baseline(repo, baseline_duration_ms=1_440_000)
-
-    with pytest.raises(GymratError):
-        _run_preflight(repo, max_minutes=30)
-
     assert records_of_type(repo, FinalizeRecord) == []
 
 
@@ -567,7 +563,10 @@ def test_preflight_when_session_has_baseline_does_need_one_iterate(repo: str):
     with pytest.raises(GymratError) as exc:
         _run_preflight(repo, max_minutes=47)
 
-    assert "48m" in str(exc.value)
+    assert (str(exc.value), exc.value.hint) == (
+        "the iteration took 48m; one iterate needs about 48m; the 47m cap cannot fit one.",
+        "Raise --max-minutes, or pass --force to launch anyway.",
+    )
 
 
 def test_preflight_when_session_lacks_baseline_does_measure_then_charge_one_iterate(
@@ -580,7 +579,10 @@ def test_preflight_when_session_lacks_baseline_does_measure_then_charge_one_iter
         _run_preflight(repo, max_minutes=47)
 
     assert len(measure_calls) == 1
-    assert "48m" in str(exc.value)
+    assert (str(exc.value), exc.value.hint) == (
+        "the iteration took 48m; one iterate needs about 48m; the 47m cap cannot fit one.",
+        "Raise --max-minutes, or pass --force to launch anyway.",
+    )
 
 
 def test_preflight_when_force_passed_does_bypass_feasibility_check(repo: str):
@@ -597,10 +599,11 @@ def test_preflight_when_no_estimate_available_does_proceed_with_a_notice(
     start_open_session(repo)
     append_records(repo, baseline_record())
 
-    result = _run_preflight(repo, max_minutes=10)
+    result = _run_preflight(repo, config=resolved_config(checks="npm test"), max_minutes=10)
 
-    captured = capsys.readouterr()
-    assert "iterate" in captured.err.lower()
+    assert capsys.readouterr().err.splitlines() == [
+        "one iterate runs one baseline pass and one experiment pass"
+    ]
     assert result.state.session is not None
 
 

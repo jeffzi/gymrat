@@ -14,10 +14,11 @@ tight-budget warning is pinned there for compare.
 
 from __future__ import annotations
 
-import json
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from gymrat.compare import CompareOptions
@@ -27,6 +28,7 @@ import pytest
 from gymrat.cli.app import app
 from gymrat.cli.commands.compare import should_fail_gate
 from gymrat.config import KindEntry, MetricEntry
+from gymrat.report.json_doc import render_json
 from gymrat.report.text.render import render_report
 from gymrat.report.types import (
     ComparisonResult,
@@ -128,34 +130,37 @@ def test_compare_when_flags_and_config_file_given_does_forward_them_to_compare_o
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("extra_argv", "comparison", "render"),
+    [
+        pytest.param(
+            ["--format", "text"],
+            create_comparison_result(),
+            partial(render_report, options=ReportOptions(color=False)),
+            id="text",
+        ),
+        pytest.param(
+            ["-v"],
+            _regressed_result(),
+            partial(render_report, options=ReportOptions(verbose=True, color=False)),
+            id="short-verbose-flag",
+        ),
+        pytest.param(["--format", "json"], create_comparison_result(), render_json, id="json"),
+    ],
+)
 @pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_format_text_does_render_report_to_stdout(monkeypatch: pytest.MonkeyPatch):
-    stub_compare_command(monkeypatch)
-
-    result = runner.invoke(
-        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "text"]
-    )
-
-    assert result.exit_code == 0
-    assert (
-        result.stdout
-        == render_report(create_comparison_result(), ReportOptions(color=False)) + "\n"
-    )
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_format_json_does_render_json_document_to_stdout(
+def test_compare_when_report_rendered_does_write_it_to_stdout(
     monkeypatch: pytest.MonkeyPatch,
+    extra_argv: list[str],
+    comparison: ComparisonResult,
+    render: Callable[[ComparisonResult], str],
 ):
-    stub_compare_command(monkeypatch)
+    stub_compare_command(monkeypatch, comparison)
 
-    result = runner.invoke(
-        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "json"]
-    )
+    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh", *extra_argv])
 
     assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert doc["baseline"] == "main"
+    assert result.stdout == render(comparison) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -345,23 +350,3 @@ def test_compare_when_fail_on_trips_does_exit_one_as_a_fail_on_gate_trip(
     )
     cmd = last_command_record(repo)
     assert (cmd.exit_code, cmd.reason) == (1, "fail-on")
-
-
-# ---------------------------------------------------------------------------
-# -v short form works like --verbose
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_short_verbose_flag_does_render_the_verbose_report(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    stub_compare_command(monkeypatch, _regressed_result())
-
-    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh", "-v"])
-
-    assert result.exit_code == 0
-    assert (
-        result.stdout
-        == render_report(_regressed_result(), ReportOptions(verbose=True, color=False)) + "\n"
-    )

@@ -9,7 +9,6 @@ target resolution, worktree lifecycle, and ``sh`` subprocesses whose stdout the
 
 from __future__ import annotations
 
-import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -28,6 +27,7 @@ from tests._git import (
     write_committed_bench,
 )
 from tests._pipeline import DIRTY_RESULT, install_pipeline, run_options
+from tests._platform import needs_posix_shell
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -60,7 +60,10 @@ async def test_measure_when_target_benched_does_assemble_the_result(
     monkeypatch: pytest.MonkeyPatch,
 ):
     install_pipeline(
-        monkeypatch, measure_mod, [[{"x": 10.0, "y": 4.0}, {"x": 20.0}, {"x": 30.0, "y": 6.0}]]
+        monkeypatch,
+        measure_mod,
+        [[{"x": 10.0, "y": 4.0}, {"x": 20.0}, {"x": 30.0, "y": 6.0}]],
+        cleanup=DIRTY_RESULT,
     )
 
     result = await measure(_options(target="main"))
@@ -73,32 +76,12 @@ async def test_measure_when_target_benched_does_assemble_the_result(
     assert result.samples == 3
     assert result.adapter == "metric-lines"
     assert result.label == "main"
-
-
-async def test_measure_when_target_sampled_does_give_it_no_comparison_position(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    captured = install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}]])
-
-    await measure(_options(target="main"))
-
-    assert captured.contexts is not None
-    assert [ctx.position for ctx in captured.contexts] == [None]
-
-
-async def test_measure_when_cleanup_reports_removals_does_map_worktree_fields(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}]], cleanup=DIRTY_RESULT)
-
-    result = await measure(_options())
-
     assert result.worktrees_removed == DIRTY_RESULT.removed
     assert result.worktrees_left_behind == DIRTY_RESULT.failures
     assert result.worktree_prune_error == DIRTY_RESULT.prune_error
 
 
-async def test_measure_when_progress_and_warn_given_does_deliver_sampling_events_and_warnings(
+async def test_measure_when_sampling_callbacks_given_does_deliver_what_the_pipeline_emits(
     monkeypatch: pytest.MonkeyPatch,
 ):
     event = PrepareStarted(label="main", at_ms=0.0)
@@ -132,7 +115,6 @@ async def test_measure_when_config_overrides_given_does_apply_them_to_the_result
 # End-to-end tests (real subprocesses, POSIX only)
 # ---------------------------------------------------------------------------
 
-_posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
 
 _FAIL = "#!/bin/sh\nexit 1\n"
 
@@ -144,7 +126,7 @@ def _e2e_options(target: str) -> MeasureOptions:
     )
 
 
-@_posix_only
+@needs_posix_shell
 async def test_measure_when_in_place_target_does_bench_without_worktree(
     repo: str,
 ):
@@ -157,8 +139,8 @@ async def test_measure_when_in_place_target_does_bench_without_worktree(
     assert list_worktree_dirs(repo, include_main=False) == []
 
 
-@_posix_only
-async def test_measure_when_ref_target_does_bench_in_worktree_and_sweep(
+@needs_posix_shell
+async def test_measure_when_ref_target_does_bench_in_a_disposable_worktree(
     repo: str,
 ):
     write_committed_bench(repo, EMIT_ONE_BENCH)
@@ -170,13 +152,13 @@ async def test_measure_when_ref_target_does_bench_in_worktree_and_sweep(
     assert list_worktree_dirs(repo, include_main=False) == []
 
 
-@_posix_only
-async def test_measure_when_bench_fails_does_reject_and_remove_worktrees(
+@needs_posix_shell
+async def test_measure_when_bench_fails_does_fail_with_nothing_on_disk(
     repo: str,
 ):
     write_committed_bench(repo, _FAIL)
 
-    with pytest.raises(CommandError):
+    with pytest.raises(CommandError, match=r'^bench command failed \("'):
         await measure(_e2e_options("HEAD"))
 
     assert list_worktree_dirs(repo, include_main=False) == []

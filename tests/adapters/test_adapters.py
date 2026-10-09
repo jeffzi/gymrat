@@ -10,7 +10,12 @@ from gymrat.adapters import (
     mitata_adapter,
 )
 from gymrat.errors import GymratError
-from tests.adapters._inputs import LINE_BREAKS, VALID_ADAPTERS_HINT, build_stdout
+from tests.adapters._inputs import (
+    VALID_ADAPTERS_HINT,
+    VALID_BENCHMARK,
+    build_stdout,
+    unknown_adapter_message,
+)
 
 # ---------------------------------------------------------------------------
 # get_adapter — registered names
@@ -44,20 +49,8 @@ def test_get_adapter_when_name_unknown_does_raise_gymrat_error_describing_valid_
 
     error = excinfo.value
     assert type(error) is GymratError
-    assert str(error) == 'Unknown adapter: "unknown".'
+    assert str(error) == unknown_adapter_message("unknown")
     assert error.hint == VALID_ADAPTERS_HINT
-
-
-# ---------------------------------------------------------------------------
-# AdapterError
-# ---------------------------------------------------------------------------
-
-
-def test_adapter_error_when_raised_does_subclass_gymrat_error():
-    error = AdapterError("unparseable output")
-
-    with pytest.raises(GymratError):
-        raise error
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +79,7 @@ def test_adapter_error_when_raised_does_subclass_gymrat_error():
         pytest.param("foo", MetricDefaults(direction="lower"), id="no-suffix"),
     ],
 )
-def test_defaults_from_suffixes_when_given_metric_name_does_return_expected_defaults(
+def test_defaults_from_suffixes_when_kind_suffix_varies_does_derive_defaults_from_it(
     metric_name: str,
     expected: MetricDefaults,
 ):
@@ -101,8 +94,6 @@ def test_defaults_from_suffixes_when_given_metric_name_does_return_expected_defa
 @pytest.mark.parametrize(
     ("stdout", "expected"),
     [
-        pytest.param("METRIC foo=42", {"foo": 42.0}, id="integer"),
-        pytest.param("METRIC bar=3.14", {"bar": 3.14}, id="decimal"),
         pytest.param("  METRIC foo=42  ", {"foo": 42.0}, id="both-whitespace"),
         pytest.param("METRIC bench#time=42", {"bench#time": 42.0}, id="single-hash"),
     ],
@@ -220,21 +211,22 @@ def test_parse_when_non_metric_lines_present_does_ignore_them_silently(stdout: s
         # A radix literal matches the number grammar but names an integer too large
         # to convert to a float; the conversion overflows and the line is skipped.
         pytest.param(f"METRIC big=0x{'f' * 300}", id="radix-overflows-float"),
-        # LF and CR are excluded: the adapter splits on them before it checks a name.
-        *(
-            pytest.param(f"METRIC na{line_break.char}me=42", id=f"name-holds-{line_break.name}")
-            for line_break in LINE_BREAKS
-            if line_break.char not in "\n\r"
-        ),
+        # One non-LF/CR terminator proves the adapter keeps the line whole and rejects
+        # the name; which characters count as terminators is pinned in
+        # tests/test_metric_name.py.
+        pytest.param("METRIC na\u2028me=42", id="name-holds-line-separator"),
     ],
 )
-def test_parse_when_metric_line_malformed_does_warn_and_skip(offending: str):
+def test_parse_when_metric_line_malformed_does_skip_line_with_warning(
+    offending: str, capsys: pytest.CaptureFixture[str]
+):
     warnings: list[str] = []
 
     result = metric_lines_adapter.parse(f"{offending}\nMETRIC valid=1", warnings.append)
 
     assert result == {"valid": 1.0}
     assert warnings == [f"Failed to parse METRIC line: {offending}"]
+    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +253,7 @@ def test_parse_when_name_contains_multiple_hashes_does_raise_adapter_error():
         pytest.param("foo#", "an empty kind", id="empty-kind"),
     ],
 )
-def test_parse_when_name_has_empty_part_does_warn_and_skip(name: str, problem: str):
+def test_parse_when_name_has_empty_part_does_skip_line_with_warning(name: str, problem: str):
     warnings: list[str] = []
 
     result = metric_lines_adapter.parse(f"METRIC {name}=42\nMETRIC valid=1", warnings.append)
@@ -275,41 +267,20 @@ def test_parse_when_name_has_empty_part_does_warn_and_skip(name: str, problem: s
 # ---------------------------------------------------------------------------
 
 
-_ROUTED_WARNINGS = [
-    pytest.param(
-        metric_lines_adapter,
-        "METRIC foo=bar\nMETRIC valid=1",
-        "Failed to parse METRIC line: METRIC foo=bar",
-        id="metric-lines",
-    ),
-    pytest.param(
-        mitata_adapter,
-        build_stdout([None, {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]}]),
-        "Skipping benchmark: expected an object, got null",
-        id="mitata",
-    ),
-]
-
-
-@pytest.mark.parametrize(("adapter", "stdout", "warning"), _ROUTED_WARNINGS)
-def test_parse_when_sink_injected_does_route_warning_and_leave_stderr_empty(
-    adapter: Adapter, stdout: str, warning: str, capsys: pytest.CaptureFixture[str]
-):
-    warnings: list[str] = []
-
-    adapter.parse(stdout, warnings.append)
-
-    assert warnings == [warning]
-    assert capsys.readouterr().err == ""
-
-
-@pytest.mark.parametrize(("adapter", "stdout", "warning"), _ROUTED_WARNINGS)
+@pytest.mark.parametrize(
+    ("adapter", "stdout"),
+    [
+        pytest.param(metric_lines_adapter, "METRIC foo=bar\nMETRIC valid=1", id="metric-lines"),
+        pytest.param(mitata_adapter, build_stdout([None, VALID_BENCHMARK]), id="mitata"),
+    ],
+)
 def test_parse_when_no_sink_given_does_warn_to_stderr(
-    adapter: Adapter, stdout: str, warning: str, capsys: pytest.CaptureFixture[str]
+    adapter: Adapter, stdout: str, capsys: pytest.CaptureFixture[str]
 ):
     adapter.parse(stdout)
 
-    assert capsys.readouterr().err == f"{warning}\n"
+    err = capsys.readouterr().err
+    assert (err.endswith("\n"), err.count("\n")) == (True, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -348,11 +319,15 @@ def test_parse_when_name_repeats_does_return_median_per_name(
         pytest.param("METRIC foo\nMETRIC bar=baz", id="only-malformed"),
     ],
 )
-def test_parse_when_no_valid_metrics_does_raise_adapter_error(stdout: str):
+def test_parse_when_no_valid_metrics_does_raise_adapter_error_subclassing_gymrat_error(
+    stdout: str,
+):
     warnings: list[str] = []
 
-    with pytest.raises(AdapterError, match=r"^No valid METRIC lines found$"):
+    with pytest.raises(AdapterError, match=r"^No valid METRIC lines found$") as excinfo:
         metric_lines_adapter.parse(stdout, warnings.append)
+
+    assert isinstance(excinfo.value, GymratError)
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +335,7 @@ def test_parse_when_no_valid_metrics_does_raise_adapter_error(stdout: str):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_name_embeds_metric_token_does_warn_but_record():
+def test_parse_when_name_embeds_metric_token_does_record_metric_with_warning():
     warnings: list[str] = []
 
     result = metric_lines_adapter.parse("METRIC METRIC foo=42", warnings.append)

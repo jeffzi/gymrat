@@ -55,7 +55,18 @@ def delta_cell(line: str) -> str:
 
 
 def line_starting_with(report: str, prefix: str) -> str:
-    """The first rendered line starting with ``prefix``, or a failure naming the report."""
+    """The first rendered line starting with ``prefix``, or a failure naming the report.
+
+    Args:
+        report: The rendered report, lines joined by newlines.
+        prefix: The text the line must start with.
+
+    Returns:
+        The first line of ``report`` that starts with ``prefix``.
+
+    Raises:
+        AssertionError: No line of ``report`` starts with ``prefix``.
+    """
     for candidate in report.split("\n"):
         if candidate.startswith(prefix):
             return candidate

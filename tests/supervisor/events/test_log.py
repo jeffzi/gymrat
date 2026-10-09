@@ -39,11 +39,11 @@ def test_create_event_log_writer_when_observing_events_does_append_one_utf8_lf_l
         UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01),
         TextDeltaEvent(at=2_000_000_000_000, chunk="café"),
     ]
+    expected = "".join(to_json_line(event) + "\n" for event in events)
 
     for event in events:
         writer(event)
 
-    expected = "".join(to_json_line(event) + "\n" for event in events)
     assert log_path.read_bytes() == expected.encode("utf-8")
 
 

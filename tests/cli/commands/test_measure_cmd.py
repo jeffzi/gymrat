@@ -4,10 +4,10 @@ These drive the command through :class:`typer.testing.CliRunner` with the
 ``measure`` and ``resolve_config`` seams replaced. They cover the optional
 target defaulting to ``.``, the report going to stdout, the missing-bench error
 routing to exit 2 for ``measure`` and ``compare`` alike, the ``--record`` flag that appends the run to an open
-session log as a baseline (including elapsed duration), the absent time-left
-line without a budget, and the command trace. The budget time-left line comes
-from the shared ``emit_report`` path, pinned through ``probe`` in
-``test_session_cmds``; the tight-budget warning is pinned there for measure.
+session log as a baseline (including elapsed duration), and the command trace.
+The budget time-left line comes from the shared ``emit_report`` path, pinned in
+``test_session_cmds`` with and without a budget; the tight-budget warning is
+pinned there for measure.
 """
 
 import re
@@ -21,6 +21,7 @@ from gymrat.measure import MeasureOptions
 from gymrat.report.types import MeasurementResult
 from gymrat.sampling import TargetSpec
 from gymrat.session.records import BaselineRecord, CommandRecord
+from tests._clock import install_monotonic_clock
 from tests.cli._session import (
     capture_measure,
     last_command_record,
@@ -173,12 +174,11 @@ def test_measure_when_record_does_write_duration_ms_to_baseline(
     record_repo: str,
 ):
     open_session(record_repo)
-    now_ms = [1_000.0]
-    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: now_ms[0])
+    clock = install_monotonic_clock(monkeypatch)
     measured = create_measurement_result(rounds=[{"latency": 42}])
 
     async def measure_for_half_a_second(_options: MeasureOptions) -> MeasurementResult:
-        now_ms[0] += 500
+        clock.tick(500.0)
         return measured
 
     monkeypatch.setattr("gymrat.measure.measure", measure_for_half_a_second)
@@ -189,23 +189,6 @@ def test_measure_when_record_does_write_duration_ms_to_baseline(
     baselines = records_of_type(record_repo, BaselineRecord)
     assert len(baselines) == 1
     assert baselines[0].duration_ms == 500
-
-
-# ---------------------------------------------------------------------------
-# budget time-left line
-# ---------------------------------------------------------------------------
-
-
-def test_measure_when_no_budget_does_omit_time_left_line(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    stub_measure(monkeypatch)
-
-    result = runner.invoke(app, ["measure", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == 0
-    assert "left of" not in result.stdout
 
 
 # ---------------------------------------------------------------------------

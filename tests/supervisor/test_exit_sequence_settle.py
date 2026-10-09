@@ -450,9 +450,7 @@ async def test_run_exit_sequence_when_an_earlier_attempt_failed_its_before_hook_
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
-    assert run.report.steps[0] == ExitStep(
-        kind="settled", text="settled: kept iteration 1 (checks passed)"
-    )
+    assert run.report.steps[0] == KEPT_STEP
 
 
 # ---------------------------------------------------------------------------

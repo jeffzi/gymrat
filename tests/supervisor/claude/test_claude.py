@@ -46,17 +46,11 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
     summarize,
 )
-from gymrat.supervisor.hooks import HooksFactory
-from gymrat.supervisor.tools import ToolsFactory
 from tests._imports import loaded_under, modules_loaded_after
 from tests.supervisor._fixtures import (
-    _SENTINEL_HOOKS,
-    _SENTINEL_SERVER,
     FactoryProbe,
     FakeClient,
     FiniteClient,
-    HooksFactoryProbe,
-    ToolsFactoryProbe,
     assistant,
     collecting_observer,
     events_of,
@@ -112,14 +106,12 @@ _TRACEPARENT = "00-abc123-def456-01"
 
 
 @pytest.mark.parametrize(
-    ("prompt", "hooks", "tools", "added"),
+    ("prompt", "added"),
     [
-        pytest.param(make_prompt(), None, None, {}, id="defaults"),
-        pytest.param(make_prompt(cwd="/my/project"), None, None, {"cwd": "/my/project"}, id="cwd"),
+        pytest.param(make_prompt(), {}, id="defaults"),
+        pytest.param(make_prompt(cwd="/my/project"), {"cwd": "/my/project"}, id="cwd"),
         pytest.param(
             make_prompt(system_prompt_append="extra instructions"),
-            None,
-            None,
             {
                 "system_prompt": {
                     "type": "preset",
@@ -131,8 +123,6 @@ _TRACEPARENT = "00-abc123-def456-01"
         ),
         pytest.param(
             make_prompt(command_timeout_ms=300000),
-            None,
-            None,
             {
                 "env": {
                     "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS": "300000",
@@ -145,50 +135,24 @@ _TRACEPARENT = "00-abc123-def456-01"
         ),
         pytest.param(
             make_prompt(model="claude-sonnet-4-20250514"),
-            None,
-            None,
             {"model": "claude-sonnet-4-20250514"},
             id="model",
         ),
-        pytest.param(make_prompt(effort="high"), None, None, {"effort": "high"}, id="effort"),
-        pytest.param(
-            make_prompt(max_budget_usd=5.0), None, None, {"max_budget_usd": 5.0}, id="max-budget"
-        ),
+        pytest.param(make_prompt(effort="high"), {"effort": "high"}, id="effort"),
+        pytest.param(make_prompt(max_budget_usd=5.0), {"max_budget_usd": 5.0}, id="max-budget"),
         pytest.param(
             make_prompt(traceparent=_TRACEPARENT),
-            None,
-            None,
             {"env": {**_DEFAULT_ENV, "GYMRAT_TRACEPARENT": _TRACEPARENT}},
             id="traceparent-under-its-own-name",
-        ),
-        pytest.param(
-            make_prompt(), HooksFactoryProbe(), None, {"hooks": _SENTINEL_HOOKS}, id="hooks-only"
-        ),
-        pytest.param(
-            make_prompt(),
-            None,
-            ToolsFactoryProbe(),
-            {"mcp_servers": {"gymrat": _SENTINEL_SERVER}},
-            id="tools-only",
-        ),
-        pytest.param(
-            make_prompt(),
-            HooksFactoryProbe(),
-            ToolsFactoryProbe(),
-            {"hooks": _SENTINEL_HOOKS, "mcp_servers": {"gymrat": _SENTINEL_SERVER}},
-            id="hooks-and-tools",
         ),
     ],
 )
 async def test_start_when_session_inputs_given_does_forward_them_as_client_options(
-    prompt: SessionPrompt,
-    hooks: HooksFactory | None,
-    tools: ToolsFactory | None,
-    added: dict[str, object],
+    prompt: SessionPrompt, added: dict[str, object]
 ):
     client = FiniteClient([result_message()])
 
-    await run_outcome(client, prompt=prompt, hooks=hooks, tools=tools)
+    await run_outcome(client, prompt=prompt)
 
     assert client.options == _DEFAULT_OPTIONS | added
 
@@ -212,17 +176,6 @@ async def test_start_when_text_block_does_emit_text_delta_carrying_its_parent(
 
     deltas = events_of(events, TextDeltaEvent)
     assert [(delta.chunk, delta.parent_tool_use_id) for delta in deltas] == [(text, parent)]
-
-
-async def test_start_when_read_path_under_cwd_does_summarize_relative_to_cwd():
-    tool_use = ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/my/project/src/main.py"})
-    client = FiniteClient([assistant(tool_use), result_message()])
-    probe = collecting_observer()
-
-    await run_outcome(client, probe.observer, prompt=make_prompt(cwd="/my/project"))
-
-    starts = events_of(probe.events, ToolStartEvent)
-    assert starts[0].input_summary == "src/main.py"
 
 
 async def test_start_when_tool_result_has_no_matching_start_does_use_fallback_fields():
@@ -340,6 +293,12 @@ _WEB_SEARCH_RESULT: dict[str, object] = {
             "tu_parent",
             "/foo.ts",
             id="client-tool-under-a-parent",
+        ),
+        pytest.param(
+            ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/tmp/test/src/main.py"}),
+            None,
+            "src/main.py",
+            id="client-read-under-cwd-is-relative",
         ),
         pytest.param(
             ServerToolUseBlock(id="tu_web", name="web_search", input=_WEB_SEARCH_INPUT),
@@ -681,16 +640,7 @@ async def test_start_when_building_or_streaming_the_client_raises_does_resolve_e
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "stop_again",
-    [
-        pytest.param(methodcaller("end"), id="then-end"),
-        pytest.param(methodcaller("interrupt"), id="then-interrupt"),
-    ],
-)
-async def test_start_when_interrupted_before_connect_does_resolve_once_without_sending_kickoff(
-    stop_again: Callable[[DriverSession], Awaitable[None]],
-):
+async def test_start_when_interrupted_before_connect_does_resolve_interrupted_without_sending_kickoff():
     client = FakeClient([result_message(total_cost_usd=0.10)])
     probe = collecting_observer()
     session = start_claude_session(
@@ -698,13 +648,32 @@ async def test_start_when_interrupted_before_connect_does_resolve_once_without_s
     )
 
     await session.interrupt()  # client not built yet — the soft stop cannot reach it
-    await stop_again(session)  # already stopped — a no-op that keeps the first outcome
     outcome = await settled_outcome(session)
 
     assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.0)
     assert client.interrupt_called is False
     assert client.query_prompts == []
     assert events_of(probe.events, UsageUpdateEvent) == []
+
+
+@pytest.mark.parametrize(
+    "stop_again",
+    [
+        pytest.param(methodcaller("end"), id="then-end"),
+        pytest.param(methodcaller("interrupt"), id="then-interrupt"),
+    ],
+)
+async def test_start_when_stopped_again_after_interrupt_before_connect_does_keep_the_first_outcome(
+    stop_again: Callable[[DriverSession], Awaitable[None]],
+):
+    client = FakeClient([result_message(total_cost_usd=0.10)])
+    session = start_claude_session(client, collecting_observer().observer)
+    await session.interrupt()
+
+    await stop_again(session)
+    outcome = await settled_outcome(session)
+
+    assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.0)
 
 
 # ---------------------------------------------------------------------------

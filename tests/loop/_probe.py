@@ -42,12 +42,15 @@ class MeasureRecorder:
     """A stand-in for the measurement engine that records every call it answers.
 
     The engine is the one boundary a probe crosses into the consumer's bench
-    script, so it is replaced wholesale: the recorder hands back a canned
-    :class:`MeasurementResult` and keeps the options it was called with, which is
-    how a test reads the target, bench command, and sample count a probe asked
-    for. When ``progress`` events or ``warnings`` are given, each call reports
-    them through the progress callback and warn sink it was handed, so a test
-    can read what the caller wired those to.
+    script, so it is replaced wholesale. The recorder keeps the options each call
+    passed in ``calls``, which is how a test reads the target, bench command, and
+    sample count a probe asked for, and what the caller wired its progress
+    callback and warn sink to.
+
+    Args:
+        result: The measurement every call hands back.
+        progress: Events each call reports through the progress callback it was handed.
+        warnings: Messages each call sends through the warn sink it was handed.
     """
 
     def __init__(

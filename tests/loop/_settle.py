@@ -5,8 +5,8 @@ own test suite, which no test here can run. Every git operation is real, driven
 against a throwaway repository from the ``create_scratch_repo`` factory, so the
 suite stays order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 
-The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.loop._settle``.
+The ``_`` prefix marks a shared helper rather than a test module; it is
+imported as ``tests.loop._settle``.
 """
 
 from collections.abc import Callable
@@ -136,6 +136,11 @@ def edit_experiment(repo_dir: str) -> None:
     (worktree / "scratch.txt").write_text("notes\n", encoding="utf-8")
 
 
+def commit_experiment_directly(repo: str) -> str:
+    """Commit the experiment worktree outside a keep, returning the standing commit."""
+    return commit_all(experiment_worktree_dir(repo), "committed outside the keep")
+
+
 #: The ``exec`` the keep module calls, which the checks stand-ins replace.
 KEEP_EXEC = "gymrat.loop.keep.exec"
 
@@ -150,6 +155,10 @@ def checks_fail(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
     return install_exec(
         monkeypatch, KEEP_EXEC, expected_result(CHECKS_STDOUT, CHECKS_STDERR, exit_code=1)
     )
+
+
+#: A result the no-checks path must never reach; installed only to prove exec stayed unused.
+UNUSED_EXEC = expected_result()
 
 
 def settling_record_of(root: str) -> SessionLogRecord:
@@ -183,12 +192,27 @@ def capture_error(action: Callable[[], object]) -> GymratError:
     return excinfo.value
 
 
-# ---------------------------------------------------------------------------
-# Record builders — the iteration and keep shapes the engine produces
-# ---------------------------------------------------------------------------
+def assert_settling_record(
+    actual: KeepRecord | DiscardRecord, expected: KeepRecord | DiscardRecord
+) -> None:
+    """Assert a settling record equals the expected one once its stamped ``at`` is normalized.
 
-#: A result the no-checks path must never reach; installed only to prove exec stayed unused.
-UNUSED_EXEC = expected_result()
+    The settle stamps a real nanosecond timestamp the fixtures cannot predict, so
+    the ``at`` is checked as a positive integer and then aligned before the
+    structural compare.
+
+    Args:
+        actual: The record the settle wrote.
+        expected: The record it should equal, apart from ``at``.
+    """
+    assert isinstance(actual.at, int)
+    assert actual.at > 0
+    assert actual.model_copy(update={"at": expected.at}) == expected
+
+
+# ---------------------------------------------------------------------------
+# Iteration record builders
+# ---------------------------------------------------------------------------
 
 #: The paired rerun samples a filtered bench reports when it only emits ``total_ms``.
 RERUN_SAMPLES = PairedSamples(experiment=({"total_ms": 14_120},), baseline=({"total_ms": 15_170},))
@@ -283,26 +307,3 @@ def unmeasured_regression(seq: int) -> IterationRecord:
             samples=RERUN_SAMPLES,
         ),
     )
-
-
-def assert_settling_record(
-    actual: KeepRecord | DiscardRecord, expected: KeepRecord | DiscardRecord
-) -> None:
-    """Assert a settling record equals the expected one once its stamped ``at`` is normalized.
-
-    The settle stamps a real nanosecond timestamp the fixtures cannot predict, so
-    the ``at`` is checked as a positive integer and then aligned before the
-    structural compare.
-
-    Args:
-        actual: The record the settle wrote.
-        expected: The record it should equal, apart from ``at``.
-    """
-    assert isinstance(actual.at, int)
-    assert actual.at > 0
-    assert actual.model_copy(update={"at": expected.at}) == expected
-
-
-def commit_experiment_directly(repo: str) -> str:
-    """Commit the experiment worktree outside a keep, returning the standing commit."""
-    return commit_all(experiment_worktree_dir(repo), "committed outside the keep")

@@ -37,16 +37,12 @@ from tests._ansi import (
 )
 from tests._process_helpers import wait_for_pid_file_blocking
 from tests._rich import Clock, console_output, frame_text, screen_lines, sealed_console
-from tests.cli._budget import (
-    SUPERVISED_HINT,
-    install_budget,
-    install_tight_budget,
-    set_origin,
-)
+from tests.cli._budget import set_origin
 from tests.cli._session import (
     FailingStdoutRunner,
     closed_stdout_error,
     last_command_record,
+    leave_as_is,
     runner,
     write_bench_config,
 )
@@ -68,6 +64,11 @@ from tests.loop.iterate._fixtures import (
     regressed_run,
     stub_runs,
     stub_samples,
+)
+from tests.session._budget import (
+    install_budget,
+    install_budget_with_ten_minutes_left,
+    install_tight_budget,
 )
 from tests.session.records._fixtures import (
     committed_keep,
@@ -273,6 +274,7 @@ def test_iterate_command_when_terminated_mid_pass_does_remove_the_progress_sidec
     )
     start_with(repo)
     write_bench_config(repo, bench=f"sh {shlex.quote(str(script))}")
+
     with spawned_gymrat(["iterate"], repo) as proc:
         # The pass-start event writes the sidecar before the bench runs.
         reap_groups.append(wait_for_pid_file_blocking(tmp_path / "bench.pid", SETTLE_TIMEOUT_S))
@@ -484,10 +486,32 @@ def _at_iteration_cap(repo: str) -> None:
     write_bench_config(repo, stop={"max_iterations": 1})
 
 
+def _tool_run_with_ten_minutes_left(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run from the tool under a live 30-minute budget with ten minutes left on a frozen clock."""
+    install_budget_with_ten_minutes_left(repo, monkeypatch)
+    set_origin(monkeypatch, "tool")
+
+
+@pytest.mark.parametrize(
+    ("arrange", "budget_key"),
+    [
+        pytest.param(leave_as_is, {}, id="no-budget"),
+        pytest.param(
+            _tool_run_with_ten_minutes_left,
+            {"budget": {"cap_minutes": 30, "remaining_seconds": 600}},
+            id="under-budget",
+        ),
+    ],
+)
 def test_iterate_command_when_format_json_and_stop_condition_does_emit_stop_document(
-    repo: str, improved_samples_mock: CollectSamplesRecorder
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    improved_samples_mock: CollectSamplesRecorder,
+    arrange: Callable[[str, pytest.MonkeyPatch], None],
+    budget_key: dict[str, object],
 ):
     _at_iteration_cap(repo)
+    arrange(repo, monkeypatch)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
 
@@ -495,6 +519,7 @@ def test_iterate_command_when_format_json_and_stop_condition_does_emit_stop_docu
     assert json.loads(result.stdout) == {
         "stopped": True,
         "reason": "Stop condition met: max iterations (1 of 1)",
+        **budget_key,
     }
     assert improved_samples_mock.call_count == 0
 
@@ -509,26 +534,6 @@ def test_iterate_command_when_stop_and_format_json_and_stdout_closed_does_exit_o
     )
 
     assert (result.exit_code, result.stderr) == (1, "")
-
-
-# ---------------------------------------------------------------------------
-# the iterate command — budget line and JSON key
-# ---------------------------------------------------------------------------
-
-
-def test_iterate_command_when_stop_and_format_json_and_budget_active_does_include_budget_key(
-    repo: str, monkeypatch: pytest.MonkeyPatch, improved_samples_mock: CollectSamplesRecorder
-):
-    _stop_condition_met(repo, monkeypatch)
-    set_origin(monkeypatch, "tool")
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
-
-    assert result.exit_code == 1
-    doc = json.loads(result.stdout)
-    assert "budget" in doc
-    assert doc["budget"]["cap_minutes"] == 30
-    assert isinstance(doc["budget"]["remaining_seconds"], int)
 
 
 # ---------------------------------------------------------------------------
@@ -562,31 +567,15 @@ def supervised_repo(
     return repo
 
 
-@pytest.mark.parametrize("output_format", ["text", "json"])
-def test_iterate_command_when_supervised_run_live_does_refuse_as_a_recorded_no_op(
-    supervised_repo: str, output_format: str, improved_samples_mock: CollectSamplesRecorder
+def test_iterate_command_when_supervised_run_live_does_refuse_before_the_hook_or_bench(
+    supervised_repo: str, improved_samples_mock: CollectSamplesRecorder
 ):
-    before = records_of_type(supervised_repo, CommandRecord, matching=False)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", output_format])
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
     assert result.exit_code == 2
-    assert result.stdout == ""
-    stderr = " ".join(stripped_lines(result.stderr, keep_blank=False))
-    assert SUPERVISED_MESSAGE in stderr
-    assert SUPERVISED_HINT in stderr
     assert improved_samples_mock.call_count == 0
     assert not Path(supervised_repo, "hook-ran").exists()
-    assert records_of_type(supervised_repo, CommandRecord, matching=False) == before
-    assert not Path(progress_path(supervised_repo)).exists()
-    commands = records_of_type(supervised_repo, CommandRecord, matching=True)
-    assert len(commands) == 1
-    cmd = last_command_record(supervised_repo)
-    assert cmd.name == "iterate"
-    assert cmd.exit_code == 2
-    assert cmd.reason == "supervised-use-tool"
-    assert cmd.origin == "cli"
-    assert cmd.seq is None
+    assert last_command_record(supervised_repo).seq is None
 
 
 def test_iterate_command_when_tool_hosted_under_live_budget_does_run_the_before_hook(

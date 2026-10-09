@@ -156,7 +156,6 @@ async def test_keep_session_when_checks_pass_does_settle_the_edit_as_committed(
     assert recorder.calls == [(CHECKS, ExecOptions(cwd=worktree, timeout_ms=TIMEOUT_MS))]
     assert status_of(worktree) == ""
     assert run_git(["rev-parse", "HEAD~1"], worktree) == before
-    assert isinstance(record.at, int)
     assert record.at > 0
     assert (record.type, record.seq, record.status) == ("keep", 1, "committed")
     assert record.commit == head_of(worktree)
@@ -181,29 +180,6 @@ async def test_keep_session_when_primary_delta_undefined_does_generate_message_t
     subject = run_git(["log", "-1", "--format=%s"], experiment_worktree_dir(repo))
     assert result.record.message == "iteration 1: geomean delta undefined"
     assert subject == result.record.message
-
-
-async def test_keep_session_when_no_checks_configured_does_keep_it_unchecked_with_a_stderr_warning(
-    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
-    start_with(repo, (iteration_record(seq=1),))
-    edit_experiment(repo)
-    recorder = install_exec(monkeypatch, KEEP_EXEC, UNUSED_EXEC)
-
-    result = await keep_session(repo, checks_config(checks=None))
-
-    warning = capsys.readouterr().err
-    assert recorder.calls == []
-    record = result.record
-    assert isinstance(record.at, int)
-    assert record.at > 0
-    assert (record.type, record.seq, record.status) == ("keep", 1, "committed")
-    assert record.commit == head_of(experiment_worktree_dir(repo))
-    assert isinstance(record.message, str)
-    assert record.checks == KeepChecks(configured=False)
-    assert "gymrat.toml" in warning
-    assert "Hint" not in warning
-    assert "`" not in warning
 
 
 async def test_keep_session_when_checks_fail_does_block_reporting_both_streams_leaving_the_edit(
@@ -593,10 +569,9 @@ def _edited_after_iteration(repo: str) -> None:
 
 
 async def test_keep_session_when_colored_does_paint_the_hint_dim_around_a_blue_command(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str,
 ):
     _nothing_measured(repo)
-    checks_pass(monkeypatch)
 
     result = await keep_session(repo, checks_config(), color=True)
 
@@ -617,25 +592,27 @@ async def test_keep_session_when_checks_output_holds_markup_metacharacters_does_
     assert noisy in strip_ansi(result.report)
 
 
-@pytest.mark.parametrize(
-    ("tty", "expect_dim"),
-    [
-        pytest.param(True, True, id="tty"),
-        pytest.param(False, False, id="no-tty"),
-    ],
-)
-async def test_keep_session_when_no_checks_and_no_color_given_does_dim_hint_per_stderr_tty(
-    repo: str, monkeypatch: pytest.MonkeyPatch, tty: bool, expect_dim: bool
+async def test_keep_session_when_no_checks_configured_does_keep_it_unchecked_with_a_dim_stderr_hint(
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    stderr = FakeStream(tty=tty)
+    stderr = FakeStream(tty=True)
     monkeypatch.setattr("sys.stderr", stderr)
     _edited_after_iteration(repo)
-    install_exec(monkeypatch, KEEP_EXEC, UNUSED_EXEC)
+    recorder = install_exec(monkeypatch, KEEP_EXEC, UNUSED_EXEC)
 
-    await keep_session(repo, checks_config(checks=None))
+    result = await keep_session(repo, checks_config(checks=None))
 
-    hint = stderr.getvalue().splitlines()[1]
-    assert hint.startswith("\x1b[2m") is expect_dim
+    record = result.record
+    warning = strip_ansi(stderr.getvalue())
+    assert recorder.calls == []
+    assert (record.type, record.seq, record.status) == ("keep", 1, "committed")
+    assert record.commit == head_of(experiment_worktree_dir(repo))
+    assert isinstance(record.message, str)
+    assert record.checks == KeepChecks(configured=False)
+    assert "gymrat.toml" in warning
+    assert "Hint" not in warning
+    assert "`" not in warning
+    assert stderr.getvalue().splitlines()[1].startswith("\x1b[2m")
 
 
 async def test_keep_session_when_no_checks_and_warn_sink_does_send_plain_hint_to_the_sink(

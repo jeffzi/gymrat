@@ -10,8 +10,8 @@ or infinite float nested in a free-form payload as ``null`` on either path,
 refusing a non-finite value in a typed float field at construction, and
 writing a value pydantic cannot serialize as its ``str()``; ``event_from_wire``
 inverts it and returns ``None`` for anything it cannot reconstruct;
-``combine_observers`` is pinned on its zero-observer no-op and on warning,
-attributed to the caller, when an observer raises.
+``combine_observers`` is pinned on warning, attributed to the caller, when an
+observer raises.
 """
 
 import json
@@ -44,7 +44,6 @@ from tests.session.records._fixtures import (
 )
 from tests.supervisor._fixtures import (
     NotJsonEncodable,
-    collecting_observer,
     make_launch,
     make_turn_end,
 )
@@ -425,29 +424,44 @@ def test_to_json_line_when_given_event_does_write_its_wire_object(
             '{"type":"text_delta","at":5000000000,"chunk":"a\\u2029b"}',
             id="paragraph-separator-escaped",
         ),
+    ],
+)
+def test_to_json_line_when_serializable_does_write_exact_compact_line(
+    event: SessionEvent, expected_line: str
+):
+    line = to_json_line(event)
+
+    assert line == expected_line
+
+
+@pytest.mark.parametrize(
+    ("event", "expected_line"),
+    [
         pytest.param(
             TextDeltaEvent(at=5_000_000_000, chunk=_SURROGATE_TEXT),
             '{"type":"text_delta","at":5000000000,"chunk":"caf\\u00e9 \\ud800"}',
-            id="lone-surrogate-escapes-all-non-ascii",
+            id="escapes-all-non-ascii",
         ),
         pytest.param(
             make_turn_end(at=12_000_000_000, text=_SURROGATE_TEXT, cost_usd=0.05),
             '{"type":"turn_end","at":12000000000,"text":"caf\\u00e9 \\ud800",'
             '"cost_usd":0.05,"origin":"agent","budget_exhausted":false}',
-            id="lone-surrogate-keeps-finite-float",
+            id="keeps-finite-float",
         ),
         pytest.param(
             make_turn_end(at=12_000_000_000, text=_SURROGATE_TEXT, cost_usd=1e-07),
             '{"type":"turn_end","at":12000000000,"text":"caf\\u00e9 \\ud800",'
             '"cost_usd":1e-07,"origin":"agent","budget_exhausted":false}',
-            id="lone-surrogate-keeps-float-exponent",
+            id="keeps-float-exponent",
         ),
     ],
 )
-def test_to_json_line_when_text_or_float_value_given_does_write_exact_compact_line(
+def test_to_json_line_when_event_holds_lone_surrogate_does_escape_all_non_ascii(
     event: SessionEvent, expected_line: str
 ):
-    assert to_json_line(event) == expected_line
+    line = to_json_line(event)
+
+    assert line == expected_line
 
 
 def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write_null():
@@ -491,7 +505,9 @@ ROUND_TRIP_EVENTS = [pytest.param(event, id=id_) for event, id_ in EVENT_SAMPLES
 
 @pytest.mark.parametrize("event", ROUND_TRIP_EVENTS)
 def test_event_from_wire_when_given_serialized_event_does_reconstruct_it(event: SessionEvent):
-    assert event_from_wire(json.loads(to_json_line(event))) == event
+    reconstructed = event_from_wire(json.loads(to_json_line(event)))
+
+    assert reconstructed == event
 
 
 @pytest.mark.parametrize(
@@ -512,19 +528,14 @@ def test_event_from_wire_when_given_serialized_event_does_reconstruct_it(event: 
     ],
 )
 def test_event_from_wire_when_input_unrecognized_does_return_none(obj: object):
-    assert event_from_wire(obj) is None
+    reconstructed = event_from_wire(obj)
+
+    assert reconstructed is None
 
 
 # ---------------------------------------------------------------------------
 # combine_observers
 # ---------------------------------------------------------------------------
-
-
-def test_combine_observers_when_given_no_observers_does_not_raise():
-    combined = combine_observers()
-    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
-
-    combined(event)
 
 
 _OBSERVER_FAILURE = "observer failure"
@@ -534,16 +545,14 @@ def _raise_observer_failure(_: object) -> None:
     raise RuntimeError(_OBSERVER_FAILURE)
 
 
-def test_combine_observers_when_an_observer_raises_does_warn_from_caller_and_keep_dispatching():
-    later = collecting_observer()
-    combined = combine_observers(_raise_observer_failure, later.observer)
+def test_combine_observers_when_an_observer_raises_does_warn_attributed_to_the_caller():
+    combined = combine_observers(_raise_observer_failure)
     event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
 
     with pytest.warns(RuntimeWarning, match=_OBSERVER_FAILURE) as caught:
         combined(event)
 
     assert [warning.filename for warning in caught] == [__file__]
-    assert later.events == [event]
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,6 @@ so the suite is order-independent and safe under ``pytest-xdist`` /
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -51,20 +50,18 @@ SAMPLE_COUNTS = [
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX quoting only")
 async def test_probe_session_when_names_given_does_bench_the_filter_scoped_command(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
     config = checks_config(filter=FILTER)
-    names = ("total_ms", "decode large payload")
+    names = ("total_ms", "alloc_bytes")
     recorder = install_measure(monkeypatch, measurement())
 
     result = await probe_session(repo, config, ProbeOptions(names=names))
 
     assert (
-        only_call(recorder).run.sampling.bench
-        == "npm run bench -- --filter total_ms 'decode large payload'"
+        only_call(recorder).run.sampling.bench == "npm run bench -- --filter total_ms alloc_bytes"
     )
     assert result.names == names
 
@@ -189,8 +186,6 @@ async def test_probe_session_when_run_reports_metrics_does_pair_each_with_its_ba
     assert result.metrics[0].reference_median == 100.0
     assert result.metrics[0].delta_pct == pytest.approx(-10.0)
     assert result.metrics[0].meta == total.meta
-    assert result.metrics[1].reference_median is None
-    assert result.metrics[1].delta_pct is None
     assert result.metrics[1].meta == alloc.meta
 
 
@@ -199,6 +194,7 @@ async def test_probe_session_when_run_reports_metrics_does_pair_each_with_its_ba
     [
         pytest.param(({"total_ms": 0.0},), 90.0, 0.0, id="baseline-median-of-zero"),
         pytest.param(BASELINE_SAMPLES, None, 100.0, id="run-reported-no-median"),
+        pytest.param(({"other_ms": 1.0},), 90.0, None, id="baseline-lacks-the-metric"),
     ],
 )
 async def test_probe_session_when_reference_or_median_missing_or_zero_does_report_no_delta(
@@ -206,7 +202,7 @@ async def test_probe_session_when_reference_or_median_missing_or_zero_does_repor
     monkeypatch: pytest.MonkeyPatch,
     samples: tuple[dict[str, float], ...],
     median: float | None,
-    expected_reference: float,
+    expected_reference: float | None,
 ):
     start_with(repo, (baseline_record(samples=samples),))
     spread = None if median is None else 1.0

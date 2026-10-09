@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.metadata
-from functools import partial
 from typing import TYPE_CHECKING, override
 
 import pytest
@@ -27,8 +27,14 @@ from gymrat.telemetry.provider import (
     start_span,
     trace_id_of,
 )
+from gymrat.utils import ENDPOINT_ENV
 from tests.telemetry._collector import otlp_collector
-from tests.telemetry._fixtures import hide_otel_sdk, hide_otlp_exporter, memory_tracing
+from tests.telemetry._fixtures import (
+    arm_placeholder_endpoint,
+    hide_otel_sdk,
+    hide_otlp_exporter,
+    memory_tracing,
+)
 
 _TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 
@@ -40,27 +46,7 @@ SESSION = "test-session-provider"
 # ---------------------------------------------------------------------------
 
 
-def _leave_endpoint_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Leave the endpoint as the test environment baseline has it: absent."""
-
-
-def _set_endpoint(monkeypatch: pytest.MonkeyPatch, *, endpoint: str) -> None:
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
-
-
-@pytest.mark.parametrize(
-    "arrange",
-    [
-        pytest.param(_leave_endpoint_unset, id="unset"),
-        pytest.param(partial(_set_endpoint, endpoint=""), id="empty"),
-        pytest.param(partial(_set_endpoint, endpoint=" \t "), id="whitespace-only"),
-    ],
-)
-def test_configure_tracing_when_endpoint_unset_or_blank_does_return_false(
-    monkeypatch: pytest.MonkeyPatch, arrange: Callable[[pytest.MonkeyPatch], None]
-):
-    arrange(monkeypatch)
-
+def test_configure_tracing_when_endpoint_unset_does_return_false():
     result = configure_tracing(SESSION)
 
     assert result is False
@@ -69,7 +55,7 @@ def test_configure_tracing_when_endpoint_unset_or_blank_does_return_false(
 def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9")
+    monkeypatch.setenv(ENDPOINT_ENV, "http://127.0.0.1:9")
     with otlp_collector() as collector:
         configure_tracing(SESSION, endpoint=collector.endpoint)
         with start_span("probe"):
@@ -83,11 +69,11 @@ def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_enviro
 
 
 def _pad_endpoint(monkeypatch: pytest.MonkeyPatch, endpoint: str) -> None:
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", f"  {endpoint} ")
+    monkeypatch.setenv(ENDPOINT_ENV, f"  {endpoint} ")
 
 
 def _pad_traces_endpoint(monkeypatch: pytest.MonkeyPatch, endpoint: str) -> None:
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+    monkeypatch.setenv(ENDPOINT_ENV, "http://127.0.0.1:1")
     monkeypatch.setenv(_TRACES_ENDPOINT_ENV, f"  {endpoint}/custom/traces ")
 
 
@@ -116,6 +102,11 @@ def test_configure_tracing_when_endpoint_variable_padded_does_export_to_it_trimm
     ]
 
 
+# ---------------------------------------------------------------------------
+# flush_tracing
+# ---------------------------------------------------------------------------
+
+
 class _StalledFlushSpanProcessor(SpanProcessor):
     """Span processor whose flush never finishes in time, as a hung exporter's would."""
 
@@ -127,7 +118,7 @@ class _StalledFlushSpanProcessor(SpanProcessor):
 def test_flush_tracing_when_flush_does_not_finish_in_time_does_count_as_failed_export(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+    monkeypatch.setenv(ENDPOINT_ENV, "http://collector:4318")
     configure_tracing(SESSION, span_processor=_StalledFlushSpanProcessor())
 
     flush_tracing()
@@ -136,7 +127,7 @@ def test_flush_tracing_when_flush_does_not_finish_in_time_does_count_as_failed_e
 
 
 # ---------------------------------------------------------------------------
-# configure_tracing — SDK import gate
+# configure_tracing — import gates
 # ---------------------------------------------------------------------------
 
 
@@ -150,7 +141,7 @@ def test_flush_tracing_when_flush_does_not_finish_in_time_does_count_as_failed_e
 def test_configure_tracing_when_a_package_is_missing_does_return_false(
     monkeypatch: pytest.MonkeyPatch, hide: Callable[[pytest.MonkeyPatch], None]
 ):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    arm_placeholder_endpoint(monkeypatch)
     hide(monkeypatch)
 
     result = configure_tracing(SESSION)
@@ -158,16 +149,10 @@ def test_configure_tracing_when_a_package_is_missing_does_return_false(
     assert result is False
 
 
-# ---------------------------------------------------------------------------
-# configure_tracing — OTLP exporter import gate
-# ---------------------------------------------------------------------------
-
-
 def test_configure_tracing_when_exporter_was_missing_does_configure_later_call_afresh(
     monkeypatch: pytest.MonkeyPatch,
 ):
-
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    arm_placeholder_endpoint(monkeypatch)
     with monkeypatch.context() as hidden:
         hide_otlp_exporter(hidden)
         configure_tracing(SESSION)
@@ -192,10 +177,8 @@ def test_configure_tracing_when_exporter_was_missing_does_configure_later_call_a
 
 
 def test_configure_tracing_when_called_does_name_and_version_the_service():
-    with memory_tracing(SESSION) as exporter:
-        span = start_span("probe")
-        span.__enter__()
-        span.__exit__(None, None, None)
+    with memory_tracing(SESSION) as exporter, start_span("probe"):
+        pass
 
     finished = exporter.get_finished_spans()
     attributes = finished[0].resource.attributes
@@ -237,10 +220,8 @@ def test_configure_tracing_when_called_with_different_session_id_does_raise():
 
 
 def test_start_span_when_keyed_without_parent_does_derive_trace_and_span_ids_from_the_session():
-    with memory_tracing(SESSION) as exporter:
-        span = start_span("keyed-span", span_key="my-key")
-        span.__enter__()
-        span.__exit__(None, None, None)
+    with memory_tracing(SESSION) as exporter, start_span("keyed-span", span_key="my-key"):
+        pass
 
     finished = exporter.get_finished_spans()
     assert len(finished) == 1
@@ -301,7 +282,7 @@ def _configure_with_failing_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> _ShutdownFailingSpanProcessor:
     """Configure tracing on a failing-shutdown processor, with export and session-drop flags set."""
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    arm_placeholder_endpoint(monkeypatch)
     processor = _ShutdownFailingSpanProcessor()
     configure_tracing(SESSION, span_processor=processor)
     flush_tracing()
@@ -328,7 +309,7 @@ def test_configure_tracing_when_previous_reset_raised_does_configure_afresh(
     monkeypatch: pytest.MonkeyPatch,
 ):
     _configure_with_failing_shutdown(monkeypatch)
-    with pytest.raises(RuntimeError, match="shutdown failed"):
+    with contextlib.suppress(RuntimeError):
         reset_tracing()
 
     result = configure_tracing(

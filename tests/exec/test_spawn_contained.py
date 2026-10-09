@@ -4,6 +4,8 @@ A child that exists but could not be registered, contained, or resumed is torn
 down before the spawn fails, and the failure always surfaces as a
 :class:`~gymrat.exec.SpawnError` — or, through ``exec`` and ``exec_argv``, as a
 failed :class:`~gymrat.exec.ExecResult` — even when the teardown fails too.
+A child that is contained leads its own session and runs one nesting level
+deeper, in the environment the caller asked for.
 
 Real-subprocess tests are POSIX-only: process groups and ``os.killpg`` do not
 exist on win32.
@@ -12,14 +14,16 @@ exist on win32.
 import asyncio
 import contextlib
 import errno
+import json
 import signal
+import sys
 from collections.abc import Callable
 from typing import NoReturn
 
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import ExecOptions
+from gymrat.exec import ExecOptions, ExecResult, exec_argv
 from tests._exec_fixtures import RUNNERS, Runner, expected_result
 from tests._process_helpers import (
     KILLPG_FAILED,
@@ -245,3 +249,55 @@ async def test_spawn_contained_when_group_kill_raises_on_a_child_ignoring_the_re
 
     (child,) = spawned_processes
     assert child.returncode == -signal.SIGKILL
+
+
+# ---------------------------------------------------------------------------
+# env option
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("env", "expected_marker"),
+    [
+        pytest.param(None, "inherited", id="inherited-env"),
+        pytest.param({"GYMRAT_TEST_MARKER": "mapped"}, "mapped", id="explicit-env"),
+        pytest.param({}, None, id="empty-env"),
+    ],
+)
+async def test_exec_argv_when_env_given_or_omitted_does_hand_child_that_env_one_nesting_level_deeper(
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    env: dict[str, str] | None,
+    expected_marker: str | None,
+) -> None:
+    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", 2)
+    monkeypatch.setenv("GYMRAT_TEST_MARKER", "inherited")
+
+    result = await exec_argv(
+        [sys.executable, "-c", "import os, json; print(json.dumps(dict(os.environ)))"],
+        make_opts(env=env),
+    )
+
+    assert isinstance(result, ExecResult)
+    child_env = json.loads(result.stdout.strip())
+    assert {
+        "GYMRAT_TEST_MARKER": child_env.get("GYMRAT_TEST_MARKER"),
+        "GYMRAT_NESTING_DEPTH": child_env.get("GYMRAT_NESTING_DEPTH"),
+    } == {"GYMRAT_TEST_MARKER": expected_marker, "GYMRAT_NESTING_DEPTH": "3"}
+
+
+# ---------------------------------------------------------------------------
+# child session (POSIX)
+# ---------------------------------------------------------------------------
+
+
+async def test_exec_argv_when_child_spawned_does_make_it_lead_its_own_session(
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    result = await exec_argv(
+        [sys.executable, "-c", "import os; print(os.getsid(0) == os.getpid())"],
+        make_opts(),
+    )
+
+    assert isinstance(result, ExecResult)
+    assert result.stdout == "True\n"

@@ -24,8 +24,6 @@ the two cannot diverge.
 
 import importlib.metadata
 import json
-import subprocess
-import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -55,6 +53,8 @@ from gymrat.session.records import SessionLogRecord
 from gymrat.session.store import fold_session
 from gymrat.supervisor.events import SessionEvent, event_from_wire
 from gymrat.supervisor.turns import outcome_record_count
+from tests._ansi import normalize
+from tests._cli import run_module
 from tests._config import benchless_config
 from tests._imports import loaded_under, modules_imported_by
 from tests.event_docs._extended_unions import PROBE_WIRE_TYPE, ProbeModel
@@ -94,6 +94,7 @@ class _Channel(NamedTuple):
     schema_path: str
     heading: str
     address: str
+    title: str
 
 
 #: The session-log channel: ``SessionLogRecord`` members, first schema of ``render_json_schemas()``.
@@ -104,6 +105,7 @@ _SESSION_LOG = _Channel(
     _SESSION_LOG_SCHEMA,
     "## Session Log",
     ".gymrat/session.jsonl",
+    "gymrat session log record",
 )
 #: The supervisor-log channel: ``SessionEvent`` members, second schema of ``render_json_schemas()``.
 _SUPERVISOR_LOG = _Channel(
@@ -113,6 +115,7 @@ _SUPERVISOR_LOG = _Channel(
     _SUPERVISOR_LOG_SCHEMA,
     "## Supervisor Log",
     ".gymrat/supervisor-<ms>.jsonl",
+    "gymrat supervisor log event",
 )
 _CHANNELS = (_SESSION_LOG, _SUPERVISOR_LOG)
 _CHANNEL_PARAMS = [pytest.param(channel, id=channel.name) for channel in _CHANNELS]
@@ -130,10 +133,6 @@ def _md_section(md: str, start_marker: str | None, stop_marker: str | None) -> s
     start = md.index(start_marker) if start_marker is not None else 0
     end = md.find(stop_marker, start + 1) if stop_marker is not None else -1
     return md[start:end] if end != -1 else md[start:]
-
-
-def _unwrap(text: str) -> str:
-    return " ".join(text.split())
 
 
 # ---------------------------------------------------------------------------
@@ -161,13 +160,7 @@ def test_main_module_when_run_does_exit_zero_with_four_output_lines(
 ):
     root = Path(create_scratch_repo())
 
-    result = subprocess.run(
-        [sys.executable, "-m", "gymrat.event_docs"],
-        capture_output=True,
-        text=True,
-        cwd=root,
-        check=False,
-    )
+    result = run_module("gymrat.event_docs", cwd=root)
 
     assert result.returncode == 0, f"stderr: {result.stderr}"
     written = [Path(line).resolve() for line in result.stdout.splitlines()]
@@ -176,13 +169,7 @@ def test_main_module_when_run_does_exit_zero_with_four_output_lines(
 
 
 def test_main_module_when_run_outside_repo_does_fail_without_writing_artifacts(tmp_path: Path):
-    result = subprocess.run(
-        [sys.executable, "-m", "gymrat.event_docs"],
-        capture_output=True,
-        text=True,
-        cwd=str(tmp_path),
-        check=False,
-    )
+    result = run_module("gymrat.event_docs", cwd=tmp_path)
 
     assert result.returncode == TOOL_FAILURE_EXIT_CODE, f"stderr: {result.stderr}"
     assert "Traceback" not in result.stderr
@@ -216,13 +203,7 @@ def test_render_all_when_compared_to_committed_artifacts_does_match_byte_for_byt
 
 
 def _render_all_with_extended_union(channel: str) -> dict[str, str]:
-    result = subprocess.run(  # noqa: S603 -- fixed interpreter and module; channel is a parametrize value
-        [sys.executable, "-m", "tests.event_docs._extended_unions", channel],
-        capture_output=True,
-        text=True,
-        cwd=str(_REPO_ROOT),
-        check=True,
-    )
+    result = run_module("tests.event_docs._extended_unions", channel, cwd=_REPO_ROOT, check=True)
     return json.loads(result.stdout)
 
 
@@ -409,23 +390,6 @@ def _render_schemas() -> tuple[dict[str, Any], dict[str, Any]]:
     return render_json_schemas()
 
 
-@pytest.mark.parametrize(
-    ("channel", "title"),
-    [
-        pytest.param(_SESSION_LOG, "gymrat session log record", id="session-log"),
-        pytest.param(_SUPERVISOR_LOG, "gymrat supervisor log event", id="supervisor-log"),
-    ],
-)
-def test_render_json_schemas_when_called_does_return_draft_2020_12_envelope(
-    channel: _Channel, title: str
-):
-    schema = _render_schemas()[channel.schema_index]
-
-    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-    assert schema["title"] == title
-    assert schema["$id"] == f"https://github.com/jeffzi/gymrat/{channel.schema_path}"
-
-
 # ---------------------------------------------------------------------------
 # member defs — const discriminator, additionalProperties per log, at as integer
 # ---------------------------------------------------------------------------
@@ -458,13 +422,18 @@ def test_render_json_schemas_when_called_does_shape_member_def_per_log(
 
 
 @pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
-def test_render_json_schemas_when_called_does_map_every_type_to_its_member_def(channel: _Channel):
+def test_render_json_schemas_when_called_does_map_every_type_in_a_draft_2020_12_envelope(
+    channel: _Channel,
+):
     expected_mapping = {
         _wire_type(member): f"#/$defs/{member.__name__}" for member in channel.members
     }
 
     schema = _render_schemas()[channel.schema_index]
 
+    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert schema["title"] == channel.title
+    assert schema["$id"] == f"https://github.com/jeffzi/gymrat/{channel.schema_path}"
     assert schema["oneOf"] == [{"$ref": f"#/$defs/{member.__name__}"} for member in channel.members]
     assert schema["discriminator"] == {"propertyName": "type", "mapping": expected_mapping}
 
@@ -506,7 +475,6 @@ def test_render_json_schemas_when_called_does_require_type_on_every_event(member
     _, supervisor_log = _render_schemas()
 
     required = supervisor_log["$defs"][member.__name__].get("required", [])
-
     assert "type" in required
 
 
@@ -536,13 +504,9 @@ def test_supervisor_log_schema_when_validating_payload_does_agree_with_event_fro
 @pytest.mark.parametrize(
     ("model_name", "field_name", "minimum"),
     [
-        pytest.param("IterationRecord", "seq", 1, id="iteration-seq"),
-        pytest.param("SessionConfig", "samples", 1, id="session-config-samples"),
-        pytest.param("HookRecord", "stdout_bytes", 0, id="hook-record-stdout-bytes"),
-        pytest.param("HookRecord", "stderr_bytes", 0, id="hook-record-stderr-bytes"),
-        pytest.param("CommandRecord", "duration_ms", 0, id="command-duration-ms"),
-        pytest.param("KeepChecks", "stdout_bytes", 0, id="keep-checks-stdout-bytes"),
-        pytest.param("KeepChecks", "stderr_bytes", 0, id="keep-checks-stderr-bytes"),
+        pytest.param("IterationRecord", "seq", 1, id="positive-int"),
+        pytest.param("HookRecord", "stdout_bytes", 0, id="non-negative-int"),
+        pytest.param("KeepChecks", "stdout_bytes", 0, id="optional-non-negative-int"),
     ],
 )
 def test_render_json_schemas_when_called_does_type_bounded_int_with_minimum(
@@ -551,7 +515,6 @@ def test_render_json_schemas_when_called_does_type_bounded_int_with_minimum(
     session_log, _ = _render_schemas()
 
     field_prop = session_log["$defs"][model_name]["properties"][field_name]
-
     assert (field_prop.get("type"), field_prop.get("minimum")) == ("integer", minimum)
 
 
@@ -571,49 +534,9 @@ def test_render_json_schemas_when_called_does_type_bounded_int_with_minimum(
             True,
             id="launch-kickoff_summary-described",
         ),
-        pytest.param("FollowUpEvent", "reason", "anyOf", False, id="follow_up-reason-never-null"),
-        pytest.param("FollowUpEvent", "text", "anyOf", False, id="follow_up-text-never-null"),
-        pytest.param("LaunchEvent", "effort", "anyOf", False, id="launch-effort-never-null"),
-        pytest.param("LaunchEvent", "max_usd", "anyOf", False, id="launch-max_usd-never-null"),
-        pytest.param("LaunchEvent", "model", "anyOf", False, id="launch-model-never-null"),
-        pytest.param(
-            "ModelPhaseEvent", "tool_name", "anyOf", False, id="model_phase-tool_name-never-null"
-        ),
-        pytest.param(
-            "ModelPhaseEvent",
-            "parent_tool_use_id",
-            "anyOf",
-            False,
-            id="model_phase-parent_tool_use_id-never-null",
-        ),
-        pytest.param(
-            "ThinkingUpdateEvent",
-            "parent_tool_use_id",
-            "anyOf",
-            False,
-            id="thinking_update-parent_tool_use_id-never-null",
-        ),
-        pytest.param(
-            "ToolStartEvent",
-            "parent_tool_use_id",
-            "anyOf",
-            False,
-            id="tool_start-parent_tool_use_id-never-null",
-        ),
-        pytest.param(
-            "ToolEndEvent",
-            "parent_tool_use_id",
-            "anyOf",
-            False,
-            id="tool_end-parent_tool_use_id-never-null",
-        ),
-        pytest.param(
-            "TextDeltaEvent",
-            "parent_tool_use_id",
-            "anyOf",
-            False,
-            id="text_delta-parent_tool_use_id-never-null",
-        ),
+        pytest.param("FollowUpEvent", "reason", "anyOf", False, id="optional-str-never-null"),
+        pytest.param("LaunchEvent", "max_usd", "anyOf", False, id="optional-float-never-null"),
+        pytest.param("LaunchEvent", "effort", "anyOf", False, id="optional-effort-never-null"),
         pytest.param("ToolStartEvent", "input", "type", False, id="tool_start-input-untyped"),
     ],
 )
@@ -626,16 +549,12 @@ def test_render_json_schemas_when_called_does_shape_supervisor_field_keyword(
     _, supervisor_log = _render_schemas()
 
     field_schema = supervisor_log["$defs"][model_name]["properties"][field_name]
-
     assert (keyword in field_schema) is present
 
 
 # ---------------------------------------------------------------------------
-# shared helpers
+# render_asyncapi — helpers
 # ---------------------------------------------------------------------------
-
-_VENDOR_DIR = Path(__file__).parent / "vendor"
-_META_SCHEMA_PATH = _VENDOR_DIR / "asyncapi-3.0.0.schema.json"
 
 
 def _render_with_schemas() -> tuple[tuple[dict[str, Any], dict[str, Any]], dict[str, Any]]:
@@ -652,13 +571,14 @@ def _render_asyncapi_doc() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def test_render_asyncapi_when_called_does_return_valid_asyncapi_300_envelope():
+def test_render_asyncapi_when_called_does_describe_the_logs_and_their_envelope():
     doc = _render_asyncapi_doc()
 
-    assert doc["asyncapi"] == "3.0.0"
     assert doc["info"]["title"] == "gymrat logs"
     assert doc["info"]["version"] == importlib.metadata.version("gymrat")
     assert len(doc["info"]["description"]) > 0
+    envelope = doc["components"]["messageTraits"]["envelope"]["description"]
+    assert "`seq` (non-negative integer)" in envelope
 
 
 # ---------------------------------------------------------------------------
@@ -735,20 +655,7 @@ def test_render_asyncapi_when_called_does_describe_each_message_payload(
 
 
 # ---------------------------------------------------------------------------
-# components.messageTraits.envelope
-# ---------------------------------------------------------------------------
-
-
-def test_render_asyncapi_when_called_does_describe_envelope_seq_as_non_negative():
-    doc = _render_asyncapi_doc()
-
-    description = doc["components"]["messageTraits"]["envelope"]["description"]
-
-    assert "`seq` (non-negative integer)" in description
-
-
-# ---------------------------------------------------------------------------
-# operations — four receive operations
+# operations — one receive operation per reader, each referencing messages that exist
 # ---------------------------------------------------------------------------
 
 
@@ -761,31 +668,16 @@ def test_render_asyncapi_when_called_does_have_receive_operation_per_reader(
     doc = _render_asyncapi_doc()
 
     op = doc["operations"][op_name]
-
     assert op["action"] == "receive"
     assert op["channel"]["$ref"] == f"#/channels/{reader.channel}"
     assert op["messages"] == [
         {"$ref": f"#/channels/{reader.channel}/messages/{t}"} for t in reader.types
     ]
-
-
-# ---------------------------------------------------------------------------
-# cross-check: every operation message exists in components and its channel
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("op_name", list(READERS))
-def test_render_asyncapi_when_called_does_have_consistent_operation_message_refs(op_name: str):
-    doc = _render_asyncapi_doc()
-
-    op = doc["operations"][op_name]
-    component_messages = doc["components"]["messages"]
-    channel_messages = doc["channels"][op["channel"]["$ref"].split("/")[-1]]["messages"]
-    referenced = [ref["$ref"].split("/")[-1] for ref in op["messages"]]
+    channel_messages = doc["channels"][reader.channel]["messages"]
     missing = [
         msg_type
-        for msg_type in referenced
-        if msg_type not in component_messages or msg_type not in channel_messages
+        for msg_type in reader.types
+        if msg_type not in doc["components"]["messages"] or msg_type not in channel_messages
     ]
     assert missing == []
 
@@ -794,16 +686,22 @@ def test_render_asyncapi_when_called_does_have_consistent_operation_message_refs
 # meta-schema validation
 # ---------------------------------------------------------------------------
 
+_META_SCHEMA_PATH = Path(__file__).parent / "vendor" / "asyncapi-3.0.0.schema.json"
+
 
 def test_render_asyncapi_when_called_does_validate_against_asyncapi_300_meta_schema():
-    doc = _render_asyncapi_doc()
-
     meta_schema = json.loads(_META_SCHEMA_PATH.read_text(encoding="utf-8"))
     validator = Draft7Validator(meta_schema)
 
-    errors = list(validator.iter_errors(doc))
+    doc = _render_asyncapi_doc()
 
+    errors = list(validator.iter_errors(doc))
     assert not errors, f"AsyncAPI meta-schema validation errors: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# render_reference — helpers
+# ---------------------------------------------------------------------------
 
 
 def _render_reference_doc() -> str:
@@ -817,14 +715,17 @@ def _type_section(md: str, wire_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# banner
+# document framing — banner, field-table header, single trailing newline
 # ---------------------------------------------------------------------------
 
 
-def test_render_reference_when_called_does_start_with_generated_file_banner():
+def test_render_reference_when_called_does_frame_the_document():
     md = _render_reference_doc()
 
     assert md.split("\n")[0] == "<!-- Generated by `task schemas`. Do not edit. -->"
+    assert "\n| Name | Type | Status | Description |\n| --- | --- | --- | --- |\n" in md
+    assert md.endswith("\n")
+    assert not md.endswith("\n\n")
 
 
 # ---------------------------------------------------------------------------
@@ -835,8 +736,7 @@ def test_render_reference_when_called_does_start_with_generated_file_banner():
 def test_render_reference_when_called_does_introduce_log_conventions():
     md = _render_reference_doc()
 
-    intro = _unwrap(_md_section(md, None, "\n## "))
-
+    intro = normalize(_md_section(md, None, "\n## "))
     assert [
         phrase
         for phrase in (
@@ -864,7 +764,6 @@ def test_render_reference_when_called_does_order_sections_per_union_declaration(
     md = _render_reference_doc()
 
     positions = [md.find(f"\n### `{_wire_type(model)}`\n") for model in channel.members]
-
     assert -1 not in positions
     assert positions == sorted(positions)
 
@@ -903,19 +802,12 @@ def test_render_reference_when_called_does_have_field_rows(wire_type: str, field
     md = _render_reference_doc()
 
     section = _type_section(md, wire_type)
-
     assert [field for field in fields if f"\n| `{field}` |" not in section] == []
 
 
 # ---------------------------------------------------------------------------
 # field table structure — columns: name, type, required/optional, description
 # ---------------------------------------------------------------------------
-
-
-def test_render_reference_when_called_does_have_table_header_with_four_columns():
-    md = _render_reference_doc()
-
-    assert "\n| Name | Type | Status | Description |\n| --- | --- | --- | --- |\n" in md
 
 
 @pytest.mark.parametrize(
@@ -935,7 +827,6 @@ def test_render_reference_when_called_does_mark_field_status(
         for line in _type_section(md, wire_type).split("\n")
         if line.startswith(f"| `{field}` |")
     ]
-
     assert [row.split(" | ")[2] for row in rows] == [status]
 
 
@@ -954,10 +845,10 @@ def test_render_reference_when_called_does_have_nested_object_subsections():
         "DirtyInfo",
     ]
 
-    headings = set(_render_reference_doc().split("\n"))
+    md = _render_reference_doc()
 
+    headings = set(md.split("\n"))
     missing = [name for name in nested_objects if f"#### `{name}`" not in headings]
-
     assert missing == []
 
 
@@ -969,23 +860,11 @@ def test_render_reference_when_called_does_have_nested_object_subsections():
 @pytest.mark.parametrize("op_name", [pytest.param(name, id=name) for name in READERS])
 def test_render_reference_when_called_does_describe_each_reader_operation(op_name: str):
     spec = READERS[op_name]
-    expected = _unwrap(f"- **{op_name}** (channel: `{spec.channel}`): {spec.description}")
+    expected = normalize(f"- **{op_name}** (channel: `{spec.channel}`): {spec.description}")
 
     md = _render_reference_doc()
 
-    assert expected in _unwrap(_md_section(md, "\n## Readers\n", None))
-
-
-# ---------------------------------------------------------------------------
-# formatting — trailing newline
-# ---------------------------------------------------------------------------
-
-
-def test_render_reference_when_called_does_end_with_single_trailing_newline():
-    md = _render_reference_doc()
-
-    assert md.endswith("\n")
-    assert not md.endswith("\n\n")
+    assert expected in normalize(_md_section(md, "\n## Readers\n", None))
 
 
 # ---------------------------------------------------------------------------

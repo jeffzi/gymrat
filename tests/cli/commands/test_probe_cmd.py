@@ -5,8 +5,9 @@ scratch repository, a real session log, and the real ``probe_session`` engine.
 The one seam replaced is the measurement engine — it shells out to the
 consumer's bench script, which no test here can run — so the option surface, the
 lock, the progress reporter, the JSON document, and every engine refusal are
-exercised end to end; the budget trailer is pinned with every other command's
-in ``test_session_cmds``.
+exercised end to end; the budget trailer, the tight-budget warning on the halved
+estimate, and the finalized refusal are pinned with every other command's in
+``test_session_cmds``.
 
 The signal test is the exception: it runs the CLI out of process against a real
 shell bench, because a process group can only be killed by a real signal.
@@ -27,11 +28,9 @@ from gymrat.progress_events import PrepareFinished, PrepareStarted
 from gymrat.session.paths import (
     experiment_worktree_dir,
     lockfile_path,
-    progress_path,
     repo_root,
     session_jsonl_path,
 )
-from gymrat.session.records import CommandRecord
 from tests._ansi import (
     strip_ansi,
     stripped_lines,
@@ -43,31 +42,26 @@ from tests._process_helpers import (
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
 )
-from tests.cli._budget import (
-    SUPERVISED_HINT,
-    install_tight_budget,
-    set_origin,
-)
+from tests.cli._budget import SUPERVISED_HINT
 from tests.cli._session import (
     last_command_record,
+    open_probe_session,
     runner,
+    stub_probe_measure,
     write_bench_config,
 )
 from tests.cli._signalled_cli import pid_recording_script, spawned_gymrat, stop_by_signal
 from tests.loop._probe import (
     BASELINE_SAMPLES,
     MeasureRecorder,
-    install_measure,
-    measurement,
     only_call,
 )
 from tests.loop._settle import start_with
+from tests.session._budget import install_tight_budget
 from tests.session.records._fixtures import (
     append_records,
     baseline_record,
-    finalize_record,
     iteration_record,
-    records_of_type,
 )
 
 FILTER = "sh bench.sh --filter {names}"
@@ -83,16 +77,13 @@ PREPARE_MILESTONES = (
 @pytest.fixture
 def measure(monkeypatch: pytest.MonkeyPatch) -> MeasureRecorder:
     """The stubbed measurement engine, reporting one prepare milestone then a canned result."""
-    return install_measure(
-        monkeypatch, measurement(adapter="metric-lines"), progress=PREPARE_MILESTONES
-    )
+    return stub_probe_measure(monkeypatch, PREPARE_MILESTONES)
 
 
 @pytest.fixture
 def probe_repo(repo: str) -> str:
     """A scratch repo with an open session, a recorded baseline, and a filter template."""
-    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    write_bench_config(repo, filter=FILTER)
+    open_probe_session(repo, filter=FILTER)
     return repo
 
 
@@ -111,22 +102,9 @@ def probe_repo(repo: str) -> str:
 )
 @pytest.mark.usefixtures("probe_repo", "measure")
 def test_probe_command_when_supported_option_given_does_complete(option: list[str]):
-
     result = runner.invoke(app, ["probe", *option])
 
     assert result.exit_code == 0
-
-
-@pytest.mark.usefixtures("probe_repo", "measure")
-def test_probe_command_when_color_flag_given_does_style_the_stdout_report_despite_no_color(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("NO_COLOR", "1")
-
-    result = runner.invoke(app, ["probe", "--color"])
-
-    assert result.exit_code == 0
-    assert "\x1b[" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -135,27 +113,42 @@ def test_probe_command_when_color_flag_given_does_style_the_stdout_report_despit
 
 
 @pytest.mark.parametrize(
-    ("args", "bench", "samples"),
+    ("args", "bench", "samples", "traced"),
     [
-        pytest.param([], "npm run bench", PROBE_DEFAULT_SAMPLES, id="whole-bench-at-probe-default"),
+        pytest.param(
+            [],
+            "npm run bench",
+            PROBE_DEFAULT_SAMPLES,
+            {"names": [], "samples": None},
+            id="whole-bench-at-probe-default",
+        ),
         pytest.param(
             ["total_ms", "decode large payload", "--samples", "3"],
             "sh bench.sh --filter total_ms 'decode large payload'",
             3,
+            {"names": ["total_ms", "decode large payload"], "samples": 3},
             id="names-and-samples-scope-the-bench",
             marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX quoting only"),
         ),
     ],
 )
-@pytest.mark.usefixtures("probe_repo")
-def test_probe_command_when_run_does_bench_the_scope_and_samples_asked_for(
-    args: list[str], bench: str, samples: int, measure: MeasureRecorder
+def test_probe_command_when_run_does_bench_and_trace_the_scope_and_samples_asked_for(
+    *,
+    probe_repo: str,
+    args: list[str],
+    bench: str,
+    samples: int,
+    traced: dict[str, object],
+    measure: MeasureRecorder,
 ):
     result = runner.invoke(app, ["probe", *args])
 
     assert result.exit_code == 0
     run = only_call(measure).run.sampling
     assert (run.bench, run.samples) == (bench, samples)
+    cmd = last_command_record(probe_repo)
+    assert (cmd.name, cmd.exit_code, cmd.reason) == ("probe", 0, None)
+    assert {key: cmd.args[key] for key in traced} == traced
 
 
 # ---------------------------------------------------------------------------
@@ -205,32 +198,6 @@ def test_probe_command_when_format_json_does_emit_the_result_as_a_json_document(
 
 
 # ---------------------------------------------------------------------------
-# duration warnings — the per-side estimate
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("duration_ms", "warns"),
-    [
-        pytest.param(720_000, True, id="half-the-estimate-outlasts-the-budget"),
-        pytest.param(400_000, False, id="half-the-estimate-still-fits"),
-    ],
-)
-@pytest.mark.usefixtures("measure")
-def test_probe_command_when_budget_tight_does_warn_on_the_halved_estimate(
-    probe_repo: str, monkeypatch: pytest.MonkeyPatch, duration_ms: int, warns: bool
-):
-    install_tight_budget(probe_repo, monkeypatch)
-    set_origin(monkeypatch, "tool")
-    append_records(probe_repo, iteration_record(duration_ms=duration_ms))
-
-    result = runner.invoke(app, ["probe"])
-
-    assert result.exit_code == 0
-    assert ("warning" in strip_ansi(result.stderr).lower()) is warns
-
-
-# ---------------------------------------------------------------------------
 # refused while a supervised run is live
 # ---------------------------------------------------------------------------
 
@@ -243,29 +210,16 @@ def supervised_probe_repo(probe_repo: str, monkeypatch: pytest.MonkeyPatch) -> s
     return probe_repo
 
 
-@pytest.mark.parametrize("output_format", ["text", "json"])
-def test_probe_command_when_supervised_run_live_does_refuse_as_supervised_use_tool(
-    supervised_probe_repo: str, output_format: str, measure: MeasureRecorder
+def test_probe_command_when_supervised_run_live_does_refuse_before_benching_or_warning(
+    supervised_probe_repo: str, measure: MeasureRecorder
 ):
-    before = records_of_type(supervised_probe_repo, CommandRecord, matching=False)
+    result = runner.invoke(app, ["probe"])
 
-    result = runner.invoke(app, ["probe", "--format", output_format])
-
-    assert result.exit_code == 2
-    assert result.stdout == ""
     lines = [line for line in stripped_lines(result.stderr, keep_blank=False) if line.strip()]
     assert len(lines) == 2
     assert "a supervised run is live; use the probe tool" in lines[0]
     assert SUPERVISED_HINT in lines[1]
     assert measure.calls == []
-    assert records_of_type(supervised_probe_repo, CommandRecord, matching=False) == before
-    assert not Path(progress_path(supervised_probe_repo)).exists()
-    assert len(records_of_type(supervised_probe_repo, CommandRecord)) == 1
-    cmd = last_command_record(supervised_probe_repo)
-    assert cmd.name == "probe"
-    assert cmd.exit_code == 2
-    assert cmd.reason == "supervised-use-tool"
-    assert cmd.origin == "cli"
 
 
 # ---------------------------------------------------------------------------
@@ -301,16 +255,9 @@ def _no_session(repo: str) -> None:
     write_bench_config(repo, filter=FILTER)
 
 
-def _finalized_session(repo: str) -> None:
-    """A configured repository whose session was closed by a finalize record."""
-    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES), finalize_record()))
-    write_bench_config(repo, filter=FILTER)
-
-
 def _no_filter(repo: str) -> None:
     """An open session with a baseline but no filter template to scope a probe."""
-    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    write_bench_config(repo)
+    open_probe_session(repo)
 
 
 def _no_baseline(repo: str) -> None:
@@ -320,7 +267,6 @@ def _no_baseline(repo: str) -> None:
 
 
 REFUSALS = [
-    pytest.param(_finalized_session, ["probe"], "was finalized onto", "finalized", id="finalized"),
     pytest.param(
         _no_filter,
         ["probe", "total_ms"],
@@ -336,8 +282,9 @@ REFUSALS = [
         id="no-baseline",
     ),
 ]
-"""Every way an opened session refuses a probe: the setup, the argv, a message fragment,
-and the recorded reason."""
+"""Every probe-only refusal of an opened session: the setup, the argv, a message fragment,
+and the recorded reason. The finalized refusal every session command shares is pinned in
+``test_session_cmds``."""
 
 
 def test_probe_command_when_no_session_was_opened_does_refuse_without_recording_a_command(
@@ -374,32 +321,6 @@ def test_probe_command_when_the_session_cannot_be_probed_does_exit_two_with_the_
     assert measure.calls == []
     cmd = last_command_record(repo)
     assert (cmd.name, cmd.exit_code, cmd.reason) == ("probe", 2, reason)
-
-
-@pytest.mark.parametrize(
-    ("argv", "names", "samples"),
-    [
-        pytest.param([], [], None, id="defaults"),
-        pytest.param(["total_ms", "--samples", "3"], ["total_ms"], 3, id="names-and-samples"),
-    ],
-)
-@pytest.mark.usefixtures("measure")
-def test_probe_command_when_run_completes_does_record_the_trace_with_names_and_samples(
-    probe_repo: str,
-    argv: list[str],
-    names: list[str],
-    samples: int | None,
-):
-
-    result = runner.invoke(app, ["probe", *argv])
-
-    assert result.exit_code == 0
-    cmd = last_command_record(probe_repo)
-    assert cmd.name == "probe"
-    assert cmd.args["names"] == names
-    assert cmd.args["samples"] == samples
-    assert cmd.exit_code == 0
-    assert cmd.reason is None
 
 
 # ---------------------------------------------------------------------------

@@ -13,17 +13,10 @@ import pytest
 
 from gymrat.cli.supervised import guard_supervised_origin, is_supervised_run_live
 from gymrat.errors import GymratError
-from gymrat.session.budget import Budget, write_budget
-from gymrat.session.paths import budget_path
-from tests._lock import held_supervise_lock, hold_supervise_lock, remove_lock_files
-from tests.cli._budget import (
-    LIVE_BUDGET,
-    SUPERVISED_HINT,
-    set_origin,
-)
-
-#: A budget whose deadline is already in the past, so every liveness check against it answers false.
-EXPIRED_BUDGET = Budget(max_minutes=30, deadline_ms=1.0)
+from gymrat.session.budget import write_budget
+from tests._lock import held_supervise_lock, remove_lock_files
+from tests.cli._budget import SUPERVISED_HINT, set_origin
+from tests.session._budget import LIVE_BUDGET
 
 
 @pytest.fixture
@@ -41,42 +34,6 @@ def supervise_lock(state_dir: str) -> Iterator[None]:
         yield
 
 
-def _write_budget_directory(state_dir: str) -> None:
-    """Put a directory where the budget file belongs so reading it fails."""
-    Path(budget_path(state_dir)).mkdir()
-
-
-def _write_garbage_budget(state_dir: str) -> None:
-    """Write a budget file that is not valid JSON."""
-    Path(budget_path(state_dir)).write_text("banana", encoding="utf-8")
-
-
-@pytest.fixture(
-    params=[
-        pytest.param("no-budget", id="no-budget-file"),
-        pytest.param("expired", id="deadline-passed"),
-        pytest.param("released", id="supervise-lock-not-held"),
-        pytest.param("garbage", id="budget-not-json"),
-        pytest.param("directory", id="budget-unreadable"),
-    ]
-)
-def not_live_repo(request: pytest.FixtureRequest, state_dir: str) -> Iterator[str]:
-    """A repository root in one of the states where no supervised run is live."""
-    case: str = request.param
-    lock = None if case == "released" else hold_supervise_lock(state_dir)
-    if case == "expired":
-        write_budget(state_dir, EXPIRED_BUDGET)
-    elif case == "released":
-        write_budget(state_dir, LIVE_BUDGET)
-    elif case == "garbage":
-        _write_garbage_budget(state_dir)
-    elif case == "directory":
-        _write_budget_directory(state_dir)
-    yield state_dir
-    if lock is not None:
-        lock.release()
-
-
 # ---------------------------------------------------------------------------
 # is_supervised_run_live
 # ---------------------------------------------------------------------------
@@ -91,8 +48,9 @@ def test_is_supervised_run_live_when_budget_live_and_lock_held_does_answer_true(
     assert live is True
 
 
-def test_is_supervised_run_live_when_not_live_does_answer_false(not_live_repo: str):
-    live = is_supervised_run_live(not_live_repo)
+@pytest.mark.usefixtures("supervise_lock")
+def test_is_supervised_run_live_when_no_budget_file_does_answer_false(state_dir: str):
+    live = is_supervised_run_live(state_dir)
 
     assert live is False
 

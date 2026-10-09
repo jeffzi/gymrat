@@ -34,6 +34,7 @@ from gymrat.session.workspace import (
     worktree_head,
 )
 from tests._git import (
+    add_worktree,
     commit_all,
     head_of,
     install_git_hook,
@@ -143,8 +144,7 @@ def test_create_workspace_when_registry_entries_are_stale_does_check_out_over_it
     create_workspace(repo, SESSION_ID, baseline)
     shutil.rmtree(experiment_worktree_dir(repo))
     shutil.rmtree(baseline_worktree_dir(repo))
-    live = str(Path(repo) / "live-worktree")
-    _git(["worktree", "add", "--detach", live, repo_head], repo)
+    live = add_worktree(repo, "live-worktree")
     absent = register_absent_worktree(repo)
 
     result = create_workspace(repo, NEXT_SESSION_ID, baseline)
@@ -329,13 +329,11 @@ def test_dirty_file_count_when_directory_missing_does_return_zero(repo: str):
 # ---------------------------------------------------------------------------
 
 
-def test_recreate_workspace_when_experiment_gone_does_put_it_back_on_the_branch(
+def test_recreate_workspace_when_experiment_gone_does_put_it_back_on_the_branch_keeping_other_registrations(
     repo: str, repo_head: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
-    user_worktree = str(Path(repo) / "user-worktree")
-    _git(["worktree", "add", "--detach", user_worktree, repo_head], repo)
-    shutil.rmtree(user_worktree)
+    user_worktree = register_absent_worktree(repo)
     shutil.rmtree(experiment_worktree_dir(repo))
 
     recreate_workspace(repo, BRANCH, repo_head)
@@ -376,7 +374,7 @@ def test_recreate_workspace_when_both_on_disk_does_leave_experiment_work_untouch
 # ---------------------------------------------------------------------------
 
 
-def test_commit_workspace_when_changes_staged_and_untracked_does_commit_them_returning_the_new_head(
+def test_commit_workspace_when_tracked_edits_and_untracked_files_does_commit_them_returning_the_new_head(
     repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
@@ -404,8 +402,7 @@ def test_commit_workspace_when_nothing_to_commit_does_raise_gymrat_error_leaving
     with pytest.raises(GymratError) as excinfo:
         commit_workspace(experiment, "no-op")
 
-    # The wrapper surfaces git's failure as "<step message>: <diagnostic>".
-    assert ": " in str(excinfo.value)
+    assert str(excinfo.value).startswith(f"Cannot commit the experiment worktree at {experiment}: ")
     assert head_of(experiment) == before
 
 

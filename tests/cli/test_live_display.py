@@ -63,10 +63,8 @@ _REPAINT_FAILURE = "final paint failed"
 _TERMINAL_GONE = "terminal gone"
 # Generous bound on waits that only time out when the code under test is broken.
 _WAIT_SECONDS = 5.0
-# How long the handler must wait for a frozen refresh-thread paint to resume.
-_RELEASE_DELAY_SECONDS = 0.05
-# Many refresh intervals at 100 refreshes per second: a live thread paints here.
-_QUIET_SECONDS = 0.2
+# How often a helper thread checks whether the display has been erased yet.
+_POLL_SECONDS = 0.005
 
 
 class _InFlight(NamedTuple):
@@ -169,6 +167,14 @@ class _FailingFrame:
         yield from ()
 
 
+def _release_once_erased(live: ErasableLive, release: threading.Event) -> None:
+    """Set *release* once the erase has begun, so a gated paint resumes during its wait."""
+    deadline = time.monotonic() + _WAIT_SECONDS
+    while not live.erased and time.monotonic() < deadline:
+        time.sleep(_POLL_SECONDS)
+    release.set()
+
+
 def _spawned_threads_ended(before: set[threading.Thread]) -> bool:
     """Whether every thread started since *before* was snapshotted has ended."""
     spawned = [thread for thread in threading.enumerate() if thread not in before]
@@ -255,12 +261,22 @@ def mounted_live() -> Iterator[Callable[..., ErasableLive]]:
         live.stop()
 
 
+class _MidPaint(NamedTuple):
+    """The console, write log and gated frame of a display erased mid-paint, plus the threads alive before it mounted."""
+
+    console: Console
+    log: _WriteLog
+    frame: _GatedFrame
+    threads_before: set[threading.Thread]
+
+
 def _signal_mid_paint(
     monkeypatch: pytest.MonkeyPatch,
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
-) -> tuple[Console, _WriteLog, _GatedFrame]:
+) -> _MidPaint:
     """Erase on a signal while a refresh-thread paint outlasts the erase's wait."""
+    threads_before = set(threading.enumerate())
     console = sealed_console()
     log = _WriteLog()
     console.file = log
@@ -272,7 +288,7 @@ def _signal_mid_paint(
     frame.entered.wait(timeout=_WAIT_SECONDS)
     monkeypatch.setattr(sys, "stderr", log)
     raise_signal(TERMINATION_SIGNAL)
-    return console, log, frame
+    return _MidPaint(console, log, frame, threads_before)
 
 
 @pytest.mark.parametrize(
@@ -479,6 +495,7 @@ def test_mount_live_when_refresh_thread_mid_paint_does_erase_frame_it_paints(
     rows_before: int,
     rows_after: int,
 ):
+    threads_before = set(threading.enumerate())
     console = sealed_console()
     log = _WriteLog()
     console.file = log
@@ -487,14 +504,15 @@ def test_mount_live_when_refresh_thread_mid_paint_does_erase_frame_it_paints(
     frame = _GatedFrame(rows_after)
     live.update(frame)
     frame.entered.wait(timeout=_WAIT_SECONDS)
-    log.painted_by_refresh.clear()
     monkeypatch.setattr(sys, "stderr", log)
-    threading.Timer(_RELEASE_DELAY_SECONDS, frame.release.set).start()
+    threading.Thread(target=_release_once_erased, args=(live, frame.release), daemon=True).start()
 
     raise_signal(TERMINATION_SIGNAL)
-    log.painted_by_refresh.wait(timeout=_WAIT_SECONDS)
 
-    assert screen_lines(log.getvalue()) == [KEPT_LINE]
+    assert (_spawned_threads_ended(threads_before), screen_lines(log.getvalue())) == (
+        True,
+        [KEPT_LINE],
+    )
 
 
 def test_mount_live_when_refresh_thread_paint_never_finishes_does_return_after_one_wait(
@@ -529,13 +547,16 @@ def test_mount_live_when_refresh_thread_paint_outlasts_erase_does_not_land_its_f
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
 ):
-    _console, log, frame = _signal_mid_paint(monkeypatch, mounted_live, raise_signal)
-    log.painted_by_refresh.clear()
+    _console, log, frame, threads_before = _signal_mid_paint(
+        monkeypatch, mounted_live, raise_signal
+    )
 
     frame.release.set()
-    log.painted_by_refresh.wait(timeout=_QUIET_SECONDS)
 
-    assert screen_lines(log.getvalue()) == [KEPT_LINE]
+    assert (_spawned_threads_ended(threads_before), screen_lines(log.getvalue())) == (
+        True,
+        [KEPT_LINE],
+    )
 
 
 def test_console_print_when_signal_erased_display_mid_paint_does_print_without_frame(
@@ -543,7 +564,9 @@ def test_console_print_when_signal_erased_display_mid_paint_does_print_without_f
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
 ):
-    console, log, frame = _signal_mid_paint(monkeypatch, mounted_live, raise_signal)
+    console, log, frame, _threads_before = _signal_mid_paint(
+        monkeypatch, mounted_live, raise_signal
+    )
     # rich holds the console lock while rendering a frame, so the print waits
     # for the in-flight paint either way; releasing it first keeps the test fast.
     frame.release.set()
@@ -617,6 +640,7 @@ def test_mount_live_when_refresh_thread_running_does_stop_its_paints(
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
 ):
+    threads_before = set(threading.enumerate())
     console = sealed_console()
     log = _WriteLog()
     console.file = log
@@ -625,9 +649,8 @@ def test_mount_live_when_refresh_thread_running_does_stop_its_paints(
     monkeypatch.setattr(sys, "stderr", StringIO())
 
     raise_signal(TERMINATION_SIGNAL)
-    log.painted_by_refresh.clear()
 
-    assert not log.painted_by_refresh.wait(timeout=_QUIET_SECONDS)
+    assert _spawned_threads_ended(threads_before)
 
 
 @pytest.mark.parametrize("case", _IN_FLIGHT_CASES)
@@ -687,14 +710,6 @@ def test_erase_for_exit_when_paint_dropped_while_earlier_paint_in_flight_does_er
     frame.resize(4)
     refresh = threading.Thread(target=live.refresh, name=_GATED_REFRESH_THREAD, daemon=True)
 
-    def release_once_erased() -> None:
-        # The refresh must reach its landing decision after the erase has begun,
-        # so it drops its frame rather than landing it.
-        deadline = time.monotonic() + _WAIT_SECONDS
-        while not live.erased and time.monotonic() < deadline:
-            time.sleep(_RELEASE_DELAY_SECONDS / 10)
-        frame.release.set()
-
     def signal_once_landing() -> None:
         # The print has rendered its four-row frame and will land it, but has
         # not written yet: the two old rows are still on screen. A refresh then
@@ -703,7 +718,11 @@ def test_erase_for_exit_when_paint_dropped_while_earlier_paint_in_flight_does_er
         if threading.current_thread() is threading.main_thread():
             refresh.start()
             frame.entered.wait(timeout=_WAIT_SECONDS)
-            threading.Thread(target=release_once_erased, daemon=True).start()
+            # The refresh must reach its landing decision after the erase has
+            # begun, so it drops its frame rather than landing it.
+            threading.Thread(
+                target=_release_once_erased, args=(live, frame.release), daemon=True
+            ).start()
             raise_signal(TERMINATION_SIGNAL)
             raise ProcessExit
 

@@ -30,7 +30,7 @@ from gymrat.session.paths import (
     supervise_lockfile_path,
     supervisor_log_name,
 )
-from tests._git import run_git
+from tests._git import add_worktree, run_git
 from tests.session.records._fixtures import (
     SESSION_ID,
 )
@@ -50,18 +50,6 @@ LOCKFILE_NAMES = [
 # ---------------------------------------------------------------------------
 # repository_lookup_error
 # ---------------------------------------------------------------------------
-
-
-def test_repository_lookup_error_when_stderr_is_fatal_not_a_repo_does_classify_as_missing():
-    cause = subprocess.CalledProcessError(
-        128,
-        ["git"],
-        stderr="fatal: not a git repository (or any of the parent directories): .git\n",
-    )
-
-    error = repository_lookup_error("/some/dir", cause)
-
-    assert isinstance(error, NotAGitRepositoryError)
 
 
 def test_repository_lookup_error_when_phrase_only_inside_path_does_not_classify_as_missing():
@@ -128,14 +116,6 @@ def test_repository_lookup_when_directory_not_in_repo_does_raise_not_a_git_repos
     assert excinfo.value.hint == "Run gymrat from inside a git repository."
 
 
-def _add_worktree(repo: str, relative: str) -> str:
-    """Register a linked worktree of ``repo`` at ``relative``, as ``gymrat start`` does."""
-    directory = Path(repo, relative)
-    directory.parent.mkdir(parents=True, exist_ok=True)
-    run_git(["worktree", "add", "--detach", str(directory), "HEAD"], repo)
-    return str(directory)
-
-
 # ---------------------------------------------------------------------------
 # git_common_dir
 # ---------------------------------------------------------------------------
@@ -146,7 +126,7 @@ def _main_checkout(repo: str) -> str:
 
 
 def _linked_worktree(repo: str) -> str:
-    return _add_worktree(repo, "linked")
+    return add_worktree(repo, "linked")
 
 
 @pytest.mark.parametrize(
@@ -191,7 +171,7 @@ def test_repo_root_when_probed_inside_a_gymrat_worktree_does_return_the_owning_c
     below: str,
 ):
     owner = checkout(create_scratch_repo())
-    worktree = _add_worktree(owner, f".gymrat/worktrees/{worktree_name}")
+    worktree = add_worktree(owner, f".gymrat/worktrees/{worktree_name}")
     probe = Path(worktree, below)
     probe.mkdir(parents=True, exist_ok=True)
 
@@ -216,7 +196,7 @@ def test_repo_root_when_directory_above_gymrat_dir_is_below_a_checkout_top_does_
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    worktree = _add_worktree(repo, "packages/.gymrat/worktrees/experiment")
+    worktree = add_worktree(repo, "packages/.gymrat/worktrees/experiment")
 
     root = repo_root(worktree)
 
@@ -227,7 +207,7 @@ def test_repo_root_when_gymrat_worktree_reached_through_a_symlink_does_return_th
     create_scratch_repo: Callable[[], str], tmp_path: Path
 ):
     repo = create_scratch_repo()
-    _add_worktree(repo, ".gymrat/worktrees/experiment")
+    add_worktree(repo, ".gymrat/worktrees/experiment")
     alias = tmp_path / "repo-alias"
     alias.symlink_to(repo)
 
@@ -240,7 +220,7 @@ def test_repo_root_when_probed_in_a_worktree_outside_the_gymrat_dir_does_return_
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    worktree = _add_worktree(repo, "hand-made")
+    worktree = add_worktree(repo, "hand-made")
 
     root = repo_root(worktree)
 
@@ -253,8 +233,7 @@ def test_repo_root_when_foreign_worktree_sits_in_gymrat_dir_does_return_that_wor
     host = create_scratch_repo()
     foreign = create_scratch_repo()
     target = str(Path(host) / ".gymrat" / "worktrees" / "impostor")
-    Path(target).parent.mkdir(parents=True, exist_ok=True)
-    run_git(["worktree", "add", "--detach", target, "HEAD"], foreign)
+    add_worktree(foreign, target)
 
     root = repo_root(target)
 

@@ -5,8 +5,9 @@ its own temp git repository. The worktree lifecycle a ref target goes through is
 tested beside its source in ``tests/sampling/test_worktree_run.py``.
 """
 
+import contextlib
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
 
 import pytest
@@ -18,10 +19,12 @@ from tests._git import (
 )
 from tests._git import run_git as _run_git
 from tests._mode_bits import needs_mode_bits
+from tests._platform import needs_symlinks
 
 # Hint gymrat attaches to every unresolvable target, duplicated here so the test
 # asserts against the same string production emits.
 RESOLVE_TARGET_HINT = "Pass an existing directory, or a git ref that resolves to a commit."
+
 
 # ---------------------------------------------------------------------------
 # resolve_target
@@ -93,14 +96,36 @@ def test_resolve_target_when_input_is_existing_file_does_fall_through_to_ref(rep
     assert result == RefTarget(ref=ref, resolved_sha=sha)
 
 
-def test_resolve_target_when_input_neither_dir_nor_ref_does_raise_with_git_stderr(
-    repo: str,
+def _unknown_ref(_repo: str) -> str:
+    return "banana"
+
+
+def _tree_sha(repo: str) -> str:
+    return _run_git(["rev-parse", "HEAD^{tree}"], repo)
+
+
+def _blob_sha(repo: str) -> str:
+    return _run_git(["rev-parse", "HEAD:README.md"], repo)
+
+
+@pytest.mark.parametrize(
+    "make_ref",
+    [
+        pytest.param(_unknown_ref, id="unknown-ref"),
+        pytest.param(_tree_sha, id="tree"),
+        pytest.param(_blob_sha, id="blob"),
+    ],
+)
+def test_resolve_target_when_input_is_not_a_commit_does_raise_with_git_stderr(
+    repo: str, make_ref: Callable[[str], str]
 ):
+    ref = make_ref(repo)
+
     with pytest.raises(GymratError) as exc_info:
-        resolve_target("nonexistent-ref-xyz", repo)
+        resolve_target(ref, repo)
 
     message = str(exc_info.value)
-    assert "Cannot resolve target 'nonexistent-ref-xyz'" in message
+    assert f"Cannot resolve target '{ref}'" in message
     assert "fatal:" in message
     assert exc_info.value.hint == RESOLVE_TARGET_HINT
 
@@ -113,52 +138,44 @@ def test_resolve_target_when_git_cannot_be_started_does_raise_gymrat_error(tmp_p
     assert exc_info.value.hint == RESOLVE_TARGET_HINT
 
 
-@pytest.mark.parametrize(
-    "rev",
-    [pytest.param("HEAD^{tree}", id="tree"), pytest.param("HEAD:README.md", id="blob")],
-)
-def test_resolve_target_when_input_is_non_commit_object_sha_does_reject(repo: str, rev: str):
-    sha = _run_git(["rev-parse", rev], repo)
-
-    with pytest.raises(GymratError, match=r"Cannot resolve target"):
-        resolve_target(sha, repo)
-
-
-@needs_mode_bits
-def test_resolve_target_when_probe_hits_symlink_loop_does_raise_resolve_error(
-    repo: str, tmp_path: Path
-):
+@contextlib.contextmanager
+def _symlink_loop(tmp_path: Path) -> Generator[Path]:
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
-
-    with pytest.raises(GymratError) as exc_info:
-        resolve_target(str(loop), repo)
-
-    message = str(exc_info.value)
-    assert f"Cannot resolve target '{loop}'" in message
-    assert "fatal:" not in message
-    assert exc_info.value.hint == RESOLVE_TARGET_HINT
+    yield loop
 
 
-@pytest.fixture
-def unsearchable_target(tmp_path: Path) -> Iterator[Path]:
-    """A directory whose parent has no permissions, made searchable again on teardown."""
+@contextlib.contextmanager
+def _unsearchable_parent(tmp_path: Path) -> Generator[Path]:
     parent = tmp_path / "parent"
     target = parent / "target"
     target.mkdir(parents=True)
     parent.chmod(0o000)
-    yield target
-    parent.chmod(0o700)
+    try:
+        yield target
+    finally:
+        parent.chmod(0o700)
 
 
-@needs_mode_bits
-def test_resolve_target_when_probe_hits_unsearchable_parent_does_raise_resolve_error(
-    repo: str, unsearchable_target: Path
+@pytest.fixture(
+    params=[
+        pytest.param(_symlink_loop, id="symlink-loop", marks=needs_symlinks),
+        pytest.param(_unsearchable_parent, id="unsearchable-parent", marks=needs_mode_bits),
+    ]
+)
+def stat_failing_target(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Path]:
+    """A path whose stat fails with an errno other than ENOENT or ENOTDIR."""
+    with request.param(tmp_path) as target:
+        yield target
+
+
+def test_resolve_target_when_path_stat_fails_does_raise_resolve_error(
+    repo: str, stat_failing_target: Path
 ):
     with pytest.raises(GymratError) as exc_info:
-        resolve_target(str(unsearchable_target), repo)
+        resolve_target(str(stat_failing_target), repo)
 
     message = str(exc_info.value)
-    assert f"Cannot resolve target '{unsearchable_target}'" in message
+    assert f"Cannot resolve target '{stat_failing_target}'" in message
     assert "fatal:" not in message
     assert exc_info.value.hint == RESOLVE_TARGET_HINT

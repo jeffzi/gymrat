@@ -16,6 +16,7 @@ from tests.session.records._wire import (
     COMMAND_RECORD_SUCCESS,
     COMMAND_RECORD_WITH_TRACEPARENT,
     COMMITTED_KEEP_RECORD,
+    CONFIRM,
     DISCARD_RECORD,
     FINALIZE_RECORD,
     HOOK_RECORD,
@@ -26,6 +27,7 @@ from tests.session.records._wire import (
     config_with,
     omitting,
     patching,
+    verdict_with,
 )
 
 # ---------------------------------------------------------------------------
@@ -72,11 +74,8 @@ from tests.session.records._wire import (
                 {
                     "metrics": {
                         "total_ms": {
-                            "delta_pct": -7.2,
-                            "verdict": "improved",
+                            **omitting(omitting(METRIC_VERDICT, "p"), "noise_pct"),
                             "method": "band",
-                            "gating": True,
-                            "confirmed": False,
                         }
                     }
                 },
@@ -85,31 +84,13 @@ from tests.session.records._wire import (
         ),
         pytest.param(
             patching(
-                ITERATION_RECORD,
-                {
-                    "metrics": {
-                        "total_ms": {**METRIC_VERDICT, "delta_pct": None, "verdict": "no-signal"}
-                    },
-                    "primary": {"kind": "geomean", "delta_pct": None},
-                    "outcome": "no-signal",
-                },
+                verdict_with(delta_pct=None, verdict="no-signal"),
+                {"primary": {"kind": "geomean", "delta_pct": None}, "outcome": "no-signal"},
             ),
             id="iteration-nulled-deltas",
         ),
         pytest.param(
-            patching(
-                ITERATION_RECORD,
-                {
-                    "confirm": {
-                        "ran": True,
-                        "filtered": ["total_ms"],
-                        "samples": {
-                            "experiment": [{"total_ms": 14120}],
-                            "baseline": [{"total_ms": 15170}],
-                        },
-                    }
-                },
-            ),
+            patching(ITERATION_RECORD, {"confirm": CONFIRM}),
             id="iteration-reran-to-confirm",
         ),
         pytest.param(
@@ -141,7 +122,9 @@ from tests.session.records._wire import (
     ],
 )
 def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[str, object]):
-    assert record_to_wire(parse_record(record)) == record
+    wire = record_to_wire(parse_record(record))
+
+    assert wire == record
 
 
 # ---------------------------------------------------------------------------
@@ -150,19 +133,21 @@ def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[
 
 
 @pytest.mark.parametrize(
-    "line",
+    ("line", "literal"),
     [
-        pytest.param('{"a":NaN}', id="nan-literal"),
-        pytest.param('{"a":Infinity}', id="infinity-literal"),
-        pytest.param('{"a":-Infinity}', id="negative-infinity-literal"),
-        pytest.param('[{"a":[NaN]}]', id="nan-literal-nested-in-an-array"),
+        pytest.param('{"a":NaN}', "NaN", id="nan-literal"),
+        pytest.param('{"a":Infinity}', "Infinity", id="infinity-literal"),
+        pytest.param('{"a":-Infinity}', "-Infinity", id="negative-infinity-literal"),
+        pytest.param('[{"a":[NaN]}]', "NaN", id="nan-literal-nested-in-an-array"),
     ],
 )
-def test_decode_log_line_when_a_number_is_nan_or_infinity_does_raise_naming_it_invalid_json(
-    line: str,
+def test_decode_log_line_when_a_number_is_nan_or_infinity_does_raise_naming_the_literal(
+    line: str, literal: str
 ):
-    with pytest.raises(NonFiniteNumberError, match="non-finite number, which is not valid JSON"):
+    with pytest.raises(NonFiniteNumberError) as excinfo:
         decode_log_line(line)
+
+    assert str(excinfo.value) == f"{literal} is a non-finite number, which is not valid JSON"
 
 
 @pytest.mark.parametrize(
@@ -199,14 +184,6 @@ def _session_log_schema() -> dict[str, Any]:
     return SESSION_LOG_ADAPTER.json_schema()
 
 
-def test_json_schema_when_generated_does_emit_keep_checks_stdout_bytes_as_plain_integer():
-    defs = _session_log_schema()["$defs"]
-
-    stdout_bytes = defs["KeepChecks"]["properties"]["stdout_bytes"]
-
-    assert (stdout_bytes.get("type"), stdout_bytes.get("anyOf")) == ("integer", None)
-
-
 def test_json_schema_when_generated_does_type_null_only_on_the_delta_pct_fields():
     defs = _session_log_schema()["$defs"]
 
@@ -226,15 +203,14 @@ def test_json_schema_when_generated_does_type_null_only_on_the_delta_pct_fields(
 
 
 def test_json_schema_when_generated_does_carry_descriptions_on_every_field():
-    schema = _session_log_schema()
-    defs = schema.get("$defs", {})
+    defs = _session_log_schema()["$defs"]
 
-    missing: list[str] = []
-    for model_name, model_schema in defs.items():
-        props = model_schema.get("properties", {})
-        for field_name, field_schema in props.items():
-            if "description" not in field_schema:
-                missing.append(f"{model_name}.{field_name}")
+    missing = [
+        f"{model}.{field}"
+        for model, definition in defs.items()
+        for field, prop in definition.get("properties", {}).items()
+        if "description" not in prop
+    ]
 
     assert not missing, f"Fields without description: {missing}"
 

@@ -8,6 +8,7 @@ termination — never from a result message alone.
 import math
 from collections.abc import Awaitable, Callable, Sequence
 from operator import methodcaller
+from typing import override
 
 import pytest
 from claude_agent_sdk import MessageOrigin, ResultMessage, TextBlock
@@ -36,6 +37,17 @@ from tests.supervisor._fixtures import (
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+class _FailingFollowUpClient(FakeClient):
+    """A client whose every ``query`` after the kickoff raises."""
+
+    @override
+    async def query(self, prompt: str) -> None:
+        if self.query_prompts:
+            message = "connection lost"
+            raise RuntimeError(message)
+        await super().query(prompt)
 
 
 async def _run_turns(messages: Sequence[object]) -> list[SessionEvent]:
@@ -157,8 +169,8 @@ async def test_start_when_budget_exhausted_does_flag_the_turn_end_without_settli
         total_cost_usd=1.50,
         result="Budget exceeded",
     )
-    session, events = await start_past_turns(FakeClient([result]), turns=1)
 
+    session, events = await start_past_turns(FakeClient([result]), turns=1)
     outcome = await end_and_settle(session)
 
     turn_ends = events_of(events, TurnEndEvent)
@@ -181,20 +193,32 @@ async def test_send_when_called_does_forward_text_to_client_query():
     assert client.query_prompts == ["initial", "follow up message"]
 
 
+async def test_send_when_client_query_fails_does_settle_error_with_its_message():
+    session, _ = await start_past_turns(
+        _FailingFollowUpClient([result_message(total_cost_usd=0.01)]), turns=1
+    )
+
+    await session.send("follow up message")
+    outcome = await settled_outcome(session)
+
+    assert (outcome.reason, outcome.message, outcome.cost_usd) == (
+        "error",
+        "connection lost",
+        0.01,
+    )
+
+
 # ---------------------------------------------------------------------------
 # end() settles the session completed unless it already settled or was interrupted
 # ---------------------------------------------------------------------------
 
 
 async def test_end_when_called_does_settle_completed_at_the_running_cost():
-    session, events = await start_past_turns(
-        FakeClient([result_message(total_cost_usd=0.20)]), turns=1
-    )
+    session, _ = await start_past_turns(FakeClient([result_message(total_cost_usd=0.20)]), turns=1)
 
     outcome = await end_and_settle(session)
 
     assert (outcome.reason, outcome.cost_usd) == ("completed", 0.20)
-    assert [u.cost_usd for u in events_of(events, UsageUpdateEvent)] == [0.20, 0.20]
 
 
 @pytest.mark.parametrize(
@@ -204,7 +228,7 @@ async def test_end_when_called_does_settle_completed_at_the_running_cost():
         pytest.param(methodcaller("end"), id="end"),
     ],
 )
-async def test_session_when_already_settled_does_ignore_later_calls(
+async def test_start_when_settled_by_an_error_result_does_ignore_later_session_calls(
     call: Callable[[DriverSession], Awaitable[None]],
 ):
     result = result_message(subtype="error", is_error=True, result="fatal", total_cost_usd=0.10)

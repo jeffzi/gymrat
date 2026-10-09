@@ -35,7 +35,8 @@ def measured_metric(
     """One metric of a single-target run: what it measured, and how steady it was.
 
     Args:
-        median: The metric's median.
+        median: The metric's median. ``None`` means the target reported no
+            value for the metric.
         spread: The run-to-run spread as a percentage of the median. ``None``
             pins the single-sample case, where there is no jitter to report.
         short_name: The metric's display name.
@@ -65,7 +66,23 @@ def create_measurement_result(
     worktrees_left_behind: Sequence[WorktreeRemovalFailure] = (),
     worktree_prune_error: str | None = None,
 ) -> MeasurementResult:
-    """A measurement of a clean single-target run with no metrics."""
+    """A measurement of a single-target run, clean and without metrics unless overridden.
+
+    Args:
+        label: The target's display label.
+        samples: How many samples the run collected.
+        adapter: The adapter that parsed the bench output.
+        metrics: The measured metrics keyed by name; ``None`` means none.
+        rounds: What each round reported, as metric name to value, in run order.
+        config_kinds: The config's ``kinds`` section, when it has one.
+        worktrees_removed: How many worktrees cleanup removed.
+        worktrees_left_behind: Worktrees cleanup could not remove.
+        worktree_prune_error: Why ``git worktree prune`` failed; ``None`` when
+            it succeeded.
+
+    Returns:
+        The measurement result.
+    """
     return MeasurementResult(
         label=label,
         samples=samples,

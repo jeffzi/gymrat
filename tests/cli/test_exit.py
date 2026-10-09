@@ -15,19 +15,18 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
-from unittest.mock import Mock, call
+from typing import Any, override
 
 import pytest
 import typer
 
 from gymrat.adapters import AdapterError
-from gymrat.cli.app import app
 from gymrat.cli.console import set_color_override, set_debug_mode
 from gymrat.cli.exit import (
     BUGS_URL,
     exit_with_error,
     format_cli_error,
+    run_cli,
     write_and_flush,
     write_stdout,
 )
@@ -35,10 +34,6 @@ from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from tests._process_helpers import run_with_closed_reader
 from tests._rich import unwrap_panel
 from tests._streams import FakeStream, RaisingStream
-from tests.cli._session import (
-    runner,
-    stub_resolve,
-)
 
 # Execs ``argv[1:]`` with the file-size limit at zero, so every write the new
 # program makes to a regular file fails with EFBIG. Bytecode caching is off so
@@ -96,12 +91,25 @@ def test_constants_when_checked_does_match_the_shipped_contract():
 # ---------------------------------------------------------------------------
 
 
+class _FlushRecordingStream(io.StringIO):
+    """A text stream that records what it held at each flush."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushed_with: list[str] = []
+
+    @override
+    def flush(self) -> None:
+        self.flushed_with.append(self.getvalue())
+        super().flush()
+
+
 def test_write_and_flush_when_called_does_write_then_flush():
-    stream = Mock()
+    stream = _FlushRecordingStream()
 
     write_and_flush(stream, "hello")
 
-    assert stream.method_calls == [call.write("hello"), call.flush()]
+    assert stream.flushed_with == ["hello"]
 
 
 #: Lines each flood probe prints: 16384 lines of 64 bytes overflow any pipe buffer.
@@ -165,21 +173,20 @@ def test_write_stdout_when_pipe_closed_does_return_without_raising(
     write_stdout("first line\n")
 
 
-@pytest.mark.usefixtures("repo")
 def test_run_cli_when_body_raises_broken_pipe_does_exit_two_with_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    stub_resolve(monkeypatch)
+    stderr = io.StringIO()
+    monkeypatch.setattr("sys.stderr", stderr)
 
-    async def _explode(*_args: object, **_kwargs: object) -> None:
+    async def _explode() -> None:
         raise BrokenPipeError(errno.EPIPE, "Broken pipe")
 
-    monkeypatch.setattr("gymrat.measure.measure", _explode)
+    with pytest.raises(typer.Exit) as exc:
+        run_cli(_explode)
 
-    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
-    assert "Broken pipe" in unwrap_panel(result.stderr)
+    assert exc.value.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert "Broken pipe" in unwrap_panel(stderr.getvalue())
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no file-size limit")

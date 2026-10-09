@@ -10,7 +10,7 @@ import contextlib
 import errno
 import os
 import sys
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from pathlib import Path
 from typing import Any, override
 from unittest.mock import create_autospec
@@ -18,10 +18,12 @@ from unittest.mock import create_autospec
 import pytest
 from typer.testing import CliRunner
 
+from gymrat.compare import compare
 from gymrat.config import KindEntry, MetricEntry, ResolvedConfig, resolve_config
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import start_session
 from gymrat.measure import MeasureOptions
+from gymrat.progress_events import ProgressEvent
 from gymrat.report.types import ComparisonResult, MeasurementResult
 from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import CommandRecord, SessionLogRecord, SessionRecord
@@ -29,8 +31,10 @@ from tests._config import resolved_config
 from tests._git import commit_all
 from tests._streams import RaisingStream
 from tests.config._toml import write_config
-from tests.loop._probe import install_measure
+from tests.loop._probe import BASELINE_SAMPLES, MeasureRecorder, install_measure, measurement
 from tests.loop._settle import (
+    CHECKS,
+    edit_experiment,
     keep_iteration,
     start_with,
 )
@@ -38,6 +42,7 @@ from tests.report._comparisons import create_comparison_result
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     append_records,
+    baseline_record,
     committed_keep,
     iteration_record,
     log_records,
@@ -191,11 +196,13 @@ def stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | Non
         result: What the fake hands back; a comparison with no regressions when ``None``.
     """
     handed_back = create_comparison_result() if result is None else result
+    monkeypatch.setattr(
+        "gymrat.compare.compare", create_autospec(compare, return_value=handed_back)
+    )
 
-    async def fake_compare(_options: object) -> ComparisonResult:
-        return handed_back
 
-    monkeypatch.setattr("gymrat.compare.compare", fake_compare)
+def leave_as_is(_repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
+    """Arrange nothing: the no-op row of an ``(repo, monkeypatch)`` arrange table."""
 
 
 def never_tty(_stream: object) -> bool:
@@ -223,6 +230,56 @@ def write_settled_session(repo: str, *trailing_records: SessionLogRecord) -> Non
         repo, session_record(), (iteration_record(seq=1), committed_keep(1), *trailing_records)
     )
     write_bench_config(repo)
+
+
+def open_probe_session(repo: str, **config: object) -> None:
+    """Open a session on a recorded baseline and write the bench config, ready for probe.
+
+    Args:
+        repo: The repository the session opens in.
+        **config: Extra ``gymrat.toml`` keys written beside the bench command.
+    """
+    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
+    write_bench_config(repo, **config)
+
+
+def stub_probe_measure(
+    monkeypatch: pytest.MonkeyPatch, progress: Sequence[ProgressEvent] = ()
+) -> MeasureRecorder:
+    """Replace the measurement engine with a recorder answering a metric-lines measurement.
+
+    Args:
+        monkeypatch: The fixture the engine is patched through.
+        progress: Events each call reports through the progress callback it was handed.
+
+    Returns:
+        The installed recorder.
+    """
+    return install_measure(monkeypatch, measurement(adapter="metric-lines"), progress=progress)
+
+
+def start_edited_session(
+    root: str,
+    history: tuple[SessionLogRecord, ...] = (iteration_record(seq=1),),
+    **config: object,
+) -> None:
+    """Open a session on ``history``, edit the experiment, and write the config.
+
+    Args:
+        root: The repository root.
+        history: The records logged after the session header; one unsettled
+            iteration by default.
+        **config: Extra ``gymrat.toml`` entries beside the bench.
+    """
+    start_with(root, history)
+    edit_experiment(root)
+    write_bench_config(root, **config)
+
+
+def open_unedited_session(root: str) -> None:
+    """Open a session with one unsettled iteration and configured checks, and edit nothing."""
+    start_with(root, (iteration_record(seq=1),))
+    write_bench_config(root, checks=CHECKS)
 
 
 def open_session(repo: str) -> None:

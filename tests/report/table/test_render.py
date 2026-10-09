@@ -1,8 +1,7 @@
 """Tests for drawing a planned table body.
 
 These pin the rules a planned body draws between a header and its rows and ahead
-of an aggregate row, including two rules in a row, and that bracketed text cells
-render literally.
+of an aggregate row, including two rules in a row and a rule closing the body.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ from rich.text import Text
 
 from gymrat.report.table.render import (
     AggregateLine,
-    GroupLine,
     HeaderLine,
     MetricLine,
     RuleLine,
@@ -30,12 +28,10 @@ if TYPE_CHECKING:
 
 
 def _text_cells(line: BodyLine[str, str]) -> tuple[Text, ...]:
-    """Two plain ``Text`` cells for a header, group, metric, or aggregate line."""
+    """Two plain ``Text`` cells for a header, metric, or aggregate line."""
     match line:
         case HeaderLine():
             return (Text("metric"), Text("value"))
-        case GroupLine(label=label):
-            return (Text(label), Text(""))
         case MetricLine(row=row):
             return (Text(row), Text("1"))
         case AggregateLine(label=label, cell=cell):
@@ -80,26 +76,9 @@ def _text_cells(line: BodyLine[str, str]) -> tuple[Text, ...]:
             ["metric   │ value", "─────────┼───────"],
             id="rule-closing-the-body",
         ),
-        pytest.param(
-            [
-                HeaderLine(),
-                RuleLine(),
-                GroupLine("[bold]"),
-                MetricLine("[dim]"),
-                AggregateLine("geomean", "-3.2%"),
-            ],
-            [
-                "metric   │ value",
-                "─────────┼───────",
-                "[bold]   │",
-                "[dim]    │ 1",
-                "geomean  │ -3.2%",
-            ],
-            id="bracketed-text-cells-render-literally",
-        ),
     ],
 )
-def test_render_body_when_rules_placed_does_draw_each_between_its_rows(
+def test_render_body_when_rules_placed_does_draw_one_rule_line_per_rule(
     body: list[BodyLine[str, str]], expected: list[str]
 ):
     lines = render_body(body, [8, 6], _text_cells, color=False)

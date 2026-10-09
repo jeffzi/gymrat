@@ -14,19 +14,17 @@ POSIX-only: the flow leans on real git worktrees and bench subprocesses,
 matching the other subprocess integration suites.
 """
 
-import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
-
-import pytest
 
 from gymrat.session.paths import lockfile_path, session_jsonl_path
 from gymrat.supervisor.events import FollowUpEvent, SessionEvent
 from gymrat.supervisor.supervise import supervise
 from tests._cli import run_cli
 from tests._lock import hold_lock
-from tests.loop._bench import commit_project, tune_experiment
+from tests._platform import needs_posix_worktrees
+from tests.loop._bench import LONG_RUN_TIMEOUT, commit_project, tune_experiment
 from tests.supervisor._fixtures import (
     make_context,
     make_launch,
@@ -38,10 +36,7 @@ from tests.supervisor._mock_driver import ActionStep, CostStep, TurnEndStep, cre
 if TYPE_CHECKING:
     from filelock import FileLock
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees and gating")
-
-#: Generous budget: every action creates real worktrees and spawns real benches.
-LONG_RUN_TIMEOUT = 180
+pytestmark = needs_posix_worktrees
 
 #: The latency the edit tunes to — an improvement over the untuned baseline.
 TUNED_LATENCY = 90
@@ -109,7 +104,6 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
     assert result.outcome.reason == "completed", result.outcome.message
     assert result.ended_by == "session"
     assert result.outcome.cost_usd == 0.42
-
     log_lines = read_log_lines(log_path)
     assert log_lines[0]["type"] == "launch"
     assert any(line["type"] == "usage_update" for line in log_lines[1:])
@@ -118,7 +112,6 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
     assert [
         (line["action"], line.get("reason")) for line in log_lines if line["type"] == "follow_up"
     ] == [("waiting", None), ("replied", None), ("ended", "finished")]
-
     # The session log the CLI left on disk holds the whole run, open to close.
     session_records = read_log_lines(session_jsonl_path(repo))
     record_types = {record["type"] for record in session_records}

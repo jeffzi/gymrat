@@ -19,13 +19,14 @@ from gymrat.loop.finalize import (
     finalize_session,
 )
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
-from gymrat.session.records import FinalizeRecord, SessionLogRecord
+from gymrat.session.records import FinalizeRecord
 from tests._git import commit_all, head_of, list_worktree_dirs
 from tests._git import run_git as _git
 from tests.loop._settle import (
     capture_error,
     commit_and_keep,
     commit_iteration,
+    settling_record_of,
 )
 from tests.session.records._fixtures import (
     append_records,
@@ -36,97 +37,56 @@ from tests.session.records._fixtures import (
     stop_record,
 )
 
-
-def _last_record(root: str) -> SessionLogRecord:
-    """The record ``root``'s log ends on, failing when the log is empty."""
-    records = log_records(root)
-    assert records, f"expected a record in {session_jsonl_path(root)}"
-    return records[-1]
-
-
 # ---------------------------------------------------------------------------
-# when nothing has been kept
+# refusals: nothing kept, an unsettled iteration, uncommitted work, unkept commits
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_session_when_nothing_kept_does_refuse_creating_no_branch_and_no_record(
-    session_repo: str,
+def _leave_nothing_kept(_root: str) -> None:
+    """Leave the fresh session as it is, with nothing kept."""
+
+
+def _leave_unsettled(root: str) -> None:
+    """Keep one iteration, then log a second that is neither kept nor discarded."""
+    commit_and_keep(root, 1, "cache the regex")
+    append_records(root, iteration_record(seq=2))
+
+
+def _leave_dirty(root: str) -> None:
+    """Keep one iteration, then leave uncommitted work in the experiment worktree."""
+    commit_and_keep(root, 1, "cache the regex")
+    (Path(experiment_worktree_dir(root)) / "scratch.txt").write_text("notes\n", encoding="utf-8")
+
+
+def _commit_ahead(root: str) -> None:
+    """Keep one iteration, then commit past it in the experiment worktree."""
+    commit_and_keep(root, 1, "cache the regex")
+    commit_all(experiment_worktree_dir(root), "extra commit", file="extra.txt", content="extra\n")
+
+
+@pytest.mark.parametrize(
+    ("arrange", "reason", "hint_words"),
+    [
+        pytest.param(_leave_nothing_kept, "nothing-kept", ("keep",), id="nothing-kept"),
+        pytest.param(
+            _leave_unsettled, "unsettled", ("keep", "discard"), id="last-iteration-unsettled"
+        ),
+        pytest.param(_leave_dirty, "dirty-worktree", ("keep",), id="experiment-worktree-dirty"),
+        pytest.param(_commit_ahead, "unkept-commits", ("keep",), id="head-ahead-of-last-keep"),
+    ],
+)
+def test_finalize_session_when_not_ready_does_refuse_leaving_no_trace(
+    session_repo: str, arrange: Callable[[str], None], reason: str, hint_words: tuple[str, ...]
 ):
+    arrange(session_repo)
     before = len(log_records(session_repo))
 
     error = capture_error(lambda: finalize_session(session_repo))
 
-    assert error.reason == "nothing-kept"
+    assert error.reason == reason
     assert error.hint is not None
-    assert re.search(r"keep", error.hint, re.IGNORECASE)
+    assert [word for word in hint_words if not re.search(word, error.hint, re.IGNORECASE)] == []
     assert _git(["branch", "--list", "*-final"], session_repo) == ""
-    assert len(log_records(session_repo)) == before
-
-
-# ---------------------------------------------------------------------------
-# when the last iteration is neither kept nor discarded
-# ---------------------------------------------------------------------------
-
-
-def test_finalize_session_when_last_iteration_unsettled_does_refuse_writing_no_record(
-    session_repo: str,
-):
-    commit_and_keep(session_repo, 1, "cache the regex")
-    append_records(session_repo, iteration_record(seq=2))
-    before = len(log_records(session_repo))
-
-    error = capture_error(lambda: finalize_session(session_repo))
-
-    assert error.reason == "unsettled"
-    assert error.hint is not None
-    assert re.search(r"keep", error.hint, re.IGNORECASE)
-    assert re.search(r"discard", error.hint, re.IGNORECASE)
-    assert len(log_records(session_repo)) == before
-
-
-# ---------------------------------------------------------------------------
-# when the experiment worktree carries uncommitted work
-# ---------------------------------------------------------------------------
-
-
-def test_finalize_session_when_experiment_worktree_dirty_does_refuse_writing_no_record(
-    session_repo: str,
-):
-    commit_and_keep(session_repo, 1, "cache the regex")
-    (Path(experiment_worktree_dir(session_repo)) / "scratch.txt").write_text(
-        "notes\n", encoding="utf-8"
-    )
-    before = len(log_records(session_repo))
-
-    error = capture_error(lambda: finalize_session(session_repo))
-
-    assert error.reason == "dirty-worktree"
-    assert error.hint is not None
-    assert re.search(r"keep", error.hint, re.IGNORECASE)
-    assert re.search(r"discard", error.hint, re.IGNORECASE)
-    assert len(log_records(session_repo)) == before
-
-
-# ---------------------------------------------------------------------------
-# when the experiment worktree HEAD is ahead of the last kept commit
-# ---------------------------------------------------------------------------
-
-
-def test_finalize_session_when_experiment_head_ahead_of_last_keep_does_refuse_hinting_keep_or_discard(
-    session_repo: str,
-):
-    commit_and_keep(session_repo, 1, "cache the regex")
-    commit_all(
-        experiment_worktree_dir(session_repo), "extra commit", file="extra.txt", content="extra\n"
-    )
-    before = len(log_records(session_repo))
-
-    error = capture_error(lambda: finalize_session(session_repo))
-
-    assert error.reason == "unkept-commits"
-    assert error.hint is not None
-    assert re.search(r"keep", error.hint, re.IGNORECASE)
-    assert re.search(r"discard", error.hint, re.IGNORECASE)
     assert len(log_records(session_repo)) == before
 
 
@@ -148,7 +108,7 @@ def test_finalize_session_when_worktree_gone_and_unkept_commits_exist_does_final
 
     squash_tree = _git(["rev-parse", f"{result.record.branch}^{{tree}}"], session_repo)
     assert squash_tree == last_kept_tree
-    assert _last_record(session_repo) == result.record
+    assert settling_record_of(session_repo) == result.record
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +187,7 @@ def test_finalize_session_when_committed_keeps_exist_does_close_the_session_on_o
     assert _git(["rev-parse", final_branch], kept_repo) == record.commit
     assert (record.type, record.branch) == ("finalize", final_branch)
     assert record.at > 0
-    assert _last_record(kept_repo) == record
+    assert settling_record_of(kept_repo) == record
     assert "2 kept iterations" in subject
     assert body.split("\n") == MESSAGES
     assert record.message == f"{subject}\n\n{body}"
@@ -321,7 +281,7 @@ def test_finalize_session_when_worktree_removal_refused_does_close_the_session(
 
     assert experiment in result.report
     assert re.search(r"git worktree remove", result.report, re.IGNORECASE)
-    assert _last_record(kept_repo) == result.record
+    assert settling_record_of(kept_repo) == result.record
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +294,6 @@ def test_finalize_session_when_stopped_and_has_kept_work_does_close_the_session(
 
     result = finalize_session(kept_repo)
 
-    record = _last_record(kept_repo)
+    record = settling_record_of(kept_repo)
     assert isinstance(record, FinalizeRecord)
     assert record == result.record

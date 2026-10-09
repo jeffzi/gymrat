@@ -197,6 +197,23 @@ def wait_for_worktrees(repo_dir: str, count: int, timeout_s: float = 30.0) -> li
         time.sleep(0.05)
 
 
+def add_worktree(repo_dir: str, directory: str) -> str:
+    """Register a linked worktree of a repo, detached at its ``HEAD``.
+
+    Args:
+        repo_dir: The repository the worktree is registered with.
+        directory: Where the worktree goes, absolute or relative to ``repo_dir``;
+            missing parent directories are created.
+
+    Returns:
+        The worktree's directory.
+    """
+    worktree = Path(repo_dir, directory)
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    run_git(["worktree", "add", "--detach", str(worktree), "HEAD"], repo_dir)
+    return str(worktree)
+
+
 def register_absent_worktree(repo_dir: str) -> str:
     """Register a worktree of a repo the way a user would, then delete its dir.
 
@@ -206,9 +223,8 @@ def register_absent_worktree(repo_dir: str) -> str:
     Returns:
         The registered worktree's directory, which no longer exists.
     """
-    directory = str(Path(repo_dir).resolve() / "absent-user-worktree")
-    run_git(["worktree", "add", "--detach", directory, "HEAD"], repo_dir)
-    shutil.rmtree(directory, ignore_errors=True)
+    directory = add_worktree(repo_dir, str(Path(repo_dir).resolve() / "absent-user-worktree"))
+    shutil.rmtree(directory)
     return directory
 
 

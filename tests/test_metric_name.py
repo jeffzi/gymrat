@@ -68,7 +68,7 @@ def test_parse_when_name_breaks_the_grammar_does_raise_the_rule_error_naming_it(
     with pytest.raises(rule_error) as excinfo:
         parse(raw_name)
 
-    assert raw_name in str(excinfo.value)
+    assert str(excinfo.value).endswith(f": {raw_name}")
 
 
 def test_format_inline_when_name_has_group_and_kind_does_dim_the_group_and_kind():

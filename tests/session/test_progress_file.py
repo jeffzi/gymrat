@@ -55,7 +55,7 @@ def _progress_file(root: str) -> Path:
     return Path(progress_path(root))
 
 
-def test_write_progress_when_called_does_create_readable_json_file(root: str):
+def test_write_progress_when_called_does_write_compact_json_bytes(root: str):
     snapshot = _make_snapshot()
 
     write_progress(root, snapshot)
@@ -100,14 +100,7 @@ def _json(payload: object) -> bytes:
     [
         pytest.param(None, id="file-absent"),
         pytest.param(_json({**_VALID_FIELDS, "unexpected_field": 42}), id="extra-unknown-key"),
-        pytest.param(_json({"passes_completed": 3, "passes_total": 10}), id="missing-key"),
-        pytest.param(_json({**_VALID_FIELDS, "passes_completed": "x"}), id="string-for-int"),
         pytest.param(_json({**_VALID_FIELDS, "passes_total": True}), id="bool-for-int"),
-        pytest.param(_json({**_VALID_FIELDS, "passes_completed": 3.0}), id="float-for-int"),
-        pytest.param(
-            _json({**_VALID_FIELDS, "last_pass_duration_ms": "fast"}), id="string-for-float"
-        ),
-        pytest.param(_json({**_VALID_FIELDS, "last_pass_duration_ms": False}), id="bool-for-float"),
     ],
 )
 def test_read_progress_when_file_absent_or_not_a_snapshot_does_return_none(

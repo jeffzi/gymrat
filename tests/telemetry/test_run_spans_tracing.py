@@ -17,20 +17,13 @@ from gymrat.supervisor.events import (
     ToolEndEvent,
     ToolStartEvent,
     UsageUpdateEvent,
-    combine_observers,
 )
 from gymrat.telemetry.provider import start_span
 from gymrat.telemetry.run_spans import TracingState, create_run_span_observer, setup_tracing
 from tests._logging import unhandled_logging
 from tests.session.records._fixtures import SESSION_ID
-from tests.supervisor._fixtures import (
-    collecting_observer,
-    make_launch,
-    make_prompt,
-    make_turn_end,
-    noop_observer,
-)
-from tests.telemetry._fixtures import memory_tracing
+from tests.supervisor._fixtures import make_launch, make_prompt, make_turn_end, noop_observer
+from tests.telemetry._fixtures import disable_otel_sdk, memory_tracing
 
 SESSION = "test-tracing-observer"
 
@@ -125,14 +118,10 @@ SESSION = "test-tracing-observer"
 def test_create_run_span_observer_when_event_observed_does_mirror_only_the_run_milestones(
     event: SessionEvent, mirrored: list[tuple[str, dict[str, object], int]]
 ):
-    with memory_tracing(SESSION) as exporter:
-        span = start_span("run")
-        span.__enter__()
+    with memory_tracing(SESSION) as exporter, start_span("run") as span:
         observer = create_run_span_observer(span)
 
         observer(event)
-
-        span.__exit__(None, None, None)
 
     finished = exporter.get_finished_spans()
     assert [(e.name, dict(e.attributes or {}), e.timestamp) for e in finished[0].events] == mirrored
@@ -149,22 +138,17 @@ class _BrokenSpan:
         raise RuntimeError(msg)
 
 
-def test_create_run_span_observer_when_mirror_fails_in_a_chain_does_contain_the_failure(
+def test_create_run_span_observer_when_mirror_fails_does_warn_instead_of_raising(
     capsys: pytest.CaptureFixture[str],
 ):
-    later = collecting_observer()
-    chain = combine_observers(
-        # pyrefly: ignore[bad-argument-type] -- _BrokenSpan stands in for Span with add_event only
-        create_run_span_observer(_BrokenSpan()),
-        later.observer,
-    )
+    # pyrefly: ignore[bad-argument-type] -- _BrokenSpan stands in for Span with add_event only
+    observer = create_run_span_observer(_BrokenSpan())
     event = make_turn_end(at=8_000_000_000, text="done", cost_usd=0.05)
 
     with unhandled_logging(), pytest.warns(RuntimeWarning, match="boom") as caught:
-        chain(event)
+        observer(event)
 
     assert len(caught) == 1
-    assert later.events == [event]
     assert capsys.readouterr().err == ""
 
 
@@ -180,8 +164,7 @@ def test_create_run_span_observer_when_mirror_fails_in_a_chain_does_contain_the_
 def test_setup_tracing_when_sdk_disabled_and_endpoint_set_does_hold_no_span(
     monkeypatch: pytest.MonkeyPatch, resumed: bool
 ):
-    monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    disable_otel_sdk(monkeypatch)
     prompt = make_prompt()
     observer = noop_observer()
 

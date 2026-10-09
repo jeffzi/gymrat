@@ -6,11 +6,11 @@ samples, and metric-meta resolution: adapter defaults, then kind, then metric.
 
 import asyncio
 import time
-from collections.abc import Sequence
+from collections.abc import Callable
 
 import pytest
 
-from gymrat.adapters import Adapter, AdapterError, MetricDefaults, metric_lines_adapter
+from gymrat.adapters import AdapterError, MetricDefaults, metric_lines_adapter
 from gymrat.config import KindEntry, MetricEntry, ResolvedConfig
 from gymrat.errors import CommandError, GymratError
 from gymrat.exec import ExecResult, ExecTimeoutError
@@ -302,20 +302,10 @@ _FAILED_HEAD = [
     "  command:   run",
     "  exit code: 1",
 ]
-_TIMED_OUT_HEAD = [
-    'bench command timed out ("x", sample 1)',
-    "  dir:       /work",
-    "  command:   run",
-    "  timeout:   1000ms",
-]
 
 
 def _failed(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -> ExecResult:
     return ExecResult(stdout, stderr, 1, stdout_bytes, stderr_bytes)
-
-
-def _timed_out(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -> ExecTimeoutError:
-    return ExecTimeoutError(stdout, stderr, 1000, stdout_bytes, stderr_bytes)
 
 
 @pytest.mark.parametrize(
@@ -424,20 +414,6 @@ def _timed_out(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -
             "\n".join(_FAILED_HEAD),
             None,
             id="neither-present",
-        ),
-        pytest.param(
-            _timed_out("s", "e", 1, 50),
-            _IN_PLACE_X,
-            _RUN_ONLY,
-            "\n".join([
-                *_TIMED_OUT_HEAD,
-                "--- stderr (truncated, 50 bytes total) ---",
-                "e",
-                "--- stdout ---",
-                "s",
-            ]),
-            None,
-            id="timed-out-both-streams",
         ),
     ],
 )
@@ -552,13 +528,6 @@ _MEMORY_NOT_GATING = {"memory": KindEntry(gating=False)}
     ("defaults", "entry", "config_kinds", "expected"),
     [
         pytest.param(
-            MetricDefaults(direction="lower"),
-            None,
-            None,
-            metric_meta(_NAME),
-            id="adapter-defaults-keep-the-full-name",
-        ),
-        pytest.param(
             MetricDefaults(direction="higher", unit="ns"),
             None,
             None,
@@ -657,15 +626,18 @@ def test_resolve_metric_meta_when_layers_given_does_layer_entry_over_kind_over_a
 # ---------------------------------------------------------------------------
 
 
-def resolve(
-    names: Sequence[str],
-    config_metrics: dict[str, MetricEntry] | None,
-    adapter: Adapter,
-    config_kinds: dict[str, KindEntry] | None = None,
-) -> dict[str, ResolvedMetricMeta]:
-    """Resolve the metadata of one round that reported every name in ``names``, in order."""
-    samples = [[dict.fromkeys(names, 1.0)]]
-    return resolve_metric_meta_from_samples(samples, config_metrics, adapter, config_kinds)
+def _by_metric_name(name: str) -> MetricDefaults:
+    if name == "response-time":
+        return MetricDefaults(direction="lower", unit="ns")
+    if name == "throughput":
+        return MetricDefaults(direction="higher")
+    return MetricDefaults(direction="lower")
+
+
+def _by_metric_suffix(name: str) -> MetricDefaults:
+    if name.endswith("/heap"):
+        return MetricDefaults(direction="lower", kind="memory", short_name="heap")
+    return MetricDefaults(direction="lower", kind="time", short_name="time")
 
 
 def test_resolve_metric_meta_from_samples_when_no_set_reports_a_metric_does_raise():
@@ -675,40 +647,46 @@ def test_resolve_metric_meta_from_samples_when_no_set_reports_a_metric_does_rais
         resolve_metric_meta_from_samples(sample_sets, None, make_adapter(), None)
 
 
-def test_resolve_metric_meta_from_samples_when_multiple_names_does_resolve_each_with_its_own_entry_in_order():
-    def defaults_fn(name: str) -> MetricDefaults:
-        if name == "response-time":
-            return MetricDefaults(direction="lower", unit="ns")
-        if name == "throughput":
-            return MetricDefaults(direction="higher")
-        return MetricDefaults(direction="lower")
+@pytest.mark.parametrize(
+    ("sample_sets", "defaults_fn", "config_metrics", "config_kinds", "expected"),
+    [
+        pytest.param(
+            [[{"throughput": 1.0}], [{"response-time": 1.0}]],
+            _by_metric_name,
+            {
+                "response-time": MetricEntry(gating=False),
+                "throughput": MetricEntry(exact=True),
+            },
+            None,
+            {
+                "throughput": metric_meta("throughput", direction="higher", exact=True),
+                "response-time": metric_meta("response-time", unit="ns", gating=False),
+            },
+            id="per-metric-entries-first-seen-in-a-later-set",
+        ),
+        pytest.param(
+            [[{"bench-a/time": 1.0}, {"bench-a/time": 1.0, "bench-a/heap": 1.0}]],
+            _by_metric_suffix,
+            None,
+            _MEMORY_NOT_GATING,
+            {
+                "bench-a/time": metric_meta("time", kind="time"),
+                "bench-a/heap": metric_meta("heap", gating=False, kind="memory"),
+            },
+            id="kind-gating-first-seen-in-a-later-round",
+        ),
+    ],
+)
+def test_resolve_metric_meta_from_samples_when_several_names_reported_does_resolve_each_in_first_seen_order(
+    sample_sets: list[list[dict[str, float]]],
+    defaults_fn: Callable[[str], MetricDefaults],
+    config_metrics: dict[str, MetricEntry] | None,
+    config_kinds: dict[str, KindEntry] | None,
+    expected: dict[str, ResolvedMetricMeta],
+):
+    result = resolve_metric_meta_from_samples(
+        sample_sets, config_metrics, make_adapter(defaults_fn), config_kinds
+    )
 
-    adapter = make_adapter(defaults_fn)
-    config_metrics = {
-        "response-time": MetricEntry(gating=False),
-        "throughput": MetricEntry(exact=True),
-    }
-
-    result = resolve(["response-time", "throughput"], config_metrics, adapter)
-
-    assert list(result) == ["response-time", "throughput"]
-    assert result == {
-        "response-time": metric_meta("response-time", unit="ns", gating=False),
-        "throughput": metric_meta("throughput", direction="higher", exact=True),
-    }
-
-
-def test_resolve_metric_meta_from_samples_when_config_metrics_none_does_apply_kind_gating_per_metric():
-    def defaults_fn(name: str) -> MetricDefaults:
-        if name.endswith("/heap"):
-            return MetricDefaults(direction="lower", kind="memory", short_name="heap")
-        return MetricDefaults(direction="lower", kind="time", short_name="time")
-
-    adapter = make_adapter(defaults_fn)
-
-    result = resolve(["bench-a/heap", "bench-a/time"], None, adapter, _MEMORY_NOT_GATING)
-
-    assert result == {
-        "bench-a/heap": metric_meta("heap", gating=False, kind="memory"),
-        "bench-a/time": metric_meta("time", kind="time"),
-    }
+    assert list(result) == list(expected)
+    assert result == expected

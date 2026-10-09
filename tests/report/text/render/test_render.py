@@ -1,10 +1,8 @@
 """Tests for the comparison report's table and the measurement report.
 
-These cover the comparison table's run header, label truncation, pair-count
-annotations, and column alignment: the ``±`` offset shared across value cells,
-the delta right-aligned across verdict cells, aggregate bands, and terminal-cell
-widths for CJK names. Alignment is asserted *within* a parsed cell, since the box
-chrome is rich's rather than a hand-spliced grid.
+These cover the comparison table's run header, label truncation, and the
+terminal-cell widths of CJK names. The single-candidate table's pair counts and
+column alignment are pinned in ``test_single``.
 
 They also cover the measurement report: its flat and grouped tables, multi-kind
 sections, its golden output, and how its header and section titles are styled.
@@ -18,14 +16,11 @@ import pytest
 from rich.cells import cell_len
 
 from gymrat.report.text.render import render_measure_report, render_report
-from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
+from gymrat.report.types import ReportOptions
 from tests._ansi import strip_ansi
 from tests.report._assertions import (
-    cells_of,
-    delta_cell,
     line_containing,
     line_starting_with,
-    rule_lines,
     stripped_cells,
     styles_at,
     table_region,
@@ -34,9 +29,6 @@ from tests.report._assertions import (
 from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
-    exact_metric,
-    metric_meta,
-    other_kind,
     permutation_metric,
 )
 from tests.report._measurements import (
@@ -44,7 +36,6 @@ from tests.report._measurements import (
     measured_metric,
     two_kind_measurement,
 )
-from tests.report._verdicts import band_metric, exact_verdict
 
 if TYPE_CHECKING:
     from syrupy.assertion import SnapshotAssertion
@@ -94,187 +85,6 @@ def test_render_report_when_variant_label_overflows_does_truncate_leaving_metric
         "vs main",
     ]
     assert stripped_cells(table_rows(output)[1])[0] == "decode/an-extremely-long-metric-name/time"
-
-
-# ---------------------------------------------------------------------------
-# metric rows
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("metric", "expected"),
-    [
-        pytest.param(
-            permutation_metric(verdict="improved", delta=-10, n=8),
-            "✓  -10.0%  ±2.5%  n=8",
-            id="permutation",
-        ),
-        pytest.param(
-            band_metric(verdict="improved", delta=-5, n=8),
-            "✓  -5.0%  ±2.5%  n=8",
-            id="band",
-        ),
-        pytest.param(
-            exact_metric(delta=-7.9, n=6, unit="ns"),
-            "✓  -7.9%  n=6",
-            id="exact",
-        ),
-    ],
-)
-def test_render_report_when_metric_paired_fewer_rounds_does_annotate_with_pair_count(
-    metric: MetricComparison, expected: str
-):
-    result = create_comparison_result(samples=10, metrics={"decode/time": metric})
-
-    row = line_starting_with(render_report(result), "decode/time")
-
-    assert stripped_cells(row)[-1] == expected
-
-
-# ---------------------------------------------------------------------------
-# value column alignment
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("metrics", "first", "second"),
-    [
-        pytest.param(
-            {
-                "first/metric": permutation_metric(
-                    verdict="improved",
-                    delta=-10,
-                    baseline_median=162000,
-                    baseline_spread=9,
-                    unit="ns",
-                ),
-                "second/metric": permutation_metric(
-                    verdict="improved",
-                    delta=-10,
-                    baseline_median=29200,
-                    baseline_spread=12,
-                    unit="ns",
-                ),
-            },
-            "162.0µs ±  9%",
-            " 29.2µs ± 12%",
-            id="percentage-spreads",
-        ),
-        pytest.param(
-            {
-                "first/metric": permutation_metric(
-                    verdict="improved",
-                    delta=-10,
-                    baseline_median=5,
-                    baseline_spread=7620,
-                    unit="bytes",
-                ),
-                "second/metric": permutation_metric(
-                    verdict="improved",
-                    delta=-10,
-                    baseline_median=49152,
-                    baseline_spread=1,
-                    unit="bytes",
-                ),
-            },
-            "    5B ± 381B",
-            "49.2KB ±   1%",
-            id="absolute-beside-percentage",
-        ),
-    ],
-)
-def test_render_report_when_aligning_value_columns_does_stack_magnitude_and_spread(
-    metrics: dict[str, MetricComparison], first: str, second: str
-):
-    report = render_report(create_comparison_result(metrics=metrics))
-    first_cell = cells_of(line_starting_with(report, "first/metric"))[1]
-    second_cell = cells_of(line_starting_with(report, "second/metric"))[1]
-
-    assert first in first_cell
-    assert second in second_cell
-    assert first_cell.index("±") == second_cell.index("±")
-
-
-def test_render_report_when_a_magnitude_has_no_spread_does_keep_it_in_the_magnitude_field():
-    report = render_report(
-        create_comparison_result(
-            metrics={
-                "first/metric": permutation_metric(
-                    verdict="improved",
-                    delta=-10,
-                    baseline_median=2048,
-                    baseline_spread=2,
-                    unit="ns",
-                ),
-                "second/metric": MetricComparison(
-                    baseline_median=120,
-                    baseline_spread=None,
-                    candidates=(CandidateMetric(median=120, verdict=exact_verdict()),),
-                    meta=metric_meta("second/metric", exact=True),
-                ),
-            }
-        )
-    )
-    first_cell = cells_of(line_starting_with(report, "first/metric"))[1]
-    second_cell = cells_of(line_starting_with(report, "second/metric"))[1]
-
-    assert first_cell.index("2.0µs") + len("2.0µs") == second_cell.index("120") + len("120")
-
-
-# ---------------------------------------------------------------------------
-# verdict column alignment
-# ---------------------------------------------------------------------------
-
-
-def test_render_report_when_aligning_the_verdict_column_does_lay_out_glyph_delta_and_band():
-    result = create_comparison_result(
-        metrics={
-            "regressed/time": permutation_metric(
-                verdict="regressed", delta=0.4, noise_pct=2.5, unit="ns"
-            ),
-            "flat/time": permutation_metric(verdict="no-signal", delta=0, noise_pct=100, unit="ns"),
-            "improved/time": permutation_metric(
-                verdict="improved", delta=-12.4, noise_pct=30, unit="ns"
-            ),
-        }
-    )
-
-    report = render_report(result)
-
-    assert stripped_cells(line_starting_with(report, "regressed/time"))[-1] == "✗   +0.4%  ±  2.5%"
-    assert stripped_cells(line_starting_with(report, "flat/time"))[-1] == "~    0.0%  ±100.0%"
-    assert stripped_cells(line_starting_with(report, "improved/time"))[-1] == "✓  -12.4%  ± 30.0%"
-
-
-# ---------------------------------------------------------------------------
-# aggregate noise band
-# ---------------------------------------------------------------------------
-
-
-def test_render_report_when_flat_geomean_carries_a_band_does_state_it_behind_the_delta():
-    result = create_comparison_result(
-        metrics={"faster/time": permutation_metric(verdict="improved", delta=-17.5)},
-        candidates=[create_candidate(kinds=[other_kind(-5.8, 1, band=1.2)])],
-    )
-
-    row = line_starting_with(render_report(result), "geomean")
-
-    assert delta_cell(row).strip() == "-5.8%  ±1.2%"
-
-
-def test_render_report_when_only_the_aggregate_carries_a_band_does_widen_the_verdict_column():
-    result = create_comparison_result(
-        samples=1,
-        metrics={"decode/time": band_metric(delta=-0.4, noise_pct=0.5, n=1, unit="ns")},
-        candidates=[create_candidate(kinds=[other_kind(-0.1, 1, band=0.5)])],
-    )
-
-    report = render_report(result)
-    row = line_starting_with(report, "geomean")
-    rule = rule_lines(report)[0]
-
-    assert delta_cell(row).strip() == "-0.1%  ±0.5%"
-    assert len(strip_ansi(row).rstrip()) <= len(rule)
 
 
 # ---------------------------------------------------------------------------

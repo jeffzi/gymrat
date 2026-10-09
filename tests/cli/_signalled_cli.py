@@ -12,6 +12,7 @@ import subprocess
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -37,25 +38,29 @@ def pid_recording_script(pid_path: Path | str, body: str) -> str:
 
 
 @contextmanager
-def spawned_gymrat(argv: Sequence[str], cwd: str) -> Generator[subprocess.Popen[str]]:
+def spawned_gymrat(
+    argv: Sequence[str], cwd: str, **popen_kwargs: Any
+) -> Generator[subprocess.Popen[Any]]:
     """Run ``gymrat`` with ``argv`` out of process in ``cwd``, reaping it on the way out.
 
     Args:
         argv: The command line after the program name.
         cwd: The directory the child runs in.
+        **popen_kwargs: Overrides for the default ``Popen`` options: stdout and
+            stderr piped as text, under the color-free test environment with
+            the fault handler on.
 
     Yields:
-        The running child, with its stdout and stderr piped as text.
+        The running child.
     """
+    options: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "env": {**no_color_env(), "PYTHONFAULTHANDLER": "1"},
+    } | popen_kwargs
     with reaped(
-        subprocess.Popen(  # noqa: S603 -- argv is the gymrat entry point plus the test's own command
-            [*ENTRY, *argv],
-            cwd=cwd,
-            env={**no_color_env(), "PYTHONFAULTHANDLER": "1"},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        subprocess.Popen([*ENTRY, *argv], cwd=cwd, **options)  # noqa: S603 -- argv is the gymrat entry point plus the test's own command
     ) as proc:
         yield proc
 

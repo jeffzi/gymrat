@@ -48,22 +48,6 @@ LINE_BREAK_CHARS = [line_break.char for line_break in LINE_BREAKS]
 DIRECTORY_READ_REASON = "Permission denied" if sys.platform == "win32" else "Is a directory"
 
 
-def load_config(config_path: Path) -> ConfigFile:
-    """Load a config file that must be accepted and return what it parsed to."""
-    result = load_config_file_collecting(config_path, required=False)
-    assert result.problems == []
-    assert result.exists
-    assert result.config_file is not None
-    return result.config_file
-
-
-def load_error_message(config_path: Path) -> str:
-    """Load a config file that must be rejected and return the first problem."""
-    result = load_config_file_collecting(config_path, required=False)
-    assert result.config_file is None
-    return result.problems[0]
-
-
 # ---------------------------------------------------------------------------
 # valid TOML with known keys
 # ---------------------------------------------------------------------------
@@ -168,9 +152,9 @@ def test_load_config_file_collecting_when_document_valid_does_parse_it(
 ):
     config_path = write_raw(tmp_path, document)
 
-    config = load_config(config_path)
+    result = load_config_file_collecting(config_path, required=False)
 
-    assert config == expected
+    assert result == ConfigFileResult(config_file=expected, exists=True, problems=[])
 
 
 # ---------------------------------------------------------------------------
@@ -444,9 +428,9 @@ def test_load_config_file_collecting_when_value_invalid_does_name_key_path_and_e
 ):
     config_path = write_config(tmp_path, content)
 
-    problem = load_error_message(config_path)
+    result = load_config_file_collecting(config_path, required=False)
 
-    assert problem == message
+    assert result == ConfigFileResult(config_file=None, exists=True, problems=[message])
 
 
 def test_load_config_file_collecting_when_multiple_fields_invalid_does_report_every_problem(
@@ -490,8 +474,11 @@ def test_load_config_file_collecting_when_number_key_given_integer_does_accept_a
 ):
     config_path = write_raw(tmp_path, text)
 
-    value = read(load_config(config_path))
+    result = load_config_file_collecting(config_path, required=False)
 
+    assert result.problems == []
+    assert result.config_file is not None
+    value = read(result.config_file)
     assert (type(value), value) == (float, expected)
 
 
@@ -513,12 +500,19 @@ def test_load_config_file_collecting_when_section_key_embeds_line_break_does_rep
     smuggled = f"latency{char}direction: 999, gating: 0"
     config_path = write_config(tmp_path, {section: {smuggled: {"gating": False}}})
 
-    message = load_error_message(config_path)
+    result = load_config_file_collecting(config_path, required=False)
 
     # The rejected value is an object; only its key is bad, so the message names
     # the key instead of demanding an object.
-    assert message == (
-        f"Invalid config value for {section}: key {json.dumps(smuggled)} must not embed a line break"
+    assert result == ConfigFileResult(
+        config_file=None,
+        exists=True,
+        problems=[
+            (
+                f"Invalid config value for {section}: "
+                f"key {json.dumps(smuggled)} must not embed a line break"
+            )
+        ],
     )
 
 
@@ -535,9 +529,18 @@ def test_load_config_file_collecting_when_metric_name_needs_quoting_does_quote_i
 ):
     config_path = write_config(tmp_path, {"metrics": {metric_name: {"direction": "sideways"}}})
 
-    message = load_error_message(config_path)
+    result = load_config_file_collecting(config_path, required=False)
 
-    assert expected_path in message
+    assert result == ConfigFileResult(
+        config_file=None,
+        exists=True,
+        problems=[
+            (
+                f"Invalid config value for {expected_path}: expected 'lower' or 'higher', "
+                'got "sideways"'
+            )
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -591,18 +594,6 @@ def test_load_config_file_collecting_when_optional_file_missing_does_return_empt
     result = load_config_file_collecting(missing, required=False)
 
     assert result == ConfigFileResult(config_file=ConfigFile(), exists=False, problems=[])
-
-
-def test_load_config_file_collecting_when_required_file_missing_does_report_not_found(
-    tmp_path: Path,
-):
-    missing = tmp_path / "nonexistent.toml"
-
-    result = load_config_file_collecting(missing, required=True)
-
-    assert result == ConfigFileResult(
-        config_file=None, exists=False, problems=[f"Config file not found at {missing}"]
-    )
 
 
 def test_load_config_file_collecting_when_path_is_directory_does_collect_read_failure(

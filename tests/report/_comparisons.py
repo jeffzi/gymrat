@@ -161,7 +161,24 @@ def permutation_metric(
     direction: Direction = "lower",
     n: int = 10,
 ) -> MetricComparison:
-    """A two-sided metric whose verdict came from the permutation method."""
+    """A two-sided metric whose verdict came from the permutation method.
+
+    Args:
+        verdict: The verdict the permutation test reached.
+        delta: The candidate's delta against the baseline, in percent.
+        baseline_median: The baseline's measured value.
+        baseline_spread: The baseline's spread, in percent of its median.
+        p: The permutation test's p-value.
+        noise_pct: The noise band, in percent.
+        noise_abs: The noise band, in the metric's own unit.
+        unit: The metric's unit, or ``None`` for a unitless count.
+        gating: Whether the metric counts toward the gated geomean.
+        direction: Which way is better for the metric.
+        n: The pair count behind the verdict.
+
+    Returns:
+        The metric comparison.
+    """
     return MetricComparison(
         baseline_median=baseline_median,
         baseline_spread=baseline_spread,
@@ -188,19 +205,35 @@ def exact_metric(
     delta: float,
     n: int = 10,
     unit: MetricUnit | None = "bytes",
+    baseline_median: float = 1000.0,
+    median: float | None = None,
+    short_name: str = "heap",
 ) -> MetricComparison:
-    """A counted metric with a 1000 baseline, compared exactly rather than statistically."""
-    baseline_median = 1000.0
+    """A counted metric with no spread, compared exactly rather than statistically.
+
+    Args:
+        delta: The candidate's delta against the baseline, in percent; NaN
+            stands for an undefined ratio.
+        n: The pair count behind the verdict.
+        unit: The metric's unit, or ``None`` for a unitless count.
+        baseline_median: The baseline's measured value.
+        median: The candidate's measured value; ``None`` derives it from
+            ``baseline_median`` and ``delta``.
+        short_name: The name the metric displays under.
+
+    Returns:
+        The metric comparison.
+    """
     return MetricComparison(
         baseline_median=baseline_median,
         baseline_spread=None,
         candidates=(
             CandidateMetric(
-                median=baseline_median * (1 + delta / 100),
+                median=baseline_median * (1 + delta / 100) if median is None else median,
                 verdict=exact_verdict(delta=delta, n=n),
             ),
         ),
-        meta=metric_meta("heap", exact=True, unit=unit),
+        meta=metric_meta(short_name, exact=True, unit=unit),
     )
 
 
@@ -235,20 +268,28 @@ def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricComparison:
     )
 
 
-def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
+def multi_candidate_result(
+    candidate_count: int = 3,
+    *,
+    labels: Sequence[str] = ("candidate-a", "candidate-b", "candidate-c"),
+    name: str = "decode/time",
+) -> ComparisonResult:
     """A multi-candidate comparison with one metric judged per candidate.
 
     Args:
-        candidate_count: ``3`` gives ``candidate-a`` improved, ``candidate-b``
-            regressed and ``candidate-c`` unstable (band method); ``2`` gives
-            the first pair alone.
+        candidate_count: ``3`` gives the first candidate improved, the second
+            regressed and the third unstable (band method); ``2`` gives the
+            first pair alone.
+        labels: The candidate labels, in order; only the first
+            ``candidate_count`` are used.
+        name: The name of the one metric every candidate is judged on.
 
     Returns:
         The comparison result.
     """
     candidates = [
-        create_candidate(label="candidate-a", kinds=[other_kind(-10, 1)]),
-        create_candidate(label="candidate-b", kinds=[other_kind(4, 1)]),
+        create_candidate(label=labels[0], kinds=[other_kind(-10, 1)]),
+        create_candidate(label=labels[1], kinds=[other_kind(4, 1)]),
     ]
     metric_candidates = [
         CandidateMetric(
@@ -263,7 +304,7 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
         ),
     ]
     if candidate_count == 3:
-        candidates.append(create_candidate(label="candidate-c", kinds=[other_kind(0, 1)]))
+        candidates.append(create_candidate(label=labels[2], kinds=[other_kind(0, 1)]))
         metric_candidates.append(
             CandidateMetric(
                 median=150.0,
@@ -277,11 +318,11 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
         baseline_label="main",
         candidates=candidates,
         metrics={
-            "decode/time": MetricComparison(
+            name: MetricComparison(
                 baseline_median=100.0,
                 baseline_spread=1.0,
                 candidates=tuple(metric_candidates),
-                meta=metric_meta("decode/time", unit="ns"),
+                meta=metric_meta(name, unit="ns"),
             ),
         },
     )
@@ -311,9 +352,51 @@ def kind_metric(
     gating: bool = True,
     unit: MetricUnit | None = "ns",
 ) -> MetricComparison:
-    """A metric of ``kind``, displayed under ``short_name``, judged by the permutation test."""
+    """A metric of ``kind``, displayed under ``short_name``, judged by the permutation test.
+
+    Args:
+        kind: The kind the metric belongs to.
+        short_name: The name the metric displays under.
+        verdict: The verdict the permutation test reached.
+        delta: The candidate's delta against the baseline, in percent.
+        gating: Whether the metric counts toward the gated geomean.
+        unit: The metric's unit, or ``None`` for a unitless count.
+
+    Returns:
+        The metric comparison.
+    """
     metric = permutation_metric(verdict=verdict, delta=delta, gating=gating, unit=unit)
     return replace(metric, meta=replace(metric.meta, kind=kind, short_name=short_name))
+
+
+def mixed_methods_result(*, n: int) -> ComparisonResult:
+    """Banded, exact and unstable rows sharing one verdict column.
+
+    Args:
+        n: The pair count behind every row's verdict.
+
+    Returns:
+        The comparison result.
+    """
+    return create_comparison_result(
+        metrics={
+            "latency#other": permutation_metric(verdict="improved", delta=-10, n=n),
+            "heap#other": exact_metric(delta=-5, n=n),
+            "flaky#other": permutation_metric(verdict="unstable", delta=50, n=n),
+        },
+    )
+
+
+def every_class_metrics() -> MetricComparisons:
+    """One metric per display class: improved, regressed, within noise, identical, inconclusive, unstable."""
+    return {
+        "faster/time": permutation_metric(verdict="improved", delta=-17.5, unit="ns"),
+        "slower/time": permutation_metric(verdict="regressed", delta=2.4, unit="ns"),
+        "flat/time": permutation_metric(verdict="no-signal", delta=0.3, unit="ns"),
+        "tied/heap": band_metric(verdict="no-signal", delta=-0.5, n=10, usable_n=0),
+        "single-pair/time": band_metric(delta=-0.4, noise_pct=0.5, n=1, unit="ns"),
+        "jittery/time": permutation_metric(verdict="unstable", delta=-50, noise_pct=30),
+    }
 
 
 def single_sample_result() -> ComparisonResult:
@@ -393,11 +476,21 @@ def memory_kind() -> KindAggregate:
     return KindAggregate(kind="memory", geomean=geomean_of(-7, 1), groups=(), gated_geomean=None)
 
 
-def two_kind_result() -> ComparisonResult:
-    """A single-candidate comparison spanning the gating ``time`` and informational ``memory`` kinds."""
+def two_kind_result(kinds: Sequence[KindAggregate] | None = None) -> ComparisonResult:
+    """A single-candidate comparison spanning the gating ``time`` and informational ``memory`` kinds.
+
+    Args:
+        kinds: The candidate's kind aggregates; ``None`` gives the ``time`` and
+            ``memory`` aggregates the metrics describe.
+
+    Returns:
+        The comparison result.
+    """
     return create_comparison_result(
         metrics=two_kind_metrics(),
-        candidates=[create_candidate(kinds=[time_kind(), memory_kind()])],
+        candidates=[
+            create_candidate(kinds=kinds if kinds is not None else [time_kind(), memory_kind()])
+        ],
         config_kinds={"memory": KindEntry(gating=False)},
     )
 

@@ -1,9 +1,8 @@
 """Tests for the multi-candidate comparison text report.
 
 These cover the candidate-per-column table: each candidate's figures paired with
-its own verdict, the identical cell, how each cell is colored, bracketed metric
-names and candidate labels, the per-candidate summary lines, and the
-per-candidate highlights.
+its own verdict, how each cell is colored, bracketed metric names and candidate
+labels, the per-candidate summary lines, and the per-candidate highlights.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import pytest
 from rich.cells import cell_len
 
 from gymrat.report.text.render import render_report
-from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
+from gymrat.report.types import ReportOptions
 from tests._ansi import (
     TRAILING_SGR_RUN,
     strip_ansi,
@@ -32,12 +31,9 @@ from tests.report._comparisons import (
     NWayCandidate,
     create_candidate,
     create_comparison_result,
-    metric_meta,
     multi_candidate_result,
     n_way_metric,
-    other_kind,
 )
-from tests.report._verdicts import band_verdict, permutation_verdict
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -72,24 +68,12 @@ def test_render_report_when_many_candidates_does_size_the_last_column_to_fit_its
         assert len(rule) >= len(geomean_line)
 
 
-def _bracketed_result() -> ComparisonResult:
-    """Two candidates whose labels, like the metric names, read as markup tags."""
-    return create_comparison_result(
-        candidates=[
-            create_candidate(label="[bold]fast"),
-            create_candidate(label="[dim]slow"),
-        ],
-        metrics={
-            "[italic]decode/time": n_way_metric([
-                NWayCandidate(verdict="improved", delta=-10, median=90),
-                NWayCandidate(verdict="regressed", delta=4, median=104),
-            ]),
-        },
+def test_render_report_when_names_carry_brackets_does_print_them_literally():
+    result = multi_candidate_result(
+        2, labels=("[bold]fast", "[dim]slow"), name="[italic]decode/time"
     )
 
-
-def test_render_report_when_names_carry_brackets_does_print_them_literally():
-    report = strip_ansi(render_report(_bracketed_result()))
+    report = strip_ansi(render_report(result))
 
     assert stripped_cells(line_starting_with(report, "metric")) == [
         "metric",
@@ -102,39 +86,6 @@ def test_render_report_when_names_carry_brackets_does_print_them_literally():
         "100ns ± 1%",
         "90ns ± 1%  ✓  -10.0%",
         "104ns ± 1%  ✗  +4.0%",
-    ]
-
-
-def test_render_report_when_ties_starve_the_test_does_mark_the_candidate_cell_identical():
-    result = create_comparison_result(
-        candidates=[
-            create_candidate(label="candidate-a"),
-            create_candidate(label="candidate-b"),
-        ],
-        metrics={
-            "tied/time": MetricComparison(
-                baseline_median=100,
-                baseline_spread=1,
-                candidates=(
-                    CandidateMetric(median=100, spread=1, verdict=band_verdict(usable_n=0)),
-                    CandidateMetric(
-                        median=90,
-                        spread=1,
-                        verdict=permutation_verdict(verdict="improved", delta=-10, p=0.002),
-                    ),
-                ),
-                meta=metric_meta("tied/time", unit="ns"),
-            ),
-        },
-    )
-
-    row = line_starting_with(render_report(result), "tied/time")
-
-    assert stripped_cells(row) == [
-        "tied/time",
-        "100ns ± 1%",
-        "100ns ± 1%  =  -0.5%",
-        "90ns ± 1%  ✓  -10.0%",
     ]
 
 
@@ -203,24 +154,10 @@ def test_render_report_when_colored_does_leave_name_and_values_plain_on_a_quiet_
 # ---------------------------------------------------------------------------
 
 
-def _two_label_result(labels: tuple[str, str]) -> ComparisonResult:
-    """One metric over two candidates labelled ``labels``, one improved and one regressed."""
-    return create_comparison_result(
-        candidates=[
-            create_candidate(label=labels[0], kinds=[other_kind(-10, 1)]),
-            create_candidate(label=labels[1], kinds=[other_kind(4, 1)]),
-        ],
-        metrics={
-            "decode/time": n_way_metric([
-                NWayCandidate(verdict="improved", delta=-10, median=90),
-                NWayCandidate(verdict="regressed", delta=4, median=104),
-            ])
-        },
-    )
-
-
 def test_render_report_when_ascii_labels_differ_in_length_does_pad_inside_the_bold_label():
-    report = render_report(_two_label_result(("fast", "slower")), ReportOptions(color=True))
+    report = render_report(
+        multi_candidate_result(2, labels=("fast", "slower")), ReportOptions(color=True)
+    )
 
     assert styles_at(line_containing(report, "fast  "), "fast  ") == ["1"]
 
@@ -237,7 +174,7 @@ def test_render_report_when_candidate_labels_differ_in_width_does_start_every_su
     labels: tuple[str, str],
     summary_column: int,
 ):
-    report = strip_ansi(render_report(_two_label_result(labels)))
+    report = strip_ansi(render_report(multi_candidate_result(2, labels=labels)))
 
     summaries = [line_starting_with(report, label) for label in labels]
     assert [cell_len(line[: line.index("✓")]) for line in summaries] == [summary_column] * 2

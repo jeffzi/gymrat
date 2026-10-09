@@ -63,12 +63,6 @@ def _compose_with_skill_text(
     return compose_kickoff(config, experiment_worktree=experiment_worktree)
 
 
-@pytest.fixture
-def generic_kickoff(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> KickoffResult:
-    """The kickoff composed around a minimal skill body and the default runbook."""
-    return _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
-
-
 # ---------------------------------------------------------------------------
 # compose_kickoff — bundled skill
 # ---------------------------------------------------------------------------
@@ -119,11 +113,11 @@ def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cau
 
 
 # ---------------------------------------------------------------------------
-# compose_kickoff — happy path composition
+# compose_kickoff — skill and runbook in the system-prompt append
 # ---------------------------------------------------------------------------
 
 
-def test_compose_kickoff_when_skill_and_runbook_present_does_append_the_skill_body_without_frontmatter_before_the_runbook(
+def test_compose_kickoff_when_bundled_skill_meets_a_runbook_does_append_the_frontmatter_free_skill_ahead_of_the_runbook(
     tmp_path: Path,
 ):
     config = benchless_config(runbook=_write_runbook(tmp_path))
@@ -202,57 +196,15 @@ def test_compose_kickoff_when_prompt_is_default_or_given_does_lead_the_kickoff_a
     result = compose_kickoff(config, prompt, experiment_worktree=experiment_path)
 
     trailing = result.kickoff.split("\n\n")[-1]
+    kickoff_lower = result.kickoff.lower()
     assert result.kickoff.startswith(opening)
     assert "session" in trailing.lower()
     assert "baseline" in trailing.lower()
     assert experiment_path in trailing
     assert "step" in trailing.lower()
     assert "runbook" in trailing.lower()
-
-
-def test_compose_kickoff_when_composed_does_keep_tool_names_out_of_the_kickoff(tmp_path: Path):
-    config = benchless_config(runbook=_write_runbook(tmp_path))
-
-    result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
-
-    kickoff_lower = result.kickoff.lower()
     assert "tool" not in kickoff_lower
     assert "`probe`" not in kickoff_lower
-
-
-# ---------------------------------------------------------------------------
-# compose_kickoff — clock rule in system-prompt append
-# ---------------------------------------------------------------------------
-
-
-def _clock_rule_paragraph(append: str) -> str:
-    """The append paragraph carrying the wall-clock reading rule."""
-    return next(p for p in append.split("\n\n") if "never estimate" in p.lower())
-
-
-#: What the clock rule must say: how to read the time left (the command form, its output, the
-#: two tools, the JSON field), the cap it reads against, and that a killed measurement records
-#: nothing.
-_CLOCK_RULE_PHRASES = [
-    "bash",
-    "time-left",
-    "`iterate`",
-    "`probe`",
-    "budget.remaining_seconds",
-    "json",
-    "wall-clock",
-    "time left",
-    "never estimate",
-    "records nothing",
-]
-
-
-def test_compose_kickoff_when_happy_path_does_state_every_phrase_in_the_clock_rule(
-    generic_kickoff: KickoffResult,
-):
-    clock_rule = _clock_rule_paragraph(generic_kickoff.system_prompt_append).lower()
-
-    assert [phrase for phrase in _CLOCK_RULE_PHRASES if phrase not in clock_rule] == []
 
 
 # ---------------------------------------------------------------------------
@@ -301,13 +253,37 @@ def test_compose_kickoff_when_skill_mentions_spend_does_keep_cap_and_spend_out_o
 
 
 # ---------------------------------------------------------------------------
-# compose_kickoff — tools paragraph in system-prompt append
+# compose_kickoff — authored paragraphs in system-prompt append
 # ---------------------------------------------------------------------------
 
 
 def _tools_paragraph_index(paragraphs: list[str]) -> int:
     """Index of the append paragraph that introduces the ``probe`` tool."""
     return next(i for i, paragraph in enumerate(paragraphs) if "`probe`" in paragraph)
+
+
+def _clock_rule_index(paragraphs: list[str]) -> int:
+    """Index of the append paragraph carrying the wall-clock reading rule."""
+    return next(
+        i for i, paragraph in enumerate(paragraphs) if "never estimate" in paragraph.lower()
+    )
+
+
+#: What the clock rule must say: how to read the time left (the command form, its output, the
+#: two tools, the JSON field), the cap it reads against, and that a killed measurement records
+#: nothing.
+_CLOCK_RULE_PHRASES = [
+    "bash",
+    "time-left",
+    "`iterate`",
+    "`probe`",
+    "budget.remaining_seconds",
+    "json",
+    "wall-clock",
+    "time left",
+    "never estimate",
+    "records nothing",
+]
 
 
 #: What the tools paragraph must name: the two tools, the bash commands it leaves to the
@@ -327,20 +303,19 @@ _TOOLS_PARAGRAPH_PHRASES = [
 ]
 
 
-def test_compose_kickoff_when_happy_path_does_state_every_phrase_in_tools_paragraph(
-    generic_kickoff: KickoffResult,
+def test_compose_kickoff_when_a_runbook_is_configured_does_author_the_supervision_paragraphs_ahead_of_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    paragraphs = generic_kickoff.system_prompt_append.split("\n\n")
-    tools_paragraph = paragraphs[_tools_paragraph_index(paragraphs)].lower()
+    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
 
-    assert [phrase for phrase in _TOOLS_PARAGRAPH_PHRASES if phrase not in tools_paragraph] == []
-
-
-def test_compose_kickoff_when_happy_path_does_order_the_authored_paragraphs_ahead_of_the_runbook(
-    generic_kickoff: KickoffResult,
-):
-    paragraphs = generic_kickoff.system_prompt_append.split("\n\n")
+    paragraphs = result.system_prompt_append.split("\n\n")
     contract_index = paragraphs.index(_CONTRACT_PARAGRAPH)
-    clock_rule_index = paragraphs.index(_clock_rule_paragraph(generic_kickoff.system_prompt_append))
+    tools_index = _tools_paragraph_index(paragraphs)
+    clock_rule_index = _clock_rule_index(paragraphs)
     runbook_index = next(i for i, p in enumerate(paragraphs) if p.startswith("## Runbook:"))
-    assert contract_index < _tools_paragraph_index(paragraphs) < clock_rule_index < runbook_index
+    tools_paragraph = paragraphs[tools_index].lower()
+    clock_rule = paragraphs[clock_rule_index].lower()
+    assert [phrase for phrase in _TOOLS_PARAGRAPH_PHRASES if phrase not in tools_paragraph] == []
+    assert [phrase for phrase in _CLOCK_RULE_PHRASES if phrase not in clock_rule] == []
+    assert contract_index < tools_index < clock_rule_index < runbook_index

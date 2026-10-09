@@ -90,6 +90,27 @@ def test_state_module_when_imported_in_a_fresh_interpreter_does_not_load_rich():
 
 
 # ---------------------------------------------------------------------------
+# Initial rows
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("has_after_hook", "expected"),
+    [
+        pytest.param(True, "then after hook", id="after-hook"),
+        pytest.param(False, "", id="no-after-hook"),
+    ],
+)
+def test_initial_state_when_after_hook_varies_does_hint_it_on_the_record_row(
+    has_after_hook: bool,
+    expected: str,
+):
+    result = _state(has_after_hook=has_after_hook)
+
+    assert result.nodes.record.hint == expected
+
+
+# ---------------------------------------------------------------------------
 # Row transitions
 # ---------------------------------------------------------------------------
 

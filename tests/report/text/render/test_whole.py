@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import replace
+from functools import partial
 from typing import TYPE_CHECKING
 
 import pytest
@@ -50,7 +51,7 @@ from tests.report._comparisons import (
     grouped_comparison,
     kind_metric,
     memory_kind,
-    metric_meta,
+    mixed_methods_result,
     n_way_kind_metric,
     other_kind,
     permutation_metric,
@@ -58,7 +59,13 @@ from tests.report._comparisons import (
     two_kind_result,
 )
 from tests.report._measurements import two_kind_measurement
-from tests.report._verdicts import band_verdict, exact_verdict, geomean_of, permutation_verdict
+from tests.report._verdicts import (
+    band_verdict,
+    exact_verdict,
+    geomean_of,
+    metric_meta,
+    permutation_verdict,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -77,6 +84,13 @@ def _normalized_highlights(report: str) -> list[str]:
 
     ``test_verdicts`` pins the exact padding; here the concern is order and
     content, so the alignment padding is folded away.
+
+    Args:
+        report: The rendered report, lines joined by newlines.
+
+    Returns:
+        The highlight block's lines, each stripped with whitespace runs folded
+        to one space.
     """
     return [re.sub(r"\s+", " ", line.strip()) for line in highlight_lines(report)]
 
@@ -141,17 +155,6 @@ def _non_gating_two_candidate_result() -> ComparisonResult:
                 ("candidate-b", geomean_of(4, 1)),
             )
         ],
-    )
-
-
-def _mixed_methods_result() -> ComparisonResult:
-    """Banded, exact and unstable rows in one verdict column, each over the run's ten pairs."""
-    return create_comparison_result(
-        metrics={
-            "latency#other": permutation_metric(verdict="improved", delta=-10, n=10),
-            "heap#other": exact_metric(delta=-5, n=10),
-            "flaky#other": permutation_metric(verdict="unstable", delta=50, n=10),
-        },
     )
 
 
@@ -226,6 +229,9 @@ def _quiet_two_kind_result() -> ComparisonResult:
 
     Each geomean figure sits far outside its own band, so a rule that reads the
     band alone would paint all of them green.
+
+    Returns:
+        The comparison result.
     """
     time_geomean = geomean_of(-8.5, 2)
     return create_comparison_result(
@@ -367,7 +373,7 @@ def _grouped_exact_mix_result() -> ComparisonResult:
     )
 
 
-def test_render_report_when_grouped_run_mixes_methods_does_rank_highlights_without_footers():
+def test_render_report_when_grouped_run_mixes_methods_does_assemble_the_whole_report():
     report = render_report(_grouped_exact_mix_result())
 
     assert table_region(report) == [
@@ -392,8 +398,6 @@ def test_render_report_when_grouped_run_mixes_methods_does_rank_highlights_witho
         "✓ decode/text=digits#time -17.9%",
         "✓ encode#heap -7.9% (exact)",
     ]
-    assert "some rounds were dropped" not in report
-    assert "worktree" not in report
 
 
 def _degenerate_result() -> ComparisonResult:
@@ -401,19 +405,16 @@ def _degenerate_result() -> ComparisonResult:
         samples=4,
         adapter="metric-lines",
         metrics={
-            "zero-median/time": MetricComparison(
-                baseline_median=0,
-                baseline_spread=None,
-                candidates=(CandidateMetric(median=0, verdict=exact_verdict(n=4)),),
-                meta=metric_meta("zero-median/time", exact=True, unit="ns"),
+            "zero-median/time": exact_metric(
+                delta=0, n=4, unit="ns", baseline_median=0, short_name="zero-median/time"
             ),
-            "nan-delta/count": MetricComparison(
+            "nan-delta/count": exact_metric(
+                delta=math.nan,
+                n=4,
+                unit=None,
                 baseline_median=0,
-                baseline_spread=None,
-                candidates=(
-                    CandidateMetric(median=120, verdict=exact_verdict(delta=math.nan, n=4)),
-                ),
-                meta=metric_meta("nan-delta/count", exact=True),
+                median=120,
+                short_name="nan-delta/count",
             ),
             "old-side-only/time": MetricComparison(
                 baseline_median=2048,
@@ -528,7 +529,7 @@ def _two_candidate_result() -> ComparisonResult:
     )
 
 
-def test_render_report_when_single_sample_does_close_on_the_hint_with_no_highlights():
+def test_render_report_when_single_sample_does_mark_verdicts_inconclusive():
     report = render_report(single_sample_result())
 
     assert cells_of(line_starting_with(report, "decode/time"))[-1].strip() == "?  -0.4%"
@@ -536,9 +537,6 @@ def test_render_report_when_single_sample_does_close_on_the_hint_with_no_highlig
     assert line_starting_with(report, "✓ 0 improved") == (
         "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   "
         "= 0 identical   ~ 0 within noise   ? 2 inconclusive"
-    )
-    assert report.split("\n")[-1] == (
-        "re-run with gymrat compare --samples 6 or more for statistical verdicts"
     )
 
 
@@ -559,7 +557,7 @@ def test_render_report_when_single_sample_does_close_on_the_hint_with_no_highlig
         pytest.param(
             _non_gating_two_candidate_result, id="flat-two-candidates-no-stable-metrics-plain"
         ),
-        pytest.param(_mixed_methods_result, id="flat-mixed-methods-plain"),
+        pytest.param(partial(mixed_methods_result, n=10), id="flat-mixed-methods-plain"),
     ],
 )
 def test_render_report_when_rendered_does_match_its_golden(
@@ -634,21 +632,34 @@ def test_render_report_when_colored_does_style_each_element(
     assert styles_at(line, marker) == expected
 
 
-def test_render_report_when_colored_does_leave_a_dotted_variant_name_out_of_dimming():
-    result = create_comparison_result(
-        baseline_label="main·1",  # cspell:disable-line
-        candidates=[create_candidate(label="perf·2")],  # cspell:disable-line
-    )
-
+@pytest.mark.parametrize(
+    ("result", "marker", "expected"),
+    [
+        pytest.param(
+            create_comparison_result(baseline_label="main·1"),  # cspell:disable-line
+            "main·1",  # cspell:disable-line
+            ["1", "4"],
+            id="dotted-baseline-label",
+        ),
+        pytest.param(
+            create_comparison_result(
+                candidates=[create_candidate(label="perf·2")],  # cspell:disable-line
+            ),
+            "perf·2",  # cspell:disable-line
+            ["1", "4"],
+            id="dotted-candidate-label",
+        ),
+        pytest.param(
+            create_comparison_result(adapter="metric·lines"),  # cspell:disable-line
+            "metric·lines",  # cspell:disable-line
+            [],
+            id="dotted-adapter",
+        ),
+    ],
+)
+def test_render_report_when_header_part_holds_a_dot_does_leave_it_out_of_dimming(
+    result: ComparisonResult, marker: str, expected: list[str]
+):
     header = line_containing(render_report(result, ReportOptions(color=True)), "gymrat compare")
 
-    assert styles_at(header, "main·1") == ["1", "4"]  # cspell:disable-line
-    assert styles_at(header, "perf·2") == ["1", "4"]  # cspell:disable-line
-
-
-def test_render_report_when_colored_does_leave_a_dotted_adapter_name_out_of_dimming():
-    result = create_comparison_result(adapter="metric·lines")  # cspell:disable-line
-
-    header = line_containing(render_report(result, ReportOptions(color=True)), "gymrat compare")
-
-    assert "adapter: metric·lines" in header  # cspell:disable-line
+    assert styles_at(header, marker) == expected

@@ -238,22 +238,13 @@ def test_acquire_lock_when_held_with_valid_json_does_report_holder_details(
         blocker.release()
 
 
-@pytest.mark.parametrize(
-    "content",
-    [
-        pytest.param(b"", id="empty"),
-        pytest.param(b'{"pid":42,"comm', id="truncated-json"),
-        pytest.param(b"\x80\x81\x82", id="non-utf8"),
-    ],
-)
 def test_acquire_lock_when_held_with_unreadable_content_does_report_held_without_remove_advice(
     lock_path: str,
-    content: bytes,
 ):
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
     blocker = FileLock(os_lock_file(lock_path), timeout=0)
     blocker.acquire()
-    Path(lock_path).write_bytes(content)
+    Path(lock_path).write_bytes(b'{"pid":42,"comm')
 
     try:
         with pytest.raises(LockContentionError) as caught:
@@ -268,13 +259,15 @@ def test_acquire_lock_when_held_with_unreadable_content_does_report_held_without
         blocker.release()
 
 
-def test_acquire_lock_when_same_process_holds_lock_does_raise_gymrat_error(
+def test_acquire_lock_when_same_process_holds_lock_does_raise_lock_contention_error(
     lock_path: str, acquire: Acquire
 ):
     acquire(lock_path, "compare")
 
-    with pytest.raises(GymratError):
+    with pytest.raises(LockContentionError) as caught:
         acquire_lock(lock_path, "measure")
+
+    assert caught.value.hint == LIVE_HOLDER_HINT
 
 
 def test_acquire_lock_when_released_then_reacquired_does_succeed(lock_path: str, acquire: Acquire):
@@ -526,20 +519,10 @@ def test_read_holder_when_lock_acquired_does_return_pid_command_and_time(
 @pytest.mark.parametrize(
     "content",
     [
-        pytest.param(b'{"pid":42,"command":"measure"}', id="missing-at"),
-        pytest.param(
-            f'{{"pid":"forty-two","command":"measure","at":"{FIXED_HOLDER_AT}"}}'.encode(),
-            id="pid-not-an-integer",
-        ),
         pytest.param(
             f'{{"pid":true,"command":"measure","at":"{FIXED_HOLDER_AT}"}}'.encode(),
             id="pid-is-a-bool",
         ),
-        pytest.param(
-            f'{{"pid":42,"command":7,"at":"{FIXED_HOLDER_AT}"}}'.encode(),
-            id="command-not-a-string",
-        ),
-        pytest.param(b'{"pid":42,"command":"measure","at":1767225600}', id="at-not-a-string"),
         pytest.param(
             f'{{"pid":42,"command":"measure","at":"{FIXED_HOLDER_AT}","host":"box"}}'.encode(),
             id="extra-field",

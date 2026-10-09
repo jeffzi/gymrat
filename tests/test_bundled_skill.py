@@ -11,6 +11,7 @@ import pytest
 
 from gymrat.bundled_skill import read_bundled_skill
 from gymrat.errors import GymratError
+from tests._ansi import normalize
 
 SKILL_HEADING = "# Driving a gymrat optimization session"
 
@@ -117,13 +118,13 @@ def _section(heading: str) -> str:
 
 def _paragraph(heading: str, marker: str) -> str:
     """The paragraph (or list item) under ``heading`` containing ``marker``, unwrapped to one line."""
-    paragraphs = (" ".join(item.split()) for item in _section(heading).split("\n\n"))
+    paragraphs = (normalize(item) for item in _section(heading).split("\n\n"))
     return next(item for item in paragraphs if marker in item)
 
 
 def _unwrapped_section(heading: str) -> str:
     """The skill text under ``heading`` with every line break and run of spaces collapsed."""
-    return " ".join(_section(heading).split())
+    return normalize(_section(heading))
 
 
 @pytest.mark.parametrize(
@@ -198,7 +199,7 @@ def _unwrapped_section(heading: str) -> str:
         ),
     ],
 )
-def test_read_bundled_skill_when_passage_read_does_state_its_rule(
+def test_read_bundled_skill_when_section_inspected_does_state_its_rule(
     passage: Callable[[], str],
     phrases: tuple[str, ...],
 ):

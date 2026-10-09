@@ -36,7 +36,9 @@ from tests.supervisor._fixtures import NotJsonEncodable
     ],
 )
 def test_summarize_when_within_budget_does_return_collapsed_text(text: str, expected: str):
-    assert summarize(text) == expected
+    result = summarize(text)
+
+    assert result == expected
 
 
 @pytest.mark.parametrize(
@@ -58,7 +60,9 @@ def test_summarize_when_within_budget_does_return_collapsed_text(text: str, expe
     ],
 )
 def test_summarize_when_over_budget_does_truncate_with_bare_ellipsis(text: str, expected: str):
-    assert summarize(text) == expected
+    result = summarize(text)
+
+    assert result == expected
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +81,9 @@ def test_summarize_when_over_budget_does_truncate_with_bare_ellipsis(text: str, 
 def test_summarize_input_when_given_value_does_summarize_its_json_form(
     value: object, expected: str
 ):
-    assert summarize_input(value) == expected
+    result = summarize_input(value)
+
+    assert result == expected
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +154,9 @@ def test_summarize_input_when_given_value_does_summarize_its_json_form(
 def test_summarize_input_when_known_tool_does_extract_its_identifying_fields(
     tool_name: str, tool_input: dict[str, object], expected: str
 ):
-    assert summarize_input(tool_input, tool_name=tool_name) == expected
+    result = summarize_input(tool_input, tool_name=tool_name)
+
+    assert result == expected
 
 
 @pytest.mark.parametrize(
@@ -186,8 +194,13 @@ def test_summarize_input_when_known_tool_does_extract_its_identifying_fields(
     ],
 )
 def test_summarize_input_when_file_path_given_does_render_it_from_root_or_home(
-    file_path: str, supervised_root: str, expected: str
+    file_path: str,
+    supervised_root: str,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     home = str(Path.home())
 
     result = summarize_input(

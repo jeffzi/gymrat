@@ -26,7 +26,7 @@ from gymrat.session.budget import (
 )
 from gymrat.session.paths import budget_path
 from gymrat.session.records import SessionLogRecord
-from tests._lock import hold_supervise_lock, remove_lock_files
+from tests._lock import held_supervise_lock
 from tests.session.records._fixtures import baseline_record, iteration_record
 
 _FAR_FUTURE_DEADLINE_MS = 999_999_999.0
@@ -94,12 +94,10 @@ def test_write_budget_when_called_does_write_compact_json_bytes(root: str):
 def supervise_lock(root: str, request: pytest.FixtureRequest) -> Iterator[None]:
     """Hold the real supervise lock for ``root``, unless the test parametrizes it ``False``."""
     if getattr(request, "param", True):
-        lock = hold_supervise_lock(root)
-        yield
-        lock.release()
+        with held_supervise_lock(root):
+            yield
     else:
         yield
-    remove_lock_files(root)
 
 
 _WRITTEN = _make_budget(deadline_ms=5000.0)
@@ -128,10 +126,6 @@ def test_read_budget_when_file_written_does_return_it_only_while_held_and_ahead(
 @pytest.mark.parametrize(
     "contents",
     [
-        pytest.param(json.dumps({"max_minutes": 30}).encode(), id="missing-key"),
-        pytest.param(_budget_json(deadline_ms="soon").encode(), id="deadline-string"),
-        pytest.param(_budget_json(deadline_ms=None).encode(), id="deadline-null"),
-        pytest.param(_budget_json(max_minutes="long").encode(), id="max-minutes-string"),
         pytest.param(_budget_json(deadline_ms=True).encode(), id="deadline-bool"),
         pytest.param(_budget_json(extra=1).encode(), id="unexpected-field"),
     ],

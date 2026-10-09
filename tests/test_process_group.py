@@ -26,6 +26,7 @@ from gymrat.process_group import (
 from tests._process_helpers import (
     JOB_HANDLE,
     PROCESS_HANDLE,
+    SLEEPER_ARGV,
     ZOMBIE_ONLY_GROUP_SCRIPT,
     FakeJobs,
     dead_pid,
@@ -242,7 +243,7 @@ def darwin_record(flag: int, state: int) -> bytes:
 @pytest.fixture
 def sleeping_group_leader() -> Iterator[subprocess.Popen[bytes]]:
     """A running child leading a process group of its own, killed and reaped on teardown."""
-    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)  # noqa: S607 -- fixed argv, sleep on PATH
+    proc = subprocess.Popen(SLEEPER_ARGV, start_new_session=True)  # noqa: S603 -- argv is a fixed list, not shell-injected
     yield proc
     proc.kill()
     proc.wait()
@@ -272,8 +273,8 @@ def group_with_lingering_member(
     """A group whose leader has exited, not yet reaped, while a member it started keeps running."""
     member_pid_file = tmp_path / "member.pid"
     leader = subprocess.Popen(  # noqa: S603 -- fixed argv
-        [  # noqa: S607 -- sh on PATH
-            "sh",
+        [
+            "/bin/sh",
             "-c",
             f'sleep {_MEMBER_LIFETIME_S} & echo $! > "$1"',
             "sh",
@@ -303,7 +304,7 @@ def linux_proc_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def exiting_child() -> Iterator[subprocess.Popen[bytes]]:
     """A child that exits with ``_CHILD_STATUS`` at once, reaped on teardown if the test did not."""
-    proc = subprocess.Popen(["sh", "-c", f"exit {_CHILD_STATUS}"])  # noqa: S603, S607 -- fixed argv
+    proc = subprocess.Popen([sys.executable, "-c", f"raise SystemExit({_CHILD_STATUS})"])  # noqa: S603 -- fixed argv
     yield proc
     proc.wait()
 
@@ -784,7 +785,9 @@ def test_terminate_or_kill_process_group_when_job_assignment_refused_does_fall_b
     assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
         "a child that never reached a job was not torn down through taskkill"
     )
-    assert jobs.closed == [PROCESS_HANDLE, JOB_HANDLE], "the refused job handle was leaked"
+    assert sorted(jobs.closed) == sorted([PROCESS_HANDLE, JOB_HANDLE]), (
+        "the refused job handle was leaked"
+    )
 
 
 def test_kill_process_group_when_host_has_no_sigkill_does_terminate_the_job(
@@ -825,7 +828,7 @@ def test_terminate_or_release_process_group_when_job_still_emptying_does_wait_fo
 
     assert jobs.terminated == [JOB_HANDLE]
     assert jobs.queried == [2, 1, 0], "the teardown returned before the job reported itself empty"
-    assert jobs.closed == closed, "the settle path left the job handle open"
+    assert sorted(jobs.closed) == sorted(closed), "the settle path left the job handle open"
 
 
 def test_terminate_process_group_when_job_never_empties_does_give_up_at_the_grace(

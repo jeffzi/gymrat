@@ -251,36 +251,28 @@ async def test_kill_live_process_groups_when_run_is_nested_does_halve_grace_per_
 # before its grace by the test's own clock.
 _TIMER_SLACK_S = 0.01
 
-# The stop grace the abort-timing test runs with. At the real 1 s, the deepest
-# level's 0.25 s grace leaves the kill, pipe close and reap a quarter second
-# before the bound, which a loaded CI runner's scheduling delays can use up.
+# The stop grace the abort-timing test runs with. At the real 1 s, the nested
+# level's 0.5 s grace leaves the kill, pipe close and reap half a second before
+# the bound, which a loaded CI runner's scheduling delays can use up.
 _ROOMY_TERMINATE_GRACE_S = 2.0
 
 
 @pytest.fixture
 def roomy_terminate_grace(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Give a stopped run's grace room for a loaded runner's delays at every nesting level."""
+    """Give a stopped run's grace room for a loaded runner's delays."""
     monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _ROOMY_TERMINATE_GRACE_S)
 
 
-@pytest.mark.parametrize(
-    ("nesting_depth", "expected_grace_s"),
-    [
-        pytest.param(0, 2.0, id="top-level"),
-        pytest.param(1, 1.0, id="nested-once"),
-        pytest.param(2, 0.5, id="nested-twice"),
-    ],
-)
 @pytest.mark.usefixtures("roomy_terminate_grace")
-async def test_exec_when_aborted_in_nested_run_does_halve_grace_per_level(
+async def test_exec_when_aborted_in_nested_run_does_wait_the_nested_grace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
-    *,
-    nesting_depth: int,
-    expected_grace_s: float,
 ) -> None:
-    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", nesting_depth)
+    # One level down is enough: the halving per level is pinned on the fake
+    # clock above, so this only shows the abort path waits the scaled grace.
+    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", 1)
+    nested_grace_s = _ROOMY_TERMINATE_GRACE_S / 2
     abort = asyncio.Event()
     options = make_opts(stdin="go\n", abort=abort)
     task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, options))
@@ -292,8 +284,8 @@ async def test_exec_when_aborted_in_nested_run_does_halve_grace_per_level(
     elapsed = time.monotonic() - started
 
     # The group ignores the polite request, so it stands for the whole grace;
-    # a grace twice as long, the level above's, would outlast the bound.
-    assert expected_grace_s - _TIMER_SLACK_S <= elapsed < 2 * expected_grace_s
+    # the unscaled grace, twice as long, would outlast the bound.
+    assert nested_grace_s - _TIMER_SLACK_S <= elapsed < 2 * nested_grace_s
 
 
 # ---------------------------------------------------------------------------

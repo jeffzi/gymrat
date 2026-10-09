@@ -5,7 +5,7 @@ module rather than being duplicated per test file. ``collecting_observer`` hands
 the list it fills; ``make_launch`` builds a fully-populated ``LaunchEvent`` from
 overridable defaults; ``read_log_lines`` parses a JSONL log into dicts;
 ``NotJsonEncodable`` is a value ``json.dumps`` cannot encode.
-``seed_session_log``, ``seed_with_stop``, ``append_step``, ``driver_calls``,
+``seed_session_log``, ``append_step``, ``driver_calls``,
 ``events_log_path``, and ``_supervise`` share the turn-loop test boilerplate;
 ``LockSwitch`` is a repository lock a test holds and releases between driver
 steps; ``SupervisorClock`` is the supervisor's wall clock, moved by hand; ``_WrapDriver``
@@ -72,7 +72,6 @@ from tests.session.records._fixtures import (
     SUPERVISED_SESSION_ID,
     append_records,
     session_record,
-    stop_record,
 )
 from tests.supervisor._mock_driver import ActionStep, EmitStep, _MockSession
 
@@ -222,6 +221,19 @@ class _InterruptEmitsEndSession(DelegatingSession):
     async def interrupt(self) -> None:
         await self._inner.interrupt()
         self._observer(make_turn_end(cost_usd=0.0))
+
+
+class SlowEndSession(DelegatingSession):
+    """A session whose ``end`` settles only after a delay."""
+
+    def __init__(self, inner: DriverSession, delay_ms: int) -> None:
+        super().__init__(inner)
+        self._delay_ms = delay_ms
+
+    @override
+    async def end(self) -> None:
+        await asyncio.sleep(self._delay_ms / 1000)
+        await self._inner.end()
 
 
 class InterruptEmitsEndDriver:
@@ -452,11 +464,6 @@ def seed_session_log(root: str) -> None:
     append_records(root, session_record())
 
 
-def seed_with_stop(root: str) -> None:
-    """Seed the session log and append a stop record so the classifier sees ``ends_on_stop``."""
-    append_records(root, session_record(), stop_record())
-
-
 def append_step(root: str, *records: SessionLogRecord, delay_ms: int | None = None) -> ActionStep:
     """Build a driver step that appends ``records`` to the session log under ``root``.
 
@@ -633,10 +640,23 @@ class SupervisorClock:
 
     Moving the clock only once a prerequisite is observed orders a wall-clock
     cap after that prerequisite, instead of racing a real-time deadline.
+
+    Args:
+        monkeypatch: Patches the supervisor's wall clock.
+        start_ms: Where the clock stands until a test moves it.
+        deadline_ms: The wall-clock deadline a test hands the supervisor, or
+            None for one minute after ``start_ms``.
     """
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, start_ms: int) -> None:
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        start_ms: int,
+        *,
+        deadline_ms: int | None = None,
+    ) -> None:
         self.now_ms = start_ms
+        self.deadline_ms = start_ms + 60_000 if deadline_ms is None else deadline_ms
         monkeypatch.setattr(
             "gymrat.supervisor.supervise.now_ms",
             create_autospec(now_ms, side_effect=lambda: self.now_ms),
@@ -645,6 +665,29 @@ class SupervisorClock:
     def jump_to(self, to_ms: int) -> None:
         """Move the clock to ``to_ms``."""
         self.now_ms = to_ms
+
+    def jump_on(
+        self,
+        event_type: type[SessionEvent],
+        observer: SessionObserver | None = None,
+    ) -> SessionObserver:
+        """Build an observer that moves the clock to the deadline when an ``event_type`` arrives.
+
+        Args:
+            event_type: The event that passes the deadline.
+            observer: Receives every event first, or None to forward nothing.
+
+        Returns:
+            The forwarding observer, ready to hand to ``_supervise``.
+        """
+
+        def observe(event: SessionEvent) -> None:
+            if observer is not None:
+                observer(event)
+            if isinstance(event, event_type):
+                self.jump_to(self.deadline_ms)
+
+        return observe
 
     def jump_step(self, to_ms: int, *, after: asyncio.Event | None = None) -> ActionStep:
         """Build a driver step that moves the clock to ``to_ms``.
@@ -676,6 +719,11 @@ def events_log_path(root: str) -> Path:
     return Path(root).parent / "events.jsonl"
 
 
+def lock_file_path(root: str) -> Path:
+    """The repository lock file ``_supervise`` probes for the repository at ``root``."""
+    return Path(root).parent / "lockfile"
+
+
 async def _supervise(
     root: str,
     driver: Driver,
@@ -695,7 +743,7 @@ async def _supervise(
 
     The event log and the repository lock file sit beside ``root``; the
     session's caps come from the keywords, and the launch event carries the
-    same spend cap unless ``launch`` says otherwise.
+    same wall-clock and spend caps unless ``launch`` says otherwise.
 
     Args:
         root: The repository the session runs in.
@@ -704,7 +752,8 @@ async def _supervise(
         max_minutes: The wall-clock cap in minutes.
         max_usd: The spend cap in dollars, or None for no cap.
         deadline_ms: The wall-clock deadline, or None for ``max_minutes`` from now.
-        launch: The launch event to emit, or None for one carrying ``max_usd``.
+        launch: The launch event to emit, or None for one carrying ``max_minutes``
+            and ``max_usd``.
         observer: Receives every session event.
         is_lock_held: Answers whether the repository lock is held; None probes
             the real lock file instead.
@@ -721,13 +770,13 @@ async def _supervise(
         context=make_context(
             root=root,
             log_path=str(events_log_path(root)),
-            lock_path=str(Path(root).parent / "lockfile"),
+            lock_path=str(lock_file_path(root)),
             config=config,
             deadline_ms=deadline_ms,
             max_minutes=max_minutes,
             max_usd=max_usd,
         ),
-        launch=make_launch(max_usd=max_usd) if launch is None else launch,
+        launch=make_launch(max_minutes=max_minutes, max_usd=max_usd) if launch is None else launch,
         observer=observer,
         grace_ms=grace_ms,
         wall_clock_poll_ms=wall_clock_poll_ms,

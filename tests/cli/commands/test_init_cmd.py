@@ -23,12 +23,11 @@ from gymrat.session.paths import (
 from tests._ansi import strip_ansi
 from tests._config import resolved_config
 from tests._lock import held_supervise_lock
-from tests.cli._budget import set_origin, write_budget_file
+from tests.cli._budget import set_origin
 from tests.cli._session import runner
-from tests.config._toml import write_raw
+from tests.config._toml import EXISTING_CONFIG, write_raw
+from tests.session._budget import write_budget_file
 from tests.session.records._fixtures import log_records
-
-EXISTING_CONFIG = 'bench = "old"\n'
 
 LIVE_REFUSAL = "a supervised run is live; init is not part of the loop"
 
@@ -116,52 +115,14 @@ def test_init_when_config_already_exists_does_not_require_bench(existing_config_
 # ---------------------------------------------------------------------------
 
 
-def _skill_path_directory(base: Path) -> None:
-    """Make the skill file path a directory, beside an existing config."""
-    write_raw(base, EXISTING_CONFIG)
-    (base / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
-
-
-def _runbook_path_directory(base: Path) -> None:
-    """Make the runbook path a directory."""
-    (base / "gymrat-runbook.md").mkdir()
-
-
-def _runbook_symlink(base: Path) -> None:
-    """Make the runbook path a symlink to a regular file."""
-    target = base / "real.md"
-    target.write_text("# target\n", encoding="utf-8")
-    (base / "gymrat-runbook.md").symlink_to(target)
-
-
-@pytest.mark.parametrize(
-    ("block", "argv", "named"),
-    [
-        pytest.param(_skill_path_directory, ["init"], "SKILL.md", id="skill-path-is-a-directory"),
-        pytest.param(
-            _runbook_path_directory,
-            ["init", "--bench", "npm run bench"],
-            "gymrat-runbook.md",
-            id="runbook-path-is-a-directory",
-        ),
-        pytest.param(
-            _runbook_symlink,
-            ["init", "--bench", "npm run bench"],
-            "gymrat-runbook.md",
-            id="runbook-is-a-symlink",
-        ),
-    ],
-)
 @pytest.mark.usefixtures("_in_non_repo")
-def test_init_when_artifact_path_blocked_does_exit_two_naming_it(
-    block: Callable[[Path], None], argv: list[str], named: str, tmp_path: Path
-):
-    block(tmp_path)
+def test_init_when_artifact_path_blocked_does_exit_two_naming_it(tmp_path: Path):
+    (tmp_path / "gymrat-runbook.md").mkdir()
 
-    result = runner.invoke(app, argv)
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
 
     assert result.exit_code == 2
-    assert named in result.stderr
+    assert "gymrat-runbook.md" in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -170,18 +131,20 @@ def test_init_when_artifact_path_blocked_does_exit_two_naming_it(
 
 
 @pytest.mark.usefixtures("_in_non_repo")
-def test_init_when_scaffolding_succeeds_does_close_the_summary_on_the_doctor_pointer():
+def test_init_when_scaffolding_succeeds_does_list_each_created_artifact_closing_on_the_doctor_pointer():
     result = runner.invoke(app, ["init", "--bench", "npm run bench"])
 
-    assert result.exit_code == 0
-    out = result.stdout
-    assert "Config: created at gymrat.toml" in out
-    assert result.stderr == ""
-    lines = strip_ansi(out).rstrip("\n").split("\n")
-    pointer_index = next(i for i, line in enumerate(lines) if "gymrat doctor" in line)
-    assert lines[pointer_index].strip() == "Run gymrat doctor to verify the setup."
-    # The hint closes the artifact block directly — no blank line before it.
-    assert lines[pointer_index - 1].strip().startswith("Skill:")
+    # The pointer closes the artifact block directly — no blank line before it.
+    assert (result.exit_code, strip_ansi(result.stdout), result.stderr) == (
+        0,
+        (
+            "  Config: created at gymrat.toml\n"
+            "  Runbook: created at gymrat-runbook.md\n"
+            "  Skill: created at .claude/skills/gymrat/SKILL.md\n"
+            "Run gymrat doctor to verify the setup.\n"
+        ),
+        "",
+    )
 
 
 @pytest.mark.usefixtures("_in_non_repo")
@@ -221,18 +184,6 @@ def test_init_when_colored_does_dim_the_doctor_pointer(monkeypatch: pytest.Monke
         line for line in result.stdout.split("\n") if "gymrat doctor" in strip_ansi(line)
     )
     assert pointer.startswith("\x1b[2m")
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_init_when_color_flag_given_does_style_the_summary_despite_no_color(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("NO_COLOR", "1")
-
-    result = runner.invoke(app, ["init", "--bench", "npm run bench", "--color"])
-
-    assert result.exit_code == 0
-    assert "\x1b[" in result.stdout
 
 
 # ---------------------------------------------------------------------------

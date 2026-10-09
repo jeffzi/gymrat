@@ -23,12 +23,11 @@ from tests.report._assertions import (
     styles_at,
     table_rows,
 )
-from tests.report._probes import probe_metric, probe_result
+from tests.report._probes import golden_probe, probe_metric, probe_result
 
 if TYPE_CHECKING:
     from syrupy.assertion import SnapshotAssertion
 
-    from gymrat.loop.probe import ProbeResult
     from gymrat.model import Direction
 
 # ---------------------------------------------------------------------------
@@ -112,16 +111,20 @@ def test_render_probe_report_when_reference_zero_does_leave_the_delta_unstyled(
     assert "\x1b[" not in delta_cell(row)
 
 
-def test_render_probe_report_when_colored_does_style_the_title_and_experiment_labels():
-    report = render_probe_report(_golden_probe(), ReportOptions(color=True))
+@pytest.mark.parametrize(
+    ("needle", "marker", "expected"),
+    [
+        pytest.param("gymrat probe", "gymrat probe", ["1"], id="title-bold"),
+        pytest.param("gymrat probe", "experiment", ["1", "4"], id="header-label-underlined"),
+        pytest.param("baseline", "experiment", ["1", "4"], id="column-label-underlined"),
+    ],
+)
+def test_render_probe_report_when_colored_does_style_each_element(
+    needle: str, marker: str, expected: list[str]
+):
+    report = render_probe_report(golden_probe(), ReportOptions(color=True))
 
-    header = line_containing(report, "gymrat probe")
-    heading = line_containing(report, "baseline")
-    assert (
-        styles_at(header, "gymrat probe"),
-        styles_at(header, "experiment"),
-        styles_at(heading, "experiment"),
-    ) == (["1"], ["1", "4"], ["1", "4"])
+    assert styles_at(line_containing(report, needle), marker) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -129,25 +132,7 @@ def test_render_probe_report_when_colored_does_style_the_title_and_experiment_la
 # ---------------------------------------------------------------------------
 
 
-def _golden_probe() -> ProbeResult:
-    """A probe with a paired metric, a higher-is-better metric, and one the baseline lacks."""
-    return probe_result(
-        metrics=[
-            probe_metric("total_ns", unit="ns", kind="time"),
-            probe_metric(
-                "ops_per_sec",
-                median=1200.0,
-                reference_median=1000.0,
-                delta_pct=20.0,
-                direction="higher",
-                kind="throughput",
-            ),
-            probe_metric("cold_start_ns", reference_median=None, delta_pct=None, unit="ns"),
-        ]
-    )
-
-
 def test_render_probe_report_when_rendered_does_match_its_golden(snapshot: SnapshotAssertion):
-    report = render_probe_report(_golden_probe(), ReportOptions(color=False))
+    report = render_probe_report(golden_probe(), ReportOptions(color=False))
 
     assert report.split("\n") == snapshot

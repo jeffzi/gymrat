@@ -23,6 +23,7 @@ from tests.session.records._wire import (
     COMMAND_RECORD_SUCCESS,
     COMMAND_RECORD_WITH_TRACEPARENT,
     COMMITTED_KEEP_RECORD,
+    CONFIRM,
     DISCARD_RECORD,
     FINALIZE_RECORD,
     HOOK_RECORD,
@@ -31,18 +32,13 @@ from tests.session.records._wire import (
     SESSION_RECORD,
     STOP_RECORD,
     config_with,
+    confirm_with,
     field_of,
     omitting,
     patching,
+    verdict_with,
+    verdict_without,
 )
-
-
-def _verdict_with(**overrides: object) -> dict[str, object]:
-    return patching(ITERATION_RECORD, {"metrics": {"total_ms": {**METRIC_VERDICT, **overrides}}})
-
-
-def _verdict_without(key: str) -> dict[str, object]:
-    return patching(ITERATION_RECORD, {"metrics": {"total_ms": omitting(METRIC_VERDICT, key)}})
 
 
 def _nested_with(record: dict[str, object], field: str, **overrides: object) -> dict[str, object]:
@@ -112,9 +108,9 @@ def test_parse_record_when_type_unknown_does_raise_with_known_types_hint(value: 
         pytest.param(omitting(BASELINE_RECORD, "samples"), "samples", id="baseline-no-samples"),
         pytest.param(omitting(ITERATION_RECORD, "metrics"), "metrics", id="iteration-no-metrics"),
         pytest.param(
-            _verdict_without("delta_pct"), "metrics.total_ms.delta_pct", id="verdict-drops-delta"
+            verdict_without("delta_pct"), "metrics.total_ms.delta_pct", id="verdict-drops-delta"
         ),
-        pytest.param(_verdict_without("gating"), "metrics.total_ms.gating", id="verdict-no-gating"),
+        pytest.param(verdict_without("gating"), "metrics.total_ms.gating", id="verdict-no-gating"),
         pytest.param(
             patching(ITERATION_RECORD, {"metrics": {"123": omitting(METRIC_VERDICT, "delta_pct")}}),
             "metrics.123.delta_pct",
@@ -161,7 +157,7 @@ def test_parse_record_when_key_missing_does_reject_naming_key(value: object, key
             "config.retries",
             id="unknown-nested",
         ),
-        pytest.param(_verdict_with(band=1.4), "metrics.total_ms.band", id="unknown-in-verdict"),
+        pytest.param(verdict_with(band=1.4), "metrics.total_ms.band", id="unknown-in-verdict"),
         pytest.param(
             patching(ITERATION_RECORD, {"schema": 1}), "schema", id="schema-on-non-session"
         ),
@@ -177,21 +173,6 @@ def test_parse_record_when_key_unknown_does_reject_naming_key(value: object, key
 # ---------------------------------------------------------------------------
 # Tuple fields — a JSON array is accepted, anything else is rejected
 # ---------------------------------------------------------------------------
-
-
-CONFIRM: dict[str, object] = {
-    "ran": True,
-    "filtered": ["total_ms"],
-    "absent": ["rss_kb"],
-    "samples": {
-        "experiment": [{"total_ms": 14120}],
-        "baseline": [{"total_ms": 15170}],
-    },
-}
-
-
-def _confirm_with(**overrides: object) -> dict[str, object]:
-    return {**CONFIRM, **overrides}
 
 
 def test_parse_record_when_iteration_tuple_fields_sent_as_arrays_does_hold_tuples():
@@ -273,13 +254,13 @@ _COMMAND_REASONS = (
             id="command-origin",
         ),
         pytest.param(
-            _verdict_with(verdict="banana"),
+            verdict_with(verdict="banana"),
             "metrics.total_ms.verdict: expected 'improved', 'regressed', 'no-signal' or "
             "'unstable', got \"banana\"",
             id="verdict",
         ),
         pytest.param(
-            _verdict_with(method="banana"),
+            verdict_with(method="banana"),
             "metrics.total_ms.method: expected 'permutation', 'band' or 'exact', got \"banana\"",
             id="method",
         ),
@@ -326,7 +307,7 @@ _COMMAND_REASONS = (
         ),
         # nullable fields take the phrase of their non-null type
         pytest.param(
-            _verdict_with(delta_pct="banana"),
+            verdict_with(delta_pct="banana"),
             'metrics.total_ms.delta_pct: expected a number, got "banana"',
             id="verdict-delta-string",
         ),
@@ -350,7 +331,7 @@ _COMMAND_REASONS = (
             id="config-hooks-before-null",
         ),
         pytest.param(
-            _verdict_with(p=None),
+            verdict_with(p=None),
             "metrics.total_ms.p: expected a number, got null",
             id="verdict-p-null",
         ),
@@ -429,22 +410,22 @@ _COMMAND_REASONS = (
         ),
         # confirm field
         pytest.param(
-            patching(ITERATION_RECORD, {"confirm": _confirm_with(filtered="total_ms")}),
+            patching(ITERATION_RECORD, {"confirm": confirm_with(filtered="total_ms")}),
             'confirm.filtered: expected an array, got "total_ms"',
             id="filtered-string",
         ),
         pytest.param(
-            patching(ITERATION_RECORD, {"confirm": _confirm_with(absent="total_ms")}),
+            patching(ITERATION_RECORD, {"confirm": confirm_with(absent="total_ms")}),
             'confirm.absent: expected an array, got "total_ms"',
             id="absent-string",
         ),
         pytest.param(
-            patching(ITERATION_RECORD, {"confirm": _confirm_with(filtered=[True])}),
+            patching(ITERATION_RECORD, {"confirm": confirm_with(filtered=[True])}),
             "confirm.filtered.0: expected a string, got true",
             id="filtered-bool",
         ),
         pytest.param(
-            patching(ITERATION_RECORD, {"confirm": _confirm_with(absent=[False])}),
+            patching(ITERATION_RECORD, {"confirm": confirm_with(absent=[False])}),
             "confirm.absent.0: expected a string, got false",
             id="absent-bool",
         ),
@@ -452,7 +433,7 @@ _COMMAND_REASONS = (
             patching(
                 ITERATION_RECORD,
                 {
-                    "confirm": _confirm_with(
+                    "confirm": confirm_with(
                         samples={"experiment": [{"total_ms": True}], "baseline": []}
                     )
                 },
@@ -464,7 +445,7 @@ _COMMAND_REASONS = (
             patching(
                 ITERATION_RECORD,
                 {
-                    "confirm": _confirm_with(
+                    "confirm": confirm_with(
                         samples={"experiment": [], "baseline": [{"total_ms": "banana"}]}
                     )
                 },

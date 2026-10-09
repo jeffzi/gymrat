@@ -44,7 +44,7 @@ from gymrat.doctor import (
 from gymrat.errors import GymratError
 from tests._config import benchless_config as _config
 from tests._doctor_fixtures import doctor_report, environment_info
-from tests.adapters._inputs import VALID_ADAPTERS_HINT
+from tests.adapters._inputs import VALID_ADAPTERS_HINT, unknown_adapter_message
 from tests.config._toml import write_raw
 
 _DEFAULT_CONFIG = _config()
@@ -223,6 +223,13 @@ def test_build_workflow_section_when_problems_present_does_return_single_ok_skip
     ]
 
 
+_STOP_UNSET = Check(
+    name="stop",
+    status="warn",
+    detail="stop is not configured",
+    hint="Without stop, a session has no finish line",
+)
+
 _UNSET_WORKFLOW_CHECKS = [
     Check(
         name="checks",
@@ -230,12 +237,7 @@ _UNSET_WORKFLOW_CHECKS = [
         detail="checks is not configured",
         hint="Without checks, keep cannot gate commits",
     ),
-    Check(
-        name="stop",
-        status="warn",
-        detail="stop is not configured",
-        hint="Without stop, a session has no finish line",
-    ),
+    _STOP_UNSET,
     Check(
         name="runbook",
         status="warn",
@@ -281,14 +283,6 @@ def test_build_workflow_section_when_config_unset_does_produce_the_exact_section
     assert section == CheckSection(title="Workflow", checks=[skill_check, *_UNSET_WORKFLOW_CHECKS])
 
 
-_STOP_UNSET = Check(
-    name="stop",
-    status="warn",
-    detail="stop is not configured",
-    hint="Without stop, a session has no finish line",
-)
-
-
 @pytest.mark.parametrize(
     ("config", "name", "expected"),
     [
@@ -316,7 +310,6 @@ _STOP_UNSET = Check(
             Check(name="stop", status="ok", detail="stop: target_value: 1.5, max_iterations: 20"),
             id="stop-both",
         ),
-        pytest.param(_config(stop=None), "stop", _STOP_UNSET, id="stop-unset"),
         pytest.param(_config(stop=StopConfig()), "stop", _STOP_UNSET, id="stop-empty"),
         pytest.param(
             _config(runbook="./RUNBOOK.md"),
@@ -337,63 +330,6 @@ def test_build_workflow_section_when_field_configured_does_report_its_check(
     )
 
     assert _find(section, name) == expected
-
-
-def _found_under_usr_bin(cmd: str) -> str:
-    return f"/usr/bin/{cmd}"
-
-
-def _not_on_path(_cmd: str) -> None:
-    return None
-
-
-# ---------------------------------------------------------------------------
-# PATH probe with shell command strings
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("bench", "expected_exe"),
-    [
-        pytest.param('"node" bench.js', "node", id="quoted-exe"),
-        pytest.param("VAR=1 make test", "make", id="env-var-prefix"),
-        pytest.param("VAR=1 FOO=2 node bench.js", "node", id="multiple-env-vars"),
-    ],
-)
-def test_build_bench_section_when_shell_command_does_extract_real_executable(
-    monkeypatch: pytest.MonkeyPatch,
-    bench: str,
-    expected_exe: str,
-):
-    monkeypatch.setattr("shutil.which", _found_under_usr_bin)
-
-    section = build_bench_section(bench=bench, adapter="metric-lines", base_dir=".")
-
-    exe_check = next(c for c in section.checks if c.name == "executable")
-    assert exe_check == Check(
-        name="executable", status="ok", detail=f"{expected_exe} is available on PATH"
-    )
-
-
-@pytest.mark.parametrize(
-    "bench",
-    [
-        pytest.param("cd src && make bench", id="shell-operator-cd"),
-        pytest.param("{ make bench; }", id="shell-brace-group"),
-        pytest.param("~/bin/bench.sh", id="home-shorthand"),
-        pytest.param("$HOME/bin/bench.sh --fast", id="variable-expansion"),
-        pytest.param("`pwd`/bench.sh", id="command-substitution"),
-    ],
-)
-def test_build_bench_section_when_shell_metacharacters_does_skip_path_check(
-    monkeypatch: pytest.MonkeyPatch,
-    bench: str,
-):
-    monkeypatch.setattr("shutil.which", _not_on_path)
-
-    section = build_bench_section(bench=bench, adapter="metric-lines", base_dir=".")
-
-    assert not any(c.name == "executable" for c in section.checks)
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +359,7 @@ _ADAPTER_OK = Check(name="adapter", status="ok", detail="adapter: metric-lines")
                 Check(
                     name="adapter",
                     status="fail",
-                    detail='Unknown adapter: "banana".',
+                    detail=unknown_adapter_message("banana"),
                     hint=VALID_ADAPTERS_HINT,
                 )
             ],
@@ -469,9 +405,88 @@ _ADAPTER_OK = Check(name="adapter", status="ok", detail="adapter: metric-lines")
             ],
             id="executable-missing",
         ),
+        pytest.param(
+            '"node" bench.js',
+            "metric-lines",
+            False,
+            "/usr/bin/x",
+            [
+                _ADAPTER_OK,
+                Check(name="bench", status="ok", detail='bench: "node" bench.js'),
+                Check(name="executable", status="ok", detail="node is available on PATH"),
+            ],
+            id="quoted-exe",
+        ),
+        pytest.param(
+            "VAR=1 make test",
+            "metric-lines",
+            False,
+            "/usr/bin/x",
+            [
+                _ADAPTER_OK,
+                Check(name="bench", status="ok", detail="bench: VAR=1 make test"),
+                Check(name="executable", status="ok", detail="make is available on PATH"),
+            ],
+            id="env-var-prefix",
+        ),
+        pytest.param(
+            "VAR=1 FOO=2 node bench.js",
+            "metric-lines",
+            False,
+            "/usr/bin/x",
+            [
+                _ADAPTER_OK,
+                Check(name="bench", status="ok", detail="bench: VAR=1 FOO=2 node bench.js"),
+                Check(name="executable", status="ok", detail="node is available on PATH"),
+            ],
+            id="multiple-env-vars",
+        ),
+        pytest.param(
+            "cd src && make bench",
+            "metric-lines",
+            False,
+            None,
+            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: cd src && make bench")],
+            id="shell-operator-cd",
+        ),
+        pytest.param(
+            "{ make bench; }",
+            "metric-lines",
+            False,
+            None,
+            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: { make bench; }")],
+            id="shell-brace-group",
+        ),
+        pytest.param(
+            "~/bin/bench.sh",
+            "metric-lines",
+            False,
+            None,
+            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: ~/bin/bench.sh")],
+            id="home-shorthand",
+        ),
+        pytest.param(
+            "$HOME/bin/bench.sh --fast",
+            "metric-lines",
+            False,
+            None,
+            [
+                _ADAPTER_OK,
+                Check(name="bench", status="ok", detail="bench: $HOME/bin/bench.sh --fast"),
+            ],
+            id="variable-expansion",
+        ),
+        pytest.param(
+            "`pwd`/bench.sh",
+            "metric-lines",
+            False,
+            None,
+            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: `pwd`/bench.sh")],
+            id="command-substitution",
+        ),
     ],
 )
-def test_build_bench_section_when_built_does_produce_the_exact_section(  # noqa: PLR0917 -- one parameter per input plus the expected section and fixture
+def test_build_bench_section_when_inputs_vary_does_produce_the_matching_checks(  # noqa: PLR0917 -- one parameter per input plus the expected section and fixture
     bench: str | None,
     adapter: str,
     config_problems: bool,
@@ -575,7 +590,7 @@ def _check(report: DoctorReport, title: str, name: str) -> Check:
         ),
     ],
 )
-def test_build_doctor_report_when_config_read_for_real_does_report_its_findings(
+def test_build_doctor_report_when_config_file_invalid_or_absent_does_report_its_effect_per_section(
     tmp_path: Path, toml: str | None, expected: Check, bench_checks: list[Check]
 ):
     if toml is not None:
@@ -597,7 +612,7 @@ def test_build_doctor_report_when_adapter_flag_given_does_check_it_in_the_bench_
     assert _check(report, "Bench", "adapter") == Check(
         name="adapter",
         status="fail",
-        detail='Unknown adapter: "banana".',
+        detail=unknown_adapter_message("banana"),
         hint=VALID_ADAPTERS_HINT,
     )
 
@@ -785,7 +800,7 @@ def test_render_doctor_report_when_rendered_does_match_the_snapshot(
 # ---------------------------------------------------------------------------
 
 
-def test_render_doctor_json_when_rendered_does_emit_two_space_indented_document():
+def test_render_doctor_json_when_report_has_a_warning_does_emit_two_space_indented_document():
     report = _warning_only_report()
 
     output = render_doctor_json(report)

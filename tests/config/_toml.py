@@ -22,6 +22,9 @@ DIGIT_LIMIT_DOCUMENT = "samples = 1" + "0" * 5000
 #: parser raises ``RecursionError``.
 DEEP_NESTING_DOCUMENT = "bench = " + "[" * 100_000 + "]" * 100_000
 
+#: A ``gymrat.toml`` already on disk before a scaffold, so a test can see it left untouched.
+EXISTING_CONFIG = 'bench = "old"\n'
+
 
 #: The loop keys a fully configured ``gymrat.toml`` carries beside its bench.
 LOOP_CONFIG: dict[str, object] = {

@@ -48,7 +48,7 @@ _GIT_DIR_ARGS = ["rev-parse", "--git-dir"]
         pytest.param("GIT_INDEX_FILE", ["ls-files"], "README.md\n", id="GIT_INDEX_FILE"),
     ],
 )
-def test_run_git_when_repo_env_var_set_does_scrub_it_and_use_cwd(
+def test_run_git_when_repo_env_var_set_does_resolve_against_cwd(
     repo: str, monkeypatch: pytest.MonkeyPatch, key: str, args: list[str], expected: str
 ):
     monkeypatch.setenv(key, "/nonexistent/.git")
@@ -79,9 +79,8 @@ def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
     run_git(["read-tree", "--empty"], repo, env=custom_env)
 
     run_git(["update-index", "--add", "--", "staged.txt"], repo, env=custom_env)
-    tree_sha = run_git(["write-tree"], repo, env=custom_env).strip()
 
-    assert "staged.txt" in run_git(["ls-tree", tree_sha], repo)
+    assert run_git(["ls-files"], repo, env=custom_env) == "staged.txt\n"
     assert run_git(["diff", "--cached", "--name-only"], repo) == ""
 
 
@@ -198,7 +197,7 @@ def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_unt
     assert list_worktree_dirs(repo, include_main=False) == []
 
 
-def test_run_git_when_pthread_sigmask_unavailable_does_run_unmasked_and_return_stdout(
+def test_run_git_when_pthread_sigmask_unavailable_does_still_return_stdout(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(signals, "pthread_sigmask", None)

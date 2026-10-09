@@ -12,7 +12,7 @@ and safe under ``pytest-xdist`` / ``pytest-randomly``.
 
 import pytest
 
-from gymrat.loop.stop import StopResult, stop_session
+from gymrat.loop.stop import stop_session
 from gymrat.session.records import SessionLogRecord, StopRecord
 from tests.loop._settle import (
     capture_error,
@@ -57,7 +57,6 @@ def test_stop_session_when_open_does_append_a_stop_record(
     assert isinstance(record, StopRecord)
     assert record.message == "switched to a different approach\nsecond line"
     assert record.at > 0
-    assert isinstance(result, StopResult)
     assert result.report == "Stopped: switched to a different approach"
 
 

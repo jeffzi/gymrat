@@ -209,6 +209,12 @@ def test_parse_fail_on_when_not_regressed_or_geomean_does_reject(value: str):
             _POSITIVE_NUMBER_MESSAGE,
             id="max-usd",
         ),
+        pytest.param(["supervise", "optimize"], "--max-minutes", id="max-minutes-missing"),
+        pytest.param(
+            ["supervise", "optimize", "--max-minutes", "10", "--effort", "banana"],
+            "'banana' is not one of 'low', 'medium', 'high', 'xhigh', 'max'.",
+            id="effort",
+        ),
     ],
 )
 def test_cli_option_when_invalid_does_exit_two_with_message(

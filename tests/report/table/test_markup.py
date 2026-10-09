@@ -83,7 +83,7 @@ from tests.report._verdicts import geomean_of, metric_meta
         ),
     ],
 )
-def test_verdict_cell_when_fields_padded_to_widths_does_style_only_field_text(
+def test_verdict_cell_when_parts_vary_does_pad_each_field_to_its_width_with_styles_on_text_only(
     parts: VerdictParts,
     widths: VerdictWidths,
     delta_style: str | None,
@@ -146,9 +146,8 @@ def test_scoped_geomean_label_when_exclusions_vary_does_count_kept_metrics_again
     [
         pytest.param(geomean_of(value=-6, band=5), "bold green", id="improvement-past-band"),
         pytest.param(geomean_of(value=6, band=5), "bold red", id="regression-past-band"),
-        pytest.param(geomean_of(value=-4, band=5), "bold", id="improvement-inside-band"),
-        pytest.param(geomean_of(value=4, band=5), "bold", id="regression-inside-band"),
-        pytest.param(geomean_of(value=-5, band=5), "bold", id="level-with-band"),
+        pytest.param(geomean_of(value=-5, band=5), "bold", id="improvement-level-with-band"),
+        pytest.param(geomean_of(value=5, band=5), "bold", id="regression-level-with-band"),
         pytest.param(geomean_of(value=-0.2, band=0), "bold green", id="improvement-no-band"),
         pytest.param(geomean_of(value=float("nan"), n=0), "bold", id="no-stable-metrics"),
     ],

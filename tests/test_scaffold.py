@@ -27,7 +27,7 @@ from gymrat.scaffold import (
     scaffold,
 )
 from tests._mode_bits import needs_mode_bits
-from tests.config._toml import write_raw
+from tests.config._toml import EXISTING_CONFIG, write_raw
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -38,22 +38,12 @@ def _read_config(base: Path) -> dict[str, object]:
     return tomllib.loads((base / "gymrat.toml").read_text(encoding="utf-8"))
 
 
-EXISTING_CONFIG = 'bench = "old"\n'
-
-
-@pytest.fixture
-def existing_config_dir(tmp_path: Path) -> Path:
-    """A ``tmp_path`` with a pre-existing ``gymrat.toml`` already written."""
-    write_raw(tmp_path, EXISTING_CONFIG)
-    return tmp_path
-
-
 # ---------------------------------------------------------------------------
 # basic scaffold with defaults
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_when_defaults_does_create_a_loadable_config_the_runbook_stub_and_the_skill(
+def test_scaffold_when_defaults_does_create_every_artifact(
     tmp_path: Path,
 ):
     result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
@@ -95,7 +85,7 @@ def test_scaffold_when_defaults_does_create_a_loadable_config_the_runbook_stub_a
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_when_runbook_false_does_omit_runbook_and_report_declined(tmp_path: Path):
+def test_scaffold_when_runbook_false_does_decline_the_runbook(tmp_path: Path):
     result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", runbook=False))
 
     config = _read_config(tmp_path)
@@ -146,7 +136,7 @@ _PLANTED = {
         pytest.param(tuple(_PLANTED), None, ("exists", "exists", "exists"), id="every-artifact"),
     ],
 )
-def test_scaffold_when_artifacts_already_exist_does_leave_them_and_report_exists(
+def test_scaffold_when_artifacts_already_exist_does_keep_them(
     tmp_path: Path, planted: tuple[str, ...], bench: str | None, statuses: tuple[str, str, str]
 ):
     for relative in planted:
@@ -166,7 +156,7 @@ def test_scaffold_when_artifacts_already_exist_does_leave_them_and_report_exists
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_when_skill_declined_does_not_create_skill_and_report_declined(tmp_path: Path):
+def test_scaffold_when_skill_declined_does_decline_the_skill(tmp_path: Path):
     result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=False))
 
     assert not (tmp_path / SKILL_RELATIVE_PATH).exists()
@@ -195,27 +185,27 @@ def _break_bundled_skill(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(resources, "files", corrupt_package)
 
 
-def test_scaffold_when_skill_read_fails_does_not_leave_config_or_runbook_behind(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("already_there", "bench"),
+    [
+        pytest.param({}, "npm run bench", id="fresh-directory"),
+        pytest.param({"gymrat.toml": EXISTING_CONFIG}, None, id="pre-existing-config"),
+    ],
+)
+def test_scaffold_when_skill_read_fails_does_leave_the_directory_as_it_found_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    already_there: dict[str, str],
+    bench: str | None,
 ):
+    for name, text in already_there.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
     _break_bundled_skill(monkeypatch)
 
     with pytest.raises(GymratError):
-        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+        scaffold(str(tmp_path), ScaffoldRequest(bench=bench, install_skill=True))
 
-    assert not (tmp_path / "gymrat.toml").exists()
-    assert not (tmp_path / "gymrat-runbook.md").exists()
-
-
-def test_scaffold_when_skill_read_fails_does_not_delete_a_pre_existing_config(
-    existing_config_dir: Path, monkeypatch: pytest.MonkeyPatch
-):
-    _break_bundled_skill(monkeypatch)
-
-    with pytest.raises(GymratError):
-        scaffold(str(existing_config_dir), ScaffoldRequest(install_skill=True))
-
-    assert (existing_config_dir / "gymrat.toml").read_text(encoding="utf-8") == EXISTING_CONFIG
+    assert _files(tmp_path) == already_there
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +304,7 @@ def test_scaffold_when_skipped_artifact_paths_are_directories_does_write_the_con
     )
 
     assert result.config.status == "created"
+    assert (tmp_path / "gymrat.toml").read_bytes() == b'bench = "npm run bench"\n'
 
 
 def test_scaffold_when_config_path_cannot_be_checked_does_raise_naming_it(
@@ -338,7 +329,7 @@ def test_scaffold_when_config_path_cannot_be_checked_does_raise_naming_it(
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_when_config_write_fails_does_raise_with_the_os_reason_and_leave_no_partial_config(
+def test_scaffold_when_config_write_fails_does_raise_atomically(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     def exploding_replace(src: object, dst: object) -> None:
@@ -430,7 +421,7 @@ def _plant_tree(base: Path, tree: dict[str, str | None]) -> None:
             (base / relative).write_text(content, encoding="utf-8")
 
 
-def test_scaffold_when_runbook_write_fails_does_raise_naming_it_and_remove_the_config_it_created(
+def test_scaffold_when_runbook_write_fails_does_roll_back_the_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     _fail_write_of(monkeypatch, "gymrat-runbook.md")

@@ -14,6 +14,7 @@ case attaches stdout to a real pty, so the module is POSIX-only.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -113,7 +114,7 @@ def test_report_when_stdout_is_a_real_tty_does_render_styled(
 
     assert returncode == 0, stderr
     assert title in strip_ansi(output)
-    assert "\x1b[" in output
+    assert re.search(r"\x1b\[[0-9;]*m", output)
 
 
 def test_measure_report_when_stdout_is_redirected_does_render_plain(
