@@ -45,6 +45,7 @@ from tests._process_helpers import (
     ZOMBIE_ONLY_GROUP_SCRIPT,
     is_alive,
     killpg_warnings,
+    poll_until,
     refuse_killpg,
     wait_for_file,
     wait_for_pid_file,
@@ -88,14 +89,13 @@ async def wait_for_shell_exit(proc: asyncio.subprocess.Process, timeout_s: float
     Raises:
         TimeoutError: stdout did not reach EOF within ``timeout_s``.
     """
-    assert proc.stdout is not None
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while not proc.stdout.at_eof():
-        if loop.time() > deadline:
-            msg = f"shell {proc.pid} never closed its stdout"
-            raise TimeoutError(msg)
-        await asyncio.sleep(0.01)
+    stdout = proc.stdout
+    assert stdout is not None
+    await poll_until(
+        stdout.at_eof,
+        timeout_s,
+        lambda: TimeoutError(f"shell {proc.pid} never closed its stdout"),
+    )
 
 
 def pidfd_available() -> bool:

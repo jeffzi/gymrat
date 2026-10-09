@@ -24,17 +24,18 @@ the two cannot diverge.
 
 import importlib.metadata
 import json
+import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple, get_args
-from unittest.mock import patch
+from unittest.mock import create_autospec
 
 import pytest
 from jsonschema import Draft7Validator, Draft202012Validator
 from pydantic import BaseModel
 
-from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from gymrat.event_docs import (
     READERS,
     SESSION_LOG_ADDRESS,
@@ -124,9 +125,19 @@ def _wire_type(model: type[BaseModel]) -> str:
 
 
 def _md_section(md: str, start_marker: str | None, stop_marker: str | None) -> str:
-    """Slice ``md`` from ``start_marker`` (or the top) to the next ``stop_marker`` (or the end).
+    """Slice one section out of a Markdown document.
 
-    A missing ``start_marker`` raises ``ValueError`` instead of returning a wrong slice.
+    Args:
+        md: The Markdown text to slice.
+        start_marker: Text the slice starts at; ``None`` starts at the top.
+        stop_marker: Text whose next occurrence after the start ends the slice;
+            ``None`` runs to the end.
+
+    Returns:
+        The text from the start marker up to, not including, the stop marker.
+
+    Raises:
+        ValueError: When ``start_marker`` is absent, instead of returning a wrong slice.
     """
     start = md.index(start_marker) if start_marker is not None else 0
     end = md.find(stop_marker, start + 1) if stop_marker is not None else -1
@@ -242,10 +253,11 @@ _STATUS_EXCLUDED = frozenset({"session", "finalize"})
 
 
 def _fold_session_types() -> set[str]:
-    """Derive the set of wire types that change ``SessionState`` under fold_session.
+    """Derive the wire types that change ``SessionState`` under fold_session.
 
-    A type is in the set when folding a log containing it (in valid context)
-    produces a different state than folding the same log without it.
+    Returns:
+        Each type for which folding a log containing it (in valid context)
+        produces a different state than folding the same log without it.
     """
     changes: set[str] = set()
     for wire_type, record in _RECORD_BY_TYPE.items():
@@ -259,11 +271,10 @@ def _fold_session_types() -> set[str]:
 
 
 def _status_history_types() -> set[str]:
-    """Derive the set of wire types that change ``status_session`` output.
+    """Derive the wire types that change ``status_session`` output.
 
-    For each record type, compare a log containing it (in valid context) against
-    the same log without it, rendered from the same session header.  A type is
-    in the set when its presence changes the rendered status output.
+    Each record type is probed by rendering a log containing it (in valid
+    context) and the same log without it, from the same session header.
 
     ``finalize`` is excluded: its only effect on ``status_session`` is the
     trailing ``format_status_finalized`` line driven by ``state.finalized``,
@@ -272,6 +283,9 @@ def _status_history_types() -> set[str]:
     builds. Probing it here would always register as a difference and produce
     a false positive against ``READERS["status-history"].types``. ``session``
     is excluded because every probe log already starts with the session header.
+
+    Returns:
+        Each probed type whose presence changes the rendered status output.
     """
     types: set[str] = set()
     with tempfile.TemporaryDirectory() as scratch:
@@ -297,10 +311,11 @@ def _status_history_types() -> set[str]:
 
 
 def _supervisor_guard_types() -> set[str]:
-    """Derive the set of wire types counted by ``outcome_record_count``.
+    """Derive the wire types counted by ``outcome_record_count``.
 
-    A type is in the set when a singleton list of that record produces a count
-    of 1 (not 0, which would mean the type is excluded).
+    Returns:
+        Each type whose singleton record list produces a count of 1 (not 0,
+        which would mean the type is excluded).
     """
     types: set[str] = set()
     for wire_type, record in _RECORD_BY_TYPE.items():
@@ -842,31 +857,45 @@ def test_import_event_docs_when_loaded_does_not_import_the_cli_package_or_doc_li
 
 
 # ---------------------------------------------------------------------------
-# main — GymratError from repo_root
+# main — repository lookup fails
 # ---------------------------------------------------------------------------
+
+#: What a git that declines to answer writes, as opposed to "not a git repository".
+_DUBIOUS_OWNERSHIP = "fatal: detected dubious ownership in repository"
 
 
 @pytest.mark.parametrize(
-    ("error", "expected_stderr"),
+    ("git_stderr", "expected_stderr"),
     [
         pytest.param(
-            GymratError("not a git repository", hint="run `git init` first"),
-            "not a git repository\nrun `git init` first\n",
-            id="with-hint",
+            None,
+            "Not a git repository: {cwd}\nRun gymrat from inside a git repository.\n",
+            id="outside-repo-with-hint",
         ),
         pytest.param(
-            GymratError("not a git repository"), "not a git repository\n", id="without-hint"
+            _DUBIOUS_OWNERSHIP,
+            f"Cannot determine the git repository at {{cwd}}: {_DUBIOUS_OWNERSHIP}\n",
+            id="git-declines-without-hint",
         ),
     ],
 )
-def test_main_when_repo_root_raises_gymrat_error_does_report_error_to_stderr(
-    error: GymratError, expected_stderr: str, capsys: pytest.CaptureFixture[str]
+def test_main_when_repository_lookup_fails_does_report_error_to_stderr(
+    git_stderr: str | None,
+    expected_stderr: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ):
-    with (
-        patch("gymrat.event_docs.repo_root", side_effect=error, autospec=True),
-        pytest.raises(SystemExit) as exc_info,
-    ):
+    monkeypatch.chdir(tmp_path)
+    if git_stderr is not None:
+        failure = subprocess.CalledProcessError(128, ["git"], stderr=git_stderr)
+        monkeypatch.setattr(
+            "gymrat.git.subprocess.run", create_autospec(subprocess.run, side_effect=failure)
+        )
+    cwd = str(Path.cwd())
+
+    with pytest.raises(SystemExit) as exc_info:
         main()
 
     assert exc_info.value.code == TOOL_FAILURE_EXIT_CODE
-    assert capsys.readouterr() == ("", expected_stderr)
+    assert capsys.readouterr() == ("", expected_stderr.format(cwd=cwd))

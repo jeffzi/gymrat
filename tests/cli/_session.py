@@ -12,12 +12,13 @@ import os
 import sys
 from collections.abc import Generator, Sequence
 from pathlib import Path
-from typing import Any, override
-from unittest.mock import create_autospec
+from typing import Any, Literal, override
+from unittest.mock import Mock, create_autospec
 
 import pytest
 from typer.testing import CliRunner
 
+from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.compare import compare
 from gymrat.config import KindEntry, MetricEntry, ResolvedConfig, resolve_config
 from gymrat.loop.finalize import finalize_session
@@ -142,6 +143,22 @@ def stub_config(
     return config
 
 
+def force_render_mode(
+    monkeypatch: pytest.MonkeyPatch, command: str, mode: Literal["live", "plain"]
+) -> None:
+    """Make a command resolve ``mode`` as its render mode, whatever the terminal says.
+
+    Args:
+        monkeypatch: The fixture that installs the stand-in.
+        command: The module under ``gymrat.cli.commands`` whose render mode is forced.
+        mode: The render mode every resolution hands back.
+    """
+    monkeypatch.setattr(
+        f"gymrat.cli.commands.{command}.resolve_render_mode",
+        create_autospec(resolve_render_mode, return_value=mode),
+    )
+
+
 def stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace the ``measure`` command's config resolution with ``MEASURE_CONFIG``."""
     stub_config(monkeypatch, "measure", MEASURE_CONFIG)
@@ -187,17 +204,20 @@ def stub_compare_command(
     stub_compare(monkeypatch, result)
 
 
-def stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> None:
+def stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> Mock:
     """Replace the ``compare`` seam with a fake that returns a fixed comparison.
 
     Args:
         monkeypatch: The fixture that installs the fake.
         result: What the fake hands back; a comparison with no regressions when ``None``.
+
+    Returns:
+        The installed fake, whose ``call_args`` hold the options each call passed.
     """
     handed_back = create_comparison_result() if result is None else result
-    monkeypatch.setattr(
-        "gymrat.compare.compare", create_autospec(compare, return_value=handed_back)
-    )
+    fake = create_autospec(compare, return_value=handed_back)
+    monkeypatch.setattr("gymrat.compare.compare", fake)
+    return fake
 
 
 def leave_as_is(_repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:

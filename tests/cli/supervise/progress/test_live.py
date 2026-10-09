@@ -21,30 +21,28 @@ from __future__ import annotations
 import sys
 from io import StringIO
 from typing import TYPE_CHECKING, override
-from unittest.mock import DEFAULT, MagicMock, Mock, patch
+from unittest.mock import DEFAULT, MagicMock, Mock, create_autospec
 
 import pytest
 
+from gymrat.cli.console import stderr_console
 from gymrat.supervisor.events import TextDeltaEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
-from tests._logging import unhandled_logging
 from tests._rich import (
     KEPT_LINE,
     Clock,
     frame_text,
-    screen_lines,
     sealed_console,
     stop_tracked,
 )
 from tests.cli.supervise._fixtures import (
+    CONSOLE_FACTORY_PATH,
     EMPTY_READ,
     FRAME_WIDTH,
     KEPT_READ,
-    LIVE_CLASS_PATH,
     ReporterKit,
-    _throwing_read,
     fire_launch_and_iterate_start,
-    launch_event,
+    launched,
     make_reporter,
     render_frame,
     tool_start_event,
@@ -63,20 +61,6 @@ if TYPE_CHECKING:
 # and tall enough that the frame is never cropped.
 _SCREEN_WIDTH = FRAME_WIDTH
 _SCREEN_HEIGHT = 40
-
-
-@pytest.fixture
-def mock_live_cls() -> Iterator[MagicMock]:
-    """The ``ErasableLive`` class the live-mode reporter builds, patched with an autospec."""
-    with patch(LIVE_CLASS_PATH, autospec=True) as live_cls:
-        yield live_cls
-
-
-def _launched_live(read_session: Callable[[], ReadSessionResult] | None = None) -> ReporterKit:
-    """A live-mode reporter reading the session through *read_session*, past its launch."""
-    kit = make_reporter(mode="live", read_session=read_session)
-    kit.reporter.observer(launch_event(1000))
-    return kit
 
 
 def _repaints_from_now(live_cls: MagicMock) -> Callable[[], int]:
@@ -118,12 +102,6 @@ def test_create_reporter_when_live_mode_does_configure_the_live_display(mock_liv
     assert call_kwargs.get("redirect_stderr", True) is True
 
 
-def test_create_reporter_when_plain_mode_does_not_create_live(mock_live_cls: MagicMock):
-    make_reporter(mode="plain", plain_write=lambda _: None)
-
-    mock_live_cls.assert_not_called()
-
-
 # ---------------------------------------------------------------------------
 # render calls — one refresh per state-changing event
 # ---------------------------------------------------------------------------
@@ -145,7 +123,7 @@ def test_create_reporter_when_plain_mode_does_not_create_live(mock_live_cls: Mag
 def test_observer_when_live_mode_does_repaint_once_per_state_change(
     mock_live_cls: MagicMock, event: SessionEvent, expected_repaints: int
 ):
-    kit = _launched_live()
+    kit = launched(make_reporter())
     repaints = _repaints_from_now(mock_live_cls)
 
     kit.reporter.observer(event)
@@ -154,7 +132,7 @@ def test_observer_when_live_mode_does_repaint_once_per_state_change(
 
 
 def test_exit_phase_when_live_mode_and_phase_changes_does_repaint_once(mock_live_cls: MagicMock):
-    kit = _launched_live()
+    kit = launched(make_reporter())
     kit.reporter.exit_phase(ExitPhase(kind="waiting-lock", pid=4242))
     repaints = _repaints_from_now(mock_live_cls)
 
@@ -178,7 +156,7 @@ def test_refresh_session_when_live_does_update_and_repaint_only_after_a_successf
     expected_session: ReadSessionResult,
     expected_repaints: int,
 ):
-    kit = _launched_live(read_session=Mock(side_effect=[EMPTY_READ, reread]))
+    kit = launched(make_reporter(read_session=Mock(side_effect=[EMPTY_READ, reread])))
     repaints = _repaints_from_now(mock_live_cls)
 
     kit.reporter.refresh_session()
@@ -198,25 +176,6 @@ def test_warn_when_live_message_contains_brackets_does_print_it_verbatim(termina
     kit.reporter.warn("missing [banana] key")
 
     assert terminal.getvalue() == f"{KEPT_LINE}\nmissing [banana] key\n"
-
-
-# ---------------------------------------------------------------------------
-# refresh_session — a failing session read reported without a traceback
-# ---------------------------------------------------------------------------
-
-_READ_FAILED = "session read failed: no session file"
-
-
-@pytest.mark.usefixtures("mock_live_cls")
-def test_refresh_session_when_live_session_read_fails_does_report_it_without_a_traceback(
-    terminal: StringIO,
-):
-    kit = make_reporter(mode="live", read_session=_throwing_read)
-
-    with unhandled_logging():
-        kit.reporter.refresh_session()
-
-    assert _screen(terminal.getvalue()) == [KEPT_LINE, _READ_FAILED]
 
 
 # ---------------------------------------------------------------------------
@@ -255,11 +214,7 @@ def test_stop_when_live_stop_raises_unrelated_value_error_does_propagate(mock_li
 
 def _paint_dashboards_on(console: Console, monkeypatch: pytest.MonkeyPatch) -> None:
     """Hand every dashboard built from here on *console* as its stderr console."""
-
-    def dashboard_console(**_kwargs: object) -> Console:
-        return console
-
-    monkeypatch.setattr("gymrat.cli.supervise.progress.stderr_console", dashboard_console)
+    monkeypatch.setattr(CONSOLE_FACTORY_PATH, create_autospec(stderr_console, return_value=console))
 
 
 def _mount_terminal(term: StringIO, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -287,10 +242,6 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[StringIO]:
     # Stop the dashboards while stderr is still this terminal: a Live stopped
     # after monkeypatch's undo would re-point sys.stderr at this dead buffer.
     stop_tracked()
-
-
-def _screen(raw: str) -> list[str]:
-    return screen_lines(raw, width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
 
 
 # ---------------------------------------------------------------------------

@@ -36,23 +36,24 @@ from gymrat.report.json_doc import (
 from gymrat.report.types import (
     CandidateMetric,
     ComparisonResult,
-    MetricComparison,
 )
 from gymrat.session.records import KeepChecks
 from gymrat.targets import WorktreeRemovalFailure
-from gymrat.verdict import KindAggregate
 from tests.report._comparisons import (
     NWayCandidate,
     create_candidate,
     create_comparison_result,
     exact_metric,
+    informational_kind,
     n_way_metric,
+    permutation_candidate,
     permutation_metric,
+    shared_baseline_metric,
     two_kind_result,
 )
 from tests.report._measurements import two_kind_measurement
 from tests.report._probes import golden_probe, probe_result
-from tests.report._verdicts import band_metric, geomean_of, metric_meta, permutation_verdict
+from tests.report._verdicts import band_metric, geomean_of
 from tests.session.records._fixtures import (
     committed_keep,
     empty_session_state,
@@ -126,15 +127,6 @@ def test_render_json_when_exact_verdict_does_null_statistical_fields():
     assert candidate["band"] is None
 
 
-def _paired_candidate(delta: float = -10.0) -> CandidateMetric:
-    """A candidate that measured and paired against the baseline, with an "improved" verdict."""
-    return CandidateMetric(
-        median=90.0,
-        spread=1.0,
-        verdict=permutation_verdict(verdict="improved", delta=delta, p=0.01, noise_abs=3.5),
-    )
-
-
 def _first_candidate_delta(doc: dict[str, Any]) -> object:
     """The ``decode/time`` metric's first candidate delta in a compare document."""
     return doc["metrics"]["decode/time"]["candidates"][0]["delta"]
@@ -151,11 +143,13 @@ def _first_kind_geomean(doc: dict[str, Any]) -> object:
         pytest.param(
             create_comparison_result(
                 metrics={
-                    "decode/time": MetricComparison(
-                        baseline_median=100.0,
-                        baseline_spread=1.0,
-                        candidates=(_paired_candidate(delta=float("inf")),),
-                        meta=metric_meta("decode/time", unit="ns"),
+                    "decode/time": shared_baseline_metric(
+                        [
+                            permutation_candidate(
+                                verdict="improved", delta=float("inf"), median=90.0
+                            )
+                        ],
+                        name="decode/time",
                     ),
                 },
             ),
@@ -166,9 +160,7 @@ def _first_kind_geomean(doc: dict[str, Any]) -> object:
             create_comparison_result(
                 candidates=[
                     create_candidate(
-                        kinds=[
-                            KindAggregate(kind="time", geomean=geomean_of(math.nan, 0), groups=())
-                        ],
+                        kinds=[informational_kind("time", geomean_of(math.nan, 0))],
                     ),
                 ],
             ),
@@ -198,11 +190,7 @@ def test_render_json_when_geomean_has_exclusions_does_list_them_in_field_order()
     result = create_comparison_result(
         candidates=[
             create_candidate(
-                kinds=[
-                    KindAggregate(
-                        kind="time", geomean=geomean_of(-3.2, 2, excluded=excluded), groups=()
-                    )
-                ],
+                kinds=[informational_kind("time", geomean_of(-3.2, 2, excluded=excluded))],
             ),
         ],
     )
@@ -219,6 +207,9 @@ def test_render_json_when_geomean_has_exclusions_does_list_them_in_field_order()
 # render_json — missing metric data
 # ---------------------------------------------------------------------------
 
+
+#: A candidate that measured and paired against the baseline, with an "improved" verdict.
+_PAIRED = permutation_candidate(verdict="improved", delta=-10.0, median=90.0)
 
 #: A candidate row with no measurement behind it, in the key order the document writes.
 _UNMEASURED_ROW: dict[str, object] = {
@@ -238,13 +229,13 @@ _UNMEASURED_ROW: dict[str, object] = {
     ("candidates", "expected"),
     [
         pytest.param(
-            (_paired_candidate(), CandidateMetric()),
+            (_PAIRED, CandidateMetric()),
             _UNMEASURED_ROW,
             id="empty-candidate-slice",
         ),
-        pytest.param((_paired_candidate(),), _UNMEASURED_ROW, id="fewer-slices-than-candidates"),
+        pytest.param((_PAIRED,), _UNMEASURED_ROW, id="fewer-slices-than-candidates"),
         pytest.param(
-            (_paired_candidate(), CandidateMetric(median=95.0, spread=3.0)),
+            (_PAIRED, CandidateMetric(median=95.0, spread=3.0)),
             {**_UNMEASURED_ROW, "median": 95.0, "spread_pct": 3.0},
             id="measured-unpaired",
         ),
@@ -253,12 +244,7 @@ _UNMEASURED_ROW: dict[str, object] = {
 def test_render_json_when_candidate_has_no_verdict_does_null_its_verdict_fields(
     candidates: tuple[CandidateMetric, ...], expected: dict[str, object]
 ):
-    metric = MetricComparison(
-        baseline_median=100.0,
-        baseline_spread=1.0,
-        candidates=candidates,
-        meta=metric_meta("decode/time", unit="ns"),
-    )
+    metric = shared_baseline_metric(candidates, name="decode/time")
     result = create_comparison_result(
         candidates=[create_candidate(label="alpha"), create_candidate(label="beta")],
         metrics={"decode/time": metric},

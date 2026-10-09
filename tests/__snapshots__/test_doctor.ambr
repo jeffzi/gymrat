@@ -1,5 +1,5 @@
 # serializer version: 1
-# name: test_render_doctor_report_when_rendered_does_match_the_snapshot[multiline-detail-color-off]
+# name: test_render_doctor_report_when_statuses_and_color_vary_does_render_glyphs_hints_and_summary_counts[multiline-detail-color-off]
   list([
     'gymrat v0.5.0 · python 3.13.0 · darwin',
     '',
@@ -13,7 +13,7 @@
     '1 ok',
   ])
 # ---
-# name: test_render_doctor_report_when_rendered_does_match_the_snapshot[ok-warn-fail-color-off]
+# name: test_render_doctor_report_when_statuses_and_color_vary_does_render_glyphs_hints_and_summary_counts[ok-warn-fail-color-off]
   list([
     'gymrat v0.5.0 · python 3.13.0 · darwin',
     '',
@@ -31,7 +31,7 @@
     '1 ok · 1 warning · 1 failure',
   ])
 # ---
-# name: test_render_doctor_report_when_rendered_does_match_the_snapshot[ok-warn-fail-color-on]
+# name: test_render_doctor_report_when_statuses_and_color_vary_does_render_glyphs_hints_and_summary_counts[ok-warn-fail-color-on]
   list([
     '\x1b[1mgymrat v0.5.0\x1b[0m\x1b[2m · python 3.13.0 · darwin\x1b[0m',
     '',
@@ -49,7 +49,7 @@
     '\x1b[32m1\x1b[0m ok · \x1b[33m1\x1b[0m warning · \x1b[31m1\x1b[0m failure',
   ])
 # ---
-# name: test_render_doctor_report_when_rendered_does_match_the_snapshot[plural-counts-color-off]
+# name: test_render_doctor_report_when_statuses_and_color_vary_does_render_glyphs_hints_and_summary_counts[plural-counts-color-off]
   list([
     'gymrat v0.5.0 · python 3.13.0 · darwin',
     '',
@@ -66,7 +66,7 @@
     '1 ok · 2 warnings · 3 failures',
   ])
 # ---
-# name: test_render_doctor_report_when_rendered_does_match_the_snapshot[warn-only-color-off]
+# name: test_render_doctor_report_when_statuses_and_color_vary_does_render_glyphs_hints_and_summary_counts[warn-only-color-off]
   list([
     'gymrat v0.5.0 · python 3.13.0 · darwin',
     '',
@@ -80,7 +80,7 @@
     '1 ok · 1 warning',
   ])
 # ---
-# name: test_render_doctor_report_when_rendered_does_match_the_snapshot[workflow-skipped-color-off]
+# name: test_render_doctor_report_when_statuses_and_color_vary_does_render_glyphs_hints_and_summary_counts[workflow-skipped-color-off]
   list([
     'gymrat v0.5.0 · python 3.13.0 · darwin',
     '',

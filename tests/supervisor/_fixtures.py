@@ -183,6 +183,24 @@ def noop_observer() -> SessionObserver:
     return _observer
 
 
+def raising_observer(message: str, *, on: type[SessionEvent] | None = None) -> SessionObserver:
+    """Return an observer that raises ``RuntimeError(message)`` on the events it is handed.
+
+    Args:
+        message: The error message, for the test to match the warning or report against.
+        on: The one event type the observer fails on; ``None`` fails on every event.
+
+    Returns:
+        The failing observer.
+    """
+
+    def _observer(event: SessionEvent) -> None:
+        if on is None or isinstance(event, on):
+            raise RuntimeError(message)
+
+    return _observer
+
+
 # ---------------------------------------------------------------------------
 # driver double: interrupt emits TurnEndEvent
 # ---------------------------------------------------------------------------

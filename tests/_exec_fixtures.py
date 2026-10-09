@@ -15,7 +15,7 @@ import pytest
 
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
 from gymrat.exec import exec as run_exec
-from tests._process_helpers import SLEEPER_ARGV, capture_spawns
+from tests._process_helpers import SLEEPER_ARGV, capture_spawns, poll_until
 
 type ExecTask = asyncio.Task[ExecResult | ExecTimeoutError]
 
@@ -78,13 +78,11 @@ async def wait_for_spawned(
         TimeoutError: Fewer than ``count`` children were spawned within three
             seconds.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _SPAWN_WAIT_S
-    while len(processes) < count:
-        if loop.time() > deadline:
-            msg = f"{spawner}() has spawned {len(processes)} of {count} children"
-            raise TimeoutError(msg)
-        await asyncio.sleep(0.01)
+    await poll_until(
+        lambda: len(processes) >= count,
+        _SPAWN_WAIT_S,
+        lambda: TimeoutError(f"{spawner}() has spawned {len(processes)} of {count} children"),
+    )
     return processes[-1]
 
 

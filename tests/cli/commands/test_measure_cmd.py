@@ -11,7 +11,6 @@ pinned there for measure.
 """
 
 import re
-from collections.abc import Callable
 from unittest.mock import create_autospec
 
 import pytest
@@ -30,6 +29,7 @@ from tests.cli._session import (
     stub_measure,
     stub_resolve,
 )
+from tests.loop._probe import install_measure
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     last_command_record,
@@ -83,10 +83,8 @@ def test_benching_command_when_bench_missing_does_exit_two_with_message_on_stder
 
 
 @pytest.fixture
-def record_repo(monkeypatch: pytest.MonkeyPatch, create_scratch_repo: Callable[[], str]) -> str:
+def record_repo(repo: str, monkeypatch: pytest.MonkeyPatch) -> str:
     """A scratch git repo, chdir'd into, with ``resolve_config`` stubbed for ``--record`` tests."""
-    repo = create_scratch_repo()
-    monkeypatch.chdir(repo)
     stub_resolve(monkeypatch)
     return repo
 
@@ -177,14 +175,7 @@ def test_measure_when_record_does_write_duration_ms_to_baseline(
     open_session(record_repo)
     clock = install_monotonic_clock(monkeypatch)
     measured = create_measurement_result(rounds=[{"latency": 42}])
-
-    async def measure_for_half_a_second(_options: MeasureOptions) -> MeasurementResult:
-        clock.tick(500.0)
-        return measured
-
-    monkeypatch.setattr(
-        "gymrat.measure.measure", create_autospec(measure, side_effect=measure_for_half_a_second)
-    )
+    install_measure(monkeypatch, measured, on_call=lambda: clock.tick(500.0))
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
 

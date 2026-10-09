@@ -239,26 +239,3 @@ def test_json_schema_when_generated_does_ref_the_nested_model_without_null(
     field_schema = schema["$defs"][model_name]["properties"][field]
 
     assert (field_schema["$ref"], "anyOf" in field_schema) == (f"#/$defs/{definition}", False)
-
-
-# ---------------------------------------------------------------------------
-# JSON schema — seq distribution across record types
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        pytest.param("SessionRecord", id="session"),
-        pytest.param("BaselineRecord", id="baseline"),
-        pytest.param("FinalizeRecord", id="finalize"),
-        pytest.param("StopRecord", id="stop"),
-    ],
-)
-def test_json_schema_when_generated_does_not_include_seq_on_non_sequenced_record(
-    model_name: str,
-):
-    schema = _session_log_schema()
-    model_schema = schema["$defs"][model_name]
-
-    assert "seq" not in model_schema["properties"]

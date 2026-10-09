@@ -15,7 +15,6 @@ is rich's rather than a hand-spliced grid.
 
 from __future__ import annotations
 
-import math
 from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING
@@ -53,6 +52,7 @@ from tests.report._comparisons import (
     time_kind,
     two_kind_metrics,
     two_kind_result,
+    undefined_ratio_metric,
     without_gated_geomean,
 )
 from tests.report._verdicts import band_metric, geomean_of
@@ -133,14 +133,7 @@ def _undefined_ratio_result() -> ComparisonResult:
     return create_comparison_result(
         metrics={
             "decode#other": permutation_metric(verdict="regressed", delta=4, n=8),
-            "nan-delta#other": exact_metric(
-                delta=math.nan,
-                n=8,
-                unit=None,
-                baseline_median=0,
-                median=120,
-                short_name="nan-delta#other",
-            ),
+            "nan-delta#other": undefined_ratio_metric("nan-delta#other", n=8),
         },
     )
 

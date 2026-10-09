@@ -39,13 +39,14 @@ from tests._exec_fixtures import (
     expected_result,
     install_exec,
 )
-from tests._git import head_of, run_git, status_of
+from tests._git import checked_out_ref, head_of, run_git, status_of
 from tests._streams import FakeStream
 from tests.loop._settle import (
     CHECKS,
     CHECKS_STDERR,
     CHECKS_STDOUT,
     KEEP_EXEC,
+    NOTHING_MEASURED_HISTORIES,
     UNUSED_EXEC,
     assert_settling_record,
     checks_config,
@@ -65,7 +66,6 @@ from tests.loop._settle import (
 from tests.session.records._fixtures import (
     append_records,
     blocked_keep,
-    committed_keep,
     gate_block,
     iteration_record,
     log_records,
@@ -164,7 +164,7 @@ async def test_keep_session_when_checks_pass_does_settle_the_edit_as_committed(
     assert run_git(["log", "-1", "--format=%s"], worktree) == expected_message
     assert settling_record_of(repo) == record
     assert head_of(baseline) == record.commit
-    assert run_git(["rev-parse", "--abbrev-ref", "HEAD"], baseline) == "HEAD"
+    assert checked_out_ref(baseline) == "HEAD"
     assert head_of(worktree)[:7] in result.report
 
 
@@ -201,6 +201,7 @@ async def test_keep_session_when_checks_fail_does_block_reporting_both_streams_l
     assert (CHECKS_STDOUT in result.report, CHECKS_STDERR in result.report) == (True, True)
     assert head_of(worktree) == before
     assert status_of(worktree) != ""
+    assert _hint_line(result.report, "keep") == "fix the failures and run keep again."
     _assert_closes_on_a_bare_hint(repo, result.report)
 
 
@@ -286,6 +287,10 @@ async def test_keep_session_when_gating_regression_stands_does_block_before_chec
     assert_settling_record(result.record, gate_block(1, "gating-regression"))
     assert not re.search(r"not measured", result.report, re.IGNORECASE)
     assert not re.search(r"filter", result.report, re.IGNORECASE)
+    assert (
+        _hint_line(result.report, "discard")
+        == "fix the regression and run iterate again, or run discard."
+    )
     _assert_closes_on_a_bare_hint(repo, result.report)
 
 
@@ -513,10 +518,8 @@ async def test_keep_session_when_head_matches_baseline_does_block_as_nothing_to_
 @pytest.mark.parametrize(
     ("history", "seq"),
     [
-        pytest.param((), 1, id="no-iteration-ever-recorded"),
-        pytest.param(
-            (iteration_record(seq=1), committed_keep(1)), 2, id="last-iteration-already-kept"
-        ),
+        pytest.param(*case.values, seq, id=case.id)
+        for case, seq in zip(NOTHING_MEASURED_HISTORIES[:2], (1, 2), strict=True)
     ],
 )
 async def test_keep_session_when_nothing_measured_does_refuse_with_nothing_measured_keep(

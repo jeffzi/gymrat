@@ -10,7 +10,7 @@ the recorders a test asserts on.
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any
 from unittest.mock import Mock, create_autospec
 
 import pytest
@@ -18,7 +18,6 @@ from typer.testing import Result
 
 from gymrat.cli.app import app
 from gymrat.cli.exit import write_stdout
-from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.cli.supervise.preflight import PreflightFlags, doctor_gate, run_preflight
 from gymrat.cli.supervise.progress import SuperviseReporter, create_supervise_reporter
 from gymrat.cli.supervise.types import ReadSessionResult
@@ -308,14 +307,6 @@ def record_stdout_writes(monkeypatch: pytest.MonkeyPatch, order: list[str], labe
     monkeypatch.setattr(
         "gymrat.cli.commands.supervise.write_stdout",
         create_autospec(write_stdout, side_effect=tracking_write),
-    )
-
-
-def force_render_mode(monkeypatch: pytest.MonkeyPatch, mode: Literal["live", "plain"]) -> None:
-    """Make the command resolve ``mode`` as its render mode, whatever the terminal says."""
-    monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.resolve_render_mode",
-        create_autospec(resolve_render_mode, return_value=mode),
     )
 
 

@@ -48,7 +48,9 @@ RESOLVERS = [
 
 
 def test_config_module_when_imported_fresh_does_not_raise_import_error():
-    modules_imported_by("gymrat.config")
+    loaded = modules_imported_by("gymrat.config")
+
+    assert "gymrat.config" in loaded
 
 
 # ---------------------------------------------------------------------------

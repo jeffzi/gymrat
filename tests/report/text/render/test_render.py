@@ -33,6 +33,7 @@ from tests.report._comparisons import (
 )
 from tests.report._measurements import (
     create_measurement_result,
+    entity_time_measurements,
     measured_metric,
     two_kind_measurement,
 )
@@ -51,12 +52,14 @@ if TYPE_CHECKING:
 def test_render_report_when_header_override_given_does_replace_the_compare_header():
     result = create_comparison_result()
 
-    output = render_report(result, ReportOptions(header="iteration 3 · experiment vs baseline"))
+    lines = strip_ansi(
+        render_report(result, ReportOptions(header="iteration 3 · experiment vs baseline"))
+    ).split("\n")
 
-    assert strip_ansi(output).split("\n")[:2] == [
+    assert (lines[0], stripped_cells(lines[1])) == (
         "iteration 3 · experiment vs baseline",
-        "metric                      │ main         │ perf/faster-decode │ vs main",
-    ]
+        ["metric", "main", "perf/faster-decode", "vs main"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -165,21 +168,7 @@ def test_render_measure_report_when_metric_has_no_spread_does_state_the_bare_med
 
 
 def test_render_measure_report_when_single_kind_grouped_does_show_group_headers():
-    result = create_measurement_result(
-        metrics={
-            "entity/alive_check#time": measured_metric(
-                kind="time",
-                short_name="entity.alive_check",
-                unit="ns",
-            ),
-            "entity/spawn#time": measured_metric(
-                kind="time",
-                short_name="entity.spawn",
-                median=104,
-                unit="ns",
-            ),
-        },
-    )
+    result = create_measurement_result(metrics=entity_time_measurements())
 
     region = table_region(render_measure_report(result))
 
@@ -210,11 +199,11 @@ def test_render_measure_report_when_kinds_differ_without_groups_does_show_short_
 
     rows = table_rows(render_measure_report(result, ReportOptions(color=False)))
 
-    assert rows == [
-        "time                  │ main",
-        "decode                │ 100ns ± 1%",
-        "allocation_throughput │ main",
-        "encode                │   100 ± 1%",
+    assert [stripped_cells(row) for row in rows] == [
+        ["time", "main"],
+        ["decode", "100ns ± 1%"],
+        ["allocation_throughput", "main"],
+        ["encode", "100 ± 1%"],
     ]
 
 

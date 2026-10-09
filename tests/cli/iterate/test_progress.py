@@ -74,11 +74,15 @@ def _style_name(segment: Segment) -> str:
 
 
 def _judge_detail_style_runs(renderable: RenderableType) -> list[tuple[str, str]]:
-    """Render *renderable* in color; return its judge row's detail as style-merged runs.
+    """Render *renderable* in color and return its judge row's detail.
 
-    The runs are ``(text, style)`` pairs. The done glyph and the ``judged``
-    label that open the row are dropped, so only the verdict's own styling
-    is returned.
+    Args:
+        renderable: The iterate frame to render.
+
+    Returns:
+        The detail as style-merged ``(text, style)`` runs. The done glyph and
+        the ``judged`` label that open the row are dropped, so only the
+        verdict's own styling remains.
     """
     styled = sealed_console(width=120, no_color=False, color_system="truecolor")
     lines = styled.render_lines(renderable, pad=False)
@@ -256,42 +260,24 @@ def test_frame_when_judge_finished_no_regressions_does_drop_the_confirm_row(
     assert _frame(renderer, clock) == snapshot
 
 
-@pytest.mark.parametrize(
-    ("regressed", "expected"),
-    [
-        pytest.param((), [("-3.2% on geomean · no gating regression", "dim")], id="zero"),
-        pytest.param(
-            ("latency",),
-            [("-3.2% on geomean · 1 regressed: ", "dim"), ("latency", "")],
-            id="one",
-        ),
-        pytest.param(
-            ("node/access#time", "parse[json]", "throughput", "alloc"),
-            [
-                ("-3.2% on geomean · 4 regressed: node/", "dim"),
-                ("access", ""),
-                ("#time, ", "dim"),
-                ("parse[json]", ""),
-                (", ", "dim"),
-                ("throughput", ""),
-                (", …", "dim"),
-            ],
-            id="several-capped-with-bracket",
-        ),
-    ],
-)
-def test_frame_when_judge_finished_does_dim_wording_around_regressed_names(
-    regressed: tuple[str, ...],
-    expected: list[tuple[str, str]],
-):
+def test_frame_when_judge_finished_does_dim_wording_and_style_regressed_names_inline():
     _console, clock, renderer = _live(sample_count=1, metric_count=5)
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     _sample_one_round(renderer, clock)
     clock.tick(1)
+    regressed = ("node/access#time", "parse[json]", "throughput", "alloc")
 
     renderer.report(JudgeFinished(primary_delta_pct=-3.2, regressed=regressed, at_ms=_ms(clock)))
 
-    assert _judge_detail_style_runs(renderer.frame()) == expected
+    assert _judge_detail_style_runs(renderer.frame()) == [
+        ("-3.2% on geomean · 4 regressed: node/", "dim"),
+        ("access", ""),
+        ("#time, ", "dim"),
+        ("parse[json]", ""),
+        (", ", "dim"),
+        ("throughput", ""),
+        (", …", "dim"),
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -231,12 +231,7 @@ async def test_run_hook_when_failing_output_exceeds_relay_limit_does_cap_each_ch
 async def test_run_hook_when_hook_exits_nonzero_does_surface_the_failure(
     hooks: HookScripts,
 ) -> None:
-    command = hooks.hook_command(
-        "import sys\n"
-        'sys.stdout.buffer.write(b"checked the cache\\n")\n'
-        'sys.stderr.buffer.write(b"no warm copy\\n")\n'
-        "sys.exit(3)\n"
-    )
+    command = hooks.failing_content_of("exits-nonzero", "checked the cache\n", "no warm copy\n")
 
     run = await run_hook(hooks.invocation_of(command))
 
@@ -298,6 +293,7 @@ async def test_run_hook_when_abort_signal_set_does_kill_it(hooks: HookScripts) -
         abort.set()
 
     trigger_task = asyncio.create_task(trigger())
+
     run = await run_hook(hooks.invocation_of(command, abort=abort))
     await trigger_task
 

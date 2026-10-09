@@ -719,7 +719,13 @@ def test_check_file_edit_when_path_has_nul_does_deny_naming_the_rule(
     assert reason == "edits belong in the experiment worktree: src/x\\x00.py cannot be resolved"
 
 
-@pytest.mark.parametrize("error", [ValueError("bad path"), OSError("too many links")])
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(ValueError("bad path"), id="value-error"),
+        pytest.param(OSError("too many links"), id="os-error"),
+    ],
+)
 def test_check_file_edit_when_realpath_raises_does_deny_naming_the_rule(
     root: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
 ):

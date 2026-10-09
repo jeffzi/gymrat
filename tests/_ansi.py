@@ -86,14 +86,15 @@ def _sgr_attributes(params: list[str]) -> list[str]:
 def sgr_codes(text: str) -> set[str]:
     """Every SGR code present in ``text``, resets left out.
 
-    An extended color run stays one code (``"38;2;255;0;0"``), so its numeric
-    components never read as attributes such as ``2`` (dim).
+    Keeping a color run whole stops its numeric components from reading as
+    attributes such as ``2`` (dim).
 
     Args:
         text: Rendered output to scan.
 
     Returns:
-        The SGR codes present, each extended color run as one code.
+        The SGR codes present; an extended color run such as ``"38;2;255;0;0"``
+        is one code.
     """
     codes: set[str] = set()
     for escape in SGR_RE.finditer(text):

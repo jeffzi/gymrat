@@ -69,7 +69,7 @@ from tests.supervisor._exit_sequence import (
     run_sequence,
     session_context,
 )
-from tests.supervisor._fixtures import events_of
+from tests.supervisor._fixtures import events_of, raising_observer
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -453,9 +453,7 @@ BOOM = "the sink is down"
 FAILED_PREFIX = "exit sequence failed: "
 
 
-def _raising_observer(_event: SessionEvent) -> None:
-    """An observer that fails on every event it is handed."""
-    raise RuntimeError(BOOM)
+_raising_observer = raising_observer(BOOM)
 
 
 def _raising_progress(_phase: ExitPhase) -> None:

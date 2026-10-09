@@ -785,7 +785,7 @@ def _plural_counts_report() -> DoctorReport:
         pytest.param(_plural_counts_report, False, id="plural-counts-color-off"),
     ],
 )
-def test_render_doctor_report_when_rendered_does_match_the_snapshot(
+def test_render_doctor_report_when_statuses_and_color_vary_does_render_glyphs_hints_and_summary_counts(
     make_report: Callable[[], DoctorReport], color: bool, snapshot: SnapshotAssertion
 ):
     report = make_report()

@@ -15,7 +15,6 @@ order-independent under ``pytest-xdist`` and ``pytest-randomly``.
 """
 
 import asyncio
-import contextlib
 import gc
 import os
 import signal
@@ -165,15 +164,16 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     recorded_exits: list[tuple[int, float]],
+    spawned_processes: list[asyncio.subprocess.Process],
 ) -> None:
-    # Widen the spawn-to-register gap so SIGTERM lands inside it.
+    # Widen the spawn-to-register gap so SIGTERM lands inside it. The spawner
+    # read here is already the recording wrapper, so every child lands in
+    # ``spawned_processes`` and is reaped at teardown.
     real_spawn = asyncio.create_subprocess_shell
-    spawned: list[asyncio.subprocess.Process] = []
     spawn_barrier = threading.Event()
 
     async def slow_spawn(command: str, **kwargs: Any) -> asyncio.subprocess.Process:
         proc = await real_spawn(command, **kwargs)
-        spawned.append(proc)
         spawn_barrier.set()
         await asyncio.sleep(1.0)
         return proc
@@ -205,14 +205,9 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
         sender.join(timeout=6.0)
         assert not sender.is_alive(), "SIGTERM sender thread outlived its join window"
         uninstall()
-        # Recorded before the sweep below, which would otherwise hide a child
-        # the termination handler left running.
-        survivors = [proc.pid for proc in spawned if proc.returncode is None]
-        for proc in spawned:
-            if proc.returncode is not None or not proc.pid:
-                continue
-            with contextlib.suppress(OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
+        # Recorded here, before the fixture's teardown sweep, which would
+        # otherwise hide a child the termination handler left running.
+        survivors = [proc.pid for proc in spawned_processes if proc.returncode is None]
 
     # The signal mask around spawn+register must cover the gap: a SIGTERM
     # landing before registration still finds the child in the live-groups
@@ -223,9 +218,9 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
         "child was not killed by the signal handler — spawn-register window is unmasked"
     )
     assert (result.exit_code, result.stderr) == (FAILURE_EXIT_CODE, "")
-    assert spawned
+    assert spawned_processes
     assert survivors == []
-    assert all(proc.returncode is not None and proc.returncode < 0 for proc in spawned), (
-        f"child was not killed by a signal: {[proc.returncode for proc in spawned]}"
+    assert all(proc.returncode is not None and proc.returncode < 0 for proc in spawned_processes), (
+        f"child was not killed by a signal: {[proc.returncode for proc in spawned_processes]}"
     )
     assert recorded_exits, "the termination handler never asked the process to exit"

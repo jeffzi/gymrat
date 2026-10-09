@@ -33,6 +33,7 @@ from tests.cli._session import (
     FailingStdoutRunner,
     close_session_with_one_keep,
     closed_stdout_error,
+    force_render_mode,
     leave_as_is,
     open_session,
     open_session_with_one_keep,
@@ -45,11 +46,12 @@ from tests.cli._session import (
     write_bench_config,
     write_settled_session,
 )
-from tests.cli.commands.supervise._seams import force_render_mode, install_seams
+from tests.cli.commands.supervise._seams import install_seams
 from tests.loop._settle import (
     CHECKS,
     settling_record_of,
 )
+from tests.loop.iterate._fixtures import write_iterate_session
 from tests.session._budget import install_budget, install_tight_budget
 from tests.session.records._fixtures import (
     append_records,
@@ -398,7 +400,7 @@ def _stub_doctor(_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
 def _supervise_live(_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace every supervise seam and force the live dashboard."""
     install_seams(monkeypatch)
-    force_render_mode(monkeypatch, "live")
+    force_render_mode(monkeypatch, "supervise", "live")
 
 
 _MEASURE_MAIN = ["measure", "main", "--bench", "sh bench.sh"]
@@ -447,9 +449,14 @@ def _live_budget_for_probe(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _live_budget_for_iterate(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """An open, configured session under a live budget."""
-    open_session(repo)
-    write_bench_config(repo)
+    """An open session whose before hook can run, under a live budget.
+
+    A hook that ran would log a hook record, so the refusal test also proves the
+    guard stops the command before its before hook.
+    """
+    header = write_iterate_session(repo)
+    Path(header.worktrees.experiment).mkdir()
+    write_bench_config(repo, hooks={"before": "echo warmed"})
     install_budget(repo, monkeypatch)
 
 
@@ -479,8 +486,8 @@ def test_session_command_when_supervised_run_live_does_refuse_as_supervised_use_
     assert records_of_type(repo, CommandRecord, matching=False) == before
     assert not Path(progress_path(repo)).exists()
     commands = records_of_type(repo, CommandRecord)
-    assert [(cmd.name, cmd.exit_code, cmd.reason, cmd.origin) for cmd in commands] == [
-        (command, 2, "supervised-use-tool", "cli")
+    assert [(cmd.name, cmd.exit_code, cmd.reason, cmd.origin, cmd.seq) for cmd in commands] == [
+        (command, 2, "supervised-use-tool", "cli", None)
     ]
 
 

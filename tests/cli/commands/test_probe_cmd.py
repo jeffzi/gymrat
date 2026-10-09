@@ -105,40 +105,56 @@ def test_probe_command_when_supported_option_given_does_complete(option: list[st
 # ---------------------------------------------------------------------------
 
 
+_POSIX_QUOTING = pytest.mark.skipif(sys.platform == "win32", reason="POSIX quoting only")
+"""Skips the case whose expected bench command carries POSIX shell quoting."""
+
+_SCOPED_ARGS = ["total_ms", "decode large payload", "--samples", "3"]
+"""Probe arguments naming two metrics and a sample count."""
+
+
 @pytest.mark.parametrize(
-    ("args", "bench", "samples", "traced"),
+    ("args", "bench", "samples"),
     [
+        pytest.param([], "npm run bench", PROBE_DEFAULT_SAMPLES, id="whole-bench-at-probe-default"),
         pytest.param(
-            [],
-            "npm run bench",
-            PROBE_DEFAULT_SAMPLES,
-            {"names": [], "samples": None},
-            id="whole-bench-at-probe-default",
-        ),
-        pytest.param(
-            ["total_ms", "decode large payload", "--samples", "3"],
+            _SCOPED_ARGS,
             "sh bench.sh --filter total_ms 'decode large payload'",
             3,
-            {"names": ["total_ms", "decode large payload"], "samples": 3},
             id="names-and-samples-scope-the-bench",
-            marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX quoting only"),
+            marks=_POSIX_QUOTING,
         ),
     ],
 )
-def test_probe_command_when_run_does_bench_and_trace_the_scope_and_samples_asked_for(
-    *,
-    probe_repo: str,
-    args: list[str],
-    bench: str,
-    samples: int,
-    traced: dict[str, object],
-    measure: MeasureRecorder,
+@pytest.mark.usefixtures("probe_repo")
+def test_probe_command_when_run_does_bench_the_scope_and_samples_asked_for(
+    *, args: list[str], bench: str, samples: int, measure: MeasureRecorder
 ):
     result = runner.invoke(app, ["probe", *args])
 
     assert result.exit_code == 0
     run = only_call(measure).run.sampling
     assert (run.bench, run.samples) == (bench, samples)
+
+
+@pytest.mark.parametrize(
+    ("args", "traced"),
+    [
+        pytest.param([], {"names": [], "samples": None}, id="whole-bench-at-probe-default"),
+        pytest.param(
+            _SCOPED_ARGS,
+            {"names": ["total_ms", "decode large payload"], "samples": 3},
+            id="names-and-samples-scope-the-bench",
+            marks=_POSIX_QUOTING,
+        ),
+    ],
+)
+@pytest.mark.usefixtures("measure")
+def test_probe_command_when_run_does_trace_the_names_and_samples_given(
+    *, probe_repo: str, args: list[str], traced: dict[str, object]
+):
+    result = runner.invoke(app, ["probe", *args])
+
+    assert result.exit_code == 0
     cmd = last_command_record(probe_repo)
     assert (cmd.name, cmd.exit_code, cmd.reason) == ("probe", 0, None)
     assert {key: cmd.args[key] for key in traced} == traced

@@ -44,13 +44,16 @@ from gymrat.supervisor.events import (
     ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
-    summarize,
 )
 from tests._imports import loaded_under, modules_loaded_after
 from tests.supervisor._fixtures import (
+    _SENTINEL_HOOKS,
+    _SENTINEL_SERVER,
     FactoryProbe,
     FakeClient,
     FiniteClient,
+    HooksFactoryProbe,
+    ToolsFactoryProbe,
     assistant,
     collecting_observer,
     events_of,
@@ -104,14 +107,20 @@ _DEFAULT_OPTIONS = {
 
 _TRACEPARENT = "00-abc123-def456-01"
 
+#: No hooks or tools factory: the session mounts neither.
+_NO_FACTORIES = (None, None)
+
 
 @pytest.mark.parametrize(
-    ("prompt", "added"),
+    ("prompt", "factories", "added"),
     [
-        pytest.param(make_prompt(), {}, id="defaults"),
-        pytest.param(make_prompt(cwd="/my/project"), {"cwd": "/my/project"}, id="cwd"),
+        pytest.param(make_prompt(), _NO_FACTORIES, {}, id="defaults"),
+        pytest.param(
+            make_prompt(cwd="/my/project"), _NO_FACTORIES, {"cwd": "/my/project"}, id="cwd"
+        ),
         pytest.param(
             make_prompt(system_prompt_append="extra instructions"),
+            _NO_FACTORIES,
             {
                 "system_prompt": {
                     "type": "preset",
@@ -123,6 +132,7 @@ _TRACEPARENT = "00-abc123-def456-01"
         ),
         pytest.param(
             make_prompt(command_timeout_ms=300000),
+            _NO_FACTORIES,
             {
                 "env": {
                     "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS": "300000",
@@ -135,24 +145,54 @@ _TRACEPARENT = "00-abc123-def456-01"
         ),
         pytest.param(
             make_prompt(model="claude-sonnet-4-20250514"),
+            _NO_FACTORIES,
             {"model": "claude-sonnet-4-20250514"},
             id="model",
         ),
-        pytest.param(make_prompt(effort="high"), {"effort": "high"}, id="effort"),
-        pytest.param(make_prompt(max_budget_usd=5.0), {"max_budget_usd": 5.0}, id="max-budget"),
+        pytest.param(make_prompt(effort="high"), _NO_FACTORIES, {"effort": "high"}, id="effort"),
+        pytest.param(
+            make_prompt(max_budget_usd=5.0), _NO_FACTORIES, {"max_budget_usd": 5.0}, id="max-budget"
+        ),
         pytest.param(
             make_prompt(traceparent=_TRACEPARENT),
+            _NO_FACTORIES,
             {"env": {**_DEFAULT_ENV, "GYMRAT_TRACEPARENT": _TRACEPARENT}},
             id="traceparent-under-its-own-name",
+        ),
+        pytest.param(
+            make_prompt(),
+            (HooksFactoryProbe, None),
+            {"hooks": _SENTINEL_HOOKS},
+            id="hooks",
+        ),
+        pytest.param(
+            make_prompt(),
+            (None, ToolsFactoryProbe),
+            {"mcp_servers": {"gymrat": _SENTINEL_SERVER}},
+            id="tools",
+        ),
+        pytest.param(
+            make_prompt(),
+            (HooksFactoryProbe, ToolsFactoryProbe),
+            {"hooks": _SENTINEL_HOOKS, "mcp_servers": {"gymrat": _SENTINEL_SERVER}},
+            id="hooks-and-tools",
         ),
     ],
 )
 async def test_start_when_session_inputs_given_does_forward_them_as_client_options(
-    prompt: SessionPrompt, added: dict[str, object]
+    prompt: SessionPrompt,
+    factories: tuple[type[HooksFactoryProbe] | None, type[ToolsFactoryProbe] | None],
+    added: dict[str, object],
 ):
     client = FiniteClient([result_message()])
+    hooks, tools = factories
 
-    await run_outcome(client, prompt=prompt)
+    await run_outcome(
+        client,
+        prompt=prompt,
+        hooks=hooks() if hooks is not None else None,
+        tools=tools() if tools is not None else None,
+    )
 
     assert client.options == _DEFAULT_OPTIONS | added
 
@@ -325,7 +365,7 @@ async def test_start_when_tool_use_block_does_emit_tool_start(
 
 
 @pytest.mark.parametrize(
-    ("messages", "parent", "tool_use_id", "tool_name", "expected_result"),
+    ("messages", "expected"),
     [
         pytest.param(
             [
@@ -334,14 +374,11 @@ async def test_start_when_tool_use_block_does_emit_tool_start(
                     parent_tool_use_id="tu_parent",
                 ),
                 tool_results(
-                    ToolResultBlock(tool_use_id="tu_1", content="file contents here"),
+                    ToolResultBlock(tool_use_id="tu_1", content="file contents\n  here\n"),
                     parent_tool_use_id="tu_parent",
                 ),
             ],
-            "tu_parent",
-            "tu_1",
-            "Read",
-            "file contents here",
+            ("tu_parent", "tu_1", "Read", "file contents\n  here\n", "file contents here"),
             id="client-tool-under-a-parent",
         ),
         pytest.param(
@@ -351,30 +388,31 @@ async def test_start_when_tool_use_block_does_emit_tool_start(
                     ServerToolResultBlock(tool_use_id="tu_web", content=_WEB_SEARCH_RESULT),
                 ),
             ],
-            None,
-            "tu_web",
-            "web_search",
-            json.dumps(_WEB_SEARCH_RESULT),
+            (
+                None,
+                "tu_web",
+                "web_search",
+                json.dumps(_WEB_SEARCH_RESULT),
+                (
+                    '{"type": "web_search_tool_result", "content": [{"type": "web_search_result", '
+                    '"url": "https://example.com/noise", "title": "Noise"}]}'
+                ),
+            ),
             id="server-tool",
         ),
     ],
 )
 async def test_start_when_tool_result_matches_start_does_emit_tool_end_with_tracked_name(
     messages: list[object],
-    parent: str | None,
-    tool_use_id: str,
-    tool_name: str,
-    expected_result: str,
+    expected: tuple[str | None, str, str, str, str],
 ):
     events = await run_with_messages(messages)
 
     ends = events_of(events, ToolEndEvent)
-    assert len(ends) == 1
-    assert ends[0].parent_tool_use_id == parent
-    assert ends[0].tool_use_id == tool_use_id
-    assert ends[0].tool_name == tool_name
-    assert ends[0].result == expected_result
-    assert ends[0].result_summary == summarize(expected_result)
+    assert [
+        (end.parent_tool_use_id, end.tool_use_id, end.tool_name, end.result, end.result_summary)
+        for end in ends
+    ] == [expected]
 
 
 # ---------------------------------------------------------------------------

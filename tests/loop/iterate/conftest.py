@@ -5,11 +5,11 @@ import pytest
 from tests.loop.iterate._fixtures import (
     CollectSamplesRecorder,
     install_collect_samples,
-    settled_history,
     stub_improved_samples,
     write_iterate_session,
 )
 from tests.loop.iterate._hooks import HookScripts
+from tests.session.records._fixtures import settled_history
 
 
 @pytest.fixture

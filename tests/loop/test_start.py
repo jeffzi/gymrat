@@ -8,11 +8,11 @@ reveal their behavior against real worktrees, and the assertions read commit SHA
 straight out of the worktrees git laid down.
 """
 
+import contextlib
 import itertools
 import os
 import re
 import shutil
-import sys
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -43,6 +43,7 @@ from tests._git import (
     session_branches,
 )
 from tests._mode_bits import needs_mode_bits
+from tests._platform import needs_posix_kill
 from tests.loop._settle import (
     commit_and_keep,
     keep_iteration,
@@ -287,7 +288,7 @@ def test_start_session_when_finalized_does_reopen_at_the_pinned_baseline_with_th
     assert head_of(baseline_worktree_dir(repo)) == repo_head
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
+@needs_posix_kill
 def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_closed_log_back(
     repo: str,
 ):
@@ -305,7 +306,7 @@ def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_clo
     assert not Path(archived_session_path(repo, closed)).exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
+@needs_posix_kill
 def test_start_session_when_putting_the_closed_log_back_fails_does_raise_the_start_failure(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -378,13 +379,18 @@ def test_start_session_when_header_append_fails_does_remove_the_branch_and_workt
     assert not Path(baseline_worktree_dir(repo)).exists()
 
 
+def _fail_a_start_on_the_header(repo: str, log_dir: Path) -> None:
+    """Run a start that fails appending its header, then let the log directory take files again."""
+    with contextlib.suppress(PermissionError):
+        start_session(repo, "main", CONFIG)
+    log_dir.chmod(0o700)
+
+
 @needs_mode_bits
 def test_start_session_when_earlier_start_failed_on_the_header_does_open_a_fresh_session(
     repo: str, read_only_log_dir: Path
 ):
-    with pytest.raises(PermissionError):
-        start_session(repo, "main", CONFIG)
-    read_only_log_dir.chmod(0o700)
+    _fail_a_start_on_the_header(repo, read_only_log_dir)
 
     result = start_session(repo, "main", CONFIG)
 
@@ -437,7 +443,7 @@ def test_start_session_when_header_reached_the_log_before_the_failure_does_keep_
     assert Path(experiment_worktree_dir(repo)).is_dir()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
+@needs_posix_kill
 def test_start_session_when_resume_fails_does_leave_the_standing_worktree_and_its_work(
     repo: str,
 ):

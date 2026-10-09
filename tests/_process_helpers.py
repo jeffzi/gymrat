@@ -193,6 +193,31 @@ def is_alive(pid: int) -> bool:
     return not _has_exited(pid)
 
 
+async def poll_until(
+    ready: Callable[[], bool],
+    timeout_s: float,
+    on_timeout: Callable[[], Exception],
+) -> None:
+    """Poll ``ready`` on the running loop until it holds.
+
+    Args:
+        ready: The condition to wait for; it must not block.
+        timeout_s: Seconds to poll before giving up.
+        on_timeout: Builds the error to raise, called only once the wait has
+            expired so its message can describe the state at that point.
+
+    Raises:
+        Exception: Whatever ``on_timeout`` builds, once ``ready`` has not held
+            within ``timeout_s``.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while not ready():
+        if loop.time() > deadline:
+            raise on_timeout()
+        await asyncio.sleep(_POLL_INTERVAL_S)
+
+
 async def wait_until_dead(pid: int, timeout_s: float = _DEFAULT_WAIT_S) -> None:
     """Poll until the process with ``pid`` no longer exists.
 
@@ -203,13 +228,11 @@ async def wait_until_dead(pid: int, timeout_s: float = _DEFAULT_WAIT_S) -> None:
     Raises:
         AssertionError: The process is still alive after ``timeout_s``.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while is_alive(pid):
-        if loop.time() > deadline:
-            message = f"process {pid} was still alive after {timeout_s}s"
-            raise AssertionError(message)
-        await asyncio.sleep(_POLL_INTERVAL_S)
+    await poll_until(
+        lambda: not is_alive(pid),
+        timeout_s,
+        lambda: AssertionError(f"process {pid} was still alive after {timeout_s}s"),
+    )
 
 
 def wait_until_dead_blocking(pid: int, timeout_s: float = _DEFAULT_WAIT_S) -> None:

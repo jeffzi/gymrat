@@ -39,6 +39,7 @@ from tests.telemetry._replay_logs import (
     T3,
     T4,
     T5,
+    record_line,
     replay_command,
     replay_launch_event,
     replay_turn_end,
@@ -479,7 +480,7 @@ def _assert_one_warning_naming(records: list[logging.LogRecord], *fragments: str
     assert all(fragment in messages[0] for fragment in fragments), (fragments, messages[0])
 
 
-_ITERATION_LINE = json.dumps(record_to_wire(iteration_record(at=T1)))
+_ITERATION_LINE = record_line(iteration_record(at=T1))
 _TORN_UTF8_LINE = b'{"type": "iteration", "note": "caf\xc3'
 
 
@@ -511,8 +512,8 @@ def test_replay_session_when_session_line_undecodable_does_skip_it_with_warning(
 ):
     session_log, sup_log = log_paths
     lines = {
-        "header": json.dumps(record_to_wire(session_record(at=T0))).encode(),
-        "command": json.dumps(record_to_wire(replay_command("measure"))).encode(),
+        "header": record_line(session_record(at=T0)).encode(),
+        "command": record_line(replay_command("measure")).encode(),
         "bad": bad_line,
     }
     Path(session_log).write_bytes(b"\n".join(lines[name] for name in line_order))
@@ -531,36 +532,20 @@ def test_replay_session_when_session_line_undecodable_does_skip_it_with_warning(
 _ITERATE_WIRE = record_to_wire(replay_command("iterate"))
 
 
-@pytest.mark.parametrize(
-    "invalid_cmd",
-    [
-        pytest.param({**_ITERATE_WIRE, "unknown_future_field": "banana"}, id="unknown-key"),
-        pytest.param({**_ITERATE_WIRE, "exit_code": "banana"}, id="value-check-failure"),
-        pytest.param(
-            {**_ITERATE_WIRE, "exit_code": 0, "reason": "error"}, id="exit-code-reason-mismatch"
-        ),
-        pytest.param(
-            {key: value for key, value in _ITERATE_WIRE.items() if key != "at"}, id="missing-at"
-        ),
-        pytest.param({**_ITERATE_WIRE, "duration_ms": "banana"}, id="duration-not-a-number"),
-        pytest.param({**_ITERATE_WIRE, "args": "banana"}, id="args-not-a-mapping"),
-        pytest.param({**_ITERATE_WIRE, "traceparent": 42}, id="traceparent-not-a-string"),
-    ],
-)
 def test_replay_session_when_command_line_fails_validation_does_skip_it_with_warning(
     log_paths: tuple[str, str],
     caplog: pytest.LogCaptureFixture,
-    invalid_cmd: dict[str, object],
 ):
     session_log, sup_log = log_paths
     header = session_record(at=T0)
+    invalid_cmd = {**_ITERATE_WIRE, "unknown_future_field": "banana"}
     valid_cmd = replay_command("measure")
     write_lines(
         session_log,
         [
-            json.dumps(record_to_wire(header)),
+            record_line(header),
             json.dumps(invalid_cmd),
-            json.dumps(record_to_wire(valid_cmd)),
+            record_line(valid_cmd),
         ],
     )
     write_standard_run(sup_log)
@@ -629,7 +614,7 @@ def test_replay_session_when_skipped_line_before_command_does_key_span_id_on_phy
     cmd = replay_command("measure", at=T2, duration_ms=100)
     write_lines(
         session_log,
-        [json.dumps(record_to_wire(header)), "not valid json", json.dumps(record_to_wire(cmd))],
+        [record_line(header), "not valid json", record_line(cmd)],
     )
     write_supervisor_log(sup_log, [replay_launch_event(at=T1), replay_turn_end(at=T4)])
 

@@ -179,8 +179,9 @@ _PROMPT_CHOICES = "[y/n] (n): "
 
 _TTY_DISCARD = (
     "import runpy, sys\n"
+    "from unittest.mock import create_autospec\n"
     "from gymrat.cli.commands import loop\n"
-    "loop.is_tty = lambda _stream: True\n"
+    "loop.is_tty = create_autospec(loop.is_tty, return_value=True)\n"
     "sys.argv = ['gymrat', 'discard']\n"
     "runpy.run_module('gymrat.cli.app', run_name='__main__')\n"
 )

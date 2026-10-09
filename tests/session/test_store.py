@@ -13,6 +13,7 @@ import os
 import re
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -325,7 +326,7 @@ def test_append_record_when_record_written_does_fsync_before_close(
         fsynced_fds.append(fd)
         real_fsync(fd)
 
-    monkeypatch.setattr(os, "fsync", spy_fsync)
+    monkeypatch.setattr(os, "fsync", create_autospec(os.fsync, side_effect=spy_fsync))
 
     append_record(jsonl_path, SESSION)
 
@@ -492,6 +493,12 @@ def _never_stored_nan_hint(line_number: int) -> str:
     The store owns the line number and the "never stores" framing; the cause
     after the colon is the decoder's wording, pinned in ``test_records.py``, so
     only its mention of NaN is checked here.
+
+    Args:
+        line_number: The 1-based number of the line holding NaN.
+
+    Returns:
+        A regular expression matching the store's hint for that line.
     """
     return rf"Line {line_number} {re.escape(_NEVER_STORED)}: .*\bNaN\b.*"
 

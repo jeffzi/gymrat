@@ -16,19 +16,15 @@ from __future__ import annotations
 
 from functools import partial
 from typing import TYPE_CHECKING, Any
-from unittest.mock import create_autospec
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from gymrat.compare import CompareOptions
-
 import pytest
 
 from gymrat.cli.app import app
 from gymrat.cli.commands.compare import should_fail_gate
-from gymrat.compare import compare
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.report.json_doc import render_json
 from gymrat.report.text.render import render_report
@@ -42,6 +38,7 @@ from gymrat.sampling import RunOptions, SamplingOptions
 from tests.cli._session import (
     open_session,
     runner,
+    stub_compare,
     stub_compare_command,
 )
 from tests.config._toml import write_config
@@ -80,13 +77,7 @@ def test_compare_when_flags_and_config_file_given_does_forward_them_to_compare_o
         },
         name="compare.toml",
     )
-    captured: list[CompareOptions] = []
-
-    async def spy_compare(options: CompareOptions) -> ComparisonResult:
-        captured.append(options)
-        return create_comparison_result()
-
-    monkeypatch.setattr("gymrat.compare.compare", create_autospec(compare, side_effect=spy_compare))
+    fake_compare = stub_compare(monkeypatch)
 
     result = runner.invoke(
         app,
@@ -110,7 +101,7 @@ def test_compare_when_flags_and_config_file_given_does_forward_them_to_compare_o
     )
 
     assert result.exit_code == 0
-    (options,) = captured
+    (options,) = fake_compare.call_args.args
     sampling = options.run.sampling
     assert options.run == RunOptions(
         sampling=SamplingOptions(

@@ -9,7 +9,9 @@ baseline against the same canned measurement, so the pieces live here once.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import create_autospec
 
+from gymrat.measure import measure
 from tests.report._measurements import create_measurement_result, measured_metric
 
 if TYPE_CHECKING:
@@ -91,6 +93,9 @@ def install_measure(
 ) -> MeasureRecorder:
     """Replace ``gymrat.measure.measure`` with a recorder answering ``result``.
 
+    The stand-in keeps the real engine's signature, so a call the real
+    ``measure`` would reject fails the test.
+
     Args:
         monkeypatch: The test's monkeypatch fixture.
         result: The measurement every call hands back.
@@ -102,7 +107,9 @@ def install_measure(
         The installed recorder.
     """
     recorder = MeasureRecorder(result, progress, warnings, on_call)
-    monkeypatch.setattr("gymrat.measure.measure", recorder)
+    monkeypatch.setattr(
+        "gymrat.measure.measure", create_autospec(measure, side_effect=recorder.__call__)
+    )
     return recorder
 
 

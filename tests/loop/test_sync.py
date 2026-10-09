@@ -17,7 +17,7 @@ import pytest
 from gymrat.errors import GymratError
 from gymrat.loop.sync import sync_to_experiment
 from gymrat.session.paths import experiment_worktree_dir
-from tests._git import commit_all, run_git
+from tests._git import commit_all, git_exclude_path, run_git
 
 
 def _tree_snapshot(root: str) -> dict[str, bytes | str | None]:
@@ -83,7 +83,7 @@ def test_sync_to_experiment_when_changes_present_does_copy_each_changed_file(
 
 def _show_session_dir_to_git(root: str) -> None:
     """Drop the session directory's line from the git exclude file the start wrote."""
-    exclude = Path(root) / ".git" / "info" / "exclude"
+    exclude = git_exclude_path(root)
     kept = [line for line in exclude.read_text(encoding="utf-8").splitlines() if line != ".gymrat/"]
     exclude.write_text("".join(f"{line}\n" for line in kept), encoding="utf-8")
 

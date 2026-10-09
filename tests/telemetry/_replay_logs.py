@@ -38,10 +38,15 @@ def write_lines(path: str, lines: list[str]) -> None:
     Path(path).write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
 
 
+def record_line(record: Any) -> str:
+    """Serialize ``record`` to the one JSON line the session log holds for it."""
+    return json.dumps(record_to_wire(record))
+
+
 def write_records_log(path: str, records: list[Any]) -> None:
     """Write ``records`` in wire form to the session log at ``path``, creating its directory."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    write_lines(path, [json.dumps(record_to_wire(rec)) for rec in records])
+    write_lines(path, [record_line(rec) for rec in records])
 
 
 def write_supervisor_log(path: str, events: list[Any]) -> None:

@@ -552,14 +552,9 @@ def test_render_report_when_methods_differ_does_name_each_with_its_pair_counts()
 def test_render_report_when_cleanup_removed_everything_cleanly_does_suppress_the_footer():
     result = create_comparison_result(worktrees_removed=3, worktrees_left_behind=[])
 
-    footer = render_report(result).split("\n\n")[-1].split("\n")
+    report = render_report(result)
 
-    assert footer == [
-        (
-            "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   "
-            "= 0 identical   ~ 0 within noise   ? 0 inconclusive"
-        ),
-    ]
+    assert report == render_report(create_comparison_result())
 
 
 @pytest.mark.parametrize(

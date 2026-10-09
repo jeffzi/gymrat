@@ -12,9 +12,11 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
+from gymrat.clock import now_ms
 from gymrat.progress_events import (
     HookStarted,
     PassFinished,
@@ -127,7 +129,10 @@ def test_read_progress_when_clock_advances_does_discard_only_past_the_bound(
     snapshot = _make_snapshot()
     write_progress(root, snapshot)
     written_ms = _progress_file(root).stat().st_mtime * 1000
-    monkeypatch.setattr("gymrat.clock.now_ms", lambda: written_ms + age_seconds * 1000)
+    monkeypatch.setattr(
+        "gymrat.clock.now_ms",
+        create_autospec(now_ms, return_value=written_ms + age_seconds * 1000),
+    )
 
     result = read_progress(root)
 
@@ -184,7 +189,7 @@ def held_open_sidecar(root: str, monkeypatch: pytest.MonkeyPatch) -> str:
             raise PermissionError(13, "The process cannot access the file", sidecar)
         original_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(os, "unlink", failing_unlink)
+    monkeypatch.setattr(os, "unlink", create_autospec(os.unlink, side_effect=failing_unlink))
     return root
 
 

@@ -28,9 +28,10 @@ from tests.cli.supervise._fixtures import (
     fire_launch_and_iterate_start,
     follow_up_event,
     launch_event,
-    make_read_session,
+    launched,
     make_reporter,
     model_phase_event,
+    reporter_showing_session,
     reporter_with_nested_read,
     session_state_three_iterations,
     turn_end_event,
@@ -44,6 +45,11 @@ if TYPE_CHECKING:
     from rich.segment import Segment
 
     from gymrat.cli.supervise.progress import SuperviseReporter
+
+# Frames are rendered straight from ``reporter.frame()``, so no test here mounts a
+# real dashboard: a live ``ErasableLive`` would start a refresh thread painting on
+# the process's stderr while the test moves the clock.
+pytestmark = pytest.mark.usefixtures("mock_live_cls")
 
 
 # ---------------------------------------------------------------------------
@@ -128,8 +134,7 @@ def _title_styles(reporter: SuperviseReporter, token: str) -> set[str]:
 
 
 def test_panel_title_when_rendered_does_set_the_label_apart_from_its_dim_connectors():
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter())
 
     styles = {token: _title_styles(kit.reporter, token) for token in ("supervise", "·", "session")}
 
@@ -149,8 +154,7 @@ def test_panel_title_when_rendered_does_set_the_label_apart_from_its_dim_connect
 def test_summary_row_when_rendered_with_color_does_open_on_a_dim_label(label: str):
     state = session_state_three_iterations(-3.2, "improved", seq=3)
     best = BestIteration(delta_pct=-3.2, seq=3, label="geomean")
-    kit = make_reporter(read_session=make_read_session(state, has_baseline=True, best=best))
-    fire_launch_and_bash_cycle(kit.reporter.observer)
+    kit = reporter_showing_session(state, best=best)
     kit.reporter.observer(turn_end_event(4000))
     kit.reporter.observer(follow_up_event(5000, action="replied"))
 
@@ -166,11 +170,7 @@ def test_summary_row_when_rendered_with_color_does_open_on_a_dim_label(label: st
 
 def test_loop_iter_count_when_rendered_with_color_does_emit_bold_styling():
     state = session_state_three_iterations(-3.2, "improved")
-    kit = make_reporter(
-        max_iterations=20,
-        read_session=make_read_session(state, has_baseline=True),
-    )
-    fire_launch_and_bash_cycle(kit.reporter.observer)
+    kit = reporter_showing_session(state, max_iterations=20)
 
     style = _segment_style(kit.reporter, "iterations")
 
@@ -191,10 +191,7 @@ def test_loop_outcome_when_rendered_with_color_does_emit_expected_styling(
         iteration_count=1,
         last_iteration=make_iteration(delta_pct, outcome),
     )
-    kit = make_reporter(
-        read_session=make_read_session(state, has_baseline=True),
-    )
-    fire_launch_and_bash_cycle(kit.reporter.observer)
+    kit = reporter_showing_session(state)
 
     style = _segment_style(kit.reporter, outcome)
 
@@ -219,14 +216,10 @@ def test_loop_outcome_when_rendered_with_color_does_emit_expected_styling(
 def test_best_delta_when_rendered_with_color_does_style_an_improvement_green_per_direction(
     delta_pct: float, direction: Literal["lower", "higher"], expected_style: str
 ) -> None:
-    kit = make_reporter(
-        read_session=make_read_session(
-            session_state(iteration_count=1, keep_count=1),
-            has_baseline=True,
-            best=BestIteration(delta_pct=delta_pct, seq=1, label="primary", direction=direction),
-        ),
+    kit = reporter_showing_session(
+        session_state(iteration_count=1, keep_count=1),
+        best=BestIteration(delta_pct=delta_pct, seq=1, label="primary", direction=direction),
     )
-    fire_launch_and_bash_cycle(kit.reporter.observer)
 
     style = _segment_style(kit.reporter, "%")
 

@@ -146,20 +146,20 @@ def _error_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
 
 # Environment states where the variables alone decide the outcome, so terminal
 # detection never enters into it and every surface must give the same answer.
+# The error surface's force-on case is pinned by
+# tests/cli/test_exit.py::test_format_cli_error_when_colored_does_paint_the_error_label_red.
 @pytest.mark.parametrize(
-    ("force_and_no_color", "expected"),
+    ("is_colored", "force_and_no_color", "expected"),
     [
-        pytest.param(("1", None), True, id="force-on"),
-        pytest.param((None, "1"), False, id="no-color-suppresses"),
-    ],
-)
-@pytest.mark.parametrize(
-    "is_colored",
-    [
-        pytest.param(_report_is_colored, id="report"),
-        pytest.param(_doctor_report_is_colored, id="doctor-report"),
-        pytest.param(_progress_is_colored, id="progress"),
-        pytest.param(_error_is_colored, id="error"),
+        pytest.param(_report_is_colored, ("1", None), True, id="report-force-on"),
+        pytest.param(_report_is_colored, (None, "1"), False, id="report-no-color-suppresses"),
+        pytest.param(_doctor_report_is_colored, ("1", None), True, id="doctor-report-force-on"),
+        pytest.param(
+            _doctor_report_is_colored, (None, "1"), False, id="doctor-report-no-color-suppresses"
+        ),
+        pytest.param(_progress_is_colored, ("1", None), True, id="progress-force-on"),
+        pytest.param(_progress_is_colored, (None, "1"), False, id="progress-no-color-suppresses"),
+        pytest.param(_error_is_colored, (None, "1"), False, id="error-no-color-suppresses"),
     ],
 )
 def test_color_surface_when_env_decides_does_follow_the_shared_precedence(

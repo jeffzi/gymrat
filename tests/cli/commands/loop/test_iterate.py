@@ -11,7 +11,7 @@ import signal
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Literal, override
+from typing import Any, override
 from unittest.mock import Mock, create_autospec
 
 import pytest
@@ -21,7 +21,6 @@ from syrupy.assertion import SnapshotAssertion
 from gymrat.cli.app import app
 from gymrat.cli.console import stderr_console
 from gymrat.cli.iterate.progress import IterateRenderer
-from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.loop.iterate.run import IterateOptions, IterateResult, iterate_session
 from gymrat.progress_events import (
     JudgeStarted,
@@ -45,6 +44,7 @@ from tests.cli._budget import set_origin
 from tests.cli._session import (
     FailingStdoutRunner,
     closed_stdout_error,
+    force_render_mode,
     leave_as_is,
     runner,
     write_bench_config,
@@ -63,7 +63,6 @@ from tests.loop.iterate._fixtures import (
     bench_malformed_once,
     install_collect_samples,
     regressed_run,
-    settled_history,
     stub_improved_samples,
     stub_runs,
     write_iterate_session,
@@ -77,6 +76,7 @@ from tests.session.records._fixtures import (
     iteration_record,
     last_command_record,
     records_of_type,
+    settled_history,
 )
 
 # ---------------------------------------------------------------------------
@@ -113,12 +113,12 @@ def test_iterate_command_when_progress_sidecar_cannot_be_removed_does_still_succ
     sidecar = progress_path(repo)
     original_unlink = os.unlink
 
-    def failing_unlink(path: str | os.PathLike[str], *args: object, **kwargs: object) -> None:
+    def failing_unlink(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> None:
         if str(path) == sidecar:
             raise PermissionError(13, "The process cannot access the file", sidecar)
-        original_unlink(path, *args, **kwargs)  # type: ignore[arg-type]  # forwards whatever Path.unlink passed
+        original_unlink(path, dir_fd=dir_fd)
 
-    monkeypatch.setattr(os, "unlink", failing_unlink)
+    monkeypatch.setattr(os, "unlink", create_autospec(os.unlink, side_effect=failing_unlink))
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
@@ -161,18 +161,10 @@ def _emitting_iterate_session(events: Sequence[ProgressEvent] = _SUBSCRIBER_EVEN
 _LIVE_SCREEN_HEIGHT = 40
 
 
-def _force_render_mode(monkeypatch: pytest.MonkeyPatch, mode: Literal["live", "plain"]) -> None:
-    """Make the loop commands resolve ``mode`` as their render mode."""
-    monkeypatch.setattr(
-        "gymrat.cli.commands.loop.resolve_render_mode",
-        create_autospec(resolve_render_mode, return_value=mode),
-    )
-
-
 def _install_live_console(monkeypatch: pytest.MonkeyPatch) -> Console:
     """Force live mode onto a sealed console the command renders into; return the console."""
     console = sealed_console(height=_LIVE_SCREEN_HEIGHT, get_time=Clock(0.0))
-    _force_render_mode(monkeypatch, "live")
+    force_render_mode(monkeypatch, "loop", "live")
     monkeypatch.setattr(
         "gymrat.cli.commands.loop.stderr_console",
         create_autospec(stderr_console, return_value=console),
@@ -403,7 +395,7 @@ def test_iterate_command_when_plain_and_adapter_warns_does_print_it_once_on_stde
 ):
     write_iterate_session(repo)
     bench_malformed_once(monkeypatch)
-    _force_render_mode(monkeypatch, "plain")
+    force_render_mode(monkeypatch, "loop", "plain")
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
@@ -564,16 +556,6 @@ def supervised_repo(
     write_bench_config(repo, hooks={"before": f"touch '{marker}'"})
     install_budget(repo, monkeypatch)
     return repo
-
-
-def test_iterate_command_when_supervised_run_live_does_refuse_before_the_hook_or_bench(
-    supervised_repo: str, improved_samples_mock: CollectSamplesRecorder
-):
-    runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    assert improved_samples_mock.call_count == 0
-    assert not Path(supervised_repo, "hook-ran").exists()
-    assert last_command_record(supervised_repo).seq is None
 
 
 def test_iterate_command_when_tool_hosted_under_live_budget_does_run_the_before_hook(

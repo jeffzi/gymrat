@@ -248,7 +248,7 @@ async def test_collect_samples_when_bench_output_unreadable_does_warn_after_the_
         ),
     ],
 )
-async def test_collect_samples_when_a_command_fails_does_stop_at_it_with_progress_up_to_the_failure(
+async def test_collect_samples_when_a_pass_cannot_yield_a_sample_does_stop_at_it_with_progress_up_to_the_failure(
     monkeypatch: pytest.MonkeyPatch,
     *,
     prepare: str | None,

@@ -31,9 +31,22 @@ from gymrat.cli.exit import (
     write_stdout,
 )
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
+from tests._ansi import TRAILING_SGR_RUN, sgr_codes
 from tests._process_helpers import run_with_closed_reader
-from tests._rich import unwrap_panel
+from tests._rich import screen_cells, unwrap_panel
 from tests._streams import FakeStream, RaisingStream
+
+# The SGR code for dim, which a pyte screen does not track.
+_SGR_DIM = "2"
+
+
+def _style_opened_before(line: str, text: str) -> set[str]:
+    """The SGR codes of the escape run directly before ``text``'s first occurrence in ``line``."""
+    before, _, _ = line.partition(text)
+    run = TRAILING_SGR_RUN.search(before)
+    assert run is not None
+    return sgr_codes(run.group())
+
 
 # Execs ``argv[1:]`` with the file-size limit at zero, so every write the new
 # program makes to a regular file fails with EFBIG. Bytecode caching is off so
@@ -165,12 +178,15 @@ def test_write_stdout_when_reader_closed_does_exit_zero_without_stderr(probe: st
     assert (result.returncode, result.stderr) == (0, "")
 
 
-def test_write_stdout_when_pipe_closed_does_return_without_raising(
+def test_write_stdout_when_pipe_closed_on_stream_without_descriptor_does_return_without_raising(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stdout", RaisingStream(BrokenPipeError(errno.EPIPE, "Broken pipe")))
+    stream = RaisingStream(BrokenPipeError(errno.EPIPE, "Broken pipe"))
+    monkeypatch.setattr("sys.stdout", stream)
 
     write_stdout("first line\n")
+
+    assert sys.stdout is stream
 
 
 def test_run_cli_when_body_raises_broken_pipe_does_exit_two_with_error(
@@ -233,7 +249,8 @@ def test_format_cli_error_when_colored_does_paint_the_error_label_red(
 
     output = format_cli_error(ValueError("boom"))
 
-    assert output.splitlines()[0].startswith("\x1b[31mError")
+    label = screen_cells(output)[0][: len("Error")]
+    assert [(cell.data, cell.fg) for cell in label] == [(char, "red") for char in "Error"]
 
 
 def test_format_cli_error_when_adapter_error_does_keep_its_class_name_prefix(
@@ -287,8 +304,14 @@ def test_format_cli_error_when_hint_colored_does_render_inline_code_blue_on_a_di
     output = format_cli_error(GymratError("boom", hint="run `gymrat doctor` first"))
 
     hint_line = output.splitlines()[-1]
-    assert hint_line.startswith("\x1b[2mrun ")  # cspell:disable-line
-    assert "\x1b[2;34mgymrat doctor" in hint_line  # cspell:disable-line
+    hint_row = screen_cells(output)[len(output.splitlines()) - 1]
+    assert [(cell.data, cell.fg) for cell in hint_row[: len("run gymrat doctor first")]] == [
+        *((char, "default") for char in "run "),
+        *((char, "blue") for char in "gymrat doctor"),
+        *((char, "default") for char in " first"),
+    ]
+    assert _SGR_DIM in _style_opened_before(hint_line, "run ")
+    assert _SGR_DIM in _style_opened_before(hint_line, "gymrat doctor")
 
 
 @pytest.mark.parametrize(

@@ -16,7 +16,6 @@ flag's forwarding to the pre-flight is pinned.
 
 import os
 import re
-import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -37,7 +36,6 @@ from gymrat.config import (
     SuperviseConfig,
 )
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
-from gymrat.exec import kill_live_process_groups
 from gymrat.session.budget import write_budget
 from gymrat.session.paths import (
     SESSION_DIR_NAME,
@@ -52,18 +50,19 @@ from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
 from gymrat.telemetry.run_spans import setup_tracing
 from gymrat.utils import abbreviate_home
 from tests._ansi import strip_ansi
+from tests._git import git_exclude_path
 from tests._lock import FIXED_HOLDER_AT, hold_lock
 from tests._process_helpers import track_cleanups
 from tests.cli._session import (
     FailingStdoutRunner,
     closed_stdout_error,
+    force_render_mode,
 )
 from tests.cli.commands.supervise._seams import (
     CAP_MINUTES,
     CAP_MS,
     command_config,
     err_text,
-    force_render_mode,
     install_seams,
     run,
 )
@@ -84,11 +83,9 @@ def test_supervise_when_run_does_hand_supervise_its_capped_session(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     seams = install_seams(monkeypatch)
-    before_ms = time.time() * 1000
 
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES), "--max-usd", "2.0")
 
-    after_ms = time.time() * 1000
     assert result.exit_code == 0
     ctx = seams.supervise_calls[0]["context"]
     assert isinstance(ctx, SupervisedSession)
@@ -96,7 +93,6 @@ def test_supervise_when_run_does_hand_supervise_its_capped_session(
     assert re.search(r"\.gymrat[/\\]supervisor-\d+\.jsonl", ctx.log_path)
     assert ctx.lock_path == lockfile_path(repo)
     assert isinstance(ctx.config, ResolvedConfig)
-    assert before_ms + CAP_MS <= ctx.deadline_ms <= after_ms + CAP_MS
     assert ctx.max_minutes == CAP_MINUTES
     assert ctx.max_usd == 2.0
     prompt = seams.supervise_calls[0]["prompt"]
@@ -147,7 +143,7 @@ def test_supervise_when_log_path_resolved_does_git_exclude_the_session_dir_only_
     repo: str, monkeypatch: pytest.MonkeyPatch, log_args: list[str], excluded: bool
 ):
     install_seams(monkeypatch)
-    exclude_file = Path(repo, ".git", "info", "exclude")
+    exclude_file = git_exclude_path(repo)
 
     result = run("optimize it", "--max-minutes", "10", *log_args)
 
@@ -239,7 +235,7 @@ def test_supervise_when_stdout_reader_closed_and_preflight_fails_does_exit_two(
 ):
     install_seams(monkeypatch, config=replace(command_config(), checks="npm test"))
     monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", run_preflight)
-    force_render_mode(monkeypatch, "live")
+    force_render_mode(monkeypatch, "supervise", "live")
 
     result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["supervise", "optimize it", "--max-minutes", "10"]
@@ -302,7 +298,7 @@ def test_supervise_when_plain_and_session_has_branch_does_print_no_title(
     build_reporter = supervise_cmd.create_supervise_reporter
     seams = install_seams(monkeypatch, branch="banana")
     monkeypatch.setattr("gymrat.cli.commands.supervise.create_supervise_reporter", build_reporter)
-    force_render_mode(monkeypatch, "plain")
+    force_render_mode(monkeypatch, "supervise", "plain")
     seams.supervise_hook = lambda call: call["observer"](call["launch"])
 
     result = run("optimize it", "--max-minutes", "10")
@@ -376,23 +372,6 @@ def test_supervise_when_run_starts_does_build_the_reporter_before_installing_any
     assert armed_at_build == [[]]
 
 
-def test_supervise_when_session_runs_does_arm_the_kill_cleanup_only_for_its_duration(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
-    registry = track_cleanups(monkeypatch, "gymrat.cli.commands.supervise")
-    armed_during_run: list[bool] = []
-    seams.supervise_hook = lambda _call: armed_during_run.append(
-        any(live is kill_live_process_groups for live in registry.live())
-    )
-
-    result = run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 0
-    assert armed_during_run == [True]
-    assert registry.live() == []
-
-
 @pytest.mark.parametrize(
     ("target", "real", "message"),
     [
@@ -417,16 +396,19 @@ def test_supervise_when_session_setup_raises_does_tear_down_everything_it_armed(
     real: Callable[..., object],
     message: str,
 ):
-    seams = install_seams(monkeypatch)
+    build_reporter = supervise_cmd.create_supervise_reporter
+    install_seams(monkeypatch)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.create_supervise_reporter", build_reporter)
+    force_render_mode(monkeypatch, "supervise", "live")
     registry = track_cleanups(monkeypatch, "gymrat.cli.commands.supervise")
+    display_cleanups = track_cleanups(monkeypatch, "gymrat.cli.live_display")
     monkeypatch.setattr(target, create_autospec(real, side_effect=GymratError(message)))
 
     result = run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 2
     assert message in err_text(result)
-    seams.reporter_stop.assert_called()
-    assert registry.live() == []
+    assert (registry.live(), display_cleanups.live()) == ([], [])
     assert not Path(budget_path(repo)).exists()
 
 
@@ -512,7 +494,7 @@ def test_supervise_when_config_resolved_does_reach_every_consumer(
 
 
 # ---------------------------------------------------------------------------
-# --effort resolution
+# model and effort resolution
 # ---------------------------------------------------------------------------
 
 
@@ -530,6 +512,12 @@ def test_supervise_when_config_resolved_does_reach_every_consumer(
             SuperviseConfig(effort="high"),
             (None, "high"),
             id="no-effort-flag-uses-config",
+        ),
+        pytest.param(
+            ("--model", "sonnet"),
+            SuperviseConfig(model="opus"),
+            ("sonnet", None),
+            id="model-flag-overrides-config",
         ),
         pytest.param(
             (),

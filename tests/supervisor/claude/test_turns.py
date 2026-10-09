@@ -1,8 +1,8 @@
 """Tests for the Claude driver turn protocol.
 
-A result message emits a ``TurnEndEvent`` and the stream continues.
-Session settlement happens via ``end()``, ``interrupt()``, or natural stream
-termination — never from a result message alone.
+A successful or budget-exhausted result message emits a ``TurnEndEvent`` and
+the stream continues. Session settlement happens via ``end()``, ``interrupt()``,
+natural stream termination, or an error result message.
 """
 
 import math

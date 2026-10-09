@@ -187,15 +187,14 @@ def band_metric(
 ) -> MetricComparison:
     """A two-sided metric whose verdict fell back to the noise band.
 
-    ``n < 6`` means the run was too short for the permutation test; ``n >= 6``
-    with ``usable_n < 6`` means ties starved it.
-
     Args:
         verdict: The band verdict.
         delta: The candidate's delta, in percent.
         noise_pct: The noise band, in percent.
-        n: The total pair count.
-        usable_n: How many pairs survived tie-dropping; ``None`` means all ``n``.
+        n: The total pair count; below 6 the run was too short for the
+            permutation test.
+        usable_n: How many pairs survived tie-dropping; ``None`` means all
+            ``n``. Below 6 with ``n >= 6``, ties starved the permutation test.
         unit: The metric's unit, if any.
 
     Returns:

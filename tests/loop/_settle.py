@@ -41,9 +41,12 @@ from tests._git import commit_all
 from tests.session.records._fixtures import (
     append_records,
     committed_keep,
+    discard_record,
+    gate_block,
     iteration_record,
     log_records,
     metric_verdict,
+    settled_history,
 )
 
 CHECKS = "npm test"
@@ -255,6 +258,21 @@ def confirmed_regression(seq: int) -> IterationRecord:
         primary=IterationPrimary(kind="geomean", delta_pct=9.4),
         outcome="regressed",
     )
+
+
+def gating_blocked_history() -> tuple[SessionLogRecord, ...]:
+    """A history whose iteration 1 regressed and a gating-regression block settled it."""
+    return (confirmed_regression(1), gate_block(1, "gating-regression"))
+
+
+#: Histories that leave nothing measured to settle, one ``pytest.param`` each.
+NOTHING_MEASURED_HISTORIES = [
+    pytest.param((), id="no-iteration-ever-recorded"),
+    pytest.param(settled_history(), id="last-iteration-already-kept"),
+    pytest.param(
+        (*gating_blocked_history(), discard_record(2)), id="gating-block-already-discarded"
+    ),
+]
 
 
 def exact_regression(seq: int) -> IterationRecord:

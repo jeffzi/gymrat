@@ -183,6 +183,25 @@ def screen_lines(raw: str, *, width: int = 80, height: int = 24) -> list[str]:
     return lines
 
 
+def screen_cells(raw: str, *, width: int = 80, height: int = 24) -> list[list[pyte.screens.Char]]:
+    """Replay a captured terminal stream through a ``pyte.Screen`` and return its cells.
+
+    Each cell carries its character and the color and attributes pyte tracks
+    (``fg``, ``bg``, ``bold``, ...), so a test asserts what the terminal shows
+    instead of the escape bytes rich chose to emit. pyte does not track dim.
+
+    Args:
+        raw: The captured output, escape sequences included.
+        width: Screen width in columns.
+        height: Screen height in rows.
+
+    Returns:
+        One list of cells per screen row, top to bottom.
+    """
+    screen = _replay(raw, width, height)
+    return [[screen.buffer[row][column] for column in range(width)] for row in range(height)]
+
+
 def cursor_hidden(raw: str, *, width: int = 80, height: int = 24) -> bool:
     """Replay *raw* through a ``pyte.Screen`` and report whether the cursor ends hidden."""
     return _replay(raw, width, height).cursor.hidden

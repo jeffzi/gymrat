@@ -9,7 +9,6 @@ success path with its printed summary.
 from __future__ import annotations
 
 import errno
-import json
 import os
 import sys
 import time
@@ -21,7 +20,6 @@ import pytest
 
 from gymrat.cli.app import app
 from gymrat.session.paths import repo_root, session_jsonl_path
-from gymrat.session.records import record_to_wire
 from gymrat.utils import ENDPOINT_ENV
 from tests._cli import no_color_env, run_cli
 from tests._mode_bits import needs_mode_bits
@@ -32,6 +30,7 @@ from tests.telemetry._fixtures import arm_placeholder_endpoint, hide_otel_sdk, h
 from tests.telemetry._replay_logs import (
     T0,
     write_measure_command_run,
+    write_records_log,
     write_standard_run,
 )
 
@@ -254,9 +253,7 @@ def test_export_when_first_record_not_session_does_exit_two_naming_its_type(
 ):
     arm_placeholder_endpoint(monkeypatch)
     session_log = session_jsonl_path(str(tmp_path))
-    command_line = json.dumps(record_to_wire(command_record(name="measure", at=T0)))
-    Path(session_log).parent.mkdir(parents=True, exist_ok=True)
-    Path(session_log).write_text(f"{command_line}\n", encoding="utf-8")
+    write_records_log(session_log, [command_record(name="measure", at=T0)])
 
     result = runner.invoke(app, ["export", session_log])
 

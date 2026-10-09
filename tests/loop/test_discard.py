@@ -22,19 +22,20 @@ from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
 from gymrat.session.records import IterationRecord, KeepRecord, SessionLogRecord
 from tests._git import commit_all, head_of, status_of
 from tests.loop._settle import (
+    NOTHING_MEASURED_HISTORIES,
     assert_settling_record,
     checks_config,
     checks_pass,
     commit_experiment_directly,
     confirmed_regression,
     edit_experiment,
+    gating_blocked_history,
     settling_record_of,
     start_with,
     unmeasured_regression,
 )
 from tests.session.records._fixtures import (
     append_records,
-    committed_keep,
     discard_record,
     gate_block,
     iteration_record,
@@ -118,13 +119,7 @@ def test_discard_session_when_gating_block_stands_does_throw_away_the_edit_numbe
 async def test_discard_session_when_keep_retried_after_block_does_throw_away_the_edit_after_the_refusal(
     repo: str,
 ):
-    start_with(
-        repo,
-        (
-            confirmed_regression(1),
-            _GATING_BLOCK,
-        ),
-    )
+    start_with(repo, gating_blocked_history())
     edit_experiment(repo)
     await keep_session(repo, checks_config())
 
@@ -167,19 +162,6 @@ async def test_discard_session_when_keep_committed_then_agent_committed_does_res
 # ---------------------------------------------------------------------------
 # discard_session unmeasured revert (dirty worktree, nothing to settle)
 # ---------------------------------------------------------------------------
-
-NOTHING_MEASURED_HISTORIES = [
-    pytest.param((), id="no-iteration-ever-recorded"),
-    pytest.param((iteration_record(seq=1), committed_keep(1)), id="last-iteration-already-kept"),
-    pytest.param(
-        (
-            confirmed_regression(1),
-            _GATING_BLOCK,
-            discard_record(2),
-        ),
-        id="gating-block-already-discarded",
-    ),
-]
 
 
 def _edit_commit_and_add_a_file(repo_dir: str) -> None:

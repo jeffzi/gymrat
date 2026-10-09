@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -66,6 +67,19 @@ def gating_kind(
         ),
         gated_geomean=geomean,
     )
+
+
+def informational_kind(kind: str, geomean: GeomeanResult) -> KindAggregate:
+    """A kind aggregate that gates nothing and holds no groups.
+
+    Args:
+        kind: The kind's name.
+        geomean: The section geomean.
+
+    Returns:
+        The kind aggregate, with no gated geomean.
+    """
+    return KindAggregate(kind=kind, geomean=geomean, groups=())
 
 
 def other_kind(
@@ -236,6 +250,21 @@ def exact_metric(
     )
 
 
+def undefined_ratio_metric(short_name: str, *, n: int) -> MetricComparison:
+    """A unitless exact metric whose zero baseline leaves its delta undefined.
+
+    Args:
+        short_name: The name the metric displays under.
+        n: The pair count behind the verdict.
+
+    Returns:
+        The metric comparison, its candidate at 120 against a baseline of 0.
+    """
+    return exact_metric(
+        delta=math.nan, n=n, unit=None, baseline_median=0, median=120, short_name=short_name
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class NWayCandidate:
     """One candidate's permutation outcome, carrying its own measured median."""
@@ -245,26 +274,54 @@ class NWayCandidate:
     median: float
 
 
-def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricComparison:
-    """One metric judged for several candidates against a single shared baseline."""
+def permutation_candidate(
+    *, verdict: ApproximateVerdict, delta: float, median: float
+) -> CandidateMetric:
+    """One candidate's slice of a metric, judged by the permutation test.
+
+    Args:
+        verdict: The verdict the permutation test reached.
+        delta: The candidate's delta against the baseline, in percent.
+        median: The candidate's measured value.
+
+    Returns:
+        The candidate's metric slice.
+    """
+    return CandidateMetric(
+        median=median,
+        spread=1.0,
+        verdict=permutation_verdict(verdict=verdict, delta=delta, p=0.01, noise_abs=3.5),
+    )
+
+
+def shared_baseline_metric(
+    candidates: Sequence[CandidateMetric], *, name: str = "time"
+) -> MetricComparison:
+    """A nanosecond metric holding the given candidate slices against one shared baseline.
+
+    Args:
+        candidates: Each candidate's slice of the metric, in candidate order.
+        name: The name the metric displays under.
+
+    Returns:
+        The metric comparison, its baseline at 100 with a 1% spread.
+    """
     return MetricComparison(
         baseline_median=100.0,
         baseline_spread=1.0,
-        candidates=tuple(
-            CandidateMetric(
-                median=candidate.median,
-                spread=1.0,
-                verdict=permutation_verdict(
-                    verdict=candidate.verdict,
-                    delta=candidate.delta,
-                    p=0.01,
-                    noise_abs=3.5,
-                ),
-            )
-            for candidate in candidates
-        ),
-        meta=metric_meta("time", unit="ns"),
+        candidates=tuple(candidates),
+        meta=metric_meta(name, unit="ns"),
     )
+
+
+def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricComparison:
+    """One metric judged for several candidates against a single shared baseline."""
+    return shared_baseline_metric([
+        permutation_candidate(
+            verdict=candidate.verdict, delta=candidate.delta, median=candidate.median
+        )
+        for candidate in candidates
+    ])
 
 
 def multi_candidate_result(
@@ -317,12 +374,7 @@ def multi_candidate_result(
         baseline_label="main",
         candidates=candidates,
         metrics={
-            name: MetricComparison(
-                baseline_median=100.0,
-                baseline_spread=1.0,
-                candidates=tuple(metric_candidates),
-                meta=metric_meta(name, unit="ns"),
-            ),
+            name: shared_baseline_metric(metric_candidates, name=name),
         },
     )
 
@@ -417,6 +469,18 @@ def single_sample_result() -> ComparisonResult:
     )
 
 
+def entity_time_metrics() -> MetricComparisons:
+    """The ``entity`` group's two ``time`` metrics: ``alive_check`` improved, ``spawn`` regressed."""
+    return {
+        "entity/alive_check#time": kind_metric(
+            kind="time", short_name="entity.alive_check", verdict="improved", delta=-10
+        ),
+        "entity/spawn#time": kind_metric(
+            kind="time", short_name="entity.spawn", verdict="regressed", delta=4
+        ),
+    }
+
+
 def two_kind_metrics() -> MetricComparisons:
     """A gating ``time`` kind (a grouped pair plus a bare row) and an informational ``memory`` kind.
 
@@ -428,12 +492,7 @@ def two_kind_metrics() -> MetricComparisons:
         The metrics keyed by full metric name.
     """
     return {
-        "entity/alive_check#time": kind_metric(
-            kind="time", short_name="entity.alive_check", verdict="improved", delta=-10
-        ),
-        "entity/spawn#time": kind_metric(
-            kind="time", short_name="entity.spawn", verdict="regressed", delta=4
-        ),
+        **entity_time_metrics(),
         "warmup#time": kind_metric(
             kind="time", short_name="warmup", verdict="no-signal", delta=0.3
         ),
@@ -472,7 +531,7 @@ def memory_kind() -> KindAggregate:
     Returns:
         The ``memory`` kind aggregate.
     """
-    return KindAggregate(kind="memory", geomean=geomean_of(-7, 1), groups=(), gated_geomean=None)
+    return informational_kind("memory", geomean_of(-7, 1))
 
 
 def two_kind_result(kinds: Sequence[KindAggregate] | None = None) -> ComparisonResult:
@@ -540,12 +599,7 @@ def grouped_comparison() -> ComparisonResult:
                 label="candidate-b",
                 kinds=[
                     gating_kind("time", geomean_of(4, 1), {"entity": geomean_of(4, 1)}),
-                    KindAggregate(
-                        kind="memory",
-                        geomean=geomean_of(-2, 1),
-                        groups=(),
-                        gated_geomean=None,
-                    ),
+                    informational_kind("memory", geomean_of(-2, 1)),
                 ],
             ),
         ],

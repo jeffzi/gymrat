@@ -46,6 +46,7 @@ from tests.supervisor._fixtures import (
     NotJsonEncodable,
     make_launch,
     make_turn_end,
+    raising_observer,
 )
 
 # ---------------------------------------------------------------------------
@@ -541,12 +542,8 @@ def test_event_from_wire_when_input_unrecognized_does_return_none(obj: object):
 _OBSERVER_FAILURE = "observer failure"
 
 
-def _raise_observer_failure(_: object) -> None:
-    raise RuntimeError(_OBSERVER_FAILURE)
-
-
 def test_combine_observers_when_an_observer_raises_does_warn_attributed_to_the_caller():
-    combined = combine_observers(_raise_observer_failure)
+    combined = combine_observers(raising_observer(_OBSERVER_FAILURE))
     event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
 
     with pytest.warns(RuntimeWarning, match=_OBSERVER_FAILURE) as caught:

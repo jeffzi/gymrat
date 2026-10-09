@@ -16,6 +16,7 @@ from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Protocol
+from unittest.mock import create_autospec
 
 import pytest
 from filelock import FileLock
@@ -119,7 +120,7 @@ def refuse_open(monkeypatch: pytest.MonkeyPatch, target_path: str) -> None:
             raise PermissionError(errno.EACCES, "Permission denied")
         return real_open(path, *args)
 
-    monkeypatch.setattr(os, "open", spy_open)
+    monkeypatch.setattr(os, "open", create_autospec(os.open, side_effect=spy_open))
 
 
 def fail_acquire_for(
@@ -144,7 +145,9 @@ def fail_acquire_for(
             raise make_error(self.lock_file)
         real_acquire(self, *args, **kwargs)
 
-    monkeypatch.setattr(FileLock, "acquire", selective_failure)
+    monkeypatch.setattr(
+        FileLock, "acquire", create_autospec(FileLock.acquire, side_effect=selective_failure)
+    )
 
 
 @contextmanager
@@ -241,9 +244,7 @@ def test_acquire_lock_when_held_with_valid_json_does_report_holder_details(
 def test_acquire_lock_when_held_with_unreadable_content_does_report_held_without_remove_advice(
     lock_path: str,
 ):
-    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
-    blocker = FileLock(os_lock_file(lock_path), timeout=0)
-    blocker.acquire()
+    blocker = hold_lock(lock_path)
     Path(lock_path).write_bytes(b'{"pid":42,"comm')
 
     try:
@@ -320,7 +321,9 @@ def test_release_when_internal_error_does_warn_on_stderr(
 
     # The patch is scoped to the call so the teardown release drops the flock for real.
     with monkeypatch.context() as patched:
-        patched.setattr(FileLock, "release", failing_release)
+        patched.setattr(
+            FileLock, "release", create_autospec(FileLock.release, side_effect=failing_release)
+        )
         release()
 
     assert "disk went away" in capsys.readouterr().err

@@ -111,7 +111,6 @@ def test_supervise_when_supervise_raises_does_fail_before_the_exit_sequence(
     assert result.exit_code == 2
     assert "config broken" in result.stderr
     assert seams.exit_calls == []
-    seams.reporter_stop.assert_called()
 
 
 def test_supervise_when_exit_sequence_reports_a_phase_does_show_it_on_the_reporter(

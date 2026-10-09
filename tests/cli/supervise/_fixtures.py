@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from datetime import UTC, tzinfo
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from unittest.mock import patch
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextlib import AbstractContextManager
 
     import pytest
     from rich.console import Console, RenderableType
@@ -46,9 +48,6 @@ from gymrat.supervisor.events import (
 )
 from gymrat.supervisor.supervise import SupervisionResult
 from gymrat.utils import NS_PER_MS
-from tests._ansi import (
-    strip_sgr,
-)
 from tests._config import resolved_config
 from tests._rich import (
     Clock,
@@ -441,6 +440,14 @@ FRAME_WIDTH = 100
 #: Patch target for the ``ErasableLive`` the live-mode reporter drives.
 LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.ErasableLive"
 
+#: Patch target for the factory that builds the console the dashboard paints on.
+CONSOLE_FACTORY_PATH = "gymrat.cli.supervise.progress.stderr_console"
+
+
+def dashboard_console_patch(console: Console) -> AbstractContextManager[Any]:
+    """Patch the dashboard's console factory with an autospec that hands out *console*."""
+    return patch(CONSOLE_FACTORY_PATH, autospec=True, return_value=console)
+
 
 #: The root every built reporter carries. Both session readers are stubbed, so
 #: nothing ever reads below it.
@@ -539,6 +546,12 @@ def make_reporter(
     return ReporterKit(track(reporter), clock)
 
 
+def launched(kit: ReporterKit) -> ReporterKit:
+    """Fire the agent's launch at 1000 ms at *kit*'s reporter, then return *kit*."""
+    kit.reporter.observer(launch_event(1000))
+    return kit
+
+
 def reporter_with_nested_read() -> ReporterKit:
     """A reporter whose in-flight Bash call runs a nested Read of ``src/config.ts``.
 
@@ -564,16 +577,33 @@ def reporter_with_nested_read() -> ReporterKit:
     return kit
 
 
+def reporter_showing_session(
+    state: SessionState, *, best: BestIteration | None = None, max_iterations: int | None = None
+) -> ReporterKit:
+    """A reporter whose session read carries *state*, past one Bash call's end.
+
+    The Bash end triggers the session re-read, so the loop and best rows show
+    *state* and *best*.
+
+    Args:
+        state: The session state every read returns, with a baseline recorded.
+        best: The best kept iteration the read reports, or ``None`` for none.
+        max_iterations: Iteration cap, or ``None`` for uncapped.
+
+    Returns:
+        The reporter together with the clock that drives it.
+    """
+    kit = make_reporter(
+        read_session=make_read_session(state, has_baseline=True, best=best),
+        max_iterations=max_iterations,
+    )
+    fire_launch_and_bash_cycle(kit.reporter.observer)
+    return kit
+
+
 def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> str:
     """Render the reporter's current frame through a non-terminal console."""
     return frame_text(reporter.frame(), width=width)
-
-
-def line_after(frame: str, needle: str) -> str:
-    """Return the line immediately following the first line containing *needle*."""
-    lines = frame.splitlines()
-    idx = next(i for i, line in enumerate(lines) if needle in line)
-    return lines[idx + 1]
 
 
 def color_console(*, width: int = FRAME_WIDTH) -> Console:
@@ -588,18 +618,6 @@ def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> s
     return console_output(console)
 
 
-def lines_containing(frame: str, needle: str) -> list[str]:
-    """Return the raw lines of *frame* whose text, color codes stripped, contains *needle*."""
-    return [line for line in frame.splitlines() if needle in strip_sgr(line)]
-
-
 def row_content(line: str) -> str:
     """Strip the panel's side borders and padding from one frame row."""
     return line.strip("│").strip()
-
-
-def content_line(frame: str, needle: str) -> str:
-    """The sole frame row containing *needle*, with panel border and padding stripped."""
-    lines = lines_containing(frame, needle)
-    assert len(lines) == 1, f"expected exactly one line containing {needle!r}, got {lines}"
-    return row_content(lines[0])

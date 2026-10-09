@@ -14,6 +14,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -35,7 +36,9 @@ from gymrat.session.workspace import (
 )
 from tests._git import (
     add_worktree,
+    checked_out_ref,
     commit_all,
+    git_exclude_path,
     head_of,
     install_git_hook,
     kill_git_during_worktree_add,
@@ -45,6 +48,7 @@ from tests._git import (
     status_of,
 )
 from tests._git import run_git as _git
+from tests._platform import needs_posix_kill
 from tests.session.records._fixtures import (
     SESSION_ID,
     worktrees_at,
@@ -57,15 +61,6 @@ BASELINE_REF = "main"
 # earlier one's leftovers.
 NEXT_SESSION_ID = "20260808-152045-b7c1"
 NEXT_BRANCH = f"gymrat/{NEXT_SESSION_ID}"
-
-
-def _checked_out_ref(worktree: str) -> str:
-    """The ref a worktree has checked out: a branch name, or ``HEAD`` when detached."""
-    return _git(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
-
-
-def _exclude_path(root: str) -> Path:
-    return Path(root) / ".git" / "info" / "exclude"
 
 
 def _both_worktrees_exist(root: str) -> bool:
@@ -100,10 +95,10 @@ def test_create_workspace_when_no_session_workspace_does_build_the_session_works
     bl = baseline_worktree_dir(repo)
     assert _git(["rev-parse", BRANCH], repo) == repo_head
     assert Path(exp).exists()
-    assert _checked_out_ref(exp) == BRANCH
+    assert checked_out_ref(exp) == BRANCH
     assert head_of(bl) == repo_head
-    assert _checked_out_ref(bl) == "HEAD"
-    assert ".gymrat/" in _exclude_path(repo).read_text(encoding="utf-8").split("\n")
+    assert checked_out_ref(bl) == "HEAD"
+    assert ".gymrat/" in git_exclude_path(repo).read_text(encoding="utf-8").split("\n")
     assert result == WorkspaceResult(branch=BRANCH, worktrees=worktrees_at(repo))
 
 
@@ -119,7 +114,7 @@ def test_create_workspace_when_branch_already_exists_does_raise_naming_branch_an
     assert re.search(r"git branch -D", excinfo.value.hint or "", re.IGNORECASE)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
+@needs_posix_kill
 def test_create_workspace_when_worktree_add_dies_does_raise_naming_that_step_leaving_nothing_behind(
     repo: str,
     baseline: BaselineRef,
@@ -150,7 +145,7 @@ def test_create_workspace_when_registry_entries_are_stale_does_check_out_over_it
     result = create_workspace(repo, NEXT_SESSION_ID, baseline)
 
     registered = list_worktree_dirs(repo, include_main=False)
-    assert _checked_out_ref(result.worktrees.experiment) == NEXT_BRANCH
+    assert checked_out_ref(result.worktrees.experiment) == NEXT_BRANCH
     assert head_of(result.worktrees.baseline) == repo_head
     assert Path(live).exists()
     assert (live in registered, absent in registered) == (True, True)
@@ -181,7 +176,7 @@ def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming
 
 def _seed_exclude(repo: str, content: bytes | None) -> Path:
     """Leave the repo's exclude file holding *content*, or absent when it is ``None``."""
-    path = _exclude_path(repo)
+    path = git_exclude_path(repo)
     path.unlink(missing_ok=True)
     if content is not None:
         path.write_bytes(content)
@@ -216,7 +211,7 @@ def test_ensure_git_exclude_when_called_does_list_the_session_dir_once_keeping_o
 
 
 def test_ensure_git_exclude_when_file_cannot_be_read_does_raise_naming_the_file(repo: str):
-    path = _exclude_path(repo)
+    path = git_exclude_path(repo)
     path.unlink(missing_ok=True)
     path.mkdir()
 
@@ -338,7 +333,7 @@ def test_recreate_workspace_when_experiment_gone_does_put_it_back_on_the_branch_
 
     recreate_workspace(repo, BRANCH, repo_head)
 
-    assert _checked_out_ref(experiment_worktree_dir(repo)) == BRANCH
+    assert checked_out_ref(experiment_worktree_dir(repo)) == BRANCH
     assert _both_worktrees_exist(repo)
     assert user_worktree in list_worktree_dirs(repo, include_main=False)
 
@@ -353,7 +348,7 @@ def test_recreate_workspace_when_baseline_gone_does_put_it_back_detached_at_sha(
 
     worktree = baseline_worktree_dir(repo)
     assert head_of(worktree) == repo_head
-    assert _checked_out_ref(worktree) == "HEAD"
+    assert checked_out_ref(worktree) == "HEAD"
 
 
 def test_recreate_workspace_when_both_on_disk_does_leave_experiment_work_untouched(
@@ -484,8 +479,8 @@ def test_advance_baseline_when_target_sha_given_does_land_the_baseline_detached_
     advance_baseline(baseline_dir, target)
 
     assert head_of(baseline_dir) == target
-    assert _checked_out_ref(baseline_dir) == "HEAD"
-    assert _checked_out_ref(experiment) == BRANCH
+    assert checked_out_ref(baseline_dir) == "HEAD"
+    assert checked_out_ref(experiment) == BRANCH
 
 
 _UNKNOWN_COMMIT = "0" * 40
@@ -614,7 +609,7 @@ def test_worktree_fingerprint_when_scratch_cleanup_fails_does_still_return_the_h
         msg = f"directory is busy: {path}"
         raise OSError(msg)
 
-    monkeypatch.setattr(os, "rmdir", _refuse_rmdir)
+    monkeypatch.setattr(os, "rmdir", create_autospec(os.rmdir, side_effect=_refuse_rmdir))
 
     result = worktree_fingerprint(experiment)
 

@@ -12,7 +12,6 @@ import contextlib
 import os
 import shutil
 import signal
-import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -45,7 +44,7 @@ from tests._git import (
     register_absent_worktree,
 )
 from tests._mode_bits import needs_mode_bits
-from tests._platform import needs_posix_shell
+from tests._platform import needs_posix_kill, needs_posix_shell, needs_symlinks
 from tests._process_helpers import fake_install, is_alive, track_cleanups, wait_for_pid_file
 
 # A sha no repository holds, so ``git worktree add`` rejects it outright.
@@ -397,6 +396,7 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_dirty_does_wrap_
 ):
     track_cleanups(monkeypatch, "gymrat.sampling")
     sweep = _install_sweep(monkeypatch, tmp_path, _removed_left_and_prune_failed)
+    details = format_cleanup_failures(sweep.expected.failures, sweep.expected.prune_error)
 
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
         worktrees.extend(sweep.worktrees)
@@ -405,7 +405,6 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_dirty_does_wrap_
     with pytest.raises(Exception) as caught:  # noqa: PT011 -- the row names the exact type below
         await run_with_worktrees(phase, lambda m, c: (m, c))
 
-    details = format_cleanup_failures(sweep.expected.failures, sweep.expected.prune_error)
     assert type(caught.value) is wrapped_type
     assert str(caught.value) == "\n".join([
         str(original),
@@ -606,14 +605,14 @@ async def test_run_with_worktrees_when_signalled_after_the_normal_sweep_left_a_w
     exits = _patch_git(
         monkeypatch, raise_signal, capsys, refused=left, signal_during=_removal(in_flight)
     )
-
-    await run_with_worktrees(_phase_leaving(worktrees), lambda m, c: (m, c))
-
     reported = CleanupResult(
         removed=0,
         failures=(WorktreeRemovalFailure(dir=str(left), error=_REFUSED),),
         prune_error=None,
     )
+
+    await run_with_worktrees(_phase_leaving(worktrees), lambda m, c: (m, c))
+
     assert exits == [
         _Exit(
             code=128 + signal.SIGTERM,
@@ -683,10 +682,6 @@ async def test_run_with_worktrees_when_signalled_during_the_normal_prune_does_ex
 # worktree lifecycle: plan, materialize, sweep
 # ---------------------------------------------------------------------------
 
-skip_on_windows = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX signal delivery to git and real symlinks are required"
-)
-
 
 def _plan_and_attempt_materialize(target: RefTarget, repo_dir: str) -> tuple[WorktreeInfo, bool]:
     """Plan a worktree and materialize it, reporting failure instead of raising."""
@@ -748,7 +743,7 @@ def _slashed_temp_base(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
     "point_base",
     [
         pytest.param(_default_temp_base, id="host-temp-base"),
-        pytest.param(_symlinked_temp_base, id="symlinked-base", marks=skip_on_windows),
+        pytest.param(_symlinked_temp_base, id="symlinked-base", marks=needs_symlinks),
         pytest.param(_slashed_temp_base, id="trailing-slash-base"),
     ],
 )
@@ -842,7 +837,7 @@ def test_materialize_worktree_when_git_cannot_be_started_does_raise_gymrat_error
         materialize_worktree(worktree, str(tmp_path))
 
 
-@skip_on_windows
+@needs_posix_kill
 def test_materialize_worktree_when_add_interrupted_does_set_created_from_disk_state(repo: str):
     kill_git_during_worktree_add(repo)
     sha = head_of(repo)
@@ -874,7 +869,7 @@ def test_cleanup_worktrees_when_list_empty_outside_repo_does_skip_prune_and_repo
     assert result == CleanupResult(removed=0, failures=(), prune_error=None)
 
 
-@skip_on_windows
+@needs_posix_kill
 def test_cleanup_worktrees_when_add_was_killed_does_remove_like_a_normal_worktree(repo: str):
     kill_git_during_worktree_add(repo)
     sha = head_of(repo)

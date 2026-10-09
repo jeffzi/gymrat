@@ -12,18 +12,18 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import override
-from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.clock import monotonic_ms
 from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
     CapEvent,
     SessionEvent,
     SessionObserver,
     TextDeltaEvent,
+    UsageUpdateEvent,
 )
+from tests._clock import install_monotonic_clock
 from tests.supervisor._fixtures import (
     DelegatingSession,
     SlowEndSession,
@@ -35,6 +35,7 @@ from tests.supervisor._fixtures import (
     events_log_path,
     events_of,
     make_launch,
+    raising_observer,
     read_log_lines,
 )
 from tests.supervisor._mock_driver import (
@@ -142,15 +143,10 @@ async def test_supervise_when_session_completes_does_report_outcome_with_events_
 async def test_supervise_when_session_spans_time_does_report_duration_from_monotonic_clock(
     root: str, monkeypatch: pytest.MonkeyPatch
 ):
-    elapsed_ms = 1000.0
-    monkeypatch.setattr(
-        "gymrat.clock.monotonic_ms",
-        create_autospec(monotonic_ms, side_effect=lambda: elapsed_ms),
-    )
+    clock = install_monotonic_clock(monkeypatch)
 
     async def spend_250_ms() -> None:
-        nonlocal elapsed_ms
-        elapsed_ms += 250
+        clock.tick(250.0)
 
     driver = create_mock_driver([ActionStep(action=spend_250_ms), CostStep(cost_usd=0.05)])
 
@@ -380,11 +376,7 @@ async def test_supervise_when_outcome_rejects_does_propagate_rejection(root: str
 
 async def test_supervise_when_observer_raises_does_still_fire_spend_cap(root: str):
     observer_message = "observer boom"
-
-    def throwing(event: SessionEvent) -> None:
-        if event.type == "usage_update":
-            raise RuntimeError(observer_message)
-
+    throwing = raising_observer(observer_message, on=UsageUpdateEvent)
     driver = create_mock_driver([CostStep(cost_usd=0.5), TurnEndStep(cost_usd=0.5)])
 
     with pytest.warns(RuntimeWarning, match=observer_message):
@@ -397,11 +389,7 @@ async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
     root: str,
 ):
     wrapper, aborted_at = _abort_bound_driver()
-
-    def failing_observer(event: SessionEvent) -> None:
-        if event.type == "cap":
-            msg = "observer explodes on cap"
-            raise RuntimeError(msg)
+    failing_observer = raising_observer("observer explodes on cap", on=CapEvent)
 
     with pytest.warns(RuntimeWarning, match="observer explodes on cap"):
         result = await asyncio.wait_for(

@@ -38,8 +38,6 @@ from tests._ansi import stripped_lines
 from tests._exec_fixtures import expected_result
 from tests.session.records._fixtures import (
     SESSION_ID,
-    committed_keep,
-    iteration_record,
     log_records,
     session_record,
     write_session_log,
@@ -129,19 +127,6 @@ def iterate_session_header(root: str, *, experiment: str | None = None) -> Sessi
 
 #: Fourteen minutes: an iteration longer than what the budget-refusal tests leave on the clock.
 OUTLASTING_ITERATION_MS = 840_000
-
-
-def settled_history(*, duration_ms: int | None = None) -> tuple[SessionLogRecord, ...]:
-    """The history of a settled session: one measured iteration and the keep that settled it.
-
-    Args:
-        duration_ms: How long the iteration is recorded to have taken; None leaves it unrecorded.
-
-    Returns:
-        The iteration record and its committed keep, in log order.
-    """
-    timing = {} if duration_ms is None else {"duration_ms": duration_ms}
-    return (iteration_record(seq=1, **timing), committed_keep(1))
 
 
 def write_iterate_session(root: str, history: tuple[SessionLogRecord, ...] = ()) -> SessionRecord:

@@ -41,25 +41,26 @@ from gymrat.cli.supervise.types import BestIteration
 from gymrat.session.progress_file import ProgressSnapshot
 from gymrat.session.records import IterationPrimary
 from gymrat.supervisor.exit_sequence import ExitPhase
+from tests._logging import unhandled_logging
 from tests._rich import track
 from tests.cli.supervise._fixtures import (
     BASH_CYCLE_END_MS,
     ReporterKit,
     _throwing_read,
     cap_event,
-    content_line,
     fire_launch_and_bash_cycle,
     fire_launch_and_bash_start,
     fire_launch_and_edit_cycle,
     fire_launch_and_iterate_start,
     follow_up_event,
     launch_event,
-    line_after,
+    launched,
     make_read_session,
     make_reporter,
     model_phase_event,
     read_result,
     render_frame,
+    reporter_showing_session,
     reporter_with_nested_read,
     row_content,
     session_state_three_iterations,
@@ -95,6 +96,11 @@ if TYPE_CHECKING:
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import PrimaryKind
     from gymrat.supervisor.events import ModelPhase
+
+# Frames are rendered straight from ``reporter.frame()``, so no test here mounts a
+# real dashboard: a live ``ErasableLive`` would start a refresh thread painting on
+# the process's stderr while the test moves the clock.
+pytestmark = pytest.mark.usefixtures("mock_live_cls")
 
 
 # ---------------------------------------------------------------------------
@@ -309,8 +315,7 @@ def _panel_title_text(frame: str) -> str:
 def test_panel_title_when_model_or_effort_in_force_does_show_labelled_value(
     model: str | None, effort: Effort | None, expected_title: str
 ) -> None:
-    kit = make_reporter(session_id="", branch="", model=model, effort=effort)
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter(session_id="", branch="", model=model, effort=effort))
 
     frame = render_frame(kit.reporter)
 
@@ -323,13 +328,16 @@ def test_panel_title_when_model_or_effort_in_force_does_show_labelled_value(
 
 
 def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero():
-    kit = make_reporter(max_minutes=60, clock_start=1000)
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter(max_minutes=60, clock_start=1000))
     kit.clock.now = 1000 + (2 * 3600) * 1000
 
     frame = render_frame(kit.reporter)
 
-    assert content_line(frame, "cap in") == "time " + "━" * 73 + " 2h 00m  cap in 0s"
+    assert _summary_rows(frame) == [
+        "time " + "━" * 73 + " 2h 00m  cap in 0s",
+        "cost $0.00",
+        "loop   no session yet",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -340,8 +348,7 @@ def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero():
 def test_frame_when_just_launched_does_render_the_starting_layout(
     snapshot: SnapshotAssertion,
 ):
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter())
 
     frame = render_frame(kit.reporter)
 
@@ -360,18 +367,17 @@ def test_best_when_kept_iteration_exists_does_show_the_best_row():
         discard_count=2,
         last_iteration=make_iteration(-6.8, "improved", seq=3),
     )
-    kit = make_reporter(
-        read_session=make_read_session(
-            state,
-            has_baseline=True,
-            best=BestIteration(delta_pct=-6.8, seq=3, label="geomean"),
-        ),
+    kit = reporter_showing_session(
+        state, best=BestIteration(delta_pct=-6.8, seq=3, label="geomean")
     )
-    fire_launch_and_bash_cycle(kit.reporter.observer)
 
     frame = render_frame(kit.reporter)
 
-    assert content_line(frame, "best") == "best -6.8% geomean (iteration 3)"
+    assert _liveness_rows(frame) == [
+        "best -6.8% geomean (iteration 3)",
+        "waiting  0s",
+        "00:00:03  Bash   ...  1s",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -443,13 +449,12 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
 
 
 def test_cap_when_fired_does_show_action_with_cap_type():
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter())
     kit.reporter.observer(cap_event("spend-cap", action="ending"))
 
     frame = render_frame(kit.reporter)
 
-    assert content_line(frame, "(spend-cap)") == "ending (spend-cap)"
+    assert _liveness_rows(frame) == ["ending (spend-cap)"]
 
 
 # ---------------------------------------------------------------------------
@@ -458,9 +463,8 @@ def test_cap_when_fired_does_show_action_with_cap_type():
 
 
 def test_final_text_when_several_agent_turns_ended_does_return_the_latest_text():
-    kit = make_reporter()
+    kit = launched(make_reporter())
     observer = kit.reporter.observer
-    observer(launch_event(1000))
     observer(turn_end_event(2000, text="first turn summary"))
     observer(turn_end_event(3000, text="second turn summary"))
 
@@ -469,11 +473,30 @@ def test_final_text_when_several_agent_turns_ended_does_return_the_latest_text()
     assert text == "second turn summary"
 
 
-def _liveness_rows(frame: str) -> list[str]:
-    """The frame rows below the loop row, with panel border and padding stripped."""
+def _split_at_loop_row(frame: str) -> tuple[list[str], list[str]]:
+    """The frame's content rows up to and including the loop row, and the rows below it.
+
+    Rows have the panel border and padding stripped.
+
+    Args:
+        frame: The rendered frame.
+
+    Returns:
+        The summary rows ending on the loop row, then the rows below it.
+    """
     rows = [row_content(line) for line in frame.splitlines() if line.startswith("│")]
     loop_index = next(i for i, row in enumerate(rows) if row.startswith("loop "))
-    return rows[loop_index + 1 :]
+    return rows[: loop_index + 1], rows[loop_index + 1 :]
+
+
+def _summary_rows(frame: str) -> list[str]:
+    """The frame rows from the time row down to the loop row, border and padding stripped."""
+    return _split_at_loop_row(frame)[0]
+
+
+def _liveness_rows(frame: str) -> list[str]:
+    """The frame rows below the loop row, with panel border and padding stripped."""
+    return _split_at_loop_row(frame)[1]
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +517,7 @@ def test_finished_tool_when_ended_does_mark_only_an_error(result: str, expected_
 
     frame = render_frame(kit.reporter)
 
-    assert content_line(frame, "Edit") == expected_row
+    assert _liveness_rows(frame) == ["waiting  0s", expected_row]
 
 
 # ---------------------------------------------------------------------------
@@ -503,8 +526,7 @@ def test_finished_tool_when_ended_does_mark_only_an_error(result: str, expected_
 
 
 def test_liveness_when_in_flight_summary_exceeds_width_does_truncate_to_one_line():
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter())
     kit.clock.now = 2000
     long_summary = "src/" + "/".join(f"level{i}" for i in range(20)) + "/file.ts"
     kit.reporter.observer(tool_start_event("Edit", "edit-1", 2000, input_summary=long_summary))
@@ -512,9 +534,9 @@ def test_liveness_when_in_flight_summary_exceeds_width_does_truncate_to_one_line
 
     frame = render_frame(kit.reporter)
 
-    assert content_line(frame, "Edit") == (
+    assert _liveness_rows(frame) == [
         "00:00:02  Edit   src/level0/level1/level2/level3/level4/level5/level6/level7/level8/level9/le…"
-    )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -525,21 +547,39 @@ def test_liveness_when_in_flight_summary_exceeds_width_does_truncate_to_one_line
 def test_nested_tool_when_in_flight_does_render_an_arrow_line_under_parent():
     kit = reporter_with_nested_read()
 
-    nested_line = line_after(render_frame(kit.reporter), "Bash")
+    rows = _liveness_rows(render_frame(kit.reporter))
 
-    assert row_content(nested_line) == "↳ Read src/config.ts  3s"
+    assert rows == ["00:00:01  Bash   ...  3s", "↳ Read src/config.ts  3s"]
 
 
 @pytest.mark.parametrize(
-    ("phase", "tool_name", "now", "expected"),
+    ("phase", "tool_name", "now", "expected_rows"),
     [
-        pytest.param("thinking", None, 4000, "↳ thinking  2s", id="thinking"),
-        pytest.param("responding", None, 3000, "↳ responding  1s", id="responding"),
-        pytest.param("tool_input", "Edit", 3000, "↳ preparing Edit  1s", id="composing"),
+        pytest.param(
+            "thinking",
+            None,
+            4000,
+            ["00:00:01  Bash   ...  2s", "↳ thinking  2s"],
+            id="thinking",
+        ),
+        pytest.param(
+            "responding",
+            None,
+            3000,
+            ["00:00:01  Bash   ...  1s", "↳ responding  1s"],
+            id="responding",
+        ),
+        pytest.param(
+            "tool_input",
+            "Edit",
+            3000,
+            ["00:00:01  Bash   ...  1s", "↳ preparing Edit  1s"],
+            id="composing",
+        ),
     ],
 )
 def test_nested_phase_when_reported_does_render_an_arrow_line_naming_it(
-    phase: ModelPhase, tool_name: str | None, now: int, expected: str
+    phase: ModelPhase, tool_name: str | None, now: int, expected_rows: list[str]
 ):
     kit = make_reporter()
     observer = kit.reporter.observer
@@ -548,9 +588,9 @@ def test_nested_phase_when_reported_does_render_an_arrow_line_naming_it(
     observer(model_phase_event(2000, phase, tool_name=tool_name, parent_tool_use_id="bash-1"))
     kit.clock.now = now
 
-    nested_line = line_after(render_frame(kit.reporter), "Bash")
+    rows = _liveness_rows(render_frame(kit.reporter))
 
-    assert row_content(nested_line) == expected
+    assert rows == expected_rows
 
 
 # ---------------------------------------------------------------------------
@@ -559,9 +599,8 @@ def test_nested_phase_when_reported_does_render_an_arrow_line_naming_it(
 
 
 def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_width():
-    kit = make_reporter()
+    kit = launched(make_reporter())
     observer = kit.reporter.observer
-    observer(launch_event(1000))
     kit.clock.now = 2000
     observer(tool_start_event("Bash", "bash-1", 2000, input_summary="run tests"))
     kit.clock.now = 2500
@@ -579,7 +618,10 @@ def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_widt
     frame = render_frame(kit.reporter)
 
     # "Bash" padded to the 5-column floor; counting the nested name would widen it.
-    assert content_line(frame, "Bash") == "00:00:02  Bash   run tests  1s"
+    assert _liveness_rows(frame) == [
+        "00:00:02  Bash   run tests  1s",
+        "↳ LongNestedToolName something  0s",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -614,7 +656,10 @@ def test_finished_tool_when_ended_does_show_wall_clock_in_the_given_tz(
 
     frame = render_frame(kit.reporter)
 
-    assert content_line(frame, "Edit") == f"{expected_clock}  Edit   src/archetype.ts  1s"
+    assert _liveness_rows(frame) == [
+        "waiting  0s",
+        f"{expected_clock}  Edit   src/archetype.ts  1s",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -644,7 +689,7 @@ def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
 
     frame = render_frame(kit.reporter)
 
-    assert content_line(frame, "Edit") == "05:30:03  Edit   src/archetype.ts  1s"
+    assert _liveness_rows(frame) == ["waiting  0s", "05:30:03  Edit   src/archetype.ts  1s"]
 
 
 # ---------------------------------------------------------------------------
@@ -667,12 +712,14 @@ def test_liveness_when_waiting_past_threshold_after_errored_tool_does_mark_it_in
 
     frame = render_frame(kit.reporter)
 
-    assert content_line(frame, "no output") == "no output for 30s (last tool: Bash ✗ at 00:00:03)"
+    assert _liveness_rows(frame) == [
+        "no output for 30s (last tool: Bash ✗ at 00:00:03)",
+        "00:00:03  Bash   ...  ✗ 1s",
+    ]
 
 
 def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter())
     kit.reporter.observer(model_phase_event(2000, "turn_end"))
     kit.clock.now = 2000 + IDLE_WARN_MS + 1
 
@@ -725,9 +772,8 @@ def test_liveness_when_waiting_around_custom_idle_warn_does_escalate_only_past_i
 def test_liveness_when_model_phase_reported_does_show_the_phase_with_its_elapsed(
     phase: ModelPhase, tool_name: str | None, expected: str
 ):
-    kit = make_reporter()
+    kit = launched(make_reporter())
     observer = kit.reporter.observer
-    observer(launch_event(1000))
     observer(model_phase_event(2000, phase, tool_name=tool_name))
 
     frame = render_frame(kit.reporter)
@@ -761,7 +807,7 @@ def test_liveness_when_iterate_tool_has_sidecar_does_show_its_passes(
 
     frame = render_frame(kit.reporter)
 
-    assert content_line(frame, "passes") == expected_row
+    assert _liveness_rows(frame) == ["00:00:02  Bash   gymrat iterate  31m 0s", expected_row]
 
 
 def test_liveness_when_iterate_tool_has_no_sidecar_or_nested_activity_does_show_only_plain_elapsed():
@@ -818,8 +864,7 @@ def test_liveness_when_mcp_iterate_tool_in_flight_does_show_the_sidecar_passes()
 def test_liveness_when_non_iterate_tool_in_flight_does_show_its_summary_without_the_sidecar(
     tool_name: str, input_summary: str, expected_row: str
 ):
-    kit = make_reporter(read_progress=lambda _root: _HALFWAY)
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter(read_progress=lambda _root: _HALFWAY))
     kit.clock.now = 2000
     kit.reporter.observer(tool_start_event(tool_name, "tool-2", 2000, input_summary=input_summary))
     kit.clock.now = 5000
@@ -835,9 +880,8 @@ def test_liveness_when_non_iterate_tool_in_flight_does_show_its_summary_without_
 
 
 def test_liveness_when_follow_up_replied_does_show_it_on_the_turns_row():
-    kit = make_reporter()
+    kit = launched(make_reporter())
     observer = kit.reporter.observer
-    observer(launch_event(1000))
     observer(model_phase_event(1500, "responding"))
     observer(turn_end_event(2000, text="done"))
     observer(follow_up_event(3000, action="replied"))
@@ -868,7 +912,9 @@ def test_plain_when_no_writer_given_does_print_each_line_to_stderr(
     assert capsys.readouterr().err == "caps 60m\n"
 
 
-def test_plain_when_session_read_fails_again_after_recovering_does_not_warn_a_second_time():
+def test_plain_when_session_read_fails_again_after_recovering_does_warn_once_without_a_traceback(
+    capsys: pytest.CaptureFixture[str],
+):
     recovered = make_read_session(session_state(), has_baseline=True)
     reads = iter([_throwing_read, recovered, _throwing_read])
 
@@ -877,11 +923,12 @@ def test_plain_when_session_read_fails_again_after_recovering_does_not_warn_a_se
 
     kit, writes = _plain(read_session=read_in_turn)
 
-    kit.reporter.refresh_session()
-    kit.reporter.refresh_session()
-    kit.reporter.refresh_session()
+    with unhandled_logging():
+        kit.reporter.refresh_session()
+        kit.reporter.refresh_session()
+        kit.reporter.refresh_session()
 
-    assert writes == ["session read failed: no session file"]
+    assert (writes, capsys.readouterr().err) == (["session read failed: no session file"], "")
 
 
 def test_plain_when_warn_called_does_record_warning():
@@ -950,8 +997,7 @@ def test_exit_phase_when_plain_does_write_a_line_only_when_the_phase_changes(
 def test_liveness_when_exit_phase_reported_does_show_the_phase_with_advancing_elapsed(
     phase: ExitPhase, expected_line: str
 ):
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter())
     kit.clock.now = 5000
     kit.reporter.exit_phase(phase)
     kit.clock.now = 8000

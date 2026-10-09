@@ -43,7 +43,12 @@ from tests.cli._progress_helpers import iterate_renderer, report_full_pass
 from tests.cli._progress_helpers import ms_from_clock as _ms
 from tests.cli._progress_helpers import pass_finished as _pass_finished
 from tests.cli._progress_helpers import pass_started as _pass_started
-from tests.cli.supervise._fixtures import LIVE_CLASS_PATH, launch_event, make_reporter
+from tests.cli.supervise._fixtures import (
+    LIVE_CLASS_PATH,
+    dashboard_console_patch,
+    launch_event,
+    make_reporter,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -141,7 +146,7 @@ def build_supervise_reporter(mode: Literal["live", "plain"], console: Console) -
         return live
 
     with (
-        patch("gymrat.cli.supervise.progress.stderr_console", autospec=True, return_value=console),
+        dashboard_console_patch(console),
         patch(LIVE_CLASS_PATH, autospec=True, side_effect=build_live),
     ):
         kit = make_reporter(mode=mode, plain_write=lambda _line: None)

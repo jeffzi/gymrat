@@ -182,6 +182,19 @@ def committed_keep(seq: int, **overrides: Any) -> KeepRecord:
     return _overridden(default, overrides)
 
 
+def settled_history(*, duration_ms: int | None = None) -> tuple[SessionLogRecord, ...]:
+    """The history of a settled session: one measured iteration and the keep that settled it.
+
+    Args:
+        duration_ms: How long the iteration is recorded to have taken; None leaves it unrecorded.
+
+    Returns:
+        The iteration record and its committed keep, in log order.
+    """
+    timing = {} if duration_ms is None else {"duration_ms": duration_ms}
+    return (iteration_record(seq=1, **timing), committed_keep(1))
+
+
 def blocked_keep(seq: int, **overrides: Any) -> KeepRecord:
     """A keep the checks gate refused, leaving the iteration numbered ``seq`` uncommitted.
 

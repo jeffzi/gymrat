@@ -96,21 +96,28 @@ def create_measurement_result(
     )
 
 
+def entity_time_measurements() -> dict[str, MetricMeasurement]:
+    """The two ``time`` metrics of the ``entity`` group, keyed by full metric name."""
+    return {
+        "entity/alive_check#time": measured_metric(
+            kind="time",
+            short_name="entity.alive_check",
+            unit="ns",
+        ),
+        "entity/spawn#time": measured_metric(
+            kind="time",
+            short_name="entity.spawn",
+            median=104,
+            unit="ns",
+        ),
+    }
+
+
 def two_kind_measurement() -> MeasurementResult:
     """A measurement spanning a gating ``time`` kind and an informational ``memory`` kind."""
     return create_measurement_result(
         metrics={
-            "entity/alive_check#time": measured_metric(
-                kind="time",
-                short_name="entity.alive_check",
-                unit="ns",
-            ),
-            "entity/spawn#time": measured_metric(
-                kind="time",
-                short_name="entity.spawn",
-                median=104,
-                unit="ns",
-            ),
+            **entity_time_measurements(),
             "warmup#time": measured_metric(kind="time", short_name="warmup", unit="ns"),
             "encode#memory": measured_metric(
                 kind="memory",

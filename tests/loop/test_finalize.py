@@ -20,7 +20,7 @@ from gymrat.loop.finalize import (
 )
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import FinalizeRecord
-from tests._git import commit_all, head_of, list_worktree_dirs
+from tests._git import checked_out_ref, commit_all, head_of, list_worktree_dirs
 from tests._git import run_git as _git
 from tests.loop._settle import (
     capture_error,
@@ -192,7 +192,7 @@ def test_finalize_session_when_committed_keeps_exist_does_close_the_session_on_o
     assert body.split("\n") == MESSAGES
     assert record.message == f"{subject}\n\n{body}"
     assert head_of(kept_repo) == repo_head
-    assert _git(["rev-parse", "--abbrev-ref", "HEAD"], kept_repo) == "main"
+    assert checked_out_ref(kept_repo) == "main"
     assert _git(["rev-parse", session_branch], kept_repo) == session_head
     assert not Path(experiment_worktree_dir(kept_repo)).exists()
     assert not Path(baseline_worktree_dir(kept_repo)).exists()

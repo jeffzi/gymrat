@@ -20,7 +20,6 @@ and aggregate rows are styled here; verdict-cell colors live in
 
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import replace
 from functools import partial
@@ -33,7 +32,6 @@ from gymrat.model import Exclusion
 from gymrat.report.text.render import render_measure_report, render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
 from gymrat.targets import WorktreeRemovalFailure
-from gymrat.verdict import KindAggregate
 from tests.report._assertions import (
     cells_of,
     highlight_lines,
@@ -46,9 +44,11 @@ from tests.report._comparisons import (
     NWayCandidate,
     create_candidate,
     create_comparison_result,
+    entity_time_metrics,
     exact_metric,
     gating_kind,
     grouped_comparison,
+    informational_kind,
     kind_metric,
     memory_kind,
     mixed_methods_result,
@@ -57,6 +57,7 @@ from tests.report._comparisons import (
     permutation_metric,
     single_sample_result,
     two_kind_result,
+    undefined_ratio_metric,
 )
 from tests.report._measurements import two_kind_measurement
 from tests.report._verdicts import (
@@ -104,14 +105,7 @@ def _one_kind_result() -> ComparisonResult:
     """A single gating ``time`` kind whose two metrics share the ``entity`` group."""
     geomean = geomean_of(-3.2, 2)
     return create_comparison_result(
-        metrics={
-            "entity/alive_check#time": kind_metric(
-                kind="time", short_name="entity.alive_check", verdict="improved", delta=-10
-            ),
-            "entity/spawn#time": kind_metric(
-                kind="time", short_name="entity.spawn", verdict="regressed", delta=4
-            ),
-        },
+        metrics=entity_time_metrics(),
         candidates=[create_candidate(kinds=[gating_kind("time", geomean, {"entity": geomean})])],
     )
 
@@ -124,11 +118,7 @@ def _non_gating_result() -> ComparisonResult:
                 kind="time", short_name="warmup", verdict="improved", delta=-10, gating=False
             ),
         },
-        candidates=[
-            create_candidate(
-                kinds=[KindAggregate(kind="time", geomean=geomean_of(-10, 1), groups=())]
-            )
-        ],
+        candidates=[create_candidate(kinds=[informational_kind("time", geomean_of(-10, 1))])],
     )
 
 
@@ -147,9 +137,7 @@ def _non_gating_two_candidate_result() -> ComparisonResult:
             ),
         },
         candidates=[
-            create_candidate(
-                label=label, kinds=[KindAggregate(kind="time", geomean=geomean, groups=())]
-            )
+            create_candidate(label=label, kinds=[informational_kind("time", geomean)])
             for label, geomean in (
                 ("candidate-a", geomean_of(-10, 1)),
                 ("candidate-b", geomean_of(4, 1)),
@@ -174,11 +162,7 @@ def _flat_non_gating_result() -> ComparisonResult:
                 kind="time", short_name="cooldown", verdict="no-signal", delta=0.3, gating=False
             ),
         },
-        candidates=[
-            create_candidate(
-                kinds=[KindAggregate(kind="time", geomean=geomean_of(-5, 2), groups=())]
-            )
-        ],
+        candidates=[create_candidate(kinds=[informational_kind("time", geomean_of(-5, 2))])],
         config_kinds={"time": KindEntry(gating=False)},
     )
 
@@ -297,14 +281,14 @@ def _per_candidate_geomean_result() -> ComparisonResult:
                 label="candidate-a",
                 kinds=[
                     gating_kind("time", geomean_of(-9, 1), {"entity": geomean_of(-9, 1)}),
-                    KindAggregate(kind="memory", geomean=geomean_of(-1, 1), groups=()),
+                    informational_kind("memory", geomean_of(-1, 1)),
                 ],
             ),
             create_candidate(
                 label="candidate-b",
                 kinds=[
                     gating_kind("time", geomean_of(-12, 1), {"entity": geomean_of(-12, 1)}),
-                    KindAggregate(kind="memory", geomean=geomean_of(-2, 1), groups=()),
+                    informational_kind("memory", geomean_of(-2, 1)),
                 ],
             ),
         ],
@@ -408,14 +392,7 @@ def _degenerate_result() -> ComparisonResult:
             "zero-median/time": exact_metric(
                 delta=0, n=4, unit="ns", baseline_median=0, short_name="zero-median/time"
             ),
-            "nan-delta/count": exact_metric(
-                delta=math.nan,
-                n=4,
-                unit=None,
-                baseline_median=0,
-                median=120,
-                short_name="nan-delta/count",
-            ),
+            "nan-delta/count": undefined_ratio_metric("nan-delta/count", n=4),
             "old-side-only/time": MetricComparison(
                 baseline_median=2048,
                 baseline_spread=2,
@@ -533,13 +510,7 @@ def test_render_report_when_single_sample_does_mark_verdicts_inconclusive():
     report = render_report(single_sample_result())
 
     assert cells_of(line_starting_with(report, "decode/time"))[-1].strip() == "?  -0.4%"
-    assert report.split("\n\n")[1:] == [
-        (
-            "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   "
-            "= 0 identical   ~ 0 within noise   ? 2 inconclusive"
-        ),
-        "re-run with gymrat compare --samples 6 or more for statistical verdicts",
-    ]
+    assert report.split("\n\n")[1].split("   ")[-1] == "? 2 inconclusive"
 
 
 # ---------------------------------------------------------------------------

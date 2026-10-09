@@ -40,6 +40,16 @@ def head_of(worktree: str) -> str:
     return run_git(["rev-parse", "HEAD"], worktree)
 
 
+def checked_out_ref(worktree: str) -> str:
+    """The ref ``worktree`` has checked out: a branch name, or ``HEAD`` when detached."""
+    return run_git(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
+
+
+def git_exclude_path(root: str) -> Path:
+    """The ``.git/info/exclude`` file of the repository at ``root``."""
+    return Path(root) / ".git" / "info" / "exclude"
+
+
 def write_committed_bench(
     repo: str, script: str, *, message: str = "add bench", branches: tuple[str, ...] = ()
 ) -> None:

@@ -14,7 +14,8 @@ from gymrat.clock import now_ms
 from gymrat.errors import GymratError
 from gymrat.exec import kill_live_process_groups
 from gymrat.loop.start import StartResult
-from gymrat.session.budget import Budget, clear_budget, read_budget, write_budget
+from gymrat.session.budget import Budget, clear_budget, read_budget
+from gymrat.supervisor.supervise import SupervisedSession
 from tests._process_helpers import CleanupRegistry, track_cleanups
 from tests.cli.commands.supervise._seams import (
     CAP_MINUTES,
@@ -38,40 +39,32 @@ def test_supervise_when_run_does_write_the_capped_budget_before_supervise(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     seams = install_seams(monkeypatch)
-    seen_budgets: list[Budget | None] = []
-    seams.supervise_hook = lambda _call: seen_budgets.append(read_budget(repo, now_ms=now_ms()))
+    seen: list[tuple[Budget | None, object]] = []
+    seams.supervise_hook = lambda call: seen.append((
+        read_budget(repo, now_ms=now_ms()),
+        call["context"],
+    ))
     earliest_start_ms = now_ms()
 
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
 
     latest_start_ms = now_ms()
     assert result.exit_code == 0
-    (budget,) = seen_budgets
+    ((budget, context),) = seen
     assert budget is not None
+    assert isinstance(context, SupervisedSession)
     assert budget.max_minutes == CAP_MINUTES
     assert earliest_start_ms + CAP_MS <= budget.deadline_ms <= latest_start_ms + CAP_MS
-
-
-def _capture_budget_writes(monkeypatch: pytest.MonkeyPatch) -> list[Budget]:
-    """Replace the command's budget write with a recorder; return the budgets it receives."""
-    captured_budgets: list[Budget] = []
-
-    def capturing_write(root: str, budget: Budget) -> None:
-        captured_budgets.append(budget)
-
-    monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.write_budget",
-        create_autospec(write_budget, side_effect=capturing_write),
-    )
-    return captured_budgets
+    assert budget.deadline_ms == context.deadline_ms
 
 
 def test_supervise_when_preflight_records_baseline_does_start_the_budget_once_it_is_recorded(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    install_seams(monkeypatch)
-    captured_budgets = _capture_budget_writes(monkeypatch)
+    seams = install_seams(monkeypatch)
     clock_ms = [1_000_000]
+    seen_budgets: list[Budget | None] = []
+    seams.supervise_hook = lambda _call: seen_budgets.append(read_budget(repo, now_ms=clock_ms[0]))
     monkeypatch.setattr(
         "gymrat.cli.commands.supervise.now_ms",
         create_autospec(now_ms, side_effect=lambda: clock_ms[0]),
@@ -93,7 +86,9 @@ def test_supervise_when_preflight_records_baseline_does_start_the_budget_once_it
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
 
     assert result.exit_code == 0
-    assert [budget.deadline_ms for budget in captured_budgets] == [1_060_000 + CAP_MS]
+    assert [budget.deadline_ms if budget else None for budget in seen_budgets] == [
+        1_060_000 + CAP_MS
+    ]
 
 
 def _record_hooks_armed_at_clear(
@@ -135,15 +130,20 @@ def _record_hooks_armed_at_clear(
         pytest.param(GymratError("boom"), 2, id="supervise-raises"),
     ],
 )
-def test_supervise_when_run_ends_does_clear_budget_then_uninstall_its_cleanup_once(
+def test_supervise_when_run_ends_does_clear_budget_then_uninstall_its_cleanups_once(
     repo: str, monkeypatch: pytest.MonkeyPatch, raises: Exception | None, expected_exit: int
 ):
-    install_seams(monkeypatch, raises=raises)
+    seams = install_seams(monkeypatch, raises=raises)
     registry, armed_at_clear = _record_hooks_armed_at_clear(monkeypatch)
+    kill_armed_during_run: list[bool] = []
+    seams.supervise_hook = lambda _call: kill_armed_during_run.append(
+        kill_live_process_groups in registry.live()
+    )
 
     result = run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == expected_exit
+    assert kill_armed_during_run == [True]
     assert [len(armed) for armed in armed_at_clear] == [1]
     assert registry.live() == []
 

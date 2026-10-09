@@ -9,7 +9,7 @@ them.
 """
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -22,24 +22,16 @@ from gymrat.session.paths import (
 )
 from tests._ansi import strip_ansi
 from tests._config import resolved_config
-from tests._lock import held_supervise_lock
 from tests.cli._budget import set_origin
 from tests.cli._session import runner
 from tests.config._toml import EXISTING_CONFIG, write_raw
-from tests.session._budget import write_budget_file
+from tests.session._budget import install_budget
 from tests.session.records._fixtures import log_records
 
 LIVE_REFUSAL = "a supervised run is live; init is not part of the loop"
 
 #: Every file init can write at a base directory.
 INIT_ARTIFACTS = ("gymrat.toml", "gymrat-runbook.md", ".claude/skills/gymrat/SKILL.md")
-
-
-@pytest.fixture
-def supervise_lock(repo: str) -> Iterator[None]:
-    """Hold the real supervise lock for ``repo`` for the duration of the test."""
-    with held_supervise_lock(repo):
-        yield
 
 
 @pytest.fixture
@@ -50,9 +42,9 @@ def existing_config_cwd(_in_non_repo: None, tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def live_repo(repo: str, supervise_lock: None) -> str:
+def live_repo(repo: str, monkeypatch: pytest.MonkeyPatch) -> str:
     """A chdir'd scratch repository with a live supervised-run budget."""
-    write_budget_file(repo)
+    install_budget(repo, monkeypatch)
     return repo
 
 

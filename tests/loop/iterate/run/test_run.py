@@ -65,7 +65,6 @@ from tests.loop.iterate._fixtures import (
     regressed_run,
     report_a_pass_per_call,
     run_before_each_call,
-    settled_history,
     stub_improved_samples,
     stub_runs,
     trimmed_report_lines,
@@ -79,6 +78,7 @@ from tests.session.records._fixtures import (
     iteration_record,
     log_records,
     records_of_type,
+    settled_history,
 )
 
 if TYPE_CHECKING:
@@ -133,7 +133,7 @@ _STOP_HINT = "The loop is done. Report what the session measured instead of meas
             id="last-iteration-unsettled",
         ),
         pytest.param(
-            (iteration_record(seq=1), committed_keep(1)),
+            settled_history(),
             resolved_config(adapter="banana"),
             (unknown_adapter_message("banana"), VALID_ADAPTERS_HINT, None),
             id="adapter-unknown",
@@ -222,10 +222,8 @@ async def test_iterate_session_when_stop_condition_no_longer_applies_does_measur
 
 
 async def test_iterate_session_when_measuring_does_record_the_paired_iteration_after_last_settled(
-    settled: str, samples_mock: CollectSamplesRecorder, capsys: pytest.CaptureFixture[str]
+    settled: str, samples_mock: CollectSamplesRecorder
 ):
-    # The session names an experiment worktree that was never created, so git
-    # has no tree there to fingerprint and the record omits it with a warning.
     worktrees = iterate_session_header(settled).worktrees
 
     result = await iterate_session(settled, resolved_config())
@@ -262,11 +260,6 @@ async def test_iterate_session_when_measuring_does_record_the_paired_iteration_a
     assert record.primary.delta_pct == pytest.approx(-15.1472, abs=1e-3)
     assert record.outcome == "improved"
     assert record.target_reached is False
-    assert record.measured_tree is None
-    assert capsys.readouterr().err == (
-        "Could not fingerprint the experiment worktree; "
-        "measured_tree is omitted from the iteration record.\n"
-    )
 
 
 @pytest.mark.parametrize("color", [False, True])
@@ -346,6 +339,21 @@ async def test_iterate_session_when_measuring_does_exclude_the_after_hook_from_d
 # ---------------------------------------------------------------------------
 
 
+async def test_iterate_session_when_experiment_worktree_missing_does_omit_measured_tree_with_a_warning(
+    settled: str, capsys: pytest.CaptureFixture[str]
+):
+    # The session names an experiment worktree that was never created, so git
+    # has no tree there to fingerprint.
+    result = await iterate_session(settled, resolved_config())
+
+    assert result.record.measured_tree is None
+    assert last_iteration_of(settled).measured_tree is None
+    assert capsys.readouterr().err == (
+        "Could not fingerprint the experiment worktree; "
+        "measured_tree is omitted from the iteration record.\n"
+    )
+
+
 async def test_iterate_session_when_bench_writes_file_does_fingerprint_the_tree_it_left(
     hooks_setup: tuple[str, str, HookScripts],
     samples_mock: CollectSamplesRecorder,
@@ -422,8 +430,14 @@ async def test_iterate_session_when_hooks_configured_does_bracket_the_whole_meas
     )
     events: list[ProgressEvent] = []
 
-    await iterate_session(repo, config, options=IterateOptions(on_progress=events.append))
+    result = await iterate_session(repo, config, options=IterateOptions(on_progress=events.append))
 
+    lines = trimmed_report_lines(result.report)
+    assert (lines[0], lines[1], lines[-1]) == (
+        "[before] hi",
+        "iteration 2 · experiment vs baseline · 10 paired samples",
+        "[after] bye",
+    )
     assert [record.type for record in log_records(repo)] == [
         "session",
         "iteration",
@@ -500,31 +514,11 @@ async def test_iterate_session_when_hooks_configured_does_tell_each_which_iterat
     )
 
 
-async def test_iterate_session_when_hooks_configured_does_print_output_around_the_measurement(
-    hooks_setup: tuple[str, str, HookScripts],
-):
-    repo, _experiment_dir, hooks = hooks_setup
-    config = resolved_config(
-        hooks=HooksConfig(
-            before=hooks.printing("warmed the cache"), after=hooks.printing("archived the samples")
-        )
-    )
-
-    result = await iterate_session(repo, config)
-
-    lines = trimmed_report_lines(result.report)
-    assert lines[0] == "[before] warmed the cache"
-    assert lines[-1] == "[after] archived the samples"
-    assert lines[1] == "iteration 2 · experiment vs baseline · 10 paired samples"
-
-
 async def test_iterate_session_when_before_hook_fails_does_still_measure(
     hooks_setup: tuple[str, str, HookScripts],
 ):
     repo, _experiment_dir, hooks = hooks_setup
-    before = hooks.hook_command(
-        'import sys\nsys.stderr.buffer.write(b"no warm copy\\n")\nsys.exit(3)\n'
-    )
+    before = hooks.failing_content_of("before-fails", "", "no warm copy\n")
     config = resolved_config(hooks=HooksConfig(before=before))
 
     result = await iterate_session(repo, config)
