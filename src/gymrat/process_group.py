@@ -38,7 +38,7 @@ import subprocess
 import sys
 import time
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 
 TERMINATE_GRACE_S = 1.0
@@ -47,11 +47,35 @@ TERMINATE_GRACE_S = 1.0
 A nested run waits less, so its own teardown ends inside the wait of the run above it.
 """
 
+monotonic: Callable[[], float] = time.monotonic
+"""The clock every group wait measures its grace against.
+
+The waits read it, :data:`sleep` and :data:`async_sleep` from this module at
+call time, so replacing all three with a fake clock whose sleeps advance it runs
+a wait in no real time.
+"""
+
+sleep: Callable[[float], None] = time.sleep
+"""The blocking pause between polls of the group waits and the POSIX kill's settle loop.
+
+The group waits are the signal path's group wait and the win32 job wait.
+"""
+
+async_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+"""The pause between polls of :func:`wait_for_process_group_exit_async`."""
+
 _TASKKILL_GONE = 128
 """``taskkill`` exit status meaning the process was already gone."""
 
-_EXIT_POLL_S = 0.01
-"""Seconds between liveness polls while a grace is waited out."""
+EXIT_POLL_S = 0.01
+"""Seconds between liveness polls while a grace is waited out or a kill settles."""
+
+KILL_SETTLE_S = 0.1
+"""Seconds a POSIX group kill keeps re-killing members that survived its first ``SIGKILL``.
+
+macOS can leave a child that a member forked at the instant of the kill alive
+in the group, and every caller drops the group once the kill returns.
+"""
 
 _DARWIN_PROC_PGRP_MIB = (1, 14, 2)
 """``CTL_KERN``, ``KERN_PROC``, ``KERN_PROC_PGRP``: the sysctl listing one group's processes.
@@ -78,8 +102,11 @@ _DARWIN_SZOMB = 5
 _DARWIN_LISTING_HEADROOM = 4
 """Extra ``kinfo_proc`` slots for members that join between the size query and the read."""
 
-_PROC_ROOT = Path("/proc")
-"""Where Linux lists every process, as a ``<pid>/stat`` file per process."""
+PROC_ROOT = Path("/proc")
+"""Where Linux lists every process, as a ``<pid>/stat`` file per process.
+
+Read at call time, so a test can point it at a directory of fake ``stat`` files.
+"""
 
 _LINUX_GONE_STATES = frozenset({"Z", "X", "x"})
 """``/proc/<pid>/stat`` states of a process that has exited: zombie or dead."""
@@ -254,7 +281,7 @@ if sys.platform == "win32":
         """Block until the job reports no active process, or the grace elapses."""
         kernel32 = ctypes.windll.kernel32
         info = _BasicAccountingInformation()
-        deadline = time.monotonic() + TERMINATE_GRACE_S
+        deadline = monotonic() + TERMINATE_GRACE_S
         while True:
             queried = kernel32.QueryInformationJobObject(
                 job,
@@ -263,9 +290,9 @@ if sys.platform == "win32":
                 ctypes.sizeof(info),
                 None,
             )
-            if not queried or info.ActiveProcesses == 0 or time.monotonic() >= deadline:
+            if not queried or info.ActiveProcesses == 0 or monotonic() >= deadline:
                 return
-            time.sleep(_EXIT_POLL_S)
+            sleep(EXIT_POLL_S)
 
     def _terminate_job(job: int, pid: int) -> None:
         """Kill every process in ``job``, returning once the job reports itself empty."""
@@ -300,7 +327,7 @@ descendant the child left behind.
 
 
 def _warn(message: str) -> None:
-    """Raise a :class:`RuntimeWarning` attributed to this module's caller."""
+    """Emit a :class:`RuntimeWarning` attributed to the caller of the helper that warns."""
     warnings.warn(message, RuntimeWarning, stacklevel=3)
 
 
@@ -352,12 +379,12 @@ def release_process_group(pid: int) -> None:
         _release_job_impl(pid)
 
 
-def _stop_group(pid: int, signal_number: int, *, defer_refusal: bool) -> bool:
+def _stop_group(pid: int, signal_number: int, *, defer_refusal: bool, settle_s: float) -> bool:
     """Dispatch to the Windows job teardown, or signal the POSIX group."""
     if sys.platform == "win32":
         _stop_win32_tree(pid)
         return False
-    return _signal_group(pid, signal_number, defer_refusal=defer_refusal)
+    return _signal_group(pid, signal_number, defer_refusal=defer_refusal, settle_s=settle_s)
 
 
 def terminate_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
@@ -378,7 +405,7 @@ def terminate_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
         ``True`` when ``defer_refusal`` held back an ``EPERM`` refusal,
         ``False`` otherwise.
     """
-    return _stop_group(pid, signal.SIGTERM, defer_refusal=defer_refusal)
+    return _stop_group(pid, signal.SIGTERM, defer_refusal=defer_refusal, settle_s=0.0)
 
 
 def kill_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
@@ -388,6 +415,13 @@ def kill_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
     group is already gone and warning on any other failure. On Windows it
     terminates the child's job, or delegates to ``taskkill /T /F`` when the
     child never made it into one.
+
+    A POSIX kill then settles the group: while a member still runs it polls
+    every :data:`EXIT_POLL_S` and kills the group again, for at most
+    :data:`KILL_SETTLE_S`. A child a member forked at the instant of the first
+    kill can survive it on macOS, and nothing else would stop it once this
+    returns. The settle ends as soon as no member runs, at the bound, or at a
+    refusal, which is handled like a refusal of the first kill.
 
     macOS refuses the signal with ``EPERM`` while every member of the group is
     still exiting or is a zombie not yet reaped. That refusal is silent: the
@@ -406,7 +440,7 @@ def kill_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
         ``True`` when ``defer_refusal`` held back an ``EPERM`` refusal,
         ``False`` otherwise.
     """
-    return _stop_group(pid, _KILL_SIGNAL, defer_refusal=defer_refusal)
+    return _stop_group(pid, _KILL_SIGNAL, defer_refusal=defer_refusal, settle_s=KILL_SETTLE_S)
 
 
 def wait_for_process_group_exit(leaders: Iterable[int], timeout_s: float) -> None:
@@ -429,11 +463,11 @@ def wait_for_process_group_exit(leaders: Iterable[int], timeout_s: float) -> Non
     if sys.platform == "win32":
         return
     waited = list(leaders)
-    deadline = time.monotonic() + timeout_s
+    deadline = monotonic() + timeout_s
     while any(_group_running(pid) for pid in waited):
-        if time.monotonic() >= deadline:
+        if monotonic() >= deadline:
             return
-        time.sleep(_EXIT_POLL_S)
+        sleep(EXIT_POLL_S)
 
 
 async def wait_for_process_group_exit_async(leader: int, timeout_s: float) -> None:
@@ -449,11 +483,11 @@ async def wait_for_process_group_exit_async(leader: int, timeout_s: float) -> No
     """
     if sys.platform == "win32":
         return
-    deadline = time.monotonic() + timeout_s
+    deadline = monotonic() + timeout_s
     while _group_running(leader):
-        if time.monotonic() >= deadline:
+        if monotonic() >= deadline:
             return
-        await asyncio.sleep(_EXIT_POLL_S)
+        await async_sleep(EXIT_POLL_S)
 
 
 def _group_running(group_id: int) -> bool:
@@ -507,7 +541,7 @@ def _linux_group_states(group_id: int) -> list[str]:
         ValueError: A ``stat`` file does not hold the fields Linux writes there.
     """
     states: list[str] = []
-    for entry in _PROC_ROOT.iterdir():
+    for entry in PROC_ROOT.iterdir():
         if not entry.name.isdigit():
             continue
         try:
@@ -555,7 +589,7 @@ def _has_exited(pid: int) -> bool:
     return False
 
 
-def _signal_group(pid: int, signal_number: int, *, defer_refusal: bool) -> bool:
+def _signal_group(pid: int, signal_number: int, *, defer_refusal: bool, settle_s: float) -> bool:
     """Signal the POSIX process group led by ``pid``, warning only when a live member refuses.
 
     macOS skips zombies and exiting processes when it signals a group, and
@@ -567,22 +601,44 @@ def _signal_group(pid: int, signal_number: int, *, defer_refusal: bool) -> bool:
         pid: The process ID leading the group.
         signal_number: The signal to send.
         defer_refusal: Return instead of warning on an ``EPERM`` refusal.
+        settle_s: Seconds to keep signalling again, every :data:`EXIT_POLL_S`,
+            while a member still runs; ``0`` signals once.
 
     Returns:
         ``True`` when ``defer_refusal`` held back an ``EPERM`` refusal,
         ``False`` otherwise.
     """
-    try:
-        os.killpg(pid, signal_number)
-    except ProcessLookupError:
-        pass
-    except OSError as error:
-        if error.errno == errno.EPERM:
-            if defer_refusal:
-                return True
-            if _group_settled(pid):
-                return False
-        _warn(f"killpg failed for pid {pid}: {error}")
+    deadline = monotonic() + settle_s
+    while True:
+        try:
+            os.killpg(pid, signal_number)
+        except OSError as error:
+            return _handle_refusal(pid, error, defer_refusal=defer_refusal)
+        if monotonic() >= deadline or not _group_running(pid):
+            return False
+        sleep(EXIT_POLL_S)
+
+
+def _handle_refusal(pid: int, error: OSError, *, defer_refusal: bool) -> bool:
+    """Stay silent on a gone or settled group, defer or warn on any other ``killpg`` failure.
+
+    Args:
+        pid: The process ID leading the group that refused.
+        error: The failure ``killpg`` raised.
+        defer_refusal: Return instead of warning on an ``EPERM`` refusal.
+
+    Returns:
+        ``True`` when ``defer_refusal`` held back an ``EPERM`` refusal,
+        ``False`` otherwise.
+    """
+    if isinstance(error, ProcessLookupError):
+        return False
+    if error.errno == errno.EPERM:
+        if defer_refusal:
+            return True
+        if _group_settled(pid):
+            return False
+    _warn(f"killpg failed for pid {pid}: {error}")
     return False
 
 
@@ -639,10 +695,17 @@ def _darwin_group_settled(group_id: int) -> bool:
 
 
 @functools.cache
-def _c_library() -> ctypes.CDLL:
-    """This process's C library, with ``sysctl`` typed."""
-    c_library = ctypes.CDLL(None, use_errno=True)
-    c_library.sysctl.argtypes = (
+def c_library() -> ctypes.CDLL:
+    """Return this process's C library, with ``sysctl`` typed, for the macOS member listing.
+
+    The listing looks this function up at call time, so a test can replace it
+    with a stub whose ``sysctl`` lists fake members or fails.
+
+    Returns:
+        The C library, loaded once and cached.
+    """
+    library = ctypes.CDLL(None, use_errno=True)
+    library.sysctl.argtypes = (
         ctypes.POINTER(ctypes.c_int),
         ctypes.c_uint,
         ctypes.c_void_p,
@@ -650,8 +713,8 @@ def _c_library() -> ctypes.CDLL:
         ctypes.c_void_p,
         ctypes.c_size_t,
     )
-    c_library.sysctl.restype = ctypes.c_int
-    return c_library
+    library.sysctl.restype = ctypes.c_int
+    return library
 
 
 def _sysctl(
@@ -671,7 +734,7 @@ def _sysctl(
         OSError: ``sysctl`` failed, including a value outgrowing ``buffer``.
     """
     length = ctypes.c_size_t(size)
-    if _c_library().sysctl(mib, len(mib), buffer, ctypes.byref(length), None, 0) != 0:
+    if c_library().sysctl(mib, len(mib), buffer, ctypes.byref(length), None, 0) != 0:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code))
     return length.value

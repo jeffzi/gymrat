@@ -36,7 +36,7 @@ from gymrat.sampling import (
     to_context,
 )
 from gymrat.targets import InPlaceTarget, RefTarget, WorktreeRemovalFailure
-from tests._exec_fixtures import settle, shell_grandchild
+from tests._exec_fixtures import settle, shell_grandchild, wait_for_spawned
 from tests._git import (
     head_of,
     kill_git_during_worktree_add,
@@ -420,6 +420,7 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_dirty_does_wrap_
 async def test_run_with_worktrees_when_termination_cleanup_invoked_does_abort_kill_then_sweep(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    spawned_processes: list[asyncio.subprocess.Process],
 ):
     captured: list[Callable[[], None]] = []
     monkeypatch.setattr(sampling, "install_termination_cleanup", fake_install(captured))
@@ -438,6 +439,10 @@ async def test_run_with_worktrees_when_termination_cleanup_invoked_does_abort_ki
         bench = asyncio.create_task(
             run_exec(shell_grandchild(pid_file), ExecOptions(cwd=str(tmp_path)))
         )
+        # A real signal is held back until the spawn has registered the bench, so
+        # the cleanup is driven only once the spawn has returned: the child can
+        # write its pid before then.
+        await wait_for_spawned(spawned_processes)
         bench_process_ids.append(await wait_for_pid_file(pid_file))
         captured[0]()
         observed["git_calls"] = list(git_calls)

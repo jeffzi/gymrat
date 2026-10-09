@@ -121,11 +121,16 @@ _thread_mask_hold = _ThreadMaskHold()
 # the collected warnings once every cleanup has run.
 _exit_output: list[str] = []
 
-# Longest the handler waits on the writer thread before exiting anyway, so a
-# terminal stalled by flow control delays exit by at most this long. It must stay
-# bounded: an unbounded wait lets a stalled stderr keep the process alive past a
-# termination signal.
-_EXIT_WRITE_TIMEOUT_S = 1.0
+EXIT_WRITE_TIMEOUT_S: float = 1.0
+"""Seconds the handler waits on the exit-output writer thread before exiting anyway.
+
+A terminal stalled by flow control delays exit by at most this long. It must
+stay bounded: an unbounded wait lets a stalled stderr keep the process alive
+past a termination signal.
+
+Test seam: the handler reads it at call time, so a replacement installed after
+the handlers are wired up still takes effect.
+"""
 
 # Shell convention: a process terminated by signal N exits with 128 + N.
 _SIGNAL_EXIT_BASE = 128
@@ -166,6 +171,24 @@ def exit_process(code: int) -> NoReturn:
         code: The process exit status.
     """
     os._exit(code)
+
+
+def join_exit_writer(writer: threading.Thread, timeout_s: float) -> None:
+    """Wait for the exit-output writer thread, giving up after ``timeout_s``.
+
+    Returns after at most ``timeout_s``, whether or not the writer finished: a
+    write stalled by terminal flow control must not hold the process past a
+    termination signal.
+
+    Test seam: tests replace this function to observe the wait instead of
+    sitting through it. The termination handler looks it up at call time, so a
+    replacement installed after the handlers are wired up still takes effect.
+
+    Args:
+        writer: The started thread writing the exit output.
+        timeout_s: Longest the wait may last, in seconds.
+    """
+    writer.join(timeout_s)
 
 
 def write_on_exit(text: str) -> None:
@@ -234,7 +257,7 @@ def _write_exit_output(warning_texts: list[str]) -> None:
 
     writer = threading.Thread(target=write, name="gymrat-exit-output", daemon=True)
     writer.start()
-    writer.join(_EXIT_WRITE_TIMEOUT_S)
+    join_exit_writer(writer, EXIT_WRITE_TIMEOUT_S)
 
 
 def _escalate(first_signal: int) -> NoReturn:

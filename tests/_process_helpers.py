@@ -590,8 +590,10 @@ def track_cleanups(monkeypatch: "pytest.MonkeyPatch", module: str) -> CleanupReg
     return registry
 
 
-# The real ``os.killpg``, captured at import so a stand-in can still reach it.
-REAL_KILLPG = os.killpg
+if sys.platform != "win32":
+    # The real ``os.killpg``, captured at import so a stand-in can still reach it.
+    # Windows has no ``killpg``, and the root conftest imports this module there.
+    REAL_KILLPG = os.killpg
 
 
 def _refuse_every_signal(_signal_number: int) -> bool:

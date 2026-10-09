@@ -15,7 +15,9 @@ import asyncio
 import contextlib
 import errno
 import json
+import os
 import signal
+import subprocess
 import sys
 from collections.abc import Callable
 from typing import NoReturn
@@ -34,6 +36,8 @@ from tests._process_helpers import (
 # Upper bound each awaited run or spawn gets before the test fails outright.
 _WAIT_TIMEOUT_S = 10
 
+CONTAINMENT_REFUSED = "containment refused"
+
 
 def _raise_on_call(error: Exception) -> Callable[[int], NoReturn]:
     """Build a stand-in that raises ``error`` when called with a pid."""
@@ -48,14 +52,14 @@ def _raise_on_call(error: Exception) -> Callable[[int], NoReturn]:
     ("failure", "expected_message"),
     [
         pytest.param(
-            ("attach_process_group", _raise_on_call(RuntimeWarning("containment refused"))),
-            "containment refused",
+            ("attach_process_group", _raise_on_call(RuntimeWarning(CONTAINMENT_REFUSED))),
+            CONTAINMENT_REFUSED,
             id="attach-warning-escalated-to-error",
         ),
         pytest.param(
             (
                 "resume_process_group",
-                _raise_on_call(OSError(errno.EPERM, "containment refused")),
+                _raise_on_call(OSError(errno.EPERM, CONTAINMENT_REFUSED)),
             ),
             "[Errno 1] containment refused",
             id="resume-os-error",
@@ -148,15 +152,15 @@ async def _spawn_contained_sleeper() -> asyncio.subprocess.Process:
     [
         pytest.param(
             "attach_process_group",
-            _raise_on_call(RuntimeWarning("containment refused")),
-            "containment refused",
+            _raise_on_call(RuntimeWarning(CONTAINMENT_REFUSED)),
+            CONTAINMENT_REFUSED,
             False,
             id="attach-raises",
         ),
         pytest.param(
             "resume_process_group",
-            _raise_on_call(RuntimeWarning("containment refused")),
-            "containment refused",
+            _raise_on_call(RuntimeWarning(CONTAINMENT_REFUSED)),
+            CONTAINMENT_REFUSED,
             False,
             id="resume-raises",
         ),
@@ -194,7 +198,7 @@ async def test_spawn_contained_when_containment_and_teardown_both_fail_does_rais
     cause = caught.value.__cause__
     assert (type(cause), str(cause)) == (
         RuntimeWarning,
-        teardown_fragment if cause_from_teardown else "containment refused",
+        teardown_fragment if cause_from_teardown else CONTAINMENT_REFUSED,
     )
     assert child.returncode is not None, (
         "the child left behind by the failed spawn was never reaped"
@@ -270,7 +274,7 @@ async def test_exec_argv_when_env_given_or_omitted_does_hand_child_that_env_one_
     env: dict[str, str] | None,
     expected_marker: str | None,
 ) -> None:
-    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", 2)
+    monkeypatch.setattr(exec_mod, "NESTING_DEPTH", 2)
     monkeypatch.setenv("GYMRAT_TEST_MARKER", "inherited")
 
     result = await exec_argv(
@@ -284,6 +288,42 @@ async def test_exec_argv_when_env_given_or_omitted_does_hand_child_that_env_one_
         "GYMRAT_TEST_MARKER": child_env.get("GYMRAT_TEST_MARKER"),
         "GYMRAT_NESTING_DEPTH": child_env.get("GYMRAT_NESTING_DEPTH"),
     } == {"GYMRAT_TEST_MARKER": expected_marker, "GYMRAT_NESTING_DEPTH": "3"}
+
+
+# ---------------------------------------------------------------------------
+# nesting depth
+# ---------------------------------------------------------------------------
+
+_PRINT_NESTING_DEPTH = "from gymrat.exec import NESTING_DEPTH; print(NESTING_DEPTH)"
+
+
+@pytest.mark.parametrize(
+    ("depth_env", "expected_depth"),
+    [
+        pytest.param({}, 0, id="missing"),
+        pytest.param({"GYMRAT_NESTING_DEPTH": "banana"}, 0, id="not-an-integer"),
+        pytest.param({"GYMRAT_NESTING_DEPTH": "-2"}, 0, id="negative"),
+        pytest.param({"GYMRAT_NESTING_DEPTH": "2"}, 2, id="valid"),
+    ],
+)
+def test_nesting_depth_when_read_from_environment_does_fall_back_to_zero_unless_a_valid_depth(
+    depth_env: dict[str, str],
+    expected_depth: int,
+) -> None:
+    inherited = {
+        name: value for name, value in os.environ.items() if name != "GYMRAT_NESTING_DEPTH"
+    }
+    env = {**inherited, **depth_env}
+
+    probe = subprocess.run(  # noqa: S603 -- fixed interpreter; the script is test-written source
+        [sys.executable, "-c", _PRINT_NESTING_DEPTH],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+
+    assert probe.stdout == f"{expected_depth}\n"
 
 
 # ---------------------------------------------------------------------------

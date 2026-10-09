@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from gymrat import process_group
 from gymrat.process_group import (
     TERMINATE_GRACE_S,
     attach_process_group,
@@ -62,11 +63,12 @@ _CANCEL_REAP_TIMEOUT_S = 2.0
 _FINAL_OUTPUT_GRACE_S = 0.1
 """Seconds a child that stopped on request gets to have its last output read to EOF."""
 
-_ESCALATION_GRACE_S = 0.2
+ESCALATION_GRACE_S = 0.2
 """Seconds the outermost gymrat run's double-signal sweep waits for a re-terminated child.
 
 Kept well under :data:`TERMINATE_GRACE_S`: the user is already waiting on a second Ctrl-C.
 A nested run waits less, halved per nesting level (see :func:`_kill_live_process_groups_now`).
+Read at call time, so a test can replace it to change how long the sweep waits.
 """
 
 _NESTING_DEPTH_ENV = "GYMRAT_NESTING_DEPTH"
@@ -85,10 +87,13 @@ def _read_nesting_depth() -> int:
         return 0
 
 
-_NESTING_DEPTH = _read_nesting_depth()
+NESTING_DEPTH = _read_nesting_depth()
 """How many gymrat runs sit above this process.
 
-Read once because the environment a process starts with is fixed.
+Read once from ``GYMRAT_NESTING_DEPTH`` because the environment a process starts
+with is fixed. It scales the terminate and escalation graces and sets the depth
+a spawned child receives, and every use reads it at call time, so a test can
+replace it to run as any nesting level.
 """
 
 
@@ -101,7 +106,7 @@ def _terminate_grace_s() -> float:
     # benches. Halving per nesting level keeps every level strictly longer than
     # the one below it at any depth, with no maximum depth to know, and leaves
     # the outermost run on the full TERMINATE_GRACE_S.
-    return TERMINATE_GRACE_S * 0.5**_NESTING_DEPTH
+    return TERMINATE_GRACE_S * 0.5**NESTING_DEPTH
 
 
 _live_process_groups: set[int] = set()
@@ -169,10 +174,10 @@ def _kill_live_process_groups_now() -> None:
     # first and the child dies before killing the benches it started in sessions
     # the parent's group kill cannot reach. Halving per nesting level keeps every
     # level strictly longer than the one below it at any depth, with no maximum
-    # depth to know. The margin at depth d is _ESCALATION_GRACE_S / 2**(d + 1), so
+    # depth to know. The margin at depth d is ESCALATION_GRACE_S / 2**(d + 1), so
     # past depth 3 it drops under the 10 ms liveness poll and the ordering is no
     # longer guaranteed in practice.
-    _sweep_live_process_groups(_ESCALATION_GRACE_S * 0.5**_NESTING_DEPTH)
+    _sweep_live_process_groups(ESCALATION_GRACE_S * 0.5**NESTING_DEPTH)
 
 
 def _sweep_live_process_groups(grace_s: float) -> None:
@@ -290,9 +295,14 @@ class OutputBuffer:
 async def _wait_for_exit(proc: asyncio.subprocess.Process, grace_s: float) -> bool:
     """Wait up to ``grace_s`` seconds for the child's whole group to exit.
 
-    The child is awaited first so its exit status is collected; the rest of the
-    grace then goes to any member it leaves behind, such as a nested run still
-    cleaning up after the child itself died on the request.
+    The child is polled first until the event loop has collected its exit
+    status; the rest of the grace then goes to any member it leaves behind, such
+    as a nested run still cleaning up after the child itself died on the
+    request.
+
+    The whole grace is measured on the process-group wait clock, read through
+    the module at call time, so a test that replaces that clock runs the wait in
+    no real time.
 
     Args:
         proc: The child leading the group.
@@ -301,11 +311,10 @@ async def _wait_for_exit(proc: asyncio.subprocess.Process, grace_s: float) -> bo
     Returns:
         Whether the child's exit status was collected within the grace.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + grace_s
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(proc.wait(), grace_s)
-    await wait_for_process_group_exit_async(proc.pid, deadline - loop.time())
+    deadline = process_group.monotonic() + grace_s
+    while proc.returncode is None and process_group.monotonic() < deadline:
+        await process_group.async_sleep(process_group.EXIT_POLL_S)
+    await wait_for_process_group_exit_async(proc.pid, deadline - process_group.monotonic())
     return proc.returncode is not None
 
 
@@ -556,7 +565,8 @@ async def spawn_contained(
         **kwargs: Keyword arguments for ``create_child`` — pipes, ``cwd``,
             ``env``. The containment arguments are added
             here and must not be passed. The child's environment, ``env`` or
-            this process's when absent, also gains :data:`_NESTING_DEPTH_ENV`.
+            this process's when absent, also gains ``GYMRAT_NESTING_DEPTH``,
+            one past :data:`NESTING_DEPTH`.
 
     Returns:
         The running, registered, contained child.
@@ -577,7 +587,7 @@ async def spawn_contained(
             # caller asked for; only an absent one inherits this process's.
             requested_env = cast("Mapping[str, str] | None", kwargs.get("env"))
             base_env = os.environ if requested_env is None else requested_env
-            child_env = {**base_env, _NESTING_DEPTH_ENV: str(_NESTING_DEPTH + 1)}
+            child_env = {**base_env, _NESTING_DEPTH_ENV: str(NESTING_DEPTH + 1)}
             child_kwargs = {**kwargs, "env": child_env}
             # Every asyncio creation function forwards unknown keywords to Popen,
             # which accepts the containment arguments.

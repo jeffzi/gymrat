@@ -9,10 +9,9 @@ import signal
 import struct
 import subprocess
 import sys
-import time
 import types
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -23,6 +22,7 @@ from gymrat.process_group import (
     wait_for_process_group_exit,
     wait_for_process_group_exit_async,
 )
+from tests._clock import WaitClock, install_wait_clock, within_hang_guard
 from tests._process_helpers import (
     JOB_HANDLE,
     PROCESS_HANDLE,
@@ -65,8 +65,25 @@ _SysctlFunction = ctypes.CFUNCTYPE(
 # ``Popen.wait`` report 0 instead.
 _CHILD_STATUS = 7
 
-# Grace a wait expected to end early is given, far longer than any probe takes.
+# Grace a wait on real time is given, far longer than any probe takes.
 _LONG_WAIT_S = 10.0
+
+# Grace a wait on the fake clock is given. It costs no real time, so it is sized
+# to sit far above the real time a fake-clock wait takes.
+_WAIT_S = 10.0
+
+# How far past its grace a wait may run on the fake clock: one poll of the
+# group, which the wait sleeps between checks.
+_ONE_POLL_S = 0.01
+
+# Real seconds a fake-clock wait may take: far below ``_WAIT_S``, so a wait
+# that slept on real time instead fails rather than passing slowly.
+_HANG_GUARD_S = _WAIT_S / 2
+
+# What a wait shows on the fake clock: it returned without sleeping, or it slept
+# until the clock reached its grace, give or take one poll.
+_NO_SLEEP = 0.0
+_TIMED_OUT = pytest.approx(_WAIT_S, abs=_ONE_POLL_S)
 
 # The macOS ``kinfo_proc`` layout, spelled out from <sys/sysctl.h> and
 # <sys/proc.h> rather than read from the module under test, so a wrong value
@@ -77,9 +94,6 @@ _DARWIN_FLAG_AND_STATE_OFFSET = 32
 _DARWIN_P_WEXIT = 0x2000
 _DARWIN_SZOMB = 5
 _DARWIN_RUNNING = 2
-
-# Grace a wait expected to run its full course is given, kept short so it stays cheap.
-_SHORT_WAIT_S = 0.2
 
 # How long a group member outlives its leader: long enough to still be running
 # when the wait starts, short enough to keep the test cheap.
@@ -111,7 +125,7 @@ class FakeProcess:
     def write(self, proc_root: Path) -> None:
         """Write this process's ``stat`` file under ``proc_root``, laid out as Linux lays it out."""
         entry = proc_root / str(self.pid)
-        entry.mkdir()
+        entry.mkdir(exist_ok=True)
         head = f"{self.pid} (".encode()
         tail = f") {self.state} 1 {self.group_id} {_STAT_TAIL}\n".encode()
         (entry / "stat").write_bytes(head + self.comm + tail)
@@ -127,8 +141,8 @@ class ProbedLeader:
 
     ``kill`` and ``killpg`` with signal 0 succeed, as they do on Linux for a
     zombie as much as for a running process; ``waitid`` reports an exit, and
-    ``getpgid`` fails the lookup, only when ``exited`` is set. Every other attribute forwards to the real ``os``
-    module.
+    ``getpgid`` fails the lookup, only when ``exited`` is set. Every other
+    attribute forwards to the real ``os`` module.
     """
 
     exited: bool
@@ -240,6 +254,41 @@ def darwin_record(flag: int, state: int) -> bytes:
     return bytes(record)
 
 
+@dataclasses.dataclass
+class SurvivingMember:
+    """Stand-in ``os`` and macOS C library for a group whose one member survives early SIGKILLs.
+
+    The member runs until the group has been sent more than ``kills_survived``
+    SIGKILLs, then lists as exiting. Every signal delivered to the group, probes
+    with signal 0 aside, lands in ``signals``. The leader has exited, as
+    :class:`ProbedLeader` shows it; every other attribute forwards there.
+    """
+
+    kills_survived: int
+    signals: list[int] = dataclasses.field(default_factory=list)
+    library: StubCLibrary = dataclasses.field(
+        default_factory=lambda: StubCLibrary(failure_errno=None)
+    )
+    _leader: ProbedLeader = dataclasses.field(default_factory=lambda: ProbedLeader(exited=True))
+
+    def __post_init__(self) -> None:
+        self._list_member()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._leader, name)
+
+    def killpg(self, _group_id: int, signal_number: int, /) -> None:
+        if signal_number == 0:
+            return
+        self.signals.append(signal_number)
+        self._list_member()
+
+    def _list_member(self) -> None:
+        running = self.signals.count(signal.SIGKILL) <= self.kills_survived
+        flag = 0 if running else _DARWIN_P_WEXIT
+        self.library.listing = darwin_record(flag, _DARWIN_RUNNING)
+
+
 @pytest.fixture
 def sleeping_group_leader() -> Iterator[subprocess.Popen[bytes]]:
     """A running child leading a process group of its own, killed and reaped on teardown."""
@@ -297,8 +346,14 @@ def linux_proc_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (proc_root / "meminfo").write_text("MemTotal: 1024 kB\n")
     (proc_root / "sys").mkdir()
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(process_group, "_PROC_ROOT", proc_root)
+    monkeypatch.setattr(process_group, "PROC_ROOT", proc_root)
     return proc_root
+
+
+@pytest.fixture
+def wait_clock(monkeypatch: pytest.MonkeyPatch) -> WaitClock:
+    """Run the process-group waits on a fake clock that advances only when they sleep."""
+    return install_wait_clock(monkeypatch, process_group)
 
 
 @pytest.fixture
@@ -310,16 +365,17 @@ def exiting_child() -> Iterator[subprocess.Popen[bytes]]:
 
 
 @_POSIX_ONLY
-def test_wait_for_process_group_exit_when_leader_reaped_during_probe_does_return_before_timeout(
+def test_wait_for_process_group_exit_when_leader_reaped_during_probe_does_return_without_sleeping(
     monkeypatch: pytest.MonkeyPatch,
+    wait_clock: WaitClock,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(process_group, "os", ReapedMidProbe())
-    started = time.monotonic()
 
-    wait_for_process_group_exit([424242], _LONG_WAIT_S)
+    with within_hang_guard(_HANG_GUARD_S):
+        wait_for_process_group_exit([_FAKE_GROUP], _WAIT_S)
 
-    assert time.monotonic() - started < _LONG_WAIT_S / 2
+    assert wait_clock.sleeps == []
 
 
 def _child_leader(leader: subprocess.Popen[bytes]) -> int:
@@ -338,27 +394,28 @@ def _parent_process(_leader: subprocess.Popen[bytes]) -> int:
         pytest.param(_parent_process, id="non-child-leader"),
     ],
 )
-def test_wait_for_process_group_exit_when_leader_running_does_wait_out_timeout(
+def test_wait_for_process_group_exit_when_leader_running_does_sleep_until_the_timeout(
     sleeping_group_leader: subprocess.Popen[bytes],
+    wait_clock: WaitClock,
     leader_of: Callable[[subprocess.Popen[bytes]], int],
 ) -> None:
-    started = time.monotonic()
+    with within_hang_guard(_HANG_GUARD_S):
+        wait_for_process_group_exit([leader_of(sleeping_group_leader)], _WAIT_S)
 
-    wait_for_process_group_exit([leader_of(sleeping_group_leader)], _SHORT_WAIT_S)
-
-    assert time.monotonic() - started >= _SHORT_WAIT_S
+    assert wait_clock.now == _TIMED_OUT
 
 
 @_POSIX_ONLY
-async def test_wait_for_process_group_exit_when_leader_is_zombie_does_return_without_reaping(
+async def test_wait_for_process_group_exit_when_leader_is_zombie_does_return_without_sleeping_or_reaping(
     exiting_child: subprocess.Popen[bytes],
+    wait_clock: WaitClock,
 ) -> None:
     await wait_until_dead(exiting_child.pid)
-    started = time.monotonic()
 
-    wait_for_process_group_exit([exiting_child.pid], _LONG_WAIT_S)
+    with within_hang_guard(_HANG_GUARD_S):
+        wait_for_process_group_exit([exiting_child.pid], _WAIT_S)
 
-    assert time.monotonic() - started < _LONG_WAIT_S / 2
+    assert wait_clock.sleeps == []
     assert exiting_child.wait() == _CHILD_STATUS
 
 
@@ -373,27 +430,20 @@ def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_
 
 @_POSIX_ONLY
 @pytest.mark.parametrize(
-    ("listed", "timeout_s", "waits"),
+    ("listed", "slept"),
     [
         pytest.param(
-            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="S")],
-            _SHORT_WAIT_S,
-            True,
-            id="sleeping-member",
+            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="S")], _TIMED_OUT, id="sleeping-member"
         ),
         pytest.param(
-            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="R")],
-            _SHORT_WAIT_S,
-            True,
-            id="running-member",
+            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="R")], _TIMED_OUT, id="running-member"
         ),
         pytest.param(
             [
                 _ZOMBIE_LEADER,
                 FakeProcess(_FAKE_MEMBER, state="S", comm=f"a) Z 1 {_FAKE_GROUP}".encode()),
             ],
-            _SHORT_WAIT_S,
-            True,
+            _TIMED_OUT,
             id="member-name-mimics-zombie-fields",
         ),
         pytest.param(
@@ -402,38 +452,30 @@ def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_
                 FakeProcess(_FAKE_MEMBER, state="S"),
                 FakeProcess(_FAKE_MEMBER + 1, state="S", comm=_CUT_NAME, group_id=_FAKE_GROUP + 10),
             ],
-            _SHORT_WAIT_S,
-            True,
+            _TIMED_OUT,
             id="unrelated-name-cut-mid-character",
         ),
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="S", comm=b"a) (Z " + _CUT_NAME)],
-            _SHORT_WAIT_S,
-            True,
+            _TIMED_OUT,
             id="member-name-cut-mid-character-with-parentheses",
         ),
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="Z")],
-            _LONG_WAIT_S,
-            False,
+            _NO_SLEEP,
             id="every-member-a-zombie",
         ),
         pytest.param(
-            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="X")],
-            _LONG_WAIT_S,
-            False,
-            id="member-exiting",
+            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="X")], _NO_SLEEP, id="member-exiting"
         ),
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="x")],
-            _LONG_WAIT_S,
-            False,
+            _NO_SLEEP,
             id="member-exiting-old-kernel-letter",
         ),
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="S", group_id=_FAKE_GROUP + 10)],
-            _LONG_WAIT_S,
-            False,
+            _NO_SLEEP,
             id="only-another-group-running",
         ),
     ],
@@ -441,29 +483,71 @@ def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_
 def test_wait_for_process_group_exit_when_linux_zombie_leader_does_wait_only_for_live_members(
     linux_proc_root: Path,
     monkeypatch: pytest.MonkeyPatch,
+    wait_clock: WaitClock,
     listed: list[FakeProcess],
-    *,
-    timeout_s: float,
-    waits: bool,
+    slept: float,
 ) -> None:
     for process in listed:
         process.write(linux_proc_root)
     monkeypatch.setattr(process_group, "os", ProbedLeader(exited=True))
-    started = time.monotonic()
 
-    wait_for_process_group_exit([_FAKE_GROUP], timeout_s)
+    with within_hang_guard(_HANG_GUARD_S):
+        wait_for_process_group_exit([_FAKE_GROUP], _WAIT_S)
 
-    assert (time.monotonic() - started >= timeout_s) is waits
+    assert wait_clock.now == slept
+
+
+async def _wait_blocking(group_id: int) -> None:
+    wait_for_process_group_exit([group_id], _WAIT_S)
+
+
+async def _wait_async(group_id: int) -> None:
+    await wait_for_process_group_exit_async(group_id, _WAIT_S)
+
+
+# The blocking and the async group wait, each given the fake-clock grace.
+_WAITS = [
+    pytest.param(_wait_blocking, id="blocking"),
+    pytest.param(_wait_async, id="async"),
+]
+
+# How many polls the wait sleeps through before the last live member exits.
+_SLEEPS_BEFORE_EXIT = 3
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("wait", _WAITS)
+async def test_wait_for_process_group_exit_blocking_or_async_when_last_member_exits_mid_wait_does_return_on_the_next_poll(
+    linux_proc_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wait_clock: WaitClock,
+    wait: Callable[[int], Awaitable[None]],
+) -> None:
+    _ZOMBIE_LEADER.write(linux_proc_root)
+    FakeProcess(_FAKE_MEMBER, state="S").write(linux_proc_root)
+    exited_member = FakeProcess(_FAKE_MEMBER, state="Z")
+
+    def exit_member_during_last_sleep() -> None:
+        if len(wait_clock.sleeps) == _SLEEPS_BEFORE_EXIT:
+            exited_member.write(linux_proc_root)
+
+    wait_clock.on_sleep = exit_member_during_last_sleep
+    monkeypatch.setattr(process_group, "os", ProbedLeader(exited=True))
+
+    with within_hang_guard(_HANG_GUARD_S):
+        await wait(_FAKE_GROUP)
+
+    assert len(wait_clock.sleeps) == _SLEEPS_BEFORE_EXIT
 
 
 def _without_proc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(process_group, "_PROC_ROOT", tmp_path / "missing")
+    monkeypatch.setattr(process_group, "PROC_ROOT", tmp_path / "missing")
 
 
 def _malformed_proc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(process_group, "_PROC_ROOT", tmp_path)
+    monkeypatch.setattr(process_group, "PROC_ROOT", tmp_path)
     _ZOMBIE_LEADER.write(tmp_path)
     # A well-formed running member beside the malformed one: skipping the
     # malformed line would find it and wait, so only a fallback to the leader
@@ -481,13 +565,13 @@ def _platform_without_listing(_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 def _failing_sysctl(_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(
-        process_group, "_c_library", lambda: StubCLibrary(failure_errno=errno.EINVAL)
+        process_group, "c_library", lambda: StubCLibrary(failure_errno=errno.EINVAL)
     )
 
 
 def _empty_sysctl(_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(process_group, "_c_library", lambda: StubCLibrary(failure_errno=None))
+    monkeypatch.setattr(process_group, "c_library", lambda: StubCLibrary(failure_errno=None))
 
 
 _GROUPS_WITHOUT_LISTING = [
@@ -498,51 +582,34 @@ _GROUPS_WITHOUT_LISTING = [
 ]
 
 
-# Whether the leader has exited, the grace the wait is given, and whether it runs that grace out.
+# Whether the leader has exited, and what the wait shows on the fake clock.
 _LEADER_OUTCOMES = [
-    pytest.param(False, _SHORT_WAIT_S, True, id="leader-running-waits-out-the-timeout"),
-    pytest.param(True, _LONG_WAIT_S, False, id="leader-exited-returns-at-once"),
+    pytest.param(False, _TIMED_OUT, id="leader-running-sleeps-until-the-timeout"),
+    pytest.param(True, _NO_SLEEP, id="leader-exited-returns-without-sleeping"),
 ]
 
 
 @_POSIX_ONLY
+@pytest.mark.parametrize("wait", _WAITS)
 @pytest.mark.parametrize("hide_members", _GROUPS_WITHOUT_LISTING)
-@pytest.mark.parametrize(("exited", "timeout_s", "waits"), _LEADER_OUTCOMES)
-def test_wait_for_process_group_exit_when_listing_unavailable_does_wait_on_the_leader(
+@pytest.mark.parametrize(("exited", "slept"), _LEADER_OUTCOMES)
+async def test_wait_for_process_group_exit_blocking_or_async_when_listing_unavailable_does_wait_on_the_leader(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    wait_clock: WaitClock,
+    wait: Callable[[int], Awaitable[None]],
     hide_members: Callable[[Path, pytest.MonkeyPatch], None],
     *,
     exited: bool,
-    timeout_s: float,
-    waits: bool,
+    slept: float,
 ) -> None:
     hide_members(tmp_path, monkeypatch)
     monkeypatch.setattr(process_group, "os", ProbedLeader(exited=exited))
-    started = time.monotonic()
 
-    wait_for_process_group_exit([_FAKE_GROUP], timeout_s)
+    with within_hang_guard(_HANG_GUARD_S):
+        await wait(_FAKE_GROUP)
 
-    assert (time.monotonic() - started >= timeout_s) is waits
-
-
-@_POSIX_ONLY
-@pytest.mark.parametrize(("exited", "timeout_s", "waits"), _LEADER_OUTCOMES)
-async def test_wait_for_process_group_exit_async_when_listing_unavailable_does_wait_on_the_leader(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    exited: bool,
-    timeout_s: float,
-    waits: bool,
-) -> None:
-    _platform_without_listing(tmp_path, monkeypatch)
-    monkeypatch.setattr(process_group, "os", ProbedLeader(exited=exited))
-    started = time.monotonic()
-
-    await wait_for_process_group_exit_async(_FAKE_GROUP, timeout_s)
-
-    assert (time.monotonic() - started >= timeout_s) is waits
+    assert wait_clock.now == slept
 
 
 # A few bytes past the last whole record, as a listing cut mid-record reports them.
@@ -551,52 +618,51 @@ _PARTIAL_RECORD = bytes(16)
 
 @_POSIX_ONLY
 @pytest.mark.parametrize(
-    ("listing", "timeout_s", "still_running"),
+    ("listing", "slept"),
     [
-        pytest.param(_PARTIAL_RECORD, _LONG_WAIT_S, False, id="shorter-than-a-record"),
+        pytest.param(_PARTIAL_RECORD, _NO_SLEEP, id="shorter-than-a-record"),
         pytest.param(
             darwin_record(0, _DARWIN_SZOMB) + _PARTIAL_RECORD,
-            _LONG_WAIT_S,
-            False,
+            _NO_SLEEP,
             id="zombie-record-then-partial",
         ),
         pytest.param(
             darwin_record(0, _DARWIN_RUNNING) + _PARTIAL_RECORD,
-            _SHORT_WAIT_S,
-            True,
+            _TIMED_OUT,
             id="running-record-then-partial",
         ),
+        pytest.param(darwin_record(0, _DARWIN_SZOMB), _NO_SLEEP, id="whole-zombie-record"),
+        pytest.param(darwin_record(0, _DARWIN_RUNNING), _TIMED_OUT, id="whole-running-record"),
         pytest.param(
-            darwin_record(0, _DARWIN_SZOMB), _LONG_WAIT_S, False, id="whole-zombie-record"
-        ),
-        pytest.param(
-            darwin_record(0, _DARWIN_RUNNING), _SHORT_WAIT_S, True, id="whole-running-record"
-        ),
-        pytest.param(
-            darwin_record(_DARWIN_P_WEXIT, _DARWIN_RUNNING),
-            _LONG_WAIT_S,
-            False,
-            id="whole-exiting-record",
+            darwin_record(_DARWIN_P_WEXIT, _DARWIN_RUNNING), _NO_SLEEP, id="whole-exiting-record"
         ),
     ],
 )
 def test_wait_for_process_group_exit_when_darwin_leader_exited_does_wait_only_for_whole_running_records(
     monkeypatch: pytest.MonkeyPatch,
+    wait_clock: WaitClock,
     listing: bytes,
-    *,
-    timeout_s: float,
-    still_running: bool,
+    slept: float,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(
-        process_group, "_c_library", lambda: StubCLibrary(failure_errno=None, listing=listing)
+        process_group, "c_library", lambda: StubCLibrary(failure_errno=None, listing=listing)
     )
     monkeypatch.setattr(process_group, "os", ProbedLeader(exited=True))
-    started = time.monotonic()
 
-    wait_for_process_group_exit([_FAKE_GROUP], timeout_s)
+    with within_hang_guard(_HANG_GUARD_S):
+        wait_for_process_group_exit([_FAKE_GROUP], _WAIT_S)
 
-    assert (time.monotonic() - started >= timeout_s) is still_running
+    assert wait_clock.now == slept
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="only macOS's C library has sysctl")
+def test_c_library_when_called_again_does_return_the_library_it_loaded_first() -> None:
+    first = process_group.c_library()
+
+    again = process_group.c_library()
+
+    assert again is first, "every member listing reloaded the C library"
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +726,61 @@ def test_kill_process_group_when_refusing_group_is_gone_by_the_listing_does_not_
     kill_process_group(gone)
 
     assert killpg_warnings(recwarn) == []
+
+
+@pytest.fixture
+def surviving_member(monkeypatch: pytest.MonkeyPatch) -> Callable[[int], SurvivingMember]:
+    """Install, under a faked macOS, a group whose member survives a given number of SIGKILLs."""
+
+    def install(kills_survived: int) -> SurvivingMember:
+        group = SurvivingMember(kills_survived)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(process_group, "os", group)
+        monkeypatch.setattr(process_group, "c_library", lambda: group.library)
+        return group
+
+    return install
+
+
+# A member that no SIGKILL ends within the settle bound.
+_NEVER_GOES = sys.maxsize
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize(
+    ("kills_survived", "kills", "sleeps"),
+    [
+        pytest.param(0, 1, [], id="group-empty-after-the-kill"),
+        pytest.param(1, 2, [process_group.EXIT_POLL_S], id="member-survives-the-first-kill"),
+    ],
+)
+def test_kill_process_group_when_member_survives_the_kill_does_kill_again_until_none_runs(
+    surviving_member: Callable[[int], SurvivingMember],
+    wait_clock: WaitClock,
+    kills_survived: int,
+    kills: int,
+    sleeps: list[float],
+) -> None:
+    group = surviving_member(kills_survived)
+
+    with within_hang_guard(_HANG_GUARD_S):
+        kill_process_group(_FAKE_GROUP)
+
+    assert group.signals == [signal.SIGKILL] * kills
+    assert wait_clock.sleeps == sleeps
+
+
+@_POSIX_ONLY
+def test_kill_process_group_when_member_never_goes_does_stop_at_the_settle_bound(
+    surviving_member: Callable[[int], SurvivingMember],
+    wait_clock: WaitClock,
+) -> None:
+    surviving_member(_NEVER_GOES)
+
+    with within_hang_guard(_HANG_GUARD_S):
+        kill_process_group(_FAKE_GROUP)
+
+    assert wait_clock.now == pytest.approx(process_group.KILL_SETTLE_S, abs=_ONE_POLL_S)
 
 
 # ---------------------------------------------------------------------------
@@ -741,13 +862,10 @@ _CHILD_PID = 4321
 _WIN32_EXTENDED_LIMIT_INFORMATION = 9
 _WIN32_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 
-# Grace given to a faked job that never empties, kept far below the real one so
-# the bound is reached in milliseconds.
+# Grace given to a faked job, apart from the real one so a wait that reaches it
+# shows the grace is read at call time, and small so the fake clock reaches it
+# in a few polls.
 _FAKE_JOB_GRACE_S = 0.05
-
-# Upper bound for a teardown whose faked job never empties: the faked grace plus
-# scheduling slack, far below the real grace a wait ignoring the faked one takes.
-_FAKE_JOB_GRACE_BOUND_S = 1.5
 
 
 def test_attach_process_group_when_child_gets_a_job_does_limit_it_to_kill_on_close(
@@ -822,29 +940,46 @@ def test_terminate_or_release_process_group_when_job_still_emptying_does_wait_fo
 ) -> None:
     jobs = FakeJobs(active_counts=[2, 1, 0])
     module = win32_process_group(monkeypatch, jobs)
+    wait_clock = install_wait_clock(monkeypatch, module)
     module.attach_process_group(_CHILD_PID)
 
-    getattr(module, entry)(_CHILD_PID)
+    with within_hang_guard(_HANG_GUARD_S):
+        getattr(module, entry)(_CHILD_PID)
 
     assert jobs.terminated == [JOB_HANDLE]
     assert jobs.queried == [2, 1, 0], "the teardown returned before the job reported itself empty"
+    assert len(wait_clock.sleeps) == 2, (
+        "the wait did not return on the first poll after the job emptied"
+    )
     assert sorted(jobs.closed) == sorted(closed), "the settle path left the job handle open"
 
 
-def test_terminate_process_group_when_job_never_empties_does_give_up_at_the_grace(
+@pytest.mark.parametrize(
+    ("final_active", "slept"),
+    [
+        pytest.param(0, _NO_SLEEP, id="job-already-empty-returns-without-sleeping"),
+        pytest.param(
+            1,
+            pytest.approx(_FAKE_JOB_GRACE_S, abs=_ONE_POLL_S),
+            id="job-never-empties-sleeps-until-the-grace",
+        ),
+    ],
+)
+def test_terminate_process_group_when_job_settles_or_not_does_wait_only_while_it_has_processes(
     monkeypatch: pytest.MonkeyPatch,
+    final_active: int,
+    slept: float,
 ) -> None:
-    jobs = FakeJobs(final_active=1)
+    jobs = FakeJobs(final_active=final_active)
     module = win32_process_group(monkeypatch, jobs)
     monkeypatch.setattr(module, "TERMINATE_GRACE_S", _FAKE_JOB_GRACE_S)
+    wait_clock = install_wait_clock(monkeypatch, module)
     module.attach_process_group(_CHILD_PID)
-    started = time.monotonic()
 
-    module.terminate_process_group(_CHILD_PID)
+    with within_hang_guard(_HANG_GUARD_S):
+        module.terminate_process_group(_CHILD_PID)
 
-    elapsed = time.monotonic() - started
-    assert len(jobs.queried) > 1, "the wait gave up without ever polling the job again"
-    assert elapsed < _FAKE_JOB_GRACE_BOUND_S, "a job that never empties held the teardown open"
+    assert wait_clock.now == slept
 
 
 def test_kill_process_group_when_job_already_released_does_fall_back_to_taskkill(

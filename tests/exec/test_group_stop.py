@@ -7,11 +7,9 @@ its own bench sweep before the run above it kills it.
 """
 
 import asyncio
-import dataclasses
 import shlex
 import signal
 import sys
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -22,7 +20,8 @@ from gymrat import process_group
 from gymrat.exec import ExecOptions
 from gymrat.exec import exec as run_exec
 from gymrat.signals import install_termination_cleanup
-from tests._exec_fixtures import ExecTask, Teardown, leave_to_timeout, set_abort
+from tests._clock import WaitClock, install_wait_clock, within_hang_guard
+from tests._exec_fixtures import ExecTask, Teardown, leave_to_timeout, set_abort, wait_for_spawned
 from tests._process_helpers import wait_for_pid_file, wait_until_dead
 
 # ---------------------------------------------------------------------------
@@ -31,17 +30,23 @@ from tests._process_helpers import wait_for_pid_file, wait_until_dead
 
 _SHELL_PID_FILE = "shell.pid"
 
-# Ignores SIGTERM along with its foreground child, so only a SIGKILL ends the
-# group. It holds back its pid until exec feeds its stdin: exec does that only
-# once the spawn has returned, so a signal raised after the pid appears is never
-# deferred by a spawn still in progress.
-_STARTED_TERM_IGNORING_COMMAND = f"trap '' TERM; read -r _; echo $$ > {_SHELL_PID_FILE}; sleep 30"
+# Ignores SIGTERM, so only a SIGKILL ends the group. It holds back its pid until
+# exec feeds its stdin: exec does that only once the spawn has returned, so a
+# signal raised after the pid appears is never deferred by a spawn still in
+# progress.
+#
+# The shell replaces itself with its sleep instead of forking it, so the group
+# is one process once the pid appears and the stop it receives acts on exactly
+# the process whose pid the test read.
+_STARTED_TERM_IGNORING_COMMAND = (
+    f"trap '' TERM; read -r _; echo $$ > {_SHELL_PID_FILE}; exec sleep 30"
+)
 
 
 @pytest.fixture(autouse=True)
 def _top_level_run(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run as a top-level gymrat, whose escalation grace the cleanup times are sized against."""
-    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", 0)
+    monkeypatch.setattr(exec_mod, "NESTING_DEPTH", 0)
 
 
 # How long the cleaner takes to clean up once asked to stop: well past the few
@@ -62,7 +67,7 @@ _ROOMY_ESCALATION_GRACE_S = 1.0
 @pytest.fixture
 def roomy_escalation_grace(monkeypatch: pytest.MonkeyPatch) -> None:
     """Give a second signal's kill sweep a grace with room for a loaded runner's delays."""
-    monkeypatch.setattr(exec_mod, "_ESCALATION_GRACE_S", _ROOMY_ESCALATION_GRACE_S)
+    monkeypatch.setattr(exec_mod, "ESCALATION_GRACE_S", _ROOMY_ESCALATION_GRACE_S)
 
 
 # A timeout that fires once the cleaner is up and waiting to be stopped.
@@ -166,26 +171,20 @@ async def test_exec_when_second_signal_arrives_before_kill_sweep_runs_does_let_t
 # group, which the wait sleeps between checks.
 _GROUP_POLL_S = 0.01
 
-
-@dataclasses.dataclass
-class FakeClock:
-    """Stand-in for the ``time`` module the process-group waits read, advancing only when slept."""
-
-    now: float = 0.0
-
-    def monotonic(self) -> float:
-        return self.now
-
-    def sleep(self, seconds: float) -> None:
-        self.now += seconds
+# Real seconds a stop on the fake clock may take: a few seconds above the
+# spawn and kill it does on real time, so a sweep that waited its grace on
+# real time instead fails rather than passing slowly.
+_HANG_GUARD_S = 5.0
 
 
 @pytest.fixture
-def group_wait_clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
-    """Run the signal path's group wait on a fake clock, so a grace is waited out without sleeping."""
-    clock = FakeClock()
-    monkeypatch.setattr(process_group, "time", clock)
-    return clock
+def group_wait_clock(monkeypatch: pytest.MonkeyPatch) -> WaitClock:
+    """Run every process-group grace wait on a fake clock, so a grace is waited out without sleeping."""
+    # The kill's settle loop polls the same clock, and a real SIGKILL lands in
+    # real time while a fake sleep returns at once, so the loop would run the
+    # fake clock past the grace these tests measure.
+    monkeypatch.setattr(process_group, "KILL_SETTLE_S", 0.0)
+    return install_wait_clock(monkeypatch, process_group)
 
 
 @pytest.mark.parametrize(
@@ -203,20 +202,46 @@ async def test_exec_when_second_signal_arrives_in_nested_run_does_kill_live_grou
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
     raise_signal: Callable[[int], int],
-    group_wait_clock: FakeClock,
+    group_wait_clock: WaitClock,
     *,
     nesting_depth: int,
     expected_grace_s: float,
 ) -> None:
-    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", nesting_depth)
+    monkeypatch.setattr(exec_mod, "NESTING_DEPTH", nesting_depth)
     task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, make_opts(stdin="go\n")))
     shell = await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
 
-    escalate_termination(raise_signal)
-    await task
+    with within_hang_guard(_HANG_GUARD_S):
+        escalate_termination(raise_signal)
+        await task
 
     await wait_until_dead(shell, timeout_s=3.0)
     assert group_wait_clock.now == pytest.approx(expected_grace_s, abs=_GROUP_POLL_S)
+
+
+# An escalation grace twice the real one, so a sweep that ignores the
+# replacement stops the fake clock at half of it.
+_REPLACED_ESCALATION_GRACE_S = 0.4
+
+
+@pytest.mark.usefixtures("spawned_processes")
+async def test_exec_when_escalation_grace_replaced_does_kill_live_group_after_replaced_grace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+    raise_signal: Callable[[int], int],
+    group_wait_clock: WaitClock,
+) -> None:
+    monkeypatch.setattr(exec_mod, "ESCALATION_GRACE_S", _REPLACED_ESCALATION_GRACE_S)
+    task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, make_opts(stdin="go\n")))
+    shell = await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
+
+    with within_hang_guard(_HANG_GUARD_S):
+        escalate_termination(raise_signal)
+        await task
+
+    await wait_until_dead(shell, timeout_s=3.0)
+    assert group_wait_clock.now == pytest.approx(_REPLACED_ESCALATION_GRACE_S, abs=_GROUP_POLL_S)
 
 
 @pytest.mark.parametrize(
@@ -232,34 +257,26 @@ async def test_kill_live_process_groups_when_run_is_nested_does_halve_grace_per_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
-    group_wait_clock: FakeClock,
+    group_wait_clock: WaitClock,
     *,
     nesting_depth: int,
     expected_grace_s: float,
 ) -> None:
-    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", nesting_depth)
+    monkeypatch.setattr(exec_mod, "NESTING_DEPTH", nesting_depth)
     task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, make_opts(stdin="go\n")))
     await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
 
-    exec_mod.kill_live_process_groups()
+    with within_hang_guard(_HANG_GUARD_S):
+        exec_mod.kill_live_process_groups()
 
     await task
     assert group_wait_clock.now == pytest.approx(expected_grace_s, abs=_GROUP_POLL_S)
 
 
-# asyncio may fire a timer up to a clock tick early, so a wait can end a hair
-# before its grace by the test's own clock.
-_TIMER_SLACK_S = 0.01
-
 # The stop grace the stop-timing tests run with. The real 1 s leaves the kill,
 # pipe close and reap, or a cleaner's half-second cleanup, only half a second
 # to spare, which a loaded CI runner's scheduling delays can use up.
 _ROOMY_TERMINATE_GRACE_S = 2.0
-
-# How deep the abort-timing test nests its run. Three levels scale the grace to
-# an eighth, so the kill, pipe close and reap have seven eighths of the roomy
-# grace before the bound.
-_ABORT_NESTING_DEPTH = 3
 
 
 @pytest.fixture
@@ -268,29 +285,32 @@ def roomy_terminate_grace(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _ROOMY_TERMINATE_GRACE_S)
 
 
-@pytest.mark.usefixtures("roomy_terminate_grace")
+# The abort-timing test's unscaled grace and nesting depth: two levels scale the
+# grace to a quarter, which a wait one level short or unscaled would overshoot.
+_ABORT_TERMINATE_GRACE_S = 1.0
+_ABORT_NESTING_DEPTH = 2
+_ABORT_NESTED_GRACE_S = 0.25
+
+
+@pytest.mark.usefixtures("spawned_processes")
 async def test_exec_when_aborted_in_nested_run_does_wait_the_nested_grace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
+    group_wait_clock: WaitClock,
 ) -> None:
-    # The halving per level is pinned on the fake clock above, so this only
-    # shows the abort path waits the scaled grace.
-    monkeypatch.setattr(exec_mod, "_NESTING_DEPTH", _ABORT_NESTING_DEPTH)
-    nested_grace_s = _ROOMY_TERMINATE_GRACE_S * 0.5**_ABORT_NESTING_DEPTH
+    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _ABORT_TERMINATE_GRACE_S)
+    monkeypatch.setattr(exec_mod, "NESTING_DEPTH", _ABORT_NESTING_DEPTH)
     abort = asyncio.Event()
     options = make_opts(stdin="go\n", abort=abort)
     task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, options))
     await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
-    started = time.monotonic()
 
-    abort.set()
-    await task
-    elapsed = time.monotonic() - started
+    with within_hang_guard(_HANG_GUARD_S):
+        abort.set()
+        await task
 
-    # The group ignores the polite request, so it stands for the whole grace;
-    # the unscaled grace would outlast the bound.
-    assert nested_grace_s - _TIMER_SLACK_S <= elapsed < _ROOMY_TERMINATE_GRACE_S
+    assert group_wait_clock.now == pytest.approx(_ABORT_NESTED_GRACE_S, abs=_GROUP_POLL_S)
 
 
 # ---------------------------------------------------------------------------
@@ -317,12 +337,17 @@ def _sweep_live_groups(
 async def test_exec_when_leader_dies_before_nested_child_does_let_child_clean_up(
     tmp_path: Path,
     make_opts: Callable[..., ExecOptions],
+    spawned_processes: list[asyncio.subprocess.Process],
     teardown: Teardown,
 ) -> None:
     abort = asyncio.Event()
     command = slow_cleanup_command(nested=True, release_stdio=True)
     options = make_opts(abort=abort, timeout_ms=teardown.timeout_ms)
     task = asyncio.create_task(run_exec(command, options))
+    # The cleaner can write its pid before the spawn has registered its group,
+    # and a sweep driven before then finds nothing to stop; a real signal is
+    # held back until registration.
+    await wait_for_spawned(spawned_processes)
     await wait_for_pid_file(tmp_path / _CLEANER_PID_FILE)
 
     teardown.trigger(task, None, abort)

@@ -132,7 +132,7 @@ def test_init_when_scaffolding_succeeds_does_list_each_created_artifact_closing_
         (
             "  Config: created at gymrat.toml\n"
             "  Runbook: created at gymrat-runbook.md\n"
-            "  Skill: created at .claude/skills/gymrat/SKILL.md\n"
+            f"  Skill: created at {Path('.claude/skills/gymrat/SKILL.md')}\n"
             "Run gymrat doctor to verify the setup.\n"
         ),
         "",
