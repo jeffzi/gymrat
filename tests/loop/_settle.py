@@ -71,9 +71,20 @@ def checks_config(**overrides: Any) -> ResolvedConfig:
     return resolved_config(**(defaults | overrides))
 
 
-def start_with(repo_dir: str, history: tuple[SessionLogRecord, ...] = ()) -> None:
-    """Open a session in the scratch repo and leave ``history`` behind its header."""
-    start_session(repo_dir, "main", checks_config())
+def start_with(
+    repo_dir: str,
+    history: tuple[SessionLogRecord, ...] = (),
+    *,
+    config: ResolvedConfig | None = None,
+) -> None:
+    """Open a session on ``main`` in the scratch repo and leave ``history`` behind its header.
+
+    Args:
+        repo_dir: The repository the session opens in.
+        history: The records logged after the session header.
+        config: The configuration the session opens with; ``None`` means :func:`checks_config`.
+    """
+    start_session(repo_dir, "main", checks_config() if config is None else config)
     append_records(repo_dir, *history)
 
 

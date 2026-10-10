@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.loop.start import start_session
-from tests._config import resolved_config
 from tests._rich import stop_tracked
-from tests.cli._session import open_stop_ready_session, write_settled_session
+from tests.cli._session import (
+    open_stop_ready_session,
+    write_settled_session,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -28,13 +29,6 @@ def _in_non_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 def stop_repo(repo: str) -> str:
     """A repository with a settled, configured session ready for the stop command."""
     open_stop_ready_session(repo)
-    return repo
-
-
-@pytest.fixture
-def sync_repo(repo: str) -> str:
-    """A repository with an open session, ready for sync tests."""
-    start_session(repo, "main", resolved_config())
     return repo
 
 

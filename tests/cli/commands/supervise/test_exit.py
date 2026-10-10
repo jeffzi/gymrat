@@ -17,19 +17,19 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
 from gymrat.session.records import CommandRecord
+from gymrat.session.store import ReadSessionResult
 from gymrat.supervisor.events import create_event_log_writer, event_from_wire
-from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep, run_exit_sequence
-from gymrat.supervisor.supervise import EndedBy, SupervisionResult, supervise
+from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport
+from gymrat.supervisor.supervise import EndedBy, SupervisionResult
 from gymrat.telemetry import run_spans
 from gymrat.telemetry.run_spans import TracingState
+from tests._cli import err_text
 from tests.cli.commands.supervise._seams import (
     CAP_MINUTES,
     Seams,
-    err_text,
     install_seams,
     record_stdout_writes,
     run,
@@ -219,10 +219,10 @@ def test_supervise_when_run_ends_does_run_the_exit_sequence_in_the_supervisor_lo
 def test_supervise_when_run_completes_does_log_one_supervise_command_record_per_stage(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    seams = install_seams(monkeypatch, real_preflight=True)
+    seams = install_seams(
+        monkeypatch, real_preflight=True, real_supervise=True, real_exit_sequence=True
+    )
     seams.create_driver.return_value = create_mock_driver([CostStep(cost_usd=0.01)])
-    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise", supervise)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.run_exit_sequence", run_exit_sequence)
 
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
 
@@ -275,27 +275,6 @@ def test_supervise_when_exit_sequence_runs_does_find_the_budget_file_already_rem
 # ---------------------------------------------------------------------------
 # closing summary after the exit sequence
 # ---------------------------------------------------------------------------
-
-
-def test_supervise_when_exit_sequence_reports_steps_does_print_them_as_exit_rows(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
-    seams.exit_report = ExitReport(
-        steps=(
-            ExitStep(kind="settled", text="settled: kept iteration 1 (checks passed)"),
-            ExitStep(kind="nothing", text="session left open (--no-finalize)"),
-        )
-    )
-
-    result = run("optimize it", "--max-minutes", "10", "--no-finalize")
-
-    assert result.exit_code == 0
-    exit_rows = [line for line in result.stdout.splitlines() if line.startswith("  exit ")]
-    assert exit_rows == [
-        "  exit    settled: kept iteration 1 (checks passed)",
-        "  exit    session left open (--no-finalize)",
-    ]
 
 
 @pytest.mark.parametrize(

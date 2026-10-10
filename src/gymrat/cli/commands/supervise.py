@@ -25,8 +25,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
     from gymrat.cli.supervise.progress import SuperviseReporter
-    from gymrat.cli.supervise.types import ReadSessionResult
     from gymrat.model import Direction
+    from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.events import SessionObserver
     from gymrat.supervisor.supervise import SupervisionResult
 
@@ -59,7 +59,6 @@ from gymrat.sampling import resolve_metric_meta
 from gymrat.session.budget import (
     Budget,
     clear_budget,
-    minutes_to_ms,
     write_budget,
 )
 from gymrat.session.lock import acquire_lock
@@ -87,15 +86,13 @@ from gymrat.supervisor.hooks import supervise_hooks_factory
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
 from gymrat.supervisor.supervise import SupervisedSession, supervise
 from gymrat.supervisor.tools import gymrat_tools_factory
-from gymrat.utils import SECONDS_PER_MINUTE, abbreviate_home
+from gymrat.utils import ASCII_DECIMAL_PATTERN, SECONDS_PER_MINUTE, abbreviate_home, minutes_to_ms
 
 # ---------------------------------------------------------------------------
 # Flag surface
 # ---------------------------------------------------------------------------
 
-# ``[0-9]`` rather than ``\d``: ``\d`` matches every Unicode decimal digit, and
-# ``float`` converts those too, so a non-ASCII digit would parse as a number.
-_POSITIVE_NUMBER_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+_POSITIVE_NUMBER_RE = re.compile(ASCII_DECIMAL_PATTERN)
 _POSITIVE_NUMBER_MESSAGE = "must be a positive number."
 
 
@@ -141,11 +138,11 @@ def parse_max_minutes(value: str) -> float:
     return parsed
 
 
-PromptArgument = Annotated[
+_PromptArgument = Annotated[
     str | None,
     typer.Argument(metavar="[PROMPT]", help="optimization prompt for the agent"),
 ]
-MaxMinutesOption = Annotated[
+_MaxMinutesOption = Annotated[
     float,
     typer.Option(
         "--max-minutes",
@@ -154,31 +151,31 @@ MaxMinutesOption = Annotated[
         help="wall-clock cap in minutes, counted from when the baseline is recorded",
     ),
 ]
-MaxUsdOption = Annotated[
+_MaxUsdOption = Annotated[
     float | None,
     typer.Option(
         "--max-usd", parser=parse_positive_number, metavar="<float>", help="spend cap in USD"
     ),
 ]
-LogOption = Annotated[str | None, typer.Option("--log", help="path for the JSONL event log")]
-ModelOption = Annotated[
+_LogOption = Annotated[str | None, typer.Option("--log", help="path for the JSONL event log")]
+_ModelOption = Annotated[
     str | None, typer.Option("--model", help="model to use for the agent session")
 ]
-AllowDirtyOption = Annotated[
+_AllowDirtyOption = Annotated[
     bool, typer.Option("--allow-dirty", help="allow launching with uncommitted changes")
 ]
-ForceOption = Annotated[
+_ForceOption = Annotated[
     bool,
     typer.Option(
         "--force",
         help="launch even when the cap cannot fit one iteration or a stop condition is already met",
     ),
 ]
-NoFinalizeOption = Annotated[
+_NoFinalizeOption = Annotated[
     bool,
     typer.Option("--no-finalize", help="leave the session open instead of finalizing it on exit"),
 ]
-EffortOption = Annotated[
+_EffortOption = Annotated[
     Effort | None,
     typer.Option("--effort", metavar="<level>", help="effort level"),
 ]
@@ -202,7 +199,7 @@ class Options:
 
 
 def _resolve_log_path(root: str, explicit: str | None) -> str:
-    """The caller's ``--log`` verbatim, or a timestamped path under the session dir.
+    """Resolve where the supervisor writes its event log.
 
     Only the default path is written under ``.gymrat/``, so only that branch
     ensures the directory is git-excluded; a caller-supplied path is left to the
@@ -213,7 +210,8 @@ def _resolve_log_path(root: str, explicit: str | None) -> str:
         explicit: The caller's ``--log`` value, or ``None`` to use the default path.
 
     Returns:
-        The resolved absolute path for the event log.
+        The caller's ``--log`` path verbatim, or a timestamped path under the
+        session directory.
     """
     if explicit is not None:
         return explicit
@@ -433,7 +431,10 @@ def _run_session(ctx: _SessionContext) -> None:
     Args:
         ctx: Everything the run needs, assembled once the lock is held.
     """
-    from gymrat.telemetry.run_spans import finalize_tracing, setup_tracing  # noqa: PLC0415
+    from gymrat.telemetry.run_spans import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack
+        finalize_tracing,
+        setup_tracing,
+    )
 
     launch = ctx.launch
     driver = create_claude_driver(
@@ -578,17 +579,17 @@ def _execute(options: Options) -> None:
 
 
 def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the option surface
-    prompt: PromptArgument = None,
+    prompt: _PromptArgument = None,
     *,
-    max_minutes: MaxMinutesOption,
-    max_usd: MaxUsdOption = None,
-    log: LogOption = None,
+    max_minutes: _MaxMinutesOption,
+    max_usd: _MaxUsdOption = None,
+    log: _LogOption = None,
     baseline: BaselineOption = None,
-    model: ModelOption = None,
-    effort: EffortOption = None,
-    allow_dirty: AllowDirtyOption = False,
-    force: ForceOption = False,
-    no_finalize: NoFinalizeOption = False,
+    model: _ModelOption = None,
+    effort: _EffortOption = None,
+    allow_dirty: _AllowDirtyOption = False,
+    force: _ForceOption = False,
+    no_finalize: _NoFinalizeOption = False,
     color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:

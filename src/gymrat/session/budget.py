@@ -18,20 +18,7 @@ from gymrat.session.lock import is_held
 from gymrat.session.paths import budget_path, supervise_lockfile_path
 from gymrat.session.records import BaselineRecord, IterationRecord, SessionLogRecord
 from gymrat.session.sidecar import read_sidecar
-from gymrat.utils import MS_PER_SECOND, SECONDS_PER_MINUTE, write_text_atomic
-
-_MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND
-
-
-def minutes_to_ms(minutes: float) -> int:
-    """Convert minutes to milliseconds, truncating toward zero via ``int()``."""
-    return int(minutes * _MS_PER_MINUTE)
-
-
-def ms_to_minutes(ms: float) -> float:
-    """Convert milliseconds to minutes, keeping fractional precision."""
-    return ms / _MS_PER_MINUTE
-
+from gymrat.utils import write_text_atomic
 
 SIDES_PER_ITERATE = 2
 """An iterate cycle measures both baseline and experiment, so it costs roughly
@@ -123,13 +110,12 @@ def estimate_iterate_duration(
 ) -> DurationEstimate | None:
     """Estimate the wall-clock cost of one ``iterate`` from session history.
 
-    Scans *records* (oldest-first) from the end:
+    Scans from the end:
 
     1. The newest ``IterationRecord`` carrying a ``duration_ms`` is returned
        directly.
     2. Failing that, the newest ``BaselineRecord`` carrying a ``duration_ms``
        is doubled (an iterate measures both baseline and experiment).
-    3. With neither, returns ``None`` (unknown).
 
     Args:
         records: Session log records to scan, oldest-first.

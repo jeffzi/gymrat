@@ -26,8 +26,9 @@ from gymrat.cli.options import (
     SamplesOption,
     TimeoutOption,
 )
+from gymrat.cli.run_setup import SharedFlags
 from gymrat.command_run import CommandTrace, with_repo_lock
-from gymrat.config import CliFlags, config_trace_args, resolve_config
+from gymrat.config import config_trace_args, resolve_config
 from gymrat.loop.finalize import FinalizeOptions, FinalizeResult, finalize_session
 from gymrat.loop.start import StartResult, start_session
 from gymrat.loop.stop import StopResult, stop_session
@@ -63,18 +64,17 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
     """Create or resume this repository's optimization session."""
     apply_command_flags(debug=debug, color=color)
 
-    flags = CliFlags(
+    flags = SharedFlags(
         bench=bench,
         prepare=prepare,
         adapter=adapter,
         samples=samples,
         timeout=timeout,
         config=config,
+        format=output_format,
     )
 
     start_args = config_trace_args(flags, baseline=baseline)
-
-    use_json = output_format == OutputFormat.json
 
     async def run() -> None:
         root = repo_root()
@@ -86,7 +86,7 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
         result, runbook = await with_repo_lock("start", body, args=start_args, root=root)
         write_budget_report(
             root,
-            use_json=use_json,
+            flags,
             render_json=lambda summary: render_start_json(result, runbook=runbook, budget=summary),
             text_report=format_start_summary(result, runbook),
         )
@@ -118,14 +118,13 @@ def finalize(
 ) -> None:
     """Collapse the session's kept iterations into one commit and close it."""
     apply_command_flags(debug=debug, color=color)
+    flags = SharedFlags(format=output_format)
 
     finalize_args: dict[str, object] = {}
     if branch is not None:
         finalize_args["branch"] = branch
     if message is not None:
         finalize_args["message"] = message
-
-    use_json = output_format == OutputFormat.json
 
     async def run() -> None:
         root = repo_root()
@@ -136,7 +135,7 @@ def finalize(
         result = await with_repo_lock("finalize", body, args=finalize_args, root=root)
         write_budget_report(
             root,
-            use_json=use_json,
+            flags,
             render_json=lambda summary: render_finalize_json(result, budget=summary),
             text_report=result.report,
         )
@@ -164,11 +163,10 @@ def stop(
 ) -> None:
     """Record a stop in the session log without reverting or committing."""
     apply_command_flags(debug=debug, color=color)
+    flags = SharedFlags(format=output_format)
     if not message.strip():
         msg = "message must not be empty"
         raise typer.BadParameter(msg)
-
-    use_json = output_format == OutputFormat.json
 
     async def run() -> None:
         root = repo_root()
@@ -179,7 +177,7 @@ def stop(
         result = await with_repo_lock("stop", body, root=root)
         write_budget_report(
             root,
-            use_json=use_json,
+            flags,
             render_json=lambda summary: render_stop_json(
                 at=result.record.at, message=result.record.message, budget=summary
             ),
@@ -202,8 +200,7 @@ def sync(
 ) -> None:
     """Sync uncommitted main-tree changes into the experiment worktree."""
     apply_command_flags(debug=debug, color=color)
-
-    use_json = output_format == OutputFormat.json
+    flags = SharedFlags(format=output_format)
 
     async def run() -> None:
         root = repo_root()
@@ -219,7 +216,7 @@ def sync(
             text_report = "\n".join([header, *(f"  {f}" for f in result.files)])
         write_budget_report(
             root,
-            use_json=use_json,
+            flags,
             render_json=lambda summary: render_sync_json(result, budget=summary),
             text_report=text_report,
         )

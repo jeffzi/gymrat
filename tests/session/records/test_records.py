@@ -1,10 +1,6 @@
-from collections.abc import Callable
-from typing import Any
-
 import pytest
 
 from gymrat.session.records import (
-    SESSION_LOG_ADAPTER,
     NonFiniteNumberError,
     decode_log_line,
     parse_record,
@@ -25,7 +21,7 @@ from tests.session.records._wire import (
     METRIC_VERDICT,
     SESSION_RECORD,
     STOP_RECORD,
-    config_with,
+    nested_with,
     omitting,
     patching,
     verdict_with,
@@ -41,25 +37,19 @@ from tests.session.records._wire import (
     [
         pytest.param(SESSION_RECORD, id="session"),
         pytest.param(
-            patching(
+            nested_with(
                 SESSION_RECORD,
-                {
-                    "config": config_with(
-                        prepare="npm run build",
-                        filter="npm run bench -- --filter {names}",
-                    )
-                },
+                "config",
+                prepare="npm run build",
+                filter="npm run bench -- --filter {names}",
             ),
             id="session-with-prepare-and-filter",
         ),
         pytest.param(
-            patching(
+            nested_with(
                 SESSION_RECORD,
-                {
-                    "config": config_with(
-                        hooks={"before": "npm run warm-cache", "after": "npm run cool-down"}
-                    )
-                },
+                "config",
+                hooks={"before": "npm run warm-cache", "after": "npm run cool-down"},
             ),
             id="session-with-hooks",
         ),
@@ -174,68 +164,3 @@ def test_decode_log_line_when_numbers_finite_does_decode_them_unchanged():
     decoded = decode_log_line(line)
 
     assert decoded == {"a": 1.5, "b": [-2, 0, 1e308], "c": {"d": -0.25, "e": "NaN"}}
-
-
-# ---------------------------------------------------------------------------
-# JSON schema — nullability of optional fields
-# ---------------------------------------------------------------------------
-
-
-def _session_log_schema() -> dict[str, Any]:
-    return SESSION_LOG_ADAPTER.json_schema()
-
-
-def _schema_fields_where(predicate: Callable[[dict[str, Any]], bool]) -> set[tuple[str, str]]:
-    return {
-        (model, field)
-        for model, definition in _session_log_schema()["$defs"].items()
-        for field, prop in definition.get("properties", {}).items()
-        if predicate(prop)
-    }
-
-
-def _is_nullable(prop: dict[str, Any]) -> bool:
-    return prop.get("type") == "null" or {"type": "null"} in prop.get("anyOf", [])
-
-
-def _lacks_description(prop: dict[str, Any]) -> bool:
-    return "description" not in prop
-
-
-def test_json_schema_when_generated_does_type_null_only_on_the_delta_pct_fields():
-    nullable = _schema_fields_where(_is_nullable)
-
-    assert nullable == {("IterationPrimary", "delta_pct"), ("MetricVerdict", "delta_pct")}
-
-
-# ---------------------------------------------------------------------------
-# JSON schema — Field(description=...) on every field
-# ---------------------------------------------------------------------------
-
-
-def test_json_schema_when_generated_does_carry_descriptions_on_every_field():
-    missing = _schema_fields_where(_lacks_description)
-
-    assert missing == set()
-
-
-# ---------------------------------------------------------------------------
-# JSON schema — SessionHooks and Confirm referenced through $defs
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("model_name", "field", "definition"),
-    [
-        pytest.param("SessionConfig", "hooks", "SessionHooks", id="session-config-hooks"),
-        pytest.param("IterationRecord", "confirm", "Confirm", id="iteration-record-confirm"),
-    ],
-)
-def test_json_schema_when_generated_does_ref_the_nested_model_without_null(
-    model_name: str, field: str, definition: str
-):
-    schema = _session_log_schema()
-
-    field_schema = schema["$defs"][model_name]["properties"][field]
-
-    assert (field_schema["$ref"], "anyOf" in field_schema) == (f"#/$defs/{definition}", False)

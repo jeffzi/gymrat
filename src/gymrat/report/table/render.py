@@ -1,10 +1,10 @@
 """The shared machinery both text tables draw through.
 
 The data half is the body planner that lays a
-:class:`~gymrat.report.table.markup.SectionLayout` out as titles, borders, rules
+:class:`~gymrat.report.table.sections.SectionLayout` out as titles, borders, rules
 and rows. The cell builders that pad a value cell's magnitude and spread, and a
 verdict cell's glyph, delta and band, into fields of their own live in
-:mod:`gymrat.report.table.markup`.
+:mod:`gymrat.report.table.cells`.
 
 The rendering half draws the grid. The box chrome — column padding, the ``│``
 separators, and the ``┼`` rules closing a header or a run of rows — is delegated
@@ -26,25 +26,23 @@ from rich.cells import cell_len
 from rich.table import Table
 from rich.text import Text
 
-from gymrat.report.style import SCOPE_SEPARATOR, markup, render_lines
-from gymrat.report.table.markup import (
-    METRIC_COLUMN_HEADER,
-    METRIC_COLUMN_MIN,
-    VALUE_COLUMN_MIN,
-    GroupBlock,
-    MetricBlock,
-    informational_tag,
-    join_value_cell,
-    value_widths,
-)
+from gymrat.report.format import SPREAD_SEPARATOR
+from gymrat.report.style import markup, render_lines
+from gymrat.report.table.cells import METRIC_COLUMN_HEADER, scope_label
+from gymrat.report.table.sections import GroupBlock, MetricBlock
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from gymrat.config import KindEntry
     from gymrat.report.format import MetricCellParts
-    from gymrat.report.table.markup import SectionLayout, SectionPlan
+    from gymrat.report.table.sections import SectionLayout, SectionPlan
 
+
+VALUE_COLUMN_MIN = 12
+METRIC_COLUMN_MIN = 16
+
+_INFORMATIONAL_TAG = "informational — gating off"
 
 type TableCell = str | Text
 """A content row's cell: styled ``Text`` renders literally, a string is parsed as markup."""
@@ -234,7 +232,7 @@ def _plan_flat_body[Metric, Cell](
     ):
         # Flat layout shows one closing aggregate; suppress per-group aggregates.
         kind = section.kind
-        body.extend(_plan_blocks(section, None, lambda group: f"{group} {SCOPE_SEPARATOR} {kind}"))
+        body.extend(_plan_blocks(section, None, lambda group: scope_label(group, kind)))
     else:
         body.extend(MetricLine(row=row) for row in layout.ordered)
     if rows is not None:
@@ -246,6 +244,28 @@ def _plan_flat_body[Metric, Cell](
 def compute_column_width(header_len: int, content_lengths: Sequence[int], minimum: int) -> int:
     """The width a column settles on: the widest of its content, its header, and its floor."""
     return max(minimum, header_len, max(content_lengths, default=0))
+
+
+def informational_tag(kind: str, config_kinds: Mapping[str, KindEntry] | None) -> str:
+    """The tag a non-gating kind's title carries, naming the config key that decided it.
+
+    Gating is resolved per metric before the report sees it, so only the config
+    distinguishes a kind switched off wholesale from one whose metrics were each
+    switched off by name. Naming the key is what lets the reader switch it back.
+
+    Args:
+        kind: The kind whose title the tag decorates.
+        config_kinds: The configured kinds, keyed by name, or ``None`` when
+            absent.
+
+    Returns:
+        The informational tag, optionally naming the config key that switched
+        gating off.
+    """
+    entry = config_kinds.get(kind) if config_kinds is not None else None
+    switched_off = entry is not None and entry.gating is False
+    source = f" (config: kinds.{kind}.gating = false)" if switched_off else ""
+    return f"{_INFORMATIONAL_TAG}{source}"
 
 
 def section_annotation[Metric](
@@ -265,6 +285,31 @@ def section_annotation[Metric](
     if section.has_gating:
         return None
     return markup(informational_tag(section.kind, config_kinds), "dim")
+
+
+@dataclass(frozen=True, slots=True)
+class ValueWidths:
+    """Widths a value column pads its two fields to, measured on plain text."""
+
+    magnitude: int
+    spread: int
+
+
+def value_widths(cells: Sequence[MetricCellParts]) -> ValueWidths:
+    """The widest magnitude and the widest spread a column of value cells holds."""
+    return ValueWidths(
+        magnitude=max((len(cell.magnitude) for cell in cells), default=0),
+        spread=max((len(cell.spread) for cell in cells), default=0),
+    )
+
+
+def join_value_cell(parts: MetricCellParts, widths: ValueWidths) -> str:
+    """A value cell with its magnitude and spread each right-aligned in its own field."""
+    magnitude = parts.magnitude.rjust(widths.magnitude)
+    if widths.spread == 0:
+        return magnitude
+    spread = "" if parts.spread == "" else f"{SPREAD_SEPARATOR}{parts.spread.rjust(widths.spread)}"
+    return f"{magnitude}{spread}".ljust(widths.magnitude + len(SPREAD_SEPARATOR) + widths.spread)
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +347,20 @@ class TableSkeleton[Row]:
     value_cell: Callable[[Row], str]
     metric_width: int
     value_width: int
+
+
+def name_cell(row: NamedRow, *, grouped: bool) -> str:
+    """The metric-column text of one row.
+
+    Args:
+        row: The metric row.
+        grouped: Whether the table is grouped (see :func:`is_grouped`).
+
+    Returns:
+        The row's indented section label once the table is grouped, its bare
+        name otherwise.
+    """
+    return row.label if grouped else row.name
 
 
 def is_grouped[Metric, Cell](
@@ -386,13 +445,15 @@ def plan_table_skeleton[Row: NamedRow](
     )
     grouped = is_grouped(layout, body)
 
-    def name_cell(row: Row) -> str:
-        return row.label if grouped else row.name
+    def row_name_cell(row: Row) -> str:
+        return name_cell(row, grouped=grouped)
 
     def value_cell(row: Row) -> str:
         return join_value_cell(value_of(row), value_fields)
 
-    metric_width = metric_column_width(body, [cell_len(name_cell(row)) for row in layout.ordered])
+    metric_width = metric_column_width(
+        body, [cell_len(row_name_cell(row)) for row in layout.ordered]
+    )
     value_width = compute_column_width(
         cell_len(label),
         [cell_len(value_cell(row)) for row in layout.ordered],
@@ -400,7 +461,7 @@ def plan_table_skeleton[Row: NamedRow](
     )
     return TableSkeleton(
         body=body,
-        name_cell=name_cell,
+        name_cell=row_name_cell,
         value_cell=value_cell,
         metric_width=metric_width,
         value_width=value_width,

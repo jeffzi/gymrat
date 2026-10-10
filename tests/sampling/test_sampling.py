@@ -11,7 +11,7 @@ from collections.abc import Callable
 import pytest
 
 from gymrat.adapters import AdapterError, MetricDefaults, metric_lines_adapter
-from gymrat.config import KindEntry, MetricEntry, ResolvedConfig
+from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import CommandError, GymratError
 from gymrat.exec import ExecResult, ExecTimeoutError
 from gymrat.model import ResolvedMetricMeta
@@ -35,6 +35,7 @@ from gymrat.sampling import (
 from gymrat.targets import InPlaceTarget, RefTarget
 from tests._config import resolved_config
 from tests._exec_fixtures import expected_result, install_exec
+from tests.adapters._inputs import malformed_line_warning
 from tests.report._verdicts import metric_meta
 from tests.sampling._adapters import make_adapter
 
@@ -212,7 +213,7 @@ async def test_collect_samples_when_bench_output_unreadable_does_warn_after_the_
     assert log == [
         PassStarted(round=1, total_rounds=1, target_count=1, label="old", at_ms=0.0),
         PassFinished(round=1, total_rounds=1, target_count=1, label="old", at_ms=0.0),
-        "Failed to parse METRIC line: METRIC foo=bar",
+        malformed_line_warning("METRIC foo=bar"),
     ]
 
 
@@ -439,44 +440,10 @@ async def test_collect_samples_when_command_fails_does_raise_error_with_full_sha
 # ---------------------------------------------------------------------------
 
 
-def _resolved_config() -> ResolvedConfig:
-    """A resolved configuration with every run setting away from its default."""
-    return resolved_config(
-        bench="run",
-        prepare="prep",
-        adapter="mitata",
-        samples=7,
-        timeout_seconds=25,
-        unstable_noise_pct=5.0,
-        metrics={"decode/time": MetricEntry(direction="higher")},
-        kinds={"memory": KindEntry(gating=False)},
-    )
-
-
-def test_run_options_from_config_when_no_overrides_given_does_copy_the_run_settings_leaving_the_default_clock():
-    events: list[ProgressEvent] = []
-    warnings: list[str] = []
-    config = _resolved_config()
-
-    run = RunOptions.from_config(config, on_progress=events.append, warn=warnings.append)
-
-    assert run == RunOptions(
-        sampling=SamplingOptions(
-            bench="run",
-            prepare="prep",
-            samples=7,
-            timeout_seconds=25,
-            on_progress=events.append,
-            warn=warnings.append,
-        ),
-        adapter="mitata",
-        config_metrics=config.metrics,
-        config_kinds=config.kinds,
-    )
-
-
 def test_run_options_from_config_when_bench_and_samples_given_does_override_the_configured_ones():
-    run = RunOptions.from_config(_resolved_config(), samples=3, bench="run --filter a")
+    config = resolved_config(bench="run", samples=7)
+
+    run = RunOptions.from_config(config, samples=3, bench="run --filter a")
 
     assert (run.sampling.bench, run.sampling.samples) == ("run --filter a", 3)
 

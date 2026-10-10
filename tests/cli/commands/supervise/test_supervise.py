@@ -50,19 +50,21 @@ from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
 from gymrat.telemetry.run_spans import setup_tracing
 from gymrat.utils import abbreviate_home
 from tests._ansi import strip_ansi
+from tests._cli import err_text
 from tests._git import git_exclude_path
 from tests._lock import FIXED_HOLDER_AT, hold_lock
 from tests._process_helpers import track_cleanups
-from tests.cli._session import (
+from tests.cli._command_stubs import (
+    force_render_mode,
+)
+from tests.cli._runner import (
     FailingStdoutRunner,
     closed_stdout_error,
-    force_render_mode,
 )
 from tests.cli.commands.supervise._seams import (
     CAP_MINUTES,
     CAP_MS,
     command_config,
-    err_text,
     install_seams,
     run,
 )
@@ -92,7 +94,6 @@ def test_supervise_when_run_does_hand_supervise_its_capped_session(
     assert ctx.root == repo
     assert re.search(r"\.gymrat[/\\]supervisor-\d+\.jsonl", ctx.log_path)
     assert ctx.lock_path == lockfile_path(repo)
-    assert isinstance(ctx.config, ResolvedConfig)
     assert ctx.max_minutes == CAP_MINUTES
     assert ctx.max_usd == 2.0
     prompt = seams.supervise_calls[0]["prompt"]
@@ -295,9 +296,7 @@ def test_supervise_when_run_does_hand_the_reporter_the_cap_and_branch_unaltered(
 def test_supervise_when_plain_and_session_has_branch_does_print_no_title(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    build_reporter = supervise_cmd.create_supervise_reporter
-    seams = install_seams(monkeypatch, branch="banana")
-    monkeypatch.setattr("gymrat.cli.commands.supervise.create_supervise_reporter", build_reporter)
+    seams = install_seams(monkeypatch, branch="banana", real_reporter=True)
     force_render_mode(monkeypatch, "supervise", "plain")
     seams.supervise_hook = lambda call: call["observer"](call["launch"])
 
@@ -396,9 +395,7 @@ def test_supervise_when_session_setup_raises_does_tear_down_everything_it_armed(
     real: Callable[..., object],
     message: str,
 ):
-    build_reporter = supervise_cmd.create_supervise_reporter
-    install_seams(monkeypatch)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.create_supervise_reporter", build_reporter)
+    install_seams(monkeypatch, real_reporter=True)
     force_render_mode(monkeypatch, "supervise", "live")
     registry = track_cleanups(monkeypatch, "gymrat.cli.commands.supervise")
     display_cleanups = track_cleanups(monkeypatch, "gymrat.cli.live_display")

@@ -20,13 +20,12 @@ from gymrat.cli.supervise.frame import (
     build_loop_text,
     log_path_text,
 )
-from gymrat.cli.supervise.text import format_cost
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
-from gymrat.utils import format_duration
+from gymrat.utils import format_cost, format_duration
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.types import ReadSessionResult
     from gymrat.config import Effort
+    from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.exit_sequence import ExitReport
     from gymrat.supervisor.supervise import SupervisionResult
 
@@ -158,7 +157,6 @@ def build_summary(  # noqa: PLR0913 -- keyword-only run-end parts extend a 1-pos
         The assembled ``Text`` block for the closing summary.
     """
     rows = [_build_outcome_text(result)]
-    # A session that ended by itself, not by a cap trip or an error.
     completed = result.ended_by == "session" and result.outcome.reason != "error"
     if completed or result.ended_by in ("guard", "stop-condition"):
         stop_message = session_result.stop_message if session_result is not None else None

@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, assert_never
 
-from gymrat.cli.supervise.text import NO_SESSION_TEXT, format_cost, loop_segments
+from gymrat.cli.supervise.text import NO_SESSION_TEXT, loop_segments
 from gymrat.cli.supervise.types import (
     Capped,
     Composing,
@@ -48,15 +48,12 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
     UsageUpdateEvent,
 )
-from gymrat.utils import NS_PER_MS
+from gymrat.utils import NS_PER_MS, format_cost, pair_value
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.types import (
-        Liveness,
-        NestedActivity,
-        ReadSessionResult,
-    )
+    from gymrat.cli.supervise.types import Liveness, NestedActivity
     from gymrat.config import Effort
+    from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.events import SessionEvent
     from gymrat.supervisor.exit_sequence import ExitPhase
 
@@ -144,13 +141,8 @@ class ReporterState:
 # ---------------------------------------------------------------------------
 
 
-def pair_value[V](pairs: tuple[tuple[str, V], ...], key: str) -> V | None:
-    """Return the value paired with `key`, or None if `key` is not present."""
-    return next((value for name, value in pairs if name == key), None)
-
-
 def _set[V](pairs: tuple[tuple[str, V], ...], key: str, value: V) -> tuple[tuple[str, V], ...]:
-    if pair_value(pairs, key) is None:
+    if not any(name == key for name, _ in pairs):
         return (*pairs, (key, value))
     # Overwriting keeps the original position, matching dict assignment: the
     # tool-end fallback relies on the last pair being the newest tool.

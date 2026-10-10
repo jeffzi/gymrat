@@ -57,7 +57,7 @@ TERMINATION_SIGNALS: frozenset[int] = frozenset(
 # Kept as a module-level reference so the fallback branch stays testable.
 # :mod:`gymrat.exec` imports this to unblock the same signals in a spawned
 # child, rather than re-resolving ``pthread_sigmask`` itself.
-pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
+pthread_sigmask: Callable[[int, Iterable[int]], set[int]] | None = getattr(
     signal, "pthread_sigmask", None
 )
 
@@ -112,7 +112,7 @@ class _ThreadMaskHold(threading.local):
 
     def __init__(self) -> None:
         self.depth = 0
-        self.saved_mask: list[int] = []
+        self.saved_mask: set[int] = set()
 
 
 _thread_mask_hold = _ThreadMaskHold()

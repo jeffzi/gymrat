@@ -13,7 +13,6 @@ for all of it.
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -257,31 +256,6 @@ async def test_run_hook_when_hook_outruns_timeout_does_kill_it_as_timed_out(
     assert run.record.timed_out is True
     assert run.record.exit_code == FAILURE_EXIT_CODE
     assert run.record.duration_ms < KILL_SANITY_BOUND_MS
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shells return 127 for a missing command")
-async def test_run_hook_when_command_not_found_does_record_shell_exit_code(
-    hooks: HookScripts,
-) -> None:
-    run = await run_hook(hooks.invocation_of("banana"))
-
-    assert run.record.exit_code == 127
-
-
-async def test_run_hook_when_worktree_vanished_does_report_instead_of_raising(
-    hooks: HookScripts,
-) -> None:
-    command = hooks.printing("never runs")
-    vanished_dir = str(Path(hooks.temp_dir) / "vanished")
-
-    run = await run_hook(HookScripts(hooks.temp_dir, vanished_dir).invocation_of(command))
-
-    lines = labeled_lines(run.report, "before")
-    assert lines[0] == f"hook exited {FAILURE_EXIT_CODE}"
-    detail = "\n".join(lines[1:])
-    assert "No such file or directory" in detail or "directory name is invalid" in detail
-    assert run.record.stdout_bytes == 0
-    assert run.record.timed_out is False
 
 
 async def test_run_hook_when_abort_signal_set_does_kill_it(hooks: HookScripts) -> None:

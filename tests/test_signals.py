@@ -33,13 +33,10 @@ if hasattr(signal, "SIGHUP"):
 # that waiting it out for real keeps a test fast.
 _SHORT_EXIT_WRITE_TIMEOUT_S = 0.05
 
-# The exit-write timeout the second-signal test installs, far above the ceiling
-# below, so an exit at once is told apart from one that waited out the timeout.
+# The exit-write timeout the second-signal test installs. The second signal ends
+# the process before any exit wait runs to its end; a handler that ignored it
+# would sit through this whole wait on the stalled write instead.
 _LONG_EXIT_WRITE_TIMEOUT_S = 5.0
-
-# A second signal during the stderr write exits at once: far below the
-# timeout the stalled write would otherwise hold the exit for.
-_SECOND_SIGNAL_EXIT_CEILING_S = 0.5
 
 # Longest a scenario run by ``_run_capped`` may take: well past the longest exit
 # wait those scenarios install, well short of a hang.
@@ -132,13 +129,6 @@ class _Terminal:
         """Write a progress line to the buffered stream and flush it toward the raw sink."""
         self.stream.write("progress\n")
         self.stream.flush()
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class _InterruptingTerminal(_Terminal):
-    """A terminal whose first write signals the main thread, recording when it did."""
-
-    signal_sent_at: list[float]
 
 
 def _buffered_terminal(on_write: Callable[[], None]) -> _Terminal:
@@ -341,7 +331,7 @@ def stalled_stderr() -> _Terminal:
 
 
 @pytest.fixture
-def interrupting_stderr() -> Iterator[_InterruptingTerminal]:
+def interrupting_stderr() -> Iterator[_Terminal]:
     """A terminal whose first write sends SIGTERM to the main thread, then stalls."""
     # The handler writes its exit output off the main thread and waits for it
     # there, so a real signal aimed at the main thread lands inside that wait.
@@ -349,16 +339,15 @@ def interrupting_stderr() -> Iterator[_InterruptingTerminal]:
     release = threading.Event()
     main_thread_id = threading.main_thread().ident
     assert main_thread_id is not None
-    signal_sent_at: list[float] = []
+    signal_sent = threading.Event()
 
     def interrupt_then_stall() -> None:
-        if not signal_sent_at:
-            signal_sent_at.append(time.perf_counter())
+        if not signal_sent.is_set():
+            signal_sent.set()
             signal.pthread_kill(main_thread_id, signal.SIGTERM)
             release.wait(timeout=10)
 
-    terminal = _buffered_terminal(interrupt_then_stall)
-    yield _InterruptingTerminal(terminal.stream, terminal.raw, signal_sent_at)
+    yield _buffered_terminal(interrupt_then_stall)
     release.set()
 
 
@@ -424,6 +413,20 @@ def recorded_joins(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
 
 @pytest.fixture
+def finished_exit_waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Wrap the exit-writer join to record the timeout of each wait that ran to its end."""
+    finished: list[float] = []
+    real_join = signals.join_exit_writer
+
+    def join_and_record(writer: threading.Thread, timeout_s: float) -> None:
+        real_join(writer, timeout_s)
+        finished.append(timeout_s)
+
+    monkeypatch.setattr(signals, "join_exit_writer", join_and_record)
+    return finished
+
+
+@pytest.fixture
 def endless_thread() -> Iterator[threading.Thread]:
     """A started daemon thread that does not finish before the test is torn down."""
     release = threading.Event()
@@ -482,7 +485,8 @@ def test_install_termination_cleanup_when_signal_interrupts_buffered_stderr_writ
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="pthread_kill is POSIX-only")
 def test_install_termination_cleanup_when_second_signal_arrives_during_exit_output_write_does_exit_at_once_without_rerunning_cleanup(
     raise_signal: RaiseSignal,
-    interrupting_stderr: _InterruptingTerminal,
+    interrupting_stderr: _Terminal,
+    finished_exit_waits: list[float],
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(sys, "stderr", interrupting_stderr.stream)
@@ -497,10 +501,9 @@ def test_install_termination_cleanup_when_second_signal_arrives_during_exit_outp
 
     code = raise_signal(signal.SIGINT)
 
-    exit_delay = time.perf_counter() - interrupting_stderr.signal_sent_at[0]
     assert calls == ["cleanup"]
     assert code == 128 + signal.SIGINT
-    assert exit_delay < _SECOND_SIGNAL_EXIT_CEILING_S
+    assert finished_exit_waits == []
 
 
 @needs_signal_masking

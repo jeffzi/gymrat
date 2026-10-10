@@ -39,7 +39,19 @@ def metric_meta(
     kind: str = "other",
     unit: MetricUnit | None = None,
 ) -> ResolvedMetricMeta:
-    """A metric meta block, defaulting to a lower-is-better, gating, non-exact "other" metric."""
+    """A resolved metric meta block.
+
+    Args:
+        short_name: The name the metric displays under.
+        direction: Which way is better for the metric.
+        gating: Whether the metric counts toward the gated geomean.
+        exact: Whether the metric is compared exactly rather than statistically.
+        kind: The kind the metric belongs to.
+        unit: The metric's unit, or ``None`` for a unitless count.
+
+    Returns:
+        The metric meta.
+    """
     return ResolvedMetricMeta(
         direction=direction,
         gating=gating,

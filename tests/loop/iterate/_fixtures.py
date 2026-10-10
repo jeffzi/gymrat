@@ -36,10 +36,13 @@ from gymrat.session.records import (
 from gymrat.session.workspace import Worktrees
 from tests._ansi import stripped_lines
 from tests._exec_fixtures import expected_result
+from tests.adapters._inputs import malformed_line_warning
+from tests.session._budget import install_tight_budget
 from tests.session.records._fixtures import (
     SESSION_ID,
     log_records,
     session_record,
+    settled_history,
     write_session_log,
 )
 
@@ -49,7 +52,7 @@ if TYPE_CHECKING:
     from gymrat.exec import ExecOptions, ExecResult
 
 #: Where ``iterate_session`` looks up ``collect_samples``, the one sampling seam the stubs replace.
-COLLECT_SAMPLES_TARGET = "gymrat.loop.iterate.confirm.collect_samples"
+COLLECT_SAMPLES_TARGET = "gymrat.loop.iterate.judge.collect_samples"
 
 #: Ten rounds of a bench that stayed near 100.
 BASELINE_MS: list[float] = [100, 101, 99, 100, 102, 98, 100, 101, 99, 100]
@@ -125,7 +128,7 @@ def iterate_session_header(root: str, *, experiment: str | None = None) -> Sessi
     )
 
 
-#: Fourteen minutes: an iteration longer than what the budget-refusal tests leave on the clock.
+#: Fourteen minutes: an iteration longer than the 5 minutes a tight budget leaves on the clock.
 OUTLASTING_ITERATION_MS = 840_000
 
 
@@ -142,6 +145,17 @@ def write_iterate_session(root: str, history: tuple[SessionLogRecord, ...] = ())
     header = iterate_session_header(root)
     write_session_log(root, header, history)
     return header
+
+
+def write_outlasted_session(root: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Write a settled session whose last iteration outlasts what a tight live budget leaves.
+
+    Args:
+        root: The repository whose session log and budget file are written.
+        monkeypatch: The fixture that releases the supervise lock at teardown and patches the clock.
+    """
+    write_iterate_session(root, settled_history(duration_ms=OUTLASTING_ITERATION_MS))
+    install_tight_budget(root, monkeypatch)
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,7 +232,7 @@ def assert_permutation(
 
 
 def install_collect_samples(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
-    """Replace ``gymrat.loop.iterate.confirm.collect_samples`` with a fresh recorder."""
+    """Replace ``gymrat.loop.iterate.judge.collect_samples`` with a fresh recorder."""
     recorder = CollectSamplesRecorder()
     monkeypatch.setattr(COLLECT_SAMPLES_TARGET, recorder)
     return recorder
@@ -310,6 +324,21 @@ def stub_improved_samples(mock: CollectSamplesRecorder, root: str) -> None:
     stub_samples(mock, root, improved_rounds(), baseline_rounds())
 
 
+def install_improved_samples(monkeypatch: pytest.MonkeyPatch, root: str) -> CollectSamplesRecorder:
+    """Install a sampling recorder that answers every call with an improved run.
+
+    Args:
+        monkeypatch: The fixture ``collect_samples`` is replaced through.
+        root: The repository whose session header names the worktrees answered for.
+
+    Returns:
+        The installed recorder.
+    """
+    recorder = install_collect_samples(monkeypatch)
+    stub_improved_samples(recorder, root)
+    return recorder
+
+
 def stub_runs(
     mock: CollectSamplesRecorder,
     root: str,
@@ -377,7 +406,7 @@ def last_iteration_of(root: str) -> IterationRecord:
 
 
 #: What the metric-lines adapter says about the malformed line :func:`bench_malformed_once` prints.
-MALFORMED_LINE_WARNING = "Failed to parse METRIC line: METRIC foo=bar"
+MALFORMED_LINE_WARNING = malformed_line_warning("METRIC foo=bar")
 
 
 def bench_malformed_once(monkeypatch: pytest.MonkeyPatch) -> None:

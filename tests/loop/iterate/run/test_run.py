@@ -54,7 +54,6 @@ from tests.adapters._inputs import VALID_ADAPTERS_HINT, unknown_adapter_message
 from tests.loop.iterate._fixtures import (
     FILTER,
     MALFORMED_LINE_WARNING,
-    OUTLASTING_ITERATION_MS,
     as_logged,
     assert_permutation,
     baseline_rounds,
@@ -69,6 +68,7 @@ from tests.loop.iterate._fixtures import (
     stub_runs,
     trimmed_report_lines,
     write_iterate_session,
+    write_outlasted_session,
 )
 from tests.loop.iterate._hooks import HookScripts
 from tests.session._budget import install_budget
@@ -573,18 +573,15 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_
     repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
     hooks = HookScripts.for_root(repo)
-    write_iterate_session(repo, settled_history(duration_ms=OUTLASTING_ITERATION_MS))
+    write_outlasted_session(repo, monkeypatch)
     stub_improved_samples(samples_mock, repo)
-
-    # Live budget with 12 min left, but last iteration took 14 min.
-    install_budget(repo, monkeypatch, deadline_ms=720_000.0, frozen_now_ms=0)
     config = resolved_config(hooks=HooksConfig(before=hooks.printing("hi")))
 
     with pytest.raises(LoopStopError) as exc:
         await iterate_session(repo, config)
 
     assert str(exc.value) == (
-        "12m left; the last iteration took 14m and the cap would cut this one off."
+        "5m left; the last iteration took 14m and the cap would cut this one off."
     )
     assert exc.value.hint == "Report what the session measured instead of measuring again."
     assert samples_mock.call_count == 0
@@ -592,7 +589,7 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_
 
 
 # ---------------------------------------------------------------------------
-# no budget: manual session runs normally
+# budget live: no estimate yet, and the stop check runs before the budget check
 # ---------------------------------------------------------------------------
 
 
@@ -609,10 +606,9 @@ async def test_iterate_session_when_budget_live_but_no_estimate_does_run_normall
 async def test_iterate_session_when_stop_condition_met_does_report_stop_before_budget_check(
     repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
-    # The last iteration took 14 minutes against 12 left, so the budget check
+    # The last iteration took 14 minutes against 5 left, so the budget check
     # would refuse on its own: only the stop check running first names max iterations.
-    write_iterate_session(repo, settled_history(duration_ms=OUTLASTING_ITERATION_MS))
-    install_budget(repo, monkeypatch, deadline_ms=720_000.0, frozen_now_ms=0)
+    write_outlasted_session(repo, monkeypatch)
     config = resolved_config(stop=StopConfig(max_iterations=1))
 
     with pytest.raises(LoopStopError, match="max iterations") as exc:

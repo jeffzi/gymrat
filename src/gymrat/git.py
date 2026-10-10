@@ -15,9 +15,6 @@ from gymrat.errors import GymratError
 from gymrat.signals import deferring_termination_signals
 from gymrat.utils import stderr_text_of
 
-# How many leading characters of a commit SHA callers abbreviate it to.
-SHORT_SHA_LENGTH = 7
-
 # Env vars an outer git process exports to point child git at a specific repo.
 # Removing them forces this call to resolve the repository from ``cwd`` alone.
 _REPO_TARGETING_ENV_VARS = (
@@ -52,6 +49,7 @@ def run_git(
     Raises:
         subprocess.CalledProcessError: When git exits non-zero. It carries
             ``.stderr`` and ``.returncode`` for callers to mine.
+        OSError: When git is missing from ``PATH`` or cannot be executed.
     """
     child_env = os.environ.copy()
     for key in _REPO_TARGETING_ENV_VARS:
@@ -105,11 +103,27 @@ def try_git(args: Sequence[str], cwd: str) -> str | None:
     return None
 
 
-class NotAGitRepositoryError(GymratError):
-    """A directory git placed outside every repository.
+def run_git_step(args: Sequence[str], cwd: str, message: str, hint: str | None = None) -> str:
+    """Run git in ``cwd``, turning any failure into a ``GymratError``.
 
-    Its own class because callers act on the distinction: standing outside a
-    repository is a supported way to run gymrat, while a git that merely
-    declined to answer says nothing about where the directory sits and must
-    never be read as "no repository here".
+    The error carries git's own diagnostics after ``message`` so the reader sees
+    the real reason, and ``hint`` for what to do next.
+
+    Args:
+        args: The git command-line arguments to run.
+        cwd: Working directory to run the command in.
+        message: The error message prefix used if the command fails.
+        hint: The hint attached to the raised error, or ``None`` for none.
+
+    Returns:
+        The captured stdout from the git command.
+
+    Raises:
+        GymratError: When the git command exits non-zero, or when the git
+            binary is missing or cannot be executed.
     """
+    try:
+        return run_git(args, cwd)
+    except (subprocess.SubprocessError, OSError) as error:
+        detail = f"{message}: {stderr_text_of(error)}"
+        raise GymratError(detail, hint=hint) from error

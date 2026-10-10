@@ -129,6 +129,7 @@ def test_append_record_when_hard_killed_during_a_large_append_does_leave_the_ear
     )
     with reaped(child):
         wait_for_file_blocking(ready_flag, timeout_s=30.0)
+
         child.kill()
         child.wait(timeout=30)
 

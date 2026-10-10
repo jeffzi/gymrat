@@ -122,7 +122,7 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         samples=samples,
         timeout=timeout,
         config=config,
-        format=output_format.value,
+        format=output_format,
         record=record,
     )
 

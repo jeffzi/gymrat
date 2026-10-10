@@ -25,14 +25,13 @@ import pytest
 from gymrat.clock import now_ns
 from gymrat.config import StopConfig
 from gymrat.session.paths import session_dir, session_jsonl_path
-from gymrat.supervisor.end_scan import detect_end_condition
 from gymrat.supervisor.events import (
     CapEvent,
     SessionEvent,
-    ToolEndEvent,
     TurnEndEvent,
     UsageUpdateEvent,
 )
+from gymrat.supervisor.supervise import detect_end_condition
 from tests._config import benchless_config
 from tests._mode_bits import needs_mode_bits
 from tests.session.records._fixtures import (
@@ -65,6 +64,7 @@ from tests.supervisor._fixtures import (
     follow_ups_with_action,
     run_supervised,
     sent_texts,
+    tool_end_event,
 )
 
 if TYPE_CHECKING:
@@ -151,16 +151,7 @@ def _append_log_bytes(root: str, content: bytes) -> None:
 
 
 def _tool_end(tool_use_id: str = "t1", tool_name: str = "Bash") -> EmitStep:
-    return EmitStep(
-        emit=ToolEndEvent(
-            at=now_ns(),
-            tool_use_id=tool_use_id,
-            tool_name=tool_name,
-            duration_ms=10,
-            result="ok",
-            result_summary="ok",
-        )
-    )
+    return EmitStep(emit=tool_end_event(tool_name, tool_use_id))
 
 
 def _ended_markers(markers: list[str]) -> list[str]:
@@ -732,6 +723,10 @@ class _AbortSettledSession(DelegatingSession):
 
     Models a backend that stays up after a polite end. ``settling`` is the task
     that interrupts the inner session on abort, for the test to await.
+
+    Args:
+        inner: The session every call but ``end`` is delegated to.
+        abort: The event whose setting interrupts ``inner`` and settles the session.
     """
 
     def __init__(self, inner: DriverSession, abort: asyncio.Event) -> None:

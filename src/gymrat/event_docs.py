@@ -25,8 +25,9 @@ import importlib.metadata
 import json
 import sys
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NamedTuple, get_args
+from typing import Any, get_args
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -54,7 +55,8 @@ _YAML_WIDTH = 100
 # ---------------------------------------------------------------------------
 
 
-class _LogSpec(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class _LogSpec:
     """One JSONL log the artifacts document.
 
     Attributes:
@@ -99,14 +101,14 @@ _LOGS: tuple[_LogSpec, _LogSpec] = (
         heading="Supervisor Log",
         title="gymrat supervisor log event",
         address=SUPERVISOR_LOG_ADDRESS,
-        # Supervisor-log event models, in ``SessionEvent`` union order.
         models=get_args(SessionEvent),
         adapter=SESSION_EVENT_ADAPTER,
     ),
 )
 
 
-class ReaderSpec(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class ReaderSpec:
     """A channel read: source channel, consumed wire-type strings, and doc sentence.
 
     Attributes:

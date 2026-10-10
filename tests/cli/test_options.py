@@ -17,7 +17,12 @@ from gymrat.config import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
 from tests._rich import unwrap_panel
-from tests.cli._session import runner, stub_measure
+from tests.cli._command_stubs import (
+    stub_measure,
+)
+from tests.cli._runner import (
+    runner,
+)
 from tests.session.records._fixtures import last_command_record, session_record, write_session_log
 
 _EMPTY_TARGET_MESSAGE = 'the target is empty; write the positional as "[label=]<ref|dir>".'

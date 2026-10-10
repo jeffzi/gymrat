@@ -16,6 +16,7 @@ which differs between ``measure`` (half an iterate, so per-side) and ``compare``
 
 import json
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Literal
 from unittest.mock import create_autospec
 
@@ -23,13 +24,13 @@ import pytest
 
 from gymrat.cli import budget_report
 from gymrat.cli.console import apply_command_flags
+from gymrat.cli.options import OutputFormat
 from gymrat.cli.run_setup import SharedFlags
 from gymrat.clock import now_ms
-from gymrat.errors import GymratError
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.types import DEFAULT_REPORT_OPTIONS, ReportOptions
 from gymrat.session.budget import Budget
-from gymrat.session.paths import repo_root
+from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.session.records import IterationRecord
 from gymrat.session.store import read_records
 from tests._lock import held_supervise_lock
@@ -103,7 +104,7 @@ def _emit(output_format: Literal["text", "json"]) -> None:
     """Emit the ``report`` result in ``output_format`` through the stub renderers."""
     budget_report.emit_report(
         "report",
-        SharedFlags(format=output_format),
+        SharedFlags(format=OutputFormat(output_format)),
         ReportOptions(color=False),
         text=_render_text,
         json=_render_result_json,
@@ -129,32 +130,47 @@ def test_emit_report_when_command_color_flag_installed_does_hand_it_to_the_text_
     assert rendered_with == [True]
 
 
+def _outside_a_repository(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Run from a directory that is not a git repository, so the root lookup fails."""
+    monkeypatch.chdir(tmp_path)
+
+
+def _repo_root_io_error(monkeypatch: pytest.MonkeyPatch, _tmp_path: Path) -> None:
+    """Make the repository root lookup fail with an I/O error."""
+    monkeypatch.setattr(
+        "gymrat.cli.budget_report.repo_root",
+        create_autospec(repo_root, side_effect=OSError("input/output error")),
+    )
+
+
+@pytest.fixture
+def failed_root_lookup(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Make the repository root lookup fail the way the parametrized arrangement does."""
+    request.param(monkeypatch, tmp_path)
+
+
 @pytest.mark.parametrize(
-    ("error", "output_format", "expected"),
+    ("failed_root_lookup", "output_format", "expected"),
     [
+        pytest.param(_outside_a_repository, "text", "report\n", id="not-a-repository"),
+        pytest.param(_repo_root_io_error, "text", "report\n", id="os-error"),
         pytest.param(
-            GymratError("detected dubious ownership"), "text", "report\n", id="gymrat-error"
-        ),
-        pytest.param(OSError("input/output error"), "text", "report\n", id="os-error"),
-        pytest.param(
-            OSError("input/output error"),
+            _repo_root_io_error,
             "json",
             '{"result": "report", "budget": null}\n',
             id="json-carries-no-budget",
         ),
     ],
+    indirect=["failed_root_lookup"],
 )
+@pytest.mark.usefixtures("failed_root_lookup")
 def test_emit_report_when_repo_root_fails_expectedly_does_write_the_report_without_a_budget(
-    error: Exception,
     output_format: Literal["text", "json"],
     expected: str,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    monkeypatch.setattr(
-        "gymrat.cli.budget_report.repo_root", create_autospec(repo_root, side_effect=error)
-    )
-
     _emit(output_format)
 
     assert capsys.readouterr().out == expected
@@ -190,29 +206,37 @@ def test_emit_report_when_budget_active_does_write_the_report_with_the_budget(
 _LOOKUPS: dict[str, Callable[..., object]] = {"repo_root": repo_root, "read_records": read_records}
 
 
+def _corrupt_session_log(_monkeypatch: pytest.MonkeyPatch, _tmp_path: Path) -> None:
+    """Append a line that is not JSON to the session log, so reading it fails."""
+    with Path(session_jsonl_path(repo_root())).open("a", encoding="utf-8") as log:
+        log.write("not json\n")
+
+
+def _read_records_io_error(monkeypatch: pytest.MonkeyPatch, _tmp_path: Path) -> None:
+    """Make reading the session log fail with an I/O error."""
+    monkeypatch.setattr(
+        "gymrat.cli.budget_report.read_records",
+        create_autospec(read_records, side_effect=OSError("input/output error")),
+    )
+
+
 @pytest.mark.parametrize(
-    ("lookup", "error"),
+    "arrange",
     [
-        pytest.param(
-            "repo_root", GymratError("detected dubious ownership"), id="repo-root-gymrat-error"
-        ),
-        pytest.param(
-            "read_records", GymratError("session log is corrupt"), id="read-records-gymrat-error"
-        ),
-        pytest.param("read_records", OSError("input/output error"), id="read-records-os-error"),
+        pytest.param(_outside_a_repository, id="not-a-repository"),
+        pytest.param(_corrupt_session_log, id="corrupt-session-log"),
+        pytest.param(_read_records_io_error, id="read-records-os-error"),
     ],
 )
 def test_warn_duration_over_budget_when_a_lookup_fails_expectedly_does_stay_silent(
-    lookup: str,
-    error: Exception,
+    arrange: Callable[[pytest.MonkeyPatch, Path], None],
     session_root: str,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
     _seed_session(session_root, budget=_budget_left(MEASURE_REMAINING_MS))
-    monkeypatch.setattr(
-        f"gymrat.cli.budget_report.{lookup}", create_autospec(_LOOKUPS[lookup], side_effect=error)
-    )
+    arrange(monkeypatch, tmp_path)
 
     budget_report.warn_duration_over_budget(halve=True)
 
@@ -358,7 +382,7 @@ def test_write_budget_report_when_budget_active_or_not_does_append_it_only_if_ac
 
     budget_report.write_budget_report(
         session_root,
-        use_json=use_json,
+        SharedFlags(format=OutputFormat.json if use_json else OutputFormat.text),
         render_json=_render_json,
         text_report="benchmark results here",
     )

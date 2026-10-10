@@ -7,7 +7,6 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 
 from gymrat.metric_name import (
-    LINE_TERMINATORS,
     EmptyKindError,
     EmptyPathSegmentError,
     MetricNameError,
@@ -16,6 +15,7 @@ from gymrat.metric_name import (
     parse,
 )
 from gymrat.report.style import render_lines
+from gymrat.utils import LINE_TERMINATORS
 
 
 @pytest.mark.parametrize(

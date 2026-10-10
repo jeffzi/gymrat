@@ -11,6 +11,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from gymrat.session import schema
+
 __all__ = [
     "DEFAULT_UNSTABLE_NOISE_PCT",
     "NOISE_FLOOR_PCT",
@@ -119,10 +121,14 @@ DEFAULT_UNSTABLE_NOISE_PCT = 200
 # Verdict records
 # ---------------------------------------------------------------------------
 
-Verdict = Literal["improved", "regressed", "no-signal"]
-"""Outcome of a comparison that cannot be flagged unstable."""
+Verdict = schema.Outcome
+"""Outcome of a comparison that cannot be flagged unstable.
 
-ApproximateVerdict = Verdict | Literal["unstable"]
+The session log's vocabulary in :mod:`gymrat.session.schema` is the one home of
+the verdict words; the in-memory verdicts reuse it so the two cannot drift.
+"""
+
+ApproximateVerdict = schema.Verdict
 """Outcome of an approximate comparison, which may additionally be ``"unstable"``."""
 
 

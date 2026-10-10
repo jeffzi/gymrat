@@ -17,12 +17,11 @@ from typing import TYPE_CHECKING
 
 from gymrat.errors import GymratError
 from gymrat.loop.baseline import measure_baseline
-from gymrat.loop.iterate.confirm import scoped_bench
-from gymrat.report.loop import baseline_medians
+from gymrat.loop.iterate.judge import EXPERIMENT_LABEL, scoped_bench
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.store import latest_baseline, require_open_session
 from gymrat.stats import percent_delta
-from gymrat.utils import finite_or_none, warn_to_stderr
+from gymrat.utils import finite_or_none, medians_by_name, warn_to_stderr
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -34,9 +33,6 @@ if TYPE_CHECKING:
 
 #: Rounds a probe runs when the caller names no count of its own.
 PROBE_DEFAULT_SAMPLES = 6
-
-#: The label a probe's target carries, naming the worktree it benched.
-EXPERIMENT_LABEL = "experiment"
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +178,7 @@ async def probe_session(
     target = TargetSpec(label=EXPERIMENT_LABEL, target=required.session.worktrees.experiment)
     result, _ = await measure_baseline(target, run_options)
 
-    references = baseline_medians(baseline)
+    references = medians_by_name(baseline.samples)
     metrics: list[ProbeMetric] = []
     for name, metric in result.metrics.items():
         reference = references.get(name)

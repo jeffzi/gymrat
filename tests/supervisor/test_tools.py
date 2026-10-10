@@ -85,30 +85,32 @@ def host(request: pytest.FixtureRequest, tmp_path: pathlib.Path, fake_exec: Asyn
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("host", [{"GYMRAT_TRACEPARENT": "00-abc-def-01"}], indirect=True)
+@pytest.mark.parametrize(
+    ("host", "expected_env"),
+    [
+        pytest.param(
+            {"GYMRAT_TRACEPARENT": "00-abc-def-01"},
+            {
+                "GYMRAT_COMMAND_ORIGIN": "tool",
+                "NO_COLOR": "1",
+                "GYMRAT_TRACEPARENT": "00-abc-def-01",
+            },
+            id="extra-env-added-to-fixed",
+        ),
+        pytest.param({"NO_COLOR": "0"}, {"NO_COLOR": "0"}, id="extra-env-wins-over-fixed"),
+    ],
+    indirect=["host"],
+)
 async def test_probe_when_called_does_run_in_the_root_with_the_composed_child_env(
-    tmp_path: pathlib.Path, host: ToolHost, fake_exec: AsyncMock
+    tmp_path: pathlib.Path, host: ToolHost, fake_exec: AsyncMock, expected_env: dict[str, str]
 ) -> None:
     await host.probe({})
 
     opts: ExecOptions = fake_exec.call_args[0][1]
     assert opts.cwd == str(tmp_path)
     assert opts.env is not None
-    assert opts.env["GYMRAT_COMMAND_ORIGIN"] == "tool"
-    assert opts.env["NO_COLOR"] == "1"
-    assert opts.env["GYMRAT_TRACEPARENT"] == "00-abc-def-01"
+    assert {key: opts.env.get(key) for key in expected_env} == expected_env
     assert opts.env.get("PATH") == os.environ.get("PATH")
-
-
-@pytest.mark.parametrize("host", [{"NO_COLOR": "0"}], indirect=True)
-async def test_probe_when_extra_env_names_a_fixed_variable_does_let_extra_env_win(
-    host: ToolHost, fake_exec: AsyncMock
-) -> None:
-    await host.probe({})
-
-    opts: ExecOptions = fake_exec.call_args[0][1]
-    assert opts.env is not None
-    assert opts.env["NO_COLOR"] == "0"
 
 
 # ---------------------------------------------------------------------------

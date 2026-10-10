@@ -218,6 +218,33 @@ async def poll_until(
         await asyncio.sleep(_POLL_INTERVAL_S)
 
 
+def poll_until_blocking(
+    ready: Callable[[], bool],
+    timeout_s: float,
+    on_timeout: Callable[[], Exception],
+) -> None:
+    """Block, polling ``ready`` until it holds.
+
+    The synchronous twin of ``poll_until``, for tests that wait without an
+    event loop.
+
+    Args:
+        ready: The condition to wait for.
+        timeout_s: Seconds to poll before giving up.
+        on_timeout: Builds the error to raise, called only once the wait has
+            expired so its message can describe the state at that point.
+
+    Raises:
+        Exception: Whatever ``on_timeout`` builds, once ``ready`` has not held
+            within ``timeout_s``.
+    """
+    deadline = time.monotonic() + timeout_s
+    while not ready():
+        if time.monotonic() > deadline:
+            raise on_timeout()
+        time.sleep(_POLL_INTERVAL_S)
+
+
 async def wait_until_dead(pid: int, timeout_s: float = _DEFAULT_WAIT_S) -> None:
     """Poll until the process with ``pid`` no longer exists.
 
@@ -248,12 +275,11 @@ def wait_until_dead_blocking(pid: int, timeout_s: float = _DEFAULT_WAIT_S) -> No
     Raises:
         AssertionError: The process is still alive after ``timeout_s``.
     """
-    deadline = time.monotonic() + timeout_s
-    while is_alive(pid):
-        if time.monotonic() > deadline:
-            message = f"process {pid} was still alive after {timeout_s}s"
-            raise AssertionError(message)
-        time.sleep(_POLL_INTERVAL_S)
+    poll_until_blocking(
+        lambda: not is_alive(pid),
+        timeout_s,
+        lambda: AssertionError(f"process {pid} was still alive after {timeout_s}s"),
+    )
 
 
 def read_pid_file(pid_path: pathlib.Path) -> int | None:
@@ -282,6 +308,22 @@ def read_pid_file(pid_path: pathlib.Path) -> int | None:
     return pid if pid > 0 else None
 
 
+@dataclasses.dataclass(slots=True)
+class _PidProbe:
+    """Polls a pid file, keeping the pid from the read that found it complete."""
+
+    path: pathlib.Path
+    # 0 is never a pid ``read_pid_file`` accepts, so it marks "not read yet".
+    pid: int = 0
+
+    def ready(self) -> bool:
+        self.pid = read_pid_file(self.path) or 0
+        return self.pid > 0
+
+    def never_appeared(self) -> TimeoutError:
+        return TimeoutError(f"pid never appeared at {self.path}")
+
+
 async def wait_for_pid_file(pid_path: pathlib.Path, timeout_s: float = _DEFAULT_WAIT_S) -> int:
     """Poll until ``pid_path`` holds a pid ``read_pid_file`` accepts, then return it.
 
@@ -295,14 +337,9 @@ async def wait_for_pid_file(pid_path: pathlib.Path, timeout_s: float = _DEFAULT_
     Raises:
         TimeoutError: No complete pid appears within ``timeout_s``.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while (pid := read_pid_file(pid_path)) is None:
-        if loop.time() > deadline:
-            message = f"pid never appeared at {pid_path}"
-            raise TimeoutError(message)
-        await asyncio.sleep(_POLL_INTERVAL_S)
-    return pid
+    probe = _PidProbe(pid_path)
+    await poll_until(probe.ready, timeout_s, probe.never_appeared)
+    return probe.pid
 
 
 def wait_for_pid_file_blocking(pid_path: pathlib.Path, timeout_s: float = _DEFAULT_WAIT_S) -> int:
@@ -321,13 +358,9 @@ def wait_for_pid_file_blocking(pid_path: pathlib.Path, timeout_s: float = _DEFAU
     Raises:
         TimeoutError: No complete pid appears within ``timeout_s``.
     """
-    deadline = time.monotonic() + timeout_s
-    while (pid := read_pid_file(pid_path)) is None:
-        if time.monotonic() > deadline:
-            message = f"pid never appeared at {pid_path}"
-            raise TimeoutError(message)
-        time.sleep(_POLL_INTERVAL_S)
-    return pid
+    probe = _PidProbe(pid_path)
+    poll_until_blocking(probe.ready, timeout_s, probe.never_appeared)
+    return probe.pid
 
 
 async def wait_for_file(path: pathlib.Path, timeout_s: float = _DEFAULT_WAIT_S) -> None:
@@ -362,12 +395,9 @@ def wait_for_file_blocking(path: pathlib.Path, timeout_s: float = _DEFAULT_WAIT_
     Raises:
         TimeoutError: ``path`` has not appeared within ``timeout_s``.
     """
-    deadline = time.monotonic() + timeout_s
-    while not path.exists():
-        if time.monotonic() > deadline:
-            message = f"file never appeared at {path}"
-            raise TimeoutError(message)
-        time.sleep(_POLL_INTERVAL_S)
+    poll_until_blocking(
+        path.exists, timeout_s, lambda: TimeoutError(f"file never appeared at {path}")
+    )
 
 
 @contextlib.contextmanager

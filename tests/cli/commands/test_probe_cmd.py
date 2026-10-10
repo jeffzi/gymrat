@@ -6,8 +6,8 @@ The one seam replaced is the measurement engine — it shells out to the
 consumer's bench script, which no test here can run — so the option surface, the
 lock, the progress reporter, the JSON document, and every engine refusal are
 exercised end to end; the budget trailer, the tight-budget warning on the halved
-estimate, and the finalized refusal are pinned with every other command's in
-``test_session_cmds``.
+estimate, the finalized refusal, and the refusal while a supervised run is live
+are pinned with every other command's in ``test_session_cmds``.
 
 The signal test is the exception: it runs the CLI out of process against a real
 shell bench, because a process group can only be killed by a real signal.
@@ -26,34 +26,34 @@ from gymrat.cli.app import app
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES
 from gymrat.progress_events import PrepareFinished, PrepareStarted
 from gymrat.session.paths import experiment_worktree_dir
-from tests._ansi import (
-    strip_ansi,
-    stripped_lines,
-)
+from tests._ansi import strip_ansi
 from tests._cli import run_cli
 from tests._git import run_git
 from tests._process_helpers import (
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
 )
+from tests.cli._command_stubs import (
+    stub_probe_measure,
+)
+from tests.cli._runner import (
+    runner,
+)
 from tests.cli._session import (
     open_probe_session,
-    runner,
-    stub_probe_measure,
     write_bench_config,
 )
 from tests.cli._signalled_cli import pid_recording_script, spawned_gymrat, stop_by_signal
+from tests.config._toml import write_config
 from tests.loop._probe import (
     BASELINE_SAMPLES,
     MeasureRecorder,
     only_call,
 )
 from tests.loop._settle import start_with
-from tests.session._budget import install_tight_budget
 from tests.session.records._fixtures import (
     append_records,
     baseline_record,
-    iteration_record,
     last_command_record,
 )
 
@@ -86,18 +86,17 @@ def probe_repo(repo: str) -> str:
 
 
 @pytest.mark.parametrize(
-    "option",
-    [
-        pytest.param(["--format", "text"], id="format"),
-        pytest.param(["-c", "gymrat.toml"], id="config-short"),
-        pytest.param(["--config", "gymrat.toml"], id="config-long"),
-    ],
+    "flag", [pytest.param("-c", id="config-short"), pytest.param("--config", id="config-long")]
 )
-@pytest.mark.usefixtures("probe_repo", "measure")
-def test_probe_command_when_supported_option_given_does_complete(option: list[str]):
-    result = runner.invoke(app, ["probe", *option])
+def test_probe_command_when_config_file_named_does_bench_with_its_command(
+    *, probe_repo: str, measure: MeasureRecorder, flag: str
+):
+    write_config(Path(probe_repo), {"bench": "sh other-bench.sh"}, name="alt.toml")
+
+    result = runner.invoke(app, ["probe", flag, "alt.toml"])
 
     assert result.exit_code == 0
+    assert only_call(measure).run.sampling.bench == "sh other-bench.sh"
 
 
 # ---------------------------------------------------------------------------
@@ -105,56 +104,43 @@ def test_probe_command_when_supported_option_given_does_complete(option: list[st
 # ---------------------------------------------------------------------------
 
 
-_POSIX_QUOTING = pytest.mark.skipif(sys.platform == "win32", reason="POSIX quoting only")
-"""Skips the case whose expected bench command carries POSIX shell quoting."""
-
-_SCOPED_ARGS = ["total_ms", "decode large payload", "--samples", "3"]
+_SCOPED_ARGS = ["total_ms", "alloc_bytes", "--samples", "3"]
 """Probe arguments naming two metrics and a sample count."""
 
 
 @pytest.mark.parametrize(
-    ("args", "bench", "samples"),
+    ("args", "bench", "samples", "traced"),
     [
-        pytest.param([], "npm run bench", PROBE_DEFAULT_SAMPLES, id="whole-bench-at-probe-default"),
+        pytest.param(
+            [],
+            "npm run bench",
+            PROBE_DEFAULT_SAMPLES,
+            {"names": [], "samples": None},
+            id="whole-bench-at-probe-default",
+        ),
         pytest.param(
             _SCOPED_ARGS,
-            "sh bench.sh --filter total_ms 'decode large payload'",
+            "sh bench.sh --filter total_ms alloc_bytes",
             3,
+            {"names": ["total_ms", "alloc_bytes"], "samples": 3},
             id="names-and-samples-scope-the-bench",
-            marks=_POSIX_QUOTING,
         ),
     ],
 )
-@pytest.mark.usefixtures("probe_repo")
-def test_probe_command_when_run_does_bench_the_scope_and_samples_asked_for(
-    *, args: list[str], bench: str, samples: int, measure: MeasureRecorder
+def test_probe_command_when_run_does_bench_and_trace_the_scope_and_samples_asked_for(
+    *,
+    probe_repo: str,
+    measure: MeasureRecorder,
+    args: list[str],
+    bench: str,
+    samples: int,
+    traced: dict[str, object],
 ):
     result = runner.invoke(app, ["probe", *args])
 
     assert result.exit_code == 0
     run = only_call(measure).run.sampling
     assert (run.bench, run.samples) == (bench, samples)
-
-
-@pytest.mark.parametrize(
-    ("args", "traced"),
-    [
-        pytest.param([], {"names": [], "samples": None}, id="whole-bench-at-probe-default"),
-        pytest.param(
-            _SCOPED_ARGS,
-            {"names": ["total_ms", "decode large payload"], "samples": 3},
-            id="names-and-samples-scope-the-bench",
-            marks=_POSIX_QUOTING,
-        ),
-    ],
-)
-@pytest.mark.usefixtures("measure")
-def test_probe_command_when_run_does_trace_the_names_and_samples_given(
-    *, probe_repo: str, args: list[str], traced: dict[str, object]
-):
-    result = runner.invoke(app, ["probe", *args])
-
-    assert result.exit_code == 0
     cmd = last_command_record(probe_repo)
     assert (cmd.name, cmd.exit_code, cmd.reason) == ("probe", 0, None)
     assert {key: cmd.args[key] for key in traced} == traced
@@ -204,29 +190,6 @@ def test_probe_command_when_format_json_does_emit_the_result_as_a_json_document(
         "reference_median": 100.0,
         "delta_pct": pytest.approx(-10.0),
     }
-
-
-# ---------------------------------------------------------------------------
-# refused while a supervised run is live
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def supervised_probe_repo(probe_repo: str, monkeypatch: pytest.MonkeyPatch) -> str:
-    """A probe-ready repo under a tight live budget its last iteration outlasts, run from the shell."""
-    install_tight_budget(probe_repo, monkeypatch)
-    append_records(probe_repo, iteration_record(duration_ms=720_000))
-    return probe_repo
-
-
-def test_probe_command_when_supervised_run_live_does_refuse_before_benching_or_warning(
-    supervised_probe_repo: str, measure: MeasureRecorder
-):
-    result = runner.invoke(app, ["probe"])
-
-    lines = [line for line in stripped_lines(result.stderr, keep_blank=False) if line.strip()]
-    assert len(lines) == 2
-    assert measure.calls == []
 
 
 # ---------------------------------------------------------------------------

@@ -22,11 +22,16 @@ from dataclasses import dataclass
 from gymrat.clock import now_ns
 from gymrat.errors import GymratError
 from gymrat.session.records import StopRecord
-from gymrat.session.store import append_record, require_open_session, require_settled
+from gymrat.session.store import (
+    append_record,
+    require_open_session,
+    require_settled,
+    settle_first_hint,
+)
 from gymrat.utils import first_line
 
-#: The hint a refusal points at whenever the fix is to settle the last iteration.
-_SETTLE_FIRST_HINT = "Run gymrat keep or gymrat discard before stopping."
+#: What a stop refusal says the user was about to do.
+_SETTLE_VERB = "stopping"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,13 +61,13 @@ def stop_session(root: str, message: str) -> StopResult:
     required = require_open_session(root, "stopping the session")
     state = required.state
 
-    require_settled(state, _SETTLE_FIRST_HINT)
+    require_settled(state, _SETTLE_VERB)
 
     if state.ends_on_gating_block:
         msg = f"Iteration {state.last_seq} is blocked by a gating regression"
         raise GymratError(
             msg,
-            hint=_SETTLE_FIRST_HINT,
+            hint=settle_first_hint(_SETTLE_VERB),
             reason="gating-block",
         )
 

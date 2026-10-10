@@ -15,12 +15,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from gymrat.model import MetricUnit
-    from gymrat.targets import WorktreeRemovalFailure
-
-
-# ---------------------------------------------------------------------------
-# Measurement builders
-# ---------------------------------------------------------------------------
+    from gymrat.worktree_failure import WorktreeRemovalFailure
 
 
 def measured_metric(

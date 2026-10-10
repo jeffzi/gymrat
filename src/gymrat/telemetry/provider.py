@@ -1,8 +1,8 @@
 """Tracing provider: lazy OTel setup, deterministic IDs, and record-to-attribute mapping.
 
-All ``opentelemetry`` imports live inside functions so that importing the
-module never pulls the SDK into ``sys.modules`` (CLAUDE.md: "Import the agent
-SDK, and anything else with a startup cost, inside the function that needs it").
+All ``opentelemetry`` imports live inside functions: ``opentelemetry`` ships
+only with the ``otel`` extra, and the import-latency seam test keeps it out of
+``sys.modules`` when this module is imported.
 The attribute mapping builds plain dicts and needs no ``opentelemetry`` import
 at all.
 """
@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
-import os
 import random
 import warnings
 from contextvars import ContextVar
@@ -25,7 +24,7 @@ from gymrat.session.records import (
     _SequencedEnvelope,
 )
 from gymrat.supervisor.events import CapEvent, CompactionEvent, FollowUpEvent, TurnEndEvent
-from gymrat.utils import ENDPOINT_ENV, otlp_endpoint
+from gymrat.utils import otlp_endpoint, otlp_endpoint_from_env
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -33,7 +32,8 @@ if TYPE_CHECKING:
     from opentelemetry.context import Context
     from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
     from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
-    from opentelemetry.trace import Span, SpanContext, Tracer
+    from opentelemetry.sdk.trace.id_generator import IdGenerator
+    from opentelemetry.trace import Link, Span, SpanContext, Tracer
 
     from gymrat.supervisor.events import LaunchEvent, SessionEvent
 
@@ -154,7 +154,11 @@ def existing_session_span(session_id: str) -> Span:
         A sampled, non-recording span carrying the session span's trace and
         span ids.
     """
-    from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags  # noqa: PLC0415
+    from opentelemetry.trace import (  # noqa: PLC0415 -- optional extra
+        NonRecordingSpan,
+        SpanContext,
+        TraceFlags,
+    )
 
     return NonRecordingSpan(
         SpanContext(
@@ -375,7 +379,7 @@ _queued_span_id: ContextVar[int | None] = ContextVar("_queued_span_id", default=
 
 def _traces_url(endpoint: str) -> str:
     """Build the URL spans are posted to, as the OTLP exporter does from the environment."""
-    traces_endpoint = otlp_endpoint(os.environ.get(_TRACES_ENDPOINT_ENV))
+    traces_endpoint = otlp_endpoint_from_env(_TRACES_ENDPOINT_ENV)
     if traces_endpoint is not None:
         return traces_endpoint
     separator = "" if endpoint.endswith("/") else "/"
@@ -428,13 +432,15 @@ def configure_tracing(
             raise ValueError(msg)
         return True
 
-    endpoint = otlp_endpoint(endpoint if endpoint is not None else os.environ.get(ENDPOINT_ENV))
+    endpoint = otlp_endpoint(endpoint) if endpoint is not None else otlp_endpoint_from_env()
     if endpoint is None:
         return False
 
     try:
-        from opentelemetry.sdk.resources import Resource  # noqa: PLC0415
-        from opentelemetry.sdk.trace import TracerProvider as _TracerProvider  # noqa: PLC0415
+        from opentelemetry.sdk.resources import Resource  # noqa: PLC0415 -- optional extra
+        from opentelemetry.sdk.trace import (  # noqa: PLC0415 -- optional extra
+            TracerProvider as _TracerProvider,
+        )
 
         if span_processor is None:
             span_processor = _otlp_span_processor(endpoint)
@@ -446,8 +452,7 @@ def configure_tracing(
         "service.version": importlib.metadata.version("gymrat"),
     })
 
-    id_generator = _DeterministicIdGenerator(trace_id_of(session_id))
-    # pyrefly: ignore[bad-argument-type] -- IdGenerator protocol mismatch
+    id_generator = _deterministic_id_generator(trace_id_of(session_id))
     provider = _TracerProvider(resource=resource, id_generator=id_generator)
     provider.add_span_processor(span_processor)
 
@@ -469,21 +474,24 @@ def _otlp_span_processor(endpoint: str) -> SpanProcessor:
     Raises:
         ImportError: When the OTLP exporter package is not installed.
     """
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415 -- optional extra
         OTLPSpanExporter,
     )
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415 -- optional extra
 
     exporter = _failure_recording(OTLPSpanExporter(endpoint=_traces_url(endpoint)))
     return BatchSpanProcessor(exporter)
 
 
-def start_span(
+def start_span(  # noqa: PLR0913 -- the key and session, plus the tracer start_span keywords it forwards
     name: str,
     *,
     span_key: str | None = None,
     session_id: str | None = None,
-    **kwargs: object,
+    context: Context | None = None,
+    links: Sequence[Link] | None = None,
+    attributes: Attrs | None = None,
+    start_time: int | None = None,
 ) -> Span:
     """Start a span through the module's tracer, which :func:`configure_tracing` must have set.
 
@@ -493,11 +501,16 @@ def start_span(
             session ID and this key.
         session_id: The session the deterministic span ID is derived from;
             ``None`` uses the session tracing was configured for.
-        **kwargs: Additional keyword arguments forwarded to the tracer's
-            ``start_span``.
+        context: The parent context, or ``None`` for the current one.
+        links: Spans this span links to, or ``None`` for none.
+        attributes: The span's attributes, or ``None`` for none.
+        start_time: The span's start, in epoch nanoseconds, or ``None`` for now.
 
     Returns:
         The started span.
+
+    Raises:
+        RuntimeError: When :func:`configure_tracing` has not set a tracer.
     """
     global _session_span_dropped  # noqa: PLW0603 — module singleton
     token = None
@@ -505,7 +518,12 @@ def start_span(
         keyed_session = _session_id if session_id is None else session_id
         token = _queued_span_id.set(span_id_of(keyed_session, span_key))
     try:
-        span = _tracer.start_span(name, **kwargs)  # type: ignore[arg-type]
+        if _tracer is None:
+            msg = "configure_tracing must run before start_span"
+            raise RuntimeError(msg)
+        span = _tracer.start_span(
+            name, context=context, links=links, attributes=attributes, start_time=start_time
+        )
     finally:
         if token is not None:
             _queued_span_id.reset(token)
@@ -541,7 +559,7 @@ def start_command_span(
     Returns:
         The started span, linked and with its status set.
     """
-    from opentelemetry.trace import Link, Status, StatusCode  # noqa: PLC0415
+    from opentelemetry.trace import Link, Status, StatusCode  # noqa: PLC0415 -- optional extra
 
     link = parse_traceparent(record.traceparent) if record.traceparent else None
     span = start_span(
@@ -615,7 +633,7 @@ def reset_tracing() -> None:
         Exception: Whatever the provider's ``shutdown`` raises, propagated after
             the singleton has been cleared.
     """
-    global _provider, _tracer, _session_id, _export_failed, _session_span_dropped  # noqa: PLW0603
+    global _provider, _tracer, _session_id, _export_failed, _session_span_dropped  # noqa: PLW0603 — module singleton
     provider = _provider
     _provider = None
     _tracer = None
@@ -630,7 +648,7 @@ def reset_tracing() -> None:
 
 def _failure_recording(exporter: SpanExporter) -> SpanExporter:
     """Wrap ``exporter`` so that any failed export sets :func:`export_failed`."""
-    from opentelemetry.sdk.trace.export import (  # noqa: PLC0415
+    from opentelemetry.sdk.trace.export import (  # noqa: PLC0415 -- optional extra
         SpanExporter,
         SpanExportResult,
     )
@@ -655,20 +673,32 @@ def _failure_recording(exporter: SpanExporter) -> SpanExporter:
     return _FailureRecordingExporter()
 
 
-class _DeterministicIdGenerator:
-    """OTel IdGenerator that produces deterministic trace IDs and queued span IDs."""
+def _deterministic_id_generator(session_trace_id: int) -> IdGenerator:
+    """Build the OTel ID generator that keys every span to the session.
 
-    def __init__(self, session_trace_id: int) -> None:
-        self._session_trace_id = session_trace_id
+    Trace IDs are never random, which the base class already reports.
 
-    def generate_trace_id(self) -> int:
-        return self._session_trace_id
+    Args:
+        session_trace_id: The trace ID every span of the session carries.
 
-    def generate_span_id(self) -> int:
-        queued = _queued_span_id.get()
-        if queued is not None:
-            return queued
-        return random.getrandbits(64) or 1
+    Returns:
+        A generator yielding ``session_trace_id`` for every trace and the queued
+        span ID, or a random one when none is queued, for every span.
+    """
+    from opentelemetry.sdk.trace.id_generator import (  # noqa: PLC0415 -- optional extra
+        IdGenerator as _IdGenerator,
+    )
 
-    def is_trace_id_random(self) -> bool:
-        return False
+    class _DeterministicIdGenerator(_IdGenerator):
+        @override
+        def generate_trace_id(self) -> int:
+            return session_trace_id
+
+        @override
+        def generate_span_id(self) -> int:
+            queued = _queued_span_id.get()
+            if queued is not None:
+                return queued
+            return random.getrandbits(64) or 1
+
+    return _DeterministicIdGenerator()

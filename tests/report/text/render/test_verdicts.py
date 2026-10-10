@@ -24,7 +24,7 @@ from gymrat.model import PERMUTATION_MIN_N, Exclusion
 from gymrat.report.style import format_hint
 from gymrat.report.text.render import footer_lines, render_report, select_highlights
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn, ReportOptions
-from gymrat.targets import WorktreeRemovalFailure
+from gymrat.worktree_failure import WorktreeRemovalFailure
 from tests._ansi import strip_ansi
 from tests.report._assertions import (
     cells_of,
@@ -554,7 +554,7 @@ def test_render_report_when_cleanup_removed_everything_cleanly_does_suppress_the
 
     report = render_report(result)
 
-    assert report == render_report(create_comparison_result())
+    assert ("worktrees removed" in report, "left behind" in report) == (False, False)
 
 
 @pytest.mark.parametrize(

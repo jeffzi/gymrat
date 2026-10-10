@@ -19,19 +19,24 @@ text inside a styled span is escaped so a metric named ``[i]`` renders literally
 
 from __future__ import annotations
 
-import statistics
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, assert_never
 
 from rich.markup import escape
 
-from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.metric_name import format_inline, parse
+from gymrat.metric_name import format_inline
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.report.display import GLYPHS
 from gymrat.report.format import format_percent_delta, format_value
-from gymrat.report.style import VARIANT_NAME_STYLE, format_hint, join_header_parts, markup
+from gymrat.report.style import (
+    VARIANT_NAME_STYLE,
+    VERDICT_STYLES,
+    format_hint,
+    join_header_parts,
+    markup,
+)
 from gymrat.report.text.render import paired_samples
-from gymrat.utils import first_line, pluralize
+from gymrat.utils import SHORT_SHA_LENGTH, first_line, medians_by_name, pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -42,10 +47,6 @@ if TYPE_CHECKING:
     from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
     from gymrat.session.schema import KeepReason, Outcome
     from gymrat.session.workspace import BaselineRef
-
-# ---------------------------------------------------------------------------
-# Primary-figure types
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,16 +86,17 @@ class MetricPrimary:
     kind: Literal["metric"] = "metric"
 
 
-#: The one figure an iteration is read on, and how far it moved.
-LoopPrimary = GeomeanPrimary | MetricPrimary
+type LoopPrimary = GeomeanPrimary | MetricPrimary
+"""The one figure an iteration is read on, and how far it moved."""
 
-#: What a confirmation rerun had to say about one metric it re-measured.
-#:
-#: ``absent`` is not a weaker ``disagreed``: a rerun that never reported the
-#: metric disproved nothing, so the regression the first run called still stands.
-#: Only ``disagreed`` — the rerun measured the metric and did not call it
-#: regressed — takes a regression back.
-RerunAnswer = Literal["confirmed", "disagreed", "absent"]
+type RerunAnswer = Literal["confirmed", "disagreed", "absent"]
+"""What a confirmation rerun had to say about one metric it re-measured.
+
+``absent`` is not a weaker ``disagreed``: a rerun that never reported the
+metric disproved nothing, so the regression the first run called still stands.
+Only ``disagreed`` — the rerun measured the metric and did not call it
+regressed — takes a regression back.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,10 +112,6 @@ class RerunConfirmation:
     answer: RerunAnswer
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 #: What the loop's header says it compared, fixed for every iteration. The two
 #: targets wear the style the table heads its columns with, so the header names
 #: them the way the columns below it do.
@@ -128,18 +126,18 @@ _TARGET_REACHED = "target reached — keep it"
 #: only where there is a direction to report. A no-signal iteration is neither
 #: good nor bad, so it wears no color rather than a hedged one.
 _OUTCOME_STYLES: dict[Outcome, str] = {
-    "improved": "bold green",
-    "regressed": "bold red",
+    "improved": f"bold {VERDICT_STYLES['improved']}",
+    "regressed": f"bold {VERDICT_STYLES['regressed']}",
     "no-signal": "bold",
 }
 
 #: What each rerun answer reads as, and the style it is painted with. An absent
-#: answer wears the yellow the table paints an unstable metric with, because it
+#: answer wears the color the table paints an unstable metric with, because it
 #: is the same kind of news: a reading nobody could take.
 _RERUN_PHRASES: dict[RerunAnswer, tuple[str, str]] = {
-    "confirmed": ("regression confirmed on rerun", "red"),
-    "disagreed": ("regression not confirmed on rerun", "dim"),
-    "absent": ("not measured on rerun", "yellow"),
+    "confirmed": ("regression confirmed on rerun", VERDICT_STYLES["regressed"]),
+    "disagreed": ("regression not confirmed on rerun", VERDICT_STYLES["within-noise"]),
+    "absent": ("not measured on rerun", VERDICT_STYLES["unstable"]),
 }
 
 
@@ -176,7 +174,7 @@ def format_loop_header(seq: int, samples: int) -> str:
 def _format_rerun_line(rerun: RerunConfirmation) -> str:
     """What the rerun settled about one metric, painted the way the table paints that answer."""
     text, style = _RERUN_PHRASES[rerun.answer]
-    name = format_inline(parse(rerun.metric))
+    name = format_inline(parse_metric_name(rerun.metric))
     return f"{name}: {markup(text, style)}"
 
 
@@ -272,8 +270,8 @@ class SettleKeepBlocked:
     reason: KeepReason | None = None
 
 
-#: What a single settling record says became of the iteration it settles.
-SettleState = SettleKept | SettleDiscarded | SettleUnsettled | SettleKeepBlocked
+type SettleState = SettleKept | SettleDiscarded | SettleUnsettled | SettleKeepBlocked
+"""What a single settling record says became of the iteration it settles."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -406,26 +404,6 @@ def format_status_iteration(iteration: StatusIteration) -> str:
     ])
 
 
-def baseline_medians(record: BaselineRecord) -> dict[str, float]:
-    """The median each metric of a recorded baseline came to over its rounds.
-
-    A round that omits a metric contributes nothing to that metric's median
-    rather than a zero, and a metric no round reported has no entry at all.
-
-    Args:
-        record: The recorded baseline measurement to summarize.
-
-    Returns:
-        Each reported metric name mapped to its median, in the order the rounds
-        first named them.
-    """
-    readings: dict[str, list[float]] = {}
-    for round_ in record.samples:
-        for name, value in round_.items():
-            readings.setdefault(name, []).append(value)
-    return {name: statistics.median(values) for name, values in readings.items()}
-
-
 def format_status_baseline(record: BaselineRecord) -> str:
     """A recorded baseline measurement: what was measured, and the median each metric came to.
 
@@ -442,7 +420,7 @@ def format_status_baseline(record: BaselineRecord) -> str:
     parts = [f"baseline {escape(record.label)}"]
     parts.extend(
         f"{escape(name)} {format_value(median)}"
-        for name, median in baseline_medians(record).items()
+        for name, median in medians_by_name(record.samples).items()
     )
     return join_header_parts(parts)
 

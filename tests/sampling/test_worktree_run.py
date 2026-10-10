@@ -35,7 +35,8 @@ from gymrat.sampling import (
     run_with_worktrees,
     to_context,
 )
-from gymrat.targets import InPlaceTarget, RefTarget, WorktreeRemovalFailure
+from gymrat.targets import InPlaceTarget, RefTarget
+from gymrat.worktree_failure import WorktreeRemovalFailure
 from tests._exec_fixtures import settle, shell_grandchild, wait_for_spawned
 from tests._git import (
     head_of,

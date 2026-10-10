@@ -25,33 +25,45 @@ from gymrat.loop.start import start_session
 from gymrat.session.paths import experiment_worktree_dir, progress_path, session_jsonl_path
 from gymrat.session.records import CommandRecord, FinalizeRecord, IterationRecord, StopRecord
 from tests._ansi import SGR_RE, strip_ansi, stripped_lines
+from tests._cli import err_text
 from tests._config import resolved_config
 from tests._git import head_of
-from tests.cli._budget import SUPERVISED_HINT, set_origin
-from tests.cli._doctor_seams import patch_doctor
-from tests.cli._session import (
-    FailingStdoutRunner,
-    close_session_with_one_keep,
-    closed_stdout_error,
+from tests.cli._command_stubs import (
     force_render_mode,
+    stub_compare,
+    stub_config,
+    stub_measure,
+    stub_probe_measure,
+)
+from tests.cli._doctor_seams import patch_doctor
+from tests.cli._origin import SUPERVISED_HINT, set_origin
+from tests.cli._runner import (
+    FailingStdoutRunner,
+    closed_stdout_error,
+    runner,
+)
+from tests.cli._session import (
+    close_session_with_one_keep,
     leave_as_is,
+    open_capped_session_under_budget,
+    open_hooked_iterate_session,
+    open_outlasted_session,
+    open_probe_session,
     open_session,
     open_session_with_one_keep,
     open_stop_ready_session,
     open_stubbed_probe_session,
-    runner,
-    stub_compare,
-    stub_config,
-    stub_measure,
+    open_unsettled_session_under_budget,
     write_bench_config,
     write_settled_session,
 )
 from tests.cli.commands.supervise._seams import install_seams
+from tests.loop._probe import MeasureRecorder
 from tests.loop._settle import (
     CHECKS,
     settling_record_of,
 )
-from tests.loop.iterate._fixtures import write_iterate_session
+from tests.loop.iterate._fixtures import CollectSamplesRecorder, install_improved_samples
 from tests.session._budget import install_budget, install_tight_budget
 from tests.session.records._fixtures import (
     append_records,
@@ -205,9 +217,9 @@ def test_finalize_command_when_branch_and_message_given_does_carry_them_into_its
 
 
 def test_sync_command_when_changes_exist_does_print_synced_file_count_and_names(
-    sync_repo: str,
+    session_repo: str,
 ):
-    root = Path(sync_repo)
+    root = Path(session_repo)
     (root / "extra.py").write_text("# new\n", encoding="utf-8")
     (root / "README.md").write_text("# updated\n", encoding="utf-8")
 
@@ -220,7 +232,7 @@ def test_sync_command_when_changes_exist_does_print_synced_file_count_and_names(
 
 
 def test_sync_command_when_nothing_to_sync_does_print_nothing_to_sync(
-    sync_repo: str,
+    session_repo: str,
 ):
     result = runner.invoke(app, ["sync"])
 
@@ -229,17 +241,17 @@ def test_sync_command_when_nothing_to_sync_does_print_nothing_to_sync(
 
 
 def test_sync_command_when_experiment_has_uncommitted_change_to_a_synced_path_does_exit_two(
-    sync_repo: str,
+    session_repo: str,
 ):
-    Path(sync_repo, "README.md").write_text("# from main\n", encoding="utf-8")
-    experiment_copy = Path(experiment_worktree_dir(sync_repo), "README.md")
+    Path(session_repo, "README.md").write_text("# from main\n", encoding="utf-8")
+    experiment_copy = Path(experiment_worktree_dir(session_repo), "README.md")
     experiment_copy.write_text("# from the agent\n", encoding="utf-8")
 
     result = runner.invoke(app, ["sync"])
 
     assert result.exit_code == 2
     assert "README.md" in result.stderr
-    assert last_command_record(sync_repo).reason == "dirty-worktree"
+    assert last_command_record(session_repo).reason == "dirty-worktree"
     assert experiment_copy.read_text(encoding="utf-8") == "# from the agent\n"
 
 
@@ -275,7 +287,7 @@ def test_stop_command_when_message_missing_or_blank_does_exit_two_naming_the_opt
     result = runner.invoke(app, ["stop", *message])
 
     assert result.exit_code == 2
-    assert "message" in (result.stderr + result.stdout).lower()
+    assert "message" in err_text(result).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -442,29 +454,56 @@ def test_command_when_stdout_reader_closed_does_exit_zero_without_stderr(
     assert (result.exit_code, result.stderr) == (0, "")
 
 
-def _live_budget_for_probe(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A probe-ready session with a stubbed engine, under a live budget."""
-    open_stubbed_probe_session(repo, monkeypatch)
-    install_budget(repo, monkeypatch)
+def _probe_under_tight_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A probe-ready session under a tight live budget its last iteration outlasts.
+
+    A probe that got past the guard would warn that the halved estimate outlasts
+    the budget, so the refusal test also proves the guard runs before that warning.
+    """
+    open_probe_session(repo)
+    install_tight_budget(repo, monkeypatch)
+    append_records(repo, iteration_record(duration_ms=720_000))
 
 
-def _live_budget_for_iterate(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def _probe_engine(_repo: str, monkeypatch: pytest.MonkeyPatch) -> MeasureRecorder:
+    """The stubbed measurement engine a probe would bench through."""
+    return stub_probe_measure(monkeypatch)
+
+
+def _iterate_engine(repo: str, monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
+    """The stubbed sampling an iterate would bench through."""
+    return install_improved_samples(monkeypatch, repo)
+
+
+def _hooked_iterate_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """An open session whose before hook can run, under a live budget.
 
     A hook that ran would log a hook record, so the refusal test also proves the
     guard stops the command before its before hook.
     """
-    header = write_iterate_session(repo)
-    Path(header.worktrees.experiment).mkdir()
-    write_bench_config(repo, hooks={"before": "echo warmed"})
-    install_budget(repo, monkeypatch)
+    open_hooked_iterate_session(repo, monkeypatch)
 
 
 @pytest.mark.parametrize(
-    ("command", "arrange"),
+    ("command", "arrange", "engine"),
     [
-        pytest.param("probe", _live_budget_for_probe, id="probe"),
-        pytest.param("iterate", _live_budget_for_iterate, id="iterate"),
+        pytest.param("probe", _probe_under_tight_budget, _probe_engine, id="probe"),
+        pytest.param("iterate", _hooked_iterate_session, _iterate_engine, id="iterate"),
+        pytest.param(
+            "iterate",
+            open_unsettled_session_under_budget,
+            _iterate_engine,
+            id="iterate-unsettled",
+        ),
+        pytest.param(
+            "iterate",
+            open_capped_session_under_budget,
+            _iterate_engine,
+            id="iterate-stop-condition",
+        ),
+        pytest.param(
+            "iterate", open_outlasted_session, _iterate_engine, id="iterate-budget-exceeded"
+        ),
     ],
 )
 def test_session_command_when_supervised_run_live_does_refuse_as_supervised_use_tool(
@@ -473,8 +512,10 @@ def test_session_command_when_supervised_run_live_does_refuse_as_supervised_use_
     monkeypatch: pytest.MonkeyPatch,
     command: str,
     arrange: Callable[[str, pytest.MonkeyPatch], None],
+    engine: Callable[[str, pytest.MonkeyPatch], MeasureRecorder | CollectSamplesRecorder],
 ):
     arrange(repo, monkeypatch)
+    bench = engine(repo, monkeypatch)
     before = records_of_type(repo, CommandRecord, matching=False)
 
     result = runner.invoke(app, [command])
@@ -483,6 +524,8 @@ def test_session_command_when_supervised_run_live_does_refuse_as_supervised_use_
     stderr = " ".join(stripped_lines(result.stderr, keep_blank=False))
     assert f"a supervised run is live; use the {command} tool" in stderr
     assert SUPERVISED_HINT in stderr
+    assert "warning" not in stderr.lower()
+    assert bench.calls == []
     assert records_of_type(repo, CommandRecord, matching=False) == before
     assert not Path(progress_path(repo)).exists()
     commands = records_of_type(repo, CommandRecord)
@@ -684,9 +727,11 @@ def test_finalize_command_when_format_json_does_emit_structured_json(
         pytest.param([], id="nothing-to-sync"),
     ],
 )
-def test_sync_command_when_format_json_does_emit_the_synced_files(sync_repo: str, files: list[str]):
+def test_sync_command_when_format_json_does_emit_the_synced_files(
+    session_repo: str, files: list[str]
+):
     for name in files:
-        Path(sync_repo, name).write_text("# new\n", encoding="utf-8")
+        Path(session_repo, name).write_text("# new\n", encoding="utf-8")
 
     result = runner.invoke(app, ["sync", "--format", "json"])
 

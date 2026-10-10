@@ -13,7 +13,7 @@ from gymrat.session.records import MetricVerdict as RecordMetricVerdict
 from gymrat.utils import finite_or_none
 
 if TYPE_CHECKING:
-    from gymrat.loop.iterate.confirm import Confirmation, Judged
+    from gymrat.loop.iterate.judge import Confirmation, Judged
     from gymrat.session.schema import Outcome
 
 

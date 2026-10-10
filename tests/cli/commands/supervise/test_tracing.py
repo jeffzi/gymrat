@@ -23,12 +23,14 @@ from gymrat.errors import GymratError
 from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.events import LaunchEvent
 from gymrat.telemetry import provider
-from gymrat.telemetry.provider import export_failed, span_id_of
-from tests.cli._session import close_session_with_one_keep
+from gymrat.telemetry.provider import export_failed, run_attributes, span_id_of
+from tests._cli import err_text
+from tests.cli._session import (
+    close_session_with_one_keep,
+)
 from tests.cli.commands.supervise._seams import (
     CAP_MINUTES,
     command_config,
-    err_text,
     install_seams,
     record_stdout_writes,
     run,
@@ -125,13 +127,7 @@ def test_supervise_when_tracing_enabled_does_export_one_quiet_session_span_paren
     assert run_span.parent.span_id == session_span.context.span_id
     assert run_span.context.span_id == span_id_of(SESSION_ID, f"run:{launch.at}")
     assert (run_span.status.status_code, run_span.events) == (run_status, ())
-    assert dict(run_span.attributes or {}) == {
-        "gymrat.session.id": SESSION_ID,
-        "gymrat.run.head_sha": launch.head_sha,
-        "gymrat.run.max_minutes": CAP_MINUTES,
-        "gen_ai.provider.name": "anthropic",
-        **outcome_attributes,
-    }
+    assert dict(run_span.attributes or {}) == run_attributes(launch) | outcome_attributes
     assert "Calling end() on an ended span." not in caplog.messages
 
 
@@ -171,14 +167,16 @@ def test_supervise_when_session_resumed_does_parent_both_run_spans_to_the_one_se
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     with memory_tracing(SESSION_ID) as exporter:
+        # The opening run is the precondition: a session the second run resumes.
         install_seams(monkeypatch)
-        opening = run("optimize it", "--max-minutes", str(CAP_MINUTES))
+        run("optimize it", "--max-minutes", str(CAP_MINUTES))
         install_seams(monkeypatch, resumed=True)
+
         resumed = run("optimize it", "--max-minutes", str(CAP_MINUTES), "--allow-dirty")
 
     spans = exporter.get_finished_spans()
     session_span_id = span_id_of(SESSION_ID, "session")
-    assert (opening.exit_code, resumed.exit_code) == (0, 0), err_text(resumed)
+    assert resumed.exit_code == 0, err_text(resumed)
     assert [_span_id(s.context) for s in spans if s.name == "gymrat.session"] == [session_span_id]
     assert [_span_id(s.parent) for s in spans if s.name == "gymrat.run"] == [
         session_span_id,

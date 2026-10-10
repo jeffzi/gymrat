@@ -48,6 +48,7 @@ from gymrat.supervisor.events import (
     summarize_input,
 )
 from gymrat.supervisor.hooks import HooksFactory
+from gymrat.supervisor.tool_names import MCP_SERVER
 from gymrat.supervisor.tools import ToolsFactory
 
 if TYPE_CHECKING:
@@ -537,7 +538,7 @@ class _ClaudeSession:
         tools = self._factories.tools
         if tools is not None:
             env = _traceparent_env(self._prompt.traceparent)
-            options["mcp_servers"] = {"gymrat": tools(self._abort, env)}
+            options["mcp_servers"] = {MCP_SERVER: tools(self._abort, env)}
         hooks = self._factories.hooks
         if hooks is not None:
             options["hooks"] = hooks()

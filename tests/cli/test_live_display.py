@@ -37,6 +37,7 @@ from tests._rich import (
     WARNING_LINE,
     console_output,
     cursor_hidden,
+    kept_line_terminal,
     screen_lines,
     sealed_console,
 )
@@ -306,9 +307,7 @@ def test_mount_live_when_signal_arrives_does_blank_every_frame_row_with_the_curs
     row_count: int,
     redirect_stderr: bool,
 ):
-    console = sealed_console()
-    console.print(KEPT_LINE)
-    monkeypatch.setattr(sys, "stderr", console.file)
+    console = kept_line_terminal(monkeypatch)
     mounted_live(console, _rows(row_count), redirect_stderr=redirect_stderr)
 
     raise_signal(TERMINATION_SIGNAL)
@@ -321,11 +320,8 @@ def test_mount_live_when_signal_lands_before_first_paint_does_restore_the_screen
     monkeypatch: pytest.MonkeyPatch,
     raise_signal: Callable[[int], int],
 ):
-    console = sealed_console()
     terminal = InterruptedTerminal()
-    console.file = terminal
-    console.print(KEPT_LINE)
-    monkeypatch.setattr(sys, "stderr", terminal)
+    console = kept_line_terminal(monkeypatch, stream=terminal)
     terminal.interrupt_write(
         lambda: raise_signal(TERMINATION_SIGNAL), marker=HIDE_CURSOR, lands=True
     )

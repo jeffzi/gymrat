@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from gymrat.cli.supervise.summary import build_summary
-from gymrat.cli.supervise.types import BestIteration
+from gymrat.session.store import BestIteration
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 from gymrat.supervisor.exit_sequence import ExitReport, ExitStep
 from tests._ansi import SGR_GREEN, SGR_RED, SGR_YELLOW, assert_has_sgr
@@ -29,8 +29,8 @@ from tests.session.records._fixtures import session_state
 if TYPE_CHECKING:
     from rich.console import RenderableType
 
-    from gymrat.cli.supervise.types import ReadSessionResult
     from gymrat.config import Effort
+    from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.driver import SessionEndReason
     from gymrat.supervisor.supervise import EndedBy, SupervisionResult
 

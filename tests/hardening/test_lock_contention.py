@@ -5,27 +5,21 @@ calls in one process, these tests pin the guarantees that only surface under
 genuine pressure:
 
 - a burst of real processes racing for one lockfile grants exactly one holder
-  and hands every loser the contention error, with the lockfile never torn,
-- the repository lock and the supervise lock are independent, so holding one
-  never blocks the command guarded by the other.
+  and hands every loser the contention error, with the lockfile never torn.
 
 The multi-process tests are POSIX-only: they rendezvous children on a named
 pipe.
 """
 
-import contextlib
 import json
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from gymrat.session.lock import acquire_lock, is_held
-from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from tests._platform import needs_named_pipes
 from tests.hardening._barrier import CHILD_BARRIER, racing_children
 
@@ -208,25 +202,3 @@ def test_acquire_lock_when_processes_race_does_admit_exactly_one_holder(
 
     for payload in outcome.lost_payloads:
         assert f"PID {winner_pid}" in payload
-
-
-# ---------------------------------------------------------------------------
-# the repository lock and the supervise lock are independent
-# ---------------------------------------------------------------------------
-
-
-def test_acquire_lock_when_repository_lock_is_held_does_not_block_the_supervise_lock(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    root = str(tmp_path / "checkout")
-    repository_lock = lockfile_path(root)
-    supervise_lock = supervise_lockfile_path(root)
-
-    with contextlib.ExitStack() as releases:
-        releases.callback(acquire_lock(repository_lock, "measure"))
-
-        releases.callback(acquire_lock(supervise_lock, "supervise"))
-
-        assert (is_held(repository_lock), is_held(supervise_lock)) == (True, True)

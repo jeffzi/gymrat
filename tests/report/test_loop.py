@@ -30,7 +30,6 @@ from gymrat.report.loop import (
     SettleUnsettled,
     StatusIteration,
     StatusSummary,
-    baseline_medians,
     format_loop_header,
     format_status_baseline,
     format_status_finalized,
@@ -41,6 +40,7 @@ from gymrat.report.loop import (
     format_verdict_block,
 )
 from gymrat.session.workspace import BaselineRef, Worktrees
+from gymrat.utils import medians_by_name
 from tests.report._assertions import render_colored, render_plain, styles_at
 from tests.session.records._fixtures import (
     RECOGNIZABLE_BASELINE_SHA,
@@ -300,7 +300,7 @@ def test_format_status_iteration_when_delta_unmeasured_does_omit_the_percentage(
 def test_baseline_medians_when_given_record_does_median_each_metric_over_its_rounds(
     samples: tuple[Mapping[str, float], ...], expected: dict[str, float]
 ):
-    medians = baseline_medians(baseline_record(samples=samples))
+    medians = medians_by_name(baseline_record(samples=samples).samples)
 
     assert medians == expected
 

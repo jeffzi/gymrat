@@ -57,7 +57,7 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
         samples=samples,
         timeout=timeout,
         config=config,
-        format=output_format.value,
+        format=output_format,
     )
 
     def run() -> None:

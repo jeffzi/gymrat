@@ -24,9 +24,7 @@ and exact.
 """
 
 import asyncio
-import math
 import statistics
-import subprocess
 import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
@@ -45,7 +43,7 @@ from gymrat.exec import (
     exec,  # noqa: A004 -- names the subprocess executor `exec`
     kill_live_process_groups,
 )
-from gymrat.git import run_git, try_git
+from gymrat.git import run_git_step, try_git
 from gymrat.model import ResolvedMetricMeta
 from gymrat.progress_events import (
     PassFinished,
@@ -58,8 +56,9 @@ from gymrat.progress_events import (
 from gymrat.report.text.render import format_cleanup_failures
 from gymrat.signals import install_termination_cleanup, write_on_exit
 from gymrat.stats import compute_half_range
-from gymrat.targets import RefTarget, Target, WorktreeRemovalFailure
-from gymrat.utils import MS_PER_SECOND, WarnSink, stderr_text_of, warn_to_stderr
+from gymrat.targets import RefTarget, Target
+from gymrat.utils import MS_PER_SECOND, WarnSink, fraction_of_median, stderr_text_of, warn_to_stderr
+from gymrat.worktree_failure import WorktreeRemovalFailure
 
 DEFAULT_METRIC_KIND: Final[str] = "other"
 """The kind a metric falls under when its adapter reports none."""
@@ -304,13 +303,11 @@ def compute_metric_stats(values: Sequence[float]) -> MetricStats:
         return MetricStats(median=None, spread=None)
 
     median = statistics.median(values)
-    if len(values) < _MIN_SPREAD_SAMPLES or median == 0:
+    if len(values) < _MIN_SPREAD_SAMPLES:
         return MetricStats(median=median, spread=None)
-
-    ratio = compute_half_range(values) / abs(median) * 100
-    if not math.isfinite(ratio):
-        return MetricStats(median=median, spread=None)
-    return MetricStats(median=median, spread=ratio)
+    return MetricStats(
+        median=median, spread=fraction_of_median(compute_half_range(values), median, 100)
+    )
 
 
 def own_values(samples: Sequence[dict[str, float]], name: str) -> list[float]:
@@ -657,11 +654,11 @@ def materialize_worktree(worktree: WorktreeInfo, repo_dir: str) -> None:
             it to :func:`cleanup_worktrees`.
     """
     try:
-        run_git(["worktree", "add", "--detach", worktree.dir, worktree.sha], repo_dir)
-    except (subprocess.SubprocessError, OSError) as error:
-        # OSError is a git binary that is missing or cannot be executed.
-        message = f"git worktree add failed for {worktree.sha}: {stderr_text_of(error)}"
-        raise GymratError(message) from error
+        run_git_step(
+            ["worktree", "add", "--detach", worktree.dir, worktree.sha],
+            repo_dir,
+            f"git worktree add failed for {worktree.sha}",
+        )
     finally:
         # git registers the worktree before the command returns, and the add can
         # be killed in between, so what landed on disk — not whether git exited
@@ -879,8 +876,10 @@ async def run_with_worktrees[M, R](
 
     Raises:
         Exception: Whatever ``phase`` raises, propagated as-is when the worktree
-            sweep succeeds, or — when the sweep also failed — a same-typed
-            replacement whose message appends the cleanup diagnostics.
+            sweep succeeds. When the sweep also failed, a ``GymratError`` is
+            replaced by one of the same subclass and hint, and any other error
+            by a plain ``Exception`` chained to the original, each with the
+            cleanup diagnostics appended to its message.
     """
     repo_dir = str(Path.cwd())
     worktrees: list[WorktreeInfo] = []

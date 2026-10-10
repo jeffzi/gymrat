@@ -46,7 +46,6 @@ from pydantic_core import ErrorDetails
 from gymrat.errors import GymratError
 from gymrat.pydantic_errors import (
     VALUE_ERROR_PREFIX,
-    coerce_integer,
     describe_key,
     drop_prefix_errors,
     phrase_for_error,
@@ -60,10 +59,11 @@ from gymrat.session.schema import (
     Method,
     Outcome,
     PrimaryKind,
+    SchemaVersion,
     Verdict,
 )
 from gymrat.session.workspace import BaselineRef, Worktrees
-from gymrat.utils import expected_got
+from gymrat.utils import coerce_integer, expected_got
 
 # ---------------------------------------------------------------------------
 # Validation and coercion helpers
@@ -231,7 +231,7 @@ class SessionRecord(_RecordEnvelope):
     """Opens a session log: identity, worktrees, and a config snapshot."""
 
     type: Literal["session"] = Field(description="Record type discriminator.")
-    schema_version: Literal[1] = Field(alias="schema", description="Session log format version.")
+    schema_version: SchemaVersion = Field(alias="schema", description="Session log format version.")
     session_id: str = Field(description="Unique identifier for this session.")
     baseline: Annotated[BaselineRef, BeforeValidator(_coerce(BaselineRef))] = Field(
         description="Git ref and SHA the baseline was taken from."

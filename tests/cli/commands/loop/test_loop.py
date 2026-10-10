@@ -37,7 +37,6 @@ from typer.testing import CliRunner
 
 from gymrat.cli.app import app
 from gymrat.clock import now_ns
-from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import (
     CommandRecord,
@@ -46,7 +45,7 @@ from gymrat.session.records import (
     SessionLogRecord,
     StopRecord,
 )
-from gymrat.utils import is_tty
+from gymrat.utils import SHORT_SHA_LENGTH, is_tty
 from tests._ansi import SGR_RE, strip_ansi
 from tests._cli import no_color_env
 from tests._git import head_of, status_of
@@ -55,14 +54,18 @@ from tests._process_helpers import (
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
 )
+from tests.cli._command_stubs import (
+    never_tty,
+)
+from tests.cli._runner import (
+    runner,
+)
 from tests.cli._session import (
     close_session_with_one_keep,
     leave_as_is,
     make_discard_repo,
-    never_tty,
     open_session_with_one_keep,
     open_unedited_session,
-    runner,
     start_edited_session,
     write_bench_config,
     write_settled_session,

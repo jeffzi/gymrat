@@ -8,7 +8,7 @@ The guards' record accounting is covered too: which records count as progress
 for the no-progress guard (outcome records only), and the consecutive-discard
 streak, which skips the records already present when the session launched.
 
-The file also pins ``detect_end_condition`` from ``gymrat.supervisor.end_scan``:
+The file also pins ``detect_end_condition`` from ``gymrat.supervisor.supervise``:
 which stop conditions end the session (and when ``check_stop`` silences them),
 which hook failures end it and with what reason (a hook failure wins over a met
 stop condition), and how the scan cursor bounds the hook-failure scan.
@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from gymrat.config import StopConfig
-from gymrat.supervisor.end_scan import EndCondition, detect_end_condition
+from gymrat.supervisor.supervise import EndCondition, detect_end_condition
 from gymrat.supervisor.turns import (
     CONSECUTIVE_DISCARD_LIMIT,
     FOLLOW_UP_CEILING,

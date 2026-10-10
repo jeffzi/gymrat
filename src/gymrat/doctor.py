@@ -51,7 +51,7 @@ from gymrat.config import (
     inspect_config,
 )
 from gymrat.errors import GymratError
-from gymrat.git import NotAGitRepositoryError, try_git
+from gymrat.git import try_git
 from gymrat.report.json_doc import render_document
 from gymrat.report.style import (
     format_hint,
@@ -59,7 +59,7 @@ from gymrat.report.style import (
     render_lines,
 )
 from gymrat.scaffold import DEFAULT_RUNBOOK_PATH, SKILL_RELATIVE_PATH
-from gymrat.session.paths import repo_root
+from gymrat.session.paths import NotAGitRepositoryError, repo_root
 
 # ---------------------------------------------------------------------------
 # report model and pure section builders
@@ -423,8 +423,12 @@ _SHELL_OPERATOR_RE = re.compile(r"[;&|(){}<>]")
 class GitEnvironment:
     """A probe of git's availability and repository status, resolved without raising.
 
-    ``git_error`` is set only when repository detection failed for a reason other
-    than "not a git repository".
+    Attributes:
+        git_available: Whether a git binary runs at all.
+        inside_git_repo: Whether ``cwd`` sits inside a git repository.
+        repo_root_dir: The repository root, or ``None`` outside a repository.
+        git_error: Why repository detection failed, set only for a reason other
+            than "not a git repository".
     """
 
     git_available: bool

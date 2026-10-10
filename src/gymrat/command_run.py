@@ -23,10 +23,14 @@ import typer
 from gymrat import clock as _clock
 from gymrat.agent_env import COMMAND_ORIGIN_ENV, TOOL_ORIGIN, TRACEPARENT_ENV
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
-from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate.run import LoopStopError
 from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
+from gymrat.session.paths import (
+    NotAGitRepositoryError,
+    lockfile_path,
+    repo_root,
+    session_jsonl_path,
+)
 from gymrat.session.records import CommandRecord, SessionRecord
 from gymrat.session.store import (
     append_record,
@@ -34,7 +38,7 @@ from gymrat.session.store import (
     recover_torn_tail,
     session_header,
 )
-from gymrat.utils import ENDPOINT_ENV, otlp_endpoint, warn_to_stderr
+from gymrat.utils import otlp_endpoint_from_env, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Trace bookkeeping
@@ -55,10 +59,9 @@ class CommandTrace:
     they carry no meaning to the seam beyond the exit-code / reason mapping.
 
     Attributes:
-        seq: Sequence number the seam reads after the body settles.
-        gate: Whether the body's outcome gates the exit code, read by the seam
-            after the body settles.
-        reason: The command reason the seam reads after the body settles.
+        seq: The iteration the command acted on, if any.
+        gate: Whether the body's outcome gates the exit code.
+        reason: Why the command settled as it did.
     """
 
     seq: int | None = None
@@ -86,11 +89,11 @@ def _resolve_exit(  # noqa: PLR0911 -- flat branch per exception type, each an e
         return GATE_EXIT_CODE, reason
 
     if isinstance(caught, typer.Exit):
-        code = caught.exit_code
-        if code >= TOOL_FAILURE_EXIT_CODE:
-            return TOOL_FAILURE_EXIT_CODE, trace.reason or "error"
-        # exit_code is int; below TOOL_FAILURE_EXIT_CODE callers only pass 0|1
-        return code, trace.reason  # type: ignore[return-value]
+        if caught.exit_code == 0:
+            return 0, trace.reason
+        if caught.exit_code == GATE_EXIT_CODE:
+            return GATE_EXIT_CODE, trace.reason
+        return TOOL_FAILURE_EXIT_CODE, trace.reason or "error"
 
     if isinstance(caught, GymratError):
         gym_reason: CommandReason = caught.reason or "error"
@@ -277,7 +280,7 @@ def _pre_body_log(root: str, jsonl: str) -> tuple[str, int]:
         The session id ``jsonl`` belongs to (empty when there is none, or no
         endpoint) and its line count (``0`` without an endpoint).
     """
-    if otlp_endpoint(os.environ.get(ENDPOINT_ENV)) is None:
+    if otlp_endpoint_from_env() is None:
         return "", 0
     header = session_header(root)
     return (header.session_id if header is not None else ""), _count_lines(jsonl)
@@ -300,13 +303,15 @@ def _maybe_configure_tracing(root: str) -> tuple[str, bool]:
     Raises:
         ValueError: When tracing is already configured for another session.
     """
-    if otlp_endpoint(os.environ.get(ENDPOINT_ENV)) is None:
+    if otlp_endpoint_from_env() is None:
         return "", False
     header = session_header(root)
     if header is None:
         return "", False
 
-    from gymrat.telemetry.provider import configure_tracing  # noqa: PLC0415
+    from gymrat.telemetry.provider import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
+        configure_tracing,
+    )
 
     active = configure_tracing(header.session_id)
     return header.session_id, active
@@ -350,9 +355,12 @@ def _emit_command_span(
         start_ns: When the command started, in nanoseconds since the epoch.
         pre_body_lines: How many lines ``jsonl`` held before the body ran.
     """
-    from opentelemetry.trace import NonRecordingSpan, set_span_in_context  # noqa: PLC0415
+    from opentelemetry.trace import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
+        NonRecordingSpan,
+        set_span_in_context,
+    )
 
-    from gymrat.telemetry.provider import (  # noqa: PLC0415
+    from gymrat.telemetry.provider import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
         existing_session_span,
         flush_tracing,
         parse_traceparent,

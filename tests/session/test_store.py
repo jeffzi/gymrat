@@ -319,18 +319,20 @@ def test_append_record_when_record_written_does_fsync_before_close(
     fresh_root: str, monkeypatch: pytest.MonkeyPatch
 ):
     jsonl_path = session_jsonl_path(fresh_root)
-    fsynced_fds: list[int] = []
+    synced_file_ids: list[int] = []
     real_fsync = os.fsync
 
     def spy_fsync(fd: int) -> None:
-        fsynced_fds.append(fd)
+        # fstat fails on a closed descriptor, so recording the file id proves the
+        # sync ran while the log's handle was still open.
+        synced_file_ids.append(os.fstat(fd).st_ino)
         real_fsync(fd)
 
     monkeypatch.setattr(os, "fsync", create_autospec(os.fsync, side_effect=spy_fsync))
 
     append_record(jsonl_path, SESSION)
 
-    assert len(fsynced_fds) >= 1
+    assert Path(jsonl_path).stat().st_ino in synced_file_ids
 
 
 # ---------------------------------------------------------------------------

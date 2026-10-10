@@ -25,10 +25,13 @@ from gymrat.telemetry.provider import (
     SESSION_ID,
     SESSION_SPAN,
     SESSION_SPAN_KEY,
+    configure_tracing,
     existing_session_span,
+    format_traceparent,
     run_attributes,
     run_event,
     run_span_key,
+    start_span,
 )
 
 if TYPE_CHECKING:
@@ -44,7 +47,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class TracingState:
     """The spans held open across the session run; both ``None`` while tracing is off."""
 
@@ -86,16 +89,10 @@ def setup_tracing(
         tracing is active the prompt carries a ``traceparent`` and the observer
         fans out to both the reporter and the tracing observer.
     """
-    from gymrat.telemetry.provider import (  # noqa: PLC0415
-        configure_tracing,
-        format_traceparent,
-        start_span,
-    )
-
     if not configure_tracing(launch.session_id):
         return prompt, reporter_observer, TracingState()
 
-    from opentelemetry.trace import set_span_in_context  # noqa: PLC0415
+    from opentelemetry.trace import set_span_in_context  # noqa: PLC0415 -- optional extra
 
     session_span = None
     if resumed:
@@ -145,7 +142,9 @@ def finalize_tracing(
             none, in which case the spans close without outcome attributes or
             an error status.
     """
-    from gymrat.telemetry.provider import flush_tracing  # noqa: PLC0415
+    # Looked up at call time, not bound at import: callers swap the provider's
+    # flush_tracing to observe when the run's spans are flushed.
+    from gymrat.telemetry.provider import flush_tracing  # noqa: PLC0415 -- bound at call time
 
     run_span = state.run_span
     if result is not None and run_span is not None:
@@ -155,7 +154,7 @@ def finalize_tracing(
             run_span.set_attribute(RUN_END_REASON, result.end_reason)
         run_span.set_attribute(RUN_DURATION_MS, result.duration_ms)
         if result.outcome.reason == "error":
-            from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+            from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415 -- optional extra
 
             run_span.set_status(Status(StatusCode.ERROR))
     if run_span is not None:

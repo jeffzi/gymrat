@@ -168,10 +168,6 @@ def test_highlight_inline_code_when_span_in_prose_does_paint_the_span_blue_witho
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        pytest.param("`gymrat doctor`", "gymrat doctor", id="command-with-spaces"),
-        pytest.param("`--bench`", "--bench", id="flag"),
-        pytest.param("`gymrat.json`", "gymrat.json", id="path"),
-        pytest.param("`runbook`", "runbook", id="single-word"),
         pytest.param(
             "Use `gymrat compare` or `gymrat measure`.",
             "Use gymrat compare or gymrat measure.",

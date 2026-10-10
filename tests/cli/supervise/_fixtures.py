@@ -28,8 +28,7 @@ from gymrat.cli.supervise.progress import (
     SuperviseReporter,
     create_supervise_reporter,
 )
-from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
-from gymrat.loop.start import start_session
+from gymrat.session.store import BestIteration, ReadSessionResult
 from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     CapAction,
@@ -41,8 +40,6 @@ from gymrat.supervisor.events import (
     ModelPhaseEvent,
     SessionObserver,
     ThinkingUpdateEvent,
-    ToolEndEvent,
-    ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
 )
@@ -56,6 +53,7 @@ from tests._rich import (
     sealed_console,
     track,
 )
+from tests.loop._settle import start_with
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     SUPERVISED_SESSION_ID,
@@ -64,7 +62,7 @@ from tests.session.records._fixtures import (
     make_iteration,
     session_state,
 )
-from tests.supervisor._fixtures import make_launch, make_turn_end
+from tests.supervisor._fixtures import make_launch, make_turn_end, tool_end_event, tool_start_event
 
 # ---------------------------------------------------------------------------
 # Builders
@@ -73,7 +71,7 @@ from tests.supervisor._fixtures import make_launch, make_turn_end
 
 def start_open_session(repo: str) -> None:
     """Start a gymrat session so the experiment worktree and session log exist."""
-    start_session(repo, "main", resolved_config())
+    start_with(repo, config=resolved_config())
 
 
 def install_baseline_seam(
@@ -223,10 +221,6 @@ def _throwing_read() -> ReadSessionResult:
 # Event firers
 # ---------------------------------------------------------------------------
 
-#: Default timestamp of a tool start, in milliseconds; a tool end's default
-#: duration is measured from it, so the two stay in sync.
-TOOL_START_MS = 2000
-
 
 def launch_event(
     at_ms: int = 1000,
@@ -249,46 +243,6 @@ def launch_event(
     """
     return make_launch(
         at=at_ms * NS_PER_MS, head_sha="abc123", max_minutes=max_minutes, max_usd=max_usd
-    )
-
-
-def tool_start_event(
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = TOOL_START_MS,
-    *,
-    input_summary: str = "...",
-    parent_tool_use_id: str | None = None,
-) -> ToolStartEvent:
-    """A ``ToolStartEvent`` for *tool_name* stamped at *at_ms* milliseconds."""
-    return ToolStartEvent(
-        at=at_ms * NS_PER_MS,
-        tool_use_id=tool_use_id,
-        tool_name=tool_name,
-        input={},
-        input_summary=input_summary,
-        parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def tool_end_event(
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = 3000,
-    *,
-    result: str = "ok",
-    started_at_ms: int = TOOL_START_MS,
-    parent_tool_use_id: str | None = None,
-) -> ToolEndEvent:
-    """A ``ToolEndEvent`` whose duration is measured from *started_at_ms*."""
-    return ToolEndEvent(
-        at=at_ms * NS_PER_MS,
-        tool_use_id=tool_use_id,
-        tool_name=tool_name,
-        duration_ms=at_ms - started_at_ms,
-        result=result,
-        result_summary="ok",
-        parent_tool_use_id=parent_tool_use_id,
     )
 
 

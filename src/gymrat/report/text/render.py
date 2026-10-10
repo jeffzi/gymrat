@@ -27,19 +27,18 @@ from rich.cells import cell_len, set_cell_size
 from rich.markup import escape
 from rich.text import Text
 
-from gymrat.metric_name import format_inline, parse
+from gymrat.metric_name import format_inline
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import PERMUTATION_MIN_N, PERMUTATION_P_THRESHOLD
 from gymrat.report.display import GLYPHS, DisplayClass, display_class
 from gymrat.report.format import (
     format_evidence,
-    format_metric_cell_parts,
     format_pair_count,
     format_percent_delta,
     format_verdict_delta,
     is_noise_percentage_undefined,
 )
 from gymrat.report.style import (
-    SCOPE_SEPARATOR,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
     format_hint,
@@ -48,16 +47,17 @@ from gymrat.report.style import (
     render_lines,
     truncate_labels,
 )
-from gymrat.report.table.markup import (
-    GATED_GEOMEAN_LABEL,
-    group_metric_cell,
-    header_metric_cell,
-    indented_section_label,
-    plan_sections,
-    spans_many_kinds,
-)
+from gymrat.report.table.cells import group_metric_cell, scope_label
 from gymrat.report.table.render import build_cell_dispatcher, plan_table_skeleton, render_body
+from gymrat.report.table.sections import plan_sections
 from gymrat.report.tally import verdict_summary_parts
+from gymrat.report.text.measure_table import (
+    MeasuredRow,
+    measured_cells,
+    measured_header_cells,
+    measured_row,
+    run_header,
+)
 from gymrat.report.text.multi import render_comparison_table
 from gymrat.report.text.single import render_table
 from gymrat.report.types import (
@@ -65,15 +65,15 @@ from gymrat.report.types import (
     GeomeanFailOn,
     RegressedFailOn,
     ReportOptions,
+    candidate_at,
 )
-from gymrat.report.types import candidate_at as _candidate_at
 from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
-    from gymrat.model import MetricVerdict
-    from gymrat.report.format import MetricCellParts
+    from gymrat.model import GeomeanResult, MetricVerdict
+    from gymrat.report.table.sections import SectionedMetric
     from gymrat.report.types import (
         CandidateComparison,
         ComparisonResult,
@@ -82,7 +82,9 @@ if TYPE_CHECKING:
         MetricComparison,
         MetricComparisons,
     )
-    from gymrat.targets import WorktreeRemovalFailure
+    from gymrat.worktree_failure import WorktreeRemovalFailure
+
+GATED_GEOMEAN_LABEL = "gated geomean"
 
 # Gap between the longest highlighted metric name and the delta that follows it.
 _HIGHLIGHT_NAME_GUTTER = 2
@@ -94,6 +96,22 @@ _HIGHLIGHTS_HEADING = "highlights"
 
 # The glyph flagging a gate the run's own `--fail-on` conditions would trip.
 _GATE_TRIP_GLYPH = "⚑"
+
+
+def spans_many_kinds(metrics: Mapping[str, SectionedMetric]) -> bool:
+    """Whether the run spans several kinds, and so is reported in sections.
+
+    Read straight off the metrics rather than off a :class:`SectionLayout`, so the
+    parts of a report drawn outside the table can ask without building rows they
+    have no use for.
+
+    Args:
+        metrics: The run's metrics, keyed by name.
+
+    Returns:
+        Whether the metrics span more than one kind.
+    """
+    return len({metric.meta.kind for metric in metrics.values()}) > 1
 
 
 def _render_block(markup_lines: Sequence[str], *, color: bool | None) -> list[str]:
@@ -242,7 +260,7 @@ def select_highlights(
     """
     ranked: list[tuple[int, float, MetricHighlight]] = []
     for name, metric in metrics.items():
-        candidate = _candidate_at(metric, candidate_index)
+        candidate = candidate_at(metric, candidate_index)
         if candidate is None or candidate.verdict is None:
             continue
         rank = _HIGHLIGHT_RANK[display_class(candidate.verdict)]
@@ -278,8 +296,8 @@ def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
     """
     if qualify:
         meta = highlight.metric.meta
-        return f"{escape(meta.kind)} {SCOPE_SEPARATOR} {escape(meta.short_name)}"
-    return format_inline(parse(highlight.name))
+        return scope_label(escape(meta.kind), escape(meta.short_name))
+    return format_inline(parse_metric_name(highlight.name))
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,7 +337,7 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
         unstable = unstable or shown == "unstable"
         style = VERDICT_STYLES[shown]
         delta = format_verdict_delta(verdict)
-        candidate = _candidate_at(highlight.metric, candidate_index)
+        candidate = candidate_at(highlight.metric, candidate_index)
         evidence = format_evidence(
             verdict,
             highlight.metric.meta.unit,
@@ -335,6 +353,22 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
         entries.append(f"  {markup(GLYPHS[shown], style)} {label_field}{delta_field}{suffix}")
 
     return HighlightBlock(entries=tuple(entries), unstable=unstable)
+
+
+def gated_geomean_trips(geomean: GeomeanResult | None, pct: float) -> bool:
+    """Whether a kind's gated geomean trips a ``--fail-on geomean:<pct>`` threshold.
+
+    A kind with no gated geomean, or one aggregating nothing, never trips: an
+    informational kind cannot fail a gate it does not stand behind.
+
+    Args:
+        geomean: The kind's gated geomean, or ``None`` when the kind does not gate.
+        pct: The threshold, in percent.
+
+    Returns:
+        Whether the geomean reached the threshold.
+    """
+    return geomean is not None and geomean.n > 0 and geomean.value >= pct
 
 
 def _gate_trip_lines(
@@ -361,7 +395,8 @@ def _gate_trip_lines(
     lines: list[str] = []
     for kind in candidate.kinds:
         geomean = kind.gated_geomean
-        if geomean is None or geomean.n == 0:
+        tripped = [pct for pct in thresholds if gated_geomean_trips(geomean, pct)]
+        if geomean is None or not tripped:
             continue
         delta = format_percent_delta(geomean.value)
         # `:g` states the threshold as it was written, dropping a trailing `.0`.
@@ -369,8 +404,7 @@ def _gate_trip_lines(
             f"  {markup(_GATE_TRIP_GLYPH, style)} {escape(kind.kind)} "
             f"{GATED_GEOMEAN_LABEL} {markup(delta, style)} "
             f"exceeded --fail-on geomean:{pct:g}"
-            for pct in thresholds
-            if geomean.value >= pct
+            for pct in tripped
         )
     return lines
 
@@ -402,7 +436,7 @@ def _hidden_regression_lines(
 
     lines: list[str] = []
     for name, metric in metrics.items():
-        candidate = _candidate_at(metric, candidate_index)
+        candidate = candidate_at(metric, candidate_index)
         if not metric.meta.gating or candidate is None or candidate.verdict is None:
             continue
         verdict = candidate.verdict
@@ -493,7 +527,7 @@ _DROPPED_ROUNDS_HINT = (
 _BAND_METHOD = "noise band ±(half-range × K)"
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _FooterData:
     """The pair counts the footer sorts by the cause that forced each fallback.
 
@@ -698,15 +732,6 @@ def _render_worktree_footer(result: ComparisonResult | MeasurementResult) -> lis
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class _MeasureRow:
-    """One measured metric's name, its section label, and its padded value fields."""
-
-    name: str
-    label: str
-    value: MetricCellParts
-
-
 def render_measure_table(
     result: MeasurementResult,
     label: str,
@@ -724,22 +749,15 @@ def render_measure_table(
     Returns:
         The rendered table lines.
     """
-    layout = plan_sections(
-        result.metrics,
-        lambda name, group, metric: _MeasureRow(
-            name=name,
-            label=indented_section_label(metric.meta.short_name, group),
-            value=format_metric_cell_parts(metric.median, metric.spread, metric.meta.unit),
-        ),
-    )
+    layout = plan_sections(result.metrics, measured_row)
     skeleton = plan_table_skeleton(layout, result.config_kinds, lambda row: row.value, label)
     widths = [skeleton.metric_width, skeleton.value_width]
 
-    def metric_cells(row: _MeasureRow) -> tuple[str, str]:
-        return escape(skeleton.name_cell(row)), escape(skeleton.value_cell(row))
+    def metric_cells(row: MeasuredRow) -> tuple[str, str]:
+        return measured_cells(skeleton, row)
 
     to_cells = build_cell_dispatcher(
-        header=lambda title: (header_metric_cell(title), markup(label, VARIANT_NAME_STYLE)),
+        header=lambda title: measured_header_cells(title, label),
         group=lambda group_label: (group_metric_cell(group_label), ""),
         metric=metric_cells,
     )
@@ -829,12 +847,7 @@ def render_measure_report(
     """
     color = options.color
     label = truncate_labels([result.label])[0]
-    header = join_header_parts([
-        markup("gymrat measure", "bold"),
-        markup(label, VARIANT_NAME_STYLE),
-        escape(pluralize(result.samples, "sample")),
-        f"adapter: {escape(result.adapter)}",
-    ])
+    header = run_header("measure", label, result.samples, result.adapter)
 
     lines = [render_lines(header, color=color)]
     lines.extend(render_measure_table(result, label, color=color))

@@ -21,6 +21,7 @@ import signal
 import sys
 import threading
 import time
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -103,10 +104,13 @@ async def test_exec_when_aborted_mid_read_does_not_leak_task_diagnostics(
 
     abort.set()
     await asyncio.wait_for(task, 10)
-    # No forced collection here: exec awaits its own reader/kill tasks on the
-    # abort path, so there is no forgotten task exception to finalize, and forcing a
-    # collection would only finalize the subprocess transport as loop noise.
-    await asyncio.sleep(0)
+    await asyncio.wait_for(asyncio.gather(*(proc.wait() for proc in spawned_processes)), 10)
+    # A forgotten task sits in a reference cycle with the future it waits on, so
+    # only a collection finalizes it. The same collection finalizes the reaped
+    # child's transport, whose ResourceWarning is not what this test is about.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResourceWarning)
+        gc.collect()
 
     assert task_leak_messages(records) == []
     assert spawned_processes  # the abort ran through a real spawned child
@@ -190,6 +194,7 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     sender = threading.Thread(target=send_signal, daemon=True)
     try:
         sender.start()
+
         result = await asyncio.wait_for(
             run_exec(
                 "sleep 30",

@@ -30,7 +30,7 @@ from gymrat.cli.exit import (
     write_and_flush,
     write_stdout,
 )
-from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from tests._ansi import TRAILING_SGR_RUN, sgr_codes
 from tests._process_helpers import run_with_closed_reader
 from tests._rich import screen_cells, unwrap_panel
@@ -89,13 +89,11 @@ def _run_with_failing_stdout(
 
 
 # ---------------------------------------------------------------------------
-# constants
+# bug-report link
 # ---------------------------------------------------------------------------
 
 
-def test_constants_when_checked_does_match_the_shipped_contract():
-    assert GATE_EXIT_CODE == 1
-    assert TOOL_FAILURE_EXIT_CODE == 2
+def test_bugs_url_when_imported_does_point_at_the_issue_tracker():
     assert BUGS_URL == "https://github.com/jeffzi/gymrat/issues"
 
 
@@ -184,9 +182,9 @@ def test_write_stdout_when_pipe_closed_on_stream_without_descriptor_does_return_
     stream = RaisingStream(BrokenPipeError(errno.EPIPE, "Broken pipe"))
     monkeypatch.setattr("sys.stdout", stream)
 
-    write_stdout("first line\n")
+    result = write_stdout("first line\n")
 
-    assert sys.stdout is stream
+    assert result is None
 
 
 def test_run_cli_when_body_raises_broken_pipe_does_exit_two_with_error(
@@ -230,7 +228,7 @@ def test_format_cli_error_when_color_override_set_does_color_despite_no_color_of
     monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("NO_COLOR", "1")
-    set_color_override(True)
+    set_color_override(override=True)
 
     result = format_cli_error(ValueError("boom"))
 
@@ -367,13 +365,14 @@ def test_exit_with_error_when_stderr_write_fails_does_keep_the_exit_code(
 def test_exit_with_error_when_debug_mode_on_does_print_the_stack(monkeypatch: pytest.MonkeyPatch):
     captured = io.StringIO()
     monkeypatch.setattr("sys.stderr", captured)
-    set_debug_mode(True)
+    set_debug_mode(enabled=True)
     message = "boom"
-
     try:
         raise ValueError(message)
-    except ValueError as error:
-        with pytest.raises(typer.Exit):
-            exit_with_error(error, code=TOOL_FAILURE_EXIT_CODE)
+    except ValueError as caught:
+        error = caught
+
+    with pytest.raises(typer.Exit):
+        exit_with_error(error, code=TOOL_FAILURE_EXIT_CODE)
 
     assert "Traceback" in captured.getvalue()

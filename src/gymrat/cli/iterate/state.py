@@ -28,18 +28,13 @@ from gymrat.progress_events import (
     ProgressEvent,
 )
 from gymrat.report.format import format_percent_delta
-from gymrat.utils import SamplingEta, format_duration, pluralize
-
-TARGETS_PER_ROUND = 2
-"""Passes one sampling round runs: one against the baseline, one against the candidate."""
+from gymrat.session.budget import SIDES_PER_ITERATE
+from gymrat.utils import MISSING_DELTA, SamplingEta, StyledSegment, format_duration, pluralize
 
 REGRESSED_NAME_CAP = 3
 """How many regressed metric names the judge's lines spell out."""
 
-MISSING_DELTA = "—"
-"""What the judge's lines print in place of a missing or non-finite primary delta."""
-
-JudgeRole = Literal["meta", "name"]
+type JudgeRole = Literal["meta", "name"]
 """What a judge segment holds: verdict wording, or one regressed metric's name."""
 
 
@@ -194,7 +189,7 @@ def initial_state(  # noqa: PLR0913 -- one parameter per iteration fact the stat
 
     Args:
         sample_count: Passes per target; the iteration total is this times
-            :data:`TARGETS_PER_ROUND`.
+            :data:`~gymrat.session.budget.SIDES_PER_ITERATE`.
         metric_count: Number of metrics the judge evaluates, shown in the judge
             row's hint alongside the primary.
         primary_metric: Name of the metric the judge gates on, shown in the
@@ -207,7 +202,7 @@ def initial_state(  # noqa: PLR0913 -- one parameter per iteration fact the stat
     Returns:
         A state with every row pending and no event applied yet.
     """
-    total = sample_count * TARGETS_PER_ROUND
+    total = sample_count * SIDES_PER_ITERATE
     judge_hint = f"{primary_metric} primary"
     if metric_count > 0:
         judge_hint = f"{pluralize(metric_count, 'metric')} · {judge_hint}"
@@ -450,7 +445,8 @@ def plain_line(before: IterateState, after: IterateState, event: ProgressEvent) 
         case PassFinished(phase="measure") if after.pass_phase.eta.completed >= after.total:
             return f"passes done ({format_duration(after.pass_phase.eta.total_time_ms)})"
         case JudgeFinished():
-            words = "".join(text for text, _role in judge_segments(_judge_detail(before, event)))
+            segments = judge_segments(_judge_detail(before, event))
+            words = "".join(segment.text for segment in segments)
             return f"judge {words}"
         case ConfirmFinished():
             return f"confirm {_confirm_detail(after, reproduced=event.reproduced)}"
@@ -478,8 +474,8 @@ def format_primary_delta(primary_delta_pct: float | None) -> str:
     return format_percent_delta(primary_delta_pct, missing=MISSING_DELTA)
 
 
-def judge_segments(detail: JudgeDetail) -> list[tuple[str, JudgeRole]]:
-    """Split the judge's verdict into the ``(text, role)`` segments both checklist modes print.
+def judge_segments(detail: JudgeDetail) -> list[StyledSegment[JudgeRole]]:
+    """Split the judge's verdict into the segments both checklist modes print.
 
     Live mode styles each segment by its role and plain mode joins the texts,
     so the two modes print the same words.
@@ -498,12 +494,14 @@ def judge_segments(detail: JudgeDetail) -> list[tuple[str, JudgeRole]]:
     primary = delta if delta == MISSING_DELTA else f"{delta} on {detail.primary_metric}"
     regressed = detail.regressed_names
     if not regressed:
-        return [(f"{primary} · no gating regression", "meta")]
-    segments: list[tuple[str, JudgeRole]] = [(f"{primary} · {len(regressed)} regressed: ", "meta")]
+        return [StyledSegment(f"{primary} · no gating regression", "meta")]
+    segments: list[StyledSegment[JudgeRole]] = [
+        StyledSegment(f"{primary} · {len(regressed)} regressed: ", "meta")
+    ]
     for index, name in enumerate(regressed[:REGRESSED_NAME_CAP]):
         if index:
-            segments.append((", ", "meta"))
-        segments.append((name, "name"))
+            segments.append(StyledSegment(", ", "meta"))
+        segments.append(StyledSegment(name, "name"))
     if len(regressed) > REGRESSED_NAME_CAP:
-        segments.append((", …", "meta"))
+        segments.append(StyledSegment(", …", "meta"))
     return segments

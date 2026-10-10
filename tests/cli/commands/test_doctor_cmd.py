@@ -21,7 +21,9 @@ from gymrat.cli.app import app
 from gymrat.doctor import GitEnvironment, detect_git_environment
 from gymrat.scaffold import SKILL_RELATIVE_PATH
 from tests.cli._doctor_seams import patch_doctor
-from tests.cli._session import runner
+from tests.cli._runner import (
+    runner,
+)
 from tests.config._toml import write_config
 
 # ---------------------------------------------------------------------------

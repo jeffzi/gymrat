@@ -27,6 +27,7 @@ from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, probe_session
 from gymrat.progress_events import PassFinished, PassStarted
 from gymrat.session.paths import experiment_worktree_dir, progress_path
 from tests._exec_fixtures import expected_result, install_exec
+from tests.adapters._inputs import malformed_line_warning
 from tests.loop._probe import BASELINE_SAMPLES, install_measure, measurement
 from tests.loop._settle import checks_config, start_with
 from tests.loop.iterate._fixtures import (
@@ -178,7 +179,7 @@ async def test_probe_session_when_callbacks_given_does_forward_them_to_the_run(
         PassStarted(round=1, total_rounds=1, target_count=1, label="experiment", at_ms=0),
         PassFinished(round=1, total_rounds=1, target_count=1, label="experiment", at_ms=0),
     ]
-    assert warnings == ["Failed to parse METRIC line: METRIC banana=ripe"]
+    assert warnings == [malformed_line_warning("METRIC banana=ripe")]
 
 
 # ---------------------------------------------------------------------------

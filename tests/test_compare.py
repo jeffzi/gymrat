@@ -3,7 +3,9 @@
 Unit tests stub the sampling pipeline to pin how ``compare`` assembles a
 :class:`ComparisonResult`: the metric union across targets, the star topology
 that judges every candidate against the shared baseline, and the
-candidate-paired restriction on the displayed baseline median. End-to-end tests
+candidate-paired restriction on the displayed baseline median. The run wiring
+``compare`` shares with ``measure`` (cleanup metadata, sampling callbacks, config
+overrides) is pinned once for both in :mod:`tests.test_measure`. End-to-end tests
 drive real scratch repos and shell bench scripts through the full pipeline.
 """
 
@@ -15,10 +17,8 @@ import pytest
 
 from gymrat import compare as compare_mod
 from gymrat.compare import CompareOptions, compare
-from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import CommandError, GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
-from gymrat.progress_events import PrepareStarted
 from gymrat.sampling import TargetSpec
 from gymrat.utils import warn_to_stderr
 from tests._git import (
@@ -29,13 +29,10 @@ from tests._git import (
     write_committed_bench,
 )
 from tests._git import run_git as _git
-from tests._pipeline import DIRTY_RESULT, install_pipeline, run_options
+from tests._pipeline import install_pipeline, run_options
 from tests._platform import needs_posix_shell
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from gymrat.progress_events import ProgressEvent
     from gymrat.utils import WarnSink
 
 
@@ -44,10 +41,7 @@ def _options(
     baseline: TargetSpec | None = None,
     candidate_targets: tuple[str, ...] = ("cand",),
     candidates: list[TargetSpec] | None = None,
-    on_progress: Callable[[ProgressEvent], None] | None = None,
     warn: WarnSink = warn_to_stderr,
-    config_metrics: dict[str, MetricEntry] | None = None,
-    config_kinds: dict[str, KindEntry] | None = None,
 ) -> CompareOptions:
     resolved_baseline = baseline if baseline is not None else TargetSpec(label=None, target="base")
     resolved_candidates = (
@@ -56,13 +50,7 @@ def _options(
         else [TargetSpec(label=None, target=name) for name in candidate_targets]
     )
     return CompareOptions(
-        run=run_options(
-            samples=4,
-            on_progress=on_progress,
-            warn=warn,
-            config_metrics=config_metrics,
-            config_kinds=config_kinds,
-        ),
+        run=run_options(samples=4, warn=warn),
         baseline=resolved_baseline,
         candidates=resolved_candidates,
         unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
@@ -150,59 +138,6 @@ async def test_compare_when_explicit_labels_given_does_flow_to_result(
 
     assert result.baseline_label == "base-label"
     assert result.candidates[0].label == "cand-label"
-
-
-async def test_compare_when_pipeline_completes_does_assemble_result_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    install_pipeline(
-        monkeypatch,
-        compare_mod,
-        [[{"x": 1.0}, {"x": 2.0}], [{"x": 3.0}, {"x": 4.0}]],
-        DIRTY_RESULT,
-    )
-
-    result = await compare(_options())
-
-    assert result.worktrees_removed == DIRTY_RESULT.removed
-    assert result.worktrees_left_behind == DIRTY_RESULT.failures
-    assert result.worktree_prune_error == DIRTY_RESULT.prune_error
-    assert result.samples == 4
-    assert result.adapter == "metric-lines"
-
-
-async def test_compare_when_sampling_callbacks_given_does_deliver_what_the_pipeline_emits(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    event = PrepareStarted(label="base", at_ms=0.0)
-    install_pipeline(
-        monkeypatch,
-        compare_mod,
-        [[{"x": 1.0}, {"x": 2.0}], [{"x": 3.0}, {"x": 4.0}]],
-        progress_event=event,
-        warning="banana",
-    )
-    steps: list[ProgressEvent] = []
-    warnings: list[str] = []
-
-    await compare(_options(on_progress=steps.append, warn=warnings.append))
-
-    assert (steps, warnings) == ([event], ["banana"])
-
-
-async def test_compare_when_config_overrides_given_does_apply_them_to_the_result(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    install_pipeline(monkeypatch, compare_mod, [[{"x": 1.0}, {"x": 2.0}], [{"x": 3.0}, {"x": 4.0}]])
-    kinds = {"other": KindEntry(gating=False)}
-
-    result = await compare(
-        _options(config_metrics={"x": MetricEntry(direction="higher")}, config_kinds=kinds)
-    )
-
-    assert result.metrics["x"].meta.direction == "higher"
-    assert result.metrics["x"].meta.gating is False
-    assert result.config_kinds == kinds
 
 
 # ---------------------------------------------------------------------------

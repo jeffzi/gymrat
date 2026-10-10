@@ -49,6 +49,7 @@ from tests.report._comparisons import (
     mixed_methods_result,
     other_kind,
     permutation_metric,
+    single_sample_result,
     time_kind,
     two_kind_metrics,
     two_kind_result,
@@ -354,10 +355,9 @@ def test_render_report_when_aligning_the_verdict_column_does_lay_out_glyph_delta
     ("result", "expected"),
     [
         pytest.param(
-            create_comparison_result(
-                samples=1,
-                metrics={"decode/time": band_metric(delta=-0.4, noise_pct=0.5, n=1, unit="ns")},
-                candidates=[create_candidate(kinds=[other_kind(-0.1, 1, band=0.5)])],
+            replace(
+                single_sample_result(),
+                candidates=(create_candidate(kinds=[other_kind(-0.1, 2, band=0.5)]),),
             ),
             "-0.1%  ±0.5%",
             id="aggregate-only-band",

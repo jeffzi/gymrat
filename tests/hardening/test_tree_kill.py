@@ -9,8 +9,8 @@ abort, a timeout, a cancellation, or a signal to the supervisor.
 
 The win32 Job Object tests at the end run in process instead: they drive a
 private copy of ``gymrat.exec`` whose job layer is faked, so the order in which
-a child is contained, and the taskkill fallback when the host refuses a job, are
-pinned from any host.
+a child is contained is pinned from any host. The taskkill fallback when the host
+refuses a job is pinned in tests/test_process_group.py.
 
 Liveness is read from heartbeat files rather than process IDs: ``os.kill(pid, 0)``
 terminates the target on Windows, so a pid probe cannot be shared across
@@ -42,7 +42,6 @@ from gymrat.exec import (
     ExecOptions,
     SpawnError,
     exec_argv,
-    release_contained,
     spawn_contained,
 )
 from tests._exec_fixtures import Teardown, cancel_task, leave_to_timeout, set_abort, settle
@@ -52,8 +51,8 @@ from tests._process_helpers import (
     SLEEPER_ARGV,
     FakeJobs,
     capture_spawns,
+    poll_until_blocking,
     reaped,
-    record_subprocess_runs,
     refuse_resume,
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
@@ -235,15 +234,19 @@ def wait_for_beat(path: Path, timeout_s: float = _BEAT_TIMEOUT_S) -> str:
     Raises:
         AssertionError: No heartbeat landed at ``path`` within ``timeout_s``.
     """
-    deadline = time.monotonic() + timeout_s
-    while True:
-        beat = read_beat(path)
-        if beat:
-            return beat
-        if time.monotonic() > deadline:
-            message = f"no heartbeat appeared at {path} within {timeout_s}s"
-            raise AssertionError(message)
-        time.sleep(_BEAT_PERIOD_S)
+    beat = ""
+
+    def landed() -> bool:
+        nonlocal beat
+        beat = read_beat(path) or ""
+        return bool(beat)
+
+    poll_until_blocking(
+        landed,
+        timeout_s,
+        lambda: AssertionError(f"no heartbeat appeared at {path} within {timeout_s}s"),
+    )
+    return beat
 
 
 def still_beating(path: Path) -> bool:
@@ -790,36 +793,3 @@ async def test_exec_argv_when_run_on_win32_does_contain_the_suspended_child_unti
     assert jobs.assigned == [(job, child_pid) for job in assigned_jobs]
     assert jobs.resumed == [child_pid], "the contained child was left suspended"
     assert jobs.closed == closed, "the settled run left a handle open"
-
-
-# ---------------------------------------------------------------------------
-# win32 Job Objects: a contained child the host refuses a job falls back to taskkill
-# ---------------------------------------------------------------------------
-
-
-async def test_kill_process_group_when_job_creation_was_refused_does_fall_back_to_taskkill_with_one_warning(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    recwarn: pytest.WarningsRecorder,
-) -> None:
-    # The child is real and started running; its job layer is the faked win32
-    # one, and the taskkill it falls back to is recorded instead of run. A
-    # refused assignment takes the same fallback through the stop entry points.
-    group = win32_process_group(monkeypatch, FakeJobs(creation_granted=False))
-    bind_group_seams(monkeypatch, gymrat_exec, group)
-    argv_calls = record_subprocess_runs(monkeypatch)
-    spawn_children_running(monkeypatch)
-    child = await spawn_contained(
-        asyncio.create_subprocess_exec, sys.executable, "-c", "pass", cwd=str(tmp_path)
-    )
-    await asyncio.wait_for(child.wait(), _SETTLE_TIMEOUT_S)
-
-    try:
-        group.kill_process_group(child.pid)
-    finally:
-        release_contained(child.pid)
-
-    runtime_warnings = [str(w.message) for w in recwarn if w.category is RuntimeWarning]
-    assert len(runtime_warnings) == 1, "a refused job warns once"
-    assert "job creation refused" in runtime_warnings[0], "the one warning is not the job refusal"
-    assert ["taskkill", "/F", "/T", "/PID", str(child.pid)] in argv_calls, "no taskkill ran"

@@ -274,7 +274,18 @@ class StatusData:
 
 
 def status_data(root: str) -> StatusData:
-    """The session's structured status, independent of any text rendering."""
+    """The session's structured status, independent of any text rendering.
+
+    Args:
+        root: Repository root directory.
+
+    Returns:
+        The status fields the JSON document serializes.
+
+    Raises:
+        GymratError: When no session has been started, or when the log is corrupt
+            — every parse failure names the log and the line at fault.
+    """
     required = require_session(root, "asking for its status")
     session, state = required.session, required.state
     return StatusData(

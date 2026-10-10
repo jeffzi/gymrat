@@ -1,30 +1,23 @@
-"""The sectioned layout a table is drawn in, its geomean labels, and its cells.
+"""What a table's columns show, and the per-scope aggregates its geomean rows state.
 
-Sorting a run's metrics into kinds and groups, and reading a candidate's
-aggregate back out for each scope, live here rather than inside a renderer: it is
-what keeps a row and the geomean closing it describing the same set of metrics. A
-comparison and a single-target measurement agree on nothing but their metadata,
-so the planner is stated over that alone (:class:`SectionedMetric`) and draws
-both in the same sections.
-
-The rest is what a column shows: the geomean row's label, parts and value
-styling, the fixed-width cell text builders, and the styled rich ``Text`` cells.
+Reading a candidate's aggregate back out for each scope lives here beside the
+geomean row's label, parts and value styling, so a geomean row states the figure
+of the same scope its label names. The rest is the fixed-width cell text builders
+and the styled rich ``Text`` cells.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from rich.text import Text
 
-from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import GeomeanResult
 from gymrat.report.display import GLYPHS, QUIET_VERDICTS, VERDICT_GLOSSES, display_class
 from gymrat.report.format import (
     PLUS_MINUS,
-    SPREAD_SEPARATOR,
     format_noise_band_value,
     format_pair_count,
     format_percent_delta,
@@ -34,16 +27,15 @@ from gymrat.report.style import (
     GROUP_LABEL_STYLE,
     SCOPE_SEPARATOR,
     VARIANT_NAME_STYLE,
+    VERDICT_STYLES,
 )
 from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Sequence
 
-    from gymrat.config import KindEntry
-    from gymrat.model import MetricVerdict, ResolvedMetricMeta
+    from gymrat.model import MetricVerdict
     from gymrat.report.display import DisplayClass
-    from gymrat.report.format import MetricCellParts
     from gymrat.report.types import CandidateComparison
     from gymrat.verdict import KindAggregate
 
@@ -53,185 +45,25 @@ GROUP_INDENT = "  "
 
 METRIC_COLUMN_HEADER = "metric"
 
-METRIC_COLUMN_MIN = 16
-VALUE_COLUMN_MIN = 12
 VERDICT_COLUMN_MIN = 12
 
 GEOMEAN_LABEL = "geomean"
 
-GATED_GEOMEAN_LABEL = "gated geomean"
 
 NO_GEOMEAN_FIGURE = "—"
 
 NO_STABLE_METRICS = "no stable metrics"
 
-_INFORMATIONAL_TAG = "informational — gating off"
+# The stand-in's figure wears bold, as a geomean figure does, and its words recede.
+NO_GEOMEAN_FIGURE_STYLE = "bold"
+NO_STABLE_METRICS_STYLE = "dim"
+
 
 # The aggregate stated where a candidate reported none. Every section is drawn from
 # the same metadata the aggregates were computed from, so this stands in for
 # nothing the renderers can produce — and if one ever does, the row says it
 # aggregated nothing rather than inventing a figure.
 NO_AGGREGATE: GeomeanResult = GeomeanResult(value=math.nan, n=0, band=0, excluded=())
-
-
-class SectionedMetric(Protocol):
-    """All a layout needs of a metric entry: the metadata that decides where it lands."""
-
-    @property
-    def meta(self) -> ResolvedMetricMeta:
-        """The resolved metadata that sorts the metric into a kind and a group."""
-
-
-@dataclass(slots=True)
-class GroupBlock[Row]:
-    """A group of one section's metrics, gathered under the prefix they share."""
-
-    group: str
-    metrics: list[Row]
-
-
-@dataclass(slots=True)
-class MetricBlock[Row]:
-    """A single metric of a section that belongs to no group."""
-
-    metric: Row
-
-
-#: One block of a section: either a named group or a single ungrouped metric.
-type SectionBlock[Row] = GroupBlock[Row] | MetricBlock[Row]
-
-
-@dataclass(slots=True)
-class SectionPlan[Row]:
-    """One kind's slice of the table: what it holds, and whether the run is judged on it.
-
-    Attributes:
-        kind: The metric kind this section covers.
-        has_gating: Whether any of the section's metrics gate the run.
-        blocks: The section's groups and standalone metrics, in first-appearance
-            order.
-    """
-
-    kind: str
-    has_gating: bool
-    blocks: list[SectionBlock[Row]]
-
-
-@dataclass(frozen=True, slots=True)
-class SectionLayout[Row]:
-    """The run's metrics as sections, and as the flat list a single-kind run draws.
-
-    Attributes:
-        sections: One plan per kind, in first-appearance order.
-        ordered: Every metric in the order the run reported it, whatever section
-            it landed in.
-    """
-
-    sections: tuple[SectionPlan[Row], ...]
-    ordered: tuple[Row, ...]
-
-
-def plan_sections[Row, Metric: SectionedMetric](
-    metrics: Mapping[str, Metric],
-    measure: Callable[[str, str | None, Metric], Row],
-) -> SectionLayout[Row]:
-    """Sort the run's metrics into one section per kind, and each section into its groups.
-
-    Kinds, groups and metrics keep first-appearance order — the order the
-    aggregates were computed in — so a section reads in the same order as the rows
-    its geomean covers. A group block sits where its first metric appeared and
-    gathers the rest of the group with it, rather than letting a metric of another
-    group split it.
-
-    Rows are built here rather than looked up later, so every row a section names
-    is the row the table draws. ``measure`` receives the inferred group rather
-    than a finished label, since what a renderer does with the prefix is its own
-    business.
-
-    Args:
-        metrics: Every metric of the run, keyed by name, in first-appearance order.
-        measure: Builds a row from a metric's name, inferred group, and entry.
-
-    Returns:
-        The sectioned layout and the flat ordered rows.
-    """
-    sections: dict[str, SectionPlan[Row]] = {}
-    ordered: list[Row] = []
-
-    for name, metric in metrics.items():
-        meta = metric.meta
-        section = sections.get(meta.kind)
-        if section is None:
-            section = SectionPlan(kind=meta.kind, has_gating=False, blocks=[])
-            sections[meta.kind] = section
-        if meta.gating:
-            section.has_gating = True
-
-        group = parse_metric_name(name).group
-        row = measure(name, group, metric)
-        ordered.append(row)
-
-        if group is None:
-            section.blocks.append(MetricBlock(metric=row))
-            continue
-
-        opened = _open_group(section, group)
-        if opened is not None:
-            opened.metrics.append(row)
-        else:
-            section.blocks.append(GroupBlock(group=group, metrics=[row]))
-
-    return SectionLayout(sections=tuple(sections.values()), ordered=tuple(ordered))
-
-
-def _open_group[Row](section: SectionPlan[Row], group: str) -> GroupBlock[Row] | None:
-    """The section's already-opened block for ``group``, or ``None`` when none is open."""
-    return next(
-        (
-            block
-            for block in section.blocks
-            if isinstance(block, GroupBlock) and block.group == group
-        ),
-        None,
-    )
-
-
-def spans_many_kinds(metrics: Mapping[str, SectionedMetric]) -> bool:
-    """Whether the run spans several kinds, and so is reported in sections.
-
-    Read straight off the metrics rather than off a :class:`SectionLayout`, so the
-    parts of a report drawn outside the table can ask without building rows they
-    have no use for.
-
-    Args:
-        metrics: The run's metrics, keyed by name.
-
-    Returns:
-        Whether the metrics span more than one kind.
-    """
-    return len({metric.meta.kind for metric in metrics.values()}) > 1
-
-
-def informational_tag(kind: str, config_kinds: Mapping[str, KindEntry] | None) -> str:
-    """The tag a non-gating kind's title carries, naming the config key that decided it.
-
-    Gating is resolved per metric before the report sees it, so only the config
-    distinguishes a kind switched off wholesale from one whose metrics were each
-    switched off by name. Naming the key is what lets the reader switch it back.
-
-    Args:
-        kind: The kind whose title the tag decorates.
-        config_kinds: The configured kinds, keyed by name, or ``None`` when
-            absent.
-
-    Returns:
-        The informational tag, optionally naming the config key that switched
-        gating off.
-    """
-    entry = config_kinds.get(kind) if config_kinds is not None else None
-    switched_off = entry is not None and entry.gating is False
-    source = f" (config: kinds.{kind}.gating = false)" if switched_off else ""
-    return f"{_INFORMATIONAL_TAG}{source}"
 
 
 def _kind_aggregate_of(candidate: CandidateComparison, kind: str) -> KindAggregate | None:
@@ -282,46 +114,22 @@ def flat_geomean_of(candidate: CandidateComparison) -> GeomeanResult:
     return NO_AGGREGATE if gated is None else gated
 
 
-def geomean_label(n: int) -> str:
-    """The geomean row's label, carrying the count of metrics behind the figure.
-
-    A table with one candidate names the count here, which frees its cells of
-    everything but the aggregate itself.
+def scope_label(left: str, right: str) -> str:
+    """Join two parts of a scoped label, such as a kind and a metric, with the scope separator.
 
     Args:
-        n: The count of metrics behind the aggregate figure.
+        left: The label's first part.
+        right: The label's second part.
 
     Returns:
-        The label with the metric count, or the bare :data:`GEOMEAN_LABEL` when
-        ``n`` is zero.
+        The two parts joined by the spaced scope separator.
     """
-    return GEOMEAN_LABEL if n == 0 else f"{GEOMEAN_LABEL} ({pluralize(n, 'stable metric')})"
+    return f"{left} {SCOPE_SEPARATOR} {right}"
 
 
 def geomean_scope_label(scope: str) -> str:
     """The label of an aggregate row covering one scope — a group or a kind."""
-    return f"{GEOMEAN_LABEL} {SCOPE_SEPARATOR} {scope}"
-
-
-def _geomean_provenance(geomean: GeomeanResult) -> str:
-    """The provenance suffix behind a scope's figure.
-
-    ``(n)`` when every scope metric stands behind the figure, ``(n/m)`` when
-    exclusions thinned them.
-
-    Args:
-        geomean: The scope's aggregate result.
-
-    Returns:
-        ``"(n)"`` or ``"(n/m)"`` when exclusions reduced the count.
-    """
-    total = geomean.n + len(geomean.excluded)
-    return f"({geomean.n})" if total == geomean.n else f"({geomean.n}/{total})"
-
-
-def scoped_geomean_label(scope: str, geomean: GeomeanResult) -> str:
-    """A sectioned table's aggregate label with the provenance behind its figure."""
-    return f"{geomean_scope_label(scope)} {_geomean_provenance(geomean)}"
+    return scope_label(GEOMEAN_LABEL, scope)
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,13 +173,12 @@ def geomean_parts(geomean: GeomeanResult) -> GeomeanParts | None:
 def _is_quiet_row(outcomes: Sequence[DisplayClass | None]) -> bool:
     """Whether every defined display class in a row is a quiet one.
 
-    A row with no verdicts at all is left alone rather than counted as quiet.
-
     Args:
         outcomes: The display class of each metric behind the row, in order.
 
     Returns:
-        Whether every defined outcome is quiet, and at least one is defined.
+        Whether every defined outcome is quiet, and at least one is defined:
+        a row with no verdicts at all is not counted as quiet.
     """
     defined = [outcome for outcome in outcomes if outcome is not None]
     return len(defined) > 0 and all(outcome in QUIET_VERDICTS for outcome in defined)
@@ -394,14 +201,15 @@ def geomean_value_style(
             leaves the band deciding alone.
 
     Returns:
-        A rich style string: ``"bold"``, ``"bold green"``, or ``"bold red"``.
+        A rich style string: ``"bold"``, or bold in the improved or regressed
+        verdict color.
     """
     if _is_quiet_row(outcomes):
         return "bold"
     if geomean.value < -geomean.band:
-        return "bold green"
+        return f"bold {VERDICT_STYLES['improved']}"
     if geomean.value > geomean.band:
-        return "bold red"
+        return f"bold {VERDICT_STYLES['regressed']}"
     return "bold"
 
 
@@ -423,31 +231,6 @@ def aggregate_label_cell(label: str) -> Text:
 def variant_name_cell(name: str) -> Text:
     """A variant's name, styled as a column header."""
     return _field(name, VARIANT_NAME_STYLE)
-
-
-@dataclass(frozen=True, slots=True)
-class ValueWidths:
-    """Widths a value column pads its two fields to, measured on plain text."""
-
-    magnitude: int
-    spread: int
-
-
-def value_widths(cells: Sequence[MetricCellParts]) -> ValueWidths:
-    """The widest magnitude and the widest spread a column of value cells holds."""
-    return ValueWidths(
-        magnitude=max((len(cell.magnitude) for cell in cells), default=0),
-        spread=max((len(cell.spread) for cell in cells), default=0),
-    )
-
-
-def join_value_cell(parts: MetricCellParts, widths: ValueWidths) -> str:
-    """A value cell with its magnitude and spread each right-aligned in its own field."""
-    magnitude = parts.magnitude.rjust(widths.magnitude)
-    if widths.spread == 0:
-        return magnitude
-    spread = "" if parts.spread == "" else f"{SPREAD_SEPARATOR}{parts.spread.rjust(widths.spread)}"
-    return f"{magnitude}{spread}".ljust(widths.magnitude + len(SPREAD_SEPARATOR) + widths.spread)
 
 
 @dataclass(frozen=True, slots=True)
@@ -607,34 +390,3 @@ def verdict_cell(
 def _field(text: str, style: str | None) -> Text:
     """``text`` as a styled span, or plain when ``style`` is ``None``."""
     return Text().append(text, style)
-
-
-def geomean_column_cell(
-    geomean: GeomeanResult,
-    outcomes: Sequence[DisplayClass | None],
-) -> Text:
-    """The geomean of one candidate column: the aggregate, then how many metrics back it.
-
-    The multi-candidate table names the scope once in its label column and states
-    each candidate's own figure and count in the candidate columns, so this builds
-    one column's cell.
-
-    Args:
-        geomean: The candidate's aggregate over the scope's metrics.
-        outcomes: The display class of each metric behind the figure, for vetoing
-            the figure's color when every one is quiet.
-
-    Returns:
-        The styled cell: the delta by
-        :func:`geomean_value_style`, the provenance
-        dimmed. An empty geomean shows the ``no stable metrics`` stand-in rather
-        than the ``0.0%`` it computes to.
-    """
-    parts = geomean_parts(geomean)
-    if parts is None:
-        return Text.assemble((NO_GEOMEAN_FIGURE, "bold"), "  ", (NO_STABLE_METRICS, "dim"))
-    return Text.assemble(
-        (parts.delta, geomean_value_style(geomean, outcomes)),
-        f" {SCOPE_SEPARATOR} ",
-        (parts.provenance, "dim"),
-    )

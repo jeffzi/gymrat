@@ -2,13 +2,11 @@
 
 Covers pairing, delta computation, and per-metric method dispatch (exact,
 permutation, band), driving that behavior through the public ``compute_verdicts``
-API only, and hierarchical kind/group aggregation through the public
-``compute_kind_aggregates`` API: bucketing order, per-kind grouping, and the
-per-subset exclusion taxonomy.
+API only.
 """
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 import pytest
 
@@ -16,15 +14,12 @@ from gymrat.model import (
     DEFAULT_UNSTABLE_NOISE_PCT,
     BandVerdict,
     ExactVerdict,
-    Exclusion,
-    GeomeanResult,
     MetricMeta,
     MetricVerdict,
     PermutationVerdict,
 )
 from gymrat.utils import WarnSink
-from gymrat.verdict import KindAggregate, compute_kind_aggregates, compute_verdicts
-from tests.verdict._inputs import MetricSpec, build_inputs, unstable_band_verdict
+from gymrat.verdict import compute_verdicts
 
 # ---------------------------------------------------------------------------
 # Metric-meta fixtures shared across the verdict-engine cases
@@ -369,11 +364,13 @@ def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_report_no_si
 
 
 @pytest.mark.parametrize(
-    ("narrow", "samples_a", "samples_b", "expected_noise_pct"),
+    ("narrow", "samples_a", "samples_b", "expected_noise_pct", "expected_noise_abs"),
     [
-        pytest.param(get_band, samples(80.0, 120.0), samples(90.0, 110.0), 30.0, id="band-spread"),
         pytest.param(
-            get_band, create_samples(2, 100.0), samples(100.0, 100.1), 0.5, id="band-floor"
+            get_band, samples(80.0, 120.0), samples(90.0, 110.0), 30.0, 30.0, id="band-spread"
+        ),
+        pytest.param(
+            get_band, create_samples(2, 100.0), samples(100.0, 100.1), 0.5, 0.075, id="band-floor"
         ),
         # The candidate side's spread (half-range 50 over median 110) sets the band.
         pytest.param(
@@ -381,6 +378,7 @@ def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_report_no_si
             create_samples(2, 100.0),
             samples(60.0, 160.0),
             150 * 50 / 110,
+            75.0,
             id="band-candidate-spread",
         ),
         pytest.param(
@@ -388,45 +386,37 @@ def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_report_no_si
             samples(-60.0, -40.0),
             samples(-50.0, -50.0),
             30.0,
+            15.0,
             id="band-negative-median",
         ),
+        pytest.param(get_band, samples(180.0, 220.0), samples(90.0, 110.0), 15.0, 30.0, id="band"),
         pytest.param(
             get_permutation,
             samples(-60.0, -55.0, -50.0, -50.0, -45.0, -40.0),
             samples(-61.0, -56.0, -51.0, -51.0, -46.0, -41.0),
             30.0,
+            15.0,
             id="permutation-negative-median",
+        ),
+        pytest.param(
+            get_permutation, _SEPARATED_HIGH, _SEPARATED_LOW, 15.0, 30.0, id="permutation"
         ),
     ],
 )
-def test_compute_verdicts_when_non_exact_inputs_vary_does_report_noise_pct(
+def test_compute_verdicts_when_non_exact_inputs_vary_does_report_noise_pct_and_abs(
     narrow: Callable[[dict[str, MetricVerdict]], BandVerdict | PermutationVerdict],
     samples_a: list[dict[str, float]],
     samples_b: list[dict[str, float]],
     expected_noise_pct: float,
-):
-    result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
-
-    assert narrow(result).noise_pct == pytest.approx(expected_noise_pct, abs=1e-5)
-
-
-@pytest.mark.parametrize(
-    ("narrow", "samples_a", "samples_b"),
-    [
-        pytest.param(get_band, samples(180.0, 220.0), samples(90.0, 110.0), id="band"),
-        pytest.param(get_permutation, _SEPARATED_HIGH, _SEPARATED_LOW, id="permutation"),
-    ],
-)
-def test_compute_verdicts_when_non_exact_does_carry_noise_abs(
-    narrow: Callable[[dict[str, MetricVerdict]], BandVerdict | PermutationVerdict],
-    samples_a: list[dict[str, float]],
-    samples_b: list[dict[str, float]],
+    expected_noise_abs: float,
 ):
     result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
 
     verdict = narrow(result)
-    assert verdict.noise_pct == pytest.approx(15.0, abs=1e-5)
-    assert verdict.noise_abs == pytest.approx(30.0, abs=1e-5)
+    assert (verdict.noise_pct, verdict.noise_abs) == (
+        pytest.approx(expected_noise_pct, abs=1e-5),
+        pytest.approx(expected_noise_abs, abs=1e-5),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -456,41 +446,51 @@ def test_compute_verdicts_when_byte_move_is_one_byte_does_report_no_signal_on_ba
 
 
 @pytest.mark.parametrize(
-    "meta",
+    ("meta", "samples_a", "samples_b", "expected_noise_pct", "expected_verdict"),
     [
-        pytest.param(METRIC_BYTES_LOWER, id="lower"),
-        pytest.param(METRIC_BYTES_HIGHER, id="higher"),
+        pytest.param(
+            METRIC_BYTES_LOWER,
+            _BYTE_ONE_MOVE_A,
+            _BYTE_ONE_MOVE_B,
+            100 / 3,
+            "no-signal",
+            id="one-byte-lower",
+        ),
+        pytest.param(
+            METRIC_BYTES_HIGHER,
+            _BYTE_ONE_MOVE_A,
+            _BYTE_ONE_MOVE_B,
+            100 / 3,
+            "no-signal",
+            id="one-byte-higher",
+        ),
+        pytest.param(
+            METRIC_BYTES_LOWER, _BYTE_CLEARS_A, _BYTE_CLEARS_B, 16.0, "improved", id="clears-lower"
+        ),
+        pytest.param(
+            METRIC_BYTES_HIGHER,
+            _BYTE_CLEARS_A,
+            _BYTE_CLEARS_B,
+            16.0,
+            "regressed",
+            id="clears-higher",
+        ),
     ],
 )
-def test_compute_verdicts_when_byte_move_is_one_byte_does_report_no_signal_on_permutation(
+def test_compute_verdicts_when_byte_permutation_does_withhold_signal_within_floor(
     meta: dict[str, MetricMeta],
+    samples_a: list[dict[str, float]],
+    samples_b: list[dict[str, float]],
+    expected_noise_pct: float,
+    expected_verdict: str,
 ):
-    result = run(_BYTE_ONE_MOVE_A, _BYTE_ONE_MOVE_B, meta)
+    result = run(samples_a, samples_b, meta)
 
     verdict = get_permutation(result)
     assert verdict.p < 0.05
     assert verdict.delta == pytest.approx(-25.0, abs=1e-5)
-    assert verdict.noise_pct == pytest.approx(100 / 3, abs=1e-5)
-    assert verdict.verdict == "no-signal"
-
-
-@pytest.mark.parametrize(
-    ("meta", "expected"),
-    [
-        pytest.param(METRIC_BYTES_LOWER, "improved", id="lower"),
-        pytest.param(METRIC_BYTES_HIGHER, "regressed", id="higher"),
-    ],
-)
-def test_compute_verdicts_when_byte_move_clears_floor_does_signal(
-    meta: dict[str, MetricMeta],
-    expected: str,
-):
-    result = run(_BYTE_CLEARS_A, _BYTE_CLEARS_B, meta)
-
-    verdict = get_permutation(result)
-    assert verdict.delta == pytest.approx(-25.0, abs=1e-5)
-    assert verdict.noise_pct == pytest.approx(16.0, abs=1e-5)
-    assert verdict.verdict == expected
+    assert verdict.noise_pct == pytest.approx(expected_noise_pct, abs=1e-5)
+    assert verdict.verdict == expected_verdict
 
 
 @pytest.mark.parametrize(
@@ -801,142 +801,3 @@ def test_compute_verdicts_when_cleanly_paired_does_not_warn():
     run(samples(100.0, 90.0), samples(95.0, 85.0), METRIC_EXACT_LOWER, warn=collected.append)
 
     assert collected == []
-
-
-def kinds_of(specs: Sequence[MetricSpec]) -> list[KindAggregate]:
-    """The kind aggregates for a spec list — ``build_inputs`` fed into ``compute_kind_aggregates``."""
-    verdicts, metric_meta = build_inputs(specs)
-    return compute_kind_aggregates(verdicts, metric_meta)
-
-
-def kind_named(aggregates: Sequence[KindAggregate], kind: str) -> KindAggregate:
-    """The aggregate for ``kind``, or a failure naming the kinds produced."""
-    for aggregate in aggregates:
-        if aggregate.kind == kind:
-            return aggregate
-    names = ", ".join(aggregate.kind for aggregate in aggregates)
-    pytest.fail(f'no aggregate for kind "{kind}", only: {names}')
-
-
-# ---------------------------------------------------------------------------
-# Kind aggregate shape and empty inputs
-# ---------------------------------------------------------------------------
-
-
-def test_compute_kind_aggregates_when_single_non_gating_metric_does_carry_kind_geomean_no_gate():
-    result = kinds_of(
-        [MetricSpec(name="warmup", gating=False, delta=0.0)],
-    )
-
-    assert result == [
-        KindAggregate(
-            kind="time",
-            geomean=GeomeanResult(value=0.0, n=1, band=0.0, excluded=()),
-            groups=(),
-            gated_geomean=None,
-        ),
-    ]
-
-
-def test_compute_kind_aggregates_when_nothing_measured_does_return_no_aggregates():
-    result = kinds_of([])
-
-    assert result == []
-
-
-# ---------------------------------------------------------------------------
-# Grouping by metric name contract (path minus last segment)
-# ---------------------------------------------------------------------------
-
-
-def test_compute_kind_aggregates_when_multi_segment_names_does_group_by_path_prefix():
-    [kind] = kinds_of(
-        [
-            MetricSpec(name="decode/time#time", delta=-10.0),
-            MetricSpec(name="decode/alloc#time", delta=-5.0),
-            MetricSpec(name="encode/time#time", delta=-10.0),
-        ],
-    )
-
-    assert [group.group for group in kind.groups] == ["decode", "encode"]
-    assert kind.groups[0].geomean.n == 2
-    assert kind.groups[1].geomean.n == 1
-
-
-def test_compute_kind_aggregates_when_single_segment_name_does_count_in_kind_not_group():
-    [kind] = kinds_of(
-        [
-            MetricSpec(name="decode/time#time", delta=-10.0),
-            MetricSpec(name="warmup#time", delta=-10.0),
-        ],
-    )
-
-    assert [group.group for group in kind.groups] == ["decode"]
-    assert kind.groups[0].geomean.n == 1
-    assert kind.geomean.n == 2
-
-
-def test_compute_kind_aggregates_when_grouped_name_in_one_kind_does_leave_other_kind_flat():
-    result = kinds_of(
-        [
-            MetricSpec(name="decode/time#time", kind="time", delta=-10.0),
-            MetricSpec(name="heap#memory", kind="memory", delta=-10.0),
-        ],
-    )
-
-    assert [group.group for group in kind_named(result, "time").groups] == ["decode"]
-    assert kind_named(result, "memory").groups == ()
-
-
-# ---------------------------------------------------------------------------
-# Ordering by first mention
-# ---------------------------------------------------------------------------
-
-
-def test_compute_kind_aggregates_when_many_kinds_and_groups_does_order_by_first_mention():
-    result = kinds_of(
-        [
-            MetricSpec(name="encode/time#time", kind="time", delta=-10.0),
-            MetricSpec(name="encode/heap#memory", kind="memory", delta=-10.0),
-            MetricSpec(name="decode/time#time", kind="time", delta=-10.0),
-        ],
-    )
-
-    assert [aggregate.kind for aggregate in result] == ["time", "memory"]
-    assert [group.group for group in kind_named(result, "time").groups] == ["encode", "decode"]
-
-
-# ---------------------------------------------------------------------------
-# Geomean scope: kind, gated and group
-# ---------------------------------------------------------------------------
-
-
-def test_compute_kind_aggregates_when_metrics_differ_only_in_gating_does_gate_over_gating_alone():
-    [kind] = kinds_of(
-        [
-            MetricSpec(name="decode/time#time", gating=True, delta=-10.0),
-            MetricSpec(name="decode/alloc#time", gating=False, delta=-5.0),
-        ],
-    )
-
-    assert kind.geomean.n == 2
-    assert kind.gated_geomean is not None
-    assert (kind.gated_geomean.n, kind.gated_geomean.value) == (1, pytest.approx(-10.0, abs=1e-5))
-    assert kind.groups[0].geomean.n == 2
-
-
-def test_compute_kind_aggregates_when_metric_unstable_does_exclude_it_only_where_it_belongs():
-    [kind] = kinds_of(
-        [
-            MetricSpec(name="decode/bad#time", verdict=unstable_band_verdict()),
-            MetricSpec(name="decode/good#time", delta=-5.0),
-            MetricSpec(name="encode/fine#time", delta=-5.0),
-        ],
-    )
-
-    excluded = (Exclusion(metric="decode/bad#time", reason="unstable"),)
-    assert (kind.geomean.n, kind.geomean.excluded) == (2, excluded)
-    assert [(group.group, group.geomean.n, group.geomean.excluded) for group in kind.groups] == [
-        ("decode", 1, excluded),
-        ("encode", 1, ()),
-    ]

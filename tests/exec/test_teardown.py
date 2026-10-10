@@ -299,7 +299,7 @@ async def test_exec_when_abort_preset_does_settle_failed_without_spawning(
         pytest.param(Teardown(None, set_abort), id="abort"),
     ],
 )
-async def test_exec_when_run_settles_does_close_stdio_pipes(
+async def test_exec_when_torn_down_does_close_stdio_pipes(
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
     teardown: Teardown,

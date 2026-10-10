@@ -15,11 +15,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import islice
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.session.records import CommandRecord, DiscardRecord, KeepRecord
-from gymrat.utils import format_duration
+from gymrat.utils import format_time_left
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -62,11 +62,17 @@ class GuardState:
         self.last_record_count = self.initial_record_count
 
 
+type EndReason = Literal[
+    "finished", "spend-cap", "follow-up-ceiling", "no-progress", "consecutive-discards"
+]
+"""Why the classifier ends a session: the agent finished, a cap tripped, or a guard fired."""
+
+
 @dataclass(frozen=True, slots=True)
 class End:
     """The session should end for the given reason."""
 
-    reason: str
+    reason: EndReason
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,8 +87,7 @@ class WaitForLock:
     """Another process holds the lock; wait without updating counters."""
 
 
-# A plain assignment, not a ``type`` statement: ``isinstance`` rejects a type alias.
-Decision = End | Reply | WaitForLock
+type Decision = End | Reply | WaitForLock
 """A classifier outcome."""
 
 
@@ -150,11 +155,11 @@ def _format_reply(
     after_wait: bool,
 ) -> str:
     remaining = max(0.0, deadline_ms - now_ms)
-    reply = f"{_RUNBOOK_INSTRUCTION}\n{format_duration(remaining)} left of {max_minutes:g}m"
+    reply = f"{_RUNBOOK_INSTRUCTION}\n{format_time_left(remaining, max_minutes)}"
     return f"{reply}\n{_AFTER_WAIT_LINE}" if after_wait else reply
 
 
-def classify(  # noqa: PLR0913, PLR0911 - one parameter per classification input
+def classify(  # noqa: PLR0913, PLR0911 -- one parameter per classification input; one return per ordered rule in the module docstring
     *,
     config: BenchlessConfig,
     state: SessionState,

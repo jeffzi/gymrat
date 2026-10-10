@@ -31,9 +31,8 @@ from gymrat.config import KindEntry
 from gymrat.model import Exclusion
 from gymrat.report.text.render import render_measure_report, render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
-from gymrat.targets import WorktreeRemovalFailure
+from gymrat.worktree_failure import WorktreeRemovalFailure
 from tests.report._assertions import (
-    cells_of,
     highlight_lines,
     line_containing,
     line_starting_with,
@@ -55,7 +54,6 @@ from tests.report._comparisons import (
     n_way_kind_metric,
     other_kind,
     permutation_metric,
-    single_sample_result,
     two_kind_result,
     undefined_ratio_metric,
 )
@@ -384,6 +382,11 @@ def test_render_report_when_grouped_run_mixes_methods_does_assemble_the_whole_re
     ]
 
 
+# ---------------------------------------------------------------------------
+# byte-for-byte golden outputs
+# ---------------------------------------------------------------------------
+
+
 def _degenerate_result() -> ComparisonResult:
     return create_comparison_result(
         samples=4,
@@ -504,18 +507,6 @@ def _two_candidate_result() -> ComparisonResult:
             ),
         },
     )
-
-
-def test_render_report_when_single_sample_does_mark_verdicts_inconclusive():
-    report = render_report(single_sample_result())
-
-    assert cells_of(line_starting_with(report, "decode/time"))[-1].strip() == "?  -0.4%"
-    assert report.split("\n\n")[1].split("   ")[-1] == "? 2 inconclusive"
-
-
-# ---------------------------------------------------------------------------
-# byte-for-byte golden outputs
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

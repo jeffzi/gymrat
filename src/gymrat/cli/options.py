@@ -20,15 +20,9 @@ from gymrat.config import (
 )
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
+from gymrat.utils import ASCII_DECIMAL_PATTERN
 
-# ``[0-9]`` rather than ``\d``: ``\d`` matches every Unicode decimal digit, and
-# ``float`` converts those too, so a non-ASCII digit would parse as a number.
-_GEOMEAN_CONDITION_RE = re.compile(r"geomean:(-?[0-9]+(?:\.[0-9]+)?)")
-
-
-# ---------------------------------------------------------------------------
-# Flag parsers
-# ---------------------------------------------------------------------------
+_GEOMEAN_CONDITION_RE = re.compile(rf"geomean:(-?{ASCII_DECIMAL_PATTERN})")
 
 
 def parse_positional(positional: str) -> TargetSpec:
@@ -174,11 +168,6 @@ def parse_fail_on(value: str) -> FailOnCondition:
     raise typer.BadParameter(message)
 
 
-# ---------------------------------------------------------------------------
-# CLI option declarations
-# ---------------------------------------------------------------------------
-
-
 class OutputFormat(StrEnum):
     """The ``--format`` choices: a human report or a machine-readable document."""
 
@@ -186,8 +175,6 @@ class OutputFormat(StrEnum):
     json = "json"
 
 
-# The config-bearing options every command shares, declared once as reusable
-# annotations so ``compare`` and ``measure`` carry an identical surface.
 BenchOption = Annotated[str | None, typer.Option("--bench", "-b", help="bench command")]
 """--bench/-b: the bench command; None defers to config."""
 PrepareOption = Annotated[

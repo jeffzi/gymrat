@@ -59,6 +59,9 @@ SQUASH_COMMIT = "c" * 40
 #: The session id every fixture record belongs to.
 SESSION_ID = "20260808-141530-a3f2"
 
+#: The id of a session a ``start`` opens over the previous one.
+FRESH_SESSION_ID = "20260809-090000-b7e4"
+
 #: The session id the supervised-run fixtures (launch events, dashboards) carry.
 SUPERVISED_SESSION_ID = "20260813-125044-34ec"
 
@@ -326,6 +329,13 @@ def write_session_log(
 ) -> None:
     """Append *header* then every record in *history* to the session JSONL log."""
     append_records(root, header, *history)
+
+
+def seeded_session(root: str) -> SessionRecord:
+    """Write the default session header to ``root``'s session log and return it."""
+    header = session_record()
+    write_session_log(root, header)
+    return header
 
 
 def append_records(root: str, *records: SessionLogRecord) -> None:

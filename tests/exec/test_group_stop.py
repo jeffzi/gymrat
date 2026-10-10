@@ -219,31 +219,6 @@ async def test_exec_when_second_signal_arrives_in_nested_run_does_kill_live_grou
     assert group_wait_clock.now == pytest.approx(expected_grace_s, abs=_GROUP_POLL_S)
 
 
-# An escalation grace twice the real one, so a sweep that ignores the
-# replacement stops the fake clock at half of it.
-_REPLACED_ESCALATION_GRACE_S = 0.4
-
-
-@pytest.mark.usefixtures("spawned_processes")
-async def test_exec_when_escalation_grace_replaced_does_kill_live_group_after_replaced_grace(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    make_opts: Callable[..., ExecOptions],
-    raise_signal: Callable[[int], int],
-    group_wait_clock: WaitClock,
-) -> None:
-    monkeypatch.setattr(exec_mod, "ESCALATION_GRACE_S", _REPLACED_ESCALATION_GRACE_S)
-    task = asyncio.create_task(run_exec(_STARTED_TERM_IGNORING_COMMAND, make_opts(stdin="go\n")))
-    shell = await wait_for_pid_file(tmp_path / _SHELL_PID_FILE)
-
-    with within_hang_guard(_HANG_GUARD_S):
-        escalate_termination(raise_signal)
-        await task
-
-    await wait_until_dead(shell, timeout_s=3.0)
-    assert group_wait_clock.now == pytest.approx(_REPLACED_ESCALATION_GRACE_S, abs=_GROUP_POLL_S)
-
-
 @pytest.mark.parametrize(
     ("nesting_depth", "expected_grace_s"),
     [

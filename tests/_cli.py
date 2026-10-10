@@ -1,9 +1,18 @@
-"""Shared CLI subprocess constants and helpers for out-of-process test modules."""
+"""Shared CLI constants and helpers: subprocess launches, and reading a run's output."""
+
+from __future__ import annotations
 
 import os
 import subprocess
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+from tests._ansi import strip_ansi
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from typer.testing import Result
 
 ENTRY = [sys.executable, "-m", "gymrat.cli.app"]
 """The command that launches the CLI the way a user's shell would."""
@@ -78,3 +87,8 @@ def run_cli(
     except subprocess.CalledProcessError as error:
         detail = f"gymrat {' '.join(args)} failed (exit {error.returncode}): {error.stderr}"
         raise AssertionError(detail) from error
+
+
+def err_text(result: Result) -> str:
+    """The combined stdout and stderr of a ``CliRunner`` run, stripped of color."""
+    return strip_ansi((result.stdout or "") + (result.stderr or ""))

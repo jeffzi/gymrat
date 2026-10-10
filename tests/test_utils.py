@@ -18,6 +18,8 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 
+from gymrat.cli.live_display import format_timestamp
+from gymrat.cli.supervise.frame import format_eta
 from gymrat.utils import (
     SamplingEta,
     abbreviate_home,
@@ -27,8 +29,6 @@ from gymrat.utils import (
     finite_or_none,
     format_clock,
     format_duration,
-    format_eta,
-    format_timestamp,
     is_tty,
     limit_output,
     otlp_endpoint,

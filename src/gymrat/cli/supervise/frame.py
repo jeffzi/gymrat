@@ -23,8 +23,7 @@ from gymrat.cli.style import (
     STYLE_REGRESSED,
     STYLE_RUNNING,
 )
-from gymrat.cli.supervise.reducer import pair_value
-from gymrat.cli.supervise.text import exit_phase_text, format_cost, loop_segments
+from gymrat.cli.supervise.text import exit_phase_text, loop_segments
 from gymrat.cli.supervise.types import (
     Capped,
     Composing,
@@ -36,12 +35,21 @@ from gymrat.cli.supervise.types import (
     Thinking,
     Waiting,
 )
-from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.model import is_improvement
 from gymrat.report.format import format_percent_delta
-from gymrat.session.budget import minutes_to_ms
-from gymrat.supervisor.events import ITERATE_SUMMARY, ITERATE_TOOL
-from gymrat.utils import MS_PER_SECOND, abbreviate_home, format_duration, format_eta
+from gymrat.supervisor.events import ITERATE_SUMMARY
+from gymrat.supervisor.tool_names import ITERATE_TOOL
+from gymrat.utils import (
+    MS_PER_SECOND,
+    SECONDS_PER_MINUTE,
+    SHORT_SHA_LENGTH,
+    abbreviate_home,
+    format_cost,
+    format_duration,
+    hours_minutes_seconds,
+    minutes_to_ms,
+    pair_value,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -50,13 +58,9 @@ if TYPE_CHECKING:
 
     from gymrat.cli.supervise.reducer import ReporterState
     from gymrat.cli.supervise.text import LoopStyle
-    from gymrat.cli.supervise.types import (
-        FinishedTool,
-        Liveness,
-        NestedActivity,
-        ReadSessionResult,
-    )
+    from gymrat.cli.supervise.types import FinishedTool, Liveness, NestedActivity
     from gymrat.session.progress_file import ProgressSnapshot
+    from gymrat.session.store import ReadSessionResult
 
 # Bounds for the tool-name column: floor prevents jitter across short names
 # (Read, Edit, Bash); ceiling prevents a long name from pushing the layout.
@@ -78,6 +82,36 @@ _LOOP_STYLES: dict[LoopStyle, str | None] = {
 # ---------------------------------------------------------------------------
 # Time and cost formatting
 # ---------------------------------------------------------------------------
+
+
+# Seconds in an hour, where an ETA switches to an hour tier.
+SECONDS_PER_HOUR = 3600
+
+
+def format_eta(ms: float) -> str:
+    """Format a forward time estimate, rounding to whole seconds.
+
+    Clamps to at least one second and drops a zero remainder in the lower tier
+    (``60_000`` renders ``"~1m left"``, not ``"~1m 0s left"``).
+
+    Args:
+        ms: The forward time estimate in milliseconds.
+
+    Returns:
+        The ETA string, e.g. ``"~5s left"`` or ``"~1m left"``.
+    """
+    total_seconds = max(1, round(ms / MS_PER_SECOND))
+    hours, minutes, seconds = hours_minutes_seconds(total_seconds)
+
+    if total_seconds < SECONDS_PER_MINUTE:
+        return f"~{seconds}s left"
+    if total_seconds < SECONDS_PER_HOUR:
+        if seconds > 0:
+            return f"~{minutes}m {seconds}s left"
+        return f"~{minutes}m left"
+    if minutes > 0:
+        return f"~{hours}h {minutes:02d}m left"
+    return f"~{hours}h left"
 
 
 def _format_wall_clock(epoch_ms: int, tz: tzinfo | None) -> str:
@@ -136,7 +170,7 @@ def build_loop_text(session_result: ReadSessionResult | None, max_iterations: in
     """
     text = Text()
     for segment in loop_segments(session_result, max_iterations):
-        text.append(segment.text, style=_LOOP_STYLES[segment.style])
+        text.append(segment.text, style=_LOOP_STYLES[segment.role])
     return text
 
 
@@ -292,8 +326,10 @@ def _build_nested_activity_line(activity: NestedActivity, now: int) -> Text:
                 label = f"preparing {tool}"
             case "responding":
                 label = "responding"
-            case _:
+            case "thinking":
                 label = "thinking"
+            case _ as unreachable:
+                assert_never(unreachable)
         content = f"    ↳ {label}  {elapsed}"
     return Text(content, style=STYLE_META, no_wrap=True, overflow="ellipsis")
 

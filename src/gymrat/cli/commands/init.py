@@ -11,7 +11,6 @@ live, the command is refused: scaffolding is not part of the loop.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -45,7 +44,7 @@ def _format_artifact(label: str, artifact: ScaffoldArtifact, base_dir: str) -> s
     if artifact.status == "declined":
         return f"  {label} declined"
     # Navigable from the user's cwd, not from the project root.
-    display = os.path.relpath(Path(base_dir) / artifact.path)
+    display = (Path(base_dir) / artifact.path).absolute().relative_to(Path.cwd(), walk_up=True)
     verb = "created at" if artifact.status == "created" else "already exists at"
     return f"  {label} {verb} {display}"
 

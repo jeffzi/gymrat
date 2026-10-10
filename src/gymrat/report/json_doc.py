@@ -62,11 +62,6 @@ class BudgetSummary:
     remaining_seconds: int
 
 
-# ---------------------------------------------------------------------------
-# Compare-result serialization
-# ---------------------------------------------------------------------------
-
-
 def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None) -> str:
     """Serialize a comparison result as JSON.
 
@@ -93,11 +88,6 @@ def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None
     return render_document(document, budget)
 
 
-# ---------------------------------------------------------------------------
-# Measurement serialization
-# ---------------------------------------------------------------------------
-
-
 def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | None = None) -> str:
     """Serialize a single-target measurement result as JSON.
 
@@ -119,11 +109,6 @@ def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | No
         "worktrees": _serialize_worktrees(result),
     }
     return render_document(document, budget)
-
-
-# ---------------------------------------------------------------------------
-# Probe serialization
-# ---------------------------------------------------------------------------
 
 
 def render_probe_json(result: ProbeResult, *, budget: BudgetSummary | None = None) -> str:
@@ -283,11 +268,6 @@ def _serialize_worktrees(result: WorktreeCleanupOutcome) -> dict[str, object]:
         ],
         "prune_error": result.worktree_prune_error,
     }
-
-
-# ---------------------------------------------------------------------------
-# Loop and session-event serialization
-# ---------------------------------------------------------------------------
 
 
 def render_iterate_json(result: IterateResult, *, budget: BudgetSummary | None = None) -> str:
@@ -479,7 +459,7 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
 
 
 def render_document(document: dict[str, object], budget: BudgetSummary | None = None) -> str:
-    """Insert the budget key when present, then serialize with a two-space indent.
+    """Serialize a JSON document with a two-space indent.
 
     Every non-finite float serializes as ``null`` (see module docstring).
 

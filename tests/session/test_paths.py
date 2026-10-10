@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.git import NotAGitRepositoryError
 from gymrat.session.paths import (
+    NotAGitRepositoryError,
     archived_session_path,
     baseline_worktree_dir,
     budget_path,

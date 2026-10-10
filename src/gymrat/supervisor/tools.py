@@ -10,8 +10,9 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from gymrat.agent_env import COMMAND_ORIGIN_ENV, TOOL_ORIGIN
-from gymrat.errors import TOOL_FAILURE_EXIT_CODE
+from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
+from gymrat.supervisor.tool_names import ITERATE_TOOL_NAME, MCP_SERVER, PROBE_TOOL_NAME
 
 if TYPE_CHECKING:
     from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool
@@ -20,8 +21,8 @@ ToolsFactory = Callable[[asyncio.Event, Mapping[str, str]], object]
 
 _ExecFn = Callable[[Sequence[str], ExecOptions], Awaitable[ExecResult | ExecTimeoutError]]
 
-# gymrat emits its JSON document on success (0) and on a stop gate (1).
-_DOCUMENT_EXIT_CODES = frozenset({0, 1})
+# gymrat emits its JSON document on success and on a stop gate.
+_DOCUMENT_EXIT_CODES = frozenset({0, GATE_EXIT_CODE})
 
 _JSON_FORMAT_ARGS = ("--format", "json")
 
@@ -78,7 +79,10 @@ class ToolHost:
 
         # A tool failure, which includes click's UsageError for a rejected argument.
         if outcome.exit_code == TOOL_FAILURE_EXIT_CODE:
-            text = outcome.stderr.strip() or f"gymrat {cmd} exited 2 with no output"
+            text = (
+                outcome.stderr.strip()
+                or f"gymrat {cmd} exited {TOOL_FAILURE_EXIT_CODE} with no output"
+            )
             return _result(text, is_error=True)
 
         if _is_json_document(outcome):
@@ -167,7 +171,7 @@ def gymrat_tool_definitions(host: ToolHost) -> list[SdkMcpTool[dict[str, Any]]]:
     )
 
     probe = _SdkMcpTool(
-        name="probe",
+        name=PROBE_TOOL_NAME,
         description=(
             "Bench the experiment worktree and report each metric's delta "
             "against the current baseline. Pass metric names to scope the run. "
@@ -185,7 +189,7 @@ def gymrat_tool_definitions(host: ToolHost) -> list[SdkMcpTool[dict[str, Any]]]:
     )
 
     iterate = _SdkMcpTool(
-        name="iterate",
+        name=ITERATE_TOOL_NAME,
         description=(
             "Measure the experiment worktree against the baseline at the "
             "configured samples and record the verdict. The only way to "
@@ -223,6 +227,6 @@ def gymrat_tools_factory(root: str) -> ToolsFactory:
         )
 
         host = ToolHost(root=root, abort=abort, extra_env=env)
-        return create_sdk_mcp_server("gymrat", "0.1.0", gymrat_tool_definitions(host))
+        return create_sdk_mcp_server(MCP_SERVER, "0.1.0", gymrat_tool_definitions(host))
 
     return factory

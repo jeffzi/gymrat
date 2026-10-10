@@ -16,33 +16,36 @@ from rich.cells import cell_len
 from rich.markup import escape
 
 from gymrat.model import is_improvement
-from gymrat.report.format import format_metric_cell_parts, format_percent_delta
+from gymrat.report.format import (
+    ZERO_PERCENT_DELTA,
+    format_metric_cell_parts,
+    format_percent_delta,
+)
 from gymrat.report.style import (
-    VARIANT_NAME_STYLE,
     VERDICT_STYLES,
-    join_header_parts,
     markup,
     render_lines,
     truncate_labels,
 )
-from gymrat.report.table.markup import (
-    VALUE_COLUMN_MIN,
-    VERDICT_COLUMN_MIN,
-    group_metric_cell,
-    header_metric_cell,
-    indented_section_label,
-    join_value_cell,
-    plan_sections,
-    value_widths,
-)
+from gymrat.report.table.cells import VERDICT_COLUMN_MIN, group_metric_cell
 from gymrat.report.table.render import (
+    VALUE_COLUMN_MIN,
     build_cell_dispatcher,
     compute_column_width,
+    join_value_cell,
     plan_table_skeleton,
     render_body,
+    value_widths,
+)
+from gymrat.report.table.sections import plan_sections
+from gymrat.report.text.measure_table import (
+    MeasuredRow,
+    measured_cells,
+    measured_header_cells,
+    measured_row,
+    run_header,
 )
 from gymrat.report.types import DEFAULT_REPORT_OPTIONS, ReportOptions
-from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from gymrat.loop.probe import ProbeMetric, ProbeResult
@@ -62,19 +65,27 @@ NO_REFERENCE = "no reference"
 
 # Deltas the report refuses to paint: nothing measured, or a figure that rounds to
 # zero and so points in no direction to call good or bad.
-_UNPAINTED_DELTAS = frozenset({"", "0.0%"})
+_UNPAINTED_DELTAS = frozenset({"", ZERO_PERCENT_DELTA})
 
 
 @dataclass(frozen=True, slots=True)
 class _ProbeRow:
-    """One probed metric's name, its section label, and the three cells it states."""
+    """One probed metric's measured cells, plus its baseline value and the delta between."""
 
-    name: str
-    label: str
-    value: MetricCellParts
+    measured: MeasuredRow
     reference: MetricCellParts
     delta: str
     delta_style: str | None
+
+    @property
+    def name(self) -> str:
+        """The metric's bare name."""
+        return self.measured.name
+
+    @property
+    def label(self) -> str:
+        """The metric's section label, indented under its group."""
+        return self.measured.label
 
 
 def _delta_style(delta: str, delta_pct: float | None, direction: Direction) -> str | None:
@@ -105,9 +116,7 @@ def _probe_row(name: str, group: str | None, metric: ProbeMetric) -> _ProbeRow:
     else:
         delta = format_percent_delta(metric.delta_pct)
     return _ProbeRow(
-        name=name,
-        label=indented_section_label(metric.meta.short_name, group),
-        value=format_metric_cell_parts(metric.median, metric.spread, metric.meta.unit),
+        measured=measured_row(name, group, metric),
         reference=format_metric_cell_parts(metric.reference_median, None, metric.meta.unit),
         delta=delta,
         delta_style=_delta_style(delta, metric.delta_pct, metric.meta.direction),
@@ -116,15 +125,8 @@ def _probe_row(name: str, group: str | None, metric: ProbeMetric) -> _ProbeRow:
 
 def _probe_header(result: ProbeResult, label: str) -> str:
     """The probe report's run header as markup: the worktree, the run, and any scope."""
-    parts = [
-        markup("gymrat probe", "bold"),
-        markup(label, VARIANT_NAME_STYLE),
-        escape(pluralize(result.samples, "sample")),
-        f"adapter: {escape(result.adapter)}",
-    ]
-    if result.names:
-        parts.append(f"scoped: {escape(', '.join(result.names))}")
-    return join_header_parts(parts)
+    scope = [f"scoped: {escape(', '.join(result.names))}"] if result.names else []
+    return run_header("probe", label, result.samples, result.adapter, scope)
 
 
 def _render_probe_table(result: ProbeResult, label: str, *, color: bool | None) -> list[str]:
@@ -133,7 +135,7 @@ def _render_probe_table(result: ProbeResult, label: str, *, color: bool | None) 
         {metric.name: metric for metric in result.metrics},
         _probe_row,
     )
-    skeleton = plan_table_skeleton(layout, None, lambda row: row.value, label)
+    skeleton = plan_table_skeleton(layout, None, lambda row: row.measured.value, label)
     reference_fields = value_widths([row.reference for row in layout.ordered])
 
     def reference_cell(row: _ProbeRow) -> str:
@@ -158,17 +160,11 @@ def _render_probe_table(result: ProbeResult, label: str, *, color: bool | None) 
         return escape(row.delta) if row.delta_style is None else markup(row.delta, row.delta_style)
 
     def metric_cells(row: _ProbeRow) -> tuple[str, str, str, str]:
-        return (
-            escape(skeleton.name_cell(row)),
-            escape(skeleton.value_cell(row)),
-            escape(reference_cell(row)),
-            delta_cell(row),
-        )
+        return (*measured_cells(skeleton, row), escape(reference_cell(row)), delta_cell(row))
 
     to_cells = build_cell_dispatcher(
         header=lambda title: (
-            header_metric_cell(title),
-            markup(label, VARIANT_NAME_STYLE),
+            *measured_header_cells(title, label),
             escape(_REFERENCE_COLUMN_HEADER),
             escape(_DELTA_COLUMN_HEADER),
         ),

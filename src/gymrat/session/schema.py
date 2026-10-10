@@ -13,8 +13,11 @@ preserves a vocabulary free of dead values.
 
 from typing import Literal
 
+#: The session JSONL format versions a reader accepts, as a type.
+SchemaVersion = Literal[1]
+
 #: Version of the session JSONL format these schemas describe.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION: SchemaVersion = 1
 
 #: How a single metric moved, once its samples were judged.
 Verdict = Literal["improved", "regressed", "no-signal", "unstable"]

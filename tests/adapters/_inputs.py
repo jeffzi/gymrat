@@ -15,12 +15,15 @@ the adapter tests that check a metric name holding one is rejected.
 
 :data:`VALID_ADAPTERS_HINT` and :func:`unknown_adapter_message` are the hint and
 message ``get_adapter`` puts on an unknown-adapter error, shared by every test
-that surfaces that error.
+that surfaces that error. :func:`malformed_line_warning` is the warning the
+metric-lines adapter gives for a line it cannot read, shared by every test that
+sees that warning reach a sink.
 
 This is test-support code, not a test module: ``test_mitata``,
-``test_adapters``, ``tests/config/test_config_load.py``,
-``tests/test_doctor.py`` and ``tests/loop/iterate/run/test_run.py`` import
-it. It carries no test functions of its own.
+``test_adapters``, ``tests/test_doctor.py``, ``tests/loop/iterate/run/test_run.py``,
+``tests/loop/iterate/_fixtures.py``, ``tests/loop/test_probe.py`` and
+``tests/sampling/test_sampling.py`` import it. It carries no test functions of
+its own.
 """
 
 import json
@@ -54,7 +57,7 @@ LINE_BREAKS = (
 )
 """Every character ``str.splitlines`` breaks on.
 
-``metric_name.LINE_TERMINATORS`` must match exactly this set.
+``utils.LINE_TERMINATORS`` must match exactly this set.
 """
 
 VALID_ADAPTERS_HINT = "valid adapters are: metric-lines, mitata"
@@ -71,6 +74,18 @@ def unknown_adapter_message(name: str) -> str:
         The error message naming ``name``.
     """
     return f'Unknown adapter: "{name}".'
+
+
+def malformed_line_warning(line: str) -> str:
+    """Return the warning the metric-lines adapter gives for a line it cannot parse.
+
+    Args:
+        line: The offending stdout line.
+
+    Returns:
+        The warning naming ``line``.
+    """
+    return f"Failed to parse METRIC line: {line}"
 
 
 def build_stdout(benchmarks: list[Any]) -> str:

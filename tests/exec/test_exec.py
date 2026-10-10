@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shlex
 import signal
 import sys
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -444,20 +445,6 @@ async def test_kill_live_process_groups_when_killpg_raises_does_signal_every_gro
     assert sorted(killed) == sorted(proc.pid for proc in spawned_processes)
 
 
-async def test_kill_live_process_groups_when_running_group_refuses_signals_does_warn(
-    spawned_processes: list[asyncio.subprocess.Process],
-    make_opts: Callable[..., ExecOptions],
-    killpg_refusal: KillpgRefusal,
-    background_runs: list[ExecTask],
-) -> None:
-    background_runs.append(asyncio.create_task(run_exec("sleep 30", make_opts())))
-    await wait_for_spawned(spawned_processes)
-    killpg_refusal.refusing = True
-
-    with pytest.warns(RuntimeWarning, match="killpg failed"):
-        exec_mod.kill_live_process_groups()
-
-
 async def test_kill_live_process_groups_when_exited_leader_group_with_live_member_refuses_does_warn(
     tmp_path: Path,
     spawned_processes: list[asyncio.subprocess.Process],
@@ -491,8 +478,14 @@ async def test_exec_when_spawned_does_unblock_termination_signals_in_child(
     make_opts: Callable[..., ExecOptions],
 ) -> None:
     result = await run_exec(
-        'python3 -c "import signal, json; '
-        'print(json.dumps(list(signal.pthread_sigmask(signal.SIG_BLOCK, []))))"',
+        shlex.join([
+            sys.executable,
+            "-c",
+            (
+                "import signal, json; "
+                "print(json.dumps(list(signal.pthread_sigmask(signal.SIG_BLOCK, []))))"
+            ),
+        ]),
         make_opts(),
     )
 

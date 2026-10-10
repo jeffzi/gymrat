@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Literal
 from gymrat.adapters import get_adapter
 from gymrat.clock import monotonic_ms
 from gymrat.config import FILTER_PLACEHOLDER, GEOMEAN_PRIMARY, ResolvedConfig
+from gymrat.loop.gating import is_gating_regression
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmSkipped,
@@ -55,10 +56,14 @@ if TYPE_CHECKING:
     from gymrat.config import KindEntry
     from gymrat.loop.iterate.run import IterateOptions
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
+    from gymrat.report.loop import RerunAnswer
     from gymrat.report.types import ComparisonResult, MetricComparisons
 
 #: The candidate an iteration measures: the experiment, judged against the baseline.
 EXPERIMENT_INDEX = 0
+
+#: The label the experiment worktree's target carries in progress and reports.
+EXPERIMENT_LABEL = "experiment"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,8 +99,16 @@ class BenchRunOutputs:
 class Judged:
     """The first run, judged and confirmed: the outputs, the comparison, and the rerun.
 
-    ``primary`` is resolved from the first run's verdicts. The rerun only demotes
-    a regression to ``no-signal``, and neither word moves the primary's delta.
+    The rerun only demotes a regression to ``no-signal``, and neither word moves
+    the primary's delta, so the primary is resolved from the first run alone.
+
+    Attributes:
+        run: The first run's bench outputs, its verdicts already
+            confirmation-applied.
+        result: The comparison built from those outputs.
+        confirmation: What the confirmation rerun found, or ``None`` when no
+            rerun was needed.
+        primary: The primary figure, resolved from the first run's verdicts.
     """
 
     run: BenchRunOutputs
@@ -240,7 +253,7 @@ async def _measure(
     options = ctx.options
     contexts: list[TargetContext] = [
         _worktree_context(worktrees.baseline, "baseline", "old"),
-        _worktree_context(worktrees.experiment, "experiment", "new"),
+        _worktree_context(worktrees.experiment, EXPERIMENT_LABEL, "new"),
     ]
     sampling_options = RunOptions.from_config(
         ctx.config, bench=bench, on_progress=options.on_progress, warn=options.warn
@@ -340,6 +353,22 @@ class Confirmation:
     absent: frozenset[str]
 
 
+def rerun_answer(confirmation: Confirmation, metric: str) -> RerunAnswer:
+    """What the confirmation rerun answered about one metric it re-measured.
+
+    Args:
+        confirmation: The rerun's findings.
+        metric: A metric in ``confirmation.filtered``.
+
+    Returns:
+        ``"absent"`` when the rerun produced no verdict for it, ``"confirmed"``
+        when the rerun also gated it as regressed, and ``"disagreed"`` otherwise.
+    """
+    if metric in confirmation.absent:
+        return "absent"
+    return "confirmed" if metric in confirmation.confirmed else "disagreed"
+
+
 def with_confirm_phase(ctx: IterationContext) -> IterationContext:
     """Return a context whose ``on_progress`` tags pass events as confirmation runs."""
     original = ctx.options.on_progress
@@ -355,7 +384,7 @@ def with_confirm_phase(ctx: IterationContext) -> IterationContext:
     return replace(ctx, options=replace(ctx.options, on_progress=wrapper))
 
 
-def is_gating_regression(meta: ResolvedMetricMeta, verdict: MetricVerdict | None) -> bool:
+def regresses_gating(meta: ResolvedMetricMeta, verdict: MetricVerdict | None) -> bool:
     """Whether ``meta``'s metric gates the run and ``verdict`` calls it regressed.
 
     Args:
@@ -365,7 +394,9 @@ def is_gating_regression(meta: ResolvedMetricMeta, verdict: MetricVerdict | None
     Returns:
         ``True`` for a gating metric whose verdict is ``regressed``.
     """
-    return meta.gating and verdict is not None and verdict.verdict == "regressed"
+    return is_gating_regression(
+        gating=meta.gating, verdict=None if verdict is None else verdict.verdict
+    )
 
 
 async def confirm_regressions(
@@ -394,7 +425,7 @@ async def confirm_regressions(
     filtered = tuple(
         name
         for name, meta in metric_meta.items()
-        if not meta.exact and is_gating_regression(meta, verdicts.get(name))
+        if not meta.exact and regresses_gating(meta, verdicts.get(name))
     )
     if not filtered:
         emit_progress(ctx.options.on_progress, ConfirmSkipped(at_ms=monotonic_ms()))
@@ -412,9 +443,7 @@ async def confirm_regressions(
     confirm_ctx = with_confirm_phase(ctx)
     rerun = await bench_and_judge(confirm_ctx, bench, metric_meta)
     confirmed = frozenset(
-        name
-        for name in filtered
-        if is_gating_regression(metric_meta[name], rerun.verdicts.get(name))
+        name for name in filtered if regresses_gating(metric_meta[name], rerun.verdicts.get(name))
     )
     absent = frozenset(name for name in filtered if rerun.verdicts.get(name) is None)
 
@@ -461,9 +490,7 @@ def apply_confirmation(
     settled: dict[str, MetricVerdict] = {}
     for name, verdict in verdicts.items():
         disagreed = (
-            name in confirmation.filtered
-            and name not in confirmation.confirmed
-            and name not in confirmation.absent
+            name in confirmation.filtered and rerun_answer(confirmation, name) == "disagreed"
         )
         settled[name] = replace(verdict, verdict="no-signal") if disagreed else verdict
     return settled

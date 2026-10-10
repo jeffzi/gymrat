@@ -68,7 +68,7 @@ def test_render_report_when_many_candidates_does_size_the_last_column_to_fit_its
         assert len(rule) >= len(geomean_line)
 
 
-def test_render_report_when_names_carry_brackets_does_print_them_literally():
+def test_render_report_when_many_candidates_have_bracketed_labels_and_names_does_print_them_literally():
     result = multi_candidate_result(
         2, labels=("[bold]fast", "[dim]slow"), name="[italic]decode/time"
     )

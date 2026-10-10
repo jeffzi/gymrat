@@ -1,4 +1,4 @@
-"""Tests for the supervised-run liveness predicate and the supervised-origin guard.
+"""Tests for the supervised-origin guard.
 
 A supervised run is live when the repository holds a budget file whose deadline
 is still ahead and the supervise lock is held. While one is live, a command typed
@@ -8,32 +8,11 @@ matching tool instead.
 
 import pytest
 
-from gymrat.cli.supervised import guard_supervised_origin, is_supervised_run_live
+from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.errors import GymratError
 from gymrat.session.budget import write_budget
-from tests.cli._budget import SUPERVISED_HINT, set_origin
+from tests.cli._origin import SUPERVISED_HINT, set_origin
 from tests.session._budget import LIVE_BUDGET
-
-# ---------------------------------------------------------------------------
-# is_supervised_run_live
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("supervise_lock")
-def test_is_supervised_run_live_when_budget_live_and_lock_held_does_answer_true(root: str):
-    write_budget(root, LIVE_BUDGET)
-
-    live = is_supervised_run_live(root)
-
-    assert live is True
-
-
-@pytest.mark.usefixtures("supervise_lock")
-def test_is_supervised_run_live_when_no_budget_file_does_answer_false(root: str):
-    live = is_supervised_run_live(root)
-
-    assert live is False
-
 
 # ---------------------------------------------------------------------------
 # guard_supervised_origin

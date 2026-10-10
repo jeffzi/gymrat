@@ -20,7 +20,7 @@ from rich.prompt import Confirm
 from rich.text import Text
 
 from gymrat import clock as _clock
-from gymrat.cli.budget_report import budget_snapshot, write_budget_report
+from gymrat.cli.budget_report import budget_snapshot, wants_json, write_budget_report
 from gymrat.cli.console import (
     apply_command_flags,
     is_debug_mode,
@@ -41,7 +41,7 @@ from gymrat.cli.options import (
     SamplesOption,
     TimeoutOption,
 )
-from gymrat.cli.run_setup import resolve_render_mode, run_with_signal_abort
+from gymrat.cli.run_setup import SharedFlags, resolve_render_mode, run_with_signal_abort
 from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.command_run import CommandTrace, with_repo_lock
 from gymrat.config import CliFlags, config_trace_args, resolve_benchless_config, resolve_config
@@ -78,8 +78,7 @@ _AllowUnimprovedOption = Annotated[
         help="keep the edit even when the iteration was not improved",
     ),
 ]
-ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
-"""--force/-f: skip the confirmation prompt."""
+_ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
 
 # ---------------------------------------------------------------------------
 # Iterate
@@ -174,15 +173,15 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     """Measure the session's experiment worktree against its baseline."""
     apply_command_flags(debug=debug, color=color)
 
-    use_json = output_format == OutputFormat.json
     resolved_color = resolve_stream_color(None, sys.stdout)
-    flags = CliFlags(
+    flags = SharedFlags(
         bench=bench,
         prepare=prepare,
         adapter=adapter,
         samples=samples,
         timeout=timeout,
         config=config,
+        format=output_format,
     )
 
     iterate_args = config_trace_args(flags)
@@ -200,7 +199,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             )
         except LoopStopError as error:
             trailer, summary = budget_snapshot(root)
-            if use_json:
+            if wants_json(flags):
                 write_stdout(render_iterate_stop_json(str(error), budget=summary) + "\n")
                 raise typer.Exit(GATE_EXIT_CODE) from None
             if trailer:
@@ -208,7 +207,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             exit_with_error(error, GATE_EXIT_CODE)
         write_budget_report(
             root,
-            use_json=use_json,
+            flags,
             render_json=lambda summary: render_iterate_json(result, budget=summary),
             text_report=result.report,
         )
@@ -237,9 +236,8 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
     """Commit the session's measured edit once its checks pass."""
     apply_command_flags(debug=debug, color=color)
 
-    use_json = output_format == OutputFormat.json
     resolved_color = resolve_stream_color(None, sys.stdout)
-    flags = CliFlags(config=config, timeout=timeout)
+    flags = SharedFlags(config=config, timeout=timeout, format=output_format)
 
     # A false flag stays out of the record, as an unset one does.
     keep_args = config_trace_args(flags, message=message, allow_unimproved=allow_unimproved or None)
@@ -272,7 +270,7 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
         result = await with_repo_lock("keep", body, args=keep_args, root=root)
         write_budget_report(
             root,
-            use_json=use_json,
+            flags,
             render_json=lambda summary: render_keep_json(result, budget=summary),
             text_report=result.report,
         )
@@ -304,15 +302,14 @@ def _confirm_discard(worktree: str) -> bool:
 
 def discard(
     *,
-    force: ForceOption = False,
+    force: _ForceOption = False,
     output_format: FormatOption = OutputFormat.text,
     color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
     """Revert the session's experiment worktree to its last commit."""
     apply_command_flags(debug=debug, color=color)
-
-    use_json = output_format == OutputFormat.json
+    flags = SharedFlags(format=output_format)
 
     async def run() -> None:
         root = repo_root()
@@ -337,7 +334,7 @@ def discard(
         result = await with_repo_lock("discard", body, args={"force": force}, root=root)
         write_budget_report(
             root,
-            use_json=use_json,
+            flags,
             render_json=lambda summary: render_discard_json(result, budget=summary),
             text_report=result.report,
         )
@@ -360,16 +357,15 @@ def status(
     """Show this repository's session history, read from its log."""
     apply_command_flags(debug=debug, color=color)
 
-    use_json = output_format == OutputFormat.json
     resolved_color = resolve_stream_color(None, sys.stdout)
-    flags = CliFlags(config=config)
+    flags = SharedFlags(config=config, format=output_format)
 
     async def run() -> None:
         root = repo_root()
 
         async def body(_trace: CommandTrace) -> str:
             trailer, summary = budget_snapshot(root)
-            if use_json:
+            if wants_json(flags):
                 return render_status_json(status_data(root), budget=summary)
             return (
                 status_session(root, resolve_benchless_config(flags, root), color=resolved_color)

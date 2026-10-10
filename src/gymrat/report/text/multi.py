@@ -18,53 +18,60 @@ from typing import TYPE_CHECKING
 from rich.cells import cell_len
 from rich.text import Text
 
-from gymrat.report.format import baseline_cell_parts, candidate_cell_parts
-from gymrat.report.style import VERDICT_STYLES
-from gymrat.report.table.markup import (
+from gymrat.report.style import SCOPE_SEPARATOR, VERDICT_STYLES
+from gymrat.report.table.cells import (
     CELL_GUTTER,
     GEOMEAN_LABEL,
-    VALUE_COLUMN_MIN,
+    NO_GEOMEAN_FIGURE,
+    NO_GEOMEAN_FIGURE_STYLE,
+    NO_STABLE_METRICS,
+    NO_STABLE_METRICS_STYLE,
     aggregate_label_cell,
     flat_geomean_of,
-    geomean_column_cell,
+    geomean_parts,
     geomean_scope_label,
+    geomean_value_style,
     group_geomean_of,
     group_metric_cell,
     header_metric_cell,
-    indented_section_label,
-    join_value_cell,
     kind_geomean_of,
-    plan_sections,
-    shown_verdict,
-    value_widths,
     variant_name_cell,
     verdict_cell,
     verdict_widths,
 )
 from gymrat.report.table.render import (
+    VALUE_COLUMN_MIN,
     AggregateLine,
     AggregateRows,
     build_cell_dispatcher,
     compute_column_width,
     is_grouped,
+    join_value_cell,
     metric_column_width,
+    name_cell,
     plan_body,
     render_body,
     section_annotation,
+    value_widths,
 )
-from gymrat.report.types import candidate_at
+from gymrat.report.table.sections import plan_sections
+from gymrat.report.text.comparison_rows import (
+    CandidateCell,
+    ComparisonRow,
+    candidate_outcomes,
+    comparison_row_builder,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from gymrat.model import GeomeanResult
-    from gymrat.report.format import MetricCellParts
-    from gymrat.report.table.markup import ShownVerdict, ValueWidths, VerdictWidths
-    from gymrat.report.table.render import BodyLine
+    from gymrat.report.display import DisplayClass
+    from gymrat.report.table.cells import VerdictWidths
+    from gymrat.report.table.render import BodyLine, ValueWidths
     from gymrat.report.types import (
         CandidateComparison,
         ComparisonResult,
-        MetricComparison,
     )
 
 type _AggregateCells = tuple[Text, ...]
@@ -72,25 +79,6 @@ type _MetricCells = tuple[Text, ...]
 
 # The name and baseline columns precede a table's candidate columns.
 _LEADING_COLUMNS = 2
-
-
-@dataclass(frozen=True, slots=True)
-class _CandidateCell:
-    """One candidate's side of a metric row: its figure and optional verdict."""
-
-    value: MetricCellParts
-    verdict: ShownVerdict | None
-
-
-@dataclass(frozen=True, slots=True)
-class _ComparisonRow:
-    """One metric row: its names, the baseline figure, and each candidate's side."""
-
-    name: str
-    label: str
-    baseline: MetricCellParts
-    candidates: tuple[_CandidateCell, ...]
-    gating: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +91,7 @@ class _ColumnFields:
 
 
 def _measure_columns(
-    ordered: Sequence[_ComparisonRow],
+    ordered: Sequence[ComparisonRow],
     candidate_count: int,
 ) -> _ColumnFields:
     """Measure each candidate column's value and verdict widths, plus the baseline's."""
@@ -122,7 +110,7 @@ def _measure_columns(
 
 
 def _column_widths(
-    body: Sequence[BodyLine[_ComparisonRow, _AggregateCells]],
+    body: Sequence[BodyLine[ComparisonRow, _AggregateCells]],
     cells_by_name: dict[str, _MetricCells],
     baseline_header: str,
     candidates: Sequence[CandidateComparison],
@@ -146,10 +134,10 @@ def _column_widths(
     return [metric_width, baseline_width, *candidate_widths]
 
 
-def _metric_cells(row: _ComparisonRow, fields: _ColumnFields, *, grouped: bool) -> _MetricCells:
+def _metric_cells(row: ComparisonRow, fields: _ColumnFields, *, grouped: bool) -> _MetricCells:
     """One metric row's cells: its name, the baseline figure, and each candidate's side."""
     return (
-        Text(row.label if grouped else row.name),
+        Text(name_cell(row, grouped=grouped)),
         Text(join_value_cell(row.baseline, fields.baseline)),
         *(
             _candidate_cell(cell, fields.values[index], fields.verdicts[index])
@@ -173,14 +161,12 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
 
     layout = plan_sections(
         result.metrics,
-        lambda name, group, metric: _build_row(
-            metric, name, group, len(candidates), result.samples
-        ),
+        comparison_row_builder(len(candidates), result.samples, with_band=False),
     )
     fields = _measure_columns(layout.ordered, len(candidates))
 
     aggregates = _aggregate_rows(candidates)
-    body: list[BodyLine[_ComparisonRow, _AggregateCells]] = plan_body(
+    body: list[BodyLine[ComparisonRow, _AggregateCells]] = plan_body(
         layout,
         aggregates,
         lambda section: section_annotation(section, result.config_kinds),
@@ -191,7 +177,7 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
     }
     widths = _column_widths(body, cells_by_name, baseline_header, candidates)
 
-    def cells_of(row: _ComparisonRow) -> _MetricCells:
+    def cells_of(row: ComparisonRow) -> _MetricCells:
         return cells_by_name[row.name]
 
     to_cells = build_cell_dispatcher(
@@ -208,50 +194,19 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
     return render_body(body, widths, to_cells, color=color)
 
 
-def _build_row(
-    metric: MetricComparison,
-    name: str,
-    group: str | None,
-    candidate_count: int,
-    samples: int,
-) -> _ComparisonRow:
-    """Split one metric into the baseline figure and one cell per candidate column."""
-    cells: list[_CandidateCell] = []
-    for index in range(candidate_count):
-        side = candidate_at(metric, index)
-        cells.append(
-            _CandidateCell(
-                value=candidate_cell_parts(side, metric.meta.unit),
-                verdict=shown_verdict(
-                    side.verdict if side is not None else None, samples, with_band=False
-                ),
-            )
-        )
-    return _ComparisonRow(
-        name=name,
-        label=indented_section_label(metric.meta.short_name, group),
-        baseline=baseline_cell_parts(metric),
-        candidates=tuple(cells),
-        gating=metric.meta.gating,
-    )
-
-
 def _aggregate_rows(
     candidates: Sequence[CandidateComparison],
-) -> AggregateRows[_ComparisonRow, _AggregateCells]:
+) -> AggregateRows[ComparisonRow, _AggregateCells]:
     """The per-candidate geomean builders, one aggregate cell per candidate column."""
 
     def column_cells(
         geomean_of: Callable[[CandidateComparison], GeomeanResult],
-        rows: Sequence[_ComparisonRow],
+        rows: Sequence[ComparisonRow],
     ) -> _AggregateCells:
         return tuple(
             geomean_column_cell(
                 geomean_of(candidate),
-                [
-                    v.outcome if (v := row.candidates[index].verdict) is not None else None
-                    for row in rows
-                ],
+                candidate_outcomes(rows, index),
             )
             for index, candidate in enumerate(candidates)
         )
@@ -272,8 +227,43 @@ def _aggregate_rows(
     )
 
 
+def geomean_column_cell(
+    geomean: GeomeanResult,
+    outcomes: Sequence[DisplayClass | None],
+) -> Text:
+    """The geomean of one candidate column: the aggregate, then how many metrics back it.
+
+    The multi-candidate table names the scope once in its label column and states
+    each candidate's own figure and count in the candidate columns, so this builds
+    one column's cell.
+
+    Args:
+        geomean: The candidate's aggregate over the scope's metrics.
+        outcomes: The display class of each metric behind the figure, for vetoing
+            the figure's color when every one is quiet.
+
+    Returns:
+        The styled cell: the delta by
+        :func:`geomean_value_style`, the provenance
+        dimmed. An empty geomean shows the ``no stable metrics`` stand-in rather
+        than the ``0.0%`` it computes to.
+    """
+    parts = geomean_parts(geomean)
+    if parts is None:
+        return Text.assemble(
+            (NO_GEOMEAN_FIGURE, NO_GEOMEAN_FIGURE_STYLE),
+            CELL_GUTTER,
+            (NO_STABLE_METRICS, NO_STABLE_METRICS_STYLE),
+        )
+    return Text.assemble(
+        (parts.delta, geomean_value_style(geomean, outcomes)),
+        f" {SCOPE_SEPARATOR} ",
+        (parts.provenance, "dim"),
+    )
+
+
 def _candidate_cell(
-    cell: _CandidateCell,
+    cell: CandidateCell,
     values: ValueWidths,
     verdicts: VerdictWidths,
 ) -> Text:

@@ -16,7 +16,7 @@ from rich.style import Style
 
 from gymrat.cli.style import STYLE_LABEL, STYLE_META
 from gymrat.cli.supervise.progress import IDLE_WARN_MS
-from gymrat.cli.supervise.types import BestIteration
+from gymrat.session.store import BestIteration
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
     BASH_CYCLE_END_MS,

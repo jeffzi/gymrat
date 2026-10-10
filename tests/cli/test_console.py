@@ -1,8 +1,8 @@
 """Tests for the CLI console state: stream helpers and the stderr console factory.
 
 The console module owns the TTY, colour and debug state every command reads,
-and sits below the shared CLI infrastructure: importing it must never pull the
-shared module back in.
+and sits below the shared CLI infrastructure: importing it must never pull
+``gymrat.cli.exit`` back in.
 """
 
 import errno
@@ -47,7 +47,7 @@ def _open_descriptors() -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_console_module_when_imported_does_not_import_the_error_module():
+def test_console_module_when_imported_does_not_import_the_exit_module():
     loaded = modules_imported_by("gymrat.cli.console")
 
     assert "gymrat.cli.exit" not in loaded
@@ -152,8 +152,8 @@ def test_apply_command_flags_when_command_gives_no_flags_does_keep_the_root_flag
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("NO_COLOR", "1")
-    set_color_override(True)
-    set_debug_mode(True)
+    set_color_override(override=True)
+    set_debug_mode(enabled=True)
 
     apply_command_flags(debug=False, color=None)
 

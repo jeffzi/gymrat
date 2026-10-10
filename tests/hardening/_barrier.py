@@ -10,11 +10,10 @@ run out of process; the parent side is :func:`racing_children`.
 import contextlib
 import os
 import subprocess
-import time
 from collections.abc import Callable, Generator, Sequence
 from pathlib import Path
 
-from tests._process_helpers import reaped, spawn_child_script
+from tests._process_helpers import poll_until_blocking, reaped, spawn_child_script
 
 #: Child-script source defining ``wait_at_barrier(barrier_path)``. A child script
 #: starts with it and calls ``wait_at_barrier`` right before its contended step.
@@ -68,16 +67,21 @@ def _release_together(
     Raises:
         AssertionError: Fewer than ``count`` children parked within ``timeout_s``.
     """
+
+    def all_parked() -> bool:
+        if on_poll is not None:
+            on_poll()
+        return len(list(barrier.parent.glob("ready.*"))) >= count
+
     go_fd = os.open(str(barrier), os.O_RDWR)
     try:
-        deadline = time.monotonic() + timeout_s
-        while len(list(barrier.parent.glob("ready.*"))) < count:
-            if on_poll is not None:
-                on_poll()
-            if time.monotonic() > deadline:
-                message = f"fewer than {count} children reached the barrier in {barrier.parent}"
-                raise AssertionError(message)
-            time.sleep(0.01)
+        poll_until_blocking(
+            all_parked,
+            timeout_s,
+            lambda: AssertionError(
+                f"fewer than {count} children reached the barrier in {barrier.parent}"
+            ),
+        )
         os.write(go_fd, b"\x00" * count)
     finally:
         os.close(go_fd)

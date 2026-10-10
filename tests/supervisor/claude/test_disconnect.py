@@ -19,7 +19,6 @@ from claude_agent_sdk import TextBlock
 from gymrat.supervisor.driver import DriverSession, SessionOutcome
 from tests.supervisor._fixtures import (
     FakeClient,
-    FiniteClient,
     abort_on_first_usage_update,
     assistant,
     end_and_settle,
@@ -76,10 +75,7 @@ class _RacingClient(FakeClient):
         fail_follow_up: bool = False,
         after_turn: Sequence[object] = (),
     ) -> None:
-        super().__init__([*messages, *after_turn], fail_follow_up=fail_follow_up)
-        if finite:
-            # Released from the start, so the stream ends once the script is spent.
-            self._released.set()
+        super().__init__([*messages, *after_turn], fail_follow_up=fail_follow_up, finite=finite)
         self._stream: _Stream | None = _Stream(self._released)
 
     @override
@@ -99,16 +95,6 @@ class _DisconnectFailingClient(FakeClient):
         self.disconnect_count += 1
         self._released.set()
         message = "transport already gone"
-        raise RuntimeError(message)
-
-
-class _FiniteDisconnectFailingClient(FiniteClient):
-    """A client whose stream ends on its own, and whose ``disconnect`` then raises."""
-
-    @override
-    async def disconnect(self) -> None:
-        self.disconnect_count += 1
-        message = "teardown boom"
         raise RuntimeError(message)
 
 
@@ -223,21 +209,19 @@ async def test_start_when_session_ended_does_disconnect_client_exactly_once_with
 
 
 @pytest.mark.parametrize(
-    ("client_cls", "end_session", "expected_reason"),
+    ("finite", "end_session", "expected_reason"),
     [
-        pytest.param(_DisconnectFailingClient, _end_by_end_call, "completed", id="end-call"),
-        pytest.param(_DisconnectFailingClient, _end_by_abort, "interrupted", id="abort"),
-        pytest.param(
-            _FiniteDisconnectFailingClient, _end_by_stream, "completed", id="stream-exhaustion"
-        ),
+        pytest.param(False, _end_by_end_call, "completed", id="end-call"),
+        pytest.param(False, _end_by_abort, "interrupted", id="abort"),
+        pytest.param(True, _end_by_stream, "completed", id="stream-exhaustion"),
     ],
 )
 async def test_start_when_disconnect_raises_does_keep_the_settled_outcome_with_one_warning(
-    client_cls: type[FakeClient],
+    finite: bool,
     end_session: Callable[[FakeClient], Awaitable[SessionOutcome]],
     expected_reason: str,
 ):
-    client = client_cls(_one_turn())
+    client = _DisconnectFailingClient(_one_turn(), finite=finite)
 
     with _recorded_warnings() as caught:
         outcome = await end_session(client)

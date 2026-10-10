@@ -17,14 +17,14 @@ from typing import Annotated
 from pydantic import Field
 
 from gymrat.errors import GymratError
-from gymrat.git import SHORT_SHA_LENGTH, run_git, try_git
+from gymrat.git import run_git, run_git_step, try_git
 from gymrat.session.paths import (
     SESSION_DIR_NAME,
     baseline_worktree_dir,
     experiment_worktree_dir,
     git_common_dir,
 )
-from gymrat.utils import stderr_text_of
+from gymrat.utils import SHORT_SHA_LENGTH
 
 # Prefix of the branch a session's experiment worktree sits on.
 BRANCH_PREFIX = "gymrat/"
@@ -87,7 +87,7 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
 
     Raises:
         GymratError: When ``root`` is not a git repository, or when git refuses
-            to prune, to create the branch, or to create either worktree.
+            to create the branch or either worktree.
     """
     branch = f"{BRANCH_PREFIX}{session_id}"
 
@@ -169,7 +169,7 @@ def recreate_workspace(root: str, branch: str, baseline_sha: str) -> None:
         baseline_sha: The commit sha to reattach the baseline worktree to.
 
     Raises:
-        GymratError: When git refuses to prune or to add a worktree.
+        GymratError: When git refuses to add a worktree.
     """
     experiment, baseline = _session_worktrees(root)
     needs_experiment = not Path(experiment).is_dir()
@@ -414,6 +414,9 @@ def dirty_file_count(directory: str) -> int:
 
     Returns:
         The number of dirty entries, or 0 when the directory is absent.
+
+    Raises:
+        GymratError: When git refuses to report the worktree's status.
     """
     if not Path(directory).is_dir():
         return 0
@@ -432,14 +435,19 @@ def changed_file_count(directory: str, target: str) -> int:
 
     This includes tracked files whose content changed between ``target`` and
     the current working tree (committed or not) and untracked files that exist
-    in the working tree but not in ``target``.  A missing directory returns 0.
+    in the working tree but not in ``target``.
 
     Args:
         directory: The worktree to compare against ``target``.
         target: The git ref or commit to diff against.
 
     Returns:
-        The number of changed or untracked files, or 0 when absent.
+        The number of changed or untracked files, or 0 when the directory is
+        absent.
+
+    Raises:
+        GymratError: When git refuses to diff the worktree or to list its
+            untracked files.
     """
     if not Path(directory).is_dir():
         return 0
@@ -520,33 +528,3 @@ def remove_worktrees(root: str, worktrees: Worktrees) -> list[str]:
             )
 
     return warnings
-
-
-# ---------------------------------------------------------------------------
-# Git plumbing
-# ---------------------------------------------------------------------------
-
-
-def run_git_step(args: list[str], cwd: str, message: str, hint: str) -> str:
-    """Run git in ``cwd``, turning a non-zero exit into a ``GymratError``.
-
-    The error carries git's own diagnostics after ``message`` so the reader sees
-    the real reason, and ``hint`` for what to do next.
-
-    Args:
-        args: The git command-line arguments to run.
-        cwd: Working directory to run the command in.
-        message: The error message prefix used if the command fails.
-        hint: The hint appended to the raised error.
-
-    Returns:
-        The captured stdout from the git command.
-
-    Raises:
-        GymratError: When the git command exits non-zero.
-    """
-    try:
-        return run_git(args, cwd)
-    except (subprocess.SubprocessError, OSError) as error:
-        detail = f"{message}: {stderr_text_of(error)}"
-        raise GymratError(detail, hint=hint) from error

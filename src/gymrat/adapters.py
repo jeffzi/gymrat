@@ -53,11 +53,11 @@ from pydantic import (
 )
 
 from gymrat.errors import GymratError
-from gymrat.metric_name import LINE_TERMINATORS, MetricNameError, MultipleHashesError
+from gymrat.metric_name import MetricNameError, MultipleHashesError
 from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import Direction, MetricUnit
 from gymrat.pydantic_errors import describe_key, drop_prefix_errors, phrase_for_error
-from gymrat.utils import WarnSink, expected_got, finite_or_none, warn_to_stderr
+from gymrat.utils import LINE_TERMINATORS, WarnSink, expected_got, finite_or_none, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # adapter contract

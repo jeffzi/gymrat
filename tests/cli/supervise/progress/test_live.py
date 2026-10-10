@@ -18,43 +18,41 @@ tested alongside every other CLI progress renderer, in
 
 from __future__ import annotations
 
-import sys
 from io import StringIO
 from typing import TYPE_CHECKING, override
-from unittest.mock import DEFAULT, MagicMock, Mock, create_autospec
+from unittest.mock import DEFAULT, MagicMock, Mock
 
 import pytest
 
-from gymrat.cli.console import stderr_console
 from gymrat.supervisor.events import TextDeltaEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._rich import (
     KEPT_LINE,
     Clock,
     frame_text,
-    sealed_console,
+    kept_line_terminal,
     stop_tracked,
 )
 from tests.cli.supervise._fixtures import (
-    CONSOLE_FACTORY_PATH,
     EMPTY_READ,
     FRAME_WIDTH,
     KEPT_READ,
     ReporterKit,
+    dashboard_console_patch,
     fire_launch_and_iterate_start,
     launched,
     make_reporter,
     render_frame,
+)
+from tests.supervisor._fixtures import (
     tool_start_event,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from rich.console import Console
-
-    from gymrat.cli.supervise.types import ReadSessionResult
     from gymrat.session.progress_file import ProgressSnapshot
+    from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.events import SessionEvent
 
 # The terminal the dashboard paints on: wide enough for the golden frame width
@@ -212,36 +210,22 @@ def test_stop_when_live_stop_raises_unrelated_value_error_does_propagate(mock_li
 # ---------------------------------------------------------------------------
 
 
-def _paint_dashboards_on(console: Console, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Hand every dashboard built from here on *console* as its stderr console."""
-    monkeypatch.setattr(CONSOLE_FACTORY_PATH, create_autospec(stderr_console, return_value=console))
-
-
-def _mount_terminal(term: StringIO, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make *term* the terminal a dashboard paints on and the process's stderr.
-
-    One line is already printed on it, above where the dashboard will go.
-
-    Args:
-        term: The buffer standing in for the terminal.
-        monkeypatch: Patches the dashboard console factory and ``sys.stderr``.
-    """
-    console = sealed_console(width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT, color_system=None)
-    console.file = term
-    console.print(KEPT_LINE)
-    _paint_dashboards_on(console, monkeypatch)
-    monkeypatch.setattr(sys, "stderr", term)
-
-
 @pytest.fixture
 def terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[StringIO]:
     """The stderr terminal the live dashboard paints on, with one line kept above it."""
     term = StringIO()
-    _mount_terminal(term, monkeypatch)
-    yield term
-    # Stop the dashboards while stderr is still this terminal: a Live stopped
-    # after monkeypatch's undo would re-point sys.stderr at this dead buffer.
-    stop_tracked()
+    console = kept_line_terminal(
+        monkeypatch,
+        stream=term,
+        width=_SCREEN_WIDTH,
+        height=_SCREEN_HEIGHT,
+        color_system=None,
+    )
+    with dashboard_console_patch(console):
+        yield term
+        # Stop the dashboards while stderr is still this terminal: a Live stopped
+        # after monkeypatch's undo would re-point sys.stderr at this dead buffer.
+        stop_tracked()
 
 
 # ---------------------------------------------------------------------------
@@ -320,12 +304,19 @@ def test_live_frame_when_failures_stop_does_render_a_fresh_frame(mock_live_cls: 
     assert recovered == render_frame(kit.reporter)
 
 
-def test_stop_when_final_frame_fails_to_render_does_return_normally(terminal: StringIO):
+def test_stop_when_final_frame_fails_to_render_does_return_normally_with_one_warning(
+    terminal: StringIO, mock_live_cls: MagicMock
+):
     sidecar = _FlakySidecar()
     kit = _dashboard_reading(sidecar)
+    get_renderable = mock_live_cls.call_args.kwargs["get_renderable"]
+    # rich renders one final frame as a Live stops.
+    mock_live_cls.return_value.stop.side_effect = get_renderable
     sidecar.fail_next(None)
 
     kit.reporter.stop()
+
+    assert terminal.getvalue() == f"{KEPT_LINE}\n{_RENDER_FAILURE_WARNING}\n"
 
 
 class _FailingClock(Clock[int]):

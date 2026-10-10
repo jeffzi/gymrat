@@ -1,7 +1,9 @@
 """Tests for the ``measure`` orchestrator.
 
 Unit tests stub the sampling pipeline to pin how ``measure`` assembles a
-:class:`MeasurementResult` from canned per-round samples. End-to-end tests
+:class:`MeasurementResult` from canned per-round samples. They also pin, once
+for both orchestrators, the run wiring ``measure`` shares with ``compare``:
+cleanup metadata, sampling callbacks, and config overrides. End-to-end tests
 drive real scratch repos and shell bench scripts through the full pipeline —
 target resolution, worktree lifecycle, and ``sh`` subprocesses whose stdout the
 ``metric-lines`` adapter parses.
@@ -13,13 +15,15 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat import compare as compare_mod
 from gymrat import measure as measure_mod
+from gymrat.compare import CompareOptions, compare
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import CommandError
 from gymrat.measure import MeasureOptions, measure
+from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
 from gymrat.progress_events import PrepareStarted
 from gymrat.sampling import TargetSpec
-from gymrat.utils import warn_to_stderr
 from tests._git import (
     EMIT_ONE_BENCH,
     FAILING_BENCH,
@@ -31,30 +35,36 @@ from tests._pipeline import DIRTY_RESULT, install_pipeline, run_options
 from tests._platform import needs_posix_shell
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
+    from types import ModuleType
 
     from gymrat.progress_events import ProgressEvent
-    from gymrat.utils import WarnSink
+    from gymrat.report.types import ComparisonResult, MeasurementResult
+    from gymrat.sampling import RunOptions
+
+    type Orchestrate = Callable[[RunOptions], Awaitable[MeasurementResult | ComparisonResult]]
 
 
-def _options(
-    *,
-    target: str = "main",
-    on_progress: Callable[[ProgressEvent], None] | None = None,
-    warn: WarnSink = warn_to_stderr,
-    config_metrics: dict[str, MetricEntry] | None = None,
-    config_kinds: dict[str, KindEntry] | None = None,
-) -> MeasureOptions:
-    return MeasureOptions(
-        run=run_options(
-            samples=3,
-            on_progress=on_progress,
-            warn=warn,
-            config_metrics=config_metrics,
-            config_kinds=config_kinds,
-        ),
-        target=TargetSpec(label=None, target=target),
+def _measure_main(run: RunOptions) -> Awaitable[MeasurementResult]:
+    return measure(MeasureOptions(run=run, target=TargetSpec(label=None, target="main")))
+
+
+def _compare_base_to_cand(run: RunOptions) -> Awaitable[ComparisonResult]:
+    return compare(
+        CompareOptions(
+            run=run,
+            baseline=TargetSpec(label=None, target="base"),
+            candidates=[TargetSpec(label=None, target="cand")],
+            unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
+        )
     )
+
+
+_ORCHESTRATORS = [
+    pytest.param(measure_mod, _measure_main, 1, id="measure"),
+    pytest.param(compare_mod, _compare_base_to_cand, 2, id="compare"),
+]
+"""Each orchestrator, how to run it on a stubbed pipeline, and how many targets it samples."""
 
 
 async def test_measure_when_target_benched_does_assemble_the_result(
@@ -64,47 +74,78 @@ async def test_measure_when_target_benched_does_assemble_the_result(
         monkeypatch,
         measure_mod,
         [[{"x": 10.0, "y": 4.0}, {"x": 20.0}, {"x": 30.0, "y": 6.0}]],
-        cleanup=DIRTY_RESULT,
     )
 
-    result = await measure(_options(target="main"))
+    result = await _measure_main(run_options(samples=3))
 
     assert set(result.metrics) == {"x", "y"}
     assert result.metrics["x"].median == 20.0
     assert result.metrics["x"].spread == 50.0
     assert result.metrics["y"].median == 5.0
     assert result.rounds == ({"x": 10.0, "y": 4.0}, {"x": 20.0}, {"x": 30.0, "y": 6.0})
-    assert result.samples == 3
-    assert result.adapter == "metric-lines"
     assert result.label == "main"
+
+
+# ---------------------------------------------------------------------------
+# Run wiring shared with compare
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("orchestrator", "orchestrate", "targets"), _ORCHESTRATORS)
+async def test_orchestrator_when_pipeline_completes_does_assemble_result_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    orchestrator: ModuleType,
+    orchestrate: Orchestrate,
+    targets: int,
+):
+    install_pipeline(monkeypatch, orchestrator, [[{"x": 1.0}, {"x": 2.0}]] * targets, DIRTY_RESULT)
+
+    result = await orchestrate(run_options(samples=3))
+
     assert result.worktrees_removed == DIRTY_RESULT.removed
     assert result.worktrees_left_behind == DIRTY_RESULT.failures
     assert result.worktree_prune_error == DIRTY_RESULT.prune_error
+    assert result.samples == 3
+    assert result.adapter == "metric-lines"
 
 
-async def test_measure_when_sampling_callbacks_given_does_deliver_what_the_pipeline_emits(
+@pytest.mark.parametrize(("orchestrator", "orchestrate", "targets"), _ORCHESTRATORS)
+async def test_orchestrator_when_sampling_callbacks_given_does_deliver_what_the_pipeline_emits(
     monkeypatch: pytest.MonkeyPatch,
+    orchestrator: ModuleType,
+    orchestrate: Orchestrate,
+    targets: int,
 ):
     event = PrepareStarted(label="main", at_ms=0.0)
     install_pipeline(
-        monkeypatch, measure_mod, [[{"x": 1.0}]], progress_event=event, warning="banana"
+        monkeypatch,
+        orchestrator,
+        [[{"x": 1.0}, {"x": 2.0}]] * targets,
+        progress_event=event,
+        warning="banana",
     )
     steps: list[ProgressEvent] = []
     warnings: list[str] = []
 
-    await measure(_options(on_progress=steps.append, warn=warnings.append))
+    await orchestrate(run_options(samples=2, on_progress=steps.append, warn=warnings.append))
 
     assert (steps, warnings) == ([event], ["banana"])
 
 
-async def test_measure_when_config_overrides_given_does_apply_them_to_the_result(
+@pytest.mark.parametrize(("orchestrator", "orchestrate", "targets"), _ORCHESTRATORS)
+async def test_orchestrator_when_config_overrides_given_does_apply_them_to_the_result(
     monkeypatch: pytest.MonkeyPatch,
+    orchestrator: ModuleType,
+    orchestrate: Orchestrate,
+    targets: int,
 ):
-    install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}, {"x": 2.0}]])
+    install_pipeline(monkeypatch, orchestrator, [[{"x": 1.0}, {"x": 2.0}]] * targets)
     kinds = {"other": KindEntry(gating=False)}
 
-    result = await measure(
-        _options(config_metrics={"x": MetricEntry(direction="higher")}, config_kinds=kinds)
+    result = await orchestrate(
+        run_options(
+            samples=2, config_metrics={"x": MetricEntry(direction="higher")}, config_kinds=kinds
+        )
     )
 
     assert result.metrics["x"].meta.direction == "higher"

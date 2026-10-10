@@ -35,11 +35,16 @@ from gymrat.report.types import (
     ReportOptions,
 )
 from gymrat.sampling import RunOptions, SamplingOptions
-from tests.cli._session import (
-    open_session,
-    runner,
+from tests._ansi import warning_lines
+from tests.cli._command_stubs import (
     stub_compare,
     stub_compare_command,
+)
+from tests.cli._runner import (
+    runner,
+)
+from tests.cli._session import (
+    open_session,
 )
 from tests.config._toml import write_config
 from tests.report._comparisons import (
@@ -190,7 +195,7 @@ def test_compare_when_a_candidate_has_no_stable_gating_metric_does_warn_only_und
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", fail_on]
     )
 
-    assert [line for line in result.stderr.splitlines() if line.startswith("warning: ")] == warnings
+    assert warning_lines(result.stderr) == warnings
 
 
 # ---------------------------------------------------------------------------

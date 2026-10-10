@@ -15,9 +15,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 from gymrat.errors import GymratError
+from gymrat.git import run_git_step
 from gymrat.session.paths import SESSION_DIR_NAME, experiment_worktree_dir
 from gymrat.session.store import require_open_session
-from gymrat.session.workspace import run_git_step
 
 # ``git status -z`` prefixes each entry with two status characters and a space
 # (``XY<space>``), then the NUL-delimited path. Rename/copy entries (``R`` or
@@ -29,7 +29,7 @@ _RENAME_COPY_CODES = frozenset("RC")
 
 
 def _raise_file_vs_dir_error(name: str) -> NoReturn:
-    """Shared by both sync failure sites so the message and submodule hint stay identical."""
+    """Shared by every sync failure site so the message wording and submodule hint stay alike."""
     msg = f"Cannot sync '{name}': expected a file but found a directory"
     raise GymratError(msg, hint="If this is a submodule, commit or remove it before syncing.")
 

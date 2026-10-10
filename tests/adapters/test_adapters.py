@@ -14,6 +14,7 @@ from tests.adapters._inputs import (
     VALID_ADAPTERS_HINT,
     VALID_BENCHMARK,
     build_stdout,
+    malformed_line_warning,
     unknown_adapter_message,
 )
 
@@ -44,11 +45,12 @@ def test_get_adapter_when_name_registered_does_return_matching_singleton(
 
 
 def test_get_adapter_when_name_unknown_does_raise_gymrat_error_describing_valid_adapters():
-    with pytest.raises(GymratError, match=r"Unknown adapter") as excinfo:
+    with pytest.raises(GymratError) as excinfo:
         get_adapter("unknown")
 
     error = excinfo.value
-    assert type(error) is GymratError
+    # An adapter error would gain a class-name prefix on the CLI; this one names no adapter fault.
+    assert not isinstance(error, AdapterError)
     assert str(error) == unknown_adapter_message("unknown")
     assert error.hint == VALID_ADAPTERS_HINT
 
@@ -217,16 +219,13 @@ def test_parse_when_non_metric_lines_present_does_ignore_them_silently(stdout: s
         pytest.param("METRIC na\u2028me=42", id="name-holds-line-separator"),
     ],
 )
-def test_parse_when_metric_line_malformed_does_skip_line_with_warning(
-    offending: str, capsys: pytest.CaptureFixture[str]
-):
+def test_parse_when_metric_line_malformed_does_skip_line_with_warning(offending: str):
     warnings: list[str] = []
 
     result = metric_lines_adapter.parse(f"{offending}\nMETRIC valid=1", warnings.append)
 
     assert result == {"valid": 1.0}
-    assert warnings == [f"Failed to parse METRIC line: {offending}"]
-    assert capsys.readouterr().err == ""
+    assert warnings == [malformed_line_warning(offending)]
 
 
 # ---------------------------------------------------------------------------
@@ -267,20 +266,41 @@ def test_parse_when_name_has_empty_part_does_skip_line_with_warning(name: str, p
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("adapter", "stdout"),
-    [
-        pytest.param(metric_lines_adapter, "METRIC foo=bar\nMETRIC valid=1", id="metric-lines"),
-        pytest.param(mitata_adapter, build_stdout([None, VALID_BENCHMARK]), id="mitata"),
-    ],
-)
+_ROUTED_WARNINGS = [
+    pytest.param(
+        metric_lines_adapter,
+        "METRIC foo=bar\nMETRIC valid=1",
+        malformed_line_warning("METRIC foo=bar"),
+        id="metric-lines",
+    ),
+    pytest.param(
+        mitata_adapter,
+        build_stdout([None, VALID_BENCHMARK]),
+        "Skipping benchmark: expected an object, got null",
+        id="mitata",
+    ),
+]
+"""Each adapter, a stdout holding one entry it skips, and the warning it gives for it."""
+
+
+@pytest.mark.parametrize(("adapter", "stdout", "warning"), _ROUTED_WARNINGS)
 def test_parse_when_no_sink_given_does_warn_to_stderr(
-    adapter: Adapter, stdout: str, capsys: pytest.CaptureFixture[str]
+    adapter: Adapter, stdout: str, warning: str, capsys: pytest.CaptureFixture[str]
 ):
     adapter.parse(stdout)
 
-    err = capsys.readouterr().err
-    assert (err.endswith("\n"), err.count("\n")) == (True, 1)
+    assert capsys.readouterr().err == f"{warning}\n"
+
+
+@pytest.mark.parametrize(("adapter", "stdout", "warning"), _ROUTED_WARNINGS)
+def test_parse_when_sink_given_does_warn_there_keeping_stderr_silent(
+    adapter: Adapter, stdout: str, warning: str, capsys: pytest.CaptureFixture[str]
+):
+    warnings: list[str] = []
+
+    adapter.parse(stdout, warnings.append)
+
+    assert (warnings, capsys.readouterr().err) == ([warning], "")
 
 
 # ---------------------------------------------------------------------------

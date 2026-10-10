@@ -46,13 +46,10 @@ from rich.text import Text
 
 from gymrat.cli.live_display import LiveDisplayMixin
 from gymrat.cli.style import (
-    COMPACT_HEIGHT_THRESHOLD,
-    SPINNER_NAME,
     STYLE_LABEL,
     STYLE_META,
     STYLE_TIMER_DONE,
     STYLE_TIMER_RUNNING,
-    STYLE_VERB,
 )
 from gymrat.progress_events import (
     PassFinished,
@@ -66,6 +63,16 @@ from gymrat.utils import (
     format_clock,
     format_duration,
 )
+
+# The one spinner animation every renderer uses, for ``SpinnerColumn`` in
+# progress bars and ``Spinner`` in checklist rows alike.
+SPINNER_NAME = "dots"
+
+# Below this terminal height, a full checklist or header-plus-rows layout
+# can't fit, so a renderer switches to a single-row compact bar.
+COMPACT_HEIGHT_THRESHOLD = 12
+
+STYLE_VERB = "bold"
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +211,22 @@ def plain_line(before: ProgressState, after: ProgressState, event: ProgressEvent
             return None
 
 
+def clock_text(elapsed_ms: float, remaining_ms: float) -> Text:
+    """The media-player clock: elapsed time over the projected total.
+
+    Args:
+        elapsed_ms: Time the run has taken so far.
+        remaining_ms: The estimate of the time left.
+
+    Returns:
+        The running clock, then a dimmed ``/total`` projected from the estimate.
+    """
+    text = Text()
+    text.append(format_clock(elapsed_ms), style=STYLE_TIMER_RUNNING)
+    text.append(f"/{format_clock(elapsed_ms + remaining_ms)}", style=STYLE_META)
+    return text
+
+
 class _ClockColumn(ProgressColumn):
     """Media-player clock: elapsed over the projected total run time.
 
@@ -222,12 +245,11 @@ class _ClockColumn(ProgressColumn):
     @override
     def render(self, task: Task) -> Text:
         elapsed_ms = (task.elapsed or 0.0) * MS_PER_SECOND
-        total = (
-            "--:--" if self._remaining_ms is None else format_clock(elapsed_ms + self._remaining_ms)
-        )
+        if self._remaining_ms is not None:
+            return clock_text(elapsed_ms, self._remaining_ms)
         text = Text()
         text.append(format_clock(elapsed_ms), style=STYLE_TIMER_RUNNING)
-        text.append(f"/{total}", style=STYLE_META)
+        text.append("/--:--", style=STYLE_META)
         return text
 
 
@@ -389,7 +411,7 @@ class ProgressReporter(LiveDisplayMixin):
         target_labels: Labels for each target, shown when ``target_count > 1``.
     """
 
-    def __init__(  # noqa: PLR0913 -- mirrors the factory below
+    def __init__(  # noqa: PLR0913 -- mirrors begin_run in cli.run_setup, which builds it
         self,
         mode: Literal["live", "plain"],
         console: Console,

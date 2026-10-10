@@ -1,8 +1,8 @@
 """Session-log records shared by the store tests and the fold-state tests."""
 
-from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.session.records import BaselineRecord, HookRecord, PairedSamples, SessionRecord
 from gymrat.session.workspace import Worktrees
+from gymrat.utils import SHORT_SHA_LENGTH
 from tests.session.records._fixtures import (
     AT,
     COMMIT,

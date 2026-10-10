@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gymrat.config import KindEntry
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
-    from gymrat.targets import WorktreeRemovalFailure
     from gymrat.verdict import KindAggregate
+    from gymrat.worktree_failure import WorktreeRemovalFailure
 
 
 @dataclass(frozen=True, slots=True)

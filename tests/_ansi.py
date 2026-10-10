@@ -39,6 +39,11 @@ def stripped_lines(text: str, *, keep_blank: bool) -> list[str]:
     return [strip_sgr(line).strip() for line in text.split("\n") if keep_blank or line.strip()]
 
 
+def warning_lines(stderr: str) -> list[str]:
+    """The lines of ``stderr`` that open with ``warning: ``, stripped of color."""
+    return [line for line in strip_ansi(stderr).splitlines() if line.startswith("warning: ")]
+
+
 def normalize(text: str) -> str:
     """Strip ANSI codes then collapse whitespace, so a reflowed block matches."""
     return " ".join(strip_ansi(text).split())

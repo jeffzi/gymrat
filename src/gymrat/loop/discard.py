@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 from gymrat.clock import now_ns
 from gymrat.errors import GymratError
-from gymrat.git import SHORT_SHA_LENGTH, try_git
+from gymrat.git import try_git
 from gymrat.session.records import DiscardRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
@@ -42,7 +42,7 @@ from gymrat.session.workspace import (
     revert_workspace,
     worktree_head,
 )
-from gymrat.utils import pluralize
+from gymrat.utils import SHORT_SHA_LENGTH, pluralize
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +51,7 @@ class DiscardResult:
 
     ``at`` is the instant the discard happened, in nanoseconds since the epoch.
     When a record is present, it equals the record's ``at``; on the unmeasured
-    path the caller supplies it directly.
+    path it is the instant the worktree was reverted.
     """
 
     record: DiscardRecord | None
@@ -162,7 +162,7 @@ def _revert_target(
     """The commit the unmeasured revert should land on.
 
     An unreachable kept commit is a corruption edge case that should not happen
-    in practice; the current HEAD is then the best the worktree can offer.
+    in practice.
 
     Args:
         state: The session's current iteration state.

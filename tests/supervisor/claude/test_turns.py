@@ -1,8 +1,8 @@
 """Tests for the Claude driver turn protocol.
 
 A successful or budget-exhausted result message emits a ``TurnEndEvent`` and
-the stream continues. Session settlement happens via ``end()``, ``interrupt()``,
-natural stream termination, or an error result message.
+the stream continues. Session settlement happens via ``end()``, natural stream
+termination, or an error result message.
 """
 
 import math
@@ -164,6 +164,29 @@ async def test_start_when_budget_exhausted_does_flag_the_turn_end_without_settli
     turn_ends = events_of(events, TurnEndEvent)
     assert [(t.budget_exhausted, t.cost_usd) for t in turn_ends] == [(True, 1.50)]
     assert outcome.reason == "completed"
+
+
+@pytest.mark.parametrize(
+    ("result_text", "expected_message"),
+    [
+        pytest.param("something went wrong", "something went wrong", id="result-text-present"),
+        pytest.param(None, "error", id="result-text-absent-uses-subtype"),
+    ],
+)
+async def test_start_when_result_is_error_does_settle_error_as_the_final_result(
+    result_text: str | None,
+    expected_message: str,
+):
+    messages = [
+        result_message(subtype="error", is_error=True, result=result_text, total_cost_usd=0.2)
+    ]
+    probe = collecting_observer()
+
+    outcome = await run_outcome(FakeClient(messages), probe.observer)
+
+    assert (outcome.reason, outcome.message, outcome.cost_usd) == ("error", expected_message, 0.2)
+    assert [update.cost_usd for update in events_of(probe.events, UsageUpdateEvent)] == [0.2]
+    assert events_of(probe.events, TurnEndEvent) == []
 
 
 # ---------------------------------------------------------------------------

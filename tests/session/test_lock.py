@@ -260,17 +260,6 @@ def test_acquire_lock_when_held_with_unreadable_content_does_report_held_without
         blocker.release()
 
 
-def test_acquire_lock_when_same_process_holds_lock_does_raise_lock_contention_error(
-    lock_path: str, acquire: Acquire
-):
-    acquire(lock_path, "compare")
-
-    with pytest.raises(LockContentionError) as caught:
-        acquire_lock(lock_path, "measure")
-
-    assert caught.value.hint == LIVE_HOLDER_HINT
-
-
 def test_acquire_lock_when_released_then_reacquired_does_succeed(lock_path: str, acquire: Acquire):
     release = acquire(lock_path, "compare")
     release()

@@ -22,14 +22,12 @@ from gymrat.cli.budget_report import emit_report
 from gymrat.cli.commands.doctor import doctor_command
 from gymrat.cli.exit import format_cli_error
 from gymrat.cli.run_setup import SharedFlags, begin_run
-from gymrat.doctor import Check, CheckSection, build_doctor_report
-from gymrat.git import NotAGitRepositoryError
 from gymrat.report.style import render_lines
 from gymrat.report.types import DEFAULT_REPORT_OPTIONS
-from gymrat.session.paths import repo_root
+from gymrat.session.paths import NotAGitRepositoryError, repo_root
 from tests._ansi import SGR_RE
-from tests._doctor_fixtures import doctor_report
 from tests._streams import FakeStream
+from tests.cli._doctor_seams import patch_doctor
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -92,11 +90,7 @@ def _doctor_report_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
     """
     stdout = FakeStream(tty=True)
     monkeypatch.setattr("sys.stdout", stdout)
-    report = doctor_report([CheckSection(title="T", checks=[Check("a", "ok", "x")])])
-    monkeypatch.setattr(
-        "gymrat.cli.commands.doctor.build_doctor_report",
-        create_autospec(build_doctor_report, return_value=report),
-    )
+    patch_doctor(monkeypatch, stub_text=False)
 
     doctor_command()
 

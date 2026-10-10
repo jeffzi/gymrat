@@ -4,7 +4,7 @@ These drive the command through :class:`typer.testing.CliRunner` with the
 ``measure`` and ``resolve_config`` seams replaced. They cover the optional
 target defaulting to ``.``, the report going to stdout, the missing-bench error
 routing to exit 2 for ``measure`` and ``compare`` alike, the ``--record`` flag that appends the run to an open
-session log as a baseline (including elapsed duration), and the command trace.
+session log as a baseline (with its elapsed duration), and the command trace.
 The budget time-left line comes from the shared ``emit_report`` path, pinned in
 ``test_session_cmds`` with and without a budget; the tight-budget warning is
 pinned there for measure.
@@ -22,12 +22,16 @@ from gymrat.report.types import MeasurementResult
 from gymrat.sampling import TargetSpec
 from gymrat.session.records import BaselineRecord, CommandRecord
 from tests._clock import install_monotonic_clock
-from tests.cli._session import (
+from tests.cli._command_stubs import (
     capture_measure,
-    open_session,
-    runner,
     stub_measure,
     stub_resolve,
+)
+from tests.cli._runner import (
+    runner,
+)
+from tests.cli._session import (
+    open_session,
 )
 from tests.loop._probe import install_measure
 from tests.report._measurements import create_measurement_result
@@ -104,7 +108,12 @@ def test_measure_when_record_and_open_session_does_record_the_run_as_a_baseline(
 ):
     open_session(record_repo)
     rounds: list[dict[str, float]] = [{"latency": 41}, {"latency": 43}]
-    capture_measure(monkeypatch, create_measurement_result(label=label, rounds=rounds))
+    clock = install_monotonic_clock(monkeypatch)
+    install_measure(
+        monkeypatch,
+        create_measurement_result(label=label, rounds=rounds),
+        on_call=lambda: clock.tick(500.0),
+    )
 
     result = runner.invoke(app, ["measure", positional, "--bench", "sh bench.sh", "--record"])
 
@@ -115,6 +124,7 @@ def test_measure_when_record_and_open_session_does_record_the_run_as_a_baseline(
     assert recorded.at > 0
     assert recorded.label == label
     assert recorded.samples == tuple(rounds)
+    assert recorded.duration_ms == 500
     assert label in result.stdout
     assert re.search(r"recorded to session", result.stdout, re.IGNORECASE)
 
@@ -161,28 +171,6 @@ def test_measure_when_no_record_flag_does_leave_open_session_untouched(
     non_command = records_of_type(record_repo, CommandRecord, matching=False)
     assert non_command == [session_record()]
     assert "recorded to session" not in result.stdout
-
-
-# ---------------------------------------------------------------------------
-# --record duration
-# ---------------------------------------------------------------------------
-
-
-def test_measure_when_record_does_write_duration_ms_to_baseline(
-    monkeypatch: pytest.MonkeyPatch,
-    record_repo: str,
-):
-    open_session(record_repo)
-    clock = install_monotonic_clock(monkeypatch)
-    measured = create_measurement_result(rounds=[{"latency": 42}])
-    install_measure(monkeypatch, measured, on_call=lambda: clock.tick(500.0))
-
-    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
-
-    assert result.exit_code == 0
-    baselines = records_of_type(record_repo, BaselineRecord)
-    assert len(baselines) == 1
-    assert baselines[0].duration_ms == 500
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Unit tests for the Windows branch of ``shell_quote_name`` in ``gymrat.loop.iterate.confirm``."""
+"""Unit tests for the Windows branch of ``shell_quote_name`` in ``gymrat.loop.iterate.judge``."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from gymrat.loop.iterate.confirm import shell_quote_name
+from gymrat.loop.iterate.judge import shell_quote_name
 
 # ---------------------------------------------------------------------------
 # shell_quote_name on Windows

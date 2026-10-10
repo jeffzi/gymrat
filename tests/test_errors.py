@@ -3,8 +3,17 @@ from functools import partial
 
 import pytest
 
-from gymrat.errors import GymratError
+from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.iterate.run import BudgetExceededError, LoopStopError
+
+# ---------------------------------------------------------------------------
+# exit codes
+# ---------------------------------------------------------------------------
+
+
+def test_exit_codes_when_imported_does_match_the_documented_cli_contract():
+    assert (GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE) == (1, 2)
+
 
 # ---------------------------------------------------------------------------
 # GymratError

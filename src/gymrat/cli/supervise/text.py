@@ -9,13 +9,15 @@ from ever disagreeing about what the summary says.  Segments carry a style
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal
 
 from gymrat.report.format import format_percent_delta
-from gymrat.utils import pluralize
+from gymrat.utils import MISSING_DELTA, StyledSegment, pluralize
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.types import Exiting, ReadSessionResult
+    from gymrat.cli.supervise.types import Exiting
+    from gymrat.session.schema import Outcome
+    from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.exit_sequence import ExitPhase
 
 #: Shown in place of the loop summary before any session data has been read.
@@ -23,18 +25,6 @@ NO_SESSION_TEXT = "no session yet"
 
 type LoopStyle = Literal["alert", "count", "done", "meta", "pending", "plain", "regressed"]
 """The style role of a loop-summary segment; ``"plain"`` means unstyled."""
-
-
-class LoopSegment(NamedTuple):
-    """One run of loop-summary text together with the role it renders under."""
-
-    text: str
-    style: LoopStyle
-
-
-def format_cost(usd: float) -> str:
-    """Format a USD amount as a two-decimal dollar string."""
-    return f"${usd:.2f}"
 
 
 def exit_phase_text(phase: ExitPhase | Exiting) -> str:
@@ -60,8 +50,8 @@ def _iter_label(count: int, max_iterations: int | None) -> str:
     return pluralize(count, "iteration")
 
 
-def _outcome_role(outcome: str) -> LoopStyle:
-    if outcome in ("improved", "kept"):
+def _outcome_role(outcome: Outcome) -> LoopStyle:
+    if outcome == "improved":
         return "done"
     if outcome == "regressed":
         return "regressed"
@@ -69,24 +59,24 @@ def _outcome_role(outcome: str) -> LoopStyle:
 
 
 def _last_iteration_segments(
-    delta_pct: float | None, outcome: str, *, unsettled: bool
-) -> list[LoopSegment]:
-    delta = format_percent_delta(delta_pct, missing="—")
+    delta_pct: float | None, outcome: Outcome, *, unsettled: bool
+) -> list[StyledSegment[LoopStyle]]:
+    delta = format_percent_delta(delta_pct, missing=MISSING_DELTA)
     role = _outcome_role(outcome)
-    segments = [
-        LoopSegment(" · last ", "plain"),
-        LoopSegment(delta, role),
-        LoopSegment(" ", "plain"),
-        LoopSegment(outcome, role),
+    segments: list[StyledSegment[LoopStyle]] = [
+        StyledSegment(" · last ", "plain"),
+        StyledSegment(delta, role),
+        StyledSegment(" ", "plain"),
+        StyledSegment(outcome, role),
     ]
     if unsettled:
-        segments.append(LoopSegment(", unsettled", "alert"))
+        segments.append(StyledSegment(", unsettled", "alert"))
     return segments
 
 
 def loop_segments(
     session_result: ReadSessionResult | None, max_iterations: int | None
-) -> tuple[LoopSegment, ...]:
+) -> tuple[StyledSegment[LoopStyle], ...]:
     """The iteration-progress summary, split into styled runs of text.
 
     Args:
@@ -101,27 +91,27 @@ def loop_segments(
         summary for an in-progress run.
     """
     if session_result is None:
-        return (LoopSegment(NO_SESSION_TEXT, "pending"),)
+        return (StyledSegment(NO_SESSION_TEXT, "pending"),)
 
     state = session_result.state
 
     if state.finalized is not None:
         return (
-            LoopSegment(_iter_label(state.iteration_count, max_iterations), "count"),
-            LoopSegment(" · finalized", "done"),
+            StyledSegment(_iter_label(state.iteration_count, max_iterations), "count"),
+            StyledSegment(" · finalized", "done"),
         )
 
     if state.iteration_count == 0:
         if session_result.has_baseline:
-            return (LoopSegment("baseline recorded · no iterations yet", "plain"),)
-        return (LoopSegment(NO_SESSION_TEXT, "pending"),)
+            return (StyledSegment("baseline recorded · no iterations yet", "plain"),)
+        return (StyledSegment(NO_SESSION_TEXT, "pending"),)
 
-    segments = [
-        LoopSegment(_iter_label(state.iteration_count, max_iterations), "count"),
-        LoopSegment(" · ", "plain"),
-        LoopSegment(f"{state.keep_count} kept", "done"),
-        LoopSegment(" · ", "plain"),
-        LoopSegment(f"{state.discard_count} discarded", "meta"),
+    segments: list[StyledSegment[LoopStyle]] = [
+        StyledSegment(_iter_label(state.iteration_count, max_iterations), "count"),
+        StyledSegment(" · ", "plain"),
+        StyledSegment(f"{state.keep_count} kept", "done"),
+        StyledSegment(" · ", "plain"),
+        StyledSegment(f"{state.discard_count} discarded", "meta"),
     ]
     last = state.last_iteration
     if last is not None:

@@ -329,6 +329,24 @@ _SIX_PAIR_Y = [9, 10, 13, 14, 15, 17]
         # delta, not an undefined one, so the null is {-200, 0, 0, 200} and the
         # exact p is 0.5.
         pytest.param([0, 5, 5], [0, -5, -5], 0.5, id="both-medians-zero-counts-no-change"),
+        # Tied pairs reduce the effective budget, keeping the path exact.
+        #
+        # Eight extreme tied pairs plus the standard six differing pairs give 14
+        # total.  2**14 > RESAMPLE_BUDGET would push scipy onto the Monte Carlo
+        # path, but tied pairs contribute the same value to both sides under every
+        # flip, so the effective space is 2**6 = 64 <= RESAMPLE_BUDGET — exact
+        # enumeration.
+        #
+        # Extreme tied values sit outside the differing-pair range and do not shift
+        # medians, so the exact p equals the ties-free six-pair p of 0.25.  An MC
+        # path over all 14 pairs would produce a close but not identical estimate,
+        # which the approx tolerance (rel 1e-6) still tells apart.
+        pytest.param(
+            [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_X],
+            [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_Y],
+            0.25,
+            id="tied-pairs-keep-exact-enumeration",
+        ),
     ],
 )
 def test_sign_flip_permutation_test_when_paired_samples_does_return_pinned_p(
@@ -337,27 +355,6 @@ def test_sign_flip_permutation_test_when_paired_samples_does_return_pinned_p(
     expected_p: float,
 ):
     assert sign_flip_permutation_test(x, y) == pytest.approx(expected_p)
-
-
-def test_sign_flip_permutation_test_when_tied_pairs_reduce_exact_budget_does_report_exact_p():
-    # Tied pairs reduce the effective budget, keeping the path exact.
-    #
-    # Eight extreme tied pairs plus the standard six differing pairs give 14
-    # total.  2**14 > RESAMPLE_BUDGET would push scipy onto the Monte Carlo
-    # path, but tied pairs contribute the same value to both sides under every
-    # flip, so the effective space is 2**6 = 64 <= RESAMPLE_BUDGET — exact
-    # enumeration.
-    #
-    # Extreme tied values sit outside the differing-pair range and do not shift
-    # medians, so the exact p equals the ties-free six-pair p of 0.25.  An MC
-    # path over all 14 pairs would produce a close but not byte-identical
-    # estimate.
-    x = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_X]
-    y = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_Y]
-
-    p = sign_flip_permutation_test(x, y)
-
-    assert p == 0.25
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,6 @@ from rich.cells import cell_len
 
 from gymrat.report.text.render import render_measure_report, render_report
 from gymrat.report.types import ReportOptions
-from tests._ansi import strip_ansi
 from tests.report._assertions import (
     line_containing,
     line_starting_with,
@@ -52,14 +51,9 @@ if TYPE_CHECKING:
 def test_render_report_when_header_override_given_does_replace_the_compare_header():
     result = create_comparison_result()
 
-    lines = strip_ansi(
-        render_report(result, ReportOptions(header="iteration 3 · experiment vs baseline"))
-    ).split("\n")
+    report = render_report(result, ReportOptions(header="iteration 3 · experiment vs baseline"))
 
-    assert (lines[0], stripped_cells(lines[1])) == (
-        "iteration 3 · experiment vs baseline",
-        ["metric", "main", "perf/faster-decode", "vs main"],
-    )
+    assert table_region(report)[:2] == ["iteration 3 · experiment vs baseline", "metric"]
 
 
 # ---------------------------------------------------------------------------

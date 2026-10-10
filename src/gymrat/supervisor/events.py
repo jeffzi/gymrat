@@ -32,6 +32,7 @@ from pydantic_core import PydanticSerializationError
 
 from gymrat.config import Effort
 from gymrat.errors import GymratError
+from gymrat.supervisor.tool_names import ITERATE_TOOL, PROBE_TOOL
 from gymrat.utils import UNICODE_LINE_BREAKS, abbreviate_home, fan_out
 
 # ---------------------------------------------------------------------------
@@ -40,10 +41,6 @@ from gymrat.utils import UNICODE_LINE_BREAKS, abbreviate_home, fan_out
 
 # Maximum code-point length for a session-event summary before it is truncated.
 SUMMARY_MAX_CHARS = 200
-
-# MCP tool names the SDK prefixes onto gymrat's own tool host.
-ITERATE_TOOL = "mcp__gymrat__iterate"
-PROBE_TOOL = "mcp__gymrat__probe"
 
 # Input summary for an iterate call, shared with the dashboard frame's match
 # against a Bash-invoked `gymrat iterate`.
@@ -314,18 +311,16 @@ def _null_non_finite(value: object) -> object:
 def event_from_wire(obj: object) -> SessionEvent | None:
     """Reconstruct a session event from its snake_case wire object.
 
-    The inverse of :func:`to_json_line`'s rendering: given a decoded JSON object,
-    return the matching event model. Returns ``None`` when ``obj`` is not a
-    dict, carries no recognized ``type``, is missing a required field, has one
-    with the wrong type, or carries the schema key (:data:`_SCHEMA_KEY`) on an
-    event other than ``launch``.
+    The inverse of :func:`to_json_line`'s rendering.
 
     Args:
         obj: The decoded JSON object to reconstruct into an event.
 
     Returns:
-        The deserialized event, or ``None`` when the object is unrecognized or
-        invalid.
+        The matching event model, or ``None`` when ``obj`` is not a dict,
+        carries no recognized ``type``, is missing a required field, has one
+        with the wrong type, or carries the schema key (:data:`_SCHEMA_KEY`) on
+        an event other than ``launch``.
     """
     if not isinstance(obj, dict):
         return None
@@ -366,15 +361,15 @@ def _warn_observer_failure(error: Exception) -> None:
 def probe_event_log_path(log_path: str | Path) -> None:
     """Verify ``log_path`` is writable before a session starts.
 
-    Attempts to create the parent directory and open the file for appending.
-    Raises :class:`GymratError` naming the path when the filesystem rejects the
-    operation, so the command can fail up front rather than after the session.
+    Attempts to create the parent directory and open the file for appending, so
+    the command can fail up front rather than after the session.
 
     Args:
         log_path: The event log path to verify.
 
     Raises:
-        GymratError: When the path or its parent directory is not writable.
+        GymratError: Naming the path, when the path or its parent directory is
+            not writable.
     """
     path = Path(log_path)
     try:
@@ -416,7 +411,7 @@ def create_event_log_writer(log_path: str | Path) -> SessionObserver:
 
 
 # ---------------------------------------------------------------------------
-# summarize
+# Tool-event summaries
 # ---------------------------------------------------------------------------
 
 _WHITESPACE_RUN = re.compile(r"\s+")
@@ -442,11 +437,6 @@ def summarize(text: str) -> str:
         return collapsed
 
     return f"{collapsed[:SUMMARY_MAX_CHARS]}…"
-
-
-# ---------------------------------------------------------------------------
-# summarize_input
-# ---------------------------------------------------------------------------
 
 
 # Tool names whose input carries a file path as the primary summary value.

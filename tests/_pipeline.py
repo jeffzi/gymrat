@@ -26,8 +26,9 @@ from gymrat.sampling import (
     TargetSamples,
     WorktreeInfo,
 )
-from gymrat.targets import InPlaceTarget, WorktreeRemovalFailure
+from gymrat.targets import InPlaceTarget
 from gymrat.utils import WarnSink, warn_to_stderr
+from gymrat.worktree_failure import WorktreeRemovalFailure
 from tests._process_helpers import fake_install
 
 CLEAN_RESULT = CleanupResult(removed=0, failures=(), prune_error=None)

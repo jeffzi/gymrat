@@ -12,25 +12,25 @@ from pathlib import Path
 
 from gymrat.clock import now_ns
 from gymrat.errors import GymratError
-from gymrat.git import SHORT_SHA_LENGTH, try_git
+from gymrat.git import run_git_step, try_git
 from gymrat.session.records import FinalizeRecord, KeepRecord, SessionLogRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
     append_record,
     last_kept_position,
     require_open_session,
+    settle_first_hint,
 )
 from gymrat.session.workspace import (
     dirty_file_count,
     missing_commit_hint,
     remove_worktrees,
-    run_git_step,
     worktree_head,
 )
-from gymrat.utils import pluralize
+from gymrat.utils import SHORT_SHA_LENGTH, pluralize
 
 #: The hint a refusal points at whenever the fix is to settle the last iteration.
-_SETTLE_FIRST_HINT = "Run gymrat keep or gymrat discard before closing the session."
+_SETTLE_FIRST_HINT = settle_first_hint("closing the session")
 
 #: The body line a committed keep gets when it names neither a message nor a commit.
 _UNNAMED_KEEP_LINE = "(no message)"
@@ -200,16 +200,16 @@ def _squash_onto_baseline(
 ) -> str:
     """Build one commit carrying ``tree_source``'s tree onto the pinned baseline.
 
-    ``tree_source`` is the last-kept position — the commit whose tree the squash
-    should carry. Reading the tree and writing the commit are both plumbing, so
-    neither needs — or moves — a checkout. The single parent is the baseline the
-    session started from, which is what makes the result a squash rather than a
-    merge.
+    Reading the tree and writing the commit are both plumbing, so neither
+    needs — or moves — a checkout. The single parent is what makes the result a
+    squash rather than a merge.
 
     Args:
         root: The repository root.
-        tree_source: The commit whose tree the squash should carry.
-        baseline_sha: The commit the squash is built onto as its sole parent.
+        tree_source: The last-kept position: the commit whose tree the squash
+            should carry.
+        baseline_sha: The commit the session started from, which the squash is
+            built onto as its sole parent.
         message: The commit message for the squash commit.
 
     Returns:

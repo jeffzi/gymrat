@@ -46,18 +46,32 @@ def test_resolve_target_when_input_is_existing_directory_does_return_absolute_in
     assert result == InPlaceTarget(dir=os.path.realpath(tmp_path / "bench"))
 
 
-@pytest.mark.parametrize("ref_kind", ["commit-sha", "head", "tag"])
+def _commit_sha(repo: str) -> str:
+    return head_of(repo)
+
+
+def _head(_repo: str) -> str:
+    return "HEAD"
+
+
+def _tag(repo: str) -> str:
+    _run_git(["tag", "v1.0.0"], repo)
+    return "v1.0.0"
+
+
+@pytest.mark.parametrize(
+    "make_ref",
+    [
+        pytest.param(_commit_sha, id="commit-sha"),
+        pytest.param(_head, id="head"),
+        pytest.param(_tag, id="tag"),
+    ],
+)
 def test_resolve_target_when_input_is_valid_git_ref_does_return_ref_target(
-    repo: str, ref_kind: str
+    repo: str, make_ref: Callable[[str], str]
 ):
     sha = head_of(repo)
-    if ref_kind == "commit-sha":
-        ref = sha
-    elif ref_kind == "head":
-        ref = "HEAD"
-    else:
-        _run_git(["tag", "v1.0.0"], repo)
-        ref = "v1.0.0"
+    ref = make_ref(repo)
 
     result = resolve_target(ref, repo)
 

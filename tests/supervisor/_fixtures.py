@@ -11,6 +11,7 @@ import contextlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from operator import methodcaller
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, override
 from unittest.mock import create_autospec
@@ -36,12 +37,15 @@ from gymrat.supervisor.events import (
     SessionEvent,
     SessionObserver,
     TextDeltaEvent,
+    ToolEndEvent,
+    ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
 )
 from gymrat.supervisor.hooks import HooksFactory
 from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult, supervise
 from gymrat.supervisor.tools import ToolsFactory
+from gymrat.utils import NS_PER_MS
 from tests._config import benchless_config
 from tests.session.records._fixtures import (
     SUPERVISED_SESSION_ID,
@@ -511,8 +515,9 @@ class FakeClient:
     ``asyncio.sleep(0)`` handshake so an observer-scheduled interrupt or an
     abort lands deterministically between messages.  After the scripted
     messages, the stream blocks until ``disconnect`` releases it, mirroring
-    the real SDK whose ``receive_messages`` iterator never terminates.  With
-    ``fail_follow_up``, every ``query`` after the kickoff raises
+    the real SDK whose ``receive_messages`` iterator never terminates; with
+    ``finite``, the stream is released from the start and ends once the script
+    is spent.  With ``fail_follow_up``, every ``query`` after the kickoff raises
     ``RuntimeError("connection lost")``.
     """
 
@@ -522,6 +527,7 @@ class FakeClient:
         *,
         throw: Exception | None = None,
         fail_follow_up: bool = False,
+        finite: bool = False,
     ) -> None:
         self.messages = messages
         self.throw = throw
@@ -531,6 +537,8 @@ class FakeClient:
         self.interrupt_called = False
         self.disconnect_count = 0
         self._released = asyncio.Event()
+        if finite:
+            self._released.set()
 
     async def connect(self) -> None:
         return None
@@ -561,9 +569,7 @@ class FiniteClient(FakeClient):
     """A client whose stream ends naturally instead of blocking after the script."""
 
     def __init__(self, messages: Sequence[object], *, throw: Exception | None = None) -> None:
-        super().__init__(messages, throw=throw)
-        # Released from the start, so the stream ends once the script is spent.
-        self._released.set()
+        super().__init__(messages, throw=throw, finite=True)
 
 
 class FactoryProbe:
@@ -597,6 +603,51 @@ def make_turn_end(**overrides: Any) -> TurnEndEvent:
         "budget_exhausted": False,
     }
     return TurnEndEvent(**(defaults | overrides))
+
+
+#: Default timestamp of a tool start, in milliseconds; a tool end's default
+#: duration is measured from it, so the two stay in sync.
+TOOL_START_MS = 2000
+
+
+def tool_start_event(
+    tool_name: str,
+    tool_use_id: str,
+    at_ms: int = TOOL_START_MS,
+    *,
+    input_summary: str = "...",
+    parent_tool_use_id: str | None = None,
+) -> ToolStartEvent:
+    """A ``ToolStartEvent`` for *tool_name* stamped at *at_ms* milliseconds."""
+    return ToolStartEvent(
+        at=at_ms * NS_PER_MS,
+        tool_use_id=tool_use_id,
+        tool_name=tool_name,
+        input={},
+        input_summary=input_summary,
+        parent_tool_use_id=parent_tool_use_id,
+    )
+
+
+def tool_end_event(
+    tool_name: str,
+    tool_use_id: str,
+    at_ms: int = 3000,
+    *,
+    result: str = "ok",
+    started_at_ms: int = TOOL_START_MS,
+    parent_tool_use_id: str | None = None,
+) -> ToolEndEvent:
+    """A ``ToolEndEvent`` whose duration is measured from *started_at_ms*."""
+    return ToolEndEvent(
+        at=at_ms * NS_PER_MS,
+        tool_use_id=tool_use_id,
+        tool_name=tool_name,
+        duration_ms=at_ms - started_at_ms,
+        result=result,
+        result_summary="ok",
+        parent_tool_use_id=parent_tool_use_id,
+    )
 
 
 def make_context(
@@ -1065,13 +1116,48 @@ def abort_on_first_usage_update(abort: asyncio.Event) -> SessionObserver:
     return observer
 
 
+async def run_acting_on_first(
+    client: FakeClient,
+    event_type: type[SessionEvent],
+    action: Callable[[DriverSession], Awaitable[None]],
+    *,
+    abort: asyncio.Event | None = None,
+) -> SessionOutcome:
+    """Run a Claude session over ``client`` that acts on itself at its first ``event_type`` event.
+
+    ``action`` is called inside the observer, so anything it does before
+    returning happens before the stream moves on; what it returns is scheduled
+    as a task. That task is awaited once the outcome settles, so an exception it
+    raises fails the test instead of being lost.
+
+    Args:
+        client: The fake client the session streams from.
+        event_type: The event whose first occurrence triggers ``action``.
+        action: Receives the running session and returns the stop to await.
+        abort: The session's abort event; a fresh, never-set one when omitted.
+
+    Returns:
+        The settled outcome.
+    """
+    sessions: list[DriverSession] = []
+    actions: list[asyncio.Future[None]] = []
+
+    def acting(event: SessionEvent) -> None:
+        if isinstance(event, event_type) and not actions:
+            actions.append(asyncio.ensure_future(action(sessions[0])))
+
+    sessions.append(start_claude_session(client, acting, abort=abort))
+    outcome = await settled_outcome(sessions[0])
+    await asyncio.gather(*actions)
+    return outcome
+
+
 async def run_interrupting_on_first_usage_update(client: FakeClient) -> SessionOutcome:
     """Run a Claude session over ``client`` that interrupts itself on its first usage update.
 
     Usage updates come from result messages, which leave the session idle
     between turns, so the soft stop lands when the stream delivers its next
-    message. The interrupt is awaited once the outcome settles, so an
-    exception it raises fails the test instead of being lost.
+    message.
 
     Args:
         client: The fake client the session streams from; it must carry a
@@ -1080,17 +1166,7 @@ async def run_interrupting_on_first_usage_update(client: FakeClient) -> SessionO
     Returns:
         The settled outcome.
     """
-    sessions: list[DriverSession] = []
-    interrupts: list[asyncio.Task[None]] = []
-
-    def interrupting(event: SessionEvent) -> None:
-        if isinstance(event, UsageUpdateEvent) and not interrupts:
-            interrupts.append(asyncio.ensure_future(sessions[0].interrupt()))
-
-    sessions.append(start_claude_session(client, interrupting))
-    outcome = await settled_outcome(sessions[0])
-    await asyncio.gather(*interrupts)
-    return outcome
+    return await run_acting_on_first(client, UsageUpdateEvent, methodcaller("interrupt"))
 
 
 async def run_outcome(

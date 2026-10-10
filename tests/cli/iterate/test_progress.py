@@ -28,7 +28,6 @@ from gymrat.progress_events import (
 )
 from tests._rich import (
     Clock,
-    console_output,
     frame_text,
     sealed_console,
 )
@@ -37,7 +36,7 @@ from tests.cli._progress_helpers import ms_from_clock as _ms
 from tests.cli._progress_helpers import pass_started as _pass_started
 
 if TYPE_CHECKING:
-    from rich.console import Console, RenderableType
+    from rich.console import RenderableType
     from rich.segment import Segment
     from syrupy.assertion import SnapshotAssertion
 
@@ -53,11 +52,6 @@ _EMOJI_LIKE_METRIC = "cpu:fire:total"
 
 #: A regressed metric name holding emoji-code and fragment syntax, which must print literally.
 _EMOJI_LIKE_REGRESSED = "lat:100:p99#time"
-
-
-def _last_line(console: Console) -> str:
-    lines = [ln for ln in console_output(console).splitlines() if ln.strip()]
-    return lines[-1]
 
 
 def _sample_one_round(renderer: IterateRenderer, clock: Clock[float]) -> None:
@@ -96,7 +90,6 @@ def _judge_detail_style_runs(renderable: RenderableType) -> list[tuple[str, str]
 
 
 _live = functools.partial(iterate_renderer, "live")
-_plain = functools.partial(iterate_renderer, "plain")
 
 
 # ---------------------------------------------------------------------------
@@ -260,23 +253,22 @@ def test_frame_when_judge_finished_no_regressions_does_drop_the_confirm_row(
     assert _frame(renderer, clock) == snapshot
 
 
-def test_frame_when_judge_finished_does_dim_wording_and_style_regressed_names_inline():
+def test_frame_when_judge_finished_does_style_regressed_names_apart_from_dim_wording():
     _console, clock, renderer = _live(sample_count=1, metric_count=5)
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     _sample_one_round(renderer, clock)
     clock.tick(1)
-    regressed = ("node/access#time", "parse[json]", "throughput", "alloc")
+    regressed = ("node/access#time", "parse[json]", "throughput")
 
     renderer.report(JudgeFinished(primary_delta_pct=-3.2, regressed=regressed, at_ms=_ms(clock)))
 
     assert _judge_detail_style_runs(renderer.frame()) == [
-        ("-3.2% on geomean · 4 regressed: node/", "dim"),
+        ("-3.2% on geomean · 3 regressed: node/", "dim"),
         ("access", ""),
         ("#time, ", "dim"),
         ("parse[json]", ""),
         (", ", "dim"),
         ("throughput", ""),
-        (", …", "dim"),
     ]
 
 
@@ -414,23 +406,6 @@ def test_frame_when_compact_confirm_started_does_restart_progress_for_confirm():
 
     assert _frame(renderer, clock) == (
         "⠹ confirming                                            0%  00:00/00:00"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Plain mode -- exact timestamped milestone lines
-# ---------------------------------------------------------------------------
-
-
-def test_report_when_plain_judge_names_look_like_emoji_codes_does_print_them_literally():
-    console, _clock, renderer = _plain(width=120, metric_count=5, primary_metric=_EMOJI_LIKE_METRIC)
-
-    renderer.report(
-        JudgeFinished(primary_delta_pct=2.0, regressed=(_EMOJI_LIKE_REGRESSED,), at_ms=0)
-    )
-
-    assert _last_line(console) == (
-        "[00:00:00] judge +2.0% on cpu:fire:total · 1 regressed: lat:100:p99#time"
     )
 
 

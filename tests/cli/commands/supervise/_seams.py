@@ -20,17 +20,21 @@ from gymrat.cli.app import app
 from gymrat.cli.exit import write_stdout
 from gymrat.cli.supervise.preflight import PreflightFlags, doctor_gate, run_preflight
 from gymrat.cli.supervise.progress import SuperviseReporter, create_supervise_reporter
-from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.config import ResolvedConfig, StopConfig, SuperviseConfig
 from gymrat.loop.start import StartResult
+from gymrat.session.store import ReadSessionResult
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep, run_exit_sequence
 from gymrat.supervisor.kickoff import compose_kickoff
 from gymrat.supervisor.supervise import SupervisionResult, supervise
-from tests._ansi import strip_ansi
 from tests._config import resolved_config
-from tests.cli._session import runner, stub_config
+from tests.cli._command_stubs import (
+    stub_config,
+)
+from tests.cli._runner import (
+    runner,
+)
 from tests.cli.supervise._fixtures import install_baseline_seam, make_supervision_result
 from tests.session.records._fixtures import empty_session_state, session_record, worktrees_at
 
@@ -56,6 +60,10 @@ def _real_reporter() -> SuperviseReporter:
         A plain-mode reporter rooted at a placeholder path.
     """
     return create_supervise_reporter(root="/tmp/repo", max_minutes=1.0, mode="plain")
+
+
+def _uninstall_cleanup() -> None:
+    """Stand for the zero-argument handle ``install_termination_cleanup`` returns."""
 
 
 @dataclass(slots=True)
@@ -99,7 +107,9 @@ class Seams:
     create_driver: Mock = field(init=False)
     install_cleanup: Mock = field(
         default_factory=lambda: create_autospec(
-            install_termination_cleanup, name="install_termination_cleanup", return_value=Mock()
+            install_termination_cleanup,
+            name="install_termination_cleanup",
+            return_value=create_autospec(_uninstall_cleanup),
         )
     )
     doctor_gate: Mock = field(
@@ -193,6 +203,49 @@ def _install_fake_preflight(
     )
 
 
+def _install_fake_exit_sequence(monkeypatch: pytest.MonkeyPatch, seams: Seams) -> None:
+    """Replace the exit sequence with a fake that records each call and returns ``exit_report``."""
+
+    async def fake_run_exit_sequence(context: object, **kwargs: object) -> ExitReport:
+        call = {"context": context, **kwargs}
+        seams.exit_calls.append(call)
+        if seams.exit_hook is not None:
+            seams.exit_hook(call)
+        return seams.exit_report
+
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.run_exit_sequence",
+        create_autospec(run_exit_sequence, side_effect=fake_run_exit_sequence),
+    )
+
+
+def _install_fake_reporter(monkeypatch: pytest.MonkeyPatch, seams: Seams) -> None:
+    """Replace the dashboard reporter with one whose sinks feed ``seams``' recorders."""
+
+    def fake_reporter(**kwargs: object) -> SuperviseReporter:
+        seams.reporter_calls.append(kwargs)
+        shown = SimpleNamespace(session=seams.session_result)
+
+        def refresh_session() -> None:
+            shown.session = seams.session_result
+
+        return SuperviseReporter(
+            observer=seams.observer,
+            stop=seams.reporter_stop,
+            frame=lambda: "",
+            exit_phase=seams.exit_phases.append,
+            warn=seams.warnings.append,
+            refresh_session=refresh_session,
+            session_result=lambda: shown.session,
+            final_text=lambda: seams.final_text,
+        )
+
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.create_supervise_reporter",
+        create_autospec(create_supervise_reporter, side_effect=fake_reporter),
+    )
+
+
 def install_seams(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -204,6 +257,9 @@ def install_seams(
     branch: str | None = None,
     resumed: bool = False,
     real_preflight: bool = False,
+    real_supervise: bool = False,
+    real_exit_sequence: bool = False,
+    real_reporter: bool = False,
 ) -> Seams:
     """Replace every seam ``commands.supervise`` composes over, returning the recorders.
 
@@ -219,6 +275,14 @@ def install_seams(
         real_preflight: Keep the real pre-flight, with only the baseline bench
             replaced, instead of the recording fake. ``preflight_calls`` stays
             empty then.
+        real_supervise: Keep the real supervisor loop instead of the recording
+            fake. ``supervise_calls`` stays empty and ``supervise_hook`` never runs.
+        real_exit_sequence: Keep the real exit sequence instead of the recording
+            fake. ``exit_calls`` stays empty, and ``exit_report`` and
+            ``exit_hook`` go unused.
+        real_reporter: Keep the real dashboard reporter instead of the recording
+            fake. ``reporter_calls``, ``reporter_stop``, ``observed_events``,
+            ``exit_phases`` and ``warnings`` stay empty.
 
     Returns:
         The recorders and doubles the run is wired to.
@@ -246,31 +310,6 @@ def install_seams(
             raise raises
         return handed_back
 
-    async def fake_run_exit_sequence(context: object, **kwargs: object) -> ExitReport:
-        call = {"context": context, **kwargs}
-        seams.exit_calls.append(call)
-        if seams.exit_hook is not None:
-            seams.exit_hook(call)
-        return seams.exit_report
-
-    def fake_reporter(**kwargs: object) -> SuperviseReporter:
-        seams.reporter_calls.append(kwargs)
-        shown = SimpleNamespace(session=seams.session_result)
-
-        def refresh_session() -> None:
-            shown.session = seams.session_result
-
-        return SuperviseReporter(
-            observer=seams.observer,
-            stop=seams.reporter_stop,
-            frame=lambda: "",
-            exit_phase=seams.exit_phases.append,
-            warn=seams.warnings.append,
-            refresh_session=refresh_session,
-            session_result=lambda: shown.session,
-            final_text=lambda: seams.final_text,
-        )
-
     monkeypatch.setattr("gymrat.cli.commands.supervise.doctor_gate", seams.doctor_gate)
     stub_config(monkeypatch, "supervise", resolved)
     if real_preflight:
@@ -282,15 +321,12 @@ def install_seams(
         create_autospec(compose_kickoff, side_effect=fake_compose),
     )
     monkeypatch.setattr("gymrat.cli.commands.supervise.create_claude_driver", seams.create_driver)
-    _patch_supervise(monkeypatch, fake_supervise)
-    monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.run_exit_sequence",
-        create_autospec(run_exit_sequence, side_effect=fake_run_exit_sequence),
-    )
-    monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.create_supervise_reporter",
-        create_autospec(create_supervise_reporter, side_effect=fake_reporter),
-    )
+    if not real_supervise:
+        _patch_supervise(monkeypatch, fake_supervise)
+    if not real_exit_sequence:
+        _install_fake_exit_sequence(monkeypatch, seams)
+    if not real_reporter:
+        _install_fake_reporter(monkeypatch, seams)
     monkeypatch.setattr(
         "gymrat.cli.commands.supervise.install_termination_cleanup", seams.install_cleanup
     )
@@ -313,8 +349,3 @@ def record_stdout_writes(monkeypatch: pytest.MonkeyPatch, order: list[str], labe
 def run(*args: str) -> Result:
     """Invoke ``gymrat supervise`` with ``args`` through the shared CLI runner."""
     return runner.invoke(app, ["supervise", *args])
-
-
-def err_text(result: Result) -> str:
-    """The combined stdout+stderr of a run, for flag-name and message probes."""
-    return strip_ansi((result.stdout or "") + (result.stderr or ""))

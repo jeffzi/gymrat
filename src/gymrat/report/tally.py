@@ -10,7 +10,7 @@ from rich.markup import escape
 
 from gymrat.report.display import GLYPHS, VERDICT_GLOSSES, display_class
 from gymrat.report.style import VERDICT_STYLES, markup
-from gymrat.report.types import candidate_at as _candidate_at
+from gymrat.report.types import candidate_at
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -47,7 +47,7 @@ def _each_verdict(
         candidate never reported are skipped.
     """
     for metric in metrics.values():
-        candidate = _candidate_at(metric, candidate_index)
+        candidate = candidate_at(metric, candidate_index)
         if candidate is not None and candidate.verdict is not None:
             yield candidate.verdict
 

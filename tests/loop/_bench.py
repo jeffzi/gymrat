@@ -8,8 +8,7 @@ a runnable bench.
 
 With a gate file the bench blocks until that file appears — the only way to hold
 a run open long enough for a second command to collide with it without betting on
-a sleep outlasting the first run. Python has no ``Atomics.wait``, so the gate is
-a plain poll loop.
+a sleep outlasting the first run. The gate is a plain poll loop.
 
 The ``_`` prefix marks a shared helper rather than a test module; it is
 imported as ``tests.loop._bench``.

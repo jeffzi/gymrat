@@ -24,7 +24,6 @@ import json
 import os
 import shutil
 import signal
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +39,7 @@ from tests._git import (
     wait_for_worktrees,
 )
 from tests._git import write_committed_bench as _write_committed_bench
+from tests._process_helpers import poll_until_blocking
 from tests._process_helpers import read_pid_file as _read_pid_file
 from tests._process_helpers import (
     wait_for_pid_file_blocking as _wait_for_pid_file_blocking,
@@ -119,6 +119,7 @@ def test_measure_when_signalled_mid_bench_does_kill_the_bench_tree(
         grandchild = _wait_for_pid_file_blocking(
             Path(repo) / "grandchild.pid", timeout_s=SETTLE_TIMEOUT_S
         )
+
         stop_by_signal(proc, signal.SIGTERM)
 
     assert proc.returncode == 128 + signal.SIGTERM
@@ -148,6 +149,7 @@ def test_measure_when_prior_run_hard_killed_does_take_over_stale_lock_on_rerun(
     # The lock left behind above is now stale; the rerun below must take it over.
 
     (Path(repo) / "bench.sh").write_text(EMIT_ONE_BENCH, encoding="utf-8")
+
     rerun = run_cli(
         ["measure", "--bench", "sh bench.sh", "--samples", "2", "--format", "json"],
         repo,
@@ -170,12 +172,15 @@ def _wait_for_drawn(chunks: list[bytes], marker: bytes) -> None:
     Args:
         chunks: The pty output a reader thread is appending to.
         marker: The bytes that show the awaited draw has landed.
+
+    Raises:
+        AssertionError: ``marker`` has not drawn within ``SETTLE_TIMEOUT_S``.
     """
-    deadline = time.monotonic() + SETTLE_TIMEOUT_S
-    while marker not in b"".join(chunks):
-        if time.monotonic() >= deadline:
-            pytest.fail(f"{marker!r} never drew within {SETTLE_TIMEOUT_S:g} s: {chunks!r}")
-        time.sleep(0.05)
+    poll_until_blocking(
+        lambda: marker in b"".join(chunks),
+        SETTLE_TIMEOUT_S,
+        lambda: AssertionError(f"{marker!r} never drew within {SETTLE_TIMEOUT_S:g} s: {chunks!r}"),
+    )
 
 
 def test_measure_when_signalled_off_a_tty_does_not_clear_a_line(
@@ -216,6 +221,7 @@ def test_measure_when_signalled_on_a_tty_does_clear_the_status_line(
         ) as (proc, _bench_pid),
     ):
         _wait_for_drawn(terminal.chunks, b"sampling")
+
         proc.send_signal(signal.SIGINT)
         proc.wait(timeout=30)
     output = terminal.output
@@ -250,6 +256,7 @@ def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
             pid = _read_pid_file(Path(wt) / "bench.pid")
             if pid is not None:
                 reap_groups.append(pid)
+
         stop_by_signal(proc, signal_number)
 
     assert proc.returncode == 128 + signal_number
@@ -444,6 +451,7 @@ def test_compare_when_signalled_again_during_the_cleanup_sweep_does_stop_after_t
                     reap_groups.append(pid)
             proc.send_signal(signal.SIGINT)
             _wait_for_pid_file_blocking(tmp_path / "removal-entered", timeout_s=SETTLE_TIMEOUT_S)
+
             proc.send_signal(signal.SIGINT)
             release.touch()
             proc.communicate(timeout=30)

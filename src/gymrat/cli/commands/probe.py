@@ -32,7 +32,8 @@ from gymrat.cli.run_setup import SharedFlags, begin_run, run_with_signal_abort
 from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.command_run import with_repo_lock
 from gymrat.config import resolve_config
-from gymrat.loop.probe import EXPERIMENT_LABEL, ProbeOptions, ProbeResult, probe_session
+from gymrat.loop.iterate.judge import EXPERIMENT_LABEL
+from gymrat.loop.probe import ProbeOptions, ProbeResult, probe_session
 from gymrat.report.json_doc import render_probe_json
 from gymrat.report.text.probe import render_probe_report
 from gymrat.report.types import DEFAULT_REPORT_OPTIONS
@@ -85,7 +86,7 @@ def probe(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
     """Bench the session's experiment worktree against its newest recorded baseline."""
     apply_command_flags(debug=debug, color=color)
     probed = list(names or [])
-    flags = SharedFlags(samples=samples, config=config, format=output_format.value)
+    flags = SharedFlags(samples=samples, config=config, format=output_format)
 
     async def run() -> None:
         root = repo_root()

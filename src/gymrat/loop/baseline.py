@@ -37,6 +37,13 @@ async def measure_baseline(
         A ``(result, record)`` pair. The record carries the measurement's label,
         every round it collected, and the wall-clock duration of the engine call.
         Nothing is appended to a session log.
+
+    Raises:
+        GymratError: When the adapter is unknown or the target is neither a
+            directory nor a resolvable ref. When the worktree cleanup also
+            failed, the message carries its diagnostics.
+        CommandError: When a prepare or bench command times out or exits
+            non-zero.
     """
     from gymrat import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the heavy measurement stack
         measure as engine,

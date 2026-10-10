@@ -106,17 +106,16 @@ def is_held(lock_path: str) -> bool:
     """Report whether another party holds the advisory lock at ``lock_path``.
 
     The probe acquires a non-blocking ``FileLock`` on the OS lock file
-    (``<lock_path>.lock``) and releases immediately.  If acquisition fails the
-    lock is held; if it succeeds or the file cannot be opened at all the lock
-    is not held.  The probe never reads or writes the holder record and always
-    preserves the lock file on disk.
+    (``<lock_path>.lock``) and releases immediately.  The probe never reads or
+    writes the holder record and always preserves the lock file on disk.
 
     Args:
         lock_path: Path to the holder-record file whose sibling OS lock file
             is probed.
 
     Returns:
-        ``True`` when the lock is held by another party, ``False`` otherwise.
+        ``True`` when acquisition fails because another party holds the lock;
+        ``False`` when it succeeds or the lock file cannot be opened at all.
     """
     probe = FileLock(_os_lock_file(lock_path), timeout=0, preserve_lock_file=True)
     try:

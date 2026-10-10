@@ -38,7 +38,7 @@ from gymrat.report.types import (
     ComparisonResult,
 )
 from gymrat.session.records import KeepChecks
-from gymrat.targets import WorktreeRemovalFailure
+from gymrat.worktree_failure import WorktreeRemovalFailure
 from tests.report._comparisons import (
     NWayCandidate,
     create_candidate,
@@ -211,7 +211,7 @@ def test_render_json_when_geomean_has_exclusions_does_list_them_in_field_order()
 #: A candidate that measured and paired against the baseline, with an "improved" verdict.
 _PAIRED = permutation_candidate(verdict="improved", delta=-10.0, median=90.0)
 
-#: A candidate row with no measurement behind it, in the key order the document writes.
+#: A candidate row with no measurement behind it.
 _UNMEASURED_ROW: dict[str, object] = {
     "label": "beta",
     "median": None,
@@ -252,7 +252,7 @@ def test_render_json_when_candidate_has_no_verdict_does_null_its_verdict_fields(
 
     beta = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][1]
 
-    assert list(beta.items()) == list(expected.items())
+    assert beta == expected
 
 
 # ---------------------------------------------------------------------------

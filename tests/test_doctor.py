@@ -18,9 +18,11 @@ and multi-line indentation, caveat note, summary counts); the JSON renderer
 by its exact document.
 """
 
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 from syrupy.assertion import SnapshotAssertion
@@ -41,7 +43,7 @@ from gymrat.doctor import (
     render_doctor_json,
     render_doctor_report,
 )
-from gymrat.errors import GymratError
+from gymrat.git import run_git
 from tests._config import benchless_config as _config
 from tests._doctor_fixtures import doctor_report, environment_info
 from tests.adapters._inputs import VALID_ADAPTERS_HINT, unknown_adapter_message
@@ -534,16 +536,21 @@ def test_detect_git_environment_when_root_unresolvable_does_report_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    def fake_repo_root(cwd: str | None = None) -> str:
-        msg = "cannot resolve"
-        raise GymratError(msg)
-
-    monkeypatch.setattr(f"{_MODULE}.repo_root", fake_repo_root)
+    dubious_ownership = subprocess.CalledProcessError(
+        128, ["git"], stderr="fatal: detected dubious ownership\n"
+    )
+    monkeypatch.setattr(
+        "gymrat.session.paths.run_git", create_autospec(run_git, side_effect=dubious_ownership)
+    )
 
     result = detect_git_environment(str(tmp_path))
 
     assert result == GitEnvironment(
-        git_available=True, inside_git_repo=True, git_error="cannot resolve"
+        git_available=True,
+        inside_git_repo=True,
+        git_error=(
+            f"Cannot determine the git repository at {tmp_path}: fatal: detected dubious ownership"
+        ),
     )
 
 

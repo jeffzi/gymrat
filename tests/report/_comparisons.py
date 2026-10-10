@@ -34,7 +34,7 @@ if TYPE_CHECKING:
         GeomeanResult,
         MetricUnit,
     )
-    from gymrat.targets import WorktreeRemovalFailure
+    from gymrat.worktree_failure import WorktreeRemovalFailure
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +141,24 @@ def create_comparison_result(
     worktrees_left_behind: Sequence[WorktreeRemovalFailure] = (),
     worktree_prune_error: str | None = None,
 ) -> ComparisonResult:
-    """A comparison result with a clean baseline-plus-one-candidate run and no metrics."""
+    """A comparison result, clean and without metrics unless overridden.
+
+    Args:
+        baseline_label: The baseline's display label.
+        candidates: The candidates compared against the baseline, in run
+            order; ``None`` means one default ``create_candidate()``.
+        samples: How many samples the run collected.
+        adapter: The adapter that parsed the bench output.
+        metrics: The compared metrics keyed by name; ``None`` means none.
+        config_kinds: The config's ``kinds`` section, when it has one.
+        worktrees_removed: How many worktrees cleanup removed.
+        worktrees_left_behind: Worktrees cleanup could not remove.
+        worktree_prune_error: Why ``git worktree prune`` failed; ``None`` when
+            it succeeded.
+
+    Returns:
+        The comparison result.
+    """
     return ComparisonResult(
         baseline_label=baseline_label,
         candidates=tuple(candidates) if candidates is not None else (create_candidate(),),
@@ -386,7 +403,17 @@ def n_way_kind_metric(
     candidates: Sequence[NWayCandidate],
     gating: bool = True,
 ) -> MetricComparison:
-    """A metric of ``kind``, displayed under ``short_name``, judged once per candidate."""
+    """A permutation-judged metric under one kind, judged once per candidate.
+
+    Args:
+        kind: The kind the metric belongs to.
+        short_name: The name the metric displays under.
+        candidates: Each candidate's permutation outcome, in candidate order.
+        gating: Whether the metric counts toward the gated geomean.
+
+    Returns:
+        The metric comparison.
+    """
     metric = n_way_metric(candidates)
     return replace(
         metric,
@@ -403,7 +430,7 @@ def kind_metric(
     gating: bool = True,
     unit: MetricUnit | None = "ns",
 ) -> MetricComparison:
-    """A metric of ``kind``, displayed under ``short_name``, judged by the permutation test.
+    """A metric under one kind, judged by the permutation test.
 
     Args:
         kind: The kind the metric belongs to.

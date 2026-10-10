@@ -21,14 +21,18 @@ import pytest
 from gymrat.cli.app import app
 from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.utils import ENDPOINT_ENV
-from tests._cli import no_color_env, run_cli
+from tests._ansi import warning_lines
+from tests._cli import err_text, no_color_env, run_cli
 from tests._mode_bits import needs_mode_bits
-from tests.cli._session import runner
+from tests.cli._runner import (
+    runner,
+)
 from tests.session.records._fixtures import SESSION_ID, command_record
 from tests.telemetry._collector import otlp_collector
 from tests.telemetry._fixtures import arm_placeholder_endpoint, hide_otel_sdk, hide_otlp_exporter
 from tests.telemetry._replay_logs import (
     T0,
+    TORN_UTF8_LINE,
     write_measure_command_run,
     write_records_log,
     write_standard_run,
@@ -36,13 +40,6 @@ from tests.telemetry._replay_logs import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    from typer.testing import Result
-
-
-def _output(result: Result) -> str:
-    """Combine stdout and stderr the way CliRunner splits them across streams."""
-    return result.stdout + result.stderr
 
 
 _TIMEOUT_ENV = "OTEL_EXPORTER_OTLP_TIMEOUT"
@@ -89,7 +86,7 @@ def test_export_when_tracing_package_not_importable_does_exit_two_naming_otel_ex
 
     result = runner.invoke(app, ["export", session_log])
 
-    output = _output(result)
+    output = err_text(result)
     assert result.exit_code == 2, output
     assert "OpenTelemetry SDK or OTLP exporter not available" in output
     assert "'gymrat[otel]'" in output
@@ -121,7 +118,7 @@ def test_export_when_tracer_records_nothing_does_exit_two_without_reporting_expo
 
         result = runner.invoke(app, ["export", session_log])
 
-    output = _output(result)
+    output = err_text(result)
     assert result.exit_code == 2, output
     assert "No spans recorded" in output
     assert "Unset OTEL_SDK_DISABLED and set OTEL_TRACES_SAMPLER" in output
@@ -173,7 +170,7 @@ def test_export_when_endpoint_missing_or_blank_does_exit_two_naming_env_var(
     result = runner.invoke(app, ["export", session_log, *args])
 
     assert result.exit_code == 2
-    assert "No endpoint: pass --endpoint or set OTEL_EXPORTER_OTLP_ENDPOINT" in _output(result)
+    assert "No endpoint: pass --endpoint or set OTEL_EXPORTER_OTLP_ENDPOINT" in err_text(result)
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +207,7 @@ def test_export_when_session_log_missing_or_blank_does_exit_two_reporting_no_ses
     result = runner.invoke(app, ["export", session_log])
 
     assert result.exit_code == 2
-    assert f"No session found in {session_log}" in _output(result)
+    assert f"No session found in {session_log}" in err_text(result)
 
 
 @pytest.mark.parametrize(
@@ -241,7 +238,7 @@ def test_export_when_first_line_corrupt_does_exit_two_naming_line(
 
     result = runner.invoke(app, ["export", session_log])
 
-    output = _output(result)
+    output = err_text(result)
     assert result.exit_code == 2
     expected = [fragment.format(path=session_log) for fragment in expected_fragments]
     assert [fragment for fragment in expected if fragment not in output] == []
@@ -257,7 +254,7 @@ def test_export_when_first_record_not_session_does_exit_two_naming_its_type(
 
     result = runner.invoke(app, ["export", session_log])
 
-    assert (result.exit_code, _output(result).splitlines()) == (
+    assert (result.exit_code, err_text(result).splitlines()) == (
         2,
         [
             f"Error: Expected session header at {session_log}:1, got a command record",
@@ -277,7 +274,7 @@ def test_export_when_session_log_unreadable_does_exit_two_naming_path_and_os_rea
 
     result = runner.invoke(app, ["export", session_log])
 
-    output = _output(result)
+    output = err_text(result)
     assert result.exit_code == 2
     assert session_log in output
     assert "Permission denied" in output
@@ -300,7 +297,7 @@ def test_export_when_endpoint_flag_given_does_send_spans_to_the_flag_over_env(
     with otlp_collector() as collector:
         result = runner.invoke(app, ["export", session_log, "--endpoint", collector.endpoint])
 
-    assert result.exit_code == 0, _output(result)
+    assert result.exit_code == 0, err_text(result)
     assert len(collector.span_names) == 3
     assert f"exported 3 spans for session {SESSION_ID} to {collector.endpoint}" in result.stderr
 
@@ -320,12 +317,12 @@ def test_export_when_endpoint_padded_does_send_spans_to_trimmed_endpoint(
         result = runner.invoke(app, ["export", session_log, *args])
 
     success_lines = [line for line in result.stderr.splitlines() if line.startswith("exported ")]
-    assert result.exit_code == 0, _output(result)
+    assert result.exit_code == 0, err_text(result)
     assert {export.path for export in collector.received} == {"/v1/traces"}
     assert len(collector.span_names) == 3
     assert success_lines == [
         f"exported 3 spans for session {SESSION_ID} to {collector.endpoint}"
-    ], _output(result)
+    ], err_text(result)
 
 
 def test_export_when_final_session_line_is_torn_utf8_does_skip_only_that_line(
@@ -333,7 +330,7 @@ def test_export_when_final_session_line_is_torn_utf8_does_skip_only_that_line(
 ):
     session_log = _populate_session_dir(str(tmp_path))
     with Path(session_log).open("ab") as log:
-        log.write(b'{"type": "iteration", "note": "caf\xc3')
+        log.write(TORN_UTF8_LINE)
     env = no_color_env()
 
     with otlp_collector() as collector:
@@ -382,7 +379,7 @@ def test_export_when_collector_unreachable_does_exit_two_naming_endpoint(
     result = runner.invoke(app, ["export", session_log])
 
     elapsed = time.monotonic() - started
-    output = _output(result)
+    output = err_text(result)
     assert result.exit_code == 2, output
     assert _failed_export_error(_UNREACHABLE_ENDPOINT) in output
     assert "exported" not in output
@@ -410,7 +407,7 @@ def test_export_when_collector_rejects_a_batch_does_exit_two_naming_endpoint(
 
         result = runner.invoke(app, ["export", session_log])
 
-    output = _output(result)
+    output = err_text(result)
     assert result.exit_code == 2, output
     assert len(collector.received) == expected_exports
     assert _failed_export_error(collector.endpoint) in output
@@ -437,7 +434,7 @@ def test_export_when_no_session_log_argument_does_use_repo_session_path(
 
         result = runner.invoke(app, ["export"])
 
-    assert result.exit_code == 0, _output(result)
+    assert result.exit_code == 0, err_text(result)
     assert f"exported 3 spans for session {SESSION_ID} to {collector.endpoint}" in result.stderr
 
 
@@ -494,7 +491,7 @@ def test_export_when_supervisor_log_not_a_launch_of_this_session_does_skip_it_si
 
         result = runner.invoke(app, ["export", session_log])
 
-    assert result.exit_code == 0, _output(result)
+    assert result.exit_code == 0, err_text(result)
     assert len(collector.span_names) == 3
     assert f"exported 3 spans for session {SESSION_ID}" in result.stderr
     assert "warning: " not in result.stderr
@@ -545,10 +542,10 @@ def test_export_when_supervisor_log_unreadable_does_skip_it_with_a_warning(
 
         result = runner.invoke(app, ["export", session_log])
 
-    warning_lines = [line for line in result.stderr.splitlines() if line.startswith("warning: ")]
-    assert result.exit_code == 0, _output(result)
+    warnings = warning_lines(result.stderr)
+    assert result.exit_code == 0, err_text(result)
     assert len(collector.span_names) == 3
-    assert len(warning_lines) == 1
-    assert str(unreadable) in warning_lines[0]
-    assert reason in warning_lines[0]
+    assert len(warnings) == 1
+    assert str(unreadable) in warnings[0]
+    assert reason in warnings[0]
     assert f"exported 3 spans for session {SESSION_ID}" in result.stderr

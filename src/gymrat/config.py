@@ -44,18 +44,16 @@ from pydantic import BeforeValidator, ConfigDict, Field, Strict, TypeAdapter, Va
 from pydantic_core import ErrorDetails
 
 from gymrat.errors import GymratError
-from gymrat.metric_name import LINE_TERMINATORS
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT, NOISE_FLOOR_PCT, Direction
 from gymrat.pydantic_errors import (
     NON_BLANK_PATTERN,
     VALUE_ERROR_PREFIX,
-    coerce_integer,
     describe_key,
     drop_prefix_errors,
     phrase_for_error,
 )
 from gymrat.session.paths import repo_root
-from gymrat.utils import expected_got
+from gymrat.utils import LINE_TERMINATORS, coerce_integer, expected_got
 
 # ---------------------------------------------------------------------------
 # Environment variables

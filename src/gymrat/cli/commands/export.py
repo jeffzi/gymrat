@@ -19,10 +19,10 @@ from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_n
 from gymrat.session.store import first_line_json, read_session_header
 from gymrat.utils import ENDPOINT_ENV, otlp_endpoint, warn_to_stderr
 
-SessionLogArg = Annotated[
+_SessionLogArgument = Annotated[
     str | None, typer.Argument(metavar="[SESSION_LOG]", help="path to session.jsonl")
 ]
-EndpointOption = Annotated[
+_EndpointOption = Annotated[
     str | None,
     typer.Option("--endpoint", envvar=ENDPOINT_ENV, help="OTLP HTTP endpoint URL"),
 ]
@@ -62,10 +62,11 @@ def _matching_supervisor_logs(session_dir: Path, session_id: str) -> list[str]:
 
 
 def export_command(
-    session_log: SessionLogArg = None,
-    endpoint: EndpointOption = None,
+    session_log: _SessionLogArgument = None,
+    endpoint: _EndpointOption = None,
+    *,
     color: ColorOption = None,
-    debug: DebugOption = False,  # noqa: FBT002 -- 1:1 pass-through of the --debug flag
+    debug: DebugOption = False,
 ) -> None:
     """Export a finished session's spans to an OpenTelemetry collector.
 
@@ -103,13 +104,15 @@ def _export(session_log: str | None, endpoint: str | None) -> None:
 
     session_id = header.session_id
 
-    from gymrat.telemetry.provider import (  # noqa: PLC0415
+    from gymrat.telemetry.provider import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack
         configure_tracing,
         export_failed,
         flush_tracing,
         session_span_dropped,
     )
-    from gymrat.telemetry.replay import replay_session  # noqa: PLC0415
+    from gymrat.telemetry.replay import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack
+        replay_session,
+    )
 
     endpoint = otlp_endpoint(endpoint)
     if endpoint is None:

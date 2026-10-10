@@ -32,13 +32,10 @@ from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import start_session
 from gymrat.report.loop import format_start_summary
 from gymrat.sampling import RunOptions, TargetSpec
-from gymrat.session.budget import (
-    estimate_iterate_duration,
-    minutes_to_ms,
-    ms_to_minutes,
-)
+from gymrat.session.budget import estimate_iterate_duration
 from gymrat.session.paths import (
     baseline_worktree_dir,
+    baseline_worktree_label,
     experiment_worktree_dir,
     session_jsonl_path,
 )
@@ -47,21 +44,14 @@ from gymrat.session.store import (
     fold_session,
     last_kept_position,
     latest_baseline,
-    read_records,
+    read_session_records,
 )
 from gymrat.session.workspace import changed_file_count, dirty_file_count
-from gymrat.utils import pluralize, warn_to_stderr
+from gymrat.utils import minutes_to_ms, ms_to_minutes, pluralize, warn_to_stderr
 
 if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
-    from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
-
-_BASELINE_LABEL = ".gymrat/worktrees/baseline"
-
-
-def _read_records(root: str) -> list[SessionLogRecord]:
-    return read_records(session_jsonl_path(root))
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,10 +198,10 @@ async def _baseline_step(
         root: The repository root.
         config: The resolved configuration the baseline is measured with.
     """
-    if latest_baseline(_read_records(root)) is not None:
+    if latest_baseline(read_session_records(root)) is not None:
         return
 
-    target = TargetSpec(label=_BASELINE_LABEL, target=baseline_worktree_dir(root))
+    target = TargetSpec(label=baseline_worktree_label(), target=baseline_worktree_dir(root))
     progress = begin_run(SharedFlags(), 1, command="supervise")
     try:
         run_options = RunOptions.from_config(
@@ -225,7 +215,7 @@ async def _baseline_step(
 
 def _check_feasibility(root: str, *, max_minutes: float, force: bool) -> None:
     """Refuse to launch when the cap cannot fit one iterate, unless ``force``."""
-    records = _read_records(root)
+    records = read_session_records(root)
     estimate = estimate_iterate_duration(records)
     if estimate is None:
         write_and_flush(
@@ -282,7 +272,7 @@ def validate_experiment_worktree(root: str) -> None:
         GymratError: When the experiment worktree has unsettled or unmeasured
             changes.
     """
-    state = fold_session(_read_records(root))
+    state = fold_session(read_session_records(root))
     if state.finalized is not None or state.session is None:
         return
 

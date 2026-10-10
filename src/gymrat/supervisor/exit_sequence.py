@@ -33,17 +33,15 @@ import contextlib
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, get_args
 
 from gymrat.clock import monotonic_ms, now_ns
 from gymrat.command_run import with_repo_lock
 from gymrat.errors import GymratError
-from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.discard import discard_session
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.keep import KeepOptions, keep_session
 from gymrat.session.lock import LockContentionError, is_held, read_holder
-from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     CommandRecord,
     DiscardRecord,
@@ -51,10 +49,10 @@ from gymrat.session.records import (
     IterationRecord,
     KeepRecord,
 )
-from gymrat.session.store import fold_session, last_kept_position, read_records
+from gymrat.session.store import fold_session, last_kept_position, read_session_records
 from gymrat.session.workspace import changed_file_count, worktree_fingerprint
-from gymrat.supervisor.events import FollowUpEvent
-from gymrat.utils import MS_PER_SECOND, pluralize
+from gymrat.supervisor.events import CapType, FollowUpEvent
+from gymrat.utils import MS_PER_SECOND, SHORT_SHA_LENGTH, pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -78,7 +76,7 @@ _FAILED_TEXT = "exit sequence failed: {message}"
 #: The run endings whose skip line closes on :data:`_CAP_NOTE`: a cap cuts the
 #: agent off mid-command, so the command it was running is expected to outlive it
 #: and hold the lock on the way out.
-_CAP_ENDS = frozenset({"wall-clock", "spend-cap"})
+_CAP_ENDS = frozenset(get_args(CapType))
 
 
 #: What a tree that no longer matches the fingerprint the iteration measured
@@ -237,7 +235,7 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
 
     async def body(trace: CommandTrace) -> None:
         progress(ExitPhase(kind="settling", pid=None))
-        state = fold_session(read_records(session_jsonl_path(context.root)))
+        state = fold_session(read_session_records(context.root))
         if state.finalized is not None:
             record(ExitStep(kind="nothing", text="session already finalized"))
             return
@@ -300,7 +298,7 @@ def _decide_finalize(
     """
     if settled is not None and settled.kind == "left":
         return None
-    after = fold_session(read_records(session_jsonl_path(context.root)))
+    after = fold_session(read_session_records(context.root))
     if after.keep_count == 0 or after.unsettled:
         return None
     if not finalize:
@@ -489,7 +487,7 @@ def _gate_reason(root: str, iteration: IterationRecord, *, experiment: str) -> s
     Returns:
         The reason wording the step reads, or ``None`` when the gate passes.
     """
-    failed = _failed_hook(read_records(session_jsonl_path(root)), iteration)
+    failed = _failed_hook(read_session_records(root), iteration)
     if failed is not None:
         return f"{failed.stage} hook failed"
 

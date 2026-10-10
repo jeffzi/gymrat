@@ -1,9 +1,9 @@
-"""Shared command-origin helpers for the CLI command test files.
+"""Command-origin helpers for the CLI tests of the supervised-run refusal.
 
-Builders used by more than one CLI test module to exercise the
-supervised-run refusal. The budget-file builders live in
-:mod:`tests.session._budget`. This is test-support code, not a test module: it
-carries no test functions or pytest fixtures of its own.
+The origin says whether the shell or the agent's tool ran a command; while a
+supervised run is live, the shell is refused. The budget-file builders that make
+a run live are in :mod:`tests.session._budget`. This is test-support code, not
+a test module: it carries no test functions or pytest fixtures of its own.
 """
 
 import pytest

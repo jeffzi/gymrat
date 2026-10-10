@@ -28,7 +28,6 @@ from gymrat.cli.supervise.types import (
     FinishedTool,
     InFlight,
     NestedPhase,
-    ReadSessionResult,
     Responding,
     RunningTool,
     Starting,
@@ -43,7 +42,6 @@ from gymrat.supervisor.exit_sequence import ExitPhase
 from gymrat.utils import NS_PER_MS
 from tests._imports import modules_imported_by
 from tests.cli.supervise._fixtures import (
-    TOOL_START_MS,
     cap_event,
     follow_up_event,
     launch_event,
@@ -51,8 +49,6 @@ from tests.cli.supervise._fixtures import (
     read_result,
     session_state_three_iterations,
     thinking_event,
-    tool_end_event,
-    tool_start_event,
     turn_end_event,
     usage_event,
 )
@@ -63,11 +59,17 @@ from tests.session.records._fixtures import (
     make_iteration,
     session_state,
 )
+from tests.supervisor._fixtures import (
+    TOOL_START_MS,
+    tool_end_event,
+    tool_start_event,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.session.store import SessionState
+    from gymrat.cli.supervise.types import NestedModelPhase
+    from gymrat.session.store import ReadSessionResult, SessionState
     from gymrat.supervisor.events import ModelPhase, SessionEvent
 
 # ---------------------------------------------------------------------------
@@ -523,7 +525,7 @@ _NESTED_MODEL_PHASES = [
 
 @pytest.mark.parametrize(("phase", "tool_name"), _NESTED_MODEL_PHASES)
 def test_advance_when_nested_model_phase_arrives_does_record_it_under_the_parent(
-    phase: ModelPhase, tool_name: str | None
+    phase: NestedModelPhase, tool_name: str | None
 ):
     before = bash_in_flight_state()
 

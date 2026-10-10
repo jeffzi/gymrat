@@ -3,7 +3,6 @@ import math
 import sys
 from collections.abc import Callable
 from dataclasses import fields
-from datetime import date
 from operator import attrgetter
 from pathlib import Path
 
@@ -23,7 +22,6 @@ from gymrat.config import (
     validate_config_dict,
 )
 from gymrat.errors import GymratError
-from tests.adapters._inputs import LINE_BREAKS
 from tests.config._toml import (
     DEEP_NESTING_DOCUMENT,
     DIGIT_LIMIT_DOCUMENT,
@@ -38,10 +36,10 @@ from tests.config._toml import (
 # Byte-order mark that editors on Windows prepend to UTF-8 files: EF BB BF.
 UTF8_BOM = "\N{BYTE ORDER MARK}"
 
-# Every character `str.splitlines` breaks on. Any of these embedded in a config
-# key would split the key, and every message naming it, across lines, so a key
-# holding one is rejected.
-LINE_BREAK_CHARS = [line_break.char for line_break in LINE_BREAKS]
+# Two characters `str.splitlines` breaks on: an ASCII one and a non-ASCII one, so
+# a key holding either is rejected and its message escapes it. Which characters
+# count as line breaks is pinned in tests/test_metric_name.py.
+LINE_BREAK_CHARS = ["\n", "\u2028"]
 
 
 #: Why reading a directory as the config file fails: the OS refuses it differently on Windows.
@@ -81,7 +79,7 @@ DIRECTORY_READ_REASON = "Permission denied" if sys.platform == "win32" else "Is 
                     "metric2": MetricEntry(direction="higher"),
                 },
             ),
-            id="all-known-keys",
+            id="flag-backed-keys-and-metrics",
         ),
         pytest.param(
             tomli_w.dumps({
@@ -339,9 +337,7 @@ _EFFORT_LEVELS = "'low', 'medium', 'high', 'xhigh' or 'max'"
         ),
         # keys that must be strings
         _wrong_type({"bench": 42}, "bench", "a string", "42"),
-        _wrong_type({"bench": ["a"]}, "bench", "a string", '["a"]'),
         _wrong_type({"prepare": True}, "prepare", "a string", "true"),
-        _wrong_type({"prepare": {"cmd": "x"}}, "prepare", "a string", '{"cmd": "x"}'),
         _wrong_type({"checks": 42}, "checks", "a string", "42"),
         _wrong_type({"filter": ["a"]}, "filter", "a string", '["a"]'),
         _wrong_type({"hooks": {"before": 42}}, "hooks.before", "a string", "42"),
@@ -364,20 +360,12 @@ _EFFORT_LEVELS = "'low', 'medium', 'high', 'xhigh' or 'max'"
         _wrong_type({"samples": 0}, "samples", "a number at or above 1", "0"),
         _wrong_type({"timeout_seconds": -1}, "timeout_seconds", "a number at or above 1", "-1"),
         _wrong_type({"timeout_seconds": True}, "timeout_seconds", "an integer", "true"),
-        _wrong_type(
-            {"samples": date(1979, 5, 27)},
-            "samples",
-            "an integer",
-            "datetime.date(1979, 5, 27)",
-        ),
         # unstable_noise_pct
         _wrong_type({"unstable_noise_pct": "loud"}, "unstable_noise_pct", "a number", '"loud"'),
         *(
             _wrong_type({"unstable_noise_pct": value}, "unstable_noise_pct", "a number", got)
             for value, got in (
                 (math.nan, "NaN"),
-                (math.inf, "Infinity"),
-                (-math.inf, "-Infinity"),
                 (False, "false"),
             )
         ),

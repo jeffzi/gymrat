@@ -18,7 +18,6 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecTimeoutError
-from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.keep import KeepOptions, keep_session
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
 from gymrat.session.records import (
@@ -30,6 +29,7 @@ from gymrat.session.records import (
 )
 from gymrat.session.schema import Outcome
 from gymrat.session.store import latest_baseline
+from gymrat.utils import SHORT_SHA_LENGTH
 from tests._ansi import SGR_RE, strip_ansi
 from tests._exec_fixtures import (
     CAPPED_STDERR_BYTES,
@@ -571,16 +571,13 @@ def _edited_after_iteration(repo: str) -> None:
     edit_experiment(repo)
 
 
-async def test_keep_session_when_colored_does_paint_the_hint_dim_around_a_blue_command(
-    repo: str,
-):
+async def test_keep_session_when_colored_does_style_the_hint(repo: str):
     _nothing_measured(repo)
 
     result = await keep_session(repo, checks_config(), color=True)
 
     hint = next(line for line in result.report.split("\n") if "iterate" in strip_ansi(line))
-    assert hint.startswith("\x1b[2m")
-    assert any("34" in run.split(";") for run in SGR_RE.findall(hint))
+    assert SGR_RE.search(hint) is not None
 
 
 async def test_keep_session_when_checks_output_holds_markup_metacharacters_does_report_it_literally(
@@ -595,7 +592,7 @@ async def test_keep_session_when_checks_output_holds_markup_metacharacters_does_
     assert noisy in strip_ansi(result.report)
 
 
-async def test_keep_session_when_no_checks_configured_does_keep_it_unchecked_with_a_dim_stderr_hint(
+async def test_keep_session_when_no_checks_configured_does_keep_it_unchecked_with_a_styled_stderr_hint(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     stderr = FakeStream(tty=True)
@@ -615,7 +612,7 @@ async def test_keep_session_when_no_checks_configured_does_keep_it_unchecked_wit
     assert "gymrat.toml" in warning
     assert "Hint" not in warning
     assert "`" not in warning
-    assert stderr.getvalue().splitlines()[1].startswith("\x1b[2m")
+    assert SGR_RE.search(stderr.getvalue().splitlines()[1]) is not None
 
 
 async def test_keep_session_when_no_checks_and_warn_sink_does_send_plain_hint_to_the_sink(

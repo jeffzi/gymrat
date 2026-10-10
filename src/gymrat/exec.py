@@ -236,6 +236,15 @@ class ExecTimeoutError:
 
     This is a returned value, not a raised exception: callers distinguish it from
     :class:`ExecResult` by type (``isinstance``).
+
+    Attributes:
+        stdout: The standard output captured before the timeout.
+        stderr: The standard error captured before the timeout.
+        timeout_ms: The timeout the run exceeded, in milliseconds.
+        stdout_bytes: Every byte the run wrote to standard output, including
+            any past the capture cap.
+        stderr_bytes: Every byte the run wrote to standard error, including any
+            past the capture cap.
     """
 
     stdout: str
@@ -251,11 +260,14 @@ class OutputBuffer:
 
     A chunk is appended only while the bytes received *before* it are still under
     the cap; the chunk that crosses the cap is kept whole, and every later chunk
-    is dropped from the text. ``byte_count`` always reflects every byte received,
-    so a caller can tell that output was truncated.
+    is dropped from the text.
 
     Internally the buffer accumulates into a list and joins on access, avoiding
     O(n^2) re-copy from repeated string concatenation toward the 64 MiB cap.
+
+    Attributes:
+        byte_count: Every byte received, kept or dropped, so a caller can tell
+            that output was truncated.
     """
 
     _chunks: list[str] = field(default_factory=list)

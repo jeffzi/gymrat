@@ -1,238 +1,47 @@
-"""Shared helpers for the CLI command test files.
+"""Session-log builders shared by the CLI command test files.
 
-Builders and stubs used by more than one ``tests/cli`` module: the loop-command
-repos and tty stand-ins, the session-log readers, and the ``measure`` and
-``compare`` seam stubs.  This is test-support code, not a test module: it carries no test
-functions.
+Each opens or writes the session a command runs against, optionally with a
+bench config and a live budget, and most double as rows in an arrange table.
+This is test-support code, not a test module: it carries no test functions.
 """
 
-import contextlib
-import errno
-import os
-import sys
-from collections.abc import Generator, Sequence
 from pathlib import Path
-from typing import Any, Literal, override
-from unittest.mock import Mock, create_autospec
 
 import pytest
-from typer.testing import CliRunner
 
-from gymrat.cli.run_setup import resolve_render_mode
-from gymrat.compare import compare
-from gymrat.config import KindEntry, MetricEntry, ResolvedConfig, resolve_config
 from gymrat.loop.finalize import finalize_session
-from gymrat.loop.start import start_session
-from gymrat.measure import MeasureOptions
-from gymrat.progress_events import ProgressEvent
-from gymrat.report.types import ComparisonResult, MeasurementResult
-from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import SessionLogRecord, SessionRecord
 from tests._config import resolved_config
-from tests._git import commit_all
-from tests._streams import RaisingStream
+from tests.cli._command_stubs import stub_probe_measure
 from tests.config._toml import write_config
-from tests.loop._probe import BASELINE_SAMPLES, MeasureRecorder, install_measure, measurement
+from tests.loop._probe import BASELINE_SAMPLES
 from tests.loop._settle import (
     CHECKS,
+    commit_and_keep,
     edit_experiment,
     keep_iteration,
     start_with,
 )
-from tests.report._comparisons import create_comparison_result
-from tests.report._measurements import create_measurement_result
+from tests.loop.iterate._fixtures import write_iterate_session, write_outlasted_session
+from tests.session._budget import install_budget
 from tests.session.records._fixtures import (
-    append_records,
     baseline_record,
     committed_keep,
     iteration_record,
     session_header_of,
     session_record,
+    settled_history,
     write_session_log,
 )
-
-runner = CliRunner()
-
-
-def closed_stdout_error() -> OSError:
-    """Build the error a POSIX stdout write raises once its reader has gone.
-
-    Returns:
-        A fresh ``BrokenPipeError`` carrying ``EPIPE``.
-    """
-    return BrokenPipeError(errno.EPIPE, "Broken pipe")
-
-
-def disk_full_error() -> OSError:
-    """Build the error a stdout write raises when the disk is full.
-
-    Returns:
-        A fresh ``OSError`` carrying ``ENOSPC`` and its system message.
-    """
-    return OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
-
-
-class FailingStdoutRunner(CliRunner):
-    """A ``CliRunner`` whose isolated ``sys.stdout`` fails every write with ``error``.
-
-    The runner still captures stderr, so a test can check nothing was reported.
-
-    Args:
-        error: The exception every stdout write raises.
-    """
-
-    def __init__(self, error: OSError) -> None:
-        super().__init__()
-        self._error = error
-
-    @override
-    @contextlib.contextmanager
-    def isolation(self, *args: Any, **kwargs: Any) -> Generator[Any]:
-        with super().isolation(*args, **kwargs) as streams:
-            # Keep the runner's wrapper alive: collecting it closes the buffer it captures into.
-            captured_stdout = sys.stdout
-            sys.stdout = RaisingStream(self._error)
-            try:
-                yield streams
-            finally:
-                sys.stdout = captured_stdout
-
-
-#: The config the stubbed ``measure`` command resolves; its fake engine never benches against it.
-MEASURE_CONFIG = resolved_config(
-    bench="sh bench.sh",
-    samples=5,
-    timeout_seconds=30,
-    unstable_noise_pct=2.0,
-    primary="time",
-)
-
-#: The config the stubbed ``compare`` command resolves; its fake engine never benches against it.
-COMPARE_CONFIG = resolved_config(
-    bench="sh bench.sh",
-    prepare="npm ci",
-    samples=5,
-    timeout_seconds=30,
-    unstable_noise_pct=2.0,
-    primary="time",
-    metrics={"decode/time": MetricEntry(direction="higher")},
-    kinds={"memory": KindEntry(gating=False)},
-)
-
-
-def stub_config(
-    monkeypatch: pytest.MonkeyPatch, command: str, config: ResolvedConfig
-) -> ResolvedConfig:
-    """Replace a command's config resolution with one that hands back ``config``.
-
-    The stand-in keeps the real resolver's signature, so a call the real
-    ``resolve_config`` would reject fails the test.
-
-    Args:
-        monkeypatch: The fixture that installs the stand-in.
-        command: The module under ``gymrat.cli.commands`` whose resolver is replaced.
-        config: What every resolution hands back.
-
-    Returns:
-        ``config``, for a test that asserts against it.
-    """
-    monkeypatch.setattr(
-        f"gymrat.cli.commands.{command}.resolve_config",
-        create_autospec(resolve_config, return_value=config),
-    )
-    return config
-
-
-def force_render_mode(
-    monkeypatch: pytest.MonkeyPatch, command: str, mode: Literal["live", "plain"]
-) -> None:
-    """Make a command resolve ``mode`` as its render mode, whatever the terminal says.
-
-    Args:
-        monkeypatch: The fixture that installs the stand-in.
-        command: The module under ``gymrat.cli.commands`` whose render mode is forced.
-        mode: The render mode every resolution hands back.
-    """
-    monkeypatch.setattr(
-        f"gymrat.cli.commands.{command}.resolve_render_mode",
-        create_autospec(resolve_render_mode, return_value=mode),
-    )
-
-
-def stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace the ``measure`` command's config resolution with ``MEASURE_CONFIG``."""
-    stub_config(monkeypatch, "measure", MEASURE_CONFIG)
-
-
-def capture_measure(
-    monkeypatch: pytest.MonkeyPatch, result: MeasurementResult | None = None
-) -> list[MeasureOptions]:
-    """Stub the ``measure`` seam and capture the options of each call.
-
-    The fake lets a test pin the label and raw rounds a recording is built from.
-
-    Args:
-        monkeypatch: The fixture that installs the fake.
-        result: What the fake hands back; a default clean run when ``None``.
-
-    Returns:
-        The options of every call, in order; empty if the seam was never reached.
-    """
-    handed_back = create_measurement_result() if result is None else result
-    return install_measure(monkeypatch, handed_back).calls
-
-
-def stub_measure(
-    monkeypatch: pytest.MonkeyPatch, result: MeasurementResult | None = None
-) -> list[MeasureOptions]:
-    """Stub both config resolution and the ``measure`` seam; return captured options."""
-    stub_resolve(monkeypatch)
-    return capture_measure(monkeypatch, result)
-
-
-def stub_compare_command(
-    monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None
-) -> None:
-    """Stub both config resolution and the ``compare`` seam, so invoking ``compare`` succeeds.
-
-    Args:
-        monkeypatch: The fixture that installs the fakes.
-        result: What the fake ``compare`` hands back; a comparison with no
-            regressions when ``None``.
-    """
-    stub_config(monkeypatch, "compare", COMPARE_CONFIG)
-    stub_compare(monkeypatch, result)
-
-
-def stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> Mock:
-    """Replace the ``compare`` seam with a fake that returns a fixed comparison.
-
-    Args:
-        monkeypatch: The fixture that installs the fake.
-        result: What the fake hands back; a comparison with no regressions when ``None``.
-
-    Returns:
-        The installed fake, whose ``call_args`` hold the options each call passed.
-    """
-    handed_back = create_comparison_result() if result is None else result
-    fake = create_autospec(compare, return_value=handed_back)
-    monkeypatch.setattr("gymrat.compare.compare", fake)
-    return fake
 
 
 def leave_as_is(_repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     """Arrange nothing: the no-op row of an ``(repo, monkeypatch)`` arrange table."""
 
 
-def never_tty(_stream: object) -> bool:
-    """Stand in for ``is_tty`` so the discard command takes its non-interactive path."""
-    return False
-
-
 def make_discard_repo(repo: str) -> str:
     """Set up ``repo`` with an open session and one unsettled iteration to discard."""
-    start_session(repo, "main", resolved_config())
-    append_records(repo, iteration_record(seq=1))
+    start_with(repo, (iteration_record(seq=1),), config=resolved_config())
     return repo
 
 
@@ -260,21 +69,6 @@ def open_probe_session(repo: str, **config: object) -> None:
     """
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
     write_bench_config(repo, **config)
-
-
-def stub_probe_measure(
-    monkeypatch: pytest.MonkeyPatch, progress: Sequence[ProgressEvent] = ()
-) -> MeasureRecorder:
-    """Replace the measurement engine with a recorder answering a metric-lines measurement.
-
-    Args:
-        monkeypatch: The fixture the engine is patched through.
-        progress: Events each call reports through the progress callback it was handed.
-
-    Returns:
-        The installed recorder.
-    """
-    return install_measure(monkeypatch, measurement(adapter="metric-lines"), progress=progress)
 
 
 def open_stubbed_probe_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -314,9 +108,8 @@ def open_session(repo: str) -> None:
 
 def open_session_with_one_keep(root: str) -> SessionRecord:
     """Open a session, commit and log one kept iteration, and return the session header."""
-    start_session(root, "main", resolved_config())
-    commit = commit_all(experiment_worktree_dir(root), "cache the regex", file="step.txt")
-    keep_iteration(root, 1, commit=commit)
+    start_with(root, config=resolved_config())
+    commit_and_keep(root, 1, "cache the regex")
     return session_header_of(root)
 
 
@@ -330,3 +123,48 @@ def close_session_with_one_keep(root: str) -> str:
 def write_bench_config(root: str, **extra: object) -> None:
     """Write the implicit ``gymrat.toml`` at the repository root, naming a bench command."""
     write_config(Path(root), {"bench": "npm run bench", **extra})
+
+
+def write_capped_session(repo: str) -> None:
+    """Write a settled session that already reached its configured cap of one iteration."""
+    write_iterate_session(repo, settled_history())
+    write_bench_config(repo, stop={"max_iterations": 1})
+
+
+def open_unsettled_session_under_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open a session whose last iteration was never settled, under a live budget."""
+    write_iterate_session(repo, (iteration_record(seq=1),))
+    write_bench_config(repo)
+    install_budget(repo, monkeypatch)
+
+
+def open_capped_session_under_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open a session at its iteration cap, under a live budget."""
+    write_capped_session(repo)
+    install_budget(repo, monkeypatch)
+
+
+def open_outlasted_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open a settled session whose last iteration outlasts the 5 minutes the budget has left."""
+    write_outlasted_session(repo, monkeypatch)
+    write_bench_config(repo)
+
+
+def open_hooked_iterate_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Open a session whose before hook touches a marker file, under a live budget.
+
+    The hook runs in the experiment worktree, so the worktree is created for it to fire.
+
+    Args:
+        repo: The repository the session opens in.
+        monkeypatch: The fixture that releases the supervise lock at teardown.
+
+    Returns:
+        The marker file the before hook creates when it runs.
+    """
+    header = write_iterate_session(repo)
+    Path(header.worktrees.experiment).mkdir()
+    marker = Path(repo, "hook-ran")
+    write_bench_config(repo, hooks={"before": f"touch '{marker}'"})
+    install_budget(repo, monkeypatch)
+    return marker

@@ -40,7 +40,7 @@ from gymrat.config import config_trace_args, resolve_config
 from gymrat.errors import GATE_EXIT_CODE
 from gymrat.report.json_doc import render_json
 from gymrat.report.tally import count_verdicts
-from gymrat.report.text.render import render_report
+from gymrat.report.text.render import gated_geomean_trips, render_report
 from gymrat.report.types import (
     CandidateComparison,
     ComparisonResult,
@@ -113,7 +113,7 @@ def _gated_geomeans_of(candidate: CandidateComparison) -> list[GeomeanResult]:
 
 
 def should_fail_gate(conditions: tuple[FailOnCondition, ...], result: ComparisonResult) -> bool:
-    """Return ``True`` when any condition trips — meaning the process should exit non-zero.
+    """Decide whether the ``--fail-on`` gate fails this run, so the process exits non-zero.
 
     Args:
         conditions: The fail-on conditions to evaluate (OR-ed).
@@ -122,7 +122,6 @@ def should_fail_gate(conditions: tuple[FailOnCondition, ...], result: Comparison
     Returns:
         ``True`` when any condition trips.
     """
-    # Only gating metrics may be judged by a gate.
     gating = {name: metric for name, metric in result.metrics.items() if metric.meta.gating}
 
     for condition in conditions:
@@ -135,9 +134,9 @@ def should_fail_gate(conditions: tuple[FailOnCondition, ...], result: Comparison
                     return True
             case GeomeanFailOn(pct=pct):
                 if any(
-                    geomean.n > 0 and geomean.value >= pct
+                    gated_geomean_trips(kind.gated_geomean, pct)
                     for candidate in result.candidates
-                    for geomean in _gated_geomeans_of(candidate)
+                    for kind in candidate.kinds
                 ):
                     return True
             case _ as unreachable:
@@ -228,7 +227,7 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         samples=samples,
         timeout=timeout,
         config=config,
-        format=output_format.value,
+        format=output_format,
         verbose=verbose,
         fail_on=tuple(fail_on) if fail_on is not None else (),
     )

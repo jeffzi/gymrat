@@ -48,15 +48,24 @@ from gymrat.event_docs import (
     render_reference,
     write_all,
 )
+from gymrat.git import run_git
 from gymrat.loop.status import status_session
+from gymrat.session.paths import repository_lookup_error
 from gymrat.session.records import SessionLogRecord
 from gymrat.session.store import fold_session
-from gymrat.supervisor.events import SessionEvent, event_from_wire
+from gymrat.supervisor.events import (
+    FollowUpEvent,
+    LaunchEvent,
+    SessionEvent,
+    ToolStartEvent,
+    event_from_wire,
+)
 from gymrat.supervisor.turns import outcome_record_count
 from tests._ansi import normalize
 from tests._cli import run_module
 from tests._config import benchless_config
 from tests._imports import loaded_under, modules_imported_by
+from tests._markdown import md_section
 from tests.session.records._fixtures import (
     baseline_record,
     command_record,
@@ -124,26 +133,6 @@ def _wire_type(model: type[BaseModel]) -> str:
     return get_args(model.model_fields["type"].annotation)[0]
 
 
-def _md_section(md: str, start_marker: str | None, stop_marker: str | None) -> str:
-    """Slice one section out of a Markdown document.
-
-    Args:
-        md: The Markdown text to slice.
-        start_marker: Text the slice starts at; ``None`` starts at the top.
-        stop_marker: Text whose next occurrence after the start ends the slice;
-            ``None`` runs to the end.
-
-    Returns:
-        The text from the start marker up to, not including, the stop marker.
-
-    Raises:
-        ValueError: When ``start_marker`` is absent, instead of returning a wrong slice.
-    """
-    start = md.index(start_marker) if start_marker is not None else 0
-    end = md.find(stop_marker, start + 1) if stop_marker is not None else -1
-    return md[start:end] if end != -1 else md[start:]
-
-
 # ---------------------------------------------------------------------------
 # write_all
 # ---------------------------------------------------------------------------
@@ -175,15 +164,6 @@ def test_main_module_when_run_does_exit_zero_with_four_output_lines(
     written = [Path(line).resolve() for line in result.stdout.splitlines()]
     assert sorted(written) == sorted((root / rel).resolve() for rel in _EXPECTED_KEYS)
     assert all(path.is_file() for path in written)
-
-
-def test_main_module_when_run_outside_repo_does_fail_without_writing_artifacts(tmp_path: Path):
-    result = run_module("gymrat.event_docs", cwd=tmp_path)
-
-    assert result.returncode == TOOL_FAILURE_EXIT_CODE, f"stderr: {result.stderr}"
-    assert "Traceback" not in result.stderr
-    assert not result.stdout.strip()
-    assert [rel for rel in sorted(_EXPECTED_KEYS) if (tmp_path / rel).exists()] == []
 
 
 # ---------------------------------------------------------------------------
@@ -359,8 +339,21 @@ def test_readers_when_compared_to_the_reader_function_does_agree(
 # ---------------------------------------------------------------------------
 
 
-def _render_schemas() -> tuple[dict[str, Any], dict[str, Any]]:
-    return render_json_schemas()
+@pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
+def test_render_json_schemas_when_called_does_map_every_type_in_a_draft_2020_12_envelope(
+    channel: _Channel,
+):
+    expected_mapping = {
+        _wire_type(member): f"#/$defs/{member.__name__}" for member in channel.members
+    }
+
+    schema = render_json_schemas()[channel.schema_index]
+
+    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert schema["title"] == channel.title
+    assert schema["$id"] == f"https://github.com/jeffzi/gymrat/{channel.schema_path}"
+    assert schema["oneOf"] == [{"$ref": f"#/$defs/{member.__name__}"} for member in channel.members]
+    assert schema["discriminator"] == {"propertyName": "type", "mapping": expected_mapping}
 
 
 # ---------------------------------------------------------------------------
@@ -386,29 +379,12 @@ def test_render_json_schemas_when_called_does_shape_member_def_per_log(
     expected_const: str,
     expected_additional: bool | None,
 ):
-    model_schema = _render_schemas()[channel.schema_index]["$defs"][model_name]
+    model_schema = render_json_schemas()[channel.schema_index]["$defs"][model_name]
 
     properties = model_schema["properties"]
     assert properties["type"].get("const") == expected_const
     assert model_schema.get("additionalProperties") is expected_additional
     assert properties["at"].get("type") == "integer"
-
-
-@pytest.mark.parametrize("channel", _CHANNEL_PARAMS)
-def test_render_json_schemas_when_called_does_map_every_type_in_a_draft_2020_12_envelope(
-    channel: _Channel,
-):
-    expected_mapping = {
-        _wire_type(member): f"#/$defs/{member.__name__}" for member in channel.members
-    }
-
-    schema = _render_schemas()[channel.schema_index]
-
-    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-    assert schema["title"] == channel.title
-    assert schema["$id"] == f"https://github.com/jeffzi/gymrat/{channel.schema_path}"
-    assert schema["oneOf"] == [{"$ref": f"#/$defs/{member.__name__}"} for member in channel.members]
-    assert schema["discriminator"] == {"propertyName": "type", "mapping": expected_mapping}
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +405,7 @@ def test_render_json_schemas_when_called_does_require_header_field_without_defau
     model_name: str,
     field_name: str,
 ):
-    model_schema = _render_schemas()[channel.schema_index]["$defs"][model_name]
+    model_schema = render_json_schemas()[channel.schema_index]["$defs"][model_name]
 
     assert field_name in model_schema["required"]
     assert "default" not in model_schema["properties"][field_name]
@@ -445,7 +421,7 @@ def test_render_json_schemas_when_called_does_require_header_field_without_defau
     [pytest.param(member, id=member.__name__) for member in get_args(SessionEvent)],
 )
 def test_render_json_schemas_when_called_does_require_type_on_every_event(member: type):
-    _, supervisor_log = _render_schemas()
+    _, supervisor_log = render_json_schemas()
 
     required = supervisor_log["$defs"][member.__name__].get("required", [])
     assert "type" in required
@@ -461,7 +437,7 @@ def test_render_json_schemas_when_called_does_require_type_on_every_event(member
 def test_supervisor_log_schema_when_validating_payload_does_agree_with_event_from_wire(
     payload: dict[str, Any],
 ):
-    _, supervisor_log = _render_schemas()
+    _, supervisor_log = render_json_schemas()
     validator = Draft202012Validator(supervisor_log)
 
     schema_accepts = validator.is_valid(payload)
@@ -485,44 +461,103 @@ def test_supervisor_log_schema_when_validating_payload_does_agree_with_event_fro
 def test_render_json_schemas_when_called_does_type_bounded_int_with_minimum(
     model_name: str, field_name: str, minimum: int
 ):
-    session_log, _ = _render_schemas()
+    session_log, _ = render_json_schemas()
 
     field_prop = session_log["$defs"][model_name]["properties"][field_name]
     assert (field_prop.get("type"), field_prop.get("minimum")) == ("integer", minimum)
 
 
 # ---------------------------------------------------------------------------
-# supervisor-log field keywords — descriptions carried, never-null fields have no
-# null branch, free-form input stays untyped
+# supervisor-log field keywords — descriptions carried, never-null fields reject
+# null, free-form input stays untyped
 # ---------------------------------------------------------------------------
 
 
+def _supervisor_field_schema(model: type[BaseModel], field_name: str) -> dict[str, Any]:
+    return render_json_schemas()[1]["$defs"][model.__name__]["properties"][field_name]
+
+
+def test_render_json_schemas_when_supervisor_field_described_does_carry_its_description():
+    field_schema = _supervisor_field_schema(LaunchEvent, "kickoff_summary")
+
+    assert field_schema["description"] == LaunchEvent.model_fields["kickoff_summary"].description
+
+
 @pytest.mark.parametrize(
-    ("model_name", "field_name", "keyword", "present"),
+    ("model", "field_name"),
     [
-        pytest.param(
-            "LaunchEvent",
-            "kickoff_summary",
-            "description",
-            True,
-            id="launch-kickoff_summary-described",
-        ),
-        pytest.param("FollowUpEvent", "reason", "anyOf", False, id="optional-str-never-null"),
-        pytest.param("LaunchEvent", "max_usd", "anyOf", False, id="optional-float-never-null"),
-        pytest.param("LaunchEvent", "effort", "anyOf", False, id="optional-effort-never-null"),
-        pytest.param("ToolStartEvent", "input", "type", False, id="tool_start-input-untyped"),
+        pytest.param(FollowUpEvent, "reason", id="optional-str"),
+        pytest.param(LaunchEvent, "max_usd", id="optional-float"),
+        pytest.param(LaunchEvent, "effort", id="optional-effort"),
     ],
 )
-def test_render_json_schemas_when_called_does_shape_supervisor_field_keyword(
-    model_name: str,
-    field_name: str,
-    keyword: str,
-    present: bool,
+def test_render_json_schemas_when_supervisor_field_optional_does_reject_null(
+    model: type[BaseModel], field_name: str
 ):
-    _, supervisor_log = _render_schemas()
+    field_schema = _supervisor_field_schema(model, field_name)
 
-    field_schema = supervisor_log["$defs"][model_name]["properties"][field_name]
-    assert (keyword in field_schema) is present
+    assert not Draft202012Validator(field_schema).is_valid(None)
+
+
+#: One value of every JSON type.
+_ANY_JSON_VALUES: tuple[object, ...] = (None, 1, 1.5, "x", True, [], {})
+
+
+def test_render_json_schemas_when_tool_start_input_free_form_does_accept_any_json_value():
+    field_schema = _supervisor_field_schema(ToolStartEvent, "input")
+
+    validator = Draft202012Validator(field_schema)
+    assert [value for value in _ANY_JSON_VALUES if not validator.is_valid(value)] == []
+
+
+# ---------------------------------------------------------------------------
+# session-log field keywords — only delta_pct nullable, descriptions carried,
+# nested models referenced without a null branch
+# ---------------------------------------------------------------------------
+
+
+def _session_log_fields_where(predicate: Callable[[dict[str, Any]], bool]) -> set[tuple[str, str]]:
+    return {
+        (model, field)
+        for model, definition in render_json_schemas()[0]["$defs"].items()
+        for field, prop in definition.get("properties", {}).items()
+        if predicate(prop)
+    }
+
+
+def _is_nullable(prop: dict[str, Any]) -> bool:
+    return prop.get("type") == "null" or {"type": "null"} in prop.get("anyOf", [])
+
+
+def _lacks_description(prop: dict[str, Any]) -> bool:
+    return "description" not in prop
+
+
+def test_render_json_schemas_when_called_does_type_null_only_on_the_delta_pct_fields():
+    nullable = _session_log_fields_where(_is_nullable)
+
+    assert nullable == {("IterationPrimary", "delta_pct"), ("MetricVerdict", "delta_pct")}
+
+
+def test_render_json_schemas_when_called_does_carry_descriptions_on_every_session_log_field():
+    missing = _session_log_fields_where(_lacks_description)
+
+    assert missing == set()
+
+
+@pytest.mark.parametrize(
+    ("model_name", "field", "definition"),
+    [
+        pytest.param("SessionConfig", "hooks", "SessionHooks", id="session-config-hooks"),
+        pytest.param("IterationRecord", "confirm", "Confirm", id="iteration-record-confirm"),
+    ],
+)
+def test_render_json_schemas_when_called_does_ref_the_nested_model_without_null(
+    model_name: str, field: str, definition: str
+):
+    field_schema = render_json_schemas()[0]["$defs"][model_name]["properties"][field]
+
+    assert (field_schema["$ref"], "anyOf" in field_schema) == (f"#/$defs/{definition}", False)
 
 
 # ---------------------------------------------------------------------------
@@ -689,7 +724,7 @@ def _render_reference_doc() -> str:
 
 def _type_section(md: str, wire_type: str) -> str:
     # Stop at the next heading of any level so nested ``####`` tables stay out.
-    return _md_section(md, f"\n### `{wire_type}`\n", "\n#")
+    return md_section(md, f"\n### `{wire_type}`\n", "\n#")
 
 
 # ---------------------------------------------------------------------------
@@ -714,7 +749,7 @@ def test_render_reference_when_called_does_frame_the_document():
 def test_render_reference_when_called_does_introduce_log_conventions():
     md = _render_reference_doc()
 
-    intro = normalize(_md_section(md, None, "\n## "))
+    intro = normalize(md_section(md, None, "\n## "))
     assert [
         phrase
         for phrase in (
@@ -747,65 +782,56 @@ def test_render_reference_when_called_does_order_sections_per_union_declaration(
 
 
 # ---------------------------------------------------------------------------
-# field tables — iteration and launch as representative types
+# field tables — iteration and launch as representative types; columns: name,
+# type, required/optional, description
 # ---------------------------------------------------------------------------
 
 
+def _field_statuses(section: str) -> dict[str, str]:
+    """Map each field row's name to its required/optional column."""
+    cells = (line.split(" | ") for line in section.split("\n") if line.startswith("| `"))
+    return {name.removeprefix("| `").removesuffix("`"): status for name, _, status, *_ in cells}
+
+
 @pytest.mark.parametrize(
-    ("wire_type", "fields"),
+    ("wire_type", "statuses"),
     [
         pytest.param(
             "iteration",
-            [
-                "seq",
-                "samples",
-                "metrics",
-                "confirm",
-                "primary",
-                "outcome",
-                "target_reached",
-                "duration_ms",
-                "measured_tree",
-            ],
+            {
+                "seq": "required",
+                "samples": "required",
+                "metrics": "required",
+                "confirm": "optional",
+                "primary": "required",
+                "outcome": "required",
+                "target_reached": "required",
+                "duration_ms": "optional",
+                "measured_tree": "optional",
+            },
             id="iteration",
         ),
         pytest.param(
             "launch",
-            ["schema", "session_id", "head_sha", "dirty", "max_minutes", "kickoff_summary"],
+            {
+                "schema": "required",
+                "session_id": "required",
+                "head_sha": "required",
+                "dirty": "required",
+                "max_minutes": "required",
+                "kickoff_summary": "required",
+            },
             id="launch",
         ),
     ],
 )
-def test_render_reference_when_called_does_have_field_rows(wire_type: str, fields: list[str]):
-    md = _render_reference_doc()
-
-    section = _type_section(md, wire_type)
-    assert [field for field in fields if f"\n| `{field}` |" not in section] == []
-
-
-# ---------------------------------------------------------------------------
-# field table structure — columns: name, type, required/optional, description
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("wire_type", "field", "status"),
-    [
-        pytest.param("iteration", "seq", "required", id="required"),
-        pytest.param("iteration", "duration_ms", "optional", id="optional"),
-    ],
-)
-def test_render_reference_when_called_does_mark_field_status(
-    wire_type: str, field: str, status: str
+def test_render_reference_when_called_does_list_field_rows_with_their_status(
+    wire_type: str, statuses: dict[str, str]
 ):
     md = _render_reference_doc()
 
-    rows = [
-        line
-        for line in _type_section(md, wire_type).split("\n")
-        if line.startswith(f"| `{field}` |")
-    ]
-    assert [row.split(" | ")[2] for row in rows] == [status]
+    rows = _field_statuses(_type_section(md, wire_type))
+    assert {field: rows.get(field) for field in statuses} == statuses
 
 
 # ---------------------------------------------------------------------------
@@ -842,7 +868,7 @@ def test_render_reference_when_called_does_describe_each_reader_operation(op_nam
 
     md = _render_reference_doc()
 
-    assert expected in normalize(_md_section(md, "\n## Readers\n", None))
+    assert expected in normalize(md_section(md, "\n## Readers\n", None))
 
 
 # ---------------------------------------------------------------------------
@@ -860,42 +886,34 @@ def test_import_event_docs_when_loaded_does_not_import_the_cli_package_or_doc_li
 # main — repository lookup fails
 # ---------------------------------------------------------------------------
 
+#: What git writes for a directory outside every repository.
+_NOT_A_REPOSITORY = "fatal: not a git repository (or any of the parent directories): .git\n"
 #: What a git that declines to answer writes, as opposed to "not a git repository".
 _DUBIOUS_OWNERSHIP = "fatal: detected dubious ownership in repository"
 
 
 @pytest.mark.parametrize(
-    ("git_stderr", "expected_stderr"),
+    "git_stderr",
     [
-        pytest.param(
-            None,
-            "Not a git repository: {cwd}\nRun gymrat from inside a git repository.\n",
-            id="outside-repo-with-hint",
-        ),
-        pytest.param(
-            _DUBIOUS_OWNERSHIP,
-            f"Cannot determine the git repository at {{cwd}}: {_DUBIOUS_OWNERSHIP}\n",
-            id="git-declines-without-hint",
-        ),
+        pytest.param(_NOT_A_REPOSITORY, id="outside-repo-with-hint"),
+        pytest.param(_DUBIOUS_OWNERSHIP, id="git-declines-without-hint"),
     ],
 )
-def test_main_when_repository_lookup_fails_does_report_error_to_stderr(
-    git_stderr: str | None,
-    expected_stderr: str,
+def test_main_when_repository_lookup_fails_does_report_error_to_stderr_without_writing(
+    git_stderr: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
     monkeypatch.chdir(tmp_path)
-    if git_stderr is not None:
-        failure = subprocess.CalledProcessError(128, ["git"], stderr=git_stderr)
-        monkeypatch.setattr(
-            "gymrat.git.subprocess.run", create_autospec(subprocess.run, side_effect=failure)
-        )
-    cwd = str(Path.cwd())
+    cause = subprocess.CalledProcessError(128, ["git"], stderr=git_stderr)
+    monkeypatch.setattr("gymrat.session.paths.run_git", create_autospec(run_git, side_effect=cause))
+    error = repository_lookup_error(str(Path.cwd()), cause)
+    expected_stderr = f"{error}\n" if error.hint is None else f"{error}\n{error.hint}\n"
 
     with pytest.raises(SystemExit) as exc_info:
         main()
 
     assert exc_info.value.code == TOOL_FAILURE_EXIT_CODE
-    assert capsys.readouterr() == ("", expected_stderr.format(cwd=cwd))
+    assert capsys.readouterr() == ("", expected_stderr)
+    assert [rel for rel in sorted(_EXPECTED_KEYS) if (tmp_path / rel).exists()] == []

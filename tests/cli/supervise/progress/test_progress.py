@@ -35,11 +35,10 @@ import pytest
 from gymrat.cli.supervise.progress import (
     IDLE_WARN_MS,
     create_supervise_reporter,
-    read_live_session,
 )
-from gymrat.cli.supervise.types import BestIteration
 from gymrat.session.progress_file import ProgressSnapshot
 from gymrat.session.records import IterationPrimary
+from gymrat.session.store import BestIteration, read_live_session
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._logging import unhandled_logging
 from tests._rich import track
@@ -64,8 +63,6 @@ from tests.cli.supervise._fixtures import (
     reporter_with_nested_read,
     row_content,
     session_state_three_iterations,
-    tool_end_event,
-    tool_start_event,
     turn_end_event,
     usage_event,
 )
@@ -83,6 +80,10 @@ from tests.session.records._fixtures import (
     stop_record,
     write_session_log,
 )
+from tests.supervisor._fixtures import (
+    tool_end_event,
+    tool_start_event,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -91,10 +92,10 @@ if TYPE_CHECKING:
 
     from syrupy.assertion import SnapshotAssertion
 
-    from gymrat.cli.supervise.types import ReadSessionResult
     from gymrat.config import Effort
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import PrimaryKind
+    from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.events import ModelPhase
 
 # Frames are rendered straight from ``reporter.frame()``, so no test here mounts a

@@ -38,6 +38,7 @@ from gymrat.telemetry.provider import reset_tracing
 from tests._exec_fixtures import recorded_spawns
 from tests._git import head_of, init_scratch_repo, list_worktree_dirs
 from tests._lock import held_supervise_lock, remove_lock_files
+from tests.loop._settle import start_with
 
 #: Names a test may inherit from the launching shell, value unchanged. An
 #: allowlisted name the shell does not export stays absent. ``PATH`` and
@@ -144,6 +145,9 @@ class _ProcessExitedError(BaseException):
 
     A ``BaseException``, like the ``SystemExit`` a real exit is closest to, so
     no ``except Exception`` between the exit and the test swallows it.
+
+    Args:
+        code: The exit code the stubbed exit was called with.
     """
 
     def __init__(self, code: int) -> None:
@@ -244,9 +248,9 @@ def _restore_env_baseline() -> Iterator[None]:
 @pytest.fixture(autouse=True)
 def _reset_color() -> Iterator[None]:
     """Reset the color override before and after every test."""
-    set_color_override(None)
+    set_color_override(override=None)
     yield
-    set_color_override(None)
+    set_color_override(override=None)
 
 
 @pytest.fixture(autouse=True)
@@ -268,9 +272,9 @@ def isolate_live_groups() -> Iterator[None]:
 @pytest.fixture(autouse=True)
 def _reset_debug() -> Iterator[None]:
     """Turn debug mode off before and after every test."""
-    set_debug_mode(False)
+    set_debug_mode(enabled=False)
     yield
-    set_debug_mode(False)
+    set_debug_mode(enabled=False)
 
 
 @pytest.fixture
@@ -376,6 +380,13 @@ def repo(create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
     root = create_scratch_repo()
     monkeypatch.chdir(root)
     return root
+
+
+@pytest.fixture
+def session_repo(repo: str) -> str:
+    """The scratch repository with an open session on ``main``."""
+    start_with(repo)
+    return repo
 
 
 @pytest.fixture

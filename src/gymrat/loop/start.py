@@ -126,6 +126,12 @@ def _create_session(root: str, jsonl_path: str, ref: str, config: ResolvedConfig
 
     Returns:
         The created session record, folded state, and ``resumed=False``.
+
+    Raises:
+        GymratError: When ``ref`` resolves to a directory or to no commit at all;
+            when git refuses to create the session branch or either worktree; or
+            when the header would not read back. A workspace whose header never
+            reached the log is torn down before the error propagates.
     """
     baseline = BaselineRef(ref=ref, sha=_resolve_baseline_sha(ref, root))
     # One clock read mints the id and stamps the header, so the two never disagree.

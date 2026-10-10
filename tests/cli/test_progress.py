@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass
 from io import StringIO
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
-from unittest.mock import patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 
@@ -35,6 +35,7 @@ from tests._rich import (
     Clock,
     console_output,
     frame_text,
+    kept_line_terminal,
     screen_lines,
     sealed_console,
     track,
@@ -336,6 +337,21 @@ def test_plain_line_when_event_is_not_a_milestone_does_return_none(
 # ---------------------------------------------------------------------------
 
 
+def _manual_refresh_live(**kwargs: Any) -> ErasableLive:
+    """Build the display a live reporter mounts, with its refresh thread switched off."""
+    return ErasableLive(**{**kwargs, "auto_refresh": False})
+
+
+@pytest.fixture
+def manual_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mount every live display without a refresh thread, so only ``frame()`` renders it."""
+    monkeypatch.setattr(
+        "gymrat.cli.live_display.ErasableLive",
+        create_autospec(ErasableLive, side_effect=_manual_refresh_live),
+    )
+
+
+@pytest.mark.usefixtures("manual_refresh")
 def test_frame_when_prepare_running_does_show_spinner_and_label(
     snapshot: SnapshotAssertion,
 ):
@@ -347,6 +363,7 @@ def test_frame_when_prepare_running_does_show_spinner_and_label(
     assert result == snapshot
 
 
+@pytest.mark.usefixtures("manual_refresh")
 def test_frame_when_prepare_done_and_first_pass_running_does_show_pending_eta(
     snapshot: SnapshotAssertion,
 ):
@@ -362,6 +379,7 @@ def test_frame_when_prepare_done_and_first_pass_running_does_show_pending_eta(
     assert result == snapshot
 
 
+@pytest.mark.usefixtures("manual_refresh")
 def test_frame_when_mid_run_with_computed_eta_does_show_clock_total(
     snapshot: SnapshotAssertion,
 ):
@@ -378,6 +396,7 @@ def test_frame_when_mid_run_with_computed_eta_does_show_clock_total(
     assert result == snapshot
 
 
+@pytest.mark.usefixtures("manual_refresh")
 def test_frame_when_multi_target_compare_does_name_running_target(
     snapshot: SnapshotAssertion,
 ):
@@ -391,6 +410,7 @@ def test_frame_when_multi_target_compare_does_name_running_target(
     assert result == snapshot
 
 
+@pytest.mark.usefixtures("manual_refresh")
 def test_frame_when_compact_layout_on_short_console_does_show_single_row(
     snapshot: SnapshotAssertion,
 ):
@@ -416,6 +436,7 @@ def test_frame_when_compact_layout_on_short_console_does_show_single_row(
         pytest.param("compare", ["main", "candidate"], id="compare"),
     ],
 )
+@pytest.mark.usefixtures("manual_refresh")
 def test_frame_when_command_given_does_show_header_with_command_and_labels(
     command: str, target_labels: list[str], snapshot: SnapshotAssertion
 ):
@@ -578,13 +599,20 @@ def test_report_when_console_width_zero_does_render_as_plain(
     assert (reporter.live, printed) == (None, ["[00:00:01] prepared bench (1s)"])
 
 
-def test_report_when_plain_label_looks_like_markup_does_print_it_verbatim():
+@pytest.mark.parametrize(
+    "label",
+    [
+        pytest.param("[bold]bench[/bold]", id="markup"),
+        pytest.param("cpu:fire:total", id="emoji-code"),
+    ],
+)
+def test_report_when_plain_label_looks_like_markup_or_emoji_code_does_print_it_verbatim(label: str):
     console, _clock, reporter = _reporter("plain")
-    reporter.report(PrepareStarted(label="[bold]bench[/bold]", at_ms=0))
+    reporter.report(PrepareStarted(label=label, at_ms=0))
 
-    reporter.report(PrepareFinished(label="[bold]bench[/bold]", at_ms=1000))
+    reporter.report(PrepareFinished(label=label, at_ms=1000))
 
-    assert console_output(console) == "[00:00:01] prepared [bold]bench[/bold] (1s)\n"
+    assert console_output(console) == f"[00:00:01] prepared {label} (1s)\n"
 
 
 # ---------------------------------------------------------------------------
@@ -630,9 +658,7 @@ def test_signal_when_live_up_does_erase_only_the_frame(
     monkeypatch: pytest.MonkeyPatch,
     raise_signal: Callable[[int], int],
 ):
-    console = sealed_console()
-    console.print(KEPT_LINE)
-    monkeypatch.setattr(sys, "stderr", console.file)
+    console = kept_line_terminal(monkeypatch)
     build_renderer("live", console)
 
     raise_signal(TERMINATION_SIGNAL)

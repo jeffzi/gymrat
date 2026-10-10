@@ -11,7 +11,6 @@ from __future__ import annotations
 import contextlib
 import functools
 import logging
-import operator
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
@@ -26,12 +25,9 @@ from gymrat.cli.supervise.reducer import (
     wants_session_refresh,
 )
 from gymrat.cli.supervise.text import exit_phase_text
-from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
 from gymrat.clock import now_ms
-from gymrat.session.paths import session_jsonl_path
 from gymrat.session.progress_file import read_progress as _default_read_progress
-from gymrat.session.records import IterationRecord, KeepRecord, StopRecord
-from gymrat.session.store import fold_session, latest_baseline, read_records
+from gymrat.session.store import read_live_session
 from gymrat.utils import MS_PER_SECOND, warn_to_stderr
 
 if TYPE_CHECKING:
@@ -43,7 +39,7 @@ if TYPE_CHECKING:
     from gymrat.config import Effort
     from gymrat.model import Direction
     from gymrat.session.progress_file import ProgressSnapshot
-    from gymrat.session.records import SessionLogRecord
+    from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.events import SessionEvent, SessionObserver
     from gymrat.supervisor.exit_sequence import ExitPhase
 
@@ -57,76 +53,6 @@ IDLE_WARN_MS = 30_000
 
 
 # ---------------------------------------------------------------------------
-# Session read
-# ---------------------------------------------------------------------------
-
-
-def _find_best_kept_iteration(
-    records: list[SessionLogRecord], direction: Direction, pinned_sha: str | None
-) -> BestIteration | None:
-    """Return the committed keep whose primary delta improved the most, if any has one.
-
-    Each iteration is measured against the commit of the committed keep before
-    it in the log, or against ``pinned_sha`` when none precedes it. Among equal
-    deltas the earliest iteration wins.
-    """
-    committed_seqs = {
-        r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"
-    }
-    better = operator.lt if direction == "lower" else operator.gt
-    best: BestIteration | None = None
-    baseline_sha = pinned_sha
-    for record in records:
-        if isinstance(record, KeepRecord):
-            if record.status == "committed":
-                baseline_sha = record.commit
-            continue
-        if not isinstance(record, IterationRecord) or record.seq not in committed_seqs:
-            continue
-        delta = record.primary.delta_pct
-        if delta is not None and (best is None or better(delta, best.delta_pct)):
-            best = BestIteration(
-                delta_pct=delta,
-                seq=record.seq,
-                label=record.primary.name or record.primary.kind,
-                baseline_sha=baseline_sha,
-                direction=direction,
-            )
-    return best
-
-
-def _find_stop_message(records: list[SessionLogRecord]) -> str | None:
-    """Return the newest stop record's message, or ``None`` if there is none."""
-    return next((r.message for r in reversed(records) if isinstance(r, StopRecord)), None)
-
-
-def read_live_session(root: str, primary_direction: Direction = "lower") -> ReadSessionResult:
-    """Read and fold the live session log at ``root``.
-
-    Args:
-        root: The repository root whose session log to read.
-        primary_direction: Whether a lower or a higher primary is the better
-            outcome, which decides which kept iteration is the best. The
-            geomean primary is lower-is-better.
-
-    Returns:
-        The folded session with its baseline presence, best kept iteration, and
-        trailing stop message.
-    """
-    records = read_records(session_jsonl_path(root))
-    state = fold_session(records)
-    has_baseline = latest_baseline(records) is not None
-    pinned_sha = state.session.baseline.sha if state.session is not None else None
-
-    return ReadSessionResult(
-        state=state,
-        has_baseline=has_baseline,
-        best=_find_best_kept_iteration(records, primary_direction, pinned_sha),
-        stop_message=_find_stop_message(records) if state.ends_on_stop else None,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Reporter shell
 # ---------------------------------------------------------------------------
 
@@ -135,9 +61,24 @@ def read_live_session(root: str, primary_direction: Direction = "lower") -> Read
 class ReporterCtx:
     """The terminal, clock, and I/O handles the reporter shell owns.
 
-    Everything the dashboard renders lives in ``state``, which the shell
-    replaces after each event.  Only the shell writes to this object; the
-    reducer never sees it.
+    Only the shell writes to this object; the reducer never sees it.
+
+    Attributes:
+        state: Everything the dashboard renders, replaced by the shell after
+            each event.
+        now: The clock, in epoch milliseconds.
+        read_session_fn: Reads and folds the session log.
+        read_progress_fn: Reads the progress sidecar under a repository root,
+            or ``None`` when there is none.
+        plain_write_fn: Writes one plain-mode line.
+        warn_fn: Where the shell reports a warning.
+        live: The live display, or ``None`` in plain mode.
+        tz: The time zone wall-clock times are shown in, or ``None`` for local
+            time.
+        idle_warn_ms: How long without tool activity before the liveness line
+            escalates to alert styling.
+        session_read_warned: Whether a failed session read was already
+            reported, so only the first is.
     """
 
     state: ReporterState
@@ -156,21 +97,27 @@ class ReporterCtx:
 class SuperviseReporter:
     """The observer/stop/frame/warn surface that drives the supervise progress display.
 
-    ``session_result`` hands back the session state as of the last re-read, which
-    is what the closing summary reports once the display has stopped.
-
     Live mode's display and its refresh timer run from construction until
     ``stop``, and for that span a termination signal erases the display: its
     cleanup is installed at construction and uninstalled by ``stop``.
 
-    ``exit_phase`` shows the run-end exit sequence's current phase: live mode
-    repaints the frame, plain mode writes the phase line once per phase change.
-
-    ``refresh_session`` re-reads the session so ``session_result`` reflects
-    writes that no event announced, such as an exit-sequence step that failed after
-    writing to the session log. A successful re-read writes no plain line; a
-    failed read keeps the previous result, as the event-driven re-read does.
-    Only the first failed read, from either, is reported, through ``warn``.
+    Attributes:
+        observer: Receives every session event.
+        stop: Stops the display and uninstalls its signal cleanup.
+        frame: Renders the current dashboard frame.
+        warn: Reports a warning without tearing the display; only the first
+            failed session read, event-driven or refreshed, is reported here.
+        session_result: The session state as of the last re-read, which is what
+            the closing summary reports once the display has stopped.
+        final_text: The text of the agent's last finished turn, or ``None`` before
+            any has ended.
+        exit_phase: Shows the run-end exit sequence's current phase: live mode
+            repaints the frame, plain mode writes the phase line once per phase
+            change.
+        refresh_session: Re-reads the session so ``session_result`` reflects
+            writes no event announced, such as an exit-sequence step that failed
+            after writing to the session log. A successful re-read writes no
+            plain line; a failed read keeps the previous result.
     """
 
     observer: SessionObserver

@@ -86,9 +86,8 @@ def shorten_label(text: str, max_width: int) -> str:
     at the back. Cutting from the middle keeps both, where a plain slice would
     drop whichever end runs past the budget.
 
-    Text already inside the budget comes back untouched, so widening the budget
-    can never lengthen the result. When a cut is needed the budget spends one
-    cell on the ellipsis; the remainder splits between head and tail, with the
+    Widening the budget can never lengthen the result. When a cut is needed,
+    the cells left after the ellipsis split between head and tail, with the
     extra cell of an odd remainder going to the head.
 
     Width is measured in terminal cells, so a wide CJK character counts as two.
@@ -341,17 +340,15 @@ def render_lines(*renderables: RenderableType, color: bool | None = None) -> str
     with markup-significant characters (a metric named ``[i]``, say) must be
     escaped by the caller with :func:`rich.markup.escape` to render literally.
 
-    Trailing whitespace is stripped from every line and the trailing newline is
-    dropped, so the result is exactly the visible text with no soft wrapping.
-
     Args:
         *renderables: One or more rich renderables or markup strings to print.
         color: The explicit color choice, or ``None`` to defer to the
             environment and TTY detection.
 
     Returns:
-        The rendered text, lines joined by newlines, with no trailing
-        whitespace on any line and no trailing newline.
+        Exactly the visible text with no soft wrapping: lines joined by
+        newlines, with no trailing whitespace on any line and no trailing
+        newline.
     """
     console = make_capture_console(color=color)
     for renderable in renderables:

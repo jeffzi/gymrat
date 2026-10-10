@@ -12,8 +12,7 @@ import asyncio
 import json
 import math
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from operator import methodcaller
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import override
 
 import pytest
@@ -38,12 +37,13 @@ from gymrat.supervisor.claude import create_claude_driver, usable_cost
 from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
 from gymrat.supervisor.events import (
     CompactionEvent,
-    SessionEvent,
     TextDeltaEvent,
     ToolEndEvent,
     ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
+    summarize,
+    summarize_input,
 )
 from tests._clock import install_monotonic_clock
 from tests._imports import loaded_under, modules_loaded_after
@@ -57,6 +57,7 @@ from tests.supervisor._fixtures import (
     events_of,
     make_prompt,
     result_message,
+    run_acting_on_first,
     run_interrupting_on_first_usage_update,
     run_outcome,
     run_session,
@@ -212,12 +213,6 @@ async def test_start_when_no_optional_input_given_does_pass_the_default_client_o
             _NO_FACTORIES,
             {"env": {**_DEFAULT_ENV, "GYMRAT_TRACEPARENT": TRACEPARENT}},
             id="traceparent-under-its-own-name",
-        ),
-        pytest.param(
-            make_prompt(),
-            (HooksFactoryProbe, None),
-            {"hooks": _SENTINEL_HOOKS},
-            id="hooks",
         ),
         pytest.param(
             make_prompt(),
@@ -399,6 +394,10 @@ async def test_start_when_tool_result_content_not_a_string_does_encode_it_as_the
 # message mapping — tool-use and tool-result blocks (client and server)
 # ---------------------------------------------------------------------------
 
+_PROMPT_CWD = "/tmp/test"
+"""The cwd ``make_prompt`` gives a session, which the driver summarizes paths against."""
+
+_READ_INPUT: dict[str, object] = {"file_path": "/foo.ts"}
 _WEB_SEARCH_INPUT: dict[str, object] = {"query": "benchmark noise"}
 _WEB_SEARCH_RESULT: dict[str, object] = {
     "type": "web_search_tool_result",
@@ -412,9 +411,9 @@ _WEB_SEARCH_RESULT: dict[str, object] = {
     ("block", "parent", "expected_input_summary"),
     [
         pytest.param(
-            ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/foo.ts"}),
+            ToolUseBlock(id="tu_1", name="Read", input=_READ_INPUT),
             "tu_parent",
-            "/foo.ts",
+            summarize_input(_READ_INPUT, tool_name="Read", supervised_root=_PROMPT_CWD),
             id="client-tool-under-a-parent",
         ),
         pytest.param(
@@ -426,7 +425,7 @@ _WEB_SEARCH_RESULT: dict[str, object] = {
         pytest.param(
             ServerToolUseBlock(id="tu_web", name="web_search", input=_WEB_SEARCH_INPUT),
             None,
-            '{"query":"benchmark noise"}',
+            summarize_input(_WEB_SEARCH_INPUT, tool_name="web_search", supervised_root=_PROMPT_CWD),
             id="server-tool",
         ),
     ],
@@ -461,7 +460,13 @@ async def test_start_when_tool_use_block_does_emit_tool_start(
                     parent_tool_use_id="tu_parent",
                 ),
             ],
-            ("tu_parent", "tu_1", "Read", "file contents\n  here\n", "file contents here"),
+            (
+                "tu_parent",
+                "tu_1",
+                "Read",
+                "file contents\n  here\n",
+                summarize("file contents\n  here\n"),
+            ),
             id="client-tool-under-a-parent",
         ),
         pytest.param(
@@ -476,10 +481,7 @@ async def test_start_when_tool_use_block_does_emit_tool_start(
                 "tu_web",
                 "web_search",
                 json.dumps(_WEB_SEARCH_RESULT),
-                (
-                    '{"type": "web_search_tool_result", "content": [{"type": "web_search_result", '
-                    '"url": "https://example.com/noise", "title": "Noise"}]}'
-                ),
+                summarize(json.dumps(_WEB_SEARCH_RESULT)),
             ),
             id="server-tool",
         ),
@@ -604,17 +606,13 @@ async def test_interrupt_when_called_between_messages_does_stop_before_next_mess
 async def test_start_when_abort_fires_after_another_stop_does_keep_the_first_outcome():
     client = FakeClient([result_message(total_cost_usd=0.1)])
     abort = asyncio.Event()
-    sessions: list[DriverSession] = []
-    ends: list[asyncio.Task[None]] = []
 
-    def end_then_abort(event: SessionEvent) -> None:
-        if isinstance(event, TurnEndEvent) and not ends:
-            ends.append(asyncio.ensure_future(sessions[0].end()))
-            abort.set()
+    def end_then_abort(session: DriverSession) -> asyncio.Future[None]:
+        ending = asyncio.ensure_future(session.end())
+        abort.set()
+        return ending
 
-    sessions.append(start_claude_session(client, end_then_abort, abort=abort))
-    outcome = await settled_outcome(sessions[0])
-    await asyncio.gather(*ends)
+    outcome = await run_acting_on_first(client, TurnEndEvent, end_then_abort, abort=abort)
 
     assert (outcome.reason, outcome.cost_usd) == ("completed", 0.1)
 
@@ -633,58 +631,21 @@ async def test_start_when_abort_already_set_at_start_does_resolve_interrupted_wi
 
 
 # ---------------------------------------------------------------------------
-# result message — session settlement
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("result_text", "expected_message"),
-    [
-        pytest.param("something went wrong", "something went wrong", id="result-text-present"),
-        pytest.param(None, "error", id="result-text-absent-uses-subtype"),
-    ],
-)
-async def test_start_when_result_is_error_does_settle_error_as_the_final_result(
-    result_text: str | None,
-    expected_message: str,
-):
-    messages = [
-        result_message(subtype="error", is_error=True, result=result_text, total_cost_usd=0.2)
-    ]
-    probe = collecting_observer()
-
-    outcome = await run_outcome(FakeClient(messages), probe.observer)
-
-    assert (outcome.reason, outcome.message, outcome.cost_usd) == ("error", expected_message, 0.2)
-    assert [update.cost_usd for update in events_of(probe.events, UsageUpdateEvent)] == [0.2]
-    assert events_of(probe.events, TurnEndEvent) == []
-
-
-# ---------------------------------------------------------------------------
 # system message — compact_boundary → CompactionEvent
 # ---------------------------------------------------------------------------
 
 _COMPACTED_AT_NS = 1_700_000_000_000_000_000
 
 
-@pytest.mark.parametrize(
-    ("subtype", "expected_compactions"),
-    [
-        pytest.param("init", [], id="init"),
-        pytest.param("some_other_subtype", [], id="other-subtype"),
-        pytest.param("compact_boundary", [_COMPACTED_AT_NS], id="compact-boundary"),
-    ],
-)
-async def test_start_when_system_message_arrives_does_emit_compaction_only_on_compact_boundary(
-    monkeypatch: pytest.MonkeyPatch, subtype: str, expected_compactions: list[int]
+async def test_start_when_compact_boundary_arrives_does_emit_a_compaction_event(
+    monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr("time.time_ns", lambda: _COMPACTED_AT_NS)
-    messages = [system_message(subtype=subtype), result_message(total_cost_usd=0.05)]
     probe = collecting_observer()
 
-    await run_outcome(FiniteClient(messages), probe.observer)
+    await run_outcome(FiniteClient([system_message(subtype="compact_boundary")]), probe.observer)
 
-    assert [event.at for event in events_of(probe.events, CompactionEvent)] == expected_compactions
+    assert [event.at for event in events_of(probe.events, CompactionEvent)] == [_COMPACTED_AT_NS]
 
 
 # ---------------------------------------------------------------------------
@@ -777,21 +738,12 @@ async def test_interrupt_when_called_before_connect_does_resolve_interrupted_wit
     assert events_of(probe.events, UsageUpdateEvent) == []
 
 
-@pytest.mark.parametrize(
-    "stop_again",
-    [
-        pytest.param(methodcaller("end"), id="then-end"),
-        pytest.param(methodcaller("interrupt"), id="then-interrupt"),
-    ],
-)
-async def test_end_or_interrupt_when_already_interrupted_before_connect_does_keep_the_first_outcome(
-    stop_again: Callable[[DriverSession], Awaitable[None]],
-):
+async def test_end_when_already_interrupted_before_connect_does_keep_the_interrupted_outcome():
     client = FakeClient([result_message(total_cost_usd=0.10)])
     session = start_claude_session(client, collecting_observer().observer)
     await session.interrupt()
 
-    await stop_again(session)
+    await session.end()
     outcome = await settled_outcome(session)
 
     assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.0)

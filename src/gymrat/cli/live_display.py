@@ -16,7 +16,7 @@ from rich.live import Live
 from rich.segment import Segment
 
 from gymrat.signals import install_termination_cleanup, write_on_exit
-from gymrat.utils import format_timestamp
+from gymrat.utils import floored_clock_tiers
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -44,6 +44,25 @@ _CURSOR_UP = "\x1b[1A"
 # paint takes milliseconds; the bound only matters when the paint is itself
 # waiting on the thread the handler interrupted.
 _PAINT_WAIT_SECONDS = 1.0
+
+
+def format_timestamp(at_ms: float, run_start_ms: float | None) -> str:
+    """Format an elapsed timestamp as ``[HH:MM:SS]`` since ``run_start_ms``.
+
+    Each caller anchors its own run start, so an unanchored run reads as zero
+    elapsed rather than as an error.
+
+    Args:
+        at_ms: The timestamp in milliseconds to format.
+        run_start_ms: The run's start timestamp in milliseconds, or ``None``
+            when the run is not yet anchored, which renders zero elapsed.
+
+    Returns:
+        A bracketed timestamp string, e.g. ``"[00:07:45]"``.
+    """
+    elapsed_ms = 0 if run_start_ms is None else at_ms - run_start_ms
+    hours, minutes, seconds = floored_clock_tiers(elapsed_ms)
+    return f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
 
 
 @dataclass(slots=True)

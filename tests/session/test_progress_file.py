@@ -8,10 +8,8 @@ partial file.  ``clear_progress`` removes the sidecar when the iteration exits.
 """
 
 import json
-import os
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 from unittest.mock import create_autospec
 
 import pytest
@@ -33,6 +31,7 @@ from gymrat.session.progress_file import (
     write_progress,
 )
 from tests._mode_bits import needs_mode_bits
+from tests.session._progress_file import fail_unlink_of
 
 # ---------------------------------------------------------------------------
 # write_progress
@@ -181,15 +180,7 @@ def test_clear_progress_when_file_absent_does_not_warn(root: str):
 def held_open_sidecar(root: str, monkeypatch: pytest.MonkeyPatch) -> str:
     """A written sidecar whose removal fails the way a win32 sharing violation does."""
     write_progress(root, _make_snapshot())
-    sidecar = progress_path(root)
-    original_unlink = os.unlink
-
-    def failing_unlink(path: str | os.PathLike[str], *args: Any, **kwargs: Any) -> None:
-        if str(path) == sidecar:
-            raise PermissionError(13, "The process cannot access the file", sidecar)
-        original_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(os, "unlink", create_autospec(os.unlink, side_effect=failing_unlink))
+    fail_unlink_of(progress_path(root), monkeypatch)
     return root
 
 

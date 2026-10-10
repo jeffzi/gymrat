@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from gymrat.cli import console
+from gymrat.cli.options import OutputFormat
 from gymrat.cli.progress import ProgressReporter
 from gymrat.config import CliFlags
 from gymrat.exec import kill_live_process_groups
@@ -23,15 +24,14 @@ from gymrat.utils import is_tty
 class SharedFlags(CliFlags):
     """The flags every command carries: the config set plus how the report prints."""
 
-    format: Literal["text", "json"] = "text"
+    format: OutputFormat = OutputFormat.text
 
 
 def resolve_render_mode() -> Literal["live", "plain"]:
     """Map the stderr TTY status to the output strategy the progress reporter uses.
 
-    A non-TTY stderr always renders plain; a TTY gets the rich-based live
-    layout regardless of color — styling is handled by the console's own
-    color resolution.
+    Color plays no part: styling is handled by the console's own color
+    resolution.
 
     Returns:
         ``"live"`` when stderr is a TTY, ``"plain"`` otherwise.

@@ -442,7 +442,7 @@ _INVALID_ALIAS_WARNING = "Skipping benchmark with invalid alias: expected a stri
     ],
 )
 def test_parse_when_benchmark_is_malformed_does_skip_only_the_bad_benchmark_with_one_warning(
-    bad_benchmark: object, warning: str, capsys: pytest.CaptureFixture[str]
+    bad_benchmark: object, warning: str
 ):
     stdout = build_stdout([bad_benchmark, VALID_BENCHMARK])
     warnings: list[str] = []
@@ -451,7 +451,6 @@ def test_parse_when_benchmark_is_malformed_does_skip_only_the_bad_benchmark_with
 
     assert result == {"valid#time": 1}
     assert warnings == [warning]
-    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------

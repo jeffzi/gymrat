@@ -13,6 +13,7 @@ import pytest
 from gymrat.bundled_skill import read_bundled_skill
 from gymrat.errors import GymratError
 from tests._ansi import normalize
+from tests._markdown import md_section
 
 SKILL_HEADING = "# Driving a gymrat optimization session"
 
@@ -138,8 +139,9 @@ SUPERVISED_MODE = "### Supervised mode"
 
 
 def _section(heading: str) -> str:
-    """The skill text under ``heading``, up to the next top-level section."""
-    return read_bundled_skill().partition(heading)[2].partition("\n## ")[0]
+    """The skill text from ``heading`` up to the next heading of the same or a higher level."""
+    level = len(heading) - len(heading.lstrip("#"))
+    return md_section(read_bundled_skill(), heading, rf"\n#{{1,{level}}} ")
 
 
 def _paragraph(heading: str, marker: str) -> str:
@@ -198,7 +200,6 @@ def _unwrapped_section(heading: str) -> str:
             ),
             (
                 "Edit, Write, MultiEdit, or NotebookEdit",
-                "outside the experiment worktree",
                 "temporary directories",
                 "names its rule",
                 "change the call",
@@ -216,7 +217,6 @@ def _unwrapped_section(heading: str) -> str:
         pytest.param(
             partial(_paragraph, "## Syncing main-tree edits", "Under supervise"),
             (
-                "Under supervise",
                 "refused",
                 "make the change in the experiment worktree",
                 "a person's main-tree edits",

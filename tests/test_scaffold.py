@@ -18,6 +18,7 @@ from typing import NoReturn
 
 import pytest
 
+from gymrat.bundled_skill import read_bundled_skill
 from gymrat.config import load_config_file_collecting
 from gymrat.errors import GymratError
 from gymrat.scaffold import (
@@ -77,7 +78,7 @@ def test_scaffold_when_defaults_does_create_every_artifact(
         "`gymrat supervise` injects this file into the agent's instructions.\n"
     )
     skill_text = (tmp_path / SKILL_RELATIVE_PATH).read_text(encoding="utf-8")
-    assert "# Driving a gymrat optimization session" in skill_text
+    assert skill_text == read_bundled_skill()
 
 
 # ---------------------------------------------------------------------------
@@ -452,26 +453,9 @@ BLOCKING_FILE = "not a directory\n"
         pytest.param({}, id="nothing-existed"),
         pytest.param({"gymrat.toml": EXISTING_CONFIG}, id="config-existed"),
         pytest.param({"gymrat-runbook.md": EXISTING_RUNBOOK}, id="runbook-existed"),
-    ],
-)
-def test_scaffold_when_skill_write_fails_does_remove_only_the_artifacts_this_run_created(
-    tmp_path: Path, already_there: dict[str, str]
-):
-    before = {".claude": BLOCKING_FILE, **already_there}
-    for relative, content in before.items():
-        (tmp_path / relative).write_text(content, encoding="utf-8")
-
-    with pytest.raises(GymratError):
-        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
-
-    assert _files(tmp_path) == before
-
-
-@pytest.mark.parametrize(
-    "already_there",
-    [
-        pytest.param({}, id="nothing-existed"),
-        pytest.param({"gymrat.toml": EXISTING_CONFIG}, id="config-existed"),
+        # A file where the skill's first directory goes fails the directory creation itself,
+        # before the write is reached.
+        pytest.param({".claude": BLOCKING_FILE}, id="file-blocks-the-claude-directory"),
         pytest.param({".claude": None}, id="empty-claude-directory-existed"),
         pytest.param(
             {".claude": None, ".claude/notes.md": STRAY_CONTENT},
@@ -479,7 +463,7 @@ def test_scaffold_when_skill_write_fails_does_remove_only_the_artifacts_this_run
         ),
     ],
 )
-def test_scaffold_when_skill_write_fails_does_remove_the_directories_this_run_created(
+def test_scaffold_when_skill_write_fails_does_remove_only_what_this_run_created(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, already_there: dict[str, str | None]
 ):
     _plant_tree(tmp_path, already_there)

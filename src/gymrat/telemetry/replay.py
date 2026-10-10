@@ -7,10 +7,12 @@ never pulls the SDK into ``sys.modules``.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gymrat.errors import GymratError
+from gymrat.session.object_line import decode_object_line
 from gymrat.session.records import CommandRecord, SessionRecord, decode_log_line, parse_record
 from gymrat.supervisor.events import (
     LaunchEvent,
@@ -61,7 +63,7 @@ def replay_session(
     Returns:
         The total number of spans exported.
     """
-    from opentelemetry import trace  # noqa: PLC0415
+    from opentelemetry import trace  # noqa: PLC0415 -- optional extra
 
     numbered_records = _read_session_log(session_log)
     if not numbered_records:
@@ -174,7 +176,7 @@ def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay co
     pending_events: list[_EventTuple],
 ) -> None:
     """Create one command span, drain pending events onto it, and close it."""
-    from opentelemetry import trace  # noqa: PLC0415
+    from opentelemetry import trace  # noqa: PLC0415 -- optional extra
 
     cmd_span = start_command_span(
         rec,
@@ -190,17 +192,20 @@ def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay co
     cmd_span.end(end_time=rec.at)
 
 
+@dataclass(slots=True)
 class _ParsedRun:
     """Data extracted from one supervisor log before span creation."""
 
-    __slots__ = ("attributes", "cost_usd", "events", "last_at", "launch_at")
+    launch_at: int
+    last_at: int
+    attributes: Attrs
+    cost_usd: float | None = None
+    events: list[_EventTuple] = field(default_factory=list)
 
-    def __init__(self, launch: LaunchEvent) -> None:
-        self.launch_at = launch.at
-        self.last_at = launch.at
-        self.cost_usd: float | None = None
-        self.attributes = run_attributes(launch)
-        self.events: list[_EventTuple] = []
+    @classmethod
+    def from_launch(cls, launch: LaunchEvent) -> _ParsedRun:
+        """Start a run's data at its launch event."""
+        return cls(launch_at=launch.at, last_at=launch.at, attributes=run_attributes(launch))
 
 
 def _read_lines(path: str) -> list[bytes]:
@@ -268,7 +273,7 @@ def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | No
     if not lines:
         return None
 
-    first_obj = _safe_json(lines[0])
+    first_obj = decode_object_line(lines[0])
     if first_obj is None:
         return None
 
@@ -278,10 +283,10 @@ def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | No
     if first_event.session_id != session_id:
         return None
 
-    run = _ParsedRun(first_event)
+    run = _ParsedRun.from_launch(first_event)
 
     for line in lines[1:]:
-        obj = _safe_json(line)
+        obj = decode_object_line(line)
         if obj is None:
             continue
         event = event_from_wire(obj)
@@ -325,12 +330,3 @@ def _find_parent_run(rec: CommandRecord, run_spans: list[_RunSpan]) -> Span | No
         if span.get_span_context().span_id == link.span_id:
             return span
     return None
-
-
-def _safe_json(line: bytes) -> dict[str, object] | None:
-    """Parse a UTF-8 JSON line into a dict, or None on failure."""
-    try:
-        wire_value = decode_log_line(line.decode("utf-8"))
-    except ValueError:
-        return None
-    return wire_value if isinstance(wire_value, dict) else None

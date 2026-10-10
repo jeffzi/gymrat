@@ -10,6 +10,9 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from gymrat.report.display import VERDICT_GLOSSES
+from gymrat.utils import fraction_of_median
+
 if TYPE_CHECKING:
     from gymrat.model import MetricUnit, MetricVerdict
     from gymrat.report.types import CandidateMetric, MetricComparison
@@ -91,11 +94,15 @@ def format_value(value: float, unit: MetricUnit | None = None) -> str:
     return _scale_tier(value, _TIER_MAP[unit])
 
 
+ZERO_PERCENT_DELTA = "0.0%"
+"""What a delta that rounds to zero prints as: unsigned, since it points nowhere."""
+
+
 def format_percent_delta(value: float | None, *, missing: str = "") -> str:
     """A signed percentage, or a placeholder when there is no finite delta to state.
 
-    A delta that rounds to zero prints as an unsigned ``0.0%``: at display
-    precision there is no direction to report, so ``-0.0%`` would claim one.
+    At display precision a delta that rounds to zero has no direction to
+    report, so ``-0.0%`` would claim one.
 
     Args:
         value: The percentage delta, such as ``2.2`` for ``+2.2%``, or ``None``
@@ -111,7 +118,7 @@ def format_percent_delta(value: float | None, *, missing: str = "") -> str:
         return missing
     magnitude = f"{abs(value):.1f}"
     if magnitude == "0.0":
-        return "0.0%"
+        return ZERO_PERCENT_DELTA
     sign = "+" if value > 0 else "-"
     return f"{sign}{magnitude}%"
 
@@ -187,7 +194,9 @@ def candidate_cell_parts(
 
 def format_verdict_delta(verdict: MetricVerdict) -> str:
     """The delta cell: the word ``unstable`` for a verdict too noisy to trust, else the delta."""
-    return "unstable" if verdict.verdict == "unstable" else format_percent_delta(verdict.delta)
+    if verdict.verdict == "unstable":
+        return VERDICT_GLOSSES["unstable"]
+    return format_percent_delta(verdict.delta)
 
 
 # ---------------------------------------------------------------------------
@@ -206,11 +215,7 @@ def format_pair_count(n: int) -> str:
 
 
 def _is_ratio_undefined(noise_abs: float, median: float | None) -> bool:
-    if median is None:
-        return False
-    if median == 0:
-        return True
-    return not math.isfinite(noise_abs / abs(median) * 100)
+    return median is not None and fraction_of_median(noise_abs, median, 100) is None
 
 
 def is_noise_percentage_undefined(
@@ -218,10 +223,9 @@ def is_noise_percentage_undefined(
 ) -> bool:
     """Whether the noise cannot be stated as a percentage of either side's median.
 
-    A median of zero has no scale to state noise against, and a median so close
-    to zero that the percentage overflows has none either. The verdict engine
-    drops such a side from the noise percentage, so the percentage left behind is
-    only the floor and understates the scatter that made the verdict unstable.
+    The verdict engine drops such a side from the noise percentage, so the
+    percentage left behind is only the floor and understates the scatter that
+    made the verdict unstable.
 
     Args:
         noise_abs: The noise in the metric's own units.

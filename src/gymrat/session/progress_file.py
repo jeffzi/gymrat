@@ -111,6 +111,13 @@ class SidecarWriter:
     writes a ``ProgressSnapshot`` under ``root`` on each; other event types are
     ignored, with no write. A phase change resets ``passes_completed`` so each
     phase's progress is counted from zero.
+
+    Attributes:
+        root: Repository root under which the sidecar is written.
+        passes_completed: Passes finished in ``current_phase``.
+        last_start_ms: The ``at_ms`` of the latest ``PassStarted``.
+        last_pass_duration_ms: Wall-clock time of the latest finished pass.
+        current_phase: The phase whose passes are being counted.
     """
 
     root: str

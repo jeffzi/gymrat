@@ -45,6 +45,9 @@ def within_hang_guard(limit_s: float) -> Generator[None]:
 
     Yields:
         Nothing: the block runs under the guard.
+
+    Raises:
+        AssertionError: The block took ``limit_s`` real seconds or more.
     """
     started = time.monotonic()
     yield

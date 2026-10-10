@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from gymrat.cli.options import OutputFormat
 from gymrat.cli.run_setup import SharedFlags
 from gymrat.config import (
     MAX_SAFE_INTEGER,
@@ -777,7 +778,9 @@ def test_inspect_config_when_integer_env_var_exceeds_cap_does_reject_as_not_a_po
         ),
         pytest.param(CliFlags(samples=0, timeout=0), {"samples": 0, "timeout": 0}, id="zero-kept"),
         pytest.param(
-            SharedFlags(samples=5, format="json"), {"samples": 5}, id="subclass-fields-left-out"
+            SharedFlags(samples=5, format=OutputFormat.json),
+            {"samples": 5},
+            id="subclass-fields-left-out",
         ),
     ],
 )

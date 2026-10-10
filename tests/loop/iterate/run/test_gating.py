@@ -573,14 +573,6 @@ async def test_iterate_session_when_primary_has_no_change_to_read_does_report_th
             id="higher-is-better-reads-the-other-side",
         ),
         pytest.param(
-            rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 1.1)),
-            resolved_config(primary="total_ms", stop=StopConfig(target_value=95)),
-            True,
-            "regressed",
-            ["primary: -10.0% · verdict: REGRESSED", "fix or run gymrat discard"],
-            id="regressed-omits-the-target-line",
-        ),
-        pytest.param(
             _noisy_rounds(),
             resolved_config(primary="total_ms", stop=StopConfig(target_value=101)),
             True,

@@ -22,8 +22,10 @@ from gymrat.session.paths import (
 )
 from tests._ansi import strip_ansi
 from tests._config import resolved_config
-from tests.cli._budget import set_origin
-from tests.cli._session import runner
+from tests.cli._origin import set_origin
+from tests.cli._runner import (
+    runner,
+)
 from tests.config._toml import EXISTING_CONFIG, write_raw
 from tests.session._budget import install_budget
 from tests.session.records._fixtures import log_records

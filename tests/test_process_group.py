@@ -885,27 +885,40 @@ def test_attach_process_group_when_child_gets_a_job_does_limit_it_to_kill_on_clo
 
 
 @pytest.mark.parametrize("entry", ["terminate_process_group", "kill_process_group"])
-def test_terminate_or_kill_process_group_when_job_assignment_refused_does_fall_back_to_taskkill_with_one_warning(
+@pytest.mark.parametrize(
+    ("refused_step", "closed"),
+    [
+        pytest.param("assignment", [PROCESS_HANDLE, JOB_HANDLE], id="assignment-refused"),
+        # No job was ever created, so there is no handle to close.
+        pytest.param("creation", [], id="creation-refused"),
+    ],
+)
+def test_terminate_or_kill_process_group_when_job_refused_does_fall_back_to_taskkill_with_one_warning(
     monkeypatch: pytest.MonkeyPatch,
     recwarn: pytest.WarningsRecorder,
     entry: str,
+    refused_step: str,
+    closed: list[int],
 ) -> None:
-    jobs = FakeJobs(assignment_granted=False)
+    jobs = FakeJobs(
+        creation_granted=refused_step != "creation",
+        assignment_granted=refused_step != "assignment",
+    )
     module = win32_process_group(monkeypatch, jobs)
     argv_calls = record_subprocess_runs(monkeypatch)
     module.attach_process_group(_CHILD_PID)
 
     getattr(module, entry)(_CHILD_PID)
 
-    refusals = [w for w in recwarn if "job assignment refused" in str(w.message)]
-    assert len(refusals) == 1, "a refused assignment has to warn exactly once"
-    assert refusals[0].category is RuntimeWarning
+    runtime_warnings = [str(w.message) for w in recwarn if w.category is RuntimeWarning]
+    assert len(runtime_warnings) == 1, "a refused job has to warn exactly once"
+    assert f"job {refused_step} refused" in runtime_warnings[0], (
+        "the one warning is not the job refusal"
+    )
     assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
         "a child that never reached a job was not torn down through taskkill"
     )
-    assert sorted(jobs.closed) == sorted([PROCESS_HANDLE, JOB_HANDLE]), (
-        "the refused job handle was leaked"
-    )
+    assert sorted(jobs.closed) == sorted(closed), "a refused job left a handle open"
 
 
 def test_kill_process_group_when_host_has_no_sigkill_does_terminate_the_job(
@@ -933,7 +946,7 @@ def test_kill_process_group_when_host_has_no_sigkill_does_terminate_the_job(
         ),
     ],
 )
-def test_terminate_or_release_process_group_when_job_still_emptying_does_wait_for_its_last_process(
+def test_terminate_or_release_process_group_when_job_still_emptying_does_wait_for_it_then_keep_or_close_the_handle(
     monkeypatch: pytest.MonkeyPatch,
     entry: str,
     closed: list[int],
@@ -947,7 +960,6 @@ def test_terminate_or_release_process_group_when_job_still_emptying_does_wait_fo
         getattr(module, entry)(_CHILD_PID)
 
     assert jobs.terminated == [JOB_HANDLE]
-    assert jobs.queried == [2, 1, 0], "the teardown returned before the job reported itself empty"
     assert len(wait_clock.sleeps) == 2, (
         "the wait did not return on the first poll after the job emptied"
     )

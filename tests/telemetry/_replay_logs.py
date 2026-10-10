@@ -32,6 +32,9 @@ T3 = T2 + _ONE_SECOND_NS
 T4 = T3 + _ONE_SECOND_NS
 T5 = T4 + _ONE_SECOND_NS
 
+#: A session-log line cut inside a multi-byte character, as a crash mid-write leaves it.
+TORN_UTF8_LINE = b'{"type": "iteration", "note": "caf\xc3'
+
 
 def write_lines(path: str, lines: list[str]) -> None:
     """Write ``lines`` to ``path``, one per line."""

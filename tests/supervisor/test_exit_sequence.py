@@ -28,7 +28,6 @@ from unittest.mock import create_autospec
 import pytest
 
 from gymrat.clock import monotonic_ms, now_ns
-from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.session.paths import lockfile_path, session_jsonl_path
 from gymrat.session.records import (
     CommandRecord,
@@ -40,7 +39,9 @@ from gymrat.supervisor.exit_sequence import (
     ExitReport,
     ExitStep,
 )
+from gymrat.utils import SHORT_SHA_LENGTH
 from tests._git import run_git
+from tests._imports import loaded_under, modules_imported_by
 from tests._lock import hold_lock
 from tests.loop._settle import (
     CHECKS,
@@ -598,3 +599,14 @@ async def test_run_exit_sequence_when_the_closing_event_raises_does_still_report
 
     assert run.report.error is not None
     assert jsonl_path in run.report.error
+
+
+# ---------------------------------------------------------------------------
+# layering — the exit sequence stays free of the CLI package
+# ---------------------------------------------------------------------------
+
+
+def test_importing_exit_sequence_when_fresh_interpreter_does_not_load_the_cli_package():
+    loaded = modules_imported_by("gymrat.supervisor.exit_sequence")
+
+    assert loaded_under(loaded, "gymrat.cli") == []

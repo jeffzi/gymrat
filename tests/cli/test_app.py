@@ -31,13 +31,15 @@ from tests._ansi import SGR_RE, normalize, sgr_params, strip_ansi
 from tests._cli import run_module
 from tests._rich import unwrap_panel
 from tests.cli._doctor_seams import patch_doctor
-from tests.cli._session import (
+from tests.cli._runner import (
     FailingStdoutRunner,
     disk_full_error,
+    runner,
+)
+from tests.cli._session import (
     leave_as_is,
     open_stubbed_probe_session,
     open_unedited_session,
-    runner,
 )
 
 DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
@@ -117,7 +119,7 @@ def test_app_when_help_colored_does_render_the_docs_link_as_a_dim_hint(
     result = runner.invoke(app, ["--help"], color=True, env={"COLUMNS": "200"})
 
     docs_line = next(line for line in result.stdout.splitlines() if "Docs:" in strip_ansi(line))
-    assert docs_line.lstrip().startswith("\x1b[2m")
+    assert sgr_params(docs_line[: docs_line.index("Docs:")]) == "2"
     assert sgr_params(docs_line[: docs_line.index(DOCS_URL)]).split(";") == ["2", "34"]
 
 

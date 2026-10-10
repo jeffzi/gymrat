@@ -5,6 +5,8 @@ can inspect finished spans without a collector; ``hide_otlp_exporter`` and
 ``hide_otel_sdk`` make the optional tracing packages fail to import,
 ``arm_placeholder_endpoint`` sets an endpoint so tracing is asked for, and
 ``disable_otel_sdk`` turns the SDK off while that endpoint is set.
+``traceparent`` and ``session_traceparent`` format the W3C header a command
+inherits its parent span from.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ if TYPE_CHECKING:
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from gymrat.telemetry.provider import configure_tracing, reset_tracing
+from gymrat.telemetry.provider import configure_tracing, reset_tracing, span_id_of, trace_id_of
 from gymrat.utils import ENDPOINT_ENV
 
 #: An OTLP endpoint that turns tracing on; nothing is ever exported to it.
@@ -149,3 +151,29 @@ def spans_by_prefix(spans: tuple[Any, ...] | list[Any], prefix: str) -> list[Any
         The matching spans.
     """
     return [s for s in spans if s.name.startswith(prefix)]
+
+
+def traceparent(trace_id: int, span_id: int) -> str:
+    """Format the W3C ``traceparent`` header naming a sampled span.
+
+    Args:
+        trace_id: The 128-bit trace id.
+        span_id: The 64-bit span id.
+
+    Returns:
+        The header value.
+    """
+    return f"00-{trace_id:032x}-{span_id:016x}-01"
+
+
+def session_traceparent(session_id: str, span_key: str) -> str:
+    """Format the ``traceparent`` of the span keyed ``span_key`` in ``session_id``'s trace.
+
+    Args:
+        session_id: The session whose trace the span belongs to.
+        span_key: The key the span id is derived from, such as ``"run:<at>"``.
+
+    Returns:
+        The header value.
+    """
+    return traceparent(trace_id_of(session_id), span_id_of(session_id, span_key))

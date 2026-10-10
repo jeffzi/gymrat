@@ -1,6 +1,7 @@
 """Shared Rich / pyte test helpers for progress renderer tests.
 
-Provides a sealed console, a one-shot plain-text renderer, a pyte screen
+Provides a sealed console (bare, or with a kept line on a terminal that is
+also ``sys.stderr``), a one-shot plain-text renderer, a pyte screen
 replay helper, a hand-advanced clock, and the constants the signal-erase
 tests share.  Every helper is deterministic and isolated from the
 developer's environment.
@@ -10,8 +11,9 @@ from __future__ import annotations
 
 import re
 import signal
+import sys
 from io import StringIO
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import IO, TYPE_CHECKING, Literal, Protocol
 
 import pyte
 import pyte.modes
@@ -21,6 +23,8 @@ from gymrat.cli.style import CLI_THEME
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    import pytest
 
 #: The escape a live display writes as it starts, hiding the cursor until it stops.
 HIDE_CURSOR = "\x1b[?25l"
@@ -68,6 +72,9 @@ class Clock[T: (int, float)]:
     deterministic frames; an int clock in milliseconds drives a reporter's
     ``now``.  Call ``tick(amount)`` to advance, or read and assign ``.now``
     directly.  Callable -- returns ``self.now``.
+
+    Args:
+        start: The time the clock starts at, in the unit the test uses.
     """
 
     def __init__(self, start: T) -> None:
@@ -121,6 +128,37 @@ def sealed_console(
         theme=CLI_THEME,
         get_time=get_time,
     )
+
+
+def kept_line_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stream: IO[str] | None = None,
+    width: int = 80,
+    height: int = 24,
+    color_system: Literal["auto", "standard", "truecolor"] | None = "auto",
+) -> Console:
+    """Build a sealed console with :data:`KEPT_LINE` printed, and make its file ``sys.stderr``.
+
+    The kept line stands where a live display will go above, so an erase that
+    leaves it on screen erased only the display.
+
+    Args:
+        monkeypatch: The fixture ``sys.stderr`` is replaced through.
+        stream: The terminal the console writes to; ``None`` keeps the console's own buffer.
+        width: Console width in columns.
+        height: Console height in rows.
+        color_system: The color system the console writes.
+
+    Returns:
+        The console, its kept line already printed.
+    """
+    console = sealed_console(width=width, height=height, color_system=color_system)
+    if stream is not None:
+        console.file = stream
+    console.print(KEPT_LINE)
+    monkeypatch.setattr(sys, "stderr", console.file)
+    return console
 
 
 def frame_text(

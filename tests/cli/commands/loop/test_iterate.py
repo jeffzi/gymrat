@@ -5,7 +5,6 @@ and inserts a ``budget`` key in JSON output, including on stop-condition exits.
 """
 
 import json
-import os
 import shlex
 import signal
 import sys
@@ -36,18 +35,28 @@ from gymrat.session.records import CommandRecord
 from tests._ansi import (
     strip_ansi,
     stripped_lines,
+    warning_lines,
 )
 from tests._clock import install_monotonic_clock
 from tests._process_helpers import wait_for_pid_file_blocking
 from tests._rich import Clock, console_output, frame_text, screen_lines, sealed_console
-from tests.cli._budget import set_origin
-from tests.cli._session import (
+from tests.cli._command_stubs import (
+    force_render_mode,
+)
+from tests.cli._origin import set_origin
+from tests.cli._runner import (
     FailingStdoutRunner,
     closed_stdout_error,
-    force_render_mode,
-    leave_as_is,
     runner,
+)
+from tests.cli._session import (
+    leave_as_is,
+    open_capped_session_under_budget,
+    open_hooked_iterate_session,
+    open_outlasted_session,
+    open_unsettled_session_under_budget,
     write_bench_config,
+    write_capped_session,
 )
 from tests.cli._signalled_cli import (
     SETTLE_TIMEOUT_S,
@@ -58,25 +67,20 @@ from tests.cli._signalled_cli import (
 from tests.loop._settle import start_with
 from tests.loop.iterate._fixtures import (
     MALFORMED_LINE_WARNING,
-    OUTLASTING_ITERATION_MS,
     CollectSamplesRecorder,
     bench_malformed_once,
     install_collect_samples,
+    install_improved_samples,
     regressed_run,
-    stub_improved_samples,
     stub_runs,
     write_iterate_session,
 )
-from tests.session._budget import (
-    install_budget,
-    install_budget_with_ten_minutes_left,
-    install_tight_budget,
-)
+from tests.session._budget import install_budget_with_ten_minutes_left
+from tests.session._progress_file import fail_unlink_of
 from tests.session.records._fixtures import (
     iteration_record,
     last_command_record,
     records_of_type,
-    settled_history,
 )
 
 # ---------------------------------------------------------------------------
@@ -88,8 +92,7 @@ def test_iterate_command_when_run_does_report_the_measured_iteration_with_its_tr
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     write_iterate_session(repo)
-    mock = install_collect_samples(monkeypatch)
-    stub_improved_samples(mock, repo)
+    install_improved_samples(monkeypatch, repo)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--samples", "10"])
 
@@ -108,17 +111,9 @@ def test_iterate_command_when_progress_sidecar_cannot_be_removed_does_still_succ
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     write_iterate_session(repo)
-    mock = install_collect_samples(monkeypatch)
-    stub_improved_samples(mock, repo)
+    install_improved_samples(monkeypatch, repo)
     sidecar = progress_path(repo)
-    original_unlink = os.unlink
-
-    def failing_unlink(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> None:
-        if str(path) == sidecar:
-            raise PermissionError(13, "The process cannot access the file", sidecar)
-        original_unlink(path, dir_fd=dir_fd)
-
-    monkeypatch.setattr(os, "unlink", create_autospec(os.unlink, side_effect=failing_unlink))
+    fail_unlink_of(sidecar, monkeypatch)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
@@ -335,11 +330,6 @@ def _wire_failing_subscriber(
     return events
 
 
-def _warning_lines(stderr: str) -> list[str]:
-    """The stderr lines that open with ``warning: ``, stripped of color."""
-    return [line for line in strip_ansi(stderr).splitlines() if line.startswith("warning: ")]
-
-
 _THREE_DISK_FULL = ("disk full", "disk full", "disk full")
 
 
@@ -353,7 +343,7 @@ def test_iterate_command_when_debug_and_subscriber_raises_does_follow_the_warnin
     lines = strip_ansi(result.stderr).splitlines()
     warning_at = lines.index("warning: disk full")
     assert lines[warning_at + 1] == "Traceback (most recent call last):"
-    assert _warning_lines(result.stderr) == ["warning: disk full"]
+    assert warning_lines(result.stderr) == ["warning: disk full"]
 
 
 @pytest.mark.parametrize(
@@ -374,7 +364,7 @@ def test_iterate_command_when_subscriber_raises_does_warn_once_per_distinct_fail
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
-    assert _warning_lines(result.stderr) == warnings
+    assert warning_lines(result.stderr) == warnings
     assert "Traceback" not in result.stderr
     assert events == list(_SUBSCRIBER_EVENTS)
     assert result.exit_code == 0
@@ -424,7 +414,7 @@ def test_iterate_command_when_live_and_adapter_warns_does_leave_the_warning_on_s
 
 def _improved_run(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub the bench to read the experiment 10% faster and 20% leaner than the baseline."""
-    stub_improved_samples(install_collect_samples(monkeypatch), repo)
+    install_improved_samples(monkeypatch, repo)
 
 
 def _confirmed_regression(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -475,12 +465,6 @@ def test_iterate_command_when_format_json_does_emit_structured_json_on_stdout(
     )
 
 
-def _at_iteration_cap(repo: str) -> None:
-    """A settled session that already reached its configured cap of one iteration."""
-    write_iterate_session(repo, settled_history())
-    write_bench_config(repo, stop={"max_iterations": 1})
-
-
 def _tool_run_with_ten_minutes_left(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Run from the tool under a live 30-minute budget with ten minutes left on a frozen clock."""
     install_budget_with_ten_minutes_left(repo, monkeypatch)
@@ -505,7 +489,7 @@ def test_iterate_command_when_format_json_and_stop_condition_does_emit_stop_docu
     arrange: Callable[[str, pytest.MonkeyPatch], None],
     budget_key: dict[str, object],
 ):
-    _at_iteration_cap(repo)
+    write_capped_session(repo)
     arrange(repo, monkeypatch)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
@@ -522,7 +506,7 @@ def test_iterate_command_when_format_json_and_stop_condition_does_emit_stop_docu
 def test_iterate_command_when_stop_and_format_json_and_stdout_closed_does_exit_one(
     repo: str, improved_samples_mock: CollectSamplesRecorder
 ):
-    _at_iteration_cap(repo)
+    write_capped_session(repo)
 
     result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["iterate", "--bench", "npm run bench", "--format", "json"]
@@ -532,76 +516,45 @@ def test_iterate_command_when_stop_and_format_json_and_stdout_closed_does_exit_o
 
 
 # ---------------------------------------------------------------------------
-# the iterate command — refused while a supervised run is live
+# the iterate command — run from the tool under a live budget
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def improved_samples_mock(repo: str, monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
     """The stubbed bench, answering every sampling call with an improved run."""
-    mock = install_collect_samples(monkeypatch)
-    stub_improved_samples(mock, repo)
-    return mock
+    return install_improved_samples(monkeypatch, repo)
 
 
-@pytest.fixture
-def supervised_repo(
-    repo: str, monkeypatch: pytest.MonkeyPatch, improved_samples_mock: CollectSamplesRecorder
-) -> str:
-    """An open session with a before hook under a live budget, run from the shell."""
-    header = write_iterate_session(repo)
-    # The before hook runs in the experiment worktree, so it must exist for the hook to fire.
-    Path(header.worktrees.experiment).mkdir()
-    marker = Path(repo, "hook-ran")
-    write_bench_config(repo, hooks={"before": f"touch '{marker}'"})
-    install_budget(repo, monkeypatch)
-    return repo
-
-
+@pytest.mark.usefixtures("improved_samples_mock")
 def test_iterate_command_when_tool_hosted_under_live_budget_does_run_the_before_hook(
-    supervised_repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
+    marker = open_hooked_iterate_session(repo, monkeypatch)
     set_origin(monkeypatch, "tool")
 
     runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
-    assert Path(supervised_repo, "hook-ran").exists()
-
-
-def _unsettled(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """An open session whose last iteration was never kept or discarded."""
-    write_iterate_session(repo, (iteration_record(seq=1),))
-    write_bench_config(repo)
-    install_budget(repo, monkeypatch)
-
-
-def _stop_condition_met(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A session at its iteration cap, under a live budget."""
-    _at_iteration_cap(repo)
-    install_budget(repo, monkeypatch)
-
-
-def _budget_exceeded(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A settled session whose last iteration outlasts the 5 minutes the budget has left."""
-    write_iterate_session(repo, settled_history(duration_ms=OUTLASTING_ITERATION_MS))
-    write_bench_config(repo)
-    install_tight_budget(repo, monkeypatch)
+    assert marker.exists()
 
 
 #: Every readiness setup, the ``(exit_code, reason, seq)`` the tool-hosted run
 #: records for it, and the phrases of the refusal it prints.
 READINESS = [
     pytest.param(
-        _unsettled, (2, "unsettled", 1), ("Iteration 1 has not been settled",), id="unsettled"
+        open_unsettled_session_under_budget,
+        (2, "unsettled", 1),
+        ("Iteration 1 has not been settled",),
+        id="unsettled",
     ),
     pytest.param(
-        _stop_condition_met,
+        open_capped_session_under_budget,
         (1, "stop-condition", 1),
         ("Stop condition met: max iterations (1 of 1)", "left of 30m"),
         id="stop-condition",
     ),
     pytest.param(
-        _budget_exceeded,
+        open_outlasted_session,
         (1, "budget-exceeded", 1),
         ("the cap would cut this one off",),
         id="budget-exceeded",
@@ -628,22 +581,4 @@ def test_iterate_command_when_tool_hosted_in_unready_state_does_refuse_with_its_
     assert (result.exit_code, cmd.reason, cmd.seq) == expected
     stderr = " ".join(stripped_lines(result.stderr, keep_blank=False))
     assert [phrase for phrase in phrases if phrase not in stderr] == []
-    assert improved_samples_mock.call_count == 0
-
-
-@pytest.mark.parametrize(
-    "setup", [pytest.param(param.values[0], id=param.id) for param in READINESS]
-)
-def test_iterate_command_when_supervised_run_live_does_refuse_before_every_readiness_check(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    setup: Callable[[str, pytest.MonkeyPatch], None],
-    improved_samples_mock: CollectSamplesRecorder,
-):
-    setup(repo, monkeypatch)
-
-    result = runner.invoke(app, ["iterate"])
-
-    assert result.exit_code == 2
-    assert last_command_record(repo).reason == "supervised-use-tool"
     assert improved_samples_mock.call_count == 0

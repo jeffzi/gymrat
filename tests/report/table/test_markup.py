@@ -17,19 +17,17 @@ import pytest
 from rich.text import Text
 
 from gymrat.model import Exclusion, GeomeanResult, ResolvedMetricMeta
-from gymrat.report.table.markup import (
+from gymrat.report.table.cells import (
     NO_AGGREGATE,
-    GroupBlock,
-    MetricBlock,
     VerdictParts,
     VerdictWidths,
     geomean_value_style,
     group_geomean_of,
     kind_geomean_of,
-    plan_sections,
-    scoped_geomean_label,
     verdict_cell,
 )
+from gymrat.report.table.sections import GroupBlock, MetricBlock, plan_sections
+from gymrat.report.text.single import scoped_geomean_label
 from tests.report._comparisons import create_candidate, memory_kind, time_kind
 from tests.report._verdicts import geomean_of, metric_meta
 

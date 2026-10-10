@@ -13,12 +13,13 @@ import tempfile
 from pathlib import Path
 
 from gymrat.errors import GymratError
-from gymrat.git import NotAGitRepositoryError, run_git
+from gymrat.git import run_git
 from gymrat.utils import stderr_text_of
 
 SESSION_DIR_NAME = ".gymrat"
 SESSION_LOG_NAME = "session.jsonl"
 WORKTREES_DIR_NAME = "worktrees"
+BASELINE_WORKTREE_NAME = "baseline"
 
 # First 12 hex chars of a sha256 gives a short, collision-resistant lock name.
 _DIGEST_HEX_LENGTH = 12
@@ -31,6 +32,16 @@ _DIGEST_HEX_LENGTH = 12
 # stderr. ``LC_ALL=C`` in :func:`~gymrat.git.run_git` stabilizes the wording
 # across locales, so a case-insensitive flag is not needed.
 _NOT_A_REPOSITORY_RE = re.compile(r"^fatal: not a git repository", re.MULTILINE)
+
+
+class NotAGitRepositoryError(GymratError):
+    """A directory git placed outside every repository.
+
+    Its own class because callers act on the distinction: standing outside a
+    repository is a supported way to run gymrat, while a git that merely
+    declined to answer says nothing about where the directory sits and must
+    never be read as "no repository here".
+    """
 
 
 def repository_lookup_error(directory: str, cause: object) -> GymratError:
@@ -47,7 +58,7 @@ def repository_lookup_error(directory: str, cause: object) -> GymratError:
         cause: The failure to classify — typically the git exception.
 
     Returns:
-        A :class:`~gymrat.git.NotAGitRepositoryError` when git's stderr opens
+        A :class:`NotAGitRepositoryError` when git's stderr opens
         with its not-a-repository diagnostic, otherwise a plain
         :class:`~gymrat.errors.GymratError` carrying git's diagnostics.
     """
@@ -74,7 +85,7 @@ def _rev_parse(flag: str, directory: str) -> str:
 
     Raises:
         GymratError: When ``directory`` is outside any repository (a
-            :class:`~gymrat.git.NotAGitRepositoryError`) or git otherwise
+            :class:`NotAGitRepositoryError`) or git otherwise
             declines to answer.
     """
     try:
@@ -97,7 +108,7 @@ def _toplevel(directory: str) -> str:
 
     Raises:
         GymratError: When ``directory`` is outside any repository (a
-            :class:`~gymrat.git.NotAGitRepositoryError`) or git otherwise
+            :class:`NotAGitRepositoryError`) or git otherwise
             declines to answer.
     """
     # git reports forward slashes on every platform; normalizing here is what
@@ -214,7 +225,7 @@ def repo_root(cwd: str | None = None) -> str:
 
     Raises:
         GymratError: When ``cwd`` is outside any repository (a
-            :class:`~gymrat.git.NotAGitRepositoryError`) or git otherwise
+            :class:`NotAGitRepositoryError`) or git otherwise
             fails to resolve the repository.
     """
     directory = os.getcwd() if cwd is None else cwd  # noqa: PTH109 -- returns str directly, matching the str return type of this function
@@ -255,7 +266,12 @@ def experiment_worktree_dir(root: str) -> str:
 
 def baseline_worktree_dir(root: str) -> str:
     """Path to the worktree detached at the session's pinned baseline commit, under ``root``."""
-    return _session_path(root, WORKTREES_DIR_NAME, "baseline")
+    return _session_path(root, WORKTREES_DIR_NAME, BASELINE_WORKTREE_NAME)
+
+
+def baseline_worktree_label() -> str:
+    """The baseline worktree's path relative to the repository root, with ``/`` separators."""
+    return f"{SESSION_DIR_NAME}/{WORKTREES_DIR_NAME}/{BASELINE_WORKTREE_NAME}"
 
 
 def _repo_digest(root: str) -> str:

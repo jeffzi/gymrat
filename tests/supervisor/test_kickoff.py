@@ -5,6 +5,7 @@ and returns the system-prompt append and the kickoff message the supervisor
 hands to the driven session.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import create_autospec
 
@@ -14,10 +15,6 @@ from gymrat.bundled_skill import read_bundled_skill
 from gymrat.errors import GymratError
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
 from tests._config import benchless_config
-
-# The heading the packaged SKILL.md opens its body with; proves the real
-# bundled skill text made it into the append.
-SKILL_MARKER = "# Driving a gymrat optimization session"
 
 RUNBOOK_CONTENT = "# My Runbook\n\nStep 1: run benchmarks.\n"
 
@@ -40,6 +37,12 @@ _GENERIC_SKILL_TEXT = "# Skill Title\n\nSome guidance.\n"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _bundled_skill_heading() -> str:
+    # The heading the packaged SKILL.md opens its body with; finding it in the append proves the
+    # real bundled skill text made it in. Its wording is pinned in tests/test_bundled_skill.py.
+    return next(line for line in read_bundled_skill().splitlines() if line.startswith("# "))
 
 
 def _write_runbook(directory: Path, content: str = RUNBOOK_CONTENT) -> str:
@@ -121,15 +124,16 @@ def test_compose_kickoff_when_bundled_skill_meets_a_runbook_does_append_the_fron
     tmp_path: Path,
 ):
     config = benchless_config(runbook=_write_runbook(tmp_path))
+    skill_heading = _bundled_skill_heading()
 
     result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
     append = result.system_prompt_append
-    prelude = append.partition(SKILL_MARKER)[0]
-    assert SKILL_MARKER in append
+    prelude = append.partition(skill_heading)[0]
+    assert skill_heading in append
     assert RUNBOOK_CONTENT in append
     assert f"## Runbook: {config.runbook}" in append
-    assert append.index(SKILL_MARKER) < append.index("## Runbook:")
+    assert append.index(skill_heading) < append.index("## Runbook:")
     assert "---" not in prelude
     assert "name: gymrat" not in prelude
     assert "description:" not in prelude
@@ -240,25 +244,21 @@ def test_compose_kickoff_when_runbook_not_utf8_does_raise_gymrat_error_naming_pa
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("field", ["system_prompt_append", "kickoff"])
+@pytest.mark.parametrize("forbidden", ["usd", "spend", "$", "30 minute", "max_minutes"])
 def test_compose_kickoff_when_skill_mentions_spend_does_keep_cap_and_spend_out_of_authored_text(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    forbidden: str,
 ):
     skill_text = "# Skill Title\n\nSome guidance with --max-usd 10 and spend and $ dollar.\n"
 
     result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
 
     # The skill text may legitimately mention spend; only code-authored text is checked.
-    authored = {
-        "system_prompt_append": result.system_prompt_append.replace(skill_text, "").lower(),
-        "kickoff": result.kickoff.replace(skill_text, "").lower(),
-    }
-    assert [
-        (field, forbidden)
-        for field, text in authored.items()
-        for forbidden in ("usd", "spend", "$", "30 minute", "max_minutes")
-        if forbidden in text
-    ] == []
+    authored = getattr(result, field).replace(skill_text, "").lower()
+    assert forbidden not in authored
 
 
 # ---------------------------------------------------------------------------
@@ -323,8 +323,29 @@ def test_compose_kickoff_when_a_runbook_is_configured_does_author_the_supervisio
     tools_index = _tools_paragraph_index(paragraphs)
     clock_rule_index = _clock_rule_index(paragraphs)
     runbook_index = next(i for i, p in enumerate(paragraphs) if p.startswith("## Runbook:"))
-    tools_paragraph = paragraphs[tools_index].lower()
-    clock_rule = paragraphs[clock_rule_index].lower()
-    assert [phrase for phrase in _TOOLS_PARAGRAPH_PHRASES if phrase not in tools_paragraph] == []
-    assert [phrase for phrase in _CLOCK_RULE_PHRASES if phrase not in clock_rule] == []
     assert contract_index < tools_index < clock_rule_index < runbook_index
+
+
+@pytest.mark.parametrize(
+    ("locate", "phrase"),
+    [
+        *(
+            pytest.param(_tools_paragraph_index, phrase, id=f"tools-{phrase.strip('`')}")
+            for phrase in _TOOLS_PARAGRAPH_PHRASES
+        ),
+        *(
+            pytest.param(_clock_rule_index, phrase, id=f"clock-rule-{phrase.strip('`')}")
+            for phrase in _CLOCK_RULE_PHRASES
+        ),
+    ],
+)
+def test_compose_kickoff_when_a_runbook_is_configured_does_name_each_required_phrase_in_its_paragraph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    locate: Callable[[list[str]], int],
+    phrase: str,
+):
+    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+
+    paragraphs = result.system_prompt_append.split("\n\n")
+    assert phrase in paragraphs[locate(paragraphs)].lower()

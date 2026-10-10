@@ -65,6 +65,7 @@ from tests.supervisor._fixtures import (
     lock_file_path,
     run_supervised,
     sent_texts,
+    tool_start_event,
 )
 
 if TYPE_CHECKING:
@@ -348,9 +349,7 @@ async def test_supervise_when_a_guard_trips_does_end_as_guard_naming_it(
     [
         pytest.param(lambda: TextDeltaEvent(at=now_ns(), chunk="typing"), id="text-delta"),
         pytest.param(
-            lambda: ToolStartEvent(
-                at=now_ns(), tool_use_id="t1", tool_name="Read", input={}, input_summary="/x"
-            ),
+            lambda: tool_start_event("Read", "t1", input_summary="/x"),
             id="tool-start",
         ),
     ],
@@ -449,15 +448,7 @@ def _replied_follow_ups(events: list[SessionEvent]) -> list[FollowUpEvent]:
     ("first_step", "reached"),
     [
         pytest.param(
-            EmitStep(
-                emit=ToolStartEvent(
-                    at=now_ns(),
-                    tool_use_id="t1",
-                    tool_name="Read",
-                    input={},
-                    input_summary="/x",
-                ),
-            ),
+            EmitStep(emit=tool_start_event("Read", "t1", input_summary="/x")),
             _tool_starts,
             id="in-flight",
         ),
