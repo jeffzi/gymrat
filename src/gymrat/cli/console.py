@@ -1,23 +1,19 @@
-"""CLI console state: debug mode, color resolution, stream helpers, the stderr console.
+"""CLI console state: debug mode, color resolution, the stderr console.
 
 This module owns the process-wide ``--debug`` and ``--color`` / ``--no-color``
-state every command reads, the stream classification the output paths share,
-and the stderr ``Console`` factory built on top of them. It sits below
-:mod:`gymrat.cli.exit` and must never import it.
+state every command reads and the stderr ``Console`` factory built on top of
+them. It sits below :mod:`gymrat.cli.exit` and must never import it.
 """
 
-import errno
-import io
-import os
 import sys
-from typing import IO, override
+from typing import override
 
 from rich.console import Console, HighlighterType, JustifyMethod, OverflowMethod
 from rich.style import Style
 from rich.text import Text
 
 from gymrat.cli.style import CLI_THEME
-from gymrat.utils import stream_color_from_env
+from gymrat.utils import is_broken_pipe, point_stream_at_devnull, stream_color_from_env
 
 
 class _DebugState:
@@ -34,46 +30,6 @@ def set_debug_mode(*, enabled: bool) -> None:
 def is_debug_mode() -> bool:
     """Whether ``--debug`` is on, so error and warning output should carry stack traces."""
     return _DebugState.enabled
-
-
-def is_broken_pipe(error: BaseException) -> bool:
-    """Whether ``error`` is a write to a pipe whose reading end has closed.
-
-    POSIX reports it as ``BrokenPipeError``. Windows reports it as a plain
-    ``OSError`` with ``EINVAL``: the C runtime maps the ``ERROR_NO_DATA`` a write
-    to a closed pipe fails with onto that errno, so no ``BrokenPipeError`` is
-    ever raised there.
-
-    Args:
-        error: The exception a stream write or flush raised.
-
-    Returns:
-        ``True`` when ``error`` means the pipe's reader is gone.
-    """
-    if isinstance(error, BrokenPipeError):
-        return True
-    return sys.platform == "win32" and isinstance(error, OSError) and error.errno == errno.EINVAL
-
-
-def point_stream_at_devnull(stream: IO[str]) -> None:
-    """Redirect ``stream``'s file descriptor to devnull; a stream without one is left alone.
-
-    The interpreter flushes a stream's unwritten buffer at shutdown. After a
-    failed write that flush would fail again and turn the exit status into 120;
-    a devnull descriptor lets it succeed.
-
-    Args:
-        stream: The stream whose descriptor is redirected.
-    """
-    try:
-        fd = stream.fileno()
-    except io.UnsupportedOperation:
-        return
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(devnull, fd)
-    finally:
-        os.close(devnull)
 
 
 class _ColorState:

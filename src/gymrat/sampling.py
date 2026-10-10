@@ -315,19 +315,6 @@ def compute_metric_stats(name: str, values: Sequence[float]) -> MetricStats:
     )
 
 
-def own_values(samples: Sequence[dict[str, float]], name: str) -> list[float]:
-    """Collect the values a side reported for ``name``, skipping rounds without it.
-
-    Args:
-        samples: One metric record per round.
-        name: The metric to extract.
-
-    Returns:
-        The reported values for ``name``, in round order.
-    """
-    return [record[name] for record in samples if name in record]
-
-
 def resolve_metric_meta_from_samples(
     sample_sets: Sequence[list[dict[str, float]]],
     config_metrics: dict[str, MetricEntry] | None,
@@ -413,6 +400,8 @@ async def collect_samples(
 
     Raises:
         CommandError: A prepare or bench command timed out or exited non-zero.
+        AdapterError: A bench run's output yielded no usable metric or an
+            unacceptable metric name.
     """
     timeout_ms = int(options.timeout_seconds * MS_PER_SECOND)
     collected = [TargetSamples(ctx=ctx, samples=[]) for ctx in targets]

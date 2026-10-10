@@ -17,12 +17,8 @@ from gymrat.command_run import CommandTrace, with_repo_lock
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import record_to_wire
 from gymrat.supervisor.events import UsageUpdateEvent, to_json_line
-from gymrat.telemetry.provider import (
-    command_attributes,
-    run_attributes,
-    span_id_of,
-    trace_id_of,
-)
+from gymrat.telemetry.command_span import command_attributes
+from gymrat.telemetry.provider import run_attributes, span_id_of, trace_id_of
 from gymrat.telemetry.replay import replay_session
 from gymrat.telemetry.run_spans import finalize_tracing, setup_tracing
 from tests.session.records._fixtures import (

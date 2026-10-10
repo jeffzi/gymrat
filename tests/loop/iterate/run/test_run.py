@@ -26,12 +26,8 @@ import pytest
 
 from gymrat.config import HooksConfig, StopConfig
 from gymrat.errors import GymratError
-from gymrat.loop.iterate.run import (
-    BudgetExceededError,
-    IterateOptions,
-    LoopStopError,
-    iterate_session,
-)
+from gymrat.loop.iterate.run import IterateOptions, iterate_session
+from gymrat.loop.stop_condition import BudgetExceededError, LoopStopError
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmSkipped,

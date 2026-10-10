@@ -22,20 +22,29 @@ if TYPE_CHECKING:
 # Value and cell formatting
 # ---------------------------------------------------------------------------
 
-type _Tier = tuple[float, float, str, int]
+
+@dataclass(frozen=True, slots=True)
+class _Tier:
+    """One scale step: a magnitude that rounds below ``threshold`` prints in this tier."""
+
+    threshold: float
+    divisor: float
+    suffix: str
+    decimals: int
+
 
 _NS_TIERS: tuple[_Tier, ...] = (
-    (1000, 1, "ns", 0),
-    (1e6, 1000, "µs", 1),
-    (1e9, 1e6, "ms", 1),
-    (math.inf, 1e9, "s", 1),
+    _Tier(threshold=1000, divisor=1, suffix="ns", decimals=0),
+    _Tier(threshold=1e6, divisor=1000, suffix="µs", decimals=1),
+    _Tier(threshold=1e9, divisor=1e6, suffix="ms", decimals=1),
+    _Tier(threshold=math.inf, divisor=1e9, suffix="s", decimals=1),
 )
 
 _BYTE_TIERS: tuple[_Tier, ...] = (
-    (1000, 1, "B", 0),
-    (1e6, 1000, "KB", 1),
-    (1e9, 1e6, "MB", 1),
-    (math.inf, 1e9, "GB", 1),
+    _Tier(threshold=1000, divisor=1, suffix="B", decimals=0),
+    _Tier(threshold=1e6, divisor=1000, suffix="KB", decimals=1),
+    _Tier(threshold=1e9, divisor=1e6, suffix="MB", decimals=1),
+    _Tier(threshold=math.inf, divisor=1e9, suffix="GB", decimals=1),
 )
 
 _TIER_MAP: dict[MetricUnit, tuple[_Tier, ...]] = {"ns": _NS_TIERS, "bytes": _BYTE_TIERS}
@@ -68,10 +77,10 @@ def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
         The scaled, suffixed figure such as ``"1.7µs"`` or ``"512KB"``.
     """
     magnitude = abs(value)
-    for threshold, divisor, suffix, decimals in tiers:
-        rounded = float(format(magnitude / divisor, f".{decimals}f"))
-        if rounded * divisor < threshold:
-            return f"{value / divisor:.{decimals}f}{suffix}"
+    for tier in tiers:
+        rounded = float(format(magnitude / tier.divisor, f".{tier.decimals}f"))
+        if rounded * tier.divisor < tier.threshold:
+            return f"{value / tier.divisor:.{tier.decimals}f}{tier.suffix}"
     return str(value)
 
 

@@ -75,8 +75,11 @@ is accepted or rejected no matter which one it arrives through.
 class EnvResult[T]:
     """The outcome of reading one env var: a value, a problem, or neither.
 
-    ``value`` and ``problem`` are mutually exclusive; both are ``None`` when the
-    variable is unset.
+    Attributes:
+        value: The parsed value, or ``None`` when the variable is unset or
+            invalid. Never set together with ``problem``.
+        problem: Why the variable's value was rejected, or ``None`` when it is
+            unset or valid. Never set together with ``value``.
     """
 
     value: T | None = None
@@ -292,8 +295,12 @@ class ConfigFile:
 class ConfigFileResult:
     """Outcome of a collecting load.
 
-    Carries the parsed config (when valid), whether the file existed, and every
-    validation problem found.
+    Attributes:
+        config_file: The parsed config, an empty ``ConfigFile`` when an optional
+            file is missing, or ``None`` when the file cannot be read, parsed or
+            validated, or a required one is missing.
+        exists: Whether the config file existed.
+        problems: Every validation problem found; empty when the load succeeded.
     """
 
     config_file: ConfigFile | None
@@ -342,6 +349,26 @@ class BenchlessConfig:
     Every value a non-benchmarking command (``status``, ``keep``) reads is present
     with defaults already applied; ``bench`` is absent because such commands never
     run one. Keyword-only so the required fields can precede the optional ones.
+
+    Attributes:
+        adapter: Name of the output adapter that parses benchmark output.
+        samples: Number of sample rounds per side.
+        timeout_seconds: Maximum seconds per bench invocation.
+        unstable_noise_pct: Noise band width, in percent, above which a verdict
+            is forced unstable.
+        primary: The metric, or the ``geomean`` aggregate, an iteration is
+            judged on.
+        prepare: Preparation command run before benchmarking, or ``None``.
+        metrics: Per-metric overrides keyed by metric name, or ``None``.
+        kinds: Per-kind overrides keyed by kind, or ``None``.
+        checks: Command a keep must pass, or ``None`` when no checks are
+            configured.
+        runbook: Path to the runbook file, or ``None``.
+        filter: Bench command template carrying the ``{names}`` placeholder that
+            narrows a run to named metrics, or ``None``.
+        stop: Loop stopping criteria, or ``None``.
+        hooks: Loop lifecycle commands, or ``None``.
+        supervise: Agent supervision settings, or ``None``.
     """
 
     adapter: str
@@ -514,9 +541,15 @@ def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFi
 class ConfigInspection:
     """Outcome of a collecting inspection.
 
-    ``config`` and ``bench`` are populated only when ``problems`` is empty;
-    ``bench`` lives here rather than on ``config`` because it has no default and a
-    benchless settlement may legitimately lack one.
+    Attributes:
+        config_path: Path of the config file that applies, or ``None`` when
+            none applies.
+        problems: Every problem found while settling the configuration.
+        config: The settled configuration; populated only when ``problems`` is
+            empty.
+        bench: The bench command; populated only when ``problems`` is empty and
+            one is set. It lives here rather than on ``config`` because it has
+            no default and a benchless settlement may legitimately lack one.
     """
 
     config_path: str | None

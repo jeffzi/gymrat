@@ -24,12 +24,12 @@ from gymrat.sampling import (
     WorktreeInfo,
     collect_samples,
     compute_metric_stats,
-    own_values,
     resolve_metric_meta_from_samples,
     run_with_worktrees,
     to_context,
 )
 from gymrat.targets import resolve_target
+from gymrat.utils import own_values
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

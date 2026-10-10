@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 from gymrat.adapters import get_adapter
 from gymrat.cli.console import apply_command_flags, resolve_stream_color
-from gymrat.cli.exit import exit_with_error, run_guarded, write_and_flush, write_stdout
+from gymrat.cli.exit import exit_with_error, run_guarded, write_stdout
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BaselineOption,
     ColorOption,
@@ -86,7 +86,13 @@ from gymrat.supervisor.hooks import supervise_hooks_factory
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
 from gymrat.supervisor.supervise import SupervisedSession, supervise
 from gymrat.supervisor.tools import gymrat_tools_factory
-from gymrat.utils import ASCII_DECIMAL_PATTERN, SECONDS_PER_MINUTE, abbreviate_home, minutes_to_ms
+from gymrat.utils import (
+    ASCII_DECIMAL_PATTERN,
+    SECONDS_PER_MINUTE,
+    abbreviate_home,
+    minutes_to_ms,
+    write_and_flush,
+)
 
 # ---------------------------------------------------------------------------
 # Flag surface
@@ -428,6 +434,11 @@ def _run_session(ctx: _SessionContext) -> None:
 
     Args:
         ctx: Everything the run needs, assembled once the lock is held.
+
+    Raises:
+        typer.Exit: With the tool-failure code on a driver or exit-sequence
+            error, or the gate code when anything but the session or a stop
+            condition ended the run.
     """
     from gymrat.telemetry.run_spans import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack
         finalize_tracing,
@@ -511,6 +522,14 @@ def _execute(options: Options) -> None:
 
     Args:
         options: The parsed ``supervise`` flags.
+
+    Raises:
+        typer.Exit: When the doctor gate refuses the run, or with the run's own
+            exit code once the session has run.
+        LockContentionError: When another supervise run already holds the
+            supervise lock.
+        GymratError: When the lock file cannot be opened, the config or
+            pre-flight refuses the run, or the event log path is not writable.
     """
     root = repo_root()
     doctor_gate(root, color=options.color)

@@ -27,10 +27,10 @@ from gymrat.cli.exit import (
     exit_with_error,
     format_cli_error,
     run_cli,
-    write_and_flush,
     write_stdout,
 )
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
+from gymrat.utils import write_and_flush
 from tests._ansi import TRAILING_SGR_RUN, sgr_codes
 from tests._process_helpers import run_with_closed_reader
 from tests._rich import screen_cells, unwrap_panel

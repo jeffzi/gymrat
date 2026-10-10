@@ -16,14 +16,13 @@ import pytest
 
 from gymrat.cli.console import (
     apply_command_flags,
-    is_broken_pipe,
     is_debug_mode,
-    point_stream_at_devnull,
     resolve_stream_color,
     set_color_override,
     set_debug_mode,
     stderr_console,
 )
+from gymrat.utils import is_broken_pipe, point_stream_at_devnull
 from tests._imports import modules_imported_by
 from tests._process_helpers import run_with_closed_reader
 from tests._streams import FakeStream, RaisingStream

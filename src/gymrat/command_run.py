@@ -23,7 +23,7 @@ import typer
 from gymrat import clock as _clock
 from gymrat.agent_env import COMMAND_ORIGIN_ENV, TOOL_ORIGIN, TRACEPARENT_ENV
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
-from gymrat.loop.iterate.run import LoopStopError
+from gymrat.loop.stop_condition import LoopStopError
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import (
     NotAGitRepositoryError,
@@ -31,7 +31,7 @@ from gymrat.session.paths import (
     repo_root,
     session_jsonl_path,
 )
-from gymrat.session.records import CommandRecord, SessionRecord
+from gymrat.session.records import CommandRecord, SessionRecord, add_record_events
 from gymrat.session.store import (
     append_record,
     read_records,
@@ -360,12 +360,15 @@ def _emit_command_span(
         set_span_in_context,
     )
 
+    from gymrat.telemetry.command_span import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
+        start_command_span,
+    )
     from gymrat.telemetry.provider import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
-        existing_session_span,
         flush_tracing,
         parse_traceparent,
-        record_event,
-        start_command_span,
+    )
+    from gymrat.telemetry.session_span import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
+        existing_session_span,
     )
 
     records = _safe_read_records(jsonl)
@@ -388,11 +391,7 @@ def _emit_command_span(
         context=parent_ctx,
         start_time=start_ns,
     ) as span:
-        for record in records[first_body_line:-1]:
-            if isinstance(record, SessionRecord):
-                continue
-            event_name, event_attrs = record_event(record)
-            span.add_event(event_name, attributes=event_attrs, timestamp=record.at)
+        add_record_events(span, records[first_body_line:-1])
 
     flush_tracing()
 

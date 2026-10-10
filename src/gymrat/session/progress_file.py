@@ -58,7 +58,7 @@ def write_progress(root: str, snapshot: ProgressSnapshot) -> None:
 
 
 def read_progress(root: str) -> ProgressSnapshot | None:
-    """Read and parse the progress sidecar, or return ``None``.
+    """Read and parse the progress sidecar.
 
     Args:
         root: Repository root under which the progress sidecar lives.

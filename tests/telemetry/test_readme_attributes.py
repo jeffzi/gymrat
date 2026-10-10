@@ -17,6 +17,9 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.session.records import (
+    ITERATION_DELTA_PCT,
+    ITERATION_OUTCOME,
+    ITERATION_SEQ,
     SESSION_LOG_MODELS,
     CommandRecord,
     Confirm,
@@ -24,23 +27,20 @@ from gymrat.session.records import (
     PairedSamples,
     SessionLogRecord,
     SessionRecord,
+    record_event,
     wire_type,
 )
-from gymrat.telemetry.provider import (
-    CAP_NAME,
+from gymrat.telemetry.command_span import (
     COMMAND_ARGS_PREFIX,
     COMMAND_DURATION_MS,
     COMMAND_EXIT_CODE,
     COMMAND_NAME,
     COMMAND_REASON,
-    FOLLOW_UP_ACTION,
-    FOLLOW_UP_REASON,
+    command_attributes,
+)
+from gymrat.telemetry.provider import (
     GEN_AI_MODEL,
     GEN_AI_PROVIDER,
-    ITERATION_DELTA_PCT,
-    ITERATION_OUTCOME,
-    ITERATION_SEQ,
-    RUN_COST_USD,
     RUN_DURATION_MS,
     RUN_EFFORT,
     RUN_END_REASON,
@@ -49,13 +49,17 @@ from gymrat.telemetry.provider import (
     RUN_MAX_MINUTES,
     RUN_MAX_USD,
     SESSION_BRANCH,
+)
+from gymrat.telemetry.provider import SESSION_ID as SESSION_ID_ATTR
+from gymrat.telemetry.run_spans import (
+    CAP_NAME,
+    FOLLOW_UP_ACTION,
+    FOLLOW_UP_REASON,
+    RUN_COST_USD,
     TURN_BUDGET_EXHAUSTED,
     TURN_ORIGIN,
     TURN_SESSION_COST_USD,
-    command_attributes,
-    record_event,
 )
-from gymrat.telemetry.provider import SESSION_ID as SESSION_ID_ATTR
 from tests.session.records._fixtures import (
     SESSION_ID,
     baseline_record,

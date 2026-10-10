@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal, assert_never
 
+from gymrat.cli.milestone_lines import prepare_milestone
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmSkipped,
@@ -440,8 +441,7 @@ def plain_line(before: IterateState, after: IterateState, event: ProgressEvent) 
     """
     match event:
         case PrepareFinished():
-            elapsed_ms = event.at_ms - before.prepare_current_start_ms
-            return f"prepared {event.label} ({format_duration(elapsed_ms)})"
+            return prepare_milestone(event.label, event.at_ms - before.prepare_current_start_ms)
         case PassFinished(phase="measure") if after.pass_phase.eta.completed >= after.total:
             return f"passes done ({format_duration(after.pass_phase.eta.total_time_ms)})"
         case JudgeFinished():

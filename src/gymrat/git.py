@@ -60,7 +60,7 @@ def run_git(
 
     with deferring_termination_signals():
         completed = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
-            ["git", *args],  # noqa: S607 -- argv is a fixed list, not shell-injected
+            ["git", *args],  # noqa: S607 -- git is resolved from PATH by design; the user's git is the one to run
             cwd=cwd,
             check=True,
             capture_output=True,

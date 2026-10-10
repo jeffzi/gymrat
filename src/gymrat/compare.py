@@ -34,13 +34,12 @@ from gymrat.sampling import (
     WorktreeInfo,
     collect_samples,
     compute_metric_stats,
-    own_values,
     resolve_metric_meta_from_samples,
     run_with_worktrees,
     to_context,
 )
 from gymrat.targets import resolve_target
-from gymrat.utils import WarnSink
+from gymrat.utils import WarnSink, own_values
 from gymrat.verdict import compute_kind_aggregates, compute_verdicts
 
 
@@ -302,6 +301,8 @@ async def compare(options: CompareOptions) -> ComparisonResult:
             directory nor a resolvable ref.
         CommandError: When a prepare or bench command times out or exits
             non-zero.
+        AdapterError: When a bench run's output yields no usable metric or an
+            unacceptable metric name.
     """
     run = options.run
     return await run_with_worktrees(

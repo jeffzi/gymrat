@@ -1,9 +1,17 @@
 """The shared machinery both text tables draw through.
 
-The data half is the body planner that lays a
-:class:`~gymrat.report.table.sections.SectionLayout` out as titles, borders, rules
-and rows. The cell builders that pad a value cell's magnitude and spread, and a
-verdict cell's glyph, delta and band, into fields of their own live in
+The layout half sorts a run's metrics into kinds, and the groups within them.
+That sorting lives here rather than inside a renderer: it is what keeps a row and
+the geomean closing it describing the same set of metrics. A comparison and a
+single-target measurement agree on nothing but their metadata, so the planner is
+stated over that alone (:class:`SectionedMetric`) and draws both in the same
+sections.
+
+The data half is the body planner that lays a :class:`SectionLayout` out as
+titles, borders, rules and rows, beside the value-cell builders
+(:func:`value_widths`, :func:`join_value_cell`) that pad a value cell's magnitude
+and spread into fields of their own. The verdict-cell builders that do the same
+for a verdict cell's glyph, delta and band live in
 :mod:`gymrat.report.table.cells`.
 
 The rendering half draws the grid. The box chrome — column padding, the ``│``
@@ -11,7 +19,7 @@ separators, and the ``┼`` rules closing a header or a run of rows — is deleg
 to a :class:`rich.table.Table`; only a section's ``┬`` top border is drawn by
 hand. Cells are styled rich :class:`~rich.text.Text` (or markup strings, which
 rich parses), resolved to color once by
-:func:`~gymrat.report.style.render_lines`. In-cell sub-field alignment stays in
+:func:`~gymrat.report.style.render_line_list`. In-cell sub-field alignment stays in
 the cell builders, because that is the behavior the tests pin; only the grid
 around the cells is rich's.
 """
@@ -26,17 +34,17 @@ from rich.cells import cell_len
 from rich.table import Table
 from rich.text import Text
 
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.report.format import SPREAD_SEPARATOR
-from gymrat.report.style import markup, render_lines
+from gymrat.report.style import markup, render_line_list
 from gymrat.report.table.cells import METRIC_COLUMN_HEADER, scope_label
-from gymrat.report.table.sections import GroupBlock, MetricBlock
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from gymrat.config import KindEntry
+    from gymrat.model import ResolvedMetricMeta
     from gymrat.report.format import MetricCellParts
-    from gymrat.report.table.sections import SectionLayout, SectionPlan
 
 
 VALUE_COLUMN_MIN = 12
@@ -46,6 +54,131 @@ _INFORMATIONAL_TAG = "informational — gating off"
 
 type TableCell = str | Text
 """A content row's cell: styled ``Text`` renders literally, a string is parsed as markup."""
+
+
+# ---------------------------------------------------------------------------
+# Section layout
+# ---------------------------------------------------------------------------
+
+
+class SectionedMetric(Protocol):
+    """All a layout needs of a metric entry: the metadata that decides where it lands."""
+
+    @property
+    def meta(self) -> ResolvedMetricMeta:
+        """The resolved metadata that sorts the metric into a kind and a group."""
+
+
+@dataclass(frozen=True, slots=True)
+class GroupBlock[Row]:
+    """A group of one section's metrics, gathered under the prefix they share."""
+
+    group: str
+    metrics: list[Row]
+
+
+@dataclass(frozen=True, slots=True)
+class MetricBlock[Row]:
+    """A single metric of a section that belongs to no group."""
+
+    metric: Row
+
+
+#: One block of a section: either a named group or a single ungrouped metric.
+type SectionBlock[Row] = GroupBlock[Row] | MetricBlock[Row]
+
+
+@dataclass(frozen=True, slots=True)
+class SectionPlan[Row]:
+    """One kind's slice of the table: what it holds, and whether the run is judged on it.
+
+    Attributes:
+        kind: The metric kind this section covers.
+        has_gating: Whether any of the section's metrics gate the run.
+        blocks: The section's groups and standalone metrics, in first-appearance
+            order.
+    """
+
+    kind: str
+    has_gating: bool
+    blocks: list[SectionBlock[Row]]
+
+
+@dataclass(frozen=True, slots=True)
+class SectionLayout[Row]:
+    """The run's metrics as sections, and as the flat list a single-kind run draws.
+
+    Attributes:
+        sections: One plan per kind, in first-appearance order.
+        ordered: Every metric in the order the run reported it, whatever section
+            it landed in.
+    """
+
+    sections: tuple[SectionPlan[Row], ...]
+    ordered: tuple[Row, ...]
+
+
+def plan_sections[Row, Metric: SectionedMetric](
+    metrics: Mapping[str, Metric],
+    measure: Callable[[str, str | None, Metric], Row],
+) -> SectionLayout[Row]:
+    """Sort the run's metrics into one section per kind, and each section into its groups.
+
+    Kinds, groups and metrics keep first-appearance order — the order the
+    aggregates were computed in — so a section reads in the same order as the rows
+    its geomean covers. A group block sits where its first metric appeared and
+    gathers the rest of the group with it, rather than letting a metric of another
+    group split it.
+
+    Rows are built here rather than looked up later, so every row a section names
+    is the row the table draws. ``measure`` receives the inferred group rather
+    than a finished label, since what a renderer does with the prefix is its own
+    business.
+
+    Args:
+        metrics: Every metric of the run, keyed by name, in first-appearance order.
+        measure: Builds a row from a metric's name, inferred group, and entry.
+
+    Returns:
+        The sectioned layout and the flat ordered rows.
+    """
+    blocks_by_kind: dict[str, list[SectionBlock[Row]]] = {}
+    gating_kinds: set[str] = set()
+    ordered: list[Row] = []
+
+    for name, metric in metrics.items():
+        meta = metric.meta
+        blocks = blocks_by_kind.setdefault(meta.kind, [])
+        if meta.gating:
+            gating_kinds.add(meta.kind)
+
+        group = parse_metric_name(name).group
+        row = measure(name, group, metric)
+        ordered.append(row)
+
+        if group is None:
+            blocks.append(MetricBlock(metric=row))
+            continue
+
+        opened = _open_group(blocks, group)
+        if opened is not None:
+            opened.metrics.append(row)
+        else:
+            blocks.append(GroupBlock(group=group, metrics=[row]))
+
+    sections = tuple(
+        SectionPlan(kind=kind, has_gating=kind in gating_kinds, blocks=blocks)
+        for kind, blocks in blocks_by_kind.items()
+    )
+    return SectionLayout(sections=sections, ordered=tuple(ordered))
+
+
+def _open_group[Row](blocks: list[SectionBlock[Row]], group: str) -> GroupBlock[Row] | None:
+    """The already-opened block for ``group`` among ``blocks``, or ``None`` when none is open."""
+    return next(
+        (block for block in blocks if isinstance(block, GroupBlock) and block.group == group),
+        None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +702,7 @@ def _flush_batch(
     table = _make_table(widths)
     for row in batch:
         table.add_row(*row.cells, end_section=row.end_section)
-    out = render_lines(table, color=color).split("\n")
+    out = render_line_list(table, color=color)
     # rich draws a section end only between rows, never after the last one.
     if batch[-1].end_section:
         out.append(_horizontal(widths, "┼"))
@@ -593,7 +726,7 @@ def render_body[Metric, Cell](
     close — the second of two in a row, or one ending a run — is drawn by hand.
     Every column is fixed to ``widths``, so separate tables across sections stay
     aligned. Color resolves once per rendered fragment through
-    :func:`~gymrat.report.style.render_lines`.
+    :func:`~gymrat.report.style.render_line_list`.
 
     Args:
         body: The planned body lines.
@@ -622,31 +755,9 @@ def render_body[Metric, Cell](
         elif isinstance(line, BorderLine):
             out.append(_horizontal(widths, "┬"))
         elif isinstance(line, TitleLine):
-            out.extend(render_lines(line.text, color=color).split("\n"))
+            out.extend(render_line_list(line.text, color=color))
         else:
             assert_never(line)
 
     out.extend(_flush_batch(batch, widths, color=color))
     return out
-
-
-__all__ = [
-    "AggregateLine",
-    "AggregateRows",
-    "BodyLine",
-    "GroupLine",
-    "HeaderLine",
-    "MetricLine",
-    "NamedRow",
-    "RuleLine",
-    "TableCell",
-    "TableSkeleton",
-    "build_cell_dispatcher",
-    "compute_column_width",
-    "is_grouped",
-    "metric_column_width",
-    "plan_body",
-    "plan_table_skeleton",
-    "render_body",
-    "section_annotation",
-]

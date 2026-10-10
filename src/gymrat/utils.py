@@ -5,6 +5,8 @@ would make sense pasted unchanged into an unrelated repository.
 """
 
 import contextlib
+import errno
+import io
 import json
 import math
 import os
@@ -13,10 +15,10 @@ import secrets
 import stat
 import statistics
 import sys
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import NamedTuple, Self
+from typing import IO, NamedTuple, Protocol, Self
 
 #: Shared by every module that converts between nanoseconds, milliseconds and
 #: clock tiers, so the conversion factors are declared once.
@@ -70,6 +72,10 @@ class StyledSegment[R](NamedTuple):
     Text built away from the rich view layer carries a role rather than a theme
     style; the view maps each role to a style, and a plain renderer joins the
     texts.
+
+    Attributes:
+        text: The run's text.
+        role: The style role the text renders under.
     """
 
     text: str
@@ -216,6 +222,19 @@ def medians_by_name(rounds: Iterable[Mapping[str, float]]) -> dict[str, float]:
         for name, value in round_.items():
             readings.setdefault(name, []).append(value)
     return {name: statistics.median(values) for name, values in readings.items()}
+
+
+def own_values(samples: Sequence[dict[str, float]], name: str) -> list[float]:
+    """Collect the values a side reported for ``name``, skipping rounds without it.
+
+    Args:
+        samples: One metric record per round.
+        name: The metric to extract.
+
+    Returns:
+        The reported values for ``name``, in round order.
+    """
+    return [record[name] for record in samples if name in record]
 
 
 def coerce_integer(value: object) -> object:
@@ -366,6 +385,60 @@ def stream_color_from_env(stream: object) -> bool:
     """
     declared = color_from_env()
     return declared if declared is not None else is_tty(stream)
+
+
+class _WritableStream(Protocol):
+    """A text stream error and progress output is written to."""
+
+    def write(self, data: str, /) -> object: ...
+
+    def flush(self) -> object: ...
+
+
+def write_and_flush(stream: _WritableStream, data: str) -> None:
+    """Write ``data`` to ``stream`` and flush it so an immediate exit cannot truncate it."""
+    stream.write(data)
+    stream.flush()
+
+
+def is_broken_pipe(error: BaseException) -> bool:
+    """Whether ``error`` is a write to a pipe whose reading end has closed.
+
+    POSIX reports it as ``BrokenPipeError``. Windows reports it as a plain
+    ``OSError`` with ``EINVAL``: the C runtime maps the ``ERROR_NO_DATA`` a write
+    to a closed pipe fails with onto that errno, so no ``BrokenPipeError`` is
+    ever raised there.
+
+    Args:
+        error: The exception a stream write or flush raised.
+
+    Returns:
+        ``True`` when ``error`` means the pipe's reader is gone.
+    """
+    if isinstance(error, BrokenPipeError):
+        return True
+    return sys.platform == "win32" and isinstance(error, OSError) and error.errno == errno.EINVAL
+
+
+def point_stream_at_devnull(stream: IO[str]) -> None:
+    """Redirect ``stream``'s file descriptor to devnull; a stream without one is left alone.
+
+    The interpreter flushes a stream's unwritten buffer at shutdown. After a
+    failed write that flush would fail again and turn the exit status into 120;
+    a devnull descriptor lets it succeed.
+
+    Args:
+        stream: The stream whose descriptor is redirected.
+    """
+    try:
+        fd = stream.fileno()
+    except io.UnsupportedOperation:
+        return
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, fd)
+    finally:
+        os.close(devnull)
 
 
 def warn_to_stderr(message: str) -> None:

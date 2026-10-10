@@ -33,11 +33,9 @@ if TYPE_CHECKING:
 # Spinner frames are 80ms apart; refreshing any slower makes them look frozen.
 LIVE_REFRESH_PER_SECOND = 10
 
-# The escape sequence that makes the terminal cursor visible again after
-# ``Live.start()`` hid it.
+# ``Live.start()`` hides the cursor; the erase must show it again.
 SHOW_CURSOR = "\x1b[?25h"
 
-# Escape sequences that erase a whole terminal line and move the cursor up one.
 _ERASE_LINE = "\x1b[2K"
 _CURSOR_UP = "\x1b[1A"
 
@@ -49,9 +47,6 @@ _PAINT_WAIT_SECONDS = 1.0
 
 def format_timestamp(at_ms: float, run_start_ms: float | None) -> str:
     """Format an elapsed timestamp as ``[HH:MM:SS]`` since ``run_start_ms``.
-
-    Each caller anchors its own run start, so an unanchored run reads as zero
-    elapsed rather than as an error.
 
     Args:
         at_ms: The timestamp in milliseconds to format.

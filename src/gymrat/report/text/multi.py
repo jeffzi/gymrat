@@ -27,14 +27,11 @@ from gymrat.report.table.cells import (
     NO_STABLE_METRICS,
     NO_STABLE_METRICS_STYLE,
     aggregate_label_cell,
-    flat_geomean_of,
     geomean_parts,
     geomean_scope_label,
     geomean_value_style,
-    group_geomean_of,
     group_metric_cell,
     header_metric_cell,
-    kind_geomean_of,
     variant_name_cell,
     verdict_cell,
     verdict_widths,
@@ -50,20 +47,21 @@ from gymrat.report.table.render import (
     metric_column_width,
     name_cell,
     plan_body,
+    plan_sections,
     render_body,
     section_annotation,
     value_widths,
 )
-from gymrat.report.table.sections import plan_sections
 from gymrat.report.text.comparison_rows import (
     CandidateCell,
     ComparisonRow,
-    candidate_outcomes,
+    ScopeAggregate,
+    comparison_aggregate_rows,
     comparison_row_builder,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
     from gymrat.model import GeomeanResult
     from gymrat.report.display import DisplayClass
@@ -199,32 +197,16 @@ def _aggregate_rows(
 ) -> AggregateRows[ComparisonRow, _AggregateCells]:
     """The per-candidate geomean builders, one aggregate cell per candidate column."""
 
-    def column_cells(
-        geomean_of: Callable[[CandidateComparison], GeomeanResult],
-        rows: Sequence[ComparisonRow],
-    ) -> _AggregateCells:
-        return tuple(
-            geomean_column_cell(
-                geomean_of(candidate),
-                candidate_outcomes(rows, index),
-            )
-            for index, candidate in enumerate(candidates)
+    def line(scope: str | None, aggregates: list[ScopeAggregate]) -> AggregateLine[_AggregateCells]:
+        return AggregateLine(
+            label=GEOMEAN_LABEL if scope is None else geomean_scope_label(scope),
+            cell=tuple(
+                geomean_column_cell(aggregate.geomean, aggregate.outcomes)
+                for aggregate in aggregates
+            ),
         )
 
-    return AggregateRows(
-        group=lambda kind, group, rows: AggregateLine(
-            label=geomean_scope_label(group),
-            cell=column_cells(lambda candidate: group_geomean_of(candidate, kind, group), rows),
-        ),
-        kind=lambda kind, rows: AggregateLine(
-            label=geomean_scope_label(kind),
-            cell=column_cells(lambda candidate: kind_geomean_of(candidate, kind), rows),
-        ),
-        flat=lambda rows: AggregateLine(
-            label=GEOMEAN_LABEL,
-            cell=column_cells(flat_geomean_of, [row for row in rows if row.gating]),
-        ),
-    )
+    return comparison_aggregate_rows(candidates, line)
 
 
 def geomean_column_cell(

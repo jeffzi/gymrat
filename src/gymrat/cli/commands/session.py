@@ -41,7 +41,6 @@ from gymrat.report.json_doc import (
 )
 from gymrat.report.loop import format_start_summary
 from gymrat.session.paths import repo_root
-from gymrat.utils import pluralize
 
 # ---------------------------------------------------------------------------
 # Start
@@ -103,14 +102,15 @@ _BranchOption = Annotated[
     str | None,
     typer.Option("--branch", help="branch to point at the squash commit (default: <branch>-final)"),
 ]
+_FinalizeMessageOption = Annotated[
+    str | None,
+    typer.Option("--message", "-m", help="message for the squash commit"),
+]
 
 
 def finalize(
     *,
-    message: Annotated[
-        str | None,
-        typer.Option("--message", "-m", help="message for the squash commit"),
-    ] = None,
+    message: _FinalizeMessageOption = None,
     branch: _BranchOption = None,
     output_format: FormatOption = OutputFormat.text,
     color: ColorOption = None,
@@ -208,16 +208,11 @@ def sync(
             return sync_to_experiment(root)
 
         result = await with_repo_lock("sync", body, args=config_trace_args(flags), root=root)
-        if not result.files:
-            text_report = "nothing to sync"
-        else:
-            header = f"Synced {pluralize(len(result.files), 'file')} to experiment worktree:"
-            text_report = "\n".join([header, *(f"  {f}" for f in result.files)])
         write_budget_report(
             root,
             flags,
             render_json=lambda summary: render_sync_json(result, budget=summary),
-            text_report=text_report,
+            text_report=result.report,
         )
 
     run_cli(run)

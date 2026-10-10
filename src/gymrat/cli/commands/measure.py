@@ -15,7 +15,7 @@ import typer
 
 from gymrat.cli.budget_report import emit_report, wants_json, warn_duration_over_budget
 from gymrat.cli.console import apply_command_flags
-from gymrat.cli.exit import run_cli, write_and_flush, write_stdout
+from gymrat.cli.exit import run_cli, write_stdout
 from gymrat.cli.options import (
     AdapterOption,
     BenchOption,
@@ -39,6 +39,7 @@ from gymrat.report.types import DEFAULT_REPORT_OPTIONS, MeasurementResult
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.paths import repo_root
 from gymrat.session.store import RequiredSession, append_record, require_open_session
+from gymrat.utils import write_and_flush
 
 _TargetArgument = Annotated[
     TargetSpec | None,
@@ -65,9 +66,11 @@ class MeasureFlags(SharedFlags):
 class _MeasureOutcome:
     """What the locked run produced: the measurement and the session it recorded to.
 
-    ``recording`` is the open session ``--record`` wrote the baseline into, or
-    ``None`` when recording was not asked for — carried out of the lock so the
-    post-report note can name the session by id.
+    Attributes:
+        result: The measurement the run produced.
+        recording: The open session ``--record`` wrote the baseline into, or
+            ``None`` when recording was not asked for — carried out of the lock
+            so the post-report note can name the session by id.
     """
 
     result: MeasurementResult

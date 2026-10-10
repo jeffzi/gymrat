@@ -165,9 +165,28 @@ def geomean_parts(geomean: GeomeanResult) -> GeomeanParts | None:
         return None
     return GeomeanParts(
         delta=format_percent_delta(geomean.value),
-        provenance=pluralize(geomean.n, "stable metric"),
+        provenance=stable_metric_count(geomean.n),
         band=format_noise_band_value(geomean.band) if geomean.band > 0 else "",
     )
+
+
+def stable_metric_count(n: int) -> str:
+    """How many stable metrics stand behind a geomean figure, as the tables phrase it."""
+    return pluralize(n, "stable metric")
+
+
+def geomean_provenance(geomean: GeomeanResult) -> str:
+    """The provenance suffix behind a scope's figure.
+
+    Args:
+        geomean: The scope's aggregate result.
+
+    Returns:
+        ``"(n)"`` when every scope metric stands behind the figure, or
+        ``"(n/m)"`` when exclusions reduced the count.
+    """
+    total = geomean.n + len(geomean.excluded)
+    return f"({geomean.n})" if total == geomean.n else f"({geomean.n}/{total})"
 
 
 def _is_quiet_row(outcomes: Sequence[DisplayClass | None]) -> bool:

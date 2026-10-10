@@ -16,8 +16,9 @@ if TYPE_CHECKING:
 
 from gymrat.errors import GymratError
 from gymrat.git import run_git_step
-from gymrat.session.paths import SESSION_DIR_NAME, experiment_worktree_dir
+from gymrat.session.paths import SESSION_DIR_NAME
 from gymrat.session.store import require_open_session
+from gymrat.utils import pluralize
 
 # ``git status -z`` prefixes each entry with two status characters and a space
 # (``XY<space>``), then the NUL-delimited path. Rename/copy entries (``R`` or
@@ -36,9 +37,21 @@ def _raise_file_vs_dir_error(name: str) -> NoReturn:
 
 @dataclass(frozen=True, slots=True)
 class SyncResult:
-    """Outcome of syncing changes from the main tree to the experiment worktree."""
+    """Outcome of syncing changes from the main tree to the experiment worktree.
+
+    Attributes:
+        files: Each synced main-tree path, sorted.
+    """
 
     files: tuple[str, ...]
+
+    @property
+    def report(self) -> str:
+        """The human-readable summary: the synced paths under a count, or that nothing synced."""
+        if not self.files:
+            return "nothing to sync"
+        header = f"Synced {pluralize(len(self.files), 'file')} to experiment worktree:"
+        return "\n".join([header, *(f"  {path}" for path in self.files)])
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,9 +179,9 @@ def sync_to_experiment(root: str) -> SyncResult:
             needs a directory, when the experiment worktree is missing, or when
             git itself fails. Nothing is written in any of these cases.
     """
-    require_open_session(root, "syncing changes")
+    required = require_open_session(root, "syncing changes")
 
-    experiment = experiment_worktree_dir(root)
+    experiment = required.session.worktrees.experiment
 
     main_entries = _exclude_session_dir(
         _dirty_entries(root, "Cannot read dirty files", "Check that the repository is not corrupt.")

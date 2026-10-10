@@ -59,8 +59,11 @@ _RUNBOOK_STUB = """# Optimization Runbook
 class ScaffoldRequest:
     """User choices that drive the scaffold.
 
-    ``bench`` is required only when the config must be written; ``runbook``
-    and ``install_skill`` gate whether those artifacts are created.
+    Attributes:
+        bench: The bench command written into the config; required only when
+            the config must be written.
+        runbook: Whether to write the runbook stub and name it in the config.
+        install_skill: Whether to install the skill file.
     """
 
     bench: str | None = None

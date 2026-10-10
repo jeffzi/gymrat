@@ -63,12 +63,10 @@ _OptStr = Annotated[str | SkipJsonSchema[None], _OMIT_NONE]
 _OptFloat = Annotated[FiniteFloat | SkipJsonSchema[None], _OMIT_NONE]
 _OptEffort = Annotated[Effort | SkipJsonSchema[None], _OMIT_NONE]
 
-# The creation timestamp every event carries.
 _At = Annotated[
     int, Field(description="Nanoseconds since the Unix epoch when the event was created.")
 ]
 
-# Description shared by every `parent_tool_use_id` field below.
 _PARENT_TOOL_USE_ID_DESCRIPTION = "Tool use ID of the enclosing tool call, if any."
 
 

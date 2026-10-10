@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from gymrat.report.table.sections import GroupBlock, MetricBlock, plan_sections
+from gymrat.report.table.render import GroupBlock, MetricBlock, plan_sections
 from tests.report._verdicts import metric_meta
 
 if TYPE_CHECKING:

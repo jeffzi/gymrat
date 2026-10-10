@@ -186,7 +186,7 @@
     },
     "Confirm": {
       "additionalProperties": false,
-      "description": "A confirmation rerun: which metrics it re-measured, and the samples it took.\n\n``absent`` names metrics the rerun was asked about but skipped; it is\n``None`` on a log written before the field existed.",
+      "description": "A confirmation rerun: which metrics it re-measured, and the samples it took.\n\n``absent`` names metrics the rerun was asked about but skipped; it is\n``None`` when the rerun skipped none.",
       "properties": {
         "absent": {
           "default": null,

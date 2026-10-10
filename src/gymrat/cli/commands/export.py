@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Annotated
 import typer
 
 from gymrat.cli.console import apply_command_flags
-from gymrat.cli.exit import run_guarded, write_and_flush
+from gymrat.cli.exit import run_guarded
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     ColorOption,
     DebugOption,
@@ -17,7 +17,7 @@ from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotati
 from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
 from gymrat.session.store import read_session_header
-from gymrat.utils import ENDPOINT_ENV, otlp_endpoint
+from gymrat.utils import ENDPOINT_ENV, otlp_endpoint, write_and_flush
 
 if TYPE_CHECKING:
     from gymrat.session.records import SessionRecord

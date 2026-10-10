@@ -422,7 +422,7 @@ class IterateRenderer(LiveDisplayMixin):
         if compact.bar is not None:
             if compact.task_id is None:
                 compact.task_id = compact.bar.add_task(
-                    "sampling", total=self._state.total, target=event.label
+                    self._state.nodes.passes.gerund, total=self._state.total, target=event.label
                 )
             elif is_confirm:
                 compact.bar.update(compact.task_id, target=event.label)
@@ -437,8 +437,9 @@ class IterateRenderer(LiveDisplayMixin):
             view.bar.update(view.task_id, target=event.label)
             return
 
+        node = self._state.nodes.confirm if is_confirm else self._state.nodes.passes
         view.task_id = view.bar.add_task(
-            "confirming" if is_confirm else "sampling",
+            node.gerund,
             total=self._state.total,
             target=event.label,
         )
@@ -472,14 +473,17 @@ class IterateRenderer(LiveDisplayMixin):
         if compact.bar is not None:
             if compact.task_id is not None:
                 compact.bar.remove_task(compact.task_id)
-            compact.task_id = compact.bar.add_task("confirming", total=self._state.total)
+            compact.task_id = compact.bar.add_task(
+                self._state.nodes.confirm.gerund, total=self._state.total
+            )
             if compact.clock_col is not None:
                 compact.clock_col.set_eta(0)
             return
 
         if self._confirm_view.bar is not None and self._confirm_view.task_id is None:
+            confirm = self._state.nodes.confirm
             self._confirm_view.task_id = self._confirm_view.bar.add_task(
-                "confirming", total=self._state.total, note=self._state.nodes.confirm.note
+                confirm.gerund, total=self._state.total, note=confirm.note
             )
 
     def _counters(self, *, is_confirm: bool) -> PhaseCounters:

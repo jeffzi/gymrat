@@ -22,19 +22,14 @@ from opentelemetry.trace import StatusCode
 from gymrat.command_run import CommandTrace, command_origin, with_repo_lock
 from gymrat.errors import GymratError
 from gymrat.git import run_git
-from gymrat.loop.iterate.run import LoopStopError
+from gymrat.loop.stop_condition import LoopStopError
 from gymrat.session.lock import LockContentionError, is_held
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
-from gymrat.session.records import CommandRecord, SessionRecord
+from gymrat.session.records import CommandRecord, SessionRecord, record_event
 from gymrat.session.schema import CommandReason
 from gymrat.session.store import session_header
-from gymrat.telemetry.provider import (
-    command_attributes,
-    export_failed,
-    record_event,
-    span_id_of,
-    trace_id_of,
-)
+from gymrat.telemetry.command_span import command_attributes
+from gymrat.telemetry.provider import export_failed, span_id_of, trace_id_of
 from tests._imports import loaded_under, modules_imported_by
 from tests._lock import hold_lock, remove_lock_files
 from tests.session.records._fixtures import (

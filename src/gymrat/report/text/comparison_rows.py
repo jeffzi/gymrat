@@ -1,7 +1,9 @@
 """The metric row a comparison table draws: the baseline's figure and each candidate's side.
 
 The single-candidate table is the multi-candidate table with one candidate, so both
-build their rows here and differ only in whether a verdict carries its band.
+build their rows here and differ only in whether a verdict carries its band. Both
+close a scope on the same geomean too, so which aggregate a scope reads, and which
+rows decide its color, are settled here as well.
 """
 
 from __future__ import annotations
@@ -10,16 +12,25 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from gymrat.report.format import baseline_cell_parts, candidate_cell_parts
-from gymrat.report.table.cells import indented_section_label, shown_verdict
+from gymrat.report.table.cells import (
+    flat_geomean_of,
+    group_geomean_of,
+    indented_section_label,
+    kind_geomean_of,
+    shown_verdict,
+)
+from gymrat.report.table.render import AggregateRows
 from gymrat.report.types import candidate_at
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from gymrat.model import GeomeanResult
     from gymrat.report.display import DisplayClass
     from gymrat.report.format import MetricCellParts
     from gymrat.report.table.cells import ShownVerdict
-    from gymrat.report.types import MetricComparison
+    from gymrat.report.table.render import AggregateLine
+    from gymrat.report.types import CandidateComparison, MetricComparison
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,3 +118,55 @@ def candidate_outcomes(rows: Sequence[ComparisonRow], index: int) -> list[Displa
         verdict.outcome if (verdict := row.candidates[index].verdict) is not None else None
         for row in rows
     ]
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeAggregate:
+    """One candidate's geomean over a scope, and the outcomes that may veto its color.
+
+    Attributes:
+        geomean: The candidate's aggregate over the scope's metrics.
+        outcomes: The display class of each metric behind the figure.
+    """
+
+    geomean: GeomeanResult
+    outcomes: list[DisplayClass | None]
+
+
+def comparison_aggregate_rows[Cell](
+    candidates: Sequence[CandidateComparison],
+    line: Callable[[str | None, list[ScopeAggregate]], AggregateLine[Cell]],
+) -> AggregateRows[ComparisonRow, Cell]:
+    """The aggregate-row builders of a comparison table, one aggregate per candidate.
+
+    A group reads its group geomean and a kind its kind geomean, each vetoed by
+    every row it covers. The flat table closes on the gated geomean, so only the
+    gating rows decide its color.
+
+    Args:
+        candidates: The candidates, in column order.
+        line: Builds the table's aggregate line from the scope's name (``None``
+            for a flat table) and each candidate's aggregate, in column order.
+
+    Returns:
+        The group, kind and flat aggregate builders.
+    """
+
+    def resolve(
+        geomean_of: Callable[[CandidateComparison], GeomeanResult],
+        rows: Sequence[ComparisonRow],
+    ) -> list[ScopeAggregate]:
+        return [
+            ScopeAggregate(geomean=geomean_of(candidate), outcomes=candidate_outcomes(rows, index))
+            for index, candidate in enumerate(candidates)
+        ]
+
+    return AggregateRows(
+        group=lambda kind, group, rows: line(
+            group, resolve(lambda candidate: group_geomean_of(candidate, kind, group), rows)
+        ),
+        kind=lambda kind, rows: line(
+            kind, resolve(lambda candidate: kind_geomean_of(candidate, kind), rows)
+        ),
+        flat=lambda rows: line(None, resolve(flat_geomean_of, [row for row in rows if row.gating])),
+    )

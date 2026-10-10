@@ -10,12 +10,10 @@ from gymrat.session.records import (
     CommandRecord,
     IterationPrimary,
     SessionLogRecord,
-)
-from gymrat.telemetry.provider import (
-    command_attributes,
     record_event,
-    run_attributes,
 )
+from gymrat.telemetry.command_span import command_attributes
+from gymrat.telemetry.provider import run_attributes
 from tests.session.records._fixtures import (
     SESSION_ID,
     baseline_record,

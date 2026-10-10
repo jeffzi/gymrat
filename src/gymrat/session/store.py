@@ -33,7 +33,6 @@ from pydantic_core import PydanticSerializationError
 
 from gymrat.errors import GymratError
 from gymrat.model import Direction
-from gymrat.session.object_line import decode_object_line
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     BaselineRecord,
@@ -51,6 +50,7 @@ from gymrat.session.records import (
     parse_record,
 )
 from gymrat.session.schema import KeepReason
+from gymrat.session.workspace import changed_file_count
 from gymrat.utils import UNICODE_LINE_BREAKS
 
 __all__ = [
@@ -58,6 +58,7 @@ __all__ = [
     "SessionState",
     "append_record",
     "complete_lines",
+    "decode_object_line",
     "first_line_json",
     "fold_session",
     "last_kept_position",
@@ -71,50 +72,55 @@ __all__ = [
     "require_settled",
     "session_header",
     "settle_first_hint",
+    "unmeasured_edit_count",
 ]
 
 
 @dataclass(frozen=True, slots=True)
 class SessionState:
-    """What a session log adds up to: the state every loop command reads before acting."""
+    """What a session log adds up to: the state every loop command reads before acting.
 
-    #: The header opening the log, absent while no session has been started.
+    Attributes:
+        session: The header opening the log, absent while no session has been started.
+        iteration_count: How many edits have been measured.
+        last_iteration: The most recently measured edit, absent while nothing has been measured.
+        unsettled: Whether a measured edit is waiting to be kept or discarded.
+        keep_count: How many edits were committed.
+        discard_count: How many edits were reverted.
+        target_reached_and_kept: Whether the last committed keep settled an edit that reached the
+            target metric.
+        last_seq: The highest number any iteration or settling record has taken, ``0`` while the log
+            has none. A refusal that settles nothing still claims a number, so this is a high-water
+            mark: the next record to need a number takes ``last_seq + 1`` and cannot alias one the
+            log already carries.
+        last_kept_commit: The commit made by the last keep that committed, absent when none did. The
+            baseline worktree advances to every kept commit, so this — not the header's pinned SHA —
+            is where the baseline stands once a keep has landed.
+        ends_on_gating_block: Whether the log ends on a keep the loop blocked for a gating
+            regression. The block settles the iteration it refused, but the edit it would not commit
+            still stands in the experiment worktree, so ``discard`` accepts this as the one settled
+            state it may still revert. Any iteration, keep, or discard after the block supersedes it
+            — except a keep refused for want of a measurement, which must not wedge the edit in
+            place.
+        ends_on_stop: Whether the newest record that is neither a hook nor a baseline is a stop. A
+            stop followed by only baseline or hook records still reads as stopped; any iteration,
+            keep, discard, or finalize supersedes it. A keep refused for ``nothing-measured`` leaves
+            this as it found it: the keep committed and settled nothing, so the stopped state is
+            unchanged.
+        finalized: The record that closed the session, absent while it is still open.
+    """
+
     session: SessionRecord | None
-    #: How many edits have been measured.
     iteration_count: int
-    #: The most recently measured edit, absent while nothing has been measured.
     last_iteration: IterationRecord | None
-    #: Whether a measured edit is waiting to be kept or discarded.
     unsettled: bool
-    #: How many edits were committed.
     keep_count: int
-    #: How many edits were reverted.
     discard_count: int
-    #: Whether the last committed keep settled an edit that reached the target metric.
     target_reached_and_kept: bool
-    #: The highest number any iteration or settling record has taken, ``0`` while
-    #: the log has none. A refusal that settles nothing still claims a number, so
-    #: this is a high-water mark: the next record to need a number takes
-    #: ``last_seq + 1`` and cannot alias one the log already carries.
     last_seq: int
-    #: The commit made by the last keep that committed, absent when none did. The
-    #: baseline worktree advances to every kept commit, so this — not the header's
-    #: pinned SHA — is where the baseline stands once a keep has landed.
     last_kept_commit: str | None
-    #: Whether the log ends on a keep the loop blocked for a gating regression.
-    #: The block settles the iteration it refused, but the edit it would not
-    #: commit still stands in the experiment worktree, so ``discard`` accepts this
-    #: as the one settled state it may still revert. Any iteration, keep, or
-    #: discard after the block supersedes it — except a keep refused for want of a
-    #: measurement, which must not wedge the edit in place.
     ends_on_gating_block: bool
-    #: Whether the newest record that is neither a hook nor a baseline is a stop.
-    #: A stop followed by only baseline or hook records still reads as stopped;
-    #: any iteration, keep, discard, or finalize supersedes it. A keep refused
-    #: for ``nothing-measured`` leaves this as it found it: the keep committed
-    #: and settled nothing, so the stopped state is unchanged.
     ends_on_stop: bool
-    #: The record that closed the session, absent while it is still open.
     finalized: FinalizeRecord | None
 
 
@@ -147,15 +153,18 @@ def require_settled(state: SessionState, verb: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class RequiredSession:
-    """An open session, with everything reading its log already produced."""
+    """An open session, with everything reading its log already produced.
 
-    #: The header the log opens with.
+    Attributes:
+        session: The header the log opens with.
+        state: What the whole log folds to, ``session`` included.
+        jsonl_path: The log the session was read from.
+        records: Every record the log holds, in file order — the same ones ``state`` folds.
+    """
+
     session: SessionRecord
-    #: What the whole log folds to, ``session`` included.
     state: SessionState
-    #: The log the session was read from.
     jsonl_path: str
-    #: Every record the log holds, in file order — the same ones ``state`` folds.
     records: list[SessionLogRecord]
 
 
@@ -174,6 +183,26 @@ def last_kept_position(state: SessionState, baseline_sha: str) -> str:
         The last kept commit SHA, or ``baseline_sha`` when nothing was kept.
     """
     return state.last_kept_commit or baseline_sha
+
+
+def unmeasured_edit_count(state: SessionState, session: SessionRecord) -> int:
+    """Count the experiment worktree's files that differ from its last kept position.
+
+    Args:
+        state: The folded session state, which names the last kept commit.
+        session: The session header, which names the experiment worktree and
+            the baseline commit that stands in when nothing was kept.
+
+    Returns:
+        The number of changed or untracked files, or 0 when the worktree is absent.
+
+    Raises:
+        GymratError: When git refuses to diff the worktree or to list its
+            untracked files.
+    """
+    return changed_file_count(
+        session.worktrees.experiment, last_kept_position(state, session.baseline.sha)
+    )
 
 
 def _decode_log_line_at(line: str, at: str, line_number: int) -> object:
@@ -233,6 +262,25 @@ def _read_first_line(path: Path) -> bytes | None:
             return handle.readline()
     except FileNotFoundError:
         return None
+
+
+def decode_object_line(raw: bytes) -> dict[str, object] | None:
+    """Decode one raw UTF-8 log line as a JSON object.
+
+    Args:
+        raw: The line's bytes, without its trailing newline.
+
+    Returns:
+        The decoded object, or ``None`` when the line is not valid UTF-8, is not
+        strict JSON (non-finite numbers included), or decodes to something other
+        than an object.
+    """
+    try:
+        # UnicodeDecodeError is a ValueError, so a non-UTF-8 line lands here too.
+        parsed = decode_log_line(raw.decode("utf-8"))
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def first_line_json(path: Path) -> dict[str, object] | None:
@@ -787,6 +835,10 @@ def read_live_session(root: str, primary_direction: Direction = "lower") -> Read
     Returns:
         The folded session with its baseline presence, best kept iteration, and
         trailing stop message.
+
+    Raises:
+        GymratError: When the log exists but cannot be read or parsed, as
+            :func:`read_records` raises it.
     """
     records = read_session_records(root)
     state = fold_session(records)

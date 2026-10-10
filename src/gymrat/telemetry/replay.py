@@ -11,24 +11,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gymrat.errors import GymratError
-from gymrat.session.object_line import decode_object_line
-from gymrat.session.records import CommandRecord, SessionRecord, decode_log_line, parse_record
-from gymrat.session.store import complete_lines, first_line_json
+from gymrat.session.records import (
+    CommandRecord,
+    SessionRecord,
+    add_record_events,
+    decode_log_line,
+    parse_record,
+)
+from gymrat.session.store import complete_lines, decode_object_line, first_line_json
 from gymrat.supervisor.events import (
     LaunchEvent,
     TurnEndEvent,
     UsageUpdateEvent,
     event_from_wire,
 )
-from gymrat.telemetry.provider import (
-    RUN_COST_USD,
-    Attrs,
-    parse_traceparent,
-    record_event,
-    run_event,
-    start_command_span,
-)
-from gymrat.telemetry.run_spans import start_run_span, start_session_span
+from gymrat.telemetry.command_span import command_link, start_command_span
+from gymrat.telemetry.provider import Attrs
+from gymrat.telemetry.run_spans import RUN_COST_USD, run_event, start_run_span, start_session_span
 from gymrat.utils import NS_PER_MS, warn_to_stderr
 
 if TYPE_CHECKING:
@@ -137,7 +136,7 @@ def _create_command_spans(
     Returns:
         The number of command spans created.
     """
-    pending_events: list[_EventTuple] = []
+    pending_records: list[SessionLogRecord] = []
     cmd_count = 0
 
     for position, rec in enumerate(records, 1):
@@ -146,12 +145,11 @@ def _create_command_spans(
 
         if isinstance(rec, CommandRecord):
             cmd_count += 1
-            _emit_command_span(rec, position, session_id, session_span, run_spans, pending_events)
+            _emit_command_span(rec, position, session_id, session_span, run_spans, pending_records)
         else:
-            ev_name, ev_attrs = record_event(rec)
-            pending_events.append((ev_name, ev_attrs, rec.at))
+            pending_records.append(rec)
 
-    _add_events(session_span, pending_events)
+    add_record_events(session_span, pending_records)
     return cmd_count
 
 
@@ -161,9 +159,9 @@ def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay co
     session_id: str,
     session_span: Span,
     run_spans: list[_RunSpan],
-    pending_events: list[_EventTuple],
+    pending_records: list[SessionLogRecord],
 ) -> None:
-    """Create one command span, drain pending events onto it, and close it."""
+    """Create one command span, drain the pending records onto it as events, and close it."""
     from opentelemetry import trace  # noqa: PLC0415 -- optional extra
 
     cmd_span = start_command_span(
@@ -174,8 +172,8 @@ def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay co
         start_time=rec.at - rec.duration_ms * NS_PER_MS,
     )
 
-    _add_events(cmd_span, pending_events)
-    pending_events.clear()
+    add_record_events(cmd_span, pending_records)
+    pending_records.clear()
 
     cmd_span.end(end_time=rec.at)
 
@@ -337,7 +335,7 @@ def _find_parent_run(rec: CommandRecord, run_spans: list[_RunSpan]) -> Span | No
     for run, span in run_spans:
         if run.launch.at <= rec.at <= run.last_at:
             return span
-    link = parse_traceparent(rec.traceparent) if rec.traceparent else None
+    link = command_link(rec)
     if link is None:
         return None
     for _run, span in run_spans:

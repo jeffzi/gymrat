@@ -24,8 +24,8 @@ from gymrat.session.budget import (
     estimate_iterate_duration,
     read_budget,
 )
-from gymrat.session.paths import repo_root, session_jsonl_path
-from gymrat.session.store import read_records
+from gymrat.session.paths import repo_root
+from gymrat.session.store import read_session_records
 from gymrat.utils import MS_PER_SECOND, format_duration, format_time_left, warn_to_stderr
 
 
@@ -171,7 +171,7 @@ def warn_duration_over_budget(*, halve: bool) -> None:
     if budget is None:
         return
     try:
-        records = read_records(session_jsonl_path(root))
+        records = read_session_records(root)
     except (GymratError, OSError):
         return
     estimate = estimate_iterate_duration(records)

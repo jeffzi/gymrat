@@ -27,7 +27,7 @@ from gymrat.cli.console import (
     resolve_stream_color,
     stderr_console,
 )
-from gymrat.cli.exit import exit_with_error, run_cli, write_and_flush, write_stdout
+from gymrat.cli.exit import exit_with_error, run_cli, write_stdout
 from gymrat.cli.iterate.progress import IterateRenderer
 from gymrat.cli.options import (
     AdapterOption,
@@ -47,9 +47,10 @@ from gymrat.command_run import CommandTrace, with_repo_lock
 from gymrat.config import CliFlags, config_trace_args, resolve_benchless_config, resolve_config
 from gymrat.errors import GATE_EXIT_CODE
 from gymrat.loop.discard import DiscardResult, discard_session
-from gymrat.loop.iterate.run import IterateOptions, IterateResult, LoopStopError, iterate_session
+from gymrat.loop.iterate.run import IterateOptions, IterateResult, iterate_session
 from gymrat.loop.keep import KeepOptions, KeepResult, keep_session
 from gymrat.loop.status import status_data, status_session
+from gymrat.loop.stop_condition import LoopStopError
 from gymrat.report.json_doc import (
     render_discard_json,
     render_iterate_json,
@@ -61,7 +62,7 @@ from gymrat.session.paths import repo_root
 from gymrat.session.progress_file import SidecarWriter, clear_progress
 from gymrat.session.store import require_open_session
 from gymrat.signals import install_termination_cleanup
-from gymrat.utils import MS_PER_SECOND, fan_out, is_tty
+from gymrat.utils import MS_PER_SECOND, fan_out, is_tty, write_and_flush
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -79,6 +80,10 @@ _AllowUnimprovedOption = Annotated[
     ),
 ]
 _ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
+_KeepMessageOption = Annotated[
+    str | None,
+    typer.Option("--message", "-m", help="commit message for the kept edit"),
+]
 
 # ---------------------------------------------------------------------------
 # Iterate
@@ -224,10 +229,7 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag
     *,
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
-    message: Annotated[
-        str | None,
-        typer.Option("--message", "-m", help="commit message for the kept edit"),
-    ] = None,
+    message: _KeepMessageOption = None,
     allow_unimproved: _AllowUnimprovedOption = False,
     output_format: FormatOption = OutputFormat.text,
     color: ColorOption = None,

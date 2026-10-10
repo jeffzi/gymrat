@@ -22,12 +22,12 @@ from gymrat import clock
 from gymrat.clock import now_ms, now_ns
 from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
-from gymrat.loop.iterate.run import stop_reason
+from gymrat.loop.stop_condition import stop_reason
 from gymrat.session.budget import Budget
 from gymrat.session.lock import is_held
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import HookRecord, SessionLogRecord
-from gymrat.session.store import SessionState, fold_session, read_records
+from gymrat.session.store import SessionState, fold_session, read_records, read_session_records
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
     CapAction,
@@ -137,7 +137,7 @@ def detect_end_condition(
 
 
 def _log_size(path: str) -> int:
-    """Size in bytes of the session log; a missing log is empty.
+    """Size in bytes of the session log.
 
     Args:
         path: The session log path.
@@ -485,9 +485,7 @@ class _Supervision:
             await asyncio.sleep(self._config.settle_window_ms / MS_PER_SECOND)
 
         try:
-            records = read_records(
-                session_jsonl_path(self._config.context.root),
-            )
+            records = read_session_records(self._config.context.root)
             state = fold_session(records)
         except GymratError as error:
             self._end_with_error(str(error))
@@ -681,8 +679,7 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
     """Run a supervised agent session with wall-clock and spend caps.
 
     Starts the driver session, tees every event to a JSONL log and an optional
-    observer, enforces the time and cost limits, and returns the session outcome
-    with metadata about how the session ended.
+    observer, and enforces the time and cost limits.
 
     After each ``ToolEndEvent`` whose session log has grown, the supervisor scans
     the log for a failed hook or a stop condition met during the run and ends the

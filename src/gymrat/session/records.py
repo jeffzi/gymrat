@@ -20,13 +20,18 @@ Inbound, a log line goes to a wire value through :func:`decode_log_line`, which
 refuses non-finite numbers, and then to a typed model through
 :func:`parse_record`. Outbound, the store renders a model as a compact JSON line
 with ``model_dump_json(exclude_none=True)``.
+
+Tracing turns records into span events through :func:`record_event` and
+:func:`add_record_events`, so the live and the replay emitters map a record the
+same way. The mapping builds plain dicts; ``opentelemetry`` is named only for
+type checking.
 """
 
 import json
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
-from typing import Annotated, Literal, NoReturn, Self, get_args
+from typing import TYPE_CHECKING, Annotated, Literal, NoReturn, Self, get_args
 
 from pydantic import (
     BaseModel,
@@ -64,6 +69,11 @@ from gymrat.session.schema import (
 )
 from gymrat.session.workspace import BaselineRef, Worktrees
 from gymrat.utils import coerce_integer, expected_got
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import Span
+
+    from gymrat.telemetry.provider import Attrs
 
 # ---------------------------------------------------------------------------
 # Validation and coercion helpers
@@ -323,7 +333,7 @@ class Confirm(BaseModel):
     """A confirmation rerun: which metrics it re-measured, and the samples it took.
 
     ``absent`` names metrics the rerun was asked about but skipped; it is
-    ``None`` on a log written before the field existed.
+    ``None`` when the rerun skipped none.
     """
 
     model_config = _RECORD_CONFIG
@@ -843,3 +853,79 @@ def _message_for_error(error: ErrorDetails, record: dict[str, object]) -> str:
         return f"Invalid session record: {key}{separator}{msg}"
     detail = expected_got(phrase_for_error(error), error["input"])
     return f"Invalid session record value for {key}: {detail}"
+
+
+# ---------------------------------------------------------------------------
+# Span events
+# ---------------------------------------------------------------------------
+
+ITERATION_SEQ = "gymrat.iteration.seq"
+ITERATION_OUTCOME = "gymrat.iteration.outcome"
+ITERATION_DELTA_PCT = "gymrat.iteration.delta_pct"
+
+SCALAR_ATTRIBUTE_TYPES = (str, int, float, bool)
+"""The value types a span attribute may hold; a field of any other type is left out."""
+
+# Record fields carried by the envelope, not mapped to a `gymrat.<type>.<field>` attribute.
+_SKIPPED_FIELD_NAMES = frozenset({"at", "seq", "type"})
+
+
+def add_iteration_seq(attrs: "Attrs", record: _SequencedEnvelope) -> None:
+    """Add the iteration sequence number to ``attrs``, when the record carries one."""
+    if record.seq is not None:
+        attrs[ITERATION_SEQ] = record.seq
+
+
+def record_event(record: SessionLogRecord) -> "tuple[str, Attrs]":
+    """Map a non-command session log record to the span event it becomes.
+
+    Any record with an iteration sequence number carries it. An iteration record
+    adds its outcome and, when known, its primary delta; any other record adds
+    its scalar top-level fields under ``gymrat.<type>.<field>``.
+
+    Args:
+        record: The session log record to map.
+
+    Returns:
+        The ``(event_name, attributes)`` pair, the name being ``gymrat.<type>``.
+    """
+    record_type: str = record.type
+    name = f"gymrat.{record_type}"
+    attrs: Attrs = {}
+
+    if isinstance(record, _SequencedEnvelope):
+        add_iteration_seq(attrs, record)
+
+    if isinstance(record, IterationRecord):
+        attrs[ITERATION_OUTCOME] = record.outcome
+        if record.primary.delta_pct is not None:
+            attrs[ITERATION_DELTA_PCT] = record.primary.delta_pct
+    else:
+        _add_scalar_fields(attrs, record_type, record)
+
+    return name, attrs
+
+
+def _add_scalar_fields(attrs: "Attrs", record_type: str, record: SessionLogRecord) -> None:
+    """Add scalar top-level fields from a non-iteration record under ``gymrat.<type>.<field>``."""
+    for field_name, value in record:
+        if field_name in _SKIPPED_FIELD_NAMES:
+            continue
+        if isinstance(value, SCALAR_ATTRIBUTE_TYPES):
+            attrs[f"gymrat.{record_type}.{field_name}"] = value
+
+
+def add_record_events(span: "Span", records: Iterable[SessionLogRecord]) -> None:
+    """Add each record to ``span`` as the span event it maps to, at the record's own time.
+
+    The session header is never an event, so a :class:`SessionRecord` is skipped.
+
+    Args:
+        span: The span the events are added to.
+        records: The records to add, in log order.
+    """
+    for record in records:
+        if isinstance(record, SessionRecord):
+            continue
+        event_name, event_attrs = record_event(record)
+        span.add_event(event_name, attributes=event_attrs, timestamp=record.at)

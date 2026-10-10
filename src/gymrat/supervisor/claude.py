@@ -616,6 +616,9 @@ class _ClaudeSession:
 
         A budget-exhausted result is an error the session survives: it closes
         the turn with ``budget_exhausted`` set instead of settling.
+
+        Args:
+            message: The result message closing the turn or settling the session.
         """
         budget_exhausted = message.is_error and message.subtype == "error_max_budget_usd"
         settles = message.is_error and not budget_exhausted

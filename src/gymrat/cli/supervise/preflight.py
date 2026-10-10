@@ -21,33 +21,32 @@ from typing import TYPE_CHECKING
 import typer
 
 from gymrat.cli.console import resolve_stream_color
-from gymrat.cli.exit import write_and_flush, write_stdout
+from gymrat.cli.exit import write_stdout
 from gymrat.cli.run_setup import SharedFlags, begin_run
 from gymrat.command_run import CommandTrace, with_repo_lock
 from gymrat.config import CliFlags, ResolvedConfig, config_trace_args
 from gymrat.doctor import build_doctor_report, render_doctor_report
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.baseline import measure_baseline
-from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import start_session
+from gymrat.loop.stop_condition import stop_condition
 from gymrat.report.loop import format_start_summary
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.budget import estimate_iterate_duration
 from gymrat.session.paths import (
     baseline_worktree_dir,
     baseline_worktree_label,
-    experiment_worktree_dir,
     session_jsonl_path,
 )
 from gymrat.session.store import (
     append_record,
     fold_session,
-    last_kept_position,
     latest_baseline,
     read_session_records,
+    unmeasured_edit_count,
 )
-from gymrat.session.workspace import changed_file_count, dirty_file_count
-from gymrat.utils import minutes_to_ms, ms_to_minutes, pluralize, warn_to_stderr
+from gymrat.session.workspace import dirty_file_count
+from gymrat.utils import minutes_to_ms, ms_to_minutes, pluralize, warn_to_stderr, write_and_flush
 
 if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
@@ -95,9 +94,12 @@ def run_preflight(*, root: str, config: ResolvedConfig, flags: PreflightFlags) -
     Raises:
         GymratError: When the main working tree is dirty (without
             ``allow_dirty``), the experiment worktree holds unsettled or
-            unmeasured changes, a stop condition is met (without ``force``),
-            the feasibility check refuses, or another process holds the
-            repository lock.
+            unmeasured changes, the session cannot be started or resumed, a
+            stop condition is met (without ``force``), the baseline cannot be
+            measured, the feasibility check refuses, or another process holds
+            the repository lock.
+        CommandError: When a prepare or bench command of the baseline
+            measurement times out or exits non-zero.
     """
     if config.checks is None:
         warn_to_stderr("warning: checks is not configured — keep will commit with the gate off")
@@ -155,6 +157,11 @@ def _session_step(
 
     Returns:
         The session start result.
+
+    Raises:
+        GymratError: When the baseline ref names no commit or a directory, when
+            the log is corrupt, or when git refuses to create or recreate the
+            workspace.
     """
     result = start_session(root, baseline_ref, config)
 
@@ -198,6 +205,12 @@ async def _baseline_step(
     Args:
         root: The repository root.
         config: The resolved configuration the baseline is measured with.
+
+    Raises:
+        GymratError: When the adapter is unknown or the baseline target cannot
+            be resolved.
+        CommandError: When a prepare or bench command times out or exits
+            non-zero.
     """
     if latest_baseline(read_session_records(root)) is not None:
         return
@@ -277,9 +290,7 @@ def validate_experiment_worktree(root: str) -> None:
     if state.finalized is not None or state.session is None:
         return
 
-    worktree = experiment_worktree_dir(root)
-    target = last_kept_position(state, state.session.baseline.sha)
-    count = changed_file_count(worktree, target)
+    count = unmeasured_edit_count(state, state.session)
     if count == 0:
         return
 

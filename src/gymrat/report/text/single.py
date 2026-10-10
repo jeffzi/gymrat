@@ -27,14 +27,13 @@ from gymrat.report.table.cells import (
     VERDICT_COLUMN_MIN,
     VerdictParts,
     aggregate_label_cell,
-    flat_geomean_of,
     geomean_parts,
+    geomean_provenance,
     geomean_scope_label,
     geomean_value_style,
-    group_geomean_of,
     group_metric_cell,
     header_metric_cell,
-    kind_geomean_of,
+    stable_metric_count,
     variant_name_cell,
     verdict_cell,
     verdict_widths,
@@ -50,18 +49,18 @@ from gymrat.report.table.render import (
     metric_column_width,
     name_cell,
     plan_body,
+    plan_sections,
     render_body,
     section_annotation,
     value_widths,
 )
-from gymrat.report.table.sections import plan_sections
 from gymrat.report.text.comparison_rows import (
     CandidateCell,
     ComparisonRow,
-    candidate_outcomes,
+    ScopeAggregate,
+    comparison_aggregate_rows,
     comparison_row_builder,
 )
-from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -102,26 +101,12 @@ def geomean_label(n: int) -> str:
         The label with the metric count, or the bare :data:`GEOMEAN_LABEL` when
         ``n`` is zero.
     """
-    return GEOMEAN_LABEL if n == 0 else f"{GEOMEAN_LABEL} ({pluralize(n, 'stable metric')})"
-
-
-def _geomean_provenance(geomean: GeomeanResult) -> str:
-    """The provenance suffix behind a scope's figure.
-
-    Args:
-        geomean: The scope's aggregate result.
-
-    Returns:
-        ``"(n)"`` when every scope metric stands behind the figure, or
-        ``"(n/m)"`` when exclusions reduced the count.
-    """
-    total = geomean.n + len(geomean.excluded)
-    return f"({geomean.n})" if total == geomean.n else f"({geomean.n}/{total})"
+    return GEOMEAN_LABEL if n == 0 else f"{GEOMEAN_LABEL} ({stable_metric_count(n)})"
 
 
 def scoped_geomean_label(scope: str, geomean: GeomeanResult) -> str:
     """A sectioned table's aggregate label with the provenance behind its figure."""
-    return f"{geomean_scope_label(scope)} {_geomean_provenance(geomean)}"
+    return f"{geomean_scope_label(scope)} {geomean_provenance(geomean)}"
 
 
 def _geomean_cell(
@@ -230,34 +215,13 @@ def _aggregate_rows(
 ) -> AggregateRows[ComparisonRow, _AggregateCell]:
     """The three aggregate-row builders for a single-candidate table."""
 
-    def scoped(
-        scope: str, geomean: GeomeanResult, rows: Sequence[ComparisonRow]
-    ) -> AggregateLine[_AggregateCell]:
-        return AggregateLine(
-            label=scoped_geomean_label(scope, geomean),
-            cell=_geomean_cell(geomean, candidate_outcomes(rows, 0)),
-        )
+    def line(scope: str | None, aggregates: list[ScopeAggregate]) -> AggregateLine[_AggregateCell]:
+        (aggregate,) = aggregates
+        geomean = aggregate.geomean
+        label = geomean_label(geomean.n) if scope is None else scoped_geomean_label(scope, geomean)
+        return AggregateLine(label=label, cell=_geomean_cell(geomean, aggregate.outcomes))
 
-    return AggregateRows(
-        group=lambda kind, group, rows: scoped(
-            group, group_geomean_of(candidate, kind, group), rows
-        ),
-        kind=lambda kind, rows: scoped(kind, kind_geomean_of(candidate, kind), rows),
-        flat=lambda rows: _flat_aggregate(candidate, rows),
-    )
-
-
-def _flat_aggregate(
-    candidate: CandidateComparison,
-    rows: Sequence[ComparisonRow],
-) -> AggregateLine[_AggregateCell]:
-    """The single geomean a flat table closes on, over the run's gating metrics."""
-    geomean = flat_geomean_of(candidate)
-    gating = [row for row in rows if row.gating]
-    return AggregateLine(
-        label=geomean_label(geomean.n),
-        cell=_geomean_cell(geomean, candidate_outcomes(gating, 0)),
-    )
+    return comparison_aggregate_rows([candidate], line)
 
 
 def _column_widths(

@@ -45,6 +45,7 @@ from rich.table import Column
 from rich.text import Text
 
 from gymrat.cli.live_display import LiveDisplayMixin
+from gymrat.cli.milestone_lines import prepare_milestone
 from gymrat.cli.style import (
     STYLE_LABEL,
     STYLE_META,
@@ -200,8 +201,7 @@ def plain_line(before: ProgressState, after: ProgressState, event: ProgressEvent
     """
     match event:
         case PrepareFinished():
-            elapsed = format_duration(event.at_ms - before.prepare_start_ms)
-            return f"prepared {event.label} ({elapsed})"
+            return prepare_milestone(event.label, event.at_ms - before.prepare_start_ms)
         case PassFinished():
             # Taking the duration from the ETA delta rather than recomputing it
             # keeps the printed number and the bar's estimate from ever disagreeing.
@@ -391,6 +391,24 @@ def passes_progress(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class RunShape:
+    """What a measure/compare run covers, as its progress display shows it.
+
+    Attributes:
+        target_count: How many targets (baseline + candidates) the run covers.
+        sample_count: The number of samples per target, or ``None`` when the
+            total is discovered at runtime from ``PassStarted.total_rounds``.
+        command: A label printed in the header row of the live display.
+        target_labels: Labels for each target, shown when ``target_count > 1``.
+    """
+
+    target_count: int
+    sample_count: int | None = None
+    command: str | None = None
+    target_labels: tuple[str, ...] = ()
+
+
 class ProgressReporter(LiveDisplayMixin):
     """Single-use progress reporter for measure/compare commands.
 
@@ -402,30 +420,25 @@ class ProgressReporter(LiveDisplayMixin):
         mode: ``"live"`` for a rich live display or ``"plain"`` for timestamped
             milestone lines.
         console: The console to render progress to.
-        target_count: How many targets (baseline + candidates) the run covers.
-        sample_count: The number of samples per target, or ``None`` when the
-            total is discovered at runtime from ``PassStarted.total_rounds``.
+        shape: The targets, samples and labels the run covers.
         clock: Optional time source injected for testing; defaults to
             ``time.monotonic``.
-        command: A label printed in the header row of the live display.
-        target_labels: Labels for each target, shown when ``target_count > 1``.
     """
 
-    def __init__(  # noqa: PLR0913 -- mirrors begin_run in cli.run_setup, which builds it
+    def __init__(
         self,
         mode: Literal["live", "plain"],
         console: Console,
-        target_count: int,
-        sample_count: int | None = None,
+        shape: RunShape,
         *,
         clock: Callable[[], float] | None = None,
-        command: str | None = None,
-        target_labels: list[str] | None = None,
     ) -> None:
         self._console = console
-        self._command = command
-        self._target_labels = target_labels or []
-        self._state = ProgressState.start(target_count=target_count, sample_count=sample_count)
+        self._command = shape.command
+        self._target_labels = shape.target_labels
+        self._state = ProgressState.start(
+            target_count=shape.target_count, sample_count=shape.sample_count
+        )
 
         self._clock_column: _ClockColumn | None = None
         self._prepare_progress: Progress | None = None

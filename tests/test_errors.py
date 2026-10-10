@@ -4,7 +4,7 @@ from functools import partial
 import pytest
 
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
-from gymrat.loop.iterate.run import BudgetExceededError, LoopStopError
+from gymrat.loop.stop_condition import BudgetExceededError, LoopStopError
 
 # ---------------------------------------------------------------------------
 # exit codes

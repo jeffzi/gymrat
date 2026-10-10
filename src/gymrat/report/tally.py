@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from gymrat.model import MetricVerdict
-    from gymrat.report.types import MetricComparisons
+    from gymrat.report.types import CandidateMetric, MetricComparison, MetricComparisons
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,10 +29,27 @@ class VerdictCounts:
     no_signal: int
 
 
-def _each_verdict(
+@dataclass(frozen=True, slots=True)
+class CandidateVerdict:
+    """One metric's verdict for one candidate, with what it was judged from.
+
+    Attributes:
+        name: The metric's name.
+        metric: The metric's comparison across the run.
+        candidate: The candidate's side of the metric.
+        verdict: The verdict the candidate earned on the metric.
+    """
+
+    name: str
+    metric: MetricComparison
+    candidate: CandidateMetric
+    verdict: MetricVerdict
+
+
+def each_candidate_verdict(
     metrics: MetricComparisons,
     candidate_index: int,
-) -> Iterator[MetricVerdict]:
+) -> Iterator[CandidateVerdict]:
     """Walk one candidate's verdicts across the metrics.
 
     Verdicts belong to a candidate, never to the run, so callers read one
@@ -43,13 +60,15 @@ def _each_verdict(
         candidate_index: The candidate's position in each metric's comparison.
 
     Yields:
-        The candidate's verdict for each metric that reported one; metrics the
-        candidate never reported are skipped.
+        The candidate's verdict for each metric that reported one, in metric
+        order; metrics the candidate never reported are skipped.
     """
-    for metric in metrics.values():
+    for name, metric in metrics.items():
         candidate = candidate_at(metric, candidate_index)
         if candidate is not None and candidate.verdict is not None:
-            yield candidate.verdict
+            yield CandidateVerdict(
+                name=name, metric=metric, candidate=candidate, verdict=candidate.verdict
+            )
 
 
 def count_verdicts(metrics: MetricComparisons, candidate_index: int) -> VerdictCounts:
@@ -67,7 +86,7 @@ def count_verdicts(metrics: MetricComparisons, candidate_index: int) -> VerdictC
         The per-class tally.
     """
     tally: Counter[str] = Counter(
-        verdict.verdict for verdict in _each_verdict(metrics, candidate_index)
+        judged.verdict.verdict for judged in each_candidate_verdict(metrics, candidate_index)
     )
 
     return VerdictCounts(
@@ -94,7 +113,9 @@ def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> l
     Returns:
         One markup string per display class.
     """
-    counts = Counter(display_class(verdict) for verdict in _each_verdict(metrics, candidate_index))
+    counts = Counter(
+        display_class(judged.verdict) for judged in each_candidate_verdict(metrics, candidate_index)
+    )
     # GLYPHS lists the display classes in legend order.
     max_width = max(len(str(counts[shown])) for shown in GLYPHS)
 

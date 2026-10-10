@@ -277,24 +277,22 @@ RENDER_WIDTH = 200
 def make_capture_console(*, color: bool | None) -> Console:
     """Build a rich console that captures its output to an in-memory buffer.
 
-    Color is resolved without touching :data:`os.environ`:
-
-    - ``color=True`` forces ANSI even when ``NO_COLOR`` is set, by declaring the
-      capture a terminal with color enabled.
-    - ``color=False`` suppresses ANSI even when ``FORCE_COLOR`` is set.
-    - ``color=None`` defers to :func:`gymrat.utils.color_from_env`, which owns the
-      ``FORCE_COLOR``/``NO_COLOR`` precedence and the ways it differs from rich's
-      own detection. With neither variable set, a captured buffer is not a TTY,
-      so the output is plain.
-
     Wide content is never wrapped or cropped (``soft_wrap``), so
     :data:`RENDER_WIDTH` only bounds justification, never the text. Emoji codes
     are off, so a ``:word:`` sequence in a metric name, kind or label prints
     literally (``lat:100:p99`` stays as written).
 
     Args:
-        color: The explicit color choice, or ``None`` to defer to the
-            environment and TTY detection.
+        color: The explicit color choice, resolved without touching
+            :data:`os.environ`:
+
+            - ``True`` forces ANSI even when ``NO_COLOR`` is set, by declaring
+              the capture a terminal with color enabled.
+            - ``False`` suppresses ANSI even when ``FORCE_COLOR`` is set.
+            - ``None`` defers to :func:`gymrat.utils.color_from_env`, which owns
+              the ``FORCE_COLOR``/``NO_COLOR`` precedence and the ways it differs
+              from rich's own detection. With neither variable set, a captured
+              buffer is not a TTY, so the output is plain.
 
     Returns:
         A console whose ``file`` is an :class:`io.StringIO` holding everything
@@ -331,24 +329,25 @@ def make_capture_console(*, color: bool | None) -> Console:
     )
 
 
-def render_lines(*renderables: RenderableType, color: bool | None = None) -> str:
-    """Render ``renderables`` through a capture console and return the text.
+def render_line_list(*renderables: RenderableType, color: bool | None = None) -> list[str]:
+    """Render ``renderables`` through a capture console and return the text lines.
 
     Each renderable is printed in turn through a console built by
     :func:`make_capture_console`, so color resolution and no-wrap behavior match
-    that helper. A plain string is interpreted as rich markup, so dynamic text
-    with markup-significant characters (a metric named ``[i]``, say) must be
-    escaped by the caller with :func:`rich.markup.escape` to render literally.
+    that helper.
 
     Args:
         *renderables: One or more rich renderables or markup strings to print.
+            A plain string is interpreted as rich markup, so dynamic text with
+            markup-significant characters (a metric named ``[i]``, say) must be
+            escaped by the caller with :func:`rich.markup.escape` to render
+            literally.
         color: The explicit color choice, or ``None`` to defer to the
             environment and TTY detection.
 
     Returns:
-        Exactly the visible text with no soft wrapping: lines joined by
-        newlines, with no trailing whitespace on any line and no trailing
-        newline.
+        Exactly the visible lines with no soft wrapping, with no trailing
+        whitespace on any line and no trailing empty line.
     """
     console = make_capture_console(color=color)
     for renderable in renderables:
@@ -361,4 +360,18 @@ def render_lines(*renderables: RenderableType, color: bool | None = None) -> str
     lines = buffer.getvalue().split("\n")
     if lines and lines[-1] == "":
         lines.pop()
-    return "\n".join(line.rstrip() for line in lines)
+    return [line.rstrip() for line in lines]
+
+
+def render_lines(*renderables: RenderableType, color: bool | None = None) -> str:
+    """Render ``renderables`` as :func:`render_line_list` does, joined into one text.
+
+    Args:
+        *renderables: One or more rich renderables or markup strings to print.
+        color: The explicit color choice, or ``None`` to defer to the
+            environment and TTY detection.
+
+    Returns:
+        The rendered lines joined by newlines, with no trailing newline.
+    """
+    return "\n".join(render_line_list(*renderables, color=color))

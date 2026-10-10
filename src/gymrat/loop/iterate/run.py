@@ -1,10 +1,9 @@
 """Measure one edit of an open session, record it, and phrase it for the agent.
 
-Sampling is driven here rather than through :func:`gymrat.compare.compare`
-because a session's worktrees are persistent: there is nothing to check out and
-nothing to sweep afterwards, and the raw samples have to survive the run to reach
-the log. Holding the repository lock across the call is the caller's job — two
-concurrent sessions' bench runs would perturb each other's measurements.
+The iteration is benched and judged through
+:func:`gymrat.loop.iterate.judge.bench_and_judge`. Holding the repository lock
+across the call is the caller's job — two concurrent sessions' bench runs would
+perturb each other's measurements.
 
 How a confirmation rerun rewrites the verdicts is
 :func:`gymrat.loop.iterate.judge.apply_confirmation`'s contract.
@@ -40,7 +39,6 @@ from typing import TYPE_CHECKING
 
 from gymrat import clock as _clock
 from gymrat.clock import monotonic_ms, now_ns
-from gymrat.errors import GymratError
 
 # Bound at module scope under the builtin's name so a test can substitute the
 # subprocess boundary via ``monkeypatch.setattr`` on this module.
@@ -59,12 +57,14 @@ from gymrat.loop.iterate.judge import (
     bench_and_judge,
     build_iteration_comparison,
     confirm_regressions,
+    gating_regressions,
     regresses_gating,
     rerun_answer,
     resolve_primary,
     target_reached,
 )
 from gymrat.loop.iterate.record import IterationJudgment, build_iteration_record
+from gymrat.loop.stop_condition import BudgetExceededError, stop_condition
 from gymrat.model import is_improvement
 from gymrat.progress_events import (
     HookFinished,
@@ -98,24 +98,20 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import Sequence
 
-    from gymrat.config import BenchlessConfig, ResolvedConfig
+    from gymrat.config import ResolvedConfig
     from gymrat.progress_events import ProgressCallback
     from gymrat.report.types import MetricComparisons
     from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord
-    from gymrat.session.schema import CommandReason, HookStage, Outcome
+    from gymrat.session.schema import HookStage, Outcome
     from gymrat.utils import WarnSink
 
 __all__ = [
-    "BudgetExceededError",
     "HookInvocation",
     "IterateOptions",
     "IterateResult",
-    "LoopStopError",
     "derive_outcome",
     "iterate_session",
     "run_hook",
-    "stop_condition",
-    "stop_reason",
 ]
 
 
@@ -520,11 +516,7 @@ async def _measure_and_judge(ctx: IterationContext) -> Judged:
     first = await bench_and_judge(ctx, ctx.config.bench, announce_judging=True)
 
     primary = resolve_primary(ctx.config.primary, first.verdicts, first.metric_meta)
-    regressed_names = tuple(
-        name
-        for name, meta in first.metric_meta.items()
-        if regresses_gating(meta, first.verdicts.get(name))
-    )
+    regressed_names = gating_regressions(first.verdicts, first.metric_meta)
     emit_progress(
         ctx.options.on_progress,
         JudgeFinished(
@@ -542,87 +534,6 @@ async def _measure_and_judge(ctx: IterationContext) -> Judged:
         confirmation=confirmation,
         primary=primary,
     )
-
-
-_STOP_HINT = "The loop is done. Report what the session measured instead of measuring again."
-
-
-class LoopStopError(GymratError):
-    """A configured stop condition refusing another iteration.
-
-    Separate from a plain :class:`GymratError` because nothing failed: the loop
-    ran to the end it was configured for, which the CLI reports as a gate trip
-    rather than as a tool failure.
-    """
-
-    def __init__(
-        self,
-        *args: object,
-        hint: str | None = None,
-        reason: CommandReason | None = "stop-condition",
-    ) -> None:
-        super().__init__(*args, hint=hint, reason=reason)
-
-
-class BudgetExceededError(LoopStopError):
-    """The session's time budget cannot afford another iteration.
-
-    Raised when a live budget's remaining time is shorter than the estimated
-    iterate duration, so the CLI routes it through the same gate-exit path as
-    any other stop condition.
-    """
-
-    def __init__(
-        self,
-        *args: object,
-        hint: str | None = None,
-        reason: CommandReason | None = "budget-exceeded",
-    ) -> None:
-        super().__init__(*args, hint=hint, reason=reason)
-
-
-def stop_reason(config: BenchlessConfig, state: SessionState) -> str | None:
-    """Which configured stop condition this session has already met, if any.
-
-    Read off the folded log alone, so it settles before a bench command runs: an
-    iteration measured past the end of the loop is one the agent would have to
-    throw away. ``target_value`` stops the loop only once the target-reaching
-    iteration is *kept* — discarding it puts the target back out of reach.
-
-    Args:
-        config: The resolved config, carrying the configured stop conditions.
-        state: The session's folded state, read for iteration count and
-            whether the target has been reached and kept.
-
-    Returns:
-        The condition that fired, such as ``max iterations (3 of 3)``, or
-        ``None`` when no condition is met yet.
-    """
-    stop = config.stop
-    if stop is None:
-        return None
-    if stop.max_iterations is not None and state.iteration_count >= stop.max_iterations:
-        return f"max iterations ({state.iteration_count} of {stop.max_iterations})"
-    if stop.target_value is not None and state.target_reached_and_kept:
-        return "target reached and kept"
-    return None
-
-
-def stop_condition(config: BenchlessConfig, state: SessionState) -> LoopStopError | None:
-    """The refusal for a configured stop condition this session has already met.
-
-    Args:
-        config: The resolved config, carrying the configured stop conditions.
-        state: The session's folded state.
-
-    Returns:
-        The stop error naming the condition :func:`stop_reason` reports, or
-        ``None`` when no condition is met yet.
-    """
-    reason = stop_reason(config, state)
-    if reason is None:
-        return None
-    return LoopStopError(f"Stop condition met: {reason}", hint=_STOP_HINT)
 
 
 _NEXT_STEPS: dict[Outcome, str] = {

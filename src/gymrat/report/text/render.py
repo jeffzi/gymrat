@@ -13,7 +13,7 @@ lines naming how each verdict was decided are built here.
 The table renderers return lines already resolved to text (ANSI or plain) for the
 run's color choice; the summary, highlights, and footer blocks are built as rich
 markup here and resolved the same way, so color is decided once per block through
-:func:`gymrat.report.style.render_lines`.
+:func:`gymrat.report.style.render_line_list`.
 """
 
 from __future__ import annotations
@@ -42,23 +42,27 @@ from gymrat.report.style import (
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
     format_hint,
-    join_header_parts,
     markup,
+    render_line_list,
     render_lines,
     truncate_labels,
 )
 from gymrat.report.table.cells import group_metric_cell, scope_label
-from gymrat.report.table.render import build_cell_dispatcher, plan_table_skeleton, render_body
-from gymrat.report.table.sections import plan_sections
-from gymrat.report.tally import verdict_summary_parts
+from gymrat.report.table.render import (
+    build_cell_dispatcher,
+    plan_sections,
+    plan_table_skeleton,
+    render_body,
+)
+from gymrat.report.tally import each_candidate_verdict, verdict_summary_parts
 from gymrat.report.text.measure_table import (
     MeasuredRow,
     measured_cells,
     measured_header_cells,
     measured_row,
-    run_header,
 )
 from gymrat.report.text.multi import render_comparison_table
+from gymrat.report.text.run_header import run_header
 from gymrat.report.text.single import render_table
 from gymrat.report.types import (
     DEFAULT_REPORT_OPTIONS,
@@ -73,7 +77,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from gymrat.model import GeomeanResult, MetricVerdict
-    from gymrat.report.table.sections import SectionedMetric
+    from gymrat.report.table.render import SectionedMetric
     from gymrat.report.types import (
         CandidateComparison,
         ComparisonResult,
@@ -114,24 +118,6 @@ def spans_many_kinds(metrics: Mapping[str, SectionedMetric]) -> bool:
     return len({metric.meta.kind for metric in metrics.values()}) > 1
 
 
-def _render_block(markup_lines: Sequence[str], *, color: bool | None) -> list[str]:
-    """Resolve a block of markup lines to rendered text, one output line per input.
-
-    Each line is resolved through the same color choice as the rest of the report,
-    so a block built here sits flush against the table lines the table renderers
-    already resolved.
-
-    Args:
-        markup_lines: The rich-markup lines to resolve.
-        color: The explicit color choice, or ``None`` to defer to the
-            environment and TTY detection.
-
-    Returns:
-        One rendered text line per input markup line.
-    """
-    return render_lines(*markup_lines, color=color).split("\n")
-
-
 def with_display_labels(result: ComparisonResult) -> ComparisonResult:
     """``result`` with every variant label replaced by the name the report prints.
 
@@ -166,12 +152,12 @@ def _compare_header(display: ComparisonResult) -> str:
     candidate_names = ", ".join(
         markup(candidate.label, VARIANT_NAME_STYLE) for candidate in display.candidates
     )
-    return join_header_parts([
-        markup("gymrat compare", "bold"),
+    return run_header(
+        "compare",
         f"baseline {markup(display.baseline_label, VARIANT_NAME_STYLE)} ↔ {candidate_names}",
-        escape(paired_samples(display.samples)),
-        f"adapter: {escape(display.adapter)}",
-    ])
+        paired_samples(display.samples),
+        display.adapter,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -259,15 +245,14 @@ def select_highlights(
         The highlights in report order.
     """
     ranked: list[tuple[int, float, MetricHighlight]] = []
-    for name, metric in metrics.items():
-        candidate = candidate_at(metric, candidate_index)
-        if candidate is None or candidate.verdict is None:
-            continue
-        rank = _HIGHLIGHT_RANK[display_class(candidate.verdict)]
+    for judged in each_candidate_verdict(metrics, candidate_index):
+        rank = _HIGHLIGHT_RANK[display_class(judged.verdict)]
         if rank is None:
             continue
-        highlight = MetricHighlight(name=name, metric=metric, verdict=candidate.verdict)
-        weight = _highlight_weight(candidate.verdict, metric.baseline_median, candidate.median)
+        highlight = MetricHighlight(name=judged.name, metric=judged.metric, verdict=judged.verdict)
+        weight = _highlight_weight(
+            judged.verdict, judged.metric.baseline_median, judged.candidate.median
+        )
         ranked.append((rank, -weight, highlight))
 
     ranked.sort(key=operator.itemgetter(0, 1))
@@ -435,15 +420,15 @@ def _hidden_regression_lines(
     qualify = spans_many_kinds(metrics)
 
     lines: list[str] = []
-    for name, metric in metrics.items():
-        candidate = candidate_at(metric, candidate_index)
-        if not metric.meta.gating or candidate is None or candidate.verdict is None:
+    for judged in each_candidate_verdict(metrics, candidate_index):
+        verdict = judged.verdict
+        if not judged.metric.meta.gating:
             continue
-        verdict = candidate.verdict
         if verdict.verdict != "regressed" or display_class(verdict) == "regressed":
             continue
         label = highlight_label(
-            MetricHighlight(name=name, metric=metric, verdict=verdict), qualify=qualify
+            MetricHighlight(name=judged.name, metric=judged.metric, verdict=verdict),
+            qualify=qualify,
         )
         delta = format_percent_delta(verdict.delta)
         lines.append(
@@ -531,9 +516,12 @@ _BAND_METHOD = "noise band ±(half-range × K)"
 class _FooterData:
     """The pair counts the footer sorts by the cause that forced each fallback.
 
-    ``permutation`` carries the pair counts of every permutation verdict.
-    ``shortage`` and ``ties`` split the band-method verdicts by cause: too few
-    total pairs, or too many of them tied away.
+    Attributes:
+        permutation: The pair counts of every permutation verdict.
+        shortage: The pair counts of the band-method verdicts that had too few
+            total pairs.
+        ties: The pair counts of the band-method verdicts that had too many
+            pairs tied away.
     """
 
     permutation: list[int]
@@ -753,7 +741,7 @@ def render_measure_table(
     skeleton = plan_table_skeleton(layout, result.config_kinds, lambda row: row.value, label)
     widths = [skeleton.metric_width, skeleton.value_width]
 
-    def metric_cells(row: MeasuredRow) -> tuple[str, str]:
+    def metric_cells(row: MeasuredRow) -> tuple[Text, Text]:
         return measured_cells(skeleton, row)
 
     to_cells = build_cell_dispatcher(
@@ -800,16 +788,16 @@ def render_report(result: ComparisonResult, options: ReportOptions = DEFAULT_REP
     if len(display.candidates) > 1:
         lines.extend(render_comparison_table(display, color=color))
         lines.append("")
-        lines.extend(_render_block(_render_summaries(display), color=color))
+        lines.extend(render_line_list(*_render_summaries(display), color=color))
     elif len(display.candidates) == 1:
         lines.extend(render_table(display, color=color))
         lines.append("")
-        lines.extend(_render_block([_render_summary(display.metrics, 0)], color=color))
+        lines.extend(render_line_list(_render_summary(display.metrics, 0), color=color))
 
     highlights = _render_highlights(display, options.fail_on)
     if highlights:
         lines.append("")
-        lines.extend(_render_block(highlights, color=color))
+        lines.extend(render_line_list(*highlights, color=color))
 
     footer = [
         *footer_lines(
@@ -822,7 +810,7 @@ def render_report(result: ComparisonResult, options: ReportOptions = DEFAULT_REP
     ]
     if footer:
         lines.append("")
-        lines.extend(_render_block(footer, color=color))
+        lines.extend(render_line_list(*footer, color=color))
 
     return "\n".join(lines)
 
@@ -847,7 +835,12 @@ def render_measure_report(
     """
     color = options.color
     label = truncate_labels([result.label])[0]
-    header = run_header("measure", label, result.samples, result.adapter)
+    header = run_header(
+        "measure",
+        markup(label, VARIANT_NAME_STYLE),
+        pluralize(result.samples, "sample"),
+        result.adapter,
+    )
 
     lines = [render_lines(header, color=color)]
     lines.extend(render_measure_table(result, label, color=color))
@@ -855,6 +848,6 @@ def render_measure_report(
     footer = _render_worktree_footer(result)
     if footer:
         lines.append("")
-        lines.extend(_render_block(footer, color=color))
+        lines.extend(render_line_list(*footer, color=color))
 
     return "\n".join(lines)

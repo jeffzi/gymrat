@@ -60,7 +60,7 @@ def write_budget(root: str, budget: Budget) -> None:
 
 
 def read_budget(root: str, *, now_ms: float) -> Budget | None:
-    """Read and validate the budget file, or return ``None``.
+    """Read and validate the budget file.
 
     Args:
         root: Repository root under which the budget file lives.

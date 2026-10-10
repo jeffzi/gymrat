@@ -129,13 +129,11 @@ def build_summary(  # noqa: PLR0913 -- keyword-only run-end parts extend a 1-pos
 
     The headline states how the run ended; the rows below it reuse the
     dashboard's best and loop renderables, so the last thing printed reads like
-    the frame it replaces, and end with where the event log landed.
+    the frame it replaces.
 
     When the session ended on its own, by a stop condition, or by a guard (not by
     a cap, a hook failure, or an error) and the agent produced text, an ``agent``
-    row appears after the headline showing the session's stop message when the
-    log ends on one, otherwise the agent's last text block, with paragraph
-    breaks preserved.
+    row appears after the headline, with paragraph breaks preserved.
 
     Args:
         result: The supervision outcome whose ``ended_by`` drives the headline.

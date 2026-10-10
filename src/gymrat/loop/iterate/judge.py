@@ -3,6 +3,11 @@
 The bench primitives — sampling both sides, computing verdicts, resolving the
 primary figure — serve the first run and the confirmation rerun alike.
 
+Sampling is driven here rather than through :func:`gymrat.compare.compare`
+because a session's worktrees are persistent: there is nothing to check out and
+nothing to sweep afterwards, and the raw samples have to survive the run to reach
+the log.
+
 A confirmation re-measures only the gating metrics the first run called
 regressed.  ``exact`` metrics never take part: one differing sample is already
 their whole signal, so a rerun could only add noise to a decision that has none.
@@ -399,6 +404,23 @@ def regresses_gating(meta: ResolvedMetricMeta, verdict: MetricVerdict | None) ->
     )
 
 
+def gating_regressions(
+    verdicts: dict[str, MetricVerdict], metric_meta: dict[str, ResolvedMetricMeta]
+) -> tuple[str, ...]:
+    """Names of the gating metrics ``verdicts`` calls regressed, in ``metric_meta`` order.
+
+    Args:
+        verdicts: Per-metric verdicts, by name.
+        metric_meta: The resolved metadata for each measured metric, by name.
+
+    Returns:
+        The regressed gating metrics' names.
+    """
+    return tuple(
+        name for name, meta in metric_meta.items() if regresses_gating(meta, verdicts.get(name))
+    )
+
+
 async def confirm_regressions(
     ctx: IterationContext,
     verdicts: dict[str, MetricVerdict],
@@ -423,9 +445,7 @@ async def confirm_regressions(
             could confirm is not recorded.
     """
     filtered = tuple(
-        name
-        for name, meta in metric_meta.items()
-        if not meta.exact and regresses_gating(meta, verdicts.get(name))
+        name for name in gating_regressions(verdicts, metric_meta) if not metric_meta[name].exact
     )
     if not filtered:
         emit_progress(ctx.options.on_progress, ConfirmSkipped(at_ms=monotonic_ms()))

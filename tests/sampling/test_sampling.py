@@ -28,11 +28,11 @@ from gymrat.sampling import (
     TargetContext,
     collect_samples,
     compute_metric_stats,
-    own_values,
     resolve_metric_meta,
     resolve_metric_meta_from_samples,
 )
 from gymrat.targets import InPlaceTarget, RefTarget
+from gymrat.utils import own_values
 from tests._config import resolved_config
 from tests._exec_fixtures import expected_result, install_exec
 from tests.adapters._inputs import malformed_line_warning

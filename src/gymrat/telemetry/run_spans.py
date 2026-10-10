@@ -16,9 +16,14 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from gymrat.supervisor.events import combine_observers
+from gymrat.supervisor.events import (
+    CapEvent,
+    CompactionEvent,
+    FollowUpEvent,
+    TurnEndEvent,
+    combine_observers,
+)
 from gymrat.telemetry.provider import (
-    RUN_COST_USD,
     RUN_DURATION_MS,
     RUN_END_REASON,
     RUN_ENDED_BY,
@@ -27,14 +32,14 @@ from gymrat.telemetry.provider import (
     SESSION_ID,
     SESSION_SPAN,
     SESSION_SPAN_KEY,
+    Attrs,
     configure_tracing,
-    existing_session_span,
     format_traceparent,
     run_attributes,
-    run_event,
     run_span_key,
     start_span,
 )
+from gymrat.telemetry.session_span import existing_session_span
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span
@@ -42,6 +47,20 @@ if TYPE_CHECKING:
     from gymrat.supervisor.driver import SessionPrompt
     from gymrat.supervisor.events import LaunchEvent, SessionEvent, SessionObserver
     from gymrat.supervisor.supervise import SupervisionResult
+
+RUN_COST_USD = "gymrat.run.cost_usd"
+
+TURN_SESSION_COST_USD = "gymrat.turn.session_cost_usd"
+TURN_ORIGIN = "gymrat.turn.origin"
+TURN_BUDGET_EXHAUSTED = "gymrat.turn.budget_exhausted"
+FOLLOW_UP_ACTION = "gymrat.follow_up.action"
+FOLLOW_UP_REASON = "gymrat.follow_up.reason"
+CAP_NAME = "gymrat.cap.name"
+
+EVENT_TURN_END = "gymrat.turn_end"
+EVENT_FOLLOW_UP = "gymrat.follow_up"
+EVENT_CAP = "gymrat.cap"
+EVENT_COMPACTION = "gymrat.compaction"
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +224,34 @@ def finalize_tracing(
 # ---------------------------------------------------------------------------
 # Run-span event mirroring
 # ---------------------------------------------------------------------------
+
+
+def run_event(event: SessionEvent) -> tuple[str, Attrs] | None:
+    """Map a supervisor event to the span event a run span mirrors it as.
+
+    Args:
+        event: The supervisor event.
+
+    Returns:
+        The span event's name and attributes, or ``None`` for an event the run
+        span does not mirror.
+    """
+    if isinstance(event, TurnEndEvent):
+        return EVENT_TURN_END, {
+            TURN_SESSION_COST_USD: event.cost_usd,
+            TURN_ORIGIN: event.origin,
+            TURN_BUDGET_EXHAUSTED: event.budget_exhausted,
+        }
+    if isinstance(event, FollowUpEvent):
+        attrs: Attrs = {FOLLOW_UP_ACTION: event.action}
+        if event.reason is not None:
+            attrs[FOLLOW_UP_REASON] = event.reason
+        return EVENT_FOLLOW_UP, attrs
+    if isinstance(event, CapEvent):
+        return EVENT_CAP, {CAP_NAME: event.cap}
+    if isinstance(event, CompactionEvent):
+        return EVENT_COMPACTION, {}
+    return None
 
 
 def create_run_span_observer(span: Span) -> SessionObserver:

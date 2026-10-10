@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from rich.cells import cell_len
 from rich.markup import escape
+from rich.text import Text
 
 from gymrat.model import is_improvement
 from gymrat.report.format import (
@@ -22,6 +23,7 @@ from gymrat.report.format import (
     format_percent_delta,
 )
 from gymrat.report.style import (
+    VARIANT_NAME_STYLE,
     VERDICT_STYLES,
     markup,
     render_lines,
@@ -33,19 +35,20 @@ from gymrat.report.table.render import (
     build_cell_dispatcher,
     compute_column_width,
     join_value_cell,
+    plan_sections,
     plan_table_skeleton,
     render_body,
     value_widths,
 )
-from gymrat.report.table.sections import plan_sections
 from gymrat.report.text.measure_table import (
     MeasuredRow,
     measured_cells,
     measured_header_cells,
     measured_row,
-    run_header,
 )
+from gymrat.report.text.run_header import run_header
 from gymrat.report.types import DEFAULT_REPORT_OPTIONS, ReportOptions
+from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from gymrat.loop.probe import ProbeMetric, ProbeResult
@@ -126,7 +129,13 @@ def _probe_row(name: str, group: str | None, metric: ProbeMetric) -> _ProbeRow:
 def _probe_header(result: ProbeResult, label: str) -> str:
     """The probe report's run header as markup: the worktree, the run, and any scope."""
     scope = [f"scoped: {escape(', '.join(result.names))}"] if result.names else []
-    return run_header("probe", label, result.samples, result.adapter, scope)
+    return run_header(
+        "probe",
+        markup(label, VARIANT_NAME_STYLE),
+        pluralize(result.samples, "sample"),
+        result.adapter,
+        scope,
+    )
 
 
 def _render_probe_table(result: ProbeResult, label: str, *, color: bool | None) -> list[str]:
@@ -156,17 +165,18 @@ def _render_probe_table(result: ProbeResult, label: str, *, color: bool | None) 
         ),
     ]
 
-    def delta_cell(row: _ProbeRow) -> str:
-        return escape(row.delta) if row.delta_style is None else markup(row.delta, row.delta_style)
-
-    def metric_cells(row: _ProbeRow) -> tuple[str, str, str, str]:
-        return (*measured_cells(skeleton, row), escape(reference_cell(row)), delta_cell(row))
+    def metric_cells(row: _ProbeRow) -> tuple[Text, Text, Text, Text]:
+        return (
+            *measured_cells(skeleton, row),
+            Text(reference_cell(row)),
+            Text().append(row.delta, row.delta_style),
+        )
 
     to_cells = build_cell_dispatcher(
         header=lambda title: (
             *measured_header_cells(title, label),
-            escape(_REFERENCE_COLUMN_HEADER),
-            escape(_DELTA_COLUMN_HEADER),
+            Text(_REFERENCE_COLUMN_HEADER),
+            Text(_DELTA_COLUMN_HEADER),
         ),
         group=lambda group_label: (group_metric_cell(group_label), "", "", ""),
         metric=metric_cells,

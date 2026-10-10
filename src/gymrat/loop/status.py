@@ -1,9 +1,10 @@
 """What ``gymrat status`` reports: the session, rebuilt from its log and nothing else.
 
-Every other loop command writes to the log; this one only reads it, which is why
-it takes no repository lock. A status that agreed with the log only while some
-process kept state in memory would be worth nothing to an agent whose every
-command is a fresh process.
+Every other loop command appends a loop record to the log; the functions here
+only read it. The CLI still runs them under the repository lock, which records
+the ``status`` invocation itself as a command record. A status that agreed with
+the log only while some process kept state in memory would be worth nothing to
+an agent whose every command is a fresh process.
 """
 
 from __future__ import annotations

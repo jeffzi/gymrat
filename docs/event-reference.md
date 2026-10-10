@@ -133,7 +133,7 @@ writer, not a degenerate measurement.
 A confirmation rerun: which metrics it re-measured, and the samples it took.
 
 ``absent`` names metrics the rerun was asked about but skipped; it is
-``None`` on a log written before the field existed.
+``None`` when the rerun skipped none.
 
 | Name | Type | Status | Description |
 | --- | --- | --- | --- |

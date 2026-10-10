@@ -50,8 +50,8 @@ from gymrat.session.records import (
     IterationRecord,
     KeepRecord,
 )
-from gymrat.session.store import fold_session, last_kept_position, read_session_records
-from gymrat.session.workspace import changed_file_count, worktree_fingerprint
+from gymrat.session.store import fold_session, read_session_records, unmeasured_edit_count
+from gymrat.session.workspace import worktree_fingerprint
 from gymrat.supervisor.events import CapType, FollowUpEvent
 from gymrat.utils import MS_PER_SECOND, SHORT_SHA_LENGTH, pluralize
 
@@ -330,6 +330,11 @@ async def _decide_settle(
 
     Returns:
         The step the session calls for, or ``None`` when it calls for none.
+
+    Raises:
+        GymratError: When the keep of an improved iteration was blocked for a
+            reason the sequence has no wording for, or when git refuses to diff
+            the experiment worktree.
     """
     session = state.session
     if session is None:
@@ -346,7 +351,7 @@ async def _decide_settle(
         trace.seq = iteration.seq
         return _settle_gating_block(context, iteration, experiment=experiment)
 
-    unmeasured = changed_file_count(experiment, last_kept_position(state, session.baseline.sha))
+    unmeasured = unmeasured_edit_count(state, session)
     if unmeasured > 0:
         counted = pluralize(unmeasured, "unmeasured edit")
         return ExitStep(

@@ -13,7 +13,7 @@ from typing import Literal
 
 from gymrat.cli import console
 from gymrat.cli.options import OutputFormat
-from gymrat.cli.progress import ProgressReporter
+from gymrat.cli.progress import ProgressReporter, RunShape
 from gymrat.config import CliFlags
 from gymrat.exec import kill_live_process_groups
 from gymrat.signals import install_termination_cleanup
@@ -60,14 +60,13 @@ def begin_run(
     """
     mode = resolve_render_mode()
     progress_console = console.stderr_console()
-    return ProgressReporter(
-        mode,
-        progress_console,
-        target_count,
-        flags.samples,
+    shape = RunShape(
+        target_count=target_count,
+        sample_count=flags.samples,
         command=command,
-        target_labels=target_labels,
+        target_labels=tuple(target_labels or ()),
     )
+    return ProgressReporter(mode, progress_console, shape)
 
 
 async def run_with_signal_abort[T](

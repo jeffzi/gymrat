@@ -49,9 +49,13 @@ from gymrat.utils import SHORT_SHA_LENGTH, pluralize, warn_to_stderr
 class DiscardResult:
     """What a discard did: an optional log record, a timestamp, and a human report.
 
-    ``at`` is the instant the discard happened, in nanoseconds since the epoch.
-    When a record is present, it equals the record's ``at``; on the unmeasured
-    path it is the instant the worktree was reverted.
+    Attributes:
+        record: The discard record appended to the session log, or ``None`` on
+            the unmeasured path, which writes no record.
+        report: The discard as the agent reads it.
+        at: The instant the discard happened, in nanoseconds since the epoch.
+            When a record is present, it equals the record's ``at``; on the
+            unmeasured path it is the instant the worktree was reverted.
     """
 
     record: DiscardRecord | None

@@ -177,7 +177,7 @@ def _acquire_publish_lock(pub_lock_path: str) -> FileLock:
 def _acquire_os_lock(
     lock_path: str, os_lock_path: str, *, wait: float, poll_interval: float
 ) -> FileLock:
-    """Acquire the main OS lock within ``wait`` seconds, or raise a diagnostic error.
+    """Acquire the main OS lock within ``wait`` seconds.
 
     Args:
         lock_path: Path to the holder-record file, read for diagnostics when

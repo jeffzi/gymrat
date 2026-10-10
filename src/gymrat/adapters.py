@@ -106,6 +106,9 @@ class Adapter(Protocol):
 
     ``defaults`` is consulted once per metric name during config resolution, and
     only for fields the user's config does not override.
+
+    Attributes:
+        name: The adapter's identifier, as named by the ``adapter`` config key.
     """
 
     name: str

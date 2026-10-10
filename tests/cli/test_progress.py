@@ -22,7 +22,7 @@ from unittest.mock import create_autospec, patch
 import pytest
 
 from gymrat.cli.live_display import LIVE_REFRESH_PER_SECOND, ErasableLive
-from gymrat.cli.progress import ProgressReporter, ProgressState, advance, plain_line
+from gymrat.cli.progress import ProgressReporter, ProgressState, RunShape, advance, plain_line
 from gymrat.progress_events import (
     HookStarted,
     PrepareFinished,
@@ -93,10 +93,8 @@ def build_progress_reporter(mode: Literal["live", "plain"], console: Console) ->
         ProgressReporter(
             mode=mode,
             console=console,
-            target_count=1,
-            sample_count=3,
+            shape=RunShape(target_count=1, sample_count=3, command="measure"),
             clock=Clock(0.0),
-            command="measure",
         )
     )
     reporter.report(PrepareStarted(label="bench", at_ms=0))
@@ -171,11 +169,13 @@ def _reporter(
     reporter = ProgressReporter(
         mode=mode,
         console=console,
-        target_count=target_count,
-        sample_count=sample_count,
+        shape=RunShape(
+            target_count=target_count,
+            sample_count=sample_count,
+            command=command,
+            target_labels=tuple(target_labels or ()),
+        ),
         clock=clock,
-        command=command,
-        target_labels=target_labels,
     )
     return console, clock, track(reporter)
 

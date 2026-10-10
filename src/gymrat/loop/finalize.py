@@ -39,21 +39,30 @@ _UNNAMED_KEEP_LINE = "(no message)"
 
 @dataclass(frozen=True, slots=True)
 class FinalizeOptions:
-    """What a caller can hand a finalize beyond the repository it runs in."""
+    """What a caller can hand a finalize beyond the repository it runs in.
 
-    #: The squash commit's message; absent, one is generated from the kept commits.
+    Attributes:
+        message: The squash commit's message; absent, one is generated from the
+            kept commits.
+        branch: The branch to point at the squash commit; absent,
+            ``<session branch>-final``.
+    """
+
     message: str | None = None
-    #: The branch to point at the squash commit; absent, ``<session branch>-final``.
     branch: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class FinalizeResult:
-    """One closed session: what was written to the log, and what to print about it."""
+    """One closed session: what was written to the log, and what to print about it.
 
-    #: The record appended to the session log.
+    Attributes:
+        record: The record appended to the session log.
+        report: The finalize as the agent reads it: the branch, the commit, and
+            any cleanup left.
+    """
+
     record: FinalizeRecord
-    #: The finalize as the agent reads it: the branch, the commit, and any cleanup left.
     report: str
 
 

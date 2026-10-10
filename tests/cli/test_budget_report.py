@@ -32,7 +32,7 @@ from gymrat.report.types import DEFAULT_REPORT_OPTIONS, ReportOptions
 from gymrat.session.budget import Budget
 from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.session.records import IterationRecord
-from gymrat.session.store import read_records
+from gymrat.session.store import read_session_records
 from tests._lock import held_supervise_lock
 from tests.session._budget import write_budget_file
 from tests.session.records._fixtures import iteration_record, session_record, write_session_log
@@ -203,7 +203,10 @@ def test_emit_report_when_budget_active_does_write_the_report_with_the_budget(
 # ---------------------------------------------------------------------------
 
 #: The session lookups ``warn_duration_over_budget`` reads, by their name in the module.
-_LOOKUPS: dict[str, Callable[..., object]] = {"repo_root": repo_root, "read_records": read_records}
+_LOOKUPS: dict[str, Callable[..., object]] = {
+    "repo_root": repo_root,
+    "read_session_records": read_session_records,
+}
 
 
 def _corrupt_session_log(_monkeypatch: pytest.MonkeyPatch, _tmp_path: Path) -> None:
@@ -215,8 +218,8 @@ def _corrupt_session_log(_monkeypatch: pytest.MonkeyPatch, _tmp_path: Path) -> N
 def _read_records_io_error(monkeypatch: pytest.MonkeyPatch, _tmp_path: Path) -> None:
     """Make reading the session log fail with an I/O error."""
     monkeypatch.setattr(
-        "gymrat.cli.budget_report.read_records",
-        create_autospec(read_records, side_effect=OSError("input/output error")),
+        "gymrat.cli.budget_report.read_session_records",
+        create_autospec(read_session_records, side_effect=OSError("input/output error")),
     )
 
 
@@ -258,7 +261,7 @@ def _warn() -> None:
     [
         pytest.param(lambda: _emit("text"), "repo_root", id="emit-report-repo-root"),
         pytest.param(_warn, "repo_root", id="warn-repo-root"),
-        pytest.param(_warn, "read_records", id="warn-read-records"),
+        pytest.param(_warn, "read_session_records", id="warn-read-records"),
     ],
 )
 def test_budget_helper_when_a_lookup_fails_unexpectedly_does_propagate(
