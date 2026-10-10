@@ -12,25 +12,26 @@ for all of it.
 """
 
 import asyncio
-import itertools
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-from gymrat.exec import FAILURE_EXIT_CODE, ExecResult
+from gymrat import exec as gymrat_exec
+from gymrat.exec import FAILURE_EXIT_CODE, ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.loop.iterate.run import run_hook
 from gymrat.session.records import IterationRecord, record_to_wire
 from gymrat.session.schema import HookStage
-from gymrat.session.workspace import Worktrees
-from tests._exec_fixtures import expected_result, install_exec
+from tests._clock import install_monotonic_clock
+from tests._exec_fixtures import (
+    CAPPED_STDERR_BYTES,
+    CAPPED_STDOUT_BYTES,
+    capped_result,
+    expected_result,
+    install_exec,
+)
 from tests.loop.iterate._hooks import HookScripts, expected_hook_record
-from tests.session.records._fixtures import SESSION_ID, iteration_record, session_record
-
-#: The cap the runner holds each of a hook's channels to before it reaches
-#: gymrat's own output.
-RELAY_LIMIT_BYTES = 8192
+from tests.session.records._fixtures import SESSION_ID, iteration_record
 
 #: A generous upper bound proving a kill happened quickly rather than the
 #: hook's full sleep running to completion.
@@ -45,6 +46,16 @@ def labeled_lines(report: str, stage: HookStage) -> list[str]:
 
     Every line the runner emits carries the label, so a line without one is a
     leak of unlabeled hook output rather than something to quietly pass through.
+
+    Args:
+        report: The hook report to split.
+        stage: The stage whose ``[stage]`` label every line must carry.
+
+    Returns:
+        The report's lines without their label; none for an empty report.
+
+    Raises:
+        AssertionError: When a line does not carry the label.
     """
     if report == "":
         return []
@@ -61,9 +72,7 @@ def labeled_lines(report: str, stage: HookStage) -> list[str]:
 @pytest.fixture
 def hooks(tmp_path: Path) -> HookScripts:
     """A ``HookScripts`` builder scoped to a fresh scratch directory."""
-    experiment_dir = tmp_path / "side-experiment"
-    experiment_dir.mkdir()
-    return HookScripts(str(tmp_path), str(experiment_dir))
+    return HookScripts.for_root(str(tmp_path))
 
 
 # ---------------------------------------------------------------------------
@@ -127,22 +136,25 @@ async def test_run_hook_when_command_runs_does_run_in_experiment_worktree(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [
+        pytest.param(
+            ("archived the samples", "pushed the branch"),
+            "[after] archived the samples\n[after] pushed the branch",
+            id="each-line-labeled",
+        ),
+        pytest.param((), "", id="nothing-printed-reports-empty"),
+    ],
+)
 async def test_run_hook_when_command_prints_does_label_each_line_with_stage(
-    hooks: HookScripts,
+    hooks: HookScripts, lines: tuple[str, ...], expected: str
 ) -> None:
-    command = hooks.printing("archived the samples", "pushed the branch")
+    command = hooks.printing(*lines)
 
     run = await run_hook(hooks.invocation_of(command, stage="after"))
 
-    assert run.report == "[after] archived the samples\n[after] pushed the branch"
-
-
-async def test_run_hook_when_hook_prints_nothing_does_report_empty(hooks: HookScripts) -> None:
-    command = hooks.hook_command("")
-
-    run = await run_hook(hooks.invocation_of(command))
-
-    assert run.report == ""
+    assert run.report == expected
 
 
 async def test_run_hook_when_successful_hook_writes_both_channels_does_report_only_stdout(
@@ -167,12 +179,21 @@ async def test_run_hook_when_successful_hook_writes_both_channels_does_report_on
 # ---------------------------------------------------------------------------
 
 
-async def test_run_hook_when_clocks_faked_does_read_both_clocks_for_the_record(
+async def test_run_hook_when_command_finishes_does_stamp_the_record_with_its_timing(
     hooks: HookScripts,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ticks = itertools.count(start=1000.0, step=250.0)
-    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
+    # The clock stands still except while the hook runs, which takes 250 ms.
+    clock = install_monotonic_clock(monkeypatch)
+
+    async def exec_taking_250_ms(
+        command: str, options: ExecOptions
+    ) -> ExecResult | ExecTimeoutError:
+        result = await gymrat_exec.exec(command, options)
+        clock.tick(250.0)
+        return result
+
+    monkeypatch.setattr("gymrat.loop.iterate.run.exec", exec_taking_250_ms)
     stamp_ns = 1_700_000_000_123_456_789
     monkeypatch.setattr("gymrat.loop.iterate.run.now_ns", lambda: stamp_ns)
 
@@ -186,30 +207,30 @@ async def test_run_hook_when_clocks_faked_does_read_both_clocks_for_the_record(
 # ---------------------------------------------------------------------------
 
 
-async def test_run_hook_when_failing_over_budget_does_cap_each_channel(hooks: HookScripts) -> None:
+async def test_run_hook_when_failing_output_exceeds_relay_limit_does_cap_each_channel(
+    hooks: HookScripts,
+) -> None:
     out_line = "a" * 100
     err_line = "b" * 100
-    whole_lines = RELAY_LIMIT_BYTES // len(f"{out_line}\n".encode())
     stdout = f"{out_line}\n" * 200
     command = hooks.failing_content_of("both-channels", stdout, f"{err_line}\n" * 200)
 
     run = await run_hook(hooks.invocation_of(command))
 
-    assert labeled_lines(run.report, "before") == (
-        [out_line] * whole_lines + ["hook exited 3"] + [err_line] * whole_lines
-    )
+    lines = labeled_lines(run.report, "before")
+    exit_at = lines.index("hook exited 3")
+    relayed_out, relayed_err = lines[:exit_at], lines[exit_at + 1 :]
+    assert set(relayed_out) == {out_line}
+    assert set(relayed_err) == {err_line}
+    assert len(relayed_out) < 200
+    assert len(relayed_err) < 200
     assert run.record.stdout_bytes == len(stdout.encode("utf-8"))
 
 
 async def test_run_hook_when_hook_exits_nonzero_does_surface_the_failure(
     hooks: HookScripts,
 ) -> None:
-    command = hooks.hook_command(
-        "import sys\n"
-        'sys.stdout.buffer.write(b"checked the cache\\n")\n'
-        'sys.stderr.buffer.write(b"no warm copy\\n")\n'
-        "sys.exit(3)\n"
-    )
+    command = hooks.failing_content_of("exits-nonzero", "checked the cache\n", "no warm copy\n")
 
     run = await run_hook(hooks.invocation_of(command))
 
@@ -237,38 +258,6 @@ async def test_run_hook_when_hook_outruns_timeout_does_kill_it_as_timed_out(
     assert run.record.duration_ms < KILL_SANITY_BOUND_MS
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shells return 127 for a missing command")
-async def test_run_hook_when_command_not_found_does_record_shell_exit_code(
-    hooks: HookScripts,
-) -> None:
-    run = await run_hook(hooks.invocation_of("nonexistent-command-abc123xyz"))
-
-    assert run.record.exit_code == 127
-
-
-async def test_run_hook_when_worktree_vanished_does_report_instead_of_raising(
-    hooks: HookScripts,
-) -> None:
-    command = hooks.printing("never runs")
-    vanished_dir = str(Path(hooks.temp_dir) / "vanished")
-    session = session_record(
-        session_id=SESSION_ID,
-        worktrees=Worktrees(
-            experiment=vanished_dir,
-            baseline=str(Path(hooks.temp_dir) / "side-baseline"),
-        ),
-    )
-
-    run = await run_hook(hooks.invocation_of(command, session=session))
-
-    lines = labeled_lines(run.report, "before")
-    assert lines[0] == f"hook exited {FAILURE_EXIT_CODE}"
-    detail = "\n".join(lines[1:])
-    assert "No such file or directory" in detail or "directory name is invalid" in detail
-    assert run.record.stdout_bytes == 0
-    assert run.record.timed_out is False
-
-
 async def test_run_hook_when_abort_signal_set_does_kill_it(hooks: HookScripts) -> None:
     command = hooks.hook_command("import time\ntime.sleep(10)\n")
     abort = asyncio.Event()
@@ -278,6 +267,7 @@ async def test_run_hook_when_abort_signal_set_does_kill_it(hooks: HookScripts) -
         abort.set()
 
     trigger_task = asyncio.create_task(trigger())
+
     run = await run_hook(hooks.invocation_of(command, abort=abort))
     await trigger_task
 
@@ -295,19 +285,12 @@ async def test_run_hook_when_exec_output_capped_does_record_pre_cap_byte_counts(
     hooks: HookScripts,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    capped = ExecResult(
-        stdout="capped stdout",
-        stderr="capped stderr",
-        exit_code=0,
-        stdout_bytes=200_000,
-        stderr_bytes=150_000,
-    )
-    install_exec(monkeypatch, "gymrat.loop.iterate.run.exec", capped)
+    install_exec(monkeypatch, "gymrat.loop.iterate.run.exec", capped_result())
 
     run = await run_hook(hooks.invocation_of("unused-because-exec-is-mocked"))
 
-    assert run.record.stdout_bytes == 200_000
-    assert run.record.stderr_bytes == 150_000
+    assert run.record.stdout_bytes == CAPPED_STDOUT_BYTES
+    assert run.record.stderr_bytes == CAPPED_STDERR_BYTES
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,8 @@
 """What ``gymrat status`` reports: the session, rebuilt from its log and nothing else.
 
-Every other loop command writes to the log; this one only reads it, which is why
-it takes no repository lock. A status that agreed with the log only while some
-process kept state in memory would be worth nothing to an agent whose every
-command is a fresh process.
+Every other loop command appends a loop record to the log; the functions here
+only read it. A status that agreed with the log only while some process kept
+state in memory would be worth nothing to an agent whose every command is a fresh process.
 """
 
 from __future__ import annotations
@@ -274,7 +273,18 @@ class StatusData:
 
 
 def status_data(root: str) -> StatusData:
-    """The session's structured status, independent of any text rendering."""
+    """The session's structured status, independent of any text rendering.
+
+    Args:
+        root: Repository root directory.
+
+    Returns:
+        The status fields the JSON document serializes.
+
+    Raises:
+        GymratError: When no session has been started, or when the log is corrupt
+            — every parse failure names the log and the line at fault.
+    """
     required = require_session(root, "asking for its status")
     session, state = required.session, required.state
     return StatusData(

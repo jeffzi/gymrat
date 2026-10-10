@@ -13,7 +13,7 @@ import contextlib
 import sys
 import traceback
 from collections.abc import Callable, Coroutine
-from typing import Any, NoReturn, Protocol
+from typing import Any, NoReturn
 
 import typer
 from rich.markup import escape
@@ -22,22 +22,9 @@ from gymrat.adapters import AdapterError
 from gymrat.cli import console
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.report.style import format_hint, highlight_inline_code, markup, render_lines
+from gymrat.utils import is_broken_pipe, point_stream_at_devnull, write_and_flush
 
 BUGS_URL = "https://github.com/jeffzi/gymrat/issues"
-
-
-class _WritableStream(Protocol):
-    """A text stream this module writes error and progress output to."""
-
-    def write(self, data: str, /) -> object: ...
-
-    def flush(self) -> object: ...
-
-
-def write_and_flush(stream: _WritableStream, data: str) -> None:
-    """Write ``data`` to ``stream`` and flush it so an immediate exit cannot truncate it."""
-    stream.write(data)
-    stream.flush()
 
 
 def format_cli_error(error: object, *, debug: bool = False) -> str:
@@ -107,7 +94,7 @@ def write_stdout(data: str) -> None:
     """Write a command's result to stdout, returning silently if the reader has gone.
 
     This write is the only place a closed stdout pipe is classified, per
-    :func:`~gymrat.cli.console.is_broken_pipe`: the same error from anywhere
+    :func:`~gymrat.utils.is_broken_pipe`: the same error from anywhere
     else in a command body is a real failure. The stderr console classifies its
     own closed pipe.
 
@@ -124,8 +111,8 @@ def write_stdout(data: str) -> None:
     try:
         write_and_flush(sys.stdout, data)
     except OSError as error:
-        console.point_stream_at_devnull(sys.stdout)
-        if not console.is_broken_pipe(error):
+        point_stream_at_devnull(sys.stdout)
+        if not is_broken_pipe(error):
             raise
 
 

@@ -11,17 +11,13 @@ SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
 TRAILING_SGR_RUN = re.compile(r"(?:\x1b\[[0-9;]*m)*$")
 """Matches the run of SGR escapes a string ends on, with nothing between them."""
 
-SGR_BOLD = 1
-SGR_DIM = 2
 SGR_RED = 31
 SGR_GREEN = 32
 SGR_YELLOW = 33
-SGR_BLUE = 34
-SGR_CYAN = 36
 
 
 def strip_ansi(text: str) -> str:
-    """Remove all ANSI escape sequences from ``text``."""
+    """Remove every CSI escape sequence from ``text``, cursor controls included, not only SGR."""
     return ANSI_RE.sub("", text)
 
 
@@ -41,6 +37,11 @@ def stripped_lines(text: str, *, keep_blank: bool) -> list[str]:
         The stripped lines, in order.
     """
     return [strip_sgr(line).strip() for line in text.split("\n") if keep_blank or line.strip()]
+
+
+def warning_lines(stderr: str) -> list[str]:
+    """The lines of ``stderr`` that open with ``warning: ``, stripped of color."""
+    return [line for line in strip_ansi(stderr).splitlines() if line.startswith("warning: ")]
 
 
 def normalize(text: str) -> str:
@@ -64,11 +65,46 @@ def sgr_params(text: str) -> str:
     return match.group(1)
 
 
+_EXTENDED_COLOR_INTRODUCERS = frozenset({"38", "48", "58"})
+"""SGR codes that open a 256-color or truecolor run instead of naming an attribute."""
+
+_EXTENDED_COLOR_LENGTHS = {"5": 3, "2": 5}
+"""Parameters an extended color run spans, by its mode: ``38;5;n`` or ``38;2;r;g;b``."""
+
+
+def _sgr_attributes(params: list[str]) -> list[str]:
+    attributes: list[str] = []
+    index = 0
+    while index < len(params):
+        param = params[index]
+        mode = params[index + 1] if index + 1 < len(params) else ""
+        if param in _EXTENDED_COLOR_INTRODUCERS and mode in _EXTENDED_COLOR_LENGTHS:
+            span = _EXTENDED_COLOR_LENGTHS[mode]
+            attributes.append(";".join(params[index : index + span]))
+            index += span
+            continue
+        attributes.append(param)
+        index += 1
+    return attributes
+
+
 def sgr_codes(text: str) -> set[str]:
-    """Every SGR parameter code present in ``text``, resets left out."""
+    """Every SGR code present in ``text``, resets left out.
+
+    Keeping a color run whole stops its numeric components from reading as
+    attributes such as ``2`` (dim).
+
+    Args:
+        text: Rendered output to scan.
+
+    Returns:
+        The SGR codes present; an extended color run such as ``"38;2;255;0;0"``
+        is one code.
+    """
     codes: set[str] = set()
     for escape in SGR_RE.finditer(text):
-        codes.update(param for param in escape.group(1).split(";") if param not in {"", "0"})
+        params = escape.group(1).split(";")
+        codes.update(code for code in _sgr_attributes(params) if code not in {"", "0"})
     return codes
 
 

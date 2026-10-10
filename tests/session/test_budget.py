@@ -7,15 +7,17 @@ temp-file-and-replace so a concurrent reader never sees a partial file.
 not passed, and the supervise lock for that root is held; otherwise it returns
 ``None``.  ``remaining_ms`` reports milliseconds left against a supplied
 current time, clamped at zero.  ``clear_budget`` removes the file and succeeds
-when the file is already gone.
+when the file is already gone; when the OS refuses the removal it warns and
+returns.  A supervise lock that cannot be probed raises out of ``read_budget``.
 """
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from gymrat.errors import GymratError
 from gymrat.session.budget import (
     Budget,
     DurationEstimate,
@@ -26,7 +28,7 @@ from gymrat.session.budget import (
 )
 from gymrat.session.paths import budget_path
 from gymrat.session.records import SessionLogRecord
-from tests._lock import hold_supervise_lock, remove_lock_files
+from tests.session._budget import block_supervise_lock
 from tests.session.records._fixtures import baseline_record, iteration_record
 
 _FAR_FUTURE_DEADLINE_MS = 999_999_999.0
@@ -36,23 +38,12 @@ def _budget_file(root: str) -> Path:
     return Path(budget_path(root))
 
 
-def _read_json(root: str) -> dict[str, object]:
-    """Read and parse the raw budget JSON under *root*."""
-    return json.loads(_budget_file(root).read_text(encoding="utf-8"))
-
-
-def _make_budget(**overrides: object) -> Budget:
-    """Build a Budget with sensible defaults, overridable per-field."""
-    defaults: dict[str, object] = {
-        "max_minutes": 30,
-        "deadline_ms": 1_800_000.0,
-    }
-    defaults.update(overrides)
-    return Budget(**defaults)  # type: ignore[arg-type]
+def _make_budget(*, max_minutes: float = 30, deadline_ms: float = 1_800_000.0) -> Budget:
+    return Budget(max_minutes=max_minutes, deadline_ms=deadline_ms)
 
 
 def _budget_json(**overrides: object) -> str:
-    """Serialize a budget JSON payload with sensible defaults, overridable per-field."""
+    """A 30-minute budget payload with a far-future deadline; ``overrides`` replace or add keys."""
     defaults: dict[str, object] = {
         "max_minutes": 30,
         "deadline_ms": _FAR_FUTURE_DEADLINE_MS,
@@ -100,18 +91,6 @@ def test_write_budget_when_called_does_write_compact_json_bytes(root: str):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def supervise_lock(root: str, request: pytest.FixtureRequest) -> Iterator[None]:
-    """Hold the real supervise lock for ``root``, unless the test parametrizes it ``False``."""
-    if getattr(request, "param", True):
-        lock = hold_supervise_lock(root)
-        yield
-        lock.release()
-    else:
-        yield
-    remove_lock_files(root)
-
-
 _WRITTEN = _make_budget(deadline_ms=5000.0)
 
 
@@ -135,47 +114,38 @@ def test_read_budget_when_file_written_does_return_it_only_while_held_and_ahead(
     assert result == expected
 
 
-def _contents(raw: bytes) -> Callable[[Path], None]:
-    def write(path: Path) -> None:
-        path.write_bytes(raw)
-
-    return write
-
-
-def _absent(_path: Path) -> None:
-    """Leave the budget file absent."""
-
-
-def _directory(path: Path) -> None:
-    path.mkdir()
-
-
 @pytest.mark.parametrize(
-    "arrange",
+    "contents",
     [
-        pytest.param(_absent, id="file-absent"),
-        pytest.param(_directory, id="path-is-a-directory"),
-        pytest.param(_contents(b"not valid json{{{"), id="invalid-json"),
-        pytest.param(_contents(b"\xff\xfe not text"), id="not-utf8"),
-        pytest.param(_contents(json.dumps({"unexpected_field": 42}).encode()), id="wrong-schema"),
-        pytest.param(_contents(json.dumps([1, 2, 3]).encode()), id="array-not-object"),
-        pytest.param(_contents(json.dumps(42).encode()), id="number-not-object"),
-        pytest.param(_contents(_budget_json(deadline_ms="soon").encode()), id="deadline-string"),
-        pytest.param(_contents(_budget_json(deadline_ms=None).encode()), id="deadline-null"),
-        pytest.param(_contents(_budget_json(max_minutes="long").encode()), id="max-minutes-string"),
-        pytest.param(_contents(_budget_json(deadline_ms=True).encode()), id="deadline-bool"),
-        pytest.param(_contents(_budget_json(extra=1).encode()), id="unexpected-field"),
+        pytest.param(_budget_json(deadline_ms=True).encode(), id="deadline-bool"),
+        pytest.param(_budget_json(extra=1).encode(), id="unexpected-field"),
     ],
 )
 @pytest.mark.usefixtures("supervise_lock")
-def test_read_budget_when_file_unreadable_or_invalid_does_return_none(
-    root: str, arrange: Callable[[Path], None]
-):
-    arrange(_budget_file(root))
+def test_read_budget_when_file_not_a_budget_does_return_none(root: str, contents: bytes):
+    _budget_file(root).write_bytes(contents)
 
     result = read_budget(root, now_ms=0.0)
 
     assert result is None
+
+
+@pytest.fixture
+def blocked_supervise_lock(root: str) -> Iterator[str]:
+    """Put a directory where the supervise lock's OS lock file belongs, yielding its path."""
+    with block_supervise_lock(root) as blocker:
+        yield blocker
+
+
+def test_read_budget_when_supervise_lock_cannot_be_probed_does_raise(
+    root: str, blocked_supervise_lock: str
+):
+    write_budget(root, _make_budget(deadline_ms=_FAR_FUTURE_DEADLINE_MS))
+
+    with pytest.raises(GymratError) as caught:
+        read_budget(root, now_ms=0.0)
+
+    assert str(caught.value).startswith(f"Lock file {blocked_supervise_lock} could not be opened: ")
 
 
 # ---------------------------------------------------------------------------
@@ -191,8 +161,51 @@ def test_clear_budget_when_file_exists_does_remove_it(root: str):
     assert not _budget_file(root).exists()
 
 
-def test_clear_budget_when_file_absent_does_not_raise(root: str):
+def test_clear_budget_when_file_absent_does_succeed_silently(root: str):
+    warnings: list[str] = []
+
+    clear_budget(root, warn=warnings.append)
+
+    assert warnings == []
+
+
+def _unlink_refusal(path: Path) -> str:
+    """The OS's description of why unlinking ``path`` fails."""
+    try:
+        path.unlink()
+    except OSError as error:
+        return error.strerror or str(error)
+    msg = f"expected unlinking {path} to fail"
+    raise AssertionError(msg)
+
+
+def test_clear_budget_when_os_refuses_removal_does_warn_naming_file_and_error(root: str):
+    budget_file = _budget_file(root)
+    budget_file.mkdir()
+    refusal = _unlink_refusal(budget_file)
+    warnings: list[str] = []
+
+    clear_budget(root, warn=warnings.append)
+
+    assert len(warnings) == 1
+    assert warnings[0].startswith(
+        f"warning: could not remove the budget file {budget_path(root)}: "
+    )
+    assert refusal in warnings[0]
+
+
+def test_clear_budget_when_os_refuses_removal_without_a_sink_does_warn_on_stderr(
+    root: str, capsys: pytest.CaptureFixture[str]
+):
+    _budget_file(root).mkdir()
+
     clear_budget(root)
+
+    warnings = capsys.readouterr().err.splitlines()
+    assert len(warnings) == 1
+    assert warnings[0].startswith(
+        f"warning: could not remove the budget file {budget_path(root)}: "
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -5,8 +5,9 @@ its own temp git repository. The worktree lifecycle a ref target goes through is
 tested beside its source in ``tests/sampling/test_worktree_run.py``.
 """
 
+import contextlib
 import os
-import sys
+from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
 
 import pytest
@@ -17,37 +18,12 @@ from tests._git import (
     head_of,
 )
 from tests._git import run_git as _run_git
+from tests._mode_bits import needs_mode_bits
+from tests._platform import needs_symlinks
 
 # Hint gymrat attaches to every unresolvable target, duplicated here so the test
 # asserts against the same string production emits.
 RESOLVE_TARGET_HINT = "Pass an existing directory, or a git ref that resolves to a commit."
-
-_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
-
-skip_on_windows = pytest.mark.skipif(
-    sys.platform == "win32", reason="Windows ignores the execute bit"
-)
-skip_on_windows_or_root = pytest.mark.skipif(
-    sys.platform == "win32" or _IS_ROOT,
-    reason="Windows lacks EACCES from chmod and root bypasses the mode bits",
-)
-
-
-@pytest.fixture(
-    params=[
-        pytest.param(False, id="git-missing"),
-        pytest.param(True, id="git-not-executable", marks=skip_on_windows),
-    ]
-)
-def unusable_git(
-    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Leave ``PATH`` holding one directory where git is absent or lacks the execute bit."""
-    if request.param:
-        blocked = tmp_path / "git"
-        blocked.write_text("#!/bin/sh\n", encoding="utf-8")
-        blocked.chmod(0o644)
-    monkeypatch.setenv("PATH", str(tmp_path))
 
 
 # ---------------------------------------------------------------------------
@@ -55,37 +31,47 @@ def unusable_git(
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_target_when_input_is_existing_directory_does_return_in_place_target(
-    tmp_path: Path,
-):
-    result = resolve_target(str(tmp_path), str(tmp_path))
-
-    assert result == InPlaceTarget(dir=os.path.realpath(tmp_path))
-
-
-def test_resolve_target_when_input_is_relative_directory_does_resolve_to_absolute(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "absolute", [pytest.param(False, id="relative"), pytest.param(True, id="absolute")]
+)
+def test_resolve_target_when_input_is_existing_directory_does_return_absolute_in_place_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, absolute: bool
 ):
     (tmp_path / "bench").mkdir()
     monkeypatch.chdir(tmp_path)
+    spelling = str(tmp_path / "bench") if absolute else "bench"
 
-    result = resolve_target("bench", str(tmp_path))
+    result = resolve_target(spelling, str(tmp_path))
 
     assert result == InPlaceTarget(dir=os.path.realpath(tmp_path / "bench"))
 
 
-@pytest.mark.parametrize("ref_kind", ["commit-sha", "head", "tag"])
+def _commit_sha(repo: str) -> str:
+    return head_of(repo)
+
+
+def _head(_repo: str) -> str:
+    return "HEAD"
+
+
+def _tag(repo: str) -> str:
+    _run_git(["tag", "v1.0.0"], repo)
+    return "v1.0.0"
+
+
+@pytest.mark.parametrize(
+    "make_ref",
+    [
+        pytest.param(_commit_sha, id="commit-sha"),
+        pytest.param(_head, id="head"),
+        pytest.param(_tag, id="tag"),
+    ],
+)
 def test_resolve_target_when_input_is_valid_git_ref_does_return_ref_target(
-    repo: str, ref_kind: str
+    repo: str, make_ref: Callable[[str], str]
 ):
     sha = head_of(repo)
-    if ref_kind == "commit-sha":
-        ref = sha
-    elif ref_kind == "head":
-        ref = "HEAD"
-    else:
-        _run_git(["tag", "v1.0.0"], repo)
-        ref = "v1.0.0"
+    ref = make_ref(repo)
 
     result = resolve_target(ref, repo)
 
@@ -124,14 +110,36 @@ def test_resolve_target_when_input_is_existing_file_does_fall_through_to_ref(rep
     assert result == RefTarget(ref=ref, resolved_sha=sha)
 
 
-def test_resolve_target_when_input_neither_dir_nor_ref_does_raise_with_git_stderr(
-    repo: str,
+def _unknown_ref(_repo: str) -> str:
+    return "banana"
+
+
+def _tree_sha(repo: str) -> str:
+    return _run_git(["rev-parse", "HEAD^{tree}"], repo)
+
+
+def _blob_sha(repo: str) -> str:
+    return _run_git(["rev-parse", "HEAD:README.md"], repo)
+
+
+@pytest.mark.parametrize(
+    "make_ref",
+    [
+        pytest.param(_unknown_ref, id="unknown-ref"),
+        pytest.param(_tree_sha, id="tree"),
+        pytest.param(_blob_sha, id="blob"),
+    ],
+)
+def test_resolve_target_when_input_is_not_a_commit_does_raise_with_git_stderr(
+    repo: str, make_ref: Callable[[str], str]
 ):
+    ref = make_ref(repo)
+
     with pytest.raises(GymratError) as exc_info:
-        resolve_target("nonexistent-ref-xyz", repo)
+        resolve_target(ref, repo)
 
     message = str(exc_info.value)
-    assert "Cannot resolve target 'nonexistent-ref-xyz'" in message
+    assert f"Cannot resolve target '{ref}'" in message
     assert "fatal:" in message
     assert exc_info.value.hint == RESOLVE_TARGET_HINT
 
@@ -144,49 +152,44 @@ def test_resolve_target_when_git_cannot_be_started_does_raise_gymrat_error(tmp_p
     assert exc_info.value.hint == RESOLVE_TARGET_HINT
 
 
-@pytest.mark.parametrize(
-    "rev",
-    [pytest.param("HEAD^{tree}", id="tree"), pytest.param("HEAD:README.md", id="blob")],
-)
-def test_resolve_target_when_input_is_non_commit_object_sha_does_reject(repo: str, rev: str):
-    sha = _run_git(["rev-parse", rev], repo)
-
-    with pytest.raises(GymratError, match=r"Cannot resolve target"):
-        resolve_target(sha, repo)
-
-
-@skip_on_windows_or_root
-def test_resolve_target_when_probe_hits_symlink_loop_does_raise_resolve_error(
-    repo: str, tmp_path: Path
-):
+@contextlib.contextmanager
+def _symlink_loop(tmp_path: Path) -> Generator[Path]:
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
-
-    with pytest.raises(GymratError) as exc_info:
-        resolve_target(str(loop), repo)
-
-    message = str(exc_info.value)
-    assert f"Cannot resolve target '{loop}'" in message
-    assert "fatal:" not in message
-    assert exc_info.value.hint == RESOLVE_TARGET_HINT
+    yield loop
 
 
-@skip_on_windows_or_root
-def test_resolve_target_when_probe_hits_unsearchable_parent_does_raise_resolve_error(
-    repo: str, tmp_path: Path
-):
+@contextlib.contextmanager
+def _unsearchable_parent(tmp_path: Path) -> Generator[Path]:
     parent = tmp_path / "parent"
     target = parent / "target"
     target.mkdir(parents=True)
     parent.chmod(0o000)
-
     try:
-        with pytest.raises(GymratError) as exc_info:
-            resolve_target(str(target), repo)
-
-        message = str(exc_info.value)
-        assert f"Cannot resolve target '{target}'" in message
-        assert "fatal:" not in message
-        assert exc_info.value.hint == RESOLVE_TARGET_HINT
+        yield target
     finally:
         parent.chmod(0o700)
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(_symlink_loop, id="symlink-loop", marks=needs_symlinks),
+        pytest.param(_unsearchable_parent, id="unsearchable-parent", marks=needs_mode_bits),
+    ]
+)
+def stat_failing_target(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Path]:
+    """A path whose stat fails with an errno other than ENOENT or ENOTDIR."""
+    with request.param(tmp_path) as target:
+        yield target
+
+
+def test_resolve_target_when_path_stat_fails_does_raise_resolve_error(
+    repo: str, stat_failing_target: Path
+):
+    with pytest.raises(GymratError) as exc_info:
+        resolve_target(str(stat_failing_target), repo)
+
+    message = str(exc_info.value)
+    assert f"Cannot resolve target '{stat_failing_target}'" in message
+    assert "fatal:" not in message
+    assert exc_info.value.hint == RESOLVE_TARGET_HINT

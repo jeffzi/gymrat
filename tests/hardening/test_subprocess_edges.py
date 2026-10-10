@@ -15,14 +15,14 @@ order-independent under ``pytest-xdist`` and ``pytest-randomly``.
 """
 
 import asyncio
-import contextlib
 import gc
 import os
 import signal
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+import warnings
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -30,15 +30,16 @@ import pytest
 
 from gymrat import exec as exec_mod
 from gymrat import signals
-from gymrat.exec import ExecOptions, ExecTimeoutError
+from gymrat.exec import FAILURE_EXIT_CODE, ExecOptions, ExecResult
 from gymrat.exec import exec as run_exec
 from gymrat.supervisor.claude import create_claude_driver
-from gymrat.supervisor.events import SessionEvent, SessionObserver, UsageUpdateEvent
-from tests._exec_fixtures import recorded_spawns
+from gymrat.supervisor.events import SessionObserver
+from tests._process_helpers import wait_for_file
 from tests.supervisor._fixtures import (
     FactoryProbe,
     FakeClient,
     FiniteClient,
+    abort_on_first_usage_update,
     collecting_observer,
     make_prompt,
     result_message,
@@ -58,37 +59,16 @@ _LEAK_MARKERS = ("was destroyed but it is pending", "exception was never retriev
 # ---------------------------------------------------------------------------
 
 
-def file_exists(path: Path) -> bool:
-    """Whether ``path`` exists (sync helper to keep the stat out of async)."""
-    return path.exists()
-
-
-async def wait_for_file(path: Path, timeout_s: float = 5.0) -> None:
-    """Poll every 20ms until ``path`` exists.
-
-    Args:
-        path: The file to wait for.
-        timeout_s: How long to poll before giving up.
-
-    Raises:
-        TimeoutError: When ``path`` has not appeared within ``timeout_s``.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while not file_exists(path):
-        if loop.time() > deadline:
-            msg = f"file never appeared at {path}"
-            raise TimeoutError(msg)
-        await asyncio.sleep(0.02)
-
-
 def install_task_leak_recorder() -> list[dict[str, object]]:
-    """Route the running loop's exception handler into a list and return it.
+    """Route the running loop's exception handler into a list.
 
     Both "Task was destroyed but it is pending!" and "Task exception was never
     retrieved" are reported through ``loop.call_exception_handler`` when the
     offending task is finalized, so recording every context the handler sees —
     then forcing a collection — captures a forgotten task deterministically.
+
+    Returns:
+        The list every context the handler sees is appended to.
     """
     loop = asyncio.get_running_loop()
     records: list[dict[str, object]] = []
@@ -107,27 +87,13 @@ def task_leak_messages(records: list[dict[str, object]]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-async def exec_children(
-    monkeypatch: pytest.MonkeyPatch,
-) -> AsyncIterator[list[asyncio.subprocess.Process]]:
-    """Record every child ``exec`` spawns and reap any survivor in-loop on teardown."""
-    async with recorded_spawns(monkeypatch) as processes:
-        yield processes
-
-
-# ---------------------------------------------------------------------------
 # aborting mid-read leaks no forgotten-task diagnostics
 # ---------------------------------------------------------------------------
 
 
 async def test_exec_when_aborted_mid_read_does_not_leak_task_diagnostics(
     tmp_path: Path,
-    exec_children: list[asyncio.subprocess.Process],
+    spawned_processes: list[asyncio.subprocess.Process],
 ) -> None:
     records = install_task_leak_recorder()
     abort = asyncio.Event()
@@ -138,28 +104,21 @@ async def test_exec_when_aborted_mid_read_does_not_leak_task_diagnostics(
 
     abort.set()
     await asyncio.wait_for(task, 10)
-    # No forced collection here: exec awaits its own reader/kill tasks on the
-    # abort path, so there is no forgotten task exception to finalize, and forcing a
-    # collection would only finalize the subprocess transport as loop noise.
-    await asyncio.sleep(0)
+    await asyncio.wait_for(asyncio.gather(*(proc.wait() for proc in spawned_processes)), 10)
+    # A forgotten task sits in a reference cycle with the future it waits on, so
+    # only a collection finalizes it. The same collection finalizes the reaped
+    # child's transport, whose ResourceWarning is not what this test is about.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResourceWarning)
+        gc.collect()
 
     assert task_leak_messages(records) == []
-    assert exec_children  # the abort ran through a real spawned child
+    assert spawned_processes  # the abort ran through a real spawned child
 
 
 def _never_abort(_abort: asyncio.Event) -> SessionObserver:
     """An observer that leaves the abort unfired, so its watch task must be cleaned up."""
     return collecting_observer().observer
-
-
-def _abort_on_usage(abort: asyncio.Event) -> SessionObserver:
-    """An observer that fires the abort on the first cost update, mid-read."""
-
-    def observer(event: SessionEvent) -> None:
-        if isinstance(event, UsageUpdateEvent):
-            abort.set()
-
-    return observer
 
 
 @pytest.mark.parametrize(
@@ -175,7 +134,7 @@ def _abort_on_usage(abort: asyncio.Event) -> SessionObserver:
             # The stream hangs after the cost update, so the abort is what unblocks it:
             # the watch task starts, fires, then teardown cancels it on the settle path.
             lambda: FakeClient([result_message(total_cost_usd=0.1)]),
-            _abort_on_usage,
+            abort_on_first_usage_update,
             "interrupted",
             id="abort-fires-mid-read",
         ),
@@ -205,35 +164,25 @@ async def test_claude_driver_when_session_settles_does_not_leak_task_diagnostics
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
 async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_group(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    recorded_exits: list[tuple[int, float]],
+    spawned_processes: list[asyncio.subprocess.Process],
 ) -> None:
-    # Widen the spawn-to-register gap so SIGTERM lands inside it.
+    # Widen the spawn-to-register gap so SIGTERM lands inside it. The spawner
+    # read here is already the recording wrapper, so every child lands in
+    # ``spawned_processes`` and is reaped at teardown.
     real_spawn = asyncio.create_subprocess_shell
-    spawned: list[asyncio.subprocess.Process] = []
     spawn_barrier = threading.Event()
 
     async def slow_spawn(command: str, **kwargs: Any) -> asyncio.subprocess.Process:
         proc = await real_spawn(command, **kwargs)
-        spawned.append(proc)
         spawn_barrier.set()
         await asyncio.sleep(1.0)
         return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_shell", slow_spawn)
-
-    # Prevent the handler from actually terminating the process.
-    exit_record: dict[str, object] = {}
-
-    def record_exit(code: int) -> None:
-        exit_record["code"] = code
-
-    monkeypatch.setattr(signals, "exit_process", record_exit)
 
     uninstall = signals.install_termination_cleanup(exec_mod.kill_live_process_groups)
 
@@ -245,6 +194,7 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     sender = threading.Thread(target=send_signal, daemon=True)
     try:
         sender.start()
+
         result = await asyncio.wait_for(
             run_exec(
                 "sleep 30",
@@ -260,16 +210,22 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
         sender.join(timeout=6.0)
         assert not sender.is_alive(), "SIGTERM sender thread outlived its join window"
         uninstall()
-        for proc in spawned:
-            if proc.returncode is not None or not proc.pid:
-                continue
-            with contextlib.suppress(OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
+        # Recorded here, before the fixture's teardown sweep, which would
+        # otherwise hide a child the termination handler left running.
+        survivors = [proc.pid for proc in spawned_processes if proc.returncode is None]
 
     # The signal mask around spawn+register must cover the gap: a SIGTERM
     # landing before registration still finds the child in the live-groups
     # registry and kills it, so exec settles as a normal result, not a timeout.
-    assert not isinstance(result, ExecTimeoutError), (
+    # An empty stderr rules out the spawn-failure result, which carries the
+    # spawn error's message under the same failure code.
+    assert isinstance(result, ExecResult), (
         "child was not killed by the signal handler — spawn-register window is unmasked"
     )
-    assert "code" in exit_record
+    assert (result.exit_code, result.stderr) == (FAILURE_EXIT_CODE, "")
+    assert spawned_processes
+    assert survivors == []
+    assert all(proc.returncode is not None and proc.returncode < 0 for proc in spawned_processes), (
+        f"child was not killed by a signal: {[proc.returncode for proc in spawned_processes]}"
+    )
+    assert recorded_exits, "the termination handler never asked the process to exit"

@@ -9,9 +9,12 @@ form, and timer color — so a row can be read at a glance:
 | done    | ``✓``   | past (``sampled``)    | dim green |
 | pending | ``○``   | noun (``judge``)      | none      |
 | error   | ``✗``   | —                    | none      |
+| skipped | en dash | noun + ``skipped``    | none      |
 
 A step that turns out not to apply (a skipped confirm, a hook that was not
-configured) is dropped from the checklist rather than shown with a skip marker.
+configured) is dropped from the checklist rather than shown with a skip marker,
+with one exception: a confirm skipped after the judge found regressions stays,
+marked skipped, to show that no rerun followed the regression.
 
 Counts (``1/4``) are bold in the default foreground; command and target labels
 are bold blue; metadata, separators, and hints are dim. Yellow is reserved for
@@ -34,9 +37,6 @@ GLYPH_DONE = "✓"
 GLYPH_PENDING = "○"
 GLYPH_ERROR = "✗"
 
-# The one spinner animation every renderer uses, for ``SpinnerColumn`` in
-# progress bars and ``Spinner`` in checklist rows alike.
-SPINNER_NAME = "dots"
 GLYPH_ALERT = "!"
 
 STYLE_RUNNING = "cyan"
@@ -44,7 +44,6 @@ STYLE_DONE = "green"
 STYLE_PENDING = "dim"
 STYLE_ALERT = "yellow"
 
-STYLE_VERB = "bold"
 STYLE_COUNT = "bold"
 STYLE_LABEL = "bold blue"
 STYLE_META = "dim"
@@ -53,10 +52,6 @@ STYLE_REGRESSED = "red"
 
 STYLE_TIMER_RUNNING = "cyan"
 STYLE_TIMER_DONE = "dim green"
-
-# Below this terminal height, a full checklist or header-plus-rows layout
-# can't fit, so a renderer switches to a single-row compact bar.
-COMPACT_HEIGHT_THRESHOLD = 12
 
 CLI_THEME = Theme({
     "progress.spinner": STYLE_RUNNING,

@@ -10,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from gymrat.session.schema import HookStage
+
 
 @dataclass(frozen=True, slots=True)
 class PrepareStarted:
@@ -62,7 +64,7 @@ class PassFinished(_PassEvent):
 class HookStarted:
     """Emitted before a lifecycle hook runs."""
 
-    stage: Literal["before", "after"]
+    stage: HookStage
     at_ms: float
 
 
@@ -70,7 +72,7 @@ class HookStarted:
 class HookFinished:
     """Emitted after a lifecycle hook completes."""
 
-    stage: Literal["before", "after"]
+    stage: HookStage
     at_ms: float
 
 

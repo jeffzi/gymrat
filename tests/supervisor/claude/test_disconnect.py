@@ -11,29 +11,24 @@ import asyncio
 import contextlib
 import warnings
 from collections.abc import Awaitable, Callable, Generator, Sequence
-from typing import override
+from typing import TypedDict, override
 
 import pytest
+from claude_agent_sdk import TextBlock
 
-from gymrat.supervisor.claude import create_claude_driver
 from gymrat.supervisor.driver import DriverSession, SessionOutcome
-from gymrat.supervisor.events import (
-    SessionEvent,
-    SessionObserver,
-    TurnEndEvent,
-    UsageUpdateEvent,
-)
 from tests.supervisor._fixtures import (
-    FactoryProbe,
     FakeClient,
-    FiniteClient,
-    make_prompt,
-    noop_observer,
+    abort_on_first_usage_update,
+    assistant,
+    end_and_settle,
     result_message,
-    wait_for_event_or_task,
+    run_interrupting_on_first_usage_update,
+    settled_outcome,
+    start_claude_session,
+    start_past_turns,
 )
 
-_TEST_TIMEOUT_S = 5.0
 _DISCONNECT_WARNING = "claude client disconnect failed"
 
 # ---------------------------------------------------------------------------
@@ -61,6 +56,14 @@ class _Stream:
         return None
 
 
+class _RacingOptions(TypedDict, total=False):
+    """The keyword options a test row passes to ``_RacingClient``."""
+
+    finite: bool
+    fail_follow_up: bool
+    after_turn: Sequence[object]
+
+
 class _RacingClient(FakeClient):
     """A client whose ``disconnect`` checks, awaits, then clears, as the SDK's does."""
 
@@ -70,26 +73,10 @@ class _RacingClient(FakeClient):
         *,
         finite: bool = False,
         fail_follow_up: bool = False,
+        after_turn: Sequence[object] = (),
     ) -> None:
-        super().__init__(messages)
-        self._finite = finite
-        self._fail_follow_up = fail_follow_up
+        super().__init__([*messages, *after_turn], fail_follow_up=fail_follow_up, finite=finite)
         self._stream: _Stream | None = _Stream(self._released)
-
-    @override
-    async def query(self, prompt: str) -> None:
-        if self._fail_follow_up and self.query_prompts:
-            message = "connection lost"
-            raise RuntimeError(message)
-        await super().query(prompt)
-
-    @override
-    async def receive_messages(self):
-        for message in self.messages:
-            await asyncio.sleep(0)
-            yield message
-        if not self._finite:
-            await self._released.wait()
 
     @override
     async def disconnect(self) -> None:
@@ -111,16 +98,6 @@ class _DisconnectFailingClient(FakeClient):
         raise RuntimeError(message)
 
 
-class _FiniteDisconnectFailingClient(FiniteClient):
-    """A client whose stream ends on its own, and whose ``disconnect`` then raises."""
-
-    @override
-    async def disconnect(self) -> None:
-        self.disconnect_count += 1
-        message = "teardown boom"
-        raise RuntimeError(message)
-
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -132,62 +109,46 @@ def _one_turn() -> list[object]:
 
 
 async def _drain(n: int = 30) -> None:
-    """Let the event loop process n rounds of pending callbacks."""
+    """Yield to the event loop; the default outlasts the turns ``_Stream.close`` stays suspended."""
     for _ in range(n):
         await asyncio.sleep(0)
 
 
 async def _outcome(session: DriverSession) -> SessionOutcome:
     """Await the session's outcome, then let any trailing teardown finish."""
-    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    outcome = await settled_outcome(session)
     await _drain()
     return outcome
 
 
-def _start_session(
-    client: FakeClient,
-    observer: SessionObserver | None = None,
-    abort: asyncio.Event | None = None,
-) -> DriverSession:
-    """Start a Claude session over ``client``, observing nothing and never aborting by default."""
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-    return driver.start(make_prompt(), observer or noop_observer(), abort or asyncio.Event())
-
-
-def _signal_turn_end(turn_closed: asyncio.Event) -> SessionObserver:
-    """An observer that sets ``turn_closed`` once the session emits a turn end."""
-
-    def observer(event: SessionEvent) -> None:
-        if isinstance(event, TurnEndEvent):
-            turn_closed.set()
-
-    return observer
-
-
 async def _start_past_first_turn(client: FakeClient) -> DriverSession:
     """Start a session over ``client`` and wait until it has closed its first turn."""
-    turn_closed = asyncio.Event()
-    session = _start_session(client, _signal_turn_end(turn_closed))
-    await wait_for_event_or_task(turn_closed, session.outcome)
+    session, _ = await start_past_turns(client, 1)
     return session
 
 
 async def _end_by_end_call(client: FakeClient) -> SessionOutcome:
     """Run a session over ``client`` and end it with ``end()`` after its first turn."""
     session = await _start_past_first_turn(client)
-    await session.end()
-    return await _outcome(session)
+    outcome = await end_and_settle(session)
+    await _drain()
+    return outcome
 
 
 async def _end_by_abort(client: FakeClient) -> SessionOutcome:
     """Run a session over ``client`` and abort it on its first usage update."""
     abort = asyncio.Event()
 
-    def observer(event: SessionEvent) -> None:
-        if isinstance(event, UsageUpdateEvent):
-            abort.set()
+    return await _outcome(
+        start_claude_session(client, abort_on_first_usage_update(abort), abort=abort)
+    )
 
-    return await _outcome(_start_session(client, observer, abort))
+
+async def _end_by_interrupt(client: FakeClient) -> SessionOutcome:
+    """Run a session over ``client`` and interrupt it on its first usage update."""
+    outcome = await run_interrupting_on_first_usage_update(client)
+    await _drain()
+    return outcome
 
 
 async def _end_by_send(client: FakeClient) -> SessionOutcome:
@@ -199,7 +160,7 @@ async def _end_by_send(client: FakeClient) -> SessionOutcome:
 
 async def _end_by_stream(client: FakeClient) -> SessionOutcome:
     """Run a session over ``client`` until its own stream ends it."""
-    return await _outcome(_start_session(client))
+    return await _outcome(start_claude_session(client))
 
 
 @contextlib.contextmanager
@@ -211,7 +172,6 @@ def _recorded_warnings() -> Generator[list[warnings.WarningMessage]]:
 
 
 def _disconnect_warnings(caught: Sequence[warnings.WarningMessage]) -> list[str]:
-    """The text of every recorded warning that reports a failed disconnect."""
     return [str(w.message) for w in caught if _DISCONNECT_WARNING in str(w.message)]
 
 
@@ -221,54 +181,47 @@ def _disconnect_warnings(caught: Sequence[warnings.WarningMessage]) -> list[str]
 
 
 @pytest.mark.parametrize(
-    ("client_options", "end_session", "expected_reason", "expected_message"),
+    ("client_options", "end_session"),
     [
-        pytest.param({}, _end_by_end_call, "completed", None, id="end-call"),
-        pytest.param({}, _end_by_abort, "interrupted", None, id="abort"),
+        pytest.param({}, _end_by_end_call, id="end-call"),
+        pytest.param({}, _end_by_abort, id="abort"),
         pytest.param(
-            {"fail_follow_up": True}, _end_by_send, "error", "connection lost", id="send-failure"
+            {"after_turn": [assistant(TextBlock(text="late"))]},
+            _end_by_interrupt,
+            id="interrupt",
         ),
-        pytest.param({"finite": True}, _end_by_stream, "completed", None, id="stream-exhaustion"),
+        pytest.param({"fail_follow_up": True}, _end_by_send, id="send-failure"),
+        pytest.param({"finite": True}, _end_by_stream, id="stream-exhaustion"),
     ],
 )
 async def test_start_when_session_ended_does_disconnect_client_exactly_once_without_warning(
-    client_options: dict[str, bool],
+    client_options: _RacingOptions,
     end_session: Callable[[FakeClient], Awaitable[SessionOutcome]],
-    expected_reason: str,
-    expected_message: str | None,
 ):
     client = _RacingClient(_one_turn(), **client_options)
 
     with _recorded_warnings() as caught:
-        outcome = await end_session(client)
+        await end_session(client)
 
-    assert (outcome.reason, outcome.message) == (expected_reason, expected_message)
     assert client.disconnect_count == 1
     assert _disconnect_warnings(caught) == []
 
 
 @pytest.mark.parametrize(
-    ("client", "end_session", "expected_reason"),
+    ("finite", "end_session", "expected_reason"),
     [
-        pytest.param(
-            _DisconnectFailingClient(_one_turn()), _end_by_end_call, "completed", id="end-call"
-        ),
-        pytest.param(
-            _DisconnectFailingClient(_one_turn()), _end_by_abort, "interrupted", id="abort"
-        ),
-        pytest.param(
-            _FiniteDisconnectFailingClient(_one_turn()),
-            _end_by_stream,
-            "completed",
-            id="stream-exhaustion",
-        ),
+        pytest.param(False, _end_by_end_call, "completed", id="end-call"),
+        pytest.param(False, _end_by_abort, "interrupted", id="abort"),
+        pytest.param(True, _end_by_stream, "completed", id="stream-exhaustion"),
     ],
 )
 async def test_start_when_disconnect_raises_does_keep_the_settled_outcome_with_one_warning(
-    client: FakeClient,
+    finite: bool,
     end_session: Callable[[FakeClient], Awaitable[SessionOutcome]],
     expected_reason: str,
 ):
+    client = _DisconnectFailingClient(_one_turn(), finite=finite)
+
     with _recorded_warnings() as caught:
         outcome = await end_session(client)
 

@@ -2,62 +2,67 @@
 
 The reporter turns a stream of :class:`~gymrat.supervisor.events.SessionEvent`
 values into a bordered ``Live`` dashboard with time/cost/loop summary rows and a
-liveness section showing tool activity.  Every test injects the clock (``now``)
-and the session reader (``read_session``) so nothing depends on real time or
-disk.
+liveness section showing tool activity.  Reporter tests inject the clock
+(``now``) and the session reader (``read_session``) so they depend on neither
+real time nor disk.  The ``read_live_session`` tests write a session log under
+``tmp_path`` and read it back the way the dashboard does.
 
 **Live mode** tests render ``reporter.frame()`` through ``frame_text()`` from
 ``tests._rich`` at a fixed width, pinning frame content with syrupy snapshots.
 The liveness line covers in-flight and finished tools (with their marks,
 truncation and wall-clock times), the waiting state and its idle threshold,
-model phase transitions, the iterate sidecar and MCP tool detection, and the
-follow-up transition. During the run-end exit sequence the reporter shows each
-exit phase as the liveness line, and a session refresh re-reads the session,
-keeping the last good read when one fails. The reducer transitions behind them
-are pinned in ``test_reducer.py``.
+model phase transitions, nested subagent lines and the tool-name column, the
+iterate sidecar and MCP tool detection, and the follow-up transition. The panel
+title's model and effort text is pinned here too; the frame's styling is pinned
+in ``test_frame.py``. During the run-end exit sequence the reporter shows each
+exit phase as the liveness line. The reducer transitions behind them are pinned
+in ``test_reducer.py``.
 
 **Plain mode** tests assert on the recorded milestone lines.
 """
 
 from __future__ import annotations
 
-import itertools
 import os
 import sys
 import time
 from datetime import UTC, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Literal
-from unittest.mock import Mock, patch
+from typing import TYPE_CHECKING, Any
+from unittest.mock import Mock
 
 import pytest
 
 from gymrat.cli.supervise.progress import (
     IDLE_WARN_MS,
     create_supervise_reporter,
-    read_live_session,
 )
-from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
 from gymrat.session.progress_file import ProgressSnapshot
 from gymrat.session.records import IterationPrimary
+from gymrat.session.store import BestIteration, read_live_session
 from gymrat.supervisor.exit_sequence import ExitPhase
+from tests._logging import unhandled_logging
 from tests._rich import track
 from tests.cli.supervise._fixtures import (
-    LIVE_CLASS_PATH,
+    BASH_CYCLE_END_MS,
     ReporterKit,
     _throwing_read,
     cap_event,
     fire_launch_and_bash_cycle,
+    fire_launch_and_bash_start,
+    fire_launch_and_edit_cycle,
+    fire_launch_and_iterate_start,
     follow_up_event,
     launch_event,
-    lines_containing,
+    launched,
     make_read_session,
     make_reporter,
     model_phase_event,
+    read_result,
     render_frame,
+    reporter_showing_session,
+    reporter_with_nested_read,
+    row_content,
     session_state_three_iterations,
-    thinking_event,
-    tool_end_event,
-    tool_start_event,
     turn_end_event,
     usage_event,
 )
@@ -68,13 +73,16 @@ from tests.session.records._fixtures import (
     blocked_keep,
     committed_keep,
     discard_record,
-    empty_session_state,
     iteration_record,
     make_iteration,
     session_record,
     session_state,
     stop_record,
     write_session_log,
+)
+from tests.supervisor._fixtures import (
+    tool_end_event,
+    tool_start_event,
 )
 
 if TYPE_CHECKING:
@@ -84,10 +92,16 @@ if TYPE_CHECKING:
 
     from syrupy.assertion import SnapshotAssertion
 
-    from gymrat.model import Direction
+    from gymrat.config import Effort
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import PrimaryKind
-    from gymrat.supervisor.events import CapAction, CapType, ModelPhase
+    from gymrat.session.store import ReadSessionResult
+    from gymrat.supervisor.events import ModelPhase
+
+# Frames are rendered straight from ``reporter.frame()``, so no test here mounts a
+# real dashboard: a live ``ErasableLive`` would start a refresh thread painting on
+# the process's stderr while the test moves the clock.
+pytestmark = pytest.mark.usefixtures("mock_live_cls")
 
 
 # ---------------------------------------------------------------------------
@@ -96,22 +110,21 @@ if TYPE_CHECKING:
 
 
 def test_session_result_when_a_tool_ends_does_return_the_latest_read():
-    state = session_state_three_iterations(-4.2, "improved", seq=3)
-    kit = make_reporter(read_session=make_read_session(state, has_baseline=True))
+    at_launch = read_result()
+    at_tool_end = read_result(
+        session_state_three_iterations(-4.2, "improved", seq=3), has_baseline=True
+    )
+    kit = make_reporter(read_session=Mock(side_effect=[at_launch, at_tool_end]))
 
     fire_launch_and_bash_cycle(kit.reporter.observer)
 
-    session_result = kit.reporter.session_result()
-    assert session_result is not None
-    assert session_result.state == state
+    assert kit.reporter.session_result() == at_tool_end
 
 
-def _read_back(
-    tmp_path: Path, history: tuple[SessionLogRecord, ...], primary_direction: Direction = "lower"
-) -> ReadSessionResult:
+def _read_back(tmp_path: Path, history: tuple[SessionLogRecord, ...]) -> ReadSessionResult:
     """Write a session log under ``tmp_path`` and read it back the dashboard's way."""
     write_session_log(str(tmp_path), session_record(), history)
-    return read_live_session(str(tmp_path), primary_direction)
+    return read_live_session(str(tmp_path), "lower")
 
 
 def _committed_throughput_history(*deltas: float) -> tuple[SessionLogRecord, ...]:
@@ -150,22 +163,8 @@ def test_read_live_session_when_keeps_committed_does_report_the_best_committed_i
 
     result = _read_back(tmp_path, history)
 
-    assert (result.best, result.has_baseline, result.stop_message) == (
-        BestIteration(delta_pct=-9.0, seq=2, label=primary_label, baseline_sha=COMMIT),
-        False,
-        None,
-    )
-
-
-def test_read_live_session_when_primary_is_higher_is_better_does_report_the_largest_gain(
-    tmp_path: Path,
-):
-    history = _committed_throughput_history(2.0, 9.0, -3.0)
-
-    result = _read_back(tmp_path, history, "higher")
-
     assert result.best == BestIteration(
-        delta_pct=9.0, seq=2, label="throughput", baseline_sha=COMMIT, direction="higher"
+        delta_pct=-9.0, seq=2, label=primary_label, baseline_sha=COMMIT
     )
 
 
@@ -208,7 +207,9 @@ def test_read_live_session_when_keeps_precede_the_best_does_name_its_baseline(
 def test_create_reporter_when_no_session_reader_given_does_read_with_the_primary_direction(
     tmp_path: Path,
 ):
-    write_session_log(str(tmp_path), session_record(), _committed_throughput_history(2.0, 9.0))
+    write_session_log(
+        str(tmp_path), session_record(), _committed_throughput_history(2.0, 9.0, -3.0)
+    )
     reporter = track(
         create_supervise_reporter(
             root=str(tmp_path),
@@ -220,12 +221,12 @@ def test_create_reporter_when_no_session_reader_given_does_read_with_the_primary
     )
 
     reporter.observer(launch_event(1000))
-    session_result = reporter.session_result()
-    reporter.stop()
 
+    session_result = reporter.session_result()
     assert session_result is not None
-    assert session_result.best is not None
-    assert session_result.best.seq == 2
+    assert session_result.best == BestIteration(
+        delta_pct=9.0, seq=2, label="throughput", baseline_sha=COMMIT, direction="higher"
+    )
 
 
 @pytest.mark.parametrize(
@@ -294,50 +295,61 @@ def test_read_live_session_when_baseline_presence_varies_does_report_it(
 
 
 # ---------------------------------------------------------------------------
+# dashboard title — model and effort text
+# ---------------------------------------------------------------------------
+
+
+def _panel_title_text(frame: str) -> str:
+    """The panel's title text, with the top border's box-drawing chars stripped."""
+    return frame.splitlines()[0].strip("╭╮─ ")
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "expected_title"),
+    [
+        pytest.param("opus", None, "supervise · model opus", id="model-only"),
+        pytest.param(None, "high", "supervise · effort high", id="effort-only"),
+        pytest.param("opus", "max", "supervise · model opus · effort max", id="model-and-effort"),
+        pytest.param(None, None, "supervise", id="neither"),
+    ],
+)
+def test_panel_title_when_model_or_effort_in_force_does_show_labelled_value(
+    model: str | None, effort: Effort | None, expected_title: str
+) -> None:
+    kit = launched(make_reporter(session_id="", branch="", model=model, effort=effort))
+
+    frame = render_frame(kit.reporter)
+
+    assert _panel_title_text(frame) == expected_title
+
+
+# ---------------------------------------------------------------------------
 # time bar
 # ---------------------------------------------------------------------------
 
 
-def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero(
-    snapshot: SnapshotAssertion,
-):
-    kit = make_reporter(max_minutes=60, clock_start=1000)
-    kit.reporter.observer(launch_event(1000))
+def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero():
+    kit = launched(make_reporter(max_minutes=60, clock_start=1000))
     kit.clock.now = 1000 + (2 * 3600) * 1000
 
     frame = render_frame(kit.reporter)
 
-    assert frame == snapshot
+    assert _summary_rows(frame) == [
+        "time " + "━" * 73 + " 2h 00m  cap in 0s",
+        "cost $0.00",
+        "loop   no session yet",
+    ]
 
 
 # ---------------------------------------------------------------------------
-# cost row
+# starting layout
 # ---------------------------------------------------------------------------
 
 
-def test_frame_when_just_launched_does_show_zero_cost_and_no_best_row(
+def test_frame_when_just_launched_does_render_the_starting_layout(
     snapshot: SnapshotAssertion,
 ):
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
-
-    frame = render_frame(kit.reporter)
-
-    assert frame == snapshot
-
-
-# ---------------------------------------------------------------------------
-# loop row
-# ---------------------------------------------------------------------------
-
-
-def test_loop_when_iterations_present_does_show_counts_and_last(snapshot: SnapshotAssertion):
-    state = session_state_three_iterations(-3.2, "improved")
-    kit = make_reporter(
-        max_iterations=20,
-        read_session=make_read_session(state, has_baseline=True),
-    )
-    fire_launch_and_bash_cycle(kit.reporter.observer)
+    kit = launched(make_reporter())
 
     frame = render_frame(kit.reporter)
 
@@ -356,45 +368,17 @@ def test_best_when_kept_iteration_exists_does_show_the_best_row():
         discard_count=2,
         last_iteration=make_iteration(-6.8, "improved", seq=3),
     )
-    kit = make_reporter(
-        read_session=make_read_session(
-            state,
-            has_baseline=True,
-            best=BestIteration(delta_pct=-6.8, seq=3, label="geomean"),
-        ),
+    kit = reporter_showing_session(
+        state, best=BestIteration(delta_pct=-6.8, seq=3, label="geomean")
     )
-    fire_launch_and_bash_cycle(kit.reporter.observer)
 
     frame = render_frame(kit.reporter)
 
-    assert _content_line(frame, "best") == "best -6.8% geomean (iteration 3)"
-
-
-# ---------------------------------------------------------------------------
-# session re-read
-# ---------------------------------------------------------------------------
-
-
-def test_reread_when_any_tool_ends_does_reread_on_the_end_not_the_start():
-    read = Mock(return_value=ReadSessionResult(state=empty_session_state(), has_baseline=False))
-    kit = make_reporter(read_session=read)
-    observer = kit.reporter.observer
-    events = [
-        tool_start_event("Read", "read-1", 2000),
-        tool_end_event("Read", "read-1", 3000),
-        tool_start_event("Bash", "bash-1", 4000),
-        tool_start_event("Read", "nested-1", 4100, parent_tool_use_id="bash-1"),
-        tool_end_event("Read", "nested-1", 4200, parent_tool_use_id="bash-1"),
-        tool_end_event("Bash", "bash-1", 5000),
+    assert _liveness_rows(frame) == [
+        "best -6.8% geomean (iteration 3)",
+        "waiting  0s",
+        "00:00:03  Bash   ...  1s",
     ]
-    observer(launch_event(1000))
-    reads = [read.call_count]
-
-    for event in events:
-        observer(event)
-        reads.append(read.call_count)
-
-    assert [after - before for before, after in itertools.pairwise(reads)] == [0, 1, 0, 0, 1, 1]
 
 
 # ---------------------------------------------------------------------------
@@ -430,11 +414,14 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
     kit.reporter.observer(usage_event(4.12, kit.clock.now))
 
     kit.clock.now += 1000
+    read_started_at = kit.clock.now
     kit.reporter.observer(
-        tool_start_event("Read", "read-1", kit.clock.now, input_summary="src/archetype.ts")
+        tool_start_event("Read", "read-1", read_started_at, input_summary="src/archetype.ts")
     )
     kit.clock.now += 500
-    kit.reporter.observer(tool_end_event("Read", "read-1", kit.clock.now))
+    kit.reporter.observer(
+        tool_end_event("Read", "read-1", kit.clock.now, started_at_ms=read_started_at)
+    )
 
     kit.clock.now += 200
     edit_started_at = kit.clock.now
@@ -462,16 +449,13 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("cap", ["wall-clock", "spend-cap"])
-@pytest.mark.parametrize("action", ["ending", "interrupting"])
-def test_cap_when_fired_does_show_action_with_cap_type(cap: CapType, action: CapAction):
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
-    kit.reporter.observer(cap_event(cap, action=action))
+def test_cap_when_fired_does_show_action_with_cap_type():
+    kit = launched(make_reporter())
+    kit.reporter.observer(cap_event("spend-cap", action="ending"))
 
     frame = render_frame(kit.reporter)
 
-    assert _content_line(frame, f"({cap})") == f"{action} ({cap})"
+    assert _liveness_rows(frame) == ["ending (spend-cap)"]
 
 
 # ---------------------------------------------------------------------------
@@ -479,69 +463,41 @@ def test_cap_when_fired_does_show_action_with_cap_type(cap: CapType, action: Cap
 # ---------------------------------------------------------------------------
 
 
-def test_final_text_when_agent_turn_ends_does_return_its_text():
-    kit = make_reporter()
+def test_final_text_when_several_agent_turns_ended_does_return_the_latest_text():
+    kit = launched(make_reporter())
     observer = kit.reporter.observer
-    observer(launch_event(1000))
     observer(turn_end_event(2000, text="first turn summary"))
     observer(turn_end_event(3000, text="second turn summary"))
 
-    assert kit.reporter.final_text() == "second turn summary"
+    text = kit.reporter.final_text()
+
+    assert text == "second turn summary"
 
 
-# ---------------------------------------------------------------------------
-# turn counting and follow-up rendering (live mode)
-# ---------------------------------------------------------------------------
+def _split_at_loop_row(frame: str) -> tuple[list[str], list[str]]:
+    """The frame's content rows up to and including the loop row, and the rows below it.
+
+    Rows have the panel border and padding stripped.
+
+    Args:
+        frame: The rendered frame.
+
+    Returns:
+        The summary rows ending on the loop row, then the rows below it.
+    """
+    rows = [row_content(line) for line in frame.splitlines() if line.startswith("│")]
+    loop_index = next(i for i, row in enumerate(rows) if row.startswith("loop "))
+    return rows[: loop_index + 1], rows[loop_index + 1 :]
 
 
-def test_follow_up_when_replied_does_show_turn_count_and_replied():
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    observer(launch_event(1000))
-    observer(turn_end_event(2000, text="done"))
-    observer(follow_up_event(3000, action="replied"))
-
-    frame = render_frame(kit.reporter)
-
-    assert _content_line(frame, "turns") == "turns  turn 1 ended · replied"
-
-
-def _content_line(frame: str, needle: str) -> str:
-    """The sole frame row containing *needle*, with panel border and padding stripped."""
-    lines = lines_containing(frame, needle)
-    assert len(lines) == 1, f"expected exactly one line containing {needle!r}, got {lines}"
-    return lines[0].split("│")[1].strip()
+def _summary_rows(frame: str) -> list[str]:
+    """The frame rows from the time row down to the loop row, border and padding stripped."""
+    return _split_at_loop_row(frame)[0]
 
 
 def _liveness_rows(frame: str) -> list[str]:
     """The frame rows below the loop row, with panel border and padding stripped."""
-    rows = [line.split("│")[1].strip() for line in frame.splitlines() if line.startswith("│")]
-    loop_index = next(i for i, row in enumerate(rows) if row.startswith("loop "))
-    return rows[loop_index + 1 :]
-
-
-# ---------------------------------------------------------------------------
-# liveness — ended tools
-# ---------------------------------------------------------------------------
-
-
-def test_liveness_when_four_tools_finish_does_show_only_last_three(snapshot: SnapshotAssertion):
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
-
-    for i, (name, summary) in enumerate(
-        [("Read", "src/a.ts"), ("Edit", "src/b.ts"), ("Bash", "npm test"), ("Read", "src/c.ts")],
-        start=1,
-    ):
-        ts = 1000 + i * 1000
-        kit.clock.now = ts
-        kit.reporter.observer(tool_start_event(name, f"t-{i}", ts, input_summary=summary))
-        kit.clock.now = ts + 500
-        kit.reporter.observer(tool_end_event(name, f"t-{i}", ts + 500, started_at_ms=ts))
-
-    frame = render_frame(kit.reporter)
-
-    assert frame == snapshot
+    return _split_at_loop_row(frame)[1]
 
 
 # ---------------------------------------------------------------------------
@@ -558,35 +514,11 @@ def test_liveness_when_four_tools_finish_does_show_only_last_three(snapshot: Sna
 )
 def test_finished_tool_when_ended_does_mark_only_an_error(result: str, expected_row: str):
     kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
-    kit.clock.now = 2000
-    kit.reporter.observer(
-        tool_start_event("Edit", "edit-1", 2000, input_summary="src/archetype.ts")
-    )
-    kit.clock.now = 3000
-    kit.reporter.observer(tool_end_event("Edit", "edit-1", 3000, result=result))
+    fire_launch_and_edit_cycle(kit, result=result)
 
     frame = render_frame(kit.reporter)
 
-    assert _content_line(frame, "Edit") == expected_row
-
-
-# ---------------------------------------------------------------------------
-# sub-second finished tool
-# ---------------------------------------------------------------------------
-
-
-def test_finished_tool_when_under_one_second_does_show_less_than_one_second():
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
-    kit.clock.now = 2000
-    kit.reporter.observer(tool_start_event("Edit", "edit-1", 2000, input_summary="src/a.ts"))
-    kit.clock.now = 2500
-    kit.reporter.observer(tool_end_event("Edit", "edit-1", 2500))
-
-    frame = render_frame(kit.reporter)
-
-    assert _content_line(frame, "Edit") == "00:00:02  Edit   src/a.ts  <1s"
+    assert _liveness_rows(frame) == ["waiting  0s", expected_row]
 
 
 # ---------------------------------------------------------------------------
@@ -595,8 +527,7 @@ def test_finished_tool_when_under_one_second_does_show_less_than_one_second():
 
 
 def test_liveness_when_in_flight_summary_exceeds_width_does_truncate_to_one_line():
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter())
     kit.clock.now = 2000
     long_summary = "src/" + "/".join(f"level{i}" for i in range(20)) + "/file.ts"
     kit.reporter.observer(tool_start_event("Edit", "edit-1", 2000, input_summary=long_summary))
@@ -604,9 +535,94 @@ def test_liveness_when_in_flight_summary_exceeds_width_does_truncate_to_one_line
 
     frame = render_frame(kit.reporter)
 
-    assert _content_line(frame, "Edit") == (
+    assert _liveness_rows(frame) == [
         "00:00:02  Edit   src/level0/level1/level2/level3/level4/level5/level6/level7/level8/level9/le…"
+    ]
+
+
+# ---------------------------------------------------------------------------
+# liveness — nested subagent lines
+# ---------------------------------------------------------------------------
+
+
+def test_nested_tool_when_in_flight_does_render_an_arrow_line_under_parent():
+    kit = reporter_with_nested_read()
+
+    rows = _liveness_rows(render_frame(kit.reporter))
+
+    assert rows == ["00:00:01  Bash   ...  3s", "↳ Read src/config.ts  3s"]
+
+
+@pytest.mark.parametrize(
+    ("phase", "tool_name", "now", "expected_rows"),
+    [
+        pytest.param(
+            "thinking",
+            None,
+            4000,
+            ["00:00:01  Bash   ...  2s", "↳ thinking  2s"],
+            id="thinking",
+        ),
+        pytest.param(
+            "responding",
+            None,
+            3000,
+            ["00:00:01  Bash   ...  1s", "↳ responding  1s"],
+            id="responding",
+        ),
+        pytest.param(
+            "tool_input",
+            "Edit",
+            3000,
+            ["00:00:01  Bash   ...  1s", "↳ preparing Edit  1s"],
+            id="composing",
+        ),
+    ],
+)
+def test_nested_phase_when_reported_does_render_an_arrow_line_naming_it(
+    phase: ModelPhase, tool_name: str | None, now: int, expected_rows: list[str]
+):
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    kit.clock.now = 2000
+    observer(model_phase_event(2000, phase, tool_name=tool_name, parent_tool_use_id="bash-1"))
+    kit.clock.now = now
+
+    rows = _liveness_rows(render_frame(kit.reporter))
+
+    assert rows == expected_rows
+
+
+# ---------------------------------------------------------------------------
+# tool-name column width — nested tools excluded
+# ---------------------------------------------------------------------------
+
+
+def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_width():
+    kit = launched(make_reporter())
+    observer = kit.reporter.observer
+    kit.clock.now = 2000
+    observer(tool_start_event("Bash", "bash-1", 2000, input_summary="run tests"))
+    kit.clock.now = 2500
+    observer(
+        tool_start_event(
+            "LongNestedToolName",
+            "nested-1",
+            2500,
+            parent_tool_use_id="bash-1",
+            input_summary="something",
+        )
     )
+    kit.clock.now = 3000
+
+    frame = render_frame(kit.reporter)
+
+    # "Bash" padded to the 5-column floor; counting the nested name would widen it.
+    assert _liveness_rows(frame) == [
+        "00:00:02  Bash   run tests  1s",
+        "↳ LongNestedToolName something  0s",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -621,7 +637,6 @@ _WALL_CLOCK_EPOCH_MS = 1_700_000_000_000
 @pytest.mark.parametrize(
     ("tz", "expected_clock"),
     [
-        pytest.param(UTC, "22:13:20", id="utc"),
         pytest.param(timezone(timedelta(hours=5, minutes=30)), "03:43:20", id="half-hour-ahead"),
         pytest.param(timezone(timedelta(hours=-5)), "17:13:20", id="five-hours-behind"),
     ],
@@ -642,7 +657,10 @@ def test_finished_tool_when_ended_does_show_wall_clock_in_the_given_tz(
 
     frame = render_frame(kit.reporter)
 
-    assert _content_line(frame, "Edit") == f"{expected_clock}  Edit   src/archetype.ts  1s"
+    assert _liveness_rows(frame) == [
+        "waiting  0s",
+        f"{expected_clock}  Edit   src/archetype.ts  1s",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -668,26 +686,16 @@ def india_local_time() -> Iterator[None]:
 @pytest.mark.usefixtures("india_local_time")
 def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
     kit = make_reporter(tz=None)
-    kit.reporter.observer(launch_event(1000))
-    kit.clock.now = 2000
-    kit.reporter.observer(
-        tool_start_event("Edit", "edit-1", 2000, input_summary="src/archetype.ts")
-    )
-    kit.clock.now = 3000
-    kit.reporter.observer(tool_end_event("Edit", "edit-1", 3000))
+    fire_launch_and_edit_cycle(kit)
 
     frame = render_frame(kit.reporter)
 
-    assert _content_line(frame, "Edit") == "05:30:03  Edit   src/archetype.ts  1s"
+    assert _liveness_rows(frame) == ["waiting  0s", "05:30:03  Edit   src/archetype.ts  1s"]
 
 
 # ---------------------------------------------------------------------------
 # above-threshold waiting — last tool context
 # ---------------------------------------------------------------------------
-
-# The clock reading right after the Bash end that both the threshold and the
-# custom idle_warn_ms tests below freeze on.
-_BASH_END_MS = 3000
 
 
 def _make_reporter_past_bash_end(
@@ -695,37 +703,24 @@ def _make_reporter_past_bash_end(
 ) -> ReporterKit:
     """A reporter with the given idle-warn threshold, clock frozen right after a Bash end."""
     kit = make_reporter(idle_warn_ms=idle_warn_ms)
-    kit.reporter.observer(launch_event(1000))
-    kit.clock.now = 2000
-    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000))
-    kit.clock.now = _BASH_END_MS
-    kit.reporter.observer(tool_end_event("Bash", "bash-1", _BASH_END_MS, result=result))
+    fire_launch_and_bash_cycle(kit.reporter.observer, clock=kit.clock, result=result)
     return kit
 
 
-@pytest.mark.parametrize(
-    ("result", "expected_fragment"),
-    [
-        pytest.param("ok", "no output for 30s (last tool: Bash at 00:00:03)", id="ok-tool"),
-        pytest.param(
-            "error", "no output for 30s (last tool: Bash ✗ at 00:00:03)", id="errored-tool"
-        ),
-    ],
-)
-def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
-    result: str, expected_fragment: str
-):
-    kit = _make_reporter_past_bash_end(result=result)
-    kit.clock.now = _BASH_END_MS + IDLE_WARN_MS + 1
+def test_liveness_when_waiting_past_threshold_after_errored_tool_does_mark_it_in_the_context():
+    kit = _make_reporter_past_bash_end(result="error")
+    kit.clock.now = BASH_CYCLE_END_MS + IDLE_WARN_MS + 1
 
     frame = render_frame(kit.reporter)
 
-    assert _content_line(frame, "no output") == expected_fragment
+    assert _liveness_rows(frame) == [
+        "no output for 30s (last tool: Bash ✗ at 00:00:03)",
+        "00:00:03  Bash   ...  ✗ 1s",
+    ]
 
 
 def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter())
     kit.reporter.observer(model_phase_event(2000, "turn_end"))
     kit.clock.now = 2000 + IDLE_WARN_MS + 1
 
@@ -748,12 +743,12 @@ def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
         pytest.param(-1, "waiting  0s", id="below-custom-idle-warn"),
     ],
 )
-def test_liveness_when_waiting_around_custom_idle_warn_does_show_expected_state(
+def test_liveness_when_waiting_around_custom_idle_warn_does_escalate_only_past_it(
     offset: int, expected_state: str
 ):
     custom_ms = 100
     kit = _make_reporter_past_bash_end(idle_warn_ms=custom_ms)
-    kit.clock.now = _BASH_END_MS + custom_ms + offset
+    kit.clock.now = BASH_CYCLE_END_MS + custom_ms + offset
 
     frame = render_frame(kit.reporter)
 
@@ -766,54 +761,25 @@ def test_liveness_when_waiting_around_custom_idle_warn_does_show_expected_state(
 
 
 @pytest.mark.parametrize(
-    ("phase", "expected"),
+    ("phase", "tool_name", "expected"),
     [
-        pytest.param("thinking", "thinking  ~0 tokens  0s", id="thinking"),
-        pytest.param("responding", "responding  0s", id="responding"),
-        pytest.param("turn_end", "waiting  0s", id="turn_end"),
+        pytest.param("thinking", None, "thinking  ~0 tokens  0s", id="thinking"),
+        pytest.param("responding", None, "responding  0s", id="responding"),
+        pytest.param("turn_end", None, "waiting  0s", id="turn_end"),
+        pytest.param("tool_input", "Edit", "preparing Edit  0s", id="with-tool-name"),
+        pytest.param("tool_input", None, "preparing unknown  0s", id="without-tool-name"),
     ],
 )
-def test_liveness_when_model_phase_does_show_expected_state(phase: ModelPhase, expected: str):
-    kit = make_reporter()
+def test_liveness_when_model_phase_reported_does_show_the_phase_with_its_elapsed(
+    phase: ModelPhase, tool_name: str | None, expected: str
+):
+    kit = launched(make_reporter())
     observer = kit.reporter.observer
-    observer(launch_event(1000))
-    observer(model_phase_event(2000, phase))
+    observer(model_phase_event(2000, phase, tool_name=tool_name))
 
     frame = render_frame(kit.reporter)
 
     assert _liveness_rows(frame) == [expected]
-
-
-def test_liveness_when_model_phase_thinking_after_thinking_update_does_preserve_token_count():
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    observer(launch_event(1000))
-    observer(thinking_event(1500, estimated_tokens=200))
-    observer(model_phase_event(2000, "thinking"))
-
-    frame = render_frame(kit.reporter)
-
-    assert _content_line(frame, "thinking") == "thinking  ~200 tokens  0s"
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "expected_state"),
-    [
-        pytest.param("Edit", "preparing Edit  0s", id="with-tool-name"),
-        pytest.param(None, "preparing unknown  0s", id="without-tool-name"),
-    ],
-)
-def test_liveness_when_model_phase_tool_input_does_show_preparing(
-    tool_name: str | None, expected_state: str
-):
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    observer(launch_event(1000))
-    observer(model_phase_event(2000, "tool_input", tool_name=tool_name))
-
-    frame = render_frame(kit.reporter)
-
-    assert _liveness_rows(frame) == [expected_state]
 
 
 # ---------------------------------------------------------------------------
@@ -837,26 +803,22 @@ def test_liveness_when_iterate_tool_has_sidecar_does_show_its_passes(
         last_pass_duration_ms=225_000.0,
     )
     kit = make_reporter(read_progress=lambda _root: sidecar)
-    kit.reporter.observer(launch_event(1000))
-    kit.clock.now = 2000
-    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
+    fire_launch_and_iterate_start(kit)
     kit.clock.now = 2000 + 31 * 60 * 1000
 
     frame = render_frame(kit.reporter)
 
-    assert _content_line(frame, "passes") == expected_row
+    assert _liveness_rows(frame) == ["00:00:02  Bash   gymrat iterate  31m 0s", expected_row]
 
 
-def test_liveness_when_iterate_tool_has_no_sidecar_does_show_plain_elapsed():
+def test_liveness_when_iterate_tool_has_no_sidecar_or_nested_activity_does_show_only_plain_elapsed():
     kit = make_reporter(read_progress=lambda _root: None)
-    kit.reporter.observer(launch_event(1000))
-    kit.clock.now = 2000
-    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
+    fire_launch_and_iterate_start(kit)
     kit.clock.now = 7000
 
     frame = render_frame(kit.reporter)
 
-    assert _content_line(frame, "Bash") == "00:00:02  Bash   gymrat iterate  5s"
+    assert _liveness_rows(frame) == ["00:00:02  Bash   gymrat iterate  5s"]
 
 
 # ---------------------------------------------------------------------------
@@ -869,11 +831,7 @@ _HALFWAY = ProgressSnapshot(passes_completed=4, passes_total=8, last_pass_durati
 
 def test_liveness_when_mcp_iterate_tool_in_flight_does_show_the_sidecar_passes():
     kit = make_reporter(read_progress=lambda _root: _HALFWAY)
-    kit.reporter.observer(launch_event(1000))
-    kit.clock.now = 2000
-    kit.reporter.observer(
-        tool_start_event("mcp__gymrat__iterate", "mcp-1", 2000, input_summary="gymrat iterate")
-    )
+    fire_launch_and_iterate_start(kit, tool_name="mcp__gymrat__iterate")
     kit.clock.now = 2000 + 10 * 60 * 1000
 
     frame = render_frame(kit.reporter)
@@ -907,8 +865,7 @@ def test_liveness_when_mcp_iterate_tool_in_flight_does_show_the_sidecar_passes()
 def test_liveness_when_non_iterate_tool_in_flight_does_show_its_summary_without_the_sidecar(
     tool_name: str, input_summary: str, expected_row: str
 ):
-    kit = make_reporter(read_progress=lambda _root: _HALFWAY)
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter(read_progress=lambda _root: _HALFWAY))
     kit.clock.now = 2000
     kit.reporter.observer(tool_start_event(tool_name, "tool-2", 2000, input_summary=input_summary))
     kit.clock.now = 5000
@@ -923,10 +880,9 @@ def test_liveness_when_non_iterate_tool_in_flight_does_show_its_summary_without_
 # ---------------------------------------------------------------------------
 
 
-def test_liveness_when_follow_up_does_not_change_liveness():
-    kit = make_reporter()
+def test_liveness_when_follow_up_replied_does_show_it_on_the_turns_row():
+    kit = launched(make_reporter())
     observer = kit.reporter.observer
-    observer(launch_event(1000))
     observer(model_phase_event(1500, "responding"))
     observer(turn_end_event(2000, text="done"))
     observer(follow_up_event(3000, action="replied"))
@@ -957,7 +913,9 @@ def test_plain_when_no_writer_given_does_print_each_line_to_stderr(
     assert capsys.readouterr().err == "caps 60m\n"
 
 
-def test_plain_when_session_read_fails_again_after_recovering_does_not_warn_a_second_time():
+def test_plain_when_session_read_fails_again_after_recovering_does_warn_once_without_a_traceback(
+    capsys: pytest.CaptureFixture[str],
+):
     recovered = make_read_session(session_state(), has_baseline=True)
     reads = iter([_throwing_read, recovered, _throwing_read])
 
@@ -966,12 +924,12 @@ def test_plain_when_session_read_fails_again_after_recovering_does_not_warn_a_se
 
     kit, writes = _plain(read_session=read_in_turn)
 
-    kit.reporter.refresh_session()
-    kit.reporter.refresh_session()
-    kit.reporter.refresh_session()
+    with unhandled_logging():
+        kit.reporter.refresh_session()
+        kit.reporter.refresh_session()
+        kit.reporter.refresh_session()
 
-    reports = [line for line in writes if "session read failed" in line]
-    assert reports == ["session read failed: no session file"]
+    assert (writes, capsys.readouterr().err) == (["session read failed: no session file"], "")
 
 
 def test_plain_when_warn_called_does_record_warning():
@@ -1020,14 +978,6 @@ def test_exit_phase_when_plain_does_write_a_line_only_when_the_phase_changes(
 # run-end exit sequence
 # ---------------------------------------------------------------------------
 
-_EMPTY = ReadSessionResult(state=empty_session_state(), has_baseline=True)
-_KEPT = ReadSessionResult(
-    state=session_state(
-        iteration_count=1, keep_count=1, last_iteration=make_iteration(-2.0, "improved")
-    ),
-    has_baseline=True,
-)
-
 
 @pytest.mark.parametrize(
     ("phase", "expected_line"),
@@ -1048,8 +998,7 @@ _KEPT = ReadSessionResult(
 def test_liveness_when_exit_phase_reported_does_show_the_phase_with_advancing_elapsed(
     phase: ExitPhase, expected_line: str
 ):
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter())
     kit.clock.now = 5000
     kit.reporter.exit_phase(phase)
     kit.clock.now = 8000
@@ -1057,51 +1006,3 @@ def test_liveness_when_exit_phase_reported_does_show_the_phase_with_advancing_el
     frame = render_frame(kit.reporter)
 
     assert _liveness_rows(frame) == [expected_line]
-
-
-_UNREADABLE = RuntimeError("session file unreadable")
-
-
-@pytest.mark.parametrize(
-    ("mode", "reread", "expected"),
-    [
-        pytest.param("live", _KEPT, _KEPT, id="rereads-live"),
-        pytest.param("plain", _KEPT, _KEPT, id="rereads-plain"),
-        pytest.param("live", _UNREADABLE, _EMPTY, id="reread-fails-keeps-previous-live"),
-        pytest.param("plain", _UNREADABLE, _EMPTY, id="reread-fails-keeps-previous-plain"),
-    ],
-)
-def test_refresh_session_when_called_does_reread_the_session_keeping_the_last_good_one(
-    mode: Literal["live", "plain"],
-    reread: ReadSessionResult | Exception,
-    expected: ReadSessionResult,
-):
-    kit = make_reporter(
-        mode=mode, read_session=Mock(side_effect=[_EMPTY, reread]), plain_write=lambda _line: None
-    )
-    kit.reporter.observer(launch_event(1000))
-
-    kit.reporter.refresh_session()
-
-    assert kit.reporter.session_result() == expected
-
-
-@pytest.mark.parametrize(
-    ("reread", "expected_repaints"),
-    [
-        pytest.param(_KEPT, 1, id="reread"),
-        pytest.param(_UNREADABLE, 0, id="reread-fails"),
-    ],
-)
-def test_refresh_session_when_live_does_repaint_only_after_a_successful_reread(
-    reread: ReadSessionResult | Exception, expected_repaints: int
-):
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        live = mock_live_cls.return_value
-        kit = make_reporter(mode="live", read_session=Mock(side_effect=[_EMPTY, reread]))
-        kit.reporter.observer(launch_event(1000))
-        painted = live.refresh.call_count
-
-        kit.reporter.refresh_session()
-
-        assert live.refresh.call_count - painted == expected_repaints

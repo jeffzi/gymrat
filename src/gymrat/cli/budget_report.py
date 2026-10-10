@@ -24,9 +24,9 @@ from gymrat.session.budget import (
     estimate_iterate_duration,
     read_budget,
 )
-from gymrat.session.paths import repo_root, session_jsonl_path
-from gymrat.session.store import read_records
-from gymrat.utils import MS_PER_SECOND, format_duration, warn_to_stderr
+from gymrat.session.paths import repo_root
+from gymrat.session.store import read_session_records
+from gymrat.utils import MS_PER_SECOND, format_duration, format_time_left, warn_to_stderr
 
 
 def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:
@@ -38,6 +38,10 @@ def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:
     Returns:
         The text trailer and JSON summary, or ``("", None)`` when no budget
         is active.
+
+    Raises:
+        GymratError: When the supervise lock file cannot be opened, so whether
+            the budget is live is unknown.
     """
     current = _clock.now_ms()
     budget = read_budget(root, now_ms=current)
@@ -48,13 +52,13 @@ def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:
         cap_minutes=budget.max_minutes,
         remaining_seconds=int(remaining_ms // MS_PER_SECOND),
     )
-    return f"\n{format_duration(remaining_ms)} left of {budget.max_minutes:g}m", summary
+    return f"\n{format_time_left(remaining_ms, budget.max_minutes)}", summary
 
 
 def write_budget_report(
     root: str,
+    flags: SharedFlags,
     *,
-    use_json: bool,
     render_json: Callable[[BudgetSummary | None], str],
     text_report: str,
 ) -> None:
@@ -62,17 +66,20 @@ def write_budget_report(
 
     Args:
         root: The repository root whose session budget to read.
-        use_json: When true, delegate to *render_json*; otherwise concatenate
-            *text_report* with the budget trailer.
+        flags: The command's flags; when they select JSON, delegate to
+            *render_json*, otherwise concatenate *text_report* with the budget
+            trailer.
         render_json: Callable that turns an optional ``BudgetSummary`` into a
             complete JSON string.
         text_report: Pre-rendered text body used in plain-text mode.
 
     Raises:
         OSError: When the stdout write fails for any reason other than a closed pipe.
+        GymratError: When the supervise lock file cannot be opened, so whether
+            the budget is live is unknown.
     """
     trailer, summary = budget_snapshot(root)
-    report = render_json(summary) if use_json else text_report + trailer
+    report = render_json(summary) if wants_json(flags) else text_report + trailer
     write_stdout(report + "\n")
 
 
@@ -98,7 +105,7 @@ class JsonRenderer[T](Protocol):
 
 def wants_json(flags: SharedFlags) -> bool:
     """Whether ``flags.format`` selects the JSON document rather than the text report."""
-    return flags.format == OutputFormat.json.value
+    return flags.format == OutputFormat.json
 
 
 def _repo_root_or_none() -> str | None:
@@ -139,6 +146,8 @@ def emit_report[T](
 
     Raises:
         OSError: When the stdout write fails for any reason other than a closed pipe.
+        GymratError: When the supervise lock file cannot be opened, so whether
+            the budget is live is unknown.
     """
     root = _repo_root_or_none()
     trailer, summary = budget_snapshot(root) if root is not None else ("", None)
@@ -161,6 +170,10 @@ def warn_duration_over_budget(*, halve: bool) -> None:
             shape ``compare`` runs — and lead with the full cost, keeping the
             per-side figure in parentheses so a per-side number that still
             fits does not read as if nothing were wrong.
+
+    Raises:
+        GymratError: When the supervise lock file cannot be opened, so whether
+            the budget is live is unknown.
     """
     root = _repo_root_or_none()
     if root is None:
@@ -170,7 +183,7 @@ def warn_duration_over_budget(*, halve: bool) -> None:
     if budget is None:
         return
     try:
-        records = read_records(session_jsonl_path(root))
+        records = read_session_records(root)
     except (GymratError, OSError):
         return
     estimate = estimate_iterate_duration(records)

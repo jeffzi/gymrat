@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import CommandOrigin, CommandReason
 
 import typer
@@ -23,18 +22,22 @@ import typer
 from gymrat import clock as _clock
 from gymrat.agent_env import COMMAND_ORIGIN_ENV, TOOL_ORIGIN, TRACEPARENT_ENV
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
-from gymrat.git import NotAGitRepositoryError
-from gymrat.loop.iterate.run import LoopStopError
+from gymrat.loop.stop_condition import LoopStopError
 from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
-from gymrat.session.records import CommandRecord, SessionRecord
+from gymrat.session.paths import (
+    NotAGitRepositoryError,
+    lockfile_path,
+    repo_root,
+    session_jsonl_path,
+)
+from gymrat.session.records import CommandRecord, SessionRecord, add_record_events
 from gymrat.session.store import (
     append_record,
     read_records,
     recover_torn_tail,
     session_header,
 )
-from gymrat.utils import ENDPOINT_ENV, otlp_endpoint, warn_to_stderr
+from gymrat.utils import otlp_endpoint_from_env, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Trace bookkeeping
@@ -55,10 +58,9 @@ class CommandTrace:
     they carry no meaning to the seam beyond the exit-code / reason mapping.
 
     Attributes:
-        seq: Sequence number the seam reads after the body settles.
-        gate: Whether the body's outcome gates the exit code, read by the seam
-            after the body settles.
-        reason: The command reason the seam reads after the body settles.
+        seq: The iteration the command acted on, if any.
+        gate: Whether the body's outcome gates the exit code.
+        reason: Why the command settled as it did.
     """
 
     seq: int | None = None
@@ -86,11 +88,11 @@ def _resolve_exit(  # noqa: PLR0911 -- flat branch per exception type, each an e
         return GATE_EXIT_CODE, reason
 
     if isinstance(caught, typer.Exit):
-        code = caught.exit_code
-        if code >= TOOL_FAILURE_EXIT_CODE:
-            return TOOL_FAILURE_EXIT_CODE, trace.reason or "error"
-        # exit_code is int; below TOOL_FAILURE_EXIT_CODE callers only pass 0|1
-        return code, trace.reason  # type: ignore[return-value]
+        if caught.exit_code == 0:
+            return 0, trace.reason
+        if caught.exit_code == GATE_EXIT_CODE:
+            return GATE_EXIT_CODE, trace.reason
+        return TOOL_FAILURE_EXIT_CODE, trace.reason or "error"
 
     if isinstance(caught, GymratError):
         gym_reason: CommandReason = caught.reason or "error"
@@ -130,6 +132,8 @@ async def with_repo_lock[T](
     With an OTLP endpoint set, the appended record is also exported as a
     command span. Tracing is configured only then, for the session whose log
     holds the record, so a body that opens a new session is traced under it.
+    A session log that cannot be read before the body, or read and parsed
+    after it, warns to stderr and emits no span.
 
     Args:
         command: The command name recorded in the :class:`CommandRecord`.
@@ -185,7 +189,7 @@ async def with_repo_lock[T](
                 reason=reason,
                 elapsed_ms=elapsed_ms,
             )
-            if appended is not None:
+            if appended is not None and pre_body_lines is not None:
                 try:
                     _, tracing_active = _maybe_configure_tracing(root)
                     if tracing_active:
@@ -220,7 +224,8 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
 ) -> CommandRecord | None:
     """Append a :class:`CommandRecord` when the session log exists and is non-empty.
 
-    A failure to build or append the record warns to stderr instead of raising.
+    A failure to read the log's size, or to build or append the record, warns
+    to stderr instead of raising.
 
     Args:
         jsonl: The session log to append to.
@@ -234,10 +239,9 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
     Returns:
         The appended record, or ``None`` when nothing was appended.
     """
-    if _jsonl_is_empty(jsonl):
-        return None
-
     try:
+        if _jsonl_is_empty(jsonl):
+            return None
         record = CommandRecord(
             type="command",
             at=_clock.now_ns(),
@@ -262,12 +266,14 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
 # ---------------------------------------------------------------------------
 
 
-def _pre_body_log(root: str, jsonl: str) -> tuple[str, int]:
+def _pre_body_log(root: str, jsonl: str) -> tuple[str, int | None]:
     """Read what the command span needs from the session log before the body runs.
 
     The span's events are the records the body appends, so the line count must
     be taken before the body runs. Without an endpoint no span is emitted and
-    the log is not read.
+    the log is not read. A log that exists but cannot be read warns to stderr:
+    without its line count the span cannot tell the body's records apart, so
+    none is emitted.
 
     Args:
         root: The repository whose session header names the session.
@@ -275,12 +281,18 @@ def _pre_body_log(root: str, jsonl: str) -> tuple[str, int]:
 
     Returns:
         The session id ``jsonl`` belongs to (empty when there is none, or no
-        endpoint) and its line count (``0`` without an endpoint).
+        endpoint) and its line count: ``0`` without an endpoint or a log,
+        ``None`` when the log could not be read.
     """
-    if otlp_endpoint(os.environ.get(ENDPOINT_ENV)) is None:
+    if otlp_endpoint_from_env() is None:
         return "", 0
     header = session_header(root)
-    return (header.session_id if header is not None else ""), _count_lines(jsonl)
+    session_id = header.session_id if header is not None else ""
+    try:
+        return session_id, _count_lines(jsonl)
+    except OSError as error:
+        warn_to_stderr(f"failed to emit command span: {error}")
+        return session_id, None
 
 
 def _maybe_configure_tracing(root: str) -> tuple[str, bool]:
@@ -300,13 +312,15 @@ def _maybe_configure_tracing(root: str) -> tuple[str, bool]:
     Raises:
         ValueError: When tracing is already configured for another session.
     """
-    if otlp_endpoint(os.environ.get(ENDPOINT_ENV)) is None:
+    if otlp_endpoint_from_env() is None:
         return "", False
     header = session_header(root)
     if header is None:
         return "", False
 
-    from gymrat.telemetry.provider import configure_tracing  # noqa: PLC0415
+    from gymrat.telemetry.provider import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
+        configure_tracing,
+    )
 
     active = configure_tracing(header.session_id)
     return header.session_id, active
@@ -316,7 +330,7 @@ def _jsonl_is_empty(jsonl_path: str) -> bool:
     """True when the session log doesn't exist or has no content yet."""
     try:
         return Path(jsonl_path).stat().st_size == 0
-    except OSError:
+    except FileNotFoundError:
         return True
 
 
@@ -324,7 +338,7 @@ def _count_lines(jsonl_path: str) -> int:
     """Count newline-terminated lines in ``jsonl_path``, 0 if absent."""
     try:
         data = Path(jsonl_path).read_bytes()
-    except OSError:
+    except FileNotFoundError:
         return 0
     return data.count(b"\n")
 
@@ -350,17 +364,23 @@ def _emit_command_span(
         start_ns: When the command started, in nanoseconds since the epoch.
         pre_body_lines: How many lines ``jsonl`` held before the body ran.
     """
-    from opentelemetry.trace import NonRecordingSpan, set_span_in_context  # noqa: PLC0415
-
-    from gymrat.telemetry.provider import (  # noqa: PLC0415
-        existing_session_span,
-        flush_tracing,
-        parse_traceparent,
-        record_event,
-        start_command_span,
+    from opentelemetry.trace import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
+        NonRecordingSpan,
+        set_span_in_context,
     )
 
-    records = _safe_read_records(jsonl)
+    from gymrat.telemetry.command_span import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
+        start_command_span,
+    )
+    from gymrat.telemetry.provider import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
+        flush_tracing,
+        parse_traceparent,
+    )
+    from gymrat.telemetry.session_span import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
+        existing_session_span,
+    )
+
+    records = read_records(jsonl)
     if not records or not isinstance(records[0], SessionRecord):
         return
     session_id = records[0].session_id
@@ -380,18 +400,6 @@ def _emit_command_span(
         context=parent_ctx,
         start_time=start_ns,
     ) as span:
-        for record in records[first_body_line:-1]:
-            if isinstance(record, SessionRecord):
-                continue
-            event_name, event_attrs = record_event(record)
-            span.add_event(event_name, attributes=event_attrs, timestamp=record.at)
+        add_record_events(span, records[first_body_line:-1])
 
     flush_tracing()
-
-
-def _safe_read_records(jsonl_path: str) -> list[SessionLogRecord]:
-    """Read records from the session log, returning empty on failure."""
-    try:
-        return read_records(jsonl_path)
-    except GymratError:
-        return []

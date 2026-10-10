@@ -10,73 +10,55 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-import pytest
-
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.loop.baseline import measure_baseline
-from gymrat.sampling import RunOptions, SamplingOptions, TargetSpec
+from gymrat.sampling import TargetSpec
 from gymrat.session.records import BaselineRecord
+from tests._clock import install_monotonic_clock
+from tests._pipeline import run_options
 from tests.loop._probe import install_measure, only_call
 from tests.report._measurements import create_measurement_result
 
 if TYPE_CHECKING:
-    from gymrat.progress_events import ProgressEvent
+    import pytest
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
+    from gymrat.progress_events import ProgressEvent
+    from gymrat.sampling import RunOptions
 
 
 def _run_options() -> RunOptions:
-    """Run options with every field set away from its default, so a dropped field shows."""
+    """Run options the baseline must hand on to the measurement engine unchanged."""
     warnings: list[str] = []
     events: list[ProgressEvent] = []
-    return RunOptions(
-        sampling=SamplingOptions(
-            bench="sh bench.sh",
-            prepare="sh prepare.sh",
-            samples=5,
-            timeout_seconds=30,
-            on_progress=events.append,
-            warn=warnings.append,
-        ),
-        adapter="metric-lines",
+    return run_options(
+        samples=5,
+        bench="sh bench.sh",
+        prepare="sh prepare.sh",
+        timeout_seconds=30,
+        on_progress=events.append,
+        warn=warnings.append,
         config_metrics={"decode/time": MetricEntry(direction="higher")},
         config_kinds={"memory": KindEntry(gating=False)},
     )
 
 
-# ---------------------------------------------------------------------------
-# measure_baseline returns result and record
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "target_label",
-    [
-        pytest.param("build", id="target-label-matches-measurement"),
-        pytest.param("release", id="target-label-differs-from-measurement"),
-    ],
-)
-def test_measure_baseline_when_target_given_does_return_the_measurement_with_its_baseline_record(
+def test_measure_baseline_when_target_label_differs_does_return_the_measurement_with_a_record_labeled_by_it(
     monkeypatch: pytest.MonkeyPatch,
-    target_label: str,
 ):
     rounds: list[dict[str, float]] = [{"latency": 41}, {"latency": 43}]
     handed_back = create_measurement_result(label="build", rounds=rounds)
-    recorder = install_measure(monkeypatch, handed_back)
-    ticks = iter([1_000.0, 1_500.0])
-    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
+    clock = install_monotonic_clock(monkeypatch)
+    recorder = install_measure(monkeypatch, handed_back, on_call=lambda: clock.tick(500.0))
     stamp_ns = 1_700_000_000_123_456_789
     monkeypatch.setattr("gymrat.loop.baseline.now_ns", lambda: stamp_ns)
-    target = TargetSpec(label=target_label, target="main")
+    target = TargetSpec(label="release", target="main")
     run_options = _run_options()
 
     result, record = asyncio.run(measure_baseline(target, run_options))
 
     forwarded = only_call(recorder)
     assert forwarded.target == target
-    assert forwarded.run is run_options
+    assert forwarded.run == run_options
     assert result is handed_back
     assert record == BaselineRecord(
         type="baseline", at=stamp_ns, label="build", samples=tuple(rounds), duration_ms=500

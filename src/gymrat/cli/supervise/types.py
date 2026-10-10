@@ -1,7 +1,6 @@
 """Types for the supervise progress display.
 
-The session read result and the liveness states and tool records the reducer
-tracks.
+The liveness states and tool records the reducer tracks.
 """
 
 from __future__ import annotations
@@ -10,53 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from gymrat.model import Direction
-    from gymrat.session.store import SessionState
     from gymrat.supervisor.events import CapAction, CapType
-
-
-@dataclass(frozen=True, slots=True)
-class BestIteration:
-    """The committed-keep iteration whose primary delta improved the most.
-
-    Attributes:
-        delta_pct: Its primary delta, in percent.
-        seq: Its sequence number.
-        label: Its primary: the metric name for a named-metric primary, else
-            the kind (``"geomean"``).
-        baseline_sha: The commit it was measured against: the commit of the
-            committed keep before it, or the commit the session started from
-            when no keep preceded it. ``None`` when the reader supplies none.
-        direction: Whether a lower or a higher primary is the better outcome,
-            which decides whether ``delta_pct`` is an improvement.
-    """
-
-    delta_pct: float
-    seq: int
-    label: str
-    baseline_sha: str | None = None
-    direction: Direction = "lower"
-
-
-@dataclass(frozen=True, slots=True)
-class ReadSessionResult:
-    """The folded session state plus whether a baseline has been recorded.
-
-    Attributes:
-        state: The folded session state as of the last read.
-        has_baseline: Whether a baseline record has been recorded for the session.
-        best: The best committed-keep iteration. ``None`` when no keep has been
-            committed. ``read_live_session`` computes it from the session
-            records; injected test readers set it directly.
-        stop_message: The newest stop record's message. Holds a value only
-            while the folded log ends on a stop; ``None`` once any iteration,
-            keep, discard, or finalize record supersedes it.
-    """
-
-    state: SessionState
-    has_baseline: bool
-    best: BestIteration | None = None
-    stop_message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,10 +52,12 @@ class Composing:
 
 @dataclass(frozen=True, slots=True)
 class Waiting:
-    """No tool is running; ``since`` is the timestamp of the last observed activity.
+    """No tool is running.
 
-    ``last_tool`` is the last finished top-level tool, ``None`` when no tool has
-    finished yet.
+    Attributes:
+        since: The timestamp of the last observed activity.
+        last_tool: The last finished top-level tool, or ``None`` when no tool
+            has finished yet.
     """
 
     since: int
@@ -119,10 +74,14 @@ class Capped:
 
 @dataclass(frozen=True, slots=True)
 class Exiting:
-    """The run-end exit sequence entered phase ``kind`` at ``since``.
+    """The run-end exit sequence entered a phase.
 
-    ``pid`` is the process holding the repository lock while the sequence waits
-    on it; ``None`` when its holder record cannot be read or while settling.
+    Attributes:
+        kind: The phase the sequence entered.
+        since: When it entered the phase.
+        pid: The process holding the repository lock while the sequence waits
+            on it, or ``None`` when its holder record cannot be read or while
+            settling.
     """
 
     kind: Literal["waiting-lock", "settling"]
@@ -154,11 +113,15 @@ class FinishedTool:
     ended_at: int
 
 
+type NestedModelPhase = Literal["thinking", "responding", "tool_input"]
+"""A model phase a nested subagent can be in; a nested turn end clears it instead."""
+
+
 @dataclass(frozen=True, slots=True)
 class NestedPhase:
     """A nested subagent model phase (thinking, responding, or tool_input)."""
 
-    phase: str
+    phase: NestedModelPhase
     since: int
     tool_name: str | None = None
 

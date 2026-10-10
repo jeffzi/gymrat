@@ -25,8 +25,9 @@ import importlib.metadata
 import json
 import sys
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NamedTuple, get_args
+from typing import Any, get_args
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -42,7 +43,13 @@ from gymrat.supervisor.events import SESSION_EVENT_ADAPTER, SessionEvent
 from gymrat.utils import first_line
 
 SESSION_LOG_ADDRESS = f"{SESSION_DIR_NAME}/{SESSION_LOG_NAME}"
+"""Where the session log lives, relative to the repository root."""
+
 SUPERVISOR_LOG_ADDRESS = f"{SESSION_DIR_NAME}/{supervisor_log_name('<ms>')}"
+"""Where a supervisor log lives, relative to the repository root.
+
+``<ms>`` stands for the supervisor's launch time in epoch milliseconds.
+"""
 
 _SCHEMA_FORMAT = "application/schema+json;version=draft-2020-12"
 _SCHEMA_BASE_URL = "https://github.com/jeffzi/gymrat/schemas/"
@@ -54,7 +61,8 @@ _YAML_WIDTH = 100
 # ---------------------------------------------------------------------------
 
 
-class _LogSpec(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class _LogSpec:
     """One JSONL log the artifacts document.
 
     Attributes:
@@ -84,7 +92,6 @@ class _LogSpec(NamedTuple):
         return {wire_type(model): model.__name__ for model in self.models}
 
 
-#: The documented logs, session log first; every artifact lists them in this order.
 _LOGS: tuple[_LogSpec, _LogSpec] = (
     _LogSpec(
         channel="session-log",
@@ -99,14 +106,15 @@ _LOGS: tuple[_LogSpec, _LogSpec] = (
         heading="Supervisor Log",
         title="gymrat supervisor log event",
         address=SUPERVISOR_LOG_ADDRESS,
-        # Supervisor-log event models, in ``SessionEvent`` union order.
         models=get_args(SessionEvent),
         adapter=SESSION_EVENT_ADAPTER,
     ),
 )
+"""The documented logs, session log first; every artifact lists them in this order."""
 
 
-class ReaderSpec(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class ReaderSpec:
     """A channel read: source channel, consumed wire-type strings, and doc sentence.
 
     Attributes:
@@ -171,10 +179,10 @@ READERS: dict[str, ReaderSpec] = {
         description="Streams supervisor events for live dashboard display.",
     ),
 }
+"""The documented log readers, keyed by operation name, in documentation order."""
 
 
 def _summary(class_name: str, schema_def: dict[str, Any], *, first_line_only: bool) -> str:
-    # A model with no docstring is summarized by its class name.
     description = schema_def.get("description")
     if not description:
         return class_name

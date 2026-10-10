@@ -56,7 +56,7 @@ from gymrat.stats import (
     percent_delta,
     sign_flip_permutation_test,
 )
-from gymrat.utils import WarnSink, finite_or_none, pluralize, warn_to_stderr
+from gymrat.utils import WarnSink, fraction_of_median, pluralize, warn_to_stderr
 
 __all__ = [
     "BAND_MIN_N",
@@ -141,27 +141,6 @@ def _determine_verdict(delta: float, direction: Direction, *, has_signal: bool =
     return "improved" if is_improvement(delta, direction) else "regressed"
 
 
-def _fraction_of_median(numerator: float, median: float, scale: float = 1.0) -> float | None:
-    """A value as a scaled fraction of a median's magnitude.
-
-    The scale is applied after the division so a large numerator alone cannot
-    overflow.
-
-    Args:
-        numerator: The value to express as a fraction of the median.
-        median: The median whose magnitude is the denominator.
-        scale: The factor applied to the fraction.
-
-    Returns:
-        The scaled fraction, or ``None`` when *median* is zero or the scaled
-        fraction is not finite.
-    """
-    if median == 0:
-        return None
-    fraction = (numerator / abs(median)) * scale
-    return finite_or_none(fraction)
-
-
 def _largest_term(*fractions: float | None) -> float:
     return max((f for f in fractions if f is not None), default=0.0)
 
@@ -193,13 +172,13 @@ def _compute_noise(samples: _PairedSamples, unit: MetricUnit | None) -> _Noise:
     half_range_a = compute_half_range(samples.left)
     half_range_b = compute_half_range(samples.right)
 
-    noise_pct_a = _fraction_of_median(half_range_a, samples.median_left, NOISE_K * 100)
-    noise_pct_b = _fraction_of_median(half_range_b, samples.median_right, NOISE_K * 100)
+    noise_pct_a = fraction_of_median(half_range_a, samples.median_left, NOISE_K * 100)
+    noise_pct_b = fraction_of_median(half_range_b, samples.median_right, NOISE_K * 100)
 
     byte_floor_pct = 0.0
     if unit == "bytes":
-        byte_pct_a = _fraction_of_median(ONE_BYTE_PCT, samples.median_left)
-        byte_pct_b = _fraction_of_median(ONE_BYTE_PCT, samples.median_right)
+        byte_pct_a = fraction_of_median(ONE_BYTE_PCT, samples.median_left)
+        byte_pct_b = fraction_of_median(ONE_BYTE_PCT, samples.median_right)
         byte_floor_pct = _largest_term(byte_pct_a, byte_pct_b)
 
     # A side with scatter but no median magnitude cannot express its noise as a

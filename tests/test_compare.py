@@ -3,39 +3,36 @@
 Unit tests stub the sampling pipeline to pin how ``compare`` assembles a
 :class:`ComparisonResult`: the metric union across targets, the star topology
 that judges every candidate against the shared baseline, and the
-candidate-paired restriction on the displayed baseline median. End-to-end tests
+candidate-paired restriction on the displayed baseline median. The run wiring
+``compare`` shares with ``measure`` (cleanup metadata, sampling callbacks, config
+overrides) is pinned once for both in :mod:`tests.test_measure`. End-to-end tests
 drive real scratch repos and shell bench scripts through the full pipeline.
 """
 
 from __future__ import annotations
 
-import sys
 from typing import TYPE_CHECKING
 
 import pytest
 
 from gymrat import compare as compare_mod
-from gymrat.adapters import get_adapter
 from gymrat.compare import CompareOptions, compare
-from gymrat.config import KindEntry, MetricEntry
-from gymrat.errors import GymratError
+from gymrat.errors import CommandError, GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
-from gymrat.sampling import (
-    CleanupResult,
-    TargetSpec,
-    resolve_metric_meta_from_samples,
-)
-from gymrat.targets import WorktreeRemovalFailure
+from gymrat.sampling import TargetSpec
 from gymrat.utils import warn_to_stderr
-from gymrat.verdict import compute_kind_aggregates, compute_verdicts
-from tests._git import list_worktree_dirs, write_committed_bench
+from tests._git import (
+    EMIT_ONE_BENCH,
+    FAILING_BENCH,
+    emit_bench,
+    list_worktree_dirs,
+    write_committed_bench,
+)
 from tests._git import run_git as _git
 from tests._pipeline import install_pipeline, run_options
+from tests._platform import needs_posix_shell
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from gymrat.progress_events import ProgressEvent
     from gymrat.utils import WarnSink
 
 
@@ -44,10 +41,7 @@ def _options(
     baseline: TargetSpec | None = None,
     candidate_targets: tuple[str, ...] = ("cand",),
     candidates: list[TargetSpec] | None = None,
-    on_progress: Callable[[ProgressEvent], None] | None = None,
     warn: WarnSink = warn_to_stderr,
-    config_metrics: dict[str, MetricEntry] | None = None,
-    config_kinds: dict[str, KindEntry] | None = None,
 ) -> CompareOptions:
     resolved_baseline = baseline if baseline is not None else TargetSpec(label=None, target="base")
     resolved_candidates = (
@@ -56,13 +50,7 @@ def _options(
         else [TargetSpec(label=None, target=name) for name in candidate_targets]
     )
     return CompareOptions(
-        run=run_options(
-            samples=4,
-            on_progress=on_progress,
-            warn=warn,
-            config_metrics=config_metrics,
-            config_kinds=config_kinds,
-        ),
+        run=run_options(samples=4, warn=warn),
         baseline=resolved_baseline,
         candidates=resolved_candidates,
         unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
@@ -79,43 +67,33 @@ async def test_compare_when_candidates_judged_does_use_shared_baseline(
 
     result = await compare(_options(candidate_targets=("a", "b")))
 
-    meta = resolve_metric_meta_from_samples(
-        [baseline, cand_a, cand_b], None, get_adapter("metric-lines"), None
-    )
-    verdicts_a = compute_verdicts(baseline, cand_a, meta)
-    verdicts_b = compute_verdicts(baseline, cand_b, meta)
-    assert result.metrics["x"].candidates[0].verdict == verdicts_a["x"]
-    assert result.metrics["x"].candidates[1].verdict == verdicts_b["x"]
-    assert [c.kinds for c in result.candidates] == [
-        tuple(compute_kind_aggregates(verdicts_a, meta)),
-        tuple(compute_kind_aggregates(verdicts_b, meta)),
+    # Against the shared baseline (median 10.35) a moves about +97% and b about
+    # -51%; judging b against a instead would put b near -75%.
+    outcomes = [
+        None if candidate.verdict is None else (candidate.verdict.verdict, candidate.verdict.delta)
+        for candidate in result.metrics["x"].candidates
     ]
+    assert outcomes == [
+        ("regressed", pytest.approx(96.6, abs=0.1)),
+        ("improved", pytest.approx(-51.4, abs=0.1)),
+    ]
+    assert [candidate.kinds[0].geomean.value for candidate in result.candidates] == pytest.approx(
+        [96.6, -51.4], abs=0.1
+    )
 
 
 async def test_compare_when_metric_on_one_side_only_does_include_it_with_that_sides_median(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    baseline = [{"a": 1.0}, {"a": 2.0}]
-    candidate = [{"b": 3.0}, {"b": 4.0}]
+    baseline = [{"items": 1.0}, {"items": 2.0}]
+    candidate = [{"y": 3.0}, {"y": 4.0}]
     install_pipeline(monkeypatch, compare_mod, [baseline, candidate])
 
     result = await compare(_options())
 
-    assert list(result.metrics.keys()) == ["a", "b"]
-    assert result.metrics["a"].baseline_median == 1.5
-    assert result.metrics["b"].candidates[0].median == 3.5
-
-
-async def test_compare_when_targets_sampled_does_place_baseline_old_and_candidates_new(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    samples = [{"x": 1.0}, {"x": 2.0}]
-    captured = install_pipeline(monkeypatch, compare_mod, [samples, samples, samples])
-
-    await compare(_options(candidate_targets=("one", "two")))
-
-    assert captured.contexts is not None
-    assert [ctx.position for ctx in captured.contexts] == ["old", "new", "new"]
+    assert list(result.metrics.keys()) == ["items", "y"]
+    assert result.metrics["items"].baseline_median == 1.5
+    assert result.metrics["y"].candidates[0].median == 3.5
 
 
 async def test_compare_when_a_round_is_one_sided_does_send_the_dropped_window_warning_to_the_sink(
@@ -128,19 +106,7 @@ async def test_compare_when_a_round_is_one_sided_does_send_the_dropped_window_wa
 
     await compare(_options(warn=warnings.append))
 
-    assert warnings == ["x: dropped 1 paired window where the metric was measured on only one side"]
-
-
-async def test_compare_when_metric_named_like_dict_method_does_treat_as_ordinary_key(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    baseline = [{"items": 1.0}, {"items": 2.0}]
-    candidate = [{"items": 3.0}, {"items": 4.0}]
-    install_pipeline(monkeypatch, compare_mod, [baseline, candidate])
-
-    result = await compare(_options())
-
-    assert result.metrics["items"].baseline_median == 1.5
+    assert [warning.split(": ", 1)[0] for warning in warnings] == ["x"]
 
 
 async def test_compare_when_baseline_round_unpaired_does_median_each_side_over_paired_rounds(
@@ -174,76 +140,13 @@ async def test_compare_when_explicit_labels_given_does_flow_to_result(
     assert result.candidates[0].label == "cand-label"
 
 
-async def test_compare_when_pipeline_completes_does_assemble_result_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    dirty = CleanupResult(
-        removed=2,
-        failures=(WorktreeRemovalFailure(dir="/tmp/wt", error="busy"),),
-        prune_error="could not prune",
-    )
-    install_pipeline(
-        monkeypatch, compare_mod, [[{"x": 1.0}, {"x": 2.0}], [{"x": 3.0}, {"x": 4.0}]], dirty
-    )
-
-    result = await compare(_options())
-
-    assert result.worktrees_removed == 2
-    assert result.worktrees_left_behind == (WorktreeRemovalFailure(dir="/tmp/wt", error="busy"),)
-    assert result.worktree_prune_error == "could not prune"
-    assert result.samples == 4
-    assert result.adapter == "metric-lines"
-
-
-async def test_compare_when_progress_and_warn_given_does_forward_to_sampling(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    captured = install_pipeline(
-        monkeypatch, compare_mod, [[{"x": 1.0}, {"x": 2.0}], [{"x": 3.0}, {"x": 4.0}]]
-    )
-    steps: list[object] = []
-    warnings: list[str] = []
-    options = _options(on_progress=steps.append, warn=warnings.append)
-
-    await compare(options)
-
-    forwarded = captured.options
-    assert forwarded is not None
-    sampling = options.run.sampling
-    assert forwarded.on_progress is sampling.on_progress
-    assert forwarded.warn is sampling.warn
-    assert forwarded.bench == "run"
-    assert forwarded.prepare == "prep"
-    assert forwarded.samples == 4
-    assert forwarded.timeout_seconds == 1.0
-
-
-async def test_compare_when_config_overrides_given_does_apply_them_to_the_result(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    install_pipeline(monkeypatch, compare_mod, [[{"x": 1.0}, {"x": 2.0}], [{"x": 3.0}, {"x": 4.0}]])
-    kinds = {"other": KindEntry(gating=False)}
-
-    result = await compare(
-        _options(config_metrics={"x": MetricEntry(direction="higher")}, config_kinds=kinds)
-    )
-
-    assert result.metrics["x"].meta.direction == "higher"
-    assert result.metrics["x"].meta.gating is False
-    assert result.config_kinds == kinds
-
-
 # ---------------------------------------------------------------------------
 # End-to-end tests (real subprocesses, POSIX only)
 # ---------------------------------------------------------------------------
 
-_posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
-
 
 def _commit_bench(repo: str, value: int) -> None:
-    write_committed_bench(
-        repo, f"#!/bin/sh\necho 'METRIC x={value}'\n", message=f"bench emits {value}"
-    )
+    write_committed_bench(repo, emit_bench(value), message=f"bench emits {value}")
 
 
 def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
@@ -255,8 +158,8 @@ def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
     )
 
 
-@_posix_only
-async def test_compare_when_two_refs_does_produce_comparison_and_sweep(
+@needs_posix_shell
+async def test_compare_when_two_refs_given_does_compare_them_in_disposable_worktrees(
     repo: str,
 ):
     _commit_bench(repo, 1)
@@ -270,11 +173,43 @@ async def test_compare_when_two_refs_does_produce_comparison_and_sweep(
     assert result.candidates[0].label == "candidate"
     assert result.metrics["x"].baseline_median == 1.0
     assert result.metrics["x"].candidates[0].median == 2.0
-    assert result.worktrees_removed >= 2
+    assert result.cleanup.removed >= 2
     assert list_worktree_dirs(repo, include_main=False) == []
 
 
-@_posix_only
+@pytest.mark.parametrize(
+    ("baseline_bench", "candidate_bench", "header"),
+    [
+        pytest.param(
+            FAILING_BENCH, emit_bench(2), 'bench command failed (old, "main"', id="baseline-fails"
+        ),
+        pytest.param(
+            EMIT_ONE_BENCH,
+            FAILING_BENCH,
+            'bench command failed (new, "candidate"',
+            id="candidate-fails",
+        ),
+    ],
+)
+@needs_posix_shell
+async def test_compare_when_a_bench_fails_does_name_the_target_by_its_comparison_side(
+    repo: str,
+    baseline_bench: str,
+    candidate_bench: str,
+    header: str,
+):
+    write_committed_bench(repo, baseline_bench, message="baseline bench")
+    _git(["switch", "-c", "candidate"], repo)
+    write_committed_bench(repo, candidate_bench, message="candidate bench")
+    _git(["switch", "main"], repo)
+
+    with pytest.raises(CommandError) as caught:
+        await compare(_e2e_options("main", "candidate"))
+
+    assert str(caught.value).startswith(header)
+
+
+@needs_posix_shell
 async def test_compare_when_candidate_unresolvable_does_fail_with_nothing_on_disk(
     repo: str,
 ):

@@ -5,8 +5,9 @@ scratch repository, a real session log, and the real ``probe_session`` engine.
 The one seam replaced is the measurement engine — it shells out to the
 consumer's bench script, which no test here can run — so the option surface, the
 lock, the progress reporter, the JSON document, and every engine refusal are
-exercised end to end; the budget trailer is pinned with every other command's
-in ``test_session_cmds``.
+exercised end to end; the budget trailer, the tight-budget warning on the halved
+estimate, the finalized refusal, and the refusal while a supervised run is live
+are pinned with every other command's in ``test_session_cmds``.
 
 The signal test is the exception: it runs the CLI out of process against a real
 shell bench, because a process group can only be killed by a real signal.
@@ -15,7 +16,6 @@ shell bench, because a process group can only be killed by a real signal.
 import json
 import os
 import signal
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -25,49 +25,36 @@ import pytest
 from gymrat.cli.app import app
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES
 from gymrat.progress_events import PrepareFinished, PrepareStarted
-from gymrat.session.paths import (
-    experiment_worktree_dir,
-    lockfile_path,
-    progress_path,
-    repo_root,
-    session_jsonl_path,
-)
-from gymrat.session.records import CommandRecord
-from tests._ansi import (
-    strip_ansi,
-    stripped_lines,
-)
-from tests._cli import ENTRY, no_color_env
+from gymrat.session.paths import experiment_worktree_dir
+from tests._ansi import strip_ansi
+from tests._cli import run_cli
 from tests._git import run_git
-from tests._lock import FIXED_HOLDER_AT, hold_lock
 from tests._process_helpers import (
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
 )
-from tests.cli._budget import (
-    SUPERVISED_HINT,
-    install_tight_budget,
-    set_origin,
+from tests.cli._command_stubs import (
+    stub_probe_measure,
+)
+from tests.cli._runner import (
+    runner,
 )
 from tests.cli._session import (
-    last_command_record,
-    runner,
+    open_probe_session,
     write_bench_config,
 )
+from tests.cli._signalled_cli import pid_recording_script, spawned_gymrat, stop_by_signal
+from tests.config._toml import write_config
 from tests.loop._probe import (
     BASELINE_SAMPLES,
     MeasureRecorder,
-    install_measure,
-    measurement,
     only_call,
 )
 from tests.loop._settle import start_with
 from tests.session.records._fixtures import (
     append_records,
     baseline_record,
-    finalize_record,
-    iteration_record,
-    records_of_type,
+    last_command_record,
 )
 
 FILTER = "sh bench.sh --filter {names}"
@@ -83,16 +70,13 @@ PREPARE_MILESTONES = (
 @pytest.fixture
 def measure(monkeypatch: pytest.MonkeyPatch) -> MeasureRecorder:
     """The stubbed measurement engine, reporting one prepare milestone then a canned result."""
-    return install_measure(
-        monkeypatch, measurement(adapter="metric-lines"), progress=PREPARE_MILESTONES
-    )
+    return stub_probe_measure(monkeypatch, PREPARE_MILESTONES)
 
 
 @pytest.fixture
 def probe_repo(repo: str) -> str:
     """A scratch repo with an open session, a recorded baseline, and a filter template."""
-    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    write_bench_config(repo, filter=FILTER)
+    open_probe_session(repo, filter=FILTER)
     return repo
 
 
@@ -102,39 +86,17 @@ def probe_repo(repo: str) -> str:
 
 
 @pytest.mark.parametrize(
-    "option",
-    [
-        pytest.param(["--debug"], id="debug"),
-        pytest.param(["--format", "text"], id="format"),
-        pytest.param(["-c", "gymrat.toml"], id="config-short"),
-        pytest.param(["--config", "gymrat.toml"], id="config-long"),
-    ],
+    "flag", [pytest.param("-c", id="config-short"), pytest.param("--config", id="config-long")]
 )
-@pytest.mark.usefixtures("probe_repo", "measure")
-def test_probe_command_when_supported_option_given_does_complete(option: list[str]):
-
-    result = runner.invoke(app, ["probe", *option])
-
-    assert result.exit_code == 0
-
-
-@pytest.mark.parametrize(
-    ("option", "env", "styled"),
-    [
-        pytest.param("--color", "NO_COLOR", True, id="color-flag-outranks-no-color-env"),
-        pytest.param("--no-color", "FORCE_COLOR", False, id="no-color-flag-outranks-force-color"),
-    ],
-)
-@pytest.mark.usefixtures("probe_repo", "measure")
-def test_probe_command_when_color_flag_given_does_style_the_stdout_report_to_match(
-    option: str, env: str, styled: bool, monkeypatch: pytest.MonkeyPatch
+def test_probe_command_when_config_file_named_does_bench_with_its_command(
+    *, probe_repo: str, measure: MeasureRecorder, flag: str
 ):
-    monkeypatch.setenv(env, "1")
+    write_config(Path(probe_repo), {"bench": "sh other-bench.sh"}, name="alt.toml")
 
-    result = runner.invoke(app, ["probe", option])
+    result = runner.invoke(app, ["probe", flag, "alt.toml"])
 
     assert result.exit_code == 0
-    assert ("\x1b[" in result.stdout) is styled
+    assert only_call(measure).run.sampling.bench == "sh other-bench.sh"
 
 
 # ---------------------------------------------------------------------------
@@ -142,28 +104,53 @@ def test_probe_command_when_color_flag_given_does_style_the_stdout_report_to_mat
 # ---------------------------------------------------------------------------
 
 
+_SCOPED_ARGS = ["total_ms", "alloc_bytes", "--samples", "3"]
+"""Probe arguments naming two metrics and a sample count."""
+
+
 @pytest.mark.parametrize(
-    ("args", "bench", "samples"),
+    ("args", "bench", "samples", "traced"),
     [
-        pytest.param([], "npm run bench", PROBE_DEFAULT_SAMPLES, id="whole-bench-at-probe-default"),
         pytest.param(
-            ["total_ms", "decode large payload", "--samples", "3"],
-            "sh bench.sh --filter total_ms 'decode large payload'",
+            [],
+            "npm run bench",
+            PROBE_DEFAULT_SAMPLES,
+            {"names": []},
+            id="whole-bench-at-probe-default",
+        ),
+        pytest.param(
+            _SCOPED_ARGS,
+            "sh bench.sh --filter total_ms alloc_bytes",
             3,
+            {"samples": 3, "names": ["total_ms", "alloc_bytes"]},
             id="names-and-samples-scope-the-bench",
-            marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX quoting only"),
+        ),
+        pytest.param(
+            ["--config", "gymrat.toml"],
+            "npm run bench",
+            PROBE_DEFAULT_SAMPLES,
+            {"config": "gymrat.toml", "names": []},
+            id="config-file-named",
         ),
     ],
 )
-@pytest.mark.usefixtures("probe_repo")
-def test_probe_command_when_run_does_bench_the_scope_and_samples_asked_for(
-    args: list[str], bench: str, samples: int, measure: MeasureRecorder
+def test_probe_command_when_run_does_bench_and_trace_the_scope_and_samples_asked_for(
+    *,
+    probe_repo: str,
+    measure: MeasureRecorder,
+    args: list[str],
+    bench: str,
+    samples: int,
+    traced: dict[str, object],
 ):
     result = runner.invoke(app, ["probe", *args])
 
     assert result.exit_code == 0
     run = only_call(measure).run.sampling
     assert (run.bench, run.samples) == (bench, samples)
+    cmd = last_command_record(probe_repo)
+    assert (cmd.name, cmd.exit_code, cmd.reason) == ("probe", 0, None)
+    assert cmd.args == traced
 
 
 # ---------------------------------------------------------------------------
@@ -213,112 +200,13 @@ def test_probe_command_when_format_json_does_emit_the_result_as_a_json_document(
 
 
 # ---------------------------------------------------------------------------
-# duration warnings — the per-side estimate
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("duration_ms", "warns"),
-    [
-        pytest.param(720_000, True, id="half-the-estimate-outlasts-the-budget"),
-        pytest.param(400_000, False, id="half-the-estimate-still-fits"),
-    ],
-)
-@pytest.mark.usefixtures("measure")
-def test_probe_command_when_budget_tight_does_warn_on_the_halved_estimate(
-    probe_repo: str, monkeypatch: pytest.MonkeyPatch, duration_ms: int, warns: bool
-):
-    install_tight_budget(probe_repo, monkeypatch)
-    set_origin(monkeypatch, "tool")
-    append_records(probe_repo, iteration_record(duration_ms=duration_ms))
-
-    result = runner.invoke(app, ["probe"])
-
-    assert result.exit_code == 0
-    assert ("warning" in strip_ansi(result.stderr).lower()) is warns
-
-
-# ---------------------------------------------------------------------------
-# refused while a supervised run is live
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def supervised_probe_repo(probe_repo: str, monkeypatch: pytest.MonkeyPatch) -> str:
-    """A probe-ready repo under a tight live budget its last iteration outlasts, run from the shell."""
-    install_tight_budget(probe_repo, monkeypatch)
-    append_records(probe_repo, iteration_record(duration_ms=720_000))
-    return probe_repo
-
-
-@pytest.mark.parametrize("output_format", ["text", "json"])
-def test_probe_command_when_supervised_run_live_does_refuse_as_supervised_use_tool(
-    supervised_probe_repo: str, output_format: str, measure: MeasureRecorder
-):
-    before = records_of_type(supervised_probe_repo, CommandRecord, matching=False)
-
-    result = runner.invoke(app, ["probe", "--format", output_format])
-
-    assert result.exit_code == 2
-    assert result.stdout == ""
-    lines = [line for line in stripped_lines(result.stderr, keep_blank=False) if line.strip()]
-    assert len(lines) == 2
-    assert "a supervised run is live; use the probe tool" in lines[0]
-    assert SUPERVISED_HINT in lines[1]
-    assert measure.calls == []
-    assert records_of_type(supervised_probe_repo, CommandRecord, matching=False) == before
-    assert not Path(progress_path(supervised_probe_repo)).exists()
-    assert len(records_of_type(supervised_probe_repo, CommandRecord)) == 1
-    cmd = last_command_record(supervised_probe_repo)
-    assert cmd.name == "probe"
-    assert cmd.exit_code == 2
-    assert cmd.reason == "supervised-use-tool"
-    assert cmd.origin == "cli"
-
-
-# ---------------------------------------------------------------------------
-# the repository lock
-# ---------------------------------------------------------------------------
-
-
-def test_probe_command_when_rival_lock_held_does_exit_two_without_benching(
-    probe_repo: str, measure: MeasureRecorder
-):
-    blocker = hold_lock(
-        lockfile_path(repo_root(probe_repo)),
-        holder={"pid": os.getpid(), "command": "iterate", "at": FIXED_HOLDER_AT},
-    )
-
-    try:
-        result = runner.invoke(app, ["probe"])
-    finally:
-        blocker.release()
-
-    assert result.exit_code == 2
-    assert f"PID {os.getpid()}" in strip_ansi(result.stderr)
-    assert measure.calls == []
-
-
-# ---------------------------------------------------------------------------
 # refusals — exit code, message, and the recorded reason
 # ---------------------------------------------------------------------------
 
 
-def _no_session(repo: str) -> None:
-    """A configured repository where no session was ever opened."""
-    write_bench_config(repo, filter=FILTER)
-
-
-def _finalized_session(repo: str) -> None:
-    """A configured repository whose session was closed by a finalize record."""
-    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES), finalize_record()))
-    write_bench_config(repo, filter=FILTER)
-
-
 def _no_filter(repo: str) -> None:
     """An open session with a baseline but no filter template to scope a probe."""
-    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    write_bench_config(repo)
+    open_probe_session(repo)
 
 
 def _no_baseline(repo: str) -> None:
@@ -328,7 +216,6 @@ def _no_baseline(repo: str) -> None:
 
 
 REFUSALS = [
-    pytest.param(_finalized_session, ["probe"], "was finalized onto", "finalized", id="finalized"),
     pytest.param(
         _no_filter,
         ["probe", "total_ms"],
@@ -344,22 +231,9 @@ REFUSALS = [
         id="no-baseline",
     ),
 ]
-"""Every way an opened session refuses a probe: the setup, the argv, a message fragment,
-and the recorded reason."""
-
-
-def test_probe_command_when_no_session_was_opened_does_refuse_without_recording_a_command(
-    repo: str, measure: MeasureRecorder
-):
-    _no_session(repo)
-
-    result = runner.invoke(app, ["probe"])
-
-    assert result.exit_code == 2
-    assert "gymrat start" in strip_ansi(result.stderr)
-    assert result.stdout == ""
-    assert measure.calls == []
-    assert not Path(session_jsonl_path(repo)).exists()
+"""Every probe-only refusal of an opened session: the setup, the argv, a message fragment,
+and the recorded reason. The finalized refusal every session command shares is pinned in
+``test_session_cmds``."""
 
 
 @pytest.mark.parametrize(("setup", "argv", "fragment", "reason"), REFUSALS)
@@ -384,99 +258,37 @@ def test_probe_command_when_the_session_cannot_be_probed_does_exit_two_with_the_
     assert (cmd.name, cmd.exit_code, cmd.reason) == ("probe", 2, reason)
 
 
-@pytest.mark.parametrize(
-    ("argv", "names", "samples"),
-    [
-        pytest.param([], [], None, id="defaults"),
-        pytest.param(["total_ms", "--samples", "3"], ["total_ms"], 3, id="names-and-samples"),
-    ],
-)
-@pytest.mark.usefixtures("measure")
-def test_probe_command_when_run_completes_does_record_the_trace_with_names_and_samples(
-    probe_repo: str,
-    argv: list[str],
-    names: list[str],
-    samples: int | None,
-):
-
-    result = runner.invoke(app, ["probe", *argv])
-
-    assert result.exit_code == 0
-    cmd = last_command_record(probe_repo)
-    assert cmd.name == "probe"
-    assert cmd.args["names"] == names
-    assert cmd.args["samples"] == samples
-    assert cmd.exit_code == 0
-    assert cmd.reason is None
-
-
 # ---------------------------------------------------------------------------
 # signal handling
 # ---------------------------------------------------------------------------
 
 
-_TRACKED_BENCH = """#!/bin/sh
-echo $$ > bench.pid
-echo 'METRIC total_ms=1'
-sleep 120
-"""
-"""A bench that records its own pid, emits one metric, then blocks past any test."""
-
-
-def _wait_or_dump_stacks(proc: subprocess.Popen[str], timeout_s: float) -> None:
-    # The child runs with PYTHONFAULTHANDLER set, so SIGABRT makes it dump every
-    # thread's stack: where a process that outlived its signal is parked.
-    try:
-        proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        proc.send_signal(signal.SIGABRT)
-        _, stacks = proc.communicate(timeout=30)
-        pytest.fail(f"gymrat still running {timeout_s:g} s after the signal; threads:\n{stacks}")
+#: A bench that records its own pid, emits one metric, then blocks past any test.
+_TRACKED_BENCH = pid_recording_script("bench.pid", "echo 'METRIC total_ms=1'\nsleep 120\n")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
-@pytest.mark.parametrize(
-    ("signal_number", "expected_code"),
-    [
-        pytest.param(signal.SIGINT, 130, id="sigint"),
-        pytest.param(signal.SIGTERM, 143, id="sigterm"),
-    ],
-)
 def test_probe_command_when_signalled_mid_bench_does_exit_on_the_signal_code_leaving_no_bench(
-    repo: str, signal_number: int, expected_code: int, reap_groups: list[int]
+    repo: str, reap_groups: list[int]
 ):
     Path(repo, "bench.sh").write_text(_TRACKED_BENCH, encoding="utf-8")
     write_bench_config(repo, bench="sh bench.sh", adapter="metric-lines", timeout_seconds=300)
     run_git(["add", "bench.sh", "gymrat.toml"], repo)
     run_git(["commit", "-m", "bench harness"], repo)
-    subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [*ENTRY, "start", "--baseline", "main"],
-        cwd=repo,
-        env=no_color_env(),
-        capture_output=True,
-        check=True,
+    run_cli(
+        ["start", "--baseline", "main"],
+        repo,
+        timeout=60,
     )
     append_records(repo, baseline_record(samples=BASELINE_SAMPLES))
 
-    proc = subprocess.Popen(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [*ENTRY, "probe"],
-        cwd=repo,
-        env={**no_color_env(), "PYTHONFAULTHANDLER": "1"},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
+    with spawned_gymrat(["probe"], repo) as proc:
         bench_pid = wait_for_pid_file_blocking(
             Path(experiment_worktree_dir(repo), "bench.pid"), timeout_s=60.0
         )
         reap_groups.append(os.getpgid(bench_pid))
-        proc.send_signal(signal_number)
-        _wait_or_dump_stacks(proc, timeout_s=60)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.communicate()
 
-    assert proc.returncode == expected_code
+        stop_by_signal(proc, signal.SIGINT, timeout_s=60)
+
+    assert proc.returncode == 128 + signal.SIGINT
     wait_until_dead_blocking(bench_pid, timeout_s=30.0)

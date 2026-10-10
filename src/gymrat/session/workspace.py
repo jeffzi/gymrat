@@ -9,7 +9,7 @@ tears those down; it holds no session records and reads no JSON.
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -17,16 +17,17 @@ from typing import Annotated
 from pydantic import Field
 
 from gymrat.errors import GymratError
-from gymrat.git import SHORT_SHA_LENGTH, run_git, try_git
+from gymrat.git import run_git, run_git_step, try_git
 from gymrat.session.paths import (
     SESSION_DIR_NAME,
     baseline_worktree_dir,
     experiment_worktree_dir,
     git_common_dir,
 )
-from gymrat.utils import stderr_text_of
+from gymrat.utils import SHORT_SHA_LENGTH, warn_to_stderr
 
-# Prefix of the branch a session's experiment worktree sits on.
+# create_workspace names every session branch ``<prefix><session_id>``, so
+# changing this renames the branch of every new session.
 BRANCH_PREFIX = "gymrat/"
 
 # Hint repeated by every git step whose failure leaves the worktree worth
@@ -75,7 +76,9 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
     call made does: a worktree git refuses takes the branch and whatever this
     attempt had already checked out down with it, so a retry starts from the
     state it found instead of tripping over its own leftovers. A worktree
-    directory that was already standing survives — see :func:`_unwind_workspace`.
+    directory that was already standing survives — see :func:`unwind_workspace`.
+    Each leftover the unwind cannot take back is warned about on stderr; the git
+    step that broke the attempt is still the error raised.
 
     Args:
         root: Repository root to create the branch and worktrees in.
@@ -87,7 +90,7 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
 
     Raises:
         GymratError: When ``root`` is not a git repository, or when git refuses
-            to prune, to create the branch, or to create either worktree.
+            to create the branch or either worktree.
     """
     branch = f"{BRANCH_PREFIX}{session_id}"
 
@@ -105,16 +108,18 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
     # checked out from one that was already there.
     standing = [d for d in (experiment, baseline_dir) if Path(d).is_dir()]
 
+    workspace = WorkspaceResult(
+        branch=branch, worktrees=Worktrees(experiment=experiment, baseline=baseline_dir)
+    )
     try:
         _add_experiment_worktree(root, branch)
         _add_baseline_worktree(root, baseline.sha)
     except GymratError:
-        _unwind_workspace(root, branch, standing)
+        for warning in unwind_workspace(root, workspace, standing):
+            warn_to_stderr(warning)
         raise
 
-    return WorkspaceResult(
-        branch=branch, worktrees=Worktrees(experiment=experiment, baseline=baseline_dir)
-    )
+    return workspace
 
 
 def ensure_git_exclude(root: str) -> None:
@@ -169,7 +174,7 @@ def recreate_workspace(root: str, branch: str, baseline_sha: str) -> None:
         baseline_sha: The commit sha to reattach the baseline worktree to.
 
     Raises:
-        GymratError: When git refuses to prune or to add a worktree.
+        GymratError: When git refuses to add a worktree.
     """
     experiment, baseline = _session_worktrees(root)
     needs_experiment = not Path(experiment).is_dir()
@@ -247,27 +252,43 @@ def _add_baseline_worktree(root: str, sha: str) -> None:
     )
 
 
-def _unwind_workspace(root: str, branch: str, standing: list[str]) -> None:
-    """Take back the branch and worktrees a failed create attempt had made.
+def unwind_workspace(
+    root: str, workspace: WorkspaceResult, standing: Collection[str] = ()
+) -> list[str]:
+    """Take back the branch and worktrees a failed attempt had made.
 
     A standing directory is what a session whose log was lost leaves behind, so it
-    stays, uncommitted work and all. The error the caller is about to raise names
-    the path, which is the only notice the user gets that something is in the way.
+    stays, uncommitted work and all, and is never warned about. The error the
+    caller is about to raise names the path, which is the only notice the user
+    gets that something is in the way.
 
     The worktrees go before the branch: git refuses to delete a branch one of
     them still has checked out. Every step is best-effort — the caller is about
-    to surface the git step that broke the session, and a cleanup that cannot
-    finish must not speak in its place.
+    to surface what broke the session, and a cleanup that cannot finish must not
+    speak in its place, so each leftover comes back as a warning instead.
 
     Args:
         root: The repository root.
-        branch: The experiment branch to delete.
+        workspace: The branch and worktrees the attempt was building.
         standing: The worktree directories that existed before the attempt began.
+
+    Returns:
+        One warning per worktree or branch git left behind, each naming the
+        command that removes it by hand; empty when everything went.
     """
-    _force_remove_worktrees(
-        root, lambda directory: Path(directory).is_dir() and directory not in standing
-    )
-    try_git(["branch", "-D", branch], root)
+    worktrees = workspace.worktrees
+    warnings = [
+        warning
+        for directory in (worktrees.experiment, worktrees.baseline)
+        if directory not in standing and (warning := _remove_worktree(root, directory)) is not None
+    ]
+    error = try_git(["branch", "-D", workspace.branch], root)
+    if error is not None:
+        warnings.append(
+            f"Could not delete the session branch '{workspace.branch}': {error}\n"
+            f"  delete it by hand with: git branch -D {workspace.branch}"
+        )
+    return warnings
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +435,9 @@ def dirty_file_count(directory: str) -> int:
 
     Returns:
         The number of dirty entries, or 0 when the directory is absent.
+
+    Raises:
+        GymratError: When git refuses to report the worktree's status.
     """
     if not Path(directory).is_dir():
         return 0
@@ -432,14 +456,19 @@ def changed_file_count(directory: str, target: str) -> int:
 
     This includes tracked files whose content changed between ``target`` and
     the current working tree (committed or not) and untracked files that exist
-    in the working tree but not in ``target``.  A missing directory returns 0.
+    in the working tree but not in ``target``.
 
     Args:
         directory: The worktree to compare against ``target``.
         target: The git ref or commit to diff against.
 
     Returns:
-        The number of changed or untracked files, or 0 when absent.
+        The number of changed or untracked files, or 0 when the directory is
+        absent.
+
+    Raises:
+        GymratError: When git refuses to diff the worktree or to list its
+            untracked files.
     """
     if not Path(directory).is_dir():
         return 0
@@ -465,6 +494,11 @@ def _git_lines(args: list[str], cwd: str, message: str, hint: str) -> list[str]:
     """Run a git step and split its stdout into non-empty lines."""
     output = run_git_step(args, cwd, message, hint).strip()
     return output.split("\n") if output else []
+
+
+# ---------------------------------------------------------------------------
+# Baseline advance and worktree removal
+# ---------------------------------------------------------------------------
 
 
 def advance_baseline(baseline_dir: str, sha: str) -> None:
@@ -509,44 +543,19 @@ def remove_worktrees(root: str, worktrees: Worktrees) -> list[str]:
     Returns:
         One warning per worktree git left standing, empty when both went.
     """
-    warnings: list[str] = []
-
-    for directory in (worktrees.experiment, worktrees.baseline):
-        error = try_git(["worktree", "remove", "--force", directory], root)
-        if error is not None and Path(directory).is_dir():
-            warnings.append(
-                f"Could not remove the worktree at {directory}: {error}\n"
-                f"  remove it by hand with: git worktree remove --force {directory}"
-            )
-
-    return warnings
+    return [
+        warning
+        for directory in (worktrees.experiment, worktrees.baseline)
+        if (warning := _remove_worktree(root, directory)) is not None
+    ]
 
 
-# ---------------------------------------------------------------------------
-# Git plumbing
-# ---------------------------------------------------------------------------
-
-
-def run_git_step(args: list[str], cwd: str, message: str, hint: str) -> str:
-    """Run git in ``cwd``, turning a non-zero exit into a ``GymratError``.
-
-    The error carries git's own diagnostics after ``message`` so the reader sees
-    the real reason, and ``hint`` for what to do next.
-
-    Args:
-        args: The git command-line arguments to run.
-        cwd: Working directory to run the command in.
-        message: The error message prefix used if the command fails.
-        hint: The hint appended to the raised error.
-
-    Returns:
-        The captured stdout from the git command.
-
-    Raises:
-        GymratError: When the git command exits non-zero.
-    """
-    try:
-        return run_git(args, cwd)
-    except (subprocess.SubprocessError, OSError) as error:
-        detail = f"{message}: {stderr_text_of(error)}"
-        raise GymratError(detail, hint=hint) from error
+def _remove_worktree(root: str, directory: str) -> str | None:
+    """Force-remove one worktree, returning the warning when git leaves it standing."""
+    error = try_git(["worktree", "remove", "--force", directory], root)
+    if error is None or not Path(directory).is_dir():
+        return None
+    return (
+        f"Could not remove the worktree at {directory}: {error}\n"
+        f"  remove it by hand with: git worktree remove --force {directory}"
+    )

@@ -13,6 +13,7 @@ reports in ``worktree list``). Every repository is order-independent and safe
 under ``pytest-xdist`` / ``pytest-randomly``.
 """
 
+import asyncio
 import contextlib
 import importlib
 import json
@@ -21,7 +22,8 @@ import shutil
 import signal
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+import time
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import NoReturn
 
@@ -29,12 +31,13 @@ import pytest
 
 from gymrat import signals
 from gymrat.cli.console import set_color_override, set_debug_mode
-from gymrat.exec import reset as exec_reset
 from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset
 from gymrat.telemetry.provider import reset_tracing
+from tests._exec_fixtures import fresh_live_process_groups, recorded_spawns
 from tests._git import head_of, init_scratch_repo, list_worktree_dirs
-from tests._lock import remove_lock_files
+from tests._lock import held_supervise_lock, remove_lock_files
+from tests.loop._settle import start_with
 
 #: Names a test may inherit from the launching shell, value unchanged. An
 #: allowlisted name the shell does not export stays absent. ``PATH`` and
@@ -79,12 +82,15 @@ PINNED_ENV = {
 
 
 def _live_environ() -> dict[str, str]:
-    """Return the process's real environment block.
+    """Read the environment a child process inherits.
 
     ``os.environ`` is a snapshot taken at interpreter start, and native code can
     write the real environment behind it: pytest imports ``readline`` before any
     ``pytest_configure``, and GNU readline then exports ``LINES`` and
     ``COLUMNS``. A child inherits the real block, so it reports those names too.
+
+    Returns:
+        The process's real environment block, as a fresh child reports it.
     """
     probe = "import json, os; print(json.dumps(dict(os.environ)))"
     output = subprocess.run(  # noqa: S603 -- argv is sys.executable with a fixed probe, not shell-injected
@@ -138,6 +144,9 @@ class _ProcessExitedError(BaseException):
 
     A ``BaseException``, like the ``SystemExit`` a real exit is closest to, so
     no ``except Exception`` between the exit and the test swallows it.
+
+    Args:
+        code: The exit code the stubbed exit was called with.
     """
 
     def __init__(self, code: int) -> None:
@@ -157,6 +166,32 @@ def forbid_direct_exit(monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.fail(f"os._exit({code}) reached without going through the replaced exit seam")
 
     monkeypatch.setattr(os, "_exit", bypassed)
+
+
+@pytest.fixture
+def color_env(monkeypatch: pytest.MonkeyPatch) -> Callable[[str | None, str | None], None]:
+    """Return a setter leaving exactly the given ``FORCE_COLOR`` and ``NO_COLOR`` set; ``None`` clears one."""
+
+    def apply(force_color: str | None, no_color: str | None) -> None:
+        for name, value in (("FORCE_COLOR", force_color), ("NO_COLOR", no_color)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+
+    return apply
+
+
+@pytest.fixture
+def recorded_exits(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, float]]:
+    """Stub the process exit to record each code and its ``time.monotonic`` moment, then return."""
+    exits: list[tuple[int, float]] = []
+
+    def record_exit(code: int) -> None:
+        exits.append((code, time.monotonic()))
+
+    monkeypatch.setattr(signals, "exit_process", record_exit)
+    return exits
 
 
 @pytest.fixture
@@ -212,9 +247,9 @@ def _restore_env_baseline() -> Iterator[None]:
 @pytest.fixture(autouse=True)
 def _reset_color() -> Iterator[None]:
     """Reset the color override before and after every test."""
-    set_color_override(None)
+    set_color_override(override=None)
     yield
-    set_color_override(None)
+    set_color_override(override=None)
 
 
 @pytest.fixture(autouse=True)
@@ -227,18 +262,17 @@ def isolate_tracing_provider() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def isolate_live_groups() -> Iterator[None]:
-    """Start and end every test with an empty live process-group registry."""
-    exec_reset()
-    yield
-    exec_reset()
+    """Give every test its own empty live process-group registry."""
+    with fresh_live_process_groups():
+        yield
 
 
 @pytest.fixture(autouse=True)
 def _reset_debug() -> Iterator[None]:
     """Turn debug mode off before and after every test."""
-    set_debug_mode(False)
+    set_debug_mode(enabled=False)
     yield
-    set_debug_mode(False)
+    set_debug_mode(enabled=False)
 
 
 @pytest.fixture
@@ -264,6 +298,15 @@ def stray_process_ids() -> Iterator[list[int]]:
     for pid in process_ids:
         with contextlib.suppress(OSError):
             os.kill(pid, signal.SIGKILL)
+
+
+@pytest.fixture
+async def spawned_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[list[asyncio.subprocess.Process]]:
+    """Record every child ``exec`` or ``exec_argv`` spawns, reaping survivors in-loop."""
+    async with recorded_spawns(monkeypatch) as processes:
+        yield processes
 
 
 @pytest.fixture
@@ -294,6 +337,9 @@ def _remove_stranded_worktrees(repo_dir: str) -> None:
     left to list, so the repository is skipped rather than failing teardown for
     every repository after it. Starting git in the vanished directory fails with
     ``FileNotFoundError`` on POSIX and ``NotADirectoryError`` on Windows.
+
+    Args:
+        repo_dir: The scratch repository whose registered worktrees are removed.
     """
     try:
         stranded = list_worktree_dirs(repo_dir, include_main=False)
@@ -335,6 +381,55 @@ def repo(create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.fixture
+def session_repo(repo: str) -> str:
+    """The scratch repository with an open session on ``main``."""
+    start_with(repo)
+    return repo
+
+
+@pytest.fixture
+def root(tmp_path: Path) -> Iterator[str]:
+    """A fake repo root with the .gymrat session directory, its lock files removed at teardown."""
+    session = tmp_path / ".gymrat"
+    session.mkdir()
+    yield str(tmp_path)
+    remove_lock_files(str(tmp_path))
+
+
+@pytest.fixture
+def supervise_lock(root: str, request: pytest.FixtureRequest) -> Iterator[None]:
+    """Hold the real supervise lock for ``root``, unless the test parametrizes it ``False``."""
+    if getattr(request, "param", True):
+        with held_supervise_lock(root):
+            yield
+    else:
+        yield
+
+
+@pytest.fixture
 def repo_head(repo: str) -> str:
     """The commit SHA ``repo`` starts at."""
     return head_of(repo)
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(False, id="git-missing"),
+        pytest.param(
+            True,
+            id="git-not-executable",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="Windows ignores the execute bit"
+            ),
+        ),
+    ]
+)
+def unusable_git(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leave ``PATH`` holding one directory where git is absent or lacks the execute bit."""
+    if request.param:
+        blocked = tmp_path / "git"
+        blocked.write_text("#!/bin/sh\n", encoding="utf-8")
+        blocked.chmod(0o644)
+    monkeypatch.setenv("PATH", str(tmp_path))

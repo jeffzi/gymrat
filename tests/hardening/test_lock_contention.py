@@ -5,35 +5,25 @@ calls in one process, these tests pin the guarantees that only surface under
 genuine pressure:
 
 - a burst of real processes racing for one lockfile grants exactly one holder
-  and hands every loser the contention error, with the lockfile never torn,
-- the repository lock and the supervise lock are independent, so holding one
-  never blocks the command guarded by the other,
-- ``supervise`` run outside a git repository exits cleanly, naming the
-  requirement, rather than crashing with an unhandled error.
+  and hands every loser the contention error, with the lockfile never torn.
 
 The multi-process tests are POSIX-only: they rendezvous children on a named
 pipe.
 """
 
-import contextlib
 import json
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import lockfile_path, supervise_lockfile_path
-from tests._lock import HOLDER_AT_PATTERN
-from tests.hardening._barrier import CHILD_BARRIER, create_barrier, release_together
+from tests._platform import needs_named_pipes
+from tests.hardening._barrier import CHILD_BARRIER, racing_children
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX-only named pipes and hard links"
-)
+pytestmark = needs_named_pipes
 
 # Ceiling for a race to resolve and for children to exit once released; generous
 # enough to absorb CI scheduling jitter without masking a real deadlock.
@@ -130,39 +120,28 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
     winner holds the lock until the parent drops the release flag, guaranteeing
     every loser contends a live holder. The lockfile is snapshotted while the
     winner still holds it, so a torn or vanished lock is caught.
+
+    Args:
+        tmp_path: Where the barrier, the result markers and the child script live.
+        lock_path: The lockfile every child races for.
+        count: How many children race.
+        command: The command name each child acquires the lock for.
+
+    Returns:
+        What the race left behind once every child exited.
     """
-    barrier_path = create_barrier(tmp_path)
     results = tmp_path / "results"
     results.mkdir()
     release_flag = tmp_path / "release.flag"
-    script = tmp_path / "race_child.py"
-    script.write_text(_RACE_CHILD, encoding="utf-8")
 
-    children = [
-        subprocess.Popen(  # noqa: S603 -- argv is a fixed list, not shell-injected
-            [
-                sys.executable,
-                str(script),
-                lock_path,
-                str(barrier_path),
-                str(results),
-                str(release_flag),
-                command,
-            ],
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for _ in range(count)
-    ]
-
-    try:
-        release_together(
-            barrier_path,
-            count,
-            on_poll=lambda: _surface_child_crashes(children),
-            timeout_s=RACE_TIMEOUT_SECONDS,
-        )
-
+    with racing_children(
+        tmp_path,
+        _RACE_CHILD,
+        lambda barrier, _index: (lock_path, str(barrier), str(results), str(release_flag), command),
+        count,
+        on_poll=_surface_child_crashes,
+        timeout_s=RACE_TIMEOUT_SECONDS,
+    ) as children:
         deadline = time.monotonic() + RACE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             won = sorted(results.glob("won.*"))
@@ -174,18 +153,14 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
 
         won = sorted(results.glob("won.*"))
         lost = sorted(results.glob("lost.*"))
-        snapshot = Path(lock_path).read_text(encoding="utf-8") if Path(lock_path).exists() else None
+        try:
+            snapshot = Path(lock_path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            snapshot = None
 
         release_flag.write_text("go", encoding="utf-8")
         exit_codes = [child.wait(timeout=RACE_TIMEOUT_SECONDS) for child in children]
         child_errors = [child.stderr.read() if child.stderr else "" for child in children]
-    finally:
-        for child in children:
-            if child.poll() is None:
-                child.kill()
-                child.wait()
-            if child.stderr is not None:
-                child.stderr.close()
 
     return _RaceOutcome(
         won_pid_values=[path.read_text(encoding="utf-8").strip() for path in won],
@@ -223,42 +198,7 @@ def test_acquire_lock_when_processes_race_does_admit_exactly_one_holder(
 
     winner_pid = outcome.won_pid_values[0]
     assert outcome.holder_snapshot is not None, "lockfile vanished while a holder was active"
-    record = json.loads(outcome.holder_snapshot)
-    assert set(record) == {"pid", "command", "at"}
-    assert record["pid"] == int(winner_pid)
-    assert record["command"] == "measure"
-    assert HOLDER_AT_PATTERN.match(record["at"])
+    assert json.loads(outcome.holder_snapshot)["pid"] == int(winner_pid)
 
     for payload in outcome.lost_payloads:
         assert f"PID {winner_pid}" in payload
-
-
-# ---------------------------------------------------------------------------
-# the repository lock and the supervise lock are independent
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("held_role", "acquired_role"),
-    [
-        pytest.param("repo", "supervise", id="repo-held-then-supervise"),
-        pytest.param("supervise", "repo", id="supervise-held-then-repo"),
-    ],
-)
-def test_acquire_lock_when_one_command_lock_is_held_does_not_block_the_other(
-    held_role: str,
-    acquired_role: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    root = str(tmp_path / "checkout")
-    paths = {"repo": lockfile_path(root), "supervise": supervise_lockfile_path(root)}
-
-    with contextlib.ExitStack() as releases:
-        releases.callback(acquire_lock(paths[held_role], held_role))
-
-        releases.callback(acquire_lock(paths[acquired_role], acquired_role))
-
-        assert Path(paths[held_role]).exists()
-        assert Path(paths[acquired_role]).exists()

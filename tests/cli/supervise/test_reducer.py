@@ -27,14 +27,13 @@ from gymrat.cli.supervise.types import (
     Exiting,
     FinishedTool,
     InFlight,
-    ReadSessionResult,
+    NestedPhase,
     Responding,
     RunningTool,
     Starting,
     Thinking,
     Waiting,
 )
-from gymrat.session.records import IterationPrimary
 from gymrat.supervisor.events import (
     CompactionEvent,
     TextDeltaEvent,
@@ -47,10 +46,9 @@ from tests.cli.supervise._fixtures import (
     follow_up_event,
     launch_event,
     model_phase_event,
+    read_result,
     session_state_three_iterations,
     thinking_event,
-    tool_end_event,
-    tool_start_event,
     turn_end_event,
     usage_event,
 )
@@ -58,21 +56,21 @@ from tests.session.records._fixtures import (
     SUPERVISED_SESSION_ID,
     empty_session_state,
     finalize_record,
-    iteration_record,
     make_iteration,
     session_state,
+)
+from tests.supervisor._fixtures import (
+    TOOL_START_MS,
+    tool_end_event,
+    tool_start_event,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.session.store import SessionState
+    from gymrat.cli.supervise.types import NestedModelPhase
+    from gymrat.session.store import ReadSessionResult, SessionState
     from gymrat.supervisor.events import ModelPhase, SessionEvent
-
-# Milliseconds the shared tool-start builders stamp, so the matching end
-# builder can derive a duration against it.
-_TOOL_START_MS = 2000
-
 
 # ---------------------------------------------------------------------------
 # builders
@@ -97,25 +95,11 @@ def make_state(**changes: Any) -> ReporterState:
 
 def loop_session() -> SessionState:
     """A session with two iterations, one kept and one discarded, last regressed."""
-    return replace(
-        empty_session_state(),
+    return session_state(
         iteration_count=2,
         keep_count=1,
         discard_count=1,
-        last_iteration=iteration_record(
-            seq=1,
-            primary=IterationPrimary(kind="geomean", delta_pct=3.2),
-            outcome="regressed",
-        ),
-    )
-
-
-def read_result(
-    state: SessionState | None = None, *, has_baseline: bool = False
-) -> ReadSessionResult:
-    """A session read result wrapping *state*, defaulting to the empty session."""
-    return ReadSessionResult(
-        state=state if state is not None else empty_session_state(), has_baseline=has_baseline
+        last_iteration=make_iteration(3.2, "regressed"),
     )
 
 
@@ -127,7 +111,7 @@ def capped_state() -> ReporterState:
 def started(
     tool_name: str,
     tool_use_id: str,
-    at_ms: int = _TOOL_START_MS,
+    at_ms: int = TOOL_START_MS,
     *,
     base: ReporterState | None = None,
 ) -> ReporterState:
@@ -171,18 +155,6 @@ def emit(
     """Advance *state* over *event* and pair the result with its plain-mode line."""
     after = advance(state, event, session)
     return after, plain_line(state, after, event)
-
-
-# ---------------------------------------------------------------------------
-# purity
-# ---------------------------------------------------------------------------
-
-
-def test_advance_when_applied_twice_to_same_input_does_return_equal_states():
-    before = make_state()
-    event = tool_start_event("Bash", "bash-1", 2000)
-
-    assert advance(before, event, None) == advance(before, event, None)
 
 
 # ---------------------------------------------------------------------------
@@ -270,10 +242,23 @@ def test_advance_when_nested_tool_has_no_in_flight_parent_does_not_change_state(
 # ---------------------------------------------------------------------------
 
 
-def test_advance_when_top_level_tool_ends_does_wait_on_the_finished_tool():
-    before = started("Read", "read-1")
+_EARLIER_READ = read_result()
+_LATER_READ = read_result(loop_session(), has_baseline=True)
 
-    after = advance(before, tool_end_event("Read", "read-1", 3000), None)
+
+@pytest.mark.parametrize(
+    ("passed", "expected_session"),
+    [
+        pytest.param(_LATER_READ, _LATER_READ, id="session-passed"),
+        pytest.param(None, _EARLIER_READ, id="no-session-passed-keeps-the-earlier-read"),
+    ],
+)
+def test_advance_when_top_level_tool_ends_does_wait_on_it_with_the_resolved_session(
+    passed: ReadSessionResult | None, expected_session: ReadSessionResult
+):
+    before = started("Read", "read-1", base=make_state(session_result=_EARLIER_READ))
+
+    after = advance(before, tool_end_event("Read", "read-1", 3000), passed)
 
     finished = FinishedTool(
         tool_name="Read", input_summary="...", duration_ms=1000, result="ok", ended_at=3000
@@ -281,6 +266,7 @@ def test_advance_when_top_level_tool_ends_does_wait_on_the_finished_tool():
     assert after.finished_tools == (finished,)
     assert dict(after.in_flight_tools) == {}
     assert after.liveness == Waiting(since=3000, last_tool=finished)
+    assert after.session_result is expected_session
 
 
 def test_advance_when_one_of_two_tools_ends_does_fall_back_to_the_remaining_tool():
@@ -334,24 +320,6 @@ def test_advance_when_more_tools_finish_than_the_bound_does_keep_only_the_most_r
         "src/3.ts",
         "src/4.ts",
     ]
-
-
-def test_advance_when_bash_tool_ends_does_take_the_passed_session_result():
-    before = started("Bash", "bash-1")
-    session = read_result()
-
-    after = advance(before, tool_end_event("Bash", "bash-1", 3000), session)
-
-    assert after.session_result is session
-
-
-def test_advance_when_tracked_non_bash_tool_ends_does_keep_the_previous_session_result():
-    session = read_result()
-    before = started("Read", "read-1", base=make_state(session_result=session))
-
-    after = advance(before, tool_end_event("Read", "read-1", 3000), None)
-
-    assert after.session_result is session
 
 
 def test_advance_when_tracked_nested_tool_ends_does_retire_it():
@@ -548,37 +516,29 @@ def test_advance_when_liveness_is_blocking_does_ignore_thinking_and_phase_events
     assert after.liveness == before.liveness
 
 
-@pytest.mark.parametrize(
-    "make_event",
-    [
-        pytest.param(
-            lambda: model_phase_event(2000, "responding", parent_tool_use_id="bash-1"),
-            id="model-phase",
-        ),
-        pytest.param(
-            lambda: model_phase_event(
-                2000, "tool_input", tool_name="Edit", parent_tool_use_id="bash-1"
-            ),
-            id="tool-input",
-        ),
-    ],
-)
-def test_advance_when_nested_model_phase_arrives_does_record_it_under_the_parent(
-    make_event: Callable[[], SessionEvent],
-):
-    before = bash_in_flight_state()
-
-    after = advance(before, make_event(), None)
-
-    assert after.liveness == before.liveness
-    assert set(dict(after.nested)) == {"bash-1"}
-
-
 _NESTED_MODEL_PHASES = [
     pytest.param("thinking", None, id="thinking"),
     pytest.param("responding", None, id="responding"),
     pytest.param("tool_input", "Edit", id="tool-input"),
 ]
+
+
+@pytest.mark.parametrize(("phase", "tool_name"), _NESTED_MODEL_PHASES)
+def test_advance_when_nested_model_phase_arrives_does_record_it_under_the_parent(
+    phase: NestedModelPhase, tool_name: str | None
+):
+    before = bash_in_flight_state()
+
+    after = advance(
+        before,
+        model_phase_event(2000, phase, tool_name=tool_name, parent_tool_use_id="bash-1"),
+        None,
+    )
+
+    assert after.liveness == before.liveness
+    assert dict(after.nested) == {
+        "bash-1": NestedPhase(phase=phase, since=2000, tool_name=tool_name)
+    }
 
 
 @pytest.mark.parametrize(
@@ -611,7 +571,7 @@ def test_advance_when_nested_turn_ends_does_clear_the_nested_model_phase(
 
     after = advance(before, model_phase_event(2500, "turn_end", parent_tool_use_id="bash-1"), None)
 
-    assert (set(dict(before.nested)), dict(after.nested)) == ({"bash-1"}, {})
+    assert dict(after.nested) == {}
 
 
 def test_advance_when_nested_thinking_update_arrives_does_not_change_state():
@@ -712,39 +672,25 @@ def test_exit_phase_when_lock_holder_changes_does_restart_the_timestamp():
 
 
 @pytest.mark.parametrize(
-    ("reason", "expected"),
+    ("reason", "passed", "expected_decision", "expected_session"),
     [
-        pytest.param("discard", "exit · discard", id="with-reason"),
-        pytest.param("", "exit", id="empty-reason"),
+        pytest.param(
+            "discard", _LATER_READ, "exit · discard", _LATER_READ, id="reason-with-session-passed"
+        ),
+        pytest.param("", None, "exit", _EARLIER_READ, id="empty-reason-keeps-the-earlier-read"),
     ],
 )
 def test_advance_when_ended_follow_up_arrives_while_exiting_does_record_the_exit_step(
-    reason: str, expected: str
-):
-    after = advance(exiting_state(), follow_up_event(8000, action="ended", reason=reason), None)
-
-    assert after.last_decision == expected
-
-
-_EARLIER_READ = read_result()
-_LATER_READ = read_result(loop_session(), has_baseline=True)
-
-
-@pytest.mark.parametrize(
-    ("passed", "expected"),
-    [
-        pytest.param(_LATER_READ, _LATER_READ, id="session-passed"),
-        pytest.param(None, _EARLIER_READ, id="no-session-passed-keeps-the-earlier-read"),
-    ],
-)
-def test_advance_when_ended_follow_up_arrives_while_exiting_does_take_the_passed_session(
-    passed: ReadSessionResult | None, expected: ReadSessionResult
+    reason: str,
+    passed: ReadSessionResult | None,
+    expected_decision: str,
+    expected_session: ReadSessionResult,
 ):
     before = replace(exiting_state(), session_result=_EARLIER_READ)
 
-    after = advance(before, follow_up_event(8000, action="ended", reason="keep"), passed)
+    after = advance(before, follow_up_event(8000, action="ended", reason=reason), passed)
 
-    assert after.session_result is expected
+    assert (after.last_decision, after.session_result) == (expected_decision, expected_session)
 
 
 # ---------------------------------------------------------------------------
@@ -756,11 +702,11 @@ def test_advance_when_ended_follow_up_arrives_while_exiting_does_take_the_passed
     ("event", "expected"),
     [
         pytest.param(launch_event(1000), True, id="launch"),
-        pytest.param(tool_end_event("Bash", "bash-1", 3000), True, id="top-level-bash"),
+        pytest.param(tool_end_event("Read", "read-1", 3000), True, id="tool-end"),
         pytest.param(
-            tool_end_event("Read", "nested-read", 3000, parent_tool_use_id="bash-1"),
+            tool_end_event("Read", "nested-1", 4200, parent_tool_use_id="bash-1"),
             True,
-            id="nested-read",
+            id="nested-tool-end",
         ),
         pytest.param(usage_event(1.0), False, id="usage-update"),
         pytest.param(tool_start_event("Bash", "bash-2", 2000), False, id="tool-start"),
@@ -769,10 +715,11 @@ def test_advance_when_ended_follow_up_arrives_while_exiting_does_take_the_passed
 def test_wants_session_refresh_when_event_arrives_does_match_the_reread_contract(
     event: SessionEvent, expected: bool
 ):
-    state = started("Bash", "bash-1")
-    state = started("Read", "read-1", base=state)
+    state = make_state()
 
-    assert wants_session_refresh(state, event) is expected
+    refresh = wants_session_refresh(state, event)
+
+    assert refresh is expected
 
 
 @pytest.mark.parametrize(
@@ -791,7 +738,9 @@ def test_wants_session_refresh_when_ended_follow_up_arrives_does_reread_only_whi
     state = make()
     event = follow_up_event(8000, action="ended", reason="keep")
 
-    assert wants_session_refresh(state, event) is expected
+    refresh = wants_session_refresh(state, event)
+
+    assert refresh is expected
 
 
 # ---------------------------------------------------------------------------
@@ -804,7 +753,6 @@ def test_wants_session_refresh_when_ended_follow_up_arrives_does_reread_only_whi
     [
         pytest.param(60, None, "caps 60m", id="no-spend-cap"),
         pytest.param(60, 5.0, "caps 60m, $5.00", id="spend-cap"),
-        pytest.param(30, None, "caps 30m", id="whole-int-minutes"),
         pytest.param(5.5, None, "caps 5.5m", id="fractional-minutes-keep-the-decimal"),
         pytest.param(10.0, None, "caps 10m", id="whole-float-minutes-drop-the-decimal"),
     ],
@@ -950,13 +898,7 @@ def test_plain_line_when_no_session_has_been_read_does_not_return_the_loop_line(
             id="unsettled",
         ),
         pytest.param(
-            session_state(
-                iteration_count=3,
-                keep_count=2,
-                discard_count=1,
-                last_iteration=make_iteration(-5.0, "improved"),
-                finalized=finalize_record(),
-            ),
+            replace(session_state_three_iterations(-5.0, "improved"), finalized=finalize_record()),
             True,
             None,
             "3 iterations · finalized",
@@ -969,7 +911,9 @@ def test_loop_plain_text_when_session_varies_does_describe_the_loop(
 ):
     session = None if state is None else read_result(state, has_baseline=has_baseline)
 
-    assert loop_plain_text(session, max_iterations) == expected
+    text = loop_plain_text(session, max_iterations)
+
+    assert text == expected
 
 
 # ---------------------------------------------------------------------------

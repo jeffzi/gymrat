@@ -12,47 +12,57 @@ from pathlib import Path
 
 from gymrat.clock import now_ns
 from gymrat.errors import GymratError
-from gymrat.git import SHORT_SHA_LENGTH, try_git
+from gymrat.git import run_git_step, try_git
 from gymrat.session.records import FinalizeRecord, KeepRecord, SessionLogRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
     append_record,
     last_kept_position,
     require_open_session,
+    require_settled,
+    settle_first_hint,
 )
 from gymrat.session.workspace import (
     dirty_file_count,
     missing_commit_hint,
     remove_worktrees,
-    run_git_step,
     worktree_head,
 )
-from gymrat.utils import pluralize
+from gymrat.utils import SHORT_SHA_LENGTH, pluralize
 
-#: The hint a refusal points at whenever the fix is to settle the last iteration.
-_SETTLE_FIRST_HINT = "Run gymrat keep or gymrat discard before closing the session."
+_SETTLE_FIRST_HINT = settle_first_hint("closing the session")
+"""The hint a refusal points at whenever the fix is to settle the last iteration."""
 
-#: The body line a committed keep gets when it names neither a message nor a commit.
 _UNNAMED_KEEP_LINE = "(no message)"
+"""The body line a committed keep gets when it names neither a message nor a commit."""
 
 
 @dataclass(frozen=True, slots=True)
 class FinalizeOptions:
-    """What a caller can hand a finalize beyond the repository it runs in."""
+    """What a caller can hand a finalize beyond the repository it runs in.
 
-    #: The squash commit's message; absent, one is generated from the kept commits.
+    Attributes:
+        message: The squash commit's message; absent, one is generated from the
+            kept commits.
+        branch: The branch to point at the squash commit; absent,
+            ``<session branch>-final``.
+    """
+
     message: str | None = None
-    #: The branch to point at the squash commit; absent, ``<session branch>-final``.
     branch: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class FinalizeResult:
-    """One closed session: what was written to the log, and what to print about it."""
+    """One closed session: what was written to the log, and what to print about it.
 
-    #: The record appended to the session log.
+    Attributes:
+        record: The record appended to the session log.
+        report: The finalize as the agent reads it: the branch, the commit, and
+            any cleanup left.
+    """
+
     record: FinalizeRecord
-    #: The finalize as the agent reads it: the branch, the commit, and any cleanup left.
     report: str
 
 
@@ -85,11 +95,7 @@ def _validate_finalize(
         message = f"Finalize refused: session {session.session_id} has kept nothing to squash."
         hint = "Run gymrat keep on a measured edit before closing the session."
         raise GymratError(message, hint=hint, reason="nothing-kept")
-    if state.unsettled:
-        message = (
-            f"Finalize refused: iteration {state.last_seq} has been neither kept nor discarded."
-        )
-        raise GymratError(message, hint=_SETTLE_FIRST_HINT, reason="unsettled")
+    require_settled(state, "finalizing")
     if dirty_file_count(session.worktrees.experiment) > 0:
         message = (
             f"Finalize refused: the experiment worktree at {session.worktrees.experiment} "
@@ -200,16 +206,16 @@ def _squash_onto_baseline(
 ) -> str:
     """Build one commit carrying ``tree_source``'s tree onto the pinned baseline.
 
-    ``tree_source`` is the last-kept position — the commit whose tree the squash
-    should carry. Reading the tree and writing the commit are both plumbing, so
-    neither needs — or moves — a checkout. The single parent is the baseline the
-    session started from, which is what makes the result a squash rather than a
-    merge.
+    Reading the tree and writing the commit are both plumbing, so neither
+    needs — or moves — a checkout. The single parent is what makes the result a
+    squash rather than a merge.
 
     Args:
         root: The repository root.
-        tree_source: The commit whose tree the squash should carry.
-        baseline_sha: The commit the squash is built onto as its sole parent.
+        tree_source: The last-kept position: the commit whose tree the squash
+            should carry.
+        baseline_sha: The commit the session started from, which the squash is
+            built onto as its sole parent.
         message: The commit message for the squash commit.
 
     Returns:

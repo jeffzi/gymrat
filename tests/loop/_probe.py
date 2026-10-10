@@ -1,19 +1,21 @@
 """Shared probe test doubles: the recorded baseline, the canned measurement, and the engine stand-in.
 
-Both the ``probe_session`` engine tests and the ``gymrat probe`` command tests
-replace the same boundary — the measurement engine that shells out to the
-consumer's bench script — and pair the same recorded baseline against the same
-canned measurement, so the pieces live here once.
+The ``probe_session`` and ``measure_baseline`` engine tests and the CLI session
+command tests replace the same boundary — the measurement engine that shells out
+to the consumer's bench script — and the probe tests pair the same recorded
+baseline against the same canned measurement, so the pieces live here once.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import create_autospec
 
+from gymrat.measure import measure
 from tests.report._measurements import create_measurement_result, measured_metric
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     import pytest
 
@@ -42,12 +44,17 @@ class MeasureRecorder:
     """A stand-in for the measurement engine that records every call it answers.
 
     The engine is the one boundary a probe crosses into the consumer's bench
-    script, so it is replaced wholesale: the recorder hands back a canned
-    :class:`MeasurementResult` and keeps the options it was called with, which is
-    how a test reads the target, bench command, and sample count a probe asked
-    for. When ``progress`` events or ``warnings`` are given, each call reports
-    them through the progress callback and warn sink it was handed, so a test
-    can read what the caller wired those to.
+    script, so it is replaced wholesale. The recorder keeps the options each call
+    passed in ``calls``, which is how a test reads the target, bench command, and
+    sample count a probe asked for, and what the caller wired its progress
+    callback and warn sink to.
+
+    Args:
+        result: The measurement every call hands back.
+        progress: Events each call reports through the progress callback it was handed.
+        warnings: Messages each call sends through the warn sink it was handed.
+        on_call: Run at the start of each call, before anything is recorded: where
+            a test advances a clock to give the measurement a duration.
     """
 
     def __init__(
@@ -55,13 +62,17 @@ class MeasureRecorder:
         result: MeasurementResult,
         progress: Sequence[ProgressEvent] = (),
         warnings: Sequence[str] = (),
+        on_call: Callable[[], None] | None = None,
     ) -> None:
         self.result = result
         self.progress = tuple(progress)
         self.warnings = tuple(warnings)
+        self.on_call = on_call
         self.calls: list[MeasureOptions] = []
 
     async def __call__(self, options: MeasureOptions) -> MeasurementResult:
+        if self.on_call is not None:
+            self.on_call()
         self.calls.append(options)
         sampling = options.run.sampling
         if sampling.on_progress is not None:
@@ -78,20 +89,27 @@ def install_measure(
     *,
     progress: Sequence[ProgressEvent] = (),
     warnings: Sequence[str] = (),
+    on_call: Callable[[], None] | None = None,
 ) -> MeasureRecorder:
     """Replace ``gymrat.measure.measure`` with a recorder answering ``result``.
+
+    The stand-in keeps the real engine's signature, so a call the real
+    ``measure`` would reject fails the test.
 
     Args:
         monkeypatch: The test's monkeypatch fixture.
         result: The measurement every call hands back.
         progress: Events each call reports through the progress callback it was handed.
         warnings: Messages each call sends through the warn sink it was handed.
+        on_call: Run at the start of each call, before anything is recorded.
 
     Returns:
         The installed recorder.
     """
-    recorder = MeasureRecorder(result, progress, warnings)
-    monkeypatch.setattr("gymrat.measure.measure", recorder)
+    recorder = MeasureRecorder(result, progress, warnings, on_call)
+    monkeypatch.setattr(
+        "gymrat.measure.measure", create_autospec(measure, side_effect=recorder.__call__)
+    )
     return recorder
 
 

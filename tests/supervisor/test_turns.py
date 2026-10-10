@@ -7,6 +7,11 @@ with ``SessionState`` fixtures and record lists from the session record models.
 The guards' record accounting is covered too: which records count as progress
 for the no-progress guard (outcome records only), and the consecutive-discard
 streak, which skips the records already present when the session launched.
+
+The file also pins ``detect_end_condition`` from ``gymrat.supervisor.supervise``:
+which stop conditions end the session (and when ``check_stop`` silences them),
+which hook failures end it and with what reason (a hook failure wins over a met
+stop condition), and how the scan cursor bounds the hook-failure scan.
 """
 
 from __future__ import annotations
@@ -16,7 +21,8 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from gymrat.config import StopConfig
-from gymrat.supervisor.end_scan import EndCondition, detect_end_condition
+from gymrat.session.budget import Budget
+from gymrat.supervisor.supervise import EndCondition, detect_end_condition
 from gymrat.supervisor.turns import (
     CONSECUTIVE_DISCARD_LIMIT,
     FOLLOW_UP_CEILING,
@@ -42,10 +48,9 @@ from tests.session.records._fixtures import (
     session_state,
     stop_record,
 )
-from tests.supervisor._fixtures import make_turn_end
+from tests.supervisor._fixtures import WAIT_FINISHED_LINE, make_turn_end
 
 if TYPE_CHECKING:
-    from gymrat.config import BenchlessConfig
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import TurnEndEvent
@@ -69,30 +74,26 @@ def guard_state(
 
 def classify_with_defaults(
     *,
-    config: BenchlessConfig | None = None,
     state: SessionState | None = None,
     records: list[SessionLogRecord] | None = None,
     guards: GuardState | None = None,
     turn: TurnEndEvent | None = None,
     lock_held: bool = False,
     max_usd: float | None = None,
-    deadline_ms: float = 999_999_999.0,
-    max_minutes: float = 60,
+    budget: Budget | None = None,
     now_ms: float = 0.0,
     after_wait: bool = False,
 ) -> Decision:
     """Delegates to ``classify``, filling every argument a test leaves out with a neutral default.
 
     Args:
-        config: The live config; the fully defaulted one when ``None``.
         state: The folded session state; an empty open session when ``None``.
         records: The session log records; none when ``None``.
         guards: The guard counters ``classify`` mutates; fresh ones when ``None``.
         turn: The turn that just ended; an agent turn with budget left when ``None``.
         lock_held: Whether another command holds the repository lock.
         max_usd: The spend cap, or ``None`` for none.
-        deadline_ms: The wall-clock deadline, in monotonic milliseconds.
-        max_minutes: The configured wall-clock budget, in minutes.
+        budget: The session's wall-clock budget; an hour that never runs out when ``None``.
         now_ms: The current monotonic time, in milliseconds.
         after_wait: Whether the turn follows a wait for the lock.
 
@@ -100,15 +101,13 @@ def classify_with_defaults(
         The decision ``classify`` reaches.
     """
     return classify(
-        config=config if config is not None else benchless_config(),
         state=state if state is not None else session_state(),
         records=records if records is not None else [],
         guards=guards if guards is not None else guard_state(),
         turn=turn if turn is not None else make_turn_end(),
         lock_held=lock_held,
         max_usd=max_usd,
-        deadline_ms=deadline_ms,
-        max_minutes=max_minutes,
+        budget=budget if budget is not None else Budget(max_minutes=60, deadline_ms=999_999_999.0),
         now_ms=now_ms,
         after_wait=after_wait,
     )
@@ -121,11 +120,6 @@ _REPLY_INSTRUCTION = (
     "record your report with gymrat stop -m and end the turn."
 )
 
-#: The line a reply closes on when the agent's last command was still running.
-_WAIT_FINISHED_LINE = (
-    "The command you left running has finished; its record, if any, is in the session log."
-)
-
 
 # ---------------------------------------------------------------------------
 # classify evaluation order
@@ -135,14 +129,6 @@ _WAIT_FINISHED_LINE = (
 @pytest.mark.parametrize(
     ("arguments", "expected"),
     [
-        pytest.param(
-            {
-                "config": benchless_config(stop=StopConfig(max_iterations=2)),
-                "state": session_state(iteration_count=2),
-            },
-            End(reason="finished"),
-            id="stop-condition-met",
-        ),
         pytest.param(
             {"state": session_state(finalized=finalize_record())},
             End(reason="finished"),
@@ -187,7 +173,11 @@ _WAIT_FINISHED_LINE = (
             End(reason="spend-cap"),
             id="spend-cap-before-lock",
         ),
-        pytest.param({"lock_held": True}, WaitForLock(), id="lock-held"),
+        pytest.param(
+            {"lock_held": True, "guards": guard_state(replies_sent=FOLLOW_UP_CEILING)},
+            WaitForLock(),
+            id="lock-before-follow-up-ceiling",
+        ),
         pytest.param(
             {
                 "guards": guard_state(
@@ -214,7 +204,7 @@ _WAIT_FINISHED_LINE = (
             id="no-progress-reaches-limit",
         ),
         pytest.param(
-            {"deadline_ms": 600_000.0, "max_minutes": 10.0},
+            {"budget": Budget(max_minutes=10.0, deadline_ms=600_000.0)},
             Reply(text=f"{_REPLY_INSTRUCTION}\n{format_duration(600_000)} left of 10m"),
             id="nothing-triggered-replies",
         ),
@@ -249,7 +239,7 @@ def test_classify_when_lock_held_does_wait_without_touching_guard_counters():
             600_000.0,
             0.0,
             True,
-            f"{_REPLY_INSTRUCTION}\n{format_duration(600_000)} left of 10m\n{_WAIT_FINISHED_LINE}",
+            f"{_REPLY_INSTRUCTION}\n{format_duration(600_000)} left of 10m\n{WAIT_FINISHED_LINE}",
             id="after-wait-appends-the-finished-line",
         ),
         pytest.param(
@@ -264,9 +254,9 @@ def test_classify_when_lock_held_does_wait_without_touching_guard_counters():
 def test_classify_when_replying_does_state_the_instruction_and_time_left(
     deadline_ms: float, now_ms: float, *, after_wait: bool, text: str
 ):
-    result = classify_with_defaults(
-        deadline_ms=deadline_ms, max_minutes=10.0, now_ms=now_ms, after_wait=after_wait
-    )
+    budget = Budget(max_minutes=10.0, deadline_ms=deadline_ms)
+
+    result = classify_with_defaults(budget=budget, now_ms=now_ms, after_wait=after_wait)
 
     assert result == Reply(text=text)
 
@@ -421,15 +411,7 @@ def test_detect_end_condition_when_hook_failed_and_stop_met_does_report_hook_fai
 # ---------------------------------------------------------------------------
 
 
-def test_classify_when_no_new_outcome_records_since_last_reply_does_increment_no_progress():
-    guards = guard_state(replies_sent=1, no_progress_count=0, last_record_count=0)
-
-    classify_with_defaults(records=[], guards=guards)
-
-    assert guards.no_progress_count == 1
-
-
-def test_classify_when_new_outcome_records_appended_does_reset_no_progress_and_move_baseline():
+def test_classify_when_new_outcome_records_appended_does_reset_the_no_progress_streak():
     guards = guard_state(replies_sent=1, no_progress_count=2, last_record_count=0)
 
     classify_with_defaults(records=[iteration_record(), iteration_record(seq=2)], guards=guards)
@@ -477,7 +459,9 @@ def test_classify_when_four_stale_turns_does_end_no_progress_on_fourth():
 def test_outcome_record_count_when_records_vary_does_exclude_command_records(
     records: list[SessionLogRecord], expected: int
 ):
-    assert outcome_record_count(records) == expected
+    count = outcome_record_count(records)
+
+    assert count == expected
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,8 @@
-"""Tracing provider: lazy OTel setup, deterministic IDs, and record-to-attribute mapping.
+"""Tracing provider: lazy OTel setup, deterministic IDs, and the run span's attributes.
 
-All ``opentelemetry`` imports live inside functions so that importing the
-module never pulls the SDK into ``sys.modules`` (CLAUDE.md: "Import the agent
-SDK, and anything else with a startup cost, inside the function that needs it").
+All ``opentelemetry`` imports live inside functions: ``opentelemetry`` ships
+only with the ``otel`` extra, and the import-latency seam test keeps it out of
+``sys.modules`` when this module is imported.
 The attribute mapping builds plain dicts and needs no ``opentelemetry`` import
 at all.
 """
@@ -11,21 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
-import os
 import random
 import warnings
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, override
 
-from gymrat.errors import TOOL_FAILURE_EXIT_CODE
-from gymrat.session.records import (
-    CommandRecord,
-    IterationRecord,
-    SessionLogRecord,
-    _SequencedEnvelope,
-)
-from gymrat.supervisor.events import CapEvent, CompactionEvent, FollowUpEvent, TurnEndEvent
-from gymrat.utils import ENDPOINT_ENV, otlp_endpoint
+from gymrat.utils import otlp_endpoint, otlp_endpoint_from_env
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -33,14 +24,13 @@ if TYPE_CHECKING:
     from opentelemetry.context import Context
     from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
     from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
-    from opentelemetry.trace import Span, SpanContext, Tracer
+    from opentelemetry.sdk.trace.id_generator import IdGenerator
+    from opentelemetry.trace import Link, Span, SpanContext, Tracer
 
-    from gymrat.supervisor.events import LaunchEvent, SessionEvent
+    from gymrat.supervisor.events import LaunchEvent
 
 type Attrs = dict[str, str | int | float | bool]
 """The flat attribute dict a span or span event carries."""
-
-_SCALAR_TYPES = (str, int, float, bool)
 
 # ---------------------------------------------------------------------------
 # Named attribute and span-name constants
@@ -52,51 +42,40 @@ RUN_SPAN = "gymrat.run"
 SESSION_ID = "gymrat.session.id"
 SESSION_BRANCH = "gymrat.session.branch"
 
-COMMAND_NAME = "gymrat.command.name"
-COMMAND_EXIT_CODE = "gymrat.command.exit_code"
-COMMAND_DURATION_MS = "gymrat.command.duration_ms"
-COMMAND_REASON = "gymrat.command.reason"
-COMMAND_ARGS_PREFIX = "gymrat.command.args"
-
 RUN_HEAD_SHA = "gymrat.run.head_sha"
 RUN_MAX_MINUTES = "gymrat.run.max_minutes"
 RUN_MAX_USD = "gymrat.run.max_usd"
 RUN_EFFORT = "gymrat.run.effort"
-RUN_COST_USD = "gymrat.run.cost_usd"
 RUN_ENDED_BY = "gymrat.run.ended_by"
 RUN_END_REASON = "gymrat.run.end_reason"
 RUN_DURATION_MS = "gymrat.run.duration_ms"
 
-TURN_SESSION_COST_USD = "gymrat.turn.session_cost_usd"
-TURN_ORIGIN = "gymrat.turn.origin"
-TURN_BUDGET_EXHAUSTED = "gymrat.turn.budget_exhausted"
-FOLLOW_UP_ACTION = "gymrat.follow_up.action"
-FOLLOW_UP_REASON = "gymrat.follow_up.reason"
-CAP_NAME = "gymrat.cap.name"
-
 GEN_AI_MODEL = "gen_ai.request.model"
 GEN_AI_PROVIDER = "gen_ai.provider.name"
 
-ITERATION_SEQ = "gymrat.iteration.seq"
-ITERATION_OUTCOME = "gymrat.iteration.outcome"
-ITERATION_DELTA_PCT = "gymrat.iteration.delta_pct"
-
-EVENT_TURN_END = "gymrat.turn_end"
-EVENT_FOLLOW_UP = "gymrat.follow_up"
-EVENT_CAP = "gymrat.cap"
-EVENT_COMPACTION = "gymrat.compaction"
-
 SESSION_SPAN_KEY = "session"
 """The key the session span's deterministic id is derived from."""
-
-# Record fields carried by the envelope, not mapped to a `gymrat.<type>.<field>` attribute.
-_SKIPPED_FIELD_NAMES = frozenset({"at", "seq", "type"})
 
 _TRACEPARENT_HEADER = "traceparent"
 
 # ---------------------------------------------------------------------------
 # Deterministic ids and traceparent headers
 # ---------------------------------------------------------------------------
+
+
+def id_from_digest(digest: bytes, width: int) -> int:
+    """Read the leading ``width`` bytes of ``digest`` as a W3C Trace Context ID.
+
+    Args:
+        digest: The hash digest to read.
+        width: How many leading bytes form the ID: 16 for a trace ID, 8 for a
+            span ID.
+
+    Returns:
+        The leading bytes as a big-endian integer, or ``1`` when that value is
+        zero, since an all-zero ID is invalid in W3C Trace Context.
+    """
+    return int.from_bytes(digest[:width], "big") or 1
 
 
 def trace_id_of(session_id: str) -> int:
@@ -106,12 +85,10 @@ def trace_id_of(session_id: str) -> int:
         session_id: The session identifier to hash.
 
     Returns:
-        The first 128 bits of the identifier's SHA-256 digest, or ``1`` when
-        that value is zero, since an all-zero trace ID is invalid in W3C Trace
-        Context.
+        The first 128 bits of the identifier's SHA-256 digest, as read by
+        :func:`id_from_digest`.
     """
-    raw = int.from_bytes(hashlib.sha256(session_id.encode()).digest()[:16], "big")
-    return raw or 1
+    return id_from_digest(hashlib.sha256(session_id.encode()).digest(), 16)
 
 
 def span_id_of(session_id: str, key: str) -> int:
@@ -123,36 +100,9 @@ def span_id_of(session_id: str, key: str) -> int:
 
     Returns:
         The first 64 bits of the SHA-256 digest of the session identifier and
-        key, or ``1`` when that value is zero, since an all-zero span ID is
-        invalid in W3C Trace Context.
+        key, as read by :func:`id_from_digest`.
     """
-    raw = int.from_bytes(hashlib.sha256((session_id + "\0" + key).encode()).digest()[:8], "big")
-    return raw or 1
-
-
-def existing_session_span(session_id: str) -> Span:
-    """Reconstruct the session span an earlier process opened, as a parent for new spans.
-
-    The session span's ids are deterministic, so a process that did not open it
-    can still parent spans under it without holding the span itself.
-
-    Args:
-        session_id: The session whose span is reconstructed.
-
-    Returns:
-        A sampled, non-recording span carrying the session span's trace and
-        span ids.
-    """
-    from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags  # noqa: PLC0415
-
-    return NonRecordingSpan(
-        SpanContext(
-            trace_id=trace_id_of(session_id),
-            span_id=span_id_of(session_id, SESSION_SPAN_KEY),
-            is_remote=False,
-            trace_flags=TraceFlags(TraceFlags.SAMPLED),
-        )
-    )
+    return id_from_digest(hashlib.sha256((session_id + "\0" + key).encode()).digest(), 8)
 
 
 def format_traceparent(span: Span) -> str:
@@ -205,7 +155,7 @@ def parse_traceparent(value: str) -> SpanContext | None:
 
 
 # ---------------------------------------------------------------------------
-# Record-to-attribute mapping
+# Run span attributes
 # ---------------------------------------------------------------------------
 
 
@@ -247,105 +197,6 @@ def run_attributes(launch: LaunchEvent) -> Attrs:
     return attrs
 
 
-def run_event(event: SessionEvent) -> tuple[str, Attrs] | None:
-    """Map a supervisor event to the span event a run span mirrors it as.
-
-    Args:
-        event: The supervisor event.
-
-    Returns:
-        The span event's name and attributes, or ``None`` for an event the run
-        span does not mirror.
-    """
-    if isinstance(event, TurnEndEvent):
-        return EVENT_TURN_END, {
-            TURN_SESSION_COST_USD: event.cost_usd,
-            TURN_ORIGIN: event.origin,
-            TURN_BUDGET_EXHAUSTED: event.budget_exhausted,
-        }
-    if isinstance(event, FollowUpEvent):
-        attrs: Attrs = {FOLLOW_UP_ACTION: event.action}
-        if event.reason is not None:
-            attrs[FOLLOW_UP_REASON] = event.reason
-        return EVENT_FOLLOW_UP, attrs
-    if isinstance(event, CapEvent):
-        return EVENT_CAP, {CAP_NAME: event.cap}
-    if isinstance(event, CompactionEvent):
-        return EVENT_COMPACTION, {}
-    return None
-
-
-def _add_seq(attrs: Attrs, record: _SequencedEnvelope) -> None:
-    """Add the iteration sequence number, when the record carries one."""
-    if record.seq is not None:
-        attrs[ITERATION_SEQ] = record.seq
-
-
-def command_attributes(record: CommandRecord, session_id: str) -> Attrs:
-    """Map a ``CommandRecord`` to the attributes of a command span.
-
-    Args:
-        record: The command record; its reason and iteration sequence number
-            are left out when ``None``, and only its scalar args are kept.
-        session_id: The session the command ran in.
-
-    Returns:
-        The flat attribute dict for the command span.
-    """
-    attrs: Attrs = {
-        SESSION_ID: session_id,
-        COMMAND_NAME: record.name,
-        COMMAND_EXIT_CODE: record.exit_code,
-        COMMAND_DURATION_MS: record.duration_ms,
-    }
-    if record.reason is not None:
-        attrs[COMMAND_REASON] = record.reason
-    _add_seq(attrs, record)
-    for key, val in record.args.items():
-        if isinstance(val, _SCALAR_TYPES):
-            attrs[f"{COMMAND_ARGS_PREFIX}.{key}"] = val
-    return attrs
-
-
-def record_event(record: SessionLogRecord) -> tuple[str, Attrs]:
-    """Map a non-command session log record to the span event it becomes.
-
-    Any record with an iteration sequence number carries it. An iteration record
-    adds its outcome and, when known, its primary delta; any other record adds
-    its scalar top-level fields under ``gymrat.<type>.<field>``.
-
-    Args:
-        record: The session log record to map.
-
-    Returns:
-        The ``(event_name, attributes)`` pair, the name being ``gymrat.<type>``.
-    """
-    record_type: str = record.type
-    name = f"gymrat.{record_type}"
-    attrs: Attrs = {}
-
-    if isinstance(record, _SequencedEnvelope):
-        _add_seq(attrs, record)
-
-    if isinstance(record, IterationRecord):
-        attrs[ITERATION_OUTCOME] = record.outcome
-        if record.primary.delta_pct is not None:
-            attrs[ITERATION_DELTA_PCT] = record.primary.delta_pct
-    else:
-        _add_scalar_fields(attrs, record_type, record)
-
-    return name, attrs
-
-
-def _add_scalar_fields(attrs: Attrs, record_type: str, record: SessionLogRecord) -> None:
-    """Add scalar top-level fields from a non-iteration record under ``gymrat.<type>.<field>``."""
-    for field_name, value in record:
-        if field_name in _SKIPPED_FIELD_NAMES:
-            continue
-        if isinstance(value, _SCALAR_TYPES):
-            attrs[f"gymrat.{record_type}.{field_name}"] = value
-
-
 # ---------------------------------------------------------------------------
 # Tracer provider
 # ---------------------------------------------------------------------------
@@ -364,7 +215,7 @@ _queued_span_id: ContextVar[int | None] = ContextVar("_queued_span_id", default=
 
 def _traces_url(endpoint: str) -> str:
     """Build the URL spans are posted to, as the OTLP exporter does from the environment."""
-    traces_endpoint = otlp_endpoint(os.environ.get(_TRACES_ENDPOINT_ENV))
+    traces_endpoint = otlp_endpoint_from_env(_TRACES_ENDPOINT_ENV)
     if traces_endpoint is not None:
         return traces_endpoint
     separator = "" if endpoint.endswith("/") else "/"
@@ -417,13 +268,15 @@ def configure_tracing(
             raise ValueError(msg)
         return True
 
-    endpoint = otlp_endpoint(endpoint if endpoint is not None else os.environ.get(ENDPOINT_ENV))
+    endpoint = otlp_endpoint(endpoint) if endpoint is not None else otlp_endpoint_from_env()
     if endpoint is None:
         return False
 
     try:
-        from opentelemetry.sdk.resources import Resource  # noqa: PLC0415
-        from opentelemetry.sdk.trace import TracerProvider as _TracerProvider  # noqa: PLC0415
+        from opentelemetry.sdk.resources import Resource  # noqa: PLC0415 -- optional extra
+        from opentelemetry.sdk.trace import (  # noqa: PLC0415 -- optional extra
+            TracerProvider as _TracerProvider,
+        )
 
         if span_processor is None:
             span_processor = _otlp_span_processor(endpoint)
@@ -435,8 +288,7 @@ def configure_tracing(
         "service.version": importlib.metadata.version("gymrat"),
     })
 
-    id_generator = _DeterministicIdGenerator(trace_id_of(session_id))
-    # pyrefly: ignore[bad-argument-type] -- IdGenerator protocol mismatch
+    id_generator = _deterministic_id_generator(trace_id_of(session_id))
     provider = _TracerProvider(resource=resource, id_generator=id_generator)
     provider.add_span_processor(span_processor)
 
@@ -458,21 +310,24 @@ def _otlp_span_processor(endpoint: str) -> SpanProcessor:
     Raises:
         ImportError: When the OTLP exporter package is not installed.
     """
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415 -- optional extra
         OTLPSpanExporter,
     )
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415 -- optional extra
 
     exporter = _failure_recording(OTLPSpanExporter(endpoint=_traces_url(endpoint)))
     return BatchSpanProcessor(exporter)
 
 
-def start_span(
+def start_span(  # noqa: PLR0913 -- the key and session, plus the tracer start_span keywords it forwards
     name: str,
     *,
     span_key: str | None = None,
     session_id: str | None = None,
-    **kwargs: object,
+    context: Context | None = None,
+    links: Sequence[Link] | None = None,
+    attributes: Attrs | None = None,
+    start_time: int | None = None,
 ) -> Span:
     """Start a span through the module's tracer, which :func:`configure_tracing` must have set.
 
@@ -482,11 +337,16 @@ def start_span(
             session ID and this key.
         session_id: The session the deterministic span ID is derived from;
             ``None`` uses the session tracing was configured for.
-        **kwargs: Additional keyword arguments forwarded to the tracer's
-            ``start_span``.
+        context: The parent context, or ``None`` for the current one.
+        links: Spans this span links to, or ``None`` for none.
+        attributes: The span's attributes, or ``None`` for none.
+        start_time: The span's start, in epoch nanoseconds, or ``None`` for now.
 
     Returns:
         The started span.
+
+    Raises:
+        RuntimeError: When :func:`configure_tracing` has not set a tracer.
     """
     global _session_span_dropped  # noqa: PLW0603 — module singleton
     token = None
@@ -494,58 +354,17 @@ def start_span(
         keyed_session = _session_id if session_id is None else session_id
         token = _queued_span_id.set(span_id_of(keyed_session, span_key))
     try:
-        span = _tracer.start_span(name, **kwargs)  # type: ignore[arg-type]
+        if _tracer is None:
+            msg = "configure_tracing must run before start_span"
+            raise RuntimeError(msg)
+        span = _tracer.start_span(
+            name, context=context, links=links, attributes=attributes, start_time=start_time
+        )
     finally:
         if token is not None:
             _queued_span_id.reset(token)
     if span_key == SESSION_SPAN_KEY:
         _session_span_dropped = not span.is_recording()
-    return span
-
-
-def start_command_span(
-    record: CommandRecord,
-    *,
-    session_id: str,
-    line_number: int,
-    context: Context,
-    start_time: int,
-) -> Span:
-    """Start the span a command record stands for.
-
-    Shared by the live and the replay emitters, so both give a command the same
-    name, id, attributes, link and status. The span links to the span context
-    the command was launched under, when it recorded one. An exit code of 0
-    ends ``OK`` and a tool failure ends ``ERROR`` with the record's reason; a
-    gate trip is not an error and leaves the status unset.
-
-    Args:
-        record: The command record the span stands for.
-        session_id: The session the command ran in, which keys the span id
-            even when tracing was configured for another session.
-        line_number: The record's line in the session log, which keys the span id.
-        context: The parent context the span starts under.
-        start_time: When the command started, in nanoseconds since the epoch.
-
-    Returns:
-        The started span, linked and with its status set.
-    """
-    from opentelemetry.trace import Link, Status, StatusCode  # noqa: PLC0415
-
-    link = parse_traceparent(record.traceparent) if record.traceparent else None
-    span = start_span(
-        f"gymrat.command.{record.name}",
-        span_key=f"command:{line_number}",
-        session_id=session_id,
-        context=context,
-        links=[Link(link)] if link is not None else None,
-        attributes=command_attributes(record, session_id),
-        start_time=start_time,
-    )
-    if record.exit_code == 0:
-        span.set_status(Status(StatusCode.OK))
-    elif record.exit_code == TOOL_FAILURE_EXIT_CODE:
-        span.set_status(Status(StatusCode.ERROR, description=record.reason))
     return span
 
 
@@ -604,7 +423,7 @@ def reset_tracing() -> None:
         Exception: Whatever the provider's ``shutdown`` raises, propagated after
             the singleton has been cleared.
     """
-    global _provider, _tracer, _session_id, _export_failed, _session_span_dropped  # noqa: PLW0603
+    global _provider, _tracer, _session_id, _export_failed, _session_span_dropped  # noqa: PLW0603 — module singleton
     provider = _provider
     _provider = None
     _tracer = None
@@ -619,7 +438,7 @@ def reset_tracing() -> None:
 
 def _failure_recording(exporter: SpanExporter) -> SpanExporter:
     """Wrap ``exporter`` so that any failed export sets :func:`export_failed`."""
-    from opentelemetry.sdk.trace.export import (  # noqa: PLC0415
+    from opentelemetry.sdk.trace.export import (  # noqa: PLC0415 -- optional extra
         SpanExporter,
         SpanExportResult,
     )
@@ -644,20 +463,33 @@ def _failure_recording(exporter: SpanExporter) -> SpanExporter:
     return _FailureRecordingExporter()
 
 
-class _DeterministicIdGenerator:
-    """OTel IdGenerator that produces deterministic trace IDs and queued span IDs."""
+def _deterministic_id_generator(session_trace_id: int) -> IdGenerator:
+    """Build the OTel ID generator that keys every span to the session.
 
-    def __init__(self, session_trace_id: int) -> None:
-        self._session_trace_id = session_trace_id
+    Trace IDs are never random, so the generator keeps the base class's
+    ``is_trace_id_random``, which returns False; do not override it to True.
 
-    def generate_trace_id(self) -> int:
-        return self._session_trace_id
+    Args:
+        session_trace_id: The trace ID every span of the session carries.
 
-    def generate_span_id(self) -> int:
-        queued = _queued_span_id.get()
-        if queued is not None:
-            return queued
-        return random.getrandbits(64) or 1
+    Returns:
+        A generator yielding ``session_trace_id`` for every trace and the queued
+        span ID, or a random one when none is queued, for every span.
+    """
+    from opentelemetry.sdk.trace.id_generator import (  # noqa: PLC0415 -- optional extra
+        IdGenerator as _IdGenerator,
+    )
 
-    def is_trace_id_random(self) -> bool:
-        return False
+    class _DeterministicIdGenerator(_IdGenerator):
+        @override
+        def generate_trace_id(self) -> int:
+            return session_trace_id
+
+        @override
+        def generate_span_id(self) -> int:
+            queued = _queued_span_id.get()
+            if queued is not None:
+                return queued
+            return random.getrandbits(64) or 1
+
+    return _DeterministicIdGenerator()

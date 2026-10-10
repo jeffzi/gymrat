@@ -20,13 +20,12 @@ from gymrat.cli.supervise.frame import (
     build_loop_text,
     log_path_text,
 )
-from gymrat.cli.supervise.text import format_cost
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
-from gymrat.utils import format_duration
+from gymrat.utils import format_cost, format_duration
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.types import ReadSessionResult
     from gymrat.config import Effort
+    from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.exit_sequence import ExitReport
     from gymrat.supervisor.supervise import SupervisionResult
 
@@ -130,13 +129,11 @@ def build_summary(  # noqa: PLR0913 -- keyword-only run-end parts extend a 1-pos
 
     The headline states how the run ended; the rows below it reuse the
     dashboard's best and loop renderables, so the last thing printed reads like
-    the frame it replaces, and end with where the event log landed.
+    the frame it replaces.
 
     When the session ended on its own, by a stop condition, or by a guard (not by
     a cap, a hook failure, or an error) and the agent produced text, an ``agent``
-    row appears after the headline showing the session's stop message when the
-    log ends on one, otherwise the agent's last text block, with paragraph
-    breaks preserved.
+    row appears after the headline, with paragraph breaks preserved.
 
     Args:
         result: The supervision outcome whose ``ended_by`` drives the headline.
@@ -158,7 +155,6 @@ def build_summary(  # noqa: PLR0913 -- keyword-only run-end parts extend a 1-pos
         The assembled ``Text`` block for the closing summary.
     """
     rows = [_build_outcome_text(result)]
-    # A session that ended by itself, not by a cap trip or an error.
     completed = result.ended_by == "session" and result.outcome.reason != "error"
     if completed or result.ended_by in ("guard", "stop-condition"):
         stop_message = session_result.stop_message if session_result is not None else None

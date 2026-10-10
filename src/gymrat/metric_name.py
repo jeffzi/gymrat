@@ -17,17 +17,6 @@ from rich.markup import RE_TAGS, escape
 
 from gymrat.errors import GymratError
 
-LINE_TERMINATORS = re.compile("[\\n\\v\\f\\r\\x1c-\\x1e\\x85\\u2028\\u2029]")
-"""Characters a metric name may not carry: every boundary :meth:`str.splitlines` breaks on.
-
-That is LF, VT (U+000B), FF (U+000C), CR, U+001C to U+001E, U+0085, U+2028, and
-U+2029. A name holding one would split across lines in any message or record line
-that names it, and LF, CR, U+2028, and U+2029 are line terminators to a JavaScript
-regular-expression engine, so an anchored name check on the session record could
-never match such a name — gymrat must never write a record it cannot read back.
-Written as escapes so the source stays plain ASCII.
-"""
-
 
 @dataclass(frozen=True, slots=True)
 class MetricName:

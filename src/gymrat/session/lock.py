@@ -2,7 +2,7 @@
 
 A run takes the lock by acquiring a ``flock``/``LockFileEx`` on a dedicated
 ``.lock`` file next to the holder metadata path, waiting at most
-``_LOCK_ACQUIRE_TIMEOUT`` seconds for a rival to let go.  The holder record is
+``_LOCK_ACQUIRE_TIMEOUT`` seconds (by default) for a rival to let go.  The holder record is
 written to the original path as compact JSON, readable on every platform — including
 Windows, where ``LockFileEx`` creates a mandatory byte-range lock that blocks
 reads through a separate handle.
@@ -16,11 +16,10 @@ When the publish lock cannot be obtained within ``_PUBLISH_LOCK_TIMEOUT`` second
 record, a loser still reports best-effort diagnostics from whatever the file
 holds.
 
-Contention is decided within the ``_LOCK_ACQUIRE_TIMEOUT`` wait for the main
-lock: the loser reads the winner's holder record for diagnostics without needing
-liveness probes.  Crash recovery is automatic — the kernel
-releases the advisory lock when the holder exits — so a stale lockfile never
-needs manual cleanup.
+Contention is decided within the wait for the main lock: the loser reads the
+winner's holder record for diagnostics without needing liveness probes.  Crash
+recovery is automatic — the kernel releases the advisory lock when the holder
+exits — so a stale lockfile never needs manual cleanup.
 """
 
 import contextlib
@@ -107,25 +106,31 @@ def is_held(lock_path: str) -> bool:
     """Report whether another party holds the advisory lock at ``lock_path``.
 
     The probe acquires a non-blocking ``FileLock`` on the OS lock file
-    (``<lock_path>.lock``) and releases immediately.  If acquisition fails the
-    lock is held; if it succeeds or the file cannot be opened at all the lock
-    is not held.  The probe never reads or writes the holder record and always
-    preserves the lock file on disk.
+    (``<lock_path>.lock``) and releases immediately.  The probe never reads or
+    writes the holder record and always preserves the lock file on disk.
 
     Args:
         lock_path: Path to the holder-record file whose sibling OS lock file
             is probed.
 
     Returns:
-        ``True`` when the lock is held by another party, ``False`` otherwise.
+        ``True`` when acquisition fails because another party holds the lock;
+        ``False`` when it succeeds.
+
+    Raises:
+        GymratError: When the OS lock file cannot be opened, so the probe
+            cannot tell whether the lock is held.
     """
-    probe = FileLock(_os_lock_file(lock_path), timeout=0, preserve_lock_file=True)
+    os_lock_path = _os_lock_file(lock_path)
+    probe = FileLock(os_lock_path, timeout=0, preserve_lock_file=True)
     try:
         probe.acquire()
     except Timeout:
         return True
-    except OSError:
-        return False
+    except PermissionError as error:
+        _raise_permission_error(os_lock_path, error)
+    except OSError as error:
+        raise GymratError(_open_failure_message(os_lock_path, error)) from error
     else:
         probe.release()
         return False
@@ -163,8 +168,8 @@ def _acquire_publish_lock(pub_lock_path: str) -> FileLock:
         The publish lock, acquired when the wait succeeded.
 
     Raises:
-        GymratError: When the publish lock file cannot be opened due to
-            permissions.
+        GymratError: When the publish lock file cannot be opened, with a
+            platform hint when the cause is permissions.
     """
     pub_lock = FileLock(pub_lock_path, timeout=_PUBLISH_LOCK_TIMEOUT, preserve_lock_file=True)
     try:
@@ -173,28 +178,35 @@ def _acquire_publish_lock(pub_lock_path: str) -> FileLock:
         pass
     except PermissionError as error:
         _raise_permission_error(pub_lock_path, error)
+    except OSError as error:
+        raise GymratError(_open_failure_message(pub_lock_path, error)) from error
     return pub_lock
 
 
-def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
-    """Acquire the main OS lock within ``_LOCK_ACQUIRE_TIMEOUT``, or raise a diagnostic error.
+def _acquire_os_lock(
+    lock_path: str, os_lock_path: str, *, wait: float, poll_interval: float
+) -> FileLock:
+    """Acquire the main OS lock within ``wait`` seconds.
 
     Args:
         lock_path: Path to the holder-record file, read for diagnostics when
             the wait runs out.
         os_lock_path: Path to the sibling OS lock file to acquire.
+        wait: Seconds to wait for a rival to let go before declaring contention.
+        poll_interval: Seconds between lock attempts during the wait.
 
     Returns:
         The acquired ``FileLock``.
 
     Raises:
         LockContentionError: When another holder keeps the lock for the whole wait.
-        GymratError: When the OS lock file cannot be opened due to permissions.
+        GymratError: When the OS lock file cannot be opened, with a platform
+            hint when the cause is permissions.
     """
     lock = FileLock(
         os_lock_path,
-        timeout=_LOCK_ACQUIRE_TIMEOUT,
-        poll_interval=_LOCK_ACQUIRE_POLL_INTERVAL,
+        timeout=wait,
+        poll_interval=poll_interval,
         preserve_lock_file=True,
     )
     try:
@@ -203,10 +215,18 @@ def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
         _raise_contention_error(lock_path)
     except PermissionError as error:
         _raise_permission_error(os_lock_path, error)
+    except OSError as error:
+        raise GymratError(_open_failure_message(os_lock_path, error)) from error
     return lock
 
 
-def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
+def acquire_lock(
+    lock_path: str,
+    command: str,
+    *,
+    wait: float = _LOCK_ACQUIRE_TIMEOUT,
+    poll_interval: float = _LOCK_ACQUIRE_POLL_INTERVAL,
+) -> ReleaseLock:
     """Take the single-flight lock at ``lock_path`` on behalf of ``command``.
 
     Args:
@@ -214,6 +234,8 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
             is acquired.
         command: Name of the command taking the lock, written into the holder
             record for diagnostics when a rival process finds it.
+        wait: Seconds to wait for a rival to let go before declaring contention.
+        poll_interval: Seconds between lock attempts during the wait.
 
     Returns:
         An idempotent zero-argument callable that releases the lock.
@@ -221,8 +243,8 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
     Raises:
         LockContentionError: When another process (or the same process) already
             holds the lock.
-        GymratError: When the lock file or its sibling publish lock file cannot
-            be opened due to permissions.
+        GymratError: When the OS lock file or its sibling publish lock file
+            cannot be opened, with a platform hint when the cause is permissions.
     """
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -233,7 +255,7 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
 
     pub_lock = _acquire_publish_lock(pub_lock_path)
     try:
-        lock = _acquire_os_lock(lock_path, os_lock_path)
+        lock = _acquire_os_lock(lock_path, os_lock_path, wait=wait, poll_interval=poll_interval)
 
         holder = Path(lock_path)
         holder.write_text(record, encoding="utf-8")
@@ -280,6 +302,10 @@ def _raise_contention_error(lock_path: str) -> NoReturn:
     raise LockContentionError(message, hint=_LIVE_HOLDER_HINT)
 
 
+def _open_failure_message(os_lock_path: str, error: OSError) -> str:
+    return f"Lock file {os_lock_path} could not be opened: {error!s}"
+
+
 def _raise_permission_error(os_lock_path: str, error: OSError) -> NoReturn:
     """Reframe a permission failure into a ``GymratError`` with platform-gated hints."""
     if sys.platform == "win32":
@@ -290,5 +316,4 @@ def _raise_permission_error(os_lock_path: str, error: OSError) -> NoReturn:
     else:
         hint = f"It belongs to another user. Remove {os_lock_path} yourself, then rerun."
 
-    message = f"Lock file {os_lock_path} could not be opened: {error!s}"
-    raise GymratError(message, hint=hint) from error
+    raise GymratError(_open_failure_message(os_lock_path, error), hint=hint) from error

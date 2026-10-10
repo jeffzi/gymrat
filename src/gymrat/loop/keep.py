@@ -29,7 +29,7 @@ from gymrat.exec import (
     ExecTimeoutError,
     exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
-from gymrat.git import SHORT_SHA_LENGTH
+from gymrat.loop.gating import is_gating_regression
 from gymrat.report.format import format_percent_delta
 from gymrat.report.style import format_hint, render_lines
 from gymrat.session.records import (
@@ -47,6 +47,7 @@ from gymrat.session.workspace import (
 )
 from gymrat.utils import (
     MS_PER_SECOND,
+    SHORT_SHA_LENGTH,
     WarnSink,
     limit_output,
     stream_color_from_env,
@@ -57,13 +58,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.config import BenchlessConfig
-    from gymrat.session.records import MetricVerdict
     from gymrat.session.schema import KeepReason
-
-
-# ---------------------------------------------------------------------------
-# checks and gating gates
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +181,8 @@ def has_standing_gating_regression(iteration: IterationRecord) -> bool:
     if _unmeasured_gating_regressions(iteration):
         return True
     return any(
-        _is_gating_regression(metric) and (metric.confirmed or metric.method == "exact")
+        is_gating_regression(gating=metric.gating, verdict=metric.verdict)
+        and (metric.confirmed or metric.method == "exact")
         for metric in iteration.metrics.values()
     )
 
@@ -197,12 +193,8 @@ def _unmeasured_gating_regressions(iteration: IterationRecord) -> list[str]:
     return [
         name
         for name, metric in iteration.metrics.items()
-        if _is_gating_regression(metric) and name in absent
+        if is_gating_regression(gating=metric.gating, verdict=metric.verdict) and name in absent
     ]
-
-
-def _is_gating_regression(metric: MetricVerdict) -> bool:
-    return metric.gating and metric.verdict == "regressed"
 
 
 def gating_refusal(iteration: IterationRecord) -> str:
@@ -237,11 +229,6 @@ def gating_refusal(iteration: IterationRecord) -> str:
         f"check that the filter template (or the bench itself) reports {reported}, "
         f"then {settle_hint}."
     )
-
-
-# ---------------------------------------------------------------------------
-# keep
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)

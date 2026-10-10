@@ -1,17 +1,22 @@
-"""Helpers for tests of and around ``exec``: results, spawn recording, ways to end a run, exec stand-ins."""
+"""Helpers for tests of and around ``exec``: results, spawn recording, ways to end a run, both entry points, exec stand-ins."""
 
 import asyncio
 import contextlib
 import dataclasses
 import os
 import signal
-from collections.abc import AsyncGenerator, Callable
+import sys
+from collections.abc import AsyncGenerator, Callable, Coroutine, Generator
 from pathlib import Path
+from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
-from tests._process_helpers import capture_spawns
+from gymrat import exec as exec_mod
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
+from gymrat.exec import exec as run_exec
+from tests._process_helpers import SLEEPER_ARGV, capture_spawns, poll_until
 
 type ExecTask = asyncio.Task[ExecResult | ExecTimeoutError]
 
@@ -33,19 +38,28 @@ def expected_result(stdout: str = "", stderr: str = "", exit_code: int = 0) -> E
     )
 
 
-def physical_path(path: Path) -> str:
-    """Resolve symlinks so a directory compares equal to ``pwd -P`` output.
+#: The bytes each channel of :func:`capped_result` wrote before exec's cap cut it.
+CAPPED_STDOUT_BYTES = 200_000
+CAPPED_STDERR_BYTES = 150_000
 
-    Wrapped in a sync helper so the resolution stays out of the async test body,
-    where a blocking filesystem call would trip the async-blocking-call lint.
+
+def capped_result(*, exit_code: int = 0) -> ExecResult:
+    """Build an ``ExecResult`` whose output overran exec's cap, keeping the pre-cap byte counts.
 
     Args:
-        path: The directory to resolve.
+        exit_code: The exit code the capped run reports.
 
     Returns:
-        The symlink-free absolute path, as a string.
+        A result whose short captured text sits beside ``CAPPED_STDOUT_BYTES`` and
+        ``CAPPED_STDERR_BYTES``.
     """
-    return str(path.resolve())
+    return ExecResult(
+        stdout="capped stdout",
+        stderr="capped stderr",
+        exit_code=exit_code,
+        stdout_bytes=CAPPED_STDOUT_BYTES,
+        stderr_bytes=CAPPED_STDERR_BYTES,
+    )
 
 
 async def wait_for_spawned(
@@ -65,14 +79,25 @@ async def wait_for_spawned(
         TimeoutError: Fewer than ``count`` children were spawned within three
             seconds.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _SPAWN_WAIT_S
-    while len(processes) < count:
-        if loop.time() > deadline:
-            msg = f"{spawner}() has spawned {len(processes)} of {count} children"
-            raise TimeoutError(msg)
-        await asyncio.sleep(0.01)
+    await poll_until(
+        lambda: len(processes) >= count,
+        _SPAWN_WAIT_S,
+        lambda: TimeoutError(f"{spawner}() has spawned {len(processes)} of {count} children"),
+    )
     return processes[-1]
+
+
+@contextlib.contextmanager
+def fresh_live_process_groups() -> Generator[None]:
+    """Swap the live process-group registry for an empty one, putting the original back after.
+
+    A private patcher rather than the ``monkeypatch`` fixture, so an autouse
+    fixture built on it does not pull every test's ``monkeypatch`` setup ahead of
+    the environment baseline.
+    """
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(exec_mod, "_live_process_groups", set())
+        yield
 
 
 @contextlib.asynccontextmanager
@@ -131,6 +156,18 @@ def cancel_task(
     task.cancel()
 
 
+async def settle(task: "asyncio.Task[object]", timeout_s: float = 5) -> None:
+    """Wait for ``task`` to finish unwinding, treating its cancellation as done."""
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout_s)
+
+
+async def cancel_and_settle(task: "asyncio.Task[object]", timeout_s: float = 5) -> None:
+    """Cancel ``task`` and wait for it to finish unwinding."""
+    task.cancel()
+    await settle(task, timeout_s)
+
+
 def fail_stderr_read(
     task: ExecTask, proc: asyncio.subprocess.Process | None, abort: asyncio.Event
 ) -> None:
@@ -149,22 +186,103 @@ class Teardown:
 
 
 # ---------------------------------------------------------------------------
+# The two entry points, for the behaviors they share
+# ---------------------------------------------------------------------------
+
+type ExecRun = Callable[[Any, ExecOptions], Coroutine[Any, Any, ExecResult | ExecTimeoutError]]
+
+
+async def run_shell(args: Any, options: ExecOptions) -> ExecResult | ExecTimeoutError:
+    """Run ``args``, a shell command line, through ``exec``."""
+    return await run_exec(args, options)
+
+
+async def run_argv(args: Any, options: ExecOptions) -> ExecResult | ExecTimeoutError:
+    """Run ``args``, a program and its arguments, through ``exec_argv``."""
+    return await exec_argv(args, options)
+
+
+def shell_grandchild(pid_file: Path) -> str:
+    """A shell command that backgrounds a ``sleep``, writes its pid to ``pid_file``, and waits."""
+    return f"sleep 30 & echo $! > '{pid_file}'; wait"
+
+
+def _argv_grandchild(pid_file: Path) -> tuple[str, ...]:
+    script = (
+        "import subprocess, time\n"
+        f"p = subprocess.Popen({list(SLEEPER_ARGV)!r})\n"
+        f"open({str(pid_file)!r}, 'w').write(str(p.pid) + '\\n')\n"
+        "time.sleep(30)\n"
+    )
+    return (sys.executable, "-c", script)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Runner:
+    """One entry point and the arguments a shared test hands it.
+
+    Attributes:
+        run: The entry point.
+        sleeper: Arguments for a child that sleeps for 30 s without writing.
+        partial_output: Arguments for a child that writes ``line 1``, then
+            sleeps for 10 s.
+        grandchild: Builds the arguments for a child that starts a sleeping
+            grandchild, writes the grandchild's pid to the given file, then
+            sleeps for 30 s itself.
+    """
+
+    run: ExecRun
+    sleeper: str | tuple[str, ...]
+    partial_output: str | tuple[str, ...]
+    grandchild: Callable[[Path], str | tuple[str, ...]]
+
+
+RUNNERS = [
+    pytest.param(
+        Runner(run_shell, "sleep 30", "echo 'line 1'; sleep 10", shell_grandchild),
+        id="exec",
+    ),
+    pytest.param(
+        Runner(
+            run_argv,
+            SLEEPER_ARGV,
+            (sys.executable, "-c", "import time; print('line 1', flush=True); time.sleep(10)"),
+            _argv_grandchild,
+        ),
+        id="exec_argv",
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
 # A stand-in for ``exec``
 # ---------------------------------------------------------------------------
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ExecRecorder:
-    """A stand-in for ``exec`` that records its calls and answers with a fixed result.
+    """The calls a stand-in for ``exec`` received and the fixed result it answers with.
 
-    Tests reach into ``calls`` to assert a command ran (or never did) and to read
-    the working directory and timeout it was handed.
+    Attributes:
+        result: What every call returns.
+        calls: Each call's command and options, in call order. Tests read it to
+            assert a command ran (or never did) and to see the working directory
+            and timeout it was handed.
     """
 
     result: ExecResult | ExecTimeoutError
     calls: list[tuple[str, ExecOptions]] = dataclasses.field(default_factory=list)
 
-    async def __call__(self, command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:
+    async def record(self, command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:
+        """Record one call and answer it.
+
+        Args:
+            command: The shell command line ``exec`` was asked to run.
+            options: The options it was handed.
+
+        Returns:
+            The recorder's fixed result.
+        """
         self.calls.append((command, options))
         return self.result
 
@@ -172,7 +290,10 @@ class ExecRecorder:
 def install_exec(
     monkeypatch: pytest.MonkeyPatch, target: str, result: ExecResult | ExecTimeoutError
 ) -> ExecRecorder:
-    """Replace the ``exec`` a module calls with a recorder answering ``result``.
+    """Replace the ``exec`` a module calls with a stand-in answering ``result``.
+
+    The stand-in carries the real ``exec`` signature, so a call the real one
+    would reject fails the test.
 
     Args:
         monkeypatch: Patches ``target`` for the duration of the test.
@@ -181,8 +302,8 @@ def install_exec(
         result: What every call returns.
 
     Returns:
-        The recorder now standing in for ``exec``.
+        The recorder holding the calls the stand-in received.
     """
     recorder = ExecRecorder(result)
-    monkeypatch.setattr(target, recorder)
+    monkeypatch.setattr(target, create_autospec(run_exec, side_effect=recorder.record))
     return recorder

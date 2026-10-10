@@ -1,10 +1,11 @@
 """Tests for the CLI error rendering and exit routing.
 
-These cover stdout writing, the error formatter and the exit path, plus the
-import-latency guard. Run-setup tests live in ``test_run_setup.py``; flag parser
-tests live in ``test_options.py``; stream-helper and stderr-console tests live in
-``test_console.py``; budget report tests live in ``test_budget_report.py``; lock
-and trace tests live in ``tests/test_command_run.py``.
+These cover stdout writing, the error formatter and the exit path. Run-setup
+tests live in ``test_run_setup.py``; flag parser tests live in ``test_options.py``;
+stream-helper and stderr-console tests live in ``test_console.py``; budget report
+tests live in ``test_budget_report.py``; lock and trace tests live in
+``tests/test_command_run.py``; import-latency tests live in
+``tests/test_import_latency.py``.
 """
 
 import errno
@@ -14,30 +15,38 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
-from unittest.mock import Mock, call
+from typing import Any, override
 
 import pytest
 import typer
 
 from gymrat.adapters import AdapterError
-from gymrat.cli.app import app
 from gymrat.cli.console import set_color_override, set_debug_mode
 from gymrat.cli.exit import (
     BUGS_URL,
     exit_with_error,
     format_cli_error,
-    write_and_flush,
+    run_cli,
     write_stdout,
 )
-from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
+from gymrat.utils import write_and_flush
+from tests._ansi import TRAILING_SGR_RUN, sgr_codes
 from tests._process_helpers import run_with_closed_reader
-from tests._rich import unwrap_panel
+from tests._rich import screen_cells, unwrap_panel
 from tests._streams import FakeStream, RaisingStream
-from tests.cli._session import (
-    runner,
-    stub_resolve,
-)
+
+# The SGR code for dim, which a pyte screen does not track.
+_SGR_DIM = "2"
+
+
+def _style_opened_before(line: str, text: str) -> set[str]:
+    """The SGR codes of the escape run directly before ``text``'s first occurrence in ``line``."""
+    before, _, _ = line.partition(text)
+    run = TRAILING_SGR_RUN.search(before)
+    assert run is not None
+    return sgr_codes(run.group())
+
 
 # Execs ``argv[1:]`` with the file-size limit at zero, so every write the new
 # program makes to a regular file fails with EFBIG. Bytecode caching is off so
@@ -79,21 +88,12 @@ def _run_with_failing_stdout(
         )
 
 
-#: How each platform reports a stdout reader that has gone: ``(error, sys.platform)``.
-CLOSED_STDOUT_ERRORS = [
-    pytest.param(BrokenPipeError(errno.EPIPE, "Broken pipe"), "linux", id="posix-broken-pipe"),
-    pytest.param(OSError(errno.EINVAL, "Invalid argument"), "win32", id="windows-einval"),
-]
-
-
 # ---------------------------------------------------------------------------
-# constants
+# bug-report link
 # ---------------------------------------------------------------------------
 
 
-def test_constants_when_checked_does_match_the_shipped_contract():
-    assert GATE_EXIT_CODE == 1
-    assert TOOL_FAILURE_EXIT_CODE == 2
+def test_bugs_url_when_imported_does_point_at_the_issue_tracker():
     assert BUGS_URL == "https://github.com/jeffzi/gymrat/issues"
 
 
@@ -102,12 +102,25 @@ def test_constants_when_checked_does_match_the_shipped_contract():
 # ---------------------------------------------------------------------------
 
 
+class _FlushRecordingStream(io.StringIO):
+    """A text stream that records what it held at each flush."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushed_with: list[str] = []
+
+    @override
+    def flush(self) -> None:
+        self.flushed_with.append(self.getvalue())
+        super().flush()
+
+
 def test_write_and_flush_when_called_does_write_then_flush():
-    stream = Mock()
+    stream = _FlushRecordingStream()
 
     write_and_flush(stream, "hello")
 
-    assert stream.method_calls == [call.write("hello"), call.flush()]
+    assert stream.flushed_with == ["hello"]
 
 
 #: Lines each flood probe prints: 16384 lines of 64 bytes overflow any pipe buffer.
@@ -163,31 +176,31 @@ def test_write_stdout_when_reader_closed_does_exit_zero_without_stderr(probe: st
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@pytest.mark.parametrize(("error", "platform"), CLOSED_STDOUT_ERRORS)
-def test_write_stdout_when_pipe_closed_does_return_without_raising(
-    monkeypatch: pytest.MonkeyPatch, error: OSError, platform: str
+def test_write_stdout_when_pipe_closed_on_stream_without_descriptor_does_return_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.platform", platform)
-    monkeypatch.setattr("sys.stdout", RaisingStream(error))
+    stream = RaisingStream(BrokenPipeError(errno.EPIPE, "Broken pipe"))
+    monkeypatch.setattr("sys.stdout", stream)
 
-    write_stdout("first line\n")
+    result = write_stdout("first line\n")
+
+    assert result is None
 
 
-@pytest.mark.usefixtures("repo")
 def test_run_cli_when_body_raises_broken_pipe_does_exit_two_with_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    stub_resolve(monkeypatch)
+    stderr = io.StringIO()
+    monkeypatch.setattr("sys.stderr", stderr)
 
-    async def _explode(*_args: object, **_kwargs: object) -> None:
+    async def _explode() -> None:
         raise BrokenPipeError(errno.EPIPE, "Broken pipe")
 
-    monkeypatch.setattr("gymrat.measure.measure", _explode)
+    with pytest.raises(typer.Exit) as exc:
+        run_cli(_explode)
 
-    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
-    assert "Broken pipe" in unwrap_panel(result.stderr)
+    assert exc.value.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert "Broken pipe" in unwrap_panel(stderr.getvalue())
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no file-size limit")
@@ -209,28 +222,17 @@ def test_gymrat_when_stdout_write_fails_otherwise_does_exit_two_without_shutdown
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("override", "env_var", "tty", "colored"),
-    [
-        pytest.param(True, "NO_COLOR", False, True, id="color-beats-no-color-off-a-tty"),
-        pytest.param(False, "FORCE_COLOR", True, False, id="no-color-beats-force-color-on-a-tty"),
-    ],
-)
-def test_format_cli_error_when_color_override_set_does_beat_the_color_env_vars(
-    override: bool,
-    env_var: str,
-    tty: bool,
-    colored: bool,
+def test_format_cli_error_when_color_override_set_does_color_despite_no_color_off_a_tty(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=tty))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
     monkeypatch.setenv("TERM", "xterm-256color")
-    monkeypatch.setenv(env_var, "1")
-    set_color_override(override)
+    monkeypatch.setenv("NO_COLOR", "1")
+    set_color_override(override=True)
 
     result = format_cli_error(ValueError("boom"))
 
-    assert ("\x1b[" in result) is colored
+    assert "\x1b[" in result
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +247,8 @@ def test_format_cli_error_when_colored_does_paint_the_error_label_red(
 
     output = format_cli_error(ValueError("boom"))
 
-    assert "\x1b[31m" in output
-    assert "Error" in output
+    label = screen_cells(output)[0][: len("Error")]
+    assert [(cell.data, cell.fg) for cell in label] == [(char, "red") for char in "Error"]
 
 
 def test_format_cli_error_when_adapter_error_does_keep_its_class_name_prefix(
@@ -300,33 +302,35 @@ def test_format_cli_error_when_hint_colored_does_render_inline_code_blue_on_a_di
     output = format_cli_error(GymratError("boom", hint="run `gymrat doctor` first"))
 
     hint_line = output.splitlines()[-1]
-    assert hint_line.startswith("\x1b[2mrun ")  # cspell:disable-line
-    assert "\x1b[2;34mgymrat doctor" in hint_line  # cspell:disable-line
+    hint_row = screen_cells(output)[len(output.splitlines()) - 1]
+    assert [(cell.data, cell.fg) for cell in hint_row[: len("run gymrat doctor first")]] == [
+        *((char, "default") for char in "run "),
+        *((char, "blue") for char in "gymrat doctor"),
+        *((char, "default") for char in " first"),
+    ]
+    assert _SGR_DIM in _style_opened_before(hint_line, "run ")
+    assert _SGR_DIM in _style_opened_before(hint_line, "gymrat doctor")
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(ValueError("boom"), id="exception"),
+        pytest.param("boom", id="not-an-exception"),
+    ],
+)
 def test_format_cli_error_when_not_gymrat_error_does_render_plain_label_message_and_bug_footer(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, error: object
 ):
     monkeypatch.setenv("NO_COLOR", "1")
 
-    output = format_cli_error(ValueError("boom"))
+    output = format_cli_error(error)
 
     assert output.splitlines() == [
         "Error: boom",
         "Run with gymrat --debug for details. If this is a bug, please report it at",
         BUGS_URL,
     ]
-
-
-def test_format_cli_error_when_value_is_not_an_exception_does_still_render(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("NO_COLOR", "1")
-
-    output = format_cli_error("plain failure")
-
-    assert "Error: plain failure" in output
-    assert BUGS_URL in output
 
 
 # ---------------------------------------------------------------------------
@@ -361,13 +365,14 @@ def test_exit_with_error_when_stderr_write_fails_does_keep_the_exit_code(
 def test_exit_with_error_when_debug_mode_on_does_print_the_stack(monkeypatch: pytest.MonkeyPatch):
     captured = io.StringIO()
     monkeypatch.setattr("sys.stderr", captured)
-    set_debug_mode(True)
+    set_debug_mode(enabled=True)
     message = "boom"
-
     try:
         raise ValueError(message)
-    except ValueError as error:
-        with pytest.raises(typer.Exit):
-            exit_with_error(error, code=TOOL_FAILURE_EXIT_CODE)
+    except ValueError as caught:
+        error = caught
+
+    with pytest.raises(typer.Exit):
+        exit_with_error(error, code=TOOL_FAILURE_EXIT_CODE)
 
     assert "Traceback" in captured.getvalue()

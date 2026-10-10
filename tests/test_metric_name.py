@@ -3,10 +3,19 @@ from __future__ import annotations
 import sys
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
-from gymrat.errors import GymratError
-from gymrat.metric_name import LINE_TERMINATORS, format_inline, parse
+from gymrat.metric_name import (
+    EmptyKindError,
+    EmptyPathSegmentError,
+    MetricNameError,
+    MultipleHashesError,
+    format_inline,
+    parse,
+)
 from gymrat.report.style import render_lines
+from gymrat.utils import LINE_TERMINATORS
 
 
 @pytest.mark.parametrize(
@@ -41,26 +50,28 @@ def test_parse_when_name_well_formed_does_split_path_kind_group_and_case(
 
 
 @pytest.mark.parametrize(
-    "raw_name",
+    ("raw_name", "rule_error"),
     [
-        pytest.param("a#b#c", id="multiple-hashes"),
-        pytest.param("a//b", id="empty-inner-segment"),
-        pytest.param("a/", id="empty-trailing-segment"),
-        pytest.param("/x", id="empty-leading-segment"),
-        pytest.param("", id="empty-name"),
-        pytest.param("#time", id="empty-path-before-kind"),
-        pytest.param("a/#time", id="empty-trailing-segment-before-kind"),
-        pytest.param("a#", id="empty-kind"),
+        pytest.param("a#b#c", MultipleHashesError, id="multiple-hashes"),
+        pytest.param("a//b", EmptyPathSegmentError, id="empty-inner-segment"),
+        pytest.param("a/", EmptyPathSegmentError, id="empty-trailing-segment"),
+        pytest.param("/x", EmptyPathSegmentError, id="empty-leading-segment"),
+        pytest.param("", EmptyPathSegmentError, id="empty-name"),
+        pytest.param("#time", EmptyPathSegmentError, id="empty-path-before-kind"),
+        pytest.param("a/#time", EmptyPathSegmentError, id="empty-trailing-segment-before-kind"),
+        pytest.param("a#", EmptyKindError, id="empty-kind"),
     ],
 )
-def test_parse_when_name_breaks_the_grammar_does_raise_gymrat_error_naming_it(raw_name: str):
-    with pytest.raises(GymratError) as excinfo:
+def test_parse_when_name_breaks_the_grammar_does_raise_the_rule_error_naming_it(
+    raw_name: str, rule_error: type[MetricNameError]
+):
+    with pytest.raises(rule_error) as excinfo:
         parse(raw_name)
 
-    assert raw_name in str(excinfo.value)
+    assert str(excinfo.value).endswith(f": {raw_name}")
 
 
-def test_format_inline_when_called_does_return_rich_markup():
+def test_format_inline_when_name_has_group_and_kind_does_dim_the_group_and_kind():
     name = parse("node/access.get_1field#time")
 
     result = format_inline(name)
@@ -68,31 +79,38 @@ def test_format_inline_when_called_does_return_rich_markup():
     assert result == "[dim]node/[/dim]access.get_1field[dim]#time[/dim]"
 
 
-@pytest.mark.parametrize(
-    "raw_name",
-    [
-        pytest.param("parse[js]#time", id="square-brackets-in-case"),
-        pytest.param("codec[h264]/decode#time", id="square-brackets-in-group"),
-        pytest.param("render#fps[avg]", id="square-brackets-in-kind"),
-        pytest.param("parse[/html]#time", id="closing-tag-shaped-bracket"),
-        pytest.param("dir\\/case#time", id="group-ends-in-backslash"),
-        pytest.param("top/dir\\/case", id="nested-group-ends-in-backslash"),
-        pytest.param("dir[x]\\/case#time", id="bracketed-group-ends-in-backslash"),
-        pytest.param("dir/case\\", id="case-ends-in-backslash-without-kind"),
-        pytest.param("dir/case\\#time", id="case-ends-in-backslash-before-kind"),
-        pytest.param("dir/case\\\\#time", id="case-ends-in-two-backslashes-before-kind"),
-        pytest.param("dir\\\\/case#time", id="group-ends-in-two-backslashes"),
-        pytest.param("di\\r/ca\\se#time", id="inner-backslashes"),
-        pytest.param("dir\\[x]/case#time", id="backslash-before-bracket-in-group"),
-        pytest.param("a\\[1]", id="backslash-before-plain-bracket-in-case"),
-        pytest.param("a\\\\[1]", id="two-backslashes-before-plain-bracket-in-case"),
-        pytest.param("dir\\[1]/case", id="backslash-before-plain-bracket-in-group"),
-        pytest.param("case#k\\[1]", id="backslash-before-plain-bracket-in-kind"),
-        pytest.param("x#time\\", id="kind-ends-in-backslash"),
-        pytest.param("case\\", id="single-segment-ends-in-backslash"),
-    ],
-)
-def test_format_inline_when_name_holds_brackets_or_backslashes_does_render_it_literally(
+_SEGMENT = st.text(alphabet="ab.=@[]\\", min_size=1, max_size=8)
+
+
+@st.composite
+def _metric_names(draw: st.DrawFn) -> str:
+    """Draw a well-formed metric name whose segments and kind are dense in markup characters."""
+    path = "/".join(draw(st.lists(_SEGMENT, min_size=1, max_size=3)))
+    kind = draw(st.none() | _SEGMENT)
+    return path if kind is None else f"{path}#{kind}"
+
+
+@given(raw_name=_metric_names())
+@example("parse[js]#time").via("square-brackets-in-case")
+@example("codec[h264]/decode#time").via("square-brackets-in-group")
+@example("render#fps[avg]").via("square-brackets-in-kind")
+@example("parse[/html]#time").via("closing-tag-shaped-bracket")
+@example("dir\\/case#time").via("group-ends-in-backslash")
+@example("top/dir\\/case").via("nested-group-ends-in-backslash")
+@example("dir[x]\\/case#time").via("bracketed-group-ends-in-backslash")
+@example("dir/case\\").via("case-ends-in-backslash-without-kind")
+@example("dir/case\\#time").via("case-ends-in-backslash-before-kind")
+@example("dir/case\\\\#time").via("case-ends-in-two-backslashes-before-kind")
+@example("dir\\\\/case#time").via("group-ends-in-two-backslashes")
+@example("di\\r/ca\\se#time").via("inner-backslashes")
+@example("dir\\[x]/case#time").via("backslash-before-bracket-in-group")
+@example("a\\[1]").via("backslash-before-plain-bracket-in-case")
+@example("a\\\\[1]").via("two-backslashes-before-plain-bracket-in-case")
+@example("dir\\[1]/case").via("backslash-before-plain-bracket-in-group")
+@example("case#k\\[1]").via("backslash-before-plain-bracket-in-kind")
+@example("x#time\\").via("kind-ends-in-backslash")
+@example("case\\").via("single-segment-ends-in-backslash")
+def test_format_inline_when_name_well_formed_does_render_it_literally(
     raw_name: str,
 ):
     name = parse(raw_name)

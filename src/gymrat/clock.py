@@ -27,7 +27,7 @@ def monotonic_ms() -> float:
     :func:`now_ms` cannot yield a skewed or negative duration.
 
     Returns:
-        Wall-clock-independent milliseconds suitable for elapsed-time
-        measurement.
+        Milliseconds as a float, comparable only with other
+        :func:`monotonic_ms` readings.
     """
     return time.perf_counter() * MS_PER_SECOND

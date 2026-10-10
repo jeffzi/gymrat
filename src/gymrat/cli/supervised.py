@@ -18,7 +18,18 @@ __all__ = [
 
 
 def is_supervised_run_live(root: str) -> bool:
-    """Whether a supervised run with a live budget owns the repository at ``root``."""
+    """Whether a supervised run with a live budget owns the repository at ``root``.
+
+    Args:
+        root: Repository root whose budget and supervise lock are read.
+
+    Returns:
+        ``True`` when a supervised run with a live budget holds the repository.
+
+    Raises:
+        GymratError: When the supervise lock file cannot be opened, so whether
+            a supervised run holds it is unknown.
+    """
     return read_budget(root, now_ms=clock.now_ms()) is not None
 
 
@@ -31,7 +42,9 @@ def guard_supervised_origin(root: str, command: str) -> None:
 
     Raises:
         GymratError: When a supervised run is live and the command's origin is
-            not ``tool``; carries the ``supervised-use-tool`` reason.
+            not ``tool``; carries the ``supervised-use-tool`` reason. Also when the
+            supervise lock file cannot be opened, so whether a supervised run holds it is
+            unknown.
     """
     if command_origin() == "tool" or not is_supervised_run_live(root):
         return

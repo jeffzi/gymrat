@@ -7,15 +7,18 @@ import json
 import os
 import pathlib
 import sys
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, create_autospec
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from claude_agent_sdk import McpSdkServerConfig
     from mcp.types import CallToolResult
 
 import pytest
+from claude_agent_sdk import create_sdk_mcp_server
 from mcp import Client
 from mcp.types import TextContent
 
@@ -23,10 +26,12 @@ from gymrat.exec import (
     ExecOptions,
     ExecResult,
     ExecTimeoutError,
+    exec_argv,
 )
 from gymrat.supervisor.tools import ToolHost, gymrat_tool_definitions, gymrat_tools_factory
 from tests._cli import run_cli
 from tests._exec_fixtures import expected_result
+from tests._platform import needs_posix_worktrees
 from tests.loop._bench import FILTER_TEMPLATE, commit_project, config_text
 
 # ---------------------------------------------------------------------------
@@ -60,7 +65,7 @@ def _real_host(
 @pytest.fixture
 def fake_exec() -> AsyncMock:
     """An ``exec_argv`` replacement that records calls and returns a canned result."""
-    return AsyncMock(return_value=expected_result(stdout='{"ok": true}'))
+    return create_autospec(exec_argv, return_value=expected_result(stdout='{"ok": true}'))
 
 
 @pytest.fixture
@@ -80,59 +85,37 @@ def host(request: pytest.FixtureRequest, tmp_path: pathlib.Path, fake_exec: Asyn
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("host", [{"GYMRAT_TRACEPARENT": "00-abc-def-01"}], indirect=True)
-async def test_probe_when_called_does_run_in_the_root_with_tool_origin_no_color_and_extra_env(
-    tmp_path: pathlib.Path, host: ToolHost, fake_exec: AsyncMock
+@pytest.mark.parametrize(
+    ("host", "expected_env"),
+    [
+        pytest.param(
+            {"GYMRAT_TRACEPARENT": "00-abc-def-01"},
+            {
+                "GYMRAT_COMMAND_ORIGIN": "tool",
+                "NO_COLOR": "1",
+                "GYMRAT_TRACEPARENT": "00-abc-def-01",
+            },
+            id="extra-env-added-to-fixed",
+        ),
+        pytest.param({"NO_COLOR": "0"}, {"NO_COLOR": "0"}, id="extra-env-wins-over-fixed"),
+    ],
+    indirect=["host"],
+)
+async def test_probe_when_called_does_run_in_the_root_with_the_composed_child_env(
+    tmp_path: pathlib.Path, host: ToolHost, fake_exec: AsyncMock, expected_env: dict[str, str]
 ) -> None:
     await host.probe({})
 
     opts: ExecOptions = fake_exec.call_args[0][1]
     assert opts.cwd == str(tmp_path)
     assert opts.env is not None
-    assert opts.env["GYMRAT_COMMAND_ORIGIN"] == "tool"
-    assert opts.env["NO_COLOR"] == "1"
-    assert opts.env["GYMRAT_TRACEPARENT"] == "00-abc-def-01"
+    assert {key: opts.env.get(key) for key in expected_env} == expected_env
     assert opts.env.get("PATH") == os.environ.get("PATH")
-
-
-@pytest.mark.parametrize("host", [{"NO_COLOR": "0"}], indirect=True)
-async def test_probe_when_extra_env_names_a_fixed_variable_does_let_extra_env_win(
-    host: ToolHost, fake_exec: AsyncMock
-) -> None:
-    await host.probe({})
-
-    opts: ExecOptions = fake_exec.call_args[0][1]
-    assert opts.env is not None
-    assert opts.env["NO_COLOR"] == "0"
 
 
 # ---------------------------------------------------------------------------
 # result mapping
 # ---------------------------------------------------------------------------
-
-
-async def test_probe_when_exit_2_with_stderr_does_return_error_with_stderr(
-    tmp_path: pathlib.Path,
-) -> None:
-    host = _real_host(tmp_path, script="import sys; sys.stderr.write('bad config'); sys.exit(2)")
-
-    result = await host.probe({})
-
-    assert result == {"content": [{"type": "text", "text": "bad config"}], "is_error": True}
-
-
-@pytest.mark.parametrize("command", ["probe", "iterate"])
-async def test_command_when_exit_2_with_no_output_does_return_fallback_naming_it(
-    tmp_path: pathlib.Path, command: str
-) -> None:
-    host = _real_host(tmp_path, script="import sys; sys.exit(2)")
-
-    result = await getattr(host, command)({})
-
-    assert result == {
-        "content": [{"type": "text", "text": f"gymrat {command} exited 2 with no output"}],
-        "is_error": True,
-    }
 
 
 async def test_probe_when_abort_already_set_does_return_killed_without_running_child(
@@ -159,6 +142,24 @@ async def test_probe_when_abort_already_set_does_return_killed_without_running_c
     [
         pytest.param(
             "probe",
+            "import sys; sys.stderr.write('bad config'); sys.exit(2)",
+            "bad config",
+            id="probe-exit-2-stderr",
+        ),
+        pytest.param(
+            "probe",
+            "import sys; sys.exit(2)",
+            "gymrat probe exited 2 with no output",
+            id="probe-exit-2-no-output",
+        ),
+        pytest.param(
+            "iterate",
+            "import sys; sys.exit(2)",
+            "gymrat iterate exited 2 with no output",
+            id="iterate-exit-2-no-output",
+        ),
+        pytest.param(
+            "probe",
             "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
             "gymrat probe failed",
             id="probe-signal-kill",
@@ -169,7 +170,7 @@ async def test_probe_when_abort_already_set_does_return_killed_without_running_c
         ),
     ],
 )
-async def test_command_when_child_fails_without_document_does_return_failure_text(
+async def test_tool_host_when_child_fails_without_document_does_return_failure_text(
     tmp_path: pathlib.Path,
     command: str,
     script: str,
@@ -182,20 +183,28 @@ async def test_command_when_child_fails_without_document_does_return_failure_tex
     assert result == {"content": [{"type": "text", "text": expected}], "is_error": True}
 
 
-async def test_probe_when_spawn_fails_does_return_spawn_error(tmp_path: pathlib.Path) -> None:
+@pytest.fixture
+async def missing_executable(tmp_path: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """A path no executable sits at, and the text the host's spawn error gives for it."""
     missing = tmp_path / "missing-executable"
+    try:
+        await asyncio.create_subprocess_exec(str(missing))
+    except FileNotFoundError as error:
+        return missing, str(error)
+    pytest.fail(f"spawning {missing} unexpectedly succeeded")
+
+
+async def test_probe_when_spawn_fails_does_return_spawn_error(
+    tmp_path: pathlib.Path, missing_executable: tuple[pathlib.Path, str]
+) -> None:
+    missing, spawn_error = missing_executable
     host = ToolHost(
         root=str(tmp_path), abort=asyncio.Event(), extra_env={}, argv_prefix=[str(missing)]
     )
-    with pytest.raises(FileNotFoundError) as spawn_failure:
-        await asyncio.create_subprocess_exec(str(missing))
 
     result = await host.probe({})
 
-    assert result == {
-        "content": [{"type": "text", "text": str(spawn_failure.value)}],
-        "is_error": True,
-    }
+    assert result == {"content": [{"type": "text", "text": spawn_error}], "is_error": True}
 
 
 @pytest.mark.parametrize("exit_code", [0, 1])
@@ -213,39 +222,41 @@ async def test_probe_when_json_object_padded_with_whitespace_does_return_documen
 
 
 @pytest.mark.parametrize(
-    ("stdout", "exit_code"),
+    ("run", "expected"),
     [
-        pytest.param('{"kind": "probe", ', 0, id="truncated-object-exit-0"),
-        pytest.param('{"ok": true}', 3, id="object-exit-3"),
-        pytest.param("[1, 2]", 0, id="array-exit-0"),
+        pytest.param(
+            expected_result(stdout='{"kind": "probe", ', stderr="broken run"),
+            "broken run",
+            id="truncated-object-exit-0",
+        ),
+        pytest.param(
+            expected_result(stdout='{"ok": true}', stderr="broken run", exit_code=3),
+            "broken run",
+            id="object-exit-3",
+        ),
+        pytest.param(
+            expected_result(stdout="[1, 2]", stderr="broken run"),
+            "broken run",
+            id="array-exit-0",
+        ),
+        pytest.param(
+            expected_result(stdout='{"kind": "probe", '),
+            '{"kind": "probe",',
+            id="truncated-object-no-stderr",
+        ),
     ],
 )
-async def test_probe_when_stdout_is_not_a_document_does_return_stderr_error(
+async def test_probe_when_stdout_is_not_a_document_does_return_the_error_output(
     host: ToolHost,
     fake_exec: AsyncMock,
-    stdout: str,
-    exit_code: int,
+    run: ExecResult,
+    expected: str,
 ) -> None:
-    fake_exec.return_value = expected_result(
-        stdout=stdout, stderr="broken run", exit_code=exit_code
-    )
+    fake_exec.return_value = run
 
     result = await host.probe({})
 
-    assert result["is_error"] is True
-    assert _text_of(result) == "broken run"
-
-
-async def test_probe_when_invalid_json_and_no_stderr_does_return_stdout_error(
-    host: ToolHost,
-    fake_exec: AsyncMock,
-) -> None:
-    fake_exec.return_value = expected_result(stdout='{"kind": "probe", ', exit_code=0)
-
-    result = await host.probe({})
-
-    assert result["is_error"] is True
-    assert _text_of(result) == '{"kind": "probe",'
+    assert result == {"content": [{"type": "text", "text": expected}], "is_error": True}
 
 
 @pytest.mark.parametrize(
@@ -279,16 +290,11 @@ async def test_probe_when_run_times_out_does_return_timeout_error(
 # ---------------------------------------------------------------------------
 
 
-async def _wait_for_gate(gate: pathlib.Path, *, timeout: float = 5.0) -> None:  # noqa: ASYNC109 -- gate-file poll with cooperative yields, not a deadline
-    """Poll until a gate file exists, raising on timeout."""
-    elapsed = 0.0
-    step = 0.05
-    while not gate.exists():  # noqa: ASYNC240 -- brief sync check between async yields
-        await asyncio.sleep(step)
-        elapsed += step
-        if elapsed >= timeout:
-            msg = f"gate file {gate} not created within {timeout}s"
-            raise TimeoutError(msg)
+async def _wait_for_gate(gate: pathlib.Path) -> None:
+    """Poll until a gate file exists, raising ``TimeoutError`` after five seconds."""
+    async with asyncio.timeout(5.0):
+        while not await asyncio.to_thread(gate.exists):  # noqa: ASYNC110 -- a child process creates the gate file, which no asyncio.Event can observe
+            await asyncio.sleep(0.05)
 
 
 def _assert_busy(result: dict[str, Any]) -> None:
@@ -318,33 +324,41 @@ def _block_first_call(fake_exec: AsyncMock) -> asyncio.Future[ExecResult]:
     return blocker
 
 
-async def test_iterate_when_a_call_is_running_does_refuse_the_concurrent_one(
-    host: ToolHost,
-    fake_exec: AsyncMock,
-) -> None:
+@dataclass(frozen=True)
+class _BusyHost:
+    host: ToolHost
+    release: Callable[[], Awaitable[None]]
+
+
+@pytest.fixture
+async def busy_host(host: ToolHost, fake_exec: AsyncMock) -> AsyncIterator[_BusyHost]:
+    """A host with a ``probe`` call still running; teardown lets that call finish."""
     blocker = _block_first_call(fake_exec)
     first = asyncio.create_task(host.probe({}))
     await asyncio.sleep(0)
 
-    refused = await host.iterate({})
-    blocker.set_result(expected_result(stdout='{"ok": true}'))
-    await first
+    async def release() -> None:
+        if not blocker.done():
+            blocker.set_result(expected_result(stdout='{"ok": true}'))
+        await first
+
+    yield _BusyHost(host, release)
+    await release()
+
+
+async def test_iterate_when_a_call_is_running_does_refuse_the_concurrent_one(
+    busy_host: _BusyHost,
+) -> None:
+    refused = await busy_host.host.iterate({})
 
     _assert_busy(refused)
 
 
-async def test_probe_when_concurrent_refused_does_not_leave_host_busy(
-    host: ToolHost,
-    fake_exec: AsyncMock,
-) -> None:
-    blocker = _block_first_call(fake_exec)
-    first = asyncio.create_task(host.probe({}))
-    await asyncio.sleep(0)
-    await host.iterate({})
-    blocker.set_result(expected_result(stdout='{"ok": true}'))
-    await first
+async def test_probe_when_concurrent_refused_does_not_leave_host_busy(busy_host: _BusyHost) -> None:
+    await busy_host.host.iterate({})
+    await busy_host.release()
 
-    after = await host.probe({})
+    after = await busy_host.host.probe({})
 
     assert after["is_error"] is False
 
@@ -432,18 +446,13 @@ async def test_gymrat_tool_definitions_when_called_does_describe_probe_then_iter
 
 
 @pytest.fixture
-def sdk_config(host: ToolHost, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """The SDK server config the factory builds, with its tool host replaced by ``host``."""
-
-    def _given_host(**_kwargs: object) -> ToolHost:
-        return host
-
-    monkeypatch.setattr("gymrat.supervisor.tools.ToolHost", _given_host)
-    return gymrat_tools_factory("unused-root")(asyncio.Event(), {})  # type: ignore[return-value]  # McpSdkServerConfig is a TypedDict
+def sdk_config(host: ToolHost) -> McpSdkServerConfig:
+    """An SDK server config exposing ``host``'s tool definitions."""
+    return create_sdk_mcp_server("gymrat", "0.1.0", gymrat_tool_definitions(host))
 
 
 async def _call_via_sdk(
-    sdk_config: dict[str, Any], tool_name: str, arguments: dict[str, Any]
+    sdk_config: McpSdkServerConfig, tool_name: str, arguments: dict[str, Any]
 ) -> CallToolResult:
     """Call *tool_name* through an in-memory MCP client on the SDK server."""
     async with Client(sdk_config["instance"]) as client:
@@ -491,8 +500,8 @@ async def _call_via_sdk(
         ),
     ],
 )
-async def test_sdk_server_when_valid_arguments_given_does_run_child_with_expected_argv(
-    sdk_config: dict[str, Any],
+async def test_gymrat_tool_definitions_when_valid_arguments_given_does_run_child_with_expected_argv(
+    sdk_config: McpSdkServerConfig,
     fake_exec: AsyncMock,
     tool_name: str,
     arguments: dict[str, Any],
@@ -513,8 +522,8 @@ async def test_sdk_server_when_valid_arguments_given_does_run_child_with_expecte
         pytest.param("probe", {"names": "a"}, id="probe-string-names"),
     ],
 )
-async def test_sdk_server_when_invalid_arguments_given_does_reject_before_running_child(
-    sdk_config: dict[str, Any],
+async def test_gymrat_tool_definitions_when_invalid_arguments_given_does_reject_before_running_child(
+    sdk_config: McpSdkServerConfig,
     fake_exec: AsyncMock,
     tool_name: str,
     arguments: dict[str, Any],
@@ -525,15 +534,26 @@ async def test_sdk_server_when_invalid_arguments_given_does_reject_before_runnin
     fake_exec.assert_not_called()
 
 
-async def test_gymrat_tools_factory_when_called_does_run_tools_in_the_root_with_the_env(
+def test_gymrat_tools_factory_when_called_does_build_the_gymrat_sdk_server(
+    tmp_path: pathlib.Path,
+) -> None:
+    factory = gymrat_tools_factory(str(tmp_path))
+
+    config = factory(asyncio.Event(), {})
+
+    assert config["type"] == "sdk"
+    assert config["name"] == "gymrat"
+
+
+async def test_gymrat_tools_factory_when_a_tool_is_called_does_run_it_with_the_env(
     create_scratch_repo: Callable[[], str],
 ) -> None:
     factory = gymrat_tools_factory(create_scratch_repo())
-    config: dict[str, Any] = factory(asyncio.Event(), {"GYMRAT_SAMPLES": "banana"})  # type: ignore[assignment]  # McpSdkServerConfig is a TypedDict
+    config = factory(asyncio.Event(), {"GYMRAT_SAMPLES": "banana"})
 
     result = await _call_via_sdk(config, "probe", {})
 
-    assert (config["type"], config["name"], result.is_error) == ("sdk", "gymrat", True)
+    assert result.is_error is True
     assert result.content == [
         TextContent(
             type="text",
@@ -547,7 +567,7 @@ async def test_gymrat_tools_factory_when_abort_set_does_kill_the_tool_call(
 ) -> None:
     abort = asyncio.Event()
     abort.set()
-    config: dict[str, Any] = gymrat_tools_factory(str(tmp_path))(abort, {})  # type: ignore[assignment]  # McpSdkServerConfig is a TypedDict
+    config = gymrat_tools_factory(str(tmp_path))(abort, {})
 
     result = await _call_via_sdk(config, "probe", {})
 
@@ -559,8 +579,6 @@ async def test_gymrat_tools_factory_when_abort_set_does_kill_the_tool_call(
 # real CLI integration
 # ---------------------------------------------------------------------------
 
-pytestmark_posix = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees")
-
 
 def _started_repo(create_scratch_repo: Callable[[], str], *, filter_template: str | None) -> str:
     """A scratch repository with a bench project, an open session, and a recorded baseline."""
@@ -571,7 +589,7 @@ def _started_repo(create_scratch_repo: Callable[[], str], *, filter_template: st
     return repo
 
 
-@pytestmark_posix
+@needs_posix_worktrees
 async def test_probe_when_real_cli_given_names_and_samples_does_return_scoped_json_document(
     create_scratch_repo: Callable[[], str],
 ) -> None:
@@ -602,7 +620,7 @@ def _config_flag_names(repo: str) -> list[str]:
     return ["--config", str(_scoped_config_path(repo))]
 
 
-@pytestmark_posix
+@needs_posix_worktrees
 @pytest.mark.parametrize(
     "names_of",
     [
@@ -628,7 +646,7 @@ async def test_probe_when_real_cli_given_option_like_names_does_return_the_cli_r
     assert "Usage:" not in text
 
 
-@pytestmark_posix
+@needs_posix_worktrees
 async def test_iterate_when_real_cli_on_scratch_repo_does_return_json_document(
     create_scratch_repo: Callable[[], str],
 ) -> None:

@@ -1,13 +1,18 @@
-"""Shared fixtures for the ``exec`` tests: run options and spawn recording."""
+"""Shared fixtures for the ``exec`` tests: run options and a ``killpg`` recorder."""
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+import os
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from gymrat.exec import ExecOptions
-from tests._exec_fixtures import recorded_spawns
+
+# exec drives POSIX process groups (killpg) and sh-only shell syntax; neither
+# works under cmd.exe, so nothing in this directory runs on win32.
+collect_ignore_glob: list[str] = ["test_*.py"] if sys.platform == "win32" else []
 
 
 @pytest.fixture
@@ -33,9 +38,16 @@ def make_opts(tmp_path: Path) -> Callable[..., ExecOptions]:
 
 
 @pytest.fixture
-async def spawned_processes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> AsyncIterator[list[asyncio.subprocess.Process]]:
-    """Record every child ``exec`` or ``exec_argv`` spawns, reaping survivors in-loop."""
-    async with recorded_spawns(monkeypatch) as processes:
-        yield processes
+def record_killpg(monkeypatch: pytest.MonkeyPatch) -> Callable[[], list[int]]:
+    """Return a switch that, once flipped, records each ``os.killpg`` target instead of signaling it."""
+
+    def start() -> list[int]:
+        targets: list[int] = []
+
+        def record(group_pid: int, _signal_number: int) -> None:
+            targets.append(group_pid)
+
+        monkeypatch.setattr(os, "killpg", record)
+        return targets
+
+    return start

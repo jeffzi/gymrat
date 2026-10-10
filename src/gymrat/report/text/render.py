@@ -13,7 +13,7 @@ lines naming how each verdict was decided are built here.
 The table renderers return lines already resolved to text (ANSI or plain) for the
 run's color choice; the summary, highlights, and footer blocks are built as rich
 markup here and resolved the same way, so color is decided once per block through
-:func:`gymrat.report.style.render_lines`.
+:func:`gymrat.report.style.render_line_list`.
 """
 
 from __future__ import annotations
@@ -27,53 +27,57 @@ from rich.cells import cell_len, set_cell_size
 from rich.markup import escape
 from rich.text import Text
 
-from gymrat.metric_name import format_inline, parse
+from gymrat.metric_name import format_inline
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import PERMUTATION_MIN_N, PERMUTATION_P_THRESHOLD
 from gymrat.report.display import GLYPHS, DisplayClass, display_class
 from gymrat.report.format import (
     format_evidence,
-    format_metric_cell_parts,
     format_pair_count,
     format_percent_delta,
     format_verdict_delta,
     is_noise_percentage_undefined,
 )
 from gymrat.report.style import (
-    SCOPE_SEPARATOR,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
     format_hint,
-    join_header_parts,
     markup,
+    render_line_list,
     render_lines,
     truncate_labels,
 )
-from gymrat.report.table.markup import (
-    GATED_GEOMEAN_LABEL,
-    group_metric_cell,
-    header_metric_cell,
-    indented_section_label,
+from gymrat.report.table.cells import group_metric_cell, scope_label
+from gymrat.report.table.render import (
+    build_cell_dispatcher,
     plan_sections,
-    spans_many_kinds,
+    plan_table_skeleton,
+    render_body,
 )
-from gymrat.report.table.render import build_cell_dispatcher, plan_table_skeleton, render_body
-from gymrat.report.tally import verdict_summary_parts
+from gymrat.report.tally import each_candidate_verdict, verdict_summary_parts
+from gymrat.report.text.measure_table import (
+    MeasuredRow,
+    measured_cells,
+    measured_header_cells,
+    measured_row,
+)
 from gymrat.report.text.multi import render_comparison_table
+from gymrat.report.text.run_header import run_header
 from gymrat.report.text.single import render_table
 from gymrat.report.types import (
     DEFAULT_REPORT_OPTIONS,
     GeomeanFailOn,
     RegressedFailOn,
     ReportOptions,
+    candidate_at,
 )
-from gymrat.report.types import candidate_at as _candidate_at
 from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
-    from gymrat.model import MetricVerdict
-    from gymrat.report.format import MetricCellParts
+    from gymrat.model import GeomeanResult, MetricVerdict
+    from gymrat.report.table.render import SectionedMetric
     from gymrat.report.types import (
         CandidateComparison,
         ComparisonResult,
@@ -82,7 +86,9 @@ if TYPE_CHECKING:
         MetricComparison,
         MetricComparisons,
     )
-    from gymrat.targets import WorktreeRemovalFailure
+    from gymrat.worktree_failure import WorktreeRemovalFailure
+
+GATED_GEOMEAN_LABEL = "gated geomean"
 
 # Gap between the longest highlighted metric name and the delta that follows it.
 _HIGHLIGHT_NAME_GUTTER = 2
@@ -96,22 +102,20 @@ _HIGHLIGHTS_HEADING = "highlights"
 _GATE_TRIP_GLYPH = "⚑"
 
 
-def _render_block(markup_lines: Sequence[str], *, color: bool | None) -> list[str]:
-    """Resolve a block of markup lines to rendered text, one output line per input.
+def spans_many_kinds(metrics: Mapping[str, SectionedMetric]) -> bool:
+    """Whether the run spans several kinds, and so is reported in sections.
 
-    Each line is resolved through the same color choice as the rest of the report,
-    so a block built here sits flush against the table lines the table renderers
-    already resolved.
+    Read straight off the metrics rather than off a :class:`SectionLayout`, so the
+    parts of a report drawn outside the table can ask without building rows they
+    have no use for.
 
     Args:
-        markup_lines: The rich-markup lines to resolve.
-        color: The explicit color choice, or ``None`` to defer to the
-            environment and TTY detection.
+        metrics: The run's metrics, keyed by name.
 
     Returns:
-        One rendered text line per input markup line.
+        Whether the metrics span more than one kind.
     """
-    return render_lines(*markup_lines, color=color).split("\n")
+    return len({metric.meta.kind for metric in metrics.values()}) > 1
 
 
 def with_display_labels(result: ComparisonResult) -> ComparisonResult:
@@ -148,12 +152,12 @@ def _compare_header(display: ComparisonResult) -> str:
     candidate_names = ", ".join(
         markup(candidate.label, VARIANT_NAME_STYLE) for candidate in display.candidates
     )
-    return join_header_parts([
-        markup("gymrat compare", "bold"),
+    return run_header(
+        "compare",
         f"baseline {markup(display.baseline_label, VARIANT_NAME_STYLE)} ↔ {candidate_names}",
-        escape(paired_samples(display.samples)),
-        f"adapter: {escape(display.adapter)}",
-    ])
+        paired_samples(display.samples),
+        display.adapter,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -241,15 +245,14 @@ def select_highlights(
         The highlights in report order.
     """
     ranked: list[tuple[int, float, MetricHighlight]] = []
-    for name, metric in metrics.items():
-        candidate = _candidate_at(metric, candidate_index)
-        if candidate is None or candidate.verdict is None:
-            continue
-        rank = _HIGHLIGHT_RANK[display_class(candidate.verdict)]
+    for judged in each_candidate_verdict(metrics, candidate_index):
+        rank = _HIGHLIGHT_RANK[display_class(judged.verdict)]
         if rank is None:
             continue
-        highlight = MetricHighlight(name=name, metric=metric, verdict=candidate.verdict)
-        weight = _highlight_weight(candidate.verdict, metric.baseline_median, candidate.median)
+        highlight = MetricHighlight(name=judged.name, metric=judged.metric, verdict=judged.verdict)
+        weight = _highlight_weight(
+            judged.verdict, judged.metric.baseline_median, judged.candidate.median
+        )
         ranked.append((rank, -weight, highlight))
 
     ranked.sort(key=operator.itemgetter(0, 1))
@@ -278,8 +281,8 @@ def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
     """
     if qualify:
         meta = highlight.metric.meta
-        return f"{escape(meta.kind)} {SCOPE_SEPARATOR} {escape(meta.short_name)}"
-    return format_inline(parse(highlight.name))
+        return scope_label(escape(meta.kind), escape(meta.short_name))
+    return format_inline(parse_metric_name(highlight.name))
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,7 +322,7 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
         unstable = unstable or shown == "unstable"
         style = VERDICT_STYLES[shown]
         delta = format_verdict_delta(verdict)
-        candidate = _candidate_at(highlight.metric, candidate_index)
+        candidate = candidate_at(highlight.metric, candidate_index)
         evidence = format_evidence(
             verdict,
             highlight.metric.meta.unit,
@@ -335,6 +338,22 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
         entries.append(f"  {markup(GLYPHS[shown], style)} {label_field}{delta_field}{suffix}")
 
     return HighlightBlock(entries=tuple(entries), unstable=unstable)
+
+
+def gated_geomean_trips(geomean: GeomeanResult | None, pct: float) -> bool:
+    """Whether a kind's gated geomean trips a ``--fail-on geomean:<pct>`` threshold.
+
+    A kind with no gated geomean, or one aggregating nothing, never trips: an
+    informational kind cannot fail a gate it does not stand behind.
+
+    Args:
+        geomean: The kind's gated geomean, or ``None`` when the kind does not gate.
+        pct: The threshold, in percent.
+
+    Returns:
+        Whether the geomean reached the threshold.
+    """
+    return geomean is not None and geomean.n > 0 and geomean.value >= pct
 
 
 def _gate_trip_lines(
@@ -361,7 +380,8 @@ def _gate_trip_lines(
     lines: list[str] = []
     for kind in candidate.kinds:
         geomean = kind.gated_geomean
-        if geomean is None or geomean.n == 0:
+        tripped = [pct for pct in thresholds if gated_geomean_trips(geomean, pct)]
+        if geomean is None or not tripped:
             continue
         delta = format_percent_delta(geomean.value)
         # `:g` states the threshold as it was written, dropping a trailing `.0`.
@@ -369,8 +389,7 @@ def _gate_trip_lines(
             f"  {markup(_GATE_TRIP_GLYPH, style)} {escape(kind.kind)} "
             f"{GATED_GEOMEAN_LABEL} {markup(delta, style)} "
             f"exceeded --fail-on geomean:{pct:g}"
-            for pct in thresholds
-            if geomean.value >= pct
+            for pct in tripped
         )
     return lines
 
@@ -401,15 +420,15 @@ def _hidden_regression_lines(
     qualify = spans_many_kinds(metrics)
 
     lines: list[str] = []
-    for name, metric in metrics.items():
-        candidate = _candidate_at(metric, candidate_index)
-        if not metric.meta.gating or candidate is None or candidate.verdict is None:
+    for judged in each_candidate_verdict(metrics, candidate_index):
+        verdict = judged.verdict
+        if not judged.metric.meta.gating:
             continue
-        verdict = candidate.verdict
         if verdict.verdict != "regressed" or display_class(verdict) == "regressed":
             continue
         label = highlight_label(
-            MetricHighlight(name=name, metric=metric, verdict=verdict), qualify=qualify
+            MetricHighlight(name=judged.name, metric=judged.metric, verdict=verdict),
+            qualify=qualify,
         )
         delta = format_percent_delta(verdict.delta)
         lines.append(
@@ -493,13 +512,16 @@ _DROPPED_ROUNDS_HINT = (
 _BAND_METHOD = "noise band ±(half-range × K)"
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _FooterData:
     """The pair counts the footer sorts by the cause that forced each fallback.
 
-    ``permutation`` carries the pair counts of every permutation verdict.
-    ``shortage`` and ``ties`` split the band-method verdicts by cause: too few
-    total pairs, or too many of them tied away.
+    Attributes:
+        permutation: The pair counts of every permutation verdict.
+        shortage: The pair counts of the band-method verdicts that had too few
+            total pairs.
+        ties: The pair counts of the band-method verdicts that had too many
+            pairs tied away.
     """
 
     permutation: list[int]
@@ -683,12 +705,12 @@ def _render_worktree_footer(result: ComparisonResult | MeasurementResult) -> lis
         Markup lines describing the cleanup failures, or an empty list when
         the cleanup was clean.
     """
-    details = format_cleanup_failures(result.worktrees_left_behind, result.worktree_prune_error)
+    cleanup = result.cleanup
+    details = format_cleanup_failures(cleanup.failures, cleanup.prune_error)
     if not details:
         return []
-    left_behind = len(result.worktrees_left_behind)
     header = (
-        f"{pluralize(result.worktrees_removed, 'worktree')} removed · {left_behind} left behind"
+        f"{pluralize(cleanup.removed, 'worktree')} removed · {len(cleanup.failures)} left behind"
     )
     return [escape(line) for line in (header, *details)]
 
@@ -696,15 +718,6 @@ def _render_worktree_footer(result: ComparisonResult | MeasurementResult) -> lis
 # ---------------------------------------------------------------------------
 # Measurement table
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class _MeasureRow:
-    """One measured metric's name, its section label, and its padded value fields."""
-
-    name: str
-    label: str
-    value: MetricCellParts
 
 
 def render_measure_table(
@@ -724,22 +737,15 @@ def render_measure_table(
     Returns:
         The rendered table lines.
     """
-    layout = plan_sections(
-        result.metrics,
-        lambda name, group, metric: _MeasureRow(
-            name=name,
-            label=indented_section_label(metric.meta.short_name, group),
-            value=format_metric_cell_parts(metric.median, metric.spread, metric.meta.unit),
-        ),
-    )
+    layout = plan_sections(result.metrics, measured_row)
     skeleton = plan_table_skeleton(layout, result.config_kinds, lambda row: row.value, label)
     widths = [skeleton.metric_width, skeleton.value_width]
 
-    def metric_cells(row: _MeasureRow) -> tuple[str, str]:
-        return escape(skeleton.name_cell(row)), escape(skeleton.value_cell(row))
+    def metric_cells(row: MeasuredRow) -> tuple[Text, Text]:
+        return measured_cells(skeleton, row)
 
     to_cells = build_cell_dispatcher(
-        header=lambda title: (header_metric_cell(title), markup(label, VARIANT_NAME_STYLE)),
+        header=lambda title: measured_header_cells(title, label),
         group=lambda group_label: (group_metric_cell(group_label), ""),
         metric=metric_cells,
     )
@@ -782,16 +788,16 @@ def render_report(result: ComparisonResult, options: ReportOptions = DEFAULT_REP
     if len(display.candidates) > 1:
         lines.extend(render_comparison_table(display, color=color))
         lines.append("")
-        lines.extend(_render_block(_render_summaries(display), color=color))
+        lines.extend(render_line_list(*_render_summaries(display), color=color))
     elif len(display.candidates) == 1:
         lines.extend(render_table(display, color=color))
         lines.append("")
-        lines.extend(_render_block([_render_summary(display.metrics, 0)], color=color))
+        lines.extend(render_line_list(_render_summary(display.metrics, 0), color=color))
 
     highlights = _render_highlights(display, options.fail_on)
     if highlights:
         lines.append("")
-        lines.extend(_render_block(highlights, color=color))
+        lines.extend(render_line_list(*highlights, color=color))
 
     footer = [
         *footer_lines(
@@ -804,7 +810,7 @@ def render_report(result: ComparisonResult, options: ReportOptions = DEFAULT_REP
     ]
     if footer:
         lines.append("")
-        lines.extend(_render_block(footer, color=color))
+        lines.extend(render_line_list(*footer, color=color))
 
     return "\n".join(lines)
 
@@ -829,12 +835,12 @@ def render_measure_report(
     """
     color = options.color
     label = truncate_labels([result.label])[0]
-    header = join_header_parts([
-        markup("gymrat measure", "bold"),
+    header = run_header(
+        "measure",
         markup(label, VARIANT_NAME_STYLE),
-        escape(pluralize(result.samples, "sample")),
-        f"adapter: {escape(result.adapter)}",
-    ])
+        pluralize(result.samples, "sample"),
+        result.adapter,
+    )
 
     lines = [render_lines(header, color=color)]
     lines.extend(render_measure_table(result, label, color=color))
@@ -842,6 +848,6 @@ def render_measure_report(
     footer = _render_worktree_footer(result)
     if footer:
         lines.append("")
-        lines.extend(_render_block(footer, color=color))
+        lines.extend(render_line_list(*footer, color=color))
 
     return "\n".join(lines)

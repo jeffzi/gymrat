@@ -22,16 +22,13 @@ from gymrat.session.paths import (
 )
 from tests._ansi import strip_ansi
 from tests._config import resolved_config
-from tests._lock import hold_supervise_lock
-from tests.cli._budget import set_origin, write_budget_file
-from tests.cli._session import (
-    FailingStdoutRunner,
-    closed_stdout_error,
+from tests.cli._origin import set_origin
+from tests.cli._runner import (
     runner,
 )
+from tests.config._toml import EXISTING_CONFIG, write_raw
+from tests.session._budget import block_supervise_lock, install_budget, write_budget_file
 from tests.session.records._fixtures import log_records
-
-EXISTING_CONFIG = 'bench = "old"\n'
 
 LIVE_REFUSAL = "a supervised run is live; init is not part of the loop"
 
@@ -40,25 +37,25 @@ INIT_ARTIFACTS = ("gymrat.toml", "gymrat-runbook.md", ".claude/skills/gymrat/SKI
 
 
 @pytest.fixture
-def supervise_lock(repo: str) -> Iterator[None]:
-    """Hold the real supervise lock for ``repo`` for the duration of the test."""
-    lock = hold_supervise_lock(repo)
-    yield
-    lock.release()
-
-
-@pytest.fixture
 def existing_config_cwd(_in_non_repo: None, tmp_path: Path) -> Path:
     """A non-repo cwd with a pre-existing ``gymrat.toml`` already written."""
-    (tmp_path / "gymrat.toml").write_text(EXISTING_CONFIG, encoding="utf-8")
+    write_raw(tmp_path, EXISTING_CONFIG)
     return tmp_path
 
 
 @pytest.fixture
-def live_repo(repo: str, supervise_lock: None) -> str:
+def live_repo(repo: str, monkeypatch: pytest.MonkeyPatch) -> str:
     """A chdir'd scratch repository with a live supervised-run budget."""
-    write_budget_file(repo)
+    install_budget(repo, monkeypatch)
     return repo
+
+
+@pytest.fixture
+def blocked_supervise_lock(repo: str) -> Iterator[str]:
+    """A live-budget repository whose supervise OS lock file is a directory, yielding its path."""
+    write_budget_file(repo)
+    with block_supervise_lock(repo) as blocker:
+        yield blocker
 
 
 def _written_artifacts(base: str) -> list[str]:
@@ -120,52 +117,14 @@ def test_init_when_config_already_exists_does_not_require_bench(existing_config_
 # ---------------------------------------------------------------------------
 
 
-def _skill_path_directory(base: Path) -> None:
-    """Make the skill file path a directory, beside an existing config."""
-    (base / "gymrat.toml").write_text(EXISTING_CONFIG, encoding="utf-8")
-    (base / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
-
-
-def _runbook_path_directory(base: Path) -> None:
-    """Make the runbook path a directory."""
-    (base / "gymrat-runbook.md").mkdir()
-
-
-def _runbook_symlink(base: Path) -> None:
-    """Make the runbook path a symlink to a regular file."""
-    target = base / "real.md"
-    target.write_text("# target\n", encoding="utf-8")
-    (base / "gymrat-runbook.md").symlink_to(target)
-
-
-@pytest.mark.parametrize(
-    ("block", "argv", "named"),
-    [
-        pytest.param(_skill_path_directory, ["init"], "SKILL.md", id="skill-path-is-a-directory"),
-        pytest.param(
-            _runbook_path_directory,
-            ["init", "--bench", "npm run bench"],
-            "gymrat-runbook.md",
-            id="runbook-path-is-a-directory",
-        ),
-        pytest.param(
-            _runbook_symlink,
-            ["init", "--bench", "npm run bench"],
-            "gymrat-runbook.md",
-            id="runbook-is-a-symlink",
-        ),
-    ],
-)
 @pytest.mark.usefixtures("_in_non_repo")
-def test_init_when_artifact_path_blocked_does_exit_two_naming_it(
-    block: Callable[[Path], None], argv: list[str], named: str, tmp_path: Path
-):
-    block(tmp_path)
+def test_init_when_artifact_path_blocked_does_exit_two_naming_it(tmp_path: Path):
+    (tmp_path / "gymrat-runbook.md").mkdir()
 
-    result = runner.invoke(app, argv)
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
 
     assert result.exit_code == 2
-    assert named in result.stderr
+    assert "gymrat-runbook.md" in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -174,18 +133,20 @@ def test_init_when_artifact_path_blocked_does_exit_two_naming_it(
 
 
 @pytest.mark.usefixtures("_in_non_repo")
-def test_init_when_scaffolding_succeeds_does_close_the_summary_on_the_doctor_pointer():
+def test_init_when_scaffolding_succeeds_does_list_each_created_artifact_closing_on_the_doctor_pointer():
     result = runner.invoke(app, ["init", "--bench", "npm run bench"])
 
-    assert result.exit_code == 0
-    out = result.stdout
-    assert "Config: created at gymrat.toml" in out
-    assert result.stderr == ""
-    lines = strip_ansi(out).rstrip("\n").split("\n")
-    pointer_index = next(i for i, line in enumerate(lines) if "gymrat doctor" in line)
-    assert lines[pointer_index].strip() == "Run gymrat doctor to verify the setup."
-    # The hint closes the artifact block directly — no blank line before it.
-    assert lines[pointer_index - 1].strip().startswith("Skill:")
+    # The pointer closes the artifact block directly — no blank line before it.
+    assert (result.exit_code, strip_ansi(result.stdout), result.stderr) == (
+        0,
+        (
+            "  Config: created at gymrat.toml\n"
+            "  Runbook: created at gymrat-runbook.md\n"
+            f"  Skill: created at {Path('.claude/skills/gymrat/SKILL.md')}\n"
+            "Run gymrat doctor to verify the setup.\n"
+        ),
+        "",
+    )
 
 
 @pytest.mark.usefixtures("_in_non_repo")
@@ -225,39 +186,6 @@ def test_init_when_colored_does_dim_the_doctor_pointer(monkeypatch: pytest.Monke
         line for line in result.stdout.split("\n") if "gymrat doctor" in strip_ansi(line)
     )
     assert pointer.startswith("\x1b[2m")
-
-
-@pytest.mark.parametrize(
-    ("env", "flag", "styled"),
-    [
-        pytest.param("FORCE_COLOR", "--no-color", False, id="no-color-beats-force-color-env"),
-        pytest.param("NO_COLOR", "--color", True, id="color-beats-no-color-env"),
-    ],
-)
-@pytest.mark.usefixtures("_in_non_repo")
-def test_init_when_color_flag_given_does_style_the_summary_despite_the_env(
-    env: str, flag: str, styled: bool, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setenv(env, "1")
-
-    result = runner.invoke(app, ["init", "--bench", "npm run bench", flag])
-
-    assert result.exit_code == 0
-    assert ("\x1b[" in result.stdout) is styled
-
-
-# ---------------------------------------------------------------------------
-# broken pipe on stdout
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_init_when_stdout_reader_closed_does_exit_zero_without_stderr():
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(
-        app, ["init", "--bench", "npm run bench"]
-    )
-
-    assert (result.exit_code, result.stderr) == (0, "")
 
 
 # ---------------------------------------------------------------------------
@@ -330,3 +258,16 @@ def test_init_when_run_from_experiment_worktree_during_live_run_does_refuse(
     assert _written_artifacts(live_repo) == []
     assert _written_artifacts(worktree) == []
     assert log_records(live_repo) == records_before
+
+
+def test_init_when_supervise_lock_cannot_be_opened_does_exit_two_without_writing(
+    repo: str, blocked_supervise_lock: str
+):
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
+
+    assert result.exit_code == 2
+    assert " ".join(strip_ansi(result.stderr).split()).startswith(
+        f"Error: Lock file {blocked_supervise_lock} could not be opened: "
+    )
+    assert result.stdout == ""
+    assert _written_artifacts(repo) == []

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 from gymrat.clock import now_ns
 from gymrat.errors import GymratError
-from gymrat.git import SHORT_SHA_LENGTH, try_git
+from gymrat.git import try_git
 from gymrat.session.records import DiscardRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
@@ -42,16 +42,20 @@ from gymrat.session.workspace import (
     revert_workspace,
     worktree_head,
 )
-from gymrat.utils import pluralize
+from gymrat.utils import SHORT_SHA_LENGTH, pluralize, warn_to_stderr
 
 
 @dataclass(frozen=True, slots=True)
 class DiscardResult:
     """What a discard did: an optional log record, a timestamp, and a human report.
 
-    ``at`` is the instant the discard happened, in nanoseconds since the epoch.
-    When a record is present, it equals the record's ``at``; on the unmeasured
-    path the caller supplies it directly.
+    Attributes:
+        record: The discard record appended to the session log, or ``None`` on
+            the unmeasured path, which writes no record.
+        report: The discard as the agent reads it.
+        at: The instant the discard happened, in nanoseconds since the epoch.
+            When a record is present, it equals the record's ``at``; on the
+            unmeasured path it is the instant the worktree was reverted.
     """
 
     record: DiscardRecord | None
@@ -162,7 +166,8 @@ def _revert_target(
     """The commit the unmeasured revert should land on.
 
     An unreachable kept commit is a corruption edge case that should not happen
-    in practice; the current HEAD is then the best the worktree can offer.
+    in practice; the fallback to the worktree HEAD is announced on stderr, naming
+    the commit, so the user learns the log points somewhere git cannot follow.
 
     Args:
         state: The session's current iteration state.
@@ -178,7 +183,11 @@ def _revert_target(
         GymratError: When git cannot read the worktree HEAD.
     """
     target = last_kept_position(state, baseline_sha)
-    unreachable = try_git(["cat-file", "-t", target], experiment_dir) is not None
-    if unreachable:
+    error = try_git(["cat-file", "-t", target], experiment_dir)
+    if error is not None:
+        warn_to_stderr(
+            f"Commit {target} is unreachable in the experiment worktree: {error}\n"
+            "  reverting to the worktree's HEAD instead"
+        )
         return worktree_head(experiment_dir)
     return target

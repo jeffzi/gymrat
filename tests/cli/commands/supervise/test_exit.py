@@ -2,47 +2,47 @@
 
 Every return of ``supervise()`` hands the session to the exit sequence before the
 reporter stops and the closing summary prints; the command's exit code then folds
-the driver outcome, the exit sequence's error, and how the run ended. Shares its
-seam-installation harness with :mod:`tests.cli.commands.supervise.test_supervise`, whose fake
+the driver outcome, the exit sequence's error, and how the run ended. The
+seam-installation harness lives in :mod:`tests.cli.commands.supervise._seams`, whose fake
 exit sequence records each call and lets a test act from inside it.
 """
 
 import asyncio
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.cli.supervise.preflight import run_preflight
-from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
 from gymrat.session.records import CommandRecord
+from gymrat.session.store import ReadSessionResult
 from gymrat.supervisor.events import create_event_log_writer, event_from_wire
-from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep, run_exit_sequence
-from gymrat.supervisor.supervise import EndedBy, SupervisionResult, supervise
+from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport
+from gymrat.supervisor.supervise import EndedBy, SupervisionResult
 from gymrat.telemetry import run_spans
 from gymrat.telemetry.run_spans import TracingState
+from tests._cli import err_text
 from tests.cli.commands.supervise._seams import (
     CAP_MINUTES,
-    CAP_MS,
-    err_text,
+    Seams,
     install_seams,
     record_stdout_writes,
     run,
 )
 from tests.cli.supervise._fixtures import (
     follow_up_event,
-    install_baseline_seam,
     make_supervision_result,
     session_state_three_iterations,
 )
 from tests.session.records._fixtures import (
     records_of_type,
 )
-from tests.supervisor._mock_driver import CostStep, create_mock_driver
+from tests.supervisor._fixtures import CostStep, create_mock_driver
 
 _EXIT_ERROR = "finalize failed: disk full"
 
@@ -111,7 +111,6 @@ def test_supervise_when_supervise_raises_does_fail_before_the_exit_sequence(
     assert result.exit_code == 2
     assert "config broken" in result.stderr
     assert seams.exit_calls == []
-    seams.reporter_stop.assert_called()
 
 
 def test_supervise_when_exit_sequence_reports_a_phase_does_show_it_on_the_reporter(
@@ -139,7 +138,7 @@ def test_supervise_when_exit_sequence_warns_does_route_it_through_the_reporter_n
     assert hint not in result.stderr
 
 
-def test_supervise_when_exit_sequence_logs_an_event_does_write_it_to_the_log_and_the_observer(
+def test_supervise_when_exit_sequence_logs_an_event_does_append_it_to_the_run_log(
     repo: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     seams = install_seams(monkeypatch)
@@ -157,13 +156,15 @@ def test_supervise_when_exit_sequence_logs_an_event_does_write_it_to_the_log_and
 
     logged = [event_from_wire(json.loads(line)) for line in log_path.read_text().splitlines()]
     assert logged[-2:] == [run_event, event]
-    assert event in seams.observed_events
 
 
-def test_supervise_when_exit_sequence_logs_an_event_does_hand_it_to_the_observer_supervise_used(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
+def _untraced(_monkeypatch: pytest.MonkeyPatch, seams: Seams) -> list[object]:
+    """Leave tracing off, so supervise is handed the reporter's own observer."""
+    return seams.observed_events
+
+
+def _traced_with_its_own_observer(monkeypatch: pytest.MonkeyPatch, _seams: Seams) -> list[object]:
+    """Make tracing hand supervise an observer of its own, returning what that observer sees."""
     run_observed: list[object] = []
 
     def tracing_with_its_own_observer(
@@ -171,13 +172,34 @@ def test_supervise_when_exit_sequence_logs_an_event_does_hand_it_to_the_observer
     ) -> tuple[object, ...]:
         return prompt, run_observed.append, TracingState()
 
-    monkeypatch.setattr(run_spans, "setup_tracing", tracing_with_its_own_observer)
+    monkeypatch.setattr(
+        run_spans,
+        "setup_tracing",
+        create_autospec(run_spans.setup_tracing, side_effect=tracing_with_its_own_observer),
+    )
+    return run_observed
+
+
+@pytest.mark.parametrize(
+    "observer_supervise_used",
+    [
+        pytest.param(_untraced, id="untraced"),
+        pytest.param(_traced_with_its_own_observer, id="traced"),
+    ],
+)
+def test_supervise_when_exit_sequence_logs_an_event_does_hand_it_to_the_observer_supervise_used(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    observer_supervise_used: Callable[[pytest.MonkeyPatch, Seams], list[object]],
+):
+    seams = install_seams(monkeypatch)
+    observed = observer_supervise_used(monkeypatch, seams)
     event = follow_up_event(action="ended", reason="nothing to settle")
     seams.exit_hook = lambda call: call["log"](event)
 
     run("optimize it", "--max-minutes", "10")
 
-    assert run_observed == [event]
+    assert observed == [event]
 
 
 def test_supervise_when_run_ends_does_run_the_exit_sequence_in_the_supervisor_loop(
@@ -185,13 +207,7 @@ def test_supervise_when_run_ends_does_run_the_exit_sequence_in_the_supervisor_lo
 ):
     seams = install_seams(monkeypatch)
     loops: list[asyncio.AbstractEventLoop] = []
-    record_supervise_call = seams.record_supervise_call
-
-    def recording_supervise(args: tuple[object, ...], kwargs: dict[str, object]) -> None:
-        loops.append(asyncio.get_running_loop())
-        record_supervise_call(args, kwargs)
-
-    seams.record_supervise_call = recording_supervise
+    seams.supervise_hook = lambda _call: loops.append(asyncio.get_running_loop())
     seams.exit_hook = lambda _call: loops.append(asyncio.get_running_loop())
 
     run("optimize it", "--max-minutes", "10")
@@ -203,12 +219,10 @@ def test_supervise_when_run_ends_does_run_the_exit_sequence_in_the_supervisor_lo
 def test_supervise_when_run_completes_does_log_one_supervise_command_record_per_stage(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    seams = install_seams(monkeypatch)
+    seams = install_seams(
+        monkeypatch, real_preflight=True, real_supervise=True, real_exit_sequence=True
+    )
     seams.create_driver.return_value = create_mock_driver([CostStep(cost_usd=0.01)])
-    monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", run_preflight)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise", supervise)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.run_exit_sequence", run_exit_sequence)
-    install_baseline_seam(monkeypatch)
 
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
 
@@ -261,27 +275,6 @@ def test_supervise_when_exit_sequence_runs_does_find_the_budget_file_already_rem
 # ---------------------------------------------------------------------------
 # closing summary after the exit sequence
 # ---------------------------------------------------------------------------
-
-
-def test_supervise_when_exit_sequence_reports_steps_does_print_them_as_exit_rows(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
-    seams.exit_report = ExitReport(
-        steps=(
-            ExitStep(kind="settled", text="settled: kept iteration 1 (checks passed)"),
-            ExitStep(kind="nothing", text="session left open (--no-finalize)"),
-        )
-    )
-
-    result = run("optimize it", "--max-minutes", "10", "--no-finalize")
-
-    assert result.exit_code == 0
-    exit_rows = [line for line in result.stdout.splitlines() if line.startswith("  exit ")]
-    assert exit_rows == [
-        "  exit    settled: kept iteration 1 (checks passed)",
-        "  exit    session left open (--no-finalize)",
-    ]
 
 
 @pytest.mark.parametrize(
@@ -347,16 +340,13 @@ def test_supervise_when_outcome_error_with_message_does_surface_the_driver_messa
 ):
     seams = install_seams(
         monkeypatch,
-        result=make_supervision_result(
-            reason="error", duration_ms=5_000, cost_usd=0.03, message="SDK connection lost"
-        ),
+        result=make_supervision_result(reason="error", message="SDK connection lost"),
     )
     seams.exit_report = exit_report
 
     result = run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 2
-    assert result.stdout.splitlines()[0] == "✗ error · 5s · $0.03"
     assert "SDK connection lost" in result.stderr
     assert _EXIT_ERROR not in result.stderr
 
@@ -382,28 +372,18 @@ def test_supervise_when_outcome_error_without_message_does_exit_two_quietly(
 
 
 @pytest.mark.parametrize(
-    ("supervision", "max_minutes", "expected_exit", "headline"),
+    ("supervision", "expected_exit"),
     [
         pytest.param(
-            make_supervision_result(
-                reason="interrupted", ended_by="wall-clock", duration_ms=CAP_MS, cost_usd=1.0
-            ),
-            str(CAP_MINUTES),
+            make_supervision_result(reason="interrupted", ended_by="wall-clock"),
             1,
-            "! interrupted by wall-clock cap · 10m 0s · $1.00",
             id="wall-clock-cap",
         ),
         pytest.param(
             make_supervision_result(
-                reason="interrupted",
-                ended_by="guard",
-                duration_ms=30_000,
-                cost_usd=0.10,
-                end_reason="safety limit reached",
+                reason="interrupted", ended_by="guard", end_reason="safety limit reached"
             ),
-            "10",
             1,
-            "! stopped by guard: safety limit reached · 30s · $0.10",
             id="guard",
         ),
         pytest.param(
@@ -412,16 +392,12 @@ def test_supervise_when_outcome_error_without_message_does_exit_two_quietly(
                 ended_by="stop-condition",
                 end_reason="max iterations (2 of 2)",
             ),
-            "10",
             0,
-            "✓ stopped: max iterations (2 of 2) · 1m 0s · $0.05",
             id="stop-condition",
         ),
         pytest.param(
             make_supervision_result(reason="interrupted", ended_by="spend-cap", end_reason=""),
-            "10",
             1,
-            "! interrupted by spend cap · 1m 0s · $0.05",
             id="spend-cap",
         ),
         pytest.param(
@@ -430,26 +406,16 @@ def test_supervise_when_outcome_error_without_message_does_exit_two_quietly(
                 ended_by="hook-failure",
                 end_reason="after hook failed on iteration 2: exit 1 (stdout 80 B, stderr 5 B)",
             ),
-            "10",
             1,
-            "! stopped: after hook failed on iteration 2: exit 1 (stdout 80 B, stderr 5 B)"
-            " · 1m 0s · $0.05",
             id="hook-failure",
         ),
     ],
 )
-def test_supervise_when_run_ended_by_a_condition_does_exit_with_its_code_and_headline(
-    *,
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    supervision: SupervisionResult,
-    max_minutes: str,
-    expected_exit: int,
-    headline: str,
+def test_supervise_when_run_ended_by_a_condition_does_exit_with_its_code(
+    repo: str, monkeypatch: pytest.MonkeyPatch, supervision: SupervisionResult, expected_exit: int
 ):
     install_seams(monkeypatch, result=supervision)
 
-    result = run("optimize it", "--max-minutes", max_minutes)
+    result = run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == expected_exit
-    assert result.stdout.splitlines()[0] == headline

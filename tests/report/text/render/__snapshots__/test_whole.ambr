@@ -19,24 +19,6 @@
     '  worktree prune failed: could not lock config file',
   ])
 # ---
-# name: test_render_report_when_rendered_does_match_its_golden[flat-grouped-colored]
-  list([
-    '\x1b[1mgymrat compare\x1b[0m \x1b[2m·\x1b[0m baseline \x1b[1;4mmain\x1b[0m ↔ \x1b[1;4mperf/faster-decode\x1b[0m \x1b[2m·\x1b[0m 10 paired samples \x1b[2m·\x1b[0m adapter: mitata',
-    'metric                     │ \x1b[1;4mmain\x1b[0m         │ \x1b[1;4mperf/faster-decode\x1b[0m │ vs \x1b[1;4mmain\x1b[0m',
-    '───────────────────────────┼──────────────┼────────────────────┼─────────────────',
-    '\x1b[1;34mentity · time\x1b[0m              │              │                    │',
-    '  alive_check              │ 100ns ± 1%   │  90ns ± 1%         │ \x1b[32m✓\x1b[0m  -10.0%  \x1b[2m±2.5%\x1b[0m',
-    '  spawn                    │ 100ns ± 1%   │ 104ns ± 1%         │ \x1b[31m✗\x1b[0m   +4.0%  \x1b[2m±2.5%\x1b[0m',
-    '───────────────────────────┼──────────────┼────────────────────┼─────────────────',
-    '\x1b[1mgeomean (2 stable metrics)\x1b[0m │              │                    │     \x1b[1;32m-3.2%\x1b[0m',
-    '',
-    '✓ \x1b[32m1\x1b[0m improved   ✗ \x1b[31m1\x1b[0m regressed   \x1b[2m≈ 0 unstable\x1b[0m   \x1b[2m= 0 identical\x1b[0m   \x1b[2m~ 0 within noise\x1b[0m   \x1b[2m? 0 inconclusive\x1b[0m',
-    '',
-    '\x1b[1mhighlights\x1b[0m',
-    '  \x1b[31m✗\x1b[0m \x1b[2mentity/\x1b[0mspawn\x1b[2m#time\x1b[0m         \x1b[31m+4.0%\x1b[0m',
-    '  \x1b[32m✓\x1b[0m \x1b[2mentity/\x1b[0malive_check\x1b[2m#time\x1b[0m  \x1b[32m-10.0%\x1b[0m',
-  ])
-# ---
 # name: test_render_report_when_rendered_does_match_its_golden[flat-grouped-plain]
   list([
     'gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata',
@@ -132,39 +114,6 @@
     '    ✓ encode#heap               -7.9%  (exact)',
     '',
     'some rounds were dropped — not all samples produced paired measurements for every metric',
-  ])
-# ---
-# name: test_render_report_when_rendered_does_match_its_golden[sectioned-multi-candidate-colored]
-  list([
-    '\x1b[1mgymrat compare\x1b[0m \x1b[2m·\x1b[0m baseline \x1b[1;4mmain\x1b[0m ↔ \x1b[1;4mcandidate-a\x1b[0m, \x1b[1;4mcandidate-b\x1b[0m \x1b[2m·\x1b[0m 10 paired samples \x1b[2m·\x1b[0m adapter: mitata',
-    '',
-    '─────────────────┬──────────────┬──────────────────────────┬────────────────────────',
-    '\x1b[1mtime\x1b[0m             │ \x1b[1;4mmain\x1b[0m         │ \x1b[1;4mcandidate-a\x1b[0m              │ \x1b[1;4mcandidate-b\x1b[0m',
-    '─────────────────┼──────────────┼──────────────────────────┼────────────────────────',
-    '\x1b[1;34mentity\x1b[0m           │              │                          │',
-    '  alive_check    │ 100ns ± 1%   │ 90ns ± 1%  \x1b[32m✓\x1b[0m  \x1b[32m-10.0%\x1b[0m     │ 104ns ± 1%  \x1b[31m✗\x1b[0m  \x1b[31m+4.0%\x1b[0m',
-    '\x1b[1mgeomean · entity\x1b[0m │              │ \x1b[1;32m-10.0%\x1b[0m · \x1b[2m1 stable metric\x1b[0m │ \x1b[1;31m+4.0%\x1b[0m · \x1b[2m1 stable metric\x1b[0m',
-    '─────────────────┼──────────────┼──────────────────────────┼────────────────────────',
-    '\x1b[1mgeomean · time\x1b[0m   │              │ \x1b[1;32m-10.0%\x1b[0m · \x1b[2m1 stable metric\x1b[0m │ \x1b[1;31m+4.0%\x1b[0m · \x1b[2m1 stable metric\x1b[0m',
-    '',
-    '\x1b[2minformational — gating off (config: kinds.memory.gating = false)\x1b[0m',
-    '─────────────────┬──────────────┬──────────────────────────┬────────────────────────',
-    '\x1b[1mmemory\x1b[0m           │ \x1b[1;4mmain\x1b[0m         │ \x1b[1;4mcandidate-a\x1b[0m              │ \x1b[1;4mcandidate-b\x1b[0m',
-    '─────────────────┼──────────────┼──────────────────────────┼────────────────────────',
-    'encode           │ 100ns ± 1%   │ 93ns ± 1%  \x1b[32m✓\x1b[0m   \x1b[32m-7.0%\x1b[0m     │  98ns ± 1%  \x1b[32m✓\x1b[0m  \x1b[32m-2.0%\x1b[0m',
-    '─────────────────┼──────────────┼──────────────────────────┼────────────────────────',
-    '\x1b[1mgeomean · memory\x1b[0m │              │ \x1b[1;32m-7.0%\x1b[0m · \x1b[2m1 stable metric\x1b[0m  │ \x1b[1;32m-2.0%\x1b[0m · \x1b[2m1 stable metric\x1b[0m',
-    '',
-    '\x1b[1mcandidate-a\x1b[0m  ✓ \x1b[32m2\x1b[0m improved   \x1b[2m✗ 0 regressed\x1b[0m   \x1b[2m≈ 0 unstable\x1b[0m   \x1b[2m= 0 identical\x1b[0m   \x1b[2m~ 0 within noise\x1b[0m   \x1b[2m? 0 inconclusive\x1b[0m',
-    '\x1b[1mcandidate-b\x1b[0m  ✓ \x1b[32m1\x1b[0m improved   ✗ \x1b[31m1\x1b[0m regressed   \x1b[2m≈ 0 unstable\x1b[0m   \x1b[2m= 0 identical\x1b[0m   \x1b[2m~ 0 within noise\x1b[0m   \x1b[2m? 0 inconclusive\x1b[0m',
-    '',
-    '\x1b[1mhighlights\x1b[0m',
-    '  \x1b[1mcandidate-a\x1b[0m',
-    '    \x1b[32m✓\x1b[0m time · entity.alive_check  \x1b[32m-10.0%\x1b[0m',
-    '    \x1b[32m✓\x1b[0m memory · encode             \x1b[32m-7.0%\x1b[0m',
-    '  \x1b[1mcandidate-b\x1b[0m',
-    '    \x1b[31m✗\x1b[0m time · entity.alive_check   \x1b[31m+4.0%\x1b[0m',
-    '    \x1b[32m✓\x1b[0m memory · encode             \x1b[32m-2.0%\x1b[0m',
   ])
 # ---
 # name: test_render_report_when_rendered_does_match_its_golden[sectioned-multi-candidate-plain]

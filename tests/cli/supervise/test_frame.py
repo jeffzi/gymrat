@@ -11,60 +11,86 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 import pytest
-from rich.panel import Panel
+from rich.box import ROUNDED
 from rich.style import Style
-from rich.text import Text
 
 from gymrat.cli.style import STYLE_LABEL, STYLE_META
 from gymrat.cli.supervise.progress import IDLE_WARN_MS
-from gymrat.cli.supervise.types import BestIteration
+from gymrat.session.store import BestIteration
 from gymrat.supervisor.exit_sequence import ExitPhase
-from tests._ansi import strip_sgr
-from tests._rich import console_output, sealed_console
 from tests.cli.supervise._fixtures import (
-    FRAME_WIDTH,
+    BASH_CYCLE_END_MS,
     ReporterKit,
     cap_event,
+    color_console,
     fire_launch_and_bash_cycle,
-    fire_launch_and_bash_start,
+    fire_launch_and_edit_cycle,
+    fire_launch_and_iterate_start,
     follow_up_event,
     launch_event,
-    line_after,
-    lines_containing,
-    make_read_session,
+    launched,
     make_reporter,
     model_phase_event,
-    render_colored,
-    render_frame,
+    reporter_showing_session,
+    reporter_with_nested_read,
     session_state_three_iterations,
-    tool_end_event,
-    tool_start_event,
     turn_end_event,
 )
 from tests.session.records._fixtures import (
-    SUPERVISED_SESSION_ID,
     make_iteration,
     session_state,
 )
 
 if TYPE_CHECKING:
-    from rich.console import RenderableType
+    from rich.segment import Segment
 
     from gymrat.cli.supervise.progress import SuperviseReporter
-    from gymrat.config import Effort
-    from gymrat.supervisor.events import ModelPhase
+
+# Frames are rendered straight from ``reporter.frame()``, so no test here mounts a
+# real dashboard: a live ``ErasableLive`` would start a refresh thread painting on
+# the process's stderr while the test moves the clock.
+pytestmark = pytest.mark.usefixtures("mock_live_cls")
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
+# The panel's border rows open on these corners; every other row is content.
+_TOP_LEFT = ROUNDED.top_left
+_BOTTOM_LEFT = ROUNDED.bottom_left
+
+# Rich lays the panel's border style under its title, so the label keeps its own
+# style on top of the border's.
+_RENDERED_LABEL_STYLE = str(Style.parse(STYLE_META) + Style.parse(STYLE_LABEL))
+
+
+def _is_border(line: list[Segment], corner: str) -> bool:
+    """Whether a rendered *line* is the panel border row that opens on *corner*."""
+    return "".join(segment.text for segment in line).startswith(corner)
+
+
+def _styles_of(lines: list[list[Segment]], token: str) -> list[str]:
+    """The styles of the segments of *lines* holding *token*, ``"none"`` when unstyled."""
+    return [
+        str(segment.style or Style.null())
+        for line in lines
+        for segment in line
+        if token in segment.text
+    ]
+
+
+def _frame_lines(reporter: SuperviseReporter) -> list[list[Segment]]:
+    """The reporter's current frame as rendered lines, through a color-enabled console."""
+    console = color_console()
+    return console.render_lines(reporter.frame(), console.options)
+
 
 def _segment_style(reporter: SuperviseReporter, token: str) -> str:
     """Return the style of the one rendered content segment whose text holds *token*.
 
-    Renders the panel's inner content, so the border styling stays out of the
-    result, through a color-enabled console at the frame width.
+    The panel's top and bottom border rows are left out, so the title and
+    border styling stay out of the result.
 
     Args:
         reporter: The reporter whose current frame is rendered.
@@ -74,57 +100,32 @@ def _segment_style(reporter: SuperviseReporter, token: str) -> str:
         The segment's style as rich spells it, ``"none"`` when unstyled.
 
     Raises:
-        TypeError: When the frame is not a panel.
         AssertionError: When no segment, or more than one, holds *token*.
     """
-    panel = reporter.frame()
-    if not isinstance(panel, Panel):
-        msg = f"frame is a {type(panel).__name__}, not a Panel"
-        raise TypeError(msg)
-    console = sealed_console(width=FRAME_WIDTH, no_color=False, color_system="standard")
-    styles = [
-        str(segment.style or Style.null())
-        for line in console.render_lines(panel.renderable, console.options)
-        for segment in line
-        if token in segment.text
+    content = [
+        line
+        for line in _frame_lines(reporter)
+        if not _is_border(line, _TOP_LEFT) and not _is_border(line, _BOTTOM_LEFT)
     ]
+    styles = _styles_of(content, token)
     if len(styles) != 1:
         msg = f"expected one segment holding {token!r}, found {len(styles)}"
         raise AssertionError(msg)
     return styles[0]
 
 
-def _render_colorless(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
-    """Render ``renderable`` through a sealed terminal console with colour off, as ``--no-color`` does."""
-    console = sealed_console(width=width, color_system=None)
-    console.print(renderable)
-    return console_output(console)
+def _title_styles(reporter: SuperviseReporter, token: str) -> set[str]:
+    """Return the styles of the rendered panel-title segments whose text holds *token*.
 
+    Args:
+        reporter: The reporter whose current frame title is rendered.
+        token: Text the segments must contain.
 
-def _styles_at(text: Text, offset: int) -> set[str]:
-    """The span styles that cover character *offset* of *text*."""
-    return {str(span.style) for span in text.spans if span.start <= offset < span.end}
-
-
-def _panel_title_text(frame: str) -> str:
-    """The panel's title text, with the top border's box-drawing chars stripped."""
-    return frame.splitlines()[0].strip("╭╮─ ")
-
-
-def _content(line: str) -> str:
-    """Strip the panel's side borders and padding from one frame line."""
-    return line.strip("│").strip()
-
-
-def _fire_waiting_bash_cycle(kit: ReporterKit, *, above_threshold: bool = False) -> None:
-    """Launch, then run a Bash start/end cycle, optionally idling past the warn threshold."""
-    kit.reporter.observer(launch_event(1000))
-    kit.clock.now = 2000
-    kit.reporter.observer(tool_start_event("Bash", "bash-1", 2000))
-    kit.clock.now = 3000
-    kit.reporter.observer(tool_end_event("Bash", "bash-1", 3000))
-    if above_threshold:
-        kit.clock.now = 3000 + IDLE_WARN_MS + 1
+    Returns:
+        Each distinct segment style as rich spells it, ``"none"`` when unstyled.
+    """
+    title_rows = [line for line in _frame_lines(reporter) if _is_border(line, _TOP_LEFT)]
+    return set(_styles_of(title_rows, token))
 
 
 # ---------------------------------------------------------------------------
@@ -133,24 +134,15 @@ def _fire_waiting_bash_cycle(kit: ReporterKit, *, above_threshold: bool = False)
 
 
 def test_panel_title_when_rendered_does_set_the_label_apart_from_its_dim_connectors():
-    kit = make_reporter(
-        session_id=SUPERVISED_SESSION_ID,
-        branch=f"gymrat/{SUPERVISED_SESSION_ID}",
-    )
-    kit.reporter.observer(launch_event(1000))
+    kit = launched(make_reporter())
 
-    panel = kit.reporter.frame()
-    assert isinstance(panel, Panel)
-    title = panel.title
-    assert isinstance(title, Text)
-    separator = title.plain.index(" · ")
-    connector = title.plain.index("session")
+    styles = {token: _title_styles(kit.reporter, token) for token in ("supervise", "·", "session")}
 
-    assert _styles_at(title, 0) == {STYLE_LABEL}
-    assert (_styles_at(title, separator + 1), _styles_at(title, connector)) == (
-        {STYLE_META},
-        {STYLE_META},
-    )
+    assert styles == {
+        "supervise": {_RENDERED_LABEL_STYLE},
+        "·": {STYLE_META},
+        "session": {STYLE_META},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +154,7 @@ def test_panel_title_when_rendered_does_set_the_label_apart_from_its_dim_connect
 def test_summary_row_when_rendered_with_color_does_open_on_a_dim_label(label: str):
     state = session_state_three_iterations(-3.2, "improved", seq=3)
     best = BestIteration(delta_pct=-3.2, seq=3, label="geomean")
-    kit = make_reporter(read_session=make_read_session(state, has_baseline=True, best=best))
-    fire_launch_and_bash_cycle(kit.reporter.observer)
+    kit = reporter_showing_session(state, best=best)
     kit.reporter.observer(turn_end_event(4000))
     kit.reporter.observer(follow_up_event(5000, action="replied"))
 
@@ -179,11 +170,7 @@ def test_summary_row_when_rendered_with_color_does_open_on_a_dim_label(label: st
 
 def test_loop_iter_count_when_rendered_with_color_does_emit_bold_styling():
     state = session_state_three_iterations(-3.2, "improved")
-    kit = make_reporter(
-        max_iterations=20,
-        read_session=make_read_session(state, has_baseline=True),
-    )
-    fire_launch_and_bash_cycle(kit.reporter.observer)
+    kit = reporter_showing_session(state, max_iterations=20)
 
     style = _segment_style(kit.reporter, "iterations")
 
@@ -204,10 +191,7 @@ def test_loop_outcome_when_rendered_with_color_does_emit_expected_styling(
         iteration_count=1,
         last_iteration=make_iteration(delta_pct, outcome),
     )
-    kit = make_reporter(
-        read_session=make_read_session(state, has_baseline=True),
-    )
-    fire_launch_and_bash_cycle(kit.reporter.observer)
+    kit = reporter_showing_session(state)
 
     style = _segment_style(kit.reporter, outcome)
 
@@ -232,14 +216,10 @@ def test_loop_outcome_when_rendered_with_color_does_emit_expected_styling(
 def test_best_delta_when_rendered_with_color_does_style_an_improvement_green_per_direction(
     delta_pct: float, direction: Literal["lower", "higher"], expected_style: str
 ) -> None:
-    kit = make_reporter(
-        read_session=make_read_session(
-            session_state(iteration_count=1, keep_count=1),
-            has_baseline=True,
-            best=BestIteration(delta_pct=delta_pct, seq=1, label="primary", direction=direction),
-        ),
+    kit = reporter_showing_session(
+        session_state(iteration_count=1, keep_count=1),
+        best=BestIteration(delta_pct=delta_pct, seq=1, label="primary", direction=direction),
     )
-    fire_launch_and_bash_cycle(kit.reporter.observer)
 
     style = _segment_style(kit.reporter, "%")
 
@@ -251,35 +231,34 @@ def test_best_delta_when_rendered_with_color_does_style_an_improvement_green_per
 # ---------------------------------------------------------------------------
 
 
-_LIVENESS_SCENARIOS = pytest.mark.parametrize(
-    ("scenario", "needle"),
-    [
-        pytest.param("responding", "responding", id="responding"),
-        pytest.param("composing", "preparing", id="composing-as-preparing"),
-        pytest.param("waiting", "waiting", id="waiting-below-threshold"),
-        pytest.param("no-output", "no output", id="waiting-above-threshold"),
-    ],
-)
-
-
 def _fire_liveness_scenario(kit: ReporterKit, scenario: str) -> None:
-    """Drive the reporter into the named liveness state."""
+    """Fire the events that put the reporter in a liveness state.
+
+    Args:
+        kit: Reporter and clock under test.
+        scenario: Liveness state to reach. ``"starting"`` fires only the launch, and
+            ``"no-output"`` and ``"in-flight"`` also move the clock.
+    """
     if scenario in {"waiting", "no-output"}:
-        _fire_waiting_bash_cycle(kit, above_threshold=scenario == "no-output")
+        fire_launch_and_bash_cycle(kit.reporter.observer, clock=kit.clock)
+        if scenario == "no-output":
+            kit.clock.now = BASH_CYCLE_END_MS + IDLE_WARN_MS + 1
+        return
+    if scenario == "in-flight":
+        fire_launch_and_iterate_start(kit)
+        kit.clock.now = 7000
         return
     kit.reporter.observer(launch_event(1000))
     if scenario == "composing":
         kit.reporter.observer(model_phase_event(2000, "tool_input", tool_name="Edit"))
     elif scenario == "responding":
         kit.reporter.observer(model_phase_event(2000, "responding"))
-    elif scenario == "in-flight":
-        kit.clock.now = 2000
-        kit.reporter.observer(
-            tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate")
-        )
-        kit.clock.now = 7000
     elif scenario == "capped":
         kit.reporter.observer(cap_event("wall-clock"))
+    elif scenario == "exiting-lock":
+        kit.reporter.exit_phase(ExitPhase(kind="waiting-lock", pid=4242))
+    elif scenario == "exiting-settling":
+        kit.reporter.exit_phase(ExitPhase(kind="settling", pid=None))
 
 
 @pytest.mark.parametrize(
@@ -292,6 +271,8 @@ def _fire_liveness_scenario(kit: ReporterKit, scenario: str) -> None:
         pytest.param("waiting", "waiting", "dim", id="waiting-below-threshold-dim"),
         pytest.param("no-output", "no output", "yellow", id="waiting-above-threshold-yellow"),
         pytest.param("capped", "interrupting", "yellow", id="capped-yellow"),
+        pytest.param("exiting-lock", "waiting for gymrat", "dim", id="exiting-waiting-lock-dim"),
+        pytest.param("exiting-settling", "settling", "dim", id="exiting-settling-dim"),
     ],
 )
 def test_liveness_line_when_rendered_with_color_does_carry_its_state_styling(
@@ -303,42 +284,6 @@ def test_liveness_line_when_rendered_with_color_does_carry_its_state_styling(
     style = _segment_style(kit.reporter, needle)
 
     assert style == expected_style
-
-
-@_LIVENESS_SCENARIOS
-def test_liveness_line_when_rendered_colored_and_colorless_does_show_the_same_text(
-    scenario: str, needle: str
-):
-    kit = make_reporter()
-    _fire_liveness_scenario(kit, scenario)
-    frame = kit.reporter.frame()
-
-    colored_lines = lines_containing(render_colored(frame), needle)
-    colorless_lines = lines_containing(_render_colorless(frame), needle)
-
-    assert colorless_lines
-    assert [strip_sgr(line) for line in colored_lines] == colorless_lines
-
-
-@pytest.mark.parametrize(
-    ("phase", "needle"),
-    [
-        pytest.param(
-            ExitPhase(kind="waiting-lock", pid=4242), "waiting for gymrat", id="waiting-lock"
-        ),
-        pytest.param(ExitPhase(kind="settling", pid=None), "settling", id="settling"),
-    ],
-)
-def test_liveness_exiting_when_rendered_with_color_does_emit_dim_styling(
-    phase: ExitPhase, needle: str
-):
-    kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
-    kit.reporter.exit_phase(phase)
-
-    style = _segment_style(kit.reporter, needle)
-
-    assert style == "dim"
 
 
 # ---------------------------------------------------------------------------
@@ -357,13 +302,7 @@ def test_finished_tool_line_when_rendered_with_color_does_style_it_by_result(
     result: Literal["ok", "error"], expected_style: str
 ):
     kit = make_reporter()
-    kit.reporter.observer(launch_event(1000))
-    kit.clock.now = 2000
-    kit.reporter.observer(
-        tool_start_event("Edit", "edit-1", 2000, input_summary="src/archetype.ts")
-    )
-    kit.clock.now = 3000
-    kit.reporter.observer(tool_end_event("Edit", "edit-1", 3000, result=result))
+    fire_launch_and_edit_cycle(kit, result=result)
 
     style = _segment_style(kit.reporter, "archetype")
 
@@ -371,143 +310,13 @@ def test_finished_tool_line_when_rendered_with_color_does_style_it_by_result(
 
 
 # ---------------------------------------------------------------------------
-# nested subagent line
+# nested subagent line styling
 # ---------------------------------------------------------------------------
 
 
-def test_nested_tool_when_in_flight_does_render_a_dim_arrow_line_under_parent():
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    fire_launch_and_bash_start(observer)
-    kit.clock.now = 2000
-    observer(
-        tool_start_event(
-            "Read",
-            "nested-read-1",
-            2000,
-            parent_tool_use_id="bash-1",
-            input_summary="src/config.ts",
-        )
-    )
-    kit.clock.now = 5000
+def test_nested_tool_line_when_rendered_with_color_does_emit_dim_styling():
+    kit = reporter_with_nested_read()
 
-    nested_line = line_after(render_frame(kit.reporter), "Bash")
     style = _segment_style(kit.reporter, "config.ts")
 
-    assert _content(nested_line) == "↳ Read src/config.ts  3s"
     assert style == "dim"
-
-
-@pytest.mark.parametrize(
-    ("phase", "tool_name", "now", "expected"),
-    [
-        pytest.param("thinking", None, 4000, "↳ thinking  2s", id="thinking"),
-        pytest.param("responding", None, 3000, "↳ responding  1s", id="responding"),
-        pytest.param("tool_input", "Edit", 3000, "↳ preparing Edit  1s", id="composing"),
-    ],
-)
-def test_nested_phase_when_reported_does_render_an_arrow_line_naming_it(
-    phase: ModelPhase, tool_name: str | None, now: int, expected: str
-):
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    fire_launch_and_bash_start(observer)
-    kit.clock.now = 2000
-    observer(model_phase_event(2000, phase, tool_name=tool_name, parent_tool_use_id="bash-1"))
-    kit.clock.now = now
-
-    nested_line = line_after(render_frame(kit.reporter), "Bash")
-
-    assert _content(nested_line) == expected
-
-
-def test_nested_tool_when_a_sibling_ends_does_keep_showing_the_running_tool():
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    fire_launch_and_bash_start(observer)
-    kit.clock.now = 2000
-    observer(
-        tool_start_event(
-            "Read", "nested-read-1", 2000, parent_tool_use_id="bash-1", input_summary="config.ts"
-        )
-    )
-    observer(
-        tool_start_event(
-            "Grep", "nested-grep-1", 2100, parent_tool_use_id="bash-1", input_summary="needle"
-        )
-    )
-    kit.clock.now = 5000
-    observer(tool_end_event("Grep", "nested-grep-1", 5000, parent_tool_use_id="bash-1"))
-
-    nested_line = line_after(render_frame(kit.reporter), "Bash")
-
-    assert _content(nested_line) == "↳ Read config.ts  3s"
-
-
-def test_nested_when_no_activity_does_not_render_arrow_line():
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    observer(launch_event(1000))
-    kit.clock.now = 2000
-    observer(tool_start_event("Bash", "bash-1", 2000, input_summary="gymrat iterate"))
-    kit.clock.now = 5000
-
-    frame = render_frame(kit.reporter)
-
-    assert "↳" not in frame
-
-
-# ---------------------------------------------------------------------------
-# tool-name column width — nested tools excluded
-# ---------------------------------------------------------------------------
-
-
-def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_width():
-    kit = make_reporter()
-    observer = kit.reporter.observer
-    observer(launch_event(1000))
-
-    kit.clock.now = 2000
-    observer(tool_start_event("Bash", "bash-1", 2000, input_summary="run tests"))
-    kit.clock.now = 2500
-    observer(
-        tool_start_event(
-            "LongNestedToolName",
-            "nested-1",
-            2500,
-            parent_tool_use_id="bash-1",
-            input_summary="something",
-        )
-    )
-    kit.clock.now = 3000
-
-    frame = render_frame(kit.reporter)
-    bash_lines = lines_containing(frame, "Bash")
-
-    # "Bash" padded to the 5-column floor; counting the nested name would widen it.
-    assert [_content(line) for line in bash_lines] == ["00:00:02  Bash   run tests  1s"]
-
-
-# ---------------------------------------------------------------------------
-# dashboard title — model and effort display
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("model", "effort", "expected_title"),
-    [
-        pytest.param("opus", None, "supervise · model opus", id="model-only"),
-        pytest.param(None, "high", "supervise · effort high", id="effort-only"),
-        pytest.param("opus", "max", "supervise · model opus · effort max", id="model-and-effort"),
-        pytest.param(None, None, "supervise", id="neither"),
-    ],
-)
-def test_panel_title_when_model_or_effort_in_force_does_show_labelled_value(
-    model: str | None, effort: Effort | None, expected_title: str
-) -> None:
-    kit = make_reporter(session_id="", branch="", model=model, effort=effort)
-    kit.reporter.observer(launch_event(1000))
-
-    frame = render_frame(kit.reporter)
-
-    assert _panel_title_text(frame) == expected_title

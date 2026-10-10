@@ -17,12 +17,11 @@ from typing import TYPE_CHECKING
 
 from gymrat.errors import GymratError
 from gymrat.loop.baseline import measure_baseline
-from gymrat.loop.iterate.confirm import scoped_bench
-from gymrat.report.loop import baseline_medians
+from gymrat.loop.iterate.judge import EXPERIMENT_LABEL, scoped_bench
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.store import latest_baseline, require_open_session
 from gymrat.stats import percent_delta
-from gymrat.utils import finite_or_none, warn_to_stderr
+from gymrat.utils import finite_or_none, medians_by_name, warn_to_stderr
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -32,11 +31,8 @@ if TYPE_CHECKING:
     from gymrat.progress_events import ProgressCallback
     from gymrat.utils import WarnSink
 
-#: Rounds a probe runs when the caller names no count of its own.
 PROBE_DEFAULT_SAMPLES = 6
-
-#: The label a probe's target carries, naming the worktree it benched.
-EXPERIMENT_LABEL = "experiment"
+"""Rounds a probe runs when the caller names no count of its own."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,23 +61,23 @@ class ProbeMetric:
 
     Attributes:
         name: The metric's name as the bench reported it.
-        median: The median the probe measured, or ``None`` when no round
-            reported the metric.
+        median: The median the probe measured.
         spread: Half the measured range as a percentage of the median, or
             ``None`` when there was no run-to-run jitter to report.
         reference_median: The median the newest baseline record came to for this
             metric, or ``None`` when that baseline never reported it.
         delta_pct: The signed percentage change from ``reference_median`` to
             ``median``, scaled by the reference's magnitude; ``0.0`` when both
-            are zero, and ``None`` when either is missing, only the reference is
-            zero, or the ratio is not finite. Positive means the probe measured a
-            larger number, whatever ``meta.direction`` makes of that.
+            are zero, and ``None`` when the reference is missing, only the
+            reference is zero, or the ratio is not finite. Positive means the
+            probe measured a larger number, whatever ``meta.direction`` makes of
+            that.
         meta: The metric's resolved metadata, carrying the direction and unit a
             renderer needs to style the delta.
     """
 
     name: str
-    median: float | None
+    median: float
     spread: float | None
     reference_median: float | None
     delta_pct: float | None
@@ -109,9 +105,9 @@ class ProbeResult:
     names: tuple[str, ...]
 
 
-def _delta_pct(median: float | None, reference: float | None) -> float | None:
+def _delta_pct(median: float, reference: float | None) -> float | None:
     """The signed percentage change from ``reference`` to ``median``, when there is one."""
-    if median is None or reference is None:
+    if reference is None:
         return None
     return finite_or_none(percent_delta(reference, median))
 
@@ -182,7 +178,7 @@ async def probe_session(
     target = TargetSpec(label=EXPERIMENT_LABEL, target=required.session.worktrees.experiment)
     result, _ = await measure_baseline(target, run_options)
 
-    references = baseline_medians(baseline)
+    references = medians_by_name(baseline.samples)
     metrics: list[ProbeMetric] = []
     for name, metric in result.metrics.items():
         reference = references.get(name)

@@ -8,6 +8,7 @@ live in :mod:`gymrat.cli.style`.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, override
@@ -16,7 +17,7 @@ from rich.live import Live
 from rich.segment import Segment
 
 from gymrat.signals import install_termination_cleanup, write_on_exit
-from gymrat.utils import format_timestamp
+from gymrat.utils import floored_clock_tiers
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -32,11 +33,9 @@ if TYPE_CHECKING:
 # Spinner frames are 80ms apart; refreshing any slower makes them look frozen.
 LIVE_REFRESH_PER_SECOND = 10
 
-# The escape sequence that makes the terminal cursor visible again after
-# ``Live.start()`` hid it.
+# ``Live.start()`` hides the cursor; the erase must show it again.
 SHOW_CURSOR = "\x1b[?25h"
 
-# Escape sequences that erase a whole terminal line and move the cursor up one.
 _ERASE_LINE = "\x1b[2K"
 _CURSOR_UP = "\x1b[1A"
 
@@ -44,6 +43,22 @@ _CURSOR_UP = "\x1b[1A"
 # paint takes milliseconds; the bound only matters when the paint is itself
 # waiting on the thread the handler interrupted.
 _PAINT_WAIT_SECONDS = 1.0
+
+
+def format_timestamp(at_ms: float, run_start_ms: float | None) -> str:
+    """Format an elapsed timestamp as ``[HH:MM:SS]`` since ``run_start_ms``.
+
+    Args:
+        at_ms: The timestamp in milliseconds to format.
+        run_start_ms: The run's start timestamp in milliseconds, or ``None``
+            when the run is not yet anchored, which renders zero elapsed.
+
+    Returns:
+        A bracketed timestamp string, e.g. ``"[00:07:45]"``.
+    """
+    elapsed_ms = 0 if run_start_ms is None else at_ms - run_start_ms
+    hours, minutes, seconds = floored_clock_tiers(elapsed_ms)
+    return f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
 
 
 @dataclass(slots=True)
@@ -79,7 +94,17 @@ class ErasableLive(Live):
     Once erased, the display paints nothing more and adds its frame to nothing
     printed through its console, so no frame lands after the erase however the
     termination handler and the painting threads interleave.
+
+    Attributes:
+        paint_wait_seconds: How long :meth:`erase_for_exit` waits for an
+            in-flight paint to finish before erasing around it.
+        on_frame_landing: Called on the painting thread once a frame has
+            rendered and is committed to land, before its write reaches the
+            terminal; ``None`` calls nothing.
     """
+
+    paint_wait_seconds: float = _PAINT_WAIT_SECONDS
+    on_frame_landing: Callable[[], None] | None = None
 
     # Paints whose frame may not have reached the terminal yet, oldest first.
     _paints: tuple[_Paint, ...] = ()
@@ -157,7 +182,7 @@ class ErasableLive(Live):
         self._disable_redirect_io()
         if self._refresh_thread is not None:
             self._refresh_thread.stop()
-        if self._lock.acquire(timeout=_PAINT_WAIT_SECONDS):
+        if self._lock.acquire(timeout=self.paint_wait_seconds):
             try:
                 height = self._height_on_screen()
             finally:
@@ -186,6 +211,8 @@ class ErasableLive(Live):
         # has returned, including before rich adds the print's own segments.
         buffer.append(Segment(""))
         paint.buffer = buffer
+        if self.on_frame_landing is not None:
+            self.on_frame_landing()
         return True
 
 
@@ -259,14 +286,28 @@ def mount_live(live: ErasableLive) -> Callable[[], None]:
     return uninstall
 
 
-class LiveDisplayMixin:
-    """Shared live-display bookkeeping for ``ProgressReporter`` and ``IterateRenderer``.
+def _stop_unless_stream_closed(live: ErasableLive) -> None:
+    try:
+        # stderr closed or broken at shutdown raises OSError on write
+        with contextlib.suppress(OSError):
+            live.stop()
+    except ValueError as exc:
+        # A closed text stream raises ValueError("I/O operation on closed
+        # file") on write, not OSError; any other ValueError is unexpected
+        # and must propagate.
+        if "closed file" not in str(exc):
+            raise
 
-    Both renderers own the ``Console`` they render to, an ``ErasableLive``
-    display (``None`` in plain mode) and a ``_stopped`` guard that makes
-    ``stop()`` run once. Mixing this in keeps the live-mode check, the plain
-    milestone line, and the refresh, warning, and stop bookkeeping identical
-    without giving the two renderers a shared base class.
+
+class LiveDisplayMixin:
+    """Shared live-display bookkeeping for every CLI progress renderer.
+
+    ``ProgressReporter``, ``IterateRenderer`` and the supervise dashboard each
+    own the ``Console`` they render to, an ``ErasableLive`` display (``None`` in
+    plain mode) and a ``_stopped`` guard that makes ``stop()`` run once. Mixing
+    this in keeps the live-mode check, the plain milestone line, and the
+    refresh, warning, and stop bookkeeping identical without giving the
+    renderers a shared base class.
     """
 
     _console: Console
@@ -293,13 +334,20 @@ class LiveDisplayMixin:
         timestamp = format_timestamp(at_ms, run_start_ms)
         self._console.print(f"{timestamp} {line}", highlight=False, markup=False, emoji=False)
 
-    def _mount_live(self, *, transient: bool, get_renderable: Callable[[], RenderableType]) -> None:
+    def _mount_live(
+        self,
+        *,
+        transient: bool,
+        get_renderable: Callable[[], RenderableType],
+        refresh_per_second: float = LIVE_REFRESH_PER_SECOND,
+        redirect_stderr: bool = False,
+    ) -> None:
         live = ErasableLive(
             console=self._console,
             auto_refresh=True,
-            refresh_per_second=LIVE_REFRESH_PER_SECOND,
+            refresh_per_second=refresh_per_second,
             transient=transient,
-            redirect_stderr=False,
+            redirect_stderr=redirect_stderr,
             get_renderable=get_renderable,
         )
         self._uninstall_erase = mount_live(live)
@@ -318,7 +366,10 @@ class LiveDisplayMixin:
         """Runs once the live display has stopped, for a renderer's closing line."""
 
     def stop(self) -> None:
-        """Stop the renderer and clean up any live display; a second call does nothing."""
+        """Stop the renderer and clean up any live display; a second call does nothing.
+
+        A stderr that is already closed or broken does not make ``stop()`` raise.
+        """
         # Nothing to do when stop() already ran, or when a termination signal
         # erased the display: Live.stop() would then restore the cursor over rows
         # the erase already cleared, taking lines above the frame with them.
@@ -328,7 +379,7 @@ class LiveDisplayMixin:
         if self._uninstall_erase is not None:
             self._uninstall_erase()
         if self._live is not None:
-            self._live.stop()
+            _stop_unless_stream_closed(self._live)
             self._after_live_stopped()
             self._live = None
 

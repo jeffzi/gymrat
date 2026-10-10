@@ -28,13 +28,18 @@ from gymrat.cli.iterate.state import (
     plain_line,
 )
 from gymrat.cli.live_display import LiveDisplayMixin
-from gymrat.cli.progress import compact_progress, passes_progress, phase_text
-from gymrat.cli.style import (
+from gymrat.cli.progress import (
     COMPACT_HEIGHT_THRESHOLD,
+    SPINNER_NAME,
+    clock_text,
+    compact_progress,
+    passes_progress,
+    phase_text,
+)
+from gymrat.cli.style import (
     GLYPH_ALERT,
     GLYPH_DONE,
     GLYPH_PENDING,
-    SPINNER_NAME,
     STYLE_ALERT,
     STYLE_DONE,
     STYLE_LABEL,
@@ -44,14 +49,15 @@ from gymrat.cli.style import (
     STYLE_TIMER_DONE,
     STYLE_TIMER_RUNNING,
 )
-from gymrat.metric_name import format_inline, parse
+from gymrat.metric_name import format_inline
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.progress_events import (
     ConfirmStarted,
     PassFinished,
     PassStarted,
     ProgressEvent,
 )
-from gymrat.utils import MS_PER_SECOND, format_clock, format_duration
+from gymrat.utils import MS_PER_SECOND, format_duration
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -110,11 +116,10 @@ def render_running_row(
 ) -> RenderableType:
     """Render a running checklist row: verb, note, target, and live timer.
 
-    ``spinner`` is updated in place so its animation carries across frames.
-
     Args:
         node: The row's state.
-        spinner: The row's spinner, reused from frame to frame.
+        spinner: The row's spinner, updated in place so its animation carries
+            across frames.
         running_ms: How long the row has been running, or ``None`` to show no
             timer.
 
@@ -196,11 +201,13 @@ def build_judge_detail(detail: JudgeDetail) -> Text:
         A styled ``Text`` for the judge row's detail.
     """
     text = Text()
-    for segment, role in judge_segments(detail):
-        if role == "name":
-            text.append_text(Text.from_markup(format_inline(parse(segment)), emoji=False))
+    for segment in judge_segments(detail):
+        if segment.role == "name":
+            text.append_text(
+                Text.from_markup(format_inline(parse_metric_name(segment.text)), emoji=False)
+            )
         else:
-            text.append(segment, style=STYLE_META)
+            text.append(segment.text, style=STYLE_META)
     return text
 
 
@@ -209,7 +216,7 @@ def build_judge_detail(detail: JudgeDetail) -> Text:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(slots=True)
 class _PhaseView:
     """The bar, clock column, and task id backing one sampling phase's row."""
 
@@ -349,8 +356,7 @@ class IterateRenderer(LiveDisplayMixin):
         if eta_ms is None:
             header.append(f"{format_duration(elapsed_ms)} elapsed", style=STYLE_META)
         else:
-            header.append(format_clock(elapsed_ms), style=STYLE_TIMER_RUNNING)
-            header.append(f"/{format_clock(elapsed_ms + eta_ms)}", style=STYLE_META)
+            header.append_text(clock_text(elapsed_ms, eta_ms))
         return header
 
     def _spinner_for(self, node: NodeState) -> Spinner:
@@ -416,7 +422,7 @@ class IterateRenderer(LiveDisplayMixin):
         if compact.bar is not None:
             if compact.task_id is None:
                 compact.task_id = compact.bar.add_task(
-                    "sampling", total=self._state.total, target=event.label
+                    self._state.nodes.passes.gerund, total=self._state.total, target=event.label
                 )
             elif is_confirm:
                 compact.bar.update(compact.task_id, target=event.label)
@@ -431,8 +437,9 @@ class IterateRenderer(LiveDisplayMixin):
             view.bar.update(view.task_id, target=event.label)
             return
 
+        node = self._state.nodes.confirm if is_confirm else self._state.nodes.passes
         view.task_id = view.bar.add_task(
-            "confirming" if is_confirm else "sampling",
+            node.gerund,
             total=self._state.total,
             target=event.label,
         )
@@ -466,14 +473,17 @@ class IterateRenderer(LiveDisplayMixin):
         if compact.bar is not None:
             if compact.task_id is not None:
                 compact.bar.remove_task(compact.task_id)
-            compact.task_id = compact.bar.add_task("confirming", total=self._state.total)
+            compact.task_id = compact.bar.add_task(
+                self._state.nodes.confirm.gerund, total=self._state.total
+            )
             if compact.clock_col is not None:
                 compact.clock_col.set_eta(0)
             return
 
         if self._confirm_view.bar is not None and self._confirm_view.task_id is None:
+            confirm = self._state.nodes.confirm
             self._confirm_view.task_id = self._confirm_view.bar.add_task(
-                "confirming", total=self._state.total, note=self._state.nodes.confirm.note
+                confirm.gerund, total=self._state.total, note=confirm.note
             )
 
     def _counters(self, *, is_confirm: bool) -> PhaseCounters:

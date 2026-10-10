@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from claude_agent_sdk.types import HookEvent, HookInput, HookJSONOutput
 
 type HooksFactory = Callable[[], dict[HookEvent, list[HookMatcher]]]
+"""Builds the SDK hooks mapping, keyed by hook event, once per session start."""
 
 
 # ---------------------------------------------------------------------------

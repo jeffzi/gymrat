@@ -11,7 +11,6 @@ from tests._ansi import (
     strip_ansi,
 )
 
-# The column separator every rendered table row is split on.
 _SEPARATOR = "│"
 # A table rule: dashes meeting the first column separator at a crossing junction.
 _RULE = re.compile(r"^─+┼")
@@ -39,18 +38,34 @@ def cells_of(line: str) -> list[str]:
     return line.split(_SEPARATOR)
 
 
+def stripped_cells(line: str) -> list[str]:
+    """The cells of a rendered table line, padding stripped."""
+    return [cell.strip() for cell in cells_of(line)]
+
+
+def rule_lines(report: str) -> list[str]:
+    """Every table rule of ``report``, styling stripped, in report order."""
+    return [bare for line in report.split("\n") if _RULE.match(bare := strip_ansi(line))]
+
+
 def delta_cell(line: str) -> str:
     """The last cell of a rendered table line — the delta/verdict column."""
     return cells_of(line)[-1]
 
 
-def last_table_row(report: str) -> str:
-    """The last rendered table row of a report — the row the table closes on."""
-    return table_rows(report)[-1]
-
-
 def line_starting_with(report: str, prefix: str) -> str:
-    """The single rendered line starting with ``prefix``, or a failure naming the report."""
+    """The first rendered line starting with ``prefix``, or a failure naming the report.
+
+    Args:
+        report: The rendered report, lines joined by newlines.
+        prefix: The text the line must start with.
+
+    Returns:
+        The first line of ``report`` that starts with ``prefix``.
+
+    Raises:
+        AssertionError: No line of ``report`` starts with ``prefix``.
+    """
     for candidate in report.split("\n"):
         if candidate.startswith(prefix):
             return candidate
@@ -132,45 +147,28 @@ def offsets_of(line: str, glyph: str) -> list[int]:
     return [match.start() for match in re.finditer(re.escape(glyph), line)]
 
 
-def separator_styles(line: str) -> list[list[str]]:
-    """The SGR parameters still open at each column separator of ``line``.
+def table_region(report: str) -> list[str]:
+    """The table region of a report: its shape down to the last table row.
 
-    A separator that inherits its row's style reports that style here; one left in
-    the terminal's default color reports nothing.
+    Escape codes are stripped before each line is encoded, so a colored and a
+    plain render of the same report have the same shape.
 
     Args:
-        line: One rendered table line, escape codes included.
+        report: The rendered report, lines joined by newlines.
 
     Returns:
-        One list of open SGR parameters per separator, left to right.
+        One entry per line from the top of the report through the last line
+        holding a ``│`` cell separator:
+
+        - a rule line (dashes running into ``┼``) becomes ``"<rule>"``;
+        - a border line (only ``─`` and ``┬``) becomes ``"<border>"``;
+        - any other line without a cell separator, such as the run header or a
+          section heading, keeps its text with trailing spaces removed;
+        - a table row becomes its first cell, stripped.
+
+    Raises:
+        AssertionError: No line of ``report`` holds a cell separator.
     """
-    closers: dict[str, re.Pattern[str]] = {
-        "0": re.compile(r"^\d+$"),
-        "22": re.compile(r"^[12]$"),
-        "23": re.compile(r"^3$"),
-        "24": re.compile(r"^4$"),
-        "39": re.compile(r"^(?:3[0-7]|9[0-7])$"),
-        "49": re.compile(r"^(?:4[0-7]|10[0-7])$"),
-    }
-    open_params: list[str] = []
-    styles: list[list[str]] = []
-    for token in re.finditer(r"\x1b\[([0-9;]*)m|│", line):
-        if token.group(0) == _SEPARATOR:
-            styles.append(list(open_params))
-            continue
-        for param in token.group(1).split(";"):
-            if param == "":
-                continue
-            closes = closers.get(param)
-            if closes is None:
-                open_params.append(param)
-            else:
-                open_params = [p for p in open_params if not closes.match(p)]
-    return styles
-
-
-def table_region(report: str) -> list[str]:
-    """The table region of a report: its shape down to the last table row."""
     lines = report.split("\n")
     last = -1
     for index, line in enumerate(lines):

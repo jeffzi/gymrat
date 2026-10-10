@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 from gymrat.cli import console
-from gymrat.cli.progress import ProgressReporter
+from gymrat.cli.options import OutputFormat
+from gymrat.cli.progress import ProgressReporter, RunShape
 from gymrat.config import CliFlags
 from gymrat.exec import kill_live_process_groups
 from gymrat.signals import install_termination_cleanup
@@ -23,15 +24,14 @@ from gymrat.utils import is_tty
 class SharedFlags(CliFlags):
     """The flags every command carries: the config set plus how the report prints."""
 
-    format: Literal["text", "json"] = "text"
+    format: OutputFormat = OutputFormat.text
 
 
 def resolve_render_mode() -> Literal["live", "plain"]:
     """Map the stderr TTY status to the output strategy the progress reporter uses.
 
-    A non-TTY stderr always renders plain; a TTY gets the rich-based live
-    layout regardless of color — styling is handled by the console's own
-    color resolution.
+    Color plays no part: styling is handled by the console's own color
+    resolution.
 
     Returns:
         ``"live"`` when stderr is a TTY, ``"plain"`` otherwise.
@@ -60,14 +60,13 @@ def begin_run(
     """
     mode = resolve_render_mode()
     progress_console = console.stderr_console()
-    return ProgressReporter(
-        mode,
-        progress_console,
-        target_count,
-        flags.samples,
+    shape = RunShape(
+        target_count=target_count,
+        sample_count=flags.samples,
         command=command,
-        target_labels=target_labels,
+        target_labels=tuple(target_labels or ()),
     )
+    return ProgressReporter(mode, progress_console, shape)
 
 
 async def run_with_signal_abort[T](
@@ -75,12 +74,11 @@ async def run_with_signal_abort[T](
 ) -> T:
     """Run ``execute`` with an abort event a termination signal trips.
 
-    ``execute`` receives an :class:`asyncio.Event` to hand the in-flight bench so
-    a ``SIGINT`` / ``SIGTERM`` sets it and the current sample is abandoned rather
-    than the process being torn down mid-command. The signal handler owns the
-    exit itself (``128 +`` the signal number); this only wires the event and
-    always removes the cleanup afterward, so a completed run leaves no handler
-    behind.
+    A ``SIGINT`` / ``SIGTERM`` sets the abort event so the current sample is
+    abandoned rather than the process being torn down mid-command. The signal
+    handler owns the exit itself (``128 +`` the signal number); this only wires
+    the event and always removes the cleanup afterward, so a completed run
+    leaves no handler behind.
 
     On the signal path the loop cannot resume to act on the abort before the
     process exits, so the cleanup kills any live exec-spawned group synchronously
@@ -88,8 +86,8 @@ async def run_with_signal_abort[T](
     the loop does keep running.
 
     Args:
-        execute: An async callable that receives an abort event and returns the
-            run result.
+        execute: An async callable that receives the abort event, to hand the
+            in-flight bench, and returns the run result.
 
     Returns:
         The value returned by ``execute``.

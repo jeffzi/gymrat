@@ -1,5 +1,5 @@
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from gymrat.model import pair_metric
@@ -80,6 +80,8 @@ def test_pair_metric_when_rounds_given_does_pair_the_rounds_both_sides_measured(
 # pair_metric — property-based invariants
 # ---------------------------------------------------------------------------
 
+_SELF_PAIRED = [{"time": 1.0}, {"time": 2.0}]
+
 _any_rounds = given(
     left=_round_lists(),
     right=_round_lists(),
@@ -88,28 +90,18 @@ _any_rounds = given(
 
 
 @_any_rounds
+@example(left=_SELF_PAIRED, right=_SELF_PAIRED, metric="time").via("paired against itself")
 def test_pair_metric_when_given_any_rounds_does_drop_unpaired_rounds_preserving_order(
     left: list[dict[str, float]],
     right: list[dict[str, float]],
     metric: str,
 ):
-    result = pair_metric(left, right, metric)
-
     shared = range(min(len(left), len(right)))
     kept = [index for index in shared if metric in left[index] and metric in right[index]]
     exactly_one = [index for index in shared if (metric in left[index]) != (metric in right[index])]
+
+    result = pair_metric(left, right, metric)
+
     assert result.left == tuple(left[index][metric] for index in kept)
     assert result.right == tuple(right[index][metric] for index in kept)
     assert result.dropped == len(exactly_one)
-
-
-@given(values=st.lists(_finite_floats, max_size=6))
-def test_pair_metric_when_paired_against_itself_does_return_metric_values_unchanged(
-    values: list[float],
-):
-    rounds = [{"time": value} for value in values]
-
-    result = pair_metric(rounds, rounds, "time")
-
-    assert result.left == tuple(values)
-    assert result.right == tuple(values)

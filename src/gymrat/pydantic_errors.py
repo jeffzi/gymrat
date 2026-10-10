@@ -1,14 +1,10 @@
 """Shared helpers for translating pydantic ``ErrorDetails`` into gymrat-worded problems.
 
-Both the config-file schema (``config.py``) and the session-log schema
-(``session/records.py``) validate with pydantic and need to render the
-same things from a pydantic ``ValidationError``: a dotted location string, a
+Every schema gymrat validates with pydantic needs to render the same things
+from a pydantic ``ValidationError``: a dotted location string, a
 list pruned of parent errors whose only fault is that a child under them also
 failed, and the expected-shape phrase a pydantic error's ``type`` and ``ctx``
 imply.
-
-It also holds :func:`coerce_integer`, the boundary coercion both schemas apply
-before strict integer validation.
 """
 
 import json
@@ -46,24 +42,6 @@ def _rejects_blank(error_type: str, ctx: dict[str, object]) -> bool:
     if error_type == "string_too_short":
         return ctx.get("min_length") == 1
     return error_type == "string_pattern_mismatch" and ctx.get("pattern") == NON_BLANK_PATTERN
-
-
-def coerce_integer(value: object) -> object:
-    """Fold an integral float into ``int`` so it satisfies strict integer validation.
-
-    Only the fold happens here; accepting or rejecting the value stays the
-    model's job.
-
-    Args:
-        value: The value to coerce.
-
-    Returns:
-        The coerced ``int`` when *value* is an integral float, otherwise *value*
-        unchanged.
-    """
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return value
 
 
 def _needs_quoting(part: str) -> bool:
