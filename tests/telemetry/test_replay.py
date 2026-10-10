@@ -33,7 +33,7 @@ from tests.session.records._fixtures import (
     session_record,
 )
 from tests.session.records._wire import with_raw_number
-from tests.supervisor._fixtures import make_prompt, noop_observer
+from tests.supervisor._fixtures import make_prompt
 from tests.telemetry._fixtures import (
     memory_tracing,
     session_traceparent,
@@ -802,9 +802,7 @@ def test_replay_session_when_launch_traced_live_does_match_replayed_session_and_
     write_records_log(session_log, [header])
     write_supervisor_log(sup_log, [launch])
     with memory_tracing(SESSION_ID) as live_exporter:
-        _, _, state = setup_tracing(
-            launch, branch=header.branch, prompt=make_prompt(), reporter_observer=noop_observer()
-        )
+        _, _, state = setup_tracing(launch, branch=header.branch, prompt=make_prompt())
         finalize_tracing(state, None)
 
     replay_spans = _replay(session_log, sup_log)

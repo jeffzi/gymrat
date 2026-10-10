@@ -8,10 +8,11 @@ of the CLI package.
 
 import asyncio
 import contextlib
+import errno
 import itertools
 import os
 import subprocess
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Generator, Iterator
 from pathlib import Path
 from unittest.mock import create_autospec
 
@@ -23,8 +24,8 @@ from gymrat.command_run import CommandTrace, command_origin, with_repo_lock
 from gymrat.errors import GymratError
 from gymrat.git import run_git
 from gymrat.loop.stop_condition import LoopStopError
-from gymrat.session.lock import LockContentionError, is_held
-from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
+from gymrat.session.lock import LockContentionError, ReleaseLock, acquire_lock, is_held
+from gymrat.session.paths import lockfile_path, repo_root, session_dir, session_jsonl_path
 from gymrat.session.records import CommandRecord, SessionRecord, record_event
 from gymrat.session.schema import CommandReason
 from gymrat.session.store import session_header
@@ -32,6 +33,7 @@ from gymrat.telemetry.command_span import command_attributes
 from gymrat.telemetry.provider import export_failed, span_id_of, trace_id_of
 from tests._imports import loaded_under, modules_imported_by
 from tests._lock import hold_lock, remove_lock_files
+from tests._mode_bits import needs_mode_bits
 from tests.session.records._fixtures import (
     FRESH_SESSION_ID,
     append_records,
@@ -47,6 +49,7 @@ from tests.session.records._fixtures import (
 )
 from tests.telemetry._collector import otlp_collector
 from tests.telemetry._fixtures import (
+    arm_placeholder_endpoint,
     hide_otlp_exporter,
     memory_tracing,
     span_by_name,
@@ -131,10 +134,44 @@ async def test_with_repo_lock_when_inside_repo_does_scope_the_lock_to_the_body(
     assert not is_held(lock_path)
 
 
-async def test_with_repo_lock_when_no_session_log_does_not_create_one(repo: str):
+def _session_log_text(root: str) -> str | None:
+    """Return the text of ``root``'s session log, or ``None`` when it does not exist."""
+    jsonl_path = Path(session_jsonl_path(root))
+    return jsonl_path.read_text(encoding="utf-8") if jsonl_path.exists() else None
+
+
+def _write_empty_session_log(root: str) -> None:
+    """Create ``root``'s session log as an empty file."""
+    jsonl_path = Path(session_jsonl_path(root))
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    jsonl_path.write_text("", encoding="utf-8")
+
+
+@pytest.mark.parametrize("traced", [False, True], ids=["untraced", "traced"])
+@pytest.mark.parametrize(
+    ("prepare", "expected"),
+    [
+        pytest.param(None, None, id="missing"),
+        pytest.param(_write_empty_session_log, "", id="empty"),
+    ],
+)
+async def test_with_repo_lock_when_session_log_missing_or_empty_does_leave_it_untouched_without_a_warning(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    prepare: Callable[[str], None] | None,
+    expected: str | None,
+    traced: bool,
+):
+    if prepare is not None:
+        prepare(repo)
+    if traced:
+        arm_placeholder_endpoint(monkeypatch)
+
     await with_repo_lock("compare", _ok_body)
 
-    assert not await asyncio.to_thread(Path(session_jsonl_path(repo)).exists)
+    assert (_session_log_text(repo), capsys.readouterr().err) == (expected, "")
 
 
 async def test_with_repo_lock_when_outside_repo_does_run_body_without_a_lock_or_a_record(
@@ -471,6 +508,63 @@ async def test_with_repo_lock_when_recording_fails_does_keep_the_body_outcome_wi
     assert not is_held(lockfile_path(repo_root()))
 
 
+@contextlib.contextmanager
+def _searchable_on_exit(directory: Path) -> Generator[None]:
+    """Give ``directory`` its search bit back on exit, whatever the body did to it."""
+    try:
+        yield
+    finally:
+        directory.chmod(0o700)
+
+
+def _return_result() -> str:
+    return "result"
+
+
+def _raise_failure() -> str:
+    msg = "body failed"
+    raise RuntimeError(msg)
+
+
+#: How a body ends once it has done its damage: the outcome ``with_repo_lock`` must keep.
+BODY_ENDINGS = [
+    pytest.param(_return_result, None, ["result"], id="body-returns"),
+    pytest.param(_raise_failure, RuntimeError, [], id="body-raises"),
+]
+
+
+@needs_mode_bits
+@pytest.mark.parametrize(("ending", "raised", "returned"), BODY_ENDINGS)
+async def test_with_repo_lock_when_session_log_size_unreadable_does_keep_the_body_outcome_with_a_warning(
+    repo: str,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    ending: Callable[[], str],
+    raised: type[BaseException] | None,
+    returned: list[str],
+):
+    seeded_session(repo)
+    directory = Path(session_dir(repo_root()))
+
+    async def body(trace: CommandTrace) -> str:
+        await asyncio.to_thread(directory.chmod, 0o600)
+        return ending()
+
+    outcome: list[str] = []
+
+    with (
+        _searchable_on_exit(directory),
+        pytest.raises(raised) if raised is not None else contextlib.nullcontext(),
+    ):
+        outcome.append(await with_repo_lock("measure", body))
+
+    warnings = capsys.readouterr().err.splitlines()
+    assert outcome == returned
+    assert len(warnings) == 1
+    assert warnings[0].startswith("failed to append command record: ")
+    assert os.strerror(errno.EACCES) in warnings[0]
+
+
 # ---------------------------------------------------------------------------
 # with_repo_lock — explicit root
 # ---------------------------------------------------------------------------
@@ -651,6 +745,77 @@ async def test_with_repo_lock_when_tracing_enabled_does_flush_before_return(repo
     assert [s.name for s in spans_by_prefix(spans_before_exit, "gymrat.command.")] == [
         "gymrat.command.measure"
     ]
+
+
+def _readable_once_locked(monkeypatch: pytest.MonkeyPatch, jsonl_path: Path) -> None:
+    """Deny reading ``jsonl_path`` until ``with_repo_lock`` takes the repository lock."""
+    jsonl_path.chmod(0o200)
+
+    def restore_then_acquire(lock_path: str, command: str) -> ReleaseLock:
+        jsonl_path.chmod(0o600)
+        return acquire_lock(lock_path, command)
+
+    monkeypatch.setattr(
+        "gymrat.command_run.acquire_lock",
+        create_autospec(acquire_lock, side_effect=restore_then_acquire),
+    )
+
+
+@needs_mode_bits
+async def test_with_repo_lock_when_session_log_unreadable_until_locked_does_warn_and_emit_no_command_span(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    header = seeded_session(repo)
+    _readable_once_locked(monkeypatch, Path(session_jsonl_path(repo_root())))
+
+    with memory_tracing(header.session_id) as exporter:
+        result = await with_repo_lock("measure", _ok_body)
+
+    warnings = capsys.readouterr().err.splitlines()
+    assert result == "ok"
+    assert spans_by_prefix(exporter.get_finished_spans(), "gymrat.command.") == []
+    assert len(warnings) == 1
+    assert warnings[0].startswith("failed to emit command span: ")
+    assert os.strerror(errno.EACCES) in warnings[0]
+
+
+def _append_garbage_line(root: str) -> None:
+    """Append a complete line that is not a session record to ``root``'s session log."""
+    with Path(session_jsonl_path(root)).open("a", encoding="utf-8") as log:
+        log.write("banana\n")
+
+
+@pytest.mark.parametrize(("ending", "raised", "returned"), BODY_ENDINGS)
+async def test_with_repo_lock_when_session_log_unparsable_after_body_does_keep_the_body_outcome_with_a_warning(
+    repo: str,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    ending: Callable[[], str],
+    raised: type[BaseException] | None,
+    returned: list[str],
+):
+    header = seeded_session(repo)
+    garbage_at = f"{session_jsonl_path(repo_root())}:2"
+
+    async def body(trace: CommandTrace) -> str:
+        _append_garbage_line(repo_root())
+        return ending()
+
+    outcome: list[str] = []
+
+    with (
+        memory_tracing(header.session_id),
+        pytest.raises(raised) if raised is not None else contextlib.nullcontext(),
+    ):
+        outcome.append(await with_repo_lock("measure", body))
+
+    warnings = capsys.readouterr().err.splitlines()
+    assert outcome == returned
+    assert len(warnings) == 1
+    assert warnings[0].startswith("failed to emit command span: ")
+    assert garbage_at in warnings[0]
 
 
 # ---------------------------------------------------------------------------

@@ -115,15 +115,22 @@ def is_held(lock_path: str) -> bool:
 
     Returns:
         ``True`` when acquisition fails because another party holds the lock;
-        ``False`` when it succeeds or the lock file cannot be opened at all.
+        ``False`` when it succeeds.
+
+    Raises:
+        GymratError: When the OS lock file cannot be opened, so the probe
+            cannot tell whether the lock is held.
     """
-    probe = FileLock(_os_lock_file(lock_path), timeout=0, preserve_lock_file=True)
+    os_lock_path = _os_lock_file(lock_path)
+    probe = FileLock(os_lock_path, timeout=0, preserve_lock_file=True)
     try:
         probe.acquire()
     except Timeout:
         return True
-    except OSError:
-        return False
+    except PermissionError as error:
+        _raise_permission_error(os_lock_path, error)
+    except OSError as error:
+        raise GymratError(_open_failure_message(os_lock_path, error)) from error
     else:
         probe.release()
         return False
@@ -161,8 +168,8 @@ def _acquire_publish_lock(pub_lock_path: str) -> FileLock:
         The publish lock, acquired when the wait succeeded.
 
     Raises:
-        GymratError: When the publish lock file cannot be opened due to
-            permissions.
+        GymratError: When the publish lock file cannot be opened, with a
+            platform hint when the cause is permissions.
     """
     pub_lock = FileLock(pub_lock_path, timeout=_PUBLISH_LOCK_TIMEOUT, preserve_lock_file=True)
     try:
@@ -171,6 +178,8 @@ def _acquire_publish_lock(pub_lock_path: str) -> FileLock:
         pass
     except PermissionError as error:
         _raise_permission_error(pub_lock_path, error)
+    except OSError as error:
+        raise GymratError(_open_failure_message(pub_lock_path, error)) from error
     return pub_lock
 
 
@@ -191,7 +200,8 @@ def _acquire_os_lock(
 
     Raises:
         LockContentionError: When another holder keeps the lock for the whole wait.
-        GymratError: When the OS lock file cannot be opened due to permissions.
+        GymratError: When the OS lock file cannot be opened, with a platform
+            hint when the cause is permissions.
     """
     lock = FileLock(
         os_lock_path,
@@ -205,6 +215,8 @@ def _acquire_os_lock(
         _raise_contention_error(lock_path)
     except PermissionError as error:
         _raise_permission_error(os_lock_path, error)
+    except OSError as error:
+        raise GymratError(_open_failure_message(os_lock_path, error)) from error
     return lock
 
 
@@ -231,8 +243,8 @@ def acquire_lock(
     Raises:
         LockContentionError: When another process (or the same process) already
             holds the lock.
-        GymratError: When the lock file or its sibling publish lock file cannot
-            be opened due to permissions.
+        GymratError: When the OS lock file or its sibling publish lock file
+            cannot be opened, with a platform hint when the cause is permissions.
     """
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -290,6 +302,10 @@ def _raise_contention_error(lock_path: str) -> NoReturn:
     raise LockContentionError(message, hint=_LIVE_HOLDER_HINT)
 
 
+def _open_failure_message(os_lock_path: str, error: OSError) -> str:
+    return f"Lock file {os_lock_path} could not be opened: {error!s}"
+
+
 def _raise_permission_error(os_lock_path: str, error: OSError) -> NoReturn:
     """Reframe a permission failure into a ``GymratError`` with platform-gated hints."""
     if sys.platform == "win32":
@@ -300,5 +316,4 @@ def _raise_permission_error(os_lock_path: str, error: OSError) -> NoReturn:
     else:
         hint = f"It belongs to another user. Remove {os_lock_path} yourself, then rerun."
 
-    message = f"Lock file {os_lock_path} could not be opened: {error!s}"
-    raise GymratError(message, hint=hint) from error
+    raise GymratError(_open_failure_message(os_lock_path, error), hint=hint) from error

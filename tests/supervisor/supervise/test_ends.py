@@ -327,7 +327,7 @@ def _deny_session_dir(_root: str, access: _SessionDirAccess) -> None:
             _tool_end(),
             "Cannot inspect session log {log}",
             id="stat-denied-at-tool-end-scan",
-            marks=[needs_mode_bits, pytest.mark.filterwarnings("default::RuntimeWarning")],
+            marks=needs_mode_bits,
         ),
     ],
 )
@@ -712,7 +712,7 @@ async def test_supervise_when_end_pending_at_injected_turn_end_with_reply_outsta
 
 
 # ---------------------------------------------------------------------------
-# a failing turn-end task
+# a failing lock probe
 # ---------------------------------------------------------------------------
 
 _PROBE_FAILURE = "lock probe broke"
@@ -720,37 +720,56 @@ _PROBE_FAILURE = "lock probe broke"
 
 @dataclass(slots=True)
 class _BreakableLockProbe:
-    """A repository lock probe that reports the lock held until broken, then raises."""
+    """A repository lock probe that reports the lock held until broken, then raises.
+
+    A probe that fails once raises on its first probe only and then reports the
+    lock held for good, so only the first probe site to reach it can end the
+    session with the failure.
+    """
 
     broken: bool
+    fails_once: bool = False
 
     def is_held(self) -> bool:
         if self.broken:
+            self.broken = not self.fails_once
             raise RuntimeError(_PROBE_FAILURE)
         return True
 
     def break_on_waiting(self, event: SessionEvent) -> None:
+        if self.fails_once:
+            return
         if isinstance(event, FollowUpEvent) and event.action == "waiting":
             self.broken = True
 
 
 @dataclass(frozen=True, slots=True)
-class _FailingTaskCase:
-    """A script whose turn end runs a task into a broken lock probe, and when the probe breaks."""
+class _FailingProbeCase:
+    """A script that runs one probe site into a broken lock probe, and when the probe breaks."""
 
     script: Callable[[str], list[MockStep]]
     broken_at_launch: bool
+    fails_once: bool = False
 
 
 @pytest.mark.parametrize(
     "case",
     [
         pytest.param(
-            _FailingTaskCase(script=lambda _root: [TurnEndStep()], broken_at_launch=True),
+            _FailingProbeCase(
+                script=lambda root: [append_step(root, _FAILED_HOOK), _tool_end()],
+                broken_at_launch=True,
+            ),
+            id="tool-end-scan",
+        ),
+        pytest.param(
+            _FailingProbeCase(
+                script=lambda _root: [TurnEndStep()], broken_at_launch=True, fails_once=True
+            ),
             id="settle",
         ),
         pytest.param(
-            _FailingTaskCase(
+            _FailingProbeCase(
                 script=lambda root: [append_step(root, _FAILED_HOOK), _tool_end(), TurnEndStep()],
                 broken_at_launch=False,
             ),
@@ -758,10 +777,10 @@ class _FailingTaskCase:
         ),
     ],
 )
-async def test_supervise_when_turn_end_task_raises_does_end_promptly_with_error_outcome(
-    root: str, case: _FailingTaskCase
+async def test_supervise_when_lock_probe_raises_does_end_promptly_with_error_outcome(
+    root: str, case: _FailingProbeCase
 ):
-    probe = _BreakableLockProbe(broken=case.broken_at_launch)
+    probe = _BreakableLockProbe(broken=case.broken_at_launch, fails_once=case.fails_once)
     driver = create_mock_driver(case.script(root))
 
     result = await asyncio.wait_for(

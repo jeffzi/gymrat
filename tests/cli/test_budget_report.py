@@ -27,6 +27,7 @@ from gymrat.cli.console import apply_command_flags
 from gymrat.cli.options import OutputFormat
 from gymrat.cli.run_setup import SharedFlags
 from gymrat.clock import now_ms
+from gymrat.errors import GymratError
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.types import DEFAULT_REPORT_OPTIONS, ReportOptions
 from gymrat.session.budget import Budget
@@ -34,7 +35,7 @@ from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.session.records import IterationRecord
 from gymrat.session.store import read_session_records
 from tests._lock import held_supervise_lock
-from tests.session._budget import write_budget_file
+from tests.session._budget import LIVE_BUDGET, block_supervise_lock, write_budget_file
 from tests.session.records._fixtures import iteration_record, session_record, write_session_log
 
 #: The last full measurement took 48 minutes, so 24 minutes per side.
@@ -275,6 +276,24 @@ def test_budget_helper_when_a_lookup_fails_unexpectedly_does_propagate(
 
     with pytest.raises(RuntimeError, match="patched wrong"):
         helper()
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        pytest.param(lambda: _emit("text"), id="emit-report"),
+        pytest.param(_warn, id="warn-duration"),
+    ],
+)
+def test_budget_helper_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(
+    helper: Callable[[], None], repo: str
+):
+    _seed_session(repo, budget=LIVE_BUDGET)
+
+    with block_supervise_lock(repo) as blocker, pytest.raises(GymratError) as exc:
+        helper()
+
+    assert str(exc.value).startswith(f"Lock file {blocker} could not be opened: ")
 
 
 @pytest.mark.parametrize(

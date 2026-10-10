@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import CommandOrigin, CommandReason
 
 import typer
@@ -133,6 +132,8 @@ async def with_repo_lock[T](
     With an OTLP endpoint set, the appended record is also exported as a
     command span. Tracing is configured only then, for the session whose log
     holds the record, so a body that opens a new session is traced under it.
+    A session log that cannot be read before the body, or read and parsed
+    after it, warns to stderr and emits no span.
 
     Args:
         command: The command name recorded in the :class:`CommandRecord`.
@@ -188,7 +189,7 @@ async def with_repo_lock[T](
                 reason=reason,
                 elapsed_ms=elapsed_ms,
             )
-            if appended is not None:
+            if appended is not None and pre_body_lines is not None:
                 try:
                     _, tracing_active = _maybe_configure_tracing(root)
                     if tracing_active:
@@ -223,7 +224,8 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
 ) -> CommandRecord | None:
     """Append a :class:`CommandRecord` when the session log exists and is non-empty.
 
-    A failure to build or append the record warns to stderr instead of raising.
+    A failure to read the log's size, or to build or append the record, warns
+    to stderr instead of raising.
 
     Args:
         jsonl: The session log to append to.
@@ -237,10 +239,9 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
     Returns:
         The appended record, or ``None`` when nothing was appended.
     """
-    if _jsonl_is_empty(jsonl):
-        return None
-
     try:
+        if _jsonl_is_empty(jsonl):
+            return None
         record = CommandRecord(
             type="command",
             at=_clock.now_ns(),
@@ -265,12 +266,14 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
 # ---------------------------------------------------------------------------
 
 
-def _pre_body_log(root: str, jsonl: str) -> tuple[str, int]:
+def _pre_body_log(root: str, jsonl: str) -> tuple[str, int | None]:
     """Read what the command span needs from the session log before the body runs.
 
     The span's events are the records the body appends, so the line count must
     be taken before the body runs. Without an endpoint no span is emitted and
-    the log is not read.
+    the log is not read. A log that exists but cannot be read warns to stderr:
+    without its line count the span cannot tell the body's records apart, so
+    none is emitted.
 
     Args:
         root: The repository whose session header names the session.
@@ -278,12 +281,18 @@ def _pre_body_log(root: str, jsonl: str) -> tuple[str, int]:
 
     Returns:
         The session id ``jsonl`` belongs to (empty when there is none, or no
-        endpoint) and its line count (``0`` without an endpoint).
+        endpoint) and its line count: ``0`` without an endpoint or a log,
+        ``None`` when the log could not be read.
     """
     if otlp_endpoint_from_env() is None:
         return "", 0
     header = session_header(root)
-    return (header.session_id if header is not None else ""), _count_lines(jsonl)
+    session_id = header.session_id if header is not None else ""
+    try:
+        return session_id, _count_lines(jsonl)
+    except OSError as error:
+        warn_to_stderr(f"failed to emit command span: {error}")
+        return session_id, None
 
 
 def _maybe_configure_tracing(root: str) -> tuple[str, bool]:
@@ -321,7 +330,7 @@ def _jsonl_is_empty(jsonl_path: str) -> bool:
     """True when the session log doesn't exist or has no content yet."""
     try:
         return Path(jsonl_path).stat().st_size == 0
-    except OSError:
+    except FileNotFoundError:
         return True
 
 
@@ -329,7 +338,7 @@ def _count_lines(jsonl_path: str) -> int:
     """Count newline-terminated lines in ``jsonl_path``, 0 if absent."""
     try:
         data = Path(jsonl_path).read_bytes()
-    except OSError:
+    except FileNotFoundError:
         return 0
     return data.count(b"\n")
 
@@ -371,7 +380,7 @@ def _emit_command_span(
         existing_session_span,
     )
 
-    records = _safe_read_records(jsonl)
+    records = read_records(jsonl)
     if not records or not isinstance(records[0], SessionRecord):
         return
     session_id = records[0].session_id
@@ -394,11 +403,3 @@ def _emit_command_span(
         add_record_events(span, records[first_body_line:-1])
 
     flush_tracing()
-
-
-def _safe_read_records(jsonl_path: str) -> list[SessionLogRecord]:
-    """Read records from the session log, returning empty on failure."""
-    try:
-        return read_records(jsonl_path)
-    except GymratError:
-        return []

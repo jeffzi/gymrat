@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
+from unittest.mock import create_autospec
 
 import pytest
+from opentelemetry.sdk.trace import Span as SdkSpan
 
 from gymrat.supervisor.events import (
     CapEvent,
@@ -19,11 +21,20 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 from gymrat.telemetry.provider import start_span
-from gymrat.telemetry.run_spans import TracingState, create_run_span_observer, setup_tracing
+from gymrat.telemetry.run_spans import (
+    TracingState,
+    create_run_span_observer,
+    finalize_tracing,
+    setup_tracing,
+)
+from gymrat.utils import ENDPOINT_ENV
 from tests._logging import unhandled_logging
 from tests.session.records._fixtures import SESSION_ID
-from tests.supervisor._fixtures import make_launch, make_prompt, make_turn_end, noop_observer
+from tests.supervisor._fixtures import make_launch, make_prompt, make_turn_end
 from tests.telemetry._fixtures import disable_otel_sdk, memory_tracing
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 SESSION = "test-tracing-observer"
 
@@ -128,7 +139,7 @@ def test_create_run_span_observer_when_event_observed_does_mirror_only_the_run_m
 
 
 # ---------------------------------------------------------------------------
-# Error suppression
+# failures reach the warn sink
 # ---------------------------------------------------------------------------
 
 
@@ -138,18 +149,44 @@ class _BrokenSpan:
         raise RuntimeError(msg)
 
 
-def test_create_run_span_observer_when_mirror_fails_does_warn_instead_of_raising(
+def test_create_run_span_observer_when_mirror_fails_does_send_the_failure_to_the_sink(
     capsys: pytest.CaptureFixture[str],
 ):
+    messages: list[str] = []
     # pyrefly: ignore[bad-argument-type] -- _BrokenSpan stands in for Span with add_event only
-    observer = create_run_span_observer(_BrokenSpan())
+    observer = create_run_span_observer(_BrokenSpan(), warn=messages.append)
     event = make_turn_end(at=8_000_000_000, text="done", cost_usd=0.05)
 
-    with unhandled_logging(), pytest.warns(RuntimeWarning, match="boom") as caught:
+    with unhandled_logging():
         observer(event)
 
-    assert len(caught) == 1
+    assert ["boom" in message for message in messages] == [True]
     assert capsys.readouterr().err == ""
+
+
+def test_setup_tracing_when_run_span_mirror_fails_does_send_the_failure_to_the_sink(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        SdkSpan,
+        "add_event",
+        create_autospec(SdkSpan.add_event, side_effect=RuntimeError("mirror broke")),
+    )
+    messages: list[str] = []
+    with memory_tracing(SESSION_ID):
+        _, observer, state = setup_tracing(
+            make_launch(at=1, head_sha="a" * 40, max_minutes=10, session_id=SESSION_ID),
+            branch=f"gymrat/{SESSION_ID}",
+            prompt=make_prompt(),
+            warn=messages.append,
+        )
+        assert observer is not None
+
+        with unhandled_logging():
+            observer(make_turn_end(at=8_000_000_000, text="done", cost_usd=0.05))
+        finalize_tracing(state, None)
+
+    assert ["mirror broke" in message for message in messages] == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -157,23 +194,32 @@ def test_create_run_span_observer_when_mirror_fails_does_warn_instead_of_raising
 # ---------------------------------------------------------------------------
 
 
+def _no_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave no OTLP endpoint set, so tracing is never asked for."""
+    monkeypatch.delenv(ENDPOINT_ENV, raising=False)
+
+
 @pytest.mark.parametrize(
-    "resumed",
-    [pytest.param(False, id="opening-launch"), pytest.param(True, id="resumed-launch")],
+    ("turn_tracing_off", "resumed"),
+    [
+        pytest.param(_no_endpoint, False, id="no-endpoint"),
+        pytest.param(disable_otel_sdk, False, id="sdk-disabled-opening-launch"),
+        pytest.param(disable_otel_sdk, True, id="sdk-disabled-resumed-launch"),
+    ],
 )
-def test_setup_tracing_when_sdk_disabled_and_endpoint_set_does_hold_no_span(
-    monkeypatch: pytest.MonkeyPatch, resumed: bool
+def test_setup_tracing_when_no_tracer_does_return_no_observer_and_hold_no_span(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_tracing_off: Callable[[pytest.MonkeyPatch], None],
+    resumed: bool,
 ):
-    disable_otel_sdk(monkeypatch)
+    turn_tracing_off(monkeypatch)
     prompt = make_prompt()
-    observer = noop_observer()
 
     traced = setup_tracing(
         make_launch(at=1, head_sha="a" * 40, max_minutes=10, session_id=SESSION_ID),
         branch=f"gymrat/{SESSION_ID}",
         prompt=prompt,
-        reporter_observer=observer,
         resumed=resumed,
     )
 
-    assert traced == (prompt, observer, TracingState())
+    assert traced == (prompt, None, TracingState())

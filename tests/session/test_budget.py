@@ -7,14 +7,17 @@ temp-file-and-replace so a concurrent reader never sees a partial file.
 not passed, and the supervise lock for that root is held; otherwise it returns
 ``None``.  ``remaining_ms`` reports milliseconds left against a supplied
 current time, clamped at zero.  ``clear_budget`` removes the file and succeeds
-when the file is already gone.
+when the file is already gone; when the OS refuses the removal it warns and
+returns.  A supervise lock that cannot be probed raises out of ``read_budget``.
 """
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from gymrat.errors import GymratError
 from gymrat.session.budget import (
     Budget,
     DurationEstimate,
@@ -25,6 +28,7 @@ from gymrat.session.budget import (
 )
 from gymrat.session.paths import budget_path
 from gymrat.session.records import SessionLogRecord
+from tests.session._budget import block_supervise_lock
 from tests.session.records._fixtures import baseline_record, iteration_record
 
 _FAR_FUTURE_DEADLINE_MS = 999_999_999.0
@@ -127,6 +131,24 @@ def test_read_budget_when_file_not_a_budget_does_return_none(root: str, contents
     assert result is None
 
 
+@pytest.fixture
+def blocked_supervise_lock(root: str) -> Iterator[str]:
+    """Put a directory where the supervise lock's OS lock file belongs, yielding its path."""
+    with block_supervise_lock(root) as blocker:
+        yield blocker
+
+
+def test_read_budget_when_supervise_lock_cannot_be_probed_does_raise(
+    root: str, blocked_supervise_lock: str
+):
+    write_budget(root, _make_budget(deadline_ms=_FAR_FUTURE_DEADLINE_MS))
+
+    with pytest.raises(GymratError) as caught:
+        read_budget(root, now_ms=0.0)
+
+    assert str(caught.value).startswith(f"Lock file {blocked_supervise_lock} could not be opened: ")
+
+
 # ---------------------------------------------------------------------------
 # clear_budget
 # ---------------------------------------------------------------------------
@@ -140,8 +162,51 @@ def test_clear_budget_when_file_exists_does_remove_it(root: str):
     assert not _budget_file(root).exists()
 
 
-def test_clear_budget_when_file_absent_does_not_raise(root: str):
+def test_clear_budget_when_file_absent_does_succeed_silently(root: str):
+    warnings: list[str] = []
+
+    clear_budget(root, warn=warnings.append)
+
+    assert warnings == []
+
+
+def _unlink_refusal(path: Path) -> str:
+    """The OS's description of why unlinking ``path`` fails."""
+    try:
+        path.unlink()
+    except OSError as error:
+        return error.strerror or str(error)
+    msg = f"expected unlinking {path} to fail"
+    raise AssertionError(msg)
+
+
+def test_clear_budget_when_os_refuses_removal_does_warn_naming_file_and_error(root: str):
+    budget_file = _budget_file(root)
+    budget_file.mkdir()
+    refusal = _unlink_refusal(budget_file)
+    warnings: list[str] = []
+
+    clear_budget(root, warn=warnings.append)
+
+    assert len(warnings) == 1
+    assert warnings[0].startswith(
+        f"warning: could not remove the budget file {budget_path(root)}: "
+    )
+    assert refusal in warnings[0]
+
+
+def test_clear_budget_when_os_refuses_removal_without_a_sink_does_warn_on_stderr(
+    root: str, capsys: pytest.CaptureFixture[str]
+):
+    _budget_file(root).mkdir()
+
     clear_budget(root)
+
+    warnings = capsys.readouterr().err.splitlines()
+    assert len(warnings) == 1
+    assert warnings[0].startswith(
+        f"warning: could not remove the budget file {budget_path(root)}: "
+    )
 
 
 # ---------------------------------------------------------------------------

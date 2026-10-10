@@ -50,6 +50,7 @@ from tests.supervisor._fixtures import (
     collecting_observer,
     create_mock_driver,
     event_log_markers,
+    events_log_path,
     events_of,
     make_context,
     make_launch,
@@ -383,36 +384,66 @@ async def test_supervise_when_outcome_rejects_does_propagate_rejection(root: str
 
 
 async def test_supervise_when_observer_raises_does_still_fire_spend_cap(root: str):
+    messages: list[str] = []
     observer_message = "observer boom"
     throwing = raising_observer(observer_message, on=UsageUpdateEvent)
     driver = create_mock_driver([CostStep(cost_usd=0.5), TurnEndStep(cost_usd=0.5)])
 
-    with pytest.warns(RuntimeWarning, match=observer_message):
-        result = await run_supervised(root, driver, max_usd=0.1, observer=throwing)
+    result = await run_supervised(
+        root, driver, max_usd=0.1, observer=throwing, warn=messages.append
+    )
 
     assert result.ended_by == "spend-cap"
+    assert {observer_message in message for message in messages} == {True}
 
 
 async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
     root: str,
 ):
+    messages: list[str] = []
     wrapper, aborted_at = _abort_bound_driver()
     failing_observer = raising_observer("observer explodes on cap", on=CapEvent)
 
-    with pytest.warns(RuntimeWarning, match="observer explodes on cap"):
-        result = await asyncio.wait_for(
-            run_supervised(
-                root,
-                wrapper,
-                max_minutes=0.001,
-                observer=failing_observer,
-                grace_ms=100,
-            ),
-            timeout=2.0,
-        )
+    result = await asyncio.wait_for(
+        run_supervised(
+            root,
+            wrapper,
+            max_minutes=0.001,
+            observer=failing_observer,
+            grace_ms=100,
+            warn=messages.append,
+        ),
+        timeout=2.0,
+    )
 
     assert len(aborted_at) == 1
     assert result.ended_by == "wall-clock"
+    assert ["observer explodes on cap" in message for message in messages] == [True]
+
+
+async def test_supervise_when_event_log_writes_fail_does_report_every_failed_write(root: str):
+    messages: list[str] = []
+    probe = collecting_observer()
+    log_path = events_log_path(root)
+    observed_at_break: list[int] = []
+
+    async def break_event_log() -> None:
+        log_path.unlink()
+        log_path.mkdir()
+        observed_at_break.append(len(probe.events))
+
+    driver = create_mock_driver([
+        CostStep(cost_usd=0.05),
+        ActionStep(action=break_event_log),
+        CostStep(cost_usd=0.1),
+        CostStep(cost_usd=0.15),
+    ])
+
+    await run_supervised(root, driver, observer=probe.observer, warn=messages.append)
+
+    failed_writes = len(probe.events) - observed_at_break[0]
+    assert failed_writes >= 2
+    assert [str(log_path) in message for message in messages] == [True] * failed_writes
 
 
 # ---------------------------------------------------------------------------

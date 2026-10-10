@@ -9,7 +9,7 @@ them.
 """
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -27,7 +27,7 @@ from tests.cli._runner import (
     runner,
 )
 from tests.config._toml import EXISTING_CONFIG, write_raw
-from tests.session._budget import install_budget
+from tests.session._budget import block_supervise_lock, install_budget, write_budget_file
 from tests.session.records._fixtures import log_records
 
 LIVE_REFUSAL = "a supervised run is live; init is not part of the loop"
@@ -48,6 +48,14 @@ def live_repo(repo: str, monkeypatch: pytest.MonkeyPatch) -> str:
     """A chdir'd scratch repository with a live supervised-run budget."""
     install_budget(repo, monkeypatch)
     return repo
+
+
+@pytest.fixture
+def blocked_supervise_lock(repo: str) -> Iterator[str]:
+    """A live-budget repository whose supervise OS lock file is a directory, yielding its path."""
+    write_budget_file(repo)
+    with block_supervise_lock(repo) as blocker:
+        yield blocker
 
 
 def _written_artifacts(base: str) -> list[str]:
@@ -250,3 +258,16 @@ def test_init_when_run_from_experiment_worktree_during_live_run_does_refuse(
     assert _written_artifacts(live_repo) == []
     assert _written_artifacts(worktree) == []
     assert log_records(live_repo) == records_before
+
+
+def test_init_when_supervise_lock_cannot_be_opened_does_exit_two_without_writing(
+    repo: str, blocked_supervise_lock: str
+):
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
+
+    assert result.exit_code == 2
+    assert " ".join(strip_ansi(result.stderr).split()).startswith(
+        f"Error: Lock file {blocked_supervise_lock} could not be opened: "
+    )
+    assert result.stdout == ""
+    assert _written_artifacts(repo) == []

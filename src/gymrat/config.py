@@ -52,7 +52,7 @@ from gymrat.pydantic_errors import (
     drop_prefix_errors,
     phrase_for_error,
 )
-from gymrat.session.paths import repo_root
+from gymrat.session.paths import NotAGitRepositoryError, repo_root
 from gymrat.utils import LINE_TERMINATORS, coerce_integer, expected_got
 
 # ---------------------------------------------------------------------------
@@ -562,16 +562,23 @@ def find_implicit_base() -> str:
     """Return the anchor directory for the implicit ``gymrat.toml`` lookup.
 
     Inside a git repository the config lives at the repo root, so moving the cwd
-    into a subdirectory must not lose it. Outside a repository — or when git is
-    unavailable — the lookup falls back to the process cwd.
+    into a subdirectory must not lose it. Only git placing the cwd outside every
+    repository falls back to the process cwd: a git that declines to answer says
+    nothing about where the cwd sits, and anchoring there would silently read
+    the wrong config.
 
     Returns:
-        The git repository root, or the current working directory when no
-        repository is found.
+        The git repository root, or the current working directory when git
+        places it outside every repository.
+
+    Raises:
+        GymratError: When git declines to answer for the current working
+            directory (dubious ownership, an unreadable ``.git``, a git that
+            cannot run), carrying git's diagnostics.
     """
     try:
         return repo_root()
-    except GymratError:
+    except NotAGitRepositoryError:
         return str(Path.cwd())
 
 
@@ -781,6 +788,10 @@ def _resolve_config_source(
         (``None`` when no file applies), the parsed config (``None`` on fatal
         read/parse failure, an empty ``ConfigFile`` when the config source is
         blank), and any problems found.
+
+    Raises:
+        GymratError: When the implicit lookup runs and git declines to answer
+            for the current working directory.
     """
     explicit_config = flags.config
     if explicit_config is None:
@@ -836,7 +847,7 @@ def _resolve_runbook(
 
 
 def inspect_config(flags: CliFlags, base_dir: str | Path | None = None) -> ConfigInspection:
-    """Settle a benchless configuration, collecting every problem instead of raising.
+    """Settle a benchless configuration, collecting each config problem rather than raising it.
 
     Args:
         flags: Command-line overrides.
@@ -846,6 +857,10 @@ def inspect_config(flags: CliFlags, base_dir: str | Path | None = None) -> Confi
     Returns:
         A :class:`ConfigInspection` whose ``config`` and ``bench`` are populated
         only when no problems were found.
+
+    Raises:
+        GymratError: When ``base_dir`` is ``None``, no config file is named, and
+            git declines to answer for the current working directory.
     """
     problems = _collect_flag_problems(flags)
 
@@ -902,7 +917,8 @@ def resolve_benchless_config(
     Raises:
         GymratError: With the first problem :func:`inspect_config` collects, when
             a flag, env var, config file, cross-field check, or runbook fails to
-            validate.
+            validate, or when the implicit lookup finds git declining to answer
+            for the current working directory.
     """
     config, _ = _settle_or_raise(flags, base_dir)
     return config
@@ -922,8 +938,10 @@ def resolve_config(flags: CliFlags, base_dir: str | Path | None = None) -> Resol
         The fully settled :class:`ResolvedConfig` including ``bench``.
 
     Raises:
-        GymratError: With the first problem :func:`inspect_config` collects, or
-            when ``bench`` is missing from both flags and the config file.
+        GymratError: With the first problem :func:`inspect_config` collects,
+            when ``bench`` is missing from both flags and the config file, or
+            when the implicit lookup finds git declining to answer for the
+            current working directory.
     """
     config, bench = _settle_or_raise(flags, base_dir)
     if bench is None:

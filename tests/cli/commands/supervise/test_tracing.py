@@ -15,13 +15,16 @@ if TYPE_CHECKING:
 
     from opentelemetry.trace import SpanContext
 
+    from tests.cli.commands.supervise._seams import Seams
+
 import pytest
+from opentelemetry.sdk.trace import Span as SdkSpan
 from opentelemetry.trace import StatusCode
 
 from gymrat.config import SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.supervisor.driver import SessionPrompt
-from gymrat.supervisor.events import LaunchEvent
+from gymrat.supervisor.events import LaunchEvent, create_event_log_writer
 from gymrat.telemetry import provider
 from gymrat.telemetry.provider import export_failed, run_attributes, span_id_of
 from tests._cli import err_text
@@ -40,6 +43,7 @@ from tests.cli.supervise._fixtures import (
     make_supervision_result,
 )
 from tests.session.records._fixtures import SESSION_ID, session_header_of
+from tests.supervisor._fixtures import raising_observer
 from tests.telemetry._collector import otlp_collector
 from tests.telemetry._fixtures import (
     arm_placeholder_endpoint,
@@ -275,6 +279,64 @@ def test_supervise_when_tracing_enabled_and_previous_session_finalized_does_trac
     assert result.exit_code == 0, err_text(result)
     assert new_id != previous_id
     assert traced == [("gymrat.command.supervise", new_id), ("gymrat.run", new_id)]
+
+
+# ---------------------------------------------------------------------------
+# every warning a run component raises reaches the reporter, never raw stderr
+# ---------------------------------------------------------------------------
+
+_COMPONENT_WARNING = "component failure"
+
+
+def _supervisor_warns(_monkeypatch: pytest.MonkeyPatch, seams: Seams) -> None:
+    seams.supervise_hook = lambda call: call["warn"](_COMPONENT_WARNING)
+
+
+def _reporter_observer_raises(_monkeypatch: pytest.MonkeyPatch, seams: Seams) -> None:
+    seams.observer = raising_observer(_COMPONENT_WARNING)
+    seams.supervise_hook = lambda call: call["observer"](follow_up_event(action="replied"))
+
+
+def _event_log_writer_raises(monkeypatch: pytest.MonkeyPatch, seams: Seams) -> None:
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.create_event_log_writer",
+        create_autospec(create_event_log_writer, return_value=raising_observer(_COMPONENT_WARNING)),
+    )
+    seams.exit_hook = lambda call: call["log"](follow_up_event(action="replied"))
+
+
+def _run_span_mirror_fails(monkeypatch: pytest.MonkeyPatch, seams: Seams) -> None:
+    monkeypatch.setattr(
+        SdkSpan,
+        "add_event",
+        create_autospec(SdkSpan.add_event, side_effect=RuntimeError(_COMPONENT_WARNING)),
+    )
+    seams.supervise_hook = lambda call: call["observer"](follow_up_event(action="replied"))
+
+
+@pytest.mark.parametrize(
+    "make_component_warn",
+    [
+        pytest.param(_supervisor_warns, id="supervisor"),
+        pytest.param(_reporter_observer_raises, id="reporter-observer"),
+        pytest.param(_event_log_writer_raises, id="event-log-writer"),
+        pytest.param(_run_span_mirror_fails, id="run-span-mirror"),
+    ],
+)
+def test_supervise_when_a_run_component_warns_does_route_it_through_the_reporter_not_stderr(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    make_component_warn: Callable[[pytest.MonkeyPatch, Seams], None],
+):
+    seams = install_seams(monkeypatch)
+    make_component_warn(monkeypatch, seams)
+
+    with memory_tracing(SESSION_ID):
+        result = run("optimize it", "--max-minutes", str(CAP_MINUTES))
+
+    assert result.exit_code == 0, err_text(result)
+    assert [_COMPONENT_WARNING in warning for warning in seams.warnings] == [True]
+    assert _COMPONENT_WARNING not in err_text(result)
 
 
 # ---------------------------------------------------------------------------

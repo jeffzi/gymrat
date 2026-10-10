@@ -46,7 +46,7 @@ from gymrat.supervisor.events import (
 from gymrat.supervisor.hooks import HooksFactory
 from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult, supervise
 from gymrat.supervisor.tools import ToolsFactory
-from gymrat.utils import NS_PER_MS
+from gymrat.utils import NS_PER_MS, WarnSink, warn_to_stderr
 from tests._config import benchless_config
 from tests.session.records._fixtures import (
     SUPERVISED_SESSION_ID,
@@ -984,6 +984,7 @@ async def run_supervised(
     grace_ms: int = 30_000,
     settle_window_ms: int = 0,
     wall_clock_poll_ms: int = 1,
+    warn: WarnSink = warn_to_stderr,
 ) -> SupervisionResult:
     """Supervise ``driver`` over the repository at ``root`` with fast polls and no settle window.
 
@@ -1006,6 +1007,7 @@ async def run_supervised(
         grace_ms: How long a stop request waits before forcing cancellation.
         settle_window_ms: Idle time after a turn ends before the log is read.
         wall_clock_poll_ms: How often the caps are checked.
+        warn: Receives each observer failure, such as a failed event-log write.
 
     Returns:
         How the supervised session ended.
@@ -1029,6 +1031,7 @@ async def run_supervised(
         settle_window_ms=settle_window_ms,
         lock_poll_ms=1,
         is_lock_held=is_lock_held,
+        warn=warn,
     )
 
 

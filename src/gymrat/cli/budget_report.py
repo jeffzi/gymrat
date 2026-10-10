@@ -38,6 +38,10 @@ def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:
     Returns:
         The text trailer and JSON summary, or ``("", None)`` when no budget
         is active.
+
+    Raises:
+        GymratError: When the supervise lock file cannot be opened, so whether
+            the budget is live is unknown.
     """
     current = _clock.now_ms()
     budget = read_budget(root, now_ms=current)
@@ -71,6 +75,8 @@ def write_budget_report(
 
     Raises:
         OSError: When the stdout write fails for any reason other than a closed pipe.
+        GymratError: When the supervise lock file cannot be opened, so whether
+            the budget is live is unknown.
     """
     trailer, summary = budget_snapshot(root)
     report = render_json(summary) if wants_json(flags) else text_report + trailer
@@ -140,6 +146,8 @@ def emit_report[T](
 
     Raises:
         OSError: When the stdout write fails for any reason other than a closed pipe.
+        GymratError: When the supervise lock file cannot be opened, so whether
+            the budget is live is unknown.
     """
     root = _repo_root_or_none()
     trailer, summary = budget_snapshot(root) if root is not None else ("", None)
@@ -162,6 +170,10 @@ def warn_duration_over_budget(*, halve: bool) -> None:
             shape ``compare`` runs — and lead with the full cost, keeping the
             per-side figure in parentheses so a per-side number that still
             fits does not read as if nothing were wrong.
+
+    Raises:
+        GymratError: When the supervise lock file cannot be opened, so whether
+            the budget is live is unknown.
     """
     root = _repo_root_or_none()
     if root is None:

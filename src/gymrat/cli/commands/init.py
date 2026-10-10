@@ -19,7 +19,7 @@ import typer
 from rich.markup import escape
 
 from gymrat.cli.console import apply_command_flags, resolve_stream_color
-from gymrat.cli.exit import exit_with_error, run_guarded, write_stdout
+from gymrat.cli.exit import run_guarded, write_stdout
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BenchOption,
     ColorOption,
@@ -72,15 +72,16 @@ def init_command(
 
     resolved_color = resolve_stream_color(None, sys.stdout)
 
-    base_dir = find_implicit_base()
-    # init has no tool form, so a live run refuses it whatever the origin.
-    if is_supervised_run_live(base_dir):
-        exit_with_error(GymratError("a supervised run is live; init is not part of the loop"))
-    # An existing config is kept as-is, so its bench command stands in for the flag.
-    if bench is None and not (Path(base_dir) / CONFIG_FILENAME).exists():
-        exit_with_error(GymratError("Missing --bench flag."))
-
     def scaffold_and_report() -> None:
+        base_dir = find_implicit_base()
+        # init has no tool form, so a live run refuses it whatever the origin.
+        if is_supervised_run_live(base_dir):
+            message = "a supervised run is live; init is not part of the loop"
+            raise GymratError(message)
+        # An existing config is kept as-is, so its bench command stands in for the flag.
+        if bench is None and not (Path(base_dir) / CONFIG_FILENAME).exists():
+            message = "Missing --bench flag."
+            raise GymratError(message)
         request = ScaffoldRequest(
             bench=bench,
             runbook=not no_runbook,

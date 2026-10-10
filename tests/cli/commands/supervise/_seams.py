@@ -25,6 +25,7 @@ from gymrat.loop.start import StartResult
 from gymrat.session.store import ReadSessionResult
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor.claude import create_claude_driver
+from gymrat.supervisor.events import SessionObserver
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep, run_exit_sequence
 from gymrat.supervisor.kickoff import compose_kickoff
 from gymrat.supervisor.supervise import SupervisionResult, supervise
@@ -88,7 +89,7 @@ class Seams:
 
     driver: object = field(default_factory=object)
     observed_events: list[object] = field(default_factory=list)
-    observer: Callable[[object], None] = field(init=False)
+    observer: SessionObserver = field(init=False)
     exit_phases: list[ExitPhase] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     exit_report: ExitReport = field(

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Report git's refusal to answer (dubious ownership, an unreadable `.git`) instead of silently
+  looking for the config file and session state in the wrong directory.
+- Fail with a lock-file error when a lock file cannot be opened, instead of treating the lock as
+  free.
+- Warn when a command's session-log record cannot be written or its trace span cannot be emitted,
+  instead of dropping it silently.
+- Show every `supervise` observer failure and every refused budget-file removal as a warning in the
+  display, instead of once per location or as an error exit.
+- Keep a copied file's source when syncing to the experiment worktree, and never write or remove a
+  file through a symlink there.
+
 ## [0.21.0] - 2026-09-24
 
 ### Added

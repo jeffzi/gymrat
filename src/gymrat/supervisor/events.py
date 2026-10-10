@@ -11,7 +11,8 @@ snake_case keys, leaving unset optional fields off — the wire form the event
 log writes. :func:`summarize` and
 :func:`summarize_input` produce the compact, single-line summaries carried on
 tool events.
-:func:`combine_observers` fans one event out to several observers in order.
+:func:`combine_observers` fans one event out to several observers in order,
+reporting each observer failure to a warn sink.
 :func:`create_event_log_writer` returns the observer that appends each event to
 the event log in that wire form, and :func:`probe_event_log_path` checks the log
 is writable before a session starts.
@@ -21,7 +22,6 @@ import json
 import math
 import os
 import re
-import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Literal
@@ -33,7 +33,7 @@ from pydantic_core import PydanticSerializationError
 from gymrat.config import Effort
 from gymrat.errors import GymratError
 from gymrat.supervisor.tool_names import ITERATE_TOOL, PROBE_TOOL
-from gymrat.utils import UNICODE_LINE_BREAKS, abbreviate_home, fan_out
+from gymrat.utils import UNICODE_LINE_BREAKS, WarnSink, abbreviate_home, fan_out, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Event vocabulary
@@ -330,25 +330,27 @@ def event_from_wire(obj: object) -> SessionEvent | None:
         return None
 
 
-def combine_observers(*observers: SessionObserver) -> SessionObserver:
+def combine_observers(
+    *observers: SessionObserver, warn: WarnSink = warn_to_stderr
+) -> SessionObserver:
     """Fan one event out to each observer in order with the identical object.
 
-    With no observers the result is a no-op. If an observer raises, a
-    :class:`RuntimeWarning` is emitted and later observers still run.
+    With no observers the result is a no-op. An observer that raises never
+    stops the later ones, and every failure is reported, including one that
+    repeats on each event.
 
     Args:
         *observers: The observers to fan each event out to, in call order.
+        warn: Receives one message naming each observer failure.
 
     Returns:
         A combined observer that dispatches to all given observers.
     """
-    return fan_out(observers, _warn_observer_failure)
 
+    def report(error: Exception) -> None:
+        warn(f"warning: session observer failed: {error}")
 
-def _warn_observer_failure(error: Exception) -> None:
-    # stacklevel=3 skips this sink and fan_out's dispatch loop, attributing the
-    # warning to whoever called the combined observer.
-    warnings.warn(str(error), RuntimeWarning, stacklevel=3)
+    return fan_out(observers, report)
 
 
 # ---------------------------------------------------------------------------

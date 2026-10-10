@@ -67,7 +67,7 @@ from tests.loop.iterate._fixtures import (
     write_outlasted_session,
 )
 from tests.loop.iterate._hooks import HookScripts
-from tests.session._budget import install_budget
+from tests.session._budget import block_supervise_lock, install_budget, write_budget_file
 from tests.session.records._fixtures import (
     committed_keep,
     discard_record,
@@ -583,6 +583,20 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_
     assert exc.value.hint == "Report what the session measured instead of measuring again."
     assert samples_mock.call_count == 0
     assert [record.type for record in log_records(repo)] == ["session", "iteration", "keep"]
+
+
+async def test_iterate_session_when_supervise_lock_cannot_be_probed_does_raise_before_any_bench(
+    repo: str, samples_mock: CollectSamplesRecorder
+):
+    write_iterate_session(repo, settled_history(duration_ms=870_000))
+    write_budget_file(repo)
+    stub_improved_samples(samples_mock, repo)
+
+    with block_supervise_lock(repo) as blocker, pytest.raises(GymratError) as exc:
+        await iterate_session(repo, resolved_config())
+
+    assert str(exc.value).startswith(f"Lock file {blocker} could not be opened: ")
+    assert samples_mock.call_count == 0
 
 
 # ---------------------------------------------------------------------------

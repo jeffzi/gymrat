@@ -186,11 +186,13 @@ def _gymrat_worktree_owner(toplevel: str) -> str | None:
     Returns:
         The owning checkout's top-level path, or ``None`` when ``toplevel`` is
         not a worktree gymrat created: its path is not shaped like one, the
-        directory above ``.gymrat/worktrees`` is not a checkout's top level, or
-        that checkout belongs to another repository.
+        directory above ``.gymrat/worktrees`` is outside every repository or
+        not a checkout's top level, or that checkout belongs to another
+        repository.
 
     Raises:
-        GymratError: When git declines to resolve the common directory of
+        GymratError: When git declines to answer for the directory above
+            ``.gymrat/worktrees`` or to resolve the common directory of
             ``toplevel``.
     """
     candidate = _owner_candidate(Path(toplevel))
@@ -199,7 +201,7 @@ def _gymrat_worktree_owner(toplevel: str) -> str | None:
     try:
         candidate_common = git_common_dir(str(candidate))
         owner = _toplevel(str(candidate))
-    except GymratError:
+    except NotAGitRepositoryError:
         return None
     if Path(owner) != candidate:
         return None

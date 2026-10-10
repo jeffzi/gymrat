@@ -12,7 +12,7 @@ from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.errors import GymratError
 from gymrat.session.budget import write_budget
 from tests.cli._origin import SUPERVISED_HINT, set_origin
-from tests.session._budget import LIVE_BUDGET
+from tests.session._budget import LIVE_BUDGET, block_supervise_lock
 
 # ---------------------------------------------------------------------------
 # guard_supervised_origin
@@ -63,3 +63,15 @@ def test_guard_supervised_origin_when_not_live_does_allow(
     result = guard_supervised_origin(root, "keep")
 
     assert result is None
+
+
+def test_guard_supervised_origin_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(
+    root: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_budget(root, LIVE_BUDGET)
+    set_origin(monkeypatch, "cli")
+
+    with block_supervise_lock(root) as blocker, pytest.raises(GymratError) as exc:
+        guard_supervised_origin(root, "iterate")
+
+    assert str(exc.value).startswith(f"Lock file {blocker} could not be opened: ")

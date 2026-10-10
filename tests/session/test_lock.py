@@ -380,6 +380,31 @@ def test_acquire_lock_when_permission_error_windows_does_advise_close_program(
     assert "belongs to another user" not in hint.lower()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="a directory at the lock path is a PermissionError on Windows"
+)
+@pytest.mark.parametrize(
+    "lock_file",
+    [
+        pytest.param(os_lock_file, id="main-lock"),
+        pytest.param(publish_lock_file, id="publish-lock"),
+    ],
+)
+def test_acquire_lock_when_lock_file_cannot_be_opened_does_raise_without_a_hint(
+    lock_path: str, lock_file: Callable[[str], str]
+):
+    target_path = lock_file(lock_path)
+    Path(target_path).mkdir(parents=True)
+
+    with pytest.raises(GymratError) as caught:
+        acquire_lock(lock_path, "compare")
+
+    assert not isinstance(caught.value, LockContentionError)
+    assert str(caught.value).startswith(f"Lock file {target_path} could not be opened: ")
+    assert os.strerror(errno.EISDIR) in str(caught.value)
+    assert caught.value.hint is None
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="fchmod not available on Windows")
 def test_acquire_lock_when_acquired_does_chmod_lock_file_to_world_writable(
     lock_path: str, acquire: Acquire
@@ -478,16 +503,49 @@ def test_is_held_when_probed_does_leave_the_lock_undisturbed(
         blocker.release()
 
 
-def test_is_held_when_permission_error_does_return_false(
+def test_is_held_when_permission_error_does_raise_the_error_acquire_lock_raises(
     lock_path: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
-    refuse_open(monkeypatch, os_lock_file(lock_path))
+    # filelock opens the lock file through ``os.open`` only on Unix, so the
+    # refusal is injected at ``FileLock.acquire`` to reach every platform.
+    fail_acquire_for(
+        monkeypatch,
+        os_lock_file(lock_path),
+        lambda _: PermissionError(errno.EACCES, "Permission denied"),
+    )
+    with pytest.raises(GymratError) as acquire_refused:
+        acquire_lock(lock_path, "compare")
 
-    result = is_held(lock_path)
+    with pytest.raises(GymratError) as caught:
+        is_held(lock_path)
 
-    assert result is False
+    expected = acquire_refused.value
+    assert str(caught.value).startswith(
+        f"Lock file {os_lock_file(lock_path)} could not be opened: "
+    )
+    assert (type(caught.value), str(caught.value), caught.value.hint) == (
+        type(expected),
+        str(expected),
+        expected.hint,
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="a directory at the lock path is a PermissionError on Windows"
+)
+def test_is_held_when_lock_file_cannot_be_opened_does_raise_without_a_hint(lock_path: str):
+    os_lock_path = os_lock_file(lock_path)
+    Path(os_lock_path).mkdir(parents=True)
+
+    with pytest.raises(GymratError) as caught:
+        is_held(lock_path)
+
+    assert not isinstance(caught.value, LockContentionError)
+    assert str(caught.value).startswith(f"Lock file {os_lock_path} could not be opened: ")
+    assert os.strerror(errno.EISDIR) in str(caught.value)
+    assert caught.value.hint is None
 
 
 # ---------------------------------------------------------------------------

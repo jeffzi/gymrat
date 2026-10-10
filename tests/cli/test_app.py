@@ -3,7 +3,7 @@
 These drive the assembled CLI through :class:`typer.testing.CliRunner`, so the
 root callback, the ``--version`` eager option, the shared ``--debug`` flag in
 both positions, the root and local color flags, every command's help content,
-and the exit-2 error every locking command prints when the repository root
+and the exit-2 error every repository command prints when the repository root
 cannot be resolved are exercised the way a shell would invoke them.
 
 ``python -m gymrat`` runs in a child process and must behave like
@@ -208,7 +208,12 @@ LOCK_FREE_COMMANDS = [
     pytest.param(["measure", "--bench", "sh bench.sh"], id="measure"),
 ]
 
-REPOSITORY_COMMANDS = [*LOCK_FREE_COMMANDS, *SESSION_COMMANDS]
+#: Every command that resolves the repository root, so a git failure there must reach the user.
+REPOSITORY_COMMANDS = [
+    *LOCK_FREE_COMMANDS,
+    *SESSION_COMMANDS,
+    pytest.param(["init", "--bench", "sh bench.sh"], id="init"),
+]
 
 
 @pytest.mark.parametrize("argv", SESSION_COMMANDS)

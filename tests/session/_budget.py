@@ -7,6 +7,8 @@ test-support code, not a test module: it carries no test functions or pytest
 fixtures of its own.
 """
 
+import contextlib
+from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import create_autospec
 
@@ -15,7 +17,8 @@ from filelock import FileLock
 
 from gymrat.clock import now_ms
 from gymrat.session.budget import Budget, write_budget
-from tests._lock import hold_supervise_lock
+from gymrat.session.paths import supervise_lockfile_path
+from tests._lock import hold_supervise_lock, os_lock_file
 
 #: A 30-minute budget whose deadline sits far in the future, so it never expires mid-test.
 LIVE_BUDGET = Budget(max_minutes=30, deadline_ms=9_999_999_999_999.0)
@@ -56,6 +59,24 @@ def write_budget_file(repo: str, budget: Budget = LIVE_BUDGET) -> None:
     """
     Path(repo, ".gymrat").mkdir(exist_ok=True)
     write_budget(repo, budget)
+
+
+@contextlib.contextmanager
+def block_supervise_lock(repo: str) -> Generator[str]:
+    """Put a directory where ``repo``'s supervise OS lock file belongs, so probing it fails.
+
+    Args:
+        repo: The repository whose supervise lock is blocked.
+
+    Yields:
+        The blocking directory's path, which the lock-probe error names.
+    """
+    blocker = Path(os_lock_file(supervise_lockfile_path(repo)))
+    blocker.mkdir(parents=True)
+    try:
+        yield str(blocker)
+    finally:
+        blocker.rmdir()
 
 
 def install_budget(

@@ -1,3 +1,4 @@
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,7 @@ from gymrat.config import (
     SuperviseConfig,
     config_trace_args,
     env_positive_int_result,
+    find_implicit_base,
     inspect_config,
     is_positive_integer,
     resolve_benchless_config,
@@ -24,6 +26,7 @@ from gymrat.config import (
     runbook_problem,
 )
 from gymrat.errors import GymratError
+from gymrat.session.paths import NotAGitRepositoryError
 from tests._config import benchless_config, resolved_config
 from tests._git import run_git
 from tests._imports import modules_imported_by
@@ -502,7 +505,51 @@ def test_inspect_config_when_config_flag_names_file_in_other_dir_does_resolve_ru
 
 
 # ---------------------------------------------------------------------------
-# inspect_config — collected problems (never raises)
+# find_implicit_base
+# ---------------------------------------------------------------------------
+
+
+def test_find_implicit_base_when_cwd_outside_any_repository_does_return_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    base = find_implicit_base()
+
+    assert Path(base) == tmp_path
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        pytest.param(find_implicit_base, id="find_implicit_base"),
+        pytest.param(lambda: inspect_config(CliFlags()), id="inspect_config"),
+        pytest.param(lambda: resolve_benchless_config(CliFlags()), id="resolve_benchless_config"),
+        pytest.param(lambda: resolve_config(CliFlags(bench="b")), id="resolve_config"),
+    ],
+)
+def test_config_lookup_when_git_declines_for_cwd_does_raise_with_git_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lookup: Callable[[], object]
+):
+    malformed = tmp_path / ".git"
+    malformed.write_text("banana\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(
+        GymratError,
+        match=(
+            rf"^Cannot determine the git repository at {re.escape(str(tmp_path))}: "
+            # git prints the .git path with forward slashes, even on Windows.
+            rf".*invalid \w+ format: {re.escape(malformed.as_posix())}$"
+        ),
+    ) as exc:
+        lookup()
+
+    assert not isinstance(exc.value, NotAGitRepositoryError)
+
+
+# ---------------------------------------------------------------------------
+# inspect_config — collected problems (a config problem never raises)
 # ---------------------------------------------------------------------------
 
 

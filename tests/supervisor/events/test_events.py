@@ -10,8 +10,8 @@ or infinite float nested in a free-form payload as ``null`` on either path,
 refusing a non-finite value in a typed float field at construction, and
 writing a value pydantic cannot serialize as its ``str()``; ``event_from_wire``
 inverts it and returns ``None`` for anything it cannot reconstruct;
-``combine_observers`` is pinned on warning, attributed to the caller, when an
-observer raises.
+``combine_observers`` sends every observer failure to its warn sink, which
+defaults to stderr.
 
 The event-log writer, ``create_event_log_writer``, appends one ``to_json_line``
 line per event to a log file; its tests pin the file-writing side effects, the
@@ -536,14 +536,26 @@ def test_event_from_wire_when_input_unrecognized_does_return_none(obj: object):
 _OBSERVER_FAILURE = "observer failure"
 
 
-def test_combine_observers_when_an_observer_raises_does_warn_attributed_to_the_caller():
+def test_combine_observers_when_an_observer_raises_twice_does_send_each_failure_to_the_sink():
+    messages: list[str] = []
+    combined = combine_observers(raising_observer(_OBSERVER_FAILURE), warn=messages.append)
+    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
+
+    combined(event)
+    combined(event)
+
+    assert [_OBSERVER_FAILURE in message for message in messages] == [True, True]
+
+
+def test_combine_observers_when_no_sink_given_does_write_the_failure_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+):
     combined = combine_observers(raising_observer(_OBSERVER_FAILURE))
     event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
 
-    with pytest.warns(RuntimeWarning, match=_OBSERVER_FAILURE) as caught:
-        combined(event)
+    combined(event)
 
-    assert [warning.filename for warning in caught] == [__file__]
+    assert _OBSERVER_FAILURE in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

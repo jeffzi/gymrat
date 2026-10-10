@@ -42,7 +42,7 @@ from gymrat.supervisor.exit_sequence import (
 from gymrat.utils import SHORT_SHA_LENGTH
 from tests._git import run_git
 from tests._imports import loaded_under, modules_imported_by
-from tests._lock import hold_lock
+from tests._lock import hold_lock, os_lock_file
 from tests.loop._settle import (
     CHECKS,
     checks_pass,
@@ -529,6 +529,27 @@ async def test_run_exit_sequence_when_the_lock_probe_raises_does_report_the_erro
     run = await run_sequence(session_context(repo), is_lock_held=_raising_probe)
 
     assert run.report == ExitReport(steps=(), error=BOOM)
+
+
+@pytest.fixture
+def blocked_repo_lock(repo: str) -> Iterator[str]:
+    """Put a directory where the repository's OS lock file belongs, yielding its path."""
+    blocker = Path(os_lock_file(lockfile_path(repo)))
+    blocker.mkdir(parents=True)
+    yield str(blocker)
+    blocker.rmdir()
+
+
+async def test_run_exit_sequence_when_the_lock_cannot_be_probed_does_report_the_error(
+    repo: str, blocked_repo_lock: str
+):
+    start_with(repo)
+
+    run = await run_sequence(session_context(repo))
+
+    assert run.report.steps == ()
+    assert run.report.error is not None
+    assert run.report.error.startswith(f"Lock file {blocked_repo_lock} could not be opened: ")
 
 
 async def test_run_exit_sequence_when_finalize_raises_does_keep_the_settled_step_on_the_report(

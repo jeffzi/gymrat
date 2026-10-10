@@ -6,6 +6,7 @@
 exercised against an arbitrary absolute root.
 """
 
+import re
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -190,6 +191,29 @@ def test_repo_root_when_directory_above_gymrat_dir_is_not_a_repository_does_retu
     root = repo_root(str(standalone))
 
     assert Path(root) == Path(standalone)
+
+
+def test_repo_root_when_git_declines_for_directory_above_gymrat_dir_does_raise_with_git_diagnostics(
+    tmp_path: Path,
+):
+    above = tmp_path / "plain"
+    standalone = above / ".gymrat" / "worktrees" / "standalone"
+    standalone.mkdir(parents=True)
+    run_git(["init"], str(standalone))
+    malformed = above / ".git"
+    malformed.write_text("banana\n", encoding="utf-8")
+
+    with pytest.raises(
+        GymratError,
+        match=(
+            rf"^Cannot determine the git repository at {re.escape(str(above))}: "
+            # git prints the .git path with forward slashes, even on Windows.
+            rf".*invalid \w+ format: {re.escape(malformed.as_posix())}$"
+        ),
+    ) as exc:
+        repo_root(str(standalone))
+
+    assert not isinstance(exc.value, NotAGitRepositoryError)
 
 
 def test_repo_root_when_directory_above_gymrat_dir_is_below_a_checkout_top_does_return_the_toplevel(

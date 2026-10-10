@@ -54,7 +54,7 @@ from gymrat.supervisor.turns import (
     outcome_record_count,
     spend_cap_reached,
 )
-from gymrat.utils import MS_PER_SECOND, warn_to_stderr
+from gymrat.utils import MS_PER_SECOND, WarnSink, warn_to_stderr
 
 WALL_CLOCK_POLL_MS = 1000
 """Default interval (in milliseconds) for polling wall-clock time against the
@@ -348,6 +348,7 @@ class _SuperviseConfig:
     settle_window_ms: int
     lock_poll_ms: int
     is_lock_held: Callable[[], bool]
+    warn: WarnSink
 
 
 class _Supervision:
@@ -361,7 +362,7 @@ class _Supervision:
         observers: list[SessionObserver] = [self._event_router, log_writer]
         if config.observer is not None:
             observers.append(config.observer)
-        self._combined = combine_observers(*observers)
+        self._combined = combine_observers(*observers, warn=config.warn)
 
         self._ended_by: EndedBy = "session"
         self._end_reason: str | None = None
@@ -414,6 +415,9 @@ class _Supervision:
         Runs inside event delivery, so every end it causes is scheduled rather
         than emitted inline: the router is the first observer, and an inline
         emit would reach the event log ahead of the ``tool_end`` that caused it.
+        A failed scan or lock probe ends the session with the error, as a failed
+        lock probe does in the settle and lock-poll tasks; raised here, it would
+        reach only the warn sink.
         """
         if self._cap_fired:
             return
@@ -423,7 +427,14 @@ class _Supervision:
         except GymratError as error:
             loop.call_soon(self._end_with_error, str(error))
             return
-        if self._end_scan.pending is not None and not self._config.is_lock_held():
+        if self._end_scan.pending is None:
+            return
+        try:
+            lock_held = self._config.is_lock_held()
+        except Exception as error:  # noqa: BLE001 - any probe failure ends the session, as in the settle task
+            loop.call_soon(self._end_with_error, str(error))
+            return
+        if not lock_held:
             loop.call_soon(self._fire_pending_end)
 
     def _fire_pending_end(self) -> None:
@@ -675,6 +686,7 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
     settle_window_ms: int = SETTLE_WINDOW_MS,
     lock_poll_ms: int = LOCK_POLL_MS,
     is_lock_held: Callable[[], bool] | None = None,
+    warn: WarnSink = warn_to_stderr,
 ) -> SupervisionResult:
     """Run a supervised agent session with wall-clock and spend caps.
 
@@ -704,6 +716,8 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
             agent is idle.
         is_lock_held: Callable returning whether the repository lock is held.
             Defaults to probing ``context.lock_path`` on disk.
+        warn: Receives one message naming each observer failure, such as a
+            failed event-log write.
 
     Returns:
         The supervision result containing the session outcome and metadata.
@@ -723,5 +737,6 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
         settle_window_ms=settle_window_ms,
         lock_poll_ms=lock_poll_ms,
         is_lock_held=is_lock_held or partial(is_held, context.lock_path),
+        warn=warn,
     )
     return await _Supervision(config).run()

@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.events import SessionObserver
     from gymrat.supervisor.supervise import SupervisionResult
+    from gymrat.telemetry.run_spans import TracingState
+    from gymrat.utils import WarnSink
 
 from gymrat.adapters import get_adapter
 from gymrat.cli.console import apply_command_flags, resolve_stream_color
@@ -309,27 +311,30 @@ def _report_result(
         raise typer.Exit(GATE_EXIT_CODE)
 
 
-def _init_budget(root: str, max_minutes: float) -> tuple[Budget, Callable[[], None]]:
+def _init_budget(
+    root: str, max_minutes: float, *, warn: WarnSink
+) -> tuple[Budget, Callable[[], None]]:
     """Create, persist, and arm cleanup for the session time budget.
 
     Args:
         root: Session root directory.
         max_minutes: Maximum session duration in minutes.
+        warn: Receives the warning when the OS refuses to remove the budget file.
 
     Returns:
         A ``(budget, release)`` pair: the budget written to disk and a callback
-        that removes the budget file and uninstalls the termination hook,
-        uninstalling even when the removal raises. The callback is idempotent,
-        so the run's own teardown and the unwind of a session whose setup
-        failed can both call it without clearing twice.
+        that removes the budget file and uninstalls the termination hook; a
+        refused removal goes to ``warn`` rather than raising. The callback is
+        idempotent, so the run's own teardown and the unwind of a session whose
+        setup failed can both call it without clearing twice.
     """
     budget = Budget(max_minutes=max_minutes, deadline_ms=now_ms() + minutes_to_ms(max_minutes))
     Path(session_dir(root)).mkdir(parents=True, exist_ok=True)
     write_budget(root, budget)
     release = ExitStack()
     # Callbacks unwind last-in first-out: the budget file goes, then the hook.
-    release.callback(install_termination_cleanup(lambda: clear_budget(root)))
-    release.callback(clear_budget, root)
+    release.callback(install_termination_cleanup(lambda: clear_budget(root, warn)))
+    release.callback(clear_budget, root, warn)
     return budget, release.close
 
 
@@ -411,13 +416,45 @@ async def _supervise_and_exit_sequence(  # noqa: PLR0913 -- the run and everythi
         ended_by=result.ended_by,
         finalize=ctx.finalize,
         progress=reporter.exit_phase,
-        log=combine_observers(create_event_log_writer(ctx.log_path), observer),
+        log=combine_observers(create_event_log_writer(ctx.log_path), observer, warn=reporter.warn),
         warn=reporter.warn,
     )
     # A step that writes the session log and then fails emits no event, so the
     # reporter would otherwise summarize the session as it was before that step.
     reporter.refresh_session()
     return result, exit_report
+
+
+def _trace_session(
+    ctx: _SessionContext, reporter: SuperviseReporter
+) -> tuple[SessionPrompt, SessionObserver, TracingState]:
+    """Open the run's tracing and fold its run-span observer in with the reporter's.
+
+    Args:
+        ctx: The run whose launch, branch and prompt the spans describe.
+        reporter: The reporter whose observer every event reaches and whose
+            ``warn`` receives each observer failure.
+
+    Returns:
+        The prompt to send, carrying a ``traceparent`` while tracing is on; the
+        observer the supervisor and exit sequence report to; and the spans
+        :func:`~gymrat.telemetry.run_spans.finalize_tracing` ends.
+    """
+    from gymrat.telemetry.run_spans import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack
+        setup_tracing,
+    )
+
+    prompt, run_span_observer, tracing = setup_tracing(
+        ctx.launch,
+        branch=ctx.branch,
+        resumed=ctx.resumed,
+        prompt=ctx.session_prompt(),
+        warn=reporter.warn,
+    )
+    if run_span_observer is None:
+        return prompt, reporter.observer, tracing
+    observer = combine_observers(reporter.observer, run_span_observer, warn=reporter.warn)
+    return prompt, observer, tracing
 
 
 def _run_session(ctx: _SessionContext) -> None:
@@ -442,7 +479,6 @@ def _run_session(ctx: _SessionContext) -> None:
     """
     from gymrat.telemetry.run_spans import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack
         finalize_tracing,
-        setup_tracing,
     )
 
     launch = ctx.launch
@@ -457,7 +493,7 @@ def _run_session(ctx: _SessionContext) -> None:
         # error reaches the terminal, or when the run path closes it early.
         display = armed.enter_context(ExitStack())
         display.callback(reporter.stop)
-        budget, release_budget = _init_budget(ctx.root, launch.max_minutes)
+        budget, release_budget = _init_budget(ctx.root, launch.max_minutes, warn=reporter.warn)
         armed.callback(release_budget)
         # A signal mid-exit-sequence exits the process before the loop can cancel
         # the checks command it is running, so its process group is killed here.
@@ -465,13 +501,7 @@ def _run_session(ctx: _SessionContext) -> None:
         if mode == "plain":
             write_and_flush(sys.stderr, f"log: {abbreviate_home(ctx.log_path)}\n")
 
-        prompt, observer, tracing = setup_tracing(
-            launch,
-            branch=ctx.branch,
-            resumed=ctx.resumed,
-            prompt=ctx.session_prompt(),
-            reporter_observer=reporter.observer,
-        )
+        prompt, observer, tracing = _trace_session(ctx, reporter)
 
         context = _supervised_session(ctx, budget)
         result: SupervisionResult | None = None
@@ -486,6 +516,7 @@ def _run_session(ctx: _SessionContext) -> None:
                             context=context,
                             launch=launch,
                             observer=observer,
+                            warn=reporter.warn,
                         ),
                         release_budget,
                         ctx=ctx,

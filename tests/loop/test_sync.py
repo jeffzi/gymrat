@@ -4,6 +4,8 @@ Every test drives the real ``sync_to_experiment`` against a throwaway repository
 from the shared ``create_scratch_repo`` factory, so the suite is order-independent
 and safe under ``pytest-xdist`` / ``pytest-randomly``. No git call is mocked: the
 sync only reveals its behavior against real worktrees and real dirty files.
+The one exception is a copy whose source the main tree leaves unchanged: git
+never reports that shape, so that test stubs the main tree's status output.
 """
 
 import shutil
@@ -15,9 +17,11 @@ from pathlib import Path
 import pytest
 
 from gymrat.errors import GymratError
+from gymrat.git import run_git_step
 from gymrat.loop.sync import sync_to_experiment
 from gymrat.session.paths import experiment_worktree_dir
 from tests._git import commit_all, git_exclude_path, run_git
+from tests.loop._settle import start_with
 
 
 def _tree_snapshot(root: str) -> dict[str, bytes | str | None]:
@@ -194,17 +198,95 @@ def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_refuse_
 # ---------------------------------------------------------------------------
 
 
-def test_sync_to_experiment_when_renamed_file_then_deleted_does_remove_old_path_from_experiment(
+def _rename_readme(repo: str) -> None:
+    """Rename ``README.md`` to ``GUIDE.md`` in the main tree, keeping its content."""
+    run_git(["mv", "README.md", "GUIDE.md"], repo)
+
+
+def _rename_readme_then_delete(repo: str) -> None:
+    """Rename ``README.md`` to ``GUIDE.md``, then delete ``GUIDE.md`` from the working tree."""
+    _rename_readme(repo)
+    (Path(repo) / "GUIDE.md").unlink()
+
+
+def _text_or_none(path: Path) -> str | None:
+    """The text at ``path``, or ``None`` when nothing is there."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
+@pytest.mark.parametrize(
+    ("arrange", "expected_guide"),
+    [
+        pytest.param(_rename_readme, "# Test Repo\n", id="renamed"),
+        pytest.param(_rename_readme_then_delete, None, id="renamed-then-deleted"),
+    ],
+)
+def test_sync_to_experiment_when_file_renamed_does_remove_old_path_and_sync_new_one(
+    session_repo: str, arrange: Callable[[str], None], expected_guide: str | None
+):
+    arrange(session_repo)
+
+    sync_to_experiment(session_repo)
+
+    experiment = Path(experiment_worktree_dir(session_repo))
+    assert _text_or_none(experiment / "README.md") is None
+    assert _text_or_none(experiment / "GUIDE.md") == expected_guide
+
+
+# ---------------------------------------------------------------------------
+# copies
+# ---------------------------------------------------------------------------
+
+
+def test_sync_to_experiment_when_file_copied_does_sync_copy_and_keep_source(
     session_repo: str,
 ):
-    run_git(["mv", "README.md", "GUIDE.md"], session_repo)
-    (Path(session_repo) / "GUIDE.md").unlink()
+    # Git reports a copy only with copy detection on and only from a source
+    # changed in the same changeset, so the source is edited and staged too.
+    run_git(["config", "status.renames", "copies"], session_repo)
+    readme = Path(session_repo) / "README.md"
+    shutil.copy(readme, Path(session_repo) / "COPY.md")
+    readme.write_text("# Test Repo\nedited\n", encoding="utf-8")
+    run_git(["add", "."], session_repo)
 
     sync_to_experiment(session_repo)
 
     experiment = experiment_worktree_dir(session_repo)
-    assert not (Path(experiment) / "README.md").exists()
-    assert not (Path(experiment) / "GUIDE.md").exists()
+    assert (Path(experiment) / "COPY.md").read_text(encoding="utf-8") == "# Test Repo\n"
+    assert (Path(experiment) / "README.md").read_text(encoding="utf-8") == "# Test Repo\nedited\n"
+
+
+@pytest.mark.parametrize(
+    "experiment_readme",
+    [
+        pytest.param("# Test Repo\n", id="source-clean-in-experiment"),
+        pytest.param("# Experiment change\n", id="source-edited-in-experiment"),
+    ],
+)
+def test_sync_to_experiment_when_copy_reported_does_sync_copy_leaving_source_untouched(
+    session_repo: str, monkeypatch: pytest.MonkeyPatch, experiment_readme: str
+):
+    experiment = experiment_worktree_dir(session_repo)
+    shutil.copy(Path(session_repo) / "README.md", Path(session_repo) / "COPY.md")
+    (Path(experiment) / "README.md").write_text(experiment_readme, encoding="utf-8")
+    main_tree = Path(session_repo).resolve()
+
+    def status_reports_copy(
+        args: list[str], cwd: str, message: str, hint: str | None = None
+    ) -> str:
+        if "status" in args and Path(cwd).resolve() == main_tree:
+            return "C  COPY.md\0README.md\0"
+        return run_git_step(args, cwd, message, hint)
+
+    monkeypatch.setattr("gymrat.loop.sync.run_git_step", status_reports_copy)
+
+    sync_to_experiment(session_repo)
+
+    assert (Path(experiment) / "COPY.md").read_text(encoding="utf-8") == "# Test Repo\n"
+    assert (Path(experiment) / "README.md").read_text(encoding="utf-8") == experiment_readme
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +310,10 @@ def test_sync_to_experiment_when_file_is_executable_does_preserve_exec_bit(
     assert synced.stat().st_mode & stat.S_IXUSR
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+_NEEDS_POSIX_SYMLINKS = pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+
+
+@_NEEDS_POSIX_SYMLINKS
 @pytest.mark.parametrize(
     "create_target",
     [
@@ -249,6 +334,49 @@ def test_sync_to_experiment_when_entry_is_symlink_does_sync_as_symlink(
     synced_link = Path(experiment) / "link"
     assert synced_link.is_symlink()
     assert synced_link.readlink() == Path("target")
+
+
+def _outside_file(outside: Path) -> Path:
+    """Create a file outside the experiment for a symlink to point at."""
+    target = outside / "target.txt"
+    target.write_text("outside\n", encoding="utf-8")
+    return target
+
+
+def _outside_directory(outside: Path) -> Path:
+    """Create a directory outside the experiment for a symlink to point at."""
+    (outside / "x.txt").write_text("outside\n", encoding="utf-8")
+    return outside
+
+
+@_NEEDS_POSIX_SYMLINKS
+@pytest.mark.parametrize(
+    "create_outside_target",
+    [
+        pytest.param(_outside_file, id="link-to-outside-file"),
+        pytest.param(_outside_directory, id="link-to-outside-directory"),
+    ],
+)
+def test_sync_to_experiment_when_experiment_path_is_symlink_does_replace_link_leaving_target_untouched(
+    session_repo: str,
+    tmp_path: Path,
+    create_outside_target: Callable[[Path], Path],
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = create_outside_target(outside)
+    experiment = Path(experiment_worktree_dir(session_repo))
+    (experiment / "notes").symlink_to(target, target_is_directory=target.is_dir())
+    commit_all(str(experiment), "add notes as a symlink")
+    (Path(session_repo) / "notes").write_text("main\n", encoding="utf-8")
+    outside_before = _tree_snapshot(str(outside))
+
+    sync_to_experiment(session_repo)
+
+    synced = experiment / "notes"
+    assert not synced.is_symlink()
+    assert synced.read_text(encoding="utf-8") == "main\n"
+    assert _tree_snapshot(str(outside)) == outside_before
 
 
 # ---------------------------------------------------------------------------
@@ -367,23 +495,93 @@ def test_sync_to_experiment_when_a_path_is_a_directory_on_either_side_does_refus
     assert _tree_snapshot(experiment) == before
 
 
-def test_sync_to_experiment_when_destination_ancestor_is_file_does_leave_experiment_untouched(
-    session_repo: str,
+def _write_below_notes(repo: str) -> str:
+    """Open a session, then add ``notes/x.txt`` in the main tree."""
+    start_with(repo)
+    (Path(repo) / "AAA.txt").write_text("lands first\n", encoding="utf-8")
+    (Path(repo) / "notes").mkdir()
+    (Path(repo) / "notes" / "x.txt").write_text("nested\n", encoding="utf-8")
+    return "notes/x.txt"
+
+
+def _remove_below_notes(repo: str) -> str:
+    """Commit ``notes/x.txt``, open a session, then delete it in the main tree."""
+    (Path(repo) / "notes").mkdir()
+    (Path(repo) / "notes" / "x.txt").write_text("nested\n", encoding="utf-8")
+    commit_all(repo, "add notes")
+    start_with(repo)
+    run_git(["rm", "-q", "notes/x.txt"], repo)
+    return "notes/x.txt"
+
+
+def _rename_from_below_notes(repo: str) -> str:
+    """Commit ``notes/x.txt``, open a session, then rename it out of ``notes`` in the main tree."""
+    (Path(repo) / "notes").mkdir()
+    (Path(repo) / "notes" / "x.txt").write_text("nested\n", encoding="utf-8")
+    commit_all(repo, "add notes")
+    start_with(repo)
+    run_git(["mv", "notes/x.txt", "moved.txt"], repo)
+    return "notes/x.txt"
+
+
+def _notes_as_file(experiment: Path, outside: Path) -> None:
+    """Make ``notes`` a plain file in the experiment."""
+    shutil.rmtree(experiment / "notes", ignore_errors=True)
+    (experiment / "notes").write_text("a file\n", encoding="utf-8")
+
+
+def _notes_as_symlink_to_outside_directory(experiment: Path, outside: Path) -> None:
+    """Make ``notes`` in the experiment a committed symlink to a directory outside it."""
+    (outside / "x.txt").write_text("outside\n", encoding="utf-8")
+    shutil.rmtree(experiment / "notes", ignore_errors=True)
+    (experiment / "notes").symlink_to(outside, target_is_directory=True)
+    commit_all(str(experiment), "replace notes with a symlink")
+
+
+@pytest.mark.parametrize(
+    ("arrange_main", "arrange_experiment"),
+    [
+        pytest.param(_write_below_notes, _notes_as_file, id="write-below-file"),
+        pytest.param(
+            _write_below_notes,
+            _notes_as_symlink_to_outside_directory,
+            id="write-below-directory-symlink",
+            marks=_NEEDS_POSIX_SYMLINKS,
+        ),
+        pytest.param(
+            _remove_below_notes,
+            _notes_as_symlink_to_outside_directory,
+            id="remove-below-directory-symlink",
+            marks=_NEEDS_POSIX_SYMLINKS,
+        ),
+        pytest.param(
+            _rename_from_below_notes,
+            _notes_as_symlink_to_outside_directory,
+            id="rename-from-below-directory-symlink",
+            marks=_NEEDS_POSIX_SYMLINKS,
+        ),
+    ],
+)
+def test_sync_to_experiment_when_ancestor_is_not_a_real_directory_does_refuse_leaving_both_trees_untouched(
+    repo: str,
+    tmp_path: Path,
+    arrange_main: Callable[[str], str],
+    arrange_experiment: Callable[[Path, Path], None],
 ):
-    experiment = experiment_worktree_dir(session_repo)
-    (Path(session_repo) / "AAA.txt").write_text("lands first\n", encoding="utf-8")
-    (Path(session_repo) / "notes").mkdir()
-    (Path(session_repo) / "notes" / "x.txt").write_text("nested\n", encoding="utf-8")
-    (Path(experiment) / "notes").write_text("a file\n", encoding="utf-8")
-    before = _tree_snapshot(experiment)
+    offending = arrange_main(repo)
+    experiment = experiment_worktree_dir(repo)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    arrange_experiment(Path(experiment), outside)
+    before = (_tree_snapshot(experiment), _tree_snapshot(str(outside)))
 
     with pytest.raises(GymratError) as excinfo:
-        sync_to_experiment(session_repo)
+        sync_to_experiment(repo)
 
     assert str(excinfo.value) == (
-        "Cannot sync 'notes/x.txt': 'notes' is not a directory in the experiment worktree"
+        f"Cannot sync '{offending}': 'notes' is not a directory in the experiment worktree"
     )
-    assert _tree_snapshot(experiment) == before
+    assert (_tree_snapshot(experiment), _tree_snapshot(str(outside))) == before
 
 
 # ---------------------------------------------------------------------------

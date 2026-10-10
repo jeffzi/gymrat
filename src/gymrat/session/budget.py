@@ -4,7 +4,8 @@ The budget file is written atomically via temp-file-and-replace so a concurrent
 reader never sees a partial write.  Reading checks three liveness conditions
 before returning the budget: the file must parse, its deadline must be ahead of
 ``now_ms``, and the supervise lock for the repository root must be held.  When
-any condition fails the budget is treated as absent.
+any condition fails the budget is treated as absent; a supervise lock that
+cannot be probed is an error, not an absent budget.
 """
 
 from collections.abc import Sequence
@@ -18,7 +19,7 @@ from gymrat.session.lock import is_held
 from gymrat.session.paths import budget_path, supervise_lockfile_path
 from gymrat.session.records import BaselineRecord, IterationRecord, SessionLogRecord
 from gymrat.session.sidecar import read_sidecar
-from gymrat.utils import write_text_atomic
+from gymrat.utils import WarnSink, warn_to_stderr, write_text_atomic
 
 SIDES_PER_ITERATE = 2
 """An iterate cycle measures both baseline and experiment, so it costs roughly
@@ -72,6 +73,10 @@ def read_budget(root: str, *, now_ms: float) -> Budget | None:
         invalid JSON, is not an object with exactly the expected numeric
         fields, its deadline has passed, or the supervise lock for *root* is
         not held.
+
+    Raises:
+        GymratError: When the supervise lock file cannot be opened, so whether
+            a supervised run holds it is unknown.
     """
     budget = read_sidecar(Path(budget_path(root)), Budget)
     if budget is None or now_ms >= budget.deadline_ms:
@@ -83,9 +88,23 @@ def read_budget(root: str, *, now_ms: float) -> Budget | None:
     return budget
 
 
-def clear_budget(root: str) -> None:
-    """Remove the budget file if it exists, silently succeed otherwise."""
-    Path(budget_path(root)).unlink(missing_ok=True)
+def clear_budget(root: str, warn: WarnSink = warn_to_stderr) -> None:
+    """Remove the budget file, best-effort.
+
+    A missing file is a silent success. A removal the OS refuses is never
+    raised: the budget is cleared on the way out of a supervised run, where an
+    error here would replace the run's own outcome. A file left behind is
+    treated as absent once the supervise lock is released.
+
+    Args:
+        root: Repository root under which the budget file lives.
+        warn: Sink that receives the message when the removal fails.
+    """
+    path = Path(budget_path(root))
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        warn(f"warning: could not remove the budget file {path}: {error}")
 
 
 @dataclass(frozen=True, slots=True)

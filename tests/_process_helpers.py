@@ -582,6 +582,7 @@ class CleanupRegistry:
 
     def __init__(self) -> None:
         self._live: list[Callable[[], None]] = []
+        self._uninstall_counts: list[int] = []
 
     def install(self, cleanup: Callable[[], None]) -> Callable[[], None]:
         """Record *cleanup* as armed.
@@ -590,11 +591,14 @@ class CleanupRegistry:
             cleanup: The termination cleanup being installed.
 
         Returns:
-            A callable that removes *cleanup* from the armed set.
+            A callable that removes *cleanup* from the armed set and counts the call.
         """
         self._live.append(cleanup)
+        slot = len(self._uninstall_counts)
+        self._uninstall_counts.append(0)
 
         def uninstall() -> None:
+            self._uninstall_counts[slot] += 1
             self._live = [live for live in self._live if live is not cleanup]
 
         return uninstall
@@ -602,6 +606,10 @@ class CleanupRegistry:
     def live(self) -> list[Callable[[], None]]:
         """Return the cleanups installed and not yet uninstalled, in install order."""
         return list(self._live)
+
+    def uninstall_counts(self) -> list[int]:
+        """Return how many times each installed cleanup was uninstalled, in install order."""
+        return list(self._uninstall_counts)
 
 
 def track_cleanups(monkeypatch: "pytest.MonkeyPatch", module: str) -> CleanupRegistry:

@@ -40,6 +40,7 @@ from gymrat.telemetry.provider import (
     start_span,
 )
 from gymrat.telemetry.session_span import existing_session_span
+from gymrat.utils import warn_to_stderr
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
     from gymrat.supervisor.driver import SessionPrompt
     from gymrat.supervisor.events import LaunchEvent, SessionEvent, SessionObserver
     from gymrat.supervisor.supervise import SupervisionResult
+    from gymrat.utils import WarnSink
 
 RUN_COST_USD = "gymrat.run.cost_usd"
 
@@ -131,9 +133,9 @@ def setup_tracing(
     *,
     branch: str,
     prompt: SessionPrompt,
-    reporter_observer: SessionObserver,
     resumed: bool = False,
-) -> tuple[SessionPrompt, SessionObserver, TracingState]:
+    warn: WarnSink = warn_to_stderr,
+) -> tuple[SessionPrompt, SessionObserver | None, TracingState]:
     """Configure tracing and open the run span, and the session span on the opening launch.
 
     The session span is emitted once per session, by the launch that opened
@@ -147,21 +149,21 @@ def setup_tracing(
         branch: Git branch name recorded on the session span.
         prompt: The session prompt; a ``traceparent`` is injected when tracing
             activates.
-        reporter_observer: The reporter's event observer, combined with the
-            tracing observer when tracing activates.
         resumed: Whether the launch resumes a session an earlier launch
             opened, in which case no session span is started.
+        warn: Receives one message naming each failure of the run-span
+            observer's mirror.
 
     Returns:
         A three-tuple of ``(prompt, observer, state)``.  When no tracing
         endpoint is configured, or the spans it opens carry no valid trace
-        context (as when the SDK is disabled), the prompt and observer are
-        returned unchanged with an empty state and no spans left open; when
-        tracing is active the prompt carries a ``traceparent`` and the observer
-        fans out to both the reporter and the tracing observer.
+        context (as when the SDK is disabled), the prompt is returned unchanged
+        with no observer, an empty state and no spans left open; when tracing
+        is active the prompt carries a ``traceparent`` and the observer mirrors
+        events onto the run span.
     """
     if not configure_tracing(launch.session_id):
-        return prompt, reporter_observer, TracingState()
+        return prompt, None, TracingState()
 
     session_span = None
     if resumed:
@@ -179,10 +181,10 @@ def setup_tracing(
         run_span.end()
         if session_span is not None:
             session_span.end()
-        return prompt, reporter_observer, TracingState()
+        return prompt, None, TracingState()
 
     prompt = replace(prompt, traceparent=format_traceparent(run_span))
-    observer = combine_observers(reporter_observer, create_run_span_observer(run_span))
+    observer = create_run_span_observer(run_span, warn=warn)
     return prompt, observer, TracingState(session_span=session_span, run_span=run_span)
 
 
@@ -254,16 +256,17 @@ def run_event(event: SessionEvent) -> tuple[str, Attrs] | None:
     return None
 
 
-def create_run_span_observer(span: Span) -> SessionObserver:
+def create_run_span_observer(span: Span, *, warn: WarnSink = warn_to_stderr) -> SessionObserver:
     """Mirror each supervisor event onto the run span as a span event.
 
     A failure to mirror an event never reaches the caller, so telemetry cannot
     end the session: it is reported the way
     :func:`~gymrat.supervisor.events.combine_observers` reports any observer
-    failure, as one :class:`RuntimeWarning`.
+    failure.
 
     Args:
         span: The run span the events are added to.
+        warn: Receives one message naming each mirroring failure.
 
     Returns:
         The observer mirroring each supervisor event onto ``span``.
@@ -275,7 +278,7 @@ def create_run_span_observer(span: Span) -> SessionObserver:
             name, attributes = mirrored
             span.add_event(name, attributes=attributes, timestamp=event.at)
 
-    # Do not catch failures in ``observe`` and log them: ``combine_observers`` reports them as a
-    # RuntimeWarning, and with no logging handler configured a logged traceback prints over the
+    # Do not catch failures in ``observe`` and log them: ``combine_observers`` hands them to
+    # ``warn``, and with no logging handler configured a logged traceback prints over the
     # supervise dashboard.
-    return combine_observers(observe)
+    return combine_observers(observe, warn=warn)
