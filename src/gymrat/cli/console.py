@@ -1,27 +1,19 @@
-"""CLI console state: debug mode, color resolution, stream helpers, the stderr console.
+"""CLI console state: debug mode, color resolution, the stderr console.
 
 This module owns the process-wide ``--debug`` and ``--color`` / ``--no-color``
-state every command reads, the stream classification the output paths share,
-and the stderr ``Console`` factory built on top of them. It sits below
-:mod:`gymrat.cli.exit` and must never import it.
+state every command reads and the stderr ``Console`` factory built on top of
+them. It sits below :mod:`gymrat.cli.exit` and must never import it.
 """
 
-import errno
-import io
-import os
 import sys
-from typing import IO, override
+from typing import override
 
 from rich.console import Console, HighlighterType, JustifyMethod, OverflowMethod
 from rich.style import Style
 from rich.text import Text
 
 from gymrat.cli.style import CLI_THEME
-from gymrat.utils import stream_color_from_env
-
-# ---------------------------------------------------------------------------
-# Debug mode
-# ---------------------------------------------------------------------------
+from gymrat.utils import is_broken_pipe, point_stream_at_devnull, stream_color_from_env
 
 
 class _DebugState:
@@ -30,77 +22,14 @@ class _DebugState:
     enabled: bool = False
 
 
-def set_debug_mode(value: bool) -> None:  # noqa: FBT001 -- 1:1 setter for the --debug flag
+def set_debug_mode(*, enabled: bool) -> None:
     """Set the module debug flag that governs stack traces in error output."""
-    _DebugState.enabled = value
+    _DebugState.enabled = enabled
 
 
 def is_debug_mode() -> bool:
     """Whether ``--debug`` is on, so error and warning output should carry stack traces."""
     return _DebugState.enabled
-
-
-def apply_debug(debug: bool) -> None:  # noqa: FBT001 -- 1:1 pass-through of a command's --debug flag
-    """Enable debug mode when a command's own ``--debug`` flag is set.
-
-    Never disables debug mode: a command's local ``--debug`` defaulting to
-    ``False`` must not undo the root ``--debug`` flag already applied.
-
-    Args:
-        debug: The command's own ``--debug`` flag.
-    """
-    if debug:
-        set_debug_mode(True)
-
-
-# ---------------------------------------------------------------------------
-# Stream helpers
-# ---------------------------------------------------------------------------
-
-
-def is_broken_pipe(error: BaseException) -> bool:
-    """Whether ``error`` is a write to a pipe whose reading end has closed.
-
-    POSIX reports it as ``BrokenPipeError``. Windows reports it as a plain
-    ``OSError`` with ``EINVAL``: the C runtime maps the ``ERROR_NO_DATA`` a write
-    to a closed pipe fails with onto that errno, so no ``BrokenPipeError`` is
-    ever raised there.
-
-    Args:
-        error: The exception a stream write or flush raised.
-
-    Returns:
-        ``True`` when ``error`` means the pipe's reader is gone.
-    """
-    if isinstance(error, BrokenPipeError):
-        return True
-    return sys.platform == "win32" and isinstance(error, OSError) and error.errno == errno.EINVAL
-
-
-def point_stream_at_devnull(stream: IO[str]) -> None:
-    """Redirect ``stream``'s file descriptor to devnull; a stream without one is left alone.
-
-    The interpreter flushes a stream's unwritten buffer at shutdown. After a
-    failed write that flush would fail again and turn the exit status into 120;
-    a devnull descriptor lets it succeed.
-
-    Args:
-        stream: The stream whose descriptor is redirected.
-    """
-    try:
-        fd = stream.fileno()
-    except io.UnsupportedOperation:
-        return
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(devnull, fd)
-    finally:
-        os.close(devnull)
-
-
-# ---------------------------------------------------------------------------
-# Color control
-# ---------------------------------------------------------------------------
 
 
 class _ColorState:
@@ -114,30 +43,19 @@ class _ColorState:
     override: bool | None = None
 
 
-def set_color_override(override: bool | None) -> None:  # noqa: FBT001 -- 1:1 setter for the --no-color flag
+def set_color_override(*, override: bool | None) -> None:
     """Set the module-level color override read by every color surface."""
     _ColorState.override = override
-
-
-def apply_color_override(color: bool | None) -> None:  # noqa: FBT001 -- 1:1 pass-through of the --color/--no-color flag
-    """Install a subcommand's color override for every color surface.
-
-    Only writes when ``color`` is not ``None`` so a subcommand that declares no
-    local ``--color`` flag does not erase a root flag already applied.
-
-    Args:
-        color: The subcommand's ``--color``/``--no-color`` flag, or ``None`` when neither was given.
-    """
-    if color is not None:
-        set_color_override(color)
 
 
 def apply_command_flags(*, debug: bool, color: bool | None) -> None:
     """Install the root's or a command's ``--debug`` and ``--color`` / ``--no-color`` flags.
 
     A command's flags never undo the root's: debug mode is only ever switched
-    on, and a call given no color flag leaves the override alone. Once installed, a
-    ``None`` override passed to :func:`resolve_stream_color` or
+    on, since a command's local ``--debug`` defaulting to ``False`` must not undo
+    a root ``--debug``, and a call given no color flag leaves the override alone,
+    so a command without a local ``--color`` does not erase the root's. Once
+    installed, a ``None`` override passed to :func:`resolve_stream_color` or
     :func:`stderr_console` resolves to the command's flag.
 
     Args:
@@ -145,8 +63,10 @@ def apply_command_flags(*, debug: bool, color: bool | None) -> None:
         color: The ``--color``/``--no-color`` flag at this level, or ``None``
             when neither was given.
     """
-    apply_debug(debug)
-    apply_color_override(color)
+    if debug:
+        set_debug_mode(enabled=True)
+    if color is not None:
+        set_color_override(override=color)
 
 
 def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa: FBT001 -- the resolved --color/--no-color preference, never a bare literal
@@ -171,11 +91,6 @@ def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa
     if _ColorState.override is not None:
         return _ColorState.override
     return stream_color_from_env(stream)
-
-
-# ---------------------------------------------------------------------------
-# Stderr console
-# ---------------------------------------------------------------------------
 
 
 class _StderrConsole(Console):

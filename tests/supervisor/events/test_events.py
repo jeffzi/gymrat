@@ -10,16 +10,27 @@ or infinite float nested in a free-form payload as ``null`` on either path,
 refusing a non-finite value in a typed float field at construction, and
 writing a value pydantic cannot serialize as its ``str()``; ``event_from_wire``
 inverts it and returns ``None`` for anything it cannot reconstruct;
-``combine_observers`` is pinned on ordering, identity, and error propagation.
+``combine_observers`` sends every observer failure to its warn sink, which
+defaults to stderr.
+
+The event-log writer, ``create_event_log_writer``, appends one ``to_json_line``
+line per event to a log file; its tests pin the file-writing side effects, the
+lazy directory creation (including re-creation after the directory is removed),
+and the failure surface, alongside the up-front write check
+``probe_event_log_path``.
 """
 
 import json
+import re
+import shutil
 from collections.abc import Callable
 from functools import partial
+from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
+from gymrat.errors import GymratError
 from gymrat.session.records import decode_log_line
 from gymrat.supervisor.events import (
     CapEvent,
@@ -35,7 +46,9 @@ from gymrat.supervisor.events import (
     TurnEndEvent,
     UsageUpdateEvent,
     combine_observers,
+    create_event_log_writer,
     event_from_wire,
+    probe_event_log_path,
     to_json_line,
 )
 from tests.session.records._fixtures import (
@@ -43,17 +56,18 @@ from tests.session.records._fixtures import (
 )
 from tests.supervisor._fixtures import (
     NotJsonEncodable,
-    collecting_observer,
     make_launch,
     make_turn_end,
+    raising_observer,
+    read_log_lines,
 )
 
 # ---------------------------------------------------------------------------
 # Event vocabulary — at: int (nanoseconds)
 # ---------------------------------------------------------------------------
 
-# One instance per event type, shared between the type-literal, JSON-serialization,
-# and wire-round-trip tests below so each event's fields are declared exactly once.
+# One instance per event type, shared between the JSON-serialization and
+# wire-round-trip tests below so each event's fields are declared exactly once.
 _THINKING_UPDATE = ThinkingUpdateEvent(at=1_000_000_000, estimated_tokens=100, delta=10)
 _TOOL_START = ToolStartEvent(
     at=2_000_000_000, tool_use_id="t1", tool_name="Read", input={"path": "/x"}, input_summary="/x"
@@ -78,23 +92,26 @@ _TURN_END = TurnEndEvent(
 )
 _FOLLOW_UP = FollowUpEvent(at=13_000_000_000, action="replied", reason="user asked", text="hello")
 _COMPACTION = CompactionEvent(at=14_000_000_000)
+_LAUNCH_WITH_OPTIONALS = make_launch(
+    max_usd=1.5, model="opus", effort="high", dirty=DirtyInfo(file_count=4)
+)
 
-#: Every event sample with its type literal and a unique parametrize id.
-#: The two ``model_phase`` variants carry phase-specific ids so pytest's
-#: strict parametrize-id uniqueness check passes.
-EVENT_SAMPLES: list[tuple[SessionEvent, str, str]] = [
-    (_THINKING_UPDATE, "thinking_update", "thinking_update"),
-    (_TOOL_START, "tool_start", "tool_start"),
-    (_TOOL_END, "tool_end", "tool_end"),
-    (_TEXT_DELTA, "text_delta", "text_delta"),
-    (_USAGE_UPDATE, "usage_update", "usage_update"),
-    (_CAP, "cap", "cap"),
-    (_MODEL_PHASE_THINKING, "model_phase", "model_phase-thinking"),
-    (_MODEL_PHASE_TOOL_INPUT, "model_phase", "model_phase-tool_input"),
-    (make_launch(), "launch", "launch"),
-    (_TURN_END, "turn_end", "turn_end"),
-    (_FOLLOW_UP, "follow_up", "follow_up"),
-    (_COMPACTION, "compaction", "compaction"),
+#: Every event sample with a unique parametrize id. The two ``model_phase``
+#: variants carry phase-specific ids so pytest's strict parametrize-id
+#: uniqueness check passes.
+EVENT_SAMPLES: list[tuple[SessionEvent, str]] = [
+    (_THINKING_UPDATE, "thinking_update"),
+    (_TOOL_START, "tool_start"),
+    (_TOOL_END, "tool_end"),
+    (_TEXT_DELTA, "text_delta"),
+    (_USAGE_UPDATE, "usage_update"),
+    (_CAP, "cap"),
+    (_MODEL_PHASE_THINKING, "model_phase-thinking"),
+    (_MODEL_PHASE_TOOL_INPUT, "model_phase-tool_input"),
+    (make_launch(), "launch"),
+    (_TURN_END, "turn_end"),
+    (_FOLLOW_UP, "follow_up"),
+    (_COMPACTION, "compaction"),
 ]
 
 # Sub-agent events: the samples above with a ``parent_tool_use_id`` set.
@@ -124,6 +141,23 @@ _TOOL_START_INPUT_NONE = ToolStartEvent(
     at=2_000_000_000, tool_use_id="t1", tool_name="Read", input=None, input_summary="none"
 )
 _FOLLOW_UP_NO_OPTIONALS = FollowUpEvent(at=20_000_000_000, action="waiting")
+
+#: Every non-finite float, each with its parametrize id.
+_NON_FINITE_FLOATS = [
+    (float("nan"), "nan"),
+    (float("inf"), "positive-infinity"),
+    (float("-inf"), "negative-infinity"),
+]
+
+#: Text holding a lone surrogate, which forces the ASCII-escaping fallback
+#: serializer, next to a raw non-ASCII character it must escape.
+_SURROGATE_TEXT = "café \ud800"
+
+
+class _Limit(BaseModel):
+    """A model nested in a free-form payload: JSON mode keeps its float field's NaN/inf."""
+
+    max: float
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +263,7 @@ JSON_CASES = [
         id="launch-no-optionals",
     ),
     pytest.param(
-        make_launch(max_usd=1.5, model="opus", effort="high", dirty=DirtyInfo(file_count=4)),
+        _LAUNCH_WITH_OPTIONALS,
         {
             "type": "launch",
             "at": 1_000_000_000_000,
@@ -344,11 +378,7 @@ JSON_CASES = [
             },
             id=f"nested-{case_id}-as-null",
         )
-        for value, case_id in [
-            (float("nan"), "nan"),
-            (float("inf"), "positive-infinity"),
-            (float("-inf"), "negative-infinity"),
-        ]
+        for value, case_id in _NON_FINITE_FLOATS
     ),
     pytest.param(
         ToolStartEvent(
@@ -372,17 +402,12 @@ JSON_CASES = [
 
 
 @pytest.mark.parametrize(("event", "expected"), JSON_CASES)
-def test_to_json_line_when_serializing_does_use_snake_case_keys(
+def test_to_json_line_when_given_event_does_write_its_wire_object(
     event: SessionEvent, expected: dict[str, object]
 ):
     parsed = json.loads(to_json_line(event))
 
     assert parsed == expected
-
-
-#: A turn-end text holding a lone surrogate, which forces the ASCII-escaping
-#: fallback serializer, next to a raw non-ASCII character it must escape.
-_SURROGATE_TEXT = "café \ud800"
 
 
 @pytest.mark.parametrize(
@@ -413,139 +438,25 @@ _SURROGATE_TEXT = "café \ud800"
             '{"type":"text_delta","at":5000000000,"chunk":"a\\u2029b"}',
             id="paragraph-separator-escaped",
         ),
-        pytest.param(
-            TextDeltaEvent(at=5_000_000_000, chunk="café \ud800"),
-            '{"type":"text_delta","at":5000000000,"chunk":"caf\\u00e9 \\ud800"}',
-            id="lone-surrogate-escapes-all-non-ascii",
-        ),
-        pytest.param(
-            make_turn_end(at=12_000_000_000, text=_SURROGATE_TEXT, cost_usd=0.05),
-            '{"type":"turn_end","at":12000000000,"text":"caf\\u00e9 \\ud800",'
-            '"cost_usd":0.05,"origin":"agent","budget_exhausted":false}',
-            id="lone-surrogate-keeps-finite-float",
-        ),
-        pytest.param(
-            make_turn_end(at=12_000_000_000, text=_SURROGATE_TEXT, cost_usd=1e-07),
-            '{"type":"turn_end","at":12000000000,"text":"caf\\u00e9 \\ud800",'
-            '"cost_usd":1e-07,"origin":"agent","budget_exhausted":false}',
-            id="lone-surrogate-keeps-float-exponent",
-        ),
     ],
 )
-def test_to_json_line_when_serializing_does_write_exact_compact_line(
+def test_to_json_line_when_text_is_utf8_encodable_does_write_exact_compact_line(
     event: SessionEvent, expected_line: str
 ):
-    assert to_json_line(event) == expected_line
+    line = to_json_line(event)
+
+    assert line == expected_line
 
 
-# ---------------------------------------------------------------------------
-# event_from_wire — snake_case wire
-# ---------------------------------------------------------------------------
+def test_to_json_line_when_event_holds_lone_surrogate_does_escape_all_non_ascii():
+    event = make_turn_end(at=12_000_000_000, text=_SURROGATE_TEXT, cost_usd=1e-07)
 
-ROUND_TRIP_EVENTS = [pytest.param(event, id=id_) for event, _, id_ in EVENT_SAMPLES] + [
-    pytest.param(
-        make_launch(max_usd=1.5, model="opus", dirty=DirtyInfo(file_count=4)),
-        id="launch-with-optionals",
-    ),
-    pytest.param(_FOLLOW_UP_NO_OPTIONALS, id="follow_up-no-optionals"),
-    pytest.param(
-        TextDeltaEvent(at=5_000_000_000, chunk="a\x85b\u2028c\u2029d"),
-        id="text_delta-unicode-line-breaks",
-    ),
-    pytest.param(
-        TextDeltaEvent(at=5_000_000_000, chunk="café \ud800"),
-        id="text_delta-lone-surrogate",
-    ),
-    pytest.param(_TOOL_START_INPUT_NONE, id="tool_start-input-none"),
-    pytest.param(_THINKING_UPDATE_WITH_PARENT, id="thinking_update-with-parent"),
-    pytest.param(_TOOL_START_WITH_PARENT, id="tool_start-with-parent"),
-    pytest.param(_TOOL_END_WITH_PARENT, id="tool_end-with-parent"),
-    pytest.param(_TEXT_DELTA_WITH_PARENT, id="text_delta-with-parent"),
-]
+    line = to_json_line(event)
 
-
-@pytest.mark.parametrize("event", ROUND_TRIP_EVENTS)
-def test_event_from_wire_when_given_serialized_event_does_reconstruct_it(event: SessionEvent):
-    assert event_from_wire(json.loads(to_json_line(event))) == event
-
-
-@pytest.mark.parametrize(
-    "obj",
-    [
-        pytest.param([1, 2, 3], id="non-dict-list"),
-        pytest.param("nope", id="non-dict-str"),
-        pytest.param({"at": 1}, id="missing-type"),
-        pytest.param({"type": "mystery", "at": 1}, id="unknown-type"),
-        pytest.param({"type": "usage_update", "at": 6}, id="missing-required-field"),
-        pytest.param(
-            {"type": "cap", "at": 7_000_000_000, "cap": "wall-clock"}, id="cap-missing-action"
-        ),
-        pytest.param(
-            {"type": "model_phase", "at": 1_000_000_000, "phase": "unknown"},
-            id="model-phase-unknown",
-        ),
-        pytest.param({"type": "model_phase", "phase": "thinking"}, id="model-phase-missing-at"),
-        pytest.param(
-            {"type": "usage_update", "at": 6_000_000_000, "cost_usd": 0.01, "schema": 1},
-            id="schema-on-non-launch-event",
-        ),
-    ],
-)
-def test_event_from_wire_when_input_unrecognized_does_return_none(obj: object):
-    assert event_from_wire(obj) is None
-
-
-# ---------------------------------------------------------------------------
-# combine_observers
-# ---------------------------------------------------------------------------
-
-
-def test_combine_observers_when_invoked_does_call_each_with_the_identical_event():
-    first = collecting_observer()
-    second = collecting_observer()
-    combined = combine_observers(first.observer, second.observer)
-    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
-
-    combined(event)
-
-    assert first.events[0] is event
-    assert second.events[0] is event
-
-
-def test_combine_observers_when_given_no_observers_does_not_raise():
-    combined = combine_observers()
-    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
-
-    combined(event)
-
-
-def test_combine_observers_when_an_observer_raises_does_warn_and_call_remaining():
-    boom_message = "observer failure"
-
-    def boom(_: object) -> None:
-        raise RuntimeError(boom_message)
-
-    later = collecting_observer()
-    combined = combine_observers(boom, later.observer)
-    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
-
-    with pytest.warns(RuntimeWarning, match=boom_message) as caught:
-        combined(event)
-
-    assert later.events == [event]
-    assert [warning.filename for warning in caught] == [__file__]
-
-
-# ---------------------------------------------------------------------------
-# non-finite float serialization
-# ---------------------------------------------------------------------------
-
-
-_NON_FINITE_FLOATS = [
-    pytest.param(float("nan"), id="nan"),
-    pytest.param(float("inf"), id="positive-infinity"),
-    pytest.param(float("-inf"), id="negative-infinity"),
-]
+    assert line == (
+        '{"type":"turn_end","at":12000000000,"text":"caf\\u00e9 \\ud800",'
+        '"cost_usd":1e-07,"origin":"agent","budget_exhausted":false}'
+    )
 
 
 def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write_null():
@@ -553,7 +464,7 @@ def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write
         at=2_000_000_000,
         tool_use_id="t1",
         tool_name="Probe",
-        input={"weights": [float("nan"), 1.5, float("-inf")], "limit": {"max": float("inf")}},
+        input={"weights": [float("nan"), 1.5, float("-inf")], "limit": _Limit(max=float("inf"))},
         input_summary=_SURROGATE_TEXT,
     )
 
@@ -570,11 +481,91 @@ def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write
 
 
 # ---------------------------------------------------------------------------
+# event_from_wire — snake_case wire
+# ---------------------------------------------------------------------------
+
+ROUND_TRIP_EVENTS = [pytest.param(event, id=id_) for event, id_ in EVENT_SAMPLES] + [
+    pytest.param(_LAUNCH_WITH_OPTIONALS, id="launch-with-optionals"),
+    pytest.param(
+        TextDeltaEvent(at=5_000_000_000, chunk="a\x85b\u2028c\u2029d"),
+        id="text_delta-unicode-line-breaks",
+    ),
+    pytest.param(
+        TextDeltaEvent(at=5_000_000_000, chunk=_SURROGATE_TEXT),
+        id="text_delta-lone-surrogate",
+    ),
+    pytest.param(_TOOL_START_INPUT_NONE, id="tool_start-input-none"),
+]
+
+
+@pytest.mark.parametrize("event", ROUND_TRIP_EVENTS)
+def test_event_from_wire_when_given_serialized_event_does_reconstruct_it(event: SessionEvent):
+    reconstructed = event_from_wire(json.loads(to_json_line(event)))
+
+    assert reconstructed == event
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        pytest.param([1, 2, 3], id="non-dict-list"),
+        pytest.param({"at": 1}, id="missing-type"),
+        pytest.param({"type": "mystery", "at": 1}, id="unknown-type"),
+        pytest.param({"type": "usage_update", "at": 6}, id="missing-required-field"),
+        pytest.param(
+            {"type": "model_phase", "at": 1_000_000_000, "phase": "unknown"},
+            id="model-phase-unknown",
+        ),
+        pytest.param(
+            {"type": "usage_update", "at": 6_000_000_000, "cost_usd": 0.01, "schema": 1},
+            id="schema-on-non-launch-event",
+        ),
+    ],
+)
+def test_event_from_wire_when_input_unrecognized_does_return_none(obj: object):
+    reconstructed = event_from_wire(obj)
+
+    assert reconstructed is None
+
+
+# ---------------------------------------------------------------------------
+# combine_observers
+# ---------------------------------------------------------------------------
+
+
+_OBSERVER_FAILURE = "observer failure"
+
+
+def test_combine_observers_when_an_observer_raises_twice_does_send_each_failure_to_the_sink():
+    messages: list[str] = []
+    combined = combine_observers(raising_observer(_OBSERVER_FAILURE), warn=messages.append)
+    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
+
+    combined(event)
+    combined(event)
+
+    assert [_OBSERVER_FAILURE in message for message in messages] == [True, True]
+
+
+def test_combine_observers_when_no_sink_given_does_write_the_failure_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+):
+    combined = combine_observers(raising_observer(_OBSERVER_FAILURE))
+    event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
+
+    combined(event)
+
+    assert _OBSERVER_FAILURE in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
 # non-finite floats refused at construction
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("value", _NON_FINITE_FLOATS)
+@pytest.mark.parametrize(
+    "value", [pytest.param(value, id=case_id) for value, case_id in _NON_FINITE_FLOATS]
+)
 @pytest.mark.parametrize(
     ("build", "field"),
     [
@@ -593,3 +584,124 @@ def test_event_when_float_field_is_non_finite_does_raise(
 ):
     with pytest.raises(ValidationError, match="finite number"):
         build(**{field: value})
+
+
+# ---------------------------------------------------------------------------
+# create_event_log_writer
+# ---------------------------------------------------------------------------
+
+
+def test_create_event_log_writer_when_observing_events_does_append_one_utf8_lf_line_each(
+    tmp_path: Path,
+):
+    log_path = tmp_path / "events.jsonl"
+    writer = create_event_log_writer(log_path)
+    events = [
+        UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01),
+        TextDeltaEvent(at=2_000_000_000_000, chunk="café"),
+    ]
+    expected = "".join(to_json_line(event) + "\n" for event in events)
+
+    for event in events:
+        writer(event)
+
+    assert log_path.read_bytes() == expected.encode("utf-8")
+
+
+def test_create_event_log_writer_when_created_does_not_create_the_parent_before_a_write(
+    tmp_path: Path,
+):
+    log_path = tmp_path / "nested" / "events.jsonl"
+
+    create_event_log_writer(log_path)
+
+    assert not log_path.parent.exists()
+
+
+def test_create_event_log_writer_when_parent_missing_does_create_tree_on_first_write(
+    tmp_path: Path,
+):
+    log_path = tmp_path / "nested" / "deep" / "events.jsonl"
+    writer = create_event_log_writer(log_path)
+    event = UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01)
+
+    writer(event)
+
+    assert read_log_lines(log_path) == [json.loads(to_json_line(event))]
+
+
+def test_create_event_log_writer_when_write_fails_does_raise_gymrat_error_naming_path_from_os_error(
+    tmp_path: Path,
+):
+    log_path = tmp_path / "a-directory"
+    log_path.mkdir()
+    writer = create_event_log_writer(log_path)
+
+    with pytest.raises(GymratError, match=re.escape(str(log_path))) as exc_info:
+        writer(UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01))
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+
+
+# ---------------------------------------------------------------------------
+# event log directory re-creation
+# ---------------------------------------------------------------------------
+
+
+def test_create_event_log_writer_when_parent_removed_after_first_write_does_recreate_on_next(
+    tmp_path: Path,
+):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    log_path = log_dir / "events.jsonl"
+    writer = create_event_log_writer(log_path)
+    writer(UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01))
+    shutil.rmtree(log_dir)
+    event = UsageUpdateEvent(at=2_000_000_000_000, cost_usd=0.02)
+
+    writer(event)
+
+    assert read_log_lines(log_path) == [json.loads(to_json_line(event))]
+
+
+# ---------------------------------------------------------------------------
+# probe_event_log_path — up-front write check
+# ---------------------------------------------------------------------------
+
+
+def _log_under_a_file(tmp_path: Path) -> Path:
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("I am a file", encoding="utf-8")
+    return blocker / "events.jsonl"
+
+
+def _log_at_a_directory(tmp_path: Path) -> Path:
+    log_path = tmp_path / "a-directory"
+    log_path.mkdir()
+    return log_path
+
+
+@pytest.mark.parametrize(
+    "build_log_path",
+    [
+        pytest.param(_log_under_a_file, id="parent-is-a-file"),
+        pytest.param(_log_at_a_directory, id="path-is-a-directory"),
+    ],
+)
+def test_probe_event_log_path_when_not_writable_does_raise_gymrat_error_naming_path_from_os_error(
+    tmp_path: Path, build_log_path: Callable[[Path], Path]
+):
+    log_path = build_log_path(tmp_path)
+
+    with pytest.raises(GymratError, match=re.escape(str(log_path))) as exc_info:
+        probe_event_log_path(log_path)
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+
+
+def test_probe_event_log_path_when_parent_missing_does_create_it(tmp_path: Path):
+    log_path = tmp_path / "nested" / "events.jsonl"
+
+    probe_event_log_path(log_path)
+
+    assert log_path.parent.is_dir()

@@ -5,7 +5,7 @@ with, and the abort event a termination signal trips.
 """
 
 import asyncio
-from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 import pytest
 
@@ -16,12 +16,8 @@ from gymrat.cli.run_setup import (
     resolve_render_mode,
     run_with_signal_abort,
 )
-from tests._process_helpers import fake_install
-from tests._rich import track
+from tests._rich import TERMINATION_SIGNAL, track
 from tests._streams import FakeStream
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 # ---------------------------------------------------------------------------
 # resolve_render_mode
@@ -29,29 +25,27 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.parametrize(
-    ("tty", "expected"),
+    ("tty", "force_color", "no_color", "expected"),
     [
-        pytest.param(False, "plain", id="non-tty-plain"),
-        pytest.param(True, "live", id="tty-live"),
+        pytest.param(False, None, None, "plain", id="non-tty-plain"),
+        pytest.param(True, None, None, "live", id="tty-live"),
+        pytest.param(True, None, "1", "live", id="no-color-on-a-tty-still-live"),
+        pytest.param(False, "1", None, "plain", id="force-color-off-a-tty-still-plain"),
     ],
 )
-def test_resolve_render_mode_when_called_does_map_tty_to_strategy(
-    tty: bool,
-    expected: str,
+def test_resolve_render_mode_when_called_does_follow_the_tty_alone(
+    *,
     monkeypatch: pytest.MonkeyPatch,
+    color_env: Callable[[str | None, str | None], None],
+    tty: bool,
+    force_color: str | None,
+    no_color: str | None,
+    expected: str,
 ):
     monkeypatch.setattr("sys.stderr", FakeStream(tty=tty))
+    color_env(force_color, no_color)
 
     assert resolve_render_mode() == expected
-
-
-def test_resolve_render_mode_when_no_color_set_does_still_use_live(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
-    monkeypatch.setenv("NO_COLOR", "1")
-
-    assert resolve_render_mode() == "live"
 
 
 # ---------------------------------------------------------------------------
@@ -81,13 +75,10 @@ def test_begin_run_when_stderr_tty_varies_does_return_a_reporter_live_only_on_a_
 # ---------------------------------------------------------------------------
 
 
-async def test_run_with_signal_abort_when_cleanup_invoked_does_kill_groups_before_setting_abort(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_run_with_signal_abort_when_termination_signal_received_does_kill_groups_before_setting_abort(
+    monkeypatch: pytest.MonkeyPatch, raise_signal: Callable[[int], int]
 ):
-    captured_cleanup: list[Callable[[], None]] = []
     captured_abort: list[asyncio.Event] = []
-    monkeypatch.setattr(run_setup, "install_termination_cleanup", fake_install(captured_cleanup))
-
     observed: dict[str, bool] = {}
 
     def _kill() -> None:
@@ -98,7 +89,7 @@ async def test_run_with_signal_abort_when_cleanup_invoked_does_kill_groups_befor
 
     async def execute(abort: asyncio.Event) -> str:
         captured_abort.append(abort)
-        captured_cleanup[0]()
+        raise_signal(TERMINATION_SIGNAL)
         observed["abort_after_cleanup"] = abort.is_set()
         return "done"
 

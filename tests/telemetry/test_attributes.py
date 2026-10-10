@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from gymrat.session.records import (
     CommandRecord,
     IterationPrimary,
     SessionLogRecord,
-)
-from gymrat.telemetry.provider import (
-    command_attributes,
     record_event,
 )
+from gymrat.telemetry.command_span import command_attributes
+from gymrat.telemetry.provider import run_attributes
 from tests.session.records._fixtures import (
     SESSION_ID,
     baseline_record,
@@ -25,6 +26,10 @@ from tests.session.records._fixtures import (
     iteration_record,
     stop_record,
 )
+from tests.supervisor._fixtures import make_launch
+
+if TYPE_CHECKING:
+    from gymrat.supervisor.events import LaunchEvent
 
 # ---------------------------------------------------------------------------
 # command_attributes
@@ -81,6 +86,53 @@ def test_command_attributes_when_called_does_map_fields_and_scalar_args_only(
     record: CommandRecord, expected: dict[str, object]
 ):
     result = command_attributes(record, session_id=SESSION_ID)
+
+    assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# run_attributes
+# ---------------------------------------------------------------------------
+
+
+_FIXED_RUN_ATTRIBUTES = {
+    "gymrat.session.id": SESSION_ID,
+    "gymrat.run.head_sha": "abc123def",
+    "gymrat.run.max_minutes": 60.0,
+    "gen_ai.provider.name": "anthropic",
+}
+
+
+@pytest.mark.parametrize(
+    ("launch", "expected"),
+    [
+        pytest.param(
+            make_launch(session_id=SESSION_ID, max_minutes=60.0),
+            _FIXED_RUN_ATTRIBUTES,
+            id="options-unset-are-left-off",
+        ),
+        pytest.param(
+            make_launch(
+                session_id=SESSION_ID,
+                max_minutes=60.0,
+                max_usd=5.0,
+                effort="high",
+                model="claude-sonnet-4-20250514",
+            ),
+            {
+                **_FIXED_RUN_ATTRIBUTES,
+                "gymrat.run.max_usd": 5.0,
+                "gymrat.run.effort": "high",
+                "gen_ai.request.model": "claude-sonnet-4-20250514",
+            },
+            id="options-set-are-recorded",
+        ),
+    ],
+)
+def test_run_attributes_when_called_does_map_the_launch_leaving_unset_options_off(
+    launch: LaunchEvent, expected: dict[str, object]
+):
+    result = run_attributes(launch)
 
     assert result == expected
 
@@ -185,4 +237,6 @@ def test_command_attributes_when_called_does_map_fields_and_scalar_args_only(
 def test_record_event_when_called_does_return_the_event_name_and_its_scalar_attributes(
     record: SessionLogRecord, expected: tuple[str, dict[str, object]]
 ):
-    assert record_event(record) == expected
+    result = record_event(record)
+
+    assert result == expected

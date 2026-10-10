@@ -25,14 +25,16 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
     from gymrat.cli.supervise.progress import SuperviseReporter
-    from gymrat.cli.supervise.types import ReadSessionResult
     from gymrat.model import Direction
+    from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.events import SessionObserver
     from gymrat.supervisor.supervise import SupervisionResult
+    from gymrat.telemetry.run_spans import TracingState
+    from gymrat.utils import WarnSink
 
 from gymrat.adapters import get_adapter
 from gymrat.cli.console import apply_command_flags, resolve_stream_color
-from gymrat.cli.exit import exit_with_error, run_guarded, write_and_flush, write_stdout
+from gymrat.cli.exit import exit_with_error, run_guarded, write_stdout
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BaselineOption,
     ColorOption,
@@ -59,7 +61,6 @@ from gymrat.sampling import resolve_metric_meta
 from gymrat.session.budget import (
     Budget,
     clear_budget,
-    minutes_to_ms,
     write_budget,
 )
 from gymrat.session.lock import acquire_lock
@@ -87,15 +88,19 @@ from gymrat.supervisor.hooks import supervise_hooks_factory
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
 from gymrat.supervisor.supervise import SupervisedSession, supervise
 from gymrat.supervisor.tools import gymrat_tools_factory
-from gymrat.utils import SECONDS_PER_MINUTE, abbreviate_home
+from gymrat.utils import (
+    ASCII_DECIMAL_PATTERN,
+    SECONDS_PER_MINUTE,
+    abbreviate_home,
+    minutes_to_ms,
+    write_and_flush,
+)
 
 # ---------------------------------------------------------------------------
 # Flag surface
 # ---------------------------------------------------------------------------
 
-# ``[0-9]`` rather than ``\d``: ``\d`` matches every Unicode decimal digit, and
-# ``float`` converts those too, so a non-ASCII digit would parse as a number.
-_POSITIVE_NUMBER_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+_POSITIVE_NUMBER_RE = re.compile(ASCII_DECIMAL_PATTERN)
 _POSITIVE_NUMBER_MESSAGE = "must be a positive number."
 
 
@@ -141,11 +146,11 @@ def parse_max_minutes(value: str) -> float:
     return parsed
 
 
-PromptArgument = Annotated[
+_PromptArgument = Annotated[
     str | None,
     typer.Argument(metavar="[PROMPT]", help="optimization prompt for the agent"),
 ]
-MaxMinutesOption = Annotated[
+_MaxMinutesOption = Annotated[
     float,
     typer.Option(
         "--max-minutes",
@@ -154,31 +159,31 @@ MaxMinutesOption = Annotated[
         help="wall-clock cap in minutes, counted from when the baseline is recorded",
     ),
 ]
-MaxUsdOption = Annotated[
+_MaxUsdOption = Annotated[
     float | None,
     typer.Option(
         "--max-usd", parser=parse_positive_number, metavar="<float>", help="spend cap in USD"
     ),
 ]
-LogOption = Annotated[str | None, typer.Option("--log", help="path for the JSONL event log")]
-ModelOption = Annotated[
+_LogOption = Annotated[str | None, typer.Option("--log", help="path for the JSONL event log")]
+_ModelOption = Annotated[
     str | None, typer.Option("--model", help="model to use for the agent session")
 ]
-AllowDirtyOption = Annotated[
+_AllowDirtyOption = Annotated[
     bool, typer.Option("--allow-dirty", help="allow launching with uncommitted changes")
 ]
-ForceOption = Annotated[
+_ForceOption = Annotated[
     bool,
     typer.Option(
         "--force",
         help="launch even when the cap cannot fit one iteration or a stop condition is already met",
     ),
 ]
-NoFinalizeOption = Annotated[
+_NoFinalizeOption = Annotated[
     bool,
     typer.Option("--no-finalize", help="leave the session open instead of finalizing it on exit"),
 ]
-EffortOption = Annotated[
+_EffortOption = Annotated[
     Effort | None,
     typer.Option("--effort", metavar="<level>", help="effort level"),
 ]
@@ -202,7 +207,7 @@ class Options:
 
 
 def _resolve_log_path(root: str, explicit: str | None) -> str:
-    """The caller's ``--log`` verbatim, or a timestamped path under the session dir.
+    """Resolve where the supervisor writes its event log.
 
     Only the default path is written under ``.gymrat/``, so only that branch
     ensures the directory is git-excluded; a caller-supplied path is left to the
@@ -213,7 +218,8 @@ def _resolve_log_path(root: str, explicit: str | None) -> str:
         explicit: The caller's ``--log`` value, or ``None`` to use the default path.
 
     Returns:
-        The resolved absolute path for the event log.
+        The caller's ``--log`` path verbatim, or a timestamped path under the
+        session directory.
     """
     if explicit is not None:
         return explicit
@@ -305,29 +311,31 @@ def _report_result(
         raise typer.Exit(GATE_EXIT_CODE)
 
 
-def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], None]]:
+def _init_budget(
+    root: str, max_minutes: float, *, warn: WarnSink
+) -> tuple[Budget, Callable[[], None]]:
     """Create, persist, and arm cleanup for the session time budget.
 
     Args:
         root: Session root directory.
         max_minutes: Maximum session duration in minutes.
+        warn: Receives the warning when the OS refuses to remove the budget file.
 
     Returns:
-        A ``(deadline_ms, release)`` pair: the absolute deadline and a callback
-        that removes the budget file and uninstalls the termination hook,
-        uninstalling even when the removal raises. The callback is idempotent,
-        so the run's own teardown and the unwind of a session whose setup
-        failed can both call it without clearing twice.
+        A ``(budget, release)`` pair: the budget written to disk and a callback
+        that removes the budget file and uninstalls the termination hook; a
+        refused removal goes to ``warn`` rather than raising. The callback is
+        idempotent, so the run's own teardown and the unwind of a session whose
+        setup failed can both call it without clearing twice.
     """
-    deadline_ms = now_ms() + minutes_to_ms(max_minutes)
-    budget = Budget(max_minutes=max_minutes, deadline_ms=deadline_ms)
+    budget = Budget(max_minutes=max_minutes, deadline_ms=now_ms() + minutes_to_ms(max_minutes))
     Path(session_dir(root)).mkdir(parents=True, exist_ok=True)
     write_budget(root, budget)
     release = ExitStack()
     # Callbacks unwind last-in first-out: the budget file goes, then the hook.
-    release.callback(install_termination_cleanup(lambda: clear_budget(root)))
-    release.callback(clear_budget, root)
-    return deadline_ms, release.close
+    release.callback(install_termination_cleanup(lambda: clear_budget(root, warn)))
+    release.callback(clear_budget, root, warn)
+    return budget, release.close
 
 
 def _primary_direction(config: ResolvedConfig) -> Direction:
@@ -357,14 +365,13 @@ def _create_reporter(ctx: _SessionContext, mode: Literal["live", "plain"]) -> Su
     )
 
 
-def _supervised_session(ctx: _SessionContext, deadline_ms: float) -> SupervisedSession:
+def _supervised_session(ctx: _SessionContext, budget: Budget) -> SupervisedSession:
     return SupervisedSession(
         root=ctx.root,
         log_path=ctx.log_path,
         lock_path=lockfile_path(ctx.root),
         config=ctx.config,
-        deadline_ms=deadline_ms,
-        max_minutes=ctx.launch.max_minutes,
+        budget=budget,
         max_usd=ctx.launch.max_usd,
     )
 
@@ -409,13 +416,45 @@ async def _supervise_and_exit_sequence(  # noqa: PLR0913 -- the run and everythi
         ended_by=result.ended_by,
         finalize=ctx.finalize,
         progress=reporter.exit_phase,
-        log=combine_observers(create_event_log_writer(ctx.log_path), observer),
+        log=combine_observers(create_event_log_writer(ctx.log_path), observer, warn=reporter.warn),
         warn=reporter.warn,
     )
     # A step that writes the session log and then fails emits no event, so the
     # reporter would otherwise summarize the session as it was before that step.
     reporter.refresh_session()
     return result, exit_report
+
+
+def _trace_session(
+    ctx: _SessionContext, reporter: SuperviseReporter
+) -> tuple[SessionPrompt, SessionObserver, TracingState]:
+    """Open the run's tracing and fold its run-span observer in with the reporter's.
+
+    Args:
+        ctx: The run whose launch, branch and prompt the spans describe.
+        reporter: The reporter whose observer every event reaches and whose
+            ``warn`` receives each observer failure.
+
+    Returns:
+        The prompt to send, carrying a ``traceparent`` while tracing is on; the
+        observer the supervisor and exit sequence report to; and the spans
+        :func:`~gymrat.telemetry.run_spans.finalize_tracing` ends.
+    """
+    from gymrat.telemetry.run_spans import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack
+        setup_tracing,
+    )
+
+    prompt, run_span_observer, tracing = setup_tracing(
+        ctx.launch,
+        branch=ctx.branch,
+        resumed=ctx.resumed,
+        prompt=ctx.session_prompt(),
+        warn=reporter.warn,
+    )
+    if run_span_observer is None:
+        return prompt, reporter.observer, tracing
+    observer = combine_observers(reporter.observer, run_span_observer, warn=reporter.warn)
+    return prompt, observer, tracing
 
 
 def _run_session(ctx: _SessionContext) -> None:
@@ -432,8 +471,15 @@ def _run_session(ctx: _SessionContext) -> None:
 
     Args:
         ctx: Everything the run needs, assembled once the lock is held.
+
+    Raises:
+        typer.Exit: With the tool-failure code on a driver or exit-sequence
+            error, or the gate code when anything but the session or a stop
+            condition ended the run.
     """
-    from gymrat.telemetry.run_spans import finalize_tracing, setup_tracing  # noqa: PLC0415
+    from gymrat.telemetry.run_spans import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack
+        finalize_tracing,
+    )
 
     launch = ctx.launch
     driver = create_claude_driver(
@@ -447,7 +493,7 @@ def _run_session(ctx: _SessionContext) -> None:
         # error reaches the terminal, or when the run path closes it early.
         display = armed.enter_context(ExitStack())
         display.callback(reporter.stop)
-        deadline_ms, release_budget = _init_budget(ctx.root, launch.max_minutes)
+        budget, release_budget = _init_budget(ctx.root, launch.max_minutes, warn=reporter.warn)
         armed.callback(release_budget)
         # A signal mid-exit-sequence exits the process before the loop can cancel
         # the checks command it is running, so its process group is killed here.
@@ -455,15 +501,9 @@ def _run_session(ctx: _SessionContext) -> None:
         if mode == "plain":
             write_and_flush(sys.stderr, f"log: {abbreviate_home(ctx.log_path)}\n")
 
-        prompt, observer, tracing = setup_tracing(
-            launch,
-            branch=ctx.branch,
-            resumed=ctx.resumed,
-            prompt=ctx.session_prompt(),
-            reporter_observer=reporter.observer,
-        )
+        prompt, observer, tracing = _trace_session(ctx, reporter)
 
-        context = _supervised_session(ctx, deadline_ms)
+        context = _supervised_session(ctx, budget)
         result: SupervisionResult | None = None
         try:
             try:
@@ -476,6 +516,7 @@ def _run_session(ctx: _SessionContext) -> None:
                             context=context,
                             launch=launch,
                             observer=observer,
+                            warn=reporter.warn,
                         ),
                         release_budget,
                         ctx=ctx,
@@ -512,6 +553,14 @@ def _execute(options: Options) -> None:
 
     Args:
         options: The parsed ``supervise`` flags.
+
+    Raises:
+        typer.Exit: When the doctor gate refuses the run, or with the run's own
+            exit code once the session has run.
+        LockContentionError: When another supervise run already holds the
+            supervise lock.
+        GymratError: When the lock file cannot be opened, the config or
+            pre-flight refuses the run, or the event log path is not writable.
     """
     root = repo_root()
     doctor_gate(root, color=options.color)
@@ -578,17 +627,17 @@ def _execute(options: Options) -> None:
 
 
 def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the option surface
-    prompt: PromptArgument = None,
+    prompt: _PromptArgument = None,
     *,
-    max_minutes: MaxMinutesOption,
-    max_usd: MaxUsdOption = None,
-    log: LogOption = None,
+    max_minutes: _MaxMinutesOption,
+    max_usd: _MaxUsdOption = None,
+    log: _LogOption = None,
     baseline: BaselineOption = None,
-    model: ModelOption = None,
-    effort: EffortOption = None,
-    allow_dirty: AllowDirtyOption = False,
-    force: ForceOption = False,
-    no_finalize: NoFinalizeOption = False,
+    model: _ModelOption = None,
+    effort: _EffortOption = None,
+    allow_dirty: _AllowDirtyOption = False,
+    force: _ForceOption = False,
+    no_finalize: _NoFinalizeOption = False,
     color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:

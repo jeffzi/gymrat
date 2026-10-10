@@ -1,13 +1,12 @@
 """Measure one edit of an open session, record it, and phrase it for the agent.
 
-Sampling is driven here rather than through :func:`gymrat.compare.compare`
-because a session's worktrees are persistent: there is nothing to check out and
-nothing to sweep afterwards, and the raw samples have to survive the run to reach
-the log. Holding the repository lock across the call is the caller's job — two
-concurrent sessions' bench runs would perturb each other's measurements.
+The iteration is benched and judged through
+:func:`gymrat.loop.iterate.judge.bench_and_judge`. Holding the repository lock
+across the call is the caller's job — two concurrent sessions' bench runs would
+perturb each other's measurements.
 
 How a confirmation rerun rewrites the verdicts is
-:func:`gymrat.loop.iterate.confirm.apply_confirmation`'s contract.
+:func:`gymrat.loop.iterate.judge.apply_confirmation`'s contract.
 
 The loop header lands last, replacing the comparison table's own header, so the
 table opens on the loop's terms rather than on ``gymrat compare``'s.
@@ -36,11 +35,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from gymrat import clock as _clock
 from gymrat.clock import monotonic_ms, now_ns
-from gymrat.errors import GymratError
 
 # Bound at module scope under the builtin's name so a test can substitute the
 # subprocess boundary via ``monkeypatch.setattr`` on this module.
@@ -51,20 +49,22 @@ from gymrat.exec import (
     ExecTimeoutError,
     exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
-from gymrat.loop.iterate.confirm import (
+from gymrat.loop.iterate.judge import (
     EXPERIMENT_INDEX,
-    Confirmation,
     IterationContext,
     Judged,
     apply_confirmation,
     bench_and_judge,
     build_iteration_comparison,
     confirm_regressions,
-    is_gating_regression,
+    gating_regressions,
+    regresses_gating,
+    rerun_answer,
     resolve_primary,
     target_reached,
 )
 from gymrat.loop.iterate.record import IterationJudgment, build_iteration_record
+from gymrat.loop.stop_condition import BudgetExceededError, stop_condition
 from gymrat.model import is_improvement
 from gymrat.progress_events import (
     HookFinished,
@@ -76,7 +76,6 @@ from gymrat.progress_events import (
 from gymrat.report.loop import (
     GeomeanPrimary,
     LoopPrimary,
-    RerunAnswer,
     RerunConfirmation,
     format_loop_header,
     format_verdict_block,
@@ -93,31 +92,32 @@ from gymrat.session.store import (
     require_open_session,
     require_settled,
 )
-from gymrat.utils import limit_output, warn_to_stderr
+from gymrat.utils import format_duration, limit_output, warn_to_stderr
 
 if TYPE_CHECKING:
     import asyncio
     from collections.abc import Sequence
 
-    from gymrat.config import BenchlessConfig, ResolvedConfig
+    from gymrat.config import ResolvedConfig
     from gymrat.progress_events import ProgressCallback
     from gymrat.report.types import MetricComparisons
     from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord
-    from gymrat.session.schema import CommandReason, HookStage, Outcome
+    from gymrat.session.schema import HookStage, Outcome
     from gymrat.utils import WarnSink
 
 __all__ = [
-    "BudgetExceededError",
     "HookInvocation",
     "IterateOptions",
     "IterateResult",
-    "LoopStopError",
     "derive_outcome",
     "iterate_session",
     "run_hook",
-    "stop_condition",
-    "stop_reason",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Options and results
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,11 +152,16 @@ class IterateResult:
     report: str
 
 
+# ---------------------------------------------------------------------------
+# Outcome derivation
+# ---------------------------------------------------------------------------
+
+
 def _has_gating_regression(metrics: MetricComparisons) -> bool:
     """Whether any metric the run is gated on came back regressed for the experiment."""
     for metric in metrics.values():
         experiment = candidate_at(metric, EXPERIMENT_INDEX)
-        if is_gating_regression(metric.meta, None if experiment is None else experiment.verdict):
+        if regresses_gating(metric.meta, None if experiment is None else experiment.verdict):
             return True
     return False
 
@@ -210,8 +215,12 @@ def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> Outcome:
     return "improved" if _primary_improved(metrics, primary) else "no-signal"
 
 
+# ---------------------------------------------------------------------------
+# Iteration entry and guards
+# ---------------------------------------------------------------------------
+
+
 def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
-    """Derive the outcome and bundle the judgment."""
     return IterationJudgment(
         outcome=derive_outcome(judged.result.metrics, judged.primary),
         primary=judged.primary,
@@ -221,7 +230,18 @@ def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
 
 
 def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
-    """Refuse when a live budget cannot afford another iteration."""
+    """Refuse when a live budget cannot afford another iteration.
+
+    Args:
+        root: Repository root whose budget and supervise lock are read.
+        records: Session log records the iteration's duration is estimated from.
+
+    Raises:
+        BudgetExceededError: When the estimated iteration would outlast the
+            time left on the budget.
+        GymratError: When the supervise lock file cannot be opened, so whether
+            the budget is live is unknown.
+    """
     current_ms = _clock.now_ms()
     budget = _budget.read_budget(root, now_ms=current_ms)
     if budget is None:
@@ -231,11 +251,9 @@ def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
         return
     remaining = budget.remaining_ms(current_ms)
     if estimate.duration_ms > remaining:
-        remaining_minutes = int(_budget.ms_to_minutes(remaining))
-        estimate_minutes = int(_budget.ms_to_minutes(estimate.duration_ms))
         message = (
-            f"{remaining_minutes}m left; the last {estimate.source} took "
-            f"{estimate_minutes}m and the cap would cut this one off."
+            f"{format_duration(remaining)} left; the last {estimate.source} took "
+            f"{format_duration(estimate.duration_ms)} and the cap would cut this one off."
         )
         raise BudgetExceededError(
             message,
@@ -246,8 +264,22 @@ def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
 def _guard_ready(
     config: ResolvedConfig, state: SessionState, root: str, records: Sequence[SessionLogRecord]
 ) -> None:
-    """Refuse another iteration when the session is not ready for one."""
-    require_settled(state, "Run gymrat keep or gymrat discard before measuring the next edit.")
+    """Refuse another iteration before anything is measured, checking in a fixed order.
+
+    Args:
+        config: The resolved run configuration, read for its stop conditions.
+        state: The folded session state.
+        root: Repository root whose budget and supervise lock are read.
+        records: Session log records the iteration's duration is estimated from.
+
+    Raises:
+        GymratError: First, when the last iteration is still unsettled; last,
+            when the supervise lock file cannot be opened.
+        LoopStopError: When a configured stop condition is already met.
+        BudgetExceededError: When the estimated iteration would outlast the
+            time left on the budget.
+    """
+    require_settled(state, "measuring the next edit")
     stop = stop_condition(config, state)
     if stop is not None:
         raise stop
@@ -333,9 +365,16 @@ async def iterate_session(
     return IterateResult(record=record, report=report)
 
 
-#: How long a hook may run before it is killed. Long enough to build, short
-#: enough to notice.
+# ---------------------------------------------------------------------------
+# Hook execution
+# ---------------------------------------------------------------------------
+
+
 HOOK_TIMEOUT_MS = 30_000
+"""How long a hook may run before it is killed.
+
+Long enough to build, short enough to notice.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,7 +515,7 @@ async def _hook_stage(
     ctx: IterationContext,
     seq: int,
     *,
-    stage: Literal["before", "after"],
+    stage: HookStage,
     last_iteration: IterationRecord | None,
     iteration_count: int,
 ) -> str:
@@ -518,16 +557,16 @@ async def _hook_stage(
     return run.report
 
 
+# ---------------------------------------------------------------------------
+# Measure and judge
+# ---------------------------------------------------------------------------
+
+
 async def _measure_and_judge(ctx: IterationContext) -> Judged:
-    """Bench the pair, confirm any gating regression, and assemble the comparison."""
     first = await bench_and_judge(ctx, ctx.config.bench, announce_judging=True)
 
     primary = resolve_primary(ctx.config.primary, first.verdicts, first.metric_meta)
-    regressed_names = tuple(
-        name
-        for name, meta in first.metric_meta.items()
-        if is_gating_regression(meta, first.verdicts.get(name))
-    )
+    regressed_names = gating_regressions(first.verdicts, first.metric_meta)
     emit_progress(
         ctx.options.on_progress,
         JudgeFinished(
@@ -547,85 +586,9 @@ async def _measure_and_judge(ctx: IterationContext) -> Judged:
     )
 
 
-_STOP_HINT = "The loop is done. Report what the session measured instead of measuring again."
-
-
-class LoopStopError(GymratError):
-    """A configured stop condition refusing another iteration.
-
-    Separate from a plain :class:`GymratError` because nothing failed: the loop
-    ran to the end it was configured for, which the CLI reports as a gate trip
-    rather than as a tool failure.
-    """
-
-    def __init__(
-        self,
-        *args: object,
-        hint: str | None = None,
-        reason: CommandReason | None = "stop-condition",
-    ) -> None:
-        super().__init__(*args, hint=hint, reason=reason)
-
-
-class BudgetExceededError(LoopStopError):
-    """The session's time budget cannot afford another iteration.
-
-    Raised when a live budget's remaining time is shorter than the estimated
-    iterate duration, so the CLI routes it through the same gate-exit path as
-    any other stop condition.
-    """
-
-    def __init__(
-        self,
-        *args: object,
-        hint: str | None = None,
-        reason: CommandReason | None = "budget-exceeded",
-    ) -> None:
-        super().__init__(*args, hint=hint, reason=reason)
-
-
-def stop_reason(config: BenchlessConfig, state: SessionState) -> str | None:
-    """Which configured stop condition this session has already met, if any.
-
-    Read off the folded log alone, so it settles before a bench command runs: an
-    iteration measured past the end of the loop is one the agent would have to
-    throw away. ``target_value`` stops the loop only once the target-reaching
-    iteration is *kept* — discarding it puts the target back out of reach.
-
-    Args:
-        config: The resolved config, carrying the configured stop conditions.
-        state: The session's folded state, read for iteration count and
-            whether the target has been reached and kept.
-
-    Returns:
-        The condition that fired, such as ``max iterations (3 of 3)``, or
-        ``None`` when no condition is met yet.
-    """
-    stop = config.stop
-    if stop is None:
-        return None
-    if stop.max_iterations is not None and state.iteration_count >= stop.max_iterations:
-        return f"max iterations ({state.iteration_count} of {stop.max_iterations})"
-    if stop.target_value is not None and state.target_reached_and_kept:
-        return "target reached and kept"
-    return None
-
-
-def stop_condition(config: BenchlessConfig, state: SessionState) -> LoopStopError | None:
-    """The refusal for a configured stop condition this session has already met.
-
-    Args:
-        config: The resolved config, carrying the configured stop conditions.
-        state: The session's folded state.
-
-    Returns:
-        The stop error naming the condition :func:`stop_reason` reports, or
-        ``None`` when no condition is met yet.
-    """
-    reason = stop_reason(config, state)
-    if reason is None:
-        return None
-    return LoopStopError(f"Stop condition met: {reason}", hint=_STOP_HINT)
+# ---------------------------------------------------------------------------
+# Report rendering
+# ---------------------------------------------------------------------------
 
 
 _NEXT_STEPS: dict[Outcome, str] = {
@@ -633,13 +596,6 @@ _NEXT_STEPS: dict[Outcome, str] = {
     "regressed": "fix or run `gymrat discard`",
     "no-signal": "`gymrat keep` or `gymrat discard`",
 }
-
-
-def _rerun_answer(confirmation: Confirmation, metric: str) -> RerunAnswer:
-    """What the rerun answered about ``metric``, as the report words it."""
-    if metric in confirmation.absent:
-        return "absent"
-    return "confirmed" if metric in confirmation.confirmed else "disagreed"
 
 
 def render_iteration(
@@ -664,7 +620,7 @@ def render_iteration(
     confirmation = judgment.confirmation
     reruns: list[RerunConfirmation] = (
         [
-            RerunConfirmation(metric=name, answer=_rerun_answer(confirmation, name))
+            RerunConfirmation(metric=name, answer=rerun_answer(confirmation, name))
             for name in confirmation.filtered
         ]
         if confirmation is not None

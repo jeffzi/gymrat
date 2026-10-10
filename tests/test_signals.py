@@ -7,6 +7,7 @@ import threading
 import time
 import warnings
 from collections.abc import Buffer, Callable, Iterator
+from types import FrameType
 from typing import NoReturn, override
 
 import pytest
@@ -15,6 +16,7 @@ from rich.file_proxy import FileProxy
 
 from gymrat import signals
 from gymrat.signals import install_termination_cleanup
+from tests._signal_masking import needs_signal_masking
 from tests._streams import RecordingStream
 
 # Invokes the handler installed for a signal and returns the code it would exit
@@ -26,17 +28,18 @@ _TERMINATION_SIGNALS = [signal.SIGINT, signal.SIGTERM]
 if hasattr(signal, "SIGHUP"):
     _TERMINATION_SIGNALS.append(signal.SIGHUP)
 
-# The contract is an exit about one second after the cleanups when the stderr
-# write stalls: never sooner than that second, and clearly before a doubled wait.
-_EXIT_WAIT_FLOOR_S = 1.0
-_EXIT_WAIT_CEILING_S = 1.9
+# An exit-write timeout apart from the one-second default, so a handler that
+# kept the default instead of the installed timeout is told apart; short enough
+# that waiting it out for real keeps a test fast.
+_SHORT_EXIT_WRITE_TIMEOUT_S = 0.05
 
-# A second signal during the stderr write exits at once: far below the one
-# second the stalled write would otherwise hold the exit for.
-_SECOND_SIGNAL_EXIT_CEILING_S = 0.5
+# The exit-write timeout the second-signal test installs. The second signal ends
+# the process before any exit wait runs to its end; a handler that ignored it
+# would sit through this whole wait on the stalled write instead.
+_LONG_EXIT_WRITE_TIMEOUT_S = 5.0
 
-# Longest a scenario run by ``_run_capped`` may take: well past the one-second
-# exit wait, well short of a hang.
+# Longest a scenario run by ``_run_capped`` may take: well past the longest exit
+# wait those scenarios install, well short of a hang.
 _SCENARIO_CAP_S = 5.0
 
 # Threads ``_run_capped`` gave up on, still inside a handler whose wait may yet
@@ -66,12 +69,17 @@ def _warn_killpg_failed() -> None:
     warnings.warn("killpg failed", RuntimeWarning, stacklevel=1)
 
 
+def _installed_handler(signal_number: int) -> Callable[[int, FrameType | None], object]:
+    handler = signal.getsignal(signal_number)
+    if not callable(handler):
+        pytest.fail(f"no handler installed for signal {signal_number}")
+    return handler
+
+
 def _deliver(signal_number: int) -> None:
     # Runs the installed handler the way a signal arriving now would, without
     # the exit bookkeeping ``raise_signal`` adds: an ignored signal returns.
-    handler = signal.getsignal(signal_number)
-    assert callable(handler)
-    handler(signal_number, None)
+    _installed_handler(signal_number)(signal_number, None)
 
 
 def _deliver_from_thread(signal_number: int) -> None:
@@ -121,13 +129,6 @@ class _Terminal:
         """Write a progress line to the buffered stream and flush it toward the raw sink."""
         self.stream.write("progress\n")
         self.stream.flush()
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class _InterruptingTerminal(_Terminal):
-    """A terminal whose first write signals the main thread, recording when it did."""
-
-    signal_sent_at: list[float]
 
 
 def _buffered_terminal(on_write: Callable[[], None]) -> _Terminal:
@@ -185,7 +186,7 @@ def _disarm_stranded_exits() -> Iterator[None]:
 
 
 @pytest.mark.parametrize("signal_number", _TERMINATION_SIGNALS, ids=_signal_id)
-def test_install_termination_cleanup_when_signal_received_does_run_cleanup_and_exit_128_plus_signal_number(
+def test_install_termination_cleanup_when_signal_received_does_exit_128_plus_signal_number_after_running_cleanup(
     raise_signal: RaiseSignal, signal_number: int
 ):
     calls = []
@@ -211,15 +212,10 @@ def test_install_termination_cleanup_when_exit_seam_replaced_after_install_does_
     def interrupt() -> None:
         if second_signal is None:
             return
-        nested = signal.getsignal(second_signal)
-        if not callable(nested):
-            pytest.fail(f"no handler installed for signal {second_signal}")
-        nested(second_signal, None)
+        _installed_handler(second_signal)(second_signal, None)
 
     install_termination_cleanup(interrupt)
-    handler = signal.getsignal(signal.SIGINT)
-    if not callable(handler):
-        pytest.fail("no handler installed for SIGINT")
+    handler = _installed_handler(signal.SIGINT)
     exits: list[int] = []
 
     def record_exit(code: int) -> NoReturn:
@@ -247,41 +243,22 @@ def test_install_termination_cleanup_when_multiple_registered_does_run_them_in_i
     assert order == ["first", "second", "third"]
 
 
-def test_install_termination_cleanup_when_uninstalled_does_exit_without_running_cleanup(
-    raise_signal: RaiseSignal,
-):
-    calls = []
-    uninstall = install_termination_cleanup(lambda: calls.append("cleanup"))
-    uninstall()
-
-    code = raise_signal(signal.SIGINT)
-
-    assert calls == []
-    assert code == 128 + signal.SIGINT
-
-
-def test_install_termination_cleanup_when_prior_run_uninstalled_does_run_only_later_cleanup(
-    raise_signal: RaiseSignal,
+@pytest.mark.parametrize(
+    ("later_cleanup", "expected_calls"),
+    [(False, []), (True, ["second"])],
+    ids=["alone", "before-a-later-install"],
+)
+def test_install_termination_cleanup_when_uninstalled_does_exit_without_running_that_cleanup(
+    raise_signal: RaiseSignal, later_cleanup: bool, expected_calls: list[str]
 ):
     calls = []
     install_termination_cleanup(lambda: calls.append("first"))()
-    install_termination_cleanup(lambda: calls.append("second"))
-
-    raise_signal(signal.SIGINT)
-
-    assert calls == ["second"]
-
-
-def test_install_termination_cleanup_when_a_cleanup_raises_does_run_remaining_cleanups(
-    raise_signal: RaiseSignal,
-):
-    survivors = []
-    install_termination_cleanup(_boom)
-    install_termination_cleanup(lambda: survivors.append("survivor"))
+    if later_cleanup:
+        install_termination_cleanup(lambda: calls.append("second"))
 
     code = raise_signal(signal.SIGINT)
 
-    assert survivors == ["survivor"]
+    assert calls == expected_calls
     assert code == 128 + signal.SIGINT
 
 
@@ -354,7 +331,7 @@ def stalled_stderr() -> _Terminal:
 
 
 @pytest.fixture
-def interrupting_stderr() -> Iterator[_InterruptingTerminal]:
+def interrupting_stderr() -> Iterator[_Terminal]:
     """A terminal whose first write sends SIGTERM to the main thread, then stalls."""
     # The handler writes its exit output off the main thread and waits for it
     # there, so a real signal aimed at the main thread lands inside that wait.
@@ -362,16 +339,15 @@ def interrupting_stderr() -> Iterator[_InterruptingTerminal]:
     release = threading.Event()
     main_thread_id = threading.main_thread().ident
     assert main_thread_id is not None
-    signal_sent_at: list[float] = []
+    signal_sent = threading.Event()
 
     def interrupt_then_stall() -> None:
-        if not signal_sent_at:
-            signal_sent_at.append(time.monotonic())
+        if not signal_sent.is_set():
+            signal_sent.set()
             signal.pthread_kill(main_thread_id, signal.SIGTERM)
             release.wait(timeout=10)
 
-    terminal = _buffered_terminal(interrupt_then_stall)
-    yield _InterruptingTerminal(terminal.stream, terminal.raw, signal_sent_at)
+    yield _buffered_terminal(interrupt_then_stall)
     release.set()
 
 
@@ -385,7 +361,7 @@ def _nothing() -> None:
         pytest.param(
             (_boom, _write_erase_notice),
             ["live display erased\ntermination cleanup failed: cleanup boom\n"],
-            id="output-then-failures-in-one-write",
+            id="remaining-cleanups-run-then-failures-in-one-write",
         ),
         pytest.param((_warn_killpg_failed,), ["killpg failed\n"], id="a-cleanup-warns"),
         pytest.param((_nothing,), [], id="nothing-pending"),
@@ -424,58 +400,97 @@ def test_install_termination_cleanup_when_stderr_is_rich_proxy_does_write_to_und
     assert console_file.getvalue() == ""
 
 
-def test_install_termination_cleanup_when_stderr_write_stalls_does_exit_after_bounded_wait(
-    raise_signal: RaiseSignal, stalled_stderr: _Terminal, monkeypatch: pytest.MonkeyPatch
+@pytest.fixture
+def recorded_joins(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Replace the exit-writer join with one that records its timeout and returns at once."""
+    joins: list[float] = []
+
+    def record_join(writer: threading.Thread, timeout_s: float) -> None:
+        joins.append(timeout_s)
+
+    monkeypatch.setattr(signals, "join_exit_writer", record_join)
+    return joins
+
+
+@pytest.fixture
+def finished_exit_waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Wrap the exit-writer join to record the timeout of each wait that ran to its end."""
+    finished: list[float] = []
+    real_join = signals.join_exit_writer
+
+    def join_and_record(writer: threading.Thread, timeout_s: float) -> None:
+        real_join(writer, timeout_s)
+        finished.append(timeout_s)
+
+    monkeypatch.setattr(signals, "join_exit_writer", join_and_record)
+    return finished
+
+
+@pytest.fixture
+def endless_thread() -> Iterator[threading.Thread]:
+    """A started daemon thread that does not finish before the test is torn down."""
+    release = threading.Event()
+    thread = threading.Thread(target=release.wait, daemon=True)
+    thread.start()
+    yield thread
+    release.set()
+
+
+def test_join_exit_writer_when_writer_never_finishes_does_return_after_timeout(
+    endless_thread: threading.Thread,
 ):
+    started_at = time.perf_counter()
+
+    _run_capped(lambda: signals.join_exit_writer(endless_thread, _SHORT_EXIT_WRITE_TIMEOUT_S))
+
+    assert time.perf_counter() - started_at >= _SHORT_EXIT_WRITE_TIMEOUT_S
+
+
+def test_install_termination_cleanup_when_stderr_write_stalls_does_exit_after_one_bounded_wait(
+    raise_signal: RaiseSignal,
+    stalled_stderr: _Terminal,
+    recorded_joins: list[float],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(signals, "EXIT_WRITE_TIMEOUT_S", _SHORT_EXIT_WRITE_TIMEOUT_S)
     monkeypatch.setattr(sys, "stderr", stalled_stderr.stream)
-    cleanups_done_at: list[float] = []
-
-    def erase_display() -> None:
-        _write_erase_notice()
-        cleanups_done_at.append(time.monotonic())
-
-    install_termination_cleanup(erase_display)
+    install_termination_cleanup(_write_erase_notice)
 
     code = _run_capped(lambda: raise_signal(signal.SIGINT))
 
-    exit_wait = time.monotonic() - cleanups_done_at[0]
     assert code == 128 + signal.SIGINT
-    assert _EXIT_WAIT_FLOOR_S <= exit_wait < _EXIT_WAIT_CEILING_S
+    assert recorded_joins == [_SHORT_EXIT_WRITE_TIMEOUT_S]
 
 
-def test_install_termination_cleanup_when_signal_interrupts_buffered_stderr_write_does_exit_after_bounded_wait(
-    raise_signal: RaiseSignal, monkeypatch: pytest.MonkeyPatch
+def test_install_termination_cleanup_when_signal_interrupts_buffered_stderr_write_does_exit_after_one_bounded_wait(
+    raise_signal: RaiseSignal, recorded_joins: list[float], monkeypatch: pytest.MonkeyPatch
 ):
-    cleanups_done_at: list[float] = []
-    exits: list[tuple[int, float]] = []
+    monkeypatch.setattr(signals, "EXIT_WRITE_TIMEOUT_S", _SHORT_EXIT_WRITE_TIMEOUT_S)
+    codes: list[int] = []
 
     def interrupt_once() -> None:
-        if not exits:
-            code = raise_signal(signal.SIGINT)
-            exits.append((code, time.monotonic()))
-
-    def note_cleanups_done() -> None:
-        cleanups_done_at.append(time.monotonic())
+        if not codes:
+            codes.append(raise_signal(signal.SIGINT))
 
     terminal = _buffered_terminal(interrupt_once)
     monkeypatch.setattr(sys, "stderr", terminal.stream)
     install_termination_cleanup(_boom)
-    install_termination_cleanup(note_cleanups_done)
 
     _run_capped(terminal.write_progress)
 
-    ((code, exited_at),) = exits
-    assert code == 128 + signal.SIGINT
-    assert _EXIT_WAIT_FLOOR_S <= exited_at - cleanups_done_at[0] < _EXIT_WAIT_CEILING_S
+    assert codes == [128 + signal.SIGINT]
+    assert recorded_joins == [_SHORT_EXIT_WRITE_TIMEOUT_S]
 
 
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="pthread_kill is POSIX-only")
 def test_install_termination_cleanup_when_second_signal_arrives_during_exit_output_write_does_exit_at_once_without_rerunning_cleanup(
     raise_signal: RaiseSignal,
-    interrupting_stderr: _InterruptingTerminal,
+    interrupting_stderr: _Terminal,
+    finished_exit_waits: list[float],
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(sys, "stderr", interrupting_stderr.stream)
+    monkeypatch.setattr(signals, "EXIT_WRITE_TIMEOUT_S", _LONG_EXIT_WRITE_TIMEOUT_S)
     calls = []
 
     def erase_display() -> None:
@@ -486,16 +501,12 @@ def test_install_termination_cleanup_when_second_signal_arrives_during_exit_outp
 
     code = raise_signal(signal.SIGINT)
 
-    exit_delay = time.monotonic() - interrupting_stderr.signal_sent_at[0]
     assert calls == ["cleanup"]
     assert code == 128 + signal.SIGINT
-    assert exit_delay < _SECOND_SIGNAL_EXIT_CEILING_S
+    assert finished_exit_waits == []
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
+@needs_signal_masking
 def test_install_termination_cleanup_when_writing_exit_output_does_block_termination_signals_on_writer_thread(
     raise_signal: RaiseSignal, monkeypatch: pytest.MonkeyPatch
 ):
@@ -623,20 +634,6 @@ def test_reset_when_escalation_already_ran_does_escalate_once_on_next_signal_pai
 
 
 @pytest.mark.parametrize("signal_number", _TERMINATION_SIGNALS, ids=_signal_id)
-def test_install_termination_cleanup_when_installed_again_does_keep_the_same_handler(
-    signal_number: int,
-):
-    install_termination_cleanup(_nothing)
-    handler = signal.getsignal(signal_number)
-
-    install_termination_cleanup(_nothing)
-
-    assert signal.getsignal(signal_number) is handler
-    assert callable(handler)
-    assert handler not in {signal.SIG_DFL, signal.SIG_IGN}
-
-
-@pytest.mark.parametrize("signal_number", _TERMINATION_SIGNALS, ids=_signal_id)
 def test_install_termination_cleanup_when_cycled_does_keep_the_same_handler(signal_number: int):
     install_termination_cleanup(_nothing)
     handler = signal.getsignal(signal_number)
@@ -645,6 +642,8 @@ def test_install_termination_cleanup_when_cycled_does_keep_the_same_handler(sign
         install_termination_cleanup(_nothing)()
 
     assert signal.getsignal(signal_number) is handler
+    assert callable(handler)
+    assert handler not in {signal.SIG_DFL, signal.SIG_IGN}
 
 
 # ---------------------------------------------------------------------------
@@ -665,10 +664,7 @@ def test_reset_when_called_during_deferral_does_handle_next_signal_immediately(
     assert code == 128 + signal.SIGINT
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
+@needs_signal_masking
 def test_deferring_termination_signals_when_entered_does_block_them_until_exit():
     before = signal.pthread_sigmask(signal.SIG_BLOCK, [])
 
@@ -679,10 +675,7 @@ def test_deferring_termination_signals_when_entered_does_block_them_until_exit()
     assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == before
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
+@needs_signal_masking
 def test_deferring_termination_signals_when_overlapping_deferrals_exit_out_of_order_does_restore_the_mask_once_both_exit():
     # Two coroutines on one event loop overlap their deferrals this way: the one
     # that entered first exits first, while the other is still inside its own.
@@ -704,9 +697,7 @@ def test_deferring_termination_signals_when_overlapping_deferral_still_open_does
     monkeypatch: pytest.MonkeyPatch,
 ):
     install_termination_cleanup(_nothing)
-    handler = signal.getsignal(signal.SIGINT)
-    if not callable(handler):
-        pytest.fail("no handler installed for SIGINT")
+    handler = _installed_handler(signal.SIGINT)
     exits: list[int] = []
 
     def record_exit(code: int) -> NoReturn:
@@ -728,24 +719,34 @@ def test_deferring_termination_signals_when_overlapping_deferral_still_open_does
     assert (exits_while_second_open, exits) == ([], [128 + signal.SIGINT])
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
-def test_deferring_termination_signals_when_mask_raises_does_handle_the_next_signal_immediately(
-    monkeypatch: pytest.MonkeyPatch, raise_signal: RaiseSignal
-):
-    cleaned: list[str] = []
-    install_termination_cleanup(lambda: cleaned.append("cleanup"))
+@pytest.fixture
+def exploding_mask(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every ``pthread_sigmask`` call in the signals module raise ``OSError``."""
 
-    def exploding_mask(*args: object, **kwargs: object) -> None:
+    def explode(*args: object, **kwargs: object) -> None:
         message = "mask failed"
         raise OSError(message)
 
-    monkeypatch.setattr(signals, "pthread_sigmask", exploding_mask)
+    monkeypatch.setattr(signals, "pthread_sigmask", explode)
+
+
+@needs_signal_masking
+@pytest.mark.usefixtures("exploding_mask")
+def test_deferring_termination_signals_when_mask_raises_does_propagate_the_error():
     with pytest.raises(OSError, match="mask failed"):
         with signals.deferring_termination_signals():
             pass  # pragma: no cover — never reached
+
+
+@needs_signal_masking
+@pytest.mark.usefixtures("exploding_mask")
+def test_deferring_termination_signals_when_mask_raised_does_handle_the_next_signal_immediately(
+    raise_signal: RaiseSignal,
+):
+    cleaned: list[str] = []
+    install_termination_cleanup(lambda: cleaned.append("cleanup"))
+    with contextlib.suppress(OSError), signals.deferring_termination_signals():
+        pass  # pragma: no cover — never reached
 
     code = raise_signal(signal.SIGINT)
 

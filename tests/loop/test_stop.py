@@ -12,19 +12,18 @@ and safe under ``pytest-xdist`` / ``pytest-randomly``.
 
 import pytest
 
-from gymrat.loop.stop import StopResult, stop_session
-from gymrat.session.records import KeepChecks, SessionLogRecord, StopRecord
+from gymrat.loop.stop import stop_session
+from gymrat.session.records import SessionLogRecord, StopRecord
 from tests.loop._settle import (
     capture_error,
-    confirmed_regression,
+    gating_blocked_history,
     settling_record_of,
     start_with,
 )
 from tests.session.records._fixtures import (
-    blocked_keep,
-    committed_keep,
     iteration_record,
     log_records,
+    settled_history,
     stop_record,
 )
 
@@ -42,11 +41,11 @@ def _record_count(repo: str) -> int:
 @pytest.mark.parametrize(
     "history",
     [
-        pytest.param((iteration_record(seq=1), committed_keep(1)), id="settled-iteration"),
+        pytest.param(settled_history(), id="settled-iteration"),
         pytest.param((), id="no-iterations"),
     ],
 )
-def test_stop_session_when_open_does_append_a_stop_record_and_return_a_report(
+def test_stop_session_when_open_does_append_a_stop_record(
     repo: str, history: tuple[SessionLogRecord, ...]
 ):
     start_with(repo, history)
@@ -57,12 +56,11 @@ def test_stop_session_when_open_does_append_a_stop_record_and_return_a_report(
     assert isinstance(record, StopRecord)
     assert record.message == "switched to a different approach\nsecond line"
     assert record.at > 0
-    assert isinstance(result, StopResult)
     assert result.report == "Stopped: switched to a different approach"
 
 
 # ---------------------------------------------------------------------------
-# when the last iteration is unsettled
+# when the session cannot be stopped: unsettled, blocked, or already stopped
 # ---------------------------------------------------------------------------
 
 
@@ -80,17 +78,14 @@ _SETTLE_FIRST = "Run gymrat keep or gymrat discard before stopping."
             id="last-iteration-unsettled",
         ),
         pytest.param(
-            (
-                confirmed_regression(1),
-                blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
-            ),
+            gating_blocked_history(),
             "Iteration 1 is blocked by a gating regression",
             _SETTLE_FIRST,
             "gating-block",
             id="gating-block-stands",
         ),
         pytest.param(
-            (iteration_record(seq=1), committed_keep(1), stop_record()),
+            (*settled_history(), stop_record()),
             "Already stopped",
             "Run iterate, keep, or discard to continue.",
             "already-stopped",

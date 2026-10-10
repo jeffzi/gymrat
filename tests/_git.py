@@ -7,8 +7,20 @@ import tempfile
 import time
 from pathlib import Path
 
+#: A bench script that exits non-zero without reporting a metric.
+FAILING_BENCH = "#!/bin/sh\nexit 1\n"
+
+#: The flags that run the bench ``write_committed_bench`` commits, once.
+BENCH_ONCE_FLAGS = ("--bench", "sh bench.sh", "--samples", "1")
+
+
+def emit_bench(value: int) -> str:
+    """A bench script that reports the metric ``x`` as ``value`` and exits cleanly."""
+    return f"#!/bin/sh\necho 'METRIC x={value}'\n"
+
+
 #: A bench script that reports one metric line and exits cleanly.
-EMIT_ONE_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
+EMIT_ONE_BENCH = emit_bench(1)
 
 
 def run_git(args: list[str], cwd: str) -> str:
@@ -28,11 +40,33 @@ def head_of(worktree: str) -> str:
     return run_git(["rev-parse", "HEAD"], worktree)
 
 
-def write_committed_bench(repo: str, script: str, *, message: str = "add bench") -> None:
-    """Drop ``script`` as ``bench.sh`` and commit it so every ref can run it."""
+def checked_out_ref(worktree: str) -> str:
+    """The ref ``worktree`` has checked out: a branch name, or ``HEAD`` when detached."""
+    return run_git(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
+
+
+def git_exclude_path(root: str) -> Path:
+    """The ``.git/info/exclude`` file of the repository at ``root``."""
+    return Path(root) / ".git" / "info" / "exclude"
+
+
+def write_committed_bench(
+    repo: str, script: str, *, message: str = "add bench", branches: tuple[str, ...] = ()
+) -> None:
+    """Drop ``script`` as ``bench.sh`` and commit it so every ref can run it.
+
+    Args:
+        repo: The repository to commit into.
+        script: The bench script's contents.
+        message: The commit message.
+        branches: Branches to create at the new commit; ``repo`` stays on its
+            current branch.
+    """
     (Path(repo) / "bench.sh").write_text(script, encoding="utf-8")
     run_git(["add", "bench.sh"], repo)
     run_git(["commit", "-m", message], repo)
+    for branch in branches:
+        run_git(["branch", branch], repo)
 
 
 def status_of(worktree: str) -> str:
@@ -43,7 +77,7 @@ def status_of(worktree: str) -> str:
 def commit_all(
     worktree: str, message: str, *, file: str | None = None, content: str | None = None
 ) -> str:
-    """Stage everything in ``worktree`` and commit it, returning the new commit's SHA.
+    """Stage everything in ``worktree`` and commit it.
 
     Args:
         worktree: The checkout the commit is made in.
@@ -185,6 +219,23 @@ def wait_for_worktrees(repo_dir: str, count: int, timeout_s: float = 30.0) -> li
         time.sleep(0.05)
 
 
+def add_worktree(repo_dir: str, directory: str) -> str:
+    """Register a linked worktree of a repo, detached at its ``HEAD``.
+
+    Args:
+        repo_dir: The repository the worktree is registered with.
+        directory: Where the worktree goes, absolute or relative to ``repo_dir``;
+            missing parent directories are created.
+
+    Returns:
+        The worktree's directory.
+    """
+    worktree = Path(repo_dir, directory)
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    run_git(["worktree", "add", "--detach", str(worktree), "HEAD"], repo_dir)
+    return str(worktree)
+
+
 def register_absent_worktree(repo_dir: str) -> str:
     """Register a worktree of a repo the way a user would, then delete its dir.
 
@@ -194,9 +245,8 @@ def register_absent_worktree(repo_dir: str) -> str:
     Returns:
         The registered worktree's directory, which no longer exists.
     """
-    directory = str(Path(repo_dir).resolve() / "absent-user-worktree")
-    run_git(["worktree", "add", "--detach", directory, "HEAD"], repo_dir)
-    shutil.rmtree(directory, ignore_errors=True)
+    directory = add_worktree(repo_dir, str(Path(repo_dir).resolve() / "absent-user-worktree"))
+    shutil.rmtree(directory)
     return directory
 
 
@@ -215,3 +265,25 @@ def create_in_place_target_dir(repo_dir: str, name: str, bench_script: str) -> s
     target.mkdir()
     (target / "bench.sh").write_text(bench_script, encoding="utf-8")
     return str(target)
+
+
+def refuse_session_branch_deletion(repo_dir: str) -> None:
+    """Install a reference-transaction hook that aborts any delete of a ``gymrat/…`` branch.
+
+    Git names the ref's new value as all zeros when it deletes the ref, so the hook
+    lets the branch be created and moved and vetoes only its removal.
+
+    Args:
+        repo_dir: The repository the hook is installed in.
+    """
+    install_git_hook(
+        repo_dir,
+        "reference-transaction",
+        '[ "$1" = prepared ] || exit 0\n'
+        "while read -r _old new ref; do\n"
+        '    if [ "${ref#refs/heads/gymrat/}" != "$ref" ] && [ -z "$(printf %s "$new" | tr -d 0)" ]; then\n'
+        "        exit 1\n"
+        "    fi\n"
+        "done\n"
+        "exit 0\n",
+    )

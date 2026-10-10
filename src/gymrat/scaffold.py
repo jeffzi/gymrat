@@ -26,12 +26,21 @@ from gymrat.config import CONFIG_FILENAME, validate_config_dict
 from gymrat.errors import GymratError
 from gymrat.utils import write_text_atomic
 
-#: Path, relative to the project root, where init writes and doctor checks for the skill.
 SKILL_RELATIVE_PATH = ".claude/skills/gymrat/SKILL.md"
+"""Path, relative to the project root, where init writes and doctor checks for the skill."""
 
 DEFAULT_RUNBOOK_PATH = "gymrat-runbook.md"
+"""Path, relative to the project root, where init writes the runbook stub.
+
+The config names the runbook by this path.
+"""
 
 type ArtifactStatus = Literal["created", "exists", "declined"]
+"""How init reports each artifact.
+
+``created`` when it wrote the file this run, ``exists`` when a file already occupied the path and
+was left untouched, and ``declined`` when the request opted out of it.
+"""
 
 _RUNBOOK_STUB = """# Optimization Runbook
 
@@ -59,8 +68,11 @@ _RUNBOOK_STUB = """# Optimization Runbook
 class ScaffoldRequest:
     """User choices that drive the scaffold.
 
-    ``bench`` is required only when the config must be written; ``runbook``
-    and ``install_skill`` gate whether those artifacts are created.
+    Attributes:
+        bench: The bench command written into the config; required only when
+            the config must be written.
+        runbook: Whether to write the runbook stub and name it in the config.
+        install_skill: Whether to install the skill file.
     """
 
     bench: str | None = None

@@ -12,21 +12,22 @@ Every test drives the real sequence against a throwaway repository from the shar
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import create_autospec
 
 import pytest
 
+from gymrat.exec import exec as exec_command
 from gymrat.session.paths import experiment_worktree_dir
-from gymrat.session.records import CommandRecord, DiscardRecord, KeepChecks, KeepRecord
+from gymrat.session.records import DiscardRecord, KeepChecks, KeepRecord
 from gymrat.session.workspace import worktree_fingerprint
 from gymrat.supervisor.exit_sequence import ExitStep
 from tests._exec_fixtures import (
     expected_result,
     install_exec,
 )
-from tests._files import write_text
 from tests._git import status_of
 from tests.loop._settle import (
     CHECKS,
@@ -46,9 +47,12 @@ from tests.session.records._fixtures import (
     command_record,
     hook_record,
     iteration_record,
+    last_command_record,
     records_of_type,
 )
 from tests.supervisor._exit_sequence import (
+    KEPT_STEP,
+    NOT_FINALIZED_STEP,
     fingerprint,
     improved_iteration,
     measured,
@@ -60,7 +64,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat.exec import ExecOptions, ExecResult
-    from gymrat.session.records import IterationRecord, SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import Outcome
 
 #: The gate reason an edit made behind the measured fingerprint reads as.
@@ -71,38 +75,41 @@ TREE_CHANGED = (
 
 def _edit_again(root: str) -> None:
     """Rewrite a tracked file, leaving the worktree off the measured fingerprint."""
-    write_text(str(Path(experiment_worktree_dir(root)) / "README.md"), "# edited again\n")
+    (Path(experiment_worktree_dir(root)) / "README.md").write_text(
+        "# edited again\n", encoding="utf-8"
+    )
 
 
 def _rewriting_checks(monkeypatch: pytest.MonkeyPatch, root: str) -> None:
     """Answer the checks command with a pass that rewrote a tracked file, as a formatter would."""
 
     async def run(_command: str, _options: ExecOptions) -> ExecResult:
-        write_text(str(Path(experiment_worktree_dir(root)) / "README.md"), "# reformatted\n")
+        readme = Path(experiment_worktree_dir(root)) / "README.md"
+        await asyncio.to_thread(readme.write_text, "# reformatted\n", encoding="utf-8")
         return expected_result()
 
-    monkeypatch.setattr("gymrat.loop.keep.exec", run)
+    monkeypatch.setattr("gymrat.loop.keep.exec", create_autospec(exec_command, side_effect=run))
 
 
-def _stale_tree(root: str) -> None:
+def _stale_tree(root: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     """An improved iteration whose worktree moved on behind the fingerprint."""
     measured(root, iteration_record(seq=1))
     _edit_again(root)
 
 
-def _no_fingerprint(root: str) -> None:
+def _no_fingerprint(root: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     """An improved iteration that recorded no fingerprint at all."""
     edit_experiment(root)
     append_records(root, iteration_record(seq=1, measured_tree=None))
 
 
-def _failed_before_hook(root: str) -> None:
+def _failed_before_hook(root: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     """An improved iteration whose before hook exited non-zero."""
     append_records(root, hook_record(seq=1, stage="before", exit_code=1))
     measured(root, iteration_record(seq=1))
 
 
-def _failed_before_hook_on_a_retry(root: str) -> None:
+def _failed_before_hook_on_a_retry(root: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     """An improved iteration whose before hook failed, recorded after an attempt that raised."""
     append_records(
         root,
@@ -113,12 +120,14 @@ def _failed_before_hook_on_a_retry(root: str) -> None:
     measured(root, iteration_record(seq=1))
 
 
-def _timed_out_after_hook(root: str) -> None:
+def _timed_out_after_hook(root: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     """An improved iteration whose after hook ran past its timeout."""
     measured(root, iteration_record(seq=1), hook_record(seq=1, stage="after", timed_out=True))
 
 
-def _failed_after_hook_ahead_of_a_command_record(root: str) -> None:
+def _failed_after_hook_ahead_of_a_command_record(
+    root: str, _monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An improved iteration whose after hook failed, with a command record written behind it."""
     measured(
         root,
@@ -128,7 +137,7 @@ def _failed_after_hook_ahead_of_a_command_record(root: str) -> None:
     )
 
 
-def _failed_standing_attempt(root: str) -> None:
+def _failed_standing_attempt(root: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     # The first attempt's hook passed; the retry that recorded the iteration is the one that failed.
     append_records(
         root,
@@ -136,6 +145,15 @@ def _failed_standing_attempt(root: str) -> None:
         hook_record(seq=1, stage="before", exit_code=1),
     )
     measured(root, iteration_record(seq=1))
+
+
+def _standing_tree_without_fingerprint(root: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An improved iteration whose standing tree cannot be fingerprinted when the gate reads it."""
+    improved_iteration(root)
+    monkeypatch.setattr(
+        "gymrat.supervisor.exit_sequence.worktree_fingerprint",
+        create_autospec(worktree_fingerprint, return_value=None),
+    )
 
 
 def _gating_block_iteration(root: str) -> None:
@@ -161,9 +179,7 @@ async def test_run_exit_sequence_when_unsettled_improved_and_gate_passes_does_co
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
-    assert run.report.steps[0] == ExitStep(
-        kind="settled", text="settled: kept iteration 1 (checks passed)"
-    )
+    assert run.report.steps == (KEPT_STEP, NOT_FINALIZED_STEP)
     record = settling_record_of(repo)
     assert isinstance(record, KeepRecord)
     assert (record.status, record.seq, record.message) == (
@@ -174,7 +190,7 @@ async def test_run_exit_sequence_when_unsettled_improved_and_gate_passes_does_co
     assert status_of(experiment_worktree_dir(repo)) == ""
 
 
-async def test_run_exit_sequence_when_no_checks_are_configured_does_say_so_to_the_report_and_warn_sink(
+async def test_run_exit_sequence_when_no_checks_are_configured_does_route_the_missing_checks_warning_to_the_sink(
     repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     start_with(repo)
@@ -225,9 +241,7 @@ async def test_run_exit_sequence_when_the_kept_tree_has_no_fingerprint_does_add_
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
-    assert run.report.steps[0] == ExitStep(
-        kind="settled", text="settled: kept iteration 1 (checks passed)"
-    )
+    assert run.report.steps[0] == KEPT_STEP
 
 
 async def test_run_exit_sequence_when_the_checks_fail_does_leave_the_iteration_for_a_person(
@@ -239,15 +253,17 @@ async def test_run_exit_sequence_when_the_checks_fail_does_leave_the_iteration_f
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
-    assert run.report.steps[0] == ExitStep(
-        kind="left",
-        text=(
-            "left unsettled: iteration 1 improved but the checks failed "
-            "— fix and keep, or discard, by hand"
+    assert run.report.steps == (
+        ExitStep(
+            kind="left",
+            text=(
+                "left unsettled: iteration 1 improved but the checks failed "
+                "— fix and keep, or discard, by hand"
+            ),
         ),
     )
     assert status_of(experiment_worktree_dir(repo)) != ""
-    command = records_of_type(repo, CommandRecord)[-1]
+    command = last_command_record(repo)
     assert (command.exit_code, command.reason, command.seq) == (1, "checks-failed", 1)
 
 
@@ -263,7 +279,7 @@ async def test_run_exit_sequence_when_the_agent_committed_nothing_does_report_it
     assert run.report.steps[0] == ExitStep(
         kind="settled", text="settled: iteration 1 had nothing to commit"
     )
-    command = records_of_type(repo, CommandRecord)[-1]
+    command = last_command_record(repo)
     assert (command.exit_code, command.reason, command.seq) == (0, None, 1)
 
 
@@ -288,16 +304,24 @@ GATE_FAILURES = [
     pytest.param(
         _failed_standing_attempt, "before hook failed", id="only-the-standing-attempt-failed"
     ),
+    pytest.param(
+        _standing_tree_without_fingerprint,
+        "fingerprint unavailable",
+        id="standing-tree-without-fingerprint",
+    ),
 ]
 
 
 @pytest.mark.parametrize(("arrange", "reason"), GATE_FAILURES)
 async def test_run_exit_sequence_when_improved_but_the_gate_fails_does_name_the_reason_and_the_diff(
-    repo: str, monkeypatch: pytest.MonkeyPatch, arrange: Callable[[str], None], reason: str
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: Callable[[str, pytest.MonkeyPatch], None],
+    reason: str,
 ):
     start_with(repo)
-    arrange(repo)
-    checks_pass(monkeypatch)
+    arrange(repo, monkeypatch)
+    recorder = checks_pass(monkeypatch)
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
@@ -309,36 +333,6 @@ async def test_run_exit_sequence_when_improved_but_the_gate_fails_does_name_the_
             "keep commits the tree as it stands)"
         ),
     )
-
-
-async def test_run_exit_sequence_when_the_standing_tree_has_no_fingerprint_does_leave_it_unsettled(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo)
-    improved_iteration(repo)
-    checks_pass(monkeypatch)
-
-    def no_fingerprint(_worktree: Path) -> None:
-        return None
-
-    monkeypatch.setattr("gymrat.supervisor.exit_sequence.worktree_fingerprint", no_fingerprint)
-
-    run = await run_sequence(session_context(repo, checks=CHECKS))
-
-    step = run.report.steps[0]
-    assert step.kind == "left"
-    assert "improved but fingerprint unavailable" in step.text
-
-
-async def test_run_exit_sequence_when_improved_but_the_gate_fails_does_neither_keep_nor_discard(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo)
-    _stale_tree(repo)
-    recorder = checks_pass(monkeypatch)
-
-    await run_sequence(session_context(repo, checks=CHECKS))
-
     assert records_of_type(repo, KeepRecord | DiscardRecord) == []
     assert recorder.calls == []
     assert status_of(experiment_worktree_dir(repo)) != ""
@@ -359,8 +353,8 @@ async def test_run_exit_sequence_when_unsettled_and_not_improved_does_revert_it_
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
-    assert run.report.steps[0] == ExitStep(
-        kind="settled", text=f"settled: discarded iteration 1 ({outcome})"
+    assert run.report.steps == (
+        ExitStep(kind="settled", text=f"settled: discarded iteration 1 ({outcome})"),
     )
     assert isinstance(settling_record_of(repo), DiscardRecord)
     assert status_of(experiment_worktree_dir(repo)) == ""
@@ -446,29 +440,18 @@ EARLIER_ATTEMPTS = [
 
 
 @pytest.mark.parametrize("earlier", EARLIER_ATTEMPTS)
-@pytest.mark.parametrize(
-    ("iteration", "settled"),
-    [
-        pytest.param(iteration_record(seq=1), "kept iteration 1 (checks passed)", id="keep"),
-        pytest.param(unimproved(1, "no-signal"), "discarded iteration 1 (no-signal)", id="discard"),
-    ],
-)
 async def test_run_exit_sequence_when_an_earlier_attempt_failed_its_before_hook_does_settle(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    earlier: tuple[SessionLogRecord, ...],
-    iteration: IterationRecord,
-    settled: str,
+    repo: str, monkeypatch: pytest.MonkeyPatch, earlier: tuple[SessionLogRecord, ...]
 ):
     start_with(repo)
     # The first attempt recorded no iteration, so the retry reuses its seq.
     append_records(repo, *earlier)
-    measured(repo, iteration, hook_record(seq=1, stage="after"))
+    measured(repo, iteration_record(seq=1), hook_record(seq=1, stage="after"))
     checks_pass(monkeypatch)
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
-    assert run.report.steps[0] == ExitStep(kind="settled", text=f"settled: {settled}")
+    assert run.report.steps[0] == KEPT_STEP
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +466,7 @@ async def test_run_exit_sequence_when_an_earlier_attempt_failed_its_before_hook_
         pytest.param(edit_experiment, "2 unmeasured edits", id="two-edits"),
     ],
 )
-async def test_run_exit_sequence_when_only_unmeasured_edits_stand_does_count_them_and_leave_them(
+async def test_run_exit_sequence_when_only_unmeasured_edits_stand_does_leave_them_counted(
     repo: str, monkeypatch: pytest.MonkeyPatch, edit: Callable[[str], None], counted: str
 ):
     start_with(repo)

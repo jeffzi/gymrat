@@ -15,23 +15,20 @@ from __future__ import annotations
 
 import os
 import subprocess
-import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
-from tests._ansi import strip_ansi
-from tests._cli import ENTRY as _ENTRY
-from tests._git import EMIT_ONE_BENCH
-from tests._git import run_git as _git
+from tests._ansi import SGR_RE, strip_ansi
+from tests._cli import run_cli
+from tests._git import BENCH_ONCE_FLAGS, EMIT_ONE_BENCH
 from tests._git import write_committed_bench as _write_committed_bench
-from tests.hardening._pty import drain as _drain
+from tests.cli._signalled_cli import spawned_gymrat
+from tests.hardening._pty import pty_capture
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-pty = pytest.importorskip("pty", reason="POSIX-only pty and shell bench")
 
 # A bench that records the ``NO_COLOR`` its own environment carries. The parent
 # starts with ``NO_COLOR`` unset, so a leak would show up here as ``[1]``.
@@ -71,31 +68,21 @@ def _run_report_on_pty(args: list[str], repo: str) -> tuple[int, str, str]:
     Returns:
         The exit code, the captured stderr, and the text drawn on the pty.
     """
-    master, slave = pty.openpty()
-    proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list, not shell-injected
-        [*_ENTRY, *args],
-        cwd=repo,
-        env=_neutral_env(),
-        stdin=subprocess.DEVNULL,
-        stdout=slave,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        close_fds=True,
-    )
-    os.close(slave)
-    chunks: list[bytes] = []
-    reader = threading.Thread(target=_drain, args=(master, chunks))
-    reader.start()
-    try:
+    with (
+        pty_capture() as terminal,
+        spawned_gymrat(
+            args,
+            repo,
+            env=_neutral_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=terminal.slave,
+            text=False,
+            start_new_session=True,
+            close_fds=True,
+        ) as proc,
+    ):
         _, stderr = proc.communicate(timeout=120)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.communicate()
-        reader.join(timeout=10)
-        os.close(master)
-    output = b"".join(chunks).decode("utf-8", "replace")
-    return proc.returncode, stderr.decode("utf-8", "replace"), output
+    return proc.returncode, stderr.decode("utf-8", "replace"), terminal.output
 
 
 # ---------------------------------------------------------------------------
@@ -106,13 +93,9 @@ def _run_report_on_pty(args: list[str], repo: str) -> tuple[int, str, str]:
 @pytest.mark.parametrize(
     ("args", "title"),
     [
+        pytest.param(["measure", *BENCH_ONCE_FLAGS], "gymrat measure", id="measure"),
         pytest.param(
-            ["measure", "--bench", "sh bench.sh", "--samples", "1"], "gymrat measure", id="measure"
-        ),
-        pytest.param(
-            ["compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
-            "gymrat compare",
-            id="compare",
+            ["compare", "main", "candidate", *BENCH_ONCE_FLAGS], "gymrat compare", id="compare"
         ),
     ],
 )
@@ -120,15 +103,13 @@ def test_report_when_stdout_is_a_real_tty_does_render_styled(
     create_scratch_repo: Callable[[], str], args: list[str], title: str
 ):
     repo = create_scratch_repo()
-    _write_committed_bench(repo, EMIT_ONE_BENCH)
-    _git(["switch", "-c", "candidate"], repo)
-    _git(["switch", "main"], repo)
+    _write_committed_bench(repo, EMIT_ONE_BENCH, branches=("candidate",))
 
     returncode, stderr, output = _run_report_on_pty(args, repo)
 
     assert returncode == 0, stderr
     assert title in strip_ansi(output)
-    assert "\x1b[" in output
+    assert SGR_RE.search(output)
 
 
 def test_measure_report_when_stdout_is_redirected_does_render_plain(
@@ -137,14 +118,12 @@ def test_measure_report_when_stdout_is_redirected_does_render_plain(
     repo = create_scratch_repo()
     _write_committed_bench(repo, EMIT_ONE_BENCH)
 
-    result = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
-        [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "1"],
-        cwd=repo,
-        env=_neutral_env(),
-        capture_output=True,
-        text=True,
-        timeout=120,
+    result = run_cli(
+        ["measure", *BENCH_ONCE_FLAGS],
+        repo,
         check=False,
+        timeout=120,
+        env=_neutral_env(),
     )
 
     assert result.returncode == 0, result.stderr
@@ -166,14 +145,12 @@ def test_measure_when_no_color_flag_does_not_leak_no_color_into_the_bench_env(
     env = _neutral_env()
     env["GYMRAT_TEST_PROBE"] = str(probe)
 
-    result = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
-        [*_ENTRY, "measure", "--no-color", "--bench", "sh bench.sh", "--samples", "1"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
+    result = run_cli(
+        ["measure", "--no-color", *BENCH_ONCE_FLAGS],
+        repo,
         check=False,
+        timeout=120,
+        env=env,
     )
 
     assert result.returncode == 0, result.stderr

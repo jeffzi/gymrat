@@ -8,12 +8,11 @@ carried.
 
 import errno
 import stat
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from gymrat.errors import GymratError
-from gymrat.git import run_git
+from gymrat.git import run_git_step
 from gymrat.utils import stderr_text_of
 
 # Hint attached to every unresolvable target, naming the two readings gymrat
@@ -47,19 +46,6 @@ class RefTarget:
 
 type Target = InPlaceTarget | RefTarget
 """Either the working tree in place or a committed ref in its own worktree."""
-
-
-@dataclass(frozen=True, slots=True)
-class WorktreeRemovalFailure:
-    """A worktree cleanup could not remove, with the reason git gave.
-
-    Attributes:
-        dir: The worktree directory that could not be removed.
-        error: The reason git reported for the failed removal.
-    """
-
-    dir: str
-    error: str
 
 
 def _try_resolve_directory(target_input: str) -> InPlaceTarget | None:
@@ -125,18 +111,15 @@ def resolve_target(target_input: str, repo_dir: str) -> Target:
     if directory is not None:
         return directory
 
-    try:
-        # ``--end-of-options`` stops a leading-dash input being parsed as a git
-        # option. ``^{commit}`` peels the ref, so a tag resolves to the commit it
-        # points at and a tree or blob sha fails instead of yielding a sha no
-        # worktree can check out.
-        resolved_sha = run_git(
-            ["rev-parse", "--verify", "--end-of-options", f"{target_input}^{{commit}}"],
-            repo_dir,
-        ).strip()
-    except (subprocess.SubprocessError, OSError) as error:
-        # OSError is a git binary that is missing or cannot be executed.
-        message = f"Cannot resolve target '{target_input}': {stderr_text_of(error)}"
-        raise GymratError(message, hint=_RESOLVE_TARGET_HINT) from error
+    # ``--end-of-options`` stops a leading-dash input being parsed as a git
+    # option. ``^{commit}`` peels the ref, so a tag resolves to the commit it
+    # points at and a tree or blob sha fails instead of yielding a sha no
+    # worktree can check out.
+    resolved_sha = run_git_step(
+        ["rev-parse", "--verify", "--end-of-options", f"{target_input}^{{commit}}"],
+        repo_dir,
+        f"Cannot resolve target '{target_input}'",
+        _RESOLVE_TARGET_HINT,
+    ).strip()
 
     return RefTarget(ref=target_input, resolved_sha=resolved_sha)

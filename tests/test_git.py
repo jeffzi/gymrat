@@ -22,6 +22,7 @@ from gymrat.git import (
     try_git,
 )
 from tests._git import install_git_hook, list_worktree_dirs
+from tests._signal_masking import needs_signal_masking
 
 # ---------------------------------------------------------------------------
 # run_git
@@ -47,7 +48,7 @@ _GIT_DIR_ARGS = ["rev-parse", "--git-dir"]
         pytest.param("GIT_INDEX_FILE", ["ls-files"], "README.md\n", id="GIT_INDEX_FILE"),
     ],
 )
-def test_run_git_when_repo_env_var_set_does_scrub_it_and_use_cwd(
+def test_run_git_when_repo_env_var_set_does_resolve_against_cwd(
     repo: str, monkeypatch: pytest.MonkeyPatch, key: str, args: list[str], expected: str
 ):
     monkeypatch.setenv(key, "/nonexistent/.git")
@@ -69,35 +70,18 @@ def test_run_git_when_alternate_object_dirs_set_does_not_read_objects_through_th
         run_git(["cat-file", "-e", blob], repo)
 
 
-def test_run_git_when_extra_env_passed_does_apply_it_to_child_process(repo: str):
-    result = run_git(
-        ["var", "GIT_AUTHOR_IDENT"],
-        repo,
-        env={"GIT_AUTHOR_NAME": "Banana", "GIT_AUTHOR_EMAIL": "banana@example.com"},
-    )
-
-    assert "Banana" in result
-
-
 def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
     repo: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("GIT_INDEX_FILE", "/nonexistent/.git/index")
-    custom_index = str(tmp_path / "custom-index")
+    custom_env = {"GIT_INDEX_FILE": str(tmp_path / "custom-index")}
     (Path(repo) / "staged.txt").write_text("banana\n")
+    run_git(["read-tree", "--empty"], repo, env=custom_env)
 
-    run_git(["read-tree", "--empty"], repo, env={"GIT_INDEX_FILE": custom_index})
-    run_git(
-        ["update-index", "--add", "--", "staged.txt"],
-        repo,
-        env={"GIT_INDEX_FILE": custom_index},
-    )
-    tree_sha = run_git(["write-tree"], repo, env={"GIT_INDEX_FILE": custom_index}).strip()
-    listing = run_git(["ls-tree", tree_sha], repo)
-    real_index_status = run_git(["diff", "--cached", "--name-only"], repo)
+    run_git(["update-index", "--add", "--", "staged.txt"], repo, env=custom_env)
 
-    assert "staged.txt" in listing
-    assert real_index_status == ""
+    assert run_git(["ls-files"], repo, env=custom_env) == "staged.txt\n"
+    assert run_git(["diff", "--cached", "--name-only"], repo) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +90,9 @@ def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
 
 
 def test_try_git_when_command_succeeds_does_return_none(repo: str):
-    assert try_git(["rev-parse", "HEAD"], repo) is None
+    result = try_git(["rev-parse", "HEAD"], repo)
+
+    assert result is None
 
 
 def _git_fails(_monkeypatch: pytest.MonkeyPatch) -> None:
@@ -168,12 +154,9 @@ _EXIT_POLL_TIMEOUT_SECONDS = 2.0
 _EXIT_POLL_INTERVAL_SECONDS = 0.01
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "pthread_sigmask"),
-    reason="Signal masking requires POSIX pthread_sigmask",
-)
+@needs_signal_masking
 def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_until_git_exits(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str, recorded_exits: list[tuple[int, float]]
 ):
     # One signal suffices here: the deferred set is pinned in the signals suite.
     term_signal = signal.SIGTERM
@@ -181,14 +164,6 @@ def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_unt
     # for a mid-call signal to land.
     install_git_hook(repo, "post-checkout", f"sleep {_WORKTREE_SLEEP_SECONDS}\n")
     worktree_dir = str(Path(repo) / "wt")
-
-    exit_record: dict[str, float] = {}
-
-    def record_exit(code: int) -> None:
-        exit_record["code"] = code
-        exit_record["at"] = time.monotonic()
-
-    monkeypatch.setattr(signals, "exit_process", record_exit)
 
     sweep_record: dict[str, bool] = {}
 
@@ -209,19 +184,20 @@ def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_unt
         timer.start()
         run_git(["worktree", "add", "--detach", worktree_dir, "HEAD"], repo)
         deadline = time.monotonic() + _EXIT_POLL_TIMEOUT_SECONDS
-        while "code" not in exit_record and time.monotonic() < deadline:
+        while not recorded_exits and time.monotonic() < deadline:
             time.sleep(_EXIT_POLL_INTERVAL_SECONDS)
     finally:
         timer.cancel()
         uninstall()
 
-    assert exit_record["code"] == 128 + int(term_signal)
-    assert exit_record["at"] - started >= _WORKTREE_SLEEP_SECONDS * _DEFERRAL_ELAPSED_FRACTION
+    [(exit_code, exited_at)] = recorded_exits
+    assert exit_code == 128 + int(term_signal)
+    assert exited_at - started >= _WORKTREE_SLEEP_SECONDS * _DEFERRAL_ELAPSED_FRACTION
     assert sweep_record["worktree_materialized"]
     assert list_worktree_dirs(repo, include_main=False) == []
 
 
-def test_run_git_when_pthread_sigmask_unavailable_does_run_unmasked_and_return_stdout(
+def test_run_git_when_pthread_sigmask_unavailable_does_still_return_stdout(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(signals, "pthread_sigmask", None)

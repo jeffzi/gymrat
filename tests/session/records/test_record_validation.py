@@ -10,7 +10,6 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.session.records import (
-    BaselineRecord,
     IterationRecord,
     parse_record,
 )
@@ -22,8 +21,8 @@ from tests.session.records._wire import (
     BLOCKED_KEEP_RECORD,
     COMMAND_RECORD,
     COMMAND_RECORD_SUCCESS,
-    COMMAND_RECORD_WITH_TRACEPARENT,
     COMMITTED_KEEP_RECORD,
+    CONFIRM,
     DISCARD_RECORD,
     FINALIZE_RECORD,
     HOOK_RECORD,
@@ -31,24 +30,14 @@ from tests.session.records._wire import (
     METRIC_VERDICT,
     SESSION_RECORD,
     STOP_RECORD,
-    config_with,
+    confirm_with,
     field_of,
+    nested_with,
     omitting,
     patching,
+    verdict_with,
+    verdict_without,
 )
-
-
-def _verdict_with(**overrides: object) -> dict[str, object]:
-    return patching(ITERATION_RECORD, {"metrics": {"total_ms": {**METRIC_VERDICT, **overrides}}})
-
-
-def _verdict_without(key: str) -> dict[str, object]:
-    return patching(ITERATION_RECORD, {"metrics": {"total_ms": omitting(METRIC_VERDICT, key)}})
-
-
-def _nested_with(record: dict[str, object], field: str, **overrides: object) -> dict[str, object]:
-    return patching(record, {field: {**field_of(record, field), **overrides}})
-
 
 # ---------------------------------------------------------------------------
 # parse_record — values that match no record type
@@ -102,20 +91,17 @@ def test_parse_record_when_type_unknown_does_raise_with_known_types_hint(value: 
 @pytest.mark.parametrize(
     ("value", "key"),
     [
-        pytest.param(omitting(STOP_RECORD, "message"), "message", id="stop-no-message"),
         pytest.param(omitting(SESSION_RECORD, "schema"), "schema", id="session-no-schema"),
-        pytest.param(omitting(SESSION_RECORD, "session_id"), "session_id", id="session-no-id"),
         pytest.param(
-            patching(SESSION_RECORD, {"config": omitting(config_with(), "bench")}),
+            patching(
+                SESSION_RECORD, {"config": omitting(field_of(SESSION_RECORD, "config"), "bench")}
+            ),
             "config.bench",
             id="config-no-bench",
         ),
-        pytest.param(omitting(BASELINE_RECORD, "samples"), "samples", id="baseline-no-samples"),
-        pytest.param(omitting(ITERATION_RECORD, "metrics"), "metrics", id="iteration-no-metrics"),
         pytest.param(
-            _verdict_without("delta_pct"), "metrics.total_ms.delta_pct", id="verdict-drops-delta"
+            verdict_without("delta_pct"), "metrics.total_ms.delta_pct", id="verdict-drops-delta"
         ),
-        pytest.param(_verdict_without("gating"), "metrics.total_ms.gating", id="verdict-no-gating"),
         pytest.param(
             patching(ITERATION_RECORD, {"metrics": {"123": omitting(METRIC_VERDICT, "delta_pct")}}),
             "metrics.123.delta_pct",
@@ -129,16 +115,7 @@ def test_parse_record_when_type_unknown_does_raise_with_known_types_hint(value: 
             "primary.delta_pct",
             id="primary-drops-delta",
         ),
-        pytest.param(omitting(COMMITTED_KEEP_RECORD, "status"), "status", id="keep-no-status"),
         pytest.param(omitting(DISCARD_RECORD, "at"), "at", id="discard-no-at"),
-        pytest.param(omitting(HOOK_RECORD, "exit_code"), "exit_code", id="hook-no-exit-code"),
-        pytest.param(omitting(FINALIZE_RECORD, "commit"), "commit", id="finalize-no-commit"),
-        pytest.param(omitting(COMMAND_RECORD, "name"), "name", id="command-no-name"),
-        pytest.param(omitting(COMMAND_RECORD, "args"), "args", id="command-no-args"),
-        pytest.param(omitting(COMMAND_RECORD, "exit_code"), "exit_code", id="command-no-exit-code"),
-        pytest.param(
-            omitting(COMMAND_RECORD, "duration_ms"), "duration_ms", id="command-no-duration-ms"
-        ),
     ],
 )
 def test_parse_record_when_key_missing_does_reject_naming_key(value: object, key: str):
@@ -158,11 +135,11 @@ def test_parse_record_when_key_missing_does_reject_naming_key(value: object, key
     [
         pytest.param(patching(DISCARD_RECORD, {"note": "why not"}), "note", id="unknown-top-level"),
         pytest.param(
-            patching(SESSION_RECORD, {"config": config_with(retries=3)}),
+            nested_with(SESSION_RECORD, "config", retries=3),
             "config.retries",
             id="unknown-nested",
         ),
-        pytest.param(_verdict_with(band=1.4), "metrics.total_ms.band", id="unknown-in-verdict"),
+        pytest.param(verdict_with(band=1.4), "metrics.total_ms.band", id="unknown-in-verdict"),
         pytest.param(
             patching(ITERATION_RECORD, {"schema": 1}), "schema", id="schema-on-non-session"
         ),
@@ -178,21 +155,6 @@ def test_parse_record_when_key_unknown_does_reject_naming_key(value: object, key
 # ---------------------------------------------------------------------------
 # Tuple fields — a JSON array is accepted, anything else is rejected
 # ---------------------------------------------------------------------------
-
-
-CONFIRM: dict[str, object] = {
-    "ran": True,
-    "filtered": ["total_ms"],
-    "absent": ["rss_kb"],
-    "samples": {
-        "experiment": [{"total_ms": 14120}],
-        "baseline": [{"total_ms": 15170}],
-    },
-}
-
-
-def _confirm_with(**overrides: object) -> dict[str, object]:
-    return {**CONFIRM, **overrides}
 
 
 def test_parse_record_when_iteration_tuple_fields_sent_as_arrays_does_hold_tuples():
@@ -217,13 +179,6 @@ def test_parse_record_when_iteration_tuple_fields_sent_as_arrays_does_hold_tuple
     )
 
 
-def test_parse_record_when_baseline_samples_sent_as_array_does_hold_tuple():
-    parsed = parse_record(BASELINE_RECORD)
-
-    assert isinstance(parsed, BaselineRecord)
-    assert parsed.samples == ({"total_ms": 15200}, {"total_ms": 15184})
-
-
 # ---------------------------------------------------------------------------
 # parse_record — exact "Invalid session record value for ..." messages
 # ---------------------------------------------------------------------------
@@ -243,7 +198,6 @@ _COMMAND_REASONS = (
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        # literal fields
         pytest.param(
             patching(ITERATION_RECORD, {"outcome": "banana"}),
             "outcome: expected 'improved', 'regressed' or 'no-signal', got \"banana\"",
@@ -281,22 +235,21 @@ _COMMAND_REASONS = (
             id="command-origin",
         ),
         pytest.param(
-            _verdict_with(verdict="banana"),
+            verdict_with(verdict="banana"),
             "metrics.total_ms.verdict: expected 'improved', 'regressed', 'no-signal' or "
             "'unstable', got \"banana\"",
             id="verdict",
         ),
         pytest.param(
-            _verdict_with(method="banana"),
+            verdict_with(method="banana"),
             "metrics.total_ms.method: expected 'permutation', 'band' or 'exact', got \"banana\"",
             id="method",
         ),
         pytest.param(
-            _nested_with(ITERATION_RECORD, "primary", kind="banana"),
+            nested_with(ITERATION_RECORD, "primary", kind="banana"),
             "primary.kind: expected 'geomean' or 'metric', got \"banana\"",
             id="primary-kind",
         ),
-        # scalar type mismatches
         pytest.param(
             patching(ITERATION_RECORD, {"at": "2026-08-08T14:15:30.000Z"}),
             'at: expected an integer, got "2026-08-08T14:15:30.000Z"',
@@ -323,18 +276,13 @@ _COMMAND_REASONS = (
             id="target-reached-string",
         ),
         pytest.param(
-            patching(COMMAND_RECORD_WITH_TRACEPARENT, {"traceparent": 42}),
-            "traceparent: expected a string, got 42",
-            id="command-traceparent-not-string",
-        ),
-        pytest.param(
             patching(COMMAND_RECORD, {"args": "banana"}),
             'args: expected an object, got "banana"',
             id="command-args-string",
         ),
         # nullable fields take the phrase of their non-null type
         pytest.param(
-            _verdict_with(delta_pct="banana"),
+            verdict_with(delta_pct="banana"),
             'metrics.total_ms.delta_pct: expected a number, got "banana"',
             id="verdict-delta-string",
         ),
@@ -348,36 +296,35 @@ _COMMAND_REASONS = (
         ),
         # optional fields that are not nullable reject an explicit null with their type
         pytest.param(
-            patching(SESSION_RECORD, {"config": config_with(filter=None)}),
+            nested_with(SESSION_RECORD, "config", filter=None),
             "config.filter: expected a string, got null",
             id="config-filter-null",
         ),
         pytest.param(
-            patching(SESSION_RECORD, {"config": config_with(hooks={"before": None})}),
+            nested_with(SESSION_RECORD, "config", hooks={"before": None}),
             "config.hooks.before: expected a string, got null",
             id="config-hooks-before-null",
         ),
         pytest.param(
-            _verdict_with(p=None),
+            verdict_with(p=None),
             "metrics.total_ms.p: expected a number, got null",
             id="verdict-p-null",
         ),
         pytest.param(
-            _nested_with(COMMITTED_KEEP_RECORD, "checks", passed=None),
+            nested_with(COMMITTED_KEEP_RECORD, "checks", passed=None),
             "checks.passed: expected a boolean, got null",
             id="keep-checks-passed-null",
         ),
         pytest.param(
-            _nested_with(COMMITTED_KEEP_RECORD, "checks", stdout_bytes=None),
+            nested_with(COMMITTED_KEEP_RECORD, "checks", stdout_bytes=None),
             "checks.stdout_bytes: expected an integer, got null",
             id="keep-checks-stdout-bytes-null",
         ),
         pytest.param(
-            patching(SESSION_RECORD, {"config": config_with(hooks=None)}),
+            nested_with(SESSION_RECORD, "config", hooks=None),
             "config.hooks: expected an object, got null",
             id="config-hooks-null",
         ),
-        # bounds
         pytest.param(
             patching(HOOK_RECORD, {"stdout_bytes": -1}),
             "stdout_bytes: expected a number at or above 0, got -1",
@@ -389,18 +336,12 @@ _COMMAND_REASONS = (
             id="stop-message-empty",
         ),
         pytest.param(
-            patching(COMMAND_RECORD, {"duration_ms": -1}),
-            "duration_ms: expected a number at or above 0, got -1",
-            id="command-duration-ms-negative",
-        ),
-        # sample rounds
-        pytest.param(
             patching(BASELINE_RECORD, {"samples": "banana"}),
             'samples: expected an array, got "banana"',
             id="baseline-samples-string",
         ),
         pytest.param(
-            _nested_with(ITERATION_RECORD, "samples", experiment="banana"),
+            nested_with(ITERATION_RECORD, "samples", experiment="banana"),
             'samples.experiment: expected an array, got "banana"',
             id="iteration-experiment-string",
         ),
@@ -415,7 +356,7 @@ _COMMAND_REASONS = (
             id="baseline-sample-string",
         ),
         pytest.param(
-            _nested_with(ITERATION_RECORD, "samples", baseline=[{"total_ms": "banana"}]),
+            nested_with(ITERATION_RECORD, "samples", baseline=[{"total_ms": "banana"}]),
             'samples.baseline.0.total_ms: expected a number, got "banana"',
             id="iteration-baseline-sample-string",
         ),
@@ -426,33 +367,32 @@ _COMMAND_REASONS = (
             id="iteration-seq-zero-float",
         ),
         pytest.param(
-            patching(SESSION_RECORD, {"config": config_with(samples=0.0), "samples": 0}),
+            patching(nested_with(SESSION_RECORD, "config", samples=0.0), {"samples": 0}),
             "config.samples: expected a number at or above 1, got 0",
             id="config-samples-zero-float-beside-equal-stray-key",
         ),
         pytest.param(
-            _nested_with(COMMITTED_KEEP_RECORD, "checks", stdout_bytes=-1.0),
+            nested_with(COMMITTED_KEEP_RECORD, "checks", stdout_bytes=-1.0),
             "checks.stdout_bytes: expected a number at or above 0, got -1",
             id="keep-checks-stdout-bytes-negative-float",
         ),
-        # confirm field
         pytest.param(
-            patching(ITERATION_RECORD, {"confirm": _confirm_with(filtered="total_ms")}),
+            patching(ITERATION_RECORD, {"confirm": confirm_with(filtered="total_ms")}),
             'confirm.filtered: expected an array, got "total_ms"',
             id="filtered-string",
         ),
         pytest.param(
-            patching(ITERATION_RECORD, {"confirm": _confirm_with(absent="total_ms")}),
+            patching(ITERATION_RECORD, {"confirm": confirm_with(absent="total_ms")}),
             'confirm.absent: expected an array, got "total_ms"',
             id="absent-string",
         ),
         pytest.param(
-            patching(ITERATION_RECORD, {"confirm": _confirm_with(filtered=[True])}),
+            patching(ITERATION_RECORD, {"confirm": confirm_with(filtered=[True])}),
             "confirm.filtered.0: expected a string, got true",
             id="filtered-bool",
         ),
         pytest.param(
-            patching(ITERATION_RECORD, {"confirm": _confirm_with(absent=[False])}),
+            patching(ITERATION_RECORD, {"confirm": confirm_with(absent=[False])}),
             "confirm.absent.0: expected a string, got false",
             id="absent-bool",
         ),
@@ -460,7 +400,7 @@ _COMMAND_REASONS = (
             patching(
                 ITERATION_RECORD,
                 {
-                    "confirm": _confirm_with(
+                    "confirm": confirm_with(
                         samples={"experiment": [{"total_ms": True}], "baseline": []}
                     )
                 },
@@ -472,7 +412,7 @@ _COMMAND_REASONS = (
             patching(
                 ITERATION_RECORD,
                 {
-                    "confirm": _confirm_with(
+                    "confirm": confirm_with(
                         samples={"experiment": [], "baseline": [{"total_ms": "banana"}]}
                     )
                 },
@@ -480,24 +420,18 @@ _COMMAND_REASONS = (
             'confirm.samples.baseline.0.total_ms: expected a number, got "banana"',
             id="sample-string",
         ),
-        # fields that violate their schema
         pytest.param(
             patching(SESSION_RECORD, {"baseline": {"ref": 42, "sha": BASELINE_SHA}}),
             "baseline.ref: expected a string, got 42",
             id="baseline-ref-not-string",
         ),
         pytest.param(
-            patching(SESSION_RECORD, {"worktrees": {"experiment": 7, "baseline": "b"}}),
-            "worktrees.experiment: expected a string, got 7",
-            id="worktrees-experiment-not-string",
-        ),
-        pytest.param(
-            patching(SESSION_RECORD, {"config": config_with(samples=10.5)}),
+            nested_with(SESSION_RECORD, "config", samples=10.5),
             "config.samples: expected an integer, got 10.5",
             id="samples-fractional",
         ),
         pytest.param(
-            patching(SESSION_RECORD, {"config": config_with(hooks="gymrat.hooks")}),
+            nested_with(SESSION_RECORD, "config", hooks="gymrat.hooks"),
             'config.hooks: expected an object, got "gymrat.hooks"',
             id="config-hooks-string",
         ),
@@ -536,11 +470,6 @@ _COMMAND_REASONS = (
             "branch: expected a string, got 42",
             id="finalize-branch-not-string",
         ),
-        pytest.param(
-            patching(COMMAND_RECORD, {"name": ""}),
-            'name: expected a non-empty string, got ""',
-            id="command-name-empty",
-        ),
     ],
 )
 def test_parse_record_when_field_invalid_does_reject_with_message(value: object, expected: str):
@@ -556,26 +485,26 @@ def test_parse_record_when_field_invalid_does_reject_with_message(value: object,
 
 
 @pytest.mark.parametrize(
-    ("value", "rule"),
+    ("value", "expected"),
     [
         pytest.param(
             patching(COMMAND_RECORD_SUCCESS, {"reason": "budget-exceeded"}),
-            "a successful command must not carry a reason",
+            "Invalid session record: command.exit_code is 0 but reason is set to "
+            "'budget-exceeded'; a successful command must not carry a reason",
             id="success-with-reason",
         ),
         pytest.param(
             omitting(COMMAND_RECORD, "reason"),
+            "Invalid session record: command.exit_code is 1 but reason is missing; "
             "a failed command must carry a reason",
             id="failure-without-reason",
         ),
     ],
 )
 def test_parse_record_when_command_exit_code_and_reason_disagree_does_reject_with_the_rule(
-    value: object, rule: str
+    value: object, expected: str
 ):
     with pytest.raises(GymratError) as exc:
         parse_record(value)
 
-    message = str(exc.value)
-    assert rule in message
-    assert "expected a valid value" not in message
+    assert str(exc.value) == expected

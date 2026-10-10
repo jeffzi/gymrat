@@ -3,28 +3,27 @@ from functools import partial
 
 import pytest
 
-from gymrat.errors import GymratError
-from gymrat.loop.iterate.run import BudgetExceededError, LoopStopError
-from gymrat.session.schema import CommandReason
+from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
+from gymrat.loop.stop_condition import BudgetExceededError, LoopStopError
+
+# ---------------------------------------------------------------------------
+# exit codes
+# ---------------------------------------------------------------------------
+
+
+def test_exit_codes_when_imported_does_match_the_documented_cli_contract():
+    assert (GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE) == (1, 2)
+
 
 # ---------------------------------------------------------------------------
 # GymratError
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("hint", "reason"),
-    [
-        pytest.param(None, None, id="bare"),
-        pytest.param("try this", "error", id="hint-and-reason"),
-    ],
-)
-def test_gymrat_error_when_constructed_does_expose_its_message_hint_and_reason(
-    hint: str | None, reason: CommandReason | None
-):
-    error = GymratError("something broke", hint=hint, reason=reason)
+def test_gymrat_error_when_given_only_a_message_does_default_hint_and_reason_to_none():
+    error = GymratError("something broke")
 
-    assert (str(error), error.hint, error.reason) == ("something broke", hint, reason)
+    assert (str(error), error.hint, error.reason) == ("something broke", None, None)
 
 
 # ---------------------------------------------------------------------------

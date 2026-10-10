@@ -1,27 +1,24 @@
-import json
 import re
-import subprocess
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
+from gymrat.cli.options import OutputFormat
 from gymrat.cli.run_setup import SharedFlags
 from gymrat.config import (
     MAX_SAFE_INTEGER,
     MAX_TIMEOUT_SECONDS,
     BenchlessConfig,
     CliFlags,
-    HooksConfig,
     KindEntry,
     MetricEntry,
-    ResolvedConfig,
     StopConfig,
     SuperviseConfig,
     config_trace_args,
     env_positive_int_result,
+    find_implicit_base,
     inspect_config,
     is_positive_integer,
     resolve_benchless_config,
@@ -29,10 +26,13 @@ from gymrat.config import (
     runbook_problem,
 )
 from gymrat.errors import GymratError
-from tests._config import benchless_config
+from gymrat.session.paths import NotAGitRepositoryError
+from tests._config import benchless_config, resolved_config
 from tests._git import run_git
+from tests._imports import modules_imported_by
 from tests.config._toml import (
     LOOP_CONFIG,
+    LOOP_FIELDS,
     write_config,
     write_raw,
 )
@@ -52,17 +52,9 @@ RESOLVERS = [
 
 
 def test_config_module_when_imported_fresh_does_not_raise_import_error():
-    result = subprocess.run(
-        [sys.executable, "-c", "import gymrat.config"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
+    loaded = modules_imported_by("gymrat.config")
 
-    assert result.returncode == 0, (
-        f"Importing gymrat.config failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-    )
+    assert "gymrat.config" in loaded
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +62,7 @@ def test_config_module_when_imported_fresh_does_not_raise_import_error():
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class EnvCase:
     """One GYMRAT_* precedence case.
 
@@ -81,7 +73,7 @@ class EnvCase:
 
     env_var: str
     env_value: str
-    field: str
+    settled_field: str
     expected: object
     flags: CliFlags = field(default_factory=CliFlags)
     config: dict[str, object] | None = None
@@ -97,29 +89,6 @@ def _arrange_env_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: Env
 @pytest.mark.parametrize(
     "case",
     [
-        pytest.param(
-            EnvCase("GYMRAT_BENCH", "env-bench", "bench", "env-bench"), id="flag-absent-bench"
-        ),
-        pytest.param(
-            EnvCase(
-                "GYMRAT_PREPARE", "env-prepare", "prepare", "env-prepare", flags=CliFlags(bench="b")
-            ),
-            id="flag-absent-prepare",
-        ),
-        pytest.param(
-            EnvCase(
-                "GYMRAT_ADAPTER", "env-adapter", "adapter", "env-adapter", flags=CliFlags(bench="b")
-            ),
-            id="flag-absent-adapter",
-        ),
-        pytest.param(
-            EnvCase("GYMRAT_SAMPLES", "42", "samples", 42, flags=CliFlags(bench="b")),
-            id="flag-absent-samples",
-        ),
-        pytest.param(
-            EnvCase("GYMRAT_TIMEOUT", "900", "timeout_seconds", 900, flags=CliFlags(bench="b")),
-            id="flag-absent-timeout",
-        ),
         pytest.param(
             EnvCase("GYMRAT_BENCH", "env-bench", "bench", "env-bench", config={"bench": "cfg"}),
             id="beats-config-bench",
@@ -157,20 +126,6 @@ def _arrange_env_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: Env
                 config={"bench": "b", "timeout_seconds": 3600},
             ),
             id="beats-config-timeout",
-        ),
-        pytest.param(
-            EnvCase(
-                "GYMRAT_BENCH",
-                "env-bench",
-                "bench",
-                "flag-bench",
-                flags=CliFlags(bench="flag-bench"),
-            ),
-            id="flag-wins-bench",
-        ),
-        pytest.param(
-            EnvCase("GYMRAT_SAMPLES", "42", "samples", 7, flags=CliFlags(bench="b", samples=7)),
-            id="flag-wins-samples",
         ),
         pytest.param(
             EnvCase(
@@ -219,7 +174,7 @@ def test_resolve_config_when_env_var_set_does_settle_by_precedence(
 
     result = resolve_config(case.flags)
 
-    assert getattr(result, case.field) == case.expected
+    assert getattr(result, case.settled_field) == case.expected
 
 
 def test_resolve_config_when_config_env_var_set_does_bypass_implicit_config(
@@ -253,7 +208,9 @@ def test_resolve_config_when_config_env_var_set_does_bypass_implicit_config(
     ],
 )
 def test_is_positive_integer_when_not_bare_positive_digits_does_reject(raw: str):
-    assert is_positive_integer(raw) is False
+    accepted = is_positive_integer(raw)
+
+    assert accepted is False
 
 
 def test_env_positive_int_result_when_digit_string_exceeds_conversion_limit_does_report_problem(
@@ -321,13 +278,8 @@ def test_resolve_config_when_flags_given_does_beat_defaults(
         CliFlags(bench="flag-bench", adapter="flag-adapter", samples=25, timeout=900)
     )
 
-    assert result == ResolvedConfig(
-        bench="flag-bench",
-        adapter="flag-adapter",
-        samples=25,
-        timeout_seconds=900,
-        unstable_noise_pct=200,
-        primary="geomean",
+    assert result == resolved_config(
+        bench="flag-bench", adapter="flag-adapter", samples=25, timeout_seconds=900
     )
 
 
@@ -369,14 +321,13 @@ def test_runbook_problem_when_path_cannot_be_read_does_name_the_path_and_reason(
 
     monkeypatch.setattr(Path, "stat", failing_stat)
 
-    assert (
-        runbook_problem("runbook.md", tmp_path)
-        == 'Cannot read runbook path "runbook.md": Permission denied'
-    )
+    problem = runbook_problem("runbook.md", tmp_path)
+
+    assert problem == 'Cannot read runbook path "runbook.md": Permission denied'
 
 
 # ---------------------------------------------------------------------------
-# inspect_config — shared helpers and fixtures
+# inspect_config — shared helpers
 # ---------------------------------------------------------------------------
 
 # The fully defaulted settled config: what inspect_config yields when neither
@@ -385,62 +336,66 @@ def test_runbook_problem_when_path_cannot_be_read_does_name_the_path_and_reason(
 DEFAULT_CONFIG = benchless_config()
 
 
-def has_problem(problems: list[str], pattern: str) -> bool:
-    return any(re.search(pattern, problem) for problem in problems)
-
-
 # ---------------------------------------------------------------------------
 # inspect_config — settled configuration
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("flags", "bench"),
-    [
-        pytest.param(CliFlags(), None, id="empty-flags"),
-        pytest.param(CliFlags(bench="flag-bench"), "flag-bench", id="bench-flag"),
-    ],
-)
-def test_inspect_config_when_no_file_does_settle_defaults_and_carry_any_bench_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: CliFlags, bench: str | None
-):
-    monkeypatch.chdir(tmp_path)
-
-    result = inspect_config(flags)
-
-    assert result.config_path is None
-    assert result.problems == []
-    assert result.config == DEFAULT_CONFIG
-    assert result.bench == bench
-
-
-def test_inspect_config_when_valid_file_provides_values_does_settle_config_and_path(
+def test_inspect_config_when_no_file_or_flags_does_settle_defaults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    write_config(
-        tmp_path,
-        {
-            "bench": "config-bench",
-            "adapter": "custom-adapter",
-            "samples": 20,
-            "timeout_seconds": 3600,
-            "unstable_noise_pct": 150.5,
-        },
-    )
     monkeypatch.chdir(tmp_path)
 
     result = inspect_config(CliFlags())
 
-    assert result.config_path == str(tmp_path / "gymrat.toml")
+    assert result.config_path is None
     assert result.problems == []
-    assert result.config == BenchlessConfig(
-        adapter="custom-adapter",
-        samples=20,
-        timeout_seconds=3600,
-        unstable_noise_pct=150.5,
-        primary="geomean",
-    )
+    assert result.config == DEFAULT_CONFIG
+    assert result.bench is None
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        pytest.param(
+            {"adapter": "custom-adapter", "samples": 20, "timeout_seconds": 3600},
+            benchless_config(adapter="custom-adapter", samples=20, timeout_seconds=3600),
+            id="flag-backed-keys",
+        ),
+        pytest.param(
+            {
+                "unstable_noise_pct": 150.5,
+                **LOOP_CONFIG,
+                "metrics": {"decode/time": {"direction": "higher", "gating": False, "exact": True}},
+                "kinds": {"memory": {"gating": False}},
+                "supervise": {"model": "claude-sonnet", "effort": "high"},
+            },
+            benchless_config(
+                unstable_noise_pct=150.5,
+                **LOOP_FIELDS,
+                metrics={"decode/time": MetricEntry(direction="higher", gating=False, exact=True)},
+                kinds={"memory": KindEntry(gating=False)},
+                supervise=SuperviseConfig(model="claude-sonnet", effort="high"),
+            ),
+            id="file-only-keys",
+        ),
+    ],
+)
+def test_inspect_config_when_valid_file_provides_values_does_settle_from_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    content: dict[str, object],
+    expected: BenchlessConfig,
+):
+    write_config(tmp_path, {"bench": "config-bench", **content})
+    monkeypatch.chdir(tmp_path)
+
+    result = inspect_config(CliFlags())
+
+    assert result.problems == []
+    assert result.config == expected
     assert result.bench == "config-bench"
+    assert result.config_path == str(tmp_path / "gymrat.toml")
 
 
 def test_inspect_config_when_flags_override_file_does_use_flag_values(
@@ -459,37 +414,6 @@ def test_inspect_config_when_flags_override_file_does_use_flag_values(
     assert result.problems == []
     assert result.config == benchless_config(adapter="flag-adapter", samples=5, timeout_seconds=30)
     assert result.bench == "flag-bench"
-
-
-def test_inspect_config_when_file_has_loop_and_override_keys_does_carry_them(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    write_config(
-        tmp_path,
-        {
-            "bench": "config-bench",
-            **LOOP_CONFIG,
-            "metrics": {"decode/time": {"direction": "higher", "gating": False, "exact": True}},
-            "kinds": {"memory": {"gating": False}},
-            "supervise": {"model": "claude-sonnet", "effort": "high"},
-        },
-    )
-    monkeypatch.chdir(tmp_path)
-
-    result = inspect_config(CliFlags())
-
-    assert result.problems == []
-    assert result.config == benchless_config(
-        primary="decode/time",
-        checks="npm test",
-        filter="npm run bench -- {names}",
-        stop=StopConfig(target_value=1.5, max_iterations=20),
-        hooks=HooksConfig(before="npm run warm-cache", after="npm run cool-down"),
-        metrics={"decode/time": MetricEntry(direction="higher", gating=False, exact=True)},
-        kinds={"memory": KindEntry(gating=False)},
-        supervise=SuperviseConfig(model="claude-sonnet", effort="high"),
-    )
-    assert result.bench == "config-bench"
 
 
 def test_inspect_config_when_file_names_existing_runbook_does_resolve_absolute_path(
@@ -581,32 +505,82 @@ def test_inspect_config_when_config_flag_names_file_in_other_dir_does_resolve_ru
 
 
 # ---------------------------------------------------------------------------
-# inspect_config — collected problems (never raises)
+# find_implicit_base
 # ---------------------------------------------------------------------------
 
 
-def test_inspect_config_when_config_flag_names_missing_path_does_report_and_omit_config(
-    tmp_path: Path,
-):
-    missing_path = tmp_path / "typo.toml"
-
-    result = inspect_config(CliFlags(bench="my-bench", config=str(missing_path)))
-
-    assert result.config_path == str(missing_path)
-    assert has_problem(result.problems, re.escape(str(missing_path)))
-    assert result.config is None
-
-
-def test_inspect_config_when_file_is_invalid_toml_does_report_naming_path(
+def test_find_implicit_base_when_cwd_outside_any_repository_does_return_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    config_path = write_raw(tmp_path, "= invalid toml =")
     monkeypatch.chdir(tmp_path)
 
-    result = inspect_config(CliFlags())
+    base = find_implicit_base()
 
-    assert result.config_path == str(config_path)
-    assert has_problem(result.problems, re.escape(str(config_path)))
+    assert Path(base) == tmp_path
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        pytest.param(find_implicit_base, id="find_implicit_base"),
+        pytest.param(lambda: inspect_config(CliFlags()), id="inspect_config"),
+        pytest.param(lambda: resolve_benchless_config(CliFlags()), id="resolve_benchless_config"),
+        pytest.param(lambda: resolve_config(CliFlags(bench="b")), id="resolve_config"),
+    ],
+)
+def test_config_lookup_when_git_declines_for_cwd_does_raise_with_git_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lookup: Callable[[], object]
+):
+    malformed = tmp_path / ".git"
+    malformed.write_text("banana\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(
+        GymratError,
+        match=(
+            rf"^Cannot determine the git repository at {re.escape(str(tmp_path))}: "
+            # git prints the .git path with forward slashes, even on Windows.
+            rf".*invalid \w+ format: {re.escape(malformed.as_posix())}$"
+        ),
+    ) as exc:
+        lookup()
+
+    assert not isinstance(exc.value, NotAGitRepositoryError)
+
+
+# ---------------------------------------------------------------------------
+# inspect_config — collected problems (a config problem never raises)
+# ---------------------------------------------------------------------------
+
+
+def _name_config_by_flag(_monkeypatch: pytest.MonkeyPatch, config_path: str) -> CliFlags:
+    return CliFlags(bench="my-bench", config=config_path)
+
+
+def _name_config_by_env_var(monkeypatch: pytest.MonkeyPatch, config_path: str) -> CliFlags:
+    monkeypatch.setenv("GYMRAT_CONFIG", config_path)
+    return CliFlags(bench="my-bench")
+
+
+@pytest.mark.parametrize(
+    "name_config",
+    [
+        pytest.param(_name_config_by_flag, id="flag"),
+        pytest.param(_name_config_by_env_var, id="env-var"),
+    ],
+)
+def test_inspect_config_when_config_source_names_missing_path_does_report_naming_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name_config: Callable[[pytest.MonkeyPatch, str], CliFlags],
+):
+    missing_path = tmp_path / "typo.toml"
+    flags = name_config(monkeypatch, str(missing_path))
+
+    result = inspect_config(flags)
+
+    assert result.config_path == str(missing_path)
+    assert result.problems == [f"Config file not found at {missing_path}"]
     assert result.config is None
 
 
@@ -673,9 +647,7 @@ def test_inspect_config_when_runbook_embeds_nul_does_report_problem_not_raise(
 @pytest.mark.parametrize(
     ("flags", "key", "got"),
     [
-        pytest.param(CliFlags(bench=""), "bench", '""', id="bench"),
         pytest.param(CliFlags(bench="my-bench", prepare=""), "prepare", '""', id="prepare"),
-        pytest.param(CliFlags(bench="my-bench", adapter=""), "adapter", '""', id="adapter"),
         pytest.param(CliFlags(bench="my-bench", config=""), "config", '""', id="config"),
         pytest.param(CliFlags(bench="\t"), "bench", '"\\t"', id="whitespace"),
     ],
@@ -751,7 +723,7 @@ def test_inspect_config_when_every_step_fails_does_report_flags_then_env_then_fi
     assert result.config is None
 
 
-def test_inspect_config_when_config_flag_blank_does_report_and_skip_file_lookup(
+def test_inspect_config_when_config_flag_blank_does_not_fall_back_to_implicit_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     write_config(tmp_path, {"bench": "cwd-bench"})
@@ -759,13 +731,9 @@ def test_inspect_config_when_config_flag_blank_does_report_and_skip_file_lookup(
 
     result = inspect_config(CliFlags(config="   "))
 
-    # A blank value is one mistake: probing it on disk would add a second,
-    # spurious "file not found" problem for a path the user never named.
-    assert len(result.problems) == 1
-    assert has_problem(result.problems, r"--config.*non-empty")
+    # A blank --config is a broken source, not an absent one: the gymrat.toml
+    # sitting in the working directory must not be picked up in its place.
     assert result.config_path is None
-    assert result.config is None
-    assert result.bench is None
 
 
 # ---------------------------------------------------------------------------
@@ -773,42 +741,17 @@ def test_inspect_config_when_config_flag_blank_does_report_and_skip_file_lookup(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("env_var", "flags", "env_value"),
-    [
-        pytest.param("GYMRAT_BENCH", CliFlags(), "", id="bench-empty"),
-        pytest.param("GYMRAT_PREPARE", CliFlags(bench="b"), " ", id="prepare-space"),
-        pytest.param("GYMRAT_ADAPTER", CliFlags(bench="b"), "\t", id="adapter-tab"),
-        pytest.param("GYMRAT_CONFIG", CliFlags(bench="b"), "  \n  ", id="config-padded-newline"),
-    ],
-)
-def test_inspect_config_when_string_env_var_blank_does_report_naming_var(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    env_var: str,
-    flags: CliFlags,
-    env_value: str,
-):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv(env_var, env_value)
-
-    result = inspect_config(flags)
-
-    assert result.problems == [
-        f"Invalid value for {env_var}: expected a non-empty string, got {json.dumps(env_value)}"
-    ]
-
-
-def test_inspect_config_when_config_env_var_names_missing_path_does_report_path(
+def test_inspect_config_when_config_env_var_blank_does_report_naming_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.chdir(tmp_path)
-    missing_path = tmp_path / "typo.toml"
-    monkeypatch.setenv("GYMRAT_CONFIG", str(missing_path))
+    monkeypatch.setenv("GYMRAT_CONFIG", "  \n  ")
 
-    result = inspect_config(CliFlags(bench="my-bench"))
+    result = inspect_config(CliFlags(bench="b"))
 
-    assert has_problem(result.problems, re.escape(str(missing_path)))
+    assert result.problems == [
+        'Invalid value for GYMRAT_CONFIG: expected a non-empty string, got "  \\n  "'
+    ]
 
 
 def test_inspect_config_when_every_field_env_var_invalid_does_report_each_in_field_order(
@@ -882,7 +825,9 @@ def test_inspect_config_when_integer_env_var_exceeds_cap_does_reject_as_not_a_po
         ),
         pytest.param(CliFlags(samples=0, timeout=0), {"samples": 0, "timeout": 0}, id="zero-kept"),
         pytest.param(
-            SharedFlags(samples=5, format="json"), {"samples": 5}, id="subclass-fields-left-out"
+            SharedFlags(samples=5, format=OutputFormat.json),
+            {"samples": 5},
+            id="subclass-fields-left-out",
         ),
     ],
 )

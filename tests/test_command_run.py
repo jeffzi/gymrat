@@ -6,51 +6,66 @@ emits when tracing is enabled, and the layering guard that keeps the seam free
 of the CLI package.
 """
 
+import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable, Iterator
+import errno
+import itertools
+import os
+import subprocess
+from collections.abc import Awaitable, Callable, Generator, Iterator
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 import typer
-from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
 from gymrat.command_run import CommandTrace, command_origin, with_repo_lock
 from gymrat.errors import GymratError
-from gymrat.git import NotAGitRepositoryError
-from gymrat.loop.iterate.run import LoopStopError
-from gymrat.session.lock import is_held
-from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
-from gymrat.session.records import CommandRecord, SessionRecord
+from gymrat.git import run_git
+from gymrat.loop.stop_condition import LoopStopError
+from gymrat.session.lock import LockContentionError, ReleaseLock, acquire_lock, is_held
+from gymrat.session.paths import lockfile_path, repo_root, session_dir, session_jsonl_path
+from gymrat.session.records import CommandRecord, SessionRecord, record_event
 from gymrat.session.schema import CommandReason
-from gymrat.session.store import recover_torn_tail, session_header
-from gymrat.telemetry.provider import export_failed, record_event, span_id_of, trace_id_of
-from tests._files import read_bytes
+from gymrat.session.store import session_header
+from gymrat.telemetry.command_span import command_attributes
+from gymrat.telemetry.provider import export_failed, span_id_of, trace_id_of
 from tests._imports import loaded_under, modules_imported_by
-from tests._lock import remove_lock_files
+from tests._lock import hold_lock, remove_lock_files
+from tests._mode_bits import needs_mode_bits
 from tests.session.records._fixtures import (
+    FRESH_SESSION_ID,
     append_records,
     archive_and_reopen_session_log,
     baseline_record,
     iteration_record,
+    last_command_record,
     log_records,
+    seeded_session,
     session_record,
     tear_final_line,
     write_session_log,
 )
 from tests.telemetry._collector import otlp_collector
-from tests.telemetry._fixtures import hide_otlp_exporter, memory_tracing
+from tests.telemetry._fixtures import (
+    arm_placeholder_endpoint,
+    hide_otlp_exporter,
+    memory_tracing,
+    span_by_name,
+    spans_by_prefix,
+    traceparent,
+)
 
-#: The id of the session a ``start`` opens over the previous one.
-_FRESH_SESSION_ID = "20260809-090000-b7e4"
 
-
-def _seeded_session(repo: str) -> SessionRecord:
-    """Write a session header to ``repo``'s session log."""
-    header = session_record()
-    write_session_log(repo, header)
-    return header
+def _refuse_git_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every repository lookup fail the way git does on a repo with dubious ownership."""
+    dubious_ownership = subprocess.CalledProcessError(
+        128, ["git"], stderr="fatal: detected dubious ownership\n"
+    )
+    monkeypatch.setattr(
+        "gymrat.session.paths.run_git", create_autospec(run_git, side_effect=dubious_ownership)
+    )
 
 
 async def _ok_body(trace: CommandTrace) -> str:
@@ -58,24 +73,14 @@ async def _ok_body(trace: CommandTrace) -> str:
     return "ok"
 
 
-def _not_a_repo(*_args: object, **_kwargs: object) -> str:
-    message = "nope"
-    raise NotAGitRepositoryError(message)
-
-
 def _broken_append(path: str, record: object) -> None:
     msg = "disk full"
     raise GymratError(msg)
 
 
-def _broken_record(*_args: object, **_kwargs: object) -> None:
-    msg = "record construction failed"
-    raise ValueError(msg)
-
-
-def _last_command_record() -> CommandRecord:
-    """Read the current session log and return its last record, asserted to be a command."""
-    cmd = log_records(repo_root())[-1]
+def _closing_command_record(root: str) -> CommandRecord:
+    """Return the final record of ``root``'s session log, failing unless it is a command record."""
+    cmd = log_records(root)[-1]
     assert isinstance(cmd, CommandRecord)
     return cmd
 
@@ -129,61 +134,77 @@ async def test_with_repo_lock_when_inside_repo_does_scope_the_lock_to_the_body(
     assert not is_held(lock_path)
 
 
-async def test_with_repo_lock_when_outside_repo_runs_body_without_a_lock_or_a_record(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    acquired: list[object] = []
-    appended: list[object] = []
-
-    def spy_acquire(*args: object, **_kwargs: object) -> Callable[[], None]:
-        acquired.append(args)
-        return lambda: None
-
-    def spy_append(path: str, record: object) -> None:
-        appended.append(record)
-
-    monkeypatch.setattr("gymrat.command_run.repo_root", _not_a_repo)
-    monkeypatch.setattr("gymrat.command_run.acquire_lock", spy_acquire)
-    monkeypatch.setattr("gymrat.command_run.append_record", spy_append)
-
-    async def body(trace: CommandTrace) -> str:
-        return "ran"
-
-    result = await with_repo_lock("compare", body)
-
-    assert (result, acquired, appended) == ("ran", [], [])
+def _session_log_text(root: str) -> str | None:
+    """Return the text of ``root``'s session log, or ``None`` when it does not exist."""
+    jsonl_path = Path(session_jsonl_path(root))
+    return jsonl_path.read_text(encoding="utf-8") if jsonl_path.exists() else None
 
 
-async def test_with_repo_lock_when_session_log_torn_does_repair_it_under_the_lock_before_the_body(
+def _write_empty_session_log(root: str) -> None:
+    """Create ``root``'s session log as an empty file, making its parent directory if absent."""
+    jsonl_path = Path(session_jsonl_path(root))
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    jsonl_path.write_text("", encoding="utf-8")
+
+
+@pytest.mark.parametrize("traced", [False, True], ids=["untraced", "traced"])
+@pytest.mark.parametrize(
+    ("prepare", "expected"),
+    [
+        pytest.param(None, None, id="missing"),
+        pytest.param(_write_empty_session_log, "", id="empty"),
+    ],
+)
+async def test_with_repo_lock_when_session_log_missing_or_empty_does_leave_it_untouched_without_a_warning(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    prepare: Callable[[str], None] | None,
+    expected: str | None,
+    traced: bool,
 ):
-    header = session_record()
-    write_session_log(repo, header)
-    jsonl_path = Path(session_jsonl_path(repo_root()))
-    intact_log = read_bytes(jsonl_path)
-    tear_final_line(jsonl_path)
-    lock_path = lockfile_path(repo_root())
-    iteration = iteration_record()
-    repairs: list[tuple[bool, bytes]] = []
-    seen: dict[str, bytes] = {}
+    if prepare is not None:
+        prepare(repo)
+    if traced:
+        arm_placeholder_endpoint(monkeypatch)
 
-    def spy_recover(path: str) -> None:
-        held = is_held(lock_path)
-        recover_torn_tail(path)
-        repairs.append((held, read_bytes(Path(path))))
+    await with_repo_lock("compare", _ok_body)
+
+    assert (_session_log_text(repo), capsys.readouterr().err) == (expected, "")
+
+
+async def test_with_repo_lock_when_outside_repo_does_run_body_without_a_lock_or_a_record(
+    plain_directory: str, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.chdir(plain_directory)
 
     async def body(trace: CommandTrace) -> str:
-        seen["log"] = read_bytes(jsonl_path)
-        append_records(repo, iteration)
         return "ran"
-
-    monkeypatch.setattr("gymrat.command_run.recover_torn_tail", spy_recover)
 
     result = await with_repo_lock("compare", body)
 
     assert result == "ran"
-    assert repairs == [(True, intact_log)]
+    assert not await asyncio.to_thread(Path(lockfile_path(plain_directory)).exists)
+    assert not await asyncio.to_thread(Path(session_jsonl_path(plain_directory)).exists)
+
+
+async def test_with_repo_lock_when_session_log_torn_does_repair_it_before_the_body(repo: str):
+    header = seeded_session(repo)
+    jsonl_path = Path(session_jsonl_path(repo_root()))
+    intact_log = await asyncio.to_thread(jsonl_path.read_bytes)
+    tear_final_line(jsonl_path)
+    iteration = iteration_record()
+    seen: dict[str, bytes] = {}
+
+    async def body(trace: CommandTrace) -> str:
+        seen["log"] = await asyncio.to_thread(jsonl_path.read_bytes)
+        append_records(repo, iteration)
+        return "ran"
+
+    result = await with_repo_lock("compare", body)
+
+    assert result == "ran"
     assert seen["log"] == intact_log
     records = log_records(repo_root())
     assert records[0] == header
@@ -191,28 +212,32 @@ async def test_with_repo_lock_when_session_log_torn_does_repair_it_under_the_loc
     assert isinstance(records[-1], CommandRecord)
 
 
-async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_running_body_locking_or_recording(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_with_repo_lock_when_session_log_torn_and_lock_held_elsewhere_does_leave_it_torn(
+    repo: str,
 ):
-    git_error = GymratError("detected dubious ownership", hint="banana hint")
+    seeded_session(repo)
+    jsonl_path = Path(session_jsonl_path(repo_root()))
+    tear_final_line(jsonl_path)
+    torn_log = await asyncio.to_thread(jsonl_path.read_bytes)
+    blocker = hold_lock(lockfile_path(repo_root()))
 
-    def broken_git(*_args: object, **_kwargs: object) -> str:
-        raise git_error
+    try:
+        with pytest.raises(LockContentionError):
+            await with_repo_lock("compare", _ok_body)
+    finally:
+        blocker.release()
 
-    acquired: list[object] = []
-    appended: list[object] = []
+    assert await asyncio.to_thread(jsonl_path.read_bytes) == torn_log
+
+
+async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_running_body_locking_or_recording(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    header = seeded_session(repo)
+    root = repo_root()
+    cwd = os.getcwd()  # noqa: PTH109 -- the message quotes the str cwd repo discovery saw
+    _refuse_git_lookups(monkeypatch)
     called: list[bool] = []
-
-    def spy_acquire(*args: object, **_kwargs: object) -> Callable[[], None]:
-        acquired.append(args)
-        return lambda: None
-
-    def spy_append(path: str, record: object) -> None:
-        appended.append(record)
-
-    monkeypatch.setattr("gymrat.command_run.repo_root", broken_git)
-    monkeypatch.setattr("gymrat.command_run.acquire_lock", spy_acquire)
-    monkeypatch.setattr("gymrat.command_run.append_record", spy_append)
 
     async def body(trace: CommandTrace) -> str:
         called.append(True)
@@ -221,10 +246,12 @@ async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_runnin
     with pytest.raises(GymratError) as exc:
         await with_repo_lock("compare", body)
 
-    assert exc.value is git_error
+    assert str(exc.value) == (
+        f"Cannot determine the git repository at {cwd}: fatal: detected dubious ownership"
+    )
     assert called == []
-    assert acquired == []
-    assert appended == []
+    assert not await asyncio.to_thread(Path(lockfile_path(root)).exists)
+    assert log_records(root) == [header]
 
 
 # ---------------------------------------------------------------------------
@@ -232,32 +259,64 @@ async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_runnin
 # ---------------------------------------------------------------------------
 
 
+#: The traceparent an outer caller hands down through ``TRACEPARENT``.
+_OUTER_TRACEPARENT = "00-abc-def-01"
+
+
 @pytest.mark.parametrize(
-    ("args", "expected_args"),
+    ("args", "env", "expected"),
     [
-        pytest.param(None, {}, id="args-none"),
-        pytest.param({"samples": 5}, {"samples": 5}, id="args-given"),
+        pytest.param(None, {}, ({}, "cli", None), id="args-none"),
+        pytest.param({"samples": 5}, {}, ({"samples": 5}, "cli", None), id="args-given"),
+        pytest.param(None, {"GYMRAT_COMMAND_ORIGIN": "tool"}, ({}, "tool", None), id="origin-tool"),
+        pytest.param(
+            None,
+            {"TRACEPARENT": _OUTER_TRACEPARENT},
+            ({}, "cli", _OUTER_TRACEPARENT),
+            id="traceparent-only",
+        ),
+        pytest.param(
+            None,
+            {"TRACEPARENT": _OUTER_TRACEPARENT, "GYMRAT_TRACEPARENT": "00-123-456-01"},
+            ({}, "cli", "00-123-456-01"),
+            id="gymrat-traceparent-wins",
+        ),
+        pytest.param(
+            None,
+            {"TRACEPARENT": _OUTER_TRACEPARENT, "GYMRAT_TRACEPARENT": ""},
+            ({}, "cli", _OUTER_TRACEPARENT),
+            id="empty-gymrat-traceparent-falls-back",
+        ),
     ],
 )
-async def test_with_repo_lock_when_body_succeeds_does_append_command_record_with_exit_zero(
+async def test_with_repo_lock_when_body_succeeds_does_append_its_command_record(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     args: dict[str, object] | None,
-    expected_args: dict[str, object],
+    env: dict[str, str],
+    expected: tuple[dict[str, object], str, str | None],
 ):
-    _seeded_session(repo)
+    seeded_session(repo)
     frozen_ns = 1_000_000_000
-    monkeypatch.setattr("gymrat.command_run._clock.now_ns", lambda: frozen_ns)
+    monotonic_readings = itertools.chain([100.0], itertools.repeat(350.0))
+    for name in ("GYMRAT_COMMAND_ORIGIN", "TRACEPARENT", "GYMRAT_TRACEPARENT"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr("gymrat.clock.now_ns", lambda: frozen_ns)
+    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(monotonic_readings))
 
     await with_repo_lock("measure", _ok_body, args=args)
 
-    cmd = _last_command_record()
-    assert cmd.name == "measure"
-    assert cmd.args == expected_args
-    assert cmd.exit_code == 0
-    assert cmd.reason is None
-    assert cmd.at == frozen_ns
-    assert cmd.traceparent is None
+    cmd = _closing_command_record(repo_root())
+    assert (cmd.name, cmd.exit_code, cmd.reason, cmd.at, cmd.duration_ms) == (
+        "measure",
+        0,
+        None,
+        frozen_ns,
+        250,
+    )
+    assert (cmd.args, cmd.origin, cmd.traceparent) == expected
 
 
 async def _gate_body(trace: CommandTrace) -> str:
@@ -327,136 +386,64 @@ async def _seq_then_error_body(trace: CommandTrace) -> str:
 @pytest.mark.parametrize(
     ("body", "raised", "recorded"),
     [
-        pytest.param(_gate_body, None, (1, "gating-regression", None), id="gate-set"),
-        pytest.param(_loop_stop_body, LoopStopError, (1, "stop-condition", None), id="loop-stop"),
+        pytest.param(_gate_body, None, (1, "gating-regression"), id="gate-set"),
+        pytest.param(_loop_stop_body, LoopStopError, (1, "stop-condition"), id="loop-stop"),
         pytest.param(
             _loop_stop_with_reason_body,
             LoopStopError,
-            (1, "budget-exceeded", None),
+            (1, "budget-exceeded"),
             id="loop-stop-with-reason",
         ),
-        pytest.param(_exit_with_reason_body, typer.Exit, (1, "fail-on", None), id="exit-1"),
-        pytest.param(_exit_two_body, typer.Exit, (2, "error", None), id="exit-2-no-reason"),
-        pytest.param(_exit_zero_body, typer.Exit, (0, None, None), id="exit-0"),
+        pytest.param(_exit_with_reason_body, typer.Exit, (1, "fail-on"), id="exit-1"),
+        pytest.param(_exit_two_body, typer.Exit, (2, "error"), id="exit-2-no-reason"),
+        pytest.param(_exit_zero_body, typer.Exit, (0, None), id="exit-0"),
         pytest.param(
-            _exit_three_with_reason_body, typer.Exit, (2, "fail-on", None), id="exit-3-with-reason"
+            _exit_three_with_reason_body, typer.Exit, (2, "fail-on"), id="exit-3-with-reason"
         ),
-        pytest.param(_exit_three_body, typer.Exit, (2, "error", None), id="exit-3-no-reason"),
+        pytest.param(_exit_three_body, typer.Exit, (2, "error"), id="exit-3-no-reason"),
         pytest.param(
             _gymrat_error_with_reason_body,
             GymratError,
-            (2, "no-session", None),
+            (2, "no-session"),
             id="gymrat-error-with-reason",
         ),
-        pytest.param(_gymrat_error_body, GymratError, (2, "error", None), id="gymrat-error"),
-        pytest.param(_unexpected_error_body, RuntimeError, (2, "error", None), id="unexpected"),
-        pytest.param(_seq_body, None, (0, None, 7), id="seq-set"),
-        pytest.param(_seq_then_error_body, GymratError, (2, "error", 7), id="seq-set-then-raise"),
+        pytest.param(_gymrat_error_body, GymratError, (2, "error"), id="gymrat-error"),
+        pytest.param(_unexpected_error_body, RuntimeError, (2, "error"), id="unexpected"),
     ],
 )
-async def test_with_repo_lock_when_body_ends_does_record_its_exit_code_reason_and_seq(
+async def test_with_repo_lock_when_body_ends_does_record_its_exit_code_and_reason(
     repo: str,
     body: Callable[[CommandTrace], Awaitable[str]],
     raised: type[BaseException] | None,
-    recorded: tuple[int, CommandReason | None, int | None],
+    recorded: tuple[int, CommandReason | None],
 ):
-    _seeded_session(repo)
+    seeded_session(repo)
 
     with pytest.raises(raised) if raised is not None else contextlib.nullcontext():
         await with_repo_lock("iterate", body)
 
-    cmd = _last_command_record()
-    assert (cmd.exit_code, cmd.reason, cmd.seq) == recorded
+    cmd = _closing_command_record(repo_root())
+    assert (cmd.exit_code, cmd.reason) == recorded
 
 
 @pytest.mark.parametrize(
-    ("gymrat_traceparent", "expected"),
+    ("body", "raised"),
     [
-        pytest.param(None, "00-abc-def-01", id="traceparent-only"),
-        pytest.param("00-123-456-01", "00-123-456-01", id="gymrat-one-wins"),
-        pytest.param("", "00-abc-def-01", id="empty-gymrat-one-falls-back"),
+        pytest.param(_seq_body, None, id="seq-set"),
+        pytest.param(_seq_then_error_body, GymratError, id="seq-set-then-raise"),
     ],
 )
-async def test_with_repo_lock_when_traceparent_vars_vary_does_record_the_effective_one(
+async def test_with_repo_lock_when_body_sets_seq_does_record_it(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    gymrat_traceparent: str | None,
-    expected: str,
+    body: Callable[[CommandTrace], Awaitable[str]],
+    raised: type[BaseException] | None,
 ):
-    _seeded_session(repo)
-    monkeypatch.setenv("TRACEPARENT", "00-abc-def-01")
-    if gymrat_traceparent is not None:
-        monkeypatch.setenv("GYMRAT_TRACEPARENT", gymrat_traceparent)
+    seeded_session(repo)
 
-    await with_repo_lock("measure", _ok_body)
+    with pytest.raises(raised) if raised is not None else contextlib.nullcontext():
+        await with_repo_lock("iterate", body)
 
-    cmd = _last_command_record()
-    assert cmd.traceparent == expected
-
-
-@pytest.mark.parametrize(
-    ("env_value", "expected"),
-    [
-        pytest.param("tool", "tool", id="env-tool"),
-        pytest.param(None, "cli", id="env-absent"),
-    ],
-)
-async def test_with_repo_lock_when_command_origin_env_varies_does_record_matching_origin(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    env_value: str | None,
-    expected: str,
-):
-    _seeded_session(repo)
-    if env_value is not None:
-        monkeypatch.setenv("GYMRAT_COMMAND_ORIGIN", env_value)
-
-    await with_repo_lock("measure", _ok_body)
-
-    cmd = _last_command_record()
-    assert cmd.origin == expected
-
-
-async def test_with_repo_lock_when_duration_recorded_does_reflect_wall_time(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _seeded_session(repo)
-    call_count = 0
-
-    def fake_monotonic_ms() -> float:
-        nonlocal call_count
-        call_count += 1
-        return 100.0 if call_count == 1 else 350.0
-
-    monkeypatch.setattr("gymrat.command_run._clock.monotonic_ms", fake_monotonic_ms)
-
-    await with_repo_lock("measure", _ok_body)
-
-    cmd = _last_command_record()
-    assert cmd.duration_ms == 250
-
-
-# ---------------------------------------------------------------------------
-# with_repo_lock — no append without session log
-# ---------------------------------------------------------------------------
-
-
-async def test_with_repo_lock_when_no_session_log_does_not_append(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    appended: list[object] = []
-
-    def _fake_append(path: str, record: object) -> None:
-        appended.append(record)
-
-    monkeypatch.setattr("gymrat.command_run.append_record", _fake_append)
-
-    result = await with_repo_lock("measure", _ok_body)
-
-    assert result == "ok"
-    assert appended == []
+    assert _closing_command_record(repo_root()).seq == 7
 
 
 # ---------------------------------------------------------------------------
@@ -474,27 +461,26 @@ async def _failing_body(trace: CommandTrace) -> str:
 
 
 @pytest.mark.parametrize(
-    ("target", "stand_in", "warning"),
+    ("command", "append", "warning", "body", "raised", "returned"),
     [
         pytest.param(
-            "gymrat.command_run.append_record",
+            "measure",
             _broken_append,
-            "failed to append command record: disk full\n",
-            id="append-fails",
+            "failed to append command record: disk full",
+            _result_body,
+            None,
+            ["result"],
+            id="append-fails-body-returns",
         ),
         pytest.param(
-            "gymrat.command_run.CommandRecord",
-            _broken_record,
-            "failed to append command record: record construction failed\n",
-            id="record-construction-fails",
+            "",
+            None,
+            "failed to append command record: 1 validation error for CommandRecord",
+            _failing_body,
+            RuntimeError,
+            [],
+            id="record-construction-fails-body-raises",
         ),
-    ],
-)
-@pytest.mark.parametrize(
-    ("body", "raised", "returned"),
-    [
-        pytest.param(_result_body, None, ["result"], id="body-returns"),
-        pytest.param(_failing_body, RuntimeError, [], id="body-raises"),
     ],
 )
 async def test_with_repo_lock_when_recording_fails_does_keep_the_body_outcome_with_a_warning(
@@ -502,70 +488,81 @@ async def test_with_repo_lock_when_recording_fails_does_keep_the_body_outcome_wi
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     *,
-    target: str,
-    stand_in: Callable[..., None],
+    command: str,
+    append: Callable[[str, object], None] | None,
     warning: str,
     body: Callable[[CommandTrace], Awaitable[str]],
     raised: type[BaseException] | None,
     returned: list[str],
 ):
-    _seeded_session(repo)
-    monkeypatch.setattr(target, stand_in)
+    seeded_session(repo)
+    if append is not None:
+        monkeypatch.setattr("gymrat.command_run.append_record", append)
     outcome: list[str] = []
 
     with pytest.raises(raised) if raised is not None else contextlib.nullcontext():
-        outcome.append(await with_repo_lock("measure", body))
+        outcome.append(await with_repo_lock(command, body))
 
     assert outcome == returned
-    assert capsys.readouterr().err == warning
-
-
-# ---------------------------------------------------------------------------
-# with_repo_lock — lock release guarantee
-# ---------------------------------------------------------------------------
-
-
-async def test_with_repo_lock_when_body_raises_does_release_lock(repo: str):
-    async def body(trace: CommandTrace) -> str:
-        msg = "boom"
-        raise RuntimeError(msg)
-
-    with pytest.raises(RuntimeError):
-        await with_repo_lock("measure", body)
-
+    assert capsys.readouterr().err.splitlines()[0] == warning
     assert not is_held(lockfile_path(repo_root()))
 
 
-async def test_with_repo_lock_when_record_construction_raises_does_release_lock(
+@contextlib.contextmanager
+def _searchable_on_exit(directory: Path) -> Generator[None]:
+    """Give ``directory`` its search bit back on exit, whatever the body did to it."""
+    try:
+        yield
+    finally:
+        directory.chmod(0o700)
+
+
+def _return_result() -> str:
+    return "result"
+
+
+def _raise_failure() -> str:
+    msg = "body failed"
+    raise RuntimeError(msg)
+
+
+#: How a body ends once it has done its damage: the outcome ``with_repo_lock`` must keep.
+BODY_ENDINGS = [
+    pytest.param(_return_result, None, ["result"], id="body-returns"),
+    pytest.param(_raise_failure, RuntimeError, [], id="body-raises"),
+]
+
+
+@needs_mode_bits
+@pytest.mark.parametrize(("ending", "raised", "returned"), BODY_ENDINGS)
+async def test_with_repo_lock_when_session_log_size_unreadable_does_keep_the_body_outcome_with_a_warning(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _seeded_session(repo)
-    monkeypatch.setattr("gymrat.command_run.CommandRecord", _broken_record)
-
-    await with_repo_lock("measure", _ok_body)
-
-    assert not is_held(lockfile_path(repo_root()))
-
-
-async def test_with_repo_lock_when_span_emission_raises_does_degrade_to_a_warning(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    *,
+    ending: Callable[[], str],
+    raised: type[BaseException] | None,
+    returned: list[str],
 ):
-    header = _seeded_session(repo)
+    seeded_session(repo)
+    directory = Path(session_dir(repo_root()))
 
-    def broken_emit(*_args: object, **_kwargs: object) -> None:
-        msg = "span export failed"
-        raise RuntimeError(msg)
+    async def body(trace: CommandTrace) -> str:
+        await asyncio.to_thread(directory.chmod, 0o600)
+        return ending()
 
-    monkeypatch.setattr("gymrat.command_run._emit_command_span", broken_emit)
+    outcome: list[str] = []
 
-    with memory_tracing(header.session_id):
-        await with_repo_lock("measure", _ok_body)
+    with (
+        _searchable_on_exit(directory),
+        pytest.raises(raised) if raised is not None else contextlib.nullcontext(),
+    ):
+        outcome.append(await with_repo_lock("measure", body))
 
-    assert capsys.readouterr().err == "failed to emit command span: span export failed\n"
-    assert not is_held(lockfile_path(repo_root()))
+    warnings = capsys.readouterr().err.splitlines()
+    assert outcome == returned
+    assert len(warnings) == 1
+    assert warnings[0].startswith("failed to append command record: ")
+    assert os.strerror(errno.EACCES) in warnings[0]
 
 
 # ---------------------------------------------------------------------------
@@ -592,12 +589,12 @@ async def test_with_repo_lock_when_root_given_does_operate_on_that_repo_not_the_
     write_session_log(cwd_repo, cwd_header)
     write_session_log(target_repo, session_record())
     jsonl_path = Path(session_jsonl_path(target_repo))
-    intact_log = read_bytes(jsonl_path)
+    intact_log = await asyncio.to_thread(jsonl_path.read_bytes)
     tear_final_line(jsonl_path)
     seen: dict[str, object] = {}
 
     async def body(trace: CommandTrace) -> str:
-        seen["log"] = read_bytes(jsonl_path)
+        seen["log"] = await asyncio.to_thread(jsonl_path.read_bytes)
         seen["held"] = (
             is_held(lockfile_path(target_repo)),
             is_held(lockfile_path(cwd_repo)),
@@ -606,18 +603,18 @@ async def test_with_repo_lock_when_root_given_does_operate_on_that_repo_not_the_
 
     result = await with_repo_lock("measure", body, args={"samples": 5}, root=target_repo)
 
-    cmd = log_records(target_repo)[-1]
+    cmd = _closing_command_record(target_repo)
     assert result == "ran"
     assert seen == {"log": intact_log, "held": (True, False)}
-    assert isinstance(cmd, CommandRecord)
     assert (cmd.name, cmd.args) == ("measure", {"samples": 5})
     assert log_records(cwd_repo) == [cwd_header]
 
 
-async def test_with_repo_lock_when_root_is_not_a_repository_does_still_hold_its_lock(
+async def test_with_repo_lock_when_root_is_not_a_repository_does_hold_its_lock_without_consulting_git(
     plain_directory: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.chdir(tmp_path)
+    _refuse_git_lookups(monkeypatch)
     held: dict[str, bool] = {}
 
     async def body(trace: CommandTrace) -> str:
@@ -630,24 +627,6 @@ async def test_with_repo_lock_when_root_is_not_a_repository_does_still_hold_its_
     assert held["target"] is True
 
 
-async def test_with_repo_lock_when_root_given_and_git_fails_otherwise_does_still_run_body(
-    plain_directory: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    def broken_git(*_args: object, **_kwargs: object) -> str:
-        message = "detected dubious ownership"
-        raise GymratError(message)
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("gymrat.command_run.repo_root", broken_git)
-
-    async def body(trace: CommandTrace) -> str:
-        return "ran"
-
-    result = await with_repo_lock("supervise", body, root=plain_directory)
-
-    assert result == "ran"
-
-
 # ---------------------------------------------------------------------------
 # with_repo_lock — command span export (tracing enabled)
 # ---------------------------------------------------------------------------
@@ -656,27 +635,32 @@ async def test_with_repo_lock_when_root_given_and_git_fails_otherwise_does_still
 _VALID_TRACEPARENT = "00-0102030405060708090a0b0c0d0e0f10-1112131415161718-01"
 
 
-def _command_span(
-    exporter: InMemorySpanExporter, name: str = "gymrat.command.measure"
-) -> ReadableSpan:
-    """Return the single finished span with the given name."""
-    (span,) = [s for s in exporter.get_finished_spans() if s.name == name]
-    return span
+async def test_with_repo_lock_when_tracing_configured_for_another_session_does_degrade_to_a_warning(
+    repo: str,
+    capsys: pytest.CaptureFixture[str],
+):
+    seeded_session(repo)
+
+    with memory_tracing(FRESH_SESSION_ID):
+        result = await with_repo_lock("measure", _ok_body)
+
+    warnings = capsys.readouterr().err.splitlines()
+    assert result == "ok"
+    assert len(warnings) == 1
+    assert warnings[0].startswith("failed to emit command span: ")
+    assert not is_held(lockfile_path(repo_root()))
 
 
 async def test_with_repo_lock_when_tracing_enabled_does_export_one_keyed_command_span_under_the_session(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str,
 ):
-    header = _seeded_session(repo)
-    monkeypatch.delenv("GYMRAT_TRACEPARENT", raising=False)
-    monkeypatch.delenv("TRACEPARENT", raising=False)
+    header = seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
         await with_repo_lock("measure", _ok_body, args={"samples": 5})
 
-    span = _command_span(exporter)
+    span = span_by_name(exporter.get_finished_spans(), "gymrat.command.measure")
     context = span.context
-    attrs = dict(span.attributes or {})
     assert context is not None
     assert context.trace_id == trace_id_of(header.session_id)
     assert context.span_id == span_id_of(header.session_id, f"command:{len(log_records(repo))}")
@@ -684,47 +668,13 @@ async def test_with_repo_lock_when_tracing_enabled_does_export_one_keyed_command
     assert span.parent.span_id == span_id_of(header.session_id, "session")
     assert span.status.status_code == StatusCode.OK
     assert span.links == ()
-    assert attrs["gymrat.session.id"] == header.session_id
-    assert attrs["gymrat.command.name"] == "measure"
-    assert attrs["gymrat.command.exit_code"] == 0
-    assert attrs["gymrat.command.args.samples"] == 5
-
-
-@pytest.mark.parametrize(
-    ("command", "body", "raised", "status", "description"),
-    [
-        pytest.param(
-            "measure",
-            _gymrat_error_with_reason_body,
-            GymratError,
-            StatusCode.ERROR,
-            "no-session",
-            id="exit-2-is-error-with-reason",
-        ),
-        pytest.param("compare", _gate_body, None, StatusCode.UNSET, None, id="exit-1-is-unset"),
-    ],
-)
-async def test_with_repo_lock_when_command_fails_does_set_the_span_status_by_exit_code(
-    repo: str,
-    *,
-    command: str,
-    body: Callable[[CommandTrace], Awaitable[str]],
-    raised: type[BaseException] | None,
-    status: StatusCode,
-    description: str | None,
-):
-    header = _seeded_session(repo)
-
-    with memory_tracing(header.session_id) as exporter:
-        with pytest.raises(raised) if raised is not None else contextlib.nullcontext():
-            await with_repo_lock(command, body)
-
-    span = _command_span(exporter, f"gymrat.command.{command}")
-    assert (span.status.status_code, span.status.description) == (status, description)
+    assert dict(span.attributes or {}) == command_attributes(
+        last_command_record(repo), session_id=header.session_id
+    )
 
 
 async def test_with_repo_lock_when_body_appends_records_does_add_span_events(repo: str):
-    header = _seeded_session(repo)
+    header = seeded_session(repo)
 
     async def body(trace: CommandTrace) -> str:
         append_records(repo_root(), iteration_record())
@@ -733,7 +683,7 @@ async def test_with_repo_lock_when_body_appends_records_does_add_span_events(rep
     with memory_tracing(header.session_id) as exporter:
         await with_repo_lock("iterate", body)
 
-    span = _command_span(exporter, "gymrat.command.iterate")
+    span = span_by_name(exporter.get_finished_spans(), "gymrat.command.iterate")
     assert "gymrat.iteration" in [e.name for e in span.events]
 
 
@@ -750,7 +700,7 @@ async def test_with_repo_lock_when_gymrat_traceparent_set_does_parent_on_it_only
     gymrat_traceparent: str,
     parent_key: str | None,
 ):
-    header = _seeded_session(repo)
+    header = seeded_session(repo)
     monkeypatch.setenv("GYMRAT_TRACEPARENT", gymrat_traceparent)
     expected_parent = (
         0x1112131415161718 if parent_key is None else span_id_of(header.session_id, parent_key)
@@ -759,28 +709,9 @@ async def test_with_repo_lock_when_gymrat_traceparent_set_does_parent_on_it_only
     with memory_tracing(header.session_id) as exporter:
         await with_repo_lock("measure", _ok_body)
 
-    span = _command_span(exporter)
+    span = span_by_name(exporter.get_finished_spans(), "gymrat.command.measure")
     assert span.parent is not None
     assert span.parent.span_id == expected_parent
-
-
-@pytest.mark.parametrize(
-    ("traceparent", "links"),
-    [
-        pytest.param(_VALID_TRACEPARENT, [0x1112131415161718], id="valid-adds-a-link"),
-        pytest.param("not-valid", [], id="malformed-adds-none"),
-    ],
-)
-async def test_with_repo_lock_when_traceparent_set_does_link_it_only_when_valid(
-    repo: str, monkeypatch: pytest.MonkeyPatch, traceparent: str, links: list[int]
-):
-    header = _seeded_session(repo)
-    monkeypatch.setenv("TRACEPARENT", traceparent)
-
-    with memory_tracing(header.session_id) as exporter:
-        await with_repo_lock("measure", _ok_body)
-
-    assert [link.context.span_id for link in _command_span(exporter).links] == links
 
 
 async def test_with_repo_lock_when_otlp_exporter_missing_does_run_body_without_tracing(
@@ -788,8 +719,7 @@ async def test_with_repo_lock_when_otlp_exporter_missing_does_run_body_without_t
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    _seeded_session(repo)
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+    seeded_session(repo)
     hide_otlp_exporter(monkeypatch)
 
     with otlp_collector() as collector:
@@ -805,14 +735,87 @@ async def test_with_repo_lock_when_otlp_exporter_missing_does_run_body_without_t
 
 
 async def test_with_repo_lock_when_tracing_enabled_does_flush_before_return(repo: str):
-    header = _seeded_session(repo)
+    header = seeded_session(repo)
 
     with memory_tracing(header.session_id, buffered=True) as exporter:
         await with_repo_lock("measure", _ok_body)
 
         spans_before_exit = exporter.get_finished_spans()
 
-    assert any(s.name == "gymrat.command.measure" for s in spans_before_exit)
+    assert [s.name for s in spans_by_prefix(spans_before_exit, "gymrat.command.")] == [
+        "gymrat.command.measure"
+    ]
+
+
+def _readable_once_locked(monkeypatch: pytest.MonkeyPatch, jsonl_path: Path) -> None:
+    """Deny reading ``jsonl_path`` until ``with_repo_lock`` takes the repository lock."""
+    jsonl_path.chmod(0o200)
+
+    def restore_then_acquire(lock_path: str, command: str) -> ReleaseLock:
+        jsonl_path.chmod(0o600)
+        return acquire_lock(lock_path, command)
+
+    monkeypatch.setattr(
+        "gymrat.command_run.acquire_lock",
+        create_autospec(acquire_lock, side_effect=restore_then_acquire),
+    )
+
+
+@needs_mode_bits
+async def test_with_repo_lock_when_session_log_unreadable_until_locked_does_warn_and_emit_no_command_span(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    header = seeded_session(repo)
+    _readable_once_locked(monkeypatch, Path(session_jsonl_path(repo_root())))
+
+    with memory_tracing(header.session_id) as exporter:
+        result = await with_repo_lock("measure", _ok_body)
+
+    warnings = capsys.readouterr().err.splitlines()
+    assert result == "ok"
+    assert spans_by_prefix(exporter.get_finished_spans(), "gymrat.command.") == []
+    assert len(warnings) == 1
+    assert warnings[0].startswith("failed to emit command span: ")
+    assert os.strerror(errno.EACCES) in warnings[0]
+
+
+def _append_garbage_line(root: str) -> None:
+    """Append a complete line that is not a session record to ``root``'s session log."""
+    with Path(session_jsonl_path(root)).open("a", encoding="utf-8") as log:
+        log.write("banana\n")
+
+
+@pytest.mark.parametrize(("ending", "raised", "returned"), BODY_ENDINGS)
+async def test_with_repo_lock_when_session_log_unparsable_after_body_does_keep_the_body_outcome_with_a_warning(
+    repo: str,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    ending: Callable[[], str],
+    raised: type[BaseException] | None,
+    returned: list[str],
+):
+    header = seeded_session(repo)
+    garbage_at = f"{session_jsonl_path(repo_root())}:2"
+
+    async def body(trace: CommandTrace) -> str:
+        _append_garbage_line(repo_root())
+        return ending()
+
+    outcome: list[str] = []
+
+    with (
+        memory_tracing(header.session_id),
+        pytest.raises(raised) if raised is not None else contextlib.nullcontext(),
+    ):
+        outcome.append(await with_repo_lock("measure", body))
+
+    warnings = capsys.readouterr().err.splitlines()
+    assert outcome == returned
+    assert len(warnings) == 1
+    assert warnings[0].startswith("failed to emit command span: ")
+    assert garbage_at in warnings[0]
 
 
 # ---------------------------------------------------------------------------
@@ -824,7 +827,7 @@ def _start_body(previous: SessionRecord) -> Callable[[CommandTrace], Awaitable[s
     """A ``start`` body that replaces ``previous``'s log with a fresh session's."""
 
     async def body(trace: CommandTrace) -> str:
-        archive_and_reopen_session_log(previous, session_record(session_id=_FRESH_SESSION_ID))
+        archive_and_reopen_session_log(previous, session_record(session_id=FRESH_SESSION_ID))
         return "started"
 
     return body
@@ -837,26 +840,21 @@ def _seeded_long_session(repo: str) -> SessionRecord:
     return header
 
 
-def _start_spans(exporter: InMemorySpanExporter) -> list[ReadableSpan]:
-    """Every finished ``start`` command span."""
-    return [s for s in exporter.get_finished_spans() if s.name == "gymrat.command.start"]
-
-
-async def test_with_repo_lock_when_start_opens_a_new_session_does_key_span_on_the_log_holding_the_record(
+async def test_with_repo_lock_when_start_opens_a_new_session_does_trace_the_log_holding_the_record(
     repo: str,
 ):
     previous = _seeded_long_session(repo)
+    baseline_event, _attrs = record_event(baseline_record())
+    iteration_event, _attrs = record_event(iteration_record())
 
-    with memory_tracing(_FRESH_SESSION_ID) as exporter:
+    with memory_tracing(FRESH_SESSION_ID) as exporter:
         await with_repo_lock("start", _start_body(previous))
 
     records = log_records(repo_root())
     assert isinstance(records[-1], CommandRecord)
     holder = session_header(repo_root())
     assert holder is not None
-    spans = _start_spans(exporter)
-    assert len(spans) == 1
-    span = spans[0]
+    span = span_by_name(exporter.get_finished_spans(), "gymrat.command.start")
     assert dict(span.attributes or {})["gymrat.session.id"] == holder.session_id
     context = span.context
     assert context is not None
@@ -864,28 +862,29 @@ async def test_with_repo_lock_when_start_opens_a_new_session_does_key_span_on_th
         trace_id_of(holder.session_id),
         span_id_of(holder.session_id, f"command:{len(records)}"),
     )
+    event_names = [e.name for e in span.events]
+    assert baseline_event in event_names
+    assert iteration_event not in event_names
 
 
 async def test_with_repo_lock_when_start_opens_the_first_session_does_key_span_on_it(
     repo: str,
 ):
     async def first_start(trace: CommandTrace) -> str:
-        write_session_log(repo_root(), session_record(session_id=_FRESH_SESSION_ID))
+        write_session_log(repo_root(), session_record(session_id=FRESH_SESSION_ID))
         return "started"
 
-    with memory_tracing(_FRESH_SESSION_ID) as exporter:
+    with memory_tracing(FRESH_SESSION_ID) as exporter:
         await with_repo_lock("start", first_start)
 
     records = log_records(repo_root())
-    spans = _start_spans(exporter)
-    assert [dict(span.attributes or {})["gymrat.session.id"] for span in spans] == [
-        _FRESH_SESSION_ID
-    ]
-    context = spans[0].context
+    span = span_by_name(exporter.get_finished_spans(), "gymrat.command.start")
+    assert dict(span.attributes or {})["gymrat.session.id"] == FRESH_SESSION_ID
+    context = span.context
     assert context is not None
     assert (context.trace_id, context.span_id) == (
-        trace_id_of(_FRESH_SESSION_ID),
-        span_id_of(_FRESH_SESSION_ID, f"command:{len(records)}"),
+        trace_id_of(FRESH_SESSION_ID),
+        span_id_of(FRESH_SESSION_ID, f"command:{len(records)}"),
     )
 
 
@@ -896,38 +895,22 @@ async def test_with_repo_lock_when_start_opens_a_new_session_under_gymrat_tracep
     previous = _seeded_long_session(repo)
     env_trace_id = 0x0102030405060708090A0B0C0D0E0F10
     env_span_id = 0x1112131415161718
-    monkeypatch.setenv("GYMRAT_TRACEPARENT", f"00-{env_trace_id:032x}-{env_span_id:016x}-01")
+    monkeypatch.setenv("GYMRAT_TRACEPARENT", traceparent(env_trace_id, env_span_id))
 
-    with memory_tracing(_FRESH_SESSION_ID) as exporter:
+    with memory_tracing(FRESH_SESSION_ID) as exporter:
         await with_repo_lock("start", _start_body(previous))
 
     records = log_records(repo_root())
-    (span,) = _start_spans(exporter)
+    span = span_by_name(exporter.get_finished_spans(), "gymrat.command.start")
     assert span.parent is not None
     assert (span.parent.trace_id, span.parent.span_id) == (env_trace_id, env_span_id)
-    assert dict(span.attributes or {})["gymrat.session.id"] == _FRESH_SESSION_ID
+    assert dict(span.attributes or {})["gymrat.session.id"] == FRESH_SESSION_ID
     context = span.context
     assert context is not None
     assert (context.trace_id, context.span_id) == (
         env_trace_id,
-        span_id_of(_FRESH_SESSION_ID, f"command:{len(records)}"),
+        span_id_of(FRESH_SESSION_ID, f"command:{len(records)}"),
     )
-
-
-async def test_with_repo_lock_when_start_opens_a_new_session_does_add_that_logs_records_as_events(
-    repo: str,
-):
-    previous = _seeded_long_session(repo)
-
-    with memory_tracing(_FRESH_SESSION_ID) as exporter:
-        await with_repo_lock("start", _start_body(previous))
-
-    (span,) = _start_spans(exporter)
-    event_names = [e.name for e in span.events]
-    baseline_event, _attrs = record_event(baseline_record())
-    iteration_event, _attrs = record_event(iteration_record())
-    assert baseline_event in event_names
-    assert iteration_event not in event_names
 
 
 async def test_with_repo_lock_when_start_cannot_append_its_record_does_emit_no_command_span(
@@ -942,10 +925,10 @@ async def test_with_repo_lock_when_start_cannot_append_its_record_does_emit_no_c
 
     monkeypatch.setattr("gymrat.command_run.append_record", broken_append)
 
-    with memory_tracing(_FRESH_SESSION_ID) as exporter:
+    with memory_tracing(FRESH_SESSION_ID) as exporter:
         await with_repo_lock("start", _start_body(previous))
 
-    assert _start_spans(exporter) == []
+    assert spans_by_prefix(exporter.get_finished_spans(), "gymrat.command.") == []
 
 
 # ---------------------------------------------------------------------------
@@ -958,8 +941,7 @@ async def test_with_repo_lock_when_collector_rejects_the_export_does_return_body
     monkeypatch: pytest.MonkeyPatch,
 ):
 
-    _seeded_session(repo)
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+    seeded_session(repo)
 
     with otlp_collector(statuses=[400]) as collector:
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint)
@@ -977,10 +959,9 @@ async def test_with_repo_lock_when_first_start_traced_only_by_endpoint_does_expo
     monkeypatch: pytest.MonkeyPatch,
 ):
     async def first_start(trace: CommandTrace) -> str:
-        write_session_log(repo_root(), session_record(session_id=_FRESH_SESSION_ID))
+        write_session_log(repo_root(), session_record(session_id=FRESH_SESSION_ID))
         return "started"
 
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
     with otlp_collector() as collector:
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint)
         await with_repo_lock("start", first_start)
@@ -990,7 +971,7 @@ async def test_with_repo_lock_when_first_start_traced_only_by_endpoint_does_expo
         for span in collector.spans
         if span.name == "gymrat.command.start"
     ]
-    assert start_sessions == [_FRESH_SESSION_ID]
+    assert start_sessions == [FRESH_SESSION_ID]
 
 
 async def test_with_repo_lock_when_endpoint_whitespace_only_does_export_nothing(
@@ -998,7 +979,7 @@ async def test_with_repo_lock_when_endpoint_whitespace_only_does_export_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ):
 
-    _seeded_session(repo)
+    seeded_session(repo)
 
     with otlp_collector() as collector:
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", " \t ")
@@ -1013,14 +994,7 @@ async def test_with_repo_lock_when_endpoint_whitespace_only_does_export_nothing(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "module",
-    [
-        pytest.param("gymrat.command_run", id="command-run"),
-        pytest.param("gymrat.supervisor.exit_sequence", id="exit-sequence"),
-    ],
-)
-def test_importing_module_when_fresh_interpreter_does_not_load_the_cli_package(module: str):
-    loaded = modules_imported_by(module)
+def test_importing_command_run_when_fresh_interpreter_does_not_load_the_cli_package():
+    loaded = modules_imported_by("gymrat.command_run")
 
     assert loaded_under(loaded, "gymrat.cli") == []

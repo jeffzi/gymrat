@@ -48,10 +48,12 @@ if TYPE_CHECKING:
 # U+2026, one cell wide — three periods would cost two more columns.
 _ELLIPSIS = "…"
 
-#: Widest a variant label prints, ellipsis included. A branch name is free to be
-#: as long as git allows, but every column it heads is sized from it, so an
-#: unbounded one would push the figures off the right edge of the terminal.
 LABEL_DISPLAY_WIDTH = 20
+"""Widest a variant label prints, ellipsis included.
+
+A branch name is free to be as long as git allows, but every column it heads is sized from it, so
+an unbounded one would push the figures off the right edge of the terminal.
+"""
 
 
 def _clip_head(text: str, budget: int) -> str:
@@ -86,9 +88,8 @@ def shorten_label(text: str, max_width: int) -> str:
     at the back. Cutting from the middle keeps both, where a plain slice would
     drop whichever end runs past the budget.
 
-    Text already inside the budget comes back untouched, so widening the budget
-    can never lengthen the result. When a cut is needed the budget spends one
-    cell on the ellipsis; the remainder splits between head and tail, with the
+    Widening the budget can never lengthen the result. When a cut is needed,
+    the cells left after the ellipsis split between head and tail, with the
     extra cell of an odd remainder going to the head.
 
     Width is measured in terminal cells, so a wide CJK character counts as two.
@@ -157,12 +158,6 @@ def truncate_labels(labels: Sequence[str]) -> list[str]:
 # Style vocabulary
 # ---------------------------------------------------------------------------
 
-#: The color each display class wears wherever the report states a verdict.
-#:
-#: Every style here is worn by the verdict itself — a glyph, a delta, a tally —
-#: never by the row or the values around it: within-noise and inconclusive recede
-#: to dim, identical reads cyan for "measured the same", and unstable keeps its
-#: amber warning.
 VERDICT_STYLES: dict[DisplayClass, str] = {
     "improved": "green",
     "regressed": "red",
@@ -171,18 +166,25 @@ VERDICT_STYLES: dict[DisplayClass, str] = {
     "within-noise": "dim",
     "inconclusive": "dim",
 }
+"""The color each display class wears wherever the report states a verdict.
 
-#: The style a variant name wears where the report names it as a name.
+Every style here is worn by the verdict itself — a glyph, a delta, a tally —
+never by the row or the values around it: within-noise and inconclusive recede
+to dim, identical reads cyan for "measured the same", and unstable keeps its
+amber warning.
+"""
+
 VARIANT_NAME_STYLE = "bold underline"
+"""The style a variant name wears where the report names it as a name."""
 
-#: The style a group label wears where the report heads a group of metrics.
 GROUP_LABEL_STYLE = "bold blue"
+"""The style a group label wears where the report heads a group of metrics."""
 
-#: The style an aggregate label (a geomean row, a total) wears.
 AGGREGATE_LABEL_STYLE = "bold"
+"""The style an aggregate label (a geomean row, a total) wears."""
 
-#: The middle-dot separator between a scope and its sub-label.
 SCOPE_SEPARATOR = "·"
+"""The middle-dot separator between a scope and its sub-label."""
 
 # A backtick-wrapped inline code span; the capture group is its content.
 _INLINE_CODE_PATTERN = re.compile(r"`([^`]+)`")
@@ -270,23 +272,15 @@ def format_hint(text: str) -> str:
 # Color resolution and capture rendering
 # ---------------------------------------------------------------------------
 
-#: A render width wide enough that a captured line never soft-wraps, whatever the
-#: real terminal is. Every report block and table renders against it.
 RENDER_WIDTH = 200
+"""A render width wide enough that a captured line never soft-wraps, whatever the real terminal is.
+
+Every report block and table renders against it.
+"""
 
 
 def make_capture_console(*, color: bool | None) -> Console:
     """Build a rich console that captures its output to an in-memory buffer.
-
-    Color is resolved without touching :data:`os.environ`:
-
-    - ``color=True`` forces ANSI even when ``NO_COLOR`` is set, by declaring the
-      capture a terminal with color enabled.
-    - ``color=False`` suppresses ANSI even when ``FORCE_COLOR`` is set.
-    - ``color=None`` defers to :func:`gymrat.utils.color_from_env`, which owns the
-      ``FORCE_COLOR``/``NO_COLOR`` precedence and the ways it differs from rich's
-      own detection. With neither variable set, a captured buffer is not a TTY,
-      so the output is plain.
 
     Wide content is never wrapped or cropped (``soft_wrap``), so
     :data:`RENDER_WIDTH` only bounds justification, never the text. Emoji codes
@@ -294,8 +288,16 @@ def make_capture_console(*, color: bool | None) -> Console:
     literally (``lat:100:p99`` stays as written).
 
     Args:
-        color: The explicit color choice, or ``None`` to defer to the
-            environment and TTY detection.
+        color: The explicit color choice, resolved without touching
+            :data:`os.environ`:
+
+            - ``True`` forces ANSI even when ``NO_COLOR`` is set, by declaring
+              the capture a terminal with color enabled.
+            - ``False`` suppresses ANSI even when ``FORCE_COLOR`` is set.
+            - ``None`` defers to :func:`gymrat.utils.color_from_env`, which owns
+              the ``FORCE_COLOR``/``NO_COLOR`` precedence and the ways it differs
+              from rich's own detection. With neither variable set, a captured
+              buffer is not a TTY, so the output is plain.
 
     Returns:
         A console whose ``file`` is an :class:`io.StringIO` holding everything
@@ -332,26 +334,25 @@ def make_capture_console(*, color: bool | None) -> Console:
     )
 
 
-def render_lines(*renderables: RenderableType, color: bool | None = None) -> str:
-    """Render ``renderables`` through a capture console and return the text.
+def render_line_list(*renderables: RenderableType, color: bool | None = None) -> list[str]:
+    """Render ``renderables`` through a capture console and return the text lines.
 
     Each renderable is printed in turn through a console built by
     :func:`make_capture_console`, so color resolution and no-wrap behavior match
-    that helper. A plain string is interpreted as rich markup, so dynamic text
-    with markup-significant characters (a metric named ``[i]``, say) must be
-    escaped by the caller with :func:`rich.markup.escape` to render literally.
-
-    Trailing whitespace is stripped from every line and the trailing newline is
-    dropped, so the result is exactly the visible text with no soft wrapping.
+    that helper.
 
     Args:
         *renderables: One or more rich renderables or markup strings to print.
+            A plain string is interpreted as rich markup, so dynamic text with
+            markup-significant characters (a metric named ``[i]``, say) must be
+            escaped by the caller with :func:`rich.markup.escape` to render
+            literally.
         color: The explicit color choice, or ``None`` to defer to the
             environment and TTY detection.
 
     Returns:
-        The rendered text, lines joined by newlines, with no trailing
-        whitespace on any line and no trailing newline.
+        Exactly the visible lines with no soft wrapping, with no trailing
+        whitespace on any line and no trailing empty line.
     """
     console = make_capture_console(color=color)
     for renderable in renderables:
@@ -364,4 +365,18 @@ def render_lines(*renderables: RenderableType, color: bool | None = None) -> str
     lines = buffer.getvalue().split("\n")
     if lines and lines[-1] == "":
         lines.pop()
-    return "\n".join(line.rstrip() for line in lines)
+    return [line.rstrip() for line in lines]
+
+
+def render_lines(*renderables: RenderableType, color: bool | None = None) -> str:
+    """Render ``renderables`` as :func:`render_line_list` does, joined into one text.
+
+    Args:
+        *renderables: One or more rich renderables or markup strings to print.
+        color: The explicit color choice, or ``None`` to defer to the
+            environment and TTY detection.
+
+    Returns:
+        The rendered lines joined by newlines, with no trailing newline.
+    """
+    return "\n".join(render_line_list(*renderables, color=color))

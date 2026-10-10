@@ -8,12 +8,14 @@ from __future__ import annotations
 
 from datetime import UTC, tzinfo
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from unittest.mock import patch
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextlib import AbstractContextManager
 
     import pytest
-    from rich.console import RenderableType
+    from rich.console import Console, RenderableType
 
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
@@ -26,8 +28,7 @@ from gymrat.cli.supervise.progress import (
     SuperviseReporter,
     create_supervise_reporter,
 )
-from gymrat.cli.supervise.types import BestIteration, ReadSessionResult
-from gymrat.loop.start import start_session
+from gymrat.session.store import BestIteration, ReadSessionResult
 from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     CapAction,
@@ -39,16 +40,11 @@ from gymrat.supervisor.events import (
     ModelPhaseEvent,
     SessionObserver,
     ThinkingUpdateEvent,
-    ToolEndEvent,
-    ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
 )
 from gymrat.supervisor.supervise import SupervisionResult
 from gymrat.utils import NS_PER_MS
-from tests._ansi import (
-    strip_sgr,
-)
 from tests._config import resolved_config
 from tests._rich import (
     Clock,
@@ -57,6 +53,7 @@ from tests._rich import (
     sealed_console,
     track,
 )
+from tests.loop._settle import start_with
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     SUPERVISED_SESSION_ID,
@@ -65,7 +62,7 @@ from tests.session.records._fixtures import (
     make_iteration,
     session_state,
 )
-from tests.supervisor._fixtures import make_launch, make_turn_end
+from tests.supervisor._fixtures import make_launch, make_turn_end, tool_end_event, tool_start_event
 
 # ---------------------------------------------------------------------------
 # Builders
@@ -74,14 +71,17 @@ from tests.supervisor._fixtures import make_launch, make_turn_end
 
 def start_open_session(repo: str) -> None:
     """Start a gymrat session so the experiment worktree and session log exist."""
-    start_session(repo, "main", resolved_config())
+    start_with(repo, config=resolved_config())
 
 
-def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+def install_baseline_seam(
+    monkeypatch: pytest.MonkeyPatch, *, on_call: Callable[[], None] | None = None
+) -> list[dict[str, Any]]:
     """Replace the baseline measurement path so no real bench runs.
 
     Args:
         monkeypatch: The fixture that installs the stand-in measurement.
+        on_call: Run at the start of each measurement, to observe state while it runs.
 
     Returns:
         A list that records each call's keyword arguments.
@@ -90,6 +90,8 @@ def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any
 
     async def fake_measure(target: object, run_options: object) -> Any:
         calls.append({"target": target, "run_options": run_options})
+        if on_call is not None:
+            on_call()
         record = baseline_record(duration_ms=5000)
         result = create_measurement_result(label=record.label, samples=1, rounds=record.samples)
         return result, record
@@ -120,6 +122,32 @@ def session_state_three_iterations(delta_pct: float, outcome: str, *, seq: int =
     )
 
 
+def read_result(
+    state: SessionState | None = None,
+    *,
+    has_baseline: bool = False,
+    best: BestIteration | None = None,
+    stop_message: str | None = None,
+) -> ReadSessionResult:
+    """Build a ``ReadSessionResult`` whose fields all default to an empty session.
+
+    Args:
+        state: The session state the result carries; the empty session when omitted.
+        has_baseline: Whether the session has recorded a baseline.
+        best: The best iteration, if any.
+        stop_message: The stop-condition message, if any.
+
+    Returns:
+        The read result.
+    """
+    return ReadSessionResult(
+        state=state if state is not None else empty_session_state(),
+        has_baseline=has_baseline,
+        best=best,
+        stop_message=stop_message,
+    )
+
+
 def make_read_session(
     state: SessionState,
     *,
@@ -138,13 +166,18 @@ def make_read_session(
     Returns:
         A callable returning one fixed ``ReadSessionResult``.
     """
-    result = ReadSessionResult(
-        state=state,
-        has_baseline=has_baseline,
-        best=best,
-        stop_message=stop_message,
-    )
+    result = read_result(state, has_baseline=has_baseline, best=best, stop_message=stop_message)
     return lambda: result
+
+
+#: A session read of a session with a baseline and no iteration yet.
+EMPTY_READ = read_result(has_baseline=True)
+
+#: A session read of a session whose one iteration was kept as an improvement.
+KEPT_READ = read_result(
+    session_state(iteration_count=1, keep_count=1, last_iteration=make_iteration(-2.0, "improved")),
+    has_baseline=True,
+)
 
 
 def make_supervision_result(
@@ -188,10 +221,6 @@ def _throwing_read() -> ReadSessionResult:
 # Event firers
 # ---------------------------------------------------------------------------
 
-# Default timestamp of a tool start; a tool end's default duration is measured
-# from it, so the two stay in sync.
-_DEFAULT_TOOL_START_TS = 2000
-
 
 def launch_event(
     at_ms: int = 1000,
@@ -217,53 +246,13 @@ def launch_event(
     )
 
 
-def tool_start_event(
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = _DEFAULT_TOOL_START_TS,
-    *,
-    input_summary: str = "...",
-    parent_tool_use_id: str | None = None,
-) -> ToolStartEvent:
-    """A ``ToolStartEvent`` for *tool_name* stamped at *at_ms* milliseconds."""
-    return ToolStartEvent(
-        at=at_ms * NS_PER_MS,
-        tool_use_id=tool_use_id,
-        tool_name=tool_name,
-        input={},
-        input_summary=input_summary,
-        parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def tool_end_event(
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = 3000,
-    *,
-    result: str = "ok",
-    started_at_ms: int = _DEFAULT_TOOL_START_TS,
-    parent_tool_use_id: str | None = None,
-) -> ToolEndEvent:
-    """A ``ToolEndEvent`` whose duration is measured from *started_at_ms*."""
-    return ToolEndEvent(
-        at=at_ms * NS_PER_MS,
-        tool_use_id=tool_use_id,
-        tool_name=tool_name,
-        duration_ms=at_ms - started_at_ms,
-        result=result,
-        result_summary="ok",
-        parent_tool_use_id=parent_tool_use_id,
-    )
-
-
 def usage_event(cost_usd: float, at_ms: int = 4000) -> UsageUpdateEvent:
     """A ``UsageUpdateEvent`` carrying the given cumulative cost."""
     return UsageUpdateEvent(at=at_ms * NS_PER_MS, cost_usd=cost_usd)
 
 
 def cap_event(cap: CapType, at_ms: int = 5000, *, action: CapAction = "interrupting") -> CapEvent:
-    """A ``CapEvent`` signaling that *cap* has fired."""
+    """A ``CapEvent`` for *cap*, interrupting an in-flight turn unless *action* is ``"ending"``."""
     return CapEvent(at=at_ms * NS_PER_MS, cap=cap, action=action)
 
 
@@ -318,17 +307,37 @@ def follow_up_event(
     return FollowUpEvent(at=at_ms * NS_PER_MS, action=action, reason=reason)
 
 
-def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
+#: When :func:`fire_launch_and_bash_cycle` stamps its Bash end, in milliseconds.
+BASH_CYCLE_END_MS = 3000
+
+
+def fire_launch_and_bash_cycle(
+    observer: SessionObserver, *, clock: Clock[int] | None = None, result: str = "ok"
+) -> None:
     """Minimum event sequence that gets session state into the loop/best rows.
 
-    The Bash end triggers the reporter's session re-read.
+    Fires a launch at 1000 ms, then a Bash start at 2000 ms and its end at
+    :data:`BASH_CYCLE_END_MS`. The Bash end triggers the reporter's session
+    re-read.
 
     Args:
         observer: The reporter observer the events are fired at.
+        clock: The reporter's clock, advanced to each event's time before it
+            fires so idle timing starts from the Bash end; left alone when
+            omitted.
+        result: The Bash call's result, ``"error"`` for a failed call.
     """
-    observer(launch_event(1000))
-    observer(tool_start_event("Bash", "bash-1", 2000))
-    observer(tool_end_event("Bash", "bash-1", 3000))
+    for at_ms, event in (
+        (1000, launch_event(1000)),
+        (2000, tool_start_event("Bash", "bash-1", 2000)),
+        (
+            BASH_CYCLE_END_MS,
+            tool_end_event("Bash", "bash-1", BASH_CYCLE_END_MS, result=result),
+        ),
+    ):
+        if clock is not None:
+            clock.now = at_ms
+        observer(event)
 
 
 def fire_launch_and_bash_start(observer: SessionObserver) -> None:
@@ -345,6 +354,36 @@ def fire_launch_and_bash_start(observer: SessionObserver) -> None:
     observer(tool_start_event("Bash", "bash-1", 1500))
 
 
+def fire_launch_and_iterate_start(kit: ReporterKit, *, tool_name: str = "Bash") -> None:
+    """Fire a launch at 1000 ms, then an iterate call at 2000 ms, leaving it in flight.
+
+    Args:
+        kit: The reporter the events are fired at; its clock is moved to 2000 ms.
+        tool_name: The tool that runs the iterate call.
+    """
+    kit.reporter.observer(launch_event(1000))
+    kit.clock.now = 2000
+    kit.reporter.observer(
+        tool_start_event(tool_name, "bash-1", 2000, input_summary="gymrat iterate")
+    )
+
+
+def fire_launch_and_edit_cycle(kit: ReporterKit, *, result: str = "ok") -> None:
+    """Fire a launch at 1000 ms, then an Edit of ``src/archetype.ts`` from 2000 to 3000 ms.
+
+    Args:
+        kit: The reporter the events are fired at; its clock is moved to each event's time.
+        result: The Edit call's result, ``"error"`` for a failed call.
+    """
+    kit.reporter.observer(launch_event(1000))
+    kit.clock.now = 2000
+    kit.reporter.observer(
+        tool_start_event("Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    )
+    kit.clock.now = 3000
+    kit.reporter.observer(tool_end_event("Edit", "edit-1", 3000, result=result))
+
+
 # ---------------------------------------------------------------------------
 # Reporter setup
 # ---------------------------------------------------------------------------
@@ -352,8 +391,17 @@ def fire_launch_and_bash_start(observer: SessionObserver) -> None:
 # Fixed width for all golden-snapshot tests so frames are stable.
 FRAME_WIDTH = 100
 
-#: Patch target for the ``ErasableLive`` the live-mode reporter drives.
-LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.ErasableLive"
+#: Patch target for the ``ErasableLive`` the live-mode reporter drives: the
+#: shared live display every CLI progress renderer mounts builds it.
+LIVE_CLASS_PATH = "gymrat.cli.live_display.ErasableLive"
+
+#: Patch target for the factory that builds the console the dashboard paints on.
+CONSOLE_FACTORY_PATH = "gymrat.cli.supervise.progress.stderr_console"
+
+
+def dashboard_console_patch(console: Console) -> AbstractContextManager[Any]:
+    """Patch the dashboard's console factory with an autospec that hands out *console*."""
+    return patch(CONSOLE_FACTORY_PATH, autospec=True, return_value=console)
 
 
 #: The root every built reporter carries. Both session readers are stubbed, so
@@ -453,25 +501,78 @@ def make_reporter(
     return ReporterKit(track(reporter), clock)
 
 
+def launched(kit: ReporterKit) -> ReporterKit:
+    """Fire the agent's launch at 1000 ms at *kit*'s reporter, then return *kit*."""
+    kit.reporter.observer(launch_event(1000))
+    return kit
+
+
+def reporter_with_nested_read() -> ReporterKit:
+    """A reporter whose in-flight Bash call runs a nested Read of ``src/config.ts``.
+
+    The Bash call starts at 1500 ms, the nested Read at 2000 ms, and the clock
+    stands at 5000 ms.
+
+    Returns:
+        The reporter together with the clock that drives it.
+    """
+    kit = make_reporter()
+    fire_launch_and_bash_start(kit.reporter.observer)
+    kit.clock.now = 2000
+    kit.reporter.observer(
+        tool_start_event(
+            "Read",
+            "nested-read-1",
+            2000,
+            parent_tool_use_id="bash-1",
+            input_summary="src/config.ts",
+        )
+    )
+    kit.clock.now = 5000
+    return kit
+
+
+def reporter_showing_session(
+    state: SessionState, *, best: BestIteration | None = None, max_iterations: int | None = None
+) -> ReporterKit:
+    """A reporter whose session read carries *state*, past one Bash call's end.
+
+    The Bash end triggers the session re-read, so the loop and best rows show
+    *state* and *best*.
+
+    Args:
+        state: The session state every read returns, with a baseline recorded.
+        best: The best kept iteration the read reports, or ``None`` for none.
+        max_iterations: Iteration cap, or ``None`` for uncapped.
+
+    Returns:
+        The reporter together with the clock that drives it.
+    """
+    kit = make_reporter(
+        read_session=make_read_session(state, has_baseline=True, best=best),
+        max_iterations=max_iterations,
+    )
+    fire_launch_and_bash_cycle(kit.reporter.observer)
+    return kit
+
+
 def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> str:
     """Render the reporter's current frame through a non-terminal console."""
     return frame_text(reporter.frame(), width=width)
 
 
-def line_after(frame: str, needle: str) -> str:
-    """Return the line immediately following the first line containing *needle*."""
-    lines = frame.splitlines()
-    idx = next(i for i, line in enumerate(lines) if needle in line)
-    return lines[idx + 1]
+def color_console(*, width: int = FRAME_WIDTH) -> Console:
+    """A sealed console with standard color, *width* columns wide."""
+    return sealed_console(width=width, no_color=False, color_system="standard")
 
 
 def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
     """Render ``renderable`` through a sealed console with standard color."""
-    console = sealed_console(width=width, no_color=False, color_system="standard")
+    console = color_console(width=width)
     console.print(renderable)
     return console_output(console)
 
 
-def lines_containing(frame: str, needle: str) -> list[str]:
-    """Return the raw lines of *frame* whose text, color codes stripped, contains *needle*."""
-    return [line for line in frame.splitlines() if needle in strip_sgr(line)]
+def row_content(line: str) -> str:
+    """Strip the panel's side borders and padding from one frame row."""
+    return line.strip("│").strip()

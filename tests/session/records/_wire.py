@@ -65,6 +65,16 @@ ITERATION_RECORD: dict[str, object] = {
     "target_reached": False,
 }
 
+CONFIRM: dict[str, object] = {
+    "ran": True,
+    "filtered": ["total_ms"],
+    "absent": ["rss_kb"],
+    "samples": {
+        "experiment": [{"total_ms": 14120}],
+        "baseline": [{"total_ms": 15170}],
+    },
+}
+
 COMMITTED_KEEP_RECORD: dict[str, object] = {
     "type": "keep",
     "seq": 1,
@@ -160,6 +170,27 @@ def patching(record: dict[str, object], patch: dict[str, object]) -> dict[str, o
     return record | patch
 
 
+def nested_with(record: dict[str, object], field: str, **overrides: object) -> dict[str, object]:
+    """Copy of ``record`` with ``overrides`` merged over the object it holds under ``field``."""
+    return patching(record, {field: {**field_of(record, field), **overrides}})
+
+
+def confirm_with(**overrides: object) -> dict[str, object]:
+    """Copy of ``CONFIRM`` with ``overrides`` merged over it."""
+    return {**CONFIRM, **overrides}
+
+
+def verdict_with(**overrides: object) -> dict[str, object]:
+    """``ITERATION_RECORD`` whose ``total_ms`` verdict has ``overrides`` merged over it."""
+    return patching(ITERATION_RECORD, {"metrics": {"total_ms": {**METRIC_VERDICT, **overrides}}})
+
+
+def verdict_without(*keys: str) -> dict[str, object]:
+    """``ITERATION_RECORD`` whose ``total_ms`` verdict lacks every key in ``keys``."""
+    verdict = {key: value for key, value in METRIC_VERDICT.items() if key not in keys}
+    return patching(ITERATION_RECORD, {"metrics": {"total_ms": verdict}})
+
+
 _RAW_NUMBER = "raw-number-placeholder"
 
 
@@ -204,8 +235,3 @@ def field_of(record: dict[str, object], key: str) -> dict[str, object]:
         msg = f"{key!r} holds {type(value).__name__}, not an object"
         raise TypeError(msg)
     return value
-
-
-def config_with(**overrides: object) -> dict[str, object]:
-    """The session record's config object with ``overrides`` merged over it."""
-    return patching(field_of(SESSION_RECORD, "config"), overrides)

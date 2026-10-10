@@ -1,14 +1,10 @@
 """Rendering-matrix hardening for the shared color precedence.
 
-The suite pins the guarantees that keep color rendering honest no matter where
-gymrat's output lands:
-
-- every color surface (the report on stdout, the doctor report on stdout, the
-  progress line on stderr, and the error text on stderr) routes through the
-  one shared precedence rule, whose full ladder is pinned in
-  ``tests/test_utils.py``,
-- a terminal that reports zero width neither crashes nor spills a garbled
-  status line.
+The suite pins the guarantee that keeps color rendering honest no matter where
+gymrat's output lands: every color surface (the report on stdout, the doctor
+report on stdout, the progress reporter on stderr, and the error text on stderr)
+routes through the one shared precedence rule, whose full ladder is pinned in
+``tests/test_utils.py``.
 
 The real-terminal, redirect, and bench-environment cases run out of process in
 ``tests/hardening/test_rendering_end_to_end.py``; these cases exercise the
@@ -24,18 +20,18 @@ import pytest
 
 from gymrat.cli.budget_report import emit_report
 from gymrat.cli.commands.doctor import doctor_command
-from gymrat.cli.console import stderr_console
 from gymrat.cli.exit import format_cli_error
-from gymrat.cli.run_setup import SharedFlags, resolve_render_mode
-from gymrat.doctor import Check, CheckSection, build_doctor_report
-from gymrat.git import NotAGitRepositoryError
+from gymrat.cli.run_setup import SharedFlags, begin_run
 from gymrat.report.style import render_lines
 from gymrat.report.types import DEFAULT_REPORT_OPTIONS
-from gymrat.session.paths import repo_root
-from tests._doctor_fixtures import doctor_report
+from gymrat.session.paths import NotAGitRepositoryError, repo_root
+from tests._ansi import SGR_RE
 from tests._streams import FakeStream
+from tests.cli._doctor_seams import patch_doctor
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from gymrat.report.json_doc import BudgetSummary
     from gymrat.report.types import ReportOptions
 
@@ -94,46 +90,47 @@ def _doctor_report_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
     """
     stdout = FakeStream(tty=True)
     monkeypatch.setattr("sys.stdout", stdout)
-    report = doctor_report([CheckSection(title="T", checks=[Check("a", "ok", "x")])])
-    monkeypatch.setattr(
-        "gymrat.cli.commands.doctor.build_doctor_report",
-        create_autospec(build_doctor_report, return_value=report),
-    )
+    patch_doctor(monkeypatch, stub_text=False)
 
     doctor_command()
 
     return "\x1b[" in stdout.getvalue()
 
 
-def _progress_is_colored() -> bool:
-    """Whether the progress surface would paint color for the environment.
+def _progress_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
+    """Whether the run's progress reporter paints color on a terminal stderr.
 
-    Builds the console through the real stderr factory — the one every progress
-    renderer receives — and checks whether a styled print carries ANSI. A
-    surface that stops going through the factory, or a factory that breaks the
-    shared precedence, fails this probe where a bare ``resolve_stream_color``
-    call would keep passing.
+    Builds the reporter the way a run does, through ``begin_run``, and stops it
+    so it prints its closing timing line. A reporter that stops building its
+    console through the shared stderr factory fails this probe. The live
+    display's cursor control is not color, so only an SGR sequence counts.
+
+    Args:
+        monkeypatch: Replaces stderr with a terminal the probe can read back.
 
     Returns:
-        Whether a styled print on the stderr console carries ANSI.
+        Whether the progress output on stderr carries an SGR sequence.
     """
-    console = stderr_console()
-    with console.capture() as capture:
-        console.print("probe", style="red", end="")
-    return "\x1b[" in capture.get()
+    stderr = FakeStream(tty=True)
+    monkeypatch.setattr("sys.stderr", stderr)
+
+    reporter = begin_run(SharedFlags(), 1)
+    reporter.stop()
+
+    return SGR_RE.search(stderr.getvalue()) is not None
 
 
-def _error_is_colored() -> bool:
-    """Whether the stderr error surface would paint its label for the environment."""
+def _error_is_colored(monkeypatch: pytest.MonkeyPatch) -> bool:
+    """Whether the stderr error surface would paint its label for the environment.
+
+    Args:
+        monkeypatch: Unused; taken so every surface probe shares one signature.
+
+    Returns:
+        Whether the formatted error carries ANSI.
+    """
+    del monkeypatch
     return "\x1b[" in format_cli_error(ValueError("boom"))
-
-
-def _apply_color_env(
-    monkeypatch: pytest.MonkeyPatch, force_color: str | None, no_color: str | None
-) -> None:
-    for name, value in (("FORCE_COLOR", force_color), ("NO_COLOR", no_color)):
-        if value is not None:
-            monkeypatch.setenv(name, value)
 
 
 # ---------------------------------------------------------------------------
@@ -142,40 +139,36 @@ def _apply_color_env(
 
 
 # Environment states where the variables alone decide the outcome, so terminal
-# detection never enters into it and all the surfaces must agree.
+# detection never enters into it and every surface must give the same answer.
+# The error surface's force-on case is pinned by
+# tests/cli/test_exit.py::test_format_cli_error_when_colored_does_paint_the_error_label_red.
 @pytest.mark.parametrize(
-    ("force_color", "no_color", "expected"),
+    ("is_colored", "force_and_no_color", "expected"),
     [
-        pytest.param("1", None, True, id="force-on"),
-        pytest.param(None, "1", False, id="no-color-suppresses"),
+        pytest.param(_report_is_colored, ("1", None), True, id="report-force-on"),
+        pytest.param(_report_is_colored, (None, "1"), False, id="report-no-color-suppresses"),
+        pytest.param(_doctor_report_is_colored, ("1", None), True, id="doctor-report-force-on"),
+        pytest.param(
+            _doctor_report_is_colored, (None, "1"), False, id="doctor-report-no-color-suppresses"
+        ),
+        pytest.param(_progress_is_colored, ("1", None), True, id="progress-force-on"),
+        pytest.param(_progress_is_colored, (None, "1"), False, id="progress-no-color-suppresses"),
+        pytest.param(_error_is_colored, (None, "1"), False, id="error-no-color-suppresses"),
     ],
 )
-def test_color_precedence_when_env_decides_does_agree_across_report_progress_and_error(
+def test_color_surface_when_env_decides_does_follow_the_shared_precedence(
     monkeypatch: pytest.MonkeyPatch,
-    force_color: str | None,
-    no_color: str | None,
+    color_env: Callable[[str | None, str | None], None],
+    is_colored: Callable[[pytest.MonkeyPatch], bool],
+    force_and_no_color: tuple[str | None, str | None],
     expected: bool,
 ):
     monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
     # Pin TERM so the console factory's own terminal detection is capable of
     # color, leaving FORCE_COLOR/NO_COLOR as the only deciders under test.
     monkeypatch.setenv("TERM", "xterm-256color")
-    _apply_color_env(monkeypatch, force_color, no_color)
+    color_env(*force_and_no_color)
 
-    surfaces = (
-        _report_is_colored(monkeypatch),
-        _doctor_report_is_colored(monkeypatch),
-        _progress_is_colored(),
-        _error_is_colored(),
-    )
+    colored = is_colored(monkeypatch)
 
-    assert surfaces == (expected,) * 4
-
-
-def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
-    _apply_color_env(monkeypatch, "1", None)
-
-    assert resolve_render_mode() == "plain"
+    assert colored is expected

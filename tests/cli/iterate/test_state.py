@@ -71,8 +71,6 @@ def _apply(state: IterateState, *events: ProgressEvent) -> IterateState:
     return state
 
 
-_INITIAL = _state()
-
 # A single round against two targets: the phase total is two passes.
 _FIRST_PASS_STARTED = _pass_started(1, 1, target_count=2, label="baseline", at_ms=0)
 _FIRST_PASS_FINISHED = _pass_finished(1, 1, target_count=2, label="baseline", at_ms=10000)
@@ -89,6 +87,27 @@ def test_state_module_when_imported_in_a_fresh_interpreter_does_not_load_rich():
     loaded = modules_imported_by("gymrat.cli.iterate.state")
 
     assert loaded_under(loaded, "rich") == []
+
+
+# ---------------------------------------------------------------------------
+# Initial rows
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("has_after_hook", "expected"),
+    [
+        pytest.param(True, "then after hook", id="after-hook"),
+        pytest.param(False, "", id="no-after-hook"),
+    ],
+)
+def test_initial_state_when_after_hook_varies_does_hint_it_on_the_record_row(
+    has_after_hook: bool,
+    expected: str,
+):
+    result = _state(has_after_hook=has_after_hook)
+
+    assert result.nodes.record.hint == expected
 
 
 # ---------------------------------------------------------------------------
@@ -134,10 +153,19 @@ def test_advance_when_judge_finished_does_store_judge_detail_as_data():
     )
 
 
-def test_advance_when_confirm_started_does_set_confirm_note():
-    result = advance(_state(), ConfirmStarted(filtered_metrics=("latency", "alloc"), at_ms=5000))
+@pytest.mark.parametrize(
+    ("filtered_metrics", "expected"),
+    [
+        pytest.param(None, "full suite", id="unfiltered"),
+        pytest.param(("latency", "alloc"), "2 metrics", id="filtered"),
+    ],
+)
+def test_advance_when_confirm_started_does_set_confirm_note(
+    filtered_metrics: tuple[str, ...] | None, expected: str
+):
+    result = advance(_state(), ConfirmStarted(filtered_metrics=filtered_metrics, at_ms=5000))
 
-    assert result.nodes.confirm.note == "2 metrics"
+    assert result.nodes.confirm.note == expected
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +179,7 @@ def test_advance_when_confirm_started_does_set_confirm_note():
         pytest.param(
             (PrepareStarted(label="baseline", at_ms=0),),
             PrepareFinished(label="baseline", at_ms=5000),
-            "prepare baseline done (5s)",
+            "prepared baseline (5s)",
             id="prepare-finished",
         ),
         pytest.param(
@@ -173,10 +201,32 @@ def test_advance_when_confirm_started_does_set_confirm_note():
             id="judge-finished-missing-delta",
         ),
         pytest.param(
+            (),
+            JudgeFinished(primary_delta_pct=-6.8, regressed=("latency",), at_ms=6000),
+            "judge -6.8% on geomean · 1 regressed: latency",
+            id="judge-finished-one-regressed",
+        ),
+        pytest.param(
+            (),
+            JudgeFinished(
+                primary_delta_pct=-6.8,
+                regressed=("latency", "alloc", "throughput", "parse"),
+                at_ms=6000,
+            ),
+            "judge -6.8% on geomean · 4 regressed: latency, alloc, throughput, …",
+            id="judge-finished-more-regressed-than-cap",
+        ),
+        pytest.param(
             (ConfirmStarted(filtered_metrics=None, at_ms=5000),),
             ConfirmFinished(reproduced=True, at_ms=15000),
             "confirm 0/2 · regressions reproduced",
             id="confirm-finished",
+        ),
+        pytest.param(
+            (ConfirmStarted(filtered_metrics=None, at_ms=5000),),
+            ConfirmFinished(reproduced=False, at_ms=15000),
+            "confirm 0/2 · regressions not reproduced",
+            id="confirm-finished-not-reproduced",
         ),
         pytest.param(
             (),

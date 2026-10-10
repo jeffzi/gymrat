@@ -11,7 +11,6 @@ live, the command is refused: scaffolding is not part of the loop.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -20,7 +19,7 @@ import typer
 from rich.markup import escape
 
 from gymrat.cli.console import apply_command_flags, resolve_stream_color
-from gymrat.cli.exit import exit_with_error, run_guarded, write_stdout
+from gymrat.cli.exit import run_guarded, write_stdout
 from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
     BenchOption,
     ColorOption,
@@ -45,7 +44,7 @@ def _format_artifact(label: str, artifact: ScaffoldArtifact, base_dir: str) -> s
     if artifact.status == "declined":
         return f"  {label} declined"
     # Navigable from the user's cwd, not from the project root.
-    display = os.path.relpath(Path(base_dir) / artifact.path)
+    display = (Path(base_dir) / artifact.path).absolute().relative_to(Path.cwd(), walk_up=True)
     verb = "created at" if artifact.status == "created" else "already exists at"
     return f"  {label} {verb} {display}"
 
@@ -73,15 +72,16 @@ def init_command(
 
     resolved_color = resolve_stream_color(None, sys.stdout)
 
-    base_dir = find_implicit_base()
-    # init has no tool form, so a live run refuses it whatever the origin.
-    if is_supervised_run_live(base_dir):
-        exit_with_error(GymratError("a supervised run is live; init is not part of the loop"))
-    # An existing config is kept as-is, so its bench command stands in for the flag.
-    if bench is None and not (Path(base_dir) / CONFIG_FILENAME).exists():
-        exit_with_error(GymratError("Missing --bench flag."))
-
     def scaffold_and_report() -> None:
+        base_dir = find_implicit_base()
+        # init has no tool form, so a live run refuses it whatever the origin.
+        if is_supervised_run_live(base_dir):
+            message = "a supervised run is live; init is not part of the loop"
+            raise GymratError(message)
+        # An existing config is kept as-is, so its bench command stands in for the flag.
+        if bench is None and not (Path(base_dir) / CONFIG_FILENAME).exists():
+            message = "Missing --bench flag."
+            raise GymratError(message)
         request = ScaffoldRequest(
             bench=bench,
             runbook=not no_runbook,

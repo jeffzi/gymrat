@@ -48,17 +48,26 @@ from gymrat.supervisor.events import (
     summarize_input,
 )
 from gymrat.supervisor.hooks import HooksFactory
+from gymrat.supervisor.tool_names import MCP_SERVER
 from gymrat.supervisor.tools import ToolsFactory
 
 if TYPE_CHECKING:
     from claude_agent_sdk import ContentBlock, ResultMessage
+# ---------------------------------------------------------------------------
+# Message mapping
+# ---------------------------------------------------------------------------
 
-#: Rough chars-per-token ratio used to estimate thinking-block token counts,
-#: since the SDK reports thinking as text, not a token count.
+
 _CHARS_PER_TOKEN_ESTIMATE = 4
-#: A ThinkingUpdateEvent is emitted only after this many characters accumulate
-#: since the last emit, keeping the event rate bounded during long thinking blocks.
+"""Rough chars-per-token ratio used to estimate thinking-block token counts.
+
+The SDK reports thinking as text, not a token count.
+"""
 _THINKING_EMIT_CHARS = 200
+"""A ThinkingUpdateEvent is emitted only after this many characters accumulate since the last emit.
+
+This keeps the event rate bounded during long thinking blocks.
+"""
 
 
 def usable_cost(value: object) -> float | None:
@@ -296,6 +305,11 @@ class MessageMapper:
         )
 
 
+# ---------------------------------------------------------------------------
+# Client seam and options
+# ---------------------------------------------------------------------------
+
+
 class ClaudeClient(Protocol):
     """The streaming client surface the driver depends on.
 
@@ -411,6 +425,11 @@ class _OptionFactories:
 
     tools: ToolsFactory | None
     hooks: HooksFactory | None
+
+
+# ---------------------------------------------------------------------------
+# Session lifecycle
+# ---------------------------------------------------------------------------
 
 
 class _ClaudeSession:
@@ -537,7 +556,7 @@ class _ClaudeSession:
         tools = self._factories.tools
         if tools is not None:
             env = _traceparent_env(self._prompt.traceparent)
-            options["mcp_servers"] = {"gymrat": tools(self._abort, env)}
+            options["mcp_servers"] = {MCP_SERVER: tools(self._abort, env)}
         hooks = self._factories.hooks
         if hooks is not None:
             options["hooks"] = hooks()
@@ -615,6 +634,9 @@ class _ClaudeSession:
 
         A budget-exhausted result is an error the session survives: it closes
         the turn with ``budget_exhausted`` set instead of settling.
+
+        Args:
+            message: The result message closing the turn or settling the session.
         """
         budget_exhausted = message.is_error and message.subtype == "error_max_budget_usd"
         settles = message.is_error and not budget_exhausted
@@ -652,6 +674,11 @@ class _ClaudeSession:
         """
         self._cost_usd = cost
         self._observer(UsageUpdateEvent(at=now_ns(), cost_usd=self._cost_usd))
+
+
+# ---------------------------------------------------------------------------
+# Driver construction
+# ---------------------------------------------------------------------------
 
 
 class _ClaudeDriver:

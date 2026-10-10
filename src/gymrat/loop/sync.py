@@ -15,38 +15,59 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 from gymrat.errors import GymratError
-from gymrat.session.paths import SESSION_DIR_NAME, experiment_worktree_dir
+from gymrat.git import run_git_step
+from gymrat.session.paths import SESSION_DIR_NAME
 from gymrat.session.store import require_open_session
-from gymrat.session.workspace import run_git_step
+from gymrat.utils import pluralize
 
 # ``git status -z`` prefixes each entry with two status characters and a space
 # (``XY<space>``), then the NUL-delimited path. Rename/copy entries (``R`` or
 # ``C`` in X) carry a second NUL-delimited field: ``XY<space>new\0old\0``.
 _STATUS_PREFIX_LEN = 3
 
-# Status codes that carry a second path field (the original name).
+# Status codes that carry a second path field (the original name). Only a
+# rename removes that original: a copy leaves it in place.
 _RENAME_COPY_CODES = frozenset("RC")
+_RENAME_CODE = "R"
 
 
 def _raise_file_vs_dir_error(name: str) -> NoReturn:
-    """Shared by both sync failure sites so the message and submodule hint stay identical."""
+    """Shared by every sync failure site so the message wording and submodule hint stay alike."""
     msg = f"Cannot sync '{name}': expected a file but found a directory"
     raise GymratError(msg, hint="If this is a submodule, commit or remove it before syncing.")
 
 
 @dataclass(frozen=True, slots=True)
 class SyncResult:
-    """Outcome of syncing changes from the main tree to the experiment worktree."""
+    """Outcome of syncing changes from the main tree to the experiment worktree.
+
+    Attributes:
+        files: Each synced main-tree path, sorted.
+    """
 
     files: tuple[str, ...]
+
+    @property
+    def report(self) -> str:
+        """The human-readable summary: the synced paths under a count, or that nothing synced."""
+        if not self.files:
+            return "nothing to sync"
+        header = f"Synced {pluralize(len(self.files), 'file')} to experiment worktree:"
+        return "\n".join([header, *(f"  {path}" for path in self.files)])
 
 
 @dataclass(frozen=True, slots=True)
 class _DirtyEntry:
-    """A single dirty-file entry parsed from ``git status -z``."""
+    """A single dirty-file entry parsed from ``git status -z``.
+
+    Attributes:
+        path: The dirty path in the worktree.
+        renamed_from: The path a rename moved ``path`` from, which the sync
+            removes; ``None`` for every other entry, copies included.
+    """
 
     path: str
-    old_path: str | None
+    renamed_from: str | None
 
 
 def _dirty_entries(directory: str, error_message: str, hint: str) -> list[_DirtyEntry]:
@@ -75,10 +96,12 @@ def _dirty_entries(directory: str, error_message: str, hint: str) -> list[_Dirty
             continue
         status_x = field[0]
         path = field[_STATUS_PREFIX_LEN:]
-        old_path: str | None = None
+        renamed_from: str | None = None
         if status_x in _RENAME_COPY_CODES:
-            old_path = next(fields, None)
-        entries.append(_DirtyEntry(path=path, old_path=old_path))
+            original = next(fields, None)
+            if status_x == _RENAME_CODE:
+                renamed_from = original
+        entries.append(_DirtyEntry(path=path, renamed_from=renamed_from))
     return entries
 
 
@@ -93,8 +116,9 @@ def _is_real_directory(path: Path) -> bool:
 
 
 def _blocks_descent(path: Path) -> bool:
-    # A dangling symlink does not exist to `is_dir`, yet still occupies the name.
-    return not path.is_dir() and (path.exists() or path.is_symlink())
+    # Any symlink blocks, dangling or not, even one to a directory: writing or
+    # removing through it would touch files outside the experiment worktree.
+    return path.is_symlink() or (path.exists() and not path.is_dir())
 
 
 def _refuse_directory_entries(root: str, experiment: str, entries: list[_DirtyEntry]) -> None:
@@ -112,14 +136,14 @@ def _refuse_directory_entries(root: str, experiment: str, entries: list[_DirtyEn
     Raises:
         GymratError: When an entry is a directory in the main tree, when a path
             the sync writes or removes is a directory in the experiment
-            worktree, or when an ancestor of such a path exists there without
-            being a directory.
+            worktree, or when an ancestor of such a path exists there as a file
+            or as a symlink, even one that points at a directory.
     """
     for entry in entries:
         src = Path(root) / entry.path
         if src.exists() and not (src.is_file() or src.is_symlink()):
             _raise_file_vs_dir_error(entry.path)
-        for touched in (entry.path, entry.old_path):
+        for touched in (entry.path, entry.renamed_from):
             if touched is None:
                 continue
             if _is_real_directory(Path(experiment) / touched):
@@ -135,7 +159,11 @@ def _refuse_directory_entries(root: str, experiment: str, entries: list[_DirtyEn
 
 
 def _copy_entry(src: Path, dst: Path) -> None:
-    """Copy a single file preserving symlinks and file-mode bits."""
+    """Copy a single file preserving symlinks and file-mode bits.
+
+    A symlink already at ``dst`` is replaced, never written through, so its target
+    (possibly outside the experiment worktree) stays untouched.
+    """
     if src.is_symlink():
         link_target = src.readlink()
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -143,6 +171,8 @@ def _copy_entry(src: Path, dst: Path) -> None:
         dst.symlink_to(link_target)
     elif src.is_file():
         dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.is_symlink():
+            dst.unlink()
         shutil.copy2(src, dst)
     else:
         _raise_file_vs_dir_error(src.name)
@@ -156,19 +186,21 @@ def sync_to_experiment(root: str) -> SyncResult:
 
     Returns:
         The sync result listing each dirty main-tree path that was copied or
-        deleted; the source path of a rename is removed but not listed.
+        deleted; the source path of a rename is removed but not listed, and
+        the source path of a copy is left untouched.
 
     Raises:
         GymratError: When no session is open, when the experiment worktree has
             uncommitted changes that overlap with the files to sync or with the
             source path of a rename, when an entry is a directory on either
-            side, when a file in the experiment worktree sits where an entry
-            needs a directory, when the experiment worktree is missing, or when
-            git itself fails. Nothing is written in any of these cases.
+            side, when a file or a symlink in the experiment worktree sits
+            where an entry needs a directory, when the experiment worktree is
+            missing, or when git itself fails. Nothing is written in any of
+            these cases.
     """
-    require_open_session(root, "syncing changes")
+    required = require_open_session(root, "syncing changes")
 
-    experiment = experiment_worktree_dir(root)
+    experiment = required.session.worktrees.experiment
 
     main_entries = _exclude_session_dir(
         _dirty_entries(root, "Cannot read dirty files", "Check that the repository is not corrupt.")
@@ -181,12 +213,12 @@ def sync_to_experiment(root: str) -> SyncResult:
     experiment_entries = _dirty_entries(
         experiment,
         "Cannot read experiment worktree",
-        "The experiment worktree may have been deleted. Run 'gymrat start' to begin a new session.",
+        "The experiment worktree may have been deleted. Run gymrat start to begin a new session.",
     )
     experiment_paths = {e.path for e in experiment_entries}
     # A rename removes its source path from the experiment, so an uncommitted
     # experiment edit there is overwritten just as one at the destination is.
-    removed_paths = {e.old_path for e in main_entries if e.old_path is not None}
+    removed_paths = {e.renamed_from for e in main_entries if e.renamed_from is not None}
     conflicts = (main_paths | removed_paths) & experiment_paths
     if conflicts:
         listed = ", ".join(sorted(conflicts))
@@ -208,7 +240,7 @@ def sync_to_experiment(root: str) -> SyncResult:
         except IsADirectoryError:
             _raise_file_vs_dir_error(entry.path)
 
-        if entry.old_path is not None:
-            (Path(experiment) / entry.old_path).unlink(missing_ok=True)
+        if entry.renamed_from is not None:
+            (Path(experiment) / entry.renamed_from).unlink(missing_ok=True)
 
     return SyncResult(files=tuple(sorted(main_paths)))

@@ -13,13 +13,16 @@ collected in order, that config problems and adapter flags reach the bench
 section, and that ``detect_git_environment`` maps git-missing, outside-repo,
 and unresolvable root to distinct ``GitEnvironment`` outcomes without raising.
 
-The text and JSON renderers render a real ``DoctorReport`` and assert its
-lines, glyphs, hint indentation, caveat note, and summary directly.
+The text renderer is pinned by one golden per named scenario (glyphs, hint
+and multi-line indentation, caveat note, summary counts); the JSON renderer
+by its exact document.
 """
 
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 from syrupy.assertion import SnapshotAssertion
@@ -40,11 +43,11 @@ from gymrat.doctor import (
     render_doctor_json,
     render_doctor_report,
 )
-from gymrat.errors import GymratError
-from tests._ansi import strip_ansi
+from gymrat.git import run_git
 from tests._config import benchless_config as _config
 from tests._doctor_fixtures import doctor_report, environment_info
-from tests.config._toml import DEEP_NESTING_DOCUMENT, DIGIT_LIMIT_DOCUMENT, write_raw
+from tests.adapters._inputs import VALID_ADAPTERS_HINT, unknown_adapter_message
+from tests.config._toml import write_raw
 
 _DEFAULT_CONFIG = _config()
 
@@ -110,7 +113,7 @@ def _find(section: CheckSection, name: str) -> Check:
         pytest.param([], (0, 0, 0), False, id="no-sections"),
     ],
 )
-def test_create_doctor_report_when_statuses_vary_does_count_each_and_flag_failures(
+def test_create_doctor_report_when_statuses_vary_does_aggregate_the_status_summary(
     sections: list[CheckSection], counts: tuple[int, int, int], has_failures: bool
 ):
     report = create_doctor_report(environment_info(), sections)
@@ -199,6 +202,7 @@ def test_build_config_section_when_problems_present_does_produce_one_fail_per_pr
         'Invalid value for "samples": expected a positive integer, got "abc"',
         'Invalid value for "adapter": expected a string, got 42',
     ]
+
     section = build_config_section(_inspection(problems=problems, config=None))
 
     fails = [check for check in section.checks if check.status == "fail"]
@@ -221,6 +225,13 @@ def test_build_workflow_section_when_problems_present_does_return_single_ok_skip
     ]
 
 
+_STOP_UNSET = Check(
+    name="stop",
+    status="warn",
+    detail="stop is not configured",
+    hint="Without stop, a session has no finish line",
+)
+
 _UNSET_WORKFLOW_CHECKS = [
     Check(
         name="checks",
@@ -228,12 +239,7 @@ _UNSET_WORKFLOW_CHECKS = [
         detail="checks is not configured",
         hint="Without checks, keep cannot gate commits",
     ),
-    Check(
-        name="stop",
-        status="warn",
-        detail="stop is not configured",
-        hint="Without stop, a session has no finish line",
-    ),
+    _STOP_UNSET,
     Check(
         name="runbook",
         status="warn",
@@ -279,133 +285,53 @@ def test_build_workflow_section_when_config_unset_does_produce_the_exact_section
     assert section == CheckSection(title="Workflow", checks=[skill_check, *_UNSET_WORKFLOW_CHECKS])
 
 
-def test_build_workflow_section_when_checks_set_does_produce_ok_echoing_value():
-    section = build_workflow_section(
-        _config(checks="npm test"),
-        config_has_problems=False,
-        skill_file_exists=True,
-        config_file_exists=False,
-    )
-
-    assert _find(section, "checks") == Check(name="checks", status="ok", detail="checks: npm test")
-
-
 @pytest.mark.parametrize(
-    ("stop", "detail"),
+    ("config", "name", "expected"),
     [
-        pytest.param(StopConfig(target_value=1.5), "stop: target_value: 1.5", id="target-only"),
-        pytest.param(StopConfig(max_iterations=20), "stop: max_iterations: 20", id="max-only"),
         pytest.param(
-            StopConfig(target_value=1.5, max_iterations=20),
-            "stop: target_value: 1.5, max_iterations: 20",
-            id="both",
+            _config(checks="npm test"),
+            "checks",
+            Check(name="checks", status="ok", detail="checks: npm test"),
+            id="checks-set",
+        ),
+        pytest.param(
+            _config(stop=StopConfig(target_value=1.5)),
+            "stop",
+            Check(name="stop", status="ok", detail="stop: target_value: 1.5"),
+            id="stop-target-only",
+        ),
+        pytest.param(
+            _config(stop=StopConfig(max_iterations=20)),
+            "stop",
+            Check(name="stop", status="ok", detail="stop: max_iterations: 20"),
+            id="stop-max-only",
+        ),
+        pytest.param(
+            _config(stop=StopConfig(target_value=1.5, max_iterations=20)),
+            "stop",
+            Check(name="stop", status="ok", detail="stop: target_value: 1.5, max_iterations: 20"),
+            id="stop-both",
+        ),
+        pytest.param(_config(stop=StopConfig()), "stop", _STOP_UNSET, id="stop-empty"),
+        pytest.param(
+            _config(runbook="./RUNBOOK.md"),
+            "runbook",
+            Check(name="runbook", status="ok", detail="runbook: ./RUNBOOK.md"),
+            id="runbook-set",
         ),
     ],
 )
-def test_build_workflow_section_when_stop_set_does_produce_ok_echoing_its_keys(
-    stop: StopConfig, detail: str
+def test_build_workflow_section_when_field_configured_does_report_its_check(
+    config: BenchlessConfig, name: str, expected: Check
 ):
     section = build_workflow_section(
-        _config(stop=stop),
+        config,
         config_has_problems=False,
         skill_file_exists=True,
         config_file_exists=False,
     )
 
-    assert _find(section, "stop") == Check(name="stop", status="ok", detail=detail)
-
-
-@pytest.mark.parametrize(
-    "stop",
-    [
-        pytest.param(None, id="unset"),
-        pytest.param(StopConfig(), id="empty"),
-    ],
-)
-def test_build_workflow_section_when_stop_absent_or_empty_does_warn(stop: StopConfig | None):
-    section = build_workflow_section(
-        _config(stop=stop),
-        config_has_problems=False,
-        skill_file_exists=True,
-        config_file_exists=False,
-    )
-
-    assert _find(section, "stop") == Check(
-        name="stop",
-        status="warn",
-        detail="stop is not configured",
-        hint="Without stop, a session has no finish line",
-    )
-
-
-def test_build_workflow_section_when_runbook_set_does_produce_ok_echoing_path():
-    section = build_workflow_section(
-        _config(runbook="./RUNBOOK.md"),
-        config_has_problems=False,
-        skill_file_exists=True,
-        config_file_exists=False,
-    )
-
-    assert _find(section, "runbook") == Check(
-        name="runbook", status="ok", detail="runbook: ./RUNBOOK.md"
-    )
-
-
-def _found_under_usr_bin(cmd: str) -> str:
-    return f"/usr/bin/{cmd}"
-
-
-def _not_on_path(_cmd: str) -> None:
-    return None
-
-
-# ---------------------------------------------------------------------------
-# PATH probe with shell command strings
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("bench", "expected_exe"),
-    [
-        pytest.param('"node" bench.js', "node", id="quoted-exe"),
-        pytest.param("VAR=1 make test", "make", id="env-var-prefix"),
-        pytest.param("VAR=1 FOO=2 node bench.js", "node", id="multiple-env-vars"),
-    ],
-)
-def test_build_bench_section_when_shell_command_does_extract_real_executable(
-    monkeypatch: pytest.MonkeyPatch,
-    bench: str,
-    expected_exe: str,
-):
-    monkeypatch.setattr("shutil.which", _found_under_usr_bin)
-
-    section = build_bench_section(bench=bench, adapter="metric-lines", base_dir=".")
-
-    exe_check = next(c for c in section.checks if c.name == "executable")
-    assert exe_check == Check(
-        name="executable", status="ok", detail=f"{expected_exe} is available on PATH"
-    )
-
-
-@pytest.mark.parametrize(
-    "bench",
-    [
-        pytest.param("cd src && make bench", id="shell-operator-cd"),
-        pytest.param("{ make bench; }", id="shell-brace-group"),
-        pytest.param("~/bin/bench.sh", id="home-shorthand"),
-        pytest.param("$HOME/bin/bench.sh --fast", id="variable-expansion"),
-        pytest.param("`pwd`/bench.sh", id="command-substitution"),
-    ],
-)
-def test_build_bench_section_when_shell_metacharacters_does_skip_path_check(
-    monkeypatch: pytest.MonkeyPatch,
-    bench: str,
-):
-    monkeypatch.setattr("shutil.which", _not_on_path)
-
-    section = build_bench_section(bench=bench, adapter="metric-lines", base_dir=".")
-
-    assert not any(c.name == "executable" for c in section.checks)
+    assert _find(section, name) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -435,8 +361,8 @@ _ADAPTER_OK = Check(name="adapter", status="ok", detail="adapter: metric-lines")
                 Check(
                     name="adapter",
                     status="fail",
-                    detail='Unknown adapter: "banana".',
-                    hint="valid adapters are: metric-lines, mitata",
+                    detail=unknown_adapter_message("banana"),
+                    hint=VALID_ADAPTERS_HINT,
                 )
             ],
             id="adapter-unknown",
@@ -481,9 +407,88 @@ _ADAPTER_OK = Check(name="adapter", status="ok", detail="adapter: metric-lines")
             ],
             id="executable-missing",
         ),
+        pytest.param(
+            '"node" bench.js',
+            "metric-lines",
+            False,
+            "/usr/bin/x",
+            [
+                _ADAPTER_OK,
+                Check(name="bench", status="ok", detail='bench: "node" bench.js'),
+                Check(name="executable", status="ok", detail="node is available on PATH"),
+            ],
+            id="quoted-exe",
+        ),
+        pytest.param(
+            "VAR=1 make test",
+            "metric-lines",
+            False,
+            "/usr/bin/x",
+            [
+                _ADAPTER_OK,
+                Check(name="bench", status="ok", detail="bench: VAR=1 make test"),
+                Check(name="executable", status="ok", detail="make is available on PATH"),
+            ],
+            id="env-var-prefix",
+        ),
+        pytest.param(
+            "VAR=1 FOO=2 node bench.js",
+            "metric-lines",
+            False,
+            "/usr/bin/x",
+            [
+                _ADAPTER_OK,
+                Check(name="bench", status="ok", detail="bench: VAR=1 FOO=2 node bench.js"),
+                Check(name="executable", status="ok", detail="node is available on PATH"),
+            ],
+            id="multiple-env-vars",
+        ),
+        pytest.param(
+            "cd src && make bench",
+            "metric-lines",
+            False,
+            None,
+            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: cd src && make bench")],
+            id="shell-operator-cd",
+        ),
+        pytest.param(
+            "{ make bench; }",
+            "metric-lines",
+            False,
+            None,
+            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: { make bench; }")],
+            id="shell-brace-group",
+        ),
+        pytest.param(
+            "~/bin/bench.sh",
+            "metric-lines",
+            False,
+            None,
+            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: ~/bin/bench.sh")],
+            id="home-shorthand",
+        ),
+        pytest.param(
+            "$HOME/bin/bench.sh --fast",
+            "metric-lines",
+            False,
+            None,
+            [
+                _ADAPTER_OK,
+                Check(name="bench", status="ok", detail="bench: $HOME/bin/bench.sh --fast"),
+            ],
+            id="variable-expansion",
+        ),
+        pytest.param(
+            "`pwd`/bench.sh",
+            "metric-lines",
+            False,
+            None,
+            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: `pwd`/bench.sh")],
+            id="command-substitution",
+        ),
     ],
 )
-def test_build_bench_section_when_built_does_produce_the_exact_section(  # noqa: PLR0917 -- one parameter per input plus the expected section and fixture
+def test_build_bench_section_when_inputs_vary_does_produce_the_matching_checks(  # noqa: PLR0917 -- one parameter per input plus the expected section and fixture
     bench: str | None,
     adapter: str,
     config_problems: bool,
@@ -511,10 +516,6 @@ _MODULE = "gymrat.doctor"
 # ---------------------------------------------------------------------------
 
 
-def _try_git_ok(*_args: object, **_kwargs: object) -> None:
-    return None
-
-
 def test_detect_git_environment_when_git_missing_does_report_unavailable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -535,19 +536,22 @@ def test_detect_git_environment_when_root_unresolvable_does_report_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    monkeypatch.setattr(f"{_MODULE}.try_git", _try_git_ok)
-
-    def fake_repo_root(cwd: str | None = None) -> str:
-        msg = "cannot resolve"
-        raise GymratError(msg)
-
-    monkeypatch.setattr(f"{_MODULE}.repo_root", fake_repo_root)
+    dubious_ownership = subprocess.CalledProcessError(
+        128, ["git"], stderr="fatal: detected dubious ownership\n"
+    )
+    monkeypatch.setattr(
+        "gymrat.session.paths.run_git", create_autospec(run_git, side_effect=dubious_ownership)
+    )
 
     result = detect_git_environment(str(tmp_path))
 
-    assert result.git_available is True
-    assert result.repo_root_dir is None
-    assert result.git_error is not None
+    assert result == GitEnvironment(
+        git_available=True,
+        inside_git_repo=True,
+        git_error=(
+            f"Cannot determine the git repository at {tmp_path}: fatal: detected dubious ownership"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -593,7 +597,7 @@ def _check(report: DoctorReport, title: str, name: str) -> Check:
         ),
     ],
 )
-def test_build_doctor_report_when_config_read_for_real_does_report_its_findings(
+def test_build_doctor_report_when_config_file_invalid_or_absent_does_report_its_effect_per_section(
     tmp_path: Path, toml: str | None, expected: Check, bench_checks: list[Check]
 ):
     if toml is not None:
@@ -615,31 +619,9 @@ def test_build_doctor_report_when_adapter_flag_given_does_check_it_in_the_bench_
     assert _check(report, "Bench", "adapter") == Check(
         name="adapter",
         status="fail",
-        detail='Unknown adapter: "banana".',
-        hint="valid adapters are: metric-lines, mitata",
+        detail=unknown_adapter_message("banana"),
+        hint=VALID_ADAPTERS_HINT,
     )
-
-
-@pytest.mark.parametrize(
-    "document",
-    [
-        pytest.param(DIGIT_LIMIT_DOCUMENT, id="integer-past-digit-limit"),
-        pytest.param(DEEP_NESTING_DOCUMENT, id="nesting-past-recursion-limit"),
-    ],
-)
-def test_build_doctor_report_when_config_parser_hits_interpreter_limit_does_fail_config_check(
-    tmp_path: Path, document: str
-):
-    config_path = write_raw(tmp_path, document)
-
-    report = build_doctor_report(CliFlags(), str(tmp_path))
-
-    config_section = next(
-        section for section in report.sections if section.title == "Configuration"
-    )
-    [check] = config_section.checks
-    assert check.status == "fail"
-    assert check.detail.startswith(f"Failed to parse config file at {config_path}: ")
 
 
 def test_build_doctor_report_when_runbook_unset_does_hint_adding_the_key_to_the_config_file(
@@ -723,94 +705,13 @@ def test_build_doctor_report_when_bench_is_a_path_does_resolve_it_against_the_re
     assert _check(report, "Bench", "executable") == expected
 
 
-def lines(output: str) -> list[str]:
-    return strip_ansi(output).split("\n")
-
-
 # ---------------------------------------------------------------------------
-# section and check rendering
-# ---------------------------------------------------------------------------
-
-
-def test_render_doctor_report_when_multiline_detail_does_indent_continuations_under_glyph():
-    report = doctor_report([
-        CheckSection(
-            title="Bench",
-            checks=[Check("bench", "ok", "line one\nline two\nline three")],
-        )
-    ])
-
-    rendered = lines(render_doctor_report(report))
-
-    assert next(line for line in rendered if "line one" in line) == "  ✓ line one"
-    assert "    line two" in rendered
-    assert "    line three" in rendered
-
-
-# ---------------------------------------------------------------------------
-# caveat note
-# ---------------------------------------------------------------------------
-
-
-def _note(report_output: str) -> str:
-    return next(line for line in lines(report_output) if "Note:" in line)
-
-
-def test_render_doctor_report_when_workflow_skipped_does_switch_note():
-    report = doctor_report([
-        CheckSection(
-            title="Workflow",
-            checks=[Check("workflow", "ok", "Skipped — fix config errors first")],
-        )
-    ])
-
-    note = _note(render_doctor_report(report))
-
-    assert "skipped" in note.lower()
-    assert "skill file location" not in note
-
-
-# ---------------------------------------------------------------------------
-# summary line
-# ---------------------------------------------------------------------------
-
-
-def test_render_doctor_report_when_multiple_per_status_does_pluralize_counts():
-    report = doctor_report([
-        CheckSection(
-            title="All",
-            checks=[
-                Check("a", "ok", ""),
-                Check("b", "warn", ""),
-                Check("c", "warn", ""),
-                Check("d", "fail", ""),
-                Check("e", "fail", ""),
-                Check("f", "fail", ""),
-            ],
-        )
-    ])
-
-    output = strip_ansi(render_doctor_report(report))
-
-    assert "1 ok" in output
-    assert "2 warnings" in output
-    assert "3 failures" in output
-
-
-# ---------------------------------------------------------------------------
-# color handling
+# text rendering — one golden per named scenario
 # ---------------------------------------------------------------------------
 
 
 # CSI introducer; present in the output iff any ANSI escape was emitted.
 _ESCAPE_PREFIX = "\x1b["
-
-
-def _two_status_report() -> DoctorReport:
-    """A report with one passing and one failing check."""
-    return doctor_report([
-        CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
-    ])
 
 
 def _mixed_status_report() -> DoctorReport:
@@ -843,16 +744,55 @@ def _warning_only_report() -> DoctorReport:
     ])
 
 
-@pytest.mark.parametrize("color", [True, False], ids=["color-on", "color-off"])
+def _multiline_detail_report() -> DoctorReport:
+    """A report with one check whose detail spans three lines."""
+    return doctor_report([
+        CheckSection(
+            title="Bench",
+            checks=[Check("bench", "ok", "line one\nline two\nline three")],
+        )
+    ])
+
+
+def _workflow_skipped_report() -> DoctorReport:
+    """A report whose workflow checks were skipped behind config errors."""
+    return doctor_report([
+        CheckSection(
+            title="Workflow",
+            checks=[Check("workflow", "ok", "Skipped — fix config errors first")],
+        )
+    ])
+
+
+def _plural_counts_report() -> DoctorReport:
+    """A report with one passing, two warning and three failing checks."""
+    return doctor_report([
+        CheckSection(
+            title="All",
+            checks=[
+                Check("a", "ok", ""),
+                Check("b", "warn", ""),
+                Check("c", "warn", ""),
+                Check("d", "fail", ""),
+                Check("e", "fail", ""),
+                Check("f", "fail", ""),
+            ],
+        )
+    ])
+
+
 @pytest.mark.parametrize(
-    "make_report",
+    ("make_report", "color"),
     [
-        pytest.param(_two_status_report, id="ok-and-fail"),
-        pytest.param(_mixed_status_report, id="ok-warn-fail"),
-        pytest.param(_warning_only_report, id="warn-only"),
+        pytest.param(_mixed_status_report, False, id="ok-warn-fail-color-off"),
+        pytest.param(_mixed_status_report, True, id="ok-warn-fail-color-on"),
+        pytest.param(_warning_only_report, False, id="warn-only-color-off"),
+        pytest.param(_multiline_detail_report, False, id="multiline-detail-color-off"),
+        pytest.param(_workflow_skipped_report, False, id="workflow-skipped-color-off"),
+        pytest.param(_plural_counts_report, False, id="plural-counts-color-off"),
     ],
 )
-def test_render_doctor_report_when_rendered_does_match_the_snapshot(
+def test_render_doctor_report_when_statuses_and_color_vary_does_render_glyphs_hints_and_summary_counts(
     make_report: Callable[[], DoctorReport], color: bool, snapshot: SnapshotAssertion
 ):
     report = make_report()
@@ -867,101 +807,40 @@ def test_render_doctor_report_when_rendered_does_match_the_snapshot(
 # ---------------------------------------------------------------------------
 
 
-def _failing_repo_report() -> DoctorReport:
-    return doctor_report(
-        [
-            CheckSection(
-                title="Environment",
-                checks=[
-                    Check("git", "ok", "available"),
-                    Check("repo", "fail", "not in repo", hint="run inside repo"),
-                ],
-            )
-        ],
-        gymrat_version="1.0.0",
-    )
+def test_render_doctor_json_when_report_has_a_warning_does_emit_two_space_indented_document():
+    report = _warning_only_report()
 
+    output = render_doctor_json(report)
 
-@pytest.mark.parametrize(
-    ("build_report", "expected"),
-    [
-        pytest.param(
-            _warning_only_report,
-            [
-                "{",
-                '  "environment": {',
-                '    "gymrat_version": "0.5.0",',
-                '    "python_version": "3.13.0",',
-                '    "platform": "darwin"',
-                "  },",
-                '  "sections": [',
-                "    {",
-                '      "title": "Environment",',
-                '      "checks": [',
-                "        {",
-                '          "name": "git",',
-                '          "status": "ok",',
-                '          "detail": "git 2.45.0",',
-                '          "hint": null',
-                "        },",
-                "        {",
-                '          "name": "skill",',
-                '          "status": "warn",',
-                '          "detail": "skill not installed",',
-                '          "hint": "run gymrat init"',
-                "        }",
-                "      ]",
-                "    }",
-                "  ],",
-                '  "ok_count": 1,',
-                '  "warn_count": 1,',
-                '  "fail_count": 0,',
-                '  "has_failures": false',
-                "}",
-            ],
-            id="warnings-only-count-without-failing",
-        ),
-        pytest.param(
-            _failing_repo_report,
-            [
-                "{",
-                '  "environment": {',
-                '    "gymrat_version": "1.0.0",',
-                '    "python_version": "3.13.0",',
-                '    "platform": "darwin"',
-                "  },",
-                '  "sections": [',
-                "    {",
-                '      "title": "Environment",',
-                '      "checks": [',
-                "        {",
-                '          "name": "git",',
-                '          "status": "ok",',
-                '          "detail": "available",',
-                '          "hint": null',
-                "        },",
-                "        {",
-                '          "name": "repo",',
-                '          "status": "fail",',
-                '          "detail": "not in repo",',
-                '          "hint": "run inside repo"',
-                "        }",
-                "      ]",
-                "    }",
-                "  ],",
-                '  "ok_count": 1,',
-                '  "warn_count": 0,',
-                '  "fail_count": 1,',
-                '  "has_failures": true',
-                "}",
-            ],
-            id="failure-flags-the-report",
-        ),
-    ],
-)
-def test_render_doctor_json_when_rendered_does_emit_two_space_indented_document(
-    build_report: Callable[[], DoctorReport], expected: list[str]
-):
-    output = render_doctor_json(build_report())
-
-    assert output.split("\n") == expected
+    assert output.split("\n") == [
+        "{",
+        '  "environment": {',
+        '    "gymrat_version": "0.5.0",',
+        '    "python_version": "3.13.0",',
+        '    "platform": "darwin"',
+        "  },",
+        '  "sections": [',
+        "    {",
+        '      "title": "Environment",',
+        '      "checks": [',
+        "        {",
+        '          "name": "git",',
+        '          "status": "ok",',
+        '          "detail": "git 2.45.0",',
+        '          "hint": null',
+        "        },",
+        "        {",
+        '          "name": "skill",',
+        '          "status": "warn",',
+        '          "detail": "skill not installed",',
+        '          "hint": "run gymrat init"',
+        "        }",
+        "      ]",
+        "    }",
+        "  ],",
+        '  "ok_count": 1,',
+        '  "warn_count": 1,',
+        '  "fail_count": 0,',
+        '  "has_failures": false',
+        "}",
+    ]

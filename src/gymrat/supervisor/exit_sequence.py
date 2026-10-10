@@ -33,17 +33,16 @@ import contextlib
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, get_args
 
 from gymrat.clock import monotonic_ms, now_ns
 from gymrat.command_run import with_repo_lock
+from gymrat.config import CliFlags, config_trace_args
 from gymrat.errors import GymratError
-from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.discard import discard_session
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.keep import KeepOptions, keep_session
 from gymrat.session.lock import LockContentionError, is_held, read_holder
-from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     CommandRecord,
     DiscardRecord,
@@ -51,10 +50,10 @@ from gymrat.session.records import (
     IterationRecord,
     KeepRecord,
 )
-from gymrat.session.store import fold_session, last_kept_position, read_records
-from gymrat.session.workspace import changed_file_count, worktree_fingerprint
-from gymrat.supervisor.events import FollowUpEvent
-from gymrat.utils import MS_PER_SECOND, pluralize
+from gymrat.session.store import fold_session, read_session_records, unmeasured_edit_count
+from gymrat.session.workspace import worktree_fingerprint
+from gymrat.supervisor.events import CapType, FollowUpEvent
+from gymrat.utils import MS_PER_SECOND, SHORT_SHA_LENGTH, pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -75,19 +74,23 @@ _CAP_NOTE = " — expected after a cap trip: the agent's last command outlives t
 
 _FAILED_TEXT = "exit sequence failed: {message}"
 
-#: The run endings whose skip line closes on :data:`_CAP_NOTE`: a cap cuts the
-#: agent off mid-command, so the command it was running is expected to outlive it
-#: and hold the lock on the way out.
-_CAP_ENDS = frozenset({"wall-clock", "spend-cap"})
+_CAP_ENDS = frozenset(get_args(CapType))
+"""The run endings whose skip line closes on :data:`_CAP_NOTE`.
+
+A cap cuts the agent off mid-command, so the command it was running is expected to outlive it and
+hold the lock on the way out.
+"""
 
 
-#: What a tree that no longer matches the fingerprint the iteration measured
-#: reads as. The interrupted discard is named because a ``discard`` killed
-#: between the revert and its record leaves an unsettled iteration whose fresh
-#: fingerprint is the kept tree, and the summary must not misattribute it.
 _TREE_CHANGED = (
     "tree changed after measuring — an after hook, a later edit, or an interrupted discard"
 )
+"""What a tree that no longer matches the fingerprint the iteration measured reads as.
+
+The interrupted discard is named because a ``discard`` killed between the revert and its record
+leaves an unsettled iteration whose fresh fingerprint is the kept tree, and the summary must not
+misattribute it.
+"""
 
 _NO_FINGERPRINT = "fingerprint unavailable"
 
@@ -237,7 +240,7 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
 
     async def body(trace: CommandTrace) -> None:
         progress(ExitPhase(kind="settling", pid=None))
-        state = fold_session(read_records(session_jsonl_path(context.root)))
+        state = fold_session(read_session_records(context.root))
         if state.finalized is not None:
             record(ExitStep(kind="nothing", text="session already finalized"))
             return
@@ -259,7 +262,8 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
             record(_skip_step(context.lock_path, ended_by))
         else:
             try:
-                await with_repo_lock("supervise", body, args={"stage": "exit"}, root=context.root)
+                args = config_trace_args(CliFlags(), stage="exit")
+                await with_repo_lock("supervise", body, args=args, root=context.root)
             except LockContentionError:
                 record(_skip_step(context.lock_path, ended_by))
     except Exception as error:  # noqa: BLE001 -- the report is the caller's error channel
@@ -300,7 +304,7 @@ def _decide_finalize(
     """
     if settled is not None and settled.kind == "left":
         return None
-    after = fold_session(read_records(session_jsonl_path(context.root)))
+    after = fold_session(read_session_records(context.root))
     if after.keep_count == 0 or after.unsettled:
         return None
     if not finalize:
@@ -330,6 +334,11 @@ async def _decide_settle(
 
     Returns:
         The step the session calls for, or ``None`` when it calls for none.
+
+    Raises:
+        GymratError: When the keep of an improved iteration was blocked for a
+            reason the sequence has no wording for, or when git refuses to diff
+            the experiment worktree.
     """
     session = state.session
     if session is None:
@@ -346,7 +355,7 @@ async def _decide_settle(
         trace.seq = iteration.seq
         return _settle_gating_block(context, iteration, experiment=experiment)
 
-    unmeasured = changed_file_count(experiment, last_kept_position(state, session.baseline.sha))
+    unmeasured = unmeasured_edit_count(state, session)
     if unmeasured > 0:
         counted = pluralize(unmeasured, "unmeasured edit")
         return ExitStep(
@@ -489,7 +498,7 @@ def _gate_reason(root: str, iteration: IterationRecord, *, experiment: str) -> s
     Returns:
         The reason wording the step reads, or ``None`` when the gate passes.
     """
-    failed = _failed_hook(read_records(session_jsonl_path(root)), iteration)
+    failed = _failed_hook(read_session_records(root), iteration)
     if failed is not None:
         return f"{failed.stage} hook failed"
 

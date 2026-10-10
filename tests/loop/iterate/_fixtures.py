@@ -8,8 +8,8 @@ order. A side that landed in the wrong half of the record could then only have
 come from the wrong worktree, which is what lets the assertions downstream read
 as evidence.
 
-The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.loop.iterate._fixtures``.
+The ``_`` prefix marks a shared helper rather than a test module; it is
+imported as ``tests.loop.iterate._fixtures``.
 """
 
 from __future__ import annotations
@@ -23,11 +23,12 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from gymrat.errors import GymratError
+from gymrat.progress_events import PassFinished, PassStarted
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
+    IterationMetricVerdict,
     IterationRecord,
-    MetricVerdict,
     SessionLogRecord,
     SessionRecord,
     record_to_wire,
@@ -35,10 +36,23 @@ from gymrat.session.records import (
 from gymrat.session.workspace import Worktrees
 from tests._ansi import stripped_lines
 from tests._exec_fixtures import expected_result
-from tests.session.records._fixtures import SESSION_ID, log_records, session_record
+from tests.adapters._inputs import malformed_line_warning
+from tests.session._budget import install_tight_budget
+from tests.session.records._fixtures import (
+    SESSION_ID,
+    log_records,
+    session_record,
+    settled_history,
+    write_session_log,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Sequence
+
     from gymrat.exec import ExecOptions, ExecResult
+
+#: Where ``iterate_session`` looks up ``collect_samples``, the one sampling seam the stubs replace.
+COLLECT_SAMPLES_TARGET = "gymrat.loop.iterate.judge.collect_samples"
 
 #: Ten rounds of a bench that stayed near 100.
 BASELINE_MS: list[float] = [100, 101, 99, 100, 102, 98, 100, 101, 99, 100]
@@ -90,7 +104,7 @@ def improved_rounds() -> list[dict[str, float]]:
     return rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 0.8))
 
 
-def iterate_session_header(root: str) -> SessionRecord:
+def iterate_session_header(root: str, *, experiment: str | None = None) -> SessionRecord:
     """A session header whose worktrees sit beside the default paths.
 
     Placing the worktrees on ``side-experiment`` / ``side-baseline`` rather than
@@ -99,6 +113,8 @@ def iterate_session_header(root: str) -> SessionRecord:
 
     Args:
         root: The repository the worktrees sit under.
+        experiment: The experiment worktree to name instead of
+            ``<root>/side-experiment``; None keeps the side path.
 
     Returns:
         The session header naming the side worktrees.
@@ -106,10 +122,40 @@ def iterate_session_header(root: str) -> SessionRecord:
     return session_record(
         session_id=SESSION_ID,
         worktrees=Worktrees(
-            experiment=str(Path(root) / "side-experiment"),
+            experiment=str(Path(root) / "side-experiment") if experiment is None else experiment,
             baseline=str(Path(root) / "side-baseline"),
         ),
     )
+
+
+#: Fourteen minutes: an iteration longer than the 5 minutes a tight budget leaves on the clock.
+OUTLASTING_ITERATION_MS = 840_000
+
+
+def write_iterate_session(root: str, history: tuple[SessionLogRecord, ...] = ()) -> SessionRecord:
+    """Write an open iterate session log: the side-worktree header, then ``history``.
+
+    Args:
+        root: The repository whose session log is written.
+        history: The records that follow the header; empty leaves a fresh session.
+
+    Returns:
+        The session header written.
+    """
+    header = iterate_session_header(root)
+    write_session_log(root, header, history)
+    return header
+
+
+def write_outlasted_session(root: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Write a settled session whose last iteration outlasts what a tight live budget leaves.
+
+    Args:
+        root: The repository whose session log and budget file are written.
+        monkeypatch: The fixture that releases the supervise lock at teardown and patches the clock.
+    """
+    write_iterate_session(root, settled_history(duration_ms=OUTLASTING_ITERATION_MS))
+    install_tight_budget(root, monkeypatch)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +194,20 @@ class CollectSamplesRecorder:
         options: SamplingOptions,
         abort: object,
     ) -> list[TargetSamples]:
+        """Record the call, then answer it with the configured stub.
+
+        Args:
+            adapter: The adapter the caller passed; ignored.
+            targets: The targets to sample; recorded as a list.
+            options: The sampling options; recorded with the targets.
+            abort: The caller's abort signal; ignored.
+
+        Returns:
+            The stub's samples for the recorded targets.
+
+        Raises:
+            AssertionError: No stub has been installed yet.
+        """
         target_list = list(targets)
         self.calls.append(_RecordedCall(target_list, options))
         if self._answer is None:
@@ -157,6 +217,7 @@ class CollectSamplesRecorder:
 
     @property
     def call_count(self) -> int:
+        """How many sampling calls the recorder has received, failed ones included."""
         return len(self.calls)
 
 
@@ -166,7 +227,7 @@ def regressed_run() -> PairedRun:
 
 
 def assert_permutation(
-    metric: MetricVerdict, *, delta: float, verdict: str, confirmed: bool
+    metric: IterationMetricVerdict, *, delta: float, verdict: str, confirmed: bool
 ) -> None:
     """Assert ``metric`` is a gating permutation verdict with the given delta and outcome.
 
@@ -186,10 +247,60 @@ def assert_permutation(
 
 
 def install_collect_samples(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
-    """Replace ``gymrat.loop.iterate.confirm.collect_samples`` with a fresh recorder."""
+    """Replace ``gymrat.loop.iterate.judge.collect_samples`` with a fresh recorder."""
     recorder = CollectSamplesRecorder()
-    monkeypatch.setattr("gymrat.loop.iterate.confirm.collect_samples", recorder)
+    monkeypatch.setattr(COLLECT_SAMPLES_TARGET, recorder)
     return recorder
+
+
+def run_before_each_call(
+    monkeypatch: pytest.MonkeyPatch,
+    recorder: CollectSamplesRecorder,
+    before: Callable[[SamplingOptions], Awaitable[None]],
+) -> None:
+    """Wrap ``recorder`` so every sampling call first runs ``before``, then is answered.
+
+    Args:
+        monkeypatch: The patcher that installs the wrapper over ``collect_samples``.
+        recorder: The installed recorder that still answers each call.
+        before: The work a call does before its samples come back, such as
+            advancing a fake clock or writing into the worktree. It is handed
+            the options the call was given.
+    """
+
+    async def sample_after_before(
+        adapter: object,
+        targets: Sequence[TargetContext],
+        options: SamplingOptions,
+        abort: object,
+    ) -> list[TargetSamples]:
+        await before(options)
+        return await recorder(adapter, targets, options, abort)
+
+    monkeypatch.setattr(COLLECT_SAMPLES_TARGET, sample_after_before)
+
+
+def report_a_pass_per_call(
+    monkeypatch: pytest.MonkeyPatch, recorder: CollectSamplesRecorder
+) -> None:
+    """Wrap ``recorder`` so every sampling call reports one pass the way sampling does.
+
+    The pass is reported through the ``on_progress`` the call was handed, so a
+    run that stopped forwarding sampling progress shows no pass at all.
+
+    Args:
+        monkeypatch: The patcher that installs the wrapper over ``collect_samples``.
+        recorder: The installed recorder that still answers each call.
+    """
+
+    async def report_a_pass(options: SamplingOptions) -> None:
+        if options.on_progress is not None:
+            for event_type in (PassStarted, PassFinished):
+                options.on_progress(
+                    event_type(round=1, total_rounds=1, target_count=1, label="x", at_ms=0)
+                )
+
+    run_before_each_call(monkeypatch, recorder, report_a_pass)
 
 
 def _samples_by_dir(
@@ -198,10 +309,12 @@ def _samples_by_dir(
     """Answer each target with the rounds ``by_dir`` holds for its worktree directory."""
     collected: list[TargetSamples] = []
     for ctx in targets:
-        if ctx.dir not in by_dir:
+        try:
+            samples = by_dir[ctx.dir]
+        except KeyError as error:
             message = f"{stub}: unrecognized worktree dir {ctx.dir}"
-            raise AssertionError(message)
-        collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
+            raise AssertionError(message) from error
+        collected.append(TargetSamples(ctx=ctx, samples=samples))
     return collected
 
 
@@ -219,6 +332,26 @@ def stub_samples(
         return _samples_by_dir(targets, by_dir, "stub_samples")
 
     mock._answer = answer
+
+
+def stub_improved_samples(mock: CollectSamplesRecorder, root: str) -> None:
+    """Answer every sampling call with an experiment 10% faster and 20% leaner than the baseline."""
+    stub_samples(mock, root, improved_rounds(), baseline_rounds())
+
+
+def install_improved_samples(monkeypatch: pytest.MonkeyPatch, root: str) -> CollectSamplesRecorder:
+    """Install a sampling recorder that answers every call with an improved run.
+
+    Args:
+        monkeypatch: The fixture ``collect_samples`` is replaced through.
+        root: The repository whose session header names the worktrees answered for.
+
+    Returns:
+        The installed recorder.
+    """
+    recorder = install_collect_samples(monkeypatch)
+    stub_improved_samples(recorder, root)
+    return recorder
 
 
 def stub_runs(
@@ -244,10 +377,11 @@ def stub_runs(
     def answer(targets: list[TargetContext]) -> list[TargetSamples]:
         index = state["index"]
         state["index"] = index + 1
-        if index >= len(runs):
+        try:
+            run = runs[index]
+        except IndexError as error:
             message = f"unexpected sampling call {index + 1}"
-            raise AssertionError(message)
-        run = runs[index]
+            raise AssertionError(message) from error
         if isinstance(run, GymratError):
             raise run
         by_dir = {worktrees.experiment: run.experiment, worktrees.baseline: run.baseline}
@@ -259,11 +393,6 @@ def stub_runs(
 def trimmed_report_lines(report: str) -> list[str]:
     """The report's lines, stripped of color and of the indentation a grouped metric carries."""
     return stripped_lines(report, keep_blank=True)
-
-
-def plain_report(report: str) -> str:
-    """The report stripped of color, as a terminal's visible text would read."""
-    return "\n".join(trimmed_report_lines(report))
 
 
 def as_logged(value: SessionLogRecord) -> object:
@@ -292,7 +421,7 @@ def last_iteration_of(root: str) -> IterationRecord:
 
 
 #: What the metric-lines adapter says about the malformed line :func:`bench_malformed_once` prints.
-MALFORMED_LINE_WARNING = "Failed to parse METRIC line: METRIC foo=bar"
+MALFORMED_LINE_WARNING = malformed_line_warning("METRIC foo=bar")
 
 
 def bench_malformed_once(monkeypatch: pytest.MonkeyPatch) -> None:

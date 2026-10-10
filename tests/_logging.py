@@ -14,6 +14,9 @@ def unhandled_logging() -> Generator[None]:
     writes it to ``sys.stderr``. pytest attaches its capture handlers to the
     root logger anew for each test phase, so the handlers are lifted here, in
     the test body, rather than in a fixture.
+
+    Yields:
+        Nothing; the root logger has no handlers while the block runs.
     """
     no_handlers: list[logging.Handler] = []
     with patch.object(logging.getLogger(), "handlers", no_handlers):

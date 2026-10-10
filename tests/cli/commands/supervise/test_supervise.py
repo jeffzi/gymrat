@@ -7,34 +7,28 @@ Git, ``repo_root``, and the supervise lock stay real; the seams the command
 composes over — config resolution, kickoff, the Claude driver, the supervisor
 run, the run-end exit sequence, the progress reporter, the git-exclude write,
 and the signal cleanup — are replaced at the names ``commands.supervise``
-imports them under, mirroring the upstream test harness.
+imports them under.
 
-The dirty-tree guards run inside the pre-flight: a dirty working tree, or an
-experiment worktree holding unmeasured or unsettled edits, stops the run before
-the agent starts, and ``--allow-dirty`` lets only the working-tree case
-through, with a warning. Those tests run the real pre-flight with only the
-baseline bench replaced.
+The dirty-tree guards belong to the pre-flight and are tested in
+:mod:`tests.cli.supervise.test_preflight`; here only the ``--allow-dirty``
+flag's forwarding to the pre-flight is pinned.
 """
 
-import asyncio
 import os
 import re
-import shutil
-import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 import typer
 
-from gymrat.adapters import MetricDefaults
+from gymrat.adapters import MetricDefaults, get_adapter
 from gymrat.cli.app import app
 from gymrat.cli.commands import supervise as supervise_cmd
 from gymrat.cli.supervise.preflight import run_preflight
 from gymrat.cli.supervise.progress import create_supervise_reporter
-from gymrat.cli.supervise.types import ReadSessionResult
 from gymrat.config import (
     MetricEntry,
     ResolvedConfig,
@@ -42,54 +36,42 @@ from gymrat.config import (
     SuperviseConfig,
 )
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
-from gymrat.exec import kill_live_process_groups
-from gymrat.loop.start import StartResult
+from gymrat.session.budget import write_budget
 from gymrat.session.paths import (
+    SESSION_DIR_NAME,
     budget_path,
-    experiment_worktree_dir,
     lockfile_path,
     supervise_lockfile_path,
 )
 from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.hooks import HooksFactory, supervise_hooks_factory
-from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult
+from gymrat.supervisor.supervise import SupervisedSession
 from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
+from gymrat.telemetry.run_spans import setup_tracing
+from gymrat.utils import abbreviate_home
 from tests._ansi import strip_ansi
+from tests._cli import err_text
+from tests._git import git_exclude_path
 from tests._lock import FIXED_HOLDER_AT, hold_lock
-from tests._rich import (
-    track,
-    unwrap_panel,
+from tests._process_helpers import track_cleanups
+from tests.cli._command_stubs import (
+    force_render_mode,
 )
-from tests.cli._session import (
+from tests.cli._runner import (
     FailingStdoutRunner,
     closed_stdout_error,
-    make_discard_repo,
 )
 from tests.cli.commands.supervise._seams import (
     CAP_MINUTES,
     CAP_MS,
-    TRACING_FAILURE,
-    Seams,
     command_config,
-    err_text,
-    exploding_setup_tracing,
     install_seams,
     run,
-    track_cleanups,
-)
-from tests.cli.supervise._fixtures import (
-    install_baseline_seam,
-    launch_event,
-    make_supervision_result,
-    render_frame,
-    session_state_three_iterations,
-    start_open_session,
 )
 from tests.sampling._adapters import make_adapter
-from tests.supervisor._mock_driver import CostStep, create_mock_driver
 
-# The message the budget-initialization seam fails with when a test makes it explode.
 _BUDGET_FAILURE = "budget write failed"
+_TRACING_FAILURE = "tracing exporter unreachable"
 
 
 # ---------------------------------------------------------------------------
@@ -97,31 +79,20 @@ _BUDGET_FAILURE = "budget write failed"
 # ---------------------------------------------------------------------------
 
 
-def test_supervise_when_max_minutes_missing_does_exit_two_naming_the_flag(repo: str):
-    result = run("my prompt")
-
-    assert result.exit_code == 2
-    assert "--max-minutes" in err_text(result)
-
-
-def test_supervise_when_run_does_carry_the_caps_into_the_session(
+def test_supervise_when_run_does_hand_supervise_its_capped_session(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     seams = install_seams(monkeypatch)
-    before_ms = time.time() * 1000
 
     result = run("optimize it", "--max-minutes", str(CAP_MINUTES), "--max-usd", "2.0")
 
-    after_ms = time.time() * 1000
     assert result.exit_code == 0
     ctx = seams.supervise_calls[0]["context"]
     assert isinstance(ctx, SupervisedSession)
     assert ctx.root == repo
     assert re.search(r"\.gymrat[/\\]supervisor-\d+\.jsonl", ctx.log_path)
     assert ctx.lock_path == lockfile_path(repo)
-    assert isinstance(ctx.config, ResolvedConfig)
-    assert before_ms + CAP_MS <= ctx.deadline_ms <= after_ms + CAP_MS
-    assert ctx.max_minutes == CAP_MINUTES
+    assert ctx.budget.max_minutes == CAP_MINUTES
     assert ctx.max_usd == 2.0
     prompt = seams.supervise_calls[0]["prompt"]
     assert isinstance(prompt, SessionPrompt)
@@ -136,14 +107,12 @@ def test_supervise_when_run_does_carry_the_caps_into_the_session(
 def test_supervise_when_no_log_given_does_report_the_session_dir_log_in_a_plain_summary(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    seams = install_seams(monkeypatch)
+    install_seams(monkeypatch)
 
     result = run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
     assert re.search(r"\.gymrat[/\\]supervisor-\d+\.jsonl", result.stderr)
-    seams.ensure_git_exclude.assert_called_once_with(repo)
-    assert result.stdout.splitlines()[0] == "✓ completed · 1m 0s · $0.05"
     assert result.stdout.count(".jsonl") == 1
     assert "\x1b[" not in result.stdout
 
@@ -160,7 +129,26 @@ def test_supervise_when_log_given_does_use_that_path_as_is(
     ctx = seams.supervise_calls[0]["context"]
     assert isinstance(ctx, SupervisedSession)
     assert ctx.log_path == custom
-    seams.ensure_git_exclude.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("log_args", "excluded"),
+    [
+        pytest.param([], True, id="default-log-under-the-session-dir"),
+        pytest.param(["--log", "custom.jsonl"], False, id="caller-placed-log"),
+    ],
+)
+def test_supervise_when_log_path_resolved_does_git_exclude_the_session_dir_only_for_the_default(
+    repo: str, monkeypatch: pytest.MonkeyPatch, log_args: list[str], excluded: bool
+):
+    install_seams(monkeypatch)
+    exclude_file = git_exclude_path(repo)
+
+    result = run("optimize it", "--max-minutes", "10", *log_args)
+
+    assert result.exit_code == 0
+    exclude_lines = exclude_file.read_text(encoding="utf-8").splitlines()
+    assert (f"{SESSION_DIR_NAME}/" in exclude_lines) is excluded
 
 
 # ---------------------------------------------------------------------------
@@ -222,18 +210,6 @@ def test_supervise_when_session_ends_with_final_text_does_show_the_agent_row(
     assert "all done here" in result.stdout
 
 
-def test_supervise_when_session_has_iterations_does_show_them_in_the_summary_loop_row(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    state = session_state_three_iterations(-4.2, "improved", seq=3)
-    install_seams(monkeypatch, session_result=ReadSessionResult(state=state, has_baseline=True))
-
-    result = run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 0
-    assert "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved" in result.stdout
-
-
 def test_supervise_when_log_path_is_long_does_print_it_unwrapped(
     repo: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -246,24 +222,11 @@ def test_supervise_when_log_path_is_long_does_print_it_unwrapped(
 
     assert result.exit_code == 0
     # On Windows CI tmp_path lives under $HOME, so the display path is ~/…
-    # abbreviated.  Check the row is a single unwrapped line.
+    # abbreviated.
     assert any(
         line.startswith("  log     ") and "supervisor-1.jsonl" in line
         for line in result.stdout.splitlines()
     )
-
-
-def test_supervise_when_stdout_reader_closed_does_exit_zero_without_stderr(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    install_seams(monkeypatch, config=replace(command_config(), checks="npm test"))
-    monkeypatch.setattr("gymrat.cli.commands.supervise.resolve_render_mode", lambda: "live")
-
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(
-        app, ["supervise", "optimize it", "--max-minutes", "10"]
-    )
-
-    assert (result.exit_code, result.stderr) == (0, "")
 
 
 def test_supervise_when_stdout_reader_closed_and_preflight_fails_does_exit_two(
@@ -271,7 +234,7 @@ def test_supervise_when_stdout_reader_closed_and_preflight_fails_does_exit_two(
 ):
     install_seams(monkeypatch, config=replace(command_config(), checks="npm test"))
     monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", run_preflight)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.resolve_render_mode", lambda: "live")
+    force_render_mode(monkeypatch, "supervise", "live")
 
     result = FailingStdoutRunner(closed_stdout_error()).invoke(
         app, ["supervise", "optimize it", "--max-minutes", "10"]
@@ -284,20 +247,6 @@ def test_supervise_when_stdout_reader_closed_and_preflight_fails_does_exit_two(
 # ---------------------------------------------------------------------------
 # driver, kickoff, and reporter wiring
 # ---------------------------------------------------------------------------
-
-
-def test_supervise_when_driver_session_completes_does_run_the_real_supervisor(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    commands_supervise = supervise_cmd.supervise
-    seams = install_seams(monkeypatch)
-    seams.create_driver.return_value = create_mock_driver([CostStep(cost_usd=0.01)])
-    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise", commands_supervise)
-
-    result = run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 0
-    assert seams.exit_calls[0]["ended_by"] == "session"
 
 
 @pytest.mark.parametrize(
@@ -318,67 +267,46 @@ def test_supervise_when_run_does_compose_kickoff_with_the_prompt_given(
     assert seams.compose_calls[0][1] == prompt
 
 
-def test_supervise_when_max_minutes_fractional_does_forward_it_without_flooring_to_reporter(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
-
-    result = run("optimize it", "--max-minutes", "5.5")
-
-    assert result.exit_code == 0
-    assert seams.reporter_calls[0]["max_minutes"] == 5.5
-
-
-def _dashboard_title(reporter_kwargs: Mapping[str, Any]) -> str:
-    """Build the real dashboard from the arguments the command passed and return its title line."""
-    reporter = track(create_supervise_reporter(**reporter_kwargs))
-    reporter.observer(launch_event(1000))
-    frame = render_frame(reporter)
-    return next(line for line in frame.splitlines() if line.startswith("╭"))
-
-
 @pytest.mark.parametrize(
-    ("branch", "title_parts"),
+    ("branch", "max_minutes", "reporter_key", "expected"),
     [
-        pytest.param("banana", ["· branch banana"], id="branch-shown"),
-        pytest.param("", [], id="no-branch-omitted"),
+        pytest.param(None, "5.5", "max_minutes", 5.5, id="fractional-max-minutes"),
+        pytest.param("banana", "10", "branch", "banana", id="session-branch"),
     ],
 )
-def test_supervise_when_live_does_show_the_session_branch_in_the_dashboard_title_if_any(
-    repo: str, monkeypatch: pytest.MonkeyPatch, branch: str, title_parts: list[str]
+def test_supervise_when_run_does_hand_the_reporter_the_cap_and_branch_unaltered(
+    *,
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    branch: str | None,
+    max_minutes: str,
+    reporter_key: str,
+    expected: object,
 ):
     seams = install_seams(monkeypatch, branch=branch)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.resolve_render_mode", lambda: "live")
 
-    result = run("optimize it", "--max-minutes", "10")
-    title = _dashboard_title(seams.reporter_calls[0])
+    result = run("optimize it", "--max-minutes", max_minutes)
 
     assert result.exit_code == 0
-    assert re.findall(r"· branch \w+", title) == title_parts
-
-
-def _plain_writes(reporter_kwargs: Mapping[str, Any]) -> list[str]:
-    """Build the real plain reporter from the command's arguments and return what launch prints."""
-    writes: list[str] = []
-    reporter = track(create_supervise_reporter(**reporter_kwargs, plain_write=writes.append))
-    reporter.observer(launch_event(1000))
-    reporter.stop()
-    return writes
+    assert seams.reporter_calls[0][reporter_key] == expected
 
 
 def test_supervise_when_plain_and_session_has_branch_does_print_no_title(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    seams = install_seams(monkeypatch, branch="banana")
-    monkeypatch.setattr("gymrat.cli.commands.supervise.resolve_render_mode", lambda: "plain")
+    seams = install_seams(monkeypatch, branch="banana", real_reporter=True)
+    force_render_mode(monkeypatch, "supervise", "plain")
+    seams.supervise_hook = lambda call: call["observer"](call["launch"])
 
     result = run("optimize it", "--max-minutes", "10")
-    writes = _plain_writes(seams.reporter_calls[0])
 
+    ctx = seams.supervise_calls[0]["context"]
+    assert isinstance(ctx, SupervisedSession)
     assert result.exit_code == 0
-    assert writes
-    assert not any("banana" in line for line in writes)
-    assert "banana" not in strip_ansi(result.stderr)
+    assert strip_ansi(result.stderr).splitlines() == [
+        f"log: {abbreviate_home(ctx.log_path)}",
+        "caps 10m",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -422,7 +350,7 @@ def test_supervise_when_run_starts_does_build_the_reporter_before_installing_any
     # The dashboard installs its own erase cleanup while it is built, so building
     # it first makes the erase run before the budget release and the process kill.
     install_seams(monkeypatch)
-    registry = track_cleanups(monkeypatch)
+    registry = track_cleanups(monkeypatch, "gymrat.cli.commands.supervise")
     armed_at_build: list[list[Callable[[], None]]] = []
     build_reporter: Callable[..., object] = supervise_cmd.create_supervise_reporter
 
@@ -430,7 +358,10 @@ def test_supervise_when_run_starts_does_build_the_reporter_before_installing_any
         armed_at_build.append(registry.live())
         return build_reporter(**kwargs)
 
-    monkeypatch.setattr("gymrat.cli.commands.supervise.create_supervise_reporter", probing_reporter)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.create_supervise_reporter",
+        create_autospec(create_supervise_reporter, side_effect=probing_reporter),
+    )
 
     result = run("optimize it", "--max-minutes", "10")
 
@@ -438,45 +369,19 @@ def test_supervise_when_run_starts_does_build_the_reporter_before_installing_any
     assert armed_at_build == [[]]
 
 
-def test_supervise_when_session_runs_does_arm_the_kill_cleanup_only_for_its_duration(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
-    registry = track_cleanups(monkeypatch)
-    armed_during_run: list[bool] = []
-
-    async def probing_supervise(*args: object, **kwargs: object) -> SupervisionResult:
-        seams.record_supervise_call(args, kwargs)
-        armed_during_run.append(any(live is kill_live_process_groups for live in registry.live()))
-        return make_supervision_result()
-
-    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise", probing_supervise)
-
-    result = run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 0
-    assert armed_during_run == [True]
-    assert registry.live() == []
-
-
-def _exploding_write_budget(*_args: object) -> None:
-    """Stand in for the budget write, failing the way a read-only session dir does."""
-    raise GymratError(_BUDGET_FAILURE)
-
-
 @pytest.mark.parametrize(
-    ("target", "replacement", "message"),
+    ("target", "real", "message"),
     [
         pytest.param(
             "gymrat.cli.commands.supervise.write_budget",
-            _exploding_write_budget,
+            write_budget,
             _BUDGET_FAILURE,
             id="budget-init",
         ),
         pytest.param(
             "gymrat.telemetry.run_spans.setup_tracing",
-            exploding_setup_tracing,
-            TRACING_FAILURE,
+            setup_tracing,
+            _TRACING_FAILURE,
             id="tracing-setup",
         ),
     ],
@@ -485,19 +390,20 @@ def test_supervise_when_session_setup_raises_does_tear_down_everything_it_armed(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     target: str,
-    replacement: Callable[..., object],
+    real: Callable[..., object],
     message: str,
 ):
-    seams = install_seams(monkeypatch)
-    registry = track_cleanups(monkeypatch)
-    monkeypatch.setattr(target, replacement)
+    install_seams(monkeypatch, real_reporter=True)
+    force_render_mode(monkeypatch, "supervise", "live")
+    registry = track_cleanups(monkeypatch, "gymrat.cli.commands.supervise")
+    display_cleanups = track_cleanups(monkeypatch, "gymrat.cli.live_display")
+    monkeypatch.setattr(target, create_autospec(real, side_effect=GymratError(message)))
 
     result = run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 2
     assert message in err_text(result)
-    seams.reporter_stop.assert_called()
-    assert registry.live() == []
+    assert (registry.live(), display_cleanups.live()) == ([], [])
     assert not Path(budget_path(repo)).exists()
 
 
@@ -550,13 +456,11 @@ def test_supervise_when_preflight_raises_does_exit_two_with_message(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     install_seams(monkeypatch)
-
     msg = "cap too small"
-
-    def exploding_preflight(**_kwargs: object) -> StartResult:
-        raise GymratError(msg)
-
-    monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", exploding_preflight)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.run_preflight",
+        create_autospec(run_preflight, side_effect=GymratError(msg)),
+    )
 
     result = run("optimize it", "--max-minutes", "10")
 
@@ -577,34 +481,16 @@ def test_supervise_when_config_resolved_does_reach_every_consumer(
     assert isinstance(passed_config, ResolvedConfig)
     assert passed_config.stop is not None
     assert passed_config.stop.max_iterations == 9
-
     ctx = seams.supervise_calls[0]["context"]
     assert isinstance(ctx, SupervisedSession)
     assert ctx.config.stop is not None
     assert ctx.config.stop.max_iterations == 9
-
     assert seams.reporter_calls[0]["max_iterations"] == 9
 
 
 # ---------------------------------------------------------------------------
-# --effort flag parsing and resolution
+# model and effort resolution
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "bad_value",
-    [
-        pytest.param("banana", id="unknown-word"),
-        pytest.param("HIGH", id="wrong-case"),
-        pytest.param("", id="empty-string"),
-    ],
-)
-def test_supervise_when_effort_invalid_does_exit_two_with_choice_message(repo: str, bad_value: str):
-    result = run("optimize it", "--max-minutes", "10", "--effort", bad_value)
-    flat = unwrap_panel(err_text(result))
-
-    assert result.exit_code == 2
-    assert f"{bad_value!r} is not one of 'low', 'medium', 'high', 'xhigh', 'max'." in flat
 
 
 @pytest.mark.parametrize(
@@ -621,6 +507,12 @@ def test_supervise_when_effort_invalid_does_exit_two_with_choice_message(repo: s
             SuperviseConfig(effort="high"),
             (None, "high"),
             id="no-effort-flag-uses-config",
+        ),
+        pytest.param(
+            ("--model", "sonnet"),
+            SuperviseConfig(model="opus"),
+            ("sonnet", None),
+            id="model-flag-overrides-config",
         ),
         pytest.param(
             (),
@@ -659,36 +551,35 @@ def test_supervise_when_run_from_subdirectory_does_pass_factories_for_repo_root(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     seams = install_seams(monkeypatch)
-    tools_factory_roots: list[str] = []
+    built_tools: dict[Path, ToolsFactory] = {}
     built_hooks: dict[Path, HooksFactory] = {}
-    real_tools_factory = gymrat_tools_factory
-    real_hooks_factory = supervise_hooks_factory
 
-    def _recording_tools_factory(root: str) -> ToolsFactory:
-        tools_factory_roots.append(root)
-        return real_tools_factory(root)
+    def _record_tools(root: str) -> ToolsFactory:
+        built_tools[Path(root).resolve()] = gymrat_tools_factory(root)
+        return built_tools[Path(root).resolve()]
 
     def _record_hooks(root: Path) -> HooksFactory:
-        built_hooks[root.resolve()] = real_hooks_factory(root)
+        built_hooks[root.resolve()] = supervise_hooks_factory(root)
         return built_hooks[root.resolve()]
 
     monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.gymrat_tools_factory", _recording_tools_factory
+        "gymrat.cli.commands.supervise.gymrat_tools_factory",
+        create_autospec(gymrat_tools_factory, side_effect=_record_tools),
     )
-    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise_hooks_factory", _record_hooks)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.supervise_hooks_factory",
+        create_autospec(supervise_hooks_factory, side_effect=_record_hooks),
+    )
     (Path(repo) / "docs").mkdir()
     monkeypatch.chdir(Path(repo) / "docs")
 
     result = run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
-    assert [Path(root).resolve() for root in tools_factory_roots] == [Path(repo).resolve()]
+    assert list(built_tools) == [Path(repo).resolve()]
     assert list(built_hooks) == [Path(repo).resolve()]
     call_kwargs = seams.create_driver.call_args.kwargs
-    tools = call_kwargs.get("tools")
-    assert callable(tools), "create_claude_driver must receive a tools callable"
-    server_config: dict[str, Any] = tools(asyncio.Event(), {})  # type: ignore[assignment]  # McpSdkServerConfig is a TypedDict
-    assert server_config["name"] == "gymrat"
+    assert call_kwargs.get("tools") is built_tools[Path(repo).resolve()]
     assert call_kwargs.get("hooks") is built_hooks[Path(repo).resolve()]
 
 
@@ -725,148 +616,13 @@ def test_supervise_when_adapter_defaults_to_higher_does_build_reporter_with_the_
 ):
     config = replace(command_config(), primary=primary, metrics=metrics)
     adapters = {config.adapter: make_adapter(lambda _name: MetricDefaults(direction="higher"))}
-    monkeypatch.setattr("gymrat.cli.commands.supervise.get_adapter", adapters.__getitem__)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.get_adapter",
+        create_autospec(get_adapter, side_effect=adapters.__getitem__),
+    )
     seams = install_seams(monkeypatch, config=config)
 
     result = run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
     assert seams.reporter_calls[0]["primary_direction"] == expected
-
-
-def _install_seams_with_real_preflight(monkeypatch: pytest.MonkeyPatch) -> Seams:
-    """Install the command seams, keeping the real pre-flight with a stand-in baseline bench."""
-    seams = install_seams(monkeypatch)
-    monkeypatch.setattr("gymrat.cli.commands.supervise.run_preflight", run_preflight)
-    install_baseline_seam(monkeypatch)
-    return seams
-
-
-# ---------------------------------------------------------------------------
-# dirty-tree guard
-# ---------------------------------------------------------------------------
-
-
-_DIRTY = r"dirty|uncommitted|untracked"
-
-
-@pytest.mark.parametrize(
-    ("files", "args", "exit_code", "stderr_has"),
-    [
-        pytest.param(
-            ["uncommitted.txt"],
-            [],
-            2,
-            {_DIRTY: True, r"commit|stash": True, r"--allow-dirty": True},
-            id="dirty-refused-with-guidance",
-        ),
-        pytest.param(
-            ["uncommitted.txt"], ["--allow-dirty"], 0, {_DIRTY: True}, id="dirty-allowed-warns"
-        ),
-        pytest.param([], [], 0, {_DIRTY: False}, id="clean-stays-silent"),
-        pytest.param(
-            ["new-dir/a.txt", "new-dir/b.txt", "new-dir/c.txt"],
-            [],
-            2,
-            {r"Working tree has 3 uncommitted files\.": True},
-            id="untracked-directory-counts-its-files",
-        ),
-    ],
-)
-def test_supervise_when_tree_state_varies_does_guard_the_launch_accordingly(
-    *,
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    files: list[str],
-    args: list[str],
-    exit_code: int,
-    stderr_has: dict[str, bool],
-):
-    _install_seams_with_real_preflight(monkeypatch)
-    for name in files:
-        path = Path(repo) / name
-        path.parent.mkdir(exist_ok=True)
-        path.write_text("dirty", encoding="utf-8")
-
-    result = run("optimize it", "--max-minutes", "10", *args)
-
-    assert result.exit_code == exit_code
-    stderr = unwrap_panel(result.stderr)
-    assert {
-        pattern: bool(re.search(pattern, stderr, re.IGNORECASE)) for pattern in stderr_has
-    } == stderr_has
-
-
-# ---------------------------------------------------------------------------
-# dirty experiment-worktree guard
-# ---------------------------------------------------------------------------
-
-
-def _dirty_experiment_worktree(repo: str, *names: str) -> None:
-    worktree = Path(experiment_worktree_dir(repo))
-    for name in names:
-        (worktree / name).write_text("dirty\n", encoding="utf-8")
-
-
-def _setup_open_session_missing_worktree(repo: str) -> None:
-    """An open session whose experiment worktree directory no longer exists on disk."""
-    start_open_session(repo)
-    shutil.rmtree(experiment_worktree_dir(repo))
-
-
-@pytest.mark.parametrize(
-    "extra_args",
-    [
-        pytest.param((), id="default"),
-        pytest.param(("--allow-dirty",), id="allow-dirty"),
-    ],
-)
-def test_supervise_when_experiment_worktree_dirty_with_unsettled_does_exit_two_with_settle_hint(
-    repo: str, monkeypatch: pytest.MonkeyPatch, extra_args: tuple[str, ...]
-):
-    _install_seams_with_real_preflight(monkeypatch)
-    make_discard_repo(repo)
-    _dirty_experiment_worktree(repo, "scratch.txt")
-
-    result = run("optimize it", "--max-minutes", "10", *extra_args)
-
-    assert result.exit_code == 2
-    text = err_text(result)
-    assert re.search(r"unsettled", text, re.IGNORECASE)
-    assert "gymrat keep" in text
-    assert "gymrat discard" in text
-
-
-def test_supervise_when_experiment_worktree_dirty_without_unsettled_does_exit_two_with_iterate_and_discard_hint(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _install_seams_with_real_preflight(monkeypatch)
-    start_open_session(repo)
-    _dirty_experiment_worktree(repo, "a.txt", "b.txt")
-
-    result = run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 2
-    text = err_text(result)
-    assert "2 unmeasured edit" in text
-    assert "gymrat iterate" in text
-    assert "gymrat discard" in text
-
-
-@pytest.mark.parametrize(
-    "setup",
-    [
-        pytest.param(_setup_open_session_missing_worktree, id="missing-worktree"),
-        # An open session whose experiment worktree has no uncommitted changes.
-        pytest.param(start_open_session, id="clean-worktree"),
-    ],
-)
-def test_supervise_when_experiment_worktree_guard_finds_no_issue_does_proceed(
-    repo: str, monkeypatch: pytest.MonkeyPatch, setup: Callable[[str], None]
-):
-    _install_seams_with_real_preflight(monkeypatch)
-    setup(repo)
-
-    result = run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 0

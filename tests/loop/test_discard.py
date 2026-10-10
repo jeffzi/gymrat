@@ -10,6 +10,7 @@ safe under ``pytest-xdist`` / ``pytest-randomly``. Every git operation is real.
 """
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -18,24 +19,27 @@ from gymrat.errors import GymratError
 from gymrat.loop.discard import discard_session
 from gymrat.loop.keep import keep_session
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
-from gymrat.session.records import IterationRecord, KeepChecks, KeepRecord, SessionLogRecord
-from tests._git import head_of, run_git, status_of
+from gymrat.session.records import IterationRecord, KeepRecord, SessionLogRecord
+from tests._git import commit_all, head_of, status_of
 from tests.loop._settle import (
+    NOTHING_MEASURED_HISTORIES,
     assert_settling_record,
     checks_config,
     checks_pass,
     commit_experiment_directly,
     confirmed_regression,
     edit_experiment,
+    gating_blocked_history,
     settling_record_of,
     start_with,
     unmeasured_regression,
 )
 from tests.session.records._fixtures import (
+    COMMIT,
     append_records,
-    blocked_keep,
     committed_keep,
     discard_record,
+    gate_block,
     iteration_record,
     log_records,
 )
@@ -52,28 +56,43 @@ def _assert_reverted(worktree: str) -> None:
     assert status_of(worktree) == ""
 
 
-def test_discard_session_when_unsettled_edit_does_settle_the_edit_as_discarded(repo: str):
+def _leave_worktree_clean(repo_dir: str) -> None:
+    """Leave the experiment worktree untouched."""
+
+
+def _edit_and_commit(repo_dir: str) -> None:
+    """Edit the experiment worktree, then commit the edit as the agent would."""
+    edit_experiment(repo_dir)
+    commit_experiment_directly(repo_dir)
+
+
+@pytest.mark.parametrize(
+    "arrange_worktree",
+    [
+        pytest.param(edit_experiment, id="dirty-edit"),
+        pytest.param(_leave_worktree_clean, id="clean-worktree"),
+        pytest.param(_edit_and_commit, id="agent-committed-edit"),
+    ],
+)
+def test_discard_session_when_iteration_unsettled_does_settle_it_as_discarded(
+    repo: str, arrange_worktree: Callable[[str], None]
+):
     start_with(repo, (iteration_record(seq=1),))
-    edit_experiment(repo)
+    arrange_worktree(repo)
+    baseline_sha = head_of(baseline_worktree_dir(repo))
 
     result = discard_session(repo)
 
     _assert_reverted(experiment_worktree_dir(repo))
+    assert head_of(experiment_worktree_dir(repo)) == baseline_sha
+    assert baseline_sha[:7] in result.report
     assert result.record is not None
     assert_settling_record(result.record, discard_record(1))
     assert settling_record_of(repo) == result.record
     assert result.at == result.record.at
 
 
-def test_discard_session_when_worktree_clean_does_record_discard_anyway(repo: str):
-    start_with(repo, (iteration_record(seq=1),))
-
-    result = discard_session(repo)
-
-    assert settling_record_of(repo) == result.record
-
-
-_GATING_BLOCK = blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True))
+_GATING_BLOCK = gate_block(1, "gating-regression")
 
 
 @pytest.mark.parametrize(
@@ -99,39 +118,11 @@ def test_discard_session_when_gating_block_stands_does_throw_away_the_edit_numbe
     assert log_records(repo)[-2:] == [_GATING_BLOCK, result.record]
 
 
-def test_discard_session_when_gating_block_then_nothing_measured_keep_does_report_reverted_iteration(
+async def test_discard_session_when_keep_retried_after_block_does_throw_away_the_edit_after_the_refusal(
     repo: str,
 ):
-    start_with(
-        repo,
-        (
-            confirmed_regression(1),
-            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
-            blocked_keep(2, reason="nothing-measured", checks=KeepChecks(configured=True)),
-        ),
-    )
+    start_with(repo, gating_blocked_history())
     edit_experiment(repo)
-
-    result = discard_session(repo)
-
-    # The report names iteration 1 — the one whose edit was actually thrown away —
-    # not the nothing-measured keep's number (2) or the discard's own seq (3).
-    assert re.search(r"iteration 1\b", result.report, re.IGNORECASE)
-    assert not re.search(r"iteration [23]\b", result.report, re.IGNORECASE)
-
-
-async def test_discard_session_when_keep_retried_after_block_does_throw_away_the_edit_after_the_refusal(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(
-        repo,
-        (
-            confirmed_regression(1),
-            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
-        ),
-    )
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
     await keep_session(repo, checks_config())
 
     result = discard_session(repo)
@@ -141,27 +132,15 @@ async def test_discard_session_when_keep_retried_after_block_does_throw_away_the
     assert isinstance(refusal, KeepRecord)
     assert (refusal.status, refusal.reason) == ("blocked", "nothing-measured")
     assert discard == result.record
+    # The report names iteration 1 — the one whose edit was actually thrown away —
+    # not the nothing-measured keep's number (2) or the discard's own seq (3).
+    assert re.search(r"iteration 1\b", result.report, re.IGNORECASE)
+    assert not re.search(r"iteration [23]\b", result.report, re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
-# discard_session resets to last kept commit or baseline SHA (D6)
+# discard_session resets to last kept commit or baseline SHA
 # ---------------------------------------------------------------------------
-
-
-def test_discard_session_when_nothing_kept_and_agent_committed_does_reset_to_the_named_baseline_sha(
-    repo: str,
-):
-    start_with(repo, (iteration_record(seq=1),))
-    edit_experiment(repo)
-    commit_experiment_directly(repo)
-    worktree = experiment_worktree_dir(repo)
-    baseline_sha = head_of(baseline_worktree_dir(repo))
-
-    result = discard_session(repo)
-
-    assert head_of(worktree) == baseline_sha
-    assert status_of(worktree) == ""
-    assert baseline_sha[:7] in result.report
 
 
 async def test_discard_session_when_keep_committed_then_agent_committed_does_reset_to_kept_commit(
@@ -172,12 +151,9 @@ async def test_discard_session_when_keep_committed_then_agent_committed_does_res
     checks_pass(monkeypatch)
     keep_result = await keep_session(repo, checks_config())
     kept_commit = keep_result.record.commit
-
     worktree = experiment_worktree_dir(repo)
     append_records(repo, iteration_record(seq=2))
-    (Path(worktree) / "post-keep.txt").write_text("after keep\n", encoding="utf-8")
-    run_git(["add", "-A"], worktree)
-    run_git(["commit", "-m", "agent commit after keep"], worktree)
+    commit_all(worktree, "agent commit after keep", file="post-keep.txt", content="after keep\n")
 
     discard_session(repo)
 
@@ -185,30 +161,54 @@ async def test_discard_session_when_keep_committed_then_agent_committed_does_res
     assert status_of(worktree) == ""
 
 
+def test_discard_session_when_kept_commit_unreachable_does_warn_naming_it_and_revert_to_the_worktree_head(
+    repo: str, capsys: pytest.CaptureFixture[str]
+):
+    # The keep names COMMIT, a commit that exists nowhere in the repository.
+    start_with(repo, (iteration_record(seq=1), committed_keep(1)))
+    edit_experiment(repo)
+    worktree = experiment_worktree_dir(repo)
+    head = head_of(worktree)
+
+    result = discard_session(repo)
+
+    stderr = capsys.readouterr().err
+    assert f"Commit {COMMIT} is unreachable in the experiment worktree: " in stderr
+    assert "reverting to the worktree's HEAD instead" in stderr
+    _assert_reverted(worktree)
+    assert head_of(worktree) == head
+    assert result.record is None
+
+
 # ---------------------------------------------------------------------------
 # discard_session unmeasured revert (dirty worktree, nothing to settle)
 # ---------------------------------------------------------------------------
 
-NOTHING_MEASURED_HISTORIES = [
-    pytest.param((), id="no-iteration-ever-recorded"),
-    pytest.param((iteration_record(seq=1), committed_keep(1)), id="last-iteration-already-kept"),
-    pytest.param(
-        (
-            confirmed_regression(1),
-            blocked_keep(1, reason="gating-regression", checks=KeepChecks(configured=True)),
-            discard_record(2),
+
+def _edit_commit_and_add_a_file(repo_dir: str) -> None:
+    """Commit an edit as the agent would, then leave a fresh untracked file beside it."""
+    _edit_and_commit(repo_dir)
+    (Path(experiment_worktree_dir(repo_dir)) / "extra.txt").write_text("more\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("history", "arrange_worktree", "reverted"),
+    [
+        *(
+            pytest.param(*case.values, edit_experiment, 2, id=case.id)
+            for case in NOTHING_MEASURED_HISTORIES
         ),
-        id="gating-block-already-discarded",
-    ),
-]
-
-
-@pytest.mark.parametrize("history", NOTHING_MEASURED_HISTORIES)
+        pytest.param((), _edit_commit_and_add_a_file, 3, id="agent-committed-plus-untracked"),
+    ],
+)
 def test_discard_session_when_nothing_measured_and_dirty_does_revert_without_recording(
-    repo: str, history: tuple[SessionLogRecord, ...]
+    repo: str,
+    history: tuple[SessionLogRecord, ...],
+    arrange_worktree: Callable[[str], None],
+    reverted: int,
 ):
     start_with(repo, history)
-    edit_experiment(repo)
+    arrange_worktree(repo)
     records_before = len(log_records(repo))
     baseline_sha = head_of(baseline_worktree_dir(repo))
 
@@ -219,27 +219,9 @@ def test_discard_session_when_nothing_measured_and_dirty_does_revert_without_rec
     assert result.record is None
     assert isinstance(result.at, int)
     assert result.at > 0
-    assert (
-        result.report
-        == f"Reverted 2 unmeasured edits: the experiment worktree is back at {baseline_sha[:7]}"
-    )
-
-
-def test_discard_session_when_nothing_measured_and_agent_committed_does_report_reverted_edit_count(
-    repo: str,
-):
-    start_with(repo, ())
-    edit_experiment(repo)
-    commit_experiment_directly(repo)
-    worktree = experiment_worktree_dir(repo)
-    (Path(worktree) / "extra.txt").write_text("more\n", encoding="utf-8")
-
-    result = discard_session(repo)
-
-    baseline_sha = head_of(baseline_worktree_dir(repo))
-    assert (
-        result.report
-        == f"Reverted 3 unmeasured edits: the experiment worktree is back at {baseline_sha[:7]}"
+    assert result.report == (
+        f"Reverted {reverted} unmeasured edits: "
+        f"the experiment worktree is back at {baseline_sha[:7]}"
     )
 
 

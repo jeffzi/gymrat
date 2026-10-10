@@ -17,6 +17,9 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.session.records import (
+    ITERATION_DELTA_PCT,
+    ITERATION_OUTCOME,
+    ITERATION_SEQ,
     SESSION_LOG_MODELS,
     CommandRecord,
     Confirm,
@@ -24,23 +27,20 @@ from gymrat.session.records import (
     PairedSamples,
     SessionLogRecord,
     SessionRecord,
+    record_event,
     wire_type,
 )
-from gymrat.telemetry.provider import (
-    CAP_NAME,
+from gymrat.telemetry.command_span import (
     COMMAND_ARGS_PREFIX,
     COMMAND_DURATION_MS,
     COMMAND_EXIT_CODE,
     COMMAND_NAME,
     COMMAND_REASON,
-    FOLLOW_UP_ACTION,
-    FOLLOW_UP_REASON,
+    command_attributes,
+)
+from gymrat.telemetry.provider import (
     GEN_AI_MODEL,
     GEN_AI_PROVIDER,
-    ITERATION_DELTA_PCT,
-    ITERATION_OUTCOME,
-    ITERATION_SEQ,
-    RUN_COST_USD,
     RUN_DURATION_MS,
     RUN_EFFORT,
     RUN_END_REASON,
@@ -49,13 +49,17 @@ from gymrat.telemetry.provider import (
     RUN_MAX_MINUTES,
     RUN_MAX_USD,
     SESSION_BRANCH,
+)
+from gymrat.telemetry.provider import SESSION_ID as SESSION_ID_ATTR
+from gymrat.telemetry.run_spans import (
+    CAP_NAME,
+    FOLLOW_UP_ACTION,
+    FOLLOW_UP_REASON,
+    RUN_COST_USD,
     TURN_BUDGET_EXHAUSTED,
     TURN_ORIGIN,
     TURN_SESSION_COST_USD,
-    command_attributes,
-    record_event,
 )
-from gymrat.telemetry.provider import SESSION_ID as SESSION_ID_ATTR
 from tests.session.records._fixtures import (
     SESSION_ID,
     baseline_record,
@@ -72,6 +76,10 @@ from tests.session.records._fixtures import (
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+
+# ---------------------------------------------------------------------------
+# Attribute namespace — every attribute name the code can emit
+# ---------------------------------------------------------------------------
 
 #: The annotations a record field may carry to be emitted as an attribute.
 _SCALAR_TYPES = (str, int, float, bool)
@@ -157,6 +165,10 @@ def all_attribute_names() -> frozenset[str]:
     return _FIXED_ATTRS | frozenset(record_derived)
 
 
+# ---------------------------------------------------------------------------
+# README attribute table — the documented names match the emitted ones
+# ---------------------------------------------------------------------------
+
 _README = Path(__file__).resolve().parents[2] / "README.md"
 _HEADING = "### Attribute reference"
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
@@ -212,12 +224,18 @@ def _parse_readme_attribute_names() -> frozenset[str]:
     return frozenset(names)
 
 
-def test_all_attribute_names_when_compared_to_readme_table_does_match_exactly() -> None:
+def test_readme_attribute_reference_when_parsed_does_list_exactly_the_emitted_attribute_names() -> (
+    None
+):
     readme_names = _parse_readme_attribute_names()
     code_names = all_attribute_names()
 
     assert readme_names == code_names
 
+
+# ---------------------------------------------------------------------------
+# record_event and command_attributes — every emitted key is documented and well formed
+# ---------------------------------------------------------------------------
 
 _ATTR_NAME_RE = re.compile(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$")
 
@@ -225,11 +243,6 @@ _ATTR_NAME_RE = re.compile(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$")
 def _assert_valid_attribute_names(keys: Iterable[str]) -> None:
     for key in keys:
         assert _ATTR_NAME_RE.match(key), f"bad attribute name: {key!r}"
-
-
-# ---------------------------------------------------------------------------
-# record_event and command_attributes — every emitted key is documented and well formed
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

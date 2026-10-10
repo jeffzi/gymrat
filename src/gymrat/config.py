@@ -44,18 +44,16 @@ from pydantic import BeforeValidator, ConfigDict, Field, Strict, TypeAdapter, Va
 from pydantic_core import ErrorDetails
 
 from gymrat.errors import GymratError
-from gymrat.metric_name import LINE_TERMINATORS
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT, NOISE_FLOOR_PCT, Direction
 from gymrat.pydantic_errors import (
     NON_BLANK_PATTERN,
     VALUE_ERROR_PREFIX,
-    coerce_integer,
     describe_key,
     drop_prefix_errors,
     phrase_for_error,
 )
-from gymrat.session.paths import repo_root
-from gymrat.utils import expected_got
+from gymrat.session.paths import NotAGitRepositoryError, repo_root
+from gymrat.utils import LINE_TERMINATORS, coerce_integer, expected_got
 
 # ---------------------------------------------------------------------------
 # Environment variables
@@ -77,8 +75,11 @@ is accepted or rejected no matter which one it arrives through.
 class EnvResult[T]:
     """The outcome of reading one env var: a value, a problem, or neither.
 
-    ``value`` and ``problem`` are mutually exclusive; both are ``None`` when the
-    variable is unset.
+    Attributes:
+        value: The parsed value, or ``None`` when the variable is unset or
+            invalid. Never set together with ``problem``.
+        problem: Why the variable's value was rejected, or ``None`` when it is
+            unset or valid. Never set together with ``value``.
     """
 
     value: T | None = None
@@ -175,8 +176,8 @@ def env_positive_int_result(env_var: str, maximum: int) -> EnvResult[int]:
 # Config types
 # ---------------------------------------------------------------------------
 
-#: The effort dial the CLI and config file both accept for a supervised session.
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
+"""The effort dial the CLI and config file both accept for a supervised session."""
 
 # Unknown keys must fail validation so the pipeline reports an "Unknown config key"
 # problem; every nested dataclass sets this, not only ``ConfigFile``.
@@ -294,8 +295,12 @@ class ConfigFile:
 class ConfigFileResult:
     """Outcome of a collecting load.
 
-    Carries the parsed config (when valid), whether the file existed, and every
-    validation problem found.
+    Attributes:
+        config_file: The parsed config, an empty ``ConfigFile`` when an optional
+            file is missing, or ``None`` when the file cannot be read, parsed or
+            validated, or a required one is missing.
+        exists: Whether the config file existed.
+        problems: Every validation problem found; empty when the load succeeded.
     """
 
     config_file: ConfigFile | None
@@ -344,6 +349,26 @@ class BenchlessConfig:
     Every value a non-benchmarking command (``status``, ``keep``) reads is present
     with defaults already applied; ``bench`` is absent because such commands never
     run one. Keyword-only so the required fields can precede the optional ones.
+
+    Attributes:
+        adapter: Name of the output adapter that parses benchmark output.
+        samples: Number of sample rounds per side.
+        timeout_seconds: Maximum seconds per bench invocation.
+        unstable_noise_pct: Noise band width, in percent, above which a verdict
+            is forced unstable.
+        primary: The metric, or the ``geomean`` aggregate, an iteration is
+            judged on.
+        prepare: Preparation command run before benchmarking, or ``None``.
+        metrics: Per-metric overrides keyed by metric name, or ``None``.
+        kinds: Per-kind overrides keyed by kind, or ``None``.
+        checks: Command a keep must pass, or ``None`` when no checks are
+            configured.
+        runbook: Path to the runbook file, or ``None``.
+        filter: Bench command template carrying the ``{names}`` placeholder that
+            narrows a run to named metrics, or ``None``.
+        stop: Loop stopping criteria, or ``None``.
+        hooks: Loop lifecycle commands, or ``None``.
+        supervise: Agent supervision settings, or ``None``.
     """
 
     adapter: str
@@ -369,17 +394,15 @@ class ResolvedConfig(BenchlessConfig):
     bench: str
 
 
-#: The config file basename the CLI writes, loads, and probes for.
 CONFIG_FILENAME = "gymrat.toml"
+"""The config file basename the CLI writes, loads, and probes for."""
 
-#: The primary that aggregates every gating metric rather than naming one.
 GEOMEAN_PRIMARY = "geomean"
+"""The primary that aggregates every gating metric rather than naming one."""
 
-#: The token a ``filter`` command must carry, where the loop substitutes benchmark names.
 FILTER_PLACEHOLDER = "{names}"
+"""The token a ``filter`` command must carry, where the loop substitutes benchmark names."""
 
-#: Built-in fallbacks for the fields no flag, env var, or config file sets: the
-#: configuration a command settles on when nothing else names one.
 CONFIG_DEFAULTS = BenchlessConfig(
     adapter="metric-lines",
     samples=10,
@@ -387,6 +410,10 @@ CONFIG_DEFAULTS = BenchlessConfig(
     unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
     primary=GEOMEAN_PRIMARY,
 )
+"""Built-in fallbacks for the fields no flag, env var, or config file sets.
+
+They are the configuration a command settles on when nothing else names one.
+"""
 
 # ---------------------------------------------------------------------------
 # Schema validation
@@ -516,9 +543,15 @@ def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFi
 class ConfigInspection:
     """Outcome of a collecting inspection.
 
-    ``config`` and ``bench`` are populated only when ``problems`` is empty;
-    ``bench`` lives here rather than on ``config`` because it has no default and a
-    benchless settlement may legitimately lack one.
+    Attributes:
+        config_path: Path of the config file that applies, or ``None`` when
+            none applies.
+        problems: Every problem found while settling the configuration.
+        config: The settled configuration; populated only when ``problems`` is
+            empty.
+        bench: The bench command; populated only when ``problems`` is empty and
+            one is set. It lives here rather than on ``config`` because it has
+            no default and a benchless settlement may legitimately lack one.
     """
 
     config_path: str | None
@@ -531,16 +564,23 @@ def find_implicit_base() -> str:
     """Return the anchor directory for the implicit ``gymrat.toml`` lookup.
 
     Inside a git repository the config lives at the repo root, so moving the cwd
-    into a subdirectory must not lose it. Outside a repository — or when git is
-    unavailable — the lookup falls back to the process cwd.
+    into a subdirectory must not lose it. Only git placing the cwd outside every
+    repository falls back to the process cwd: a git that declines to answer says
+    nothing about where the cwd sits, and anchoring there would silently read
+    the wrong config.
 
     Returns:
-        The git repository root, or the current working directory when no
-        repository is found.
+        The git repository root, or the current working directory when git
+        places it outside every repository.
+
+    Raises:
+        GymratError: When git declines to answer for the current working
+            directory (dubious ownership, an unreadable ``.git``, a git that
+            cannot run), carrying git's diagnostics.
     """
     try:
         return repo_root()
-    except GymratError:
+    except NotAGitRepositoryError:
         return str(Path.cwd())
 
 
@@ -750,6 +790,10 @@ def _resolve_config_source(
         (``None`` when no file applies), the parsed config (``None`` on fatal
         read/parse failure, an empty ``ConfigFile`` when the config source is
         blank), and any problems found.
+
+    Raises:
+        GymratError: When the implicit lookup runs and git declines to answer
+            for the current working directory.
     """
     explicit_config = flags.config
     if explicit_config is None:
@@ -805,7 +849,7 @@ def _resolve_runbook(
 
 
 def inspect_config(flags: CliFlags, base_dir: str | Path | None = None) -> ConfigInspection:
-    """Settle a benchless configuration, collecting every problem instead of raising.
+    """Settle a benchless configuration, collecting each config problem rather than raising it.
 
     Args:
         flags: Command-line overrides.
@@ -815,6 +859,10 @@ def inspect_config(flags: CliFlags, base_dir: str | Path | None = None) -> Confi
     Returns:
         A :class:`ConfigInspection` whose ``config`` and ``bench`` are populated
         only when no problems were found.
+
+    Raises:
+        GymratError: When ``base_dir`` is ``None``, no config file is named, and
+            git declines to answer for the current working directory.
     """
     problems = _collect_flag_problems(flags)
 
@@ -871,7 +919,8 @@ def resolve_benchless_config(
     Raises:
         GymratError: With the first problem :func:`inspect_config` collects, when
             a flag, env var, config file, cross-field check, or runbook fails to
-            validate.
+            validate, or when the implicit lookup finds git declining to answer
+            for the current working directory.
     """
     config, _ = _settle_or_raise(flags, base_dir)
     return config
@@ -891,8 +940,10 @@ def resolve_config(flags: CliFlags, base_dir: str | Path | None = None) -> Resol
         The fully settled :class:`ResolvedConfig` including ``bench``.
 
     Raises:
-        GymratError: With the first problem :func:`inspect_config` collects, or
-            when ``bench`` is missing from both flags and the config file.
+        GymratError: With the first problem :func:`inspect_config` collects,
+            when ``bench`` is missing from both flags and the config file, or
+            when the implicit lookup finds git declining to answer for the
+            current working directory.
     """
     config, bench = _settle_or_raise(flags, base_dir)
     if bench is None:

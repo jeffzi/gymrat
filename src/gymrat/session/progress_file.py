@@ -17,9 +17,11 @@ from gymrat.session.paths import progress_path
 from gymrat.session.sidecar import read_sidecar
 from gymrat.utils import MS_PER_SECOND, WarnSink, warn_to_stderr, write_text_atomic
 
-#: A reader discards files whose mtime is older than this many seconds.
-#: 600 s (10 min) is well above the longest single benchmark pass.
 STALENESS_BOUND_SECONDS: int = 600
+"""A reader discards files whose mtime is older than this many seconds.
+
+600 s (10 min) is well above the longest single benchmark pass.
+"""
 
 
 class ProgressSnapshot(BaseModel):
@@ -58,7 +60,7 @@ def write_progress(root: str, snapshot: ProgressSnapshot) -> None:
 
 
 def read_progress(root: str) -> ProgressSnapshot | None:
-    """Read and parse the progress sidecar, or return ``None``.
+    """Read and parse the progress sidecar.
 
     Args:
         root: Repository root under which the progress sidecar lives.
@@ -111,6 +113,13 @@ class SidecarWriter:
     writes a ``ProgressSnapshot`` under ``root`` on each; other event types are
     ignored, with no write. A phase change resets ``passes_completed`` so each
     phase's progress is counted from zero.
+
+    Attributes:
+        root: Repository root under which the sidecar is written.
+        passes_completed: Passes finished in ``current_phase``.
+        last_start_ms: The ``at_ms`` of the latest ``PassStarted``.
+        last_pass_duration_ms: Wall-clock time of the latest finished pass.
+        current_phase: The phase whose passes are being counted.
     """
 
     root: str

@@ -5,23 +5,32 @@ would make sense pasted unchanged into an unrelated repository.
 """
 
 import contextlib
+import errno
+import io
 import json
 import math
 import os
+import re
 import secrets
 import stat
+import statistics
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Self
+from typing import IO, NamedTuple, Protocol, Self
 
-#: Shared by every module that converts between nanoseconds, milliseconds and
-#: clock tiers, so the conversion factors are declared once.
 SECONDS_PER_MINUTE = 60
-SECONDS_PER_HOUR = 3600
+"""Seconds in one minute.
+
+Shared by every module that converts between nanoseconds, milliseconds and clock tiers, so the
+conversion factors are declared once.
+"""
 MS_PER_SECOND = 1000
+"""Milliseconds in one second; shared conversion factor, declared once."""
 NS_PER_MS = 1_000_000
+"""Nanoseconds in one millisecond; shared conversion factor, declared once."""
+_MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND
 
 ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 """Environment variable every tracing entry point reads the OTLP endpoint from."""
@@ -32,6 +41,27 @@ ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 # internal knob, not something a caller should tune.
 _OUTPUT_LIMIT_BYTES = 8192
 
+# ``[0-9]`` rather than ``\d``: ``\d`` matches every Unicode decimal digit, and
+# ``float`` converts those too, so a non-ASCII digit would parse as a number.
+ASCII_DECIMAL_PATTERN = r"[0-9]+(?:\.[0-9]+)?"
+"""An unsigned decimal written in ASCII digits, with an optional fractional part."""
+
+SHORT_SHA_LENGTH = 7
+"""How many leading characters of a commit SHA an abbreviation keeps."""
+
+LINE_TERMINATORS = re.compile("[\\n\\v\\f\\r\\x1c-\\x1e\\x85\\u2028\\u2029]")
+"""Every line boundary :meth:`str.splitlines` breaks on.
+
+That is LF, VT (U+000B), FF (U+000C), CR, U+001C to U+001E, U+0085, U+2028, and
+U+2029. Text holding one splits across lines in any message or record line that
+carries it, and LF, CR, U+2028, and U+2029 are line terminators to a JavaScript
+regular-expression engine, so an anchored check on a record field could never
+match such a value. Written as escapes so the source stays plain ASCII.
+"""
+
+MISSING_DELTA = "—"
+"""What a progress display prints in place of a missing or non-finite delta."""
+
 type WarnSink = Callable[[str], None]
 """Where a caller sends a complaint about output it could not read.
 
@@ -39,6 +69,27 @@ The caller owns the destination so a warning can be interleaved with whatever
 else is on the terminal — the CLI's progress line, for one — instead of landing
 on stderr wherever the cursor happens to be.
 """
+
+
+class StyledSegment[R](NamedTuple):
+    """One run of text together with the style role it renders under.
+
+    Text built away from the rich view layer carries a role rather than a theme
+    style; the view maps each role to a style, and a plain renderer joins the
+    texts.
+
+    Attributes:
+        text: The run's text.
+        role: The style role the text renders under.
+    """
+
+    text: str
+    role: R
+
+
+# ---------------------------------------------------------------------------
+# Text and number helpers
+# ---------------------------------------------------------------------------
 
 
 def abbreviate_home(path: str) -> str:
@@ -74,8 +125,13 @@ def pluralize(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
+def format_cost(usd: float) -> str:
+    """Format a USD amount as a two-decimal dollar string."""
+    return f"${usd:.2f}"
+
+
 def first_line(text: str) -> str:
-    """The first line of ``text``, discarding the rest."""
+    """The text up to the first newline; other line terminators do not end the line."""
     return text.split("\n", maxsplit=1)[0]
 
 
@@ -135,6 +191,83 @@ def finite_or_none(value: float) -> float | None:
         ``value`` itself, or ``None`` when it is ``NaN`` or either infinity.
     """
     return value if math.isfinite(value) else None
+
+
+def fraction_of_median(numerator: float, median: float, scale: float = 1.0) -> float | None:
+    """A value as a scaled fraction of a median's magnitude.
+
+    The scale is applied after the division so a large numerator alone cannot
+    overflow.
+
+    Args:
+        numerator: The value to express as a fraction of the median.
+        median: The median whose magnitude is the denominator.
+        scale: The factor applied to the fraction.
+
+    Returns:
+        The scaled fraction, or ``None`` when ``median`` is zero or the scaled
+        fraction is not finite.
+    """
+    if median == 0:
+        return None
+    fraction = (numerator / abs(median)) * scale
+    return finite_or_none(fraction)
+
+
+def medians_by_name(rounds: Iterable[Mapping[str, float]]) -> dict[str, float]:
+    """The median each name came to over the rounds that reported it.
+
+    A round that omits a name contributes nothing to that name's median rather
+    than a zero, and a name no round reported has no entry at all.
+
+    Args:
+        rounds: One mapping of name to value per round.
+
+    Returns:
+        Each reported name mapped to its median, in the order the rounds first
+        named them.
+    """
+    readings: dict[str, list[float]] = {}
+    for round_ in rounds:
+        for name, value in round_.items():
+            readings.setdefault(name, []).append(value)
+    return {name: statistics.median(values) for name, values in readings.items()}
+
+
+def own_values(samples: Sequence[dict[str, float]], name: str) -> list[float]:
+    """Collect the values a side reported for ``name``, skipping rounds without it.
+
+    Args:
+        samples: One metric record per round.
+        name: The metric to extract.
+
+    Returns:
+        The reported values for ``name``, in round order.
+    """
+    return [record[name] for record in samples if name in record]
+
+
+def coerce_integer(value: object) -> object:
+    """Fold an integral float into ``int`` so it satisfies strict integer validation.
+
+    Only the fold happens here; accepting or rejecting the value stays the
+    model's job.
+
+    Args:
+        value: The value to coerce.
+
+    Returns:
+        The coerced ``int`` when ``value`` is an integral float, otherwise
+        ``value`` unchanged.
+    """
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Subprocess output
+# ---------------------------------------------------------------------------
 
 
 def limit_output(text: str) -> str:
@@ -201,6 +334,11 @@ def stderr_text_of(error: object) -> str:
     return str(error)
 
 
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+
+
 def otlp_endpoint(value: str | None) -> str | None:
     """Apply the one trimming rule every reader of the OTLP endpoint shares.
 
@@ -212,6 +350,18 @@ def otlp_endpoint(value: str | None) -> str | None:
         nothing is left, which means "no endpoint".
     """
     return (value or "").strip() or None
+
+
+def otlp_endpoint_from_env(name: str = ENDPOINT_ENV) -> str | None:
+    """Read an OTLP endpoint variable from the environment, trimmed by :func:`otlp_endpoint`.
+
+    Args:
+        name: The environment variable that holds the endpoint.
+
+    Returns:
+        The trimmed endpoint, or ``None`` when the variable is unset or blank.
+    """
+    return otlp_endpoint(os.environ.get(name))
 
 
 def color_from_env() -> bool | None:
@@ -257,6 +407,65 @@ def stream_color_from_env(stream: object) -> bool:
     return declared if declared is not None else is_tty(stream)
 
 
+# ---------------------------------------------------------------------------
+# Stream writes
+# ---------------------------------------------------------------------------
+
+
+class _WritableStream(Protocol):
+    """A text stream error and progress output is written to."""
+
+    def write(self, data: str, /) -> object: ...
+
+    def flush(self) -> object: ...
+
+
+def write_and_flush(stream: _WritableStream, data: str) -> None:
+    """Write ``data`` to ``stream`` and flush it so an immediate exit cannot truncate it."""
+    stream.write(data)
+    stream.flush()
+
+
+def is_broken_pipe(error: BaseException) -> bool:
+    """Whether ``error`` is a write to a pipe whose reading end has closed.
+
+    POSIX reports it as ``BrokenPipeError``. Windows reports it as a plain
+    ``OSError`` with ``EINVAL``: the C runtime maps the ``ERROR_NO_DATA`` a write
+    to a closed pipe fails with onto that errno, so no ``BrokenPipeError`` is
+    ever raised there.
+
+    Args:
+        error: The exception a stream write or flush raised.
+
+    Returns:
+        ``True`` when ``error`` means the pipe's reader is gone.
+    """
+    if isinstance(error, BrokenPipeError):
+        return True
+    return sys.platform == "win32" and isinstance(error, OSError) and error.errno == errno.EINVAL
+
+
+def point_stream_at_devnull(stream: IO[str]) -> None:
+    """Redirect ``stream``'s file descriptor to devnull; a stream without one is left alone.
+
+    The interpreter flushes a stream's unwritten buffer at shutdown. After a
+    failed write that flush would fail again and turn the exit status into 120;
+    a devnull descriptor lets it succeed.
+
+    Args:
+        stream: The stream whose descriptor is redirected.
+    """
+    try:
+        fd = stream.fileno()
+    except io.UnsupportedOperation:
+        return
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, fd)
+    finally:
+        os.close(devnull)
+
+
 def warn_to_stderr(message: str) -> None:
     """Default :data:`WarnSink` for callers called without an explicit one.
 
@@ -264,6 +473,11 @@ def warn_to_stderr(message: str) -> None:
         message: The text to write to stderr, followed by a newline.
     """
     sys.stderr.write(f"{message}\n")
+
+
+# ---------------------------------------------------------------------------
+# Callback and file helpers
+# ---------------------------------------------------------------------------
 
 
 def fan_out[E](
@@ -295,6 +509,11 @@ def fan_out[E](
                 on_error(error)
 
     return dispatch
+
+
+def pair_value[V](pairs: tuple[tuple[str, V], ...], key: str) -> V | None:
+    """Return the value paired with `key`, or None if `key` is not present."""
+    return next((value for name, value in pairs if name == key), None)
 
 
 def write_text_atomic(path: Path, text: str) -> None:
@@ -359,10 +578,9 @@ def write_text_atomic(path: Path, text: str) -> None:
 
 # The formatters are deliberately not unified. format_duration reports elapsed
 # time and floors to whole seconds while always keeping a zero remainder
-# ("1m 0s"); format_eta reports a forward estimate, rounds to whole seconds,
-# clamps to at least one second, and drops a zero remainder ("~1m left");
-# format_clock renders the media-player clock a progress bar ticks through
-# ("07:45", "1:07:45").
+# ("1m 0s"); format_clock renders the media-player clock a progress bar ticks
+# through ("07:45", "1:07:45"). Both build on the tier splits below, which the
+# CLI's timestamp and ETA formatters share.
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,16 +630,34 @@ class SamplingEta:
         )
 
 
-def _hours_minutes_seconds(total_seconds: int) -> tuple[int, int, int]:
-    """Split a whole-second count into an hours/minutes/seconds tier."""
+def hours_minutes_seconds(total_seconds: int) -> tuple[int, int, int]:
+    """Split a whole-second count into clock tiers.
+
+    Args:
+        total_seconds: The duration in whole seconds.
+
+    Returns:
+        ``(hours, minutes, seconds)``, where minutes and seconds stay below 60
+        and hours are unbounded.
+    """
     minutes, seconds = divmod(total_seconds, SECONDS_PER_MINUTE)
     hours, minutes = divmod(minutes, SECONDS_PER_MINUTE)
     return hours, minutes, seconds
 
 
-def _floored_clock_tiers(ms: float) -> tuple[int, int, int]:
+def floored_clock_tiers(ms: float) -> tuple[int, int, int]:
     """Clamp a negative elapsed input to zero, floor to whole seconds, and split into tiers."""
-    return _hours_minutes_seconds(math.floor(max(0.0, ms) / MS_PER_SECOND))
+    return hours_minutes_seconds(math.floor(max(0.0, ms) / MS_PER_SECOND))
+
+
+def minutes_to_ms(minutes: float) -> int:
+    """Convert minutes to milliseconds, truncating toward zero via ``int()``."""
+    return int(minutes * _MS_PER_MINUTE)
+
+
+def ms_to_minutes(ms: float) -> float:
+    """Convert milliseconds to minutes, keeping fractional precision."""
+    return ms / _MS_PER_MINUTE
 
 
 def format_duration(ms: float) -> str:
@@ -437,7 +673,7 @@ def format_duration(ms: float) -> str:
     Returns:
         The formatted duration string (e.g. ``"5s"``, ``"1m 0s"``, ``"1h 00m"``).
     """
-    hours, minutes, seconds = _floored_clock_tiers(ms)
+    hours, minutes, seconds = floored_clock_tiers(ms)
 
     if hours > 0:
         return f"{hours}h {minutes:02d}m"
@@ -446,23 +682,17 @@ def format_duration(ms: float) -> str:
     return f"{seconds}s"
 
 
-def format_timestamp(at_ms: float, run_start_ms: float | None) -> str:
-    """Format an elapsed timestamp as ``[HH:MM:SS]`` since ``run_start_ms``.
-
-    Each caller anchors its own run start, so an unanchored run reads as zero
-    elapsed rather than as an error.
+def format_time_left(remaining_ms: float, max_minutes: float) -> str:
+    """Format how much of a session's time budget is left, as the agent reads it.
 
     Args:
-        at_ms: The timestamp in milliseconds to format.
-        run_start_ms: The run's start timestamp in milliseconds, or ``None``
-            when the run is not yet anchored, which renders zero elapsed.
+        remaining_ms: Milliseconds left until the deadline.
+        max_minutes: The budget's total, in minutes.
 
     Returns:
-        A bracketed timestamp string, e.g. ``"[00:07:45]"``.
+        The ``"<remaining> left of <total>m"`` line.
     """
-    elapsed_ms = 0 if run_start_ms is None else at_ms - run_start_ms
-    hours, minutes, seconds = _floored_clock_tiers(elapsed_ms)
-    return f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
+    return f"{format_duration(remaining_ms)} left of {max_minutes:g}m"
 
 
 def format_clock(ms: float) -> str:
@@ -477,34 +707,8 @@ def format_clock(ms: float) -> str:
     Returns:
         The clock string, e.g. ``"07:45"`` or ``"1:07:45"``.
     """
-    hours, minutes, seconds = _floored_clock_tiers(ms)
+    hours, minutes, seconds = floored_clock_tiers(ms)
 
     if hours == 0:
         return f"{minutes:02d}:{seconds:02d}"
     return f"{hours}:{minutes:02d}:{seconds:02d}"
-
-
-def format_eta(ms: float) -> str:
-    """Format a forward time estimate, rounding to whole seconds.
-
-    Clamps to at least one second and drops a zero remainder in the lower tier
-    (``60_000`` renders ``"~1m left"``, not ``"~1m 0s left"``).
-
-    Args:
-        ms: The forward time estimate in milliseconds.
-
-    Returns:
-        The ETA string, e.g. ``"~5s left"`` or ``"~1m left"``.
-    """
-    total_seconds = max(1, round(ms / MS_PER_SECOND))
-    hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
-
-    if total_seconds < SECONDS_PER_MINUTE:
-        return f"~{seconds}s left"
-    if total_seconds < SECONDS_PER_HOUR:
-        if seconds > 0:
-            return f"~{minutes}m {seconds}s left"
-        return f"~{minutes}m left"
-    if minutes > 0:
-        return f"~{hours}h {minutes:02d}m left"
-    return f"~{hours}h left"

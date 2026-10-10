@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from gymrat.model import (
@@ -31,6 +30,38 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+def metric_meta(
+    short_name: str,
+    *,
+    direction: Direction = "lower",
+    gating: bool = True,
+    exact: bool = False,
+    kind: str = "other",
+    unit: MetricUnit | None = None,
+) -> ResolvedMetricMeta:
+    """A ``ResolvedMetricMeta``; by default lower-is-better, gating and statistically compared.
+
+    Args:
+        short_name: The name the metric displays under.
+        direction: Which way is better for the metric.
+        gating: Whether the metric counts toward the gated geomean.
+        exact: Whether the metric is compared exactly rather than statistically.
+        kind: The kind the metric belongs to.
+        unit: The metric's unit, or ``None`` for a unitless count.
+
+    Returns:
+        The metric meta.
+    """
+    return ResolvedMetricMeta(
+        direction=direction,
+        gating=gating,
+        exact=exact,
+        unit=unit,
+        kind=kind,
+        short_name=short_name,
+    )
+
+
 def band_verdict(
     *,
     verdict: ApproximateVerdict = "no-signal",
@@ -40,7 +71,20 @@ def band_verdict(
     noise_pct: float = 2.5,
     noise_abs: float = 2.5,
 ) -> BandVerdict:
-    """A noise-band verdict, tied pairs and all."""
+    """A noise-band verdict, the method used when too few pairs remain for a permutation test.
+
+    Args:
+        verdict: The approximate outcome.
+        delta: The percentage delta between the paired medians.
+        n: The total pair count.
+        usable_n: How many pairs survived tie-dropping; below 6 the
+            permutation test is starved and the band decides.
+        noise_pct: The noise band, in percent of the baseline median.
+        noise_abs: The noise band, in the metric's own units.
+
+    Returns:
+        The band verdict.
+    """
     return BandVerdict(
         method="band",
         verdict=verdict,
@@ -61,7 +105,19 @@ def permutation_verdict(
     noise_pct: float = 2.5,
     noise_abs: float = 2.5,
 ) -> PermutationVerdict:
-    """A verdict the sign-flip permutation test test produced."""
+    """A verdict the sign-flip permutation test produced.
+
+    Args:
+        verdict: The approximate outcome.
+        delta: The percentage delta between the paired medians.
+        n: The paired sample count.
+        p: The permutation test's p-value; below 0.05 the shift is significant.
+        noise_pct: The noise band, in percent of the baseline median.
+        noise_abs: The noise band, in the metric's own units.
+
+    Returns:
+        The permutation verdict.
+    """
     return PermutationVerdict(
         method="permutation",
         verdict=verdict,
@@ -113,7 +169,17 @@ def geomean_of(
     band: float = 0.0,
     excluded: Sequence[Exclusion] = (),
 ) -> GeomeanResult:
-    """A geomean over ``n`` metrics, with no exclusions and no band unless overridden."""
+    """A geomean over ``n`` metrics, with no exclusions and no band unless overridden.
+
+    Args:
+        value: The geometric-mean delta, in percent.
+        n: How many metrics contribute to ``value``.
+        band: The instability band around ``value``, in percent; 0 means no band.
+        excluded: The metrics left out of the aggregate, with their reasons.
+
+    Returns:
+        The geomean result.
+    """
     return GeomeanResult(value=value, n=n, band=band, excluded=tuple(excluded))
 
 
@@ -133,21 +199,19 @@ def band_metric(
 ) -> MetricComparison:
     """A two-sided metric whose verdict fell back to the noise band.
 
-    ``n < 6`` means the run was too short for the permutation test; ``n >= 6``
-    with ``usable_n < 6`` means ties starved it.
-
     Args:
         verdict: The band verdict.
         delta: The candidate's delta, in percent.
         noise_pct: The noise band, in percent.
-        n: The total pair count.
-        usable_n: How many pairs survived tie-dropping; ``None`` means all ``n``.
+        n: The total pair count; below 6 the run was too short for the
+            permutation test.
+        usable_n: How many pairs survived tie-dropping; ``None`` means all
+            ``n``. Below 6 with ``n >= 6``, ties starved the permutation test.
         unit: The metric's unit, if any.
 
     Returns:
         The metric comparison, judged for a single candidate.
     """
-    resolved_usable = n if usable_n is None else usable_n
     return MetricComparison(
         baseline_median=100.0,
         baseline_spread=5.0,
@@ -155,94 +219,17 @@ def band_metric(
             CandidateMetric(
                 median=100.0 + delta,
                 spread=4.0,
-                verdict=BandVerdict(
-                    method="band",
+                verdict=band_verdict(
                     verdict=verdict,
-                    usable_n=resolved_usable,
-                    noise_pct=noise_pct,
-                    noise_abs=3.5,
                     delta=delta,
                     n=n,
+                    usable_n=n if usable_n is None else usable_n,
+                    noise_pct=noise_pct,
+                    noise_abs=3.5,
                 ),
             ),
         ),
-        meta=ResolvedMetricMeta(
-            direction="lower",
-            gating=True,
-            exact=False,
-            unit=unit,
-            kind="other",
-            short_name="time",
-        ),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class CandidateSpec:
-    """One candidate's permutation outcome against the shared baseline."""
-
-    verdict: ApproximateVerdict
-    delta: float
-    noise_pct: float = 2.5
-
-
-def metric_for(
-    candidates: Sequence[CandidateSpec],
-    direction: Direction = "lower",
-) -> MetricComparison:
-    """A metric judged once per candidate against the shared baseline.
-
-    The baseline median and spread are carried once, so the candidate entries
-    differ only in what the pairwise verdict engine returned for each of them.
-
-    Args:
-        candidates: Each candidate's permutation outcome, in candidate order.
-        direction: Which way is better for the metric.
-
-    Returns:
-        The metric comparison.
-    """
-    return MetricComparison(
-        baseline_median=100.0,
-        baseline_spread=1.0,
-        candidates=tuple(
-            CandidateMetric(
-                median=100.0 + candidate.delta,
-                spread=1.0,
-                verdict=PermutationVerdict(
-                    method="permutation",
-                    verdict=candidate.verdict,
-                    p=0.01,
-                    noise_pct=candidate.noise_pct,
-                    noise_abs=candidate.noise_pct,
-                    delta=candidate.delta,
-                    n=10,
-                ),
-            )
-            for candidate in candidates
-        ),
-        meta=ResolvedMetricMeta(
-            direction=direction,
-            gating=True,
-            exact=False,
-            unit=None,
-            kind="other",
-            short_name="time",
-        ),
-    )
-
-
-def approximate_metric(
-    *,
-    verdict: ApproximateVerdict,
-    delta: float,
-    noise_pct: float = 2.5,
-    direction: Direction = "lower",
-) -> MetricComparison:
-    """A single-candidate metric whose verdict came from the permutation method."""
-    return metric_for(
-        [CandidateSpec(verdict=verdict, delta=delta, noise_pct=noise_pct)],
-        direction,
+        meta=metric_meta("time", unit=unit),
     )
 
 
@@ -252,12 +239,5 @@ def one_sided_metric() -> MetricComparison:
         baseline_median=100.0,
         baseline_spread=1.0,
         candidates=(CandidateMetric(),),
-        meta=ResolvedMetricMeta(
-            direction="lower",
-            gating=False,
-            exact=False,
-            unit=None,
-            kind="other",
-            short_name="time",
-        ),
+        meta=metric_meta("time", gating=False),
     )

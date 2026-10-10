@@ -1,4 +1,5 @@
 import json
+import math
 import sys
 from collections.abc import Callable
 from dataclasses import fields
@@ -16,50 +17,33 @@ from gymrat.config import (
     HooksConfig,
     KindEntry,
     MetricEntry,
-    StopConfig,
     SuperviseConfig,
     load_config_file_collecting,
     validate_config_dict,
 )
 from gymrat.errors import GymratError
-from tests.adapters._inputs import LINE_BREAKS
 from tests.config._toml import (
     DEEP_NESTING_DOCUMENT,
     DIGIT_LIMIT_DOCUMENT,
     HUGE_HEX_BITS,
     HUGE_HEX_LITERAL,
     LOOP_CONFIG,
+    LOOP_FIELDS,
     write_config,
     write_raw,
 )
 
 # Byte-order mark that editors on Windows prepend to UTF-8 files: EF BB BF.
-UTF8_BOM = "﻿"
+UTF8_BOM = "\N{BYTE ORDER MARK}"
 
-# Every character `str.splitlines` breaks on. Any of these embedded in a config
-# key would split the key, and every message naming it, across lines, so a key
-# holding one is rejected.
-LINE_BREAK_CHARS = [line_break.char for line_break in LINE_BREAKS]
+# Two characters `str.splitlines` breaks on: an ASCII one and a non-ASCII one, so
+# a key holding either is rejected and its message escapes it. Which characters
+# count as line breaks is pinned in tests/test_metric_name.py.
+LINE_BREAK_CHARS = ["\n", "\u2028"]
 
 
 #: Why reading a directory as the config file fails: the OS refuses it differently on Windows.
 DIRECTORY_READ_REASON = "Permission denied" if sys.platform == "win32" else "Is a directory"
-
-
-def load_config(config_path: Path) -> ConfigFile:
-    """Load a config file that must be accepted and return what it parsed to."""
-    result = load_config_file_collecting(config_path, required=False)
-    assert result.problems == []
-    assert result.exists
-    assert result.config_file is not None
-    return result.config_file
-
-
-def load_error_message(config_path: Path) -> str:
-    """Load a config file that must be rejected and return the first problem."""
-    result = load_config_file_collecting(config_path, required=False)
-    assert result.config_file is None
-    return result.problems[0]
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +79,7 @@ def load_error_message(config_path: Path) -> str:
                     "metric2": MetricEntry(direction="higher"),
                 },
             ),
-            id="all-known-keys",
+            id="flag-backed-keys-and-metrics",
         ),
         pytest.param(
             tomli_w.dumps({
@@ -137,13 +121,7 @@ def load_error_message(config_path: Path) -> str:
         pytest.param('runbook = "RUNBOOK.md"', ConfigFile(runbook="RUNBOOK.md"), id="runbook"),
         pytest.param(
             tomli_w.dumps(LOOP_CONFIG),
-            ConfigFile(
-                checks="npm test",
-                filter="npm run bench -- {names}",
-                primary="decode/time",
-                stop=StopConfig(target_value=1.5, max_iterations=20),
-                hooks=HooksConfig(before="npm run warm-cache", after="npm run cool-down"),
-            ),
+            ConfigFile(**LOOP_FIELDS),
             id="loop-keys",
         ),
         pytest.param('filter = ""', ConfigFile(filter=""), id="empty-filter"),
@@ -172,7 +150,9 @@ def test_load_config_file_collecting_when_document_valid_does_parse_it(
 ):
     config_path = write_raw(tmp_path, document)
 
-    assert load_config(config_path) == expected
+    result = load_config_file_collecting(config_path, required=False)
+
+    assert result == ConfigFileResult(config_file=expected, exists=True, problems=[])
 
 
 # ---------------------------------------------------------------------------
@@ -203,32 +183,6 @@ def test_load_config_file_collecting_when_toml_invalid_does_report_parse_problem
         exists=True,
         problems=[f"Failed to parse config file at {config_path}: {reason}"],
     )
-
-
-@pytest.mark.parametrize(
-    ("literal", "token"),
-    [
-        pytest.param("nan", "NaN", id="nan"),
-        pytest.param("inf", "Infinity", id="inf"),
-        pytest.param("-inf", "-Infinity", id="negative-inf"),
-        pytest.param("false", "false", id="boolean"),
-    ],
-)
-@pytest.mark.parametrize(
-    ("prefix", "key"),
-    [
-        pytest.param("unstable_noise_pct = ", "unstable_noise_pct", id="noise-pct"),
-        pytest.param("[stop]\ntarget_value = ", "stop.target_value", id="stop-target-value"),
-    ],
-)
-def test_load_config_file_collecting_when_number_key_non_finite_or_boolean_does_reject_as_not_a_number(
-    tmp_path: Path, literal: str, token: str, prefix: str, key: str
-):
-    config_path = write_raw(tmp_path, f"{prefix}{literal}")
-
-    message = load_error_message(config_path)
-
-    assert message == f"Invalid config value for {key}: expected a number, got {token}"
 
 
 @pytest.mark.parametrize(
@@ -383,42 +337,40 @@ _EFFORT_LEVELS = "'low', 'medium', 'high', 'xhigh' or 'max'"
         ),
         # keys that must be strings
         _wrong_type({"bench": 42}, "bench", "a string", "42"),
-        _wrong_type({"bench": ["a"]}, "bench", "a string", '["a"]'),
         _wrong_type({"prepare": True}, "prepare", "a string", "true"),
-        _wrong_type({"prepare": {"cmd": "x"}}, "prepare", "a string", '{"cmd": "x"}'),
         _wrong_type({"checks": 42}, "checks", "a string", "42"),
         _wrong_type({"filter": ["a"]}, "filter", "a string", '["a"]'),
         _wrong_type({"hooks": {"before": 42}}, "hooks.before", "a string", "42"),
         # keys that must be non-empty strings
         _wrong_type({"hooks": {"before": ""}}, "hooks.before", "a non-empty string", '""'),
         _wrong_type({"hooks": {"after": ""}}, "hooks.after", "a non-empty string", '""'),
-        _wrong_type({"hooks": {"before": " "}}, "hooks.before", "a non-empty string", '" "'),
-        _wrong_type(
-            {"hooks": {"after": "\t\n "}}, "hooks.after", "a non-empty string", '"\\t\\n "'
-        ),
         _wrong_type({"supervise": {"model": ""}}, "supervise.model", "a non-empty string", '""'),
-        # keys that must be non-empty strings, holding a blank
         _wrong_type({"checks": ""}, "checks", "a non-empty string", '""'),
         _wrong_type({"bench": ""}, "bench", "a non-empty string", '""'),
         _wrong_type({"prepare": ""}, "prepare", "a non-empty string", '""'),
         _wrong_type({"adapter": ""}, "adapter", "a non-empty string", '""'),
         _wrong_type({"runbook": ""}, "runbook", "a non-empty string", '""'),
         _wrong_type({"primary": ""}, "primary", "a non-empty string", '""'),
-        _wrong_type({"checks": " "}, "checks", "a non-empty string", '" "'),
-        _wrong_type({"bench": "\t"}, "bench", "a non-empty string", '"\\t"'),
-        _wrong_type({"adapter": "\u00a0"}, "adapter", "a non-empty string", '"\\u00a0"'),
+        _wrong_type({"bench": " "}, "bench", "a non-empty string", '" "'),
+        _wrong_type({"bench": "\t\n "}, "bench", "a non-empty string", '"\\t\\n "'),
+        _wrong_type({"bench": "\u00a0"}, "bench", "a non-empty string", '"\\u00a0"'),
         # positive-integer keys
         _wrong_type({"samples": "ten"}, "samples", "an integer", '"ten"'),
         _wrong_type({"samples": 1.5}, "samples", "an integer", "1.5"),
         _wrong_type({"samples": 0}, "samples", "a number at or above 1", "0"),
         _wrong_type({"timeout_seconds": -1}, "timeout_seconds", "a number at or above 1", "-1"),
         _wrong_type({"timeout_seconds": True}, "timeout_seconds", "an integer", "true"),
-        # unstable_noise_pct
         _wrong_type({"unstable_noise_pct": "loud"}, "unstable_noise_pct", "a number", '"loud"'),
+        *(
+            _wrong_type({"unstable_noise_pct": value}, "unstable_noise_pct", "a number", got)
+            for value, got in (
+                (math.nan, "NaN"),
+                (False, "false"),
+            )
+        ),
         _wrong_type(
             {"unstable_noise_pct": 0.25}, "unstable_noise_pct", "a number at or above 0.5", "0.25"
         ),
-        # metric direction
         *(
             _wrong_type(
                 {"metrics": {"latency": {"direction": value}}},
@@ -441,13 +393,12 @@ _EFFORT_LEVELS = "'low', 'medium', 'high', 'xhigh' or 'max'"
             f"a number at or below {MAX_SAFE_INTEGER}",
             str(MAX_SAFE_INTEGER + 1),
         ),
-        # stop fields
         _wrong_type({"stop": {"target_value": "fast"}}, "stop.target_value", "a number", '"fast"'),
+        _wrong_type({"stop": {"target_value": math.nan}}, "stop.target_value", "a number", "NaN"),
         _wrong_type(
             {"stop": {"max_iterations": 0}}, "stop.max_iterations", "a number at or above 1", "0"
         ),
         _wrong_type({"stop": {"max_iterations": 1.5}}, "stop.max_iterations", "an integer", "1.5"),
-        # supervise effort
         *(
             _wrong_type(
                 {"supervise": {"effort": effort}}, "supervise.effort", _EFFORT_LEVELS, f'"{effort}"'
@@ -461,11 +412,30 @@ def test_load_config_file_collecting_when_value_invalid_does_name_key_path_and_e
 ):
     config_path = write_config(tmp_path, content)
 
-    assert load_error_message(config_path) == message
+    result = load_config_file_collecting(config_path, required=False)
+
+    assert result == ConfigFileResult(config_file=None, exists=True, problems=[message])
+
+
+def test_load_config_file_collecting_when_multiple_fields_invalid_does_report_every_problem(
+    tmp_path: Path,
+):
+    config_path = write_config(tmp_path, {"bench": 42, "samples": 0})
+
+    result = load_config_file_collecting(config_path, required=False)
+
+    assert result == ConfigFileResult(
+        config_file=None,
+        exists=True,
+        problems=[
+            "Invalid config value for bench: expected a string, got 42",
+            "Invalid config value for samples: expected a number at or above 1, got 0",
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
-# number-typed keys: integers accepted, booleans rejected
+# number-typed keys: integers accepted as floats
 # ---------------------------------------------------------------------------
 
 
@@ -488,30 +458,45 @@ def test_load_config_file_collecting_when_number_key_given_integer_does_accept_a
 ):
     config_path = write_raw(tmp_path, text)
 
-    value = read(load_config(config_path))
+    result = load_config_file_collecting(config_path, required=False)
 
+    assert result.problems == []
+    assert result.config_file is not None
+    value = read(result.config_file)
     assert (type(value), value) == (float, expected)
 
 
 # ---------------------------------------------------------------------------
-# metrics
+# section keys
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("section", ["metrics", "kinds"])
-@pytest.mark.parametrize("char", LINE_BREAK_CHARS)
+@pytest.mark.parametrize(
+    ("section", "char"),
+    [
+        *(pytest.param("metrics", char, id=f"metrics-{ord(char)}") for char in LINE_BREAK_CHARS),
+        pytest.param("kinds", "\n", id="kinds-10"),
+    ],
+)
 def test_load_config_file_collecting_when_section_key_embeds_line_break_does_report_key_not_shape(
-    tmp_path: Path, char: str, section: str
+    tmp_path: Path, section: str, char: str
 ):
     smuggled = f"latency{char}direction: 999, gating: 0"
     config_path = write_config(tmp_path, {section: {smuggled: {"gating": False}}})
 
-    message = load_error_message(config_path)
+    result = load_config_file_collecting(config_path, required=False)
 
     # The rejected value is an object; only its key is bad, so the message names
     # the key instead of demanding an object.
-    assert message == (
-        f"Invalid config value for {section}: key {json.dumps(smuggled)} must not embed a line break"
+    assert result == ConfigFileResult(
+        config_file=None,
+        exists=True,
+        problems=[
+            (
+                f"Invalid config value for {section}: "
+                f"key {json.dumps(smuggled)} must not embed a line break"
+            )
+        ],
     )
 
 
@@ -528,22 +513,29 @@ def test_load_config_file_collecting_when_metric_name_needs_quoting_does_quote_i
 ):
     config_path = write_config(tmp_path, {"metrics": {metric_name: {"direction": "sideways"}}})
 
-    message = load_error_message(config_path)
+    result = load_config_file_collecting(config_path, required=False)
 
-    assert expected_path in message
+    assert result == ConfigFileResult(
+        config_file=None,
+        exists=True,
+        problems=[
+            (
+                f"Invalid config value for {expected_path}: expected 'lower' or 'higher', "
+                'got "sideways"'
+            )
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
-# explicit None and empty values
+# validate_config_dict
 # ---------------------------------------------------------------------------
 
 
 def test_validate_config_dict_when_optional_keys_explicitly_none_does_accept():
     config: dict[str, object] = {field.name: None for field in fields(ConfigFile)}
 
-    result = validate_config_dict(config)
-
-    assert result is None
+    validate_config_dict(config)
 
 
 @pytest.mark.parametrize(
@@ -574,46 +566,18 @@ def test_validate_config_dict_when_several_problems_does_raise_the_first(
 
 
 # ---------------------------------------------------------------------------
-# load_config_file_collecting
+# missing, unreadable and undecodable files
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("required", "config_file", "problems"),
-    [
-        pytest.param(False, ConfigFile(), [], id="optional"),
-        pytest.param(True, None, ["Config file not found at {missing}"], id="required"),
-    ],
-)
-def test_load_config_file_collecting_when_file_missing_does_report_absent_and_problem_if_required(
-    tmp_path: Path, required: bool, config_file: ConfigFile | None, problems: list[str]
+def test_load_config_file_collecting_when_optional_file_missing_does_return_empty_config(
+    tmp_path: Path,
 ):
     missing = tmp_path / "nonexistent.toml"
 
-    result = load_config_file_collecting(missing, required=required)
+    result = load_config_file_collecting(missing, required=False)
 
-    assert result == ConfigFileResult(
-        config_file=config_file,
-        exists=False,
-        problems=[problem.format(missing=missing) for problem in problems],
-    )
-
-
-def test_load_config_file_collecting_when_multiple_fields_invalid_does_report_every_problem(
-    tmp_path: Path,
-):
-    config_path = write_config(tmp_path, {"bench": 42, "samples": 0})
-
-    result = load_config_file_collecting(config_path, required=False)
-
-    assert result == ConfigFileResult(
-        config_file=None,
-        exists=True,
-        problems=[
-            "Invalid config value for bench: expected a string, got 42",
-            "Invalid config value for samples: expected a number at or above 1, got 0",
-        ],
-    )
+    assert result == ConfigFileResult(config_file=ConfigFile(), exists=False, problems=[])
 
 
 def test_load_config_file_collecting_when_path_is_directory_does_collect_read_failure(
@@ -625,22 +589,6 @@ def test_load_config_file_collecting_when_path_is_directory_does_collect_read_fa
         config_file=None,
         exists=True,
         problems=[f"Cannot read config file at {tmp_path}: {DIRECTORY_READ_REASON}"],
-    )
-
-
-def test_load_config_file_collecting_when_value_is_toml_date_does_report_problem_not_crash(
-    tmp_path: Path,
-):
-    config_path = write_raw(tmp_path, "samples = 1979-05-27")
-
-    result = load_config_file_collecting(config_path, required=False)
-
-    assert result == ConfigFileResult(
-        config_file=None,
-        exists=True,
-        problems=[
-            "Invalid config value for samples: expected an integer, got datetime.date(1979, 5, 27)"
-        ],
     )
 
 

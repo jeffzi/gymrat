@@ -1,12 +1,9 @@
-"""Canonical session-record builders shared by the store tests.
+"""Canonical session-record builders shared across the test suite.
 
 Each builder returns a fully-populated record with the same defaults the real
 session writes, and takes keyword overrides for the fields a test cares about.
-Optional fields default to ``None`` on the underlying dataclasses, so passing a
-keyword of ``None`` erases the builder's default for that field.
-
-The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.session.records._fixtures``.
+Optional fields default to ``None`` on the underlying pydantic models, so passing
+a keyword of ``None`` erases the builder's default for that field.
 """
 
 from dataclasses import replace
@@ -29,17 +26,18 @@ from gymrat.session.records import (
     DiscardRecord,
     FinalizeRecord,
     HookRecord,
+    IterationMetricVerdict,
     IterationPrimary,
     IterationRecord,
     KeepChecks,
     KeepRecord,
-    MetricVerdict,
     PairedSamples,
     SessionConfig,
     SessionLogRecord,
     SessionRecord,
     StopRecord,
 )
+from gymrat.session.schema import KeepReason
 from gymrat.session.store import SessionState, append_record, read_records
 from gymrat.session.workspace import BaselineRef, Worktrees
 
@@ -49,11 +47,20 @@ AT = 1_786_198_530_000_000_000
 #: A commit SHA fixture records point at; not a real commit.
 COMMIT = "b" * 40
 
+#: A 40-hex baseline SHA whose first seven characters are recognizable on their own.
+RECOGNIZABLE_BASELINE_SHA = "a1b2c3d" + "e" * 33
+
+#: A 40-hex keep-commit SHA whose first seven characters are recognizable on their own.
+RECOGNIZABLE_KEEP_COMMIT = "b1b2b3b" + "c" * 33
+
 #: The squash commit SHA finalize fixtures point at; distinct from COMMIT.
 SQUASH_COMMIT = "c" * 40
 
 #: The session id every fixture record belongs to.
 SESSION_ID = "20260808-141530-a3f2"
+
+#: The id of a session a ``start`` opens over the previous one.
+FRESH_SESSION_ID = "20260809-090000-b7e4"
 
 #: The session id the supervised-run fixtures (launch events, dashboards) carry.
 SUPERVISED_SESSION_ID = "20260813-125044-34ec"
@@ -123,9 +130,9 @@ def baseline_record(**overrides: Any) -> BaselineRecord:
     return _overridden(default, overrides)
 
 
-def metric_verdict(**overrides: Any) -> MetricVerdict:
+def metric_verdict(**overrides: Any) -> IterationMetricVerdict:
     """A metric verdict the engine produces, improved and gating unless overridden."""
-    default = MetricVerdict(
+    default = IterationMetricVerdict(
         delta_pct=-7.2,
         verdict="improved",
         method="permutation",
@@ -178,6 +185,19 @@ def committed_keep(seq: int, **overrides: Any) -> KeepRecord:
     return _overridden(default, overrides)
 
 
+def settled_history(*, duration_ms: int | None = None) -> tuple[SessionLogRecord, ...]:
+    """The history of a settled session: one measured iteration and the keep that settled it.
+
+    Args:
+        duration_ms: How long the iteration is recorded to have taken; None leaves it unrecorded.
+
+    Returns:
+        The iteration record and its committed keep, in log order.
+    """
+    timing = {} if duration_ms is None else {"duration_ms": duration_ms}
+    return (iteration_record(seq=1, **timing), committed_keep(1))
+
+
 def blocked_keep(seq: int, **overrides: Any) -> KeepRecord:
     """A keep the checks gate refused, leaving the iteration numbered ``seq`` uncommitted.
 
@@ -201,7 +221,22 @@ def blocked_keep(seq: int, **overrides: Any) -> KeepRecord:
     return _overridden(default, overrides)
 
 
+def gate_block(seq: int, reason: KeepReason) -> KeepRecord:
+    """Build a keep a gate refused before the configured checks ever ran.
+
+    Args:
+        seq: The iteration the refused keep settles.
+        reason: The gate that refused it, such as ``"gating-regression"`` or
+            ``"nothing-measured"``.
+
+    Returns:
+        The blocked keep record, its checks configured but not run.
+    """
+    return blocked_keep(seq, reason=reason, checks=KeepChecks(configured=True))
+
+
 def discard_record(seq: int) -> DiscardRecord:
+    """A discard that settles the iteration numbered ``seq``."""
     return DiscardRecord(type="discard", seq=seq, at=AT)
 
 
@@ -296,6 +331,13 @@ def write_session_log(
     append_records(root, header, *history)
 
 
+def seeded_session(root: str) -> SessionRecord:
+    """Write the default session header to ``root``'s session log and return it."""
+    header = session_record()
+    write_session_log(root, header)
+    return header
+
+
 def append_records(root: str, *records: SessionLogRecord) -> None:
     """Append every record, in order, to the session JSONL log under ``root``."""
     jsonl_path = session_jsonl_path(root)
@@ -351,6 +393,25 @@ def records_of_type(
         The selected records, in file order.
     """
     return [record for record in log_records(root) if isinstance(record, record_type) is matching]
+
+
+def last_command_record(root: str) -> CommandRecord:
+    """Read the session log and return the last ``CommandRecord``.
+
+    Args:
+        root: The repository whose session log is read.
+
+    Returns:
+        The last command record in the log.
+
+    Raises:
+        AssertionError: The log holds no command record.
+    """
+    for record in reversed(log_records(root)):
+        if isinstance(record, CommandRecord):
+            return record
+    msg = "no CommandRecord found in session log"
+    raise AssertionError(msg)
 
 
 def session_header_of(root: str) -> SessionRecord:

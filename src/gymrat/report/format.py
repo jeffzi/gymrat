@@ -10,6 +10,9 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from gymrat.report.display import VERDICT_GLOSSES
+from gymrat.utils import fraction_of_median
+
 if TYPE_CHECKING:
     from gymrat.model import MetricUnit, MetricVerdict
     from gymrat.report.types import CandidateMetric, MetricComparison
@@ -19,20 +22,29 @@ if TYPE_CHECKING:
 # Value and cell formatting
 # ---------------------------------------------------------------------------
 
-type _Tier = tuple[float, float, str, int]
+
+@dataclass(frozen=True, slots=True)
+class _Tier:
+    """One scale step: a magnitude that rounds below ``threshold`` prints in this tier."""
+
+    threshold: float
+    divisor: float
+    suffix: str
+    decimals: int
+
 
 _NS_TIERS: tuple[_Tier, ...] = (
-    (1000, 1, "ns", 0),
-    (1e6, 1000, "µs", 1),
-    (1e9, 1e6, "ms", 1),
-    (math.inf, 1e9, "s", 1),
+    _Tier(threshold=1000, divisor=1, suffix="ns", decimals=0),
+    _Tier(threshold=1e6, divisor=1000, suffix="µs", decimals=1),
+    _Tier(threshold=1e9, divisor=1e6, suffix="ms", decimals=1),
+    _Tier(threshold=math.inf, divisor=1e9, suffix="s", decimals=1),
 )
 
 _BYTE_TIERS: tuple[_Tier, ...] = (
-    (1000, 1, "B", 0),
-    (1e6, 1000, "KB", 1),
-    (1e9, 1e6, "MB", 1),
-    (math.inf, 1e9, "GB", 1),
+    _Tier(threshold=1000, divisor=1, suffix="B", decimals=0),
+    _Tier(threshold=1e6, divisor=1000, suffix="KB", decimals=1),
+    _Tier(threshold=1e9, divisor=1e6, suffix="MB", decimals=1),
+    _Tier(threshold=math.inf, divisor=1e9, suffix="GB", decimals=1),
 )
 
 _TIER_MAP: dict[MetricUnit, tuple[_Tier, ...]] = {"ns": _NS_TIERS, "bytes": _BYTE_TIERS}
@@ -65,10 +77,10 @@ def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
         The scaled, suffixed figure such as ``"1.7µs"`` or ``"512KB"``.
     """
     magnitude = abs(value)
-    for threshold, divisor, suffix, decimals in tiers:
-        rounded = float(format(magnitude / divisor, f".{decimals}f"))
-        if rounded * divisor < threshold:
-            return f"{value / divisor:.{decimals}f}{suffix}"
+    for tier in tiers:
+        rounded = float(format(magnitude / tier.divisor, f".{tier.decimals}f"))
+        if rounded * tier.divisor < tier.threshold:
+            return f"{value / tier.divisor:.{tier.decimals}f}{tier.suffix}"
     return str(value)
 
 
@@ -91,11 +103,15 @@ def format_value(value: float, unit: MetricUnit | None = None) -> str:
     return _scale_tier(value, _TIER_MAP[unit])
 
 
+ZERO_PERCENT_DELTA = "0.0%"
+"""What a delta that rounds to zero prints as: unsigned, since it points nowhere."""
+
+
 def format_percent_delta(value: float | None, *, missing: str = "") -> str:
     """A signed percentage, or a placeholder when there is no finite delta to state.
 
-    A delta that rounds to zero prints as an unsigned ``0.0%``: at display
-    precision there is no direction to report, so ``-0.0%`` would claim one.
+    At display precision a delta that rounds to zero has no direction to
+    report, so ``-0.0%`` would claim one.
 
     Args:
         value: The percentage delta, such as ``2.2`` for ``+2.2%``, or ``None``
@@ -111,14 +127,16 @@ def format_percent_delta(value: float | None, *, missing: str = "") -> str:
         return missing
     magnitude = f"{abs(value):.1f}"
     if magnitude == "0.0":
-        return "0.0%"
+        return ZERO_PERCENT_DELTA
     sign = "+" if value > 0 else "-"
     return f"{sign}{magnitude}%"
 
 
 PLUS_MINUS = "±"
+"""Glyph that prefixes a noise figure or a verdict's noise band."""
 
 SPREAD_SEPARATOR = f" {PLUS_MINUS} "
+"""Spaced glyph between a value cell's magnitude and its spread."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,7 +205,9 @@ def candidate_cell_parts(
 
 def format_verdict_delta(verdict: MetricVerdict) -> str:
     """The delta cell: the word ``unstable`` for a verdict too noisy to trust, else the delta."""
-    return "unstable" if verdict.verdict == "unstable" else format_percent_delta(verdict.delta)
+    if verdict.verdict == "unstable":
+        return VERDICT_GLOSSES["unstable"]
+    return format_percent_delta(verdict.delta)
 
 
 # ---------------------------------------------------------------------------
@@ -206,11 +226,7 @@ def format_pair_count(n: int) -> str:
 
 
 def _is_ratio_undefined(noise_abs: float, median: float | None) -> bool:
-    if median is None:
-        return False
-    if median == 0:
-        return True
-    return not math.isfinite(noise_abs / abs(median) * 100)
+    return median is not None and fraction_of_median(noise_abs, median, 100) is None
 
 
 def is_noise_percentage_undefined(
@@ -218,10 +234,9 @@ def is_noise_percentage_undefined(
 ) -> bool:
     """Whether the noise cannot be stated as a percentage of either side's median.
 
-    A median of zero has no scale to state noise against, and a median so close
-    to zero that the percentage overflows has none either. The verdict engine
-    drops such a side from the noise percentage, so the percentage left behind is
-    only the floor and understates the scatter that made the verdict unstable.
+    The verdict engine drops such a side from the noise percentage, so the
+    percentage left behind is only the floor and understates the scatter that
+    made the verdict unstable.
 
     Args:
         noise_abs: The noise in the metric's own units.

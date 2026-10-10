@@ -15,21 +15,25 @@ import asyncio
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Literal
 
 from gymrat import clock
 from gymrat.clock import now_ms, now_ns
 from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
+from gymrat.loop.stop_condition import stop_reason
+from gymrat.session.budget import Budget
 from gymrat.session.lock import is_held
 from gymrat.session.paths import session_jsonl_path
-from gymrat.session.store import fold_session, read_records
+from gymrat.session.records import HookRecord, SessionLogRecord
+from gymrat.session.store import SessionState, fold_session, read_records, read_session_records
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
-from gymrat.supervisor.end_scan import EndConditionScan
 from gymrat.supervisor.events import (
     CapAction,
     CapEvent,
     CapType,
+    CompactionEvent,
     FollowUpEvent,
     LaunchEvent,
     SessionEvent,
@@ -50,7 +54,11 @@ from gymrat.supervisor.turns import (
     outcome_record_count,
     spend_cap_reached,
 )
-from gymrat.utils import MS_PER_SECOND, warn_to_stderr
+from gymrat.utils import MS_PER_SECOND, WarnSink, warn_to_stderr
+
+# ---------------------------------------------------------------------------
+# Defaults and shared types
+# ---------------------------------------------------------------------------
 
 WALL_CLOCK_POLL_MS = 1000
 """Default interval (in milliseconds) for polling wall-clock time against the
@@ -64,18 +72,198 @@ LOCK_POLL_MS = 5000
 """Default interval (in milliseconds) for polling the repository lock while
 waiting for another process to release it."""
 
-EndedBy = Literal["session", "wall-clock", "spend-cap", "guard", "stop-condition", "hook-failure"]
+EndedBy = Literal["session", "guard", "stop-condition", "hook-failure"] | CapType
 """How a supervised run ended. See ``SupervisionResult.ended_by`` for the meaning of each member."""
 
 _TaskSlot = Literal["settle", "lock_poll"]
 """Names of the at-most-one-per-slot background tasks the supervisor schedules."""
 
-_IN_FLIGHT_EXCLUSION = frozenset({"cap", "launch", "follow_up", "compaction"})
-"""Event types that do NOT cancel a pending settle window or lock poll.
+_IN_FLIGHT_EXCLUSION = (CapEvent, LaunchEvent, FollowUpEvent, CompactionEvent)
+"""Event classes that do NOT cancel a pending settle window or lock poll.
 
 Usage updates and turn ends never reach the check: the event router handles
 both before it.
 """
+
+
+@dataclass(frozen=True, slots=True)
+class EndCondition:
+    """A condition read off the session log that ends supervision."""
+
+    ended_by: EndedBy
+    reason: str
+
+
+# ---------------------------------------------------------------------------
+# End-condition detection
+# ---------------------------------------------------------------------------
+
+
+def _hook_failure_reason(record: HookRecord) -> str:
+    failure = "timed out" if record.timed_out else f"exit {record.exit_code}"
+    stderr = "?" if record.stderr_bytes is None else record.stderr_bytes
+    return (
+        f"{record.stage} hook failed on iteration {record.seq}: {failure} "
+        f"(stdout {record.stdout_bytes} B, stderr {stderr} B)"
+    )
+
+
+def detect_end_condition(
+    config: BenchlessConfig,
+    records: list[SessionLogRecord],
+    state: SessionState,
+    *,
+    cursor: int | None,
+    check_stop: bool,
+) -> EndCondition | None:
+    """Find the condition in the session log that ends supervision, if any.
+
+    A failed or timed-out hook record at or past *cursor* wins over a met stop
+    condition. Hooks are scanned from the cursor rather than the tail because
+    ``iterate`` appends a before-hook, the iteration, then an after-hook, so a
+    failed before-hook sits two records back.
+
+    Args:
+        config: The session's Benchless configuration, read for stop conditions.
+        records: The raw session log records, command records included.
+        state: The session state already folded from *records*.
+        cursor: The index of the first record not yet scanned for hook
+            failures, or ``None`` to scan no hook records.
+        check_stop: Whether a met stop condition is reported.
+
+    Returns:
+        The end condition, or ``None`` when nothing ends supervision.
+    """
+    if cursor is not None:
+        for record in records[cursor:]:
+            if isinstance(record, HookRecord) and record.failed:
+                return EndCondition("hook-failure", _hook_failure_reason(record))
+
+    if check_stop and (reason := stop_reason(config, state)) is not None:
+        return EndCondition("stop-condition", reason)
+
+    return None
+
+
+def _log_size(path: str) -> int:
+    """Size in bytes of the session log.
+
+    Args:
+        path: The session log path.
+
+    Returns:
+        The log size in bytes, or ``0`` when the log does not exist.
+
+    Raises:
+        GymratError: The log exists but cannot be inspected.
+    """
+    try:
+        return Path(path).stat().st_size
+    except FileNotFoundError:
+        return 0
+    except OSError as error:
+        message = f"Cannot inspect session log {path}: {error.strerror or error}"
+        raise GymratError(message) from error
+
+
+class EndConditionScan:
+    """Track how far the session log has been scanned and the end it found.
+
+    Hook records are scanned only past the cursor, so a hook failure already in
+    the log when the run started never ends it. Later scans leave a pending
+    condition alone.
+
+    Args:
+        config: The settled config whose stop conditions the scan checks.
+        log_path: The session log to scan.
+
+    Attributes:
+        pending: The first end condition found, held until the supervisor fires
+            it; ``None`` while nothing is pending.
+    """
+
+    def __init__(self, config: BenchlessConfig, log_path: str) -> None:
+        self._config = config
+        self._path = log_path
+        self._size = 0
+        self._cursor: int | None = None
+        self._check_stop = True
+        self.pending: EndCondition | None = None
+
+    def seed(self) -> list[SessionLogRecord] | None:
+        """Read the log at launch and start the scan from its current end.
+
+        A stop condition already met at launch disarms stop-condition detection:
+        the run was forced past it. When the read fails the cursor stays unset,
+        and the first clean scan sets it and arms stop-condition detection from
+        the state it folds, without reporting hook failures.
+
+        Returns:
+            The launch records, or ``None`` when the log cannot be inspected, read, or folded.
+        """
+        try:
+            size = _log_size(self._path)
+            records = read_records(self._path)
+            state = fold_session(records)
+        except GymratError:
+            return None
+        self._size = size
+        self._cursor = len(records)
+        self._arm_stop_check(state)
+        return records
+
+    def scan_if_grown(self) -> None:
+        """Read the log and detect an end condition when it grew since the last scan.
+
+        Does nothing while an end is pending or when the log size is unchanged,
+        so event delivery never re-parses an untouched log.
+
+        Raises:
+            GymratError: The grown log cannot be inspected, read, or folded.
+        """
+        if self.pending is not None:
+            return
+        size = _log_size(self._path)
+        if size == self._size:
+            return
+        records = read_records(self._path)
+        state = fold_session(records)
+        self._size = size
+        self.detect(records, state)
+
+    def detect(self, records: list[SessionLogRecord], state: SessionState) -> None:
+        """Record the end condition in ``records`` as pending, unless one already is.
+
+        The first scan after a failed launch read decides whether stop-condition
+        detection is armed, exactly as a clean launch read would: a stop condition
+        already met in that state means the run was forced past it.
+
+        Args:
+            records: The raw session log records, command records included.
+            state: The session state already folded from ``records``.
+        """
+        if self.pending is not None:
+            return
+        if self._cursor is None:
+            self._arm_stop_check(state)
+        self.pending = detect_end_condition(
+            self._config,
+            records,
+            state,
+            cursor=self._cursor,
+            check_stop=self._check_stop,
+        )
+        # Every record has now been scanned for hook failures, whatever was found.
+        self._cursor = len(records)
+
+    def _arm_stop_check(self, state: SessionState) -> None:
+        """Arm stop-condition detection unless ``state`` already satisfies one."""
+        self._check_stop = stop_reason(self._config, state) is None
+
+
+# ---------------------------------------------------------------------------
+# Background task helpers
+# ---------------------------------------------------------------------------
 
 
 def _warn_on_task_failure(finished: asyncio.Task[None], *, context: str) -> None:
@@ -96,13 +284,13 @@ def _fire_and_report_interrupt(session: DriverSession) -> asyncio.Task[None] | N
 
     ``interrupt`` may throw synchronously or its coroutine may reject; either way
     the fallback recovery still runs, so the failure is warned, never raised.
-    Returns the interrupt task so the caller can cancel it on teardown.
 
     Args:
         session: The driver session to interrupt.
 
     Returns:
-        The interrupt task, or ``None`` when the interrupt could not be started.
+        The interrupt task, so the caller can cancel it on teardown, or ``None``
+        when the interrupt could not be started.
     """
     try:
         pending = session.interrupt()
@@ -115,24 +303,32 @@ def _fire_and_report_interrupt(session: DriverSession) -> asyncio.Task[None] | N
     return task
 
 
+# ---------------------------------------------------------------------------
+# Session inputs and result
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True, slots=True)
 class SupervisedSession:
     """Immutable snapshot of everything a supervised session needs to run.
 
-    Built by the CLI layer (``_run_session``) and threaded into :func:`supervise`,
-    which extracts the values it needs rather than accepting them as individual
-    keyword arguments.
+    Built by the CLI layer and passed to :func:`supervise`.
 
-    ``lock_path`` is the repository lock (``lockfile_path(root)``), not the
-    supervise lock.
+    Attributes:
+        root: The repository root the session runs in.
+        log_path: Where the supervisor writes its JSONL event log.
+        lock_path: The repository lock (``lockfile_path(root)``), not the
+            supervise lock.
+        config: The settled config whose stop conditions and guards apply.
+        budget: The session's time budget; its deadline is when the wall-clock cap trips.
+        max_usd: The spend cap in dollars, or ``None`` for no cap.
     """
 
     root: str
     log_path: str
     lock_path: str
     config: BenchlessConfig
-    deadline_ms: float
-    max_minutes: float
+    budget: Budget
     max_usd: float | None
 
 
@@ -171,6 +367,12 @@ class _SuperviseConfig:
     settle_window_ms: int
     lock_poll_ms: int
     is_lock_held: Callable[[], bool]
+    warn: WarnSink
+
+
+# ---------------------------------------------------------------------------
+# Supervision runtime
+# ---------------------------------------------------------------------------
 
 
 class _Supervision:
@@ -184,7 +386,7 @@ class _Supervision:
         observers: list[SessionObserver] = [self._event_router, log_writer]
         if config.observer is not None:
             observers.append(config.observer)
-        self._combined = combine_observers(*observers)
+        self._combined = combine_observers(*observers, warn=config.warn)
 
         self._ended_by: EndedBy = "session"
         self._end_reason: str | None = None
@@ -225,7 +427,7 @@ class _Supervision:
             self._handle_turn_end(event)
             return
 
-        if event.type not in _IN_FLIGHT_EXCLUSION:
+        if not isinstance(event, _IN_FLIGHT_EXCLUSION):
             self._cancel_pending()
 
         if isinstance(event, ToolEndEvent):
@@ -237,6 +439,9 @@ class _Supervision:
         Runs inside event delivery, so every end it causes is scheduled rather
         than emitted inline: the router is the first observer, and an inline
         emit would reach the event log ahead of the ``tool_end`` that caused it.
+        A failed scan or lock probe ends the session with the error, as a failed
+        lock probe does in the settle and lock-poll tasks; raised here, it would
+        reach only the warn sink.
         """
         if self._cap_fired:
             return
@@ -244,9 +449,16 @@ class _Supervision:
         try:
             self._end_scan.scan_if_grown()
         except GymratError as error:
-            loop.call_soon(self._handle_log_error, str(error))
+            loop.call_soon(self._end_with_error, str(error))
             return
-        if self._end_scan.pending is not None and not self._config.is_lock_held():
+        if self._end_scan.pending is None:
+            return
+        try:
+            lock_held = self._config.is_lock_held()
+        except Exception as error:  # noqa: BLE001 - any probe failure ends the session, as in the settle task
+            loop.call_soon(self._end_with_error, str(error))
+            return
+        if not lock_held:
             loop.call_soon(self._fire_pending_end)
 
     def _fire_pending_end(self) -> None:
@@ -280,8 +492,17 @@ class _Supervision:
                 del self._tasks[slot]
 
         task.add_done_callback(_clear_on_done)
-        task.add_done_callback(_warn_unhandled)
+        task.add_done_callback(self._end_on_task_failure)
         self._tasks[slot] = task
+
+    def _end_on_task_failure(self, finished: asyncio.Task[None]) -> None:
+        # A failed settle or lock poll leaves nothing to answer the turn end,
+        # so the run would otherwise idle until the wall-clock cap.
+        if finished.cancelled():
+            return
+        error = finished.exception()
+        if error is not None:
+            self._end_with_error(str(error))
 
     def _handle_turn_end(self, event: TurnEndEvent) -> None:
         if self._cap_fired:
@@ -299,12 +520,10 @@ class _Supervision:
             await asyncio.sleep(self._config.settle_window_ms / MS_PER_SECOND)
 
         try:
-            records = read_records(
-                session_jsonl_path(self._config.context.root),
-            )
+            records = read_session_records(self._config.context.root)
             state = fold_session(records)
         except GymratError as error:
-            self._handle_log_error(str(error))
+            self._end_with_error(str(error))
             return
 
         self._end_scan.detect(records, state)
@@ -322,15 +541,13 @@ class _Supervision:
             return
 
         decision = classify(
-            config=self._config.context.config,
             state=state,
             records=records,
             guards=self._guards,
             lock_held=lock_held,
             turn=turn,
             max_usd=self._config.context.max_usd,
-            deadline_ms=self._config.context.deadline_ms,
-            max_minutes=self._config.context.max_minutes,
+            budget=self._config.context.budget,
             now_ms=now_ms(),
             after_wait=after_wait,
         )
@@ -361,7 +578,7 @@ class _Supervision:
             self._config.grace_ms / MS_PER_SECOND, self._abort_event.set
         )
 
-    def _handle_log_error(self, message: str) -> None:
+    def _end_with_error(self, message: str) -> None:
         self._end_session(message, ended_by="session", end_reason=message)
 
     def _execute_decision(self, decision: Decision, turn: TurnEndEvent) -> None:
@@ -441,7 +658,7 @@ class _Supervision:
         self._arm_grace()
 
     async def _run_wall_clock(self) -> None:
-        deadline = self._config.context.deadline_ms
+        deadline = self._config.context.budget.deadline_ms
         poll_s = self._config.wall_clock_poll_ms / MS_PER_SECOND
         while now_ms() < deadline:  # noqa: ASYNC110 - wall-clock poll survives machine sleep
             await asyncio.sleep(poll_s)
@@ -481,6 +698,11 @@ class _Supervision:
                     handle.cancel()
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
 async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
     driver: Driver,
     prompt: SessionPrompt,
@@ -493,12 +715,12 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
     settle_window_ms: int = SETTLE_WINDOW_MS,
     lock_poll_ms: int = LOCK_POLL_MS,
     is_lock_held: Callable[[], bool] | None = None,
+    warn: WarnSink = warn_to_stderr,
 ) -> SupervisionResult:
     """Run a supervised agent session with wall-clock and spend caps.
 
     Starts the driver session, tees every event to a JSONL log and an optional
-    observer, enforces the time and cost limits, and returns the session outcome
-    with metadata about how the session ended.
+    observer, and enforces the time and cost limits.
 
     After each ``ToolEndEvent`` whose session log has grown, the supervisor scans
     the log for a failed hook or a stop condition met during the run and ends the
@@ -523,6 +745,8 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
             agent is idle.
         is_lock_held: Callable returning whether the repository lock is held.
             Defaults to probing ``context.lock_path`` on disk.
+        warn: Receives one message naming each observer failure, such as a
+            failed event-log write.
 
     Returns:
         The supervision result containing the session outcome and metadata.
@@ -542,5 +766,6 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
         settle_window_ms=settle_window_ms,
         lock_poll_ms=lock_poll_ms,
         is_lock_held=is_lock_held or partial(is_held, context.lock_path),
+        warn=warn,
     )
     return await _Supervision(config).run()

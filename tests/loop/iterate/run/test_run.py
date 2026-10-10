@@ -1,14 +1,24 @@
 """Behavioral tests for ``iterate_session``: measuring one edit of an open session.
 
+Covers when it refuses to measure, what a measured iteration records, the
+progress it emits, the elapsed time and tree fingerprint the record carries,
+the before and after hooks around the measurement, the budget, and adapter
+warnings. How the verdicts are judged lives in ``test_gating.py``.
+
 The one boundary these tests mock is sampling, which shells out to the
 consumer's bench script; everything downstream of it — verdicts, aggregation,
-the record, the report — runs for real. Sessions are laid down on disk with the
-real record builders against a throwaway repository, so the suite is
-order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
+the record, the report, and the real hook subprocesses — runs for real. The
+budget tests lay a real budget file down and freeze the wall clock it is read
+against.
+Sessions are laid down on disk with the real record builders against a
+throwaway repository, so the suite is order-independent and safe under
+``pytest-xdist`` / ``pytest-randomly``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,12 +26,8 @@ import pytest
 
 from gymrat.config import HooksConfig, StopConfig
 from gymrat.errors import GymratError
-from gymrat.loop.iterate.run import (
-    BudgetExceededError,
-    IterateOptions,
-    LoopStopError,
-    iterate_session,
-)
+from gymrat.loop.iterate.run import IterateOptions, iterate_session
+from gymrat.loop.stop_condition import BudgetExceededError, LoopStopError
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmSkipped,
@@ -32,16 +38,15 @@ from gymrat.progress_events import (
     JudgeFinished,
     JudgeStarted,
     PassFinished,
-    PassStarted,
     ProgressEvent,
 )
-from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
+from gymrat.sampling import SamplingOptions, TargetContext
 from gymrat.session import workspace as _workspace
-from gymrat.session.budget import Budget
-from gymrat.session.records import PairedSamples
+from gymrat.session.records import HookRecord, PairedSamples
 from gymrat.targets import InPlaceTarget
+from tests._clock import install_monotonic_clock
 from tests._config import resolved_config
-from tests._files import write_text
+from tests.adapters._inputs import VALID_ADAPTERS_HINT, unknown_adapter_message
 from tests.loop.iterate._fixtures import (
     FILTER,
     MALFORMED_LINE_WARNING,
@@ -53,30 +58,35 @@ from tests.loop.iterate._fixtures import (
     iterate_session_header,
     last_iteration_of,
     regressed_run,
+    report_a_pass_per_call,
+    run_before_each_call,
+    stub_improved_samples,
     stub_runs,
-    stub_samples,
+    trimmed_report_lines,
+    write_iterate_session,
+    write_outlasted_session,
 )
 from tests.loop.iterate._hooks import HookScripts
+from tests.session._budget import block_supervise_lock, install_budget, write_budget_file
 from tests.session.records._fixtures import (
     committed_keep,
     discard_record,
     iteration_record,
     log_records,
-    write_session_log,
+    records_of_type,
+    settled_history,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from syrupy.assertion import SnapshotAssertion
-
     from gymrat.config import ResolvedConfig
     from gymrat.session.records import SessionLogRecord
     from tests.loop.iterate._fixtures import CollectSamplesRecorder
 
 
-#: The events that mark the judge, confirmation and record stages of an iteration.
+#: The events that mark the end of a bench pass and the judge, confirmation and
+#: record stages of an iteration.
 _MILESTONE_EVENTS = (
+    PassFinished,
     JudgeStarted,
     JudgeFinished,
     ConfirmStarted,
@@ -85,15 +95,19 @@ _MILESTONE_EVENTS = (
     IterationRecorded,
 )
 
+#: The events that mark each stage of an iteration, hooks included, in the order they fire.
+_STAGE_EVENTS = (
+    HookStarted,
+    HookFinished,
+    JudgeStarted,
+    JudgeFinished,
+    ConfirmStarted,
+    ConfirmFinished,
+    IterationRecorded,
+)
 
-@pytest.fixture
-def settled(repo: str, samples_mock: CollectSamplesRecorder) -> str:
-    """A settled session on disk — one kept iteration — with sampling stubbed improved."""
-    write_session_log(
-        repo, iterate_session_header(repo), (iteration_record(seq=1), committed_keep(1))
-    )
-    stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
-    return repo
+#: The hint every stop-condition refusal closes on.
+_STOP_HINT = "The loop is done. Report what the session measured instead of measuring again."
 
 
 # ---------------------------------------------------------------------------
@@ -115,10 +129,27 @@ def settled(repo: str, samples_mock: CollectSamplesRecorder) -> str:
             id="last-iteration-unsettled",
         ),
         pytest.param(
-            (iteration_record(seq=1), committed_keep(1)),
+            settled_history(),
             resolved_config(adapter="banana"),
-            ('Unknown adapter: "banana".', "valid adapters are: metric-lines, mitata", None),
+            (unknown_adapter_message("banana"), VALID_ADAPTERS_HINT, None),
             id="adapter-unknown",
+        ),
+        pytest.param(
+            (
+                iteration_record(seq=1),
+                committed_keep(1),
+                iteration_record(seq=2),
+                committed_keep(2),
+            ),
+            resolved_config(stop=StopConfig(max_iterations=2)),
+            ("Stop condition met: max iterations (2 of 2)", _STOP_HINT, "stop-condition"),
+            id="max-iterations-reached",
+        ),
+        pytest.param(
+            (iteration_record(seq=1, target_reached=True), committed_keep(1)),
+            resolved_config(primary="total_ms", stop=StopConfig(target_value=95)),
+            ("Stop condition met: target reached and kept", _STOP_HINT, "stop-condition"),
+            id="target-kept",
         ),
     ],
 )
@@ -129,93 +160,56 @@ async def test_iterate_session_when_not_ready_to_measure_does_refuse_before_samp
     config: ResolvedConfig,
     refusal: tuple[str, str, str | None],
 ):
-    write_session_log(repo, iterate_session_header(repo), history)
+    write_iterate_session(repo, history)
 
     with pytest.raises(GymratError) as exc:
         await iterate_session(repo, config)
 
     assert (str(exc.value), exc.value.hint, exc.value.reason) == refusal
     assert samples_mock.call_count == 0
+    assert len(log_records(repo)) == len(history) + 1
 
 
 # ---------------------------------------------------------------------------
-# a configured stop condition already met
+# a configured stop condition no longer applies
 # ---------------------------------------------------------------------------
 
 
-async def test_iterate_session_when_max_iterations_reached_does_refuse_without_measuring(
-    repo: str, samples_mock: CollectSamplesRecorder
-):
-    write_session_log(
-        repo,
-        iterate_session_header(repo),
-        (iteration_record(seq=1), committed_keep(1), iteration_record(seq=2), committed_keep(2)),
-    )
-    stub_runs(samples_mock, repo, [])
-
-    with pytest.raises(LoopStopError) as exc:
-        await iterate_session(repo, resolved_config(stop=StopConfig(max_iterations=2)))
-
-    assert str(exc.value) == "Stop condition met: max iterations (2 of 2)"
-    assert samples_mock.call_count == 0
-    assert len(log_records(repo)) == 5
-
-
-async def test_iterate_session_when_target_kept_does_refuse_without_measuring(
-    repo: str, samples_mock: CollectSamplesRecorder
-):
-    write_session_log(
-        repo,
-        iterate_session_header(repo),
-        (iteration_record(seq=1, target_reached=True), committed_keep(1)),
-    )
-    stub_runs(samples_mock, repo, [])
-
-    with pytest.raises(LoopStopError) as exc:
-        await iterate_session(
-            repo, resolved_config(primary="total_ms", stop=StopConfig(target_value=95))
-        )
-
-    assert str(exc.value) == "Stop condition met: target reached and kept"
-    assert samples_mock.call_count == 0
-    assert len(log_records(repo)) == 3
-
-
-async def test_iterate_session_when_target_iteration_discarded_does_measure_again(
-    repo: str, samples_mock: CollectSamplesRecorder
-):
-    stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
-    write_session_log(
-        repo,
-        iterate_session_header(repo),
-        (iteration_record(seq=1, target_reached=True), discard_record(1)),
-    )
-
-    result = await iterate_session(
-        repo, resolved_config(primary="total_ms", stop=StopConfig(target_value=95))
-    )
-
-    assert result.record.seq == 2
-
-
-async def test_iterate_session_when_no_stop_configured_does_measure_past_a_kept_target(
-    repo: str, samples_mock: CollectSamplesRecorder
-):
-    write_session_log(
-        repo,
-        iterate_session_header(repo),
-        (
-            iteration_record(seq=1, target_reached=True),
-            committed_keep(1),
-            iteration_record(seq=2),
-            committed_keep(2),
+@pytest.mark.parametrize(
+    ("history", "config", "expected_seq"),
+    [
+        pytest.param(
+            (iteration_record(seq=1, target_reached=True), discard_record(1)),
+            resolved_config(primary="total_ms", stop=StopConfig(target_value=95)),
+            2,
+            id="target-iteration-discarded",
         ),
-    )
-    stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
+        pytest.param(
+            (
+                iteration_record(seq=1, target_reached=True),
+                committed_keep(1),
+                iteration_record(seq=2),
+                committed_keep(2),
+            ),
+            resolved_config(),
+            3,
+            id="no-stop-configured",
+        ),
+    ],
+)
+async def test_iterate_session_when_stop_condition_no_longer_applies_does_measure_again(
+    repo: str,
+    samples_mock: CollectSamplesRecorder,
+    history: tuple[SessionLogRecord, ...],
+    config: ResolvedConfig,
+    expected_seq: int,
+):
+    write_iterate_session(repo, history)
+    stub_improved_samples(samples_mock, repo)
 
-    result = await iterate_session(repo, resolved_config())
+    result = await iterate_session(repo, config)
 
-    assert result.record.seq == 3
+    assert result.record.seq == expected_seq
 
 
 # ---------------------------------------------------------------------------
@@ -226,9 +220,10 @@ async def test_iterate_session_when_no_stop_configured_does_measure_past_a_kept_
 async def test_iterate_session_when_measuring_does_record_the_paired_iteration_after_last_settled(
     settled: str, samples_mock: CollectSamplesRecorder
 ):
+    worktrees = iterate_session_header(settled).worktrees
+
     result = await iterate_session(settled, resolved_config())
 
-    worktrees = iterate_session_header(settled).worktrees
     assert samples_mock.calls[0].targets == [
         TargetContext(
             target=InPlaceTarget(dir=worktrees.baseline),
@@ -263,17 +258,6 @@ async def test_iterate_session_when_measuring_does_record_the_paired_iteration_a
     assert record.target_reached is False
 
 
-async def test_iterate_session_when_primary_is_named_metric_does_report_its_delta_alone(
-    settled: str, samples_mock: CollectSamplesRecorder, snapshot: SnapshotAssertion
-):
-    result = await iterate_session(settled, resolved_config(primary="total_ms"))
-
-    assert result.record.primary.kind == "metric"
-    assert result.record.primary.name == "total_ms"
-    assert result.record.primary.delta_pct == pytest.approx(-10, abs=1e-6)
-    assert result.report.split("\n") == snapshot
-
-
 @pytest.mark.parametrize("color", [False, True])
 async def test_iterate_session_when_color_given_does_emit_ansi_only_when_true(
     settled: str, samples_mock: CollectSamplesRecorder, *, color: bool
@@ -288,60 +272,10 @@ async def test_iterate_session_when_color_given_does_emit_ansi_only_when_true(
 # ---------------------------------------------------------------------------
 
 
-async def test_iterate_session_when_measuring_does_emit_judge_started_after_the_bench_passes(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+async def test_iterate_session_when_improved_does_judge_after_the_bench_then_record_without_confirming(
+    settled: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
-    write_session_log(
-        repo, iterate_session_header(repo), (iteration_record(seq=1), committed_keep(1))
-    )
-    worktrees = iterate_session_header(repo).worktrees
-    by_dir = {worktrees.experiment: improved_rounds(), worktrees.baseline: baseline_rounds()}
-
-    async def sample_reporting_passes(
-        adapter: object,
-        targets: Sequence[TargetContext],
-        options: SamplingOptions,
-        abort: object,
-    ) -> list[TargetSamples]:
-        """Stand in for the bench, reporting one pass per target the way sampling does."""
-        forward = options.on_progress
-        assert forward is not None, "iterate_session should forward sampling progress"
-        contexts = list(targets)
-        collected: list[TargetSamples] = []
-        for ctx in contexts:
-            for event_type in (PassStarted, PassFinished):
-                forward(
-                    event_type(
-                        round=1,
-                        total_rounds=1,
-                        target_count=len(contexts),
-                        label=ctx.label,
-                        at_ms=0,
-                    )
-                )
-            collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
-        return collected
-
-    monkeypatch.setattr("gymrat.loop.iterate.confirm.collect_samples", sample_reporting_passes)
-    events: list[ProgressEvent] = []
-
-    await iterate_session(
-        repo, resolved_config(), options=IterateOptions(on_progress=events.append)
-    )
-
-    judge_started = [e for e in events if isinstance(e, JudgeStarted)]
-    assert len(judge_started) == 1
-    event_types = [type(e).__name__ for e in events]
-    started_idx = event_types.index("JudgeStarted")
-    finished_idx = event_types.index("JudgeFinished")
-    last_pass_idx = max(i for i, name in enumerate(event_types) if name == "PassFinished")
-    assert last_pass_idx < started_idx
-    assert started_idx < finished_idx
-
-
-async def test_iterate_session_when_improved_does_judge_then_record_without_confirming(
-    settled: str, samples_mock: CollectSamplesRecorder
-):
+    report_a_pass_per_call(monkeypatch, samples_mock)
     events: list[ProgressEvent] = []
 
     result = await iterate_session(
@@ -350,59 +284,18 @@ async def test_iterate_session_when_improved_does_judge_then_record_without_conf
 
     milestones = [e for e in events if isinstance(e, _MILESTONE_EVENTS)]
     assert [type(e) for e in milestones] == [
+        PassFinished,
         JudgeStarted,
         JudgeFinished,
         ConfirmSkipped,
         IterationRecorded,
     ]
-    _, judge, _, recorded = milestones
+    _, _, judge, _, recorded = milestones
     assert isinstance(judge, JudgeFinished)
     assert judge.primary_delta_pct == pytest.approx(-15.1472, abs=1e-3)
     assert judge.regressed == ()
     assert isinstance(recorded, IterationRecorded)
     assert (recorded.seq, recorded.outcome) == (result.record.seq, "improved")
-
-
-async def test_iterate_session_when_hooks_and_confirmation_does_order_all_events(
-    hooks_setup: tuple[str, str, HookScripts], samples_mock: CollectSamplesRecorder
-):
-    repo, _experiment_dir, hooks = hooks_setup
-    stub_runs(
-        samples_mock,
-        repo,
-        [
-            regressed_run(),
-            regressed_run(),
-        ],
-    )
-    events: list[ProgressEvent] = []
-    config = resolved_config(
-        filter=FILTER,
-        hooks=HooksConfig(before=hooks.printing("hi"), after=hooks.printing("bye")),
-    )
-
-    await iterate_session(repo, config, options=IterateOptions(on_progress=events.append))
-
-    def stage_index(event_type: type[HookStarted | HookFinished], stage: str) -> int:
-        return next(
-            i for i, e in enumerate(events) if isinstance(e, event_type) and e.stage == stage
-        )
-
-    event_types = [type(e).__name__ for e in events]
-    assert event_types.index("HookStarted") < event_types.index("HookFinished")
-    before_finished_idx = stage_index(HookFinished, "before")
-    judge_started_idx = event_types.index("JudgeStarted")
-    judge_idx = event_types.index("JudgeFinished")
-    confirm_started_idx = event_types.index("ConfirmStarted")
-    confirm_finished_idx = event_types.index("ConfirmFinished")
-    recorded_idx = event_types.index("IterationRecorded")
-    after_started_idx = stage_index(HookStarted, "after")
-    assert before_finished_idx < judge_started_idx
-    assert judge_started_idx < judge_idx
-    assert judge_idx < confirm_started_idx
-    assert confirm_started_idx < confirm_finished_idx
-    assert confirm_finished_idx < recorded_idx
-    assert recorded_idx < after_started_idx
 
 
 # ---------------------------------------------------------------------------
@@ -412,15 +305,27 @@ async def test_iterate_session_when_hooks_and_confirmation_does_order_all_events
 
 async def test_iterate_session_when_measuring_does_exclude_the_after_hook_from_duration_ms(
     hooks_setup: tuple[str, str, HookScripts],
+    samples_mock: CollectSamplesRecorder,
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo, _experiment_dir, hooks = hooks_setup
-    # The iteration reads the clock at start and end; the after hook times itself with two more reads.
-    ticks = iter([1_000.0, 1_500.0, 2_000.0, 2_000.0])
-    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
+    # The clock stands still except where the test moves it: the bench takes
+    # 500 ms, and the after hook takes far longer once it starts.
+    clock = install_monotonic_clock(monkeypatch)
+
+    async def bench_taking_500_ms(_options: SamplingOptions) -> None:
+        clock.tick(500.0)
+
+    def slow_after_hook(event: ProgressEvent) -> None:
+        if isinstance(event, HookStarted) and event.stage == "after":
+            clock.tick(60_000.0)
+
+    run_before_each_call(monkeypatch, samples_mock, bench_taking_500_ms)
     config = resolved_config(hooks=HooksConfig(after=hooks.printing("bye")))
 
-    result = await iterate_session(repo, config)
+    result = await iterate_session(
+        repo, config, options=IterateOptions(on_progress=slow_after_hook)
+    )
 
     assert result.record.duration_ms == 500
 
@@ -430,29 +335,37 @@ async def test_iterate_session_when_measuring_does_exclude_the_after_hook_from_d
 # ---------------------------------------------------------------------------
 
 
-def _ensure_dir(path: str) -> None:
-    Path(path).mkdir(parents=True, exist_ok=True)
+async def test_iterate_session_when_experiment_worktree_missing_does_omit_measured_tree_with_a_warning(
+    settled: str, capsys: pytest.CaptureFixture[str]
+):
+    # The session names an experiment worktree that was never created, so git
+    # has no tree there to fingerprint.
+    result = await iterate_session(settled, resolved_config())
+
+    assert result.record.measured_tree is None
+    assert last_iteration_of(settled).measured_tree is None
+    assert capsys.readouterr().err == (
+        "Could not fingerprint the experiment worktree; "
+        "measured_tree is omitted from the iteration record.\n"
+    )
 
 
 async def test_iterate_session_when_bench_writes_file_does_fingerprint_the_tree_it_left(
-    settled: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
+    hooks_setup: tuple[str, str, HookScripts],
+    samples_mock: CollectSamplesRecorder,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    experiment_dir = iterate_session_header(settled).worktrees.experiment
-    _ensure_dir(experiment_dir)
+    settled, experiment_dir, _hooks = hooks_setup
     # The experiment dir sits inside the scratch repo: keep the growing session log
     # out of the fingerprint so only the bench's write can change it.
     _workspace.ensure_git_exclude(settled)
 
-    async def bench_writing_an_artifact(
-        adapter: object,
-        targets: Sequence[TargetContext],
-        options: SamplingOptions,
-        abort: object,
-    ) -> list[TargetSamples]:
-        write_text(Path(experiment_dir, "bench-artifact.txt"), "artifact")
-        return await samples_mock(adapter, targets, options, abort)
+    async def bench_writing_an_artifact(_options: SamplingOptions) -> None:
+        await asyncio.to_thread(
+            Path(experiment_dir, "bench-artifact.txt").write_text, "artifact", encoding="utf-8"
+        )
 
-    monkeypatch.setattr("gymrat.loop.iterate.confirm.collect_samples", bench_writing_an_artifact)
+    run_before_each_call(monkeypatch, samples_mock, bench_writing_an_artifact)
 
     result = await iterate_session(settled, resolved_config())
 
@@ -482,26 +395,169 @@ async def test_iterate_session_when_after_hook_writes_file_does_not_change_measu
     assert result.record.measured_tree != tree_after
 
 
-async def test_iterate_session_when_fingerprint_fails_does_omit_measured_tree_with_warning(
-    settled: str,
-    samples_mock: CollectSamplesRecorder,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-):
-    def no_fingerprint(directory: Path) -> str | None:
-        return None
+# ---------------------------------------------------------------------------
+# the config declares a command for a stage (hooks)
+# ---------------------------------------------------------------------------
 
-    monkeypatch.setattr("gymrat.session.workspace.worktree_fingerprint", no_fingerprint)
 
-    result = await iterate_session(settled, resolved_config())
+def _hook_events(events: list[ProgressEvent]) -> list[tuple[type[HookStarted | HookFinished], str]]:
+    """Each hook event's type and stage, in the order they were emitted."""
+    return [(type(e), e.stage) for e in events if isinstance(e, (HookStarted, HookFinished))]
 
-    assert result.record.measured_tree is None
-    assert result.record.seq == 2
-    captured = capsys.readouterr()
-    assert captured.err == (
-        "Could not fingerprint the experiment worktree; "
-        "measured_tree is omitted from the iteration record.\n"
+
+def _capturing_payload(hooks: HookScripts, stage: str) -> str:
+    """A hook command filing the payload it was handed away where assertions can read it."""
+    body = (
+        "import sys, pathlib\n"
+        "data = sys.stdin.buffer.read()\n"
+        f"pathlib.Path({json.dumps(stage + '.json')}).write_bytes(data)\n"
     )
+    return hooks.hook_command(body)
+
+
+async def test_iterate_session_when_hooks_configured_does_bracket_the_whole_measurement(
+    hooks_setup: tuple[str, str, HookScripts], samples_mock: CollectSamplesRecorder
+):
+    repo, _experiment_dir, hooks = hooks_setup
+    stub_runs(samples_mock, repo, [regressed_run(), regressed_run()])
+    config = resolved_config(
+        filter=FILTER,
+        hooks=HooksConfig(before=hooks.printing("hi"), after=hooks.printing("bye")),
+    )
+    events: list[ProgressEvent] = []
+
+    result = await iterate_session(repo, config, options=IterateOptions(on_progress=events.append))
+
+    lines = trimmed_report_lines(result.report)
+    assert (lines[0], lines[1], lines[-1]) == (
+        "[before] hi",
+        "iteration 2 · experiment vs baseline · 10 paired samples",
+        "[after] bye",
+    )
+    assert [record.type for record in log_records(repo)] == [
+        "session",
+        "iteration",
+        "keep",
+        "hook",
+        "iteration",
+        "hook",
+    ]
+    assert [record.stage for record in records_of_type(repo, HookRecord)] == ["before", "after"]
+    assert [
+        (type(e), getattr(e, "stage", None)) for e in events if isinstance(e, _STAGE_EVENTS)
+    ] == [
+        (HookStarted, "before"),
+        (HookFinished, "before"),
+        (JudgeStarted, None),
+        (JudgeFinished, None),
+        (ConfirmStarted, None),
+        (ConfirmFinished, None),
+        (IterationRecorded, None),
+        (HookStarted, "after"),
+        (HookFinished, "after"),
+    ]
+
+
+def _iteration_fields(experiment_dir: str, stage: str) -> tuple[object, ...]:
+    """The iteration-level fields of the payload the ``stage`` hook was handed.
+
+    The capturing command names the file relatively, so reading it back out of
+    the experiment worktree is also what proves the hook ran there.
+
+    Args:
+        experiment_dir: The experiment worktree the hook wrote its payload into.
+        stage: The hook stage whose payload file to read.
+
+    Returns:
+        The payload's stage, experiment dir, seq, last iteration, and session
+        iteration count, in that order.
+    """
+    payload = json.loads((Path(experiment_dir) / f"{stage}.json").read_text(encoding="utf-8"))
+    return (
+        payload["stage"],
+        payload["experiment_dir"],
+        payload["seq"],
+        payload["last_iteration"],
+        payload["session"]["iteration_count"],
+    )
+
+
+async def test_iterate_session_when_hooks_configured_does_tell_each_which_iteration(
+    hooks_setup: tuple[str, str, HookScripts],
+):
+    repo, experiment_dir, hooks = hooks_setup
+    config = resolved_config(
+        hooks=HooksConfig(
+            before=_capturing_payload(hooks, "before"), after=_capturing_payload(hooks, "after")
+        )
+    )
+
+    result = await iterate_session(repo, config)
+
+    assert _iteration_fields(experiment_dir, "before") == (
+        "before",
+        experiment_dir,
+        2,
+        as_logged(iteration_record(seq=1)),
+        1,
+    )
+    assert _iteration_fields(experiment_dir, "after") == (
+        "after",
+        experiment_dir,
+        2,
+        as_logged(result.record),
+        2,
+    )
+
+
+async def test_iterate_session_when_before_hook_fails_does_still_measure(
+    hooks_setup: tuple[str, str, HookScripts],
+):
+    repo, _experiment_dir, hooks = hooks_setup
+    before = hooks.failing_content_of("before-fails", "", "no warm copy\n")
+    config = resolved_config(hooks=HooksConfig(before=before))
+
+    result = await iterate_session(repo, config)
+
+    assert [(record.stage, record.exit_code) for record in records_of_type(repo, HookRecord)] == [
+        ("before", 3)
+    ]
+    assert last_iteration_of(repo).seq == 2
+    assert result.record.outcome == "improved"
+
+
+@pytest.mark.parametrize(
+    ("with_after", "expected_stages", "expected_events"),
+    [
+        pytest.param(False, [], [], id="no-hooks"),
+        pytest.param(
+            True,
+            ["after"],
+            [(HookStarted, "after"), (HookFinished, "after")],
+            id="only-after",
+        ),
+    ],
+)
+async def test_iterate_session_when_before_stage_absent_does_run_nothing_for_it(
+    hooks_setup: tuple[str, str, HookScripts],
+    *,
+    with_after: bool,
+    expected_stages: list[str],
+    expected_events: list[tuple[type[HookStarted | HookFinished], str]],
+):
+    repo, _experiment_dir, hooks = hooks_setup
+    hooks_config = HooksConfig(after=hooks.printing("bye")) if with_after else None
+    config = resolved_config(hooks=hooks_config)
+    events: list[ProgressEvent] = []
+
+    result = await iterate_session(repo, config, options=IterateOptions(on_progress=events.append))
+
+    assert [record.stage for record in records_of_type(repo, HookRecord)] == expected_stages
+    assert _hook_events(events) == expected_events
+    before_lines = [
+        line for line in trimmed_report_lines(result.report) if line.startswith("[before]")
+    ]
+    assert before_lines == []
 
 
 # ---------------------------------------------------------------------------
@@ -509,59 +565,51 @@ async def test_iterate_session_when_fingerprint_fails_does_omit_measured_tree_wi
 # ---------------------------------------------------------------------------
 
 
-def _install_live_budget(monkeypatch: pytest.MonkeyPatch, *, deadline_ms: float) -> None:
-    """Make ``read_budget`` answer a 30-minute budget due at *deadline_ms*, with the clock at zero."""
-    live_budget = Budget(max_minutes=30, deadline_ms=deadline_ms)
-
-    def read_live_budget(root: str, *, now_ms: float) -> Budget | None:
-        return live_budget
-
-    monkeypatch.setattr("gymrat.session.budget.read_budget", read_live_budget)
-    monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0)
-
-
 async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_or_bench(
     repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
-    hooks = HookScripts(repo, iterate_session_header(repo).worktrees.experiment)
-    write_session_log(
-        repo,
-        iterate_session_header(repo),
-        (iteration_record(seq=1, duration_ms=840_000), committed_keep(1)),
-    )
-    stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
-
-    # Live budget with 12 min left, but last iteration took 14 min.
-    _install_live_budget(monkeypatch, deadline_ms=720_000.0)
+    hooks = HookScripts.for_root(repo)
+    write_iterate_session(repo, settled_history(duration_ms=870_000))
+    install_budget(repo, monkeypatch, deadline_ms=90_000.0, frozen_now_ms=0)
+    stub_improved_samples(samples_mock, repo)
     config = resolved_config(hooks=HooksConfig(before=hooks.printing("hi")))
 
     with pytest.raises(LoopStopError) as exc:
         await iterate_session(repo, config)
 
     assert str(exc.value) == (
-        "12m left; the last iteration took 14m and the cap would cut this one off."
+        "1m 30s left; the last iteration took 14m 30s and the cap would cut this one off."
     )
     assert exc.value.hint == "Report what the session measured instead of measuring again."
     assert samples_mock.call_count == 0
     assert [record.type for record in log_records(repo)] == ["session", "iteration", "keep"]
 
 
+async def test_iterate_session_when_supervise_lock_cannot_be_probed_does_raise_before_any_bench(
+    repo: str, samples_mock: CollectSamplesRecorder
+):
+    write_iterate_session(repo, settled_history(duration_ms=870_000))
+    write_budget_file(repo)
+    stub_improved_samples(samples_mock, repo)
+
+    with block_supervise_lock(repo) as blocker, pytest.raises(GymratError) as exc:
+        await iterate_session(repo, resolved_config())
+
+    assert str(exc.value).startswith(f"Lock file {blocker} could not be opened: ")
+    assert samples_mock.call_count == 0
+
+
 # ---------------------------------------------------------------------------
-# no budget: manual session runs normally
+# budget live: no estimate yet, and the stop check runs before the budget check
 # ---------------------------------------------------------------------------
 
 
 async def test_iterate_session_when_budget_live_but_no_estimate_does_run_normally(
-    repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
+    settled: str, monkeypatch: pytest.MonkeyPatch
 ):
-    write_session_log(
-        repo, iterate_session_header(repo), (iteration_record(seq=1), committed_keep(1))
-    )
-    stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
+    install_budget(settled, monkeypatch, deadline_ms=1_800_000.0, frozen_now_ms=0)
 
-    _install_live_budget(monkeypatch, deadline_ms=1_800_000.0)
-
-    result = await iterate_session(repo, resolved_config())
+    result = await iterate_session(settled, resolved_config())
 
     assert result.record.seq == 2
 
@@ -569,13 +617,9 @@ async def test_iterate_session_when_budget_live_but_no_estimate_does_run_normall
 async def test_iterate_session_when_stop_condition_met_does_report_stop_before_budget_check(
     repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
-    write_session_log(
-        repo, iterate_session_header(repo), (iteration_record(seq=1), committed_keep(1))
-    )
-    stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
-
-    _install_live_budget(monkeypatch, deadline_ms=720_000.0)
-
+    # The last iteration took 14 minutes against 5 left, so the budget check
+    # would refuse on its own: only the stop check running first names max iterations.
+    write_outlasted_session(repo, monkeypatch)
     config = resolved_config(stop=StopConfig(max_iterations=1))
 
     with pytest.raises(LoopStopError, match="max iterations") as exc:
@@ -590,24 +634,24 @@ async def test_iterate_session_when_stop_condition_met_does_report_stop_before_b
 
 
 async def test_iterate_session_when_warn_sink_given_does_route_adapter_warnings_to_it(
-    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    open_repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    write_session_log(repo, iterate_session_header(repo))
     bench_malformed_once(monkeypatch)
     warnings: list[str] = []
 
-    await iterate_session(repo, resolved_config(), options=IterateOptions(warn=warnings.append))
+    await iterate_session(
+        open_repo, resolved_config(), options=IterateOptions(warn=warnings.append)
+    )
 
     assert warnings == [MALFORMED_LINE_WARNING]
     assert MALFORMED_LINE_WARNING not in capsys.readouterr().err
 
 
 async def test_iterate_session_when_no_warn_sink_does_print_adapter_warnings_on_stderr(
-    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    open_repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    write_session_log(repo, iterate_session_header(repo))
     bench_malformed_once(monkeypatch)
 
-    await iterate_session(repo, resolved_config())
+    await iterate_session(open_repo, resolved_config())
 
     assert MALFORMED_LINE_WARNING in capsys.readouterr().err.splitlines()

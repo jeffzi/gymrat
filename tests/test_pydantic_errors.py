@@ -3,6 +3,7 @@ from typing import Annotated, Literal
 
 import pytest
 from pydantic import BaseModel, Field, Strict, TypeAdapter, ValidationError
+from pydantic_core import ErrorDetails
 
 from gymrat.pydantic_errors import NON_BLANK_PATTERN, phrase_for_error
 
@@ -14,6 +15,14 @@ class _Point(BaseModel):
 @dataclass(frozen=True, slots=True)
 class _Pair:
     left: int
+
+
+def _first_error(annotation: object, value: object) -> ErrorDetails:
+    try:
+        TypeAdapter(annotation).validate_python(value)
+    except ValidationError as error:
+        return error.errors()[0]
+    pytest.fail(f"{value!r} unexpectedly validated against {annotation!r}")
 
 
 @pytest.mark.parametrize(
@@ -58,9 +67,7 @@ class _Pair:
 def test_phrase_for_error_when_validation_fails_does_phrase_expected_shape(
     annotation: object, value: object, expected: str
 ):
-    with pytest.raises(ValidationError) as exc:
-        TypeAdapter(annotation).validate_python(value)
-    error = exc.value.errors()[0]
+    error = _first_error(annotation, value)
 
     phrase = phrase_for_error(error)
 
