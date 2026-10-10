@@ -4,7 +4,9 @@ The classifier is a pure function over its arguments plus the mutable
 ``GuardState`` it updates. It never reads the filesystem or the driver.
 Evaluation order is fixed — the first matching rule wins:
 
-1. Session finished (finalized, stop record, or configured stop condition).
+1. Session finished (finalized or stop record). A configured stop condition is
+   not checked here: the supervisor's end scan owns it, and disarms it for a
+   run forced past a condition already met at launch.
 2. Spend cap (budget exhausted or cost exceeds ``max_usd``).
 3. Lock held (another process holds the repository lock).
 4. Guard tripped (follow-up ceiling, no-progress, consecutive discards).
@@ -17,14 +19,13 @@ from dataclasses import dataclass, field
 from itertools import islice
 from typing import TYPE_CHECKING, Literal
 
-from gymrat.loop.iterate.run import stop_condition
 from gymrat.session.records import CommandRecord, DiscardRecord, KeepRecord
 from gymrat.utils import format_time_left
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from gymrat.config import BenchlessConfig
+    from gymrat.session.budget import Budget
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import TurnEndEvent
@@ -147,29 +148,21 @@ def spend_cap_reached(turn: TurnEndEvent, max_usd: float | None) -> bool:
     return turn.budget_exhausted or (max_usd is not None and turn.cost_usd >= max_usd)
 
 
-def _format_reply(
-    *,
-    deadline_ms: float,
-    max_minutes: float,
-    now_ms: float,
-    after_wait: bool,
-) -> str:
-    remaining = max(0.0, deadline_ms - now_ms)
-    reply = f"{_RUNBOOK_INSTRUCTION}\n{format_time_left(remaining, max_minutes)}"
+def _format_reply(*, budget: Budget, now_ms: float, after_wait: bool) -> str:
+    time_left = format_time_left(budget.remaining_ms(now_ms), budget.max_minutes)
+    reply = f"{_RUNBOOK_INSTRUCTION}\n{time_left}"
     return f"{reply}\n{_AFTER_WAIT_LINE}" if after_wait else reply
 
 
 def classify(  # noqa: PLR0913, PLR0911 -- one parameter per classification input; one return per ordered rule in the module docstring
     *,
-    config: BenchlessConfig,
     state: SessionState,
     records: list[SessionLogRecord],
     guards: GuardState,
     lock_held: bool,
     turn: TurnEndEvent,
     max_usd: float | None,
-    deadline_ms: float,
-    max_minutes: float,
+    budget: Budget,
     now_ms: float,
     after_wait: bool = False,
 ) -> Decision:
@@ -179,7 +172,6 @@ def classify(  # noqa: PLR0913, PLR0911 -- one parameter per classification inpu
     record-count baseline, the no-progress counter, and the reply counter.
 
     Args:
-        config: The session's Benchless configuration.
         state: The current session state.
         records: The session log records accumulated so far.
         guards: The mutable per-run counters to read and update.
@@ -187,19 +179,14 @@ def classify(  # noqa: PLR0913, PLR0911 -- one parameter per classification inpu
             lock.
         turn: The turn-end event being classified.
         max_usd: The spend cap in USD, or ``None`` for no cap.
-        deadline_ms: The session deadline, in epoch milliseconds.
-        max_minutes: The session's configured time budget, in minutes.
+        budget: The session's wall-clock budget, for the time-left trailer.
         now_ms: The current time, in epoch milliseconds.
         after_wait: Whether this turn follows a wait for a running command.
 
     Returns:
         The next action: continue, end, or wait for lock.
     """
-    if (
-        state.finalized is not None
-        or state.ends_on_stop
-        or stop_condition(config, state) is not None
-    ):
+    if state.finalized is not None or state.ends_on_stop:
         return End(reason="finished")
 
     if spend_cap_reached(turn, max_usd):
@@ -232,10 +219,5 @@ def classify(  # noqa: PLR0913, PLR0911 -- one parameter per classification inpu
         return End(reason="consecutive-discards")
 
     guards.replies_sent += 1
-    text = _format_reply(
-        deadline_ms=deadline_ms,
-        max_minutes=max_minutes,
-        now_ms=now_ms,
-        after_wait=after_wait,
-    )
+    text = _format_reply(budget=budget, now_ms=now_ms, after_wait=after_wait)
     return Reply(text=text)

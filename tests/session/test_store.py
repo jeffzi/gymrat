@@ -21,9 +21,9 @@ from gymrat.errors import GymratError
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     BaselineRecord,
+    IterationMetricVerdict,
     IterationPrimary,
     IterationRecord,
-    MetricVerdict,
     PairedSamples,
     SessionLogRecord,
 )
@@ -199,7 +199,7 @@ def test_append_record_when_delta_undefined_does_write_delta_pct_as_null(fresh_r
     jsonl_path, header_len = _log_with_session_header(fresh_root)
     record = iteration_record(
         metrics={
-            "total_ms": MetricVerdict(
+            "total_ms": IterationMetricVerdict(
                 delta_pct=None,
                 verdict="no-signal",
                 method="permutation",

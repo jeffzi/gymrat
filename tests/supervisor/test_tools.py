@@ -8,7 +8,7 @@ import os
 import pathlib
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, create_autospec
 
 if TYPE_CHECKING:
@@ -539,7 +539,7 @@ def test_gymrat_tools_factory_when_called_does_build_the_gymrat_sdk_server(
 ) -> None:
     factory = gymrat_tools_factory(str(tmp_path))
 
-    config = cast("McpSdkServerConfig", factory(asyncio.Event(), {}))
+    config = factory(asyncio.Event(), {})
 
     assert config["type"] == "sdk"
     assert config["name"] == "gymrat"
@@ -549,7 +549,7 @@ async def test_gymrat_tools_factory_when_a_tool_is_called_does_run_it_with_the_e
     create_scratch_repo: Callable[[], str],
 ) -> None:
     factory = gymrat_tools_factory(create_scratch_repo())
-    config = cast("McpSdkServerConfig", factory(asyncio.Event(), {"GYMRAT_SAMPLES": "banana"}))
+    config = factory(asyncio.Event(), {"GYMRAT_SAMPLES": "banana"})
 
     result = await _call_via_sdk(config, "probe", {})
 
@@ -567,7 +567,7 @@ async def test_gymrat_tools_factory_when_abort_set_does_kill_the_tool_call(
 ) -> None:
     abort = asyncio.Event()
     abort.set()
-    config = cast("McpSdkServerConfig", gymrat_tools_factory(str(tmp_path))(abort, {}))
+    config = gymrat_tools_factory(str(tmp_path))(abort, {})
 
     result = await _call_via_sdk(config, "probe", {})
 

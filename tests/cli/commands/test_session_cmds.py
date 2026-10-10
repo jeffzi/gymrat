@@ -178,7 +178,9 @@ def test_start_command_when_no_baseline_does_default_to_head(
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_command_when_run_does_finalize_onto_the_session_final_branch(repo: str):
+def test_finalize_command_when_run_bare_does_finalize_onto_the_session_final_branch_tracing_no_args(
+    repo: str,
+):
     final_branch = f"{open_session_with_one_keep(repo).branch}-final"
 
     result = runner.invoke(app, ["finalize"])
@@ -188,6 +190,7 @@ def test_finalize_command_when_run_does_finalize_onto_the_session_final_branch(r
     assert isinstance(record, FinalizeRecord)
     assert record.branch == final_branch
     assert final_branch in result.stdout
+    assert last_command_record(repo).args == {}
 
 
 def test_finalize_command_when_branch_and_message_given_does_carry_them_into_its_records(
@@ -231,13 +234,14 @@ def test_sync_command_when_changes_exist_does_print_synced_file_count_and_names(
     assert "README.md" in result.stdout
 
 
-def test_sync_command_when_nothing_to_sync_does_print_nothing_to_sync(
+def test_sync_command_when_nothing_to_sync_does_print_nothing_to_sync_tracing_no_args(
     session_repo: str,
 ):
     result = runner.invoke(app, ["sync"])
 
     assert result.exit_code == 0
     assert "nothing to sync" in result.stdout
+    assert last_command_record(session_repo).args == {}
 
 
 def test_sync_command_when_experiment_has_uncommitted_change_to_a_synced_path_does_exit_two(
@@ -260,7 +264,7 @@ def test_sync_command_when_experiment_has_uncommitted_change_to_a_synced_path_do
 # ---------------------------------------------------------------------------
 
 
-def test_stop_command_when_message_given_does_stop_the_session_with_it(
+def test_stop_command_when_message_given_does_stop_the_session_with_it_tracing_no_args(
     stop_repo: str,
 ):
     result = runner.invoke(app, ["stop", "--message", "switched to a different approach"])
@@ -272,6 +276,8 @@ def test_stop_command_when_message_given_does_stop_the_session_with_it(
     stop_records = records_of_type(stop_repo, StopRecord)
     assert len(stop_records) == 1
     assert stop_records[0].message == "switched to a different approach"
+    # The message lives in the stop record, not the command record's args.
+    assert last_command_record(stop_repo).args == {}
 
 
 @pytest.mark.parametrize(

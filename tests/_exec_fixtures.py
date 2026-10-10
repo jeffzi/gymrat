@@ -6,13 +6,14 @@ import dataclasses
 import os
 import signal
 import sys
-from collections.abc import AsyncGenerator, Callable, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine, Generator
 from pathlib import Path
 from typing import Any
 from unittest.mock import create_autospec
 
 import pytest
 
+from gymrat import exec as exec_mod
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
 from gymrat.exec import exec as run_exec
 from tests._process_helpers import SLEEPER_ARGV, capture_spawns, poll_until
@@ -84,6 +85,19 @@ async def wait_for_spawned(
         lambda: TimeoutError(f"{spawner}() has spawned {len(processes)} of {count} children"),
     )
     return processes[-1]
+
+
+@contextlib.contextmanager
+def fresh_live_process_groups() -> Generator[None]:
+    """Swap the live process-group registry for an empty one, putting the original back after.
+
+    A private patcher rather than the ``monkeypatch`` fixture, so an autouse
+    fixture built on it does not pull every test's ``monkeypatch`` setup ahead of
+    the environment baseline.
+    """
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(exec_mod, "_live_process_groups", set())
+        yield
 
 
 @contextlib.asynccontextmanager

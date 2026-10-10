@@ -303,7 +303,7 @@ def _report_result(
         raise typer.Exit(GATE_EXIT_CODE)
 
 
-def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], None]]:
+def _init_budget(root: str, max_minutes: float) -> tuple[Budget, Callable[[], None]]:
     """Create, persist, and arm cleanup for the session time budget.
 
     Args:
@@ -311,21 +311,20 @@ def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], Non
         max_minutes: Maximum session duration in minutes.
 
     Returns:
-        A ``(deadline_ms, release)`` pair: the absolute deadline and a callback
+        A ``(budget, release)`` pair: the budget written to disk and a callback
         that removes the budget file and uninstalls the termination hook,
         uninstalling even when the removal raises. The callback is idempotent,
         so the run's own teardown and the unwind of a session whose setup
         failed can both call it without clearing twice.
     """
-    deadline_ms = now_ms() + minutes_to_ms(max_minutes)
-    budget = Budget(max_minutes=max_minutes, deadline_ms=deadline_ms)
+    budget = Budget(max_minutes=max_minutes, deadline_ms=now_ms() + minutes_to_ms(max_minutes))
     Path(session_dir(root)).mkdir(parents=True, exist_ok=True)
     write_budget(root, budget)
     release = ExitStack()
     # Callbacks unwind last-in first-out: the budget file goes, then the hook.
     release.callback(install_termination_cleanup(lambda: clear_budget(root)))
     release.callback(clear_budget, root)
-    return deadline_ms, release.close
+    return budget, release.close
 
 
 def _primary_direction(config: ResolvedConfig) -> Direction:
@@ -355,14 +354,13 @@ def _create_reporter(ctx: _SessionContext, mode: Literal["live", "plain"]) -> Su
     )
 
 
-def _supervised_session(ctx: _SessionContext, deadline_ms: float) -> SupervisedSession:
+def _supervised_session(ctx: _SessionContext, budget: Budget) -> SupervisedSession:
     return SupervisedSession(
         root=ctx.root,
         log_path=ctx.log_path,
         lock_path=lockfile_path(ctx.root),
         config=ctx.config,
-        deadline_ms=deadline_ms,
-        max_minutes=ctx.launch.max_minutes,
+        budget=budget,
         max_usd=ctx.launch.max_usd,
     )
 
@@ -448,7 +446,7 @@ def _run_session(ctx: _SessionContext) -> None:
         # error reaches the terminal, or when the run path closes it early.
         display = armed.enter_context(ExitStack())
         display.callback(reporter.stop)
-        deadline_ms, release_budget = _init_budget(ctx.root, launch.max_minutes)
+        budget, release_budget = _init_budget(ctx.root, launch.max_minutes)
         armed.callback(release_budget)
         # A signal mid-exit-sequence exits the process before the loop can cancel
         # the checks command it is running, so its process group is killed here.
@@ -464,7 +462,7 @@ def _run_session(ctx: _SessionContext) -> None:
             reporter_observer=reporter.observer,
         )
 
-        context = _supervised_session(ctx, deadline_ms)
+        context = _supervised_session(ctx, budget)
         result: SupervisionResult | None = None
         try:
             try:

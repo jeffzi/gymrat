@@ -208,13 +208,13 @@ class MetricStats:
     """A metric's central value and relative spread.
 
     Attributes:
-        median: The metric's median, or ``None`` when there were no values.
+        median: The metric's median.
         spread: The half-range as a percentage of the median's magnitude, or
             ``None`` when it is undefined (fewer than two values, a zero median,
             or a non-finite ratio).
     """
 
-    median: float | None
+    median: float
     spread: float | None
 
 
@@ -288,19 +288,24 @@ def resolve_metric_meta(
 _MIN_SPREAD_SAMPLES = 2
 
 
-def compute_metric_stats(values: Sequence[float]) -> MetricStats:
+def compute_metric_stats(name: str, values: Sequence[float]) -> MetricStats:
     """Summarize a metric's samples as a median and relative spread.
 
     Args:
+        name: The metric's full name, which the error for an empty sample names.
         values: The metric's sampled values.
 
     Returns:
         The median and its half-range as a percentage of ``abs(median)``. The
         spread is absent when there are fewer than two values, the median is
         zero, or the ratio is non-finite.
+
+    Raises:
+        GymratError: ``values`` is empty, so the metric has no median.
     """
     if not values:
-        return MetricStats(median=None, spread=None)
+        message = f"Metric {name!r} has no samples to summarize"
+        raise GymratError(message)
 
     median = statistics.median(values)
     if len(values) < _MIN_SPREAD_SAMPLES:

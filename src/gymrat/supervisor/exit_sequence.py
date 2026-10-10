@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Literal, get_args
 
 from gymrat.clock import monotonic_ms, now_ns
 from gymrat.command_run import with_repo_lock
+from gymrat.config import CliFlags, config_trace_args
 from gymrat.errors import GymratError
 from gymrat.loop.discard import discard_session
 from gymrat.loop.finalize import finalize_session
@@ -257,7 +258,8 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
             record(_skip_step(context.lock_path, ended_by))
         else:
             try:
-                await with_repo_lock("supervise", body, args={"stage": "exit"}, root=context.root)
+                args = config_trace_args(CliFlags(), stage="exit")
+                await with_repo_lock("supervise", body, args=args, root=context.root)
             except LockContentionError:
                 record(_skip_step(context.lock_path, ended_by))
     except Exception as error:  # noqa: BLE001 -- the report is the caller's error channel

@@ -15,6 +15,7 @@ from gymrat.report.types import (
     MetricComparisons,
 )
 from gymrat.verdict import GroupAggregate, KindAggregate
+from tests._pipeline import CLEAN_RESULT
 from tests.report._verdicts import (
     band_metric,
     band_verdict,
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
         GeomeanResult,
         MetricUnit,
     )
-    from gymrat.worktree_failure import WorktreeRemovalFailure
+    from gymrat.sampling import CleanupResult
 
 
 # ---------------------------------------------------------------------------
@@ -137,9 +138,7 @@ def create_comparison_result(
     adapter: str = "mitata",
     metrics: MetricComparisons | None = None,
     config_kinds: dict[str, KindEntry] | None = None,
-    worktrees_removed: int = 0,
-    worktrees_left_behind: Sequence[WorktreeRemovalFailure] = (),
-    worktree_prune_error: str | None = None,
+    cleanup: CleanupResult = CLEAN_RESULT,
 ) -> ComparisonResult:
     """A comparison result, clean and without metrics unless overridden.
 
@@ -151,10 +150,7 @@ def create_comparison_result(
         adapter: The adapter that parsed the bench output.
         metrics: The compared metrics keyed by name; ``None`` means none.
         config_kinds: The config's ``kinds`` section, when it has one.
-        worktrees_removed: How many worktrees cleanup removed.
-        worktrees_left_behind: Worktrees cleanup could not remove.
-        worktree_prune_error: Why ``git worktree prune`` failed; ``None`` when
-            it succeeded.
+        cleanup: What the worktree cleanup removed and left behind.
 
     Returns:
         The comparison result.
@@ -166,9 +162,7 @@ def create_comparison_result(
         adapter=adapter,
         metrics=dict(metrics) if metrics is not None else {},
         config_kinds=config_kinds,
-        worktrees_removed=worktrees_removed,
-        worktrees_left_behind=tuple(worktrees_left_behind),
-        worktree_prune_error=worktree_prune_error,
+        cleanup=cleanup,
     )
 
 

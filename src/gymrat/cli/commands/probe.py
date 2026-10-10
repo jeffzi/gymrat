@@ -31,7 +31,7 @@ from gymrat.cli.options import (
 from gymrat.cli.run_setup import SharedFlags, begin_run, run_with_signal_abort
 from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.command_run import with_repo_lock
-from gymrat.config import resolve_config
+from gymrat.config import config_trace_args, resolve_config
 from gymrat.loop.iterate.judge import EXPERIMENT_LABEL
 from gymrat.loop.probe import ProbeOptions, ProbeResult, probe_session
 from gymrat.report.json_doc import render_probe_json
@@ -93,7 +93,7 @@ def probe(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
         result = await with_repo_lock(
             "probe",
             lambda _trace: _probe_body(root, flags, probed),
-            args={"names": probed, "samples": samples},
+            args=config_trace_args(flags, names=probed),
             root=root,
         )
         emit_report(

@@ -24,7 +24,7 @@ from gymrat.cli.console import resolve_stream_color
 from gymrat.cli.exit import write_and_flush, write_stdout
 from gymrat.cli.run_setup import SharedFlags, begin_run
 from gymrat.command_run import CommandTrace, with_repo_lock
-from gymrat.config import CliFlags, ResolvedConfig
+from gymrat.config import CliFlags, ResolvedConfig, config_trace_args
 from gymrat.doctor import build_doctor_report, render_doctor_report
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.baseline import measure_baseline
@@ -111,7 +111,8 @@ def run_preflight(*, root: str, config: ResolvedConfig, flags: PreflightFlags) -
         _check_feasibility(root, max_minutes=flags.max_minutes, force=flags.force)
         return result
 
-    return asyncio.run(with_repo_lock("supervise", body, args={"stage": "preflight"}, root=root))
+    args = config_trace_args(CliFlags(), stage="preflight")
+    return asyncio.run(with_repo_lock("supervise", body, args=args, root=root))
 
 
 def doctor_gate(root: str, *, color: bool | None = None) -> None:

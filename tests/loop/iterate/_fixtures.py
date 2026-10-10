@@ -27,8 +27,8 @@ from gymrat.progress_events import PassFinished, PassStarted
 from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
+    IterationMetricVerdict,
     IterationRecord,
-    MetricVerdict,
     SessionLogRecord,
     SessionRecord,
     record_to_wire,
@@ -212,7 +212,7 @@ def regressed_run() -> PairedRun:
 
 
 def assert_permutation(
-    metric: MetricVerdict, *, delta: float, verdict: str, confirmed: bool
+    metric: IterationMetricVerdict, *, delta: float, verdict: str, confirmed: bool
 ) -> None:
     """Assert ``metric`` is a gating permutation verdict with the given delta and outcome.
 

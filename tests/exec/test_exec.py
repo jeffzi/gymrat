@@ -31,6 +31,7 @@ from tests._exec_fixtures import (
     ExecRun,
     ExecTask,
     expected_result,
+    fresh_live_process_groups,
     run_argv,
     run_shell,
     shell_grandchild,
@@ -48,6 +49,9 @@ from tests._process_helpers import (
 # ---------------------------------------------------------------------------
 # captured output and stdin delivery
 # ---------------------------------------------------------------------------
+
+#: A process-group id no test spawns; recorded, never signaled.
+_LEAKED_GROUP_PID = 999_999
 
 
 async def test_exec_when_multi_byte_char_split_across_reads_does_decode_single_char(
@@ -392,11 +396,25 @@ async def test_kill_live_process_groups_when_run_has_settled_does_not_target_its
     assert attempted == []
 
 
+def test_fresh_live_process_groups_when_a_group_leaked_in_does_hide_it_from_the_sweep_until_exit(
+    record_killpg: Callable[[], list[int]],
+) -> None:
+    exec_mod._live_process_groups.add(_LEAKED_GROUP_PID)
+    attempted = record_killpg()
+
+    with fresh_live_process_groups():
+        exec_mod.kill_live_process_groups()
+
+    assert attempted == []
+    assert _LEAKED_GROUP_PID in exec_mod._live_process_groups
+
+
 async def test_kill_live_process_groups_when_registry_reset_does_spare_every_earlier_child(
     tmp_path: Path,
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
     background_runs: list[ExecTask],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     background_runs.extend(
         asyncio.create_task(run_exec(shell_grandchild(tmp_path / f"earlier{n}.pid"), make_opts()))
@@ -406,7 +424,7 @@ async def test_kill_live_process_groups_when_registry_reset_does_spare_every_ear
     earlier_grandchildren = [
         await wait_for_pid_file(tmp_path / f"earlier{n}.pid") for n in range(2)
     ]
-    exec_mod.reset()
+    monkeypatch.setattr(exec_mod, "_live_process_groups", set())
     background_runs.append(
         asyncio.create_task(run_exec(shell_grandchild(tmp_path / "later.pid"), make_opts())),
     )

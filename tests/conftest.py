@@ -31,11 +31,10 @@ import pytest
 
 from gymrat import signals
 from gymrat.cli.console import set_color_override, set_debug_mode
-from gymrat.exec import reset as exec_reset
 from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset
 from gymrat.telemetry.provider import reset_tracing
-from tests._exec_fixtures import recorded_spawns
+from tests._exec_fixtures import fresh_live_process_groups, recorded_spawns
 from tests._git import head_of, init_scratch_repo, list_worktree_dirs
 from tests._lock import held_supervise_lock, remove_lock_files
 from tests.loop._settle import start_with
@@ -263,10 +262,9 @@ def isolate_tracing_provider() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def isolate_live_groups() -> Iterator[None]:
-    """Start and end every test with an empty live process-group registry."""
-    exec_reset()
-    yield
-    exec_reset()
+    """Give every test its own empty live process-group registry."""
+    with fresh_live_process_groups():
+        yield
 
 
 @pytest.fixture(autouse=True)

@@ -57,10 +57,10 @@ from gymrat.session.schema import (
     KeepReason,
     KeepStatus,
     Method,
+    MetricOutcome,
     Outcome,
     PrimaryKind,
     SchemaVersion,
-    Verdict,
 )
 from gymrat.session.workspace import BaselineRef, Worktrees
 from gymrat.utils import coerce_integer, expected_got
@@ -287,7 +287,7 @@ class _DeltaPctSerializer(BaseModel):
         return data
 
 
-class MetricVerdict(_DeltaPctSerializer):
+class IterationMetricVerdict(_DeltaPctSerializer):
     """How one metric moved, with the statistics behind the judgement.
 
     ``delta_pct`` is ``None`` when a zero baseline median left the ratio
@@ -295,8 +295,11 @@ class MetricVerdict(_DeltaPctSerializer):
     writer, not a degenerate measurement.
     """
 
-    verdict: Verdict = Field(
-        description="Whether the metric improved, regressed, or showed no signal."
+    verdict: MetricOutcome = Field(
+        description=(
+            "How the metric moved: improved, regressed, no-signal, or unstable when its"
+            " samples were too noisy to judge."
+        )
     )
     method: Method = Field(description="Statistical test used to judge the metric.")
     p: _OptNumber = Field(default=None, description="P-value from the statistical test.")
@@ -357,7 +360,7 @@ class IterationRecord(_SequencedEnvelope):
     # pyrefly: ignore[bad-override-mutable-attribute] -- pydantic narrows optional to required
     seq: _PositiveInt = Field(description="Iteration sequence number, starting at 1.")
     samples: PairedSamples = Field(description="Raw sample rounds from both worktrees.")
-    metrics: dict[str, MetricVerdict] = Field(
+    metrics: dict[str, IterationMetricVerdict] = Field(
         description="Per-metric verdicts keyed by metric name."
     )
     confirm: Annotated[

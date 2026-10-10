@@ -20,7 +20,7 @@ SchemaVersion = Literal[1]
 SCHEMA_VERSION: SchemaVersion = 1
 
 #: How a single metric moved, once its samples were judged.
-Verdict = Literal["improved", "regressed", "no-signal", "unstable"]
+MetricOutcome = Literal["improved", "regressed", "no-signal", "unstable"]
 
 #: The statistical test that produced a metric's verdict. Identical to the model's
 #: own method union: the sign-flip permutation test is the default, with the band
@@ -31,7 +31,7 @@ Method = Literal["permutation", "band", "exact"]
 PrimaryKind = Literal["geomean", "metric"]
 
 #: An iteration's overall outcome -- the tri-state an agent acts on. Unlike a
-#: per-metric :data:`Verdict`, an iteration is never reported ``"unstable"``.
+#: per-metric :data:`MetricOutcome`, an iteration is never reported ``"unstable"``.
 Outcome = Literal["improved", "regressed", "no-signal"]
 
 #: Whether a kept iteration was committed or refused.

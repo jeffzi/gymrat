@@ -12,7 +12,7 @@ import re
 import shutil
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest.mock import create_autospec
 
@@ -31,6 +31,7 @@ from gymrat.session.workspace import (
     recreate_workspace,
     remove_worktrees,
     revert_workspace,
+    unwind_workspace,
     worktree_fingerprint,
     worktree_head,
 )
@@ -43,11 +44,13 @@ from tests._git import (
     install_git_hook,
     kill_git_during_worktree_add,
     list_worktree_dirs,
+    refuse_session_branch_deletion,
     register_absent_worktree,
     session_branches,
     status_of,
 )
 from tests._git import run_git as _git
+from tests._mode_bits import needs_mode_bits
 from tests._platform import needs_posix_kill
 from tests.session.records._fixtures import (
     SESSION_ID,
@@ -79,6 +82,26 @@ def _edit_worktree(worktree: str, edit: str | None) -> None:
 def baseline(repo_head: str) -> BaselineRef:
     """A ``BaselineRef`` pointing at the scratch repo's initial commit on ``main``."""
     return BaselineRef(ref=BASELINE_REF, sha=repo_head)
+
+
+# The directory a hooked checkout leaves in a worktree, closed to deletion.
+PINNED_DIR = "pinned"
+
+
+@pytest.fixture
+def pinned_checkout_dies(repo: str) -> Iterator[None]:
+    """A post-checkout hook that leaves an undeletable directory in the new worktree, then kills git."""
+    install_git_hook(
+        repo,
+        "post-checkout",
+        f"mkdir {PINNED_DIR} && : > {PINNED_DIR}/file && chmod 500 {PINNED_DIR}\n"
+        'exec >/dev/null 2>&1\nkill -9 "$PPID"\nsleep 1\n',
+    )
+    yield
+
+    pinned = Path(experiment_worktree_dir(repo)) / PINNED_DIR
+    if pinned.exists():
+        pinned.chmod(0o700)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +156,81 @@ def test_create_workspace_when_worktree_add_dies_does_raise_naming_that_step_lea
     assert not Path(experiment_worktree_dir(repo)).exists()
 
 
+@needs_posix_kill
+@needs_mode_bits
+@pytest.mark.usefixtures("pinned_checkout_dies")
+def test_create_workspace_when_unwind_cannot_remove_the_worktree_does_warn_once_with_the_removal_command(
+    repo: str, baseline: BaselineRef, capsys: pytest.CaptureFixture[str]
+):
+    worktree = experiment_worktree_dir(repo)
+
+    with pytest.raises(GymratError) as excinfo:
+        create_workspace(repo, SESSION_ID, baseline)
+
+    stderr = capsys.readouterr().err
+    assert stderr.count(f"remove it by hand with: git worktree remove --force {worktree}\n") == 1
+    assert re.search(r"cannot create the experiment worktree", str(excinfo.value), re.IGNORECASE)
+
+
+@needs_posix_kill
+def test_create_workspace_when_unwind_cannot_delete_the_branch_does_warn_once_with_the_delete_command(
+    repo: str, baseline: BaselineRef, capsys: pytest.CaptureFixture[str]
+):
+    kill_git_during_worktree_add(repo)
+    refuse_session_branch_deletion(repo)
+
+    with pytest.raises(GymratError) as excinfo:
+        create_workspace(repo, SESSION_ID, baseline)
+
+    assert capsys.readouterr().err.count(f"delete it by hand with: git branch -D {BRANCH}\n") == 1
+    assert re.search(r"cannot create the experiment worktree", str(excinfo.value), re.IGNORECASE)
+
+
+@pytest.fixture
+def pin_worktree() -> Iterator[Callable[[str], None]]:
+    """Leave a directory nothing can empty in each worktree handed to it, opened again at teardown."""
+    pinned: list[Path] = []
+
+    def pin(worktree: str) -> None:
+        directory = Path(worktree) / PINNED_DIR
+        directory.mkdir()
+        (directory / "file").write_text("", encoding="utf-8")
+        directory.chmod(0o500)
+        pinned.append(directory)
+
+    yield pin
+
+    for directory in pinned:
+        directory.chmod(0o700)
+
+
+@needs_mode_bits
+@pytest.mark.parametrize(
+    "worktree_dir",
+    [
+        pytest.param(experiment_worktree_dir, id="experiment"),
+        pytest.param(baseline_worktree_dir, id="baseline"),
+    ],
+)
+def test_unwind_workspace_when_git_cannot_remove_a_worktree_does_warn_naming_it_and_its_command(
+    repo: str,
+    baseline: BaselineRef,
+    pin_worktree: Callable[[str], None],
+    worktree_dir: Callable[[str], str],
+):
+    workspace = create_workspace(repo, SESSION_ID, baseline)
+    worktree = worktree_dir(repo)
+    pin_worktree(worktree)
+
+    warnings = unwind_workspace(repo, workspace)
+
+    assert len(warnings) == 1, warnings
+    assert warnings[0].startswith(f"Could not remove the worktree at {worktree}: ")
+    assert warnings[0].endswith(
+        f"\n  remove it by hand with: git worktree remove --force {worktree}"
+    )
+
+
 def test_create_workspace_when_registry_entries_are_stale_does_check_out_over_its_own_entries_only(
     repo: str, repo_head: str, baseline: BaselineRef
 ):
@@ -152,7 +250,7 @@ def test_create_workspace_when_registry_entries_are_stale_does_check_out_over_it
 
 
 def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming_the_path_with_its_work_intact(
-    repo: str, baseline: BaselineRef
+    repo: str, baseline: BaselineRef, capsys: pytest.CaptureFixture[str]
 ):
     # The earlier session's log is gone, so nothing told this run the workspace
     # was already there; its worktree still holds uncommitted work.
@@ -163,7 +261,8 @@ def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming
     with pytest.raises(GymratError) as excinfo:
         create_workspace(repo, NEXT_SESSION_ID, baseline)
 
-    # Only this attempt's own branch is unwound.
+    # Only this attempt's own branch is unwound, and the standing worktree goes unreported.
+    assert capsys.readouterr().err == ""
     assert stranded.read_text(encoding="utf-8") == "# work from the earlier session\n"
     assert session_branches(repo) == [BRANCH]
     assert experiment_worktree_dir(repo) in str(excinfo.value)

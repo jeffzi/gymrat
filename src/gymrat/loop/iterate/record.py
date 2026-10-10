@@ -8,8 +8,12 @@ from typing import TYPE_CHECKING
 from gymrat.clock import now_ns
 from gymrat.model import ExactVerdict, MetricVerdict, PermutationVerdict, ResolvedMetricMeta
 from gymrat.report.loop import LoopPrimary, MetricPrimary
-from gymrat.session.records import Confirm, IterationPrimary, IterationRecord
-from gymrat.session.records import MetricVerdict as RecordMetricVerdict
+from gymrat.session.records import (
+    Confirm,
+    IterationMetricVerdict,
+    IterationPrimary,
+    IterationRecord,
+)
 from gymrat.utils import finite_or_none
 
 if TYPE_CHECKING:
@@ -39,7 +43,7 @@ def recorded_verdicts(
     verdicts: dict[str, MetricVerdict],
     metric_meta: dict[str, ResolvedMetricMeta],
     confirmation: Confirmation | None,
-) -> dict[str, RecordMetricVerdict]:
+) -> dict[str, IterationMetricVerdict]:
     """The per-metric verdicts as the log keeps them, flattened out of the method shapes.
 
     Args:
@@ -54,9 +58,9 @@ def recorded_verdicts(
         verdicts, ``noise_pct`` for exact ones, so a record handed to a
         caller matches the one read back off the log.
     """
-    recorded: dict[str, RecordMetricVerdict] = {}
+    recorded: dict[str, IterationMetricVerdict] = {}
     for name, verdict in verdicts.items():
-        recorded[name] = RecordMetricVerdict(
+        recorded[name] = IterationMetricVerdict(
             delta_pct=finite_or_none(verdict.delta),
             verdict=verdict.verdict,
             method=verdict.method,

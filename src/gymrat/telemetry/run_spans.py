@@ -1,9 +1,11 @@
 """Session and run span lifecycle for supervised sessions.
 
 :func:`setup_tracing` opens the session and run spans, and
-:func:`finalize_tracing` ends them. While the run is active,
-:func:`create_run_span_observer` mirrors supervisor events onto the run span as
-OpenTelemetry span events.
+:func:`finalize_tracing` ends them. Both spans are built by
+:func:`start_session_span` and :func:`start_run_span`, which replay uses too,
+so an exported session carries the spans live tracing emitted. While the run is
+active, :func:`create_run_span_observer` mirrors supervisor events onto the run
+span as OpenTelemetry span events.
 
 All ``opentelemetry`` imports live inside the functions so importing this module
 never pulls the SDK into ``sys.modules``.
@@ -45,6 +47,56 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Session and run spans
 # ---------------------------------------------------------------------------
+
+
+def start_session_span(session_id: str, *, branch: str, start_time: int | None = None) -> Span:
+    """Start the ``gymrat.session`` span, the root every run and command span hangs under.
+
+    Shared by live tracing and replay, so both give the session span the same
+    id and attributes.
+
+    Args:
+        session_id: The session the span stands for.
+        branch: The session's git branch.
+        start_time: When the session started, in epoch nanoseconds, or
+            ``None`` for now.
+
+    Returns:
+        The started span.
+    """
+    return start_span(
+        SESSION_SPAN,
+        span_key=SESSION_SPAN_KEY,
+        attributes={SESSION_ID: session_id, SESSION_BRANCH: branch},
+        start_time=start_time,
+    )
+
+
+def start_run_span(launch: LaunchEvent, *, parent: Span, start_time: int | None = None) -> Span:
+    """Start the ``gymrat.run`` span of one supervised run, under the session span.
+
+    Shared by live tracing and replay, so both give the run span the same id
+    and launch attributes.
+
+    Args:
+        launch: The run's launch event, whose timestamp keys the span id and
+            whose options become the span's attributes.
+        parent: The session span the run span starts under.
+        start_time: When the run started, in epoch nanoseconds, or ``None``
+            for now.
+
+    Returns:
+        The started span.
+    """
+    from opentelemetry.trace import set_span_in_context  # noqa: PLC0415 -- optional extra
+
+    return start_span(
+        RUN_SPAN,
+        span_key=run_span_key(launch.at),
+        attributes=run_attributes(launch),
+        context=set_span_in_context(parent),
+        start_time=start_time,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,27 +144,13 @@ def setup_tracing(
     if not configure_tracing(launch.session_id):
         return prompt, reporter_observer, TracingState()
 
-    from opentelemetry.trace import set_span_in_context  # noqa: PLC0415 -- optional extra
-
     session_span = None
     if resumed:
         parent = existing_session_span(launch.session_id)
     else:
-        session_span = start_span(
-            SESSION_SPAN,
-            span_key=SESSION_SPAN_KEY,
-            attributes={
-                SESSION_ID: launch.session_id,
-                SESSION_BRANCH: branch,
-            },
-        )
+        session_span = start_session_span(launch.session_id, branch=branch)
         parent = session_span
-    run_span = start_span(
-        RUN_SPAN,
-        span_key=run_span_key(launch.at),
-        attributes=run_attributes(launch),
-        context=set_span_in_context(parent),
-    )
+    run_span = start_run_span(launch, parent=parent)
 
     # A disabled SDK (OTEL_SDK_DISABLED=true) still configures a provider but
     # opens no span: it hands back the parent's non-recording span, whose

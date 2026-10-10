@@ -24,6 +24,7 @@ from gymrat.model import PERMUTATION_MIN_N, Exclusion
 from gymrat.report.style import format_hint
 from gymrat.report.text.render import footer_lines, render_report, select_highlights
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn, ReportOptions
+from gymrat.sampling import CleanupResult
 from gymrat.worktree_failure import WorktreeRemovalFailure
 from tests._ansi import strip_ansi
 from tests.report._assertions import (
@@ -550,7 +551,9 @@ def test_render_report_when_methods_differ_does_name_each_with_its_pair_counts()
 
 
 def test_render_report_when_cleanup_removed_everything_cleanly_does_suppress_the_footer():
-    result = create_comparison_result(worktrees_removed=3, worktrees_left_behind=[])
+    result = create_comparison_result(
+        cleanup=CleanupResult(removed=3, failures=(), prune_error=None)
+    )
 
     report = render_report(result)
 
@@ -562,23 +565,27 @@ def test_render_report_when_cleanup_removed_everything_cleanly_does_suppress_the
     [
         pytest.param(
             create_comparison_result(
-                worktrees_removed=2,
-                worktrees_left_behind=[
-                    WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="is locked")
-                ],
+                cleanup=CleanupResult(
+                    removed=2,
+                    failures=(WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="is locked"),),
+                    prune_error=None,
+                )
             ),
             ["2 worktrees removed · 1 left behind", "  left behind: /tmp/gymrat-abc (is locked)"],
             id="one-left-behind",
         ),
         pytest.param(
             create_comparison_result(
-                worktrees_removed=1,
-                worktrees_left_behind=[
-                    WorktreeRemovalFailure(
-                        dir="/tmp/gymrat-abc", error="contains modified or untracked files"
+                cleanup=CleanupResult(
+                    removed=1,
+                    failures=(
+                        WorktreeRemovalFailure(
+                            dir="/tmp/gymrat-abc", error="contains modified or untracked files"
+                        ),
+                        WorktreeRemovalFailure(dir="/tmp/gymrat-def", error="is locked"),
                     ),
-                    WorktreeRemovalFailure(dir="/tmp/gymrat-def", error="is locked"),
-                ],
+                    prune_error=None,
+                )
             ),
             [
                 "1 worktree removed · 2 left behind",
@@ -588,7 +595,11 @@ def test_render_report_when_cleanup_removed_everything_cleanly_does_suppress_the
             id="several-left-behind",
         ),
         pytest.param(
-            create_comparison_result(worktree_prune_error="fatal: not a git repository"),
+            create_comparison_result(
+                cleanup=CleanupResult(
+                    removed=0, failures=(), prune_error="fatal: not a git repository"
+                )
+            ),
             [
                 "0 worktrees removed · 0 left behind",
                 "  worktree prune failed: fatal: not a git repository",
@@ -607,13 +618,18 @@ def test_render_report_when_cleanup_left_worktrees_or_prune_failed_does_render_t
 
 def _with_left_behind_reason(reason: str) -> ComparisonResult:
     return create_comparison_result(
-        worktrees_removed=1,
-        worktrees_left_behind=[WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error=reason)],
+        cleanup=CleanupResult(
+            removed=1,
+            failures=(WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error=reason),),
+            prune_error=None,
+        )
     )
 
 
 def _with_prune_error(reason: str) -> ComparisonResult:
-    return create_comparison_result(worktree_prune_error=reason)
+    return create_comparison_result(
+        cleanup=CleanupResult(removed=0, failures=(), prune_error=reason)
+    )
 
 
 #: A git reason carrying every whitespace class: tabs, space runs, CRLF, blank
@@ -663,9 +679,11 @@ def _colorful_result() -> ComparisonResult:
                 ]
             )
         ],
-        worktrees_removed=1,
-        worktrees_left_behind=[WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="is locked")],
-        worktree_prune_error="fatal: not a git repository",
+        cleanup=CleanupResult(
+            removed=1,
+            failures=(WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="is locked"),),
+            prune_error="fatal: not a git repository",
+        ),
     )
 
 

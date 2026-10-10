@@ -605,6 +605,21 @@ async def test_iterate_session_when_target_configured_does_close_the_report_on_t
     assert trimmed_report_lines(result.report)[-len(report_tail) :] == report_tail
 
 
+async def test_iterate_session_when_experiment_stops_reporting_the_targeted_primary_does_not_reach_the_target(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    experiment = [
+        {name: value for name, value in sample.items() if name != "total_ms"}
+        for sample in improved_rounds()
+    ]
+    stub_samples(samples_mock, open_repo, experiment, baseline_rounds())
+    config = resolved_config(primary="total_ms", stop=StopConfig(target_value=95))
+
+    result = await iterate_session(open_repo, config)
+
+    assert result.record.target_reached is False
+
+
 # ---------------------------------------------------------------------------
 # derive_outcome
 # ---------------------------------------------------------------------------

@@ -9,18 +9,19 @@ from gymrat.report.types import (
     MeasurementResult,
     MetricMeasurement,
 )
+from tests._pipeline import CLEAN_RESULT
 from tests.report._verdicts import metric_meta
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from gymrat.model import MetricUnit
-    from gymrat.worktree_failure import WorktreeRemovalFailure
+    from gymrat.sampling import CleanupResult
 
 
 def measured_metric(
     *,
-    median: float | None = 100.0,
+    median: float = 100.0,
     spread: float | None = 1.0,
     short_name: str = "time",
     kind: str = "other",
@@ -30,8 +31,7 @@ def measured_metric(
     """One metric of a single-target run: what it measured, and how steady it was.
 
     Args:
-        median: The metric's median. ``None`` means the target reported no
-            value for the metric.
+        median: The metric's median.
         spread: The run-to-run spread as a percentage of the median. ``None``
             pins the single-sample case, where there is no jitter to report.
         short_name: The metric's display name.
@@ -57,9 +57,7 @@ def create_measurement_result(
     metrics: dict[str, MetricMeasurement] | None = None,
     rounds: Sequence[dict[str, float]] = (),
     config_kinds: dict[str, KindEntry] | None = None,
-    worktrees_removed: int = 0,
-    worktrees_left_behind: Sequence[WorktreeRemovalFailure] = (),
-    worktree_prune_error: str | None = None,
+    cleanup: CleanupResult = CLEAN_RESULT,
 ) -> MeasurementResult:
     """A measurement of a single-target run, clean and without metrics unless overridden.
 
@@ -70,10 +68,7 @@ def create_measurement_result(
         metrics: The measured metrics keyed by name; ``None`` means none.
         rounds: What each round reported, as metric name to value, in run order.
         config_kinds: The config's ``kinds`` section, when it has one.
-        worktrees_removed: How many worktrees cleanup removed.
-        worktrees_left_behind: Worktrees cleanup could not remove.
-        worktree_prune_error: Why ``git worktree prune`` failed; ``None`` when
-            it succeeded.
+        cleanup: What the worktree cleanup removed and left behind.
 
     Returns:
         The measurement result.
@@ -85,9 +80,7 @@ def create_measurement_result(
         metrics=dict(metrics) if metrics is not None else {},
         rounds=tuple(rounds),
         config_kinds=config_kinds,
-        worktrees_removed=worktrees_removed,
-        worktrees_left_behind=tuple(worktrees_left_behind),
-        worktree_prune_error=worktree_prune_error,
+        cleanup=cleanup,
     )
 
 

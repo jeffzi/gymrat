@@ -292,29 +292,44 @@ def test_should_fail_gate_when_evaluated_does_trip_only_on_a_matching_gating_con
 # ---------------------------------------------------------------------------
 
 
+_BENCH_TRACE = {"bench": "sh bench.sh"}
+"""The config override every traced compare below is invoked with."""
+
+
 @pytest.mark.parametrize(
-    ("argv", "baseline", "candidates", "fail_on"),
+    ("argv", "traced"),
     [
-        pytest.param(["main", "cand"], "main", ["cand"], "", id="no-fail-on"),
+        pytest.param(
+            ["main", "cand"],
+            {**_BENCH_TRACE, "baseline": "main", "candidates": ["cand"]},
+            id="no-fail-on",
+        ),
         pytest.param(
             ["main", "cand", "--fail-on", "regressed", "--fail-on", "geomean:99.5"],
-            "main",
-            ["cand"],
-            "regressed,geomean:99.5",
+            {
+                **_BENCH_TRACE,
+                "baseline": "main",
+                "candidates": ["cand"],
+                "fail_on": "regressed,geomean:99.5",
+            },
             id="regressed-and-geomean-fail-on",
         ),
-        pytest.param(["before=main", "after=cand"], "before", ["after"], "", id="labeled-targets"),
         pytest.param(
-            ["main", "cand1", "cand2"], "main", ["cand1", "cand2"], "", id="two-candidates"
+            ["before=main", "after=cand"],
+            {**_BENCH_TRACE, "baseline": "before", "candidates": ["after"]},
+            id="labeled-targets",
+        ),
+        pytest.param(
+            ["main", "cand1", "cand2"],
+            {**_BENCH_TRACE, "baseline": "main", "candidates": ["cand1", "cand2"]},
+            id="two-candidates",
         ),
     ],
 )
-def test_compare_when_success_does_record_trace_with_baseline_candidates_and_fail_on(
+def test_compare_when_success_does_record_trace_with_only_the_args_given(
     *,
     argv: list[str],
-    baseline: str,
-    candidates: list[str],
-    fail_on: str,
+    traced: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
@@ -326,8 +341,7 @@ def test_compare_when_success_does_record_trace_with_baseline_candidates_and_fai
     assert result.exit_code == 0
     cmd = last_command_record(repo)
     assert (cmd.name, cmd.exit_code, cmd.reason) == ("compare", 0, None)
-    assert (cmd.args["baseline"], cmd.args["candidates"]) == (baseline, candidates)
-    assert (cmd.args["fail_on"], cmd.args["bench"]) == (fail_on, "sh bench.sh")
+    assert cmd.args == traced
 
 
 def test_compare_when_fail_on_trips_does_exit_one_as_a_fail_on_gate_trip(

@@ -128,7 +128,7 @@ The session log's vocabulary in :mod:`gymrat.session.schema` is the one home of
 the verdict words; the in-memory verdicts reuse it so the two cannot drift.
 """
 
-ApproximateVerdict = schema.Verdict
+ApproximateVerdict = schema.MetricOutcome
 """Outcome of an approximate comparison, which may additionally be ``"unstable"``."""
 
 

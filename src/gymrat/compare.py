@@ -13,6 +13,7 @@ Rendering is the caller's job. Worktree cleanup and signal handling belong to
 """
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 
@@ -127,6 +128,14 @@ def _baseline_paired_values(
     return paired or own_values(baseline_samples, metric_name)
 
 
+def _side_figures(metric_name: str, values: Sequence[float]) -> tuple[float | None, float | None]:
+    """A side's median and spread, both ``None`` when the side never reported the metric."""
+    if not values:
+        return None, None
+    stats = compute_metric_stats(metric_name, values)
+    return stats.median, stats.spread
+
+
 def _measure_candidates(
     baseline_samples: list[dict[str, float]],
     candidates: list[TargetSamples],
@@ -185,31 +194,31 @@ def build_comparison_result(
 
     metrics: dict[str, MetricComparison] = {}
     for metric_name, meta in measurement.metric_meta.items():
-        baseline_stats = compute_metric_stats(
-            _baseline_paired_values(baseline_samples, candidate_sample_sets, metric_name)
+        baseline_median, baseline_spread = _side_figures(
+            metric_name,
+            _baseline_paired_values(baseline_samples, candidate_sample_sets, metric_name),
         )
         candidate_metrics: list[CandidateMetric] = []
         for candidate in candidates:
             paired = pair_metric(baseline_samples, candidate.samples, metric_name).right
-            stats = compute_metric_stats(paired or own_values(candidate.samples, metric_name))
+            median, spread = _side_figures(
+                metric_name, paired or own_values(candidate.samples, metric_name)
+            )
             candidate_metrics.append(
                 CandidateMetric(
-                    median=stats.median,
-                    spread=stats.spread,
+                    median=median,
+                    spread=spread,
                     verdict=candidate.verdicts.get(metric_name),
                 )
             )
         metrics[metric_name] = MetricComparison(
-            baseline_median=baseline_stats.median,
-            baseline_spread=baseline_stats.spread,
+            baseline_median=baseline_median,
+            baseline_spread=baseline_spread,
             candidates=tuple(candidate_metrics),
             meta=meta,
         )
 
     return ComparisonResult(
-        worktrees_removed=cleanup.removed,
-        worktrees_left_behind=cleanup.failures,
-        worktree_prune_error=cleanup.prune_error,
         baseline_label=measurement.baseline_label,
         candidates=tuple(
             CandidateComparison(
@@ -221,6 +230,7 @@ def build_comparison_result(
         samples=samples,
         adapter=adapter,
         metrics=metrics,
+        cleanup=cleanup,
         config_kinds=config_kinds,
     )
 

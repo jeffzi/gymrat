@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from gymrat.config import StopConfig
+from gymrat.session.budget import Budget
 from gymrat.supervisor.supervise import EndCondition, detect_end_condition
 from gymrat.supervisor.turns import (
     CONSECUTIVE_DISCARD_LIMIT,
@@ -50,7 +51,6 @@ from tests.session.records._fixtures import (
 from tests.supervisor._fixtures import WAIT_FINISHED_LINE, make_turn_end
 
 if TYPE_CHECKING:
-    from gymrat.config import BenchlessConfig
     from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import TurnEndEvent
@@ -74,30 +74,26 @@ def guard_state(
 
 def classify_with_defaults(
     *,
-    config: BenchlessConfig | None = None,
     state: SessionState | None = None,
     records: list[SessionLogRecord] | None = None,
     guards: GuardState | None = None,
     turn: TurnEndEvent | None = None,
     lock_held: bool = False,
     max_usd: float | None = None,
-    deadline_ms: float = 999_999_999.0,
-    max_minutes: float = 60,
+    budget: Budget | None = None,
     now_ms: float = 0.0,
     after_wait: bool = False,
 ) -> Decision:
     """Delegates to ``classify``, filling every argument a test leaves out with a neutral default.
 
     Args:
-        config: The live config; the fully defaulted one when ``None``.
         state: The folded session state; an empty open session when ``None``.
         records: The session log records; none when ``None``.
         guards: The guard counters ``classify`` mutates; fresh ones when ``None``.
         turn: The turn that just ended; an agent turn with budget left when ``None``.
         lock_held: Whether another command holds the repository lock.
         max_usd: The spend cap, or ``None`` for none.
-        deadline_ms: The wall-clock deadline, in monotonic milliseconds.
-        max_minutes: The configured wall-clock budget, in minutes.
+        budget: The session's wall-clock budget; an hour that never runs out when ``None``.
         now_ms: The current monotonic time, in milliseconds.
         after_wait: Whether the turn follows a wait for the lock.
 
@@ -105,15 +101,13 @@ def classify_with_defaults(
         The decision ``classify`` reaches.
     """
     return classify(
-        config=config if config is not None else benchless_config(),
         state=state if state is not None else session_state(),
         records=records if records is not None else [],
         guards=guards if guards is not None else guard_state(),
         turn=turn if turn is not None else make_turn_end(),
         lock_held=lock_held,
         max_usd=max_usd,
-        deadline_ms=deadline_ms,
-        max_minutes=max_minutes,
+        budget=budget if budget is not None else Budget(max_minutes=60, deadline_ms=999_999_999.0),
         now_ms=now_ms,
         after_wait=after_wait,
     )
@@ -135,14 +129,6 @@ _REPLY_INSTRUCTION = (
 @pytest.mark.parametrize(
     ("arguments", "expected"),
     [
-        pytest.param(
-            {
-                "config": benchless_config(stop=StopConfig(max_iterations=2)),
-                "state": session_state(iteration_count=2),
-            },
-            End(reason="finished"),
-            id="stop-condition-met",
-        ),
         pytest.param(
             {"state": session_state(finalized=finalize_record())},
             End(reason="finished"),
@@ -218,7 +204,7 @@ _REPLY_INSTRUCTION = (
             id="no-progress-reaches-limit",
         ),
         pytest.param(
-            {"deadline_ms": 600_000.0, "max_minutes": 10.0},
+            {"budget": Budget(max_minutes=10.0, deadline_ms=600_000.0)},
             Reply(text=f"{_REPLY_INSTRUCTION}\n{format_duration(600_000)} left of 10m"),
             id="nothing-triggered-replies",
         ),
@@ -268,9 +254,9 @@ def test_classify_when_lock_held_does_wait_without_touching_guard_counters():
 def test_classify_when_replying_does_state_the_instruction_and_time_left(
     deadline_ms: float, now_ms: float, *, after_wait: bool, text: str
 ):
-    result = classify_with_defaults(
-        deadline_ms=deadline_ms, max_minutes=10.0, now_ms=now_ms, after_wait=after_wait
-    )
+    budget = Budget(max_minutes=10.0, deadline_ms=deadline_ms)
+
+    result = classify_with_defaults(budget=budget, now_ms=now_ms, after_wait=after_wait)
 
     assert result == Reply(text=text)
 

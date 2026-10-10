@@ -9,6 +9,7 @@ success path with its printed summary.
 from __future__ import annotations
 
 import errno
+import json
 import os
 import sys
 import time
@@ -19,10 +20,11 @@ from unittest.mock import create_autospec
 import pytest
 
 from gymrat.cli.app import app
+from gymrat.cli.exit import BUGS_URL
 from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.utils import ENDPOINT_ENV
 from tests._ansi import warning_lines
-from tests._cli import err_text, no_color_env, run_cli
+from tests._cli import err_text
 from tests._mode_bits import needs_mode_bits
 from tests.cli._runner import (
     runner,
@@ -33,6 +35,9 @@ from tests.telemetry._fixtures import arm_placeholder_endpoint, hide_otel_sdk, h
 from tests.telemetry._replay_logs import (
     T0,
     TORN_UTF8_LINE,
+    record_line,
+    replay_command,
+    write_lines,
     write_measure_command_run,
     write_records_log,
     write_standard_run,
@@ -195,7 +200,7 @@ def _no_log(path: Path) -> None:
         pytest.param(_blank_log, id="blank"),
     ],
 )
-def test_export_when_session_log_missing_or_blank_does_exit_two_reporting_no_session(
+def test_export_when_session_log_missing_or_blank_does_exit_two_reporting_no_session_without_bug_footer(
     arrange: Callable[[Path], None],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -206,8 +211,10 @@ def test_export_when_session_log_missing_or_blank_does_exit_two_reporting_no_ses
 
     result = runner.invoke(app, ["export", session_log])
 
+    output = err_text(result)
     assert result.exit_code == 2
-    assert f"No session found in {session_log}" in err_text(result)
+    assert output.splitlines()[0] == f"Error: No session found in {session_log}"
+    assert BUGS_URL not in output
 
 
 @pytest.mark.parametrize(
@@ -263,22 +270,49 @@ def test_export_when_first_record_not_session_does_exit_two_naming_its_type(
     )
 
 
-@needs_mode_bits
-def test_export_when_session_log_unreadable_does_exit_two_naming_path_and_os_reason(
+def _deny_session_log_read(session_log: Path) -> None:
+    session_log.chmod(0o000)
+
+
+def _replace_session_log_with_directory(session_log: Path) -> None:
+    session_log.unlink()
+    session_log.mkdir()
+
+
+#: What the OS says when a directory is opened as a file: Windows denies access.
+_DIRECTORY_OPEN_REASON = os.strerror(errno.EACCES if sys.platform == "win32" else errno.EISDIR)
+
+
+@pytest.mark.parametrize(
+    ("make_unreadable", "reason"),
+    [
+        pytest.param(
+            _deny_session_log_read,
+            os.strerror(errno.EACCES),
+            marks=needs_mode_bits,
+            id="no-read-permission",
+        ),
+        pytest.param(_replace_session_log_with_directory, _DIRECTORY_OPEN_REASON, id="a-directory"),
+    ],
+)
+def test_export_when_session_log_unreadable_does_exit_two_naming_path_and_os_reason_without_bug_footer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    make_unreadable: Callable[[Path], None],
+    reason: str,
 ) -> None:
     session_log = _populate_session_dir(str(tmp_path))
     arm_placeholder_endpoint(monkeypatch)
-    Path(session_log).chmod(0o000)
+    make_unreadable(Path(session_log))
 
     result = runner.invoke(app, ["export", session_log])
 
     output = err_text(result)
     assert result.exit_code == 2
     assert session_log in output
-    assert "Permission denied" in output
+    assert reason in output
     assert "No session found" not in output
+    assert BUGS_URL not in output
 
 
 # ---------------------------------------------------------------------------
@@ -325,29 +359,55 @@ def test_export_when_endpoint_padded_does_send_spans_to_trimmed_endpoint(
     ], err_text(result)
 
 
-def test_export_when_final_session_line_is_torn_utf8_does_skip_only_that_line(
+@pytest.mark.parametrize(
+    "torn_tail",
+    [
+        pytest.param(record_line(replay_command("iterate")).encode(), id="a-complete-record"),
+        pytest.param(TORN_UTF8_LINE, id="cut-inside-a-utf8-character"),
+    ],
+)
+def test_export_when_final_session_line_unterminated_does_ignore_it_without_warning(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    torn_tail: bytes,
 ):
     session_log = _populate_session_dir(str(tmp_path))
     with Path(session_log).open("ab") as log:
-        log.write(TORN_UTF8_LINE)
-    env = no_color_env()
+        log.write(torn_tail)
 
     with otlp_collector() as collector:
-        env[ENDPOINT_ENV] = collector.endpoint
+        monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
 
-        result = run_cli(
-            ["export", session_log],
-            tmp_path,
-            check=False,
-            timeout=60,
-            env=env,
-        )
+        result = runner.invoke(app, ["export", session_log])
 
-    assert result.returncode == 0, result.stderr
-    assert f"session log {session_log}: skipping line 3 (invalid JSON)" in result.stderr
-    assert f"exported 3 spans for session {SESSION_ID} to {collector.endpoint}" in result.stderr
+    assert result.exit_code == 0, err_text(result)
+    assert sorted(collector.span_names) == [
+        "gymrat.command.measure",
+        "gymrat.run",
+        "gymrat.session",
+    ]
+    assert warning_lines(result.stderr) == []
+
+
+def test_export_when_session_line_not_json_does_skip_it_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    session_log = _populate_session_dir(str(tmp_path))
+    header, *rest = Path(session_log).read_text(encoding="utf-8").splitlines()
+    write_lines(session_log, [header, "not json at all", *rest])
+
+    with otlp_collector() as collector:
+        monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
+
+        result = runner.invoke(app, ["export", session_log])
+
+    warnings = warning_lines(result.stderr)
+    assert result.exit_code == 0, err_text(result)
     assert len(collector.span_names) == 3
+    assert len(warnings) == 1, result.stderr
+    assert session_log in warnings[0]
+    assert "skipping line 2 (invalid JSON)" in warnings[0]
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +566,29 @@ def _deny_read(path: Path) -> None:
 def _make_directory(path: Path) -> None:
     """Create a directory whose name matches the supervisor log pattern."""
     path.mkdir()
+
+
+def test_export_when_supervisor_log_of_this_session_fails_to_parse_does_skip_it_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    session_log = _populate_session_dir(str(tmp_path))
+    invalid = Path(session_log).parent / "supervisor-002.jsonl"
+    invalid.write_text(
+        json.dumps({"type": "launch", "session_id": SESSION_ID, "at": "banana"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with otlp_collector() as collector:
+        monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
+
+        result = runner.invoke(app, ["export", session_log])
+
+    warnings = warning_lines(result.stderr)
+    assert result.exit_code == 0, err_text(result)
+    assert len(collector.span_names) == 3
+    assert len(warnings) == 1, result.stderr
+    assert str(invalid) in warnings[0]
 
 
 @pytest.mark.parametrize(

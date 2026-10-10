@@ -17,7 +17,7 @@ from gymrat.supervisor.tool_names import ITERATE_TOOL_NAME, MCP_SERVER, PROBE_TO
 if TYPE_CHECKING:
     from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool
 
-ToolsFactory = Callable[[asyncio.Event, Mapping[str, str]], object]
+type ToolsFactory = Callable[[asyncio.Event, Mapping[str, str]], McpSdkServerConfig]
 
 _ExecFn = Callable[[Sequence[str], ExecOptions], Awaitable[ExecResult | ExecTimeoutError]]
 

@@ -57,6 +57,7 @@ __all__ = [
     "RequiredSession",
     "SessionState",
     "append_record",
+    "complete_lines",
     "first_line_json",
     "fold_session",
     "last_kept_position",
@@ -458,6 +459,24 @@ def recover_torn_tail(jsonl_path: str) -> None:
         handle.truncate(last_newline + 1)
 
 
+def complete_lines(raw: bytes) -> list[bytes]:
+    """Split a session log's bytes into its newline-terminated lines, without the newlines.
+
+    Each record is written as a single newline-terminated write, so whatever
+    follows the last newline is either empty (the file ends on a newline) or the
+    torn tail of a write that never finished — a torn append or a crash
+    mid-flush — and must not be trusted. Either way it is dropped. Blank lines
+    are kept, so a line's index plus one is its 1-based line number.
+
+    Args:
+        raw: The whole content of a session log.
+
+    Returns:
+        The complete lines, in file order.
+    """
+    return raw.split(b"\n")[:-1]
+
+
 def read_records(jsonl_path: str) -> list[SessionLogRecord]:
     """Read every record from the session log at ``jsonl_path``, in file order.
 
@@ -486,14 +505,8 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
         message = f"Cannot read session log at {jsonl_path}"
         raise GymratError(message, hint=f"{error.strerror}.") from error
 
-    # Each record is written as a single newline-terminated write, so whatever
-    # follows the last newline is either empty (the file ends on \n) or the
-    # torn tail of a write that never finished — a torn append or a crash
-    # mid-flush — and must not be trusted. Either way it is dropped.
-    raw_lines = raw.split(b"\n")[:-1]
-
     records: list[SessionLogRecord] = []
-    for line_number, raw_line in enumerate(raw_lines, start=1):
+    for line_number, raw_line in enumerate(complete_lines(raw), start=1):
         if raw_line.strip() == b"":
             continue
 

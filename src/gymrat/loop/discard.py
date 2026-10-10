@@ -42,7 +42,7 @@ from gymrat.session.workspace import (
     revert_workspace,
     worktree_head,
 )
-from gymrat.utils import SHORT_SHA_LENGTH, pluralize
+from gymrat.utils import SHORT_SHA_LENGTH, pluralize, warn_to_stderr
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +162,8 @@ def _revert_target(
     """The commit the unmeasured revert should land on.
 
     An unreachable kept commit is a corruption edge case that should not happen
-    in practice.
+    in practice; the fallback to the worktree HEAD is announced on stderr, naming
+    the commit, so the user learns the log points somewhere git cannot follow.
 
     Args:
         state: The session's current iteration state.
@@ -178,7 +179,11 @@ def _revert_target(
         GymratError: When git cannot read the worktree HEAD.
     """
     target = last_kept_position(state, baseline_sha)
-    unreachable = try_git(["cat-file", "-t", target], experiment_dir) is not None
-    if unreachable:
+    error = try_git(["cat-file", "-t", target], experiment_dir)
+    if error is not None:
+        warn_to_stderr(
+            f"Commit {target} is unreachable in the experiment worktree: {error}\n"
+            "  reverting to the worktree's HEAD instead"
+        )
         return worktree_head(experiment_dir)
     return target

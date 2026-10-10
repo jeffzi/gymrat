@@ -536,13 +536,23 @@ def _lacks_description(prop: dict[str, Any]) -> bool:
 def test_render_json_schemas_when_called_does_type_null_only_on_the_delta_pct_fields():
     nullable = _session_log_fields_where(_is_nullable)
 
-    assert nullable == {("IterationPrimary", "delta_pct"), ("MetricVerdict", "delta_pct")}
+    assert nullable == {("IterationPrimary", "delta_pct"), ("IterationMetricVerdict", "delta_pct")}
 
 
 def test_render_json_schemas_when_called_does_carry_descriptions_on_every_session_log_field():
     missing = _session_log_fields_where(_lacks_description)
 
     assert missing == set()
+
+
+def test_render_json_schemas_when_metric_verdict_described_does_name_every_allowed_value():
+    field_schema = render_json_schemas()[0]["$defs"]["IterationMetricVerdict"]["properties"][
+        "verdict"
+    ]
+
+    unnamed = [value for value in field_schema["enum"] if value not in field_schema["description"]]
+
+    assert unnamed == []
 
 
 @pytest.mark.parametrize(

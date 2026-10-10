@@ -28,12 +28,11 @@ from gymrat.progress_events import PassFinished, PassStarted
 from gymrat.session.paths import experiment_worktree_dir, progress_path
 from tests._exec_fixtures import expected_result, install_exec
 from tests.adapters._inputs import malformed_line_warning
-from tests.loop._probe import BASELINE_SAMPLES, install_measure, measurement
+from tests.loop._probe import BASELINE_SAMPLES
 from tests.loop._settle import checks_config, start_with
 from tests.loop.iterate._fixtures import (
     FILTER,
 )
-from tests.report._measurements import measured_metric
 from tests.session.records._fixtures import baseline_record, log_records
 
 if TYPE_CHECKING:
@@ -221,22 +220,6 @@ async def test_probe_session_when_reference_missing_or_zero_does_report_no_delta
     result = await probe_session(repo, checks_config(), ProbeOptions())
 
     assert result.metrics[0].reference_median == expected_reference
-    assert result.metrics[0].delta_pct is None
-
-
-async def test_probe_session_when_run_reported_no_median_does_report_no_delta(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    # No output a bench can print makes the engine hand back a metric without
-    # a median, so this one case replaces the engine itself.
-    install_measure(
-        monkeypatch, measurement({"total_ms": measured_metric(median=None, spread=None)})
-    )
-
-    result = await probe_session(repo, checks_config(), ProbeOptions())
-
-    assert result.metrics[0].reference_median == 100.0
     assert result.metrics[0].delta_pct is None
 
 

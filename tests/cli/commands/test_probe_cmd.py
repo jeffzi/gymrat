@@ -115,15 +115,22 @@ _SCOPED_ARGS = ["total_ms", "alloc_bytes", "--samples", "3"]
             [],
             "npm run bench",
             PROBE_DEFAULT_SAMPLES,
-            {"names": [], "samples": None},
+            {"names": []},
             id="whole-bench-at-probe-default",
         ),
         pytest.param(
             _SCOPED_ARGS,
             "sh bench.sh --filter total_ms alloc_bytes",
             3,
-            {"names": ["total_ms", "alloc_bytes"], "samples": 3},
+            {"samples": 3, "names": ["total_ms", "alloc_bytes"]},
             id="names-and-samples-scope-the-bench",
+        ),
+        pytest.param(
+            ["--config", "gymrat.toml"],
+            "npm run bench",
+            PROBE_DEFAULT_SAMPLES,
+            {"config": "gymrat.toml", "names": []},
+            id="config-file-named",
         ),
     ],
 )
@@ -143,7 +150,7 @@ def test_probe_command_when_run_does_bench_and_trace_the_scope_and_samples_asked
     assert (run.bench, run.samples) == (bench, samples)
     cmd = last_command_record(probe_repo)
     assert (cmd.name, cmd.exit_code, cmd.reason) == ("probe", 0, None)
-    assert {key: cmd.args[key] for key in traced} == traced
+    assert cmd.args == traced
 
 
 # ---------------------------------------------------------------------------

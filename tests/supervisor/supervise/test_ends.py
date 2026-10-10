@@ -7,6 +7,10 @@ through tool ends, append records to the scratch session log between steps, and
 inject ``is_lock_held`` to defer an end while a command the agent left running
 holds the repository lock.
 
+A stop condition already met at launch, as on a forced run, never ends the run:
+the turn ends keep getting replies until something else ends it. One that
+becomes met during the run ends it at the next turn end.
+
 A step that must never run once an end fires carries a long ``delay_ms``: the
 mock's delay races the abort, so a run that ends returns at once, while a run
 that misses the end sits out the delay and reports a plain session ending.
@@ -27,6 +31,7 @@ from gymrat.config import StopConfig
 from gymrat.session.paths import session_dir, session_jsonl_path
 from gymrat.supervisor.events import (
     CapEvent,
+    FollowUpEvent,
     SessionEvent,
     TurnEndEvent,
     UsageUpdateEvent,
@@ -37,10 +42,12 @@ from tests._mode_bits import needs_mode_bits
 from tests.session.records._fixtures import (
     append_records,
     command_record,
+    finalize_record,
     hook_record,
     iteration_record,
     session_record,
     session_state,
+    stop_record,
 )
 from tests.supervisor._fixtures import (
     ActionStep,
@@ -506,6 +513,120 @@ async def test_supervise_when_condition_lands_after_last_tool_end_does_end_at_tu
 
 
 # ---------------------------------------------------------------------------
+# a stop condition met at launch versus during the run
+# ---------------------------------------------------------------------------
+
+
+def _follow_ups(events: list[SessionEvent]) -> list[tuple[str, str | None]]:
+    return [(event.action, event.reason) for event in events_of(events, FollowUpEvent)]
+
+
+@dataclass(frozen=True)
+class _LaterEndCase:
+    """A way a run ends that is not its stop condition becoming met."""
+
+    script: Callable[[str], list[MockStep]]
+    ended_by: str
+    follow_ups: list[tuple[str, str | None]]
+    max_usd: float | None = None
+
+
+_LATER_END_CASES = [
+    pytest.param(
+        _LaterEndCase(
+            script=lambda root: [TurnEndStep(), append_step(root, stop_record()), TurnEndStep()],
+            ended_by="session",
+            follow_ups=[("replied", None), ("ended", "finished")],
+        ),
+        id="stop-record",
+    ),
+    pytest.param(
+        _LaterEndCase(
+            script=lambda root: [
+                TurnEndStep(),
+                append_step(root, finalize_record()),
+                TurnEndStep(),
+            ],
+            ended_by="session",
+            follow_ups=[("replied", None), ("ended", "finished")],
+        ),
+        id="finalize",
+    ),
+    pytest.param(
+        _LaterEndCase(
+            script=lambda _root: [TurnEndStep(), TurnEndStep(cost_usd=5.0)],
+            ended_by="spend-cap",
+            follow_ups=[("replied", None), ("ended", "spend-cap")],
+            max_usd=1.0,
+        ),
+        id="spend-cap",
+    ),
+    pytest.param(
+        _LaterEndCase(
+            script=lambda _root: [TurnEndStep()] * 4,
+            ended_by="guard",
+            follow_ups=[
+                ("replied", None),
+                ("replied", None),
+                ("replied", None),
+                ("ended", "no-progress"),
+            ],
+        ),
+        id="no-progress-guard",
+    ),
+]
+
+
+@pytest.mark.parametrize("case", _LATER_END_CASES)
+@pytest.mark.parametrize(
+    "launch_records",
+    [
+        pytest.param([iteration_record(seq=1)], id="met-at-launch"),
+        pytest.param([], id="never-met"),
+    ],
+)
+async def test_supervise_when_stop_condition_never_becomes_met_does_reply_until_a_later_end(
+    root: str, launch_records: list[SessionLogRecord], case: _LaterEndCase
+):
+    append_records(root, *launch_records)
+    probe = collecting_observer()
+    driver = create_mock_driver(case.script(root))
+
+    result = await run_supervised(
+        root,
+        driver,
+        config=benchless_config(stop=StopConfig(max_iterations=1)),
+        observer=probe.observer,
+        max_usd=case.max_usd,
+    )
+
+    assert result.ended_by == case.ended_by
+    assert _follow_ups(probe.events) == case.follow_ups
+
+
+async def test_supervise_when_stop_condition_met_after_a_reply_does_end_at_the_next_turn_end(
+    root: str,
+):
+    probe = collecting_observer()
+    driver = create_mock_driver([
+        TurnEndStep(),
+        append_step(root, iteration_record(seq=1)),
+        TurnEndStep(),
+    ])
+
+    result = await run_supervised(
+        root,
+        driver,
+        config=benchless_config(stop=StopConfig(max_iterations=1)),
+        observer=probe.observer,
+    )
+
+    assert (result.ended_by, result.end_reason) == ("stop-condition", _MAX_ITERATIONS_REASON)
+    assert _follow_ups(probe.events) == [("replied", None), ("ended", _MAX_ITERATIONS_REASON)]
+    assert len(sent_texts(driver.sessions[0])) == 1
+
+
+# ---------------------------------------------------------------------------
 # deferral while the repository lock is held
 # ---------------------------------------------------------------------------
 
@@ -588,6 +709,69 @@ async def test_supervise_when_end_pending_at_injected_turn_end_with_reply_outsta
     assert result.ended_by == "hook-failure"
     assert result.outcome.reason == "interrupted"
     assert "end" not in driver_calls(driver.sessions[0])
+
+
+# ---------------------------------------------------------------------------
+# a failing turn-end task
+# ---------------------------------------------------------------------------
+
+_PROBE_FAILURE = "lock probe broke"
+
+
+@dataclass(slots=True)
+class _BreakableLockProbe:
+    """A repository lock probe that reports the lock held until broken, then raises."""
+
+    broken: bool
+
+    def is_held(self) -> bool:
+        if self.broken:
+            raise RuntimeError(_PROBE_FAILURE)
+        return True
+
+    def break_on_waiting(self, event: SessionEvent) -> None:
+        if isinstance(event, FollowUpEvent) and event.action == "waiting":
+            self.broken = True
+
+
+@dataclass(frozen=True, slots=True)
+class _FailingTaskCase:
+    """A script whose turn end runs a task into a broken lock probe, and when the probe breaks."""
+
+    script: Callable[[str], list[MockStep]]
+    broken_at_launch: bool
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            _FailingTaskCase(script=lambda _root: [TurnEndStep()], broken_at_launch=True),
+            id="settle",
+        ),
+        pytest.param(
+            _FailingTaskCase(
+                script=lambda root: [append_step(root, _FAILED_HOOK), _tool_end(), TurnEndStep()],
+                broken_at_launch=False,
+            ),
+            id="lock-poll",
+        ),
+    ],
+)
+async def test_supervise_when_turn_end_task_raises_does_end_promptly_with_error_outcome(
+    root: str, case: _FailingTaskCase
+):
+    probe = _BreakableLockProbe(broken=case.broken_at_launch)
+    driver = create_mock_driver(case.script(root))
+
+    result = await asyncio.wait_for(
+        run_supervised(root, driver, observer=probe.break_on_waiting, is_lock_held=probe.is_held),
+        timeout=2.0,
+    )
+
+    assert (result.ended_by, result.outcome.reason) == ("session", "error")
+    assert result.end_reason == result.outcome.message
+    assert _PROBE_FAILURE in str(result.outcome.message)
 
 
 # ---------------------------------------------------------------------------

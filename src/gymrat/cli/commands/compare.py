@@ -234,12 +234,12 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 
     async def run() -> None:
         warn_duration_over_budget(halve=False)
-        trace_args: dict[str, object] = {
-            "baseline": baseline.display_label,
-            "candidates": [spec.display_label for spec in candidates],
-            "fail_on": _serialize_fail_on(flags.fail_on),
-            **config_trace_args(flags),
-        }
+        trace_args = config_trace_args(
+            flags,
+            baseline=baseline.display_label,
+            candidates=[spec.display_label for spec in candidates],
+            fail_on=_serialize_fail_on(flags.fail_on) or None,
+        )
 
         async def body(trace: CommandTrace) -> ComparisonResult:
             comparison = await _compare_body(flags, baseline, candidates)

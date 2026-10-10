@@ -5,21 +5,26 @@ per second rendering through ``get_renderable``, ``transient=True``, rich's
 stderr redirect left on), the single ``refresh()`` an event that changes state
 triggers, the skipped repaint for events that leave state unchanged, the session
 refresh that re-reads the session, keeping the last good read when one fails and
-repainting only when the re-read succeeds, and ``_stop_live`` suppression scope
-(``OSError`` and a closed-stream ``ValueError`` only).
+repainting only when the re-read succeeds, and the suppression scope of
+``stop()`` (``OSError`` and a closed-stream ``ValueError`` only).
+
+The lifecycle tests mount a real dashboard: a zero-width console renders plain
+whatever the mode, a second ``stop()`` writes nothing, and stopping erases the
+transient frame, leaving only the line kept above it.
 
 The ``terminal`` fixture makes a sealed terminal console the dashboard's
 console and the process's stderr, with one line kept above the dashboard. The
 warning tests patch out the ``Live`` class so no frame is painted, and read
-what the dashboard printed. What a termination signal does to the dashboard is
-tested alongside every other CLI progress renderer, in
-``tests/cli/test_progress.py``.
+what the dashboard printed; the plain-text warning test paints on a terminal
+with styling on, so a highlighted number or path would show up as escape
+codes. What a termination signal does to the dashboard is tested alongside
+every other CLI progress renderer, in ``tests/cli/test_progress.py``.
 """
 
 from __future__ import annotations
 
 from io import StringIO
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Literal, override
 from unittest.mock import DEFAULT, MagicMock, Mock
 
 import pytest
@@ -29,8 +34,11 @@ from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._rich import (
     KEPT_LINE,
     Clock,
+    console_output,
     frame_text,
     kept_line_terminal,
+    screen_lines,
+    sealed_console,
     stop_tracked,
 )
 from tests.cli.supervise._fixtures import (
@@ -163,21 +171,99 @@ def test_refresh_session_when_live_does_update_and_repaint_only_after_a_successf
 
 
 # ---------------------------------------------------------------------------
-# warn — messages printed verbatim
+# Lifecycle — zero-width console, repeated stop, transient frame
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["live", "plain"])
+def test_create_reporter_when_console_width_zero_does_render_plain_whatever_the_mode(
+    mode: Literal["live", "plain"],
+):
+    writes: list[str] = []
+    with dashboard_console_patch(sealed_console(width=0)):
+        kit = launched(make_reporter(mode=mode, plain_write=writes.append, max_minutes=60))
+
+    assert (kit.reporter.live, writes) == (None, ["caps 60m"])
+
+
+def test_stop_when_called_again_does_write_nothing_more():
+    console = sealed_console(width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
+    with dashboard_console_patch(console):
+        kit = launched(make_reporter(mode="live"))
+    kit.reporter.stop()
+    after_first_stop = console_output(console)
+
+    kit.reporter.stop()
+
+    assert console_output(console) == after_first_stop
+
+
+def test_stop_when_live_does_erase_the_frame_and_keep_the_line_above(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    console = kept_line_terminal(monkeypatch, width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
+    with dashboard_console_patch(console):
+        kit = launched(make_reporter(mode="live"))
+
+    kit.reporter.stop()
+
+    on_screen = screen_lines(console_output(console), width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
+    assert on_screen == [KEPT_LINE]
+
+
+# ---------------------------------------------------------------------------
+# warn — messages printed verbatim, with no highlighting
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("mock_live_cls")
-def test_warn_when_live_message_contains_brackets_does_print_it_verbatim(terminal: StringIO):
-    kit = make_reporter(mode="live")
+@pytest.mark.parametrize("mode", ["live", "plain"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        pytest.param("missing [banana] key", id="brackets"),
+        pytest.param("cache /tmp/banana/cache.json holds 3 entries", id="number-and-path"),
+    ],
+)
+def test_warn_when_message_looks_like_markup_or_has_numbers_does_print_it_as_plain_text(
+    monkeypatch: pytest.MonkeyPatch, mode: Literal["live", "plain"], message: str
+):
+    # Built in the test body: pytest re-points sys.stderr between fixture setup
+    # and the test call, and a plain-mode warning is written to sys.stderr.
+    term = StringIO()
+    console = kept_line_terminal(
+        monkeypatch,
+        stream=term,
+        width=_SCREEN_WIDTH,
+        height=_SCREEN_HEIGHT,
+        color_system="standard",
+    )
+    with dashboard_console_patch(console):
+        kit = make_reporter(mode=mode)
 
-    kit.reporter.warn("missing [banana] key")
+    kit.reporter.warn(message)
 
-    assert terminal.getvalue() == f"{KEPT_LINE}\nmissing [banana] key\n"
+    assert term.getvalue() == f"{KEPT_LINE}\n{message}\n"
+
+
+def test_warn_when_frame_is_up_does_print_above_it_leaving_the_frame_whole(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    console = kept_line_terminal(monkeypatch, width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
+    with dashboard_console_patch(console):
+        kit = launched(make_reporter(mode="live"))
+    frame_rows = screen_lines(console_output(console), width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)[
+        1:
+    ]
+
+    kit.reporter.warn("cache /tmp/banana/cache.json holds 3 entries")
+
+    on_screen = screen_lines(console_output(console), width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
+    assert on_screen == [KEPT_LINE, "cache /tmp/banana/cache.json holds 3 entries", *frame_rows]
 
 
 # ---------------------------------------------------------------------------
-# _stop_live — suppresses OSError and a closed-stream ValueError only
+# stop — suppresses OSError and a closed-stream ValueError only
 # ---------------------------------------------------------------------------
 
 

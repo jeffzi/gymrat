@@ -19,6 +19,7 @@ from gymrat.session.store import (
     append_record,
     last_kept_position,
     require_open_session,
+    require_settled,
     settle_first_hint,
 )
 from gymrat.session.workspace import (
@@ -85,11 +86,7 @@ def _validate_finalize(
         message = f"Finalize refused: session {session.session_id} has kept nothing to squash."
         hint = "Run gymrat keep on a measured edit before closing the session."
         raise GymratError(message, hint=hint, reason="nothing-kept")
-    if state.unsettled:
-        message = (
-            f"Finalize refused: iteration {state.last_seq} has been neither kept nor discarded."
-        )
-        raise GymratError(message, hint=_SETTLE_FIRST_HINT, reason="unsettled")
+    require_settled(state, "finalizing")
     if dirty_file_count(session.worktrees.experiment) > 0:
         message = (
             f"Finalize refused: the experiment worktree at {session.worktrees.experiment} "

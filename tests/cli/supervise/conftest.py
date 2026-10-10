@@ -12,4 +12,6 @@ from tests.cli.supervise._fixtures import LIVE_CLASS_PATH
 def mock_live_cls() -> Iterator[MagicMock]:
     """The ``ErasableLive`` class the live-mode reporter builds, patched with an autospec."""
     with patch(LIVE_CLASS_PATH, autospec=True) as live_cls:
+        # An autospec'd property is a truthy mock; a display still on screen is not erased.
+        live_cls.return_value.erased = False
         yield live_cls

@@ -37,6 +37,7 @@ from gymrat.report.types import (
     CandidateMetric,
     ComparisonResult,
 )
+from gymrat.sampling import CleanupResult
 from gymrat.session.records import KeepChecks
 from gymrat.worktree_failure import WorktreeRemovalFailure
 from tests.report._comparisons import (
@@ -262,11 +263,13 @@ def test_render_json_when_candidate_has_no_verdict_does_null_its_verdict_fields(
 
 def test_render_json_when_cleanup_has_failures_does_report_them_in_worktrees():
     result = create_comparison_result(
-        worktrees_removed=1,
-        worktrees_left_behind=[
-            WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="contains modified files"),
-        ],
-        worktree_prune_error="fatal: prune failed",
+        cleanup=CleanupResult(
+            removed=1,
+            failures=(
+                WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="contains modified files"),
+            ),
+            prune_error="fatal: prune failed",
+        )
     )
 
     doc = json.loads(render_json(result))

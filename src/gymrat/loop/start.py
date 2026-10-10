@@ -8,7 +8,6 @@ the repository lock across the call is the caller's job — this touches ``.gymr
 and the repository's branches, so two concurrent runs must not reach it.
 """
 
-import contextlib
 import secrets
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -17,7 +16,6 @@ from pathlib import Path
 from gymrat import clock as _clock
 from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
-from gymrat.git import try_git
 from gymrat.session.paths import archived_session_path, session_jsonl_path
 from gymrat.session.records import SessionConfig, SessionHooks, SessionRecord
 from gymrat.session.schema import SCHEMA_VERSION
@@ -30,10 +28,9 @@ from gymrat.session.store import (
 )
 from gymrat.session.workspace import (
     BaselineRef,
-    WorkspaceResult,
     create_workspace,
     recreate_workspace,
-    remove_worktrees,
+    unwind_workspace,
 )
 from gymrat.targets import RefTarget, resolve_target
 from gymrat.utils import MS_PER_SECOND, NS_PER_MS, warn_to_stderr
@@ -98,8 +95,13 @@ def start_session(root: str, ref: str | None, config: ResolvedConfig) -> StartRe
             # Best-effort: the failure being re-raised is what broke the start, and
             # a rename that cannot run must not speak in its place. The closed
             # session's records stay on disk under its own id either way.
-            with contextlib.suppress(OSError):
+            try:
                 Path(archived_path).rename(jsonl_path)
+            except OSError as error:
+                warn_to_stderr(
+                    f"Could not put the closed session's log back at {jsonl_path}: {error}\n"
+                    f"  its records stay at {archived_path}"
+                )
             raise
         return replace(created, archived=session.session_id, archived_path=archived_path)
 
@@ -155,8 +157,11 @@ def _create_session(root: str, jsonl_path: str, ref: str, config: ResolvedConfig
     except BaseException:
         # A header that reached the log before the failure (a sync that failed
         # after the write) names this workspace, and the next start resumes in it.
+        # create_workspace only returns once it checked out both worktrees itself,
+        # so nothing the unwind takes back predates this start.
         if not _header_landed(jsonl_path):
-            _unwind_workspace(root, workspace)
+            for warning in unwind_workspace(root, workspace):
+                warn_to_stderr(warning)
         raise
 
     return StartResult(session=session, state=fold_session([session]), resumed=False)
@@ -168,32 +173,6 @@ def _header_landed(jsonl_path: str) -> bool:
         return fold_session(read_records(jsonl_path)).session is not None
     except (GymratError, OSError):
         return False
-
-
-def _unwind_workspace(root: str, workspace: WorkspaceResult) -> None:
-    """Take back the branch and both worktrees of a session whose header never landed.
-
-    Left standing, they would make every later start refuse until the user
-    removed them by hand. ``create_workspace`` only returns once it checked out
-    both worktrees itself, so nothing here predates this start.
-
-    The worktrees go before the branch: git refuses to delete a branch one of
-    them still has checked out. A step that fails is reported as a warning — the
-    caller is about to re-raise what broke the start, and a cleanup that cannot
-    finish must not speak in its place.
-
-    Args:
-        root: The repository root.
-        workspace: The branch and worktrees ``create_workspace`` just made.
-    """
-    for warning in remove_worktrees(root, workspace.worktrees):
-        warn_to_stderr(warning)
-    error = try_git(["branch", "-D", workspace.branch], root)
-    if error is not None:
-        warn_to_stderr(
-            f"Could not delete the session branch '{workspace.branch}': {error}\n"
-            f"  delete it by hand with: git branch -D {workspace.branch}"
-        )
 
 
 def _resolve_baseline_sha(ref: str, root: str) -> str:

@@ -93,7 +93,7 @@ One measured edit: raw samples, per-metric verdicts, and the outcome.
 | `seq` | integer | required | Iteration sequence number, starting at 1. |
 | `type` | `"iteration"` | required | Record type discriminator. |
 | `samples` | [PairedSamples](#pairedsamples) | required | Raw sample rounds from both worktrees. |
-| `metrics` | object (values: [MetricVerdict](#metricverdict)) | required | Per-metric verdicts keyed by metric name. |
+| `metrics` | object (values: [IterationMetricVerdict](#iterationmetricverdict)) | required | Per-metric verdicts keyed by metric name. |
 | `confirm` | [Confirm](#confirm) | optional | Confirmation rerun results, if one was triggered. |
 | `primary` | [IterationPrimary](#iterationprimary) | required | The primary metric or aggregate the outcome was judged on. |
 | `outcome` | `"improved"` \| `"regressed"` \| `"no-signal"` | required | Overall iteration outcome: improved, regressed, or no-signal. |
@@ -110,7 +110,7 @@ The experiment and baseline sample rounds measured in one iteration.
 | `experiment` | array of object | required | Sample rounds from the experiment worktree. |
 | `baseline` | array of object | required | Sample rounds from the baseline worktree. |
 
-#### `MetricVerdict`
+#### `IterationMetricVerdict`
 
 How one metric moved, with the statistics behind the judgement.
 
@@ -121,7 +121,7 @@ writer, not a degenerate measurement.
 | Name | Type | Status | Description |
 | --- | --- | --- | --- |
 | `delta_pct` | number \| integer \| null | required | Percentage change from baseline, or null when undefined. |
-| `verdict` | `"improved"` \| `"regressed"` \| `"no-signal"` \| `"unstable"` | required | Whether the metric improved, regressed, or showed no signal. |
+| `verdict` | `"improved"` \| `"regressed"` \| `"no-signal"` \| `"unstable"` | required | How the metric moved: improved, regressed, no-signal, or unstable when its samples were too noisy to judge. |
 | `method` | `"permutation"` \| `"band"` \| `"exact"` | required | Statistical test used to judge the metric. |
 | `p` | number | optional | P-value from the statistical test. |
 | `noise_pct` | number | optional | Estimated noise as a percentage of the baseline median. |

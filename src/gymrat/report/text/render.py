@@ -717,12 +717,12 @@ def _render_worktree_footer(result: ComparisonResult | MeasurementResult) -> lis
         Markup lines describing the cleanup failures, or an empty list when
         the cleanup was clean.
     """
-    details = format_cleanup_failures(result.worktrees_left_behind, result.worktree_prune_error)
+    cleanup = result.cleanup
+    details = format_cleanup_failures(cleanup.failures, cleanup.prune_error)
     if not details:
         return []
-    left_behind = len(result.worktrees_left_behind)
     header = (
-        f"{pluralize(result.worktrees_removed, 'worktree')} removed · {left_behind} left behind"
+        f"{pluralize(cleanup.removed, 'worktree')} removed · {len(cleanup.failures)} left behind"
     )
     return [escape(line) for line in (header, *details)]
 

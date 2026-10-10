@@ -128,15 +128,12 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 
     async def run() -> None:
         warn_duration_over_budget(halve=True)
-        trace_args: dict[str, object] = {
-            "target": resolved_target.display_label,
-            "record": record,
-            **config_trace_args(flags),
-        }
         outcome = await with_repo_lock(
             "measure",
             lambda _trace: _measure_body(flags, resolved_target),
-            args=trace_args,
+            args=config_trace_args(
+                flags, target=resolved_target.display_label, record=record or None
+            ),
         )
         emit_report(
             outcome.result,

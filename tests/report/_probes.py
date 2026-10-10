@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 def probe_metric(
     name: str = "total_ms",
     *,
-    median: float | None = 90.0,
+    median: float = 90.0,
     spread: float | None = 2.0,
     reference_median: float | None = 100.0,
     delta_pct: float | None = -10.0,
@@ -28,8 +28,7 @@ def probe_metric(
 
     Args:
         name: The metric name.
-        median: The metric's median now. ``None`` means no round reported the
-            metric.
+        median: The metric's median now.
         spread: The run-to-run spread as a percentage of the median. ``None``
             means there was no run-to-run jitter to report.
         reference_median: The baseline's median, ``None`` together with

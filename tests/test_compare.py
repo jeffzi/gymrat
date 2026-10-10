@@ -173,7 +173,7 @@ async def test_compare_when_two_refs_given_does_compare_them_in_disposable_workt
     assert result.candidates[0].label == "candidate"
     assert result.metrics["x"].baseline_median == 1.0
     assert result.metrics["x"].candidates[0].median == 2.0
-    assert result.worktrees_removed >= 2
+    assert result.cleanup.removed >= 2
     assert list_worktree_dirs(repo, include_main=False) == []
 
 

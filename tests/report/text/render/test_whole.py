@@ -31,6 +31,7 @@ from gymrat.config import KindEntry
 from gymrat.model import Exclusion
 from gymrat.report.text.render import render_measure_report, render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
+from gymrat.sampling import CleanupResult
 from gymrat.worktree_failure import WorktreeRemovalFailure
 from tests.report._assertions import (
     highlight_lines,
@@ -426,11 +427,13 @@ def _degenerate_result() -> ComparisonResult:
                 ]
             )
         ],
-        worktrees_removed=1,
-        worktrees_left_behind=[
-            WorktreeRemovalFailure(dir="/tmp/gymrat-abc123", error="contains modified files")
-        ],
-        worktree_prune_error="could not lock config file",
+        cleanup=CleanupResult(
+            removed=1,
+            failures=(
+                WorktreeRemovalFailure(dir="/tmp/gymrat-abc123", error="contains modified files"),
+            ),
+            prune_error="could not lock config file",
+        ),
     )
 
 

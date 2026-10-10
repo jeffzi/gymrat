@@ -35,7 +35,9 @@ from tests.loop._settle import (
     unmeasured_regression,
 )
 from tests.session.records._fixtures import (
+    COMMIT,
     append_records,
+    committed_keep,
     discard_record,
     gate_block,
     iteration_record,
@@ -157,6 +159,25 @@ async def test_discard_session_when_keep_committed_then_agent_committed_does_res
 
     assert head_of(worktree) == kept_commit
     assert status_of(worktree) == ""
+
+
+def test_discard_session_when_kept_commit_unreachable_does_warn_naming_it_and_revert_to_the_worktree_head(
+    repo: str, capsys: pytest.CaptureFixture[str]
+):
+    # The keep names COMMIT, a commit that exists nowhere in the repository.
+    start_with(repo, (iteration_record(seq=1), committed_keep(1)))
+    edit_experiment(repo)
+    worktree = experiment_worktree_dir(repo)
+    head = head_of(worktree)
+
+    result = discard_session(repo)
+
+    stderr = capsys.readouterr().err
+    assert f"Commit {COMMIT} is unreachable in the experiment worktree: " in stderr
+    assert "reverting to the worktree's HEAD instead" in stderr
+    _assert_reverted(worktree)
+    assert head_of(worktree) == head
+    assert result.record is None
 
 
 # ---------------------------------------------------------------------------

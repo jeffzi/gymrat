@@ -331,7 +331,9 @@ def discard(
                 trace.seq = discard_result.record.seq
             return discard_result
 
-        result = await with_repo_lock("discard", body, args={"force": force}, root=root)
+        result = await with_repo_lock(
+            "discard", body, args=config_trace_args(flags, force=force or None), root=root
+        )
         write_budget_report(
             root,
             flags,
@@ -372,7 +374,7 @@ def status(
                 + trailer
             )
 
-        report = await with_repo_lock("status", body, root=root)
+        report = await with_repo_lock("status", body, args=config_trace_args(flags), root=root)
         write_stdout(report + "\n")
 
     run_cli(run)

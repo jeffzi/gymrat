@@ -39,8 +39,8 @@ if TYPE_CHECKING:
         MeasurementResult,
         MetricComparison,
         MetricMeasurement,
-        WorktreeCleanupOutcome,
     )
+    from gymrat.sampling import CleanupResult
     from gymrat.session.records import IterationRecord
     from gymrat.verdict import KindAggregate
 
@@ -83,7 +83,7 @@ def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None
             for name, metric in result.metrics.items()
         },
         "per_candidate": _serialize_per_candidate(result),
-        "worktrees": _serialize_worktrees(result),
+        "worktrees": _serialize_worktrees(result.cleanup),
     }
     return render_document(document, budget)
 
@@ -106,7 +106,7 @@ def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | No
         "metrics": {
             name: _serialize_measure_metric(name, metric) for name, metric in result.metrics.items()
         },
-        "worktrees": _serialize_worktrees(result),
+        "worktrees": _serialize_worktrees(result.cleanup),
     }
     return render_document(document, budget)
 
@@ -258,15 +258,14 @@ def _serialize_measure_metric(name: str, metric: MetricMeasurement) -> dict[str,
     }
 
 
-def _serialize_worktrees(result: WorktreeCleanupOutcome) -> dict[str, object]:
+def _serialize_worktrees(cleanup: CleanupResult) -> dict[str, object]:
     """The cleanup outcome: count removed, failures, and any prune error."""
     return {
-        "removed": result.worktrees_removed,
+        "removed": cleanup.removed,
         "left_behind": [
-            {"path": failure.dir, "reason": failure.error}
-            for failure in result.worktrees_left_behind
+            {"path": failure.dir, "reason": failure.error} for failure in cleanup.failures
         ],
-        "prune_error": result.worktree_prune_error,
+        "prune_error": cleanup.prune_error,
     }
 
 

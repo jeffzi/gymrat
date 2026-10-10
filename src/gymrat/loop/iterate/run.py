@@ -92,7 +92,7 @@ from gymrat.session.store import (
     require_open_session,
     require_settled,
 )
-from gymrat.utils import limit_output, ms_to_minutes, warn_to_stderr
+from gymrat.utils import format_duration, limit_output, warn_to_stderr
 
 if TYPE_CHECKING:
     import asyncio
@@ -230,11 +230,9 @@ def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
         return
     remaining = budget.remaining_ms(current_ms)
     if estimate.duration_ms > remaining:
-        remaining_minutes = int(ms_to_minutes(remaining))
-        estimate_minutes = int(ms_to_minutes(estimate.duration_ms))
         message = (
-            f"{remaining_minutes}m left; the last {estimate.source} took "
-            f"{estimate_minutes}m and the cap would cut this one off."
+            f"{format_duration(remaining)} left; the last {estimate.source} took "
+            f"{format_duration(estimate.duration_ms)} and the cap would cut this one off."
         )
         raise BudgetExceededError(
             message,

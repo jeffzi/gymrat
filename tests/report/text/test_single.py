@@ -21,11 +21,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat.model import Exclusion
 from gymrat.report.text.render import render_report
+from gymrat.report.text.single import scoped_geomean_label
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from gymrat.model import GeomeanResult
     from gymrat.report.types import ComparisonResult, MetricComparison
 from tests._ansi import strip_ansi
 from tests.report._assertions import (
@@ -541,3 +544,38 @@ def test_render_report_when_closing_a_sectioned_table_does_end_on_the_last_geome
     report = render_report(make_result())
 
     assert table_region(report)[-1] == "geomean · memory (1)"
+
+
+# ---------------------------------------------------------------------------
+# scoped_geomean_label
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("scope", "geomean", "expected"),
+    [
+        pytest.param("entity", geomean_of(n=1), "geomean · entity (1)", id="nothing-excluded"),
+        pytest.param(
+            "entity",
+            geomean_of(n=1, excluded=[Exclusion(metric="entity.spawn/time", reason="unstable")]),
+            "geomean · entity (1/2)",
+            id="one-exclusion",
+        ),
+        pytest.param(
+            "memory",
+            geomean_of(
+                n=13,
+                excluded=[
+                    Exclusion(metric="a/heap", reason="unstable"),
+                    Exclusion(metric="b/heap", reason="undefined-ratio"),
+                ],
+            ),
+            "geomean · memory (13/15)",
+            id="several-exclusions",
+        ),
+    ],
+)
+def test_scoped_geomean_label_when_exclusions_vary_does_count_kept_metrics_against_total(
+    scope: str, geomean: GeomeanResult, expected: str
+):
+    assert scoped_geomean_label(scope, geomean) == expected

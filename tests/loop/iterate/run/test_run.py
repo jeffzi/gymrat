@@ -573,7 +573,8 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_
     repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
     hooks = HookScripts.for_root(repo)
-    write_outlasted_session(repo, monkeypatch)
+    write_iterate_session(repo, settled_history(duration_ms=870_000))
+    install_budget(repo, monkeypatch, deadline_ms=90_000.0, frozen_now_ms=0)
     stub_improved_samples(samples_mock, repo)
     config = resolved_config(hooks=HooksConfig(before=hooks.printing("hi")))
 
@@ -581,7 +582,7 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_
         await iterate_session(repo, config)
 
     assert str(exc.value) == (
-        "5m left; the last iteration took 14m and the cap would cut this one off."
+        "1m 30s left; the last iteration took 14m 30s and the cap would cut this one off."
     )
     assert exc.value.hint == "Report what the session measured instead of measuring again."
     assert samples_mock.call_count == 0

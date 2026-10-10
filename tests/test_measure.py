@@ -102,9 +102,7 @@ async def test_orchestrator_when_pipeline_completes_does_assemble_result_metadat
 
     result = await orchestrate(run_options(samples=3))
 
-    assert result.worktrees_removed == DIRTY_RESULT.removed
-    assert result.worktrees_left_behind == DIRTY_RESULT.failures
-    assert result.worktree_prune_error == DIRTY_RESULT.prune_error
+    assert result.cleanup == DIRTY_RESULT
     assert result.samples == 3
     assert result.adapter == "metric-lines"
 
@@ -174,7 +172,7 @@ async def test_measure_when_in_place_target_does_bench_without_worktree(
     result = await measure(_e2e_options(target_dir))
 
     assert result.metrics["x"].median == 1.0
-    assert result.worktrees_removed == 0
+    assert result.cleanup.removed == 0
     assert list_worktree_dirs(repo, include_main=False) == []
 
 
@@ -187,7 +185,7 @@ async def test_measure_when_ref_target_does_bench_in_a_disposable_worktree(
     result = await measure(_e2e_options("HEAD"))
 
     assert result.metrics["x"].median == 1.0
-    assert result.worktrees_removed >= 1
+    assert result.cleanup.removed >= 1
     assert list_worktree_dirs(repo, include_main=False) == []
 
 

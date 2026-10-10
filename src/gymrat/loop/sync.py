@@ -181,7 +181,7 @@ def sync_to_experiment(root: str) -> SyncResult:
     experiment_entries = _dirty_entries(
         experiment,
         "Cannot read experiment worktree",
-        "The experiment worktree may have been deleted. Run 'gymrat start' to begin a new session.",
+        "The experiment worktree may have been deleted. Run gymrat start to begin a new session.",
     )
     experiment_paths = {e.path for e in experiment_entries}
     # A rename removes its source path from the experiment, so an uncommitted

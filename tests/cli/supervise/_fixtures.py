@@ -391,8 +391,9 @@ def fire_launch_and_edit_cycle(kit: ReporterKit, *, result: str = "ok") -> None:
 # Fixed width for all golden-snapshot tests so frames are stable.
 FRAME_WIDTH = 100
 
-#: Patch target for the ``ErasableLive`` the live-mode reporter drives.
-LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.ErasableLive"
+#: Patch target for the ``ErasableLive`` the live-mode reporter drives: the
+#: shared live display every CLI progress renderer mounts builds it.
+LIVE_CLASS_PATH = "gymrat.cli.live_display.ErasableLive"
 
 #: Patch target for the factory that builds the console the dashboard paints on.
 CONSOLE_FACTORY_PATH = "gymrat.cli.supervise.progress.stderr_console"

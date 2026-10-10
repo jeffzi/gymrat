@@ -31,7 +31,7 @@ from gymrat.session.paths import (
 )
 from gymrat.session.records import SessionConfig, SessionHooks
 from gymrat.session.store import fold_session, read_records
-from gymrat.session.workspace import BaselineRef, remove_worktrees
+from gymrat.session.workspace import BaselineRef, create_workspace, remove_worktrees
 from tests._config import resolved_config
 from tests._git import (
     commit_all,
@@ -40,6 +40,7 @@ from tests._git import (
     install_git_hook,
     kill_git_during_worktree_add,
     list_worktree_dirs,
+    refuse_session_branch_deletion,
     session_branches,
 )
 from tests._mode_bits import needs_mode_bits
@@ -49,6 +50,8 @@ from tests.loop._settle import (
     keep_iteration,
 )
 from tests.session.records._fixtures import (
+    FRESH_SESSION_ID,
+    SESSION_ID,
     append_records,
     finalize_record,
     log_records,
@@ -136,28 +139,6 @@ def _pin_worktree_contents(repo_dir: str) -> None:
         repo_dir,
         "post-checkout",
         f"mkdir {PINNED_DIR} && : > {PINNED_DIR}/file && chmod 500 {PINNED_DIR}\n",
-    )
-
-
-def _refuse_session_branch_deletion(repo_dir: str) -> None:
-    """Install a reference-transaction hook that aborts any delete of a ``gymrat/…`` branch.
-
-    Git names the ref's new value as all zeros when it deletes the ref, so the hook
-    lets the branch be created and moved and vetoes only its removal.
-
-    Args:
-        repo_dir: The repository the hook is installed in.
-    """
-    install_git_hook(
-        repo_dir,
-        "reference-transaction",
-        '[ "$1" = prepared ] || exit 0\n'
-        "while read -r _old new ref; do\n"
-        '    if [ "${ref#refs/heads/gymrat/}" != "$ref" ] && [ -z "$(printf %s "$new" | tr -d 0)" ]; then\n'
-        "        exit 1\n"
-        "    fi\n"
-        "done\n"
-        "exit 0\n",
     )
 
 
@@ -307,9 +288,10 @@ def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_clo
 
 
 @needs_posix_kill
-def test_start_session_when_putting_the_closed_log_back_fails_does_raise_the_start_failure(
+def test_start_session_when_putting_the_closed_log_back_fails_does_warn_naming_both_paths_raising_the_start_failure(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ):
     start_session(repo, "main", CONFIG)
     closed = _close_session_with_one_keep(repo)
@@ -327,8 +309,12 @@ def test_start_session_when_putting_the_closed_log_back_fails_does_raise_the_sta
     with pytest.raises(GymratError) as excinfo:
         start_session(repo, "main", CONFIG)
 
+    archived = archived_session_path(repo, closed)
     assert re.search(r"cannot create the experiment worktree", str(excinfo.value), re.IGNORECASE)
-    assert Path(archived_session_path(repo, closed)).exists()
+    assert Path(archived).exists()
+    warning = capsys.readouterr().err
+    assert archived in warning
+    assert str(jsonl) in warning
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +387,7 @@ def test_start_session_when_earlier_start_failed_on_the_header_does_open_a_fresh
 
 @needs_mode_bits
 @pytest.mark.usefixtures("read_only_log_dir")
-def test_start_session_when_unwinding_a_failed_start_fails_does_warn_naming_the_worktree(
+def test_start_session_when_unwinding_a_failed_start_fails_does_warn_naming_each_worktree_and_its_command(
     repo: str, capsys: pytest.CaptureFixture[str]
 ):
     # Neither git nor a plain delete can empty the worktrees, so the unwind's own steps fail.
@@ -410,7 +396,10 @@ def test_start_session_when_unwinding_a_failed_start_fails_does_warn_naming_the_
     with pytest.raises(PermissionError):
         start_session(repo, "main", CONFIG)
 
-    assert experiment_worktree_dir(repo) in capsys.readouterr().err
+    stderr = capsys.readouterr().err
+    experiment, baseline = experiment_worktree_dir(repo), baseline_worktree_dir(repo)
+    assert stderr.count(f"remove it by hand with: git worktree remove --force {experiment}\n") == 1
+    assert stderr.count(f"remove it by hand with: git worktree remove --force {baseline}\n") == 1
 
 
 @needs_mode_bits
@@ -418,13 +407,53 @@ def test_start_session_when_unwinding_a_failed_start_fails_does_warn_naming_the_
 def test_start_session_when_unwind_cannot_delete_the_branch_does_warn_with_the_branch_delete_command(
     repo: str, capsys: pytest.CaptureFixture[str]
 ):
-    _refuse_session_branch_deletion(repo)
+    refuse_session_branch_deletion(repo)
 
     with pytest.raises(PermissionError):
         start_session(repo, "main", CONFIG)
 
     (branch,) = session_branches(repo)
     assert f"git branch -D {branch}" in capsys.readouterr().err
+
+
+@needs_mode_bits
+@pytest.mark.usefixtures("read_only_log_dir")
+def test_start_session_when_unwind_cannot_delete_the_branch_does_warn_word_for_word_as_a_failed_workspace_creation(
+    repo: str, repo_head: str, capsys: pytest.CaptureFixture[str]
+):
+    refuse_session_branch_deletion(repo)
+    baseline = BaselineRef(ref="main", sha=repo_head)
+    # The workspace standing before the failed creation is left alone and never reported.
+    standing = create_workspace(repo, SESSION_ID, baseline)
+    with pytest.raises(GymratError):
+        create_workspace(repo, FRESH_SESSION_ID, baseline)
+    creation_warnings = capsys.readouterr().err.replace(f"gymrat/{FRESH_SESSION_ID}", "<branch>")
+    remove_worktrees(repo, standing.worktrees)
+
+    with pytest.raises(PermissionError):
+        start_session(repo, "main", CONFIG)
+
+    (branch,) = set(session_branches(repo)) - {f"gymrat/{SESSION_ID}", f"gymrat/{FRESH_SESSION_ID}"}
+    assert capsys.readouterr().err.replace(branch, "<branch>") == creation_warnings
+
+
+@needs_mode_bits
+def test_start_session_when_the_log_cannot_be_read_back_after_the_failure_does_unwind_its_workspace(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    log = Path(session_jsonl_path(repo))
+
+    def fail_and_lock_the_log(_descriptor: int) -> None:
+        log.chmod(0o000)
+        raise OSError(5, "sync failed")
+
+    monkeypatch.setattr(os, "fsync", fail_and_lock_the_log)
+
+    with pytest.raises(OSError, match="sync failed"):
+        start_session(repo, "main", CONFIG)
+
+    assert session_branches(repo) == []
+    assert list_worktree_dirs(repo, include_main=False) == []
 
 
 def test_start_session_when_header_reached_the_log_before_the_failure_does_keep_its_workspace(

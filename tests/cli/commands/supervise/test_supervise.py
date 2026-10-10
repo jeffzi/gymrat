@@ -94,7 +94,7 @@ def test_supervise_when_run_does_hand_supervise_its_capped_session(
     assert ctx.root == repo
     assert re.search(r"\.gymrat[/\\]supervisor-\d+\.jsonl", ctx.log_path)
     assert ctx.lock_path == lockfile_path(repo)
-    assert ctx.max_minutes == CAP_MINUTES
+    assert ctx.budget.max_minutes == CAP_MINUTES
     assert ctx.max_usd == 2.0
     prompt = seams.supervise_calls[0]["prompt"]
     assert isinstance(prompt, SessionPrompt)

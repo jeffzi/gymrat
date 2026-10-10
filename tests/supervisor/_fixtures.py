@@ -26,6 +26,7 @@ from claude_agent_sdk import (
 
 from gymrat.clock import now_ms, now_ns
 from gymrat.config import BenchlessConfig, Effort
+from gymrat.session.budget import Budget
 from gymrat.session.paths import lockfile_path
 from gymrat.session.records import SessionLogRecord
 from gymrat.supervisor.claude import create_claude_driver
@@ -683,8 +684,7 @@ def make_context(
         log_path=log_path,
         lock_path=lock_path if lock_path is not None else lockfile_path(root),
         config=config if config is not None else benchless_config(),
-        deadline_ms=deadline_ms,
-        max_minutes=max_minutes,
+        budget=Budget(max_minutes=max_minutes, deadline_ms=deadline_ms),
         max_usd=max_usd,
     )
 

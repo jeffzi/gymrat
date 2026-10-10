@@ -120,16 +120,6 @@ signal path before a worktree sweep runs.
 """
 
 
-def reset() -> None:
-    """Forget every registered process group, so a later kill targets none of them.
-
-    Test-only seam: production code never calls this, since a group leaves the
-    registry when its owner settles. Tests use it to isolate the registry
-    between cases instead of reaching into the private set directly.
-    """
-    _live_process_groups.clear()
-
-
 class SpawnError(Exception):
     """A child that could not be started, or was killed because it could not run.
 

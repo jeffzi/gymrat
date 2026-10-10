@@ -268,7 +268,7 @@ def test_sync_to_experiment_when_experiment_worktree_missing_does_raise_gymrat_e
 
     assert str(excinfo.value).startswith("Cannot read experiment worktree: ")
     assert excinfo.value.hint == (
-        "The experiment worktree may have been deleted. Run 'gymrat start' to begin a new session."
+        "The experiment worktree may have been deleted. Run gymrat start to begin a new session."
     )
 
 

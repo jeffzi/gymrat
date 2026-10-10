@@ -118,26 +118,32 @@ def _write_open_session_with_one_keep(root: str) -> str:
 
 
 @pytest.mark.parametrize(
-    "arrange",
+    ("arrange", "args", "traced"),
     [
-        pytest.param(_write_open_session_with_one_keep, id="open"),
-        pytest.param(close_session_with_one_keep, id="finalized"),
+        pytest.param(_write_open_session_with_one_keep, [], {}, id="open"),
+        pytest.param(close_session_with_one_keep, [], {}, id="finalized"),
+        pytest.param(
+            _write_open_session_with_one_keep,
+            ["--config", "gymrat.toml"],
+            {"config": "gymrat.toml"},
+            id="config-file-named",
+        ),
     ],
 )
 def test_status_command_when_run_does_render_the_session_with_its_trace(
-    repo: str, arrange: Callable[[str], str]
+    repo: str, arrange: Callable[[str], str], args: list[str], traced: dict[str, object]
 ):
     session_id = arrange(repo)
     write_bench_config(repo)
 
-    result = runner.invoke(app, ["status"])
+    result = runner.invoke(app, ["status", *args])
 
     assert result.exit_code == 0
     text = strip_ansi(result.stdout)
     assert f"session {session_id}" in text
     assert "1 kept" in text
     cmd = last_command_record(repo)
-    assert (cmd.name, cmd.args, cmd.exit_code, cmd.reason) == ("status", {}, 0, None)
+    assert (cmd.name, cmd.args, cmd.exit_code, cmd.reason) == ("status", traced, 0, None)
 
 
 def test_status_command_when_run_inside_the_experiment_worktree_does_render_the_session(
@@ -309,11 +315,11 @@ def test_discard_command_when_tty_and_answer_invalid_does_ask_again(
 
 
 @pytest.mark.parametrize(
-    ("args", "is_tty_stub", "force"),
+    ("args", "is_tty_stub", "traced"),
     [
-        pytest.param(["--force"], _always_tty, True, id="force-long"),
-        pytest.param(["-f"], _always_tty, True, id="force-short"),
-        pytest.param([], never_tty, False, id="stdin-not-tty"),
+        pytest.param(["--force"], _always_tty, {"force": True}, id="force-long"),
+        pytest.param(["-f"], _always_tty, {"force": True}, id="force-short"),
+        pytest.param([], never_tty, {}, id="stdin-not-tty"),
     ],
 )
 def test_discard_command_when_force_or_stdin_not_tty_does_discard_without_prompting(
@@ -322,7 +328,7 @@ def test_discard_command_when_force_or_stdin_not_tty_does_discard_without_prompt
     monkeypatch: pytest.MonkeyPatch,
     args: list[str],
     is_tty_stub: Callable[[object], bool],
-    force: bool,
+    traced: dict[str, object],
 ):
     monkeypatch.setattr(
         "gymrat.cli.commands.loop.is_tty", create_autospec(is_tty, side_effect=is_tty_stub)
@@ -337,7 +343,7 @@ def test_discard_command_when_force_or_stdin_not_tty_does_discard_without_prompt
     cmd = last_command_record(edited_repo)
     assert (cmd.name, cmd.args, cmd.seq, cmd.exit_code, cmd.reason) == (
         "discard",
-        {"force": force},
+        traced,
         1,
         0,
         None,

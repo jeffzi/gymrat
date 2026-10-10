@@ -98,20 +98,18 @@ def _build_measurement_result(
     run = options.run
     metrics: dict[str, MetricMeasurement] = {}
     for metric_name, meta in measurement.metric_meta.items():
-        stats = compute_metric_stats(own_values(measurement.samples, metric_name))
+        stats = compute_metric_stats(metric_name, own_values(measurement.samples, metric_name))
         metrics[metric_name] = MetricMeasurement(
             median=stats.median, spread=stats.spread, meta=meta
         )
 
     return MeasurementResult(
-        worktrees_removed=cleanup.removed,
-        worktrees_left_behind=cleanup.failures,
-        worktree_prune_error=cleanup.prune_error,
         label=measurement.label,
         samples=run.sampling.samples,
         adapter=run.adapter,
         metrics=metrics,
         rounds=tuple(measurement.samples),
+        cleanup=cleanup,
         config_kinds=run.config_kinds,
     )
 

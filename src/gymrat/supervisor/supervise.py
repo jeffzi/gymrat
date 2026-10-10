@@ -23,6 +23,7 @@ from gymrat.clock import now_ms, now_ns
 from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.run import stop_reason
+from gymrat.session.budget import Budget
 from gymrat.session.lock import is_held
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import HookRecord, SessionLogRecord
@@ -300,8 +301,7 @@ class SupervisedSession:
         lock_path: The repository lock (``lockfile_path(root)``), not the
             supervise lock.
         config: The settled config whose stop conditions and guards apply.
-        deadline_ms: When the wall-clock cap trips, in epoch milliseconds.
-        max_minutes: The session's time budget, in minutes.
+        budget: The session's time budget; its deadline is when the wall-clock cap trips.
         max_usd: The spend cap in dollars, or ``None`` for no cap.
     """
 
@@ -309,8 +309,7 @@ class SupervisedSession:
     log_path: str
     lock_path: str
     config: BenchlessConfig
-    deadline_ms: float
-    max_minutes: float
+    budget: Budget
     max_usd: float | None
 
 
@@ -422,7 +421,7 @@ class _Supervision:
         try:
             self._end_scan.scan_if_grown()
         except GymratError as error:
-            loop.call_soon(self._handle_log_error, str(error))
+            loop.call_soon(self._end_with_error, str(error))
             return
         if self._end_scan.pending is not None and not self._config.is_lock_held():
             loop.call_soon(self._fire_pending_end)
@@ -458,8 +457,17 @@ class _Supervision:
                 del self._tasks[slot]
 
         task.add_done_callback(_clear_on_done)
-        task.add_done_callback(_warn_unhandled)
+        task.add_done_callback(self._end_on_task_failure)
         self._tasks[slot] = task
+
+    def _end_on_task_failure(self, finished: asyncio.Task[None]) -> None:
+        # A failed settle or lock poll leaves nothing to answer the turn end,
+        # so the run would otherwise idle until the wall-clock cap.
+        if finished.cancelled():
+            return
+        error = finished.exception()
+        if error is not None:
+            self._end_with_error(str(error))
 
     def _handle_turn_end(self, event: TurnEndEvent) -> None:
         if self._cap_fired:
@@ -482,7 +490,7 @@ class _Supervision:
             )
             state = fold_session(records)
         except GymratError as error:
-            self._handle_log_error(str(error))
+            self._end_with_error(str(error))
             return
 
         self._end_scan.detect(records, state)
@@ -500,15 +508,13 @@ class _Supervision:
             return
 
         decision = classify(
-            config=self._config.context.config,
             state=state,
             records=records,
             guards=self._guards,
             lock_held=lock_held,
             turn=turn,
             max_usd=self._config.context.max_usd,
-            deadline_ms=self._config.context.deadline_ms,
-            max_minutes=self._config.context.max_minutes,
+            budget=self._config.context.budget,
             now_ms=now_ms(),
             after_wait=after_wait,
         )
@@ -539,7 +545,7 @@ class _Supervision:
             self._config.grace_ms / MS_PER_SECOND, self._abort_event.set
         )
 
-    def _handle_log_error(self, message: str) -> None:
+    def _end_with_error(self, message: str) -> None:
         self._end_session(message, ended_by="session", end_reason=message)
 
     def _execute_decision(self, decision: Decision, turn: TurnEndEvent) -> None:
@@ -619,7 +625,7 @@ class _Supervision:
         self._arm_grace()
 
     async def _run_wall_clock(self) -> None:
-        deadline = self._config.context.deadline_ms
+        deadline = self._config.context.budget.deadline_ms
         poll_s = self._config.wall_clock_poll_ms / MS_PER_SECOND
         while now_ms() < deadline:  # noqa: ASYNC110 - wall-clock poll survives machine sleep
             await asyncio.sleep(poll_s)

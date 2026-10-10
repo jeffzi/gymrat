@@ -26,11 +26,11 @@ from gymrat.session.records import (
     DiscardRecord,
     FinalizeRecord,
     HookRecord,
+    IterationMetricVerdict,
     IterationPrimary,
     IterationRecord,
     KeepChecks,
     KeepRecord,
-    MetricVerdict,
     PairedSamples,
     SessionConfig,
     SessionLogRecord,
@@ -130,9 +130,9 @@ def baseline_record(**overrides: Any) -> BaselineRecord:
     return _overridden(default, overrides)
 
 
-def metric_verdict(**overrides: Any) -> MetricVerdict:
+def metric_verdict(**overrides: Any) -> IterationMetricVerdict:
     """A metric verdict the engine produces, improved and gating unless overridden."""
-    default = MetricVerdict(
+    default = IterationMetricVerdict(
         delta_pct=-7.2,
         verdict="improved",
         method="permutation",

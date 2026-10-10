@@ -19,6 +19,7 @@ import pytest
 from claude_agent_sdk import (
     ConversationResetMessage,
     HookMatcher,
+    McpSdkServerConfig,
     RateLimitEvent,
     RateLimitInfo,
     ServerToolResultBlock,
@@ -30,6 +31,7 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
+    create_sdk_mcp_server,
 )
 from claude_agent_sdk.types import HookEvent
 
@@ -107,7 +109,7 @@ TRACEPARENT = "00-abc123-def456-01"
 
 #: The MCP server config ``ToolsFactoryProbe`` hands back, so a test can find it
 #: again in the client options.
-_SENTINEL_SERVER: dict[str, str] = {"type": "stdio", "command": "fake"}
+_SENTINEL_SERVER: McpSdkServerConfig = create_sdk_mcp_server("fake")
 
 #: The hook mapping ``HooksFactoryProbe`` hands back, so a test can find it again
 #: in the client options.
@@ -133,7 +135,7 @@ class ToolsFactoryProbe:
     def __init__(self) -> None:
         self.calls: list[tuple[asyncio.Event, Mapping[str, str]]] = []
 
-    def __call__(self, abort: asyncio.Event, env: Mapping[str, str]) -> object:
+    def __call__(self, abort: asyncio.Event, env: Mapping[str, str]) -> McpSdkServerConfig:
         self.calls.append((abort, env))
         return _SENTINEL_SERVER
 

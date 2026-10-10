@@ -55,7 +55,7 @@ def test_supervise_when_run_does_write_the_capped_budget_before_supervise(
     assert isinstance(context, SupervisedSession)
     assert budget.max_minutes == CAP_MINUTES
     assert earliest_start_ms + CAP_MS <= budget.deadline_ms <= latest_start_ms + CAP_MS
-    assert budget.deadline_ms == context.deadline_ms
+    assert context.budget == budget
 
 
 def test_supervise_when_preflight_records_baseline_does_start_the_budget_once_it_is_recorded(

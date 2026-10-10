@@ -61,23 +61,23 @@ class ProbeMetric:
 
     Attributes:
         name: The metric's name as the bench reported it.
-        median: The median the probe measured, or ``None`` when no round
-            reported the metric.
+        median: The median the probe measured.
         spread: Half the measured range as a percentage of the median, or
             ``None`` when there was no run-to-run jitter to report.
         reference_median: The median the newest baseline record came to for this
             metric, or ``None`` when that baseline never reported it.
         delta_pct: The signed percentage change from ``reference_median`` to
             ``median``, scaled by the reference's magnitude; ``0.0`` when both
-            are zero, and ``None`` when either is missing, only the reference is
-            zero, or the ratio is not finite. Positive means the probe measured a
-            larger number, whatever ``meta.direction`` makes of that.
+            are zero, and ``None`` when the reference is missing, only the
+            reference is zero, or the ratio is not finite. Positive means the
+            probe measured a larger number, whatever ``meta.direction`` makes of
+            that.
         meta: The metric's resolved metadata, carrying the direction and unit a
             renderer needs to style the delta.
     """
 
     name: str
-    median: float | None
+    median: float
     spread: float | None
     reference_median: float | None
     delta_pct: float | None
@@ -105,9 +105,9 @@ class ProbeResult:
     names: tuple[str, ...]
 
 
-def _delta_pct(median: float | None, reference: float | None) -> float | None:
+def _delta_pct(median: float, reference: float | None) -> float | None:
     """The signed percentage change from ``reference`` to ``median``, when there is one."""
-    if median is None or reference is None:
+    if reference is None:
         return None
     return finite_or_none(percent_delta(reference, median))
 

@@ -178,18 +178,25 @@ def test_measure_when_no_record_flag_does_leave_open_session_untouched(
 # ---------------------------------------------------------------------------
 
 
+_BENCH_TRACE = {"bench": "sh bench.sh"}
+"""The config override every traced measure below is invoked with."""
+
+
 @pytest.mark.parametrize(
-    ("argv", "target", "record"),
+    ("argv", "traced"),
     [
-        pytest.param(["main"], "main", False, id="bare-ref"),
-        pytest.param([], ".", False, id="default-target"),
-        pytest.param(["build=main", "--record"], "build", True, id="recorded"),
+        pytest.param(["main"], {**_BENCH_TRACE, "target": "main"}, id="bare-ref"),
+        pytest.param([], {**_BENCH_TRACE, "target": "."}, id="default-target"),
+        pytest.param(
+            ["build=main", "--record"],
+            {**_BENCH_TRACE, "target": "build", "record": True},
+            id="recorded",
+        ),
     ],
 )
-def test_measure_when_success_does_record_trace_with_target_and_record_flag(
+def test_measure_when_success_does_record_trace_with_only_the_args_given(
     argv: list[str],
-    target: str,
-    record: bool,
+    traced: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
@@ -201,11 +208,7 @@ def test_measure_when_success_does_record_trace_with_target_and_record_flag(
     assert result.exit_code == 0
     cmd = last_command_record(repo)
     assert (cmd.name, cmd.exit_code, cmd.reason) == ("measure", 0, None)
-    assert (cmd.args["target"], cmd.args["record"], cmd.args["bench"]) == (
-        target,
-        record,
-        "sh bench.sh",
-    )
+    assert cmd.args == traced
 
 
 def test_measure_when_bench_fails_does_record_trace_with_exit_two_error(

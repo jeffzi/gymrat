@@ -120,19 +120,18 @@ def finalize(
     apply_command_flags(debug=debug, color=color)
     flags = SharedFlags(format=output_format)
 
-    finalize_args: dict[str, object] = {}
-    if branch is not None:
-        finalize_args["branch"] = branch
-    if message is not None:
-        finalize_args["message"] = message
-
     async def run() -> None:
         root = repo_root()
 
         async def body(_trace: CommandTrace) -> FinalizeResult:
             return finalize_session(root, FinalizeOptions(message=message, branch=branch))
 
-        result = await with_repo_lock("finalize", body, args=finalize_args, root=root)
+        result = await with_repo_lock(
+            "finalize",
+            body,
+            args=config_trace_args(flags, branch=branch, message=message),
+            root=root,
+        )
         write_budget_report(
             root,
             flags,
@@ -174,7 +173,7 @@ def stop(
         async def body(_trace: CommandTrace) -> StopResult:
             return stop_session(root, message)
 
-        result = await with_repo_lock("stop", body, root=root)
+        result = await with_repo_lock("stop", body, args=config_trace_args(flags), root=root)
         write_budget_report(
             root,
             flags,
@@ -208,7 +207,7 @@ def sync(
         async def body(_trace: CommandTrace) -> SyncResult:
             return sync_to_experiment(root)
 
-        result = await with_repo_lock("sync", body, root=root)
+        result = await with_repo_lock("sync", body, args=config_trace_args(flags), root=root)
         if not result.files:
             text_report = "nothing to sync"
         else:

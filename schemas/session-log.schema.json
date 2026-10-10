@@ -373,6 +373,79 @@
       "title": "HookRecord",
       "type": "object"
     },
+    "IterationMetricVerdict": {
+      "additionalProperties": false,
+      "description": "How one metric moved, with the statistics behind the judgement.\n\n``delta_pct`` is ``None`` when a zero baseline median left the ratio\nundefined; the field is always present so a dropped delta reads as a broken\nwriter, not a degenerate measurement.",
+      "properties": {
+        "confirmed": {
+          "description": "Whether a confirmation rerun validated this verdict.",
+          "title": "Confirmed",
+          "type": "boolean"
+        },
+        "delta_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Percentage change from baseline, or null when undefined.",
+          "title": "Delta Pct"
+        },
+        "gating": {
+          "description": "Whether this metric gates the iteration outcome.",
+          "title": "Gating",
+          "type": "boolean"
+        },
+        "method": {
+          "description": "Statistical test used to judge the metric.",
+          "enum": [
+            "permutation",
+            "band",
+            "exact"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "noise_pct": {
+          "default": null,
+          "description": "Estimated noise as a percentage of the baseline median.",
+          "title": "Noise Pct",
+          "type": "number"
+        },
+        "p": {
+          "default": null,
+          "description": "P-value from the statistical test.",
+          "title": "P",
+          "type": "number"
+        },
+        "verdict": {
+          "description": "How the metric moved: improved, regressed, no-signal, or unstable when its samples were too noisy to judge.",
+          "enum": [
+            "improved",
+            "regressed",
+            "no-signal",
+            "unstable"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delta_pct",
+        "verdict",
+        "method",
+        "gating",
+        "confirmed"
+      ],
+      "title": "IterationMetricVerdict",
+      "type": "object"
+    },
     "IterationPrimary": {
       "additionalProperties": false,
       "description": "The primary an iteration was judged on -- the geomean, or a named metric.",
@@ -443,7 +516,7 @@
         },
         "metrics": {
           "additionalProperties": {
-            "$ref": "#/$defs/MetricVerdict"
+            "$ref": "#/$defs/IterationMetricVerdict"
           },
           "description": "Per-metric verdicts keyed by metric name.",
           "title": "Metrics",
@@ -602,79 +675,6 @@
         "checks"
       ],
       "title": "KeepRecord",
-      "type": "object"
-    },
-    "MetricVerdict": {
-      "additionalProperties": false,
-      "description": "How one metric moved, with the statistics behind the judgement.\n\n``delta_pct`` is ``None`` when a zero baseline median left the ratio\nundefined; the field is always present so a dropped delta reads as a broken\nwriter, not a degenerate measurement.",
-      "properties": {
-        "confirmed": {
-          "description": "Whether a confirmation rerun validated this verdict.",
-          "title": "Confirmed",
-          "type": "boolean"
-        },
-        "delta_pct": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Percentage change from baseline, or null when undefined.",
-          "title": "Delta Pct"
-        },
-        "gating": {
-          "description": "Whether this metric gates the iteration outcome.",
-          "title": "Gating",
-          "type": "boolean"
-        },
-        "method": {
-          "description": "Statistical test used to judge the metric.",
-          "enum": [
-            "permutation",
-            "band",
-            "exact"
-          ],
-          "title": "Method",
-          "type": "string"
-        },
-        "noise_pct": {
-          "default": null,
-          "description": "Estimated noise as a percentage of the baseline median.",
-          "title": "Noise Pct",
-          "type": "number"
-        },
-        "p": {
-          "default": null,
-          "description": "P-value from the statistical test.",
-          "title": "P",
-          "type": "number"
-        },
-        "verdict": {
-          "description": "Whether the metric improved, regressed, or showed no signal.",
-          "enum": [
-            "improved",
-            "regressed",
-            "no-signal",
-            "unstable"
-          ],
-          "title": "Verdict",
-          "type": "string"
-        }
-      },
-      "required": [
-        "delta_pct",
-        "verdict",
-        "method",
-        "gating",
-        "confirmed"
-      ],
-      "title": "MetricVerdict",
       "type": "object"
     },
     "PairedSamples": {

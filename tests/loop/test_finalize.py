@@ -90,6 +90,20 @@ def test_finalize_session_when_not_ready_does_refuse_leaving_no_trace(
     assert len(log_records(session_repo)) == before
 
 
+def test_finalize_session_when_last_iteration_unsettled_does_refuse_with_the_shared_settle_first_wording(
+    session_repo: str,
+):
+    _leave_unsettled(session_repo)
+
+    error = capture_error(lambda: finalize_session(session_repo))
+
+    assert (str(error), error.hint, error.reason) == (
+        "Iteration 2 has not been settled",
+        "Run gymrat keep or gymrat discard before finalizing.",
+        "unsettled",
+    )
+
+
 # ---------------------------------------------------------------------------
 # when the experiment worktree is already gone from disk
 # ---------------------------------------------------------------------------

@@ -179,7 +179,7 @@ def test_advance_when_confirm_started_does_set_confirm_note(
         pytest.param(
             (PrepareStarted(label="baseline", at_ms=0),),
             PrepareFinished(label="baseline", at_ms=5000),
-            "prepare baseline done (5s)",
+            "prepared baseline (5s)",
             id="prepare-finished",
         ),
         pytest.param(

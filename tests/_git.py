@@ -265,3 +265,25 @@ def create_in_place_target_dir(repo_dir: str, name: str, bench_script: str) -> s
     target.mkdir()
     (target / "bench.sh").write_text(bench_script, encoding="utf-8")
     return str(target)
+
+
+def refuse_session_branch_deletion(repo_dir: str) -> None:
+    """Install a reference-transaction hook that aborts any delete of a ``gymrat/…`` branch.
+
+    Git names the ref's new value as all zeros when it deletes the ref, so the hook
+    lets the branch be created and moved and vetoes only its removal.
+
+    Args:
+        repo_dir: The repository the hook is installed in.
+    """
+    install_git_hook(
+        repo_dir,
+        "reference-transaction",
+        '[ "$1" = prepared ] || exit 0\n'
+        "while read -r _old new ref; do\n"
+        '    if [ "${ref#refs/heads/gymrat/}" != "$ref" ] && [ -z "$(printf %s "$new" | tr -d 0)" ]; then\n'
+        "        exit 1\n"
+        "    fi\n"
+        "done\n"
+        "exit 0\n",
+    )

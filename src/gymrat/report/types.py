@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gymrat.config import KindEntry
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
+    from gymrat.sampling import CleanupResult
     from gymrat.verdict import KindAggregate
-    from gymrat.worktree_failure import WorktreeRemovalFailure
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,25 +66,6 @@ type MetricComparisons = dict[str, MetricComparison]
 
 
 @dataclass(frozen=True, slots=True)
-class WorktreeCleanupOutcome:
-    """Worktree cleanup outcome shared by every run result.
-
-    Comparison and measurement runs manage the same worktrees the same way.
-
-    Attributes:
-        worktrees_removed: How many worktrees cleanup removed.
-        worktrees_left_behind: Worktrees cleanup could not remove, each with the
-            reason git gave.
-        worktree_prune_error: The reason the ``git worktree prune`` sweep failed,
-            or ``None`` when it succeeded.
-    """
-
-    worktrees_removed: int
-    worktrees_left_behind: tuple[WorktreeRemovalFailure, ...]
-    worktree_prune_error: str | None
-
-
-@dataclass(frozen=True, slots=True)
 class CandidateComparison:
     """One candidate's run-level results, judged against the shared baseline.
 
@@ -98,7 +79,7 @@ class CandidateComparison:
 
 
 @dataclass(frozen=True, slots=True)
-class ComparisonResult(WorktreeCleanupOutcome):
+class ComparisonResult:
     """Everything a renderer needs to draw a comparison — the rendering input contract.
 
     The shape is a star, not a mesh: every candidate is compared with the
@@ -114,6 +95,7 @@ class ComparisonResult(WorktreeCleanupOutcome):
         samples: How many samples the run collected.
         adapter: The adapter that produced the measurements.
         metrics: Every metric the comparison produced, keyed by name.
+        cleanup: What the worktree cleanup after sampling removed and left behind.
         config_kinds: The ``kinds`` section of the resolved config, when it had
             one, so the report can name the config line behind a gating decision.
     """
@@ -123,6 +105,7 @@ class ComparisonResult(WorktreeCleanupOutcome):
     samples: int
     adapter: str
     metrics: MetricComparisons
+    cleanup: CleanupResult
     config_kinds: dict[str, KindEntry] | None = None
 
 
@@ -135,12 +118,12 @@ class MetricMeasurement:
     run-to-run jitter, and a zero median has no scale to be a percentage of.
 
     Attributes:
-        median: The metric's median measurement, or ``None`` when none reported.
+        median: The metric's median measurement.
         spread: The half-range around the median, or ``None``.
         meta: The metadata that shaped the reading.
     """
 
-    median: float | None
+    median: float
     spread: float | None
     meta: ResolvedMetricMeta
 
@@ -150,7 +133,7 @@ type MetricMeasurements = dict[str, MetricMeasurement]
 
 
 @dataclass(frozen=True, slots=True)
-class MeasurementResult(WorktreeCleanupOutcome):
+class MeasurementResult:
     """Everything a single-target run measured — the rendering input contract for a measurement.
 
     There is nothing to judge against, so no verdicts and no aggregates: a
@@ -164,6 +147,7 @@ class MeasurementResult(WorktreeCleanupOutcome):
         metrics: Every metric the measurement produced, keyed by name.
         rounds: What each round reported, in the order the rounds ran, so a
             reader can compute statistics the report never printed.
+        cleanup: What the worktree cleanup after sampling removed and left behind.
         config_kinds: The ``kinds`` section of the resolved config, when it had
             one.
     """
@@ -173,6 +157,7 @@ class MeasurementResult(WorktreeCleanupOutcome):
     adapter: str
     metrics: MetricMeasurements
     rounds: tuple[dict[str, float], ...]
+    cleanup: CleanupResult
     config_kinds: dict[str, KindEntry] | None = None
 
 
