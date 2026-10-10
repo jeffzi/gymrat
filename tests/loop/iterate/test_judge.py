@@ -8,10 +8,6 @@ import pytest
 
 from gymrat.loop.iterate.judge import shell_quote_name
 
-# ---------------------------------------------------------------------------
-# shell_quote_name on Windows
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.parametrize(
     ("value", "expected"),

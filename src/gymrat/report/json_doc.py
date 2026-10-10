@@ -62,6 +62,11 @@ class BudgetSummary:
     remaining_seconds: int
 
 
+# ---------------------------------------------------------------------------
+# Comparison, measurement and probe documents
+# ---------------------------------------------------------------------------
+
+
 def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None) -> str:
     """Serialize a comparison result as JSON.
 
@@ -269,6 +274,11 @@ def _serialize_worktrees(cleanup: CleanupResult) -> dict[str, object]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Loop command documents
+# ---------------------------------------------------------------------------
+
+
 def render_iterate_json(result: IterateResult, *, budget: BudgetSummary | None = None) -> str:
     """Seq, outcome, primary summary, per-metric verdicts, and confirm results."""
     return render_document(_serialize_iteration(result.record), budget)
@@ -455,6 +465,11 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
         "metrics": metrics,
         "confirm": confirm,
     }
+
+
+# ---------------------------------------------------------------------------
+# Serialization
+# ---------------------------------------------------------------------------
 
 
 def render_document(document: dict[str, object], budget: BudgetSummary | None = None) -> str:

@@ -56,6 +56,10 @@ from gymrat.supervisor.turns import (
 )
 from gymrat.utils import MS_PER_SECOND, WarnSink, warn_to_stderr
 
+# ---------------------------------------------------------------------------
+# Defaults and shared types
+# ---------------------------------------------------------------------------
+
 WALL_CLOCK_POLL_MS = 1000
 """Default interval (in milliseconds) for polling wall-clock time against the
 deadline. Tests override this to avoid real waits."""
@@ -88,6 +92,11 @@ class EndCondition:
 
     ended_by: EndedBy
     reason: str
+
+
+# ---------------------------------------------------------------------------
+# End-condition detection
+# ---------------------------------------------------------------------------
 
 
 def _hook_failure_reason(record: HookRecord) -> str:
@@ -252,6 +261,11 @@ class EndConditionScan:
         self._check_stop = stop_reason(self._config, state) is None
 
 
+# ---------------------------------------------------------------------------
+# Background task helpers
+# ---------------------------------------------------------------------------
+
+
 def _warn_on_task_failure(finished: asyncio.Task[None], *, context: str) -> None:
     """Warn to stderr with ``context`` when ``finished`` raised; ignore cancellation."""
     if finished.cancelled():
@@ -287,6 +301,11 @@ def _fire_and_report_interrupt(session: DriverSession) -> asyncio.Task[None] | N
     task = asyncio.create_task(pending)
     task.add_done_callback(partial(_warn_on_task_failure, context="session interrupt"))
     return task
+
+
+# ---------------------------------------------------------------------------
+# Session inputs and result
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,6 +368,11 @@ class _SuperviseConfig:
     lock_poll_ms: int
     is_lock_held: Callable[[], bool]
     warn: WarnSink
+
+
+# ---------------------------------------------------------------------------
+# Supervision runtime
+# ---------------------------------------------------------------------------
 
 
 class _Supervision:
@@ -672,6 +696,11 @@ class _Supervision:
             for handle in (self._wall_task, self._grace_timer, self._interrupt_task):
                 if handle is not None:
                     handle.cancel()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 
 async def supervise(  # noqa: PLR0913 - one parameter per supervision knob

@@ -33,10 +33,6 @@ from tests.session.records._fixtures import (
     baseline_record,
 )
 
-# ---------------------------------------------------------------------------
-# budget lifecycle
-# ---------------------------------------------------------------------------
-
 
 def test_supervise_when_run_does_write_the_capped_budget_before_supervise(
     repo: str, monkeypatch: pytest.MonkeyPatch

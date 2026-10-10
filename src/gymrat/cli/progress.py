@@ -76,6 +76,11 @@ COMPACT_HEIGHT_THRESHOLD = 12
 STYLE_VERB = "bold"
 
 
+# ---------------------------------------------------------------------------
+# Progress state and reducer
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True, slots=True)
 class ProgressState:
     """Everything the progress display needs to paint a frame.
@@ -209,6 +214,11 @@ def plain_line(before: ProgressState, after: ProgressState, event: ProgressEvent
             return f"pass {event.round}/{event.total_rounds} · {event.label} ({elapsed})"
         case _:
             return None
+
+
+# ---------------------------------------------------------------------------
+# Rich columns and progress bars
+# ---------------------------------------------------------------------------
 
 
 def clock_text(elapsed_ms: float, remaining_ms: float) -> Text:
@@ -389,6 +399,11 @@ def passes_progress(
         BarColumn(),
         MofNCompleteColumn(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Reporter shell
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)

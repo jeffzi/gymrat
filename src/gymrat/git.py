@@ -97,8 +97,7 @@ def try_git(args: Sequence[str], cwd: str) -> str | None:
     except (subprocess.SubprocessError, OSError) as error:
         # SubprocessError covers CalledProcessError and TimeoutExpired; OSError
         # covers a git binary that is missing or cannot be executed
-        # (FileNotFoundError, PermissionError). try_git reports every failure as
-        # text, never raises.
+        # (FileNotFoundError, PermissionError).
         return stderr_text_of(error)
     return None
 

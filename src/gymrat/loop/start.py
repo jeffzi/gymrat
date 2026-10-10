@@ -44,17 +44,20 @@ SESSION_ID_ENTROPY_BYTES = 2
 
 @dataclass(frozen=True, slots=True)
 class StartResult:
-    """A session ready to iterate in, together with everything its log already holds."""
+    """A session ready to iterate in, together with everything its log already holds.
 
-    #: The header the session's log opens with, newly written or read back.
+    Attributes:
+        session: The header the session's log opens with, newly written or read back.
+        state: What the log adds up to, so a resumed session can report its history.
+        resumed: Whether the session was already on disk.
+        archived: The id of the finalized session whose log was moved aside for this one.
+        archived_path: The path the finalized session's log was moved to.
+    """
+
     session: SessionRecord
-    #: What the log adds up to, so a resumed session can report its history.
     state: SessionState
-    #: Whether the session was already on disk.
     resumed: bool
-    #: The id of the finalized session whose log was moved aside for this one.
     archived: str | None = None
-    #: The path the finalized session's log was moved to.
     archived_path: str | None = None
 
 

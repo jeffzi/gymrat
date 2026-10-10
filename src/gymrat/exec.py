@@ -48,6 +48,10 @@ from gymrat.signals import (
 )
 from gymrat.utils import MS_PER_SECOND
 
+# ---------------------------------------------------------------------------
+# Nesting depth and termination grace
+# ---------------------------------------------------------------------------
+
 FAILURE_EXIT_CODE = 1
 """Exit code reported when a run fails without a positive child exit code."""
 
@@ -187,6 +191,11 @@ def _sweep_live_process_groups(grace_s: float) -> None:
             kill_process_group(pid)
 
 
+# ---------------------------------------------------------------------------
+# Result types and output buffer
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True, slots=True)
 class ExecOptions:
     """Inputs for a single :func:`exec` or :func:`exec_argv` run.
@@ -292,6 +301,11 @@ class OutputBuffer:
     def text(self) -> str:
         """The accumulated text, joined from internal chunks."""
         return "".join(self._chunks)
+
+
+# ---------------------------------------------------------------------------
+# Reaping and stream plumbing
+# ---------------------------------------------------------------------------
 
 
 async def _wait_for_exit(proc: asyncio.subprocess.Process, grace_s: float) -> bool:
@@ -479,6 +493,11 @@ def _build_result(stdout_buf: OutputBuffer, stderr_buf: OutputBuffer, exit_code:
     )
 
 
+# ---------------------------------------------------------------------------
+# Contained spawn
+# ---------------------------------------------------------------------------
+
+
 def _containment_kwargs() -> dict[str, Any]:
     """The creation arguments that put a child in a tree this process can tear down.
 
@@ -627,6 +646,11 @@ async def spawn_contained(
             reason = f"{reason} (tearing the child down also failed: {teardown_error})"
         raise SpawnError(reason) from containment_error or teardown_error
     return proc
+
+
+# ---------------------------------------------------------------------------
+# Run and public entry points
+# ---------------------------------------------------------------------------
 
 
 def _spawn_failure(message: str) -> ExecResult:

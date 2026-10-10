@@ -19,11 +19,8 @@ that surfaces that error. :func:`malformed_line_warning` is the warning the
 metric-lines adapter gives for a line it cannot read, shared by every test that
 sees that warning reach a sink.
 
-This is test-support code, not a test module: ``test_mitata``,
-``test_adapters``, ``tests/test_doctor.py``, ``tests/loop/iterate/run/test_run.py``,
-``tests/loop/iterate/_fixtures.py``, ``tests/loop/test_probe.py`` and
-``tests/sampling/test_sampling.py`` import it. It carries no test functions of
-its own.
+This is test-support code shared across test modules, not a test module. It
+carries no test functions of its own.
 """
 
 import json

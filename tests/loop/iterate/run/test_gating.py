@@ -223,8 +223,7 @@ async def test_iterate_session_when_rerun_bench_fails_does_raise_without_recordi
 
 
 # The filter command reaches a POSIX shell, which is what decides where one
-# argument ends and the next begins; win32 is skipped for the same reason the
-# exec suite is.
+# argument ends and the next begins.
 _ARGS_SCRIPT = '#!/bin/sh\nfor arg in "$@"; do\n  echo "$arg"\ndone\n'
 _ARGS_FILTER = "sh args.sh {names}"
 

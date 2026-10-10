@@ -74,19 +74,23 @@ _CAP_NOTE = " — expected after a cap trip: the agent's last command outlives t
 
 _FAILED_TEXT = "exit sequence failed: {message}"
 
-#: The run endings whose skip line closes on :data:`_CAP_NOTE`: a cap cuts the
-#: agent off mid-command, so the command it was running is expected to outlive it
-#: and hold the lock on the way out.
 _CAP_ENDS = frozenset(get_args(CapType))
+"""The run endings whose skip line closes on :data:`_CAP_NOTE`.
+
+A cap cuts the agent off mid-command, so the command it was running is expected to outlive it and
+hold the lock on the way out.
+"""
 
 
-#: What a tree that no longer matches the fingerprint the iteration measured
-#: reads as. The interrupted discard is named because a ``discard`` killed
-#: between the revert and its record leaves an unsettled iteration whose fresh
-#: fingerprint is the kept tree, and the summary must not misattribute it.
 _TREE_CHANGED = (
     "tree changed after measuring — an after hook, a later edit, or an interrupted discard"
 )
+"""What a tree that no longer matches the fingerprint the iteration measured reads as.
+
+The interrupted discard is named because a ``discard`` killed between the revert and its record
+leaves an unsettled iteration whose fresh fingerprint is the kept tree, and the summary must not
+misattribute it.
+"""
 
 _NO_FINGERPRINT = "fingerprint unavailable"
 

@@ -198,7 +198,6 @@ _COMMAND_REASONS = (
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        # literal fields
         pytest.param(
             patching(ITERATION_RECORD, {"outcome": "banana"}),
             "outcome: expected 'improved', 'regressed' or 'no-signal', got \"banana\"",
@@ -251,7 +250,6 @@ _COMMAND_REASONS = (
             "primary.kind: expected 'geomean' or 'metric', got \"banana\"",
             id="primary-kind",
         ),
-        # scalar type mismatches
         pytest.param(
             patching(ITERATION_RECORD, {"at": "2026-08-08T14:15:30.000Z"}),
             'at: expected an integer, got "2026-08-08T14:15:30.000Z"',
@@ -327,7 +325,6 @@ _COMMAND_REASONS = (
             "config.hooks: expected an object, got null",
             id="config-hooks-null",
         ),
-        # bounds
         pytest.param(
             patching(HOOK_RECORD, {"stdout_bytes": -1}),
             "stdout_bytes: expected a number at or above 0, got -1",
@@ -338,7 +335,6 @@ _COMMAND_REASONS = (
             'message: expected a non-empty string, got ""',
             id="stop-message-empty",
         ),
-        # sample rounds
         pytest.param(
             patching(BASELINE_RECORD, {"samples": "banana"}),
             'samples: expected an array, got "banana"',
@@ -380,7 +376,6 @@ _COMMAND_REASONS = (
             "checks.stdout_bytes: expected a number at or above 0, got -1",
             id="keep-checks-stdout-bytes-negative-float",
         ),
-        # confirm field
         pytest.param(
             patching(ITERATION_RECORD, {"confirm": confirm_with(filtered="total_ms")}),
             'confirm.filtered: expected an array, got "total_ms"',
@@ -425,7 +420,6 @@ _COMMAND_REASONS = (
             'confirm.samples.baseline.0.total_ms: expected a number, got "banana"',
             id="sample-string",
         ),
-        # fields that violate their schema
         pytest.param(
             patching(SESSION_RECORD, {"baseline": {"ref": 42, "sha": BASELINE_SHA}}),
             "baseline.ref: expected a string, got 42",

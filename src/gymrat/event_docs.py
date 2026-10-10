@@ -43,7 +43,13 @@ from gymrat.supervisor.events import SESSION_EVENT_ADAPTER, SessionEvent
 from gymrat.utils import first_line
 
 SESSION_LOG_ADDRESS = f"{SESSION_DIR_NAME}/{SESSION_LOG_NAME}"
+"""Where the session log lives, relative to the repository root."""
+
 SUPERVISOR_LOG_ADDRESS = f"{SESSION_DIR_NAME}/{supervisor_log_name('<ms>')}"
+"""Where a supervisor log lives, relative to the repository root.
+
+``<ms>`` stands for the supervisor's launch time in epoch milliseconds.
+"""
 
 _SCHEMA_FORMAT = "application/schema+json;version=draft-2020-12"
 _SCHEMA_BASE_URL = "https://github.com/jeffzi/gymrat/schemas/"
@@ -86,7 +92,6 @@ class _LogSpec:
         return {wire_type(model): model.__name__ for model in self.models}
 
 
-#: The documented logs, session log first; every artifact lists them in this order.
 _LOGS: tuple[_LogSpec, _LogSpec] = (
     _LogSpec(
         channel="session-log",
@@ -105,6 +110,7 @@ _LOGS: tuple[_LogSpec, _LogSpec] = (
         adapter=SESSION_EVENT_ADAPTER,
     ),
 )
+"""The documented logs, session log first; every artifact lists them in this order."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,10 +179,10 @@ READERS: dict[str, ReaderSpec] = {
         description="Streams supervisor events for live dashboard display.",
     ),
 }
+"""The documented log readers, keyed by operation name, in documentation order."""
 
 
 def _summary(class_name: str, schema_def: dict[str, Any], *, first_line_only: bool) -> str:
-    # A model with no docstring is summarized by its class name.
     description = schema_def.get("description")
     if not description:
         return class_name

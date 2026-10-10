@@ -84,8 +84,8 @@ class MetricBlock[Row]:
     metric: Row
 
 
-#: One block of a section: either a named group or a single ungrouped metric.
 type SectionBlock[Row] = GroupBlock[Row] | MetricBlock[Row]
+"""One block of a section: either a named group or a single ungrouped metric."""
 
 
 @dataclass(frozen=True, slots=True)

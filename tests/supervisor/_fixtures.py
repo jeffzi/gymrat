@@ -71,6 +71,11 @@ WAIT_FINISHED_LINE = (
 )
 
 
+# ---------------------------------------------------------------------------
+# observers, launches and prompts
+# ---------------------------------------------------------------------------
+
+
 class NotJsonEncodable:
     """A value ``json.dumps`` cannot encode, with a deterministic string form."""
 
@@ -401,7 +406,7 @@ class DelegatingSession:
 
     @property
     def outcome(self) -> Awaitable[SessionOutcome]:
-        """Forward the inner session's outcome."""
+        """The inner session's outcome, so a wrapper settles exactly when its inner session does."""
         return self._inner.outcome
 
     async def interrupt(self) -> None:
@@ -448,11 +453,14 @@ class SlowEndSession(DelegatingSession):
 class InterruptEmitsEndDriver:
     """A driver wrapper whose sessions emit a ``TurnEndEvent`` on ``interrupt``.
 
-    Wraps a driver (typically from ``create_mock_driver``) and intercepts the
-    observer from ``start``.  Each session's ``interrupt`` delegates to the
-    inner session and then fires a ``TurnEndEvent(origin="agent")`` into the
-    observer, simulating a driver that delivers a final turn boundary on
-    interrupt.
+    Wraps a driver and intercepts the observer from ``start``.  Each session's
+    ``interrupt`` delegates to the inner session and then fires a
+    ``TurnEndEvent(origin="agent")`` into the observer, simulating a driver
+    that delivers a final turn boundary on interrupt.
+
+    Args:
+        inner: The driver whose sessions are wrapped, typically from
+            ``create_mock_driver``.
     """
 
     def __init__(self, inner: Driver) -> None:
@@ -516,10 +524,15 @@ class FakeClient:
     ``asyncio.sleep(0)`` handshake so an observer-scheduled interrupt or an
     abort lands deterministically between messages.  After the scripted
     messages, the stream blocks until ``disconnect`` releases it, mirroring
-    the real SDK whose ``receive_messages`` iterator never terminates; with
-    ``finite``, the stream is released from the start and ends once the script
-    is spent.  With ``fail_follow_up``, every ``query`` after the kickoff raises
-    ``RuntimeError("connection lost")``.
+    the real SDK whose ``receive_messages`` iterator never terminates.
+
+    Args:
+        messages: The scripted messages ``receive_messages`` replays, in order.
+        throw: Raised from ``receive_messages`` once the script is spent.
+        fail_follow_up: Make every ``query`` after the kickoff raise
+            ``RuntimeError("connection lost")``.
+        finite: Release the stream from the start, so it ends once the script
+            is spent instead of blocking until ``disconnect``.
     """
 
     def __init__(
@@ -584,6 +597,11 @@ class FactoryProbe:
         self.calls += 1
         self._client.options = dict(options)
         return self._client
+
+
+# ---------------------------------------------------------------------------
+# event and context builders
+# ---------------------------------------------------------------------------
 
 
 def make_turn_end(**overrides: Any) -> TurnEndEvent:
@@ -734,15 +752,15 @@ class LockSwitch:
     held: bool
 
     def is_held(self) -> bool:
-        """Report whether the lock is held."""
+        """The lock probe a test hands the supervisor; reads the flag at call time."""
         return self.held
 
     async def hold(self) -> None:
-        """Take the lock."""
+        """Mark the lock held, as if another gymrat command had taken it."""
         self.held = True
 
     async def release(self) -> None:
-        """Free the lock."""
+        """Mark the lock free, so the supervisor's next probe sees it released."""
         self.held = False
 
     def release_on_waiting(self, observer: SessionObserver) -> SessionObserver:
@@ -776,6 +794,11 @@ def blocked_step() -> EmitStep:
     return EmitStep(emit=TextDeltaEvent(at=now_ns(), chunk="late"), delay_ms=_BLOCKED_MS)
 
 
+# ---------------------------------------------------------------------------
+# driver, observer and clock doubles
+# ---------------------------------------------------------------------------
+
+
 def _same_session(session: DriverSession, _abort: asyncio.Event) -> DriverSession:
     return session
 
@@ -783,9 +806,12 @@ def _same_session(session: DriverSession, _abort: asyncio.Event) -> DriverSessio
 class WrapDriver:
     """Capture what the supervisor hands a driver, and wrap the session it starts.
 
-    ``make_session`` receives the inner driver's session and the abort event,
-    and returns the session the supervisor sees; by default the inner one.
     ``abort`` and ``observer`` fail the test when the driver never started.
+
+    Args:
+        inner: The driver whose sessions are wrapped.
+        make_session: Receives the inner driver's session and the abort event,
+            and returns the session the supervisor sees; by default the inner one.
     """
 
     def __init__(
@@ -885,7 +911,7 @@ class SupervisorClock:
         )
 
     def jump_to(self, to_ms: int) -> None:
-        """Move the clock to ``to_ms``."""
+        """Set the time the supervisor reads on its next call; no real time passes."""
         self.now_ms = to_ms
 
     def jump_on(
@@ -934,6 +960,11 @@ class SupervisorClock:
             self.jump_to(to_ms)
 
         return ActionStep(action=jump)
+
+
+# ---------------------------------------------------------------------------
+# supervised-run harness
+# ---------------------------------------------------------------------------
 
 
 def events_log_path(root: str) -> Path:
@@ -1033,6 +1064,11 @@ async def run_supervised(
         is_lock_held=is_lock_held,
         warn=warn,
     )
+
+
+# ---------------------------------------------------------------------------
+# driver session runners
+# ---------------------------------------------------------------------------
 
 
 async def settled_outcome(session: DriverSession) -> SessionOutcome:
@@ -1248,6 +1284,11 @@ async def run_with_messages(messages: Sequence[object]) -> list[SessionEvent]:
     probe = collecting_observer()
     await run_session(driver, probe.observer)
     return probe.events
+
+
+# ---------------------------------------------------------------------------
+# event utilities
+# ---------------------------------------------------------------------------
 
 
 def events_of[T: SessionEvent](events: Sequence[SessionEvent], event_type: type[T]) -> list[T]:

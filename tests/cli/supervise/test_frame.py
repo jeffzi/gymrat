@@ -232,7 +232,13 @@ def test_best_delta_when_rendered_with_color_does_style_an_improvement_green_per
 
 
 def _fire_liveness_scenario(kit: ReporterKit, scenario: str) -> None:
-    """Drive the reporter into the named liveness state."""
+    """Fire the events that put the reporter in a liveness state.
+
+    Args:
+        kit: Reporter and clock under test.
+        scenario: Liveness state to reach. ``"starting"`` fires only the launch, and
+            ``"no-output"`` and ``"in-flight"`` also move the clock.
+    """
     if scenario in {"waiting", "no-output"}:
         fire_launch_and_bash_cycle(kit.reporter.observer, clock=kit.clock)
         if scenario == "no-output":

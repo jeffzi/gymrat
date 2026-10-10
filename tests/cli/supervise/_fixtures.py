@@ -129,7 +129,7 @@ def read_result(
     best: BestIteration | None = None,
     stop_message: str | None = None,
 ) -> ReadSessionResult:
-    """A session read result.
+    """Build a ``ReadSessionResult`` whose fields all default to an empty session.
 
     Args:
         state: The session state the result carries; the empty session when omitted.
@@ -252,7 +252,7 @@ def usage_event(cost_usd: float, at_ms: int = 4000) -> UsageUpdateEvent:
 
 
 def cap_event(cap: CapType, at_ms: int = 5000, *, action: CapAction = "interrupting") -> CapEvent:
-    """A ``CapEvent`` signaling that *cap* has fired."""
+    """A ``CapEvent`` for *cap*, interrupting an in-flight turn unless *action* is ``"ending"``."""
     return CapEvent(at=at_ms * NS_PER_MS, cap=cap, action=action)
 
 

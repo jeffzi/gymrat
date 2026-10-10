@@ -27,10 +27,6 @@ from tests.session.records._wire import (
     verdict_with,
 )
 
-# ---------------------------------------------------------------------------
-# parse_record — valid records round-trip through the wire
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.parametrize(
     "record",
@@ -116,11 +112,6 @@ def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[
     wire = record_to_wire(parse_record(record))
 
     assert wire == record
-
-
-# ---------------------------------------------------------------------------
-# decode_log_line
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

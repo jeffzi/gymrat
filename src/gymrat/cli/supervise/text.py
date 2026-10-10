@@ -20,8 +20,8 @@ if TYPE_CHECKING:
     from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.exit_sequence import ExitPhase
 
-#: Shown in place of the loop summary before any session data has been read.
 NO_SESSION_TEXT = "no session yet"
+"""Shown in place of the loop summary before any session data has been read."""
 
 type LoopStyle = Literal["alert", "count", "done", "meta", "pending", "plain", "regressed"]
 """The style role of a loop-summary segment; ``"plain"`` means unstyled."""

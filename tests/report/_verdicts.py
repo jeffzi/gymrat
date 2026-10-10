@@ -39,7 +39,7 @@ def metric_meta(
     kind: str = "other",
     unit: MetricUnit | None = None,
 ) -> ResolvedMetricMeta:
-    """A resolved metric meta block.
+    """A ``ResolvedMetricMeta``; by default lower-is-better, gating and statistically compared.
 
     Args:
         short_name: The name the metric displays under.

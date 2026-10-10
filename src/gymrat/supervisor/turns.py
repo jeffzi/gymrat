@@ -71,14 +71,17 @@ type EndReason = Literal[
 
 @dataclass(frozen=True, slots=True)
 class End:
-    """The session should end for the given reason."""
+    """Terminal decision: the supervisor ends the session with ``reason`` as its end reason."""
 
     reason: EndReason
 
 
 @dataclass(frozen=True, slots=True)
 class Reply:
-    """Send a follow-up message with the given text."""
+    """Continue the session: the supervisor sends ``text`` as the next user message.
+
+    Every reply counts toward :data:`FOLLOW_UP_CEILING`.
+    """
 
     text: str
 
@@ -89,7 +92,7 @@ class WaitForLock:
 
 
 type Decision = End | Reply | WaitForLock
-"""A classifier outcome."""
+"""What :func:`classify` returns for each turn end: end the session, reply, or wait for the lock."""
 
 
 def _outcome_records(records: list[SessionLogRecord]) -> Iterator[SessionLogRecord]:

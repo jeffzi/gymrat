@@ -13,10 +13,6 @@ from tests.session.records._fixtures import (
     session_record,
 )
 
-# ---------------------------------------------------------------------------
-# Fixture records
-# ---------------------------------------------------------------------------
-
 SESSION: SessionRecord = session_record(
     worktrees=Worktrees(experiment="/repo/.gymrat/experiment", baseline="/repo/.gymrat/baseline")
 )

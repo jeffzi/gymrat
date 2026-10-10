@@ -30,11 +30,11 @@ from gymrat.session.workspace import (
 )
 from gymrat.utils import SHORT_SHA_LENGTH, pluralize
 
-#: The hint a refusal points at whenever the fix is to settle the last iteration.
 _SETTLE_FIRST_HINT = settle_first_hint("closing the session")
+"""The hint a refusal points at whenever the fix is to settle the last iteration."""
 
-#: The body line a committed keep gets when it names neither a message nor a commit.
 _UNNAMED_KEEP_LINE = "(no message)"
+"""The body line a committed keep gets when it names neither a message nor a commit."""
 
 
 @dataclass(frozen=True, slots=True)

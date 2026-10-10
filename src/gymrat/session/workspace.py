@@ -26,7 +26,8 @@ from gymrat.session.paths import (
 )
 from gymrat.utils import SHORT_SHA_LENGTH, warn_to_stderr
 
-# Prefix of the branch a session's experiment worktree sits on.
+# create_workspace names every session branch ``<prefix><session_id>``, so
+# changing this renames the branch of every new session.
 BRANCH_PREFIX = "gymrat/"
 
 # Hint repeated by every git step whose failure leaves the worktree worth
@@ -493,6 +494,11 @@ def _git_lines(args: list[str], cwd: str, message: str, hint: str) -> list[str]:
     """Run a git step and split its stdout into non-empty lines."""
     output = run_git_step(args, cwd, message, hint).strip()
     return output.split("\n") if output else []
+
+
+# ---------------------------------------------------------------------------
+# Baseline advance and worktree removal
+# ---------------------------------------------------------------------------
 
 
 def advance_baseline(baseline_dir: str, sha: str) -> None:

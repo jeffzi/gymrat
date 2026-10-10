@@ -466,7 +466,8 @@ def _failure_recording(exporter: SpanExporter) -> SpanExporter:
 def _deterministic_id_generator(session_trace_id: int) -> IdGenerator:
     """Build the OTel ID generator that keys every span to the session.
 
-    Trace IDs are never random, which the base class already reports.
+    Trace IDs are never random, so the generator keeps the base class's
+    ``is_trace_id_random``, which returns False; do not override it to True.
 
     Args:
         session_trace_id: The trace ID every span of the session carries.

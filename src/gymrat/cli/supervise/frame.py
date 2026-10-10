@@ -67,7 +67,6 @@ if TYPE_CHECKING:
 _MIN_TOOL_NAME_WIDTH = 5
 _MAX_TOOL_NAME_WIDTH = 8
 
-#: Theme style for each loop-summary style role; ``None`` leaves the run unstyled.
 _LOOP_STYLES: dict[LoopStyle, str | None] = {
     "alert": STYLE_ALERT,
     "count": STYLE_COUNT,
@@ -77,6 +76,7 @@ _LOOP_STYLES: dict[LoopStyle, str | None] = {
     "plain": None,
     "regressed": STYLE_REGRESSED,
 }
+"""Theme style for each loop-summary style role; ``None`` leaves the run unstyled."""
 
 
 # ---------------------------------------------------------------------------

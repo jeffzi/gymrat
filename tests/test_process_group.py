@@ -123,7 +123,12 @@ class FakeProcess:
     group_id: int = _FAKE_GROUP
 
     def write(self, proc_root: Path) -> None:
-        """Write this process's ``stat`` file under ``proc_root``, laid out as Linux lays it out."""
+        """Write this process's ``stat`` file, laid out as Linux lays it out.
+
+        Args:
+            proc_root: Directory standing in for ``/proc``; the process's entry
+                directory is created beneath it.
+        """
         entry = proc_root / str(self.pid)
         entry.mkdir(exist_ok=True)
         head = f"{self.pid} (".encode()
@@ -248,7 +253,15 @@ class StubCLibrary:
 
 
 def darwin_record(flag: int, state: int) -> bytes:
-    """One macOS ``kinfo_proc`` record carrying ``flag`` as ``p_flag`` and ``state`` as ``p_stat``."""
+    """One macOS ``kinfo_proc`` record with only its flag and state fields set.
+
+    Args:
+        flag: Value stored as ``p_flag``.
+        state: Value stored as ``p_stat``.
+
+    Returns:
+        A ``_DARWIN_KINFO_PROC_SIZE``-byte record, zero everywhere else.
+    """
     record = bytearray(_DARWIN_KINFO_PROC_SIZE)
     _DARWIN_FLAG_AND_STATE.pack_into(record, _DARWIN_FLAG_AND_STATE_OFFSET, flag, state)
     return bytes(record)

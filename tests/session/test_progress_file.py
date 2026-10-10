@@ -309,7 +309,6 @@ def test_sidecar_writer_when_confirm_follows_measure_does_reset_passes_completed
         )
     )
 
-    # Confirm phase starts: passes_completed must reset to 0, not carry over
     writer(
         PassStarted(
             round=1, total_rounds=2, target_count=1, label="x", at_ms=300.0, phase="confirm"

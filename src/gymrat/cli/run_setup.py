@@ -74,12 +74,11 @@ async def run_with_signal_abort[T](
 ) -> T:
     """Run ``execute`` with an abort event a termination signal trips.
 
-    ``execute`` receives an :class:`asyncio.Event` to hand the in-flight bench so
-    a ``SIGINT`` / ``SIGTERM`` sets it and the current sample is abandoned rather
-    than the process being torn down mid-command. The signal handler owns the
-    exit itself (``128 +`` the signal number); this only wires the event and
-    always removes the cleanup afterward, so a completed run leaves no handler
-    behind.
+    A ``SIGINT`` / ``SIGTERM`` sets the abort event so the current sample is
+    abandoned rather than the process being torn down mid-command. The signal
+    handler owns the exit itself (``128 +`` the signal number); this only wires
+    the event and always removes the cleanup afterward, so a completed run
+    leaves no handler behind.
 
     On the signal path the loop cannot resume to act on the abort before the
     process exits, so the cleanup kills any live exec-spawned group synchronously
@@ -87,8 +86,8 @@ async def run_with_signal_abort[T](
     the loop does keep running.
 
     Args:
-        execute: An async callable that receives an abort event and returns the
-            run result.
+        execute: An async callable that receives the abort event, to hand the
+            in-flight bench, and returns the run result.
 
     Returns:
         The value returned by ``execute``.

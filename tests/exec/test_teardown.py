@@ -131,6 +131,7 @@ class HeldReaper:
         return getattr(os, name)
 
     def waitpid(self, pid: int, options: int, /) -> tuple[int, int]:
+        """Hold a blocking ``waitpid(pid, 0)`` until ``release`` is set or ``hold_s`` passes."""
         if options == 0:
             self.release.wait(self.hold_s)
         return os.waitpid(pid, options)

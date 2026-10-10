@@ -41,25 +41,29 @@ from contextlib import contextmanager
 from types import FrameType
 from typing import NoReturn, TextIO
 
-# Termination signals gymrat installs cleanup for. SIGHUP is POSIX-only and
-# absent on win32, so each name is resolved defensively and any the platform
-# does not define is dropped. This is the canonical set: :mod:`gymrat.exec`
-# imports it to unblock exactly these signals in a spawned child, reversing the
-# mask the parent holds across the spawn.
 TERMINATION_SIGNALS: frozenset[int] = frozenset(
     resolved
     for name in ("SIGINT", "SIGTERM", "SIGHUP")
     if (resolved := getattr(signal, name, None)) is not None
 )
+"""Termination signals gymrat installs cleanup for.
 
-# POSIX-only seam for blocking signals. ``None`` on platforms without
-# ``pthread_sigmask`` (win32), where callers fall back to running unmasked.
-# Kept as a module-level reference so the fallback branch stays testable.
-# :mod:`gymrat.exec` imports this to unblock the same signals in a spawned
-# child, rather than re-resolving ``pthread_sigmask`` itself.
+SIGHUP is POSIX-only and absent on win32, so each name is resolved defensively and any the
+platform does not define is dropped. This is the canonical set: :mod:`gymrat.exec` imports it to
+unblock exactly these signals in a spawned child, reversing the mask the parent holds across the
+spawn.
+"""
+
 pthread_sigmask: Callable[[int, Iterable[int]], set[int]] | None = getattr(
     signal, "pthread_sigmask", None
 )
+"""POSIX-only seam for blocking signals.
+
+``None`` on platforms without ``pthread_sigmask`` (win32), where callers fall back to running
+unmasked. Kept as a module-level reference so the fallback branch stays testable.
+:mod:`gymrat.exec` imports this to unblock the same signals in a spawned child, rather than
+re-resolving ``pthread_sigmask`` itself.
+"""
 
 # Live cleanups keyed by an opaque install token. A dict preserves insertion
 # order, which the handler relies on to run cleanups in install order; a set

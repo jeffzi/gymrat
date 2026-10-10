@@ -631,12 +631,9 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
     log_lines = read_log_lines(log_path)
     assert log_lines[0]["type"] == "launch"
     assert any(line["type"] == "usage_update" for line in log_lines[1:])
-    # The supervisor waited out the repository lock before replying, then ended
-    # the run on the finalized session it read from the repo.
     assert [
         (line["action"], line.get("reason")) for line in log_lines if line["type"] == "follow_up"
     ] == [("waiting", None), ("replied", None), ("ended", "finished")]
-    # The session log the CLI left on disk holds the whole run, open to close.
     session_records = read_log_lines(session_jsonl_path(repo))
     record_types = {record["type"] for record in session_records}
     assert "session" in record_types

@@ -64,11 +64,15 @@ if TYPE_CHECKING:
     from gymrat.report.loop import RerunAnswer
     from gymrat.report.types import ComparisonResult, MetricComparisons
 
-#: The candidate an iteration measures: the experiment, judged against the baseline.
-EXPERIMENT_INDEX = 0
+# ---------------------------------------------------------------------------
+# Bench and judge
+# ---------------------------------------------------------------------------
 
-#: The label the experiment worktree's target carries in progress and reports.
+EXPERIMENT_INDEX = 0
+"""The candidate an iteration measures: the experiment, judged against the baseline."""
+
 EXPERIMENT_LABEL = "experiment"
+"""The label the experiment worktree's target carries in progress and reports."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +279,11 @@ def _worktree_context(directory: str, label: str, position: Literal["old", "new"
     )
 
 
+# ---------------------------------------------------------------------------
+# Primary and target resolution
+# ---------------------------------------------------------------------------
+
+
 def resolve_primary(
     primary: str,
     verdicts: dict[str, MetricVerdict],
@@ -336,6 +345,11 @@ def target_reached(
     if median is None:
         return False
     return median >= target if metric.meta.direction == "higher" else median <= target
+
+
+# ---------------------------------------------------------------------------
+# Confirmation rerun
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -514,6 +528,11 @@ def apply_confirmation(
         )
         settled[name] = replace(verdict, verdict="no-signal") if disagreed else verdict
     return settled
+
+
+# ---------------------------------------------------------------------------
+# Bench scoping and shell quoting
+# ---------------------------------------------------------------------------
 
 
 def scoped_bench(config: ResolvedConfig, names: Sequence[str]) -> str:

@@ -133,8 +133,10 @@ def format_percent_delta(value: float | None, *, missing: str = "") -> str:
 
 
 PLUS_MINUS = "±"
+"""Glyph that prefixes a noise figure or a verdict's noise band."""
 
 SPREAD_SEPARATOR = f" {PLUS_MINUS} "
+"""Spaced glyph between a value cell's magnitude and its spread."""
 
 
 @dataclass(frozen=True, slots=True)

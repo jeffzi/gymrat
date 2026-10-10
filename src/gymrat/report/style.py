@@ -48,10 +48,12 @@ if TYPE_CHECKING:
 # U+2026, one cell wide — three periods would cost two more columns.
 _ELLIPSIS = "…"
 
-#: Widest a variant label prints, ellipsis included. A branch name is free to be
-#: as long as git allows, but every column it heads is sized from it, so an
-#: unbounded one would push the figures off the right edge of the terminal.
 LABEL_DISPLAY_WIDTH = 20
+"""Widest a variant label prints, ellipsis included.
+
+A branch name is free to be as long as git allows, but every column it heads is sized from it, so
+an unbounded one would push the figures off the right edge of the terminal.
+"""
 
 
 def _clip_head(text: str, budget: int) -> str:
@@ -156,12 +158,6 @@ def truncate_labels(labels: Sequence[str]) -> list[str]:
 # Style vocabulary
 # ---------------------------------------------------------------------------
 
-#: The color each display class wears wherever the report states a verdict.
-#:
-#: Every style here is worn by the verdict itself — a glyph, a delta, a tally —
-#: never by the row or the values around it: within-noise and inconclusive recede
-#: to dim, identical reads cyan for "measured the same", and unstable keeps its
-#: amber warning.
 VERDICT_STYLES: dict[DisplayClass, str] = {
     "improved": "green",
     "regressed": "red",
@@ -170,18 +166,25 @@ VERDICT_STYLES: dict[DisplayClass, str] = {
     "within-noise": "dim",
     "inconclusive": "dim",
 }
+"""The color each display class wears wherever the report states a verdict.
 
-#: The style a variant name wears where the report names it as a name.
+Every style here is worn by the verdict itself — a glyph, a delta, a tally —
+never by the row or the values around it: within-noise and inconclusive recede
+to dim, identical reads cyan for "measured the same", and unstable keeps its
+amber warning.
+"""
+
 VARIANT_NAME_STYLE = "bold underline"
+"""The style a variant name wears where the report names it as a name."""
 
-#: The style a group label wears where the report heads a group of metrics.
 GROUP_LABEL_STYLE = "bold blue"
+"""The style a group label wears where the report heads a group of metrics."""
 
-#: The style an aggregate label (a geomean row, a total) wears.
 AGGREGATE_LABEL_STYLE = "bold"
+"""The style an aggregate label (a geomean row, a total) wears."""
 
-#: The middle-dot separator between a scope and its sub-label.
 SCOPE_SEPARATOR = "·"
+"""The middle-dot separator between a scope and its sub-label."""
 
 # A backtick-wrapped inline code span; the capture group is its content.
 _INLINE_CODE_PATTERN = re.compile(r"`([^`]+)`")
@@ -269,9 +272,11 @@ def format_hint(text: str) -> str:
 # Color resolution and capture rendering
 # ---------------------------------------------------------------------------
 
-#: A render width wide enough that a captured line never soft-wraps, whatever the
-#: real terminal is. Every report block and table renders against it.
 RENDER_WIDTH = 200
+"""A render width wide enough that a captured line never soft-wraps, whatever the real terminal is.
+
+Every report block and table renders against it.
+"""
 
 
 def make_capture_console(*, color: bool | None) -> Console:

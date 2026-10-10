@@ -77,6 +77,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 
+# ---------------------------------------------------------------------------
+# Attribute namespace — every attribute name the code can emit
+# ---------------------------------------------------------------------------
+
 #: The annotations a record field may carry to be emitted as an attribute.
 _SCALAR_TYPES = (str, int, float, bool)
 
@@ -161,6 +165,10 @@ def all_attribute_names() -> frozenset[str]:
     return _FIXED_ATTRS | frozenset(record_derived)
 
 
+# ---------------------------------------------------------------------------
+# README attribute table — the documented names match the emitted ones
+# ---------------------------------------------------------------------------
+
 _README = Path(__file__).resolve().parents[2] / "README.md"
 _HEADING = "### Attribute reference"
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
@@ -225,17 +233,16 @@ def test_readme_attribute_reference_when_parsed_does_list_exactly_the_emitted_at
     assert readme_names == code_names
 
 
+# ---------------------------------------------------------------------------
+# record_event and command_attributes — every emitted key is documented and well formed
+# ---------------------------------------------------------------------------
+
 _ATTR_NAME_RE = re.compile(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$")
 
 
 def _assert_valid_attribute_names(keys: Iterable[str]) -> None:
     for key in keys:
         assert _ATTR_NAME_RE.match(key), f"bad attribute name: {key!r}"
-
-
-# ---------------------------------------------------------------------------
-# record_event and command_attributes — every emitted key is documented and well formed
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

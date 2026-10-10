@@ -77,6 +77,10 @@ GLYPHS: dict[DisplayClass, str] = {
 
 
 VERDICT_GLOSSES: dict[DisplayClass, str] = {cls: cls.replace("-", " ") for cls in GLYPHS}
+"""The word for each display class: its name with hyphens as spaces.
+
+Used in the verdict tally and as the delta cell of an unstable verdict.
+"""
 
 QUIET_VERDICTS: frozenset[DisplayClass] = frozenset({
     "within-noise",
@@ -84,3 +88,8 @@ QUIET_VERDICTS: frozenset[DisplayClass] = frozenset({
     "inconclusive",
     "unstable",
 })
+"""The display classes that report no real change.
+
+A metric row draws a quiet verdict's delta in the verdict color, and a geomean whose metrics are
+all quiet stays uncolored whatever its value.
+"""

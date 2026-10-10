@@ -18,6 +18,7 @@ DEFAULT_KICKOFF = (
     "`iterate`, `keep`, `discard`, `status`, `sync`, `compare`, and `measure` print the time left. "
     "Follow the skill instructions and the runbook to guide your work."
 )
+"""The kickoff message ``compose_kickoff`` uses when the caller passes no ``prompt``."""
 
 
 _CLOCK_RULE = (

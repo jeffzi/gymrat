@@ -30,8 +30,8 @@ from gymrat.session.store import (
 )
 from gymrat.utils import first_line
 
-#: What a stop refusal says the user was about to do.
 _SETTLE_VERB = "stopping"
+"""What a stop refusal says the user was about to do."""
 
 
 @dataclass(frozen=True, slots=True)

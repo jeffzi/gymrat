@@ -66,6 +66,11 @@ NO_STABLE_METRICS_STYLE = "dim"
 NO_AGGREGATE: GeomeanResult = GeomeanResult(value=math.nan, n=0, band=0, excluded=())
 
 
+# ---------------------------------------------------------------------------
+# Geomean aggregates
+# ---------------------------------------------------------------------------
+
+
 def _kind_aggregate_of(candidate: CandidateComparison, kind: str) -> KindAggregate | None:
     """The aggregate a candidate reported for one kind, or ``None`` when it reported none."""
     return next((aggregate for aggregate in candidate.kinds if aggregate.kind == kind), None)
@@ -232,6 +237,11 @@ def geomean_value_style(
     return "bold"
 
 
+# ---------------------------------------------------------------------------
+# Metric-column cells
+# ---------------------------------------------------------------------------
+
+
 def header_metric_cell(title: str | None) -> Text:
     """The metric-column cell for a section header row."""
     return _field(title, "bold") if title is not None else Text(METRIC_COLUMN_HEADER)
@@ -250,6 +260,11 @@ def aggregate_label_cell(label: str) -> Text:
 def variant_name_cell(name: str) -> Text:
     """A variant's name, styled as a column header."""
     return _field(name, VARIANT_NAME_STYLE)
+
+
+# ---------------------------------------------------------------------------
+# Verdict cells and section labels
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)

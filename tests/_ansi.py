@@ -17,7 +17,7 @@ SGR_YELLOW = 33
 
 
 def strip_ansi(text: str) -> str:
-    """Remove all ANSI escape sequences from ``text``."""
+    """Remove every CSI escape sequence from ``text``, cursor controls included, not only SGR."""
     return ANSI_RE.sub("", text)
 
 

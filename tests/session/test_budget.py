@@ -39,12 +39,11 @@ def _budget_file(root: str) -> Path:
 
 
 def _make_budget(*, max_minutes: float = 30, deadline_ms: float = 1_800_000.0) -> Budget:
-    """Build a Budget with sensible defaults, overridable per-field."""
     return Budget(max_minutes=max_minutes, deadline_ms=deadline_ms)
 
 
 def _budget_json(**overrides: object) -> str:
-    """Serialize a budget JSON payload with sensible defaults, overridable per-field."""
+    """A 30-minute budget payload with a far-future deadline; ``overrides`` replace or add keys."""
     defaults: dict[str, object] = {
         "max_minutes": 30,
         "deadline_ms": _FAR_FUTURE_DEADLINE_MS,

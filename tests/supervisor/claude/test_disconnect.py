@@ -109,7 +109,7 @@ def _one_turn() -> list[object]:
 
 
 async def _drain(n: int = 30) -> None:
-    """Let the event loop process n rounds of pending callbacks."""
+    """Yield to the event loop; the default outlasts the turns ``_Stream.close`` stays suspended."""
     for _ in range(n):
         await asyncio.sleep(0)
 
@@ -172,7 +172,6 @@ def _recorded_warnings() -> Generator[list[warnings.WarningMessage]]:
 
 
 def _disconnect_warnings(caught: Sequence[warnings.WarningMessage]) -> list[str]:
-    """The text of every recorded warning that reports a failed disconnect."""
     return [str(w.message) for w in caught if _DISCONNECT_WARNING in str(w.message)]
 
 

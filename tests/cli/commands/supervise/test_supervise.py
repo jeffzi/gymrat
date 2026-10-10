@@ -7,7 +7,7 @@ Git, ``repo_root``, and the supervise lock stay real; the seams the command
 composes over — config resolution, kickoff, the Claude driver, the supervisor
 run, the run-end exit sequence, the progress reporter, the git-exclude write,
 and the signal cleanup — are replaced at the names ``commands.supervise``
-imports them under, mirroring the upstream test harness.
+imports them under.
 
 The dirty-tree guards belong to the pre-flight and are tested in
 :mod:`tests.cli.supervise.test_preflight`; here only the ``--allow-dirty``
@@ -70,8 +70,6 @@ from tests.cli.commands.supervise._seams import (
 )
 from tests.sampling._adapters import make_adapter
 
-# The messages the budget-initialization and tracing-setup seams fail with when a
-# test makes them explode.
 _BUDGET_FAILURE = "budget write failed"
 _TRACING_FAILURE = "tracing exporter unreachable"
 
@@ -224,7 +222,7 @@ def test_supervise_when_log_path_is_long_does_print_it_unwrapped(
 
     assert result.exit_code == 0
     # On Windows CI tmp_path lives under $HOME, so the display path is ~/…
-    # abbreviated.  Check the row is a single unwrapped line.
+    # abbreviated.
     assert any(
         line.startswith("  log     ") and "supervisor-1.jsonl" in line
         for line in result.stdout.splitlines()

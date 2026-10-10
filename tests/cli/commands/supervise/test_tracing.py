@@ -1,8 +1,7 @@
 """Tracing integration tests for the ``gymrat supervise`` command.
 
 These tests verify session and run span export, attribute setting, observer
-combination, and the untraced path. They share the seam infrastructure from
-``_seams`` and add ``memory_tracing`` from the telemetry test fixtures.
+combination, and the untraced path.
 """
 
 from __future__ import annotations

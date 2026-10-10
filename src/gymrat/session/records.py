@@ -532,7 +532,6 @@ class CommandRecord(_SequencedEnvelope):
 # Wire codec
 # ---------------------------------------------------------------------------
 
-#: The discriminated union of every record type a session JSONL line can decode to.
 type SessionLogRecord = (
     SessionRecord
     | BaselineRecord
@@ -544,9 +543,10 @@ type SessionLogRecord = (
     | StopRecord
     | CommandRecord
 )
+"""The discriminated union of every record type a session JSONL line can decode to."""
 
-#: Session-log record models, in ``SessionLogRecord`` union order.
 SESSION_LOG_MODELS: tuple[type[BaseModel], ...] = get_args(SessionLogRecord.__value__)
+"""Session-log record models, in ``SessionLogRecord`` union order."""
 
 
 def wire_type(model: type[BaseModel]) -> str:

@@ -20,11 +20,16 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, NamedTuple, Protocol, Self
 
-#: Shared by every module that converts between nanoseconds, milliseconds and
-#: clock tiers, so the conversion factors are declared once.
 SECONDS_PER_MINUTE = 60
+"""Seconds in one minute.
+
+Shared by every module that converts between nanoseconds, milliseconds and clock tiers, so the
+conversion factors are declared once.
+"""
 MS_PER_SECOND = 1000
+"""Milliseconds in one second; shared conversion factor, declared once."""
 NS_PER_MS = 1_000_000
+"""Nanoseconds in one millisecond; shared conversion factor, declared once."""
 _MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND
 
 ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
@@ -82,6 +87,11 @@ class StyledSegment[R](NamedTuple):
     role: R
 
 
+# ---------------------------------------------------------------------------
+# Text and number helpers
+# ---------------------------------------------------------------------------
+
+
 def abbreviate_home(path: str) -> str:
     """Shorten a path under the user's home directory to a ``~`` prefix.
 
@@ -121,7 +131,7 @@ def format_cost(usd: float) -> str:
 
 
 def first_line(text: str) -> str:
-    """The first line of ``text``, discarding the rest."""
+    """The text up to the first newline; other line terminators do not end the line."""
     return text.split("\n", maxsplit=1)[0]
 
 
@@ -255,6 +265,11 @@ def coerce_integer(value: object) -> object:
     return value
 
 
+# ---------------------------------------------------------------------------
+# Subprocess output
+# ---------------------------------------------------------------------------
+
+
 def limit_output(text: str) -> str:
     """Return at most ``_OUTPUT_LIMIT_BYTES`` bytes of ``text`` (UTF-8).
 
@@ -317,6 +332,11 @@ def stderr_text_of(error: object) -> str:
         if isinstance(stream, str) and stream.strip():
             return stream.strip()
     return str(error)
+
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
 
 
 def otlp_endpoint(value: str | None) -> str | None:
@@ -387,6 +407,11 @@ def stream_color_from_env(stream: object) -> bool:
     return declared if declared is not None else is_tty(stream)
 
 
+# ---------------------------------------------------------------------------
+# Stream writes
+# ---------------------------------------------------------------------------
+
+
 class _WritableStream(Protocol):
     """A text stream error and progress output is written to."""
 
@@ -448,6 +473,11 @@ def warn_to_stderr(message: str) -> None:
         message: The text to write to stderr, followed by a newline.
     """
     sys.stderr.write(f"{message}\n")
+
+
+# ---------------------------------------------------------------------------
+# Callback and file helpers
+# ---------------------------------------------------------------------------
 
 
 def fan_out[E](
@@ -601,7 +631,15 @@ class SamplingEta:
 
 
 def hours_minutes_seconds(total_seconds: int) -> tuple[int, int, int]:
-    """Split a whole-second count into an hours/minutes/seconds tier."""
+    """Split a whole-second count into clock tiers.
+
+    Args:
+        total_seconds: The duration in whole seconds.
+
+    Returns:
+        ``(hours, minutes, seconds)``, where minutes and seconds stay below 60
+        and hours are unbounded.
+    """
     minutes, seconds = divmod(total_seconds, SECONDS_PER_MINUTE)
     hours, minutes = divmod(minutes, SECONDS_PER_MINUTE)
     return hours, minutes, seconds

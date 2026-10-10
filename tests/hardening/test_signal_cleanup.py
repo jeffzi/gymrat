@@ -146,7 +146,6 @@ def test_measure_when_prior_run_hard_killed_does_take_over_stale_lock_on_rerun(
     with contextlib.suppress(ProcessLookupError):
         os.killpg(os.getpgid(bench_pid), signal.SIGKILL)
     _wait_until_dead_blocking(bench_pid, timeout_s=SETTLE_TIMEOUT_S)
-    # The lock left behind above is now stale; the rerun below must take it over.
 
     (Path(repo) / "bench.sh").write_text(EMIT_ONE_BENCH, encoding="utf-8")
 

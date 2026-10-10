@@ -3,10 +3,7 @@
 This is test-support code, not a test module: it carries no test functions of
 its own. :func:`environment_info` builds the version and platform context a
 doctor report opens with, and :func:`doctor_report` and
-:func:`single_check_report` build whole reports on it, for
-``tests/test_doctor.py``, ``tests/cli/supervise/test_preflight.py``,
-``tests/hardening/test_rendering_matrix.py`` and the doctor command stand-ins in
-``tests/cli/_doctor_seams.py``.
+:func:`single_check_report` build whole reports on it.
 """
 
 from __future__ import annotations

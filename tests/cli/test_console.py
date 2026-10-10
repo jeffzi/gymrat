@@ -37,7 +37,7 @@ class _BadDescriptorStream(io.StringIO):
 
 
 def _open_descriptors() -> set[str]:
-    """List the descriptors this process holds open."""
+    """Snapshot this process's open descriptors from ``/dev/fd``, to compare for leaks."""
     return {entry.name for entry in Path("/dev/fd").iterdir()}
 
 

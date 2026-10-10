@@ -31,7 +31,7 @@ class ReceivedSpan:
 
 @dataclass(frozen=True, slots=True)
 class ReceivedExport:
-    """One export request the collector received."""
+    """One OTLP export request: the URL path it was posted to and the spans in its body."""
 
     path: str
     spans: list[ReceivedSpan]
@@ -44,7 +44,11 @@ class ReceivedExport:
 
 @dataclass(frozen=True, slots=True)
 class OtlpCollector:
-    """Handle on a running local collector."""
+    """Handle yielded by ``otlp_collector``.
+
+    ``endpoint`` is the base URL to export to, and ``received`` fills with one
+    ``ReceivedExport`` per request, in arrival order.
+    """
 
     endpoint: str
     received: list[ReceivedExport] = field(default_factory=list)

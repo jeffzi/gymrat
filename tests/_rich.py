@@ -84,6 +84,11 @@ class Clock[T: (int, float)]:
         return self.now
 
     def tick(self, amount: T) -> None:
+        """Advance ``now`` by *amount*, in the unit the clock was started with.
+
+        Args:
+            amount: How far to move ``now`` forward.
+        """
         # pyrefly: ignore[unsupported-operation] -- T is int or float, and each adds to itself
         self.now += amount
 

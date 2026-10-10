@@ -13,31 +13,34 @@ preserves a vocabulary free of dead values.
 
 from typing import Literal
 
-#: The session JSONL format versions a reader accepts, as a type.
 SchemaVersion = Literal[1]
+"""The session JSONL format versions a reader accepts, as a type."""
 
-#: Version of the session JSONL format these schemas describe.
 SCHEMA_VERSION: SchemaVersion = 1
+"""Version of the session JSONL format these schemas describe."""
 
-#: How a single metric moved, once its samples were judged.
 MetricOutcome = Literal["improved", "regressed", "no-signal", "unstable"]
+"""How a single metric moved, once its samples were judged."""
 
-#: The statistical test that produced a metric's verdict. Identical to the model's
-#: own method union: the sign-flip permutation test is the default, with the band
-#: and exact fallbacks.
 Method = Literal["permutation", "band", "exact"]
+"""The statistical test that produced a metric's verdict.
 
-#: Whether an iteration's primary aggregates every gating metric or names one.
+Identical to the model's own method union: the sign-flip permutation test is the default, with
+the band and exact fallbacks.
+"""
+
 PrimaryKind = Literal["geomean", "metric"]
+"""Whether an iteration's primary aggregates every gating metric or names one."""
 
-#: An iteration's overall outcome -- the tri-state an agent acts on. Unlike a
-#: per-metric :data:`MetricOutcome`, an iteration is never reported ``"unstable"``.
 Outcome = Literal["improved", "regressed", "no-signal"]
+"""An iteration's overall outcome -- the tri-state an agent acts on.
 
-#: Whether a kept iteration was committed or refused.
+Unlike a per-metric :data:`MetricOutcome`, an iteration is never reported ``"unstable"``.
+"""
+
 KeepStatus = Literal["committed", "blocked"]
+"""Whether a kept iteration was committed or refused."""
 
-#: Why a keep was blocked.
 KeepReason = Literal[
     "checks-failed",
     "gating-regression",
@@ -45,44 +48,18 @@ KeepReason = Literal[
     "nothing-to-commit",
     "not-improved",
 ]
+"""Why a keep was blocked."""
 
-#: Which side of an iteration a hook ran on.
 HookStage = Literal["before", "after"]
+"""Which side of an iteration a hook ran on."""
 
-#: What invoked a command: a person at a terminal, or the supervisor's tool host.
-#:
-#: - ``cli``  — run directly, by a person or a script
-#: - ``tool`` — run by the supervised agent through the in-process tool host
 CommandOrigin = Literal["cli", "tool"]
+"""What invoked a command: a person at a terminal, or the supervisor's tool host.
 
-#: Why a command exited non-zero.
-#:
-#: Each value is produced by the command named after the dash-prefix:
-#:
-#: - ``stop-condition``    — iterate (the stop condition fired)
-#: - ``budget-exceeded``   — iterate (the iteration budget ran out)
-#: - ``unsettled``         — iterate (unsettled iterations remain)
-#: - ``gating-block``      — iterate (a gating metric regressed and blocked)
-#: - ``already-stopped``   — iterate (a stop record already exists)
-#: - ``no-session``        — any command requiring a session
-#: - ``finalized``         — iterate / keep / discard (session already finalized)
-#: - ``nothing-measured``  — keep (no iteration was measured)
-#: - ``gating-regression`` — keep (gating regression blocked the keep)
-#: - ``nothing-to-commit`` — keep (nothing to commit)
-#: - ``checks-failed``     — keep (configured checks failed)
-#: - ``not-improved``      — keep (the iteration was not improved)
-#: - ``nothing-to-discard`` — discard (nothing to discard)
-#: - ``stale-session``     — discard / keep (the session is stale)
-#: - ``nothing-kept``      — finalize (no kept iterations)
-#: - ``dirty-worktree``    — start (the worktree has uncommitted changes)
-#: - ``unkept-commits``    — finalize (unkept commits remain)
-#: - ``bad-branch``        — start (the branch is invalid)
-#: - ``branch-exists``     — start (the branch already exists)
-#: - ``fail-on``           — iterate (the fail-on condition fired)
-#: - ``no-filter``         — probe (names given with no filter template configured)
-#: - ``no-baseline``       — probe (the session has no baseline record)
-#: - ``supervised-use-tool`` — any command typed outside the supervisor during a live supervised run
-#: - ``error``             — any command (an unexpected error)
+- ``cli``  — run directly, by a person or a script
+- ``tool`` — run by the supervised agent through the in-process tool host
+"""
+
 CommandReason = Literal[
     "stop-condition",
     "budget-exceeded",
@@ -109,3 +86,32 @@ CommandReason = Literal[
     "supervised-use-tool",
     "error",
 ]
+"""Why a command exited non-zero.
+
+Each value is produced by the command named after the dash-prefix:
+
+- ``stop-condition``    — iterate (the stop condition fired)
+- ``budget-exceeded``   — iterate (the iteration budget ran out)
+- ``unsettled``         — iterate (unsettled iterations remain)
+- ``gating-block``      — iterate (a gating metric regressed and blocked)
+- ``already-stopped``   — iterate (a stop record already exists)
+- ``no-session``        — any command requiring a session
+- ``finalized``         — iterate / keep / discard (session already finalized)
+- ``nothing-measured``  — keep (no iteration was measured)
+- ``gating-regression`` — keep (gating regression blocked the keep)
+- ``nothing-to-commit`` — keep (nothing to commit)
+- ``checks-failed``     — keep (configured checks failed)
+- ``not-improved``      — keep (the iteration was not improved)
+- ``nothing-to-discard`` — discard (nothing to discard)
+- ``stale-session``     — discard / keep (the session is stale)
+- ``nothing-kept``      — finalize (no kept iterations)
+- ``dirty-worktree``    — start (the worktree has uncommitted changes)
+- ``unkept-commits``    — finalize (unkept commits remain)
+- ``bad-branch``        — start (the branch is invalid)
+- ``branch-exists``     — start (the branch already exists)
+- ``fail-on``           — iterate (the fail-on condition fired)
+- ``no-filter``         — probe (names given with no filter template configured)
+- ``no-baseline``       — probe (the session has no baseline record)
+- ``supervised-use-tool`` — any command typed outside the supervisor during a live supervised run
+- ``error``             — any command (an unexpected error)
+"""

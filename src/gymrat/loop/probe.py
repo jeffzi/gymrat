@@ -31,8 +31,8 @@ if TYPE_CHECKING:
     from gymrat.progress_events import ProgressCallback
     from gymrat.utils import WarnSink
 
-#: Rounds a probe runs when the caller names no count of its own.
 PROBE_DEFAULT_SAMPLES = 6
+"""Rounds a probe runs when the caller names no count of its own."""
 
 
 @dataclass(frozen=True, slots=True)

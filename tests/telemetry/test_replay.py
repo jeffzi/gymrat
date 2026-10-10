@@ -722,7 +722,7 @@ async def test_replay_session_when_gymrat_traceparent_set_live_does_match_replay
 ):
     header = seeded_session(repo)
 
-    # Build a GYMRAT_TRACEPARENT from deterministic IDs so live and replay agree
+    # Deterministic IDs, so the live command and replay derive the same parent link.
     monkeypatch.setenv("GYMRAT_TRACEPARENT", session_traceparent(header.session_id, f"run:{T0}"))
 
     jsonl_path = session_jsonl_path(repo)

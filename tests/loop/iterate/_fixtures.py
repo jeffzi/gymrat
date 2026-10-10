@@ -194,6 +194,20 @@ class CollectSamplesRecorder:
         options: SamplingOptions,
         abort: object,
     ) -> list[TargetSamples]:
+        """Record the call, then answer it with the configured stub.
+
+        Args:
+            adapter: The adapter the caller passed; ignored.
+            targets: The targets to sample; recorded as a list.
+            options: The sampling options; recorded with the targets.
+            abort: The caller's abort signal; ignored.
+
+        Returns:
+            The stub's samples for the recorded targets.
+
+        Raises:
+            AssertionError: No stub has been installed yet.
+        """
         target_list = list(targets)
         self.calls.append(_RecordedCall(target_list, options))
         if self._answer is None:
@@ -203,6 +217,7 @@ class CollectSamplesRecorder:
 
     @property
     def call_count(self) -> int:
+        """How many sampling calls the recorder has received, failed ones included."""
         return len(self.calls)
 
 

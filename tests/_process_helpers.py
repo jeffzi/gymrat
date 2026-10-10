@@ -21,10 +21,8 @@ from gymrat import process_group
 if TYPE_CHECKING:
     import pytest
 
-# Interval a polling loop sleeps between checks.
 _POLL_INTERVAL_S = 0.025
 
-# Default upper bound a polling loop waits before giving up.
 _DEFAULT_WAIT_S = 5.0
 
 # A child that writes nothing, sleeps, and never exits on its own — a stand-in

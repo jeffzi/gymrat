@@ -112,33 +112,39 @@ class RerunConfirmation:
     answer: RerunAnswer
 
 
-#: What the loop's header says it compared, fixed for every iteration. The two
-#: targets wear the style the table heads its columns with, so the header names
-#: them the way the columns below it do.
 _COMPARED = (
     f"{markup('experiment', VARIANT_NAME_STYLE)} vs {markup('baseline', VARIANT_NAME_STYLE)}"
 )
+"""What the loop's header says it compared, fixed for every iteration.
 
-#: What an iteration that met the configured target says, and what it asks for.
+The two targets wear the style the table heads its columns with, so the header names them the way
+the columns below it do.
+"""
+
 _TARGET_REACHED = "target reached — keep it"
+"""What an iteration that met the configured target says, and what it asks for."""
 
-#: How each outcome's word is painted: emboldened whatever it says, and colored
-#: only where there is a direction to report. A no-signal iteration is neither
-#: good nor bad, so it wears no color rather than a hedged one.
 _OUTCOME_STYLES: dict[Outcome, str] = {
     "improved": f"bold {VERDICT_STYLES['improved']}",
     "regressed": f"bold {VERDICT_STYLES['regressed']}",
     "no-signal": "bold",
 }
+"""How each outcome's word is painted.
 
-#: What each rerun answer reads as, and the style it is painted with. An absent
-#: answer wears the color the table paints an unstable metric with, because it
-#: is the same kind of news: a reading nobody could take.
+It is emboldened whatever it says, and colored only where there is a direction to report. A
+no-signal iteration is neither good nor bad, so it wears no color rather than a hedged one.
+"""
+
 _RERUN_PHRASES: dict[RerunAnswer, tuple[str, str]] = {
     "confirmed": ("regression confirmed on rerun", VERDICT_STYLES["regressed"]),
     "disagreed": ("regression not confirmed on rerun", VERDICT_STYLES["within-noise"]),
     "absent": ("not measured on rerun", VERDICT_STYLES["unstable"]),
 }
+"""What each rerun answer reads as, and the style it is painted with.
+
+An absent answer wears the color the table paints an unstable metric with, because it is the same
+kind of news: a reading nobody could take.
+"""
 
 
 def _format_primary_delta(delta_pct: float | None) -> str:
@@ -312,15 +318,16 @@ class StatusSummary:
     stop: StopConfig | None = None
 
 
-#: The glyph each outcome wears, borrowed from the comparison table's vocabulary.
-#:
-#: A no-signal iteration takes the table's within-noise glyph: both say the same
-#: thing — the figure moved by nothing the run can stand behind.
 OUTCOME_GLYPHS: dict[Outcome, DisplayClass] = {
     "improved": "improved",
     "regressed": "regressed",
     "no-signal": "within-noise",
 }
+"""The glyph each outcome wears, borrowed from the comparison table's vocabulary.
+
+A no-signal iteration takes the table's within-noise glyph: both say the same
+thing — the figure moved by nothing the run can stand behind.
+"""
 
 
 def format_baseline_ref(baseline: BaselineRef) -> str:

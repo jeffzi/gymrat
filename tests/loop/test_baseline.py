@@ -25,10 +25,6 @@ if TYPE_CHECKING:
     from gymrat.progress_events import ProgressEvent
     from gymrat.sampling import RunOptions
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
 
 def _run_options() -> RunOptions:
     """Run options the baseline must hand on to the measurement engine unchanged."""
@@ -44,11 +40,6 @@ def _run_options() -> RunOptions:
         config_metrics={"decode/time": MetricEntry(direction="higher")},
         config_kinds={"memory": KindEntry(gating=False)},
     )
-
-
-# ---------------------------------------------------------------------------
-# measure_baseline returns result and record
-# ---------------------------------------------------------------------------
 
 
 def test_measure_baseline_when_target_label_differs_does_return_the_measurement_with_a_record_labeled_by_it(

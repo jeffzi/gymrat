@@ -41,6 +41,10 @@ import warnings
 from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# Tuning constants and clock hooks
+# ---------------------------------------------------------------------------
+
 TERMINATE_GRACE_S = 1.0
 """Seconds a tree gets to act on a stop request before the outermost gymrat run kills it.
 
@@ -118,6 +122,10 @@ Windows defines no ``SIGKILL``, and its teardown goes through the child's job
 rather than a signal, so the value bound there is never delivered — reading the
 attribute at all is what has to be avoided.
 """
+
+# ---------------------------------------------------------------------------
+# Windows job objects
+# ---------------------------------------------------------------------------
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -326,6 +334,11 @@ descendant the child left behind.
 """
 
 
+# ---------------------------------------------------------------------------
+# Public process-group lifecycle
+# ---------------------------------------------------------------------------
+
+
 def _warn(message: str) -> None:
     """Emit a :class:`RuntimeWarning` attributed to the caller of the helper that warns."""
     warnings.warn(message, RuntimeWarning, stacklevel=3)
@@ -443,6 +456,11 @@ def kill_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
     return _stop_group(pid, _KILL_SIGNAL, defer_refusal=defer_refusal, settle_s=KILL_SETTLE_S)
 
 
+# ---------------------------------------------------------------------------
+# Group exit waits
+# ---------------------------------------------------------------------------
+
+
 def wait_for_process_group_exit(leaders: Iterable[int], timeout_s: float) -> None:
     """Block until no member of any group led by ``leaders`` is running, or ``timeout_s`` elapses.
 
@@ -488,6 +506,11 @@ async def wait_for_process_group_exit_async(leader: int, timeout_s: float) -> No
         if monotonic() >= deadline:
             return
         await async_sleep(EXIT_POLL_S)
+
+
+# ---------------------------------------------------------------------------
+# Liveness probing
+# ---------------------------------------------------------------------------
 
 
 def _group_running(group_id: int) -> bool:
@@ -587,6 +610,11 @@ def _has_exited(pid: int) -> bool:
     except ProcessLookupError:
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# POSIX signaling and refusal handling
+# ---------------------------------------------------------------------------
 
 
 def _signal_group(pid: int, signal_number: int, *, defer_refusal: bool, settle_s: float) -> bool:
@@ -694,6 +722,11 @@ def _darwin_group_settled(group_id: int) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# macOS sysctl listing
+# ---------------------------------------------------------------------------
+
+
 @functools.cache
 def c_library() -> ctypes.CDLL:
     """Return this process's C library, with ``sysctl`` typed, for the macOS member listing.
@@ -764,6 +797,11 @@ def _darwin_group_members(group_id: int) -> list[tuple[int, int]]:
         _DARWIN_FLAG_AND_STATE.unpack_from(buffer, offset + _DARWIN_FLAG_AND_STATE_OFFSET)
         for offset in range(0, whole_records_length, _DARWIN_KINFO_PROC_SIZE)
     ]
+
+
+# ---------------------------------------------------------------------------
+# Windows fallback
+# ---------------------------------------------------------------------------
 
 
 def _taskkill(pid: int) -> None:

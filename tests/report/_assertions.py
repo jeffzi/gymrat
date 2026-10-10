@@ -11,7 +11,6 @@ from tests._ansi import (
     strip_ansi,
 )
 
-# The column separator every rendered table row is split on.
 _SEPARATOR = "│"
 # A table rule: dashes meeting the first column separator at a crossing junction.
 _RULE = re.compile(r"^─+┼")

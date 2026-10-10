@@ -18,6 +18,10 @@ if TYPE_CHECKING:
     from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool
 
 type ToolsFactory = Callable[[asyncio.Event, Mapping[str, str]], McpSdkServerConfig]
+"""Builds the SDK server config from the abort event and the extra child environment.
+
+See :func:`gymrat_tools_factory`.
+"""
 
 _ExecFn = Callable[[Sequence[str], ExecOptions], Awaitable[ExecResult | ExecTimeoutError]]
 

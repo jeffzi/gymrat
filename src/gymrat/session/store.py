@@ -171,9 +171,9 @@ class RequiredSession:
 def last_kept_position(state: SessionState, baseline_sha: str) -> str:
     """The commit the experiment worktree should stand at after the last keep.
 
-    Both ``discard_session`` and ``finalize_session`` need this position:
-    discard resets the worktree to it, and finalize refuses when the worktree
-    has drifted past it.
+    This is the one definition of where the experiment worktree stands after
+    the last keep. Every command that resets, compares, or recreates the
+    worktree reads it here, so changing the fallback moves them all together.
 
     Args:
         state: The folded session state to inspect for a kept commit.
@@ -648,9 +648,11 @@ def _fold_iteration(
     target_reached[record.seq] = record.target_reached
 
 
-#: Reasons a blocked keep leaves the iteration unsettled: the agent can fix the
-#: failing checks, or pass ``--allow-unimproved``, and keep the same edit.
 _RETRYABLE_KEEP_REASONS: frozenset[KeepReason] = frozenset({"checks-failed", "not-improved"})
+"""Reasons a blocked keep leaves the iteration unsettled.
+
+The agent can fix the failing checks, or pass ``--allow-unimproved``, and keep the same edit.
+"""
 
 
 def _fold_keep(acc: _FoldState, target_reached: dict[int, bool], record: KeepRecord) -> None:

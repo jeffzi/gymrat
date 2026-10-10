@@ -360,7 +360,6 @@ _EFFORT_LEVELS = "'low', 'medium', 'high', 'xhigh' or 'max'"
         _wrong_type({"samples": 0}, "samples", "a number at or above 1", "0"),
         _wrong_type({"timeout_seconds": -1}, "timeout_seconds", "a number at or above 1", "-1"),
         _wrong_type({"timeout_seconds": True}, "timeout_seconds", "an integer", "true"),
-        # unstable_noise_pct
         _wrong_type({"unstable_noise_pct": "loud"}, "unstable_noise_pct", "a number", '"loud"'),
         *(
             _wrong_type({"unstable_noise_pct": value}, "unstable_noise_pct", "a number", got)
@@ -372,7 +371,6 @@ _EFFORT_LEVELS = "'low', 'medium', 'high', 'xhigh' or 'max'"
         _wrong_type(
             {"unstable_noise_pct": 0.25}, "unstable_noise_pct", "a number at or above 0.5", "0.25"
         ),
-        # metric direction
         *(
             _wrong_type(
                 {"metrics": {"latency": {"direction": value}}},
@@ -395,14 +393,12 @@ _EFFORT_LEVELS = "'low', 'medium', 'high', 'xhigh' or 'max'"
             f"a number at or below {MAX_SAFE_INTEGER}",
             str(MAX_SAFE_INTEGER + 1),
         ),
-        # stop fields
         _wrong_type({"stop": {"target_value": "fast"}}, "stop.target_value", "a number", '"fast"'),
         _wrong_type({"stop": {"target_value": math.nan}}, "stop.target_value", "a number", "NaN"),
         _wrong_type(
             {"stop": {"max_iterations": 0}}, "stop.max_iterations", "a number at or above 1", "0"
         ),
         _wrong_type({"stop": {"max_iterations": 1.5}}, "stop.max_iterations", "an integer", "1.5"),
-        # supervise effort
         *(
             _wrong_type(
                 {"supervise": {"effort": effort}}, "supervise.effort", _EFFORT_LEVELS, f'"{effort}"'

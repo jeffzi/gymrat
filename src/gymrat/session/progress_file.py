@@ -17,9 +17,11 @@ from gymrat.session.paths import progress_path
 from gymrat.session.sidecar import read_sidecar
 from gymrat.utils import MS_PER_SECOND, WarnSink, warn_to_stderr, write_text_atomic
 
-#: A reader discards files whose mtime is older than this many seconds.
-#: 600 s (10 min) is well above the longest single benchmark pass.
 STALENESS_BOUND_SECONDS: int = 600
+"""A reader discards files whose mtime is older than this many seconds.
+
+600 s (10 min) is well above the longest single benchmark pass.
+"""
 
 
 class ProgressSnapshot(BaseModel):

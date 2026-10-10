@@ -176,8 +176,8 @@ def env_positive_int_result(env_var: str, maximum: int) -> EnvResult[int]:
 # Config types
 # ---------------------------------------------------------------------------
 
-#: The effort dial the CLI and config file both accept for a supervised session.
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
+"""The effort dial the CLI and config file both accept for a supervised session."""
 
 # Unknown keys must fail validation so the pipeline reports an "Unknown config key"
 # problem; every nested dataclass sets this, not only ``ConfigFile``.
@@ -394,17 +394,15 @@ class ResolvedConfig(BenchlessConfig):
     bench: str
 
 
-#: The config file basename the CLI writes, loads, and probes for.
 CONFIG_FILENAME = "gymrat.toml"
+"""The config file basename the CLI writes, loads, and probes for."""
 
-#: The primary that aggregates every gating metric rather than naming one.
 GEOMEAN_PRIMARY = "geomean"
+"""The primary that aggregates every gating metric rather than naming one."""
 
-#: The token a ``filter`` command must carry, where the loop substitutes benchmark names.
 FILTER_PLACEHOLDER = "{names}"
+"""The token a ``filter`` command must carry, where the loop substitutes benchmark names."""
 
-#: Built-in fallbacks for the fields no flag, env var, or config file sets: the
-#: configuration a command settles on when nothing else names one.
 CONFIG_DEFAULTS = BenchlessConfig(
     adapter="metric-lines",
     samples=10,
@@ -412,6 +410,10 @@ CONFIG_DEFAULTS = BenchlessConfig(
     unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
     primary=GEOMEAN_PRIMARY,
 )
+"""Built-in fallbacks for the fields no flag, env var, or config file sets.
+
+They are the configuration a command settles on when nothing else names one.
+"""
 
 # ---------------------------------------------------------------------------
 # Schema validation

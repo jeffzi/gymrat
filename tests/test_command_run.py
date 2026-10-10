@@ -141,7 +141,7 @@ def _session_log_text(root: str) -> str | None:
 
 
 def _write_empty_session_log(root: str) -> None:
-    """Create ``root``'s session log as an empty file."""
+    """Create ``root``'s session log as an empty file, making its parent directory if absent."""
     jsonl_path = Path(session_jsonl_path(root))
     jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     jsonl_path.write_text("", encoding="utf-8")

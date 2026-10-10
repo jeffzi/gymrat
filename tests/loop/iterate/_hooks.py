@@ -20,6 +20,7 @@ from gymrat.loop.iterate.run import HookInvocation
 from gymrat.session.records import HookRecord
 from tests.loop.iterate._fixtures import iterate_session_header
 
+#: The output stream a hook script writes to.
 Channel = Literal["stdout", "stderr"]
 
 

@@ -75,7 +75,7 @@ class LiveRenderer(Protocol):
         ...
 
     def stop(self) -> None:
-        """Stop the renderer."""
+        """Stop the renderer; a no-op once a termination signal has erased its live display."""
         ...
 
 
@@ -189,8 +189,7 @@ def _summary_line(console: Console) -> str:
 def _run_two_passes(reporter: ProgressReporter, clock: Clock[float]) -> None:
     """Drive prepare plus two full 2-sample passes to completion.
 
-    The shared "measure done" setup behind the summary-line tests: prepare,
-    then rounds 1 and 2 of 2, each started and finished.
+    The shared "measure done" setup behind the summary-line tests.
     """
     reporter.report(PrepareStarted(label="bench", at_ms=0))
     clock.tick(1)

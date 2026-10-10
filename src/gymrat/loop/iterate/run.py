@@ -115,6 +115,11 @@ __all__ = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Options and results
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True, slots=True)
 class IterateOptions:
     """What a caller can hand an iteration beyond its configuration.
@@ -145,6 +150,11 @@ class IterateResult:
 
     record: IterationRecord
     report: str
+
+
+# ---------------------------------------------------------------------------
+# Outcome derivation
+# ---------------------------------------------------------------------------
 
 
 def _has_gating_regression(metrics: MetricComparisons) -> bool:
@@ -205,8 +215,12 @@ def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> Outcome:
     return "improved" if _primary_improved(metrics, primary) else "no-signal"
 
 
+# ---------------------------------------------------------------------------
+# Iteration entry and guards
+# ---------------------------------------------------------------------------
+
+
 def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
-    """Derive the outcome and bundle the judgment."""
     return IterationJudgment(
         outcome=derive_outcome(judged.result.metrics, judged.primary),
         primary=judged.primary,
@@ -250,7 +264,21 @@ def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
 def _guard_ready(
     config: ResolvedConfig, state: SessionState, root: str, records: Sequence[SessionLogRecord]
 ) -> None:
-    """Refuse another iteration when the session is not ready for one."""
+    """Refuse another iteration before anything is measured, checking in a fixed order.
+
+    Args:
+        config: The resolved run configuration, read for its stop conditions.
+        state: The folded session state.
+        root: Repository root whose budget and supervise lock are read.
+        records: Session log records the iteration's duration is estimated from.
+
+    Raises:
+        GymratError: First, when the last iteration is still unsettled; last,
+            when the supervise lock file cannot be opened.
+        LoopStopError: When a configured stop condition is already met.
+        BudgetExceededError: When the estimated iteration would outlast the
+            time left on the budget.
+    """
     require_settled(state, "measuring the next edit")
     stop = stop_condition(config, state)
     if stop is not None:
@@ -337,9 +365,16 @@ async def iterate_session(
     return IterateResult(record=record, report=report)
 
 
-#: How long a hook may run before it is killed. Long enough to build, short
-#: enough to notice.
+# ---------------------------------------------------------------------------
+# Hook execution
+# ---------------------------------------------------------------------------
+
+
 HOOK_TIMEOUT_MS = 30_000
+"""How long a hook may run before it is killed.
+
+Long enough to build, short enough to notice.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -522,8 +557,12 @@ async def _hook_stage(
     return run.report
 
 
+# ---------------------------------------------------------------------------
+# Measure and judge
+# ---------------------------------------------------------------------------
+
+
 async def _measure_and_judge(ctx: IterationContext) -> Judged:
-    """Bench the pair, confirm any gating regression, and assemble the comparison."""
     first = await bench_and_judge(ctx, ctx.config.bench, announce_judging=True)
 
     primary = resolve_primary(ctx.config.primary, first.verdicts, first.metric_meta)
@@ -545,6 +584,11 @@ async def _measure_and_judge(ctx: IterationContext) -> Judged:
         confirmation=confirmation,
         primary=primary,
     )
+
+
+# ---------------------------------------------------------------------------
+# Report rendering
+# ---------------------------------------------------------------------------
 
 
 _NEXT_STEPS: dict[Outcome, str] = {
