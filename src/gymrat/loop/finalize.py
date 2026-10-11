@@ -10,7 +10,6 @@ earned the squash stays readable.
 from dataclasses import dataclass
 from pathlib import Path
 
-from gymrat.clock import now_ns
 from gymrat.errors import GymratError
 from gymrat.git import run_git_step, try_git
 from gymrat.session.records import FinalizeRecord, KeepRecord, SessionLogRecord, SessionRecord
@@ -28,7 +27,7 @@ from gymrat.session.workspace import (
     remove_worktrees,
     worktree_head,
 )
-from gymrat.utils import SHORT_SHA_LENGTH, pluralize
+from gymrat.utils import SHORT_SHA_LENGTH, now_ns, pluralize
 
 _SETTLE_FIRST_HINT = settle_first_hint("closing the session")
 """The hint a refusal points at whenever the fix is to settle the last iteration."""

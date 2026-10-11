@@ -5,7 +5,7 @@ import pytest
 from pydantic import BaseModel, Field, Strict, TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
 
-from gymrat.pydantic_errors import NON_BLANK_PATTERN, phrase_for_error
+from gymrat.utils import NON_BLANK_PATTERN, phrase_for_error
 
 
 class _Point(BaseModel):

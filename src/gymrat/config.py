@@ -45,15 +45,17 @@ from pydantic_core import ErrorDetails
 
 from gymrat.errors import GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT, NOISE_FLOOR_PCT, Direction
-from gymrat.pydantic_errors import (
+from gymrat.session.paths import NotAGitRepositoryError, repo_root
+from gymrat.utils import (
+    LINE_TERMINATORS,
     NON_BLANK_PATTERN,
     VALUE_ERROR_PREFIX,
+    coerce_integer,
     describe_key,
     drop_prefix_errors,
+    expected_got,
     phrase_for_error,
 )
-from gymrat.session.paths import NotAGitRepositoryError, repo_root
-from gymrat.utils import LINE_TERMINATORS, coerce_integer, expected_got
 
 # ---------------------------------------------------------------------------
 # Environment variables

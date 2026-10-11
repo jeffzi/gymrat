@@ -86,7 +86,7 @@ if TYPE_CHECKING:
         MetricComparison,
         MetricComparisons,
     )
-    from gymrat.worktree_failure import WorktreeRemovalFailure
+    from gymrat.sampling import WorktreeRemovalFailure
 
 GATED_GEOMEAN_LABEL = "gated geomean"
 

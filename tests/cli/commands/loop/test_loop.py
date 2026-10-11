@@ -36,7 +36,6 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
-from gymrat.clock import now_ns
 from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import (
     CommandRecord,
@@ -45,7 +44,7 @@ from gymrat.session.records import (
     SessionLogRecord,
     StopRecord,
 )
-from gymrat.utils import SHORT_SHA_LENGTH, is_tty
+from gymrat.utils import SHORT_SHA_LENGTH, is_tty, now_ns
 from tests._ansi import SGR_RE, strip_ansi
 from tests._cli import no_color_env
 from tests._git import head_of, status_of

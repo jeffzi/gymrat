@@ -24,9 +24,8 @@ from dataclasses import dataclass
 from math import ceil, isfinite
 from typing import TYPE_CHECKING, Literal, Protocol
 
-from gymrat import clock
+from gymrat import utils
 from gymrat.agent_env import TRACEPARENT_ENV
-from gymrat.clock import now_ns
 from gymrat.supervisor.driver import (
     Driver,
     DriverSession,
@@ -50,6 +49,7 @@ from gymrat.supervisor.events import (
 from gymrat.supervisor.hooks import HooksFactory
 from gymrat.supervisor.tool_names import MCP_SERVER
 from gymrat.supervisor.tools import ToolsFactory
+from gymrat.utils import now_ns
 
 if TYPE_CHECKING:
     from claude_agent_sdk import ContentBlock, ResultMessage
@@ -271,7 +271,7 @@ class MessageMapper:
     def _start_tool(
         self, tool_use_id: str, name: str, tool_input: dict[str, object], parent: str | None
     ) -> None:
-        self._tool_starts[tool_use_id] = clock.monotonic_ms()
+        self._tool_starts[tool_use_id] = utils.monotonic_ms()
         self._tool_names[tool_use_id] = name
         self._observer(
             ToolStartEvent(
@@ -290,7 +290,7 @@ class MessageMapper:
 
     def _end_tool(self, tool_use_id: str, content: object, parent: str | None) -> None:
         start = self._tool_starts.get(tool_use_id)
-        duration_ms = int(clock.monotonic_ms() - start) if start is not None else 0
+        duration_ms = int(utils.monotonic_ms() - start) if start is not None else 0
         result = _stringify_result(content)
         self._observer(
             ToolEndEvent(

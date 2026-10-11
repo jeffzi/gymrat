@@ -27,7 +27,6 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.clock import monotonic_ms, now_ns
 from gymrat.session.paths import lockfile_path, session_jsonl_path
 from gymrat.session.records import (
     CommandRecord,
@@ -39,7 +38,7 @@ from gymrat.supervisor.exit_sequence import (
     ExitReport,
     ExitStep,
 )
-from gymrat.utils import SHORT_SHA_LENGTH
+from gymrat.utils import SHORT_SHA_LENGTH, monotonic_ms, now_ns
 from tests._git import run_git
 from tests._imports import loaded_under, modules_imported_by
 from tests._lock import hold_lock, os_lock_file

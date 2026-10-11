@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.clock import now_ns
 from gymrat.supervisor.events import (
     CapEvent,
     CompactionEvent,
@@ -33,6 +32,7 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 from gymrat.supervisor.turns import CONSECUTIVE_DISCARD_LIMIT
+from gymrat.utils import now_ns
 from tests._lock import hold_lock
 from tests.session.records._fixtures import (
     append_records,

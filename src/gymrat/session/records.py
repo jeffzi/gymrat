@@ -49,12 +49,6 @@ from pydantic.json_schema import SkipJsonSchema, WithJsonSchema
 from pydantic_core import ErrorDetails
 
 from gymrat.errors import GymratError
-from gymrat.pydantic_errors import (
-    VALUE_ERROR_PREFIX,
-    describe_key,
-    drop_prefix_errors,
-    phrase_for_error,
-)
 from gymrat.session.schema import (
     CommandOrigin,
     CommandReason,
@@ -68,7 +62,14 @@ from gymrat.session.schema import (
     SchemaVersion,
 )
 from gymrat.session.workspace import BaselineRef, Worktrees
-from gymrat.utils import coerce_integer, expected_got
+from gymrat.utils import (
+    VALUE_ERROR_PREFIX,
+    coerce_integer,
+    describe_key,
+    drop_prefix_errors,
+    expected_got,
+    phrase_for_error,
+)
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span

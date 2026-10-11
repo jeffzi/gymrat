@@ -24,7 +24,6 @@ from claude_agent_sdk import (
     ResultMessage,
 )
 
-from gymrat.clock import now_ms, now_ns
 from gymrat.config import BenchlessConfig, Effort
 from gymrat.session.budget import Budget
 from gymrat.session.paths import lockfile_path
@@ -46,7 +45,7 @@ from gymrat.supervisor.events import (
 from gymrat.supervisor.hooks import HooksFactory
 from gymrat.supervisor.supervise import SupervisedSession, SupervisionResult, supervise
 from gymrat.supervisor.tools import ToolsFactory
-from gymrat.utils import NS_PER_MS, WarnSink, warn_to_stderr
+from gymrat.utils import NS_PER_MS, WarnSink, now_ms, now_ns, warn_to_stderr
 from tests._config import benchless_config
 from tests.session.records._fixtures import (
     SUPERVISED_SESSION_ID,

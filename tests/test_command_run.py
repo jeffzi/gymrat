@@ -303,8 +303,8 @@ async def test_with_repo_lock_when_body_succeeds_does_append_its_command_record(
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr("gymrat.clock.now_ns", lambda: frozen_ns)
-    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(monotonic_readings))
+    monkeypatch.setattr("gymrat.utils.now_ns", lambda: frozen_ns)
+    monkeypatch.setattr("gymrat.utils.monotonic_ms", lambda: next(monotonic_readings))
 
     await with_repo_lock("measure", _ok_body, args=args)
 

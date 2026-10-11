@@ -23,7 +23,6 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from gymrat.adapters import get_adapter
-from gymrat.clock import monotonic_ms
 from gymrat.config import FILTER_PLACEHOLDER, GEOMEAN_PRIMARY, ResolvedConfig
 from gymrat.loop.gating import is_gating_regression
 from gymrat.progress_events import (
@@ -51,7 +50,7 @@ from gymrat.sampling import (
 )
 from gymrat.session.records import PairedSamples, SessionRecord
 from gymrat.targets import InPlaceTarget
-from gymrat.utils import finite_or_none
+from gymrat.utils import finite_or_none, monotonic_ms
 from gymrat.verdict import compute_geomean, compute_verdicts
 
 if TYPE_CHECKING:

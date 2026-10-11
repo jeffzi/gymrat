@@ -19,7 +19,7 @@ import typer
 from rich.prompt import Confirm
 from rich.text import Text
 
-from gymrat import clock as _clock
+from gymrat import utils as _utils
 from gymrat.cli.budget_report import budget_snapshot, wants_json, write_budget_report
 from gymrat.cli.console import (
     apply_command_flags,
@@ -135,7 +135,7 @@ async def _iterate_body(
         metric_count,
         resolved.primary,
         verbose=verbose,
-        clock=lambda: _clock.monotonic_ms() / MS_PER_SECOND,
+        clock=lambda: _utils.monotonic_ms() / MS_PER_SECOND,
         checks_cmd=resolved.checks,
         has_before_hook=resolved.hooks is not None and resolved.hooks.before is not None,
         has_after_hook=resolved.hooks is not None and resolved.hooks.after is not None,

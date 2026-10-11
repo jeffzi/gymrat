@@ -44,7 +44,6 @@ from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.cli.supervise.preflight import PreflightFlags, doctor_gate, run_preflight
 from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.cli.supervise.summary import build_summary
-from gymrat.clock import now_ms, now_ns
 from gymrat.config import (
     GEOMEAN_PRIMARY,
     MAX_TIMEOUT_SECONDS,
@@ -93,6 +92,8 @@ from gymrat.utils import (
     SECONDS_PER_MINUTE,
     abbreviate_home,
     minutes_to_ms,
+    now_ms,
+    now_ns,
     write_and_flush,
 )
 

@@ -6,7 +6,7 @@ drive the loop through its tools, so a command whose origin is not ``tool`` is
 refused with a hint pointing at the matching tool.
 """
 
-from gymrat import clock
+from gymrat import utils
 from gymrat.command_run import command_origin
 from gymrat.errors import GymratError
 from gymrat.session.budget import read_budget
@@ -30,7 +30,7 @@ def is_supervised_run_live(root: str) -> bool:
         GymratError: When the supervise lock file cannot be opened, so whether
             a supervised run holds it is unknown.
     """
-    return read_budget(root, now_ms=clock.now_ms()) is not None
+    return read_budget(root, now_ms=utils.now_ms()) is not None
 
 
 def guard_supervised_origin(root: str, command: str) -> None:
