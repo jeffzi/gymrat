@@ -4,7 +4,7 @@ The suite pins the guarantee that keeps color rendering honest no matter where
 gymrat's output lands: every color surface (the report on stdout, the doctor
 report on stdout, the progress reporter on stderr, and the error text on stderr)
 routes through the one shared precedence rule, whose full ladder is pinned in
-``tests/test_utils.py``.
+``tests/utils/test_utils.py``.
 
 The real-terminal, redirect, and bench-environment cases run out of process in
 ``tests/hardening/test_rendering_end_to_end.py``; these cases exercise the

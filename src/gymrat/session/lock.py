@@ -34,8 +34,7 @@ from filelock import FileLock, Timeout
 from pydantic import BaseModel, ConfigDict
 
 from gymrat.errors import GymratError
-from gymrat.session.sidecar import read_sidecar
-from gymrat.utils import warn_to_stderr
+from gymrat.utils import read_sidecar, warn_to_stderr
 
 __all__ = [
     "LockContentionError",

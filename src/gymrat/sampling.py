@@ -33,7 +33,6 @@ from pathlib import Path
 from typing import Final, Literal, Self
 
 from gymrat.adapters import Adapter
-from gymrat.clock import monotonic_ms
 from gymrat.config import KindEntry, MetricEntry, ResolvedConfig
 from gymrat.errors import CommandError, GymratError
 from gymrat.exec import (
@@ -57,8 +56,14 @@ from gymrat.report.text.render import format_cleanup_failures
 from gymrat.signals import install_termination_cleanup, write_on_exit
 from gymrat.stats import compute_half_range
 from gymrat.targets import RefTarget, Target
-from gymrat.utils import MS_PER_SECOND, WarnSink, fraction_of_median, stderr_text_of, warn_to_stderr
-from gymrat.worktree_failure import WorktreeRemovalFailure
+from gymrat.utils import (
+    MS_PER_SECOND,
+    WarnSink,
+    fraction_of_median,
+    monotonic_ms,
+    stderr_text_of,
+    warn_to_stderr,
+)
 
 DEFAULT_METRIC_KIND: Final[str] = "other"
 """The kind a metric falls under when its adapter reports none."""
@@ -66,6 +71,19 @@ DEFAULT_METRIC_KIND: Final[str] = "other"
 # ---------------------------------------------------------------------------
 # sampling types
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeRemovalFailure:
+    """A worktree cleanup could not remove, with the reason git gave.
+
+    Attributes:
+        dir: The worktree directory that could not be removed.
+        error: The reason git reported for the failed removal.
+    """
+
+    dir: str
+    error: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +149,7 @@ class SamplingOptions:
         on_progress: Invoked with each progress event, or ``None`` for silence.
         warn: Where an adapter sends complaints about output it could not read.
         clock: A source of monotonic millisecond timestamps for event stamping.
-            Defaults to :func:`~gymrat.clock.monotonic_ms`.
+            Defaults to :func:`~gymrat.utils.monotonic_ms`.
     """
 
     bench: str

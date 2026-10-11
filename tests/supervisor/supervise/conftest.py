@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.clock import now_ms
+from gymrat.utils import now_ms
 from tests.session.records._fixtures import append_records, session_record
 from tests.supervisor._fixtures import SupervisorClock
 

@@ -11,11 +11,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from gymrat import clock as _clock
+from gymrat import utils as _utils
 from gymrat.progress_events import PassFinished, PassStarted, ProgressEvent
 from gymrat.session.paths import progress_path
-from gymrat.session.sidecar import read_sidecar
-from gymrat.utils import MS_PER_SECOND, WarnSink, warn_to_stderr, write_text_atomic
+from gymrat.utils import MS_PER_SECOND, WarnSink, read_sidecar, warn_to_stderr, write_text_atomic
 
 STALENESS_BOUND_SECONDS: int = 600
 """A reader discards files whose mtime is older than this many seconds.
@@ -77,7 +76,7 @@ def read_progress(root: str) -> ProgressSnapshot | None:
     except OSError:
         return None
 
-    age_ms = _clock.now_ms() - stat.st_mtime * MS_PER_SECOND
+    age_ms = _utils.now_ms() - stat.st_mtime * MS_PER_SECOND
     if age_ms > STALENESS_BOUND_SECONDS * MS_PER_SECOND:
         return None
 

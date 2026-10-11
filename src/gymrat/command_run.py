@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 import typer
 
-from gymrat import clock as _clock
+from gymrat import utils as _utils
 from gymrat.agent_env import COMMAND_ORIGIN_ENV, TOOL_ORIGIN, TRACEPARENT_ENV
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.stop_condition import LoopStopError
@@ -155,7 +155,7 @@ async def with_repo_lock[T](
         Exception: Whatever ``body`` raises, propagated unchanged.
     """
     trace = CommandTrace()
-    start = _clock.monotonic_ms()
+    start = _utils.monotonic_ms()
 
     if root is None:
         try:
@@ -164,7 +164,7 @@ async def with_repo_lock[T](
             return await body(trace)
 
     jsonl = session_jsonl_path(root)
-    start_ns = _clock.now_ns()
+    start_ns = _utils.now_ns()
     pre_body_session_id, pre_body_lines = _pre_body_log(root, jsonl)
 
     release = acquire_lock(lockfile_path(root), command)
@@ -177,7 +177,7 @@ async def with_repo_lock[T](
         caught = exc
         raise
     finally:
-        elapsed_ms = int(_clock.monotonic_ms() - start)
+        elapsed_ms = int(_utils.monotonic_ms() - start)
         exit_code, reason = _resolve_exit(trace, caught)
         try:
             appended = _try_append_command_record(
@@ -244,7 +244,7 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
             return None
         record = CommandRecord(
             type="command",
-            at=_clock.now_ns(),
+            at=_utils.now_ns(),
             name=command,
             args=args,
             exit_code=exit_code,

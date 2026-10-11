@@ -1,7 +1,8 @@
-"""Generic helpers that depend on the standard library alone.
+"""Generic helpers that depend on nothing else in the project.
 
 Nothing here imports a project module or names a project type: each helper
-would make sense pasted unchanged into an unrelated repository.
+would make sense pasted unchanged into an unrelated repository that has the
+same dependencies.
 """
 
 import contextlib
@@ -15,10 +16,14 @@ import secrets
 import stat
 import statistics
 import sys
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, NamedTuple, Protocol, Self
+
+from pydantic import BaseModel, ValidationError
+from pydantic_core import ErrorDetails
 
 SECONDS_PER_MINUTE = 60
 """Seconds in one minute.
@@ -712,3 +717,164 @@ def format_clock(ms: float) -> str:
     if hours == 0:
         return f"{minutes:02d}:{seconds:02d}"
     return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+
+def now_ns() -> int:
+    """Nanoseconds since the epoch, the unit every log record and event stamps with."""
+    return time.time_ns()
+
+
+def now_ms() -> int:
+    """Milliseconds since the epoch, for budgets, deadlines, and log-file names."""
+    return int(time.time() * MS_PER_SECOND)
+
+
+def monotonic_ms() -> float:
+    """Milliseconds from an arbitrary, ever-increasing reference point.
+
+    Unaffected by system clock adjustments (NTP corrections, DST shifts), so
+    bracketing a measurement's start and end with this instead of
+    :func:`now_ms` cannot yield a skewed or negative duration.
+
+    Returns:
+        Milliseconds as a float, comparable only with other
+        :func:`monotonic_ms` readings.
+    """
+    return time.perf_counter() * MS_PER_SECOND
+
+
+def read_sidecar[Model: BaseModel](path: Path, model: type[Model]) -> Model | None:
+    """Read and validate one JSON sidecar file.
+
+    A sidecar is advisory state another process may be rewriting or may have
+    left behind, so a file that cannot be used reads as no file at all.
+
+    Args:
+        path: The sidecar file to read.
+        model: The pydantic model the file's JSON must validate against.
+
+    Returns:
+        The validated model, or ``None`` when the file is missing, unreadable,
+        not UTF-8, or does not validate.
+    """
+    try:
+        return model.model_validate_json(path.read_text(encoding="utf-8"))
+    except (ValidationError, OSError, UnicodeDecodeError):
+        return None
+
+
+# Rendering pydantic ``ErrorDetails`` as worded problems: a dotted location, a list
+# pruned of parent errors whose only fault is a failing child, and the expected-shape
+# phrase an error's ``type`` and ``ctx`` imply.
+
+NON_BLANK_PATTERN = r"\S"
+"""String ``pattern`` constraint that rejects a whitespace-only value."""
+
+VALUE_ERROR_PREFIX = "Value error, "
+"""Prefix pydantic prepends to a model validator's ``ValueError`` message."""
+
+_TYPE_PHRASES: dict[str, str] = {
+    "int_type": "an integer",
+    "float_type": "a number",
+    "finite_number": "a number",
+    "string_type": "a string",
+    "bool_type": "a boolean",
+    "dict_type": "an object",
+    "dataclass_type": "an object",
+    "model_type": "an object",
+    "list_type": "an array",
+    "tuple_type": "an array",
+}
+
+# Templates filled from the error ``ctx``, which carries the constraint's own value.
+_CONSTRAINT_PHRASES: dict[str, str] = {
+    "greater_than_equal": "a number at or above {ge}",
+    "less_than_equal": "a number at or below {le}",
+    "literal_error": "{expected}",
+}
+
+
+def _rejects_blank(error_type: str, ctx: dict[str, object]) -> bool:
+    if error_type == "string_too_short":
+        return ctx.get("min_length") == 1
+    return error_type == "string_pattern_mismatch" and ctx.get("pattern") == NON_BLANK_PATTERN
+
+
+def _needs_quoting(part: str) -> bool:
+    """Whether a location part would not read back as itself unquoted.
+
+    An empty part would vanish into a bare dot; a part carrying a dot, a quote,
+    or whitespace would read as a deeper path (or a truncated one) than the
+    writer actually named.
+
+    Args:
+        part: One segment of an error location.
+
+    Returns:
+        Whether the part needs quoting to survive a round-trip.
+    """
+    return part == "" or any(char in '."' or char.isspace() for char in part)
+
+
+def describe_key(loc: tuple[str | int, ...]) -> str:
+    """Join an error location into a dotted key path.
+
+    Parts that would be misread bare are quoted with :func:`json.dumps`, which
+    also escapes the quotes, backslashes, and line terminators a part may carry
+    so the rendered path stays on one line.
+
+    Args:
+        loc: The error location parts to join; a list index is written as its
+            digits.
+
+    Returns:
+        The dot-joined key path.
+    """
+    parts = (str(part) for part in loc)
+    return ".".join(json.dumps(part) if _needs_quoting(part) else part for part in parts)
+
+
+def drop_prefix_errors(errors: list[ErrorDetails]) -> list[ErrorDetails]:
+    """Drop any error whose location is a strict prefix of another's.
+
+    When a parent and its child both fail, only the more specific child error is
+    worth reporting; the parent prefix is redundant noise.
+
+    Args:
+        errors: The pydantic error details to filter.
+
+    Returns:
+        The errors with prefix-only entries removed.
+    """
+    locs = [error["loc"] for error in errors]
+    return [
+        error
+        for error in errors
+        if not any(
+            len(candidate) > len(error["loc"]) and candidate[: len(error["loc"])] == error["loc"]
+            for candidate in locs
+        )
+    ]
+
+
+def phrase_for_error(error: ErrorDetails) -> str:
+    """Describe the value shape a pydantic error says was expected.
+
+    The phrase is derived from the error ``type`` and its ``ctx`` constraint
+    values alone, so every field sharing a constraint shares its wording.
+
+    Args:
+        error: The pydantic error detail to describe.
+
+    Returns:
+        The phrase that completes ``expected ...``, such as ``"an integer"`` or
+        ``"a number at or above 1"``, or ``"a valid value"`` when the error
+        type implies no shape (``missing``, or any type not mapped here).
+    """
+    error_type = error["type"]
+    ctx = error.get("ctx", {})
+    if _rejects_blank(error_type, ctx):
+        return "a non-empty string"
+    if error_type in _CONSTRAINT_PHRASES:
+        return _CONSTRAINT_PHRASES[error_type].format_map(ctx)
+    return _TYPE_PHRASES.get(error_type, "a valid value")

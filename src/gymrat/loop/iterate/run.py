@@ -37,8 +37,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from gymrat import clock as _clock
-from gymrat.clock import monotonic_ms, now_ns
+from gymrat import utils as _utils
 
 # Bound at module scope under the builtin's name so a test can substitute the
 # subprocess boundary via ``monkeypatch.setattr`` on this module.
@@ -51,6 +50,7 @@ from gymrat.exec import (
 )
 from gymrat.loop.iterate.judge import (
     EXPERIMENT_INDEX,
+    Confirmation,
     IterationContext,
     Judged,
     apply_confirmation,
@@ -63,9 +63,14 @@ from gymrat.loop.iterate.judge import (
     resolve_primary,
     target_reached,
 )
-from gymrat.loop.iterate.record import IterationJudgment, build_iteration_record
 from gymrat.loop.stop_condition import BudgetExceededError, stop_condition
-from gymrat.model import is_improvement
+from gymrat.model import (
+    ExactVerdict,
+    MetricVerdict,
+    PermutationVerdict,
+    ResolvedMetricMeta,
+    is_improvement,
+)
 from gymrat.progress_events import (
     HookFinished,
     HookStarted,
@@ -76,6 +81,7 @@ from gymrat.progress_events import (
 from gymrat.report.loop import (
     GeomeanPrimary,
     LoopPrimary,
+    MetricPrimary,
     RerunConfirmation,
     format_loop_header,
     format_verdict_block,
@@ -85,14 +91,28 @@ from gymrat.report.text.render import render_report
 from gymrat.report.types import ComparisonResult, ReportOptions, candidate_at
 from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
-from gymrat.session.records import HookRecord, record_to_wire
+from gymrat.session.records import (
+    Confirm,
+    HookRecord,
+    IterationMetricVerdict,
+    IterationPrimary,
+    IterationRecord,
+    record_to_wire,
+)
 from gymrat.session.store import (
     SessionState,
     append_record,
     require_open_session,
     require_settled,
 )
-from gymrat.utils import format_duration, limit_output, warn_to_stderr
+from gymrat.utils import (
+    finite_or_none,
+    format_duration,
+    limit_output,
+    monotonic_ms,
+    now_ns,
+    warn_to_stderr,
+)
 
 if TYPE_CHECKING:
     import asyncio
@@ -101,7 +121,7 @@ if TYPE_CHECKING:
     from gymrat.config import ResolvedConfig
     from gymrat.progress_events import ProgressCallback
     from gymrat.report.types import MetricComparisons
-    from gymrat.session.records import IterationRecord, SessionLogRecord, SessionRecord
+    from gymrat.session.records import SessionLogRecord, SessionRecord
     from gymrat.session.schema import HookStage, Outcome
     from gymrat.utils import WarnSink
 
@@ -113,6 +133,116 @@ __all__ = [
     "iterate_session",
     "run_hook",
 ]
+
+
+# ---------------------------------------------------------------------------
+# The iteration record
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class IterationJudgment:
+    """The outcome, primary figure, and optional confirmation rerun to report.
+
+    Attributes:
+        outcome: The loop outcome derived from the comparison.
+        primary: The primary figure that drives the verdict display.
+        confirmation: What the confirmation rerun found, or ``None`` when no
+            rerun was needed.
+        reached_target: Whether the run met its declared target.
+    """
+
+    outcome: Outcome
+    primary: LoopPrimary
+    confirmation: Confirmation | None
+    reached_target: bool
+
+
+def recorded_verdicts(
+    verdicts: dict[str, MetricVerdict],
+    metric_meta: dict[str, ResolvedMetricMeta],
+    confirmation: Confirmation | None,
+) -> dict[str, IterationMetricVerdict]:
+    """The per-metric verdicts as the log keeps them, flattened out of the method shapes.
+
+    Args:
+        verdicts: The per-metric verdicts to flatten, by name.
+        metric_meta: The resolved metadata for each measured metric, by name.
+        confirmation: What the confirmation rerun found, or ``None`` when no
+            rerun was needed.
+
+    Returns:
+        The per-metric verdicts keyed by metric name, each carrying only the
+        fields the log serializes: ``p`` is omitted for non-permutation
+        verdicts, ``noise_pct`` for exact ones, so a record handed to a
+        caller matches the one read back off the log.
+    """
+    recorded: dict[str, IterationMetricVerdict] = {}
+    for name, verdict in verdicts.items():
+        recorded[name] = IterationMetricVerdict(
+            delta_pct=finite_or_none(verdict.delta),
+            verdict=verdict.verdict,
+            method=verdict.method,
+            gating=metric_meta[name].gating,
+            confirmed=name in confirmation.confirmed if confirmation is not None else False,
+            p=verdict.p if isinstance(verdict, PermutationVerdict) else None,
+            noise_pct=None if isinstance(verdict, ExactVerdict) else verdict.noise_pct,
+        )
+    return recorded
+
+
+def build_iteration_record(
+    judged: Judged,
+    seq: int,
+    judgment: IterationJudgment,
+    *,
+    duration_ms: int,
+    measured_tree: str | None,
+) -> IterationRecord:
+    """Assemble the session-log record for one measured iteration.
+
+    An empty ``absent`` tuple collapses to ``None`` so the log never
+    carries ``[]``.
+
+    Args:
+        judged: The bench run outputs and comparison result.
+        seq: The 1-based iteration sequence number.
+        judgment: The outcome, primary, and optional confirmation.
+        duration_ms: Wall-clock milliseconds the iteration took.
+        measured_tree: The experiment worktree fingerprint at measurement time,
+            or ``None`` when fingerprinting failed.
+
+    Returns:
+        The iteration record ready to append to the session log.
+    """
+    confirmation = judgment.confirmation
+    confirm: Confirm | None = None
+    if confirmation is not None:
+        absent = tuple(name for name in confirmation.filtered if name in confirmation.absent)
+        confirm = Confirm(
+            ran=True,
+            filtered=confirmation.filtered,
+            samples=confirmation.samples,
+            absent=absent or None,
+        )
+    primary = judgment.primary
+    return IterationRecord(
+        type="iteration",
+        seq=seq,
+        at=now_ns(),
+        samples=judged.run.samples,
+        metrics=recorded_verdicts(judged.run.verdicts, judged.run.metric_meta, confirmation),
+        primary=IterationPrimary(
+            kind=primary.kind,
+            delta_pct=primary.delta_pct,
+            name=primary.name if isinstance(primary, MetricPrimary) else None,
+        ),
+        outcome=judgment.outcome,
+        target_reached=judgment.reached_target,
+        confirm=confirm,
+        duration_ms=duration_ms,
+        measured_tree=measured_tree,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +372,7 @@ def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
         GymratError: When the supervise lock file cannot be opened, so whether
             the budget is live is unknown.
     """
-    current_ms = _clock.now_ms()
+    current_ms = _utils.now_ms()
     budget = _budget.read_budget(root, now_ms=current_ms)
     if budget is None:
         return
@@ -319,7 +449,7 @@ async def iterate_session(
     session, state, jsonl_path = required.session, required.state, required.jsonl_path
     _guard_ready(config, state, root, required.records)
 
-    start_ms = _clock.monotonic_ms()
+    start_ms = _utils.monotonic_ms()
     seq = state.last_seq + 1
     ctx = IterationContext(session=session, config=config, options=opts, jsonl_path=jsonl_path)
     before_report = await _hook_stage(
@@ -333,7 +463,7 @@ async def iterate_session(
     judged = await _measure_and_judge(ctx)
     judgment = _judge(config, judged)
 
-    duration_ms = int(_clock.monotonic_ms() - start_ms)
+    duration_ms = int(_utils.monotonic_ms() - start_ms)
     measured_tree = _workspace.worktree_fingerprint(Path(session.worktrees.experiment))
     if measured_tree is None:
         warn_to_stderr(
@@ -435,7 +565,7 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
     """
     payload = json.dumps(_build_payload(invocation))
 
-    started_at = _clock.monotonic_ms()
+    started_at = _utils.monotonic_ms()
     result = await exec(
         invocation.command,
         ExecOptions(
@@ -445,7 +575,7 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
             stdin=f"{payload}\n",
         ),
     )
-    duration_ms = _clock.monotonic_ms() - started_at
+    duration_ms = _utils.monotonic_ms() - started_at
 
     timed_out = isinstance(result, ExecTimeoutError)
     record = HookRecord(

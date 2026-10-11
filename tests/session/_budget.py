@@ -15,9 +15,9 @@ from unittest.mock import create_autospec
 import pytest
 from filelock import FileLock
 
-from gymrat.clock import now_ms
 from gymrat.session.budget import Budget, write_budget
 from gymrat.session.paths import supervise_lockfile_path
+from gymrat.utils import now_ms
 from tests._lock import hold_supervise_lock, os_lock_file
 
 #: A 30-minute budget whose deadline sits far in the future, so it never expires mid-test.
@@ -95,7 +95,7 @@ def install_budget(
         repo: The repository whose budget file is written and whose supervise lock is held.
         monkeypatch: The fixture that releases the lock at teardown and patches the clock.
         deadline_ms: The budget's deadline; far in the future by default.
-        frozen_now_ms: The wall-clock reading to freeze ``gymrat.clock.now_ms``
+        frozen_now_ms: The wall-clock reading to freeze ``gymrat.utils.now_ms``
             at; None leaves the clock real.
     """
     write_budget_file(repo, Budget(max_minutes=LIVE_BUDGET.max_minutes, deadline_ms=deadline_ms))
@@ -103,7 +103,7 @@ def install_budget(
         monkeypatch.setattr(_SUPERVISE_LOCK, "held", hold_supervise_lock(repo))
     if frozen_now_ms is not None:
         monkeypatch.setattr(
-            "gymrat.clock.now_ms", create_autospec(now_ms, return_value=frozen_now_ms)
+            "gymrat.utils.now_ms", create_autospec(now_ms, return_value=frozen_now_ms)
         )
 
 

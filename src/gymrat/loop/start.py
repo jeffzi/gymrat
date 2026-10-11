@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from gymrat import clock as _clock
+from gymrat import utils as _utils
 from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
 from gymrat.session.paths import archived_session_path, session_jsonl_path
@@ -140,7 +140,7 @@ def _create_session(root: str, jsonl_path: str, ref: str, config: ResolvedConfig
     """
     baseline = BaselineRef(ref=ref, sha=_resolve_baseline_sha(ref, root))
     # One clock read mints the id and stamps the header, so the two never disagree.
-    at = _clock.now_ns()
+    at = _utils.now_ns()
     session_id = _new_session_id(at)
     workspace = create_workspace(root, session_id, baseline)
 

@@ -26,7 +26,6 @@ from gymrat.cli import budget_report
 from gymrat.cli.console import apply_command_flags
 from gymrat.cli.options import OutputFormat
 from gymrat.cli.run_setup import SharedFlags
-from gymrat.clock import now_ms
 from gymrat.errors import GymratError
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.types import DEFAULT_REPORT_OPTIONS, ReportOptions
@@ -34,6 +33,7 @@ from gymrat.session.budget import Budget
 from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.session.records import IterationRecord
 from gymrat.session.store import read_session_records
+from gymrat.utils import now_ms
 from tests._lock import held_supervise_lock
 from tests.session._budget import LIVE_BUDGET, block_supervise_lock, write_budget_file
 from tests.session.records._fixtures import iteration_record, session_record, write_session_log
@@ -55,7 +55,7 @@ _TIMED_ITERATION = (iteration_record(duration_ms=ITERATE_MS),)
 @pytest.fixture
 def session_root(repo: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     """A repository under a live supervised run, with the clock frozen at 0."""
-    monkeypatch.setattr("gymrat.clock.now_ms", create_autospec(now_ms, return_value=0))
+    monkeypatch.setattr("gymrat.utils.now_ms", create_autospec(now_ms, return_value=0))
     with held_supervise_lock(repo):
         yield repo
 

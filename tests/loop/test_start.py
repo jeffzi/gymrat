@@ -194,7 +194,7 @@ def test_start_session_when_new_does_mint_the_session_id_from_the_instant_the_he
     instant_ns = 1_709_618_828_900_000_000
     day_ns = 86_400_000_000_000
     reads = itertools.count(instant_ns, day_ns)
-    monkeypatch.setattr("gymrat.clock.now_ns", lambda: next(reads))
+    monkeypatch.setattr("gymrat.utils.now_ns", lambda: next(reads))
 
     start_session(repo, "main", CONFIG)
 

@@ -37,9 +37,8 @@ from gymrat.report.types import (
     CandidateMetric,
     ComparisonResult,
 )
-from gymrat.sampling import CleanupResult
+from gymrat.sampling import CleanupResult, WorktreeRemovalFailure
 from gymrat.session.records import KeepChecks
-from gymrat.worktree_failure import WorktreeRemovalFailure
 from tests.report._comparisons import (
     NWayCandidate,
     create_candidate,

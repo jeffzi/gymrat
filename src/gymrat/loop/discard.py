@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from gymrat.clock import now_ns
 from gymrat.errors import GymratError
 from gymrat.git import try_git
 from gymrat.session.records import DiscardRecord, SessionRecord
@@ -42,7 +41,7 @@ from gymrat.session.workspace import (
     revert_workspace,
     worktree_head,
 )
-from gymrat.utils import SHORT_SHA_LENGTH, pluralize, warn_to_stderr
+from gymrat.utils import SHORT_SHA_LENGTH, now_ns, pluralize, warn_to_stderr
 
 
 @dataclass(frozen=True, slots=True)

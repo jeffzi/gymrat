@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 import pytest
 
-from gymrat.clock import monotonic_ms, now_ms, now_ns
+from gymrat.utils import monotonic_ms, now_ms, now_ns
 
 
 @pytest.mark.parametrize(

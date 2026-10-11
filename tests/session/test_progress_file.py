@@ -14,7 +14,6 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.clock import now_ms
 from gymrat.progress_events import (
     HookStarted,
     PassFinished,
@@ -30,6 +29,7 @@ from gymrat.session.progress_file import (
     read_progress,
     write_progress,
 )
+from gymrat.utils import now_ms
 from tests._mode_bits import needs_mode_bits
 from tests.session._progress_file import fail_unlink_of
 
@@ -129,7 +129,7 @@ def test_read_progress_when_clock_advances_does_discard_only_past_the_bound(
     write_progress(root, snapshot)
     written_ms = _progress_file(root).stat().st_mtime * 1000
     monkeypatch.setattr(
-        "gymrat.clock.now_ms",
+        "gymrat.utils.now_ms",
         create_autospec(now_ms, return_value=written_ms + age_seconds * 1000),
     )
 

@@ -35,7 +35,6 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
-from gymrat.clock import monotonic_ms, now_ns
 from gymrat.command_run import with_repo_lock
 from gymrat.config import CliFlags, config_trace_args
 from gymrat.errors import GymratError
@@ -53,7 +52,7 @@ from gymrat.session.records import (
 from gymrat.session.store import fold_session, read_session_records, unmeasured_edit_count
 from gymrat.session.workspace import worktree_fingerprint
 from gymrat.supervisor.events import CapType, FollowUpEvent
-from gymrat.utils import MS_PER_SECOND, SHORT_SHA_LENGTH, pluralize
+from gymrat.utils import MS_PER_SECOND, SHORT_SHA_LENGTH, monotonic_ms, now_ns, pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -18,8 +18,7 @@ from functools import partial
 from pathlib import Path
 from typing import Literal
 
-from gymrat import clock
-from gymrat.clock import now_ms, now_ns
+from gymrat import utils
 from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
 from gymrat.loop.stop_condition import stop_reason
@@ -54,7 +53,7 @@ from gymrat.supervisor.turns import (
     outcome_record_count,
     spend_cap_reached,
 )
-from gymrat.utils import MS_PER_SECOND, WarnSink, warn_to_stderr
+from gymrat.utils import MS_PER_SECOND, WarnSink, now_ms, now_ns, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Defaults and shared types
@@ -667,7 +666,7 @@ class _Supervision:
     async def run(self) -> SupervisionResult:
         self._combined(self._config.launch)
 
-        start_time = clock.monotonic_ms()
+        start_time = utils.monotonic_ms()
         self._session = self._config.driver.start(
             self._config.prompt,
             self._combined,
@@ -678,7 +677,7 @@ class _Supervision:
 
         try:
             outcome = await self._session.outcome
-            duration_ms = int(clock.monotonic_ms() - start_time)
+            duration_ms = int(utils.monotonic_ms() - start_time)
 
             if self._end_reason is not None and self._ended_by == "session":
                 outcome = SessionOutcome(

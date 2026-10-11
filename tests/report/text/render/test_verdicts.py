@@ -24,8 +24,7 @@ from gymrat.model import PERMUTATION_MIN_N, Exclusion
 from gymrat.report.style import format_hint
 from gymrat.report.text.render import footer_lines, render_report, select_highlights
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn, ReportOptions
-from gymrat.sampling import CleanupResult
-from gymrat.worktree_failure import WorktreeRemovalFailure
+from gymrat.sampling import CleanupResult, WorktreeRemovalFailure
 from tests._ansi import strip_ansi
 from tests.report._assertions import (
     cells_of,

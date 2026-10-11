@@ -18,8 +18,7 @@ from pydantic import BaseModel, ConfigDict
 from gymrat.session.lock import is_held
 from gymrat.session.paths import budget_path, supervise_lockfile_path
 from gymrat.session.records import BaselineRecord, IterationRecord, SessionLogRecord
-from gymrat.session.sidecar import read_sidecar
-from gymrat.utils import WarnSink, warn_to_stderr, write_text_atomic
+from gymrat.utils import WarnSink, read_sidecar, warn_to_stderr, write_text_atomic
 
 SIDES_PER_ITERATE = 2
 """An iterate cycle measures both baseline and experiment, so it costs roughly

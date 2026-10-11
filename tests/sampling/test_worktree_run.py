@@ -28,6 +28,7 @@ from gymrat.sampling import (
     CleanupResult,
     TargetSpec,
     WorktreeInfo,
+    WorktreeRemovalFailure,
     cleanup_worktrees,
     materialize_worktree,
     plan_worktree,
@@ -36,7 +37,6 @@ from gymrat.sampling import (
     to_context,
 )
 from gymrat.targets import InPlaceTarget, RefTarget
-from gymrat.worktree_failure import WorktreeRemovalFailure
 from tests._exec_fixtures import settle, shell_grandchild, wait_for_spawned
 from tests._git import (
     head_of,

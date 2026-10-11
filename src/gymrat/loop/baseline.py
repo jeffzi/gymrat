@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from gymrat import clock as _clock
-from gymrat.clock import now_ns
+from gymrat import utils as _utils
 from gymrat.session.records import BaselineRecord
+from gymrat.utils import now_ns
 
 if TYPE_CHECKING:
     from gymrat.report.types import MeasurementResult
@@ -51,9 +51,9 @@ async def measure_baseline(
 
     options = engine.MeasureOptions(run=run_options, target=target)
 
-    start = _clock.monotonic_ms()
+    start = _utils.monotonic_ms()
     result = await engine.measure(options)
-    duration_ms = int(_clock.monotonic_ms() - start)
+    duration_ms = int(_utils.monotonic_ms() - start)
 
     record = BaselineRecord(
         type="baseline",

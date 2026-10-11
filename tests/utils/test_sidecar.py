@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from gymrat.session.sidecar import read_sidecar
+from gymrat.utils import read_sidecar
 
 
 class _Sample(BaseModel):

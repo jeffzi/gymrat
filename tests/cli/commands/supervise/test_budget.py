@@ -12,13 +12,13 @@ from unittest.mock import create_autospec
 import pytest
 
 from gymrat.cli.supervise.preflight import PreflightFlags, run_preflight
-from gymrat.clock import now_ms
 from gymrat.errors import GymratError
 from gymrat.exec import kill_live_process_groups
 from gymrat.loop.start import StartResult
 from gymrat.session.budget import Budget, clear_budget, read_budget
 from gymrat.session.paths import budget_path
 from gymrat.supervisor.supervise import SupervisedSession
+from gymrat.utils import now_ms
 from tests._cli import err_text
 from tests._process_helpers import CleanupRegistry, track_cleanups
 from tests.cli.commands.supervise._seams import (

@@ -31,8 +31,7 @@ from gymrat.config import KindEntry
 from gymrat.model import Exclusion
 from gymrat.report.text.render import render_measure_report, render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
-from gymrat.sampling import CleanupResult
-from gymrat.worktree_failure import WorktreeRemovalFailure
+from gymrat.sampling import CleanupResult, WorktreeRemovalFailure
 from tests.report._assertions import (
     highlight_lines,
     line_containing,

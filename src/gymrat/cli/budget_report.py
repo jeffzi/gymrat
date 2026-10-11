@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Protocol
 
-from gymrat import clock as _clock
+from gymrat import utils as _utils
 from gymrat.cli import console
 from gymrat.cli.exit import write_stdout
 from gymrat.cli.options import OutputFormat
@@ -43,7 +43,7 @@ def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:
         GymratError: When the supervise lock file cannot be opened, so whether
             the budget is live is unknown.
     """
-    current = _clock.now_ms()
+    current = _utils.now_ms()
     budget = read_budget(root, now_ms=current)
     if budget is None:
         return "", None
@@ -178,7 +178,7 @@ def warn_duration_over_budget(*, halve: bool) -> None:
     root = _repo_root_or_none()
     if root is None:
         return
-    current = _clock.now_ms()
+    current = _utils.now_ms()
     budget = read_budget(root, now_ms=current)
     if budget is None:
         return

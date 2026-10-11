@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING, cast, override
 
 import pytest
 
-from gymrat.clock import now_ns
 from gymrat.config import StopConfig
 from gymrat.session.paths import session_dir, session_jsonl_path
 from gymrat.supervisor.events import (
@@ -37,6 +36,7 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 from gymrat.supervisor.supervise import detect_end_condition
+from gymrat.utils import now_ns
 from tests._config import benchless_config
 from tests._mode_bits import needs_mode_bits
 from tests.session.records._fixtures import (

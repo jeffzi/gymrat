@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape
 
-from gymrat.clock import now_ns
 from gymrat.exec import (
     ExecOptions,
     ExecTimeoutError,
@@ -50,6 +49,7 @@ from gymrat.utils import (
     SHORT_SHA_LENGTH,
     WarnSink,
     limit_output,
+    now_ns,
     stream_color_from_env,
     warn_to_stderr,
 )

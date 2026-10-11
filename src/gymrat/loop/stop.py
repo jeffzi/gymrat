@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from gymrat.clock import now_ns
 from gymrat.errors import GymratError
 from gymrat.session.records import StopRecord
 from gymrat.session.store import (
@@ -28,7 +27,7 @@ from gymrat.session.store import (
     require_settled,
     settle_first_hint,
 )
-from gymrat.utils import first_line
+from gymrat.utils import first_line, now_ns
 
 _SETTLE_VERB = "stopping"
 """What a stop refusal says the user was about to do."""
