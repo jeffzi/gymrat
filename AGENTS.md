@@ -52,9 +52,12 @@ than one concern; it is not a budget. These rules decide where code lives. They 
 letter: a reason that is not written here is not a reason. The numbers and names they refer to are
 listed under Project facts.
 
-A module's **importers** are the project modules that import it in any form: at module level,
-inside a function, or under `TYPE_CHECKING`. Tests, `__main__.py` and `__init__.py` are not
-importers. To **fold** a module is to move all of it into another module and delete the file.
+A module's **importers** are the project modules that import it at runtime: at module level or
+inside a function. An import under `TYPE_CHECKING` is an annotation, not an importer: it names the
+code without loading it, and when the code moves, the annotation follows it to the new module.
+Tests, `__main__.py` and `__init__.py` are not importers. A module **uses** code when it is one of
+its importers; "user" and "importer" mean the same thing throughout. To **fold** a module is to
+move all of it into another module and delete the file.
 
 **Registration is not use.** A module that only registers another (a command, a handler, a plugin)
 and never calls it is neither its user nor its home, and does not count among its importers. A
@@ -62,8 +65,11 @@ module that nothing but its registrar imports is a module of its own at any size
 modules also import is placed by those importers alone.
 
 The **generic-helpers module** holds code that passes this admission test: it imports no project
-module, names no project type, imports the standard library only, and would make sense pasted
-unchanged into an unrelated repository.
+module other than the generic-helpers module itself, names or defines no project type, and would
+make sense pasted unchanged into an unrelated repository that has the same dependencies. A
+constant, name, or vocabulary that exists because of this project (an environment variable it
+defines, a wire format it reads, a protocol between two of its parts) fails the last clause
+whatever it imports.
 
 1. **New code goes in the module that uses it.** One user: that module. No new file until rule 2
    or rule 6 calls for one.
