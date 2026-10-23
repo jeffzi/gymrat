@@ -253,22 +253,45 @@ def test_count_nonzero_pairs_when_paired_positionally_does_count_differing_pairs
 
 
 # ---------------------------------------------------------------------------
+# sign_flip_permutation_test — signed-rank statistic
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "expected"),
+    [
+        # Differences [+1, -0.5, +3] rank [2, 1, 3]: 2 - 1 + 3.
+        pytest.param([10.0, 10.0, 10.0], [11.0, 9.5, 13.0], 4.0, id="ranks-favor-increases"),
+        pytest.param([11.0, 9.5, 13.0], [10.0, 10.0, 10.0], -4.0, id="ranks-favor-decreases"),
+        # Differences [+1, -1] share the average rank 1.5, so they cancel.
+        pytest.param([10.0, 10.0], [11.0, 9.0], 0.0, id="ranks-balance"),
+        pytest.param([], [], 0.0, id="empty"),
+        pytest.param([3.0, 5.0, 7.0], [3.0, 5.0, 7.0], 0.0, id="all-tied"),
+        pytest.param([4.0], [1.0], -1.0, id="single-differing-pair"),
+        pytest.param([1.0, 2.0, 3.0], [1.0, 2.0, 4.0], 1.0, id="one-differing-among-tied"),
+        pytest.param([1.0, math.nan, 3.0], [2.0, 5.0, 4.0], math.nan, id="nan-pair"),
+    ],
+)
+def test_sign_flip_permutation_test_when_paired_samples_does_return_signed_rank_sum_statistic(
+    x: list[float],
+    y: list[float],
+    expected: float,
+):
+    assert sign_flip_permutation_test(x, y).statistic == pytest.approx(expected, nan_ok=True)
+
+
+# ---------------------------------------------------------------------------
 # sign_flip_permutation_test — pinned empirical fixtures
 # ---------------------------------------------------------------------------
 
 _SIX_PAIR_X = [10, 12, 14, 16, 18, 20]
 _SIX_PAIR_Y = [9, 10, 13, 14, 15, 17]
+_TIED_PAIRS = [1, 2, 3, 4, 96, 97, 98, 99]
 
 
 @pytest.mark.parametrize(
     ("x", "y", "expected_p"),
     [
-        pytest.param(
-            _SIX_PAIR_X,
-            _SIX_PAIR_Y,
-            0.25,
-            id="six-pair-all-negative-diff",
-        ),
         pytest.param(
             [10, 11, 12, 13, 14, 15],
             [10, 11, 12, 13, 14, 15.5],
@@ -278,74 +301,77 @@ _SIX_PAIR_Y = [9, 10, 13, 14, 15, 17]
         pytest.param(
             [10, 20, 30, 40],
             [10, 21, 30, 41],
-            1.0,
+            0.5,
             id="interleaved-ties-two-differing-pairs",
         ),
         pytest.param([1, 3], [3, 1], 1.0, id="symmetric-swap-clipped-to-one"),
         pytest.param(
             [10, 11, 12, 13, 14, 15, 16, 17],
             [12, 11, 15, 13, 18, 15, 21, 23],
-            0.5,
+            0.0625,
             id="interleaved-ties-five-differing-pairs",
         ),
         pytest.param(
             [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
             [12, 13, 15, 13, 18, 15, 21, 23, 24, 19],
-            0.125,
+            0.015625,
             id="interleaved-ties-seven-differing-pairs",
         ),
-        pytest.param(
-            [100.0 + 2.0 * i for i in range(13)],
-            [95.0 + 2.0 * i for i in range(13)],
-            0.0625,
-            id="thirteen-pair-largest-exact-enumeration",
-        ),
+        # Fourteen same-direction pairs leave exact enumeration: the seeded Monte
+        # Carlo draw hits the all-negative sign pattern once, so p is 4 / 10_000
+        # rather than the 2 / 10_000 floor.
         pytest.param(
             [100.0 + 2.0 * i for i in range(14)],
             [95.0 + 2.0 * i for i in range(14)],
-            0.028,
+            4 / 10_000,
             id="fourteen-pair-seeded-monte-carlo",
         ),
         # Unequal lengths pair index-wise over the shorter input.
         pytest.param(
             [*_SIX_PAIR_X, 99],
             _SIX_PAIR_Y,
-            0.25,
+            0.03125,
             id="unequal-lengths-pair-over-shorter",
         ),
-        # Baseline [12]*6 vs candidate [0,0,0,0,60,60]: some rearrangements flip
-        # enough low candidate values into the baseline to make its median zero,
-        # which makes the delta undefined (division by zero). Those rearrangements
-        # must count on the baseline side (against the observed delta), not be
-        # discarded or treated as evidence for the delta. The correct exact p is
-        # 0.25, not 0.125.
+        # Differences [-12, -12, -12, -12, +48, +48]: the two increases hold the
+        # two largest ranks, so the signed-rank sum is only +1 (-10 + 11) and
+        # many sign patterns reach it.
         pytest.param(
             [12] * 6,
             [0, 0, 0, 0, 60, 60],
-            0.25,
-            id="zero-median-rearrangements-count-against",
+            0.8125,
+            id="few-large-increases-against-many-small-decreases",
         ),
-        # A single flip leaves both medians at zero: that rearrangement is a 0%
-        # delta, not an undefined one, so the null is {-200, 0, 0, 200} and the
-        # exact p is 0.5.
-        pytest.param([0, 5, 5], [0, -5, -5], 0.5, id="both-medians-zero-counts-no-change"),
-        # Tied pairs reduce the effective budget, keeping the path exact.
-        #
-        # Eight extreme tied pairs plus the standard six differing pairs give 14
-        # total.  2**14 > RESAMPLE_BUDGET would push scipy onto the Monte Carlo
-        # path, but tied pairs contribute the same value to both sides under every
-        # flip, so the effective space is 2**6 = 64 <= RESAMPLE_BUDGET — exact
-        # enumeration.
-        #
-        # Extreme tied values sit outside the differing-pair range and do not shift
-        # medians, so the exact p equals the ties-free six-pair p of 0.25.  An MC
-        # path over all 14 pairs would produce a close but not identical estimate,
-        # which the approx tolerance (rel 1e-6) still tells apart.
+        # Against five finite increases, the infinite decrease takes rank 6, so
+        # the signed-rank sum is 15 - 6 = 9 and 28 of 64 sign patterns reach it.
         pytest.param(
-            [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_X],
-            [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_Y],
-            0.25,
-            id="tied-pairs-keep-exact-enumeration",
+            [0.0] * 6,
+            [1.0, 2.0, 3.0, 4.0, 5.0, -math.inf],
+            0.4375,
+            id="infinite-difference-ranks-largest",
+        ),
+        pytest.param([333.0] * 10, [417.0] * 10, 2 / 2**10, id="flat-increase"),
+        pytest.param([791.0] * 10, [625.0] * 10, 2 / 2**10, id="flat-decrease"),
+        pytest.param(
+            [100.0 + i for i in range(10)],
+            [100.5 + i for i in range(10)],
+            2 / 2**10,
+            id="spread-half-unit-increase",
+        ),
+        pytest.param(_SIX_PAIR_X, _SIX_PAIR_Y, 2 / 2**6, id="six-pair-all-negative-diff"),
+        pytest.param(
+            [100.0 + 2.0 * i for i in range(13)],
+            [95.0 + 2.0 * i for i in range(13)],
+            2 / 2**13,
+            id="thirteen-pair-largest-exact-enumeration",
+        ),
+        # 8 ties + 6 differing pairs = 14 total pairs stay on exact enumeration
+        # because ties drop out before the 2**n budget applies.
+        pytest.param(
+            [*_TIED_PAIRS, *_SIX_PAIR_X],
+            [*_TIED_PAIRS, *_SIX_PAIR_Y],
+            2 / 2**6,
+            id="tied-pairs-added-to-six-pair",
         ),
     ],
 )
@@ -354,11 +380,106 @@ def test_sign_flip_permutation_test_when_paired_samples_does_return_pinned_p(
     y: list[float],
     expected_p: float,
 ):
-    assert sign_flip_permutation_test(x, y) == pytest.approx(expected_p)
+    assert sign_flip_permutation_test(x, y).p == pytest.approx(expected_p)
 
 
 # ---------------------------------------------------------------------------
-# sign_flip_permutation_test — degenerate guards (no scipy invocation)
+# sign_flip_permutation_test — Monte Carlo regime (more than 13 differing pairs)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("n", [20, 30, 50])
+@pytest.mark.parametrize(
+    ("x_start", "y_start", "step"),
+    [
+        pytest.param(333.0, 417.0, 0.0, id="flat-increase"),
+        pytest.param(100.0, 100.5, 1.0, id="spread-half-unit-increase"),
+    ],
+)
+def test_sign_flip_permutation_test_when_every_pair_moves_same_way_above_exact_does_return_monte_carlo_floor(
+    n: int,
+    x_start: float,
+    y_start: float,
+    step: float,
+):
+    x = [x_start + step * i for i in range(n)]
+    y = [y_start + step * i for i in range(n)]
+
+    p = sign_flip_permutation_test(x, y).p
+
+    # No seeded resample reaches the observed extreme: p is the Monte Carlo
+    # floor 2 / (budget + 1).
+    assert p == pytest.approx(2 / 10_000)
+
+
+def test_sign_flip_permutation_test_when_called_twice_above_exact_does_return_same_p():
+    x = [100.0] * 20
+    y = [100.0 + (-1) ** i * (i + 1) for i in range(20)]
+    first = sign_flip_permutation_test(x, y).p
+
+    second = sign_flip_permutation_test(x, y).p
+
+    assert second == first
+
+
+# ---------------------------------------------------------------------------
+# sign_flip_permutation_test — order invariance (exact regime)
+# ---------------------------------------------------------------------------
+
+
+def _is_nonzero(value: int) -> bool:
+    return value != 0
+
+
+# Small non-zero half-integer differences make equal magnitudes with opposite
+# signs common: those are the pairs whose shared average rank keeps the p-value
+# independent of order. Integer baselines keep each half-integer difference
+# exact once added back. At most 13 pairs keeps the test on exact enumeration,
+# where every sign pattern is counted once.
+_reordered_differences = st.lists(
+    st.integers(min_value=-4, max_value=4).filter(_is_nonzero),
+    min_size=2,
+    max_size=13,
+).flatmap(
+    lambda differences: st.tuples(
+        st.just(differences),
+        st.permutations(differences),
+        st.lists(
+            st.integers(min_value=1, max_value=1000),
+            min_size=len(differences),
+            max_size=len(differences),
+        ),
+    )
+)
+
+# `sign_flip_permutation_test` imports scipy lazily on its first call, so the
+# first example in a worker pays a one-time ~400ms import cost that trips
+# hypothesis's per-example deadline. That deadline is a wall-clock constraint
+# orthogonal to the invariants under test.
+_no_deadline = settings(deadline=None)
+
+
+@_no_deadline
+@given(case=_reordered_differences)
+@example(case=([1, -1, 1, 1, 2, 3], [-1, 1, 1, 3, 1, 2], [100] * 6))
+@example(case=([1, -1, 1, 1, 2, 3], [-1, 1, 1, 3, 1, 2], [1, 7, 950, 3, 64, 500]))
+def test_sign_flip_permutation_test_when_differences_match_in_any_order_does_return_same_p(
+    case: tuple[list[int], list[int], list[int]],
+):
+    differences, reordered, baselines = case
+    constant = [100.0] * len(differences)
+    expected = sign_flip_permutation_test(constant, [100.0 + d / 2 for d in differences]).p
+
+    p = sign_flip_permutation_test(
+        [float(b) for b in baselines],
+        [b + d / 2 for b, d in zip(baselines, reordered, strict=True)],
+    ).p
+
+    assert p == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# sign_flip_permutation_test — degenerate guards (no permutation run)
 # ---------------------------------------------------------------------------
 
 
@@ -368,54 +489,37 @@ def test_sign_flip_permutation_test_when_paired_samples_does_return_pinned_p(
         pytest.param([], [], id="empty"),
         pytest.param([3.0, 5.0, 7.0], [3.0, 5.0, 7.0], id="all-diffs-zero"),
         pytest.param([4.0], [1.0], id="single-pair"),
-        # median(x) == 0 with a non-zero candidate median makes the delta functional
-        # divide by zero: the observed statistic is non-finite, so there is no
-        # direction to test.
-        pytest.param([-1.0, 1.0], [5.0, 6.0], id="baseline-median-zero"),
-        pytest.param([1.0, 2.0], [math.inf, math.inf], id="infinite-delta"),
+        pytest.param([1.0, 2.0, 3.0], [1.0, 2.0, 4.0], id="one-differing-among-tied"),
+        pytest.param([1.0, math.nan, 3.0], [2.0, 5.0, 4.0], id="nan-in-baseline"),
+        pytest.param([1.0, 2.0, 3.0], [2.0, math.nan, 4.0], id="nan-in-candidate"),
     ],
 )
 def test_sign_flip_permutation_test_when_nothing_to_test_does_return_p_one(
     x: list[float], y: list[float]
 ):
-    assert sign_flip_permutation_test(x, y) == 1.0
+    assert sign_flip_permutation_test(x, y).p == 1.0
 
 
 # ---------------------------------------------------------------------------
 # sign_flip_permutation_test — p-value range
 # ---------------------------------------------------------------------------
 
-# Positive-only samples keep both baseline medians strictly positive, so the
-# delta functional is always finite and the two-sided p-value is well defined in
-# either pairing direction. Sizes stay within exact-enumeration range (2..8) to
-# keep each example fast.
-_positive_floats = st.floats(
-    min_value=1.0,
-    max_value=1e6,
-    allow_nan=False,
-    allow_infinity=False,
-)
+# Sizes stay within exact-enumeration range (2..8) to keep each example fast.
 _paired_samples = st.lists(
-    st.tuples(_positive_floats, _positive_floats),
+    st.tuples(_bounded_floats, _bounded_floats),
     min_size=2,
     max_size=8,
 )
 
-# The test imports scipy lazily on its first non-degenerate call, so the first
-# example in a worker pays a one-time ~400ms import cost that trips hypothesis's
-# per-example deadline. That deadline is a wall-clock constraint orthogonal to
-# the invariants under test.
-_no_deadline = settings(deadline=None)
-
 
 @_no_deadline
 @given(pairs=_paired_samples)
-def test_sign_flip_permutation_test_when_any_positive_pairs_does_return_p_in_unit_interval(
+def test_sign_flip_permutation_test_when_any_finite_pairs_does_return_p_in_unit_interval(
     pairs: list[tuple[float, float]],
 ):
     x = [pair[0] for pair in pairs]
     y = [pair[1] for pair in pairs]
 
-    p = sign_flip_permutation_test(x, y)
+    p = sign_flip_permutation_test(x, y).p
 
     assert 0.0 < p <= 1.0

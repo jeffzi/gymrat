@@ -7,18 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Rename the `turn_end` trace attribute `gymrat.turn.cost_usd` to
+  `gymrat.turn.session_cost_usd`, which names the cumulative session cost it always carried; update
+  any query or dashboard that reads it.
+- Kill a run's child process groups at once on a second termination signal, and ignore a third.
+- Record and trace the session setup and baseline measurement that `supervise` runs before launching
+  the agent, like any other command.
+
 ### Fixed
 
 - Report git's refusal to answer (dubious ownership, an unreadable `.git`) instead of silently
   looking for the config file and session state in the wrong directory.
-- Fail with a lock-file error when a lock file cannot be opened, instead of treating the lock as
-  free.
+- Wait briefly for a session lock another command holds, and fail on a lock file that cannot be
+  opened instead of treating the lock as free.
 - Warn when a command's session-log record cannot be written or its trace span cannot be emitted,
   instead of dropping it silently.
-- Show every `supervise` observer failure and every refused budget-file removal as a warning in the
-  display, instead of once per location or as an error exit.
+- Warn on each failure to record or display a `supervise` event and each refused time-budget file
+  removal, instead of once per location or as an error exit.
 - Keep a copied file's source when syncing to the experiment worktree, and never write or remove a
   file through a symlink there.
+- Judge a metric's change by the ranks of its paired differences, so gymrat now reports a shift that
+  every pair shows and may no longer report a change that one outlying pair carries.
+- Report a negative-valued metric's delta with the sign of its movement, and record an overflowing
+  delta as null and an overflowing noise band as unstable, instead of infinite.
+- Keep Ctrl-C and other stop signals reaching every process gymrat starts, let a nested gymrat run
+  finish cleanup before its parent kills it, and kill bench children forked mid-stop on macOS.
+- Keep a command's exit code when its stdout is closed, instead of exiting 0, and exit 1 when its
+  stderr is closed.
+- Send the supervised agent one reply, instead of two, when a turn ends while a gymrat command is
+  still running, and accept its `iterate` tool call with no arguments.
+- End a supervised run when a turn's follow-up fails instead of at the wall-clock cap, and let a
+  `--force` run outlast its first turn end when a stop condition already holds.
+- Exit non-zero from `gymrat export` when the collector is unreachable or rejects a batch, replay
+  spans with the numbering live tracing used, and skip unreadable supervisor logs.
+- Name the git command that removes each worktree or branch a cleanup leaves behind.
+- Accept and reject the same `--samples` and `--timeout` values whether they come from the flag or
+  from `GYMRAT_SAMPLES` and `GYMRAT_TIMEOUT`.
+- Time durations with a monotonic clock, so a wall-clock jump no longer skews them.
 
 ## [0.21.0] - 2026-09-24
 
@@ -97,8 +124,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Append a `command` record to the session log for every command run inside a session.
 - Add a `compaction` event and a `session_id` on the launch event to the supervisor event log.
-- Add the `otel` optional extra (`pip install 'gymrat[otel]'`) to export OpenTelemetry spans for every
-  command and supervised run when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+- Add the `otel` optional extra to export OpenTelemetry spans for every command and supervised run
+  when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 - Add `gymrat export` to replay a finished session's logs into the same span structure for post-hoc
   analysis.
 - Publish the session and supervisor log formats as JSON Schema, AsyncAPI 3.0, and a Markdown event
@@ -143,8 +170,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Run the `doctor` checks before `supervise` launches and refuse to launch on a failure.
-- Add `supervise --baseline <ref>` to pin a freshly opened session to the given git ref (defaults to
-  HEAD; ignored when resuming an existing session).
+- Add `supervise --baseline <ref>` to pin a freshly opened session to the given git ref.
 - Add `gymrat stop -m "<report>"`, with `--format json`, to record a closing report in the session
   log without closing the session.
 - Report whether the session is stopped in `gymrat status`, in both the text report and a new
@@ -247,8 +273,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Accept `--debug` whether written before or after the subcommand.
 - End the run quietly on a closed output pipe instead of printing a bug-report footer.
 - Read the mitata adapter's report correctly when the bench command prints extra output around the
-  JSON.
-- Warn about unusable mitata entries instead of skipping them silently.
+  JSON, and warn about unusable mitata entries instead of skipping them silently.
 - Keep the session log readable and complete after a crash mid-write.
 - Report a `gymrat.toml` that is not valid UTF-8 as unreadable and an oversized integer in a
   `GYMRAT_*` environment variable as invalid, instead of crashing.

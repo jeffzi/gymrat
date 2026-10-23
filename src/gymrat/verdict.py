@@ -6,10 +6,11 @@ with one of three methods:
 
 - **exact** — any difference between medians is signal; no noise band.
 - **permutation** — the sign-flip permutation test decides significance once
-  there are enough non-tied pairs. Its statistic is the reported delta functional
-  itself, its small-sample null is an exact sign-flip enumeration, and its
-  p-value is used unclamped; a delta must also clear the metric's measurement
-  resolution.
+  there are enough non-tied pairs. Its statistic is the Wilcoxon signed-rank sum
+  of the paired differences, its small-sample null is an exact sign-flip
+  enumeration, and its p-value is used unclamped. A significant p-value signals
+  only when the delta is finite, points the same way as the signed-rank sum, and
+  clears the metric's measurement resolution.
 - **band** — the fallback for short or tied runs; a delta must exceed the
   metric's own noise band.
 
@@ -209,9 +210,17 @@ def _compute_approximate_verdict(
     noise band otherwise. Tied pairs contribute no sign to flip, so a long but
     mostly identical run falls back to the band just as a short one does.
 
-    A significant p-value alone is not enough on the permutation path: the delta
-    must also clear the metric's measurement resolution, or a one-byte
-    quantization step reads as signal however many rounds agree on it.
+    The permutation test reads the paired differences, while the reported delta
+    compares the medians, so a significant p-value alone is not enough on the
+    permutation path. The signal also requires that:
+
+    - the delta is finite, since an undefined or overflowing ratio has no size
+      to report;
+    - the signed-rank sum of the paired differences points the same way as the
+      delta, since the pairs and the medians can disagree on the direction of
+      the move;
+    - the delta clears the metric's measurement resolution, or a one-byte
+      quantization step reads as signal however many rounds agree on it.
 
     Args:
         samples: The paired baseline/candidate samples for the metric.
@@ -241,8 +250,13 @@ def _compute_approximate_verdict(
             n=n,
         )
     else:
-        p = sign_flip_permutation_test(samples.left, samples.right)
-        has_signal = p < PERMUTATION_P_THRESHOLD and abs(delta) > noise.resolution_pct
+        p, statistic = sign_flip_permutation_test(samples.left, samples.right)
+        has_signal = (
+            p < PERMUTATION_P_THRESHOLD
+            and math.isfinite(delta)
+            and statistic * delta > 0
+            and abs(delta) > noise.resolution_pct
+        )
         verdict = _determine_verdict(delta, meta.direction, has_signal=has_signal)
         record = PermutationVerdict(
             method="permutation",
