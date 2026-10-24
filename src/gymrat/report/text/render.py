@@ -71,7 +71,7 @@ from gymrat.report.types import (
     ReportOptions,
     candidate_at,
 )
-from gymrat.utils import collapse_whitespace, pluralize
+from gymrat.utils import balancing_cycle, collapse_whitespace, pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -601,12 +601,16 @@ def _method_lines(data: _FooterData) -> list[str]:
     return lines
 
 
-def _shortage_hint(shortage: Sequence[int], samples: int, command: str) -> str | None:
+def _shortage_hint(
+    shortage: Sequence[int], samples: int, command: str, target_count: int
+) -> str | None:
     """The hint for metrics that fell to the band because their paired count was short.
 
     When the run's own sample count is below the floor, more samples are the
-    fix. When it had enough samples but rounds were dropped during pairing,
-    suggesting more samples is misleading.
+    fix, and the count suggested is the smallest at or above the floor that
+    balances the run's targets, so the re-run is not refused. When it had
+    enough samples but rounds were dropped during pairing, suggesting more
+    samples is misleading.
 
     The suggested command is stated whole and backtick-marked so
     :func:`gymrat.report.style.format_hint` sets it apart from the prose: a
@@ -617,6 +621,7 @@ def _shortage_hint(shortage: Sequence[int], samples: int, command: str) -> str |
             for lack of pairs.
         samples: The run's own sample count.
         command: The subcommand name to embed in the suggested re-run.
+        target_count: How many targets the run compared, baseline included.
 
     Returns:
         The samples hint, the dropped-rounds hint, or ``None`` when the
@@ -626,10 +631,9 @@ def _shortage_hint(shortage: Sequence[int], samples: int, command: str) -> str |
         return None
     if samples >= PERMUTATION_MIN_N:
         return _DROPPED_ROUNDS_HINT
-    return (
-        f"re-run with `gymrat {command} --samples {PERMUTATION_MIN_N}` "
-        f"or more for statistical verdicts"
-    )
+    cycle = balancing_cycle(target_count)
+    suggested = cycle * math.ceil(PERMUTATION_MIN_N / cycle)
+    return f"re-run with `gymrat {command} --samples {suggested}` or more for statistical verdicts"
 
 
 def footer_lines(
@@ -638,6 +642,7 @@ def footer_lines(
     verbose: bool,
     command: str,
     samples: int,
+    target_count: int,
 ) -> list[str]:
     """The footer: how each verdict was decided when verbose, and the samples hint.
 
@@ -648,12 +653,14 @@ def footer_lines(
             a re-run names the whole invocation.
         samples: The run's sample count, to distinguish shortage from dropped
             rounds.
+        target_count: How many targets the run compared, baseline included, so
+            a suggested sample count balances them.
 
     Returns:
         The footer lines, method lines (when verbose) first, then the hint.
     """
     data = _collect_footer_data(metrics)
-    hint = _shortage_hint(data.shortage, samples, command)
+    hint = _shortage_hint(data.shortage, samples, command, target_count)
     lines = _method_lines(data) if verbose else []
     if hint is not None:
         lines.append(format_hint(hint))
@@ -801,6 +808,7 @@ def render_report(result: ComparisonResult, options: ReportOptions = DEFAULT_REP
             verbose=options.verbose,
             command=options.command,
             samples=display.samples,
+            target_count=len(display.candidates) + 1,
         ),
         *_render_worktree_footer(display),
     ]
