@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Rotate which target runs first in each sampling round, so neither side of a comparison always
+  runs first.
 - Judge a byte metric's step against its baseline median alone, so a small heap that halves now
   reports an improvement.
 - **Breaking:** Rename the `turn_end` trace attribute `gymrat.turn.cost_usd` to

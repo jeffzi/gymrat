@@ -1,22 +1,20 @@
 """Behavioral tests for the sampling core and progress reporting.
 
 They also cover the per-metric median and spread computed from collected
-samples, and metric-meta resolution: adapter defaults, then kind, then metric,
-including the warning for time readings that look quantized.
+samples.
 """
 
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.adapters import AdapterError, MetricDefaults, metric_lines_adapter
-from gymrat.config import KindEntry, MetricEntry
+from gymrat.adapters import AdapterError, metric_lines_adapter
 from gymrat.errors import CommandError, GymratError
-from gymrat.exec import ExecResult, ExecTimeoutError
-from gymrat.model import ResolvedMetricMeta
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
+from gymrat.exec import exec as run_exec
 from gymrat.progress_events import (
     PassFinished,
     PassStarted,
@@ -30,17 +28,12 @@ from gymrat.sampling import (
     TargetContext,
     collect_samples,
     compute_metric_stats,
-    resolve_metric_meta,
-    resolve_metric_meta_from_samples,
 )
 from gymrat.targets import InPlaceTarget, RefTarget
 from gymrat.utils import monotonic_ms
 from tests._config import resolved_config
 from tests._exec_fixtures import expected_result, install_exec
-from tests._pipeline import quantized_warning
 from tests.adapters._inputs import malformed_line_warning
-from tests.report._verdicts import metric_meta
-from tests.sampling._adapters import make_adapter
 
 REF_HINT = (
     "the worktree only contains files tracked at this ref; "
@@ -87,6 +80,41 @@ def one_in_place_target() -> list[TargetContext]:
     ]
 
 
+def three_in_place_targets() -> list[TargetContext]:
+    """Three in-place targets labelled a/b/c, rooted at /a, /b and /c."""
+    return [
+        TargetContext(target=InPlaceTarget(dir=f"/{name}"), dir=f"/{name}", label=name)
+        for name in ("a", "b", "c")
+    ]
+
+
+def install_numbered_exec(
+    monkeypatch: pytest.MonkeyPatch, answer: Callable[[int], ExecResult | ExecTimeoutError]
+) -> list[tuple[str, ExecOptions]]:
+    """Replace the sampling ``exec`` with a stand-in answering each call by its 1-based number.
+
+    Args:
+        monkeypatch: Patches the sampling ``exec`` for the duration of the test.
+        answer: Builds the result for the n-th call.
+
+    Returns:
+        Each call's command and options, in call order.
+    """
+    calls: list[tuple[str, ExecOptions]] = []
+
+    async def record(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:
+        calls.append((command, options))
+        return answer(len(calls))
+
+    monkeypatch.setattr(SAMPLING_EXEC, create_autospec(run_exec, side_effect=record))
+    return calls
+
+
+def numbered_sample(call: int) -> ExecResult:
+    """Answer a bench run with ``METRIC x=<call>``, so each sample names the run it came from."""
+    return make_success(f"METRIC x={call}")
+
+
 # ---------------------------------------------------------------------------
 # collect_samples
 # ---------------------------------------------------------------------------
@@ -102,14 +130,14 @@ def one_in_place_target() -> list[TargetContext]:
                 ("prep", "/b"),
                 ("run", "/a"),
                 ("run", "/b"),
-                ("run", "/a"),
                 ("run", "/b"),
+                ("run", "/a"),
             ],
             id="prepare-per-target-before-any-bench",
         ),
         pytest.param(
             None,
-            [("run", "/a"), ("run", "/b"), ("run", "/a"), ("run", "/b")],
+            [("run", "/a"), ("run", "/b"), ("run", "/b"), ("run", "/a")],
             id="bench-only",
         ),
     ],
@@ -134,6 +162,49 @@ async def test_collect_samples_when_targets_succeed_does_collect_each_targets_sa
         [{"x": 1.0}, {"x": 1.0}],
         [{"x": 1.0}, {"x": 1.0}],
     ]
+
+
+@pytest.mark.parametrize(
+    ("targets", "rounds", "expected_dirs", "expected_samples"),
+    [
+        pytest.param(
+            one_in_place_target(),
+            3,
+            ["/a", "/a", "/a"],
+            [[1.0, 2.0, 3.0]],
+            id="one-target",
+        ),
+        pytest.param(
+            two_in_place_targets(),
+            4,
+            ["/a", "/b", "/b", "/a", "/a", "/b", "/b", "/a"],
+            [[1.0, 4.0, 5.0, 8.0], [2.0, 3.0, 6.0, 7.0]],
+            id="two-targets",
+        ),
+        pytest.param(
+            three_in_place_targets(),
+            4,
+            ["/a", "/b", "/c", "/b", "/c", "/a", "/c", "/a", "/b", "/a", "/b", "/c"],
+            [[1.0, 6.0, 8.0, 10.0], [2.0, 4.0, 9.0, 11.0], [3.0, 5.0, 7.0, 12.0]],
+            id="three-targets",
+        ),
+    ],
+)
+async def test_collect_samples_when_rounds_repeat_does_rotate_which_target_runs_first(
+    monkeypatch: pytest.MonkeyPatch,
+    targets: list[TargetContext],
+    rounds: int,
+    expected_dirs: list[str],
+    expected_samples: list[list[float]],
+):
+    calls = install_numbered_exec(monkeypatch, numbered_sample)
+    options = SamplingOptions(bench="run", prepare=None, samples=rounds, timeout_seconds=1.0)
+
+    result = await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+
+    assert [exec_options.cwd for _, exec_options in calls] == expected_dirs
+    assert [ts.ctx for ts in result] == targets
+    assert [[sample["x"] for sample in ts.samples] for ts in result] == expected_samples
 
 
 async def test_collect_samples_when_progress_given_does_emit_every_event_stamped_from_the_clock(
@@ -168,14 +239,41 @@ async def test_collect_samples_when_progress_given_does_emit_every_event_stamped
         PassFinished(1, 3, 2, "old", 600.0, phase="measure"),
         PassStarted(1, 3, 2, "new", 700.0, phase="measure"),
         PassFinished(1, 3, 2, "new", 800.0, phase="measure"),
-        PassStarted(2, 3, 2, "old", 900.0, phase="measure"),
-        PassFinished(2, 3, 2, "old", 1000.0, phase="measure"),
-        PassStarted(2, 3, 2, "new", 1100.0, phase="measure"),
-        PassFinished(2, 3, 2, "new", 1200.0, phase="measure"),
+        PassStarted(2, 3, 2, "new", 900.0, phase="measure"),
+        PassFinished(2, 3, 2, "new", 1000.0, phase="measure"),
+        PassStarted(2, 3, 2, "old", 1100.0, phase="measure"),
+        PassFinished(2, 3, 2, "old", 1200.0, phase="measure"),
         PassStarted(3, 3, 2, "old", 1300.0, phase="measure"),
         PassFinished(3, 3, 2, "old", 1400.0, phase="measure"),
         PassStarted(3, 3, 2, "new", 1500.0, phase="measure"),
         PassFinished(3, 3, 2, "new", 1600.0, phase="measure"),
+    ]
+
+
+async def test_collect_samples_when_three_targets_rotate_does_label_each_pass_with_its_target(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_exec(monkeypatch, SAMPLING_EXEC, make_success())
+    events: list[ProgressEvent] = []
+    options = SamplingOptions(
+        bench="run",
+        prepare=None,
+        samples=3,
+        timeout_seconds=1.0,
+        on_progress=events.append,
+        clock=lambda: 0.0,
+    )
+
+    await collect_samples(metric_lines_adapter, three_in_place_targets(), options, asyncio.Event())
+
+    passes = [event for event in events if isinstance(event, PassStarted | PassFinished)]
+
+    assert len(passes) == len(events)
+    assert [(type(event), event.round, event.label) for event in passes] == [
+        (kind, round_number, label)
+        for round_number, labels in ((1, "abc"), (2, "bca"), (3, "cab"))
+        for label in labels
+        for kind in (PassStarted, PassFinished)
     ]
 
 
@@ -280,6 +378,85 @@ async def test_collect_samples_when_a_pass_cannot_yield_a_sample_does_stop_at_it
         )
 
     assert [command for command, _ in recorder.calls] == expected_commands
+    assert events == expected_events
+
+
+def _malformed_at_call_three(call: int) -> ExecResult:
+    return make_success("METRIC a//b=1") if call == 3 else numbered_sample(call)
+
+
+def _fails_at_call_three(call: int) -> ExecResult:
+    return make_failure() if call == 3 else numbered_sample(call)
+
+
+def _times_out_at_call_three(call: int) -> ExecResult | ExecTimeoutError:
+    return _TIMED_OUT if call == 3 else numbered_sample(call)
+
+
+_ROUND_ONE_EVENTS: list[ProgressEvent] = [
+    PassStarted(round=1, total_rounds=2, target_count=2, label="old", at_ms=0.0),
+    PassFinished(round=1, total_rounds=2, target_count=2, label="old", at_ms=0.0),
+    PassStarted(round=1, total_rounds=2, target_count=2, label="new", at_ms=0.0),
+    PassFinished(round=1, total_rounds=2, target_count=2, label="new", at_ms=0.0),
+]
+
+
+@pytest.mark.parametrize(
+    ("answer", "error", "expected_events"),
+    [
+        pytest.param(
+            _fails_at_call_three,
+            CommandError,
+            [
+                *_ROUND_ONE_EVENTS,
+                PassStarted(round=2, total_rounds=2, target_count=2, label="new", at_ms=0.0),
+            ],
+            id="bench-exits-non-zero",
+        ),
+        pytest.param(
+            _times_out_at_call_three,
+            CommandError,
+            [
+                *_ROUND_ONE_EVENTS,
+                PassStarted(round=2, total_rounds=2, target_count=2, label="new", at_ms=0.0),
+            ],
+            id="bench-times-out",
+        ),
+        pytest.param(
+            _malformed_at_call_three,
+            AdapterError,
+            [
+                *_ROUND_ONE_EVENTS,
+                PassStarted(round=2, total_rounds=2, target_count=2, label="new", at_ms=0.0),
+                PassFinished(round=2, total_rounds=2, target_count=2, label="new", at_ms=0.0),
+            ],
+            id="bench-reports-only-malformed-names",
+        ),
+    ],
+)
+async def test_collect_samples_when_a_later_round_pass_fails_does_stop_at_it_in_rotated_order(
+    monkeypatch: pytest.MonkeyPatch,
+    answer: Callable[[int], ExecResult | ExecTimeoutError],
+    error: type[Exception],
+    expected_events: list[ProgressEvent],
+):
+    calls = install_numbered_exec(monkeypatch, answer)
+    events: list[ProgressEvent] = []
+    options = SamplingOptions(
+        bench="run",
+        prepare=None,
+        samples=2,
+        timeout_seconds=1.0,
+        on_progress=events.append,
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(error):
+        await collect_samples(
+            metric_lines_adapter, two_in_place_targets(), options, asyncio.Event()
+        )
+
+    assert [exec_options.cwd for _, exec_options in calls] == ["/a", "/b", "/b"]
     assert events == expected_events
 
 
@@ -483,327 +660,3 @@ def test_compute_metric_stats_when_given_values_does_return_median_and_percent_s
 def test_compute_metric_stats_when_no_values_does_raise_naming_the_metric():
     with pytest.raises(GymratError, match=r"\bdecode/time\b"):
         compute_metric_stats("decode/time", [])
-
-
-# ---------------------------------------------------------------------------
-# resolve_metric_meta
-# ---------------------------------------------------------------------------
-
-_NAME = "bench-a/heap"
-_HEAP = MetricDefaults(direction="higher", kind="memory", short_name="heap", unit="bytes")
-_MEMORY_NOT_GATING = {"memory": KindEntry(gating=False)}
-_HEAP_STEP = replace(_HEAP, resolution=1.0)
-_MEMORY_STEP = {"memory": KindEntry(resolution=1024.0)}
-
-
-def _heap_step_meta(
-    resolution: float, *, gating: bool = True, exact: bool = False
-) -> ResolvedMetricMeta:
-    return metric_meta(
-        "heap",
-        direction="higher",
-        kind="memory",
-        unit="bytes",
-        gating=gating,
-        exact=exact,
-        resolution=resolution,
-    )
-
-
-@pytest.mark.parametrize(
-    ("defaults", "entry", "config_kinds", "expected"),
-    [
-        pytest.param(
-            MetricDefaults(direction="higher", unit="ns"),
-            None,
-            None,
-            metric_meta(_NAME, direction="higher", unit="ns"),
-            id="adapter-direction-and-unit",
-        ),
-        pytest.param(
-            MetricDefaults(direction="lower", kind="memory", short_name="heap"),
-            None,
-            None,
-            metric_meta("heap", kind="memory"),
-            id="adapter-kind-and-short-name",
-        ),
-        pytest.param(
-            _HEAP,
-            MetricEntry(direction="lower"),
-            None,
-            metric_meta("heap", direction="lower", kind="memory", unit="bytes"),
-            id="entry-direction",
-        ),
-        pytest.param(
-            _HEAP,
-            MetricEntry(gating=False),
-            None,
-            metric_meta("heap", direction="higher", kind="memory", unit="bytes", gating=False),
-            id="entry-gating",
-        ),
-        pytest.param(
-            _HEAP,
-            MetricEntry(exact=True),
-            None,
-            metric_meta("heap", direction="higher", kind="memory", unit="bytes", exact=True),
-            id="entry-exact",
-        ),
-        pytest.param(
-            _HEAP,
-            MetricEntry(exact=True),
-            _MEMORY_NOT_GATING,
-            metric_meta(
-                "heap", direction="higher", kind="memory", unit="bytes", gating=False, exact=True
-            ),
-            id="kind-gating-fills-an-entry-without-gating",
-        ),
-        pytest.param(
-            _HEAP,
-            None,
-            _MEMORY_NOT_GATING,
-            metric_meta("heap", direction="higher", kind="memory", unit="bytes", gating=False),
-            id="kind-gating-without-an-entry",
-        ),
-        pytest.param(
-            _HEAP,
-            None,
-            {"time": KindEntry(gating=False)},
-            metric_meta("heap", direction="higher", kind="memory", unit="bytes"),
-            id="other-kind-gating-ignored",
-        ),
-        pytest.param(
-            _HEAP,
-            MetricEntry(gating=True),
-            _MEMORY_NOT_GATING,
-            metric_meta("heap", direction="higher", kind="memory", unit="bytes"),
-            id="entry-gating-beats-kind-gating",
-        ),
-        pytest.param(
-            _HEAP,
-            None,
-            {"memory": KindEntry(gating=None)},
-            metric_meta("heap", direction="higher", kind="memory", unit="bytes"),
-            id="kind-entry-without-gating-keeps-the-default",
-        ),
-        pytest.param(
-            MetricDefaults(direction="lower", short_name="heap"),
-            None,
-            {"other": KindEntry(gating=False)},
-            metric_meta("heap", kind="other", gating=False),
-            id="adapter-reports-no-kind",
-        ),
-        pytest.param(_HEAP_STEP, None, None, _heap_step_meta(1.0), id="adapter-resolution"),
-        pytest.param(_HEAP_STEP, None, _MEMORY_STEP, _heap_step_meta(1024.0), id="kind-resolution"),
-        pytest.param(
-            _HEAP_STEP,
-            MetricEntry(resolution=8.0),
-            _MEMORY_STEP,
-            _heap_step_meta(8.0),
-            id="entry-resolution-beats-kind-resolution",
-        ),
-        pytest.param(
-            _HEAP_STEP,
-            MetricEntry(exact=True),
-            _MEMORY_STEP,
-            _heap_step_meta(1024.0, exact=True),
-            id="kind-resolution-fills-an-entry-without-resolution",
-        ),
-        pytest.param(
-            _HEAP_STEP,
-            None,
-            {"time": KindEntry(resolution=1024.0)},
-            _heap_step_meta(1.0),
-            id="other-kind-resolution-ignored",
-        ),
-        pytest.param(
-            _HEAP_STEP,
-            None,
-            _MEMORY_NOT_GATING,
-            _heap_step_meta(1.0, gating=False),
-            id="kind-entry-without-resolution-keeps-the-default",
-        ),
-        pytest.param(
-            _HEAP_STEP,
-            MetricEntry(resolution=8.0),
-            None,
-            _heap_step_meta(8.0),
-            id="entry-resolution-without-kinds",
-        ),
-        pytest.param(
-            _HEAP,
-            None,
-            _MEMORY_STEP,
-            _heap_step_meta(1024.0),
-            id="kind-resolution-without-an-adapter-resolution",
-        ),
-    ],
-)
-def test_resolve_metric_meta_when_layers_given_does_layer_entry_over_kind_over_adapter(
-    defaults: MetricDefaults,
-    entry: MetricEntry | None,
-    config_kinds: dict[str, KindEntry] | None,
-    expected: ResolvedMetricMeta,
-):
-    adapter = make_adapter(lambda _name: defaults)
-
-    result = resolve_metric_meta(_NAME, entry, adapter, config_kinds)
-
-    assert result == expected
-
-
-# ---------------------------------------------------------------------------
-# resolve_metric_meta_from_samples
-# ---------------------------------------------------------------------------
-
-
-def _by_metric_name(name: str) -> MetricDefaults:
-    if name == "response-time":
-        return MetricDefaults(direction="lower", unit="ns")
-    if name == "throughput":
-        return MetricDefaults(direction="higher")
-    return MetricDefaults(direction="lower")
-
-
-def _by_metric_suffix(name: str) -> MetricDefaults:
-    if name.endswith("/heap"):
-        return MetricDefaults(direction="lower", kind="memory", short_name="heap")
-    return MetricDefaults(direction="lower", kind="time", short_name="time")
-
-
-def test_resolve_metric_meta_from_samples_when_no_set_reports_a_metric_does_raise():
-    sample_sets = [[{}, {}], [{}, {}]]
-
-    with pytest.raises(GymratError, match="^No metrics found in benchmark output$"):
-        resolve_metric_meta_from_samples(sample_sets, None, make_adapter(), None)
-
-
-@pytest.mark.parametrize(
-    ("sample_sets", "defaults_fn", "config_metrics", "config_kinds", "expected"),
-    [
-        pytest.param(
-            [[{"throughput": 1.0}], [{"response-time": 1.0}]],
-            _by_metric_name,
-            {
-                "response-time": MetricEntry(gating=False),
-                "throughput": MetricEntry(exact=True),
-            },
-            None,
-            {
-                "throughput": metric_meta("throughput", direction="higher", exact=True),
-                "response-time": metric_meta("response-time", unit="ns", gating=False),
-            },
-            id="per-metric-entries-first-seen-in-a-later-set",
-        ),
-        pytest.param(
-            [[{"bench-a/time": 1.0}, {"bench-a/time": 1.0, "bench-a/heap": 1.0}]],
-            _by_metric_suffix,
-            None,
-            _MEMORY_NOT_GATING,
-            {
-                "bench-a/time": metric_meta("time", kind="time"),
-                "bench-a/heap": metric_meta("heap", gating=False, kind="memory"),
-            },
-            id="kind-gating-first-seen-in-a-later-round",
-        ),
-    ],
-)
-def test_resolve_metric_meta_from_samples_when_several_names_reported_does_resolve_each_in_first_seen_order(
-    sample_sets: list[list[dict[str, float]]],
-    defaults_fn: Callable[[str], MetricDefaults],
-    config_metrics: dict[str, MetricEntry] | None,
-    config_kinds: dict[str, KindEntry] | None,
-    expected: dict[str, ResolvedMetricMeta],
-):
-    result = resolve_metric_meta_from_samples(
-        sample_sets, config_metrics, make_adapter(defaults_fn), config_kinds
-    )
-
-    assert list(result) == list(expected)
-    assert result == expected
-
-
-_TIME = "bench#time"
-
-
-def _readings(*per_target: list[float], name: str = _TIME) -> list[list[dict[str, float]]]:
-    return [[{name: value} for value in values] for values in per_target]
-
-
-_ONE_STEP_UP_VALUES = ([333.0] * 5 + [375.0], [375.0] * 5 + [417.0])
-_ONE_STEP_UP = _readings(*_ONE_STEP_UP_VALUES)
-
-
-@pytest.mark.parametrize(
-    ("sample_sets", "gap"),
-    [
-        pytest.param(_ONE_STEP_UP, "42ns", id="one-step-up-on-every-pair"),
-        pytest.param(_readings([333.0] * 10, [417.0] * 10), "84ns", id="two-values-ten-times"),
-        pytest.param(
-            _readings([332.9999999550637, 333.0], [375.0, 417.0]),
-            "42ns",
-            id="float-noise-counts-as-one-value",
-        ),
-        pytest.param(_readings([333.0] * 3, [333.0] * 3), None, id="every-reading-one-value"),
-        pytest.param(_readings([0.0, 0.0], [0.0, 5.0]), "5ns", id="zero-median"),
-    ],
-)
-def test_resolve_metric_meta_from_samples_when_time_readings_look_quantized_does_warn_once(
-    sample_sets: list[list[dict[str, float]]], gap: str | None
-):
-    warnings: list[str] = []
-
-    result = resolve_metric_meta_from_samples(
-        sample_sets, None, metric_lines_adapter, None, warn=warnings.append
-    )
-
-    assert (result, warnings) == (
-        {_TIME: metric_meta("bench", unit="ns", kind="time")},
-        [quantized_warning(_TIME, gap)],
-    )
-
-
-def test_resolve_metric_meta_from_samples_when_no_sink_given_does_warn_on_stderr(
-    capsys: pytest.CaptureFixture[str],
-):
-    resolve_metric_meta_from_samples(_ONE_STEP_UP, None, metric_lines_adapter, None)
-
-    assert capsys.readouterr().err == f"{quantized_warning(_TIME, '42ns')}\n"
-
-
-@pytest.mark.parametrize(
-    ("sample_sets", "config_metrics", "config_kinds"),
-    [
-        pytest.param(
-            _ONE_STEP_UP, {_TIME: MetricEntry(resolution=42.0)}, None, id="metric-resolution"
-        ),
-        pytest.param(_ONE_STEP_UP, {_TIME: MetricEntry(exact=True)}, None, id="exact"),
-        pytest.param(
-            _readings(*_ONE_STEP_UP_VALUES, name="bench"),
-            None,
-            None,
-            id="unit-not-ns",
-        ),
-        pytest.param(_readings([333.0, 375.0], [333.0, 375.0]), None, None, id="no-target-repeats"),
-        pytest.param(
-            _readings([1000.0, 1000.0], [1000.0, 1005.0]), None, None, id="gap-at-half-a-percent"
-        ),
-        pytest.param(
-            _readings([10_000.0, 10_001.0, 10_003.0, 10_000.0], [10_002.0, 10_005.0, 10_007.0]),
-            None,
-            None,
-            id="ten-microseconds-on-a-one-nanosecond-timer",
-        ),
-    ],
-)
-def test_resolve_metric_meta_from_samples_when_readings_not_suspect_does_not_warn(
-    sample_sets: list[list[dict[str, float]]],
-    config_metrics: dict[str, MetricEntry] | None,
-    config_kinds: dict[str, KindEntry] | None,
-):
-    warnings: list[str] = []
-
-    resolve_metric_meta_from_samples(
-        sample_sets, config_metrics, metric_lines_adapter, config_kinds, warn=warnings.append
-    )
-
-    assert warnings == []
