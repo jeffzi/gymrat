@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a `resolution` key to metric and kind entries that declares a metric's measurement step, so a
+  change of about one step no longer reads as an improvement or a regression.
+- Warn when a time metric's readings repeat the way a coarse timer's do and it declares no
+  `resolution`.
+- Add a `reason` field to JSON and session-log verdicts that says why a `no-signal` verdict was
+  withheld although the medians differ.
+
 ### Changed
 
+- Require a byte metric to move by more than 1.25 bytes of its baseline median before it signals,
+  so a drop from 4 B to 2 B now reports an improvement.
 - **Breaking:** Rename the `turn_end` trace attribute `gymrat.turn.cost_usd` to
   `gymrat.turn.session_cost_usd`, which names the cumulative session cost it always carried; update
   any query or dashboard that reads it.
@@ -21,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Send `iterate`'s dropped-window warning to the same warning output as adapter warnings instead
+  of raw stderr.
 - Report git's refusal to answer (dubious ownership, an unreadable `.git`) instead of silently
   looking for the config file and session state in the wrong directory.
 - Wait briefly for a session lock another command holds, and fail on a lock file that cannot be

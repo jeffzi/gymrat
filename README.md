@@ -131,11 +131,23 @@ max_iterations = 20 # the loop stops after this many iterations
 # target_value = 9000000 # stop once the primary reaches this and is kept; needs a metric primary
 
 [metrics."decode#time"]
-direction = "lower" # per-metric overrides: direction, gating, exact
+direction = "lower" # per-metric overrides: direction, gating, exact, resolution
+resolution = 41.67 # one measurement step, in ns: a timer that ticks at 24 MHz
+
+[kinds.time]
+resolution = 41.67 # every time metric that sets no step of its own
 ```
 
-The file also accepts `runbook`, `unstable_noise_pct`, and per-kind `[kinds]` overrides. gymrat
-names any unknown key or invalid value when it reads the file.
+The file also accepts `runbook`, `unstable_noise_pct`, and per-kind `[kinds]` overrides of
+`gating` and `resolution`. gymrat names any unknown key or invalid value when it reads the file.
+
+`resolution` is the size of one measurement step, in the metric's unit: 41.67 for a timer that
+ticks at 24 MHz and is read in nanoseconds. One byte is built in for `#heap` metrics. A change of
+one step never signals, because the true change behind it can be anything from nothing to two
+steps. Where the bench allows it, timing more iterations per reading is the better cure, since it
+shrinks the step against the reading. gymrat warns when a time metric's readings look quantized and
+no step is declared. The gap the warning names is the largest the step can be, so declare the
+timer's tick rather than the gap.
 
 Precedence: command-line flag > `GYMRAT_*` environment variable (`GYMRAT_BENCH`, `GYMRAT_SAMPLES`,
 …) > `gymrat.toml` > built-in default.
@@ -397,11 +409,11 @@ exceed the metric's noise band.
 
 A metric's noise band is 1.5 times the larger of the two sides' half-ranges (half the span from
 lowest to highest sample), each taken as a percentage of that side's median, and never less than
-0.5%. The measurement resolution is the smallest change a metric can show. Byte metrics are
-quantized to whole bytes, so their resolution is one byte as a percentage of each side's median,
-whichever is larger, and a change within it counts as noise whatever the pairs say. Setting
-`exact = true` on a metric skips the statistical test and the noise band: any difference between
-its medians is a change.
+0.5%. A metric measured in whole steps must also move by more than 1.25 steps: one byte for a
+`#heap` metric, the declared `resolution` otherwise. Its band therefore never sits below 1.25 steps
+as a share of the baseline median, and a change within those 1.25 steps counts as noise whatever
+the pairs say. Setting `exact = true` on a metric skips the statistical test and the noise band: any
+difference between its medians is a change.
 
 Each metric lands in one class:
 
@@ -409,13 +421,20 @@ Each metric lands in one class:
 - **≈ unstable** — the samples are too erratic to judge.
 - **= identical** — every pair tied (an `exact` metric shows within noise instead).
 - **~ within noise** — gymrat could not confirm a change. The change is indistinguishable from
-  noise, falls within the metric's measurement resolution, has no finite percentage, or runs
+  noise, falls within 1.25 of the metric's measurement steps, has no finite percentage, or runs
   against the pairs (the medians do not move the way the pairs do).
 - **? inconclusive** — fewer than 6 pairs, too few for a statistical verdict.
 
 JSON output stores identical and within-noise as `no-signal`. An inconclusive verdict keeps the
 value the noise band gave it (`improved`, `regressed`, `unstable`, or `no-signal`), with fewer than
-6 pairs behind it.
+6 pairs behind it. A `no-signal` verdict whose medians differ carries a `reason`:
+
+- `non-finite-delta` — the change has no finite percentage.
+- `resolution` — the change falls within 1.25 measurement steps.
+- `noise` — the noise band rejects the change, too few pairs differ, or the permutation test is
+  not significant.
+- `direction-mismatch` — the pairs move the other way from the medians.
+- `unconfirmed` — a confirmation rerun did not reproduce the regression.
 
 ## Contributing
 
