@@ -22,6 +22,10 @@ metric with no resolution, or a zero baseline median, has no step floor.
 Every approximate ``"no-signal"`` verdict with a non-zero delta records why the
 signal was withheld, as a :data:`~gymrat.session.schema.WithheldReason`.
 
+Every approximate verdict also states the smallest change the run could have
+detected, as a percentage of the baseline median: the detectable shift of the
+paired differences on the permutation path, the noise band on the band path.
+
 Verdicts are then averaged hierarchically — one geometric mean per kind, per
 group, and per gating subset. Each mean covers exactly the metrics in its scope,
 in log space over each metric's normalized ratio, and propagates their noise
@@ -62,6 +66,7 @@ from gymrat.stats import (
     combine_geomean,
     compute_half_range,
     count_nonzero_pairs,
+    detectable_shift,
     normalize_ratio,
     percent_delta,
     sign_flip_permutation_test,
@@ -125,15 +130,17 @@ class _Noise:
             has no resolution, the baseline median is zero, or the floor
             overflows (which forces the verdict unstable). A delta no larger
             than this is a step of quantization, not a measured move.
+        step_floor_overflows: Whether the step floor overflows against a
+            non-zero baseline median, so it has no finite percentage.
         force_unstable: Whether a side scattered around a median too close to
             zero to express its noise as a percentage, which understates ``pct``,
-            or the step floor overflows against a non-zero baseline median,
-            which needs no scatter.
+            or the step floor overflows, which needs no scatter.
     """
 
     pct: float
     abs: float
     step_floor_pct: float
+    step_floor_overflows: bool
     force_unstable: bool
 
 
@@ -201,6 +208,9 @@ def _compute_noise(samples: _PairedSamples, resolution: float | None) -> _Noise:
     if resolution is not None:
         step_floor = fraction_of_median(RESOLUTION_STEPS * resolution, samples.median_left, 100)
     step_floor_pct = step_floor if step_floor is not None else 0.0
+    step_floor_overflows = (
+        resolution is not None and step_floor is None and samples.median_left != 0
+    )
 
     # A side with scatter but no median magnitude cannot express its noise as a
     # percentage and adds no term to `pct`, which would understate the band; force
@@ -210,15 +220,60 @@ def _compute_noise(samples: _PairedSamples, resolution: float | None) -> _Noise:
     force_unstable = (
         (noise_pct_a is None and half_range_a != 0)
         or (noise_pct_b is None and half_range_b != 0)
-        or (resolution is not None and step_floor is None and samples.median_left != 0)
+        or step_floor_overflows
     )
 
     return _Noise(
         pct=max(_largest_term(noise_pct_a, noise_pct_b), NOISE_FLOOR_PCT, step_floor_pct),
         abs=NOISE_K * max(half_range_a, half_range_b),
         step_floor_pct=step_floor_pct,
+        step_floor_overflows=step_floor_overflows,
         force_unstable=force_unstable,
     )
+
+
+def _band_detectable_pct(nonzero_n: int, samples: _PairedSamples, noise: _Noise) -> float | None:
+    """The band a band verdict's delta had to clear, as its detectable change.
+
+    A forced-unstable band understates the noise or sits on an overflowing step
+    floor.
+
+    Args:
+        nonzero_n: How many pairs differ by a non-zero amount.
+        samples: The paired baseline/candidate samples for the metric.
+        noise: The metric's noise thresholds.
+
+    Returns:
+        The noise band in percent, or ``None`` with fewer than
+        :data:`BAND_MIN_N` differing pairs, a zero baseline median, or a
+        forced-unstable band.
+    """
+    if nonzero_n < BAND_MIN_N or samples.median_left == 0 or noise.force_unstable:
+        return None
+    return noise.pct
+
+
+def _permutation_detectable_pct(samples: _PairedSamples, noise: _Noise) -> float | None:
+    """The detectable shift as a percentage of the baseline median, floored at the step floor.
+
+    The shift runs the permutation test, which draws thousands of resamples
+    above 13 pairs, so it is computed once per metric.
+
+    Args:
+        samples: The paired baseline/candidate samples for the metric.
+        noise: The metric's noise thresholds, which carry the step floor.
+
+    Returns:
+        The detectable change in percent, or ``None`` when the shift or the
+        step floor has no finite percentage.
+    """
+    if noise.step_floor_overflows:
+        return None
+    shift = detectable_shift(samples.left, samples.right)
+    shift_pct = fraction_of_median(shift, samples.median_left, 100)
+    if shift_pct is None:
+        return None
+    return max(shift_pct, noise.step_floor_pct)
 
 
 def _withheld_reason(
@@ -283,7 +338,8 @@ def _compute_approximate_verdict(
 
     The band path needs no separate step-floor gate: the floor sits inside its
     band. A ``"no-signal"`` verdict with a non-zero delta carries the reason it
-    was withheld; the unstable override replaces the verdict and clears it.
+    was withheld; the unstable override replaces the verdict and clears it. The
+    detectable change is decided before the override and survives it.
 
     Args:
         samples: The paired baseline/candidate samples for the metric.
@@ -313,6 +369,7 @@ def _compute_approximate_verdict(
             delta=delta,
             n=n,
             reason=_withheld_reason(verdict, delta, noise, noise_rejects=not clears_band),
+            detectable_pct=_band_detectable_pct(nonzero_n, samples, noise),
         )
     else:
         p, statistic = sign_flip_permutation_test(samples.left, samples.right)
@@ -333,6 +390,7 @@ def _compute_approximate_verdict(
             delta=delta,
             n=n,
             reason=_withheld_reason(verdict, delta, noise, noise_rejects=not significant),
+            detectable_pct=_permutation_detectable_pct(samples, noise),
         )
 
     # The band is too wide to measure any delta against, so the override is

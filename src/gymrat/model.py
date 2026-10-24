@@ -154,6 +154,10 @@ class PermutationVerdict:
         n: Number of paired samples.
         reason: Why a ``"no-signal"`` verdict with a non-zero delta was
             withheld; ``None`` for every other verdict.
+        detectable_pct: The smallest change, as a percentage of the baseline
+            median, the run could have detected: the detectable shift of the
+            paired differences, never below the metric's step floor. ``None``
+            when the figure has no finite percentage.
     """
 
     method: Literal["permutation"]
@@ -164,6 +168,7 @@ class PermutationVerdict:
     delta: float
     n: int
     reason: schema.WithheldReason | None = None
+    detectable_pct: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +185,10 @@ class BandVerdict:
         n: Number of paired samples.
         reason: Why a ``"no-signal"`` verdict with a non-zero delta was
             withheld; ``None`` for every other verdict.
+        detectable_pct: The smallest change, as a percentage of the baseline
+            median, the run could have detected: the noise band the delta had
+            to clear. ``None`` with fewer than two differing pairs, a zero
+            baseline median, or a band with no finite percentage.
     """
 
     method: Literal["band"]
@@ -190,6 +199,7 @@ class BandVerdict:
     delta: float
     n: int
     reason: schema.WithheldReason | None = None
+    detectable_pct: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,29 +225,29 @@ MetricVerdict = PermutationVerdict | BandVerdict | ExactVerdict
 
 def verdict_stats(
     verdict: MetricVerdict,
-) -> tuple[float | None, float | None, schema.WithheldReason | None]:
+) -> tuple[float | None, float | None, schema.WithheldReason | None, float | None]:
     """The method-specific fields of a verdict, ``None`` where its method carries none.
 
     This is the single place the rule for which fields each method carries lives:
     only a permutation verdict has a p-value, and every non-exact verdict has a
-    noise figure and a withheld reason.
+    noise figure, a withheld reason and a detectable change.
 
     Args:
         verdict: The verdict to read.
 
     Returns:
-        The ``(p, noise_pct, reason)`` triple. ``p`` is ``None`` unless the
-        verdict is a permutation one; ``noise_pct`` and ``reason`` are ``None``
-        for an exact verdict, and ``reason`` is also ``None`` for a verdict that
-        was not withheld.
+        The ``(p, noise_pct, reason, detectable_pct)`` tuple. ``p`` is ``None``
+        unless the verdict is a permutation one; the other three are ``None``
+        for an exact verdict. ``reason`` is also ``None`` for a verdict that was
+        not withheld, and ``detectable_pct`` for one with no finite figure.
     """
     match verdict:
         case PermutationVerdict():
-            return verdict.p, verdict.noise_pct, verdict.reason
+            return verdict.p, verdict.noise_pct, verdict.reason, verdict.detectable_pct
         case BandVerdict():
-            return None, verdict.noise_pct, verdict.reason
+            return None, verdict.noise_pct, verdict.reason, verdict.detectable_pct
         case ExactVerdict():
-            return None, None, None
+            return None, None, None, None
         case _ as unreachable:  # pragma: no cover — exhaustive match over MetricVerdict
             assert_never(unreachable)
 

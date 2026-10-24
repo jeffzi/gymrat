@@ -177,7 +177,7 @@ def recorded_verdicts(
     """
     recorded: dict[str, IterationMetricVerdict] = {}
     for name, verdict in verdicts.items():
-        p, noise_pct, reason = verdict_stats(verdict)
+        p, noise_pct, reason, _detectable_pct = verdict_stats(verdict)
         recorded[name] = IterationMetricVerdict(
             delta_pct=finite_or_none(verdict.delta),
             verdict=verdict.verdict,

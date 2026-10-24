@@ -2,7 +2,14 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from gymrat.model import pair_metric
+from gymrat.model import (
+    BandVerdict,
+    ExactVerdict,
+    MetricVerdict,
+    PermutationVerdict,
+    pair_metric,
+    verdict_stats,
+)
 
 _METRIC_NAMES = ["time", "mem", "cpu"]
 
@@ -105,3 +112,52 @@ def test_pair_metric_when_given_any_rounds_does_drop_unpaired_rounds_preserving_
     assert result.left == tuple(left[index][metric] for index in kept)
     assert result.right == tuple(right[index][metric] for index in kept)
     assert result.dropped == len(exactly_one)
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected"),
+    [
+        pytest.param(
+            PermutationVerdict(
+                method="permutation",
+                verdict="no-signal",
+                p=0.2,
+                noise_pct=3.0,
+                noise_abs=3.0,
+                delta=1.0,
+                n=8,
+                reason="noise",
+                detectable_pct=2.5,
+            ),
+            (0.2, 3.0, "noise", 2.5),
+            id="permutation",
+        ),
+        pytest.param(
+            BandVerdict(
+                method="band",
+                verdict="no-signal",
+                usable_n=2,
+                noise_pct=3.0,
+                noise_abs=3.0,
+                delta=1.0,
+                n=2,
+                reason="noise",
+                detectable_pct=4.0,
+            ),
+            (None, 3.0, "noise", 4.0),
+            id="band",
+        ),
+        pytest.param(
+            ExactVerdict(method="exact", verdict="improved", delta=1.0, n=1),
+            (None, None, None, None),
+            id="exact",
+        ),
+    ],
+)
+def test_verdict_stats_when_method_varies_does_carry_fields_the_method_computes(
+    verdict: MetricVerdict,
+    expected: tuple[float | None, float | None, str | None, float | None],
+):
+    result = verdict_stats(verdict)
+
+    assert result == expected

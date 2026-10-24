@@ -209,7 +209,7 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
         name = verdict.verdict
         method = verdict.method
         delta = verdict.delta
-        p, noise_pct, reason = verdict_stats(verdict)
+        p, noise_pct, reason, _detectable_pct = verdict_stats(verdict)
         if isinstance(verdict, BandVerdict):
             band_pct = noise_pct
     return {
