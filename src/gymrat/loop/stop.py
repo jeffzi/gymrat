@@ -19,14 +19,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from gymrat import utils
 from gymrat.errors import GymratError
-from gymrat.report.loop import first_line
-from gymrat.session.clock import now_ns
 from gymrat.session.records import StopRecord
-from gymrat.session.store import append_record, require_open_session
+from gymrat.session.store import (
+    append_record,
+    require_open_session,
+    require_settled,
+    settle_first_hint,
+)
+from gymrat.utils import first_line
 
-#: The hint a refusal points at whenever the fix is to settle the last iteration.
-_SETTLE_FIRST_HINT = "Run gymrat keep or gymrat discard before stopping."
+_SETTLE_VERB = "stopping"
+"""What a stop refusal says the user was about to do."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +50,8 @@ def stop_session(root: str, message: str) -> StopResult:
         message: The reason to record for stopping the session.
 
     Returns:
-        The stop result with the rendered report and timestamp.
+        The appended stop record (carrying its timestamp) and its one-line
+        report.
 
     Raises:
         GymratError: When no session is open, when the session is finalized,
@@ -55,19 +61,13 @@ def stop_session(root: str, message: str) -> StopResult:
     required = require_open_session(root, "stopping the session")
     state = required.state
 
-    if state.unsettled:
-        msg = f"Iteration {state.last_seq} has not been settled"
-        raise GymratError(
-            msg,
-            hint=_SETTLE_FIRST_HINT,
-            reason="unsettled",
-        )
+    require_settled(state, _SETTLE_VERB)
 
     if state.ends_on_gating_block:
         msg = f"Iteration {state.last_seq} is blocked by a gating regression"
         raise GymratError(
             msg,
-            hint=_SETTLE_FIRST_HINT,
+            hint=settle_first_hint(_SETTLE_VERB),
             reason="gating-block",
         )
 
@@ -79,7 +79,7 @@ def stop_session(root: str, message: str) -> StopResult:
             reason="already-stopped",
         )
 
-    at = now_ns()
+    at = utils.now_ns()
     record = StopRecord(type="stop", at=at, message=message)
     append_record(required.jsonl_path, record)
 

@@ -11,8 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from gymrat.session import clock as _clock
-from gymrat.session.clock import now_ns
+from gymrat import utils
 from gymrat.session.records import BaselineRecord
 
 if TYPE_CHECKING:
@@ -37,31 +36,27 @@ async def measure_baseline(
         A ``(result, record)`` pair. The record carries the measurement's label,
         every round it collected, and the wall-clock duration of the engine call.
         Nothing is appended to a session log.
+
+    Raises:
+        GymratError: When the adapter is unknown or the target is neither a
+            directory nor a resolvable ref. When the worktree cleanup also
+            failed, the message carries its diagnostics.
+        CommandError: When a prepare or bench command times out or exits
+            non-zero.
     """
     from gymrat import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the heavy measurement stack
         measure as engine,
     )
 
-    options = engine.MeasureOptions(
-        target=target,
-        bench=run_options.bench,
-        prepare=run_options.prepare,
-        adapter=run_options.adapter,
-        samples=run_options.samples,
-        timeout_seconds=run_options.timeout_seconds,
-        config_metrics=run_options.config_metrics,
-        config_kinds=run_options.config_kinds,
-        on_progress=run_options.on_progress,
-        warn=run_options.warn,
-    )
+    options = engine.MeasureOptions(run=run_options, target=target)
 
-    start = _clock.monotonic_ms()
+    start = utils.monotonic_ms()
     result = await engine.measure(options)
-    duration_ms = int(_clock.monotonic_ms() - start)
+    duration_ms = int(utils.monotonic_ms() - start)
 
     record = BaselineRecord(
         type="baseline",
-        at=now_ns(),
+        at=utils.now_ns(),
         label=result.label,
         samples=tuple(result.rounds),
         duration_ms=duration_ms,

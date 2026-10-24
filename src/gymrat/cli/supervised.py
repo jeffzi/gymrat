@@ -6,28 +6,31 @@ drive the loop through its tools, so a command whose origin is not ``tool`` is
 refused with a hint pointing at the matching tool.
 """
 
-import os
-
+from gymrat import utils
+from gymrat.command_run import command_origin
 from gymrat.errors import GymratError
-from gymrat.session import clock
 from gymrat.session.budget import read_budget
-from gymrat.session.schema import CommandOrigin
 
 __all__ = [
-    "command_origin",
     "guard_supervised_origin",
     "is_supervised_run_live",
 ]
 
 
-def command_origin() -> CommandOrigin:
-    """The running command's origin: ``tool`` only when the supervisor says so, else ``cli``."""
-    return "tool" if os.environ.get("GYMRAT_COMMAND_ORIGIN") == "tool" else "cli"
-
-
 def is_supervised_run_live(root: str) -> bool:
-    """Whether a supervised run with a live budget owns the repository at ``root``."""
-    return read_budget(root, now_ms=clock.now_ms()) is not None
+    """Check the budget file and supervise lock under ``root`` for a live supervised run.
+
+    Args:
+        root: Repository root whose budget and supervise lock are read.
+
+    Returns:
+        ``True`` when a supervised run with a live budget holds the repository.
+
+    Raises:
+        GymratError: When the supervise lock file cannot be opened, so whether
+            a supervised run holds it is unknown.
+    """
+    return read_budget(root, now_ms=utils.now_ms()) is not None
 
 
 def guard_supervised_origin(root: str, command: str) -> None:
@@ -39,7 +42,9 @@ def guard_supervised_origin(root: str, command: str) -> None:
 
     Raises:
         GymratError: When a supervised run is live and the command's origin is
-            not ``tool``; carries the ``supervised-use-tool`` reason.
+            not ``tool``; carries the ``supervised-use-tool`` reason. Also when the
+            supervise lock file cannot be opened, so whether a supervised run holds it is
+            unknown.
     """
     if command_origin() == "tool" or not is_supervised_run_live(root):
         return

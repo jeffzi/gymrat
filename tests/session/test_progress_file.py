@@ -2,16 +2,17 @@
 
 The sidecar carries a JSON snapshot that a dashboard or supervisor polls via
 ``read_progress``.  ``write_progress`` writes atomically so readers never see a
-partial file.  ``clear_progress`` removes the sidecar when the iteration exits.
-``create_sidecar_writer`` returns a callback that translates ``PassStarted`` /
+partial file.  ``clear_progress`` hands its path and label to the shared sidecar
+removal pinned in ``tests/utils/test_sidecar.py``; here only its stderr warning
+when the OS refuses the removal is pinned.
+``SidecarWriter`` is a callback that translates ``PassStarted`` /
 ``PassFinished`` events into sidecar writes.
 """
 
 import json
-import os
-import time
-from dataclasses import asdict
+from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -20,80 +21,51 @@ from gymrat.progress_events import (
     PassFinished,
     PassStarted,
     PrepareStarted,
+    ProgressEvent,
 )
 from gymrat.session.paths import progress_path, session_dir
 from gymrat.session.progress_file import (
-    STALENESS_BOUND_SECONDS,
     ProgressSnapshot,
+    SidecarWriter,
     clear_progress,
-    create_sidecar_writer,
     read_progress,
     write_progress,
 )
-
-
-@pytest.fixture
-def root(tmp_path: Path) -> str:
-    """A fake repo root with the .gymrat session directory pre-created."""
-    session = tmp_path / ".gymrat"
-    session.mkdir()
-    return str(tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# progress_path
-# ---------------------------------------------------------------------------
-
-
-def test_progress_path_when_given_root_does_place_file_under_session_dir(
-    root: str,
-):
-    result = progress_path(root)
-
-    expected = str(Path(session_dir(root)) / "progress.json")
-    assert result == expected
-
+from gymrat.utils import now_ms
+from tests._mode_bits import needs_mode_bits
+from tests.session._progress_file import fail_unlink_of
 
 # ---------------------------------------------------------------------------
 # write_progress
 # ---------------------------------------------------------------------------
 
 
-def _make_snapshot(**overrides: object) -> ProgressSnapshot:
+def _make_snapshot(
+    *, passes_completed: int = 3, passes_total: int = 10, last_pass_duration_ms: float = 1234.5
+) -> ProgressSnapshot:
     """Build a ProgressSnapshot with sensible defaults, overridable per-field."""
-    defaults: dict[str, object] = {
-        "passes_completed": 3,
-        "passes_total": 10,
-        "last_pass_duration_ms": 1234.5,
-    }
-    defaults.update(overrides)
-    return ProgressSnapshot(**defaults)  # type: ignore[arg-type]
+    return ProgressSnapshot(
+        passes_completed=passes_completed,
+        passes_total=passes_total,
+        last_pass_duration_ms=last_pass_duration_ms,
+    )
+
+
+_VALID_FIELDS: dict[str, object] = _make_snapshot().model_dump()
 
 
 def _progress_file(root: str) -> Path:
     return Path(progress_path(root))
 
 
-def _read_json(root: str) -> dict[str, object]:
-    """Read and parse the raw sidecar JSON under *root*."""
-    return json.loads(_progress_file(root).read_text(encoding="utf-8"))
-
-
-def test_write_progress_when_called_does_create_readable_json_file(root: str):
+def test_write_progress_when_called_does_write_compact_json_bytes(root: str):
     snapshot = _make_snapshot()
 
     write_progress(root, snapshot)
 
-    assert _read_json(root) == asdict(snapshot)
-
-
-def test_write_progress_when_called_twice_does_overwrite_previous_snapshot(
-    root: str,
-):
-    write_progress(root, _make_snapshot(passes_completed=1))
-    write_progress(root, _make_snapshot(passes_completed=2))
-
-    assert _read_json(root)["passes_completed"] == 2
+    assert _progress_file(root).read_text(encoding="utf-8") == (
+        '{"passes_completed":3,"passes_total":10,"last_pass_duration_ms":1234.5}'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -101,8 +73,20 @@ def test_write_progress_when_called_twice_does_overwrite_previous_snapshot(
 # ---------------------------------------------------------------------------
 
 
-def test_read_progress_when_file_exists_does_return_snapshot(root: str):
-    original = _make_snapshot()
+@pytest.mark.parametrize(
+    "original",
+    [
+        pytest.param(_make_snapshot(), id="typical"),
+        pytest.param(
+            _make_snapshot(passes_completed=0, passes_total=0, last_pass_duration_ms=0.0),
+            id="all-zero",
+        ),
+        pytest.param(_make_snapshot(last_pass_duration_ms=250.0), id="whole-number-duration"),
+    ],
+)
+def test_read_progress_when_file_written_does_round_trip_every_field(
+    root: str, original: ProgressSnapshot
+):
     write_progress(root, original)
 
     result = read_progress(root)
@@ -110,37 +94,23 @@ def test_read_progress_when_file_exists_does_return_snapshot(root: str):
     assert result == original
 
 
-def test_read_progress_when_file_absent_does_return_none(root: str):
-    result = read_progress(root)
-
-    assert result is None
+def _json(payload: object) -> bytes:
+    return json.dumps(payload).encode()
 
 
-def test_read_progress_when_file_contains_invalid_json_does_return_none(
-    root: str,
+@pytest.mark.parametrize(
+    "contents",
+    [
+        pytest.param(None, id="file-absent"),
+        pytest.param(_json({**_VALID_FIELDS, "unexpected_field": 42}), id="extra-unknown-key"),
+        pytest.param(_json({**_VALID_FIELDS, "passes_total": True}), id="bool-for-int"),
+    ],
+)
+def test_read_progress_when_file_absent_or_not_a_snapshot_does_return_none(
+    root: str, contents: bytes | None
 ):
-    _progress_file(root).write_text("not valid json{{{", encoding="utf-8")
-
-    result = read_progress(root)
-
-    assert result is None
-
-
-def test_read_progress_when_file_contains_wrong_schema_does_return_none(
-    root: str,
-):
-    _progress_file(root).write_text(json.dumps({"unexpected_field": 42}), encoding="utf-8")
-
-    result = read_progress(root)
-
-    assert result is None
-
-
-def test_read_progress_when_file_is_stale_does_return_none(root: str):
-    write_progress(root, _make_snapshot())
-    path = _progress_file(root)
-    stale_time = time.time() - STALENESS_BOUND_SECONDS - 60
-    os.utime(path, (stale_time, stale_time))
+    if contents is not None:
+        _progress_file(root).write_bytes(contents)
 
     result = read_progress(root)
 
@@ -148,40 +118,41 @@ def test_read_progress_when_file_is_stale_does_return_none(root: str):
 
 
 @pytest.mark.parametrize(
-    "exception",
+    ("age_seconds", "survives"),
     [
-        pytest.param(
-            FileNotFoundError(2, "No such file", "progress.json"),
-            id="file-vanishes-mid-read",
-        ),
-        pytest.param(
-            PermissionError(13, "Permission denied", "progress.json"),
-            id="permission-denied",
-        ),
+        pytest.param(540, True, id="inside-the-ten-minute-bound"),
+        pytest.param(660, False, id="past-the-ten-minute-bound"),
     ],
 )
-def test_read_progress_when_read_text_raises_os_error_does_return_none(
-    root: str, monkeypatch: pytest.MonkeyPatch, exception: OSError
+def test_read_progress_when_clock_advances_does_discard_only_past_the_bound(
+    root: str, monkeypatch: pytest.MonkeyPatch, age_seconds: int, survives: bool
 ):
+    snapshot = _make_snapshot()
+    write_progress(root, snapshot)
+    written_ms = _progress_file(root).stat().st_mtime * 1000
+    monkeypatch.setattr(
+        "gymrat.utils.now_ms",
+        create_autospec(now_ms, return_value=written_ms + age_seconds * 1000),
+    )
+
+    result = read_progress(root)
+
+    assert result == (snapshot if survives else None)
+
+
+@pytest.fixture
+def unsearchable_sidecar(root: str) -> Iterator[str]:
+    """A written sidecar whose session directory denies search, so the file cannot be stat'd."""
     write_progress(root, _make_snapshot())
-    original_read_text = Path.read_text
-
-    def failing_read(self: Path, *args: object, **kwargs: object) -> str:
-        if str(self) == str(_progress_file(root)):
-            raise exception
-        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(Path, "read_text", failing_read)
-
-    result = read_progress(root)
-
-    assert result is None
+    session = Path(session_dir(root))
+    session.chmod(0o600)
+    yield root
+    session.chmod(0o700)
 
 
-def test_read_progress_when_file_contains_non_utf8_bytes_does_return_none(root: str):
-    _progress_file(root).write_bytes(b"\x80\x81\x82")
-
-    result = read_progress(root)
+@needs_mode_bits
+def test_read_progress_when_sidecar_cannot_be_stat_does_return_none(unsearchable_sidecar: str):
+    result = read_progress(unsearchable_sidecar)
 
     assert result is None
 
@@ -191,39 +162,35 @@ def test_read_progress_when_file_contains_non_utf8_bytes_does_return_none(root: 
 # ---------------------------------------------------------------------------
 
 
-def test_clear_progress_when_file_exists_does_remove_it(root: str):
+@pytest.fixture
+def held_open_sidecar(root: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A written sidecar whose removal fails the way a win32 sharing violation does."""
     write_progress(root, _make_snapshot())
-
-    clear_progress(root)
-
-    assert not _progress_file(root).exists()
+    fail_unlink_of(progress_path(root), monkeypatch)
+    return root
 
 
-def test_clear_progress_when_file_absent_does_not_raise(root: str):
-    clear_progress(root)
+def test_clear_progress_when_unlink_raises_and_no_sink_given_does_warn_on_stderr(
+    held_open_sidecar: str, capsys: pytest.CaptureFixture[str]
+):
+    clear_progress(held_open_sidecar)
 
-
-# ---------------------------------------------------------------------------
-# ProgressSnapshot
-# ---------------------------------------------------------------------------
-
-
-def test_progress_snapshot_when_constructed_does_be_frozen():
-    snapshot = _make_snapshot()
-
-    with pytest.raises(AttributeError):
-        snapshot.passes_completed = 99  # type: ignore[misc]
+    warnings = capsys.readouterr().err.splitlines()
+    assert len(warnings) == 1
+    assert warnings[0].startswith(
+        f"warning: could not remove the progress sidecar {progress_path(held_open_sidecar)}: "
+    )
 
 
 # ---------------------------------------------------------------------------
-# create_sidecar_writer
+# SidecarWriter
 # ---------------------------------------------------------------------------
 
 
-def test_create_sidecar_writer_when_pass_started_does_write_snapshot_with_zero_completed(
+def test_sidecar_writer_when_pass_started_does_write_snapshot_with_zero_completed(
     root: str,
 ):
-    writer = create_sidecar_writer(root)
+    writer = SidecarWriter(root)
     event = PassStarted(
         round=1,
         total_rounds=5,
@@ -241,10 +208,10 @@ def test_create_sidecar_writer_when_pass_started_does_write_snapshot_with_zero_c
     assert snapshot.passes_total == 10
 
 
-def test_create_sidecar_writer_when_pass_finished_does_increment_completed_and_record_duration(
+def test_sidecar_writer_when_pass_finished_does_increment_completed_and_record_duration(
     root: str,
 ):
-    writer = create_sidecar_writer(root)
+    writer = SidecarWriter(root)
     writer(
         PassStarted(
             round=1,
@@ -284,21 +251,21 @@ def test_create_sidecar_writer_when_pass_finished_does_increment_completed_and_r
         ),
     ],
 )
-def test_create_sidecar_writer_when_non_pass_event_does_not_write(
+def test_sidecar_writer_when_non_pass_event_does_not_write(
     root: str,
-    event: object,
+    event: ProgressEvent,
 ):
-    writer = create_sidecar_writer(root)
+    writer = SidecarWriter(root)
 
-    writer(event)  # type: ignore[arg-type]
+    writer(event)
 
     assert read_progress(root) is None
 
 
-def test_create_sidecar_writer_when_confirm_follows_measure_does_reset_passes_completed(
+def test_sidecar_writer_when_confirm_follows_measure_does_reset_passes_completed(
     root: str,
 ):
-    writer = create_sidecar_writer(root)
+    writer = SidecarWriter(root)
     # Complete all measure passes: 2 rounds * 1 target = 2 total
     writer(
         PassStarted(
@@ -321,7 +288,6 @@ def test_create_sidecar_writer_when_confirm_follows_measure_does_reset_passes_co
         )
     )
 
-    # Confirm phase starts: passes_completed must reset to 0, not carry over
     writer(
         PassStarted(
             round=1, total_rounds=2, target_count=1, label="x", at_ms=300.0, phase="confirm"

@@ -3,10 +3,11 @@
 A child spawned into its own session or job can leave grandchildren running
 when it is torn down, and a child that is itself a gymrat run holds benches
 that only it can reach. Teardown is therefore two steps:
-:func:`terminate_process_group` asks the tree to stop and gives it
-:data:`TERMINATE_GRACE_S` to act on that, and :func:`kill_process_group` takes
-down whatever is still standing. Neither raises into the caller: a tree that is
-already gone is silent, and any other failure surfaces as a
+:func:`terminate_process_group` asks the tree to stop, the caller gives it a
+grace to act on that (:data:`TERMINATE_GRACE_S`, less in a nested run), and
+:func:`kill_process_group` takes down whatever is still standing. Neither
+raises into the caller: a tree that is already gone is silent, and any other
+failure surfaces as a
 :class:`RuntimeWarning` — unless the caller opts into ``defer_refusal``, in
 which case a POSIX ``EPERM`` refusal is returned silently instead, and the
 caller must signal again after reaping the leader.
@@ -26,6 +27,7 @@ takes the process handle. A child that cannot be assigned falls back to
 ``taskkill /T /F``, which walks the parent-child tree instead.
 """
 
+import asyncio
 import ctypes
 import errno
 import functools
@@ -36,16 +38,48 @@ import subprocess
 import sys
 import time
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Tuning constants and clock hooks
+# ---------------------------------------------------------------------------
 
 TERMINATE_GRACE_S = 1.0
-"""Seconds a tree gets to act on a stop request before it is killed."""
+"""Seconds a tree gets to act on a stop request before the outermost gymrat run kills it.
+
+A nested run waits less, so its own teardown ends inside the wait of the run above it.
+"""
+
+monotonic: Callable[[], float] = time.monotonic
+"""The clock every group wait measures its grace against.
+
+The waits read it, :data:`sleep` and :data:`async_sleep` from this module at
+call time, so replacing all three with a fake clock whose sleeps advance it runs
+a wait in no real time.
+"""
+
+sleep: Callable[[float], None] = time.sleep
+"""The blocking pause between polls of the group waits and the POSIX kill's settle loop.
+
+The group waits are the signal path's group wait and the win32 job wait.
+"""
+
+async_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+"""The pause between polls of :func:`wait_for_process_group_exit_async`."""
 
 _TASKKILL_GONE = 128
 """``taskkill`` exit status meaning the process was already gone."""
 
-_EXIT_POLL_S = 0.01
-"""Seconds between liveness polls while a grace is waited out."""
+EXIT_POLL_S = 0.01
+"""Seconds between liveness polls while a grace is waited out or a kill settles."""
+
+KILL_SETTLE_S = 0.1
+"""Seconds a POSIX group kill keeps re-killing members that survived its first ``SIGKILL``.
+
+macOS can leave a child that a member forked at the instant of the kill alive
+in the group, and every caller drops the group once the kill returns.
+"""
 
 _DARWIN_PROC_PGRP_MIB = (1, 14, 2)
 """``CTL_KERN``, ``KERN_PROC``, ``KERN_PROC_PGRP``: the sysctl listing one group's processes.
@@ -72,6 +106,15 @@ _DARWIN_SZOMB = 5
 _DARWIN_LISTING_HEADROOM = 4
 """Extra ``kinfo_proc`` slots for members that join between the size query and the read."""
 
+PROC_ROOT = Path("/proc")
+"""Where Linux lists every process, as a ``<pid>/stat`` file per process.
+
+Read at call time, so a test can point it at a directory of fake ``stat`` files.
+"""
+
+_LINUX_GONE_STATES = frozenset({"Z", "X", "x"})
+"""``/proc/<pid>/stat`` states of a process that has exited: zombie or dead."""
+
 _KILL_SIGNAL = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
 """Signal that kills a POSIX process group outright.
 
@@ -79,6 +122,10 @@ Windows defines no ``SIGKILL``, and its teardown goes through the child's job
 rather than a signal, so the value bound there is never delivered — reading the
 attribute at all is what has to be avoided.
 """
+
+# ---------------------------------------------------------------------------
+# Windows job objects
+# ---------------------------------------------------------------------------
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -229,6 +276,9 @@ if sys.platform == "win32":
         Closing the last handle kills the members asynchronously, so the kill is
         driven explicitly and waited on instead: a caller that returns from here
         must be able to treat the whole tree as gone.
+
+        Args:
+            pid: The process whose job to tear down.
         """
         job = _job_handles.pop(pid, None)
         if job is not None:
@@ -239,7 +289,7 @@ if sys.platform == "win32":
         """Block until the job reports no active process, or the grace elapses."""
         kernel32 = ctypes.windll.kernel32
         info = _BasicAccountingInformation()
-        deadline = time.monotonic() + TERMINATE_GRACE_S
+        deadline = monotonic() + TERMINATE_GRACE_S
         while True:
             queried = kernel32.QueryInformationJobObject(
                 job,
@@ -248,9 +298,9 @@ if sys.platform == "win32":
                 ctypes.sizeof(info),
                 None,
             )
-            if not queried or info.ActiveProcesses == 0 or time.monotonic() >= deadline:
+            if not queried or info.ActiveProcesses == 0 or monotonic() >= deadline:
                 return
-            time.sleep(_EXIT_POLL_S)
+            sleep(EXIT_POLL_S)
 
     def _terminate_job(job: int, pid: int) -> None:
         """Kill every process in ``job``, returning once the job reports itself empty."""
@@ -284,8 +334,13 @@ descendant the child left behind.
 """
 
 
+# ---------------------------------------------------------------------------
+# Public process-group lifecycle
+# ---------------------------------------------------------------------------
+
+
 def _warn(message: str) -> None:
-    """Raise a :class:`RuntimeWarning` attributed to this module's caller."""
+    """Emit a :class:`RuntimeWarning` attributed to the caller of the helper that warns."""
     warnings.warn(message, RuntimeWarning, stacklevel=3)
 
 
@@ -337,12 +392,12 @@ def release_process_group(pid: int) -> None:
         _release_job_impl(pid)
 
 
-def _stop_group(pid: int, signal_number: int, *, defer_refusal: bool) -> bool:
+def _stop_group(pid: int, signal_number: int, *, defer_refusal: bool, settle_s: float) -> bool:
     """Dispatch to the Windows job teardown, or signal the POSIX group."""
     if sys.platform == "win32":
         _stop_win32_tree(pid)
         return False
-    return _signal_group(pid, signal_number, defer_refusal=defer_refusal)
+    return _signal_group(pid, signal_number, defer_refusal=defer_refusal, settle_s=settle_s)
 
 
 def terminate_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
@@ -363,7 +418,7 @@ def terminate_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
         ``True`` when ``defer_refusal`` held back an ``EPERM`` refusal,
         ``False`` otherwise.
     """
-    return _stop_group(pid, signal.SIGTERM, defer_refusal=defer_refusal)
+    return _stop_group(pid, signal.SIGTERM, defer_refusal=defer_refusal, settle_s=0.0)
 
 
 def kill_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
@@ -373,6 +428,13 @@ def kill_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
     group is already gone and warning on any other failure. On Windows it
     terminates the child's job, or delegates to ``taskkill /T /F`` when the
     child never made it into one.
+
+    A POSIX kill then settles the group: while a member still runs it polls
+    every :data:`EXIT_POLL_S` and kills the group again, for at most
+    :data:`KILL_SETTLE_S`. A child a member forked at the instant of the first
+    kill can survive it on macOS, and nothing else would stop it once this
+    returns. The settle ends as soon as no member runs, at the bound, or at a
+    refusal, which is handled like a refusal of the first kill.
 
     macOS refuses the signal with ``EPERM`` while every member of the group is
     still exiting or is a zombie not yet reaped. That refusal is silent: the
@@ -391,18 +453,26 @@ def kill_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
         ``True`` when ``defer_refusal`` held back an ``EPERM`` refusal,
         ``False`` otherwise.
     """
-    return _stop_group(pid, _KILL_SIGNAL, defer_refusal=defer_refusal)
+    return _stop_group(pid, _KILL_SIGNAL, defer_refusal=defer_refusal, settle_s=KILL_SETTLE_S)
+
+
+# ---------------------------------------------------------------------------
+# Group exit waits
+# ---------------------------------------------------------------------------
 
 
 def wait_for_process_group_exit(leaders: Iterable[int], timeout_s: float) -> None:
-    """Block until every leader in ``leaders`` has exited, or ``timeout_s`` elapses.
+    """Block until no member of any group led by ``leaders`` is running, or ``timeout_s`` elapses.
 
     This is the signal path's grace, where there is no event loop to await on: a
     child asked to stop gets this long to tear down benches of its own before it
-    is killed. A leader that exited counts as gone even though nothing has
-    reaped it yet, so the wait ends as soon as every leader has stopped. Windows
-    offers no pid probe that is not itself destructive, and its terminate
-    already waits for the job to empty, so there the wait is a no-op.
+    is killed. The whole group is waited for, not just its leader: a leader
+    that dies on the request can leave a nested run behind in its group, still
+    cleaning up. A member that exited counts as gone even though nothing has
+    reaped it yet, so the wait ends as soon as nothing in the groups still runs.
+    Where a group's members cannot be listed, the wait falls back to its leader
+    alone. Windows offers no pid probe that is not itself destructive, and its
+    terminate already waits for the job to empty, so there the wait is a no-op.
 
     Args:
         leaders: Process IDs of the group leaders to wait for.
@@ -411,16 +481,105 @@ def wait_for_process_group_exit(leaders: Iterable[int], timeout_s: float) -> Non
     if sys.platform == "win32":
         return
     waited = list(leaders)
-    deadline = time.monotonic() + timeout_s
-    while any(_leader_alive(pid) for pid in waited):
-        if time.monotonic() >= deadline:
+    deadline = monotonic() + timeout_s
+    while any(_group_running(pid) for pid in waited):
+        if monotonic() >= deadline:
             return
-        time.sleep(_EXIT_POLL_S)
+        sleep(EXIT_POLL_S)
 
 
-def _leader_alive(pid: int) -> bool:
-    """Whether a process with ``pid`` is still running; a zombie awaiting its reap is not."""
-    return _pid_exists(pid) and not _has_exited(pid)
+async def wait_for_process_group_exit_async(leader: int, timeout_s: float) -> None:
+    """Wait until no member of the group led by ``leader`` is running, or ``timeout_s`` elapses.
+
+    The event-loop twin of :func:`wait_for_process_group_exit`, for one group:
+    it polls without blocking the loop, and never reaps the leader, so the loop
+    that owns it still collects its exit status.
+
+    Args:
+        leader: Process ID of the group leader to wait for.
+        timeout_s: Seconds to wait before giving up on the stragglers.
+    """
+    if sys.platform == "win32":
+        return
+    deadline = monotonic() + timeout_s
+    while _group_running(leader):
+        if monotonic() >= deadline:
+            return
+        await async_sleep(EXIT_POLL_S)
+
+
+# ---------------------------------------------------------------------------
+# Liveness probing
+# ---------------------------------------------------------------------------
+
+
+def _group_running(group_id: int) -> bool:
+    """Whether the leader ``group_id``, or any other member of its group, is still running.
+
+    Zombies and exiting members count as gone. Only macOS and Linux list a
+    group's members; elsewhere, and whenever the listing fails, the leader alone
+    decides.
+
+    Args:
+        group_id: The process group, whose id is also its leader's pid.
+
+    Returns:
+        ``True`` while the leader or a listed member still runs.
+    """
+    # A zombie leader awaiting its reap still answers ``kill`` but runs nothing.
+    if _pid_exists(group_id) and not _has_exited(group_id):
+        return True
+    try:
+        if sys.platform == "darwin":
+            return not all(
+                _darwin_member_gone(flag, state) for flag, state in _darwin_group_members(group_id)
+            )
+        if sys.platform == "linux":
+            return any(state not in _LINUX_GONE_STATES for state in _linux_group_states(group_id))
+    # A listing that fails or cannot be parsed leaves the leader alone to decide.
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def _darwin_member_gone(flag: int, state: int) -> bool:
+    # A zombie or a member already exiting no longer runs any code of its own.
+    return state == _DARWIN_SZOMB or bool(flag & _DARWIN_P_WEXIT)
+
+
+def _linux_group_states(group_id: int) -> list[str]:
+    """List the ``/proc/<pid>/stat`` state of every member of group ``group_id``, zombies included.
+
+    Linux has no call listing one group, so every process is scanned. A process
+    that exits between the scan and the read of its ``stat`` file is skipped.
+
+    Args:
+        group_id: The process group to list.
+
+    Returns:
+        One state letter per member; empty when the group no longer exists.
+
+    Raises:
+        OSError: ``/proc`` could not be listed or a ``stat`` file could not be read.
+        ValueError: A ``stat`` file does not hold the fields Linux writes there.
+    """
+    states: list[str] = []
+    for entry in PROC_ROOT.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_bytes()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        # The command name before the state is parenthesized and may itself
+        # hold spaces and parentheses, so the fields start after the last ")".
+        # The name is never decoded: the kernel cuts it at 15 bytes, which can
+        # split a multi-byte character, so only the fields after it are text.
+        fields = stat.rpartition(b")")[2].decode("ascii")
+        state, _parent, member_group = fields.split(maxsplit=3)[:3]
+        if int(member_group) == group_id:
+            states.append(state)
+    return states
 
 
 def _pid_exists(pid: int) -> bool:
@@ -453,7 +612,12 @@ def _has_exited(pid: int) -> bool:
     return False
 
 
-def _signal_group(pid: int, signal_number: int, *, defer_refusal: bool) -> bool:
+# ---------------------------------------------------------------------------
+# POSIX signaling and refusal handling
+# ---------------------------------------------------------------------------
+
+
+def _signal_group(pid: int, signal_number: int, *, defer_refusal: bool, settle_s: float) -> bool:
     """Signal the POSIX process group led by ``pid``, warning only when a live member refuses.
 
     macOS skips zombies and exiting processes when it signals a group, and
@@ -465,22 +629,44 @@ def _signal_group(pid: int, signal_number: int, *, defer_refusal: bool) -> bool:
         pid: The process ID leading the group.
         signal_number: The signal to send.
         defer_refusal: Return instead of warning on an ``EPERM`` refusal.
+        settle_s: Seconds to keep signalling again, every :data:`EXIT_POLL_S`,
+            while a member still runs; ``0`` signals once.
 
     Returns:
         ``True`` when ``defer_refusal`` held back an ``EPERM`` refusal,
         ``False`` otherwise.
     """
-    try:
-        os.killpg(pid, signal_number)
-    except ProcessLookupError:
-        pass
-    except OSError as error:
-        if error.errno == errno.EPERM:
-            if defer_refusal:
-                return True
-            if _group_settled(pid):
-                return False
-        _warn(f"killpg failed for pid {pid}: {error}")
+    deadline = monotonic() + settle_s
+    while True:
+        try:
+            os.killpg(pid, signal_number)
+        except OSError as error:
+            return _handle_refusal(pid, error, defer_refusal=defer_refusal)
+        if monotonic() >= deadline or not _group_running(pid):
+            return False
+        sleep(EXIT_POLL_S)
+
+
+def _handle_refusal(pid: int, error: OSError, *, defer_refusal: bool) -> bool:
+    """Stay silent on a gone or settled group, defer or warn on any other ``killpg`` failure.
+
+    Args:
+        pid: The process ID leading the group that refused.
+        error: The failure ``killpg`` raised.
+        defer_refusal: Return instead of warning on an ``EPERM`` refusal.
+
+    Returns:
+        ``True`` when ``defer_refusal`` held back an ``EPERM`` refusal,
+        ``False`` otherwise.
+    """
+    if isinstance(error, ProcessLookupError):
+        return False
+    if error.errno == errno.EPERM:
+        if defer_refusal:
+            return True
+        if _group_settled(pid):
+            return False
+    _warn(f"killpg failed for pid {pid}: {error}")
     return False
 
 
@@ -526,7 +712,7 @@ def _darwin_group_settled(group_id: int) -> bool:
     except OSError:
         return False
     if members:
-        return all(state == _DARWIN_SZOMB or flag & _DARWIN_P_WEXIT for flag, state in members)
+        return all(_darwin_member_gone(flag, state) for flag, state in members)
     try:
         os.killpg(group_id, 0)
     except ProcessLookupError:
@@ -536,11 +722,23 @@ def _darwin_group_settled(group_id: int) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# macOS sysctl listing
+# ---------------------------------------------------------------------------
+
+
 @functools.cache
-def _c_library() -> ctypes.CDLL:
-    """This process's C library, with ``sysctl`` typed."""
-    c_library = ctypes.CDLL(None, use_errno=True)
-    c_library.sysctl.argtypes = (
+def c_library() -> ctypes.CDLL:
+    """Return this process's C library, with ``sysctl`` typed, for the macOS member listing.
+
+    The listing looks this function up at call time, so a test can replace it
+    with a stub whose ``sysctl`` lists fake members or fails.
+
+    Returns:
+        The C library, loaded once and cached.
+    """
+    library = ctypes.CDLL(None, use_errno=True)
+    library.sysctl.argtypes = (
         ctypes.POINTER(ctypes.c_int),
         ctypes.c_uint,
         ctypes.c_void_p,
@@ -548,8 +746,8 @@ def _c_library() -> ctypes.CDLL:
         ctypes.c_void_p,
         ctypes.c_size_t,
     )
-    c_library.sysctl.restype = ctypes.c_int
-    return c_library
+    library.sysctl.restype = ctypes.c_int
+    return library
 
 
 def _sysctl(
@@ -569,7 +767,7 @@ def _sysctl(
         OSError: ``sysctl`` failed, including a value outgrowing ``buffer``.
     """
     length = ctypes.c_size_t(size)
-    if _c_library().sysctl(mib, len(mib), buffer, ctypes.byref(length), None, 0) != 0:
+    if c_library().sysctl(mib, len(mib), buffer, ctypes.byref(length), None, 0) != 0:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code))
     return length.value
@@ -592,10 +790,18 @@ def _darwin_group_members(group_id: int) -> list[tuple[int, int]]:
     capacity = _sysctl(mib, None, 0) + _DARWIN_LISTING_HEADROOM * _DARWIN_KINFO_PROC_SIZE
     buffer = ctypes.create_string_buffer(capacity)
     length = _sysctl(mib, buffer, capacity)
+    # A trailing partial record holds bytes the kernel never wrote: the zeroed
+    # buffer would decode as a running member.
+    whole_records_length = length - length % _DARWIN_KINFO_PROC_SIZE
     return [
         _DARWIN_FLAG_AND_STATE.unpack_from(buffer, offset + _DARWIN_FLAG_AND_STATE_OFFSET)
-        for offset in range(0, length, _DARWIN_KINFO_PROC_SIZE)
+        for offset in range(0, whole_records_length, _DARWIN_KINFO_PROC_SIZE)
     ]
+
+
+# ---------------------------------------------------------------------------
+# Windows fallback
+# ---------------------------------------------------------------------------
 
 
 def _taskkill(pid: int) -> None:
@@ -615,6 +821,9 @@ def _stop_win32_tree(pid: int) -> None:
 
     The fallback is the whole win32 path for a child that was never assigned —
     an assignment the host refused, or a platform faked after a POSIX spawn.
+
+    Args:
+        pid: The root process of the tree to stop.
     """
     job = _job_handles.get(pid)
     if job is None or _terminate_job_impl is None:

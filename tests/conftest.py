@@ -1,108 +1,303 @@
-"""Shared scratch-repository fixtures for target and worktree tests.
+"""Shared test environment baseline and scratch-repository fixtures.
 
-These fixtures build throwaway git repositories in the system temp directory,
-each in its own ``tempfile.mkdtemp`` slot resolved through ``os.path.realpath``
-(so macOS ``/var`` → ``/private/var`` matches what git reports in
-``worktree list``). Every repository is order-independent and safe under
-``pytest-xdist`` / ``pytest-randomly``.
+Every test runs against one explicit environment. ``pytest_configure``
+rebuilds ``os.environ`` from an allowlist before any test module is imported,
+in the controller and in every ``pytest-xdist`` worker, so nothing the
+developer's shell exports reaches code under test or the children it spawns;
+an autouse fixture puts that baseline back after every test.
 
-The helpers expose a common fixture surface so later worktree and driver
-tests can reuse the same building blocks.
+The scratch-repository fixtures build throwaway git repositories in the system
+temp directory, each in its own ``tempfile.mkdtemp`` slot resolved through
+``os.path.realpath`` (so macOS ``/var`` → ``/private/var`` matches what git
+reports in ``worktree list``). Every repository is order-independent and safe
+under ``pytest-xdist`` / ``pytest-randomly``.
 """
 
+import asyncio
 import contextlib
+import importlib
 import json
 import os
 import shutil
 import signal
 import subprocess
-import tempfile
+import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
+from typing import NoReturn
+from unittest.mock import create_autospec
 
 import pytest
-from filelock import FileLock
 
-from gymrat.cli.shared import set_color_override
-from gymrat.session.clock import now_iso
-from gymrat.session.lock import _os_lock_file
-from gymrat.session.paths import lockfile_path, supervise_lockfile_path
+from gymrat import signals
+from gymrat.cli.console import set_color_override, set_debug_mode
 from gymrat.signals import TERMINATION_SIGNALS
-from gymrat.signals import reset as signals_reset
-from tests._git import run_git as _run_git
+from gymrat.telemetry.provider import reset_tracing
+from tests._exec_fixtures import fresh_live_process_groups, recorded_spawns
+from tests._git import head_of, init_scratch_repo, list_worktree_dirs
+from tests._lock import held_supervise_lock, remove_lock_files
+from tests.loop._settle import start_with
 
-#: Every environment variable a test must not inherit from the developer's
-#: shell — the GYMRAT_* set the config resolver reads, plus the OTLP endpoint
-#: configure_tracing reads.
-SCRUBBED_ENV_VARS = (
-    "GYMRAT_BENCH",
-    "GYMRAT_PREPARE",
-    "GYMRAT_ADAPTER",
-    "GYMRAT_SAMPLES",
-    "GYMRAT_TIMEOUT",
-    "GYMRAT_CONFIG",
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-)
+#: Names a test may inherit from the launching shell, value unchanged. An
+#: allowlisted name the shell does not export stays absent. ``PATH`` and
+#: ``VIRTUAL_ENV`` come from ``uv run`` and make ``sys.executable`` children
+#: and ``git`` resolvable; ``CI`` selects Hypothesis's ``ci`` profile and
+#: pytest's untruncated assertion output; the last four are the Windows
+#: process set a child Python, ``expanduser``, ``shell=True`` and
+#: ``shutil.which`` need.
+BASELINE_ENV_NAMES = frozenset({
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "VIRTUAL_ENV",
+    "PYTHONPATH",
+    "CI",
+    "SYSTEMROOT",
+    "USERPROFILE",
+    "PATHEXT",
+    "COMSPEC",
+})
+
+#: Prefixes of inherited names kept alongside ``BASELINE_ENV_NAMES``: uv's
+#: own settings, pytest's and its plugins' (xdist marks its workers with
+#: ``PYTEST_XDIST_*``), and coverage's.
+BASELINE_ENV_PREFIXES = ("UV_", "PYTEST_", "COVERAGE_")
+
+#: Names every test sees with a fixed value, whatever the shell exports. The
+#: git pair hides the developer's global and system config, so a setting such
+#: as ``tag.gpgSign`` cannot change what a plain ``git tag`` does in a scratch
+#: repo.
+PINNED_ENV = {
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
 
 
-def hold_lock(
-    lock_path: str, command: str = "measure", *, holder: dict[str, object] | None = None
-) -> FileLock:
-    """Acquire a real OS lock on ``lock_path`` and stamp it with holder JSON.
+def _live_environ() -> dict[str, str]:
+    """Read the environment a child process inherits.
 
-    Simulates another live process holding the repository lock, so a rival
-    ``acquire_lock`` call sees contention.  The OS lock lives on
-    ``lock_path + ".lock"`` — the same layout ``acquire_lock`` uses — so the
-    holder JSON at ``lock_path`` stays readable on Windows where ``LockFileEx``
-    blocks reads through a separate handle.
+    ``os.environ`` is a snapshot taken at interpreter start, and native code can
+    write the real environment behind it: pytest imports ``readline`` before any
+    ``pytest_configure``, and GNU readline then exports ``LINES`` and
+    ``COLUMNS``. A child inherits the real block, so it reports those names too.
 
-    Returns the acquired ``FileLock`` so the caller can release it during
-    teardown.  Pass ``holder`` to stamp an exact record; otherwise one is
-    built from ``command`` and the current process.
+    Returns:
+        The process's real environment block, as a fresh child reports it.
     """
-    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(_os_lock_file(lock_path), timeout=0)
-    lock.acquire()
-    if holder is None:
-        holder = {"pid": os.getpid(), "command": command, "at": now_iso()}
-    Path(lock_path).write_text(json.dumps(holder), encoding="utf-8")
-    return lock
+    probe = "import json, os; print(json.dumps(dict(os.environ)))"
+    output = subprocess.run(  # noqa: S603 -- argv is sys.executable with a fixed probe, not shell-injected
+        [sys.executable, "-I", "-S", "-c", probe], check=True, capture_output=True, text=True
+    ).stdout
+    return json.loads(output)
+
+
+def pytest_configure() -> None:
+    """Rebuild the environment as the allowlisted baseline before collection.
+
+    Runs in the controller and again in every xdist worker, which inherits the
+    rebuilt environment; a second rebuild keeps it unchanged. ``os.environ`` is
+    first brought in line with the real environment, so names written behind it
+    are cleared with the rest and no child process inherits them. Also imports
+    ``typer.rich_utils`` under that baseline, so typer's once-per-process
+    terminal detection never sees the shell or an earlier test's variables.
+    """
+    os.environ.update({**_live_environ(), **os.environ})
+    kept = {
+        name: value
+        for name, value in os.environ.items()
+        if name in BASELINE_ENV_NAMES or name.startswith(BASELINE_ENV_PREFIXES)
+    }
+    os.environ.clear()
+    os.environ.update(kept | PINNED_ENV)
+    # typer.rich_utils decides once, at first import, whether to force a
+    # terminal from FORCE_COLOR, PY_COLORS and GITHUB_ACTIONS. Importing it
+    # under the baseline keeps a test that sets FORCE_COLOR before that first
+    # import from forcing a terminal for every later test in its worker.
+    importlib.import_module("typer.rich_utils")
 
 
 @pytest.fixture(autouse=True)
 def _restore_signal_dispositions() -> Iterator[None]:
-    """Restore termination-signal dispositions after every test."""
+    """Start every test on fresh signal state and restore termination-signal dispositions after it."""
     saved = {sig: signal.getsignal(sig) for sig in TERMINATION_SIGNALS}
-    yield
-    if any(signal.getsignal(sig) is not handler for sig, handler in saved.items()):
-        # Un-wiring the OS dispositions alone would strand the module's
-        # installed-signals bookkeeping: the next install would then no-op and
-        # leave a real signal on the default handler. reset() is the sanctioned
-        # seam that clears that state alongside the registry.
-        signals_reset()
-        for sig, handler in saved.items():
-            signal.signal(sig, handler)
+    # Un-wiring the OS dispositions alone would strand the module's
+    # installed-signals bookkeeping: the next install would then no-op and
+    # leave a real signal on the default handler. A fresh state object per test
+    # empties that bookkeeping along with every cleanup, escalation action,
+    # flag, deferred signal and pending exit output an earlier test left. A
+    # deferral still open from an earlier test settles on the state it entered
+    # with, so it cannot reach this one.
+    #
+    # A private patcher, not the shared `monkeypatch` fixture: requesting that
+    # here would set it up before every other fixture, so the test's own
+    # patches would be undone only after those fixtures were torn down.
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(signals, "_state", signals._SignalState())
+        yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
+
+
+class _ProcessExitedError(BaseException):
+    """Raised by the stubbed exit seam so a handler unwinds where it would exit.
+
+    A ``BaseException``, like the ``SystemExit`` a real exit is closest to, so
+    no ``except Exception`` between the exit and the test swallows it.
+
+    Args:
+        code: The exit code the stubbed exit was called with.
+    """
+
+    def __init__(self, code: int) -> None:
+        self.code = code
+        super().__init__(f"exit_process({code})")
+
+
+@pytest.fixture
+def forbid_direct_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test when the process exit is reached other than through a replaced seam."""
+    # The termination handler must exit through `signals.exit_process`, the seam
+    # tests replace. A handler that calls `os._exit` itself, or that kept the
+    # real seam bound from before the replacement, would otherwise take the test
+    # worker down with no assertion naming the bypass.
+
+    def bypassed(code: int) -> NoReturn:
+        pytest.fail(f"os._exit({code}) reached without going through the replaced exit seam")
+
+    monkeypatch.setattr(os, "_exit", create_autospec(os._exit, side_effect=bypassed))
+
+
+@pytest.fixture
+def color_env(monkeypatch: pytest.MonkeyPatch) -> Callable[[str | None, str | None], None]:
+    """Return a setter leaving exactly the given ``FORCE_COLOR`` and ``NO_COLOR`` set; ``None`` clears one."""
+
+    def apply(force_color: str | None, no_color: str | None) -> None:
+        for name, value in (("FORCE_COLOR", force_color), ("NO_COLOR", no_color)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+
+    return apply
+
+
+@pytest.fixture
+def recorded_exits(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, float]]:
+    """Stub the process exit to record each code and its ``time.monotonic`` moment, then return."""
+    exits: list[tuple[int, float]] = []
+
+    def record_exit(code: int) -> None:
+        exits.append((code, time.monotonic()))
+
+    monkeypatch.setattr(
+        signals, "exit_process", create_autospec(signals.exit_process, side_effect=record_exit)
+    )
+    return exits
+
+
+@pytest.fixture
+def raise_signal(monkeypatch: pytest.MonkeyPatch, forbid_direct_exit: None) -> Callable[[int], int]:
+    """Stub the process exit and return a helper that runs the installed signal handler."""
+    # Emitting a real signal would take the test runner down, so the helper
+    # fetches the handler via signal.getsignal and calls it directly. With the
+    # exit seam stubbed to raise, the handler unwinds exactly where the real one
+    # would exit, and the helper reports the exit code.
+    #
+    # A signal delivered while another is being handled (a call made from
+    # inside a cleanup) ends the process for both: its exit unwinds through the
+    # outer handler, and the outermost call reports the code.
+    depth = 0
+
+    def fake_exit(code: int) -> None:
+        raise _ProcessExitedError(code)
+
+    monkeypatch.setattr(
+        signals, "exit_process", create_autospec(signals.exit_process, side_effect=fake_exit)
+    )
+
+    def _raise(signal_number: int) -> int:
+        nonlocal depth
+        handler = signal.getsignal(signal_number)
+        if not callable(handler):
+            pytest.fail(f"no handler installed for signal {signal_number}")
+        depth += 1
+        try:
+            handler(signal_number, None)
+        except _ProcessExitedError as exited:
+            if depth > 1:
+                raise
+            return exited.code
+        finally:
+            depth -= 1
+        pytest.fail("handler returned instead of exiting")
+
+    return _raise
 
 
 @pytest.fixture(autouse=True)
-def _clear_gymrat_env() -> Iterator[None]:
-    """Remove every GYMRAT_* and OTLP env var for the duration of the test."""
-    # A private MonkeyPatch context rather than the `monkeypatch` fixture: an
-    # autouse dependency on `monkeypatch` would reorder its teardown after
+def _restore_env_baseline() -> Iterator[None]:
+    """Put ``os.environ`` back to its pre-test contents after every test."""
+    # A plain snapshot rather than a MonkeyPatch context, which would only undo
+    # its own calls and miss a direct `os.environ` write. No dependency on the
+    # `monkeypatch` fixture either: that would reorder its teardown after
     # module-level autouse cleanups, running them under still-active patches.
-    with pytest.MonkeyPatch.context() as patcher:
-        for var in SCRUBBED_ENV_VARS:
-            patcher.delenv(var, raising=False)
-        yield
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 @pytest.fixture(autouse=True)
 def _reset_color() -> Iterator[None]:
     """Reset the color override before and after every test."""
-    set_color_override(None)
+    set_color_override(override=None)
     yield
-    set_color_override(None)
+    set_color_override(override=None)
+
+
+@pytest.fixture(autouse=True)
+def isolate_tracing_provider() -> Iterator[None]:
+    """Start and end every test with no tracing provider."""
+    reset_tracing()
+    yield
+    reset_tracing()
+
+
+@pytest.fixture(autouse=True)
+def isolate_live_groups() -> Iterator[None]:
+    """Give every test its own empty live process-group registry."""
+    with fresh_live_process_groups():
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_debug() -> Iterator[None]:
+    """Turn debug mode off before and after every test."""
+    set_debug_mode(enabled=False)
+    yield
+    set_debug_mode(enabled=False)
+
+
+@pytest.fixture
+def stdin_holding_text() -> Iterator[None]:
+    """Point this process's stdin at a pipe holding text, so a child inheriting it reads that text."""
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"banana\n")
+    os.close(write_fd)
+    saved_stdin = os.dup(0)
+    os.dup2(read_fd, 0)
+    os.close(read_fd)
+    yield
+    os.dup2(saved_stdin, 0)
+    os.close(saved_stdin)
 
 
 @pytest.fixture
@@ -116,100 +311,63 @@ def stray_process_ids() -> Iterator[list[int]]:
             os.kill(pid, signal.SIGKILL)
 
 
-def _init_scratch_repo() -> str:
-    """Create one temporary git repo on ``main`` with a single committed file."""
-    directory = os.path.realpath(tempfile.mkdtemp(prefix="gymrat-test-"))
+@pytest.fixture
+async def spawned_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[list[asyncio.subprocess.Process]]:
+    """Record every child ``exec`` or ``exec_argv`` spawns, reaping survivors in-loop."""
+    async with recorded_spawns(monkeypatch) as processes:
+        yield processes
+
+
+@pytest.fixture
+def reap_groups() -> Iterator[list[int]]:
+    """Track process-group leaders and hard-kill any survivor on teardown."""
+    leaders: list[int] = []
     try:
-        _run_git(["init", "-b", "main"], directory)
-        for key, value in (
-            ("user.name", "Test User"),
-            ("user.email", "test@example.com"),
-            ("commit.gpgsign", "false"),
-            ("core.autocrlf", "false"),
-        ):
-            _run_git(["config", key, value], directory)
-        (Path(directory) / "README.md").write_text("# Test Repo\n", encoding="utf-8")
-        _run_git(["add", "README.md"], directory)
-        _run_git(["commit", "-m", "Initial commit"], directory)
-    except BaseException:
-        shutil.rmtree(directory, ignore_errors=True)
-        raise
-    return directory
+        yield leaders
+    finally:
+        for pid in leaders:
+            # A leader that already exited still names its group, so a group whose
+            # leader died while a child lives on is reaped by the leader's pid.
+            try:
+                group = os.getpgid(pid)
+            except ProcessLookupError:
+                group = pid
+            with contextlib.suppress(OSError):
+                os.killpg(group, signal.SIGKILL)
 
 
-def _list_worktree_dirs(repo_dir: str, *, include_main: bool = True) -> list[str]:
-    """Directories git currently lists as worktrees of ``repo_dir``.
-
-    ``git worktree remove`` clears a worktree's registry entry itself, so this
-    only reveals pruning behavior when a directory vanished behind git's back.
-    With ``include_main=False`` the main worktree's own directory is dropped;
-    git prints resolved paths, so the main directory is matched through
-    ``os.path.realpath``.
-    """
-    output = _run_git(["worktree", "list", "--porcelain"], repo_dir)
-    dirs = [
-        os.path.normpath(line[len("worktree ") :])
-        for line in output.split("\n")
-        if line.startswith("worktree ")
-    ]
-    if not include_main:
-        main_dir = os.path.realpath(repo_dir)
-        return [directory for directory in dirs if directory != main_dir]
-    return dirs
-
-
-def _wait_for_worktrees(repo_dir: str, count: int, timeout_s: float = 30.0) -> list[str]:
-    """Poll until ``repo_dir`` lists at least ``count`` linked worktrees.
-
-    Only for polling while another process is still adding or removing
-    worktrees: ``git worktree list`` reads each registry entry non-atomically
-    and exits 128 when it meets one half-written by a concurrent ``git worktree
-    add`` or half-cleared by a ``remove`` — a file of the entry it expects is
-    not there. Such a read counts as "not there yet". Once no writer runs,
-    call :func:`_list_worktree_dirs` directly so a real failure stays loud.
-
-    Args:
-        repo_dir: The main worktree whose registry is polled.
-        count: The minimum number of linked worktrees to wait for.
-        timeout_s: How long to poll before giving up.
-
-    Returns:
-        The linked worktree directories of the first read that reached ``count``.
-
-    Raises:
-        AssertionError: When ``count`` is not reached within ``timeout_s``.
-    """
-    deadline = time.monotonic() + timeout_s
-    listed: list[str] = []
-    while True:
-        with contextlib.suppress(subprocess.CalledProcessError):
-            listed = _list_worktree_dirs(repo_dir, include_main=False)
-        if len(listed) >= count:
-            return listed
-        if time.monotonic() > deadline:
-            message = f"expected >= {count} worktrees within {timeout_s}s, saw {listed}"
-            raise AssertionError(message)
-        time.sleep(0.05)
+_SCRATCH_PREFIX = "gymrat-test-"
 
 
 def _remove_stranded_worktrees(repo_dir: str) -> None:
-    """Delete worktree directories a run stranded, keeping temp dirs clean."""
+    """Delete worktree directories a run stranded, keeping temp dirs clean.
+
+    A test may move or delete its scratch repository; git then has no registry
+    left to list, so the repository is skipped rather than failing teardown for
+    every repository after it. Starting git in the vanished directory fails with
+    ``FileNotFoundError`` on POSIX and ``NotADirectoryError`` on Windows.
+
+    Args:
+        repo_dir: The scratch repository whose registered worktrees are removed.
+    """
     try:
-        stranded = _list_worktree_dirs(repo_dir, include_main=False)
-    except subprocess.CalledProcessError:
+        stranded = list_worktree_dirs(repo_dir, include_main=False)
+    except (subprocess.CalledProcessError, FileNotFoundError, NotADirectoryError):
         return
     for directory in stranded:
         shutil.rmtree(directory, ignore_errors=True)
 
 
 @pytest.fixture
-def create_scratch_repo() -> Iterator[Callable[[], str]]:
+def create_scratch_repo() -> Iterator[Callable[..., str]]:
     """Factory yielding fresh scratch repositories, all cleaned up on teardown."""
     created: list[str] = []
     original_cwd = Path.cwd()
 
-    def factory() -> str:
-        directory = _init_scratch_repo()
+    def factory(prefix: str = _SCRATCH_PREFIX) -> str:
+        directory = init_scratch_repo(prefix)
         created.append(directory)
         return directory
 
@@ -221,10 +379,8 @@ def create_scratch_repo() -> Iterator[Callable[[], str]]:
         for directory in created:
             _remove_stranded_worktrees(directory)
             shutil.rmtree(directory, ignore_errors=True)
-            # Lock files persist after release (filelock preserves the file);
-            # every process using them is dead by cleanup time.
-            for lock in (lockfile_path(directory), supervise_lockfile_path(directory)):
-                Path(lock).unlink(missing_ok=True)
+            # Every process using the locks is dead by cleanup time.
+            remove_lock_files(directory)
 
 
 @pytest.fixture
@@ -236,62 +392,55 @@ def repo(create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.fixture
-def supervise_lock(repo: str) -> Iterator[None]:
-    """Hold the real supervise lock for ``repo`` for the duration of the test."""
-    lock = hold_lock(supervise_lockfile_path(repo), "supervise")
-    yield
-    lock.release()
+def session_repo(repo: str) -> str:
+    """The scratch repository with an open session on ``main``."""
+    start_with(repo)
+    return repo
 
 
 @pytest.fixture
-def list_worktree_dirs() -> Callable[..., list[str]]:
-    """Expose the worktree-listing helper to tests."""
-    return _list_worktree_dirs
+def root(tmp_path: Path) -> Iterator[str]:
+    """A fake repo root with the .gymrat session directory, its lock files removed at teardown."""
+    session = tmp_path / ".gymrat"
+    session.mkdir()
+    yield str(tmp_path)
+    remove_lock_files(str(tmp_path))
 
 
 @pytest.fixture
-def wait_for_worktrees() -> Callable[..., list[str]]:
-    """Expose the race-tolerant worktree poller to tests."""
-    return _wait_for_worktrees
+def supervise_lock(root: str, request: pytest.FixtureRequest) -> Iterator[None]:
+    """Hold the real supervise lock for ``root``, unless the test parametrizes it ``False``."""
+    if getattr(request, "param", True):
+        with held_supervise_lock(root):
+            yield
+    else:
+        yield
 
 
 @pytest.fixture
-def kill_git_during_worktree_add() -> Callable[[str], None]:
-    """Install a post-checkout hook that kills git once a worktree is on disk."""
-
-    def install(repo_dir: str) -> None:
-        hook_path = Path(repo_dir) / ".git" / "hooks" / "post-checkout"
-        hook_path.parent.mkdir(parents=True, exist_ok=True)
-        hook_path.write_text(
-            '#!/bin/sh\nexec >/dev/null 2>&1\nkill -9 "$PPID"\nsleep 1\n',  # cspell:disable-line
-            encoding="utf-8",
-        )
-        hook_path.chmod(0o755)
-
-    return install
+def repo_head(repo: str) -> str:
+    """The commit SHA ``repo`` starts at."""
+    return head_of(repo)
 
 
-@pytest.fixture
-def register_absent_worktree() -> Callable[[str], str]:
-    """Register a worktree of a repo the way a user would, then delete its dir."""
-
-    def register(repo_dir: str) -> str:
-        directory = str(Path(os.path.realpath(repo_dir)) / "absent-user-worktree")
-        _run_git(["worktree", "add", "--detach", directory, "HEAD"], repo_dir)
-        shutil.rmtree(directory, ignore_errors=True)
-        return directory
-
-    return register
-
-
-@pytest.fixture
-def create_in_place_target_dir() -> Callable[[str, str, str], str]:
-    """Write a bench script into a plain subdirectory of a repo."""
-
-    def create(repo_dir: str, name: str, bench_script: str) -> str:
-        target = Path(repo_dir) / name
-        target.mkdir()
-        (target / "bench.sh").write_text(bench_script, encoding="utf-8")
-        return str(target)
-
-    return create
+@pytest.fixture(
+    params=[
+        pytest.param(False, id="git-missing"),
+        pytest.param(
+            True,
+            id="git-not-executable",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="Windows ignores the execute bit"
+            ),
+        ),
+    ]
+)
+def unusable_git(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leave ``PATH`` holding one directory where git is absent or lacks the execute bit."""
+    if request.param:
+        blocked = tmp_path / "git"
+        blocked.write_text("#!/bin/sh\n", encoding="utf-8")
+        blocked.chmod(0o644)
+    monkeypatch.setenv("PATH", str(tmp_path))

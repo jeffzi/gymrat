@@ -24,15 +24,20 @@ from typing import TYPE_CHECKING, Literal, assert_never
 
 from rich.markup import escape
 
-from gymrat.git import SHORT_SHA_LENGTH
-from gymrat.metric_name import format_inline, parse
-from gymrat.model import Effect
-from gymrat.plural import pluralize
-from gymrat.report.display import get_glyph
-from gymrat.report.format import format_delta, format_value, is_improvement
-from gymrat.report.style import VARIANT_NAME_STYLE, format_hint, markup
-from gymrat.report.text import paired_samples
-from gymrat.stats.descriptive import compute_median
+from gymrat.metric_name import format_inline
+from gymrat.metric_name import parse as parse_metric_name
+from gymrat.report.display import GLYPHS
+from gymrat.report.format import format_percent_delta, format_value
+from gymrat.report.style import (
+    EMPHASIZED_DIRECTION_STYLES,
+    VARIANT_NAME_STYLE,
+    VERDICT_STYLES,
+    format_hint,
+    join_header_parts,
+    markup,
+)
+from gymrat.report.text.render import paired_samples
+from gymrat.utils import SHORT_SHA_LENGTH, first_line, medians_by_name, pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -40,25 +45,9 @@ if TYPE_CHECKING:
     from gymrat.config import StopConfig
     from gymrat.loop.start import StartResult
     from gymrat.report.display import DisplayClass
-    from gymrat.report.types import MetricComparison, MetricComparisons
-    from gymrat.session import (
-        BaselineRecord,
-        BaselineRef,
-        FinalizeRecord,
-        SessionRecord,
-    )
-    from gymrat.session.schema import KeepReason
-
-# ---------------------------------------------------------------------------
-# Outcome and primary-figure types
-# ---------------------------------------------------------------------------
-
-#: What an iteration amounted to.
-#:
-#: Narrower than a metric verdict: an iteration has no ``unstable`` of its own,
-#: because a primary figure too noisy to read is one that reported nothing, which
-#: is what ``no-signal`` already says.
-LoopOutcome = Literal["improved", "regressed", "no-signal"]
+    from gymrat.session.records import BaselineRecord, FinalizeRecord, SessionRecord
+    from gymrat.session.schema import KeepReason, Outcome
+    from gymrat.session.workspace import BaselineRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,16 +87,17 @@ class MetricPrimary:
     kind: Literal["metric"] = "metric"
 
 
-#: The one figure an iteration is read on, and how far it moved.
-LoopPrimary = GeomeanPrimary | MetricPrimary
+type LoopPrimary = GeomeanPrimary | MetricPrimary
+"""The one figure an iteration is read on, and how far it moved."""
 
-#: What a confirmation rerun had to say about one metric it re-measured.
-#:
-#: ``absent`` is not a weaker ``disagreed``: a rerun that never reported the
-#: metric disproved nothing, so the regression the first run called still stands.
-#: Only ``disagreed`` — the rerun measured the metric and did not call it
-#: regressed — takes a regression back.
-RerunAnswer = Literal["confirmed", "disagreed", "absent"]
+type RerunAnswer = Literal["confirmed", "disagreed", "absent"]
+"""What a confirmation rerun had to say about one metric it re-measured.
+
+``absent`` is not a weaker ``disagreed``: a rerun that never reported the
+metric disproved nothing, so the regression the first run called still stands.
+Only ``disagreed`` — the rerun measured the metric and did not call it
+regressed — takes a regression back.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,61 +113,45 @@ class RerunConfirmation:
     answer: RerunAnswer
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-#: The candidate an iteration measures: the experiment, judged against the baseline.
-EXPERIMENT_INDEX = 0
-
-#: What the loop's header says it compared, fixed for every iteration. The two
-#: targets wear the style the table heads its columns with, so the header names
-#: them the way the columns below it do.
 _COMPARED = (
     f"{markup('experiment', VARIANT_NAME_STYLE)} vs {markup('baseline', VARIANT_NAME_STYLE)}"
 )
+"""What the loop's header says it compared, fixed for every iteration.
 
-#: What an iteration that met the configured target says, and what it asks for.
+The two targets wear the style the table heads its columns with, so the header names them the way
+the columns below it do.
+"""
+
 _TARGET_REACHED = "target reached — keep it"
+"""What an iteration that met the configured target says, and what it asks for."""
 
-#: The word each outcome is announced with.
-_OUTCOME_WORDS: dict[LoopOutcome, str] = {
-    "improved": "IMPROVED",
-    "regressed": "REGRESSED",
-    "no-signal": "NO-SIGNAL",
-}
-
-#: How each outcome's word is painted: emboldened whatever it says, and colored
-#: only where there is a direction to report. A no-signal iteration is neither
-#: good nor bad, so it wears no color rather than a hedged one.
-_OUTCOME_STYLES: dict[LoopOutcome, str] = {
-    "improved": "bold green",
-    "regressed": "bold red",
+_OUTCOME_STYLES: dict[Outcome, str] = {
+    "improved": EMPHASIZED_DIRECTION_STYLES["improved"],
+    "regressed": EMPHASIZED_DIRECTION_STYLES["regressed"],
     "no-signal": "bold",
 }
+"""How each outcome's word is painted.
 
-#: What each rerun answer reads as, and the style it is painted with. An absent
-#: answer wears the yellow the table paints an unstable metric with, because it
-#: is the same kind of news: a reading nobody could take.
+It is emboldened whatever it says, and colored only where there is a direction to report. A
+no-signal iteration is neither good nor bad, so it wears no color rather than a hedged one.
+"""
+
 _RERUN_PHRASES: dict[RerunAnswer, tuple[str, str]] = {
-    "confirmed": ("regression confirmed on rerun", "red"),
-    "disagreed": ("regression not confirmed on rerun", "dim"),
-    "absent": ("not measured on rerun", "yellow"),
+    "confirmed": ("regression confirmed on rerun", VERDICT_STYLES["regressed"]),
+    "disagreed": ("regression not confirmed on rerun", VERDICT_STYLES["within-noise"]),
+    "absent": ("not measured on rerun", VERDICT_STYLES["unstable"]),
 }
+"""What each rerun answer reads as, and the style it is painted with.
 
-#: The ``·`` the loop's lines separate their parts with, dimmed in color.
-_SEPARATOR = "·"
-
-
-def _separator() -> str:
-    """The dimmed ``·`` separator, spaces left outside the dim so each dot stands alone."""
-    return f" {markup(_SEPARATOR, 'dim')} "
+An absent answer wears the color the table paints an unstable metric with, because it is the same
+kind of news: a reading nobody could take.
+"""
 
 
 def _format_primary_delta(delta_pct: float | None) -> str:
     if delta_pct is None:
         return ""
-    return f" {format_delta(Effect(value=delta_pct, unit='percent'))}"
+    return f" {format_percent_delta(delta_pct)}"
 
 
 # ---------------------------------------------------------------------------
@@ -201,19 +175,19 @@ def format_loop_header(seq: int, samples: int) -> str:
         The header as a single rich-markup line.
     """
     parts = [markup(f"iteration {seq}", "bold"), _COMPARED, escape(paired_samples(samples))]
-    return _separator().join(parts)
+    return join_header_parts(parts)
 
 
 def _format_rerun_line(rerun: RerunConfirmation) -> str:
     """What the rerun settled about one metric, painted the way the table paints that answer."""
     text, style = _RERUN_PHRASES[rerun.answer]
-    name = format_inline(parse(rerun.metric))
+    name = format_inline(parse_metric_name(rerun.metric))
     return f"{name}: {markup(text, style)}"
 
 
 def format_verdict_block(
     *,
-    outcome: LoopOutcome,
+    outcome: Outcome,
     primary: LoopPrimary,
     next_step: str,
     reruns: Sequence[RerunConfirmation] = (),
@@ -240,11 +214,11 @@ def format_verdict_block(
         The block as rich-markup lines, so the caller appends them to the report
         it already holds as lines.
     """
-    verdict = markup(_OUTCOME_WORDS[outcome], _OUTCOME_STYLES[outcome])
+    verdict = markup(outcome.upper(), _OUTCOME_STYLES[outcome])
     # The delta renders blank when the ratio had no value, so the parts are
     # joined rather than interpolated: a blank between a space and the separator
     # would read as a gap.
-    verdict_line = _separator().join([
+    verdict_line = join_header_parts([
         f"primary:{_format_primary_delta(primary.delta_pct)}",
         f"verdict: {verdict}",
     ])
@@ -254,78 +228,6 @@ def format_verdict_block(
         lines.append(markup(_TARGET_REACHED, "green"))
     lines.append(format_hint(next_step))
     return lines
-
-
-# ---------------------------------------------------------------------------
-# Outcome derivation
-# ---------------------------------------------------------------------------
-
-
-def _experiment_regressed(metric: MetricComparison) -> bool:
-    """Whether the experiment's side of ``metric`` came back regressed."""
-    if len(metric.candidates) <= EXPERIMENT_INDEX:
-        return False
-    verdict = metric.candidates[EXPERIMENT_INDEX].verdict
-    return verdict is not None and verdict.verdict == "regressed"
-
-
-def _has_gating_regression(metrics: MetricComparisons) -> bool:
-    """Whether any metric the run is gated on came back regressed for the experiment."""
-    return any(metric.meta.gating and _experiment_regressed(metric) for metric in metrics.values())
-
-
-def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
-    """Whether the primary figure moved the way its direction calls an improvement.
-
-    A figure whose ratio had no value moved in no direction at all, so it
-    improves nothing. The geomean case routes through :func:`is_improvement`
-    wrapping a percent effect; a named metric combines that verdict with its own
-    direction — a ``higher`` metric improves on the opposite sign, and never on a
-    delta of exactly zero.
-
-    Args:
-        metrics: The run's metric comparisons, used to look up the primary's
-            direction when it names a metric rather than the geomean.
-        primary: The one figure the iteration is read on.
-
-    Returns:
-        Whether the primary figure moved in the direction its metric calls an
-        improvement.
-    """
-    if primary.delta_pct is None:
-        return False
-    effect = Effect(value=primary.delta_pct, unit="percent")
-    if isinstance(primary, GeomeanPrimary):
-        return is_improvement(effect)
-    metric = metrics.get(primary.name)
-    if metric is None:
-        return False
-    if metric.meta.direction == "higher":
-        return not is_improvement(effect) and primary.delta_pct != 0
-    return is_improvement(effect)
-
-
-def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> LoopOutcome:
-    """What an iteration amounted to, read off its metrics and its primary figure.
-
-    A gating regression settles it whatever the primary did: the run is judged on
-    every metric it gates, so a headline that improved while a gate broke is still
-    an iteration to fix rather than one to keep.
-
-    Everything that is neither a gating regression nor an improvement in the
-    primary's own direction reads ``no-signal`` — including a primary the run
-    never measured, which reports nothing rather than reporting zero.
-
-    Args:
-        metrics: The run's per-metric comparisons.
-        primary: The one figure the iteration is read on.
-
-    Returns:
-        The iteration's outcome.
-    """
-    if _has_gating_regression(metrics):
-        return "regressed"
-    return "improved" if _primary_improved(metrics, primary) else "no-signal"
 
 
 # ---------------------------------------------------------------------------
@@ -347,22 +249,17 @@ class SettleKept:
     """
 
     commit: str | None = None
-    outcome: LoopOutcome | None = None
-    kind: Literal["kept"] = "kept"
+    outcome: Outcome | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class SettleDiscarded:
     """An iteration whose edits were reverted."""
 
-    kind: Literal["discarded"] = "discarded"
-
 
 @dataclass(frozen=True, slots=True)
 class SettleUnsettled:
     """An iteration with no keep or discard yet."""
-
-    kind: Literal["unsettled"] = "unsettled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,11 +275,10 @@ class SettleKeepBlocked:
     """
 
     reason: KeepReason | None = None
-    kind: Literal["keep-blocked"] = "keep-blocked"
 
 
-#: What a single settling record says became of the iteration it settles.
-SettleState = SettleKept | SettleDiscarded | SettleUnsettled | SettleKeepBlocked
+type SettleState = SettleKept | SettleDiscarded | SettleUnsettled | SettleKeepBlocked
+"""What a single settling record says became of the iteration it settles."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,7 +295,7 @@ class StatusIteration:
 
     seq: int
     delta_pct: float | None
-    outcome: LoopOutcome
+    outcome: Outcome
     settle: SettleState
 
 
@@ -423,15 +319,16 @@ class StatusSummary:
     stop: StopConfig | None = None
 
 
-#: The glyph each outcome wears, borrowed from the comparison table's vocabulary.
-#:
-#: A no-signal iteration takes the table's within-noise glyph: both say the same
-#: thing — the figure moved by nothing the run can stand behind.
-OUTCOME_GLYPHS: dict[LoopOutcome, DisplayClass] = {
+OUTCOME_GLYPHS: dict[Outcome, DisplayClass] = {
     "improved": "improved",
     "regressed": "regressed",
     "no-signal": "within-noise",
 }
+"""The glyph each outcome wears, borrowed from the comparison table's vocabulary.
+
+A no-signal iteration takes the table's within-noise glyph: both say the same
+thing — the figure moved by nothing the run can stand behind.
+"""
 
 
 def format_baseline_ref(baseline: BaselineRef) -> str:
@@ -453,7 +350,7 @@ def format_status_header(session: SessionRecord) -> list[str]:
     """
     baseline = format_baseline_ref(session.baseline)
     return [
-        _separator().join([
+        join_header_parts([
             markup(f"session {session.session_id}", "bold"),
             f"baseline {escape(baseline)}",
             f"adapter {escape(session.config.adapter)}",
@@ -507,32 +404,12 @@ def format_status_iteration(iteration: StatusIteration) -> str:
     Returns:
         The iteration as a single rich-markup line.
     """
-    glyph = markup(get_glyph(OUTCOME_GLYPHS[iteration.outcome]), _OUTCOME_STYLES[iteration.outcome])
-    return _separator().join([
+    glyph = markup(GLYPHS[OUTCOME_GLYPHS[iteration.outcome]], _OUTCOME_STYLES[iteration.outcome])
+    return join_header_parts([
         f"iteration {iteration.seq}",
         f"{glyph}{_format_primary_delta(iteration.delta_pct)}",
         format_status_settle(iteration.settle),
     ])
-
-
-def baseline_medians(record: BaselineRecord) -> dict[str, float]:
-    """The median each metric of a recorded baseline came to over its rounds.
-
-    A round that omits a metric contributes nothing to that metric's median
-    rather than a zero, and a metric no round reported has no entry at all.
-
-    Args:
-        record: The recorded baseline measurement to summarize.
-
-    Returns:
-        Each reported metric name mapped to its median, in the order the rounds
-        first named them.
-    """
-    readings: dict[str, list[float]] = {}
-    for round_ in record.samples:
-        for name, value in round_.items():
-            readings.setdefault(name, []).append(value)
-    return {name: compute_median(values) for name, values in readings.items()}
 
 
 def format_status_baseline(record: BaselineRecord) -> str:
@@ -551,9 +428,9 @@ def format_status_baseline(record: BaselineRecord) -> str:
     parts = [f"baseline {escape(record.label)}"]
     parts.extend(
         f"{escape(name)} {format_value(median)}"
-        for name, median in baseline_medians(record).items()
+        for name, median in medians_by_name(record.samples).items()
     )
-    return _separator().join(parts)
+    return join_header_parts(parts)
 
 
 def _format_stop_state(summary: StatusSummary) -> str | None:
@@ -568,7 +445,7 @@ def _format_stop_state(summary: StatusSummary) -> str | None:
         parts.append("target reached" if summary.target_reached else "target pending")
     if not parts:
         return None
-    return f"{markup('stop:', 'dim')} {_separator().join(parts)}"
+    return f"{markup('stop:', 'dim')} {join_header_parts(parts)}"
 
 
 def format_status_footer(summary: StatusSummary) -> list[str]:
@@ -583,7 +460,7 @@ def format_status_footer(summary: StatusSummary) -> list[str]:
     Returns:
         The totals line, and the stop-progress line when configured.
     """
-    totals = _separator().join([
+    totals = join_header_parts([
         pluralize(summary.iteration_count, "iteration"),
         f"{summary.keep_count} kept",
         f"{summary.discard_count} discarded",
@@ -592,14 +469,9 @@ def format_status_footer(summary: StatusSummary) -> list[str]:
     return [totals] if stop is None else [totals, stop]
 
 
-def first_line(message: str) -> str:
-    """The first line of a stop message, discarding the rest."""
-    return message.split("\n", maxsplit=1)[0]
-
-
 def format_status_stop(message: str) -> str:
     """The line a stopped session renders: the word and the first line of its message."""
-    return _separator().join([markup("stopped", "bold"), escape(first_line(message))])
+    return join_header_parts([markup("stopped", "bold"), escape(first_line(message))])
 
 
 def format_status_finalized(finalized: FinalizeRecord) -> str:
@@ -615,7 +487,7 @@ def format_status_finalized(finalized: FinalizeRecord) -> str:
     Returns:
         A single rich-markup line naming the branch and short commit.
     """
-    return _separator().join([
+    return join_header_parts([
         markup("finalized", "bold"),
         f"branch {escape(finalized.branch)}",
         f"commit {finalized.commit[:SHORT_SHA_LENGTH]}",

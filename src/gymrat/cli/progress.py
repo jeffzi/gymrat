@@ -5,9 +5,14 @@ and a sampling bar with an elapsed-over-total clock. The prepare row is removed
 once prepare finishes, so the display never grows past those two rows. Plain
 mode (non-TTY) prints timestamped milestone lines without ANSI escape codes.
 
-This module is the shell: it owns the terminal, the ``rich`` objects, and the
-live/plain branch. Every decision about what to show lives in the pure reducer
-:mod:`gymrat.cli.progress_state`.
+:class:`ProgressReporter` is the shell: it owns the terminal, the ``rich``
+objects, and the live/plain branch. Every decision about what to show lives in
+the pure reducer made of :class:`ProgressState`, :func:`advance` and
+:func:`plain_line` -- which rows are visible, how many passes are done, what
+the remaining estimate is, and which milestone line plain mode prints. The
+reducer touches no ``rich`` object and reads no clock: ``now`` always comes
+from the event's own ``at_ms``, so a transition is fully determined by
+``(state, event)``.
 
 Glyphs, verb forms, and timer colors follow the conventions in
 :mod:`gymrat.cli.style`.
@@ -15,7 +20,8 @@ Glyphs, verb forms, and timer colors follow the conventions in
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, override
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Literal, Self, override
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -23,7 +29,6 @@ if TYPE_CHECKING:
     from gymrat.progress_events import ProgressEvent
 
 from rich.console import Console, Group, RenderableType
-from rich.live import Live
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -39,20 +44,197 @@ from rich.progress import (
 from rich.table import Column
 from rich.text import Text
 
-from gymrat.cli.progress_state import ProgressState, advance, plain_line
+from gymrat.cli.live_display import LiveDisplayMixin
+from gymrat.cli.milestone_lines import prepare_milestone
 from gymrat.cli.style import (
-    COMPACT_HEIGHT_THRESHOLD,
-    LIVE_REFRESH_PER_SECOND,
-    SPINNER_NAME,
     STYLE_LABEL,
     STYLE_META,
     STYLE_TIMER_DONE,
     STYLE_TIMER_RUNNING,
-    STYLE_VERB,
-    LiveDisplayMixin,
 )
-from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
-from gymrat.signals import install_termination_cleanup
+from gymrat.progress_events import (
+    PassFinished,
+    PassStarted,
+    PrepareFinished,
+    PrepareStarted,
+)
+from gymrat.utils import (
+    MS_PER_SECOND,
+    SamplingEta,
+    format_clock,
+    format_duration,
+)
+
+# The one spinner animation every renderer uses, for ``SpinnerColumn`` in
+# progress bars and ``Spinner`` in checklist rows alike.
+SPINNER_NAME = "dots"
+
+# Below this terminal height, a full checklist or header-plus-rows layout
+# can't fit, so a renderer switches to a single-row compact bar.
+COMPACT_HEIGHT_THRESHOLD = 12
+
+STYLE_VERB = "bold"
+
+
+# ---------------------------------------------------------------------------
+# Progress state and reducer
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressState:
+    """Everything the progress display needs to paint a frame.
+
+    Attributes:
+        target_count: How many targets (baseline plus candidates) the run covers.
+        sample_count: Samples per target, or ``None`` when the total is only
+            discovered at runtime from ``PassStarted.total_rounds``.
+        prepare_start_ms: Timestamp the current prepare step began.
+        pass_start_ms: Timestamp the current pass began.
+        run_start_ms: Timestamp of the first event seen, or ``None`` until the
+            first event arrives.
+        run_end_ms: Timestamp of the most recent event, or ``None`` until the
+            first event arrives.
+        eta: Finished-pass samples and the remaining-time estimate they make.
+            Its ``total`` is ``0`` while the pass count is still unknown, which
+            happens when no ``--samples`` flag pinned it up front; the first
+            ``PassStarted`` fills it in.
+        prepare_visible: Whether the prepare row is shown. Cleared on
+            ``PrepareFinished`` even though the run is still in progress; it
+            tracks row visibility, not whether the prepare phase is done.
+        pass_visible: Whether the pass row is shown.
+        current_target: Label of the in-flight target shown on whichever row
+            is currently visible, or ``""`` before one is set.
+    """
+
+    target_count: int
+    sample_count: int | None = None
+    prepare_start_ms: float = 0.0
+    pass_start_ms: float = 0.0
+    run_start_ms: float | None = None
+    run_end_ms: float | None = None
+    eta: SamplingEta = field(default_factory=lambda: SamplingEta(total=0))
+    prepare_visible: bool = False
+    pass_visible: bool = False
+    current_target: str = ""
+
+    @classmethod
+    def start(cls, *, target_count: int, sample_count: int | None) -> Self:
+        """Build the state a run begins in.
+
+        Args:
+            target_count: How many targets (baseline plus candidates) the run covers.
+            sample_count: Samples per target, or ``None`` when the total is only
+                discovered at runtime from ``PassStarted.total_rounds``.
+
+        Returns:
+            A state with nothing visible and the total pre-sized when it is known.
+        """
+        total = (sample_count or 0) * target_count
+        return cls(
+            target_count=target_count,
+            sample_count=sample_count,
+            eta=SamplingEta(total=total),
+        )
+
+    @property
+    def total(self) -> int:
+        """Passes the run expects in all, as the estimate counts them."""
+        return self.eta.total
+
+
+def _pass_started(state: ProgressState, event: PassStarted) -> ProgressState:
+    total = state.total or event.total_rounds * event.target_count
+    return replace(
+        state,
+        eta=replace(state.eta, total=total),
+        pass_start_ms=event.at_ms,
+        pass_visible=True,
+        current_target=event.label,
+    )
+
+
+def advance(state: ProgressState, event: ProgressEvent) -> ProgressState:
+    """Fold ``event`` into ``state``.
+
+    Args:
+        state: The state the run is in before the event.
+        event: The event to apply; anything outside the four prepare/pass
+            milestones is not a display change.
+
+    Returns:
+        The state the display should paint next, or ``state`` itself when the
+        event carries nothing the display shows.
+    """
+    match event:
+        case PrepareStarted():
+            updated = replace(
+                state,
+                prepare_start_ms=event.at_ms,
+                prepare_visible=True,
+                current_target=event.label,
+            )
+        case PrepareFinished():
+            # The prepare row has nothing left to say once sampling starts, so it
+            # leaves the display rather than lingering as a completed row.
+            updated = replace(state, prepare_visible=False)
+        case PassStarted():
+            updated = _pass_started(state, event)
+        case PassFinished():
+            updated = replace(state, eta=state.eta.advanced(event.at_ms - state.pass_start_ms))
+        case _:
+            return state
+
+    return replace(
+        updated,
+        run_start_ms=event.at_ms if state.run_start_ms is None else state.run_start_ms,
+        run_end_ms=event.at_ms,
+    )
+
+
+def plain_line(before: ProgressState, after: ProgressState, event: ProgressEvent) -> str | None:
+    """Render the milestone line plain mode prints for ``event``, without its timestamp.
+
+    Args:
+        before: The state before ``event`` was applied.
+        after: The state ``advance`` returned for ``event``.
+        event: The event being reported.
+
+    Returns:
+        The line to print, or ``None`` when the event is not a milestone plain
+        mode announces.
+    """
+    match event:
+        case PrepareFinished():
+            return prepare_milestone(event.label, event.at_ms - before.prepare_start_ms)
+        case PassFinished():
+            # Taking the duration from the ETA delta rather than recomputing it
+            # keeps the printed number and the bar's estimate from ever disagreeing.
+            elapsed = format_duration(after.eta.total_time_ms - before.eta.total_time_ms)
+            return f"pass {event.round}/{event.total_rounds} · {event.label} ({elapsed})"
+        case _:
+            return None
+
+
+# ---------------------------------------------------------------------------
+# Rich columns and progress bars
+# ---------------------------------------------------------------------------
+
+
+def clock_text(elapsed_ms: float, remaining_ms: float) -> Text:
+    """The media-player clock: elapsed time over the projected total.
+
+    Args:
+        elapsed_ms: Time the run has taken so far.
+        remaining_ms: The estimate of the time left.
+
+    Returns:
+        The running clock, then a dimmed ``/total`` projected from the estimate.
+    """
+    text = Text()
+    text.append(format_clock(elapsed_ms), style=STYLE_TIMER_RUNNING)
+    text.append(f"/{format_clock(elapsed_ms + remaining_ms)}", style=STYLE_META)
+    return text
 
 
 class _ClockColumn(ProgressColumn):
@@ -73,12 +255,11 @@ class _ClockColumn(ProgressColumn):
     @override
     def render(self, task: Task) -> Text:
         elapsed_ms = (task.elapsed or 0.0) * MS_PER_SECOND
-        total = (
-            "--:--" if self._remaining_ms is None else format_clock(elapsed_ms + self._remaining_ms)
-        )
+        if self._remaining_ms is not None:
+            return clock_text(elapsed_ms, self._remaining_ms)
         text = Text()
         text.append(format_clock(elapsed_ms), style=STYLE_TIMER_RUNNING)
-        text.append(f"/{total}", style=STYLE_META)
+        text.append("/--:--", style=STYLE_META)
         return text
 
 
@@ -97,12 +278,33 @@ class _TargetColumn(ProgressColumn):
         return text
 
 
+def phase_text(verb: str, note: str, target: str) -> Text:
+    """Build a running row: the verb, then the context the row carries.
+
+    Args:
+        verb: The gerund the row leads with (``"sampling"``).
+        note: Dim context shown after the verb; empty for none.
+        target: The in-flight target label, shown behind a dim separator;
+            empty for none.
+
+    Returns:
+        The styled row text.
+    """
+    text = Text()
+    text.append(verb, style=STYLE_VERB)
+    if note:
+        text.append(f" {note}", style=STYLE_META)
+    if target:
+        text.append(" · ", style=STYLE_META)
+        text.append(target, style=STYLE_LABEL)
+    return text
+
+
 class _PhaseColumn(ProgressColumn):
     """Renders the running verb plus the optional context the row carries.
 
     The task description holds the gerund (``"sampling"``); the optional
-    ``note`` field adds dim context after it, and the optional ``target`` field
-    adds the in-flight target label behind a dim separator.
+    ``note`` and ``target`` fields are the context :func:`phase_text` adds.
 
     The column never wraps: a narrow terminal shrinks the bar rather than
     spilling the verb onto a second line and breaking the checklist alignment.
@@ -114,16 +316,9 @@ class _PhaseColumn(ProgressColumn):
     @override
     def render(self, task: Task) -> Text:
         fields = task.fields
-        text = Text()
-        text.append(task.description, style=STYLE_VERB)
-        note = fields.get("note", "")
-        if note:
-            text.append(f" {note}", style=STYLE_META)
-        target = fields.get("target", "")
-        if target:
-            text.append(" · ", style=STYLE_META)
-            text.append(str(target), style=STYLE_LABEL)
-        return text
+        return phase_text(
+            task.description, str(fields.get("note", "")), str(fields.get("target", ""))
+        )
 
 
 def _clocked_progress(
@@ -137,7 +332,7 @@ def _clocked_progress(
         console: The console the progress bar renders to.
         clock: Optional time source injected for testing; ``None`` defaults to
             ``time.monotonic``.
-        columns: The columns to show before the clock column.
+        *columns: The columns to show before the clock column.
 
     Returns:
         The ``Progress`` and its ``_ClockColumn``.
@@ -206,6 +401,29 @@ def passes_progress(
     )
 
 
+# ---------------------------------------------------------------------------
+# Reporter shell
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RunShape:
+    """What a measure/compare run covers, as its progress display shows it.
+
+    Attributes:
+        target_count: How many targets (baseline + candidates) the run covers.
+        sample_count: The number of samples per target, or ``None`` when the
+            total is discovered at runtime from ``PassStarted.total_rounds``.
+        command: A label printed in the header row of the live display.
+        target_labels: Labels for each target, shown when ``target_count > 1``.
+    """
+
+    target_count: int
+    sample_count: int | None = None
+    command: str | None = None
+    target_labels: tuple[str, ...] = ()
+
+
 class ProgressReporter(LiveDisplayMixin):
     """Single-use progress reporter for measure/compare commands.
 
@@ -217,52 +435,37 @@ class ProgressReporter(LiveDisplayMixin):
         mode: ``"live"`` for a rich live display or ``"plain"`` for timestamped
             milestone lines.
         console: The console to render progress to.
-        target_count: How many targets (baseline + candidates) the run covers.
-        sample_count: The number of samples per target, or ``None`` when the
-            total is discovered at runtime from ``PassStarted.total_rounds``.
+        shape: The targets, samples and labels the run covers.
         clock: Optional time source injected for testing; defaults to
             ``time.monotonic``.
-        command: A label printed in the header row of the live display.
-        target_labels: Labels for each target, shown when ``target_count > 1``.
     """
 
-    def __init__(  # noqa: PLR0913 -- mirrors the factory below
+    def __init__(
         self,
         mode: Literal["live", "plain"],
         console: Console,
-        target_count: int,
-        sample_count: int | None = None,
+        shape: RunShape,
         *,
         clock: Callable[[], float] | None = None,
-        command: str | None = None,
-        target_labels: list[str] | None = None,
     ) -> None:
         self._console = console
-        self._command = command
-        self._target_labels = target_labels or []
-        self._state = ProgressState.start(target_count=target_count, sample_count=sample_count)
+        self._command = shape.command
+        self._target_labels = shape.target_labels
+        self._state = ProgressState.start(
+            target_count=shape.target_count, sample_count=shape.sample_count
+        )
 
-        # Read only by ``report``; ``__init__`` branches on the local so the
-        # live/plain split stays in exactly one place.
-        is_live = mode == "live" and console.width > 0
-        self._is_live = is_live
-        self._live: Live | None = None
         self._clock_column: _ClockColumn | None = None
         self._prepare_progress: Progress | None = None
         self._pass_progress: Progress | None = None
         self._prepare_task_id: TaskID | None = None
         self._pass_task_id: TaskID | None = None
-        self._compact = False
-        self._stopped = False
-        self._uninstall_cleanup: Callable[[], None] = lambda: None
 
-        if is_live:
+        if self._resolve_live(mode):
             self._init_live(console, clock)
 
     def _init_live(self, console: Console, clock: Callable[[], float] | None) -> None:
-        self._compact = console.height < COMPACT_HEIGHT_THRESHOLD
-
-        if self._compact:
+        if console.height < COMPACT_HEIGHT_THRESHOLD:
             self._pass_progress, self._clock_column = compact_progress(console, clock=clock)
         else:
             self._prepare_progress = Progress(
@@ -275,20 +478,10 @@ class ProgressReporter(LiveDisplayMixin):
             )
             self._pass_progress, self._clock_column = passes_progress(console, clock=clock)
 
-        self._live = Live(
-            console=console,
-            auto_refresh=True,
-            refresh_per_second=LIVE_REFRESH_PER_SECOND,
-            transient=True,
-            redirect_stderr=False,
-            get_renderable=self.frame,
-        )
-        self._live.start()
-
         # A termination signal exits via os._exit without unwinding the run's
         # finally block, so the live display would strand its last frame on the
-        # terminal. Clearing it here keeps the terminal clean.
-        self._uninstall_cleanup = install_termination_cleanup(self.clear_on_signal)
+        # terminal; the mount erases it instead.
+        self._mount_live(transient=True, get_renderable=self.frame)
 
     def _header_text(self) -> Text | None:
         if not self._command:
@@ -296,7 +489,7 @@ class ProgressReporter(LiveDisplayMixin):
         header = Text()
         header.append(self._command, style=STYLE_LABEL)
         sample_count = self._state.sample_count
-        label_str = ", ".join(self._target_labels) if self._target_labels else ""
+        label_str = ", ".join(self._target_labels)
         sample_str = f"{sample_count} samples" if sample_count is not None else ""
         dim_parts = [p for p in (label_str, sample_str) if p]
         if dim_parts:
@@ -338,8 +531,7 @@ class ProgressReporter(LiveDisplayMixin):
 
         line = plain_line(before, after, event)
         if line is not None:
-            ts = format_timestamp(event.at_ms, after.run_start_ms)
-            self._console.print(f"{ts} {line}", highlight=False, markup=False)
+            self._print_milestone(line, event.at_ms, after.run_start_ms)
 
     def _sync_live(self, state: ProgressState) -> None:
         self._sync_prepare_row(state)
@@ -378,22 +570,8 @@ class ProgressReporter(LiveDisplayMixin):
             completed=state.eta.completed,
         )
 
-    def warn(self, message: str) -> None:
-        """Surface a warning without disturbing any active live display."""
-        self._console.print(message, highlight=False, markup=False)
-
-    def stop(self) -> None:
-        """Stop the reporter and clean up any live display."""
-        if self._stopped:
-            return
-        self._stopped = True
-        self._uninstall_cleanup()
-        if self._live is not None:
-            self._live.stop()
-            self._print_summary()
-            self._live = None
-
-    def _print_summary(self) -> None:
+    @override
+    def _after_live_stopped(self) -> None:
         """Print the run's timing; the report right below carries everything else."""
         state = self._state
         elapsed_ms = (

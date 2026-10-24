@@ -12,37 +12,39 @@ business. Worktree cleanup and signal handling belong to
 
 import asyncio
 from dataclasses import dataclass
+from functools import partial
 
 from gymrat.adapters import get_adapter
 from gymrat.model import ResolvedMetricMeta
 from gymrat.report.types import MeasurementResult, MetricMeasurement
 from gymrat.sampling import (
+    CleanupResult,
     RunOptions,
-    SamplingOptions,
-    TargetContext,
     TargetSpec,
+    WorktreeInfo,
     collect_samples,
     compute_metric_stats,
-    own_values,
-    resolve_dir,
-    resolve_label,
     resolve_metric_meta_from_samples,
     run_with_worktrees,
+    to_context,
 )
-from gymrat.targets import CleanupResult, WorktreeInfo, resolve_target
+from gymrat.targets import resolve_target
+from gymrat.utils import own_values
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class MeasureOptions(RunOptions):
+class MeasureOptions:
     """Caller-facing configuration for a single measurement run.
 
     One target, no baseline: nothing is judged, so there is no noise band to set
     and no verdict to gate on.
 
     Attributes:
+        run: The bench, sampling, adapter, and config-override settings of the run.
         target: The revision or directory to measure.
     """
 
+    run: RunOptions
     target: TargetSpec
 
 
@@ -59,29 +61,56 @@ class _Measurement:
     metric_meta: dict[str, ResolvedMetricMeta]
 
 
+async def _measure_phase(
+    options: MeasureOptions,
+    repo_dir: str,
+    worktrees: list[WorktreeInfo],
+    abort: asyncio.Event,
+) -> _Measurement:
+    """Resolve the target, sample it, and resolve its metric metadata."""
+    run = options.run
+    adapter = get_adapter(run.adapter)
+    target = resolve_target(options.target.target, repo_dir)
+
+    ctx = to_context(options.target, target, repo_dir, worktrees)
+
+    (collected,) = await collect_samples(adapter, [ctx], run.sampling, abort)
+
+    return _Measurement(
+        label=ctx.label,
+        samples=collected.samples,
+        metric_meta=resolve_metric_meta_from_samples(
+            [collected.samples],
+            run.config_metrics,
+            adapter,
+            run.config_kinds,
+        ),
+    )
+
+
 def _build_measurement_result(
     measurement: _Measurement,
-    options: MeasureOptions,
     cleanup: CleanupResult,
+    *,
+    options: MeasureOptions,
 ) -> MeasurementResult:
     """Assemble the rendered result from the measurement and the cleanup outcome."""
+    run = options.run
     metrics: dict[str, MetricMeasurement] = {}
     for metric_name, meta in measurement.metric_meta.items():
-        stats = compute_metric_stats(own_values(measurement.samples, metric_name))
+        stats = compute_metric_stats(metric_name, own_values(measurement.samples, metric_name))
         metrics[metric_name] = MetricMeasurement(
             median=stats.median, spread=stats.spread, meta=meta
         )
 
     return MeasurementResult(
-        worktrees_removed=cleanup.removed,
-        worktrees_left_behind=tuple(cleanup.failures),
-        worktree_prune_error=cleanup.prune_error,
         label=measurement.label,
-        samples=options.samples,
-        adapter=options.adapter,
+        samples=run.sampling.samples,
+        adapter=run.adapter,
         metrics=metrics,
         rounds=tuple(measurement.samples),
-        config_kinds=options.config_kinds,
+        cleanup=cleanup,
+        config_kinds=run.config_kinds,
     )
 
 
@@ -98,48 +127,15 @@ async def measure(options: MeasureOptions) -> MeasurementResult:
 
     Returns:
         The assembled measurement, ready for a renderer.
+
+    Raises:
+        GymratError: When the adapter is unknown or the target is neither a
+            directory nor a resolvable ref. When the worktree cleanup also
+            failed, the message carries its diagnostics.
+        CommandError: When a prepare or bench command times out or exits
+            non-zero.
     """
-
-    async def phase(
-        repo_dir: str,
-        worktrees: list[WorktreeInfo],
-        abort: asyncio.Event,
-    ) -> _Measurement:
-        adapter = get_adapter(options.adapter)
-        target = resolve_target(options.target.target, repo_dir)
-
-        ctx = TargetContext(
-            target=target,
-            dir=resolve_dir(target, repo_dir, worktrees),
-            label=resolve_label(options.target.label, target),
-        )
-
-        (collected,) = await collect_samples(
-            adapter,
-            [ctx],
-            SamplingOptions(
-                bench=options.bench,
-                prepare=options.prepare,
-                samples=options.samples,
-                timeout_seconds=options.timeout_seconds,
-                on_progress=options.on_progress,
-                warn=options.warn,
-            ),
-            abort,
-        )
-
-        return _Measurement(
-            label=ctx.label,
-            samples=collected.samples,
-            metric_meta=resolve_metric_meta_from_samples(
-                [collected.samples],
-                options.config_metrics,
-                adapter,
-                options.config_kinds,
-            ),
-        )
-
     return await run_with_worktrees(
-        phase,
-        lambda measurement, cleanup: _build_measurement_result(measurement, options, cleanup),
+        partial(_measure_phase, options),
+        partial(_build_measurement_result, options=options),
     )

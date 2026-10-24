@@ -2,43 +2,43 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.metadata
-import sys
-import warnings
 from typing import TYPE_CHECKING, override
 
 import pytest
 from opentelemetry.sdk.trace import SpanProcessor
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, set_span_in_context
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable
 
-from gymrat.telemetry.ids import span_id_of, trace_id_of
 from gymrat.telemetry.provider import (
-    _reset_for_tests,
+    SESSION_SPAN_KEY,
     configure_tracing,
+    export_failed,
     flush_tracing,
+    reset_tracing,
+    session_span_dropped,
+    span_id_of,
     start_span,
+    trace_id_of,
 )
-from tests.telemetry._fixtures import memory_tracing
+from gymrat.telemetry.run_spans import SESSION_SPAN
+from gymrat.utils import ENDPOINT_ENV
+from tests.telemetry._collector import otlp_collector
+from tests.telemetry._fixtures import (
+    arm_placeholder_endpoint,
+    hide_otel_sdk,
+    hide_otlp_exporter,
+    memory_tracing,
+)
+
+_TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 
 SESSION = "test-session-provider"
-
-
-def _reset_provider_quietly() -> None:
-    """Call ``_reset_for_tests`` with OTel's deprecation warnings suppressed."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        _reset_for_tests()
-
-
-@pytest.fixture(autouse=True)
-def _isolate_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Ensure every test starts and ends with no provider and a clean environment."""
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-    _reset_provider_quietly()
-    yield
-    _reset_provider_quietly()
 
 
 # ---------------------------------------------------------------------------
@@ -46,55 +46,129 @@ def _isolate_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
-def test_configure_tracing_when_endpoint_unset_does_return_false(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-
+def test_configure_tracing_when_endpoint_unset_does_return_false():
     result = configure_tracing(SESSION)
 
     assert result is False
 
 
-def test_configure_tracing_when_endpoint_blank_does_return_false(
+def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+    monkeypatch.setenv(ENDPOINT_ENV, "http://127.0.0.1:9")
+    with otlp_collector() as collector:
+        configure_tracing(SESSION, endpoint=collector.endpoint)
+        with start_span("probe"):
+            pass
 
-    result = configure_tracing(SESSION)
+        flush_tracing()
 
-    assert result is False
-
-
-# ---------------------------------------------------------------------------
-# configure_tracing — SDK import gate
-# ---------------------------------------------------------------------------
-
-
-def test_configure_tracing_when_sdk_missing_does_return_false(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-
-    saved = {}
-    sdk_keys = [
-        k for k in sys.modules if k == "opentelemetry.sdk" or k.startswith("opentelemetry.sdk.")
+    assert [(export.path, export.span_names) for export in collector.received] == [
+        ("/v1/traces", ["probe"])
     ]
-    for key in sdk_keys:
-        saved[key] = sys.modules[key]
 
-    try:
-        for key in sdk_keys:
-            monkeypatch.setitem(sys.modules, key, None)
-        monkeypatch.setitem(sys.modules, "opentelemetry.sdk", None)
-        monkeypatch.setitem(sys.modules, "opentelemetry.sdk.trace", None)
 
-        result = configure_tracing(SESSION)
-    finally:
-        for key, mod in saved.items():
-            sys.modules[key] = mod
+def _pad_endpoint(monkeypatch: pytest.MonkeyPatch, endpoint: str) -> None:
+    monkeypatch.setenv(ENDPOINT_ENV, f"  {endpoint} ")
+
+
+def _pad_traces_endpoint(monkeypatch: pytest.MonkeyPatch, endpoint: str) -> None:
+    monkeypatch.setenv(ENDPOINT_ENV, "http://127.0.0.1:1")
+    monkeypatch.setenv(_TRACES_ENDPOINT_ENV, f"  {endpoint}/custom/traces ")
+
+
+@pytest.mark.parametrize(
+    ("arrange", "expected_path"),
+    [
+        pytest.param(_pad_endpoint, "/v1/traces", id="base-endpoint"),
+        pytest.param(_pad_traces_endpoint, "/custom/traces", id="traces-endpoint-over-base"),
+    ],
+)
+def test_configure_tracing_when_endpoint_variable_padded_does_export_to_it_trimmed(
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: Callable[[pytest.MonkeyPatch, str], None],
+    expected_path: str,
+):
+    with otlp_collector() as collector:
+        arrange(monkeypatch, collector.endpoint)
+        configure_tracing(SESSION)
+        with start_span("probe"):
+            pass
+
+        flush_tracing()
+
+    assert [(export.path, export.span_names) for export in collector.received] == [
+        (expected_path, ["probe"])
+    ]
+
+
+# ---------------------------------------------------------------------------
+# flush_tracing
+# ---------------------------------------------------------------------------
+
+
+class _StalledFlushSpanProcessor(SpanProcessor):
+    """Span processor whose flush never finishes in time, as a hung exporter's would."""
+
+    @override
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return False
+
+
+def test_flush_tracing_when_flush_does_not_finish_in_time_does_count_as_failed_export(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(ENDPOINT_ENV, "http://collector:4318")
+    configure_tracing(SESSION, span_processor=_StalledFlushSpanProcessor())
+
+    flush_tracing()
+
+    assert export_failed()
+
+
+# ---------------------------------------------------------------------------
+# configure_tracing — import gates
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "hide",
+    [
+        pytest.param(hide_otel_sdk, id="sdk-missing"),
+        pytest.param(hide_otlp_exporter, id="exporter-missing"),
+    ],
+)
+def test_configure_tracing_when_a_package_is_missing_does_return_false(
+    monkeypatch: pytest.MonkeyPatch, hide: Callable[[pytest.MonkeyPatch], None]
+):
+    arm_placeholder_endpoint(monkeypatch)
+    hide(monkeypatch)
+
+    result = configure_tracing(SESSION)
 
     assert result is False
+
+
+def test_configure_tracing_when_exporter_was_missing_does_configure_later_call_afresh(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    arm_placeholder_endpoint(monkeypatch)
+    with monkeypatch.context() as hidden:
+        hide_otlp_exporter(hidden)
+        configure_tracing(SESSION)
+    exporter = InMemorySpanExporter()
+
+    configured = configure_tracing(
+        "session-after-missing-exporter",
+        span_processor=SimpleSpanProcessor(exporter),
+    )
+    with start_span("probe"):
+        pass
+
+    # pyrefly: ignore[missing-attribute] -- a finished span always carries its context
+    trace_ids = [span.context.trace_id for span in exporter.get_finished_spans()]
+    assert configured is True
+    assert trace_ids == [trace_id_of("session-after-missing-exporter")]
 
 
 # ---------------------------------------------------------------------------
@@ -102,89 +176,41 @@ def test_configure_tracing_when_sdk_missing_does_return_false(
 # ---------------------------------------------------------------------------
 
 
-def test_configure_tracing_when_endpoint_set_does_return_true(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+def test_configure_tracing_when_called_does_name_and_version_the_service():
+    with memory_tracing(SESSION) as exporter, start_span("probe"):
+        pass
 
-    result = configure_tracing(
-        SESSION,
-        span_processor=SimpleSpanProcessor(InMemorySpanExporter()),
+    finished = exporter.get_finished_spans()
+    attributes = finished[0].resource.attributes
+    assert (attributes["service.name"], attributes["service.version"]) == (
+        "gymrat",
+        importlib.metadata.version("gymrat"),
     )
 
-    assert result is True
 
-
-def test_configure_tracing_when_called_does_set_resource_service_name(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_configure_tracing_when_called_twice_does_reuse_provider():
     with memory_tracing(SESSION) as exporter:
-        span = start_span("probe")
-        span.__enter__()
-        span.__exit__(None, None, None)
-
-    finished = exporter.get_finished_spans()
-    resource = finished[0].resource
-    assert resource.attributes["service.name"] == "gymrat"
-
-
-def test_configure_tracing_when_called_does_set_resource_service_version(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    expected_version = importlib.metadata.version("gymrat")
-
-    with memory_tracing(SESSION) as exporter:
-        span = start_span("probe")
-        span.__enter__()
-        span.__exit__(None, None, None)
-
-    finished = exporter.get_finished_spans()
-    resource = finished[0].resource
-    assert resource.attributes["service.version"] == expected_version
-
-
-def test_configure_tracing_when_called_twice_does_reuse_provider(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    configure_tracing(SESSION, span_processor=SimpleSpanProcessor(InMemorySpanExporter()))
-
-    result = configure_tracing(SESSION)
+        result = configure_tracing(SESSION)
+        with start_span("probe"):
+            pass
 
     assert result is True
+    assert [span.name for span in exporter.get_finished_spans()] == ["probe"]
 
 
-def test_configure_tracing_when_already_configured_with_span_processor_does_raise(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    configure_tracing(SESSION, span_processor=SimpleSpanProcessor(InMemorySpanExporter()))
-
-    with pytest.raises(ValueError, match="span_processor"):
+def test_configure_tracing_when_already_configured_with_span_processor_does_raise():
+    with (
+        memory_tracing(SESSION),
+        pytest.raises(ValueError, match="span_processor"),
+    ):
         configure_tracing(
             SESSION,
             span_processor=SimpleSpanProcessor(InMemorySpanExporter()),
         )
 
 
-def test_configure_tracing_when_called_with_different_session_id_does_raise(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    configure_tracing(SESSION, span_processor=SimpleSpanProcessor(InMemorySpanExporter()))
-
-    with pytest.raises(ValueError, match="session_id"):
+def test_configure_tracing_when_called_with_different_session_id_does_raise():
+    with memory_tracing(SESSION), pytest.raises(ValueError, match="session_id"):
         configure_tracing("other-session")
 
 
@@ -193,60 +219,39 @@ def test_configure_tracing_when_called_with_different_session_id_does_raise(
 # ---------------------------------------------------------------------------
 
 
-def test_start_span_when_no_parent_does_use_session_trace_id():
-    with memory_tracing(SESSION) as exporter:
-        span = start_span("root-span")
-        span.__enter__()
-        span.__exit__(None, None, None)
+def test_start_span_when_keyed_without_parent_does_derive_trace_and_span_ids_from_the_session():
+    with memory_tracing(SESSION) as exporter, start_span("keyed-span", span_key="my-key"):
+        pass
 
     finished = exporter.get_finished_spans()
     assert len(finished) == 1
-    assert finished[0].context.trace_id == trace_id_of(SESSION)  # pyrefly: ignore[missing-attribute]
-
-
-def test_start_span_when_span_key_given_does_use_deterministic_span_id():
-    with memory_tracing(SESSION) as exporter:
-        span = start_span("keyed-span", span_key="my-key")
-        span.__enter__()
-        span.__exit__(None, None, None)
-
-    finished = exporter.get_finished_spans()
-    assert len(finished) == 1
-    assert finished[0].context.span_id == span_id_of(SESSION, "my-key")  # pyrefly: ignore[missing-attribute]
+    context = finished[0].context
+    assert context is not None
+    assert (context.trace_id, context.span_id) == (
+        trace_id_of(SESSION),
+        span_id_of(SESSION, "my-key"),
+    )
 
 
 def test_start_span_when_no_span_key_does_use_random_span_id():
     with memory_tracing(SESSION) as exporter:
-        span = start_span("random-span")
-        span.__enter__()
-        span.__exit__(None, None, None)
+        with start_span("random-span"):
+            pass
+        with start_span("random-span"):
+            pass
 
-    finished = exporter.get_finished_spans()
-    assert len(finished) == 1
-    assert finished[0].context.span_id != span_id_of(SESSION, "random-span")  # pyrefly: ignore[missing-attribute]
-
-
-# ---------------------------------------------------------------------------
-# flush_tracing
-# ---------------------------------------------------------------------------
-
-
-def test_flush_tracing_when_provider_exists_does_not_raise():
-    with memory_tracing(SESSION):
-        flush_tracing()
-
-
-def test_flush_tracing_when_no_provider_does_not_raise():
-    flush_tracing()
+    # pyrefly: ignore[missing-attribute] -- a finished span always carries its context
+    span_ids = {span.context.span_id for span in exporter.get_finished_spans()}
+    assert len(span_ids) == 2
 
 
 # ---------------------------------------------------------------------------
-# _reset_for_tests
+# reset_tracing
 # ---------------------------------------------------------------------------
 
 
 class _ShutdownFailingSpanProcessor(SpanProcessor):
-    """Span processor whose first ``shutdown`` raises, mimicking a failing exporter.
+    """Span processor whose flushes time out and whose first ``shutdown`` raises.
 
     Later shutdowns are no-ops so the provider's ``atexit`` handler — left
     registered when the first shutdown raises — stays quiet at interpreter exit.
@@ -254,6 +259,10 @@ class _ShutdownFailingSpanProcessor(SpanProcessor):
 
     def __init__(self) -> None:
         self._shut_down = False
+
+    @override
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return False
 
     @override
     def shutdown(self) -> None:
@@ -264,47 +273,39 @@ class _ShutdownFailingSpanProcessor(SpanProcessor):
         raise RuntimeError(msg)
 
 
-def test_reset_for_tests_when_shutdown_raises_does_clear_provider(
+def _configure_with_failing_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure tracing on a failing-shutdown processor, with export and session-drop flags set."""
+    arm_placeholder_endpoint(monkeypatch)
+    configure_tracing(SESSION, span_processor=_ShutdownFailingSpanProcessor())
+    flush_tracing()
+    # An unsampled parent makes the default parent-based sampler drop the session span.
+    unsampled = NonRecordingSpan(
+        SpanContext(trace_id=1, span_id=1, is_remote=True, trace_flags=TraceFlags(0))
+    )
+    start_span(SESSION_SPAN, span_key=SESSION_SPAN_KEY, context=set_span_in_context(unsampled))
+
+
+def test_reset_tracing_when_shutdown_raises_does_propagate_with_flags_cleared(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    configure_tracing(SESSION, span_processor=_ShutdownFailingSpanProcessor())
+    _configure_with_failing_shutdown(monkeypatch)
 
     with pytest.raises(RuntimeError, match="shutdown failed"):
-        _reset_provider_quietly()
+        reset_tracing()
+
+    assert (export_failed(), session_span_dropped()) == (False, False)
+
+
+def test_configure_tracing_when_previous_reset_raised_does_configure_afresh(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _configure_with_failing_shutdown(monkeypatch)
+    with contextlib.suppress(RuntimeError):
+        reset_tracing()
 
     result = configure_tracing(
         "session-after-failed-reset",
         span_processor=SimpleSpanProcessor(InMemorySpanExporter()),
     )
+
     assert result is True
-
-
-def test_reset_for_tests_when_called_does_allow_fresh_provider(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    configure_tracing(SESSION, span_processor=SimpleSpanProcessor(InMemorySpanExporter()))
-
-    _reset_provider_quietly()
-
-    exporter2 = InMemorySpanExporter()
-    result = configure_tracing(
-        "new-session",
-        span_processor=SimpleSpanProcessor(exporter2),
-    )
-    assert result is True
-
-    span = start_span("after-reset")
-    span.__enter__()
-    span.__exit__(None, None, None)
-
-    finished = exporter2.get_finished_spans()
-    assert len(finished) == 1
-    assert finished[0].context.trace_id == trace_id_of("new-session")  # pyrefly: ignore[missing-attribute]

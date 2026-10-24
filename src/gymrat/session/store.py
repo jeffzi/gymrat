@@ -13,20 +13,26 @@ the two ends of that contract:
   folds the records into the :class:`SessionState` every loop command consults
   before acting.
 
+:func:`read_live_session` reads and folds the log for the supervise dashboard,
+adding the best committed-keep iteration and any trailing stop message.
+
 :func:`require_session` and :func:`require_open_session` wrap read-and-fold with
 the guards a command needs: a session must exist, and — for the writers — it
 must not already be finalized.
 """
 
-import json
+import math
+import operator
 import os
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import assert_never
 
-from gymrat.errors import GymratError, hint_of
-from gymrat.finite_json import null_non_finite
+from pydantic_core import PydanticSerializationError
+
+from gymrat.errors import GymratError
+from gymrat.model import GEOMEAN_DIRECTION, Direction
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     BaselineRecord,
@@ -40,90 +46,136 @@ from gymrat.session.records import (
     SessionRecord,
     StopRecord,
     parse_record,
-    record_to_wire,
 )
 from gymrat.session.schema import KeepReason
+from gymrat.session.workspace import changed_file_count
+from gymrat.utils import (
+    UNICODE_LINE_BREAKS,
+    NonFiniteNumberError,
+    loads_strict_json,
+    os_error_reason,
+)
 
 __all__ = [
     "RequiredSession",
     "SessionState",
     "append_record",
+    "complete_lines",
     "fold_session",
+    "is_blank_line",
     "last_kept_position",
     "latest_baseline",
     "read_records",
+    "read_session_header",
+    "read_session_records",
     "recover_torn_tail",
     "require_open_session",
     "require_session",
+    "require_settled",
     "session_header",
+    "settle_first_hint",
+    "unmeasured_edit_count",
 ]
 
 
 @dataclass(frozen=True, slots=True)
 class SessionState:
-    """What a session log adds up to: the state every loop command reads before acting."""
+    """What a session log adds up to: the state every loop command reads before acting.
 
-    #: The header opening the log, absent while no session has been started.
+    Attributes:
+        session: The header opening the log, absent while no session has been started.
+        iteration_count: How many edits have been measured.
+        last_iteration: The most recently measured edit, absent while nothing has been measured.
+        unsettled: Whether a measured edit is waiting to be kept or discarded.
+        keep_count: How many edits were committed.
+        discard_count: How many edits were reverted.
+        target_reached_and_kept: Whether the last committed keep settled an edit that reached the
+            target metric.
+        last_seq: The highest number any iteration or settling record has taken, ``0`` while the log
+            has none. A refusal that settles nothing still claims a number, so this is a high-water
+            mark: the next record to need a number takes ``last_seq + 1`` and cannot alias one the
+            log already carries.
+        last_kept_commit: The commit made by the last keep that committed, absent when none did. The
+            baseline worktree advances to every kept commit, so this — not the header's pinned SHA —
+            is where the baseline stands once a keep has landed.
+        ends_on_gating_block: Whether the log ends on a keep the loop blocked for a gating
+            regression. The block settles the iteration it refused, but the edit it would not commit
+            still stands in the experiment worktree, so ``discard`` accepts this as the one settled
+            state it may still revert. Any iteration, keep, or discard after the block supersedes it
+            — except a keep refused for want of a measurement, which must not wedge the edit in
+            place.
+        ends_on_stop: Whether the newest record that is neither a hook nor a baseline is a stop. A
+            stop followed by only baseline or hook records still reads as stopped; any iteration,
+            keep, discard, or finalize supersedes it. A keep refused for ``nothing-measured`` leaves
+            this as it found it: the keep committed and settled nothing, so the stopped state is
+            unchanged.
+        finalized: The record that closed the session, absent while it is still open.
+    """
+
     session: SessionRecord | None
-    #: How many edits have been measured.
     iteration_count: int
-    #: The most recently measured edit, absent while nothing has been measured.
     last_iteration: IterationRecord | None
-    #: Whether a measured edit is waiting to be kept or discarded.
     unsettled: bool
-    #: How many edits were committed.
     keep_count: int
-    #: How many edits were reverted.
     discard_count: int
-    #: Whether the last committed keep settled an edit that reached the target metric.
     target_reached_and_kept: bool
-    #: The highest number any iteration or settling record has taken, ``0`` while
-    #: the log has none. A refusal that settles nothing still claims a number, so
-    #: this is a high-water mark: the next record to need a number takes
-    #: ``last_seq + 1`` and cannot alias one the log already carries.
     last_seq: int
-    #: The commit made by the last keep that committed, absent when none did. The
-    #: baseline worktree advances to every kept commit, so this — not the header's
-    #: pinned SHA — is where the baseline stands once a keep has landed.
     last_kept_commit: str | None
-    #: Whether the log ends on a keep the loop blocked for a gating regression.
-    #: The block settles the iteration it refused, but the edit it would not
-    #: commit still stands in the experiment worktree, so ``discard`` accepts this
-    #: as the one settled state it may still revert. Any iteration, keep, or
-    #: discard after the block supersedes it — except a keep refused for want of a
-    #: measurement, which must not wedge the edit in place.
     ends_on_gating_block: bool
-    #: Whether the newest record that is neither a hook nor a baseline is a stop.
-    #: A stop followed by only baseline or hook records still reads as stopped;
-    #: any iteration, keep, discard, or finalize supersedes it. A keep refused
-    #: for ``nothing-measured`` leaves this as it found it: the keep committed
-    #: and settled nothing, so the stopped state is unchanged.
     ends_on_stop: bool
-    #: The record that closed the session, absent while it is still open.
     finalized: FinalizeRecord | None
+
+
+def settle_first_hint(verb: str) -> str:
+    """The hint a refusal gives when the last iteration must be settled first.
+
+    Args:
+        verb: Gerund describing what the caller is about to do.
+
+    Returns:
+        The hint telling the user to keep or discard before ``verb``.
+    """
+    return f"Run gymrat keep or gymrat discard before {verb}."
+
+
+def require_settled(state: SessionState, verb: str) -> None:
+    """Refuse when a measured edit is still waiting to be kept or discarded.
+
+    Args:
+        state: The folded session state to check.
+        verb: Gerund describing the caller's intent, surfaced in the hint.
+
+    Raises:
+        GymratError: When an iteration is unsettled, with ``reason="unsettled"``.
+    """
+    if state.unsettled:
+        message = f"Iteration {state.last_seq} has not been settled"
+        raise GymratError(message, hint=settle_first_hint(verb), reason="unsettled")
 
 
 @dataclass(frozen=True, slots=True)
 class RequiredSession:
-    """An open session, with everything reading its log already produced."""
+    """An open session, with everything reading its log already produced.
 
-    #: The header the log opens with.
+    Attributes:
+        session: The header the log opens with.
+        state: What the whole log folds to, ``session`` included.
+        jsonl_path: The log the session was read from.
+        records: Every record the log holds, in file order — the same ones ``state`` folds.
+    """
+
     session: SessionRecord
-    #: What the whole log folds to, ``session`` included.
     state: SessionState
-    #: The log the session was read from.
     jsonl_path: str
-    #: Every record the log holds, in file order — the same ones ``state`` folds.
     records: list[SessionLogRecord]
 
 
 def last_kept_position(state: SessionState, baseline_sha: str) -> str:
     """The commit the experiment worktree should stand at after the last keep.
 
-    Returns the commit from the most recent committed keep, falling back to
-    ``baseline_sha`` when the session has kept nothing. Both ``discard_session``
-    and ``finalize_session`` need this position: discard resets the worktree to
-    it, and finalize refuses when the worktree has drifted past it.
+    This is the one definition of where the experiment worktree stands after
+    the last keep. Every command that resets, compares, or recreates the
+    worktree reads it here, so changing the fallback moves them all together.
 
     Args:
         state: The folded session state to inspect for a kept commit.
@@ -135,32 +187,174 @@ def last_kept_position(state: SessionState, baseline_sha: str) -> str:
     return state.last_kept_commit or baseline_sha
 
 
-def session_header(root: str) -> SessionRecord | None:
-    """Read only the first line of the session log and return the session record.
+def unmeasured_edit_count(state: SessionState, session: SessionRecord) -> int:
+    """Count the experiment worktree's files that differ from its last kept position.
 
-    Returns ``None`` when the log is absent, empty, or its first line is not a
-    session record. Unlike :func:`read_records` this never reads past the first
-    line, making it safe for hot paths that only need the session ID.
+    Args:
+        state: The folded session state, which names the last kept commit.
+        session: The session header, which names the experiment worktree and
+            the baseline commit that stands in when nothing was kept.
+
+    Returns:
+        The number of changed or untracked files, or 0 when the worktree is absent.
+
+    Raises:
+        GymratError: When git refuses to diff the worktree or to list its
+            untracked files.
+    """
+    return changed_file_count(
+        session.worktrees.experiment, last_kept_position(state, session.baseline.sha)
+    )
+
+
+def _decode_log_line_at(line: str, at: str, line_number: int) -> object:
+    """Decode one session-log line, naming its location when it is not JSON.
+
+    Args:
+        line: The line to decode.
+        at: The ``path:line`` location the message names.
+        line_number: The 1-based line number the hint names.
+
+    Returns:
+        The decoded JSON value.
+
+    Raises:
+        GymratError: When the line is not strict JSON. The hint names the
+            non-finite number when that is what the line holds.
+    """
+    message = f"Invalid JSON at {at}"
+    try:
+        return loads_strict_json(line)
+    except NonFiniteNumberError as error:
+        hint = f"Line {line_number} holds a number the session log never stores: {error}."
+        raise GymratError(message, hint=hint) from error
+    except ValueError as error:
+        raise GymratError(message, hint=f"Line {line_number} is not a JSON object.") from error
+
+
+def _decode_utf8_at(raw: bytes, at: str, line_number: int) -> str:
+    """Decode one session-log line, naming its location when it is not UTF-8.
+
+    Args:
+        raw: The line's bytes.
+        at: The ``path:line`` location the message names.
+        line_number: The 1-based line number the hint names.
+
+    Returns:
+        The decoded line.
+
+    Raises:
+        GymratError: When the bytes are not valid UTF-8.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        message = f"Corrupt session log at {at}"
+        raise GymratError(
+            message, hint=f"Line {line_number} contains invalid UTF-8 bytes."
+        ) from error
+
+
+def is_blank_line(raw: bytes) -> bool:
+    """Tell whether a session-log line holds only ASCII whitespace, and so no record.
+
+    Every session-log reader skips exactly these lines. The test runs on bytes:
+    JSON whitespace is ASCII-only, so a line holding non-ASCII whitespace such
+    as U+3000 is not blank and fails to parse as a record.
+
+    Args:
+        raw: The line's bytes, with or without its line feed.
+
+    Returns:
+        Whether the line is blank.
+    """
+    return not raw.strip()
+
+
+def _first_non_blank_line(path: Path) -> tuple[str, int] | None:
+    """Read ``path`` up to its first non-blank line, never past it.
+
+    Args:
+        path: The session log to read.
+
+    Returns:
+        That line, decoded, and its 1-based line number, or ``None`` when the
+        log does not exist or holds only blank lines.
+
+    Raises:
+        GymratError: When the first non-blank line is not valid UTF-8.
+    """
+    # Binary read: a text-mode read decodes a whole buffered chunk, so bytes on
+    # later lines could fail the read of a header that is itself valid.
+    try:
+        handle = path.open("rb")
+    except FileNotFoundError:
+        return None
+    with handle:
+        for line_number, raw in enumerate(handle, start=1):
+            if not is_blank_line(raw):
+                return _decode_utf8_at(raw, f"{path}:{line_number}", line_number), line_number
+    return None
+
+
+def read_session_header(jsonl_path: str) -> SessionRecord | None:
+    """Read the session header from the first non-blank line of the log at ``jsonl_path``.
+
+    Blank lines before the header, as :func:`is_blank_line` defines them, are
+    skipped. Unlike :func:`read_records` this never reads past the header line,
+    so a caller that only needs the header pays for the lines up to it however
+    long the log.
+
+    Args:
+        jsonl_path: Path to the session log file.
+
+    Returns:
+        The session record, or ``None`` when the log does not exist or holds
+        only blank lines.
+
+    Raises:
+        GymratError: When the first non-blank line is not valid UTF-8, is
+            not JSON, matches no record schema, or holds a record other than a
+            session header.
+        OSError: When the log exists but cannot be read, such as a directory
+            or a file without read permission.
+    """
+    found = _first_non_blank_line(Path(jsonl_path))
+    if found is None:
+        return None
+    line, line_number = found
+    location = f"{jsonl_path}:{line_number}"
+
+    value = _decode_log_line_at(line, location, line_number)
+
+    return _require_session_header(parse_record(value), location)
+
+
+def _require_session_header(record: SessionLogRecord, at: str) -> SessionRecord:
+    if not isinstance(record, SessionRecord):
+        message = f"Expected session header at {at}, got a {record.type} record"
+        raise GymratError(message, hint="The session log is corrupt; start a new session.")
+    return record
+
+
+def session_header(root: str) -> SessionRecord | None:
+    """Read the session header of ``root``'s log, treating a bad log as no session.
+
+    The lenient form of :func:`read_session_header` for hot paths that only need
+    the session ID. It never reads past the first non-blank line.
 
     Args:
         root: Repository root whose session log is inspected.
 
     Returns:
-        The session record, or ``None`` when the log is absent or invalid.
+        The session record, or ``None`` when no valid header could be read: a
+        log that is absent, unreadable, only blank lines, undecodable,
+        malformed, or opened by another record type.
     """
-    jsonl = session_jsonl_path(root)
     try:
-        with Path(jsonl).open(encoding="utf-8") as f:
-            first_line = f.readline()
-    except OSError:
+        return read_session_header(session_jsonl_path(root))
+    except (OSError, GymratError):
         return None
-    if not first_line.strip():
-        return None
-    try:
-        record = parse_record(json.loads(first_line))
-    except (json.JSONDecodeError, GymratError):
-        return None
-    return record if isinstance(record, SessionRecord) else None
 
 
 def append_record(jsonl_path: str, record: SessionLogRecord) -> None:
@@ -196,11 +390,19 @@ def _serialize_record(record: SessionLogRecord) -> str:
     A record can satisfy the type checker and still not survive JSON: ``NaN`` and
     ``Infinity`` are floats in Python but JSON ``null`` under JavaScript's
     ``JSON.stringify``, and any measurement an adapter hands back unchecked can
-    carry one. Non-finite floats are lowered to ``None`` — matching that wire
-    form — and the serialized line is run back through :func:`parse_record`, the
-    very parser :func:`read_records` uses. Nothing is written until that round
-    trip succeeds, which stops a single bad measurement from leaving the whole
-    session log unreadable.
+    carry one. The line is the record's compact JSON with ``None``-valued keys
+    omitted, and pydantic writes non-finite floats as ``null`` — matching that
+    wire form. The line is then run back through :func:`parse_record`, the very
+    parser :func:`read_records` uses. Nothing is written until that round trip
+    succeeds, which stops a single bad measurement from leaving the whole session
+    log unreadable.
+
+    Non-ASCII text is written raw except U+0085, U+2028 and U+2029, which are
+    written as JSON unicode escapes so one record stays on one line for a reader
+    that splits with ``str.splitlines``.
+
+    Args:
+        record: The record to serialize.
 
     Returns:
         The JSON-encoded line ready for appending.
@@ -209,17 +411,62 @@ def _serialize_record(record: SessionLogRecord) -> str:
         GymratError: When the record does not survive the JSON round trip.
     """
     try:
-        wire = record_to_wire(record)
-        line = json.dumps(null_non_finite(wire))
-        parse_record(json.loads(line))
+        line = record.model_dump_json(exclude_none=True)
+    except PydanticSerializationError as error:
+        hint = _NOT_UTF8_HINT if _any_leaf(record, _is_lone_surrogate_text) else _NOT_JSON_HINT
+        raise GymratError(_refusal(record, error), hint=hint) from error
+    try:
+        parse_record(loads_strict_json(line))
     except (GymratError, ValueError, TypeError) as error:
-        message = f"Refusing to log an unreadable {record.type} record: {error!s}"
-        hint = (
-            "Nothing was written. A metric that is NaN or Infinity becomes "
-            "null in JSON and no longer reads back."
-        )
-        raise GymratError(message, hint=hint) from error
-    return line
+        hint = _NON_FINITE_HINT if _any_leaf(record, _is_non_finite) else _OFF_SCHEMA_HINT
+        raise GymratError(_refusal(record, error), hint=hint) from error
+    return line.translate(UNICODE_LINE_BREAKS)
+
+
+_NOT_UTF8_HINT = (
+    "Nothing was written. A text field holds characters that are not valid UTF-8, for "
+    "example from a non-UTF-8 argument or path."
+)
+_NOT_JSON_HINT = "Nothing was written. A field holds a value JSON cannot represent."
+_NON_FINITE_HINT = (
+    "Nothing was written. A metric that is NaN or Infinity becomes null in JSON and no "
+    "longer reads back."
+)
+_OFF_SCHEMA_HINT = "Nothing was written. The record does not match the session-log schema."
+
+
+def _any_leaf(record: SessionLogRecord, test: Callable[[object], bool]) -> bool:
+    # Walks the record's values, so a refusal's hint names what the record holds
+    # rather than guessing from the error text.
+    pending: list[object] = [record.model_dump()]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            pending.extend(value)
+        elif test(value):
+            return True
+    return False
+
+
+def _is_lone_surrogate_text(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode()
+    except UnicodeEncodeError:
+        return True
+    return False
+
+
+def _is_non_finite(value: object) -> bool:
+    return isinstance(value, float) and not math.isfinite(value)
+
+
+def _refusal(record: SessionLogRecord, error: Exception) -> str:
+    return f"Refusing to log an unreadable {record.type} record: {error!s}"
 
 
 def recover_torn_tail(jsonl_path: str) -> None:
@@ -252,6 +499,24 @@ def recover_torn_tail(jsonl_path: str) -> None:
         handle.truncate(last_newline + 1)
 
 
+def complete_lines(raw: bytes) -> list[bytes]:
+    """Split a session log's bytes into its newline-terminated lines, without the newlines.
+
+    Each record is written as a single newline-terminated write, so whatever
+    follows the last newline is either empty (the file ends on a newline) or the
+    torn tail of a write that never finished — a torn append or a crash
+    mid-flush — and must not be trusted. Either way it is dropped. Blank lines
+    are kept, so a line's index plus one is its 1-based line number.
+
+    Args:
+        raw: The whole content of a session log.
+
+    Returns:
+        The complete lines, in file order.
+    """
+    return raw.split(b"\n")[:-1]
+
+
 def read_records(jsonl_path: str) -> list[SessionLogRecord]:
     """Read every record from the session log at ``jsonl_path``, in file order.
 
@@ -266,64 +531,57 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
         The records in file order, or an empty list when the log is absent.
 
     Raises:
-        GymratError: When a line is not JSON, when a line matches no record
-            schema, or when the first record is not a session header. Every
-            message names the log and the 1-based line at fault.
+        GymratError: When the log exists but cannot be read, such as a
+            directory or a file without read permission; when a line is not
+            JSON; when a line matches no record schema; or when the first record
+            is not a session header. Every message names the log, and a line
+            failure names the 1-based line at fault.
     """
     try:
         raw = Path(jsonl_path).read_bytes()
     except FileNotFoundError:
         return []
-
-    # The final element is whatever follows the last newline — either empty
-    # (when the file ends on \n) or the torn tail of a write that never
-    # finished.
-    raw_lines = raw.split(b"\n")
-    # A file whose last byte is not b"\n" ends on a line the writer never
-    # finished — a torn append or a crash mid-flush. Each record is written as
-    # a single newline-terminated write, so a line lacking the terminator was
-    # never completed and must not be trusted.
-    last_unterminated = bool(raw) and raw[-1] != ord(b"\n")
+    except OSError as error:
+        message = f"Cannot read session log at {jsonl_path}"
+        raise GymratError(message, hint=f"{os_error_reason(error)}.") from error
 
     records: list[SessionLogRecord] = []
-    for index, raw_line in enumerate(raw_lines):
-        if raw_line.strip() == b"":
+    for line_number, raw_line in enumerate(complete_lines(raw), start=1):
+        if is_blank_line(raw_line):
             continue
 
-        is_last_line = index == len(raw_lines) - 1
-        if is_last_line and last_unterminated:
-            break
+        at = f"{jsonl_path}:{line_number}"
 
-        at = f"{jsonl_path}:{index + 1}"
-
-        try:
-            line = raw_line.decode("utf-8")
-        except UnicodeDecodeError as error:
-            message = f"Corrupt session log at {at}"
-            raise GymratError(
-                message, hint=f"Line {index + 1} contains invalid UTF-8 bytes."
-            ) from error
-
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError as error:
-            message = f"Invalid JSON at {at}"
-            raise GymratError(message, hint=f"Line {index + 1} is not a JSON object.") from error
+        line = _decode_utf8_at(raw_line, at, line_number)
+        value = _decode_log_line_at(line, at, line_number)
 
         try:
             record = parse_record(value)
         except GymratError as error:
             message = f"{error!s} (at {at})"
-            raise GymratError(message, hint=hint_of(error)) from error
+            raise GymratError(message, hint=error.hint) from error
 
-        if not records and record.type != "session":
-            message = f"Expected session header at {at}, got a {record.type} record"
-            raise GymratError(
-                message, hint="The session log is corrupt; start a new session."
-            ) from None
+        if not records:
+            record = _require_session_header(record, at)
         records.append(record)
 
     return records
+
+
+def read_session_records(root: str) -> list[SessionLogRecord]:
+    """Read every record from the session log under ``root``, in file order.
+
+    Args:
+        root: The repository root whose session log to read.
+
+    Returns:
+        The records in file order, or an empty list when the log is absent.
+
+    Raises:
+        GymratError: When the log exists but cannot be read or parsed, as
+            :func:`read_records` raises it.
+    """
+    return read_records(session_jsonl_path(root))
 
 
 def latest_baseline(records: Sequence[SessionLogRecord]) -> BaselineRecord | None:
@@ -351,18 +609,18 @@ class _FoldState:
     ``SessionState`` the rest of the codebase consumes.
     """
 
-    session: SessionRecord | None
-    iteration_count: int
-    last_iteration: IterationRecord | None
-    unsettled: bool
-    keep_count: int
-    discard_count: int
-    target_reached_and_kept: bool
-    last_seq: int
-    last_kept_commit: str | None
-    ends_on_gating_block: bool
-    ends_on_stop: bool
-    finalized: FinalizeRecord | None
+    session: SessionRecord | None = None
+    iteration_count: int = 0
+    last_iteration: IterationRecord | None = None
+    unsettled: bool = False
+    keep_count: int = 0
+    discard_count: int = 0
+    target_reached_and_kept: bool = False
+    last_seq: int = 0
+    last_kept_commit: str | None = None
+    ends_on_gating_block: bool = False
+    ends_on_stop: bool = False
+    finalized: FinalizeRecord | None = None
 
 
 def _clear_ends_on_flags(acc: _FoldState) -> None:
@@ -382,9 +640,11 @@ def _fold_iteration(
     target_reached[record.seq] = record.target_reached
 
 
-#: Reasons a blocked keep leaves the iteration unsettled: the agent can fix the
-#: failing checks, or pass ``--allow-unimproved``, and keep the same edit.
 _RETRYABLE_KEEP_REASONS: frozenset[KeepReason] = frozenset({"checks-failed", "not-improved"})
+"""Reasons a blocked keep leaves the iteration unsettled.
+
+The agent can fix the failing checks, or pass ``--allow-unimproved``, and keep the same edit.
+"""
 
 
 def _fold_keep(acc: _FoldState, target_reached: dict[int, bool], record: KeepRecord) -> None:
@@ -438,20 +698,7 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
     Returns:
         The accumulated session state.
     """
-    acc = _FoldState(
-        session=None,
-        iteration_count=0,
-        last_iteration=None,
-        unsettled=False,
-        keep_count=0,
-        discard_count=0,
-        target_reached_and_kept=False,
-        last_seq=0,
-        last_kept_commit=None,
-        ends_on_gating_block=False,
-        ends_on_stop=False,
-        finalized=None,
-    )
+    acc = _FoldState()
     target_reached: dict[int, bool] = {}
 
     for record in records:
@@ -475,28 +722,137 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
             case _ as unreachable:
                 assert_never(unreachable)
 
-    return SessionState(
-        session=acc.session,
-        iteration_count=acc.iteration_count,
-        last_iteration=acc.last_iteration,
-        unsettled=acc.unsettled,
-        keep_count=acc.keep_count,
-        discard_count=acc.discard_count,
-        target_reached_and_kept=acc.target_reached_and_kept,
-        last_seq=acc.last_seq,
-        last_kept_commit=acc.last_kept_commit,
-        ends_on_gating_block=acc.ends_on_gating_block,
-        ends_on_stop=acc.ends_on_stop,
-        finalized=acc.finalized,
+    return SessionState(**{field.name: getattr(acc, field.name) for field in fields(SessionState)})
+
+
+@dataclass(frozen=True, slots=True)
+class BestIteration:
+    """The committed-keep iteration whose primary delta improved the most.
+
+    Attributes:
+        delta_pct: Its primary delta, in percent.
+        seq: Its sequence number.
+        label: Its primary: the metric name for a named-metric primary, else
+            the kind (``"geomean"``).
+        baseline_sha: The commit it was measured against: the commit of the
+            committed keep before it, or the commit the session started from
+            when no keep preceded it. ``None`` when the reader supplies none.
+        direction: Whether a lower or a higher primary is the better outcome,
+            which decides whether ``delta_pct`` is an improvement.
+    """
+
+    delta_pct: float
+    seq: int
+    label: str
+    baseline_sha: str | None = None
+    direction: Direction = GEOMEAN_DIRECTION
+
+
+@dataclass(frozen=True, slots=True)
+class ReadSessionResult:
+    """The folded session state plus whether a baseline has been recorded.
+
+    Attributes:
+        state: The folded session state as of the last read.
+        has_baseline: Whether a baseline record has been recorded for the session.
+        best: The best committed-keep iteration. ``None`` when no keep has been
+            committed. ``read_live_session`` computes it from the session
+            records; injected test readers set it directly.
+        stop_message: The newest stop record's message. Holds a value only
+            while the folded log ends on a stop; ``None`` once any iteration,
+            keep, discard, or finalize record supersedes it.
+    """
+
+    state: SessionState
+    has_baseline: bool
+    best: BestIteration | None = None
+    stop_message: str | None = None
+
+
+def best_kept_iteration(
+    records: list[SessionLogRecord], direction: Direction, pinned_sha: str | None
+) -> BestIteration | None:
+    """Return the committed keep whose primary delta improved the most, if any has one.
+
+    Each iteration is measured against the commit of the committed keep before
+    it in the log, or against ``pinned_sha`` when none precedes it. Among equal
+    deltas the earliest iteration wins.
+
+    Args:
+        records: The session log's records, in file order.
+        direction: Whether a lower or a higher primary is the better outcome.
+        pinned_sha: The commit the session started from, or ``None``.
+
+    Returns:
+        The best committed-keep iteration, or ``None`` when no committed keep
+        carries a primary delta.
+    """
+    committed_seqs = {
+        r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"
+    }
+    better = operator.lt if direction == "lower" else operator.gt
+    best: BestIteration | None = None
+    baseline_sha = pinned_sha
+    for record in records:
+        if isinstance(record, KeepRecord):
+            if record.status == "committed":
+                baseline_sha = record.commit
+            continue
+        if not isinstance(record, IterationRecord) or record.seq not in committed_seqs:
+            continue
+        delta = record.primary.delta_pct
+        if delta is not None and (best is None or better(delta, best.delta_pct)):
+            best = BestIteration(
+                delta_pct=delta,
+                seq=record.seq,
+                label=record.primary.name or record.primary.kind,
+                baseline_sha=baseline_sha,
+                direction=direction,
+            )
+    return best
+
+
+def _find_stop_message(records: list[SessionLogRecord]) -> str | None:
+    """Return the newest stop record's message, or ``None`` if there is none."""
+    return next((r.message for r in reversed(records) if isinstance(r, StopRecord)), None)
+
+
+def read_live_session(
+    root: str, primary_direction: Direction = GEOMEAN_DIRECTION
+) -> ReadSessionResult:
+    """Read and fold the live session log at ``root``.
+
+    Args:
+        root: The repository root whose session log to read.
+        primary_direction: Whether a lower or a higher primary is the better
+            outcome, which decides which kept iteration is the best. The
+            geomean primary is lower-is-better.
+
+    Returns:
+        The folded session with its baseline presence, best kept iteration, and
+        trailing stop message.
+
+    Raises:
+        GymratError: When the log exists but cannot be read or parsed, as
+            :func:`read_records` raises it.
+    """
+    records = read_session_records(root)
+    state = fold_session(records)
+    has_baseline = latest_baseline(records) is not None
+    pinned_sha = state.session.baseline.sha if state.session is not None else None
+
+    return ReadSessionResult(
+        state=state,
+        has_baseline=has_baseline,
+        best=best_kept_iteration(records, primary_direction, pinned_sha),
+        stop_message=_find_stop_message(records) if state.ends_on_stop else None,
     )
 
 
 def require_session(root: str, verb: str) -> RequiredSession:
     """The session open in ``root``, or the error telling the caller to open one.
 
-    ``verb`` names what the caller was about to do — "measuring an edit" — and
-    becomes the thing the hint says no session was open for, so every loop
-    command refuses in its own words while sharing one guard.
+    Every loop command refuses in its own words while sharing this one guard.
 
     Args:
         root: Repository root whose session log is read and folded.
@@ -508,7 +864,8 @@ def require_session(root: str, verb: str) -> RequiredSession:
 
     Raises:
         GymratError: When no session has been started, or when the log is
-            corrupt — every parse failure names the log and the line at fault.
+            unreadable or corrupt — every parse failure names the log and the
+            line at fault.
     """
     jsonl_path = session_jsonl_path(root)
     records = read_records(jsonl_path)
@@ -542,8 +899,8 @@ def require_open_session(root: str, verb: str) -> RequiredSession:
         The session header, folded state, log path, and records.
 
     Raises:
-        GymratError: When no session has been started, when the log is corrupt,
-            or when the session was already finalized.
+        GymratError: When no session has been started, when the log is
+            unreadable or corrupt, or when the session was already finalized.
     """
     required = require_session(root, verb)
     finalized = required.state.finalized

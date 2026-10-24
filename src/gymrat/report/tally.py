@@ -8,20 +8,15 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape
 
-from gymrat.report.display import (
-    VERDICT_GLOSSES,
-    DisplayClass,
-    display_class,
-    get_glyph,
-)
+from gymrat.report.display import GLYPHS, VERDICT_GLOSSES, display_class
 from gymrat.report.style import VERDICT_STYLES, markup
-from gymrat.report.types import candidate_at as _candidate_at
+from gymrat.report.types import candidate_at
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from gymrat.model import MetricVerdict
-    from gymrat.report.types import MetricComparisons
+    from gymrat.report.types import CandidateMetric, MetricComparison, MetricComparisons
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,19 +29,46 @@ class VerdictCounts:
     no_signal: int
 
 
-def _each_verdict(
+@dataclass(frozen=True, slots=True)
+class CandidateVerdict:
+    """One metric's verdict for one candidate, with what it was judged from.
+
+    Attributes:
+        name: The metric's name.
+        metric: The metric's comparison across the run.
+        candidate: The candidate's side of the metric.
+        verdict: The verdict the candidate earned on the metric.
+    """
+
+    name: str
+    metric: MetricComparison
+    candidate: CandidateMetric
+    verdict: MetricVerdict
+
+
+def each_candidate_verdict(
     metrics: MetricComparisons,
     candidate_index: int,
-) -> Iterator[MetricVerdict]:
-    """Yield one candidate's verdict for every metric that reported one.
+) -> Iterator[CandidateVerdict]:
+    """Walk one candidate's verdicts across the metrics.
 
     Verdicts belong to a candidate, never to the run, so callers read one
-    candidate at a time. Metrics that candidate never reported are skipped.
+    candidate at a time.
+
+    Args:
+        metrics: The per-metric comparisons to read.
+        candidate_index: The candidate's position in each metric's comparison.
+
+    Yields:
+        The candidate's verdict for each metric that reported one, in metric
+        order; metrics the candidate never reported are skipped.
     """
-    for metric in metrics.values():
-        candidate = _candidate_at(metric, candidate_index)
+    for name, metric in metrics.items():
+        candidate = candidate_at(metric, candidate_index)
         if candidate is not None and candidate.verdict is not None:
-            yield candidate.verdict
+            yield CandidateVerdict(
+                name=name, metric=metric, candidate=candidate, verdict=candidate.verdict
+            )
 
 
 def count_verdicts(metrics: MetricComparisons, candidate_index: int) -> VerdictCounts:
@@ -64,7 +86,7 @@ def count_verdicts(metrics: MetricComparisons, candidate_index: int) -> VerdictC
         The per-class tally.
     """
     tally: Counter[str] = Counter(
-        verdict.verdict for verdict in _each_verdict(metrics, candidate_index)
+        judged.verdict.verdict for judged in each_candidate_verdict(metrics, candidate_index)
     )
 
     return VerdictCounts(
@@ -73,24 +95,6 @@ def count_verdicts(metrics: MetricComparisons, candidate_index: int) -> VerdictC
         unstable=tally["unstable"],
         no_signal=tally["no-signal"],
     )
-
-
-_DISPLAY_CLASS_ORDER: tuple[DisplayClass, ...] = (
-    "improved",
-    "regressed",
-    "unstable",
-    "identical",
-    "within-noise",
-    "inconclusive",
-)
-
-
-def _display_counts(
-    metrics: MetricComparisons,
-    candidate_index: int,
-) -> Counter[DisplayClass]:
-    """How many metrics one candidate landed in each display class."""
-    return Counter(display_class(verdict) for verdict in _each_verdict(metrics, candidate_index))
 
 
 def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> list[str]:
@@ -109,14 +113,16 @@ def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> l
     Returns:
         One markup string per display class.
     """
-    counts = _display_counts(metrics, candidate_index)
-    max_width = max(len(str(counts[shown])) for shown in _DISPLAY_CLASS_ORDER)
+    counts = Counter(
+        display_class(judged.verdict) for judged in each_candidate_verdict(metrics, candidate_index)
+    )
+    # GLYPHS lists the display classes in legend order.
+    max_width = max(len(str(counts[shown])) for shown in GLYPHS)
 
     parts: list[str] = []
-    for shown in _DISPLAY_CLASS_ORDER:
+    for shown, glyph in GLYPHS.items():
         count = counts[shown]
         padded = str(count).rjust(max_width)
-        glyph = get_glyph(shown)
         gloss = VERDICT_GLOSSES[shown]
         if count == 0:
             parts.append(markup(f"{glyph} {padded} {gloss}", "dim"))

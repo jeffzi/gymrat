@@ -1,0 +1,150 @@
+"""Hook-script builders and record helpers shared by the hooks tests.
+
+Every builder writes a numbered Python script into a scratch directory and
+returns the command that runs it under the current interpreter: no shell
+builtin, no executable bit, just ``"<python>" "<script>"`` with both paths
+quoted. Large payloads are parked in files beside the script rather than baked
+into the source, so a channel far larger than a source literal wants to be
+still reaches the runner byte for byte.
+
+The ``_`` prefix marks a shared helper rather than a test module; it is
+imported as ``tests.loop.iterate._hooks``.
+"""
+
+import json
+import sys
+from pathlib import Path
+from typing import Any, Literal, Self
+
+from gymrat.loop.iterate.run import HookInvocation
+from gymrat.session.records import HookRecord
+from tests.loop.iterate._fixtures import iterate_session_header
+
+#: The output stream a hook script writes to.
+Channel = Literal["stdout", "stderr"]
+
+
+class HookScripts:
+    """Builders for hook commands scoped to a scratch directory.
+
+    A private counter numbers the scripts so repeated builders in one test never
+    collide on a filename.
+
+    Args:
+        temp_dir: The directory holding the scripts and any parked payload files.
+        experiment_dir: The worktree an invocation runs in.
+    """
+
+    def __init__(self, temp_dir: str, experiment_dir: str) -> None:
+        self.temp_dir = temp_dir
+        self.experiment_dir = experiment_dir
+        self._count = 0
+
+    @classmethod
+    def for_root(cls, root: str) -> Self:
+        """A builder whose scripts sit in ``root`` and whose worktree is the session's side one.
+
+        Creates the experiment worktree directory named by
+        :func:`iterate_session_header` so an invocation can run in it.
+
+        Args:
+            root: The repository the side worktrees sit under.
+
+        Returns:
+            The builder scoped to ``root``.
+        """
+        experiment_dir = iterate_session_header(root).worktrees.experiment
+        Path(experiment_dir).mkdir(parents=True, exist_ok=True)
+        return cls(root, experiment_dir)
+
+    def hook_command(self, body: str) -> str:
+        """Write ``body`` as a script and give back the command that runs it."""
+        self._count += 1
+        script_path = Path(self.temp_dir) / f"hook-{self._count}.py"
+        script_path.write_text(body, encoding="utf-8")
+        return f'"{sys.executable}" "{script_path}"'
+
+    def printing(self, *lines: str) -> str:
+        r"""A command printing each given line on its own line on stdout.
+
+        Writes go through ``sys.stdout.buffer`` so ``\n`` stays a single byte
+        on Windows — text-mode stdout would translate it to ``\r\n``.
+
+        Args:
+            *lines: The lines to print, in order.
+
+        Returns:
+            The shell command that runs the printing script.
+        """
+        writes = "\n".join(
+            f"sys.stdout.buffer.write({json.dumps(line + chr(10))}.encode())" for line in lines
+        )
+        return self.hook_command(f"import sys\n{writes}\n")
+
+    def printing_line(self, name: str, channel: Channel, content: str) -> str:
+        """Park text in a file beside the hook and return source printing it.
+
+        The text lives in a file rather than inside the script so a payload far
+        larger than a source literal wants to be still reaches the runner byte
+        for byte.
+
+        Args:
+            name: The file name, under the hook directory, the text is parked in.
+            channel: The stream the source writes the text to.
+            content: The text to park and print.
+
+        Returns:
+            One line of Python source that writes the parked text to ``channel``.
+        """
+        data_path = Path(self.temp_dir) / name
+        data_path.write_bytes(content.encode())
+        return f"sys.{channel}.buffer.write(open({json.dumps(str(data_path))}, 'rb').read())\n"
+
+    def failing_content_of(self, stem: str, stdout: str, stderr: str) -> str:
+        """A command that prints parked text on both channels and then exits 3."""
+        body = (
+            "import sys\n"
+            + self.printing_line(f"{stem}-stdout.txt", "stdout", stdout)
+            + self.printing_line(f"{stem}-stderr.txt", "stderr", stderr)
+            + "sys.exit(3)\n"
+        )
+        return self.hook_command(body)
+
+    def invocation_of(self, command: str, **overrides: Any) -> HookInvocation:
+        """A ``before`` invocation on the scratch worktree, overridable field by field."""
+        session = iterate_session_header(self.temp_dir, experiment=self.experiment_dir)
+        fields: dict[str, Any] = {
+            "command": command,
+            "stage": "before",
+            "seq": 2,
+            "session": session,
+            "last_iteration": None,
+            "iteration_count": 1,
+        }
+        fields.update(overrides)
+        return HookInvocation(**fields)
+
+
+def expected_hook_record(**overrides: Any) -> HookRecord:
+    """The ``HookRecord`` ``run_hook`` produces, with ``at`` and ``duration_ms`` normalized to 0.
+
+    ``at`` and ``duration_ms`` are both nondeterministic, so each defaults to 0
+    here and callers compare against a record whose own ``at`` and
+    ``duration_ms`` they have replaced with 0.
+
+    Args:
+        **overrides: The record's fields. ``timed_out`` defaults to ``False``
+            and ``stderr_bytes`` to 0; every other field is the caller's to name.
+
+    Returns:
+        The expected hook record.
+    """
+    fields: dict[str, Any] = {
+        "type": "hook",
+        "at": 0,
+        "timed_out": False,
+        "stderr_bytes": 0,
+        "duration_ms": 0,
+    }
+    fields.update(overrides)
+    return HookRecord(**fields)

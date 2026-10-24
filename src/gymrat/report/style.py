@@ -1,10 +1,7 @@
 """Style and color primitives for the report package.
 
-This module owns three concerns the text renderers share:
+This module owns two concerns the text renderers share:
 
-- **Label fitting** — middle-ellipsis truncation (:func:`shorten_label`) and
-  set-aware widening (:func:`truncate_labels`) so long branch names fit a column
-  without losing the ends that tell sibling branches apart.
 - **Style vocabulary** — the rich style strings a verdict, a variant name, a
   group label or an aggregate label wears, plus the markup helpers
   (:func:`format_hint`, :func:`highlight_inline_code`) that carry inline
@@ -14,24 +11,20 @@ This module owns three concerns the text renderers share:
   writing to an in-memory buffer, resolving the choice against the environment
   without ever mutating :data:`os.environ`.
 
-The CLI-side style vocabulary lives in :mod:`gymrat.cli.style`.
-
-Display widths are measured in terminal cells (:func:`rich.cells.cell_len`), so
-a wide CJK character counts as two columns. Slicing is on code points: Python
-has no standard-library grapheme segmentation, so a cut may land between the
-code points of a combined emoji. Such clusters are out of scope here.
+The CLI-side style vocabulary lives in :mod:`gymrat.cli.style`, and fitting a
+label into a column lives in :mod:`gymrat.report.labels`.
 """
 
 from __future__ import annotations
 
 import io
-import os
 import re
 from typing import TYPE_CHECKING, Literal, cast
 
-from rich.cells import cell_len
 from rich.console import Console
 from rich.markup import escape
+
+from gymrat.utils import color_from_env
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -41,136 +34,9 @@ if TYPE_CHECKING:
     from gymrat.report.display import DisplayClass
 
 # ---------------------------------------------------------------------------
-# Label truncation
-# ---------------------------------------------------------------------------
-
-# U+2026, one cell wide — three periods would cost two more columns.
-_ELLIPSIS = "…"
-
-#: Widest a variant label prints, ellipsis included. A branch name is free to be
-#: as long as git allows, but every column it heads is sized from it, so an
-#: unbounded one would push the figures off the right edge of the terminal.
-LABEL_DISPLAY_WIDTH = 20
-
-
-def _clip_to_cells(text: str, budget: int, *, from_end: bool) -> str:
-    """Return the run of code points from one end of ``text`` fitting ``budget`` cells.
-
-    Args:
-        text: The source string.
-        budget: The number of terminal cells the returned slice may occupy.
-        from_end: Take code points from the end of ``text`` instead of the start.
-
-    Returns:
-        The longest prefix (or suffix) of ``text`` whose cell width does not
-        exceed ``budget``. A wide character is kept only when it fits whole, so
-        the result never overshoots the budget.
-    """
-    if budget <= 0:
-        return ""
-
-    chars = list(text)
-    if from_end:
-        chars.reverse()
-
-    kept: list[str] = []
-    used = 0
-    for char in chars:
-        width = cell_len(char)
-        if used + width > budget:
-            break
-        kept.append(char)
-        used += width
-
-    if from_end:
-        kept.reverse()
-    return "".join(kept)
-
-
-def shorten_label(text: str, max_width: int) -> str:
-    """Fit ``text`` into ``max_width`` terminal cells, keeping both of its ends.
-
-    The ends carry the identity: branch names that share a prefix differ in
-    their tail, and a progress line names its step at the front and its target
-    at the back. Cutting from the middle keeps both, where a plain slice would
-    drop whichever end runs past the budget.
-
-    Text already inside the budget comes back untouched, so widening the budget
-    can never lengthen the result. When a cut is needed the budget spends one
-    cell on the ellipsis; the remainder splits between head and tail, with the
-    extra cell of an odd remainder going to the head.
-
-    Width is measured in terminal cells, so a wide CJK character counts as two.
-    The kept head and tail are sliced on code points and each is filled only
-    with characters that fit whole, so a kept slice never overshoots its share.
-
-    Args:
-        text: The label to fit.
-        max_width: The budget in terminal cells.
-
-    Returns:
-        ``text`` verbatim when it already fits, an empty string when
-        ``max_width`` is zero or negative, ``"…"`` alone when only one cell is
-        available, or ``head + "…" + tail`` otherwise.
-    """
-    if max_width <= 0:
-        return ""
-
-    if cell_len(text) <= max_width:
-        return text
-
-    kept = max_width - cell_len(_ELLIPSIS)
-    if kept <= 0:
-        return _ELLIPSIS
-
-    head_budget = (kept + 1) // 2
-    tail_budget = kept - head_budget
-    head = _clip_to_cells(text, head_budget, from_end=False)
-    tail = _clip_to_cells(text, tail_budget, from_end=True)
-    return f"{head}{_ELLIPSIS}{tail}"
-
-
-def truncate_labels(labels: Sequence[str]) -> list[str]:
-    """Shorten every label to the narrowest width that keeps the set as distinct.
-
-    Labels are shortened as a set rather than one at a time because the ends are
-    what tell sibling branches apart: ``feature/experiment-one-fastpath`` and
-    ``feature/exploration-two-fastpath`` share both of theirs, so the narrowest
-    width that keeps them distinct is the one worth spending. The width grows one
-    cell at a time from :data:`LABEL_DISPLAY_WIDTH` up to the longest label until
-    the shortened set has as many unique strings as the originals — two labels
-    that were already identical stay that way, which is the run's own doing, not
-    the display's.
-
-    Widening never lengthens a label that already fits the wider budget:
-    :func:`shorten_label` returns such a label verbatim.
-
-    Args:
-        labels: The labels to fit, in order.
-
-    Returns:
-        A new list of shortened labels aligned with ``labels``. Every label is
-        returned verbatim when they all fit :data:`LABEL_DISPLAY_WIDTH`.
-    """
-    longest = max((cell_len(label) for label in labels), default=0)
-    distinct = len(set(labels))
-    for max_width in range(LABEL_DISPLAY_WIDTH, longest):
-        shortened = [shorten_label(label, max_width) for label in labels]
-        if len(set(shortened)) == distinct:
-            return shortened
-    return list(labels)
-
-
-# ---------------------------------------------------------------------------
 # Style vocabulary
 # ---------------------------------------------------------------------------
 
-#: The color each display class wears wherever the report states a verdict.
-#:
-#: Every style here is worn by the verdict itself — a glyph, a delta, a tally —
-#: never by the row or the values around it: within-noise and inconclusive recede
-#: to dim, identical reads cyan for "measured the same", and unstable keeps its
-#: amber warning.
 VERDICT_STYLES: dict[DisplayClass, str] = {
     "improved": "green",
     "regressed": "red",
@@ -179,18 +45,36 @@ VERDICT_STYLES: dict[DisplayClass, str] = {
     "within-noise": "dim",
     "inconclusive": "dim",
 }
+"""The color each display class wears wherever the report states a verdict.
 
-#: The style a variant name wears where the report names it as a name.
+Every style here is worn by the verdict itself — a glyph, a delta, a tally —
+never by the row or the values around it: within-noise and inconclusive recede
+to dim, identical reads cyan for "measured the same", and unstable keeps its
+amber warning.
+"""
+
+EMPHASIZED_DIRECTION_STYLES: dict[Literal["improved", "regressed"], str] = {
+    "improved": f"bold {VERDICT_STYLES['improved']}",
+    "regressed": f"bold {VERDICT_STYLES['regressed']}",
+}
+"""The style a headline figure wears when it reports a direction.
+
+A headline figure (a geomean, an iteration's outcome) is emboldened whatever it
+says; it takes its verdict color only where there is a direction to report, and
+stays plain ``"bold"`` otherwise.
+"""
+
 VARIANT_NAME_STYLE = "bold underline"
+"""The style a variant name wears where the report names it as a name."""
 
-#: The style a group label wears where the report heads a group of metrics.
 GROUP_LABEL_STYLE = "bold blue"
+"""The style a group label wears where the report heads a group of metrics."""
 
-#: The style an aggregate label (a geomean row, a total) wears.
 AGGREGATE_LABEL_STYLE = "bold"
+"""The style an aggregate label (a geomean row, a total) wears."""
 
-#: The middle-dot separator between a scope and its sub-label.
 SCOPE_SEPARATOR = "·"
+"""The middle-dot separator between a scope and its sub-label."""
 
 # A backtick-wrapped inline code span; the capture group is its content.
 _INLINE_CODE_PATTERN = re.compile(r"`([^`]+)`")
@@ -238,9 +122,13 @@ def highlight_inline_code(text: str) -> str:
     """
 
     def style_span(match: re.Match[str]) -> str:
-        return f"[blue]{escape(match.group(1))}[/blue]"
+        return _code_span(match.group(1))
 
     return _INLINE_CODE_PATTERN.sub(style_span, text)
+
+
+def _code_span(code: str) -> str:
+    return f"[blue]{escape(code)}[/blue]"
 
 
 def format_hint(text: str) -> str:
@@ -253,9 +141,8 @@ def format_hint(text: str) -> str:
 
     Prose outside the code spans is escaped here rather than by the caller, so a
     hint naming a metric such as ``[i]`` renders it literally instead of having
-    rich parse it as a style tag. The spans are escaped by
-    :func:`highlight_inline_code`, so escaping the prose separately is what keeps
-    both from being escaped twice.
+    rich parse it as a style tag. The spans are escaped on their own, so
+    escaping the prose separately is what keeps both from being escaped twice.
 
     Args:
         text: The bare hint sentence, which may contain ``` `...` ``` spans.
@@ -263,13 +150,11 @@ def format_hint(text: str) -> str:
     Returns:
         Rich markup for the hint line, for :func:`render_lines` to resolve.
     """
-    parts: list[str] = []
-    position = 0
-    for span in _INLINE_CODE_PATTERN.finditer(text):
-        parts.append(escape(text[position : span.start()]))
-        parts.append(highlight_inline_code(span.group(0)))
-        position = span.end()
-    parts.append(escape(text[position:]))
+    # Splitting on a pattern with one capture group alternates prose and code.
+    parts = [
+        _code_span(piece) if index % 2 else escape(piece)
+        for index, piece in enumerate(_INLINE_CODE_PATTERN.split(text))
+    ]
     return f"[dim]{''.join(parts)}[/dim]"
 
 
@@ -277,33 +162,32 @@ def format_hint(text: str) -> str:
 # Color resolution and capture rendering
 # ---------------------------------------------------------------------------
 
-#: A render width wide enough that a captured line never soft-wraps, whatever the
-#: real terminal is. Every report block and table renders against it.
 RENDER_WIDTH = 200
+"""A render width wide enough that a captured line never soft-wraps, whatever the real terminal is.
+
+Every report block and table renders against it.
+"""
 
 
-def make_capture_console(*, color: bool | None, width: int) -> Console:
+def make_capture_console(*, color: bool | None) -> Console:
     """Build a rich console that captures its output to an in-memory buffer.
 
-    Color is resolved without touching :data:`os.environ`:
-
-    - ``color=True`` forces ANSI even when ``NO_COLOR`` is set, by declaring the
-      capture a terminal with color enabled.
-    - ``color=False`` suppresses ANSI even when ``FORCE_COLOR`` is set.
-    - ``color=None`` reads the environment then TTY-ness, with this
-      precedence: ``FORCE_COLOR`` (any value but ``0``/``false``/empty) forces
-      color on even when ``NO_COLOR`` is also set, ``NO_COLOR`` alone forces it
-      off, and with neither a captured buffer is not a TTY, so the output is
-      plain. ``FORCE_COLOR`` winning over ``NO_COLOR`` is the one place rich's own
-      detection differs, so that case is resolved here rather than deferred.
-
-    Wide content is never wrapped or cropped (``soft_wrap``), so the width only
-    bounds justification, never the text.
+    Wide content is never wrapped or cropped (``soft_wrap``), so
+    :data:`RENDER_WIDTH` only bounds justification, never the text. Emoji codes
+    are off, so a ``:word:`` sequence in a metric name, kind or label prints
+    literally (``lat:100:p99`` stays as written).
 
     Args:
-        color: The explicit color choice, or ``None`` to defer to the
-            environment and TTY detection.
-        width: The terminal width the console renders against.
+        color: The explicit color choice, resolved without touching
+            :data:`os.environ`:
+
+            - ``True`` forces ANSI even when ``NO_COLOR`` is set, by declaring
+              the capture a terminal with color enabled.
+            - ``False`` suppresses ANSI even when ``FORCE_COLOR`` is set.
+            - ``None`` defers to :func:`gymrat.utils.color_from_env`, which owns
+              the ``FORCE_COLOR``/``NO_COLOR`` precedence and the ways it differs
+              from rich's own detection. With neither variable set, a captured
+              buffer is not a TTY, so the output is plain.
 
     Returns:
         A console whose ``file`` is an :class:`io.StringIO` holding everything
@@ -329,83 +213,38 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
     # (TERM=dumb, common in git hooks and CI) early-returns (80, 25).
     return Console(
         file=buffer,
-        width=width,
+        width=RENDER_WIDTH,
         height=25,
         force_terminal=force_terminal,
         color_system=color_system,
         legacy_windows=False,
         no_color=False,
         soft_wrap=True,
+        emoji=False,
     )
 
 
-def _force_color_env() -> bool:
-    """Whether ``FORCE_COLOR`` in the environment asks for color, without mutating it.
-
-    ``FORCE_COLOR`` wins over ``NO_COLOR`` when both are set:
-    any value other than ``0``, ``false`` or the empty string enables color. Only
-    the ``color=None`` branch consults this; an explicit choice never does.
-
-    Returns:
-        Whether ``FORCE_COLOR`` is present and set to an enabling value.
-    """
-    value = os.environ.get("FORCE_COLOR")
-    if value is None:
-        return False
-    return value.lower() not in {"", "0", "false"}
-
-
-def color_from_env() -> bool | None:
-    """The color preference the environment declares, or ``None`` to defer to the caller.
-
-    One precedence rule, shared by every color surface so they never disagree:
-    ``FORCE_COLOR`` (any value but ``0``/``false``/empty) forces color on even
-    when ``NO_COLOR`` is also present; ``FORCE_COLOR`` set to a rejected value
-    (``0``/``false``/empty) explicitly disables color — this must override
-    Rich's presence-based detection which treats any ``FORCE_COLOR`` as "on";
-    ``NO_COLOR`` (present, any value) then forces it off; with neither the
-    answer is ``None`` so the caller decides from the stream's own TTY state.
-
-    Returns:
-        ``True`` for forced color, ``False`` for suppressed color, or ``None``
-        when neither environment variable is set.
-    """
-    if _force_color_env():
-        return True
-    if os.environ.get("FORCE_COLOR") is not None:
-        return False
-    if "NO_COLOR" in os.environ:
-        return False
-    return None
-
-
-def render_lines(
-    *renderables: RenderableType,
-    color: bool | None = None,
-    width: int = RENDER_WIDTH,
-) -> str:
-    """Render ``renderables`` through a capture console and return the text.
+def render_line_list(*renderables: RenderableType, color: bool | None = None) -> list[str]:
+    """Render ``renderables`` through a capture console and return the text lines.
 
     Each renderable is printed in turn through a console built by
     :func:`make_capture_console`, so color resolution and no-wrap behavior match
-    that helper. A plain string is interpreted as rich markup, so dynamic text
-    with markup-significant characters (a metric named ``[i]``, say) must be
-    escaped by the caller with :func:`rich.markup.escape` to render literally.
-
-    Trailing whitespace is stripped from every line and the trailing newline is
-    dropped, so the result is exactly the visible text with no soft wrapping.
+    that helper.
 
     Args:
-        renderables: One or more rich renderables or markup strings to print.
+        *renderables: One or more rich renderables or markup strings to print.
+            A plain string is interpreted as rich markup, so dynamic text with
+            markup-significant characters (a metric named ``[i]``, say) must be
+            escaped by the caller with :func:`rich.markup.escape` to render
+            literally.
         color: The explicit color choice, or ``None`` to defer to the
             environment and TTY detection.
-        width: The terminal width the console renders against.
 
     Returns:
-        The rendered text, lines joined by newlines, with no trailing
-        whitespace on any line and no trailing newline.
+        Exactly the visible lines with no soft wrapping, with no trailing
+        whitespace on any line and no trailing empty line.
     """
-    console = make_capture_console(color=color, width=width)
+    console = make_capture_console(color=color)
     for renderable in renderables:
         # The report styles every span deliberately; rich's repr highlighter would
         # otherwise embolden bare numbers (a delta, a sample count) and split a
@@ -416,4 +255,18 @@ def render_lines(
     lines = buffer.getvalue().split("\n")
     if lines and lines[-1] == "":
         lines.pop()
-    return "\n".join(line.rstrip() for line in lines)
+    return [line.rstrip() for line in lines]
+
+
+def render_lines(*renderables: RenderableType, color: bool | None = None) -> str:
+    """Render ``renderables`` as :func:`render_line_list` does, joined into one text.
+
+    Args:
+        *renderables: One or more rich renderables or markup strings to print.
+        color: The explicit color choice, or ``None`` to defer to the
+            environment and TTY detection.
+
+    Returns:
+        The rendered lines joined by newlines, with no trailing newline.
+    """
+    return "\n".join(render_line_list(*renderables, color=color))

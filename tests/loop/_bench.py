@@ -8,19 +8,23 @@ a runnable bench.
 
 With a gate file the bench blocks until that file appears — the only way to hold
 a run open long enough for a second command to collide with it without betting on
-a sleep outlasting the first run. Python has no ``Atomics.wait``, so the gate is
-a plain poll loop.
+a sleep outlasting the first run. The gate is a plain poll loop.
 
-The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.loop._bench``.
+The ``_`` prefix marks a shared helper rather than a test module; it is
+imported as ``tests.loop._bench``.
 """
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import tomli_w
+
+from gymrat.session.paths import experiment_worktree_dir
+from tests._git import run_git
+
+#: Generous budget for a CLI run that creates real worktrees and spawns real benches.
+LONG_RUN_TIMEOUT = 180
 
 #: The bench script every worktree runs.
 BENCH_FILE = "bench.py"
@@ -48,25 +52,30 @@ def bench_script(gate_file: str | None = None) -> str:
     Returns:
         The bench script's Python source.
     """
-    lines = ["import os", "import sys"]
+    lines = ["import sys"]
+    if gate_file is not None:
+        lines.append("import time")
+    lines.append("from pathlib import Path")
     if gate_file is not None:
         lines += [
-            "import time",
-            f"gate = {json.dumps(gate_file)}",
+            f"gate = Path({json.dumps(gate_file)})",
             "deadline = time.monotonic() + 60",
-            "while not os.path.exists(gate) and time.monotonic() < deadline:",
+            "while not gate.exists() and time.monotonic() < deadline:",
             "    time.sleep(0.025)",
         ]
     lines += [
-        f"tuning = {json.dumps(TUNING_FILE)}",
-        "if os.path.exists(tuning):",
-        '    with open(tuning, encoding="utf-8") as handle:',
-        "        tuned = handle.read().strip()",
-        "else:",
+        "try:",
+        f'    tuned = Path({json.dumps(TUNING_FILE)}).read_text(encoding="utf-8").strip()',
+        "except FileNotFoundError:",
         f'    tuned = "{BASELINE_LATENCY}"',
         'sys.stdout.write("METRIC latency=" + tuned + "\\n")',
     ]
     return "\n".join(lines) + "\n"
+
+
+def tune_experiment(repo: str, latency: int) -> None:
+    """Tune the experiment worktree to ``latency``, the edit an agent would make."""
+    (Path(experiment_worktree_dir(repo)) / TUNING_FILE).write_text(f"{latency}\n", encoding="utf-8")
 
 
 #: A rerun template that scopes the bench to the metric names it is given.
@@ -127,17 +136,5 @@ def commit_project(
     }
     for name, content in files.items():
         (Path(repo_dir) / name).write_text(content, encoding="utf-8")
-    subprocess.run(  # noqa: S603
-        ["git", "add", *files],  # noqa: S607
-        cwd=repo_dir,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    subprocess.run(
-        ["git", "commit", "-m", "bench harness"],  # noqa: S607
-        cwd=repo_dir,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    run_git(["add", *files], repo_dir)
+    run_git(["commit", "-m", "bench harness"], repo_dir)

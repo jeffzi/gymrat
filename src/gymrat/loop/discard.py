@@ -1,0 +1,193 @@
+"""Discard an edit: revert the experiment worktree, recording the action when measured.
+
+Three states accept a discard:
+
+1. **Unsettled iteration** — a measured iteration no keep or discard has settled yet.
+   The worktree is reverted, a ``discard`` record is appended, and the result
+   carries that record.
+
+2. **Standing gating block** — a gating regression refused the keep, but the edit is
+   still in the worktree.  Same as (1), with the discard numbered past the block.
+
+3. **Unmeasured edit** — nothing has been measured since the last settle (or since the
+   session started), but the worktree differs from the last kept position, whether
+   that difference is committed or still uncommitted.  The worktree is reverted
+   silently: no record is appended, because there is no iteration to settle, and the
+   log should not accumulate bookkeeping entries that carry no measurement.  The
+   result carries ``record=None``.
+
+A worktree that already matches the last kept position, with nothing measured, is
+refused — there is genuinely nothing to throw away.
+
+Holding the repository lock across a discard is the caller's job, as it is for a
+keep.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from gymrat import utils
+from gymrat.errors import GymratError
+from gymrat.git import try_git
+from gymrat.session.records import DiscardRecord, SessionRecord
+from gymrat.session.store import (
+    SessionState,
+    append_record,
+    last_kept_position,
+    require_open_session,
+)
+from gymrat.session.workspace import (
+    changed_file_count,
+    revert_workspace,
+    worktree_head,
+)
+from gymrat.utils import SHORT_SHA_LENGTH, pluralize, warn_to_stderr
+
+
+@dataclass(frozen=True, slots=True)
+class DiscardResult:
+    """What a discard did: an optional log record, a timestamp, and a human report.
+
+    Attributes:
+        record: The discard record appended to the session log, or ``None`` on
+            the unmeasured path, which writes no record.
+        report: The discard as the agent reads it.
+        at: The instant the discard happened, in nanoseconds since the epoch.
+            When a record is present, it equals the record's ``at``; on the
+            unmeasured path it is the instant the worktree was reverted.
+    """
+
+    record: DiscardRecord | None
+    report: str
+    at: int
+
+
+def discard_session(root: str, expected_session_id: str | None = None) -> DiscardResult:
+    """Revert the experiment worktree, recording the action only when an iteration is settled.
+
+    See the module docstring for the three accepted states and when a record is
+    appended.
+
+    Args:
+        root: The repository root containing the session.
+        expected_session_id: The session ID the caller expects to still be
+            open, or ``None`` to skip that check.
+
+    Returns:
+        The discard result with the rendered report and timestamp.
+
+    Raises:
+        GymratError: When no session has been started, when neither a measured
+            iteration nor a worktree that has changed since the last kept
+            position gives something to throw away, or when git refuses to
+            revert the worktree.
+    """
+    required = require_open_session(root, "settling an edit")
+    session, state, jsonl_path = required.session, required.state, required.jsonl_path
+
+    if expected_session_id is not None and session.session_id != expected_session_id:
+        stale_message = (
+            f"Discard refused: the session on disk ({session.session_id}) is not the "
+            f"one the prompt named ({expected_session_id})."
+        )
+        raise GymratError(
+            stale_message,
+            hint=(
+                "Another process started a new session between the confirmation and the "
+                "lock. Run gymrat discard again to confirm against the current session."
+            ),
+            reason="stale-session",
+        )
+
+    has_measured = state.unsettled or state.ends_on_gating_block
+
+    if not has_measured:
+        return _discard_unmeasured(session, state)
+
+    target = last_kept_position(state, session.baseline.sha)
+    revert_workspace(session.worktrees.experiment, target=target)
+
+    reverted_seq = state.last_iteration.seq if state.last_iteration is not None else state.last_seq
+
+    at = utils.now_ns()
+    record = DiscardRecord(
+        type="discard",
+        # The block already settled the iteration it refused, so the discard behind
+        # it takes the number no iteration has used yet — the same number a refused
+        # keep takes. Reusing the iteration's own seq would make the discard the last
+        # settling record to carry it, and ``gymrat status`` would render it in place
+        # of the block instead of alongside it.
+        seq=state.last_seq + 1 if state.ends_on_gating_block else state.last_seq,
+        at=at,
+    )
+    append_record(jsonl_path, record)
+
+    return DiscardResult(
+        record=record,
+        at=at,
+        report=f"Discarded iteration {reverted_seq}: {_reverted_to(target)}",
+    )
+
+
+def _discard_unmeasured(session: SessionRecord, state: SessionState) -> DiscardResult:
+    experiment = session.worktrees.experiment
+    target = _revert_target(state, session.baseline.sha, experiment)
+    n_changed = changed_file_count(experiment, target)
+    if n_changed == 0:
+        nothing_message = (
+            "Discard refused: nothing has been measured since the last keep or discard."
+        )
+        raise GymratError(
+            nothing_message,
+            hint="Run iterate to measure an edit before settling it.",
+            reason="nothing-to-discard",
+        )
+
+    revert_workspace(experiment, target=target)
+
+    return DiscardResult(
+        record=None,
+        at=utils.now_ns(),
+        report=f"Reverted {pluralize(n_changed, 'unmeasured edit')}: {_reverted_to(target)}",
+    )
+
+
+def _reverted_to(target: str) -> str:
+    """The report clause naming where the experiment worktree landed."""
+    return f"the experiment worktree is back at {target[:SHORT_SHA_LENGTH]}"
+
+
+def _revert_target(
+    state: SessionState,
+    baseline_sha: str,
+    experiment_dir: str,
+) -> str:
+    """The commit the unmeasured revert should land on.
+
+    An unreachable kept commit is a corruption edge case that should not happen
+    in practice; the fallback to the worktree HEAD is announced on stderr, naming
+    the commit, so the user learns the log points somewhere git cannot follow.
+
+    Args:
+        state: The session's current iteration state.
+        baseline_sha: The commit the session started from.
+        experiment_dir: The experiment worktree's directory.
+
+    Returns:
+        The SHA of the commit to revert the experiment worktree to: the last
+        kept commit, the baseline SHA when nothing was kept, or the current
+        HEAD when the kept commit is no longer reachable.
+
+    Raises:
+        GymratError: When git cannot read the worktree HEAD.
+    """
+    target = last_kept_position(state, baseline_sha)
+    error = try_git(["cat-file", "-t", target], experiment_dir)
+    if error is not None:
+        warn_to_stderr(
+            f"Commit {target} is unreachable in the experiment worktree: {error}\n"
+            "  reverting to the worktree's HEAD instead"
+        )
+        return worktree_head(experiment_dir)
+    return target

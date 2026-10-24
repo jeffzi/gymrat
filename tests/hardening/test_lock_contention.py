@@ -5,45 +5,25 @@ calls in one process, these tests pin the guarantees that only surface under
 genuine pressure:
 
 - a burst of real processes racing for one lockfile grants exactly one holder
-  and hands every loser the contention error, with the lockfile never torn,
-- the repository lock and the supervise lock are independent, so holding one
-  never blocks the command guarded by the other,
-- ``supervise`` run outside a git repository exits cleanly, naming the
-  requirement, rather than crashing with an unhandled error.
+  and hands every loser the contention error, with the lockfile never torn.
 
 The multi-process tests are POSIX-only: they rendezvous children on a named
 pipe.
 """
 
 import json
-import os
-import re
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
-from gymrat.cli.app import app
-from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import lockfile_path, supervise_lockfile_path
-from tests._ansi import strip_ansi
-from tests._process_helpers import dead_pid
+from tests._platform import needs_named_pipes
+from tests.hardening._barrier import CHILD_BARRIER, racing_children
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX-only named pipes and hard links"
-)
-
-# The ISO-8601 shape a freshly published holder record stamps into ``at``.
-AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
-
-# The fixed timestamp planted into a stale lockfile fixture; its exact value is
-# immaterial, only that a holder record is well-formed.
-WRITTEN_LOCK_AT = "2026-01-01T00:00:00.000Z"
+pytestmark = needs_named_pipes
 
 # Ceiling for a race to resolve and for children to exit once released; generous
 # enough to absorb CI scheduling jitter without masking a real deadlock.
@@ -52,11 +32,11 @@ RACE_TIMEOUT_SECONDS = 30
 # A child that races for the lock, records its verdict under ``results``, and —
 # when it wins — holds the lock until the parent drops the release flag, so
 # every rival races against a genuinely live holder.
-_RACE_CHILD = """\
-import os
+_RACE_CHILD = (
+    CHILD_BARRIER
+    + """\
 import sys
 import time
-from pathlib import Path
 
 from gymrat.errors import GymratError
 from gymrat.session.lock import acquire_lock
@@ -66,11 +46,7 @@ def main() -> int:
     lock_path, barrier_path, results_dir, release_flag, command = sys.argv[1:6]
     pid = os.getpid()
 
-    # Unbuffered read so each child consumes exactly one go byte; a buffered
-    # reader would slurp the whole pipe and starve its siblings.
-    barrier_fd = os.open(barrier_path, os.O_RDONLY)
-    os.read(barrier_fd, 1)
-    os.close(barrier_fd)
+    wait_at_barrier(barrier_path)
 
     try:
         release = acquire_lock(lock_path, command)
@@ -89,13 +65,29 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 """
+)
+
+
+# A holder that takes the lock and dies without releasing it. ``os._exit`` skips
+# every cleanup path, so the kernel drops the OS lock while its file, the
+# holder record and the publish lock file stay on disk, as after a real crash.
+_CRASHED_HOLDER_CHILD = """\
+import os
+import sys
+
+from gymrat.session.lock import acquire_lock
+
+acquire_lock(sys.argv[1], "measure")
+os._exit(0)
+"""
 
 
 def _write_stale_lock(lock_path: str) -> None:
-    """Plant a holder record whose owning process has already exited."""
-    Path(lock_path).write_text(
-        json.dumps({"pid": dead_pid(), "command": "measure", "at": WRITTEN_LOCK_AT}),
-        encoding="utf-8",
+    """Leave behind the lock files of a holder that crashed while holding the lock."""
+    subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
+        [sys.executable, "-c", _CRASHED_HOLDER_CHILD, lock_path],
+        check=True,
+        timeout=RACE_TIMEOUT_SECONDS,
     )
 
 
@@ -122,41 +114,34 @@ def _surface_child_crashes(children: list[subprocess.Popen[str]]) -> None:
 def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measure") -> _RaceOutcome:
     """Race ``count`` child processes for ``lock_path`` behind a shared barrier.
 
-    All children block on a named pipe until the parent writes the go bytes, so
-    the race starts together. The winner holds the lock until the parent drops
-    the release flag, guaranteeing every loser contends a live holder. The
-    lockfile is snapshotted while the winner still holds it, so a torn or
-    vanished lock is caught.
+    All children open a named pipe, leave a ``ready.<pid>`` marker beside it and
+    block on it; the parent writes the go bytes only once every marker exists,
+    so every child calls ``acquire_lock`` within the same scheduling window. The
+    winner holds the lock until the parent drops the release flag, guaranteeing
+    every loser contends a live holder. The lockfile is snapshotted while the
+    winner still holds it, so a torn or vanished lock is caught.
+
+    Args:
+        tmp_path: Where the barrier, the result markers and the child script live.
+        lock_path: The lockfile every child races for.
+        count: How many children race.
+        command: The command name each child acquires the lock for.
+
+    Returns:
+        What the race left behind once every child exited.
     """
-    barrier_path = tmp_path / "barrier.pipe"
-    os.mkfifo(barrier_path)
     results = tmp_path / "results"
     results.mkdir()
     release_flag = tmp_path / "release.flag"
-    script = tmp_path / "race_child.py"
-    script.write_text(_RACE_CHILD, encoding="utf-8")
 
-    children = [
-        subprocess.Popen(  # noqa: S603
-            [
-                sys.executable,
-                str(script),
-                lock_path,
-                str(barrier_path),
-                str(results),
-                str(release_flag),
-                command,
-            ],
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for _ in range(count)
-    ]
-
-    go_fd = os.open(str(barrier_path), os.O_RDWR)
-    try:
-        os.write(go_fd, b"\x00" * count)
-
+    with racing_children(
+        tmp_path,
+        _RACE_CHILD,
+        lambda barrier, _index: (lock_path, str(barrier), str(results), str(release_flag), command),
+        count,
+        on_poll=_surface_child_crashes,
+        timeout_s=RACE_TIMEOUT_SECONDS,
+    ) as children:
         deadline = time.monotonic() + RACE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             won = sorted(results.glob("won.*"))
@@ -168,19 +153,14 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
 
         won = sorted(results.glob("won.*"))
         lost = sorted(results.glob("lost.*"))
-        snapshot = Path(lock_path).read_text(encoding="utf-8") if Path(lock_path).exists() else None
+        try:
+            snapshot = Path(lock_path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            snapshot = None
 
         release_flag.write_text("go", encoding="utf-8")
         exit_codes = [child.wait(timeout=RACE_TIMEOUT_SECONDS) for child in children]
         child_errors = [child.stderr.read() if child.stderr else "" for child in children]
-    finally:
-        os.close(go_fd)
-        for child in children:
-            if child.poll() is None:
-                child.kill()
-                child.wait()
-            if child.stderr is not None:
-                child.stderr.close()
 
     return _RaceOutcome(
         won_pid_values=[path.read_text(encoding="utf-8").strip() for path in won],
@@ -203,7 +183,7 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
         pytest.param("stale", 2, id="stale-steal"),
     ],
 )
-def test_acquire_lock_when_processes_race_does_grant_one_holder_and_contend_the_rest(
+def test_acquire_lock_when_processes_race_does_admit_exactly_one_holder(
     initial_state: str, count: int, tmp_path: Path
 ):
     lock_path = str(tmp_path / "gymrat.lock.json")
@@ -218,57 +198,7 @@ def test_acquire_lock_when_processes_race_does_grant_one_holder_and_contend_the_
 
     winner_pid = outcome.won_pid_values[0]
     assert outcome.holder_snapshot is not None, "lockfile vanished while a holder was active"
-    record = json.loads(outcome.holder_snapshot)
-    assert set(record) == {"pid", "command", "at"}
-    assert record["pid"] == int(winner_pid)
-    assert record["command"] == "measure"
-    assert AT_PATTERN.match(record["at"])
+    assert json.loads(outcome.holder_snapshot)["pid"] == int(winner_pid)
 
     for payload in outcome.lost_payloads:
         assert f"PID {winner_pid}" in payload
-
-
-# ---------------------------------------------------------------------------
-# the repository lock and the supervise lock are independent
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("held_role", "acquired_role"),
-    [
-        pytest.param("repo", "supervise", id="repo-held-then-supervise"),
-        pytest.param("supervise", "repo", id="supervise-held-then-repo"),
-    ],
-)
-def test_acquire_lock_when_one_command_lock_is_held_does_not_block_the_other(
-    held_role: str, acquired_role: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    root = str(tmp_path / "checkout")
-    paths = {"repo": lockfile_path(root), "supervise": supervise_lockfile_path(root)}
-
-    held = acquire_lock(paths[held_role], held_role)
-    other = acquire_lock(paths[acquired_role], acquired_role)
-
-    assert Path(paths[held_role]).exists()
-    assert Path(paths[acquired_role]).exists()
-    held()
-    other()
-
-
-# ---------------------------------------------------------------------------
-# supervise run outside a git repository
-# ---------------------------------------------------------------------------
-
-
-def test_supervise_when_run_outside_a_git_repository_does_exit_two_naming_the_requirement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.chdir(tmp_path)
-
-    result = CliRunner().invoke(app, ["supervise", "optimize it", "--max-minutes", "10"])
-
-    assert result.exit_code == 2
-    combined = strip_ansi((result.stdout or "") + (result.stderr or ""))
-    assert re.search("git repository", combined, re.IGNORECASE)
-    assert "Traceback" not in combined

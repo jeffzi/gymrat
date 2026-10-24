@@ -29,6 +29,8 @@ Opens a session log: identity, worktrees, and a config snapshot.
 | `worktrees` | [Worktrees](#worktrees) | required | Paths to the experiment and baseline worktrees. |
 | `config` | [SessionConfig](#sessionconfig) | required | Configuration snapshot the session was started with. |
 
+Rejects keys not listed above.
+
 #### `BaselineRef`
 
 A git ref together with the commit it resolved to when the session started.
@@ -38,6 +40,8 @@ A git ref together with the commit it resolved to when the session started.
 | `ref` | string | required | Git ref name the baseline was taken from. |
 | `sha` | string | required | Commit SHA the ref resolved to at session start. |
 
+Rejects keys not listed above.
+
 #### `Worktrees`
 
 The two worktree directories a session runs in.
@@ -46,6 +50,8 @@ The two worktree directories a session runs in.
 | --- | --- | --- | --- |
 | `experiment` | string | required | Path to the experiment worktree. |
 | `baseline` | string | required | Path to the baseline worktree. |
+
+Rejects keys not listed above.
 
 #### `SessionConfig`
 
@@ -62,6 +68,8 @@ The settled configuration a session was opened with, kept for provenance.
 | `filter` | string | optional | Filter expression for selecting benchmarks. |
 | `hooks` | [SessionHooks](#sessionhooks) | optional | Hook commands to run around iterations. |
 
+Rejects keys not listed above.
+
 #### `SessionHooks`
 
 The hook commands a session was started with; an absent stage ran nothing.
@@ -70,6 +78,8 @@ The hook commands a session was started with; an absent stage ran nothing.
 | --- | --- | --- | --- |
 | `before` | string | optional | Command to run before each iteration. |
 | `after` | string | optional | Command to run after each iteration. |
+
+Rejects keys not listed above.
 
 ### `baseline`
 
@@ -83,6 +93,8 @@ A labelled set of baseline sample rounds.
 | `samples` | array of object | required | Baseline sample rounds mapping metric names to numbers. |
 | `duration_ms` | number | optional | Wall-clock milliseconds the baseline measurement took. |
 
+Rejects keys not listed above.
+
 ### `iteration`
 
 One measured edit: raw samples, per-metric verdicts, and the outcome.
@@ -93,13 +105,15 @@ One measured edit: raw samples, per-metric verdicts, and the outcome.
 | `seq` | integer | required | Iteration sequence number, starting at 1. |
 | `type` | `"iteration"` | required | Record type discriminator. |
 | `samples` | [PairedSamples](#pairedsamples) | required | Raw sample rounds from both worktrees. |
-| `metrics` | object (values: [MetricVerdict](#metricverdict)) | required | Per-metric verdicts keyed by metric name. |
+| `metrics` | object (values: [IterationMetricVerdict](#iterationmetricverdict)) | required | Per-metric verdicts keyed by metric name. |
 | `confirm` | [Confirm](#confirm) | optional | Confirmation rerun results, if one was triggered. |
 | `primary` | [IterationPrimary](#iterationprimary) | required | The primary metric or aggregate the outcome was judged on. |
 | `outcome` | `"improved"` \| `"regressed"` \| `"no-signal"` | required | Overall iteration outcome: improved, regressed, or no-signal. |
 | `target_reached` | boolean | required | Whether the iteration met the target threshold. |
 | `duration_ms` | number | optional | Wall-clock milliseconds the iteration measurement took. |
 | `measured_tree` | string | optional | Git tree hash of the experiment worktree at measurement time. |
+
+Rejects keys not listed above.
 
 #### `PairedSamples`
 
@@ -110,7 +124,9 @@ The experiment and baseline sample rounds measured in one iteration.
 | `experiment` | array of object | required | Sample rounds from the experiment worktree. |
 | `baseline` | array of object | required | Sample rounds from the baseline worktree. |
 
-#### `MetricVerdict`
+Rejects keys not listed above.
+
+#### `IterationMetricVerdict`
 
 How one metric moved, with the statistics behind the judgement.
 
@@ -120,20 +136,22 @@ writer, not a degenerate measurement.
 
 | Name | Type | Status | Description |
 | --- | --- | --- | --- |
-| `delta_pct` | integer \| number \| null | required | Percentage change from baseline, or null when undefined. |
-| `verdict` | `"improved"` \| `"regressed"` \| `"no-signal"` \| `"unstable"` | required | Whether the metric improved, regressed, or showed no signal. |
+| `delta_pct` | number \| integer \| null | required | Percentage change from baseline, or null when undefined. |
+| `verdict` | `"improved"` \| `"regressed"` \| `"no-signal"` \| `"unstable"` | required | How the metric moved: improved, regressed, no-signal, or unstable when its samples were too noisy to judge. |
 | `method` | `"permutation"` \| `"band"` \| `"exact"` | required | Statistical test used to judge the metric. |
 | `p` | number | optional | P-value from the statistical test. |
 | `noise_pct` | number | optional | Estimated noise as a percentage of the baseline median. |
 | `gating` | boolean | required | Whether this metric gates the iteration outcome. |
 | `confirmed` | boolean | required | Whether a confirmation rerun validated this verdict. |
 
+Rejects keys not listed above.
+
 #### `Confirm`
 
 A confirmation rerun: which metrics it re-measured, and the samples it took.
 
 ``absent`` names metrics the rerun was asked about but skipped; it is
-``None`` on a log written before the field existed.
+``None`` when the rerun skipped none.
 
 | Name | Type | Status | Description |
 | --- | --- | --- | --- |
@@ -142,15 +160,19 @@ A confirmation rerun: which metrics it re-measured, and the samples it took.
 | `absent` | array of string | optional | Metric names the rerun was asked about but skipped. |
 | `samples` | [PairedSamples](#pairedsamples) | required | Sample rounds collected during the confirmation rerun. |
 
+Rejects keys not listed above.
+
 #### `IterationPrimary`
 
 The primary an iteration was judged on -- the geomean, or a named metric.
 
 | Name | Type | Status | Description |
 | --- | --- | --- | --- |
-| `delta_pct` | integer \| number \| null | required | Percentage change from baseline, or null when undefined. |
+| `delta_pct` | number \| integer \| null | required | Percentage change from baseline, or null when undefined. |
 | `kind` | `"geomean"` \| `"metric"` | required | Whether the primary is a geomean aggregate or a named metric. |
 | `name` | string | optional | Metric name when kind is 'metric'. |
+
+Rejects keys not listed above.
 
 ### `keep`
 
@@ -167,6 +189,8 @@ The settlement of an iteration: committed, or blocked with a reason.
 | `reason` | `"checks-failed"` \| `"gating-regression"` \| `"nothing-measured"` \| `"nothing-to-commit"` \| `"not-improved"` | optional | Why the keep was blocked, when status is blocked. |
 | `checks` | [KeepChecks](#keepchecks) | required | Outcome of the configured checks. |
 
+Rejects keys not listed above.
+
 #### `KeepChecks`
 
 The outcome of a keep's configured checks, with relayed output sizes.
@@ -178,6 +202,8 @@ The outcome of a keep's configured checks, with relayed output sizes.
 | `stdout_bytes` | integer | optional | Bytes the check command wrote to stdout. |
 | `stderr_bytes` | integer | optional | Bytes the check command wrote to stderr. |
 
+Rejects keys not listed above.
+
 ### `discard`
 
 The reverted settlement of an iteration.
@@ -187,6 +213,8 @@ The reverted settlement of an iteration.
 | `at` | integer | required | Nanoseconds since the Unix epoch when the record was created. |
 | `seq` | integer | required | Iteration sequence number this discard settles. |
 | `type` | `"discard"` | required | Record type discriminator. |
+
+Rejects keys not listed above.
 
 ### `hook`
 
@@ -199,10 +227,12 @@ One hook invocation around an iteration.
 | `type` | `"hook"` | required | Record type discriminator. |
 | `stage` | `"before"` \| `"after"` | required | Whether the hook ran before or after the iteration. |
 | `exit_code` | integer | required | Process exit code of the hook command. |
-| `duration_ms` | integer \| number | required | Wall-clock milliseconds the hook command ran. |
+| `duration_ms` | number \| integer | required | Wall-clock milliseconds the hook command ran. |
 | `stdout_bytes` | integer | required | Bytes the hook command wrote to stdout. |
 | `stderr_bytes` | integer | optional | Bytes the hook command wrote to stderr. |
 | `timed_out` | boolean | required | Whether the hook command exceeded its timeout. |
+
+Rejects keys not listed above.
 
 ### `finalize`
 
@@ -216,6 +246,8 @@ Closes a session: the branch and squash commit its kept work collapsed onto.
 | `commit` | string | required | Git commit SHA of the squash commit. |
 | `message` | string | required | Commit message of the squash commit. |
 
+Rejects keys not listed above.
+
 ### `stop`
 
 A user-requested stop: halts the loop without finalizing the session.
@@ -225,6 +257,8 @@ A user-requested stop: halts the loop without finalizing the session.
 | `at` | integer | required | Nanoseconds since the Unix epoch when the record was created. |
 | `type` | `"stop"` | required | Record type discriminator. |
 | `message` | string | required | Reason the stop was requested. |
+
+Rejects keys not listed above.
 
 ### `command`
 
@@ -242,6 +276,8 @@ A CLI command invocation: name, arguments, exit code, and optional reason.
 | `duration_ms` | integer | required | Wall-clock milliseconds the command took. |
 | `origin` | `"cli"` \| `"tool"` | optional | What invoked the command: 'tool' when the supervised agent ran it through the in-process tool host, 'cli' when it was run directly. |
 | `traceparent` | string | optional | W3C Trace Context traceparent header for distributed tracing. |
+
+Rejects keys not listed above.
 
 ## Supervisor Log
 
@@ -271,17 +307,6 @@ Emitted when the model invokes a tool.
 | `input_summary` | string | required | Human-readable summary of the tool input. |
 | `parent_tool_use_id` | string | optional | Tool use ID of the enclosing tool call, if any. |
 
-### `tool_progress`
-
-Emitted periodically while a long-running tool call is still in flight.
-
-| Name | Type | Status | Description |
-| --- | --- | --- | --- |
-| `type` | `"tool_progress"` | required | Event type discriminator. |
-| `at` | integer | required | Nanoseconds since the Unix epoch when the event was created. |
-| `tool_use_id` | string | required | Unique identifier of the in-flight tool invocation. |
-| `elapsed_ms` | integer | required | Milliseconds elapsed since the tool call started. |
-
 ### `tool_end`
 
 Emitted when a tool call completes and its result is available.
@@ -291,8 +316,8 @@ Emitted when a tool call completes and its result is available.
 | `type` | `"tool_end"` | required | Event type discriminator. |
 | `at` | integer | required | Nanoseconds since the Unix epoch when the event was created. |
 | `tool_use_id` | string | required | Unique identifier of the completed tool invocation. |
-| `tool_name` | string | required | Name of the tool that completed. |
-| `duration_ms` | integer | required | Wall-clock milliseconds the tool call took. |
+| `tool_name` | string \| null | required | Name of the tool that completed, or null when its start was never seen. |
+| `duration_ms` | integer \| null | required | Wall-clock milliseconds the tool call took, or null when its start was never seen. |
 | `result` | string | required | Raw result returned by the tool. |
 | `result_summary` | string | required | Human-readable summary of the tool result. |
 | `parent_tool_use_id` | string | optional | Tool use ID of the enclosing tool call, if any. |
@@ -317,7 +342,6 @@ Emitted when the driver observes updated cumulative cost.
 | `type` | `"usage_update"` | required | Event type discriminator. |
 | `at` | integer | required | Nanoseconds since the Unix epoch when the event was created. |
 | `cost_usd` | number | required | Cumulative session cost in US dollars. |
-| `settled` | boolean | optional | Whether the session has already settled. |
 
 ### `cap`
 
@@ -378,7 +402,7 @@ Emitted when the agent finishes a conversational turn.
 | `type` | `"turn_end"` | required | Event type discriminator. |
 | `at` | integer | required | Nanoseconds since the Unix epoch when the event was created. |
 | `text` | string | required | Full text the agent produced in this turn. |
-| `cost_usd` | number | required | Cost of this turn in US dollars. |
+| `cost_usd` | number | required | Cumulative session cost in US dollars when the turn ended. |
 | `origin` | `"agent"` \| `"injected"` | required | Whether the turn was agent-generated or injected by the supervisor. |
 | `budget_exhausted` | boolean | required | Whether the turn exhausted the remaining budget. |
 
@@ -414,5 +438,5 @@ Each reader operation consumes a subset of record or event types from one log fi
 - **supervisor-guard** (channel: `session-log`): Reads session log state for supervisor startup.
   Types: `session`, `baseline`, `iteration`, `keep`, `discard`, `hook`, `finalize`, `stop`
 - **dashboard** (channel: `supervisor-log`): Streams supervisor events for live dashboard display.
-  Types: `launch`, `thinking_update`, `tool_start`, `tool_progress`, `tool_end`, `text_delta`,
-  `usage_update`, `cap`, `model_phase`, `turn_end`, `follow_up`, `compaction`
+  Types: `launch`, `thinking_update`, `tool_start`, `tool_end`, `text_delta`, `usage_update`, `cap`,
+  `model_phase`, `turn_end`, `follow_up`, `compaction`

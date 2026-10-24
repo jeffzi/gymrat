@@ -4,7 +4,9 @@ The classifier is a pure function over its arguments plus the mutable
 ``GuardState`` it updates. It never reads the filesystem or the driver.
 Evaluation order is fixed — the first matching rule wins:
 
-1. Session finished (finalized, stop record, or configured stop condition).
+1. Session finished (finalized or stop record). A configured stop condition is
+   not checked here: the supervisor's end scan owns it, and disarms it for a
+   run forced past a condition already met at launch.
 2. Spend cap (budget exhausted or cost exceeds ``max_usd``).
 3. Lock held (another process holds the repository lock).
 4. Guard tripped (follow-up ceiling, no-progress, consecutive discards).
@@ -14,18 +16,19 @@ Evaluation order is fixed — the first matching rule wins:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from itertools import islice
+from typing import TYPE_CHECKING, Literal
 
-from gymrat.eta import format_duration
-from gymrat.loop.iterate.run import stop_condition
-from gymrat.session.records.models import CommandRecord, DiscardRecord, HookRecord, KeepRecord
+from gymrat.session.records import CommandRecord, DiscardRecord, KeepRecord
+from gymrat.utils import format_time_left
 
 if TYPE_CHECKING:
-    from gymrat.config import BenchlessConfig
-    from gymrat.session import SessionLogRecord
+    from collections.abc import Iterator
+
+    from gymrat.session.budget import Budget
+    from gymrat.session.records import SessionLogRecord
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import TurnEndEvent
-    from gymrat.supervisor.supervise import EndedBy
 
 FOLLOW_UP_CEILING = 100
 """Maximum follow-up replies before the classifier ends the session."""
@@ -60,88 +63,43 @@ class GuardState:
         self.last_record_count = self.initial_record_count
 
 
-class Decision:
-    """Base type for classifier outcomes."""
+type EndReason = Literal[
+    "finished", "spend-cap", "follow-up-ceiling", "no-progress", "consecutive-discards"
+]
+"""Why the classifier ends a session: the agent finished, a cap tripped, or a guard fired."""
 
 
 @dataclass(frozen=True, slots=True)
-class End(Decision):
-    """The session should end for the given reason."""
+class End:
+    """Terminal decision: the supervisor ends the session with ``reason`` as its end reason."""
 
-    reason: str
+    reason: EndReason
 
 
 @dataclass(frozen=True, slots=True)
-class Reply(Decision):
-    """Send a follow-up message with the given text."""
+class Reply:
+    """Continue the session with a follow-up message.
+
+    Every reply counts toward :data:`FOLLOW_UP_CEILING`.
+
+    Attributes:
+        text: The next user message the supervisor sends.
+    """
 
     text: str
 
 
 @dataclass(frozen=True, slots=True)
-class WaitForLock(Decision):
+class WaitForLock:
     """Another process holds the lock; wait without updating counters."""
 
 
-_STOP_MESSAGE_PREFIX = "Stop condition met:"
+type Decision = End | Reply | WaitForLock
+"""What :func:`classify` returns for each turn end: end the session, reply, or wait for the lock."""
 
 
-@dataclass(frozen=True, slots=True)
-class EndCondition:
-    """A condition read off the session log that ends supervision."""
-
-    ended_by: EndedBy
-    reason: str
-
-
-def _hook_failure_reason(record: HookRecord) -> str:
-    failure = "timed out" if record.timed_out else f"exit {record.exit_code}"
-    stderr = "?" if record.stderr_bytes is None else record.stderr_bytes
-    return (
-        f"{record.stage} hook failed on iteration {record.seq}: {failure} "
-        f"(stdout {record.stdout_bytes} B, stderr {stderr} B)"
-    )
-
-
-def detect_end_condition(
-    config: BenchlessConfig,
-    records: list[SessionLogRecord],
-    state: SessionState,
-    *,
-    cursor: int | None,
-    check_stop: bool,
-) -> tuple[EndCondition | None, int]:
-    """Find the condition in the session log that ends supervision, if any.
-
-    A failed or timed-out hook record at or past *cursor* wins over a met stop
-    condition. Hooks are scanned from the cursor rather than the tail because
-    ``iterate`` appends a before-hook, the iteration, then an after-hook, so a
-    failed before-hook sits two records back.
-
-    Args:
-        config: The session's Benchless configuration, read for stop conditions.
-        records: The raw session log records, command records included.
-        state: The session state already folded from *records*.
-        cursor: The index of the first record not yet scanned for hook
-            failures, or ``None`` to scan no hook records.
-        check_stop: Whether a met stop condition is reported.
-
-    Returns:
-        The end condition, or ``None`` when nothing ends supervision, paired
-        with the cursor for the next call.
-    """
-    next_cursor = len(records)
-
-    if cursor is not None:
-        for record in records[cursor:]:
-            if isinstance(record, HookRecord) and (record.exit_code != 0 or record.timed_out):
-                return EndCondition("hook-failure", _hook_failure_reason(record)), next_cursor
-
-    if check_stop and (stop := stop_condition(config, state)) is not None:
-        reason = str(stop).removeprefix(_STOP_MESSAGE_PREFIX).strip()
-        return EndCondition("stop-condition", reason), next_cursor
-
-    return None, next_cursor
+def _outcome_records(records: list[SessionLogRecord]) -> Iterator[SessionLogRecord]:
+    return (r for r in records if not isinstance(r, CommandRecord))
 
 
 def outcome_record_count(records: list[SessionLogRecord]) -> int:
@@ -157,7 +115,7 @@ def outcome_record_count(records: list[SessionLogRecord]) -> int:
     Returns:
         The number of non-command records.
     """
-    return sum(1 for r in records if not isinstance(r, CommandRecord))
+    return sum(1 for _ in _outcome_records(records))
 
 
 def _consecutive_discard_count(
@@ -170,9 +128,8 @@ def _consecutive_discard_count(
     between discards do not break the streak. A committed keep resets it. A
     keep that is not committed neither counts nor resets the streak.
 
-    ``initial_outcome_count`` is the number of non-command records at launch.
-    The slice skips that many outcome records regardless of interleaved command
-    records.
+    The slice skips the first ``initial_outcome_count`` outcome records
+    regardless of interleaved command records.
 
     Args:
         records: The session log records to scan.
@@ -181,15 +138,7 @@ def _consecutive_discard_count(
     Returns:
         The number of consecutive trailing discards.
     """
-    skipped = 0
-    post_launch: list[SessionLogRecord] = []
-    for r in records:
-        if isinstance(r, CommandRecord):
-            continue
-        if skipped < initial_outcome_count:
-            skipped += 1
-        else:
-            post_launch.append(r)
+    post_launch = islice(_outcome_records(records), initial_outcome_count, None)
     settlements = [r for r in post_launch if isinstance(r, KeepRecord | DiscardRecord)]
     count = 0
     for record in reversed(settlements):
@@ -205,34 +154,21 @@ def spend_cap_reached(turn: TurnEndEvent, max_usd: float | None) -> bool:
     return turn.budget_exhausted or (max_usd is not None and turn.cost_usd >= max_usd)
 
 
-def _format_reply(
-    *,
-    deadline_ms: float,
-    max_minutes: float,
-    now_ms: float,
-    after_wait: bool,
-) -> str:
-    remaining = max(0.0, deadline_ms - now_ms)
-    parts = [
-        _RUNBOOK_INSTRUCTION,
-        f"\n{format_duration(remaining)} left of {max_minutes:g}m",
-    ]
-    if after_wait:
-        parts.append(f"\n{_AFTER_WAIT_LINE}")
-    return "".join(parts)
+def _format_reply(*, budget: Budget, now_ms: float, after_wait: bool) -> str:
+    time_left = format_time_left(budget.remaining_ms(now_ms), budget.max_minutes)
+    reply = f"{_RUNBOOK_INSTRUCTION}\n{time_left}"
+    return f"{reply}\n{_AFTER_WAIT_LINE}" if after_wait else reply
 
 
-def classify(  # noqa: PLR0913, PLR0911 - one parameter per classification input
+def classify(  # noqa: PLR0913, PLR0911 -- one parameter per classification input; one return per ordered rule in the module docstring
     *,
-    config: BenchlessConfig,
     state: SessionState,
     records: list[SessionLogRecord],
     guards: GuardState,
     lock_held: bool,
     turn: TurnEndEvent,
     max_usd: float | None,
-    deadline_ms: float,
-    max_minutes: float,
+    budget: Budget,
     now_ms: float,
     after_wait: bool = False,
 ) -> Decision:
@@ -242,7 +178,6 @@ def classify(  # noqa: PLR0913, PLR0911 - one parameter per classification input
     record-count baseline, the no-progress counter, and the reply counter.
 
     Args:
-        config: The session's Benchless configuration.
         state: The current session state.
         records: The session log records accumulated so far.
         guards: The mutable per-run counters to read and update.
@@ -250,19 +185,14 @@ def classify(  # noqa: PLR0913, PLR0911 - one parameter per classification input
             lock.
         turn: The turn-end event being classified.
         max_usd: The spend cap in USD, or ``None`` for no cap.
-        deadline_ms: The session deadline, in epoch milliseconds.
-        max_minutes: The session's configured time budget, in minutes.
+        budget: The session's wall-clock budget, for the time-left trailer.
         now_ms: The current time, in epoch milliseconds.
         after_wait: Whether this turn follows a wait for a running command.
 
     Returns:
         The next action: continue, end, or wait for lock.
     """
-    if (
-        state.finalized is not None
-        or state.ends_on_stop
-        or stop_condition(config, state) is not None
-    ):
+    if state.finalized is not None or state.ends_on_stop:
         return End(reason="finished")
 
     if spend_cap_reached(turn, max_usd):
@@ -295,10 +225,5 @@ def classify(  # noqa: PLR0913, PLR0911 - one parameter per classification input
         return End(reason="consecutive-discards")
 
     guards.replies_sent += 1
-    text = _format_reply(
-        deadline_ms=deadline_ms,
-        max_minutes=max_minutes,
-        now_ms=now_ms,
-        after_wait=after_wait,
-    )
+    text = _format_reply(budget=budget, now_ms=now_ms, after_wait=after_wait)
     return Reply(text=text)

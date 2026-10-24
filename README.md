@@ -50,7 +50,7 @@ highlights
 ```
 
 Add `--fail-on regressed` to make a continuous integration (CI) job exit non-zero on a regression,
-or `--format json` for machine-readable output.
+or `--format json` for machine-readable JavaScript Object Notation (JSON) output.
 
 ## Choosing a workflow
 
@@ -157,9 +157,6 @@ values.
 
 ## The optimization loop
 
-For iterating on performance work, gymrat manages a session with a pinned baseline and an
-experiment worktree:
-
 ```console
 gymrat start --baseline main   # pin the baseline and open the session
 # ...edit code in the experiment worktree...
@@ -178,7 +175,7 @@ A committed `keep` advances the recorded baseline to the kept iteration's sample
 iteration measures against what was just kept.
 
 While a session is open, `start`, `iterate`, `keep`, `discard`, `status`, `stop`, `sync`,
-`finalize`, `probe`, `compare`, and `measure` each append a `command` record to
+`finalize`, `probe`, `compare`, `measure`, and `supervise` each append a `command` record to
 `.gymrat/session.jsonl`. The record holds the command's arguments, exit code, the reason for a
 non-zero exit, duration, and `origin` (`cli` or `tool`). `status` takes the repository lock briefly
 to record itself.
@@ -187,8 +184,8 @@ to record itself.
 
 `gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5` runs the loop under an AI
 agent. The agent is Claude Code, driven through the Claude Agent SDK that gymrat installs as a
-dependency, so Claude Code must be able to authenticate: signed in, or with `ANTHROPIC_API_KEY`
-set. `--max-usd` caps the spend Claude Code reports for the run. The runbook scaffolded by `init`
+dependency. Claude Code must be able to authenticate: signed in, or with `ANTHROPIC_API_KEY` set.
+`--max-usd` caps the spend Claude Code reports for the run. The runbook scaffolded by `init`
 describes the goal and constraints.
 
 `supervise` opens the session and records the baseline itself before handing control to the agent.
@@ -197,8 +194,8 @@ resuming an open session. The wall-clock cap starts once the baseline is recorde
 the cap plus the baseline's duration.
 
 `--force` launches even when the cap cannot fit one iteration or a stop condition is already met.
-`--allow-dirty` allows a launch with uncommitted changes, and `--log <path>` sets where the JSONL
-event log goes.
+`--allow-dirty` allows a launch with uncommitted changes, and `--log <path>` sets where the JSON
+Lines (JSONL) event log goes.
 
 #### Guards and caps
 
@@ -282,7 +279,7 @@ gymrat reports a hook's non-zero exit in the iteration output; the iteration sti
 `supervise`, a failed hook ends the run and leaves the iteration it bracketed for a person to keep or
 discard. gymrat kills a hook that runs longer than 30 seconds.
 
-An after hook must not modify the experiment worktree: gymrat captures the worktree's contents when
+An `after` hook must not modify the experiment worktree: gymrat captures the worktree's contents when
 it measures, so anything the hook changes afterwards goes unrecorded.
 
 ## Machine-readable output
@@ -290,10 +287,7 @@ it measures, so anything the hook changes afterwards goes unrecorded.
 `compare`, `measure`, `probe`, `doctor`, and the session commands (`start`, `iterate`, `keep`,
 `discard`, `status`, `stop`, `sync`, `finalize`) accept `--format json` for structured output.
 `init`, `export`, and `supervise` are text-only. Text output is for humans and may change between
-releases.
-
-Log records use snake_case keys, `at` timestamps are integer nanoseconds since the Unix epoch,
-and the schema is additive-only from the first published release.
+releases; the log schema is additive-only from the first published release.
 
 The session and supervisor log formats are documented in the
 [event reference](https://github.com/jeffzi/gymrat/blob/main/docs/event-reference.md), with JSON
@@ -324,11 +318,13 @@ record and for every supervised run. One trace covers the whole session:
 - **`gymrat.run`** — one per supervised run, a child of the session span, with cost, duration, and
   model attributes.
 - **`gymrat.command.<name>`** — one per CLI command (iterate, keep, compare, …), parented under the
-  run span when the command runs inside `supervise`, under the session span otherwise. The outcome
-  records that the command appended to the session log appear as events on this span.
+  run span when the supervised agent runs the command, under the session span otherwise. The
+  outcome records that the command appended to the session log appear as events on this span.
 
-When a supervised run has Claude Code's own tracing on, each command span links to the tool-call
-span through the `TRACEPARENT` environment variable (`GYMRAT_TRACEPARENT` takes precedence).
+A command span also links to the trace context in its environment. For a command the supervised
+agent runs, the link always targets the run span, which gymrat passes as `GYMRAT_TRACEPARENT`. For
+any other command, `supervise` itself included, it targets whatever the `TRACEPARENT` environment
+variable names.
 
 `gymrat export` replays a session's logs into the same span structure after the fact:
 
@@ -350,7 +346,7 @@ for those record types.
 | ------------------------------ | ------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `gymrat.session.id`            | string | session, run, command            | Unique identifier for the session.                                                                                        |
 | `gymrat.session.branch`        | string | session                          | Git branch created for the session.                                                                                       |
-| `gymrat.run.head_sha`          | string | run                              | Git HEAD commit SHA at launch time.                                                                                       |
+| `gymrat.run.head_sha`          | string | run                              | Git HEAD commit hash (SHA) at launch time.                                                                                |
 | `gymrat.run.max_minutes`       | float  | run                              | Wall-clock timeout in minutes.                                                                                            |
 | `gymrat.run.max_usd`           | float  | run (when set)                   | Spend cap in US dollars, if configured.                                                                                   |
 | `gymrat.run.effort`            | string | run (when set)                   | Effort level, if specified.                                                                                               |
@@ -368,7 +364,7 @@ for those record types.
 | `gymrat.iteration.seq`         | int    | command, events                  | Iteration sequence number the record belongs to.                                                                          |
 | `gymrat.iteration.outcome`     | string | iteration event                  | Overall iteration outcome: improved, regressed, or no-signal.                                                             |
 | `gymrat.iteration.delta_pct`   | float  | iteration event                  | Percentage change from baseline for the primary metric.                                                                   |
-| `gymrat.turn.cost_usd`         | float  | turn_end event                   | Cost of the turn in US dollars.                                                                                           |
+| `gymrat.turn.session_cost_usd` | float  | turn_end event                   | Cumulative session cost in US dollars when the turn ended.                                                                |
 | `gymrat.turn.origin`           | string | turn_end event                   | Whether the turn was agent-generated or injected by the supervisor.                                                       |
 | `gymrat.turn.budget_exhausted` | bool   | turn_end event                   | Whether the turn exhausted the remaining budget.                                                                          |
 | `gymrat.follow_up.action`      | string | follow_up event                  | Supervisor action taken after the turn.                                                                                   |
@@ -394,16 +390,32 @@ for those record types.
 ## How verdicts work
 
 Each candidate is sampled in strict alternation with its baseline, so machine drift hits both
-sides equally. A metric's verdict comes from a sign-flip permutation test on the paired deltas;
-below the sample floor a noise-band fallback applies. Each metric lands in one class:
+sides equally. A metric's verdict comes from a sign-flip permutation test on the signed-rank sum of
+the paired differences. Tied pairs carry no sign to flip, so when fewer than 6 pairs differ, a
+noise-band fallback applies instead: the percentage change between the two sides' medians must
+exceed the metric's noise band.
+
+A metric's noise band is 1.5 times the larger of the two sides' half-ranges (half the span from
+lowest to highest sample), each taken as a percentage of that side's median, and never less than
+0.5%. The measurement resolution is the smallest change a metric can show. Byte metrics are
+quantized to whole bytes, so their resolution is one byte as a percentage of each side's median,
+whichever is larger, and a change within it counts as noise whatever the pairs say. Setting
+`exact = true` on a metric skips the statistical test and the noise band: any difference between
+its medians is a change.
+
+Each metric lands in one class:
 
 - **✓ improved** / **✗ regressed** — the metric moved in its better or worse direction.
 - **≈ unstable** — the samples are too erratic to judge.
-- **= identical** — every pair tied.
-- **~ within noise** — the change stays inside the noise band.
+- **= identical** — every pair tied (an `exact` metric shows within noise instead).
+- **~ within noise** — gymrat could not confirm a change. The change is indistinguishable from
+  noise, falls within the metric's measurement resolution, has no finite percentage, or runs
+  against the pairs (the medians do not move the way the pairs do).
 - **? inconclusive** — fewer than 6 pairs, too few for a statistical verdict.
 
-JSON output stores the last three classes as `no-signal`.
+JSON output stores identical and within-noise as `no-signal`. An inconclusive verdict keeps the
+value the noise band gave it (`improved`, `regressed`, `unstable`, or `no-signal`), with fewer than
+6 pairs behind it.
 
 ## Contributing
 

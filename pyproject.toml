@@ -22,18 +22,18 @@ classifiers = [
   "Topic :: System :: Benchmark",
 ]
 dependencies = [
-  "claude-agent-sdk>=0.2.148,<0.3",
-  "filelock>=3.32,<4",
-  "pydantic>=2.13,<3",
+  "claude-agent-sdk>=0.2.168,<0.3",
+  "filelock>=4.2,<5",
+  "pydantic>=2.14,<3",
   "rich>=15.0,<16",
   "scipy>=1.18,<2",
-  "typer>=0.27.2,<0.28",
+  "typer>=0.27.3,<0.28",
 ]
 
 [project.optional-dependencies]
 otel = [
-  "opentelemetry-sdk>=1.44,<2",
-  "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
+  "opentelemetry-sdk>=1.45,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.45,<2",
 ]
 
 [project.urls]
@@ -46,26 +46,27 @@ gymrat = "gymrat.cli.app:main"
 
 [dependency-groups]
 dev = [
-  "diff-cover>=10.5,<11",
-  "hypothesis>=6.167,<7",
-  "jsonschema>=4.24,<5",
-  "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
-  "opentelemetry-sdk>=1.44,<2",
-  "prek>=0.5.0,<0.6",
-  "pyrefly>=1.2,<2",
+  "diff-cover>=10.6,<11",
+  "hypothesis>=6.170,<7",
+  "jsonschema>=4.26,<5",
+  "gymrat[otel]",
+  "mcp>=2.3,<3",
+  "prek>=0.5.5,<0.6",
+  "pyrefly>=1.4,<2",
   "pyte>=0.8.2,<0.9",
   "pyyaml>=6.0,<7",
   "pytest>=9.1,<10",
   "pytest-asyncio>=1.4,<2",
   "pytest-cov>=7.1,<8",
-  "pytest-randomly>=4.1,<5",
+  "pytest-randomly>=5.0,<6",
   "pytest-sugar>=1.1,<2",
   "pytest-xdist>=3.8,<4",
-  "ruff>=0.16.5,<0.17",
-  "syrupy>=6.0,<7",
+  "ruff>=0.17.1,<0.18",
+  "syrupy>=6.1,<7",
   "tomli-w>=1.2,<2",
   "types-jsonschema>=4.26,<5",
   "types-pyyaml>=6.0,<7",
+  "typing-extensions>=4.16,<5",
 ]
 
 [build-system]
@@ -88,7 +89,6 @@ python-version = "3.12"
 search-path = ["src", "."]
 
 [tool.ruff]
-target-version = "py312"
 line-length = 100
 preview = true
 
@@ -107,19 +107,14 @@ ignore = [
   # --- Style preferences ---
   "COM812", # trailing comma (handled by formatter)
   "CPY001", # missing copyright notice (not wanted on every file)
-  "G004", # logging f-string (acceptable for modern Python)
-  "ISC001", # single-line implicit string concat (conflicts with formatter)
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["E402", "F401"]
 "**/tests/*" = [
-  "D101", # missing docstring in public class
   "DOC", # docstring section checks (fixtures and helpers)
   "D102", # missing docstring in public method
   "D103", # missing docstring in public function
   "E402", # module import not at top of file
-  "ANN001", # missing type annotation for function argument
   "ANN003", # missing type annotation for **kwargs
   "ANN201", # missing return type for public function
   "ANN202", # missing return type for private function
@@ -134,25 +129,34 @@ ignore = [
   "PLC0415", # import outside top-level (local test imports)
   "PLR0913", # too many arguments (fixture/builder options mirror TS option objects)
   "PLR2004", # magic value in comparison (assert x == 42)
-  "PT012", # pytest.raises block with multiple statements
   "RUF043", # pytest.raises(match) ambiguous pattern
   "S101", # use of assert
-  "S105", # hardcoded password string
-  "S106", # hardcoded password argument
   "S108", # hardcoded temp file path
   "SIM117", # nested with statements (raises + patch)
   "SLF001", # private member access
   "TRY301", # raise within try
 ]
 
-[tool.ruff.lint.flake8-annotations]
-allow-star-arg-any = true
-
 [tool.ruff.lint.pydoclint]
 ignore-one-line-docstrings = true
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.pydoclint]
+style = "google"
+# Ruff's DOC501 covers direct raises; propagated errors are documented by review, which pydoclint's
+# body-only raise analysis would flag as extraneous.
+skip-checking-raises = true
+arg-type-hints-in-docstring = false
+check-class-attributes = false
+check-return-types = false
+check-style-mismatch = true
+check-yield-types = false
+
+[tool.pymaxlines]
+max-lines = 500
+max-lines-per-function = 60
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -161,6 +165,11 @@ addopts = "--import-mode=importlib -n auto --cov --cov-report=term-missing"
 filterwarnings = ["error"]
 asyncio_mode = "auto"
 strict = true
+# A test stuck past this many seconds dumps every thread's stack and exits its
+# worker, so a hang fails the run instead of stalling it. It clears the slowest
+# test's failure-path waits (about 150 s), which keep their own messages.
+faulthandler_timeout = 180
+faulthandler_exit_on_timeout = true
 
 [tool.coverage.run]
 source = ["src"]
@@ -169,9 +178,6 @@ parallel = true
 
 [tool.coverage.report]
 exclude_also = [
-  "if TYPE_CHECKING:",
   "if __name__ == .__main__.",
-  "raise NotImplementedError",
 ]
-show_missing = true
 fail_under = 90

@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING
+
+from gymrat.report.display import VERDICT_GLOSSES
+from gymrat.utils import fraction_of_median
 
 if TYPE_CHECKING:
-    from gymrat.model import Effect, MetricUnit, MetricVerdict
+    from gymrat.model import MetricUnit, MetricVerdict
     from gymrat.report.types import CandidateMetric, MetricComparison
 
 
@@ -19,20 +22,29 @@ if TYPE_CHECKING:
 # Value and cell formatting
 # ---------------------------------------------------------------------------
 
-type _Tier = tuple[float, float, str, int]
+
+@dataclass(frozen=True, slots=True)
+class _Tier:
+    """One scale step: a magnitude that rounds below ``threshold`` prints in this tier."""
+
+    threshold: float
+    divisor: float
+    suffix: str
+    decimals: int
+
 
 _NS_TIERS: tuple[_Tier, ...] = (
-    (1000, 1, "ns", 0),
-    (1e6, 1000, "µs", 1),
-    (1e9, 1e6, "ms", 1),
-    (math.inf, 1e9, "s", 1),
+    _Tier(threshold=1000, divisor=1, suffix="ns", decimals=0),
+    _Tier(threshold=1e6, divisor=1000, suffix="µs", decimals=1),
+    _Tier(threshold=1e9, divisor=1e6, suffix="ms", decimals=1),
+    _Tier(threshold=math.inf, divisor=1e9, suffix="s", decimals=1),
 )
 
 _BYTE_TIERS: tuple[_Tier, ...] = (
-    (1000, 1, "B", 0),
-    (1e6, 1000, "KB", 1),
-    (1e9, 1e6, "MB", 1),
-    (math.inf, 1e9, "GB", 1),
+    _Tier(threshold=1000, divisor=1, suffix="B", decimals=0),
+    _Tier(threshold=1e6, divisor=1000, suffix="KB", decimals=1),
+    _Tier(threshold=1e9, divisor=1e6, suffix="MB", decimals=1),
+    _Tier(threshold=math.inf, divisor=1e9, suffix="GB", decimals=1),
 )
 
 _TIER_MAP: dict[MetricUnit, tuple[_Tier, ...]] = {"ns": _NS_TIERS, "bytes": _BYTE_TIERS}
@@ -41,7 +53,7 @@ _RELATIVE_SPREAD_CAP_PCT = 100
 
 
 def _non_finite_token(value: float) -> str:
-    """The token a non-finite reading prints, matching the differ/JSON contract."""
+    """The token the text report prints for a non-finite reading (JSON writes ``null``)."""
     if math.isnan(value):
         return "NaN"
     return "Infinity" if value > 0 else "-Infinity"
@@ -57,14 +69,18 @@ def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
     since a sign is not a size: a negative reading picks the tier its magnitude
     names.
 
+    Args:
+        value: The value to scale.
+        tiers: The scale tiers, smallest first.
+
     Returns:
         The scaled, suffixed figure such as ``"1.7µs"`` or ``"512KB"``.
     """
     magnitude = abs(value)
-    for threshold, divisor, suffix, decimals in tiers:
-        rounded = float(format(magnitude / divisor, f".{decimals}f"))
-        if rounded * divisor < threshold:
-            return f"{value / divisor:.{decimals}f}{suffix}"
+    for tier in tiers:
+        rounded = float(format(magnitude / tier.divisor, f".{tier.decimals}f"))
+        if rounded * tier.divisor < tier.threshold:
+            return f"{value / tier.divisor:.{tier.decimals}f}{tier.suffix}"
     return str(value)
 
 
@@ -87,56 +103,40 @@ def format_value(value: float, unit: MetricUnit | None = None) -> str:
     return _scale_tier(value, _TIER_MAP[unit])
 
 
-def format_delta(effect: Effect) -> str:
-    """A signed percentage, or nothing when the effect is not a finite number.
+ZERO_PERCENT_DELTA = "0.0%"
+"""What a delta that rounds to zero prints as: unsigned, since it points nowhere."""
 
-    A delta that rounds to zero prints as an unsigned ``0.0%``: at display
-    precision there is no direction to report, so ``-0.0%`` would claim one.
+
+def format_percent_delta(value: float | None, *, missing: str = "") -> str:
+    """A signed percentage, or a placeholder when there is no finite delta to state.
+
+    At display precision a delta that rounds to zero has no direction to
+    report, so ``-0.0%`` would claim one.
 
     Args:
-        effect: The effect to render. Its ``value`` carries the number and its
-            ``unit`` the scale (percent today).
+        value: The percentage delta, such as ``2.2`` for ``+2.2%``, or ``None``
+            when none was measured.
+        missing: What to print for a missing or non-finite delta.
 
     Returns:
         A signed percentage such as ``"+2.2%"``, an unsigned ``"0.0%"`` for a
-        value that rounds to zero, or ``""`` when the value is not finite
-        (``NaN`` or either infinity).
+        value that rounds to zero, or ``missing`` when the value is ``None`` or
+        not finite (``NaN`` or either infinity).
     """
-    value = effect.value
-    if not math.isfinite(value):
-        return ""
+    if value is None or not math.isfinite(value):
+        return missing
     magnitude = f"{abs(value):.1f}"
     if magnitude == "0.0":
-        return "0.0%"
+        return ZERO_PERCENT_DELTA
     sign = "+" if value > 0 else "-"
     return f"{sign}{magnitude}%"
 
 
-def is_improvement(effect: Effect) -> bool:
-    """Whether an effect's move counts as an improvement, keyed on its unit.
-
-    This is the single place the sign-of-improvement rule lives, so a caller
-    judging a direction-aware metric combines this with the metric's own
-    direction rather than re-deriving the sign.
-
-    For a ``"percent"`` delta the default is lower-is-better: a strictly negative
-    value improves. A value of exactly zero does not — at rest a figure moved in
-    no direction to call good.
-
-    Args:
-        effect: The effect to judge; its ``unit`` selects the rule.
-
-    Returns:
-        ``True`` when the effect's value is an improvement for its unit.
-    """
-    if effect.unit == "percent":
-        return effect.value < 0
-    assert_never(effect.unit)
-
-
 PLUS_MINUS = "±"
+"""Glyph that prefixes a noise figure or a verdict's noise band."""
 
 SPREAD_SEPARATOR = f" {PLUS_MINUS} "
+"""Spaced glyph between a value cell's magnitude and its spread."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +205,9 @@ def candidate_cell_parts(
 
 def format_verdict_delta(verdict: MetricVerdict) -> str:
     """The delta cell: the word ``unstable`` for a verdict too noisy to trust, else the delta."""
-    return "unstable" if verdict.verdict == "unstable" else format_delta(verdict.delta)
+    if verdict.verdict == "unstable":
+        return VERDICT_GLOSSES["unstable"]
+    return format_percent_delta(verdict.delta)
 
 
 # ---------------------------------------------------------------------------
@@ -218,33 +220,89 @@ def format_noise_band_value(noise_pct: float) -> str:
     return f"{noise_pct:.1f}%"
 
 
-def _format_noise_band(noise_pct: float) -> str:
-    """A metric's noise band as the ``±N%`` the rows and highlights share."""
-    return f"{PLUS_MINUS}{format_noise_band_value(noise_pct)}"
-
-
 def format_pair_count(n: int) -> str:
     """How many pairs a verdict rests on, as the ``n=N`` the rows and footer share."""
     return f"n={n}"
+
+
+def _is_ratio_undefined(noise_abs: float, median: float | None) -> bool:
+    return median is not None and fraction_of_median(noise_abs, median, 100) is None
+
+
+def is_noise_percentage_undefined(
+    noise_abs: float, baseline_median: float | None, candidate_median: float | None
+) -> bool:
+    """Whether the noise cannot be stated as a percentage of either side's median.
+
+    The verdict engine drops such a side from the noise percentage, so the
+    percentage left behind is only the floor and understates the scatter that
+    made the verdict unstable.
+
+    Args:
+        noise_abs: The noise in the metric's own units.
+        baseline_median: The baseline median, or ``None`` when unknown.
+        candidate_median: The candidate median, or ``None`` when unknown.
+
+    Returns:
+        ``True`` when either median is zero or the noise as a percentage of it is
+        not finite.
+    """
+    return _is_ratio_undefined(noise_abs, baseline_median) or _is_ratio_undefined(
+        noise_abs, candidate_median
+    )
+
+
+def is_noise_absolute(
+    noise_pct: float,
+    noise_abs: float,
+    baseline_median: float,
+    candidate_median: float | None = None,
+) -> bool:
+    """Whether a noise figure reads in the metric's own units rather than as a percentage.
+
+    Past :data:`_RELATIVE_SPREAD_CAP_PCT` a percentage stops being readable, and
+    when either median leaves the noise without a finite percentage (see
+    :func:`is_noise_percentage_undefined`) it is only the noise floor, standing
+    in for a scatter no percentage can express.
+
+    Args:
+        noise_pct: The noise as a percentage of the median.
+        noise_abs: The noise in the metric's own units.
+        baseline_median: The baseline median the noise is stated against.
+        candidate_median: The candidate median, or ``None`` when unknown.
+
+    Returns:
+        ``True`` when the noise belongs in absolute units.
+    """
+    return noise_pct > _RELATIVE_SPREAD_CAP_PCT or is_noise_percentage_undefined(
+        noise_abs, baseline_median, candidate_median
+    )
 
 
 def format_evidence(
     verdict: MetricVerdict,
     unit: MetricUnit | None = None,
     baseline_median: float | None = None,
+    candidate_median: float | None = None,
 ) -> str:
     """The evidence suffix for a highlighted metric.
 
     Exact entries keep ``(exact)``. Unstable entries show the noise that swamped
-    the signal — as a percentage while that stays readable, and against the
-    baseline median in the metric's own units past
-    :data:`_RELATIVE_SPREAD_CAP_PCT`. Improved/regressed/no-signal entries from
+    the signal — as a percentage while that stays readable, and in the metric's
+    own units past :data:`_RELATIVE_SPREAD_CAP_PCT` or when either median leaves
+    the noise without a finite percentage (a zero median, or one so close to zero
+    that the percentage overflows), where the percentage is only the noise floor
+    and would understate the scatter. The absolute noise is stated against the
+    baseline median, or against the candidate median when only the candidate
+    leaves the percentage undefined. Improved/regressed/no-signal entries from
     approximate methods carry no trailing evidence.
 
     Args:
         verdict: The verdict to describe.
         unit: The metric's unit, for restating noise in absolute terms.
         baseline_median: The baseline median, for the absolute restatement.
+        candidate_median: The candidate median, for the absolute restatement
+            when the noise has no finite percentage of it.
 
     Returns:
         The evidence suffix, or ``""`` when there is nothing to add.
@@ -253,7 +311,15 @@ def format_evidence(
         return "(exact)"
     if verdict.verdict != "unstable":
         return ""
-    if verdict.noise_pct > _RELATIVE_SPREAD_CAP_PCT and baseline_median is not None:
-        noise = format_value(verdict.noise_abs, unit)
-        return f"{PLUS_MINUS}{noise} noise on a {format_value(baseline_median, unit)} median"
-    return f"noise {_format_noise_band(verdict.noise_pct)}"
+    if baseline_median is None or not is_noise_absolute(
+        verdict.noise_pct, verdict.noise_abs, baseline_median, candidate_median
+    ):
+        return f"noise {PLUS_MINUS}{format_noise_band_value(verdict.noise_pct)}"
+    noise = f"{PLUS_MINUS}{format_value(verdict.noise_abs, unit)} noise"
+    if (
+        candidate_median is not None
+        and not _is_ratio_undefined(verdict.noise_abs, baseline_median)
+        and _is_ratio_undefined(verdict.noise_abs, candidate_median)
+    ):
+        return f"{noise} on a {format_value(candidate_median, unit)} candidate median"
+    return f"{noise} on a {format_value(baseline_median, unit)} median"

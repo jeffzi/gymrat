@@ -10,49 +10,59 @@ earned the squash stays readable.
 from dataclasses import dataclass
 from pathlib import Path
 
+from gymrat import utils
 from gymrat.errors import GymratError
-from gymrat.git import try_git
-from gymrat.plural import pluralize
-from gymrat.report.loop import SHORT_SHA_LENGTH
-from gymrat.session.clock import now_ns
+from gymrat.git import run_git_step, try_git
 from gymrat.session.records import FinalizeRecord, KeepRecord, SessionLogRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
     append_record,
     last_kept_position,
     require_open_session,
+    require_settled,
+    settle_first_hint,
 )
 from gymrat.session.workspace import (
-    is_worktree_dirty,
+    dirty_file_count,
+    missing_commit_hint,
     remove_worktrees,
-    run_git_step,
     worktree_head,
 )
+from gymrat.utils import SHORT_SHA_LENGTH, pluralize
 
-#: The hint a refusal points at whenever the fix is to settle the last iteration.
-_SETTLE_FIRST_HINT = "Run gymrat keep or gymrat discard before closing the session."
+_SETTLE_FIRST_HINT = settle_first_hint("closing the session")
+"""The hint a refusal points at whenever the fix is to settle the last iteration."""
 
-#: The body line a committed keep gets when it names neither a message nor a commit.
 _UNNAMED_KEEP_LINE = "(no message)"
+"""The body line a committed keep gets when it names neither a message nor a commit."""
 
 
 @dataclass(frozen=True, slots=True)
 class FinalizeOptions:
-    """What a caller can hand a finalize beyond the repository it runs in."""
+    """What a caller can hand a finalize beyond the repository it runs in.
 
-    #: The squash commit's message; absent, one is generated from the kept commits.
+    Attributes:
+        message: The squash commit's message; absent, one is generated from the
+            kept commits.
+        branch: The branch to point at the squash commit; absent,
+            ``<session branch>-final``.
+    """
+
     message: str | None = None
-    #: The branch to point at the squash commit; absent, ``<session branch>-final``.
     branch: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class FinalizeResult:
-    """One closed session: what was written to the log, and what to print about it."""
+    """One closed session: what was written to the log, and what to print about it.
 
-    #: The record appended to the session log.
+    Attributes:
+        record: The record appended to the session log.
+        report: The finalize as the agent reads it: the branch, the commit, and
+            any cleanup left.
+    """
+
     record: FinalizeRecord
-    #: The finalize as the agent reads it: the branch, the commit, and any cleanup left.
     report: str
 
 
@@ -77,18 +87,16 @@ def _validate_finalize(
 
     Raises:
         GymratError: When the session kept nothing, has an unsettled iteration,
-            or carries uncommitted work in the experiment worktree.
+            carries uncommitted work or unkept commits in the experiment
+            worktree, when the branch name starts with a dash, when the target
+            branch already exists, or when git cannot read the worktree HEAD.
     """
     if state.keep_count == 0:
         message = f"Finalize refused: session {session.session_id} has kept nothing to squash."
         hint = "Run gymrat keep on a measured edit before closing the session."
         raise GymratError(message, hint=hint, reason="nothing-kept")
-    if state.unsettled:
-        message = (
-            f"Finalize refused: iteration {state.last_seq} has been neither kept nor discarded."
-        )
-        raise GymratError(message, hint=_SETTLE_FIRST_HINT, reason="unsettled")
-    if is_worktree_dirty(session.worktrees.experiment):
+    require_settled(state, "finalizing")
+    if dirty_file_count(session.worktrees.experiment) > 0:
         message = (
             f"Finalize refused: the experiment worktree at {session.worktrees.experiment} "
             "carries uncommitted work."
@@ -143,8 +151,8 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
             are used when omitted.
 
     Returns:
-        The finalize result containing the squash commit, the branch it landed on,
-        and the session's final state.
+        The appended finalize record (carrying the squash commit and the branch
+        it landed on) and the report to print.
 
     Raises:
         GymratError: When no open session exists, when the session kept nothing,
@@ -172,7 +180,7 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
 
     record = FinalizeRecord(
         type="finalize",
-        at=now_ns(),
+        at=utils.now_ns(),
         branch=branch,
         commit=commit,
         message=message,
@@ -198,20 +206,23 @@ def _squash_onto_baseline(
 ) -> str:
     """Build one commit carrying ``tree_source``'s tree onto the pinned baseline.
 
-    ``tree_source`` is the last-kept position — the commit whose tree the squash
-    should carry. Reading the tree and writing the commit are both plumbing, so
-    neither needs — or moves — a checkout. The single parent is the baseline the
-    session started from, which is what makes the result a squash rather than a
-    merge.
+    Reading the tree and writing the commit are both plumbing, so neither
+    needs — or moves — a checkout. The single parent is what makes the result a
+    squash rather than a merge.
 
     Args:
         root: The repository root.
-        tree_source: The commit whose tree the squash should carry.
-        baseline_sha: The commit the squash is built onto as its sole parent.
+        tree_source: The last-kept position: the commit whose tree the squash
+            should carry.
+        baseline_sha: The commit the session started from, which the squash is
+            built onto as its sole parent.
         message: The commit message for the squash commit.
 
     Returns:
         The SHA of the new squash commit.
+
+    Raises:
+        GymratError: When git cannot read the tree or build the commit.
     """
     tree = run_git_step(
         ["rev-parse", f"{tree_source}^{{tree}}"],
@@ -220,14 +231,11 @@ def _squash_onto_baseline(
         f"Check that the commit is still there: git cat-file -t {tree_source}",
     ).strip()
 
-    build_hint = (
-        f"Check that {baseline_sha} is a commit this repository has: git cat-file -t {baseline_sha}"
-    )
     return run_git_step(
         ["commit-tree", tree, "-p", baseline_sha, "-m", message],
         root,
         f"Cannot build the squash commit from {tree_source[:SHORT_SHA_LENGTH]} onto {baseline_sha}",
-        build_hint,
+        missing_commit_hint(baseline_sha),
     ).strip()
 
 

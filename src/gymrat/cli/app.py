@@ -1,9 +1,9 @@
 """The assembled ``gymrat`` command-line program and its console-script entry.
 
-Building the app wires the ``compare`` and ``measure`` subcommands, the root
-``--version`` and ``--debug`` options, and the example epilogues, all without
-importing the comparison or measurement engines — those load lazily inside each
-command so ``gymrat --help`` stays as cheap as importing the package.
+Building the app wires every subcommand, the root ``--version`` and ``--debug``
+options, and the example epilogues, all without importing the comparison or
+measurement engines — those load lazily inside each command so ``gymrat --help``
+stays as cheap as importing the package.
 """
 
 from __future__ import annotations
@@ -13,16 +13,21 @@ from typing import Annotated
 
 import typer
 
-from gymrat.cli.compare_cmd import compare
-from gymrat.cli.doctor_cmd import doctor_command
-from gymrat.cli.export_cmd import export_command
-from gymrat.cli.init_cmd import init_command
-from gymrat.cli.loop_cmds import discard, iterate, keep, status
-from gymrat.cli.measure_cmd import measure
-from gymrat.cli.probe_cmd import probe
-from gymrat.cli.session_cmds import finalize, start, stop, sync
-from gymrat.cli.shared import BUGS_URL, ColorOption, DebugOption, set_color_override, set_debug_mode
-from gymrat.cli.supervise.cmd import supervise_command
+from gymrat.cli.commands.compare import compare
+from gymrat.cli.commands.doctor import doctor_command
+from gymrat.cli.commands.export import export_command
+from gymrat.cli.commands.init import init_command
+from gymrat.cli.commands.loop import discard, iterate, keep, status
+from gymrat.cli.commands.measure import measure
+from gymrat.cli.commands.probe import probe
+from gymrat.cli.commands.session import finalize, start, stop, sync
+from gymrat.cli.commands.supervise import supervise_command
+from gymrat.cli.console import apply_command_flags
+from gymrat.cli.exit import BUGS_URL, exit_with_error, write_stdout
+from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
+    ColorOption,
+    DebugOption,
+)
 from gymrat.report.style import format_hint
 
 _DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
@@ -68,9 +73,20 @@ Examples:
 
 
 def _version_callback(*, value: bool) -> None:
-    """Print the installed package version and exit when ``--version`` is given."""
+    """Print the installed package version and exit when ``--version`` is given.
+
+    Args:
+        value: Whether ``--version`` was passed on the command line.
+
+    Raises:
+        typer.Exit: Always — code 0 on success or closed pipe, code 2 when the
+            write fails for another reason (reported through the error formatter).
+    """
     if value:
-        typer.echo(importlib.metadata.version("gymrat"))
+        try:
+            write_stdout(importlib.metadata.version("gymrat") + "\n")
+        except OSError as error:
+            exit_with_error(error)
         raise typer.Exit
 
 
@@ -105,9 +121,7 @@ def _root(
 ) -> None:
     """Route the shared ``--debug`` and ``--color`` flags."""
     _ = version  # consumed eagerly by its callback; declared so --version is a root option
-    if color is not None:
-        set_color_override(color)
-    set_debug_mode(debug)
+    apply_command_flags(debug=debug, color=color)
 
 
 app.command("init")(init_command)

@@ -1,0 +1,21 @@
+# serializer version: 1
+# name: test_render_probe_report_when_rendered_does_match_its_golden
+  list([
+    'gymrat probe · experiment · 6 samples · adapter: mitata',
+    '',
+    '─────────────────┬──────────────┬──────────────┬─────────────',
+    'time             │ experiment   │ baseline     │ delta',
+    '─────────────────┼──────────────┼──────────────┼─────────────',
+    'total_ns         │ 90ns ± 2%    │ 100ns        │ -10.0%',
+    '',
+    '─────────────────┬──────────────┬──────────────┬─────────────',
+    'throughput       │ experiment   │ baseline     │ delta',
+    '─────────────────┼──────────────┼──────────────┼─────────────',
+    'ops_per_sec      │ 1200 ± 2%    │  1000        │ +20.0%',
+    '',
+    '─────────────────┬──────────────┬──────────────┬─────────────',
+    'other            │ experiment   │ baseline     │ delta',
+    '─────────────────┼──────────────┼──────────────┼─────────────',
+    'cold_start_ns    │ 90ns ± 2%    │              │ no reference',
+  ])
+# ---

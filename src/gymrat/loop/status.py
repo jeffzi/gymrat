@@ -1,9 +1,8 @@
 """What ``gymrat status`` reports: the session, rebuilt from its log and nothing else.
 
-Every other loop command writes to the log; this one only reads it, which is why
-it takes no repository lock. A status that agreed with the log only while some
-process kept state in memory would be worth nothing to an agent whose every
-command is a fresh process.
+Every other loop command appends a loop record to the log; the functions here
+only read it. A status that agreed with the log only while some process kept
+state in memory would be worth nothing to an agent whose every command is a fresh process.
 """
 
 from __future__ import annotations
@@ -26,23 +25,22 @@ from gymrat.report.loop import (
     format_status_settle,
     format_status_stop,
 )
-from gymrat.report.style import RENDER_WIDTH, render_lines
-from gymrat.session import (
+from gymrat.report.style import render_lines
+from gymrat.session.records import (
     BaselineRecord,
-    CommandRecord,
     DiscardRecord,
     IterationRecord,
     KeepRecord,
     StopRecord,
-    require_session,
 )
+from gymrat.session.store import require_session
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from gymrat.config import BenchlessConfig
     from gymrat.report.loop import SettleState
-    from gymrat.session import SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
     from gymrat.session.schema import Outcome
 
 
@@ -81,6 +79,11 @@ class _LastGatingBlock:
 
     A discard that supersedes it can relocate the block to a standalone line and
     take the iteration's display for itself.
+
+    Attributes:
+        iteration_position: The log position of the iteration the block settled.
+        block_position: The log position of the keep-blocked record.
+        block_state: The settle state the block gave the iteration.
     """
 
     iteration_position: int
@@ -184,8 +187,6 @@ def _history_lines(records: Sequence[SessionLogRecord]) -> list[str]:
     settled = _settle_states(records)
     history: list[str] = []
     for position, record in enumerate(records):
-        if isinstance(record, CommandRecord):
-            continue
         if isinstance(record, BaselineRecord):
             history.append(format_status_baseline(record))
         elif isinstance(record, IterationRecord):
@@ -257,7 +258,7 @@ def status_session(root: str, config: BenchlessConfig, *, color: bool | None = N
     if state.finalized is not None:
         lines.append(format_status_finalized(state.finalized))
 
-    return render_lines(*lines, color=color, width=RENDER_WIDTH)
+    return render_lines(*lines, color=color)
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +278,18 @@ class StatusData:
 
 
 def status_data(root: str) -> StatusData:
-    """The session's structured status, independent of any text rendering."""
+    """The session's structured status, independent of any text rendering.
+
+    Args:
+        root: Repository root directory.
+
+    Returns:
+        The status fields the JSON document serializes.
+
+    Raises:
+        GymratError: When no session has been started, or when the log is corrupt
+            — every parse failure names the log and the line at fault.
+    """
     required = require_session(root, "asking for its status")
     session, state = required.session, required.state
     return StatusData(

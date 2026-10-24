@@ -7,29 +7,32 @@ and log rows.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from gymrat.cli.supervise.summary import SessionLabels, build_summary
+from gymrat.cli.supervise.summary import build_summary
+from gymrat.session.store import BestIteration
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 from gymrat.supervisor.exit_sequence import ExitReport, ExitStep
 from tests._ansi import SGR_GREEN, SGR_RED, SGR_YELLOW, assert_has_sgr
 from tests._rich import frame_text
 from tests.cli.supervise._fixtures import (
     FRAME_WIDTH,
-    make_iteration,
-    make_read_session,
     make_supervision_result,
+    read_result,
     render_colored,
-    session_state,
     session_state_three_iterations,
 )
+from tests.session.records._fixtures import session_state
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.progress import ReadSessionResult
-    from gymrat.supervisor import SessionEndReason
-    from gymrat.supervisor.supervise import EndedBy
+    from rich.console import RenderableType
+
+    from gymrat.config import Effort
+    from gymrat.session.store import ReadSessionResult
+    from gymrat.supervisor.driver import SessionEndReason
+    from gymrat.supervisor.supervise import EndedBy, SupervisionResult
 
 
 # ---------------------------------------------------------------------------
@@ -39,128 +42,90 @@ if TYPE_CHECKING:
 _LOG_PATH = "/repo/.gymrat/supervisor-1.jsonl"
 _LOG_ROW = f"  log     {_LOG_PATH}"
 
-
-def _session_result(*, with_best: bool) -> ReadSessionResult:
-    """A three-iteration session, with or without a best-iteration record."""
-    state = session_state_three_iterations(-4.2, "improved", seq=3)
-    if not with_best:
-        return make_read_session(state, has_baseline=True)()
-    return make_read_session(
-        state,
-        has_baseline=True,
-        best_delta_pct=-4.2,
-        best_seq=3,
-        primary_label="wall_time",
-        baseline_sha="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
-    )()
+#: An exit sequence that took no step, so the summary shows no ``exit`` row.
+_NO_EXIT_STEPS = ExitReport(steps=())
 
 
-def test_summary_when_run_has_a_best_iteration_does_render_headline_best_loop_and_log():
-    summary = build_summary(
-        make_supervision_result(reason="interrupted", ended_by="wall-clock", cost_usd=0.16),
-        log_path=_LOG_PATH,
-        session_result=_session_result(with_best=True),
+def _summary(supervision: SupervisionResult | None = None, **overrides: Any) -> RenderableType:
+    """Build the closing summary with the standard log path, no session and no exit step.
+
+    Args:
+        supervision: The run's result; a completed session run by default.
+        **overrides: ``build_summary`` keywords that replace the defaults.
+
+    Returns:
+        The closing summary renderable.
+    """
+    options: dict[str, Any] = {
+        "log_path": _LOG_PATH,
+        "session_result": None,
+        "exit_report": _NO_EXIT_STEPS,
+        **overrides,
+    }
+    return build_summary(
+        supervision if supervision is not None else make_supervision_result(), **options
     )
 
+
+def _session_result() -> ReadSessionResult:
+    """A three-iteration session whose third iteration is the best."""
+    return read_result(
+        session_state_three_iterations(-4.2, "improved", seq=3),
+        has_baseline=True,
+        best=BestIteration(
+            delta_pct=-4.2,
+            seq=3,
+            label="wall_time",
+            baseline_sha="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        ),
+    )
+
+
+def test_summary_when_run_has_a_best_iteration_does_render_the_best_row():
+    summary = _summary(session_result=_session_result())
+
     assert frame_text(summary, width=FRAME_WIDTH) == (
-        "! interrupted by wall-clock cap · 1m 0s · $0.16\n"
+        "✓ completed · 1m 0s · $0.05\n"
         "  best    -4.2% wall_time vs baseline a1b2c3d (iteration 3)\n"
         "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved\n"
         f"{_LOG_ROW}"
     )
 
 
-@pytest.mark.parametrize(
-    ("reason", "ended_by", "expected"),
-    [
-        pytest.param("completed", "session", "✓ completed · 1m 0s · $0.05", id="session-end"),
-        pytest.param(
-            "interrupted",
-            "wall-clock",
-            "! interrupted by wall-clock cap · 1m 0s · $0.05",
-            id="wall-clock-cap",
-        ),
-        pytest.param(
-            "interrupted",
-            "spend-cap",
-            "! interrupted by spend cap · 1m 0s · $0.05",
-            id="spend-cap",
-        ),
-        pytest.param("error", "session", "✗ error · 1m 0s · $0.05", id="error"),
-    ],
-)
-def test_summary_headline_when_run_ends_does_name_the_outcome_duration_and_cost(
-    reason: str, ended_by: str, expected: str
+_CAPPED_OR_ERRORED = [
+    pytest.param(
+        "interrupted",
+        "wall-clock",
+        "! interrupted by wall-clock cap · 1m 0s · $0.05",
+        id="wall-clock-cap",
+    ),
+    pytest.param(
+        "interrupted",
+        "spend-cap",
+        "! interrupted by spend cap · 1m 0s · $0.05",
+        id="spend-cap",
+    ),
+    pytest.param("error", "session", "✗ error · 1m 0s · $0.05", id="error"),
+]
+
+
+@pytest.mark.parametrize(("reason", "ended_by", "headline"), _CAPPED_OR_ERRORED)
+def test_summary_when_run_capped_or_errored_does_hide_the_agent_row(
+    reason: SessionEndReason, ended_by: EndedBy, headline: str
 ) -> None:
-    summary = build_summary(
-        make_supervision_result(reason=reason, ended_by=ended_by),  # type: ignore[arg-type]
-        log_path=_LOG_PATH,
-        session_result=None,
-    )
-
-    assert frame_text(summary, width=FRAME_WIDTH).splitlines()[0] == expected
-
-
-@pytest.mark.parametrize(
-    ("session_result", "expected_loop"),
-    [
-        pytest.param(None, "  loop    no session yet", id="no-session"),
-        pytest.param(
-            _session_result(with_best=False),
-            "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved",
-            id="no-best-iteration",
-        ),
-    ],
-)
-def test_summary_when_no_best_delta_does_omit_the_best_row(
-    session_result: ReadSessionResult | None, expected_loop: str
-) -> None:
-    summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=session_result
+    summary = _summary(
+        make_supervision_result(reason=reason, ended_by=ended_by), final_text="Some final text."
     )
 
     assert frame_text(summary, width=FRAME_WIDTH) == (
-        f"✓ completed · 1m 0s · $0.05\n{expected_loop}\n{_LOG_ROW}"
+        f"{headline}\n  loop    no session yet\n{_LOG_ROW}"
     )
-
-
-@pytest.mark.parametrize(
-    ("session_result", "expected_loop"),
-    [
-        pytest.param(
-            make_read_session(session_state(), has_baseline=True)(),
-            "  loop    baseline recorded · no iterations yet",
-            id="zero-iterations",
-        ),
-        pytest.param(
-            make_read_session(
-                session_state(
-                    iteration_count=1,
-                    keep_count=1,
-                    discard_count=0,
-                    last_iteration=make_iteration(-4.2, "improved"),
-                ),
-                has_baseline=True,
-            )(),
-            "  loop    1 iteration · 1 kept · 0 discarded · last -4.2% improved",
-            id="one-iteration",
-        ),
-    ],
-)
-def test_summary_loop_row_when_iteration_count_varies_does_name_the_count_as_a_noun(
-    session_result: ReadSessionResult, expected_loop: str
-) -> None:
-    summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=session_result
-    )
-
-    assert frame_text(summary, width=FRAME_WIDTH).splitlines()[1] == expected_loop
 
 
 def test_summary_when_log_lives_under_home_does_abbreviate_the_prefix_with_a_tilde():
     log_path = str(Path.home() / ".gymrat" / "supervisor-1.jsonl")
 
-    summary = build_summary(make_supervision_result(), log_path=log_path, session_result=None)
+    summary = _summary(log_path=log_path)
 
     assert (
         frame_text(summary, width=FRAME_WIDTH).splitlines()[-1]
@@ -179,13 +144,9 @@ def test_summary_when_log_lives_under_home_does_abbreviate_the_prefix_with_a_til
     ],
 )
 def test_summary_headline_when_rendered_with_color_does_emit_outcome_styling(
-    reason: str, ended_by: str, expected_sgr: int
+    reason: SessionEndReason, ended_by: EndedBy, expected_sgr: int
 ) -> None:
-    summary = build_summary(
-        make_supervision_result(reason=reason, ended_by=ended_by),  # type: ignore[arg-type]
-        log_path=_LOG_PATH,
-        session_result=None,
-    )
+    summary = _summary(make_supervision_result(reason=reason, ended_by=ended_by))
 
     colored = render_colored(summary)
 
@@ -193,7 +154,7 @@ def test_summary_headline_when_rendered_with_color_does_emit_outcome_styling(
 
 
 def test_summary_log_row_when_rendered_with_color_does_leave_the_path_unstyled():
-    summary = build_summary(make_supervision_result(), log_path=_LOG_PATH, session_result=None)
+    summary = _summary()
 
     colored = render_colored(summary)
 
@@ -203,34 +164,6 @@ def test_summary_log_row_when_rendered_with_color_does_leave_the_path_unstyled()
 # ---------------------------------------------------------------------------
 # closing summary — agent row
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("reason", "ended_by", "expected_headline"),
-    [
-        pytest.param(
-            "interrupted",
-            "wall-clock",
-            "! interrupted by wall-clock cap · 1m 0s · $0.05",
-            id="wall-clock-cap",
-        ),
-        pytest.param("error", "session", "✗ error · 1m 0s · $0.05", id="error"),
-    ],
-)
-def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
-    reason: SessionEndReason, ended_by: EndedBy, expected_headline: str
-) -> None:
-    summary = build_summary(
-        make_supervision_result(reason=reason, ended_by=ended_by),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text="Some final text.",
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert "  agent" not in text
-    assert text == f"{expected_headline}\n  loop    no session yet\n{_LOG_ROW}"
 
 
 @pytest.mark.parametrize(
@@ -271,14 +204,11 @@ def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
         ),
     ],
 )
-def test_summary_when_final_text_multiline_does_indent_continuation_under_content(
+def test_summary_agent_row_when_final_text_given_does_indent_continuation_lines_under_content(
     final_text: str, expected_lines: list[str]
 ) -> None:
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text=final_text,
+    summary = _summary(
+        make_supervision_result(reason="completed", ended_by="session"), final_text=final_text
     )
 
     text = frame_text(summary, width=FRAME_WIDTH)
@@ -291,83 +221,46 @@ def test_summary_when_final_text_multiline_does_indent_continuation_under_conten
 # ---------------------------------------------------------------------------
 
 
-def test_summary_agent_row_when_text_at_threshold_does_render_unchanged():
-    short_text = "x" * SUMMARY_MAX_CHARS
-
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text=short_text,
+@pytest.mark.parametrize(
+    ("final_text", "expected_agent_row"),
+    [
+        pytest.param(
+            "x" * SUMMARY_MAX_CHARS, f"  agent   {'x' * SUMMARY_MAX_CHARS}", id="at-threshold"
+        ),
+        pytest.param(
+            "a" * (SUMMARY_MAX_CHARS + 50),
+            f"  agent   {'a' * SUMMARY_MAX_CHARS}… (full message in log)",
+            id="over-threshold",
+        ),
+    ],
+)
+def test_summary_agent_row_when_text_length_varies_does_clip_only_past_the_threshold(
+    final_text: str, expected_agent_row: str
+):
+    summary = _summary(
+        make_supervision_result(reason="completed", ended_by="session"), final_text=final_text
     )
 
     text = frame_text(summary, width=FRAME_WIDTH + 200)
-    agent_line = next(line for line in text.splitlines() if "agent" in line)
 
-    assert agent_line == f"  agent   {short_text}"
-    assert "(full message in log)" not in text
+    assert text.splitlines()[1] == expected_agent_row
 
 
-def test_summary_agent_row_when_text_exceeds_threshold_does_clip_with_ellipsis_and_log_note():
-    long_text = "a" * (SUMMARY_MAX_CHARS + 50)
+def test_summary_agent_row_when_clipped_text_is_multiline_does_indent_every_continuation_line():
+    lead = "Line one.\nLine two.\n"
+    long_text = lead + "c" * (SUMMARY_MAX_CHARS + 50)
 
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text=long_text,
+    summary = _summary(
+        make_supervision_result(reason="completed", ended_by="session"), final_text=long_text
     )
 
-    text = frame_text(summary, width=FRAME_WIDTH + 200)
-    agent_lines = [line for line in text.splitlines() if "agent" in line]
+    agent_rows = frame_text(summary, width=FRAME_WIDTH + 200).splitlines()[1:-2]
 
-    assert len(agent_lines) == 1
-    agent_line = agent_lines[0]
-    assert "…" in agent_line
-    assert "(full message in log)" in agent_line
-    assert len(agent_line) < len(f"  agent   {long_text}")
-
-
-def test_summary_agent_row_when_text_below_threshold_does_not_append_log_note():
-    short_text = "Short status message."
-
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text=short_text,
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert "(full message in log)" not in text
-    assert any("Short status message." in line for line in text.splitlines())
-
-
-# ---------------------------------------------------------------------------
-# closing summary — agent row stop-message preference
-# ---------------------------------------------------------------------------
-
-
-def test_summary_agent_row_when_stop_message_present_does_show_stop_message() -> None:
-    session_result = make_read_session(
-        session_state(),
-        has_baseline=True,
-        stop_message="Target reached, stopping.",
-    )()
-
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=session_result,
-        final_text="Some other final text.",
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-    agent_line = next(line for line in text.splitlines() if "agent" in line)
-
-    assert agent_line == "  agent   Target reached, stopping."
-    assert "Some other final text." not in text
+    assert agent_rows == [
+        "  agent   Line one.",
+        "          Line two.",
+        f"          {'c' * (SUMMARY_MAX_CHARS - len(lead))}… (full message in log)",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -376,77 +269,29 @@ def test_summary_agent_row_when_stop_message_present_does_show_stop_message() ->
 
 
 @pytest.mark.parametrize(
-    ("labels", "expected_line"),
+    ("model", "effort", "expected_line"),
     [
-        pytest.param(SessionLabels(model="opus"), "  model   opus", id="model-only"),
-        pytest.param(SessionLabels(effort="high"), "  effort  high", id="effort-only"),
+        pytest.param("opus", None, "  model   opus", id="model-only"),
+        pytest.param(None, "high", "  effort  high", id="effort-only"),
     ],
 )
 def test_summary_when_model_or_effort_in_force_does_show_labelled_row(
-    labels: SessionLabels, expected_line: str
+    model: str | None, effort: Effort | None, expected_line: str
 ) -> None:
-    summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=None, labels=labels
-    )
+    summary = _summary(model=model, effort=effort)
 
     text = frame_text(summary, width=FRAME_WIDTH)
 
-    assert expected_line in text.splitlines()
-
-
-def test_summary_when_no_labels_does_omit_model_and_effort_rows() -> None:
-    summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=None, labels=SessionLabels()
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert "model" not in text.lower()
-    assert "effort" not in text.lower()
+    assert text.splitlines() == [
+        "✓ completed · 1m 0s · $0.05",
+        expected_line,
+        "  loop    no session yet",
+        _LOG_ROW,
+    ]
 
 
 # ---------------------------------------------------------------------------
-# closing summary — guard-ended session
-# ---------------------------------------------------------------------------
-
-
-def test_summary_headline_when_guard_ended_does_show_stopped_by_guard_with_reason() -> None:
-    summary = build_summary(
-        make_supervision_result(
-            reason="interrupted",
-            ended_by="guard",
-            end_reason="safety limit reached",
-        ),
-        log_path=_LOG_PATH,
-        session_result=None,
-    )
-
-    headline = frame_text(summary, width=FRAME_WIDTH).splitlines()[0]
-
-    assert "stopped by guard" in headline
-    assert "safety limit reached" in headline
-
-
-def test_summary_when_guard_ended_does_show_agent_row() -> None:
-    summary = build_summary(
-        make_supervision_result(
-            reason="interrupted",
-            ended_by="guard",
-            end_reason="safety limit reached",
-        ),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text="I was working on the optimization.",
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert "  agent" in text
-    assert "I was working on the optimization." in text
-
-
-# ---------------------------------------------------------------------------
-# closing summary — stop-condition and hook-failure endings
+# closing summary — stop-condition, guard and hook-failure endings
 # ---------------------------------------------------------------------------
 
 _STOP_CONDITION_REASON = "max iterations (2 of 2)"
@@ -455,12 +300,11 @@ _EMPTY_LOOP_ROW = "  loop    baseline recorded · no iterations yet"
 
 
 @pytest.mark.parametrize(
-    ("ended_by", "end_reason", "stop_message", "expected_lines"),
+    ("ended_by", "end_reason", "expected_lines"),
     [
         pytest.param(
             "stop-condition",
             _STOP_CONDITION_REASON,
-            None,
             [
                 f"✓ stopped: {_STOP_CONDITION_REASON} · 1m 0s · $0.05",
                 "  agent   Some final text.",
@@ -470,41 +314,57 @@ _EMPTY_LOOP_ROW = "  loop    baseline recorded · no iterations yet"
             id="stop-condition-agent-text",
         ),
         pytest.param(
-            "stop-condition",
-            _STOP_CONDITION_REASON,
-            "Target reached, stopping.",
-            [
-                f"✓ stopped: {_STOP_CONDITION_REASON} · 1m 0s · $0.05",
-                "  agent   Target reached, stopping.",
-                _EMPTY_LOOP_ROW,
-                _LOG_ROW,
-            ],
-            id="stop-condition-stop-message",
-        ),
-        pytest.param(
             "hook-failure",
             _HOOK_FAILURE_REASON,
-            None,
             [f"! stopped: {_HOOK_FAILURE_REASON} · 1m 0s · $0.05", _EMPTY_LOOP_ROW, _LOG_ROW],
             id="hook-failure",
         ),
+        pytest.param(
+            "guard",
+            "safety limit reached",
+            [
+                "! stopped by guard: safety limit reached · 1m 0s · $0.05",
+                "  agent   Some final text.",
+                _EMPTY_LOOP_ROW,
+                _LOG_ROW,
+            ],
+            id="guard-shows-the-agent-row",
+        ),
     ],
 )
-def test_summary_when_stop_condition_or_hook_failure_ended_does_render_stopped_headline(
-    ended_by: EndedBy, end_reason: str, stop_message: str | None, expected_lines: list[str]
+def test_summary_when_a_stop_guard_or_hook_ended_the_run_does_render_its_ending(
+    ended_by: EndedBy, end_reason: str, expected_lines: list[str]
 ) -> None:
-    session_result = make_read_session(
-        session_state(), has_baseline=True, stop_message=stop_message
-    )()
+    session_result = read_result(session_state(), has_baseline=True)
 
-    summary = build_summary(
+    summary = _summary(
         make_supervision_result(reason="interrupted", ended_by=ended_by, end_reason=end_reason),
-        log_path=_LOG_PATH,
         session_result=session_result,
         final_text="Some final text.",
     )
 
     assert frame_text(summary, width=FRAME_WIDTH).splitlines() == expected_lines
+
+
+def test_summary_agent_row_when_stop_message_recorded_does_show_it_over_the_final_text() -> None:
+    session_result = read_result(
+        session_state(), has_baseline=True, stop_message="Target reached, stopping."
+    )
+
+    summary = _summary(
+        make_supervision_result(
+            reason="interrupted", ended_by="stop-condition", end_reason=_STOP_CONDITION_REASON
+        ),
+        session_result=session_result,
+        final_text="Some final text.",
+    )
+
+    assert frame_text(summary, width=FRAME_WIDTH).splitlines() == [
+        f"✓ stopped: {_STOP_CONDITION_REASON} · 1m 0s · $0.05",
+        "  agent   Target reached, stopping.",
+        _EMPTY_LOOP_ROW,
+        _LOG_ROW,
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -535,12 +395,7 @@ _EXIT_ROWS = [
 def test_summary_when_exit_report_given_does_render_exit_rows_between_loop_and_log(
     error: str | None, expected_exit_rows: list[str]
 ) -> None:
-    summary = build_summary(
-        make_supervision_result(),
-        log_path=_LOG_PATH,
-        session_result=None,
-        exit_report=ExitReport(steps=_EXIT_STEPS, error=error),
-    )
+    summary = _summary(exit_report=ExitReport(steps=_EXIT_STEPS, error=error))
 
     assert frame_text(summary, width=FRAME_WIDTH).splitlines() == [
         "✓ completed · 1m 0s · $0.05",
@@ -551,11 +406,8 @@ def test_summary_when_exit_report_given_does_render_exit_rows_between_loop_and_l
 
 
 def test_summary_exit_error_row_when_rendered_with_color_does_emit_alert_styling() -> None:
-    summary = build_summary(
-        make_supervision_result(),
-        log_path=_LOG_PATH,
-        session_result=None,
-        exit_report=ExitReport(steps=_EXIT_STEPS, error="finalize failed: disk full"),
+    summary = _summary(
+        exit_report=ExitReport(steps=_EXIT_STEPS, error="finalize failed: disk full")
     )
 
     colored = render_colored(summary)

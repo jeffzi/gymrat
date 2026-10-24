@@ -1,22 +1,160 @@
-"""Stderr ``Console`` factory for rich output."""
+"""CLI console state: debug mode, color resolution, the stderr console.
+
+This module owns the process-wide ``--debug`` and ``--color`` / ``--no-color``
+state every command reads and the stderr ``Console`` factory built on top of
+them. It sits below :mod:`gymrat.cli.exit` and must never import it.
+"""
 
 import sys
+from typing import override
 
-from rich.console import Console
+from rich.console import Console, HighlighterType, JustifyMethod, OverflowMethod
+from rich.style import Style
+from rich.text import Text
 
-from gymrat.cli.shared import resolve_stream_color
 from gymrat.cli.style import CLI_THEME
+from gymrat.utils import is_broken_pipe, point_stream_at_devnull, stream_color_from_env
+
+
+class _DebugState:
+    """Holds the global ``--debug`` flag without reaching for a ``global`` statement."""
+
+    enabled: bool = False
+
+
+def set_debug_mode(*, enabled: bool) -> None:
+    """Set the module debug flag that governs stack traces in error output."""
+    _DebugState.enabled = enabled
+
+
+def is_debug_mode() -> bool:
+    """Whether ``--debug`` is on, so error and warning output should carry stack traces."""
+    return _DebugState.enabled
+
+
+class _ColorState:
+    """Holds the ``--color`` / ``--no-color`` override for all color surfaces.
+
+    The root callback and per-command callbacks write this through
+    :func:`apply_command_flags` so every :func:`resolve_stream_color` call
+    shares a single truth.
+    """
+
+    override: bool | None = None
+
+
+def set_color_override(*, override: bool | None) -> None:
+    """Set the module-level color override read by every color surface."""
+    _ColorState.override = override
+
+
+def apply_command_flags(*, debug: bool, color: bool | None) -> None:
+    """Install the root's or a command's ``--debug`` and ``--color`` / ``--no-color`` flags.
+
+    A command's flags never undo the root's: debug mode is only ever switched
+    on, since a command's local ``--debug`` defaulting to ``False`` must not undo
+    a root ``--debug``, and a call given no color flag leaves the override alone,
+    so a command without a local ``--color`` does not erase the root's. Once
+    installed, a ``None`` override passed to :func:`resolve_stream_color` or
+    :func:`stderr_console` resolves to the command's flag.
+
+    Args:
+        debug: The ``--debug`` flag at this level.
+        color: The ``--color``/``--no-color`` flag at this level, or ``None``
+            when neither was given.
+    """
+    if debug:
+        set_debug_mode(enabled=True)
+    if color is not None:
+        set_color_override(override=color)
+
+
+def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa: FBT001 -- the resolved --color/--no-color preference, never a bare literal
+    """Resolve whether ``stream`` should carry color.
+
+    Precedence, shared by every color surface (report on stdout, progress on
+    stderr, error text on stderr): an explicit per-call ``override`` wins; then
+    the module-level ``_ColorState.override`` set by the root or subcommand
+    callback; then ``FORCE_COLOR``; then ``NO_COLOR``; then the stream's TTY
+    status.
+
+    Args:
+        override: The explicit ``--color`` / ``--no-color`` flag, or ``None``
+            when neither was given.
+        stream: The output stream whose TTY status is the final fallback.
+
+    Returns:
+        Whether the stream should emit color.
+    """
+    if override is not None:
+        return override
+    if _ColorState.override is not None:
+        return _ColorState.override
+    return stream_color_from_env(stream)
+
+
+class _StderrConsole(Console):
+    """A ``Console`` that prints ``:name:`` codes literally.
+
+    On a broken pipe it silences its own stream, not stdout.
+    """
+
+    @override
+    def render_str(
+        self,
+        text: str,
+        *,
+        style: str | Style = "",
+        justify: JustifyMethod | None = None,
+        overflow: OverflowMethod | None = None,
+        emoji: bool | None = None,
+        markup: bool | None = None,
+        highlight: bool | None = None,
+        highlighter: HighlighterType | None = None,
+    ) -> Text:
+        # Emoji codes are never expanded, whatever the call asks: the text
+        # printed here (metric names, commands, paths) routinely holds a
+        # ``:word:`` sequence, such as ``lat:100:p99``, that must stay as written.
+        return super().render_str(
+            text,
+            style=style,
+            justify=justify,
+            overflow=overflow,
+            emoji=False,
+            markup=markup,
+            highlight=highlight,
+            highlighter=highlighter,
+        )
+
+    @override
+    def _write_buffer(self) -> None:
+        # Rich routes only BrokenPipeError to on_broken_pipe; a Windows broken
+        # pipe arrives as OSError(EINVAL) and would escape the hook.
+        try:
+            super()._write_buffer()
+        except BrokenPipeError:
+            raise
+        except OSError as error:
+            if not is_broken_pipe(error):
+                raise
+            raise BrokenPipeError(error.errno, error.strerror) from error
+
+    @override
+    def on_broken_pipe(self) -> None:
+        self.quiet = True
+        point_stream_at_devnull(self.file)
+        raise SystemExit(1)
 
 
 def stderr_console(*, color_flag: bool | None = None) -> Console:
     """Build a ``Console`` that writes to stderr with resolved color and width.
 
-    When colorless the console uses ``color_system=None`` rather than
-    ``no_color=True`` so that **all** SGR is suppressed — including bold and
-    dim — matching the stdout report surface.
+    When colorless the console sets ``no_color=True`` and ``color_system=None``
+    so all SGR is suppressed, including bold and dim, matching the stdout
+    report surface.
 
-    Rich's own ``Console`` already reads ``COLUMNS`` through a guarded path
-    that ignores non-numeric values, so we do not reimplement that lookup.
+    A write that hits a broken stderr pipe exits with status 1 and writes
+    nothing further to either stream.
 
     Args:
         color_flag: The Typer ``--color`` / ``--no-color`` option value.
@@ -26,15 +164,14 @@ def stderr_console(*, color_flag: bool | None = None) -> Console:
         CLI theme.
     """
     colored = resolve_stream_color(color_flag, sys.stderr)
-
-    # no_color pins Rich's own NO_COLOR detection so the shared precedence
-    # (flag > FORCE_COLOR > NO_COLOR > TTY) is the single decider.
-    # color_system=None strips every SGR sequence (bold, dim, italic — not
-    # just color); "auto" lets Rich pick the palette from the terminal.
     color_system = "auto" if colored else None
 
-    return Console(
+    # Do not pass `width=` or read `COLUMNS` here: Rich already sizes the
+    # console to the terminal.
+    return _StderrConsole(
         stderr=True,
+        # Pins Rich's own NO_COLOR detection so the shared precedence
+        # (flag > FORCE_COLOR > NO_COLOR > TTY) is the single decider.
         no_color=not colored,
         color_system=color_system,
         legacy_windows=False,

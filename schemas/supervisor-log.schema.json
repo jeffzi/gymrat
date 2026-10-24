@@ -35,6 +35,7 @@
         }
       },
       "required": [
+        "type",
         "at",
         "cap",
         "action"
@@ -59,6 +60,7 @@
         }
       },
       "required": [
+        "type",
         "at"
       ],
       "title": "CompactionEvent",
@@ -80,7 +82,7 @@
       "type": "object"
     },
     "FollowUpEvent": {
-      "description": "Emitted when the supervisor acts on a completed turn.\n\n``reason`` and ``text`` are ``None``-optional and omitted from the wire\nform via the global ``exclude_none=True`` in :func:`to_json_line`.",
+      "description": "Emitted when the supervisor acts on a completed turn.\n\n``reason`` and ``text`` are ``None``-optional and omitted from the wire\nform when unset.",
       "properties": {
         "action": {
           "description": "Supervisor action taken after the turn.",
@@ -118,6 +120,7 @@
         }
       },
       "required": [
+        "type",
         "at",
         "action"
       ],
@@ -125,7 +128,7 @@
       "type": "object"
     },
     "LaunchEvent": {
-      "description": "Written by the supervisor as the log's first line: launch provenance.\n\n``max_usd``, ``model``, and ``effort`` are ``None``-optional and omitted\nfrom the wire form via the global ``exclude_none=True`` in\n:func:`to_json_line`.",
+      "description": "Written by the supervisor as the log's first line: launch provenance.\n\n``max_usd``, ``model``, and ``effort`` are ``None``-optional and omitted\nfrom the wire form when unset.",
       "properties": {
         "at": {
           "description": "Nanoseconds since the Unix epoch when the event was created.",
@@ -210,6 +213,7 @@
         }
       },
       "required": [
+        "type",
         "at",
         "schema",
         "session_id",
@@ -262,6 +266,7 @@
         }
       },
       "required": [
+        "type",
         "at",
         "phase"
       ],
@@ -296,6 +301,7 @@
         }
       },
       "required": [
+        "type",
         "at",
         "chunk"
       ],
@@ -335,6 +341,7 @@
         }
       },
       "required": [
+        "type",
         "at",
         "estimated_tokens",
         "delta"
@@ -351,9 +358,16 @@
           "type": "integer"
         },
         "duration_ms": {
-          "description": "Wall-clock milliseconds the tool call took.",
-          "title": "Duration Ms",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Wall-clock milliseconds the tool call took, or null when its start was never seen.",
+          "title": "Duration Ms"
         },
         "parent_tool_use_id": {
           "default": null,
@@ -372,9 +386,16 @@
           "type": "string"
         },
         "tool_name": {
-          "description": "Name of the tool that completed.",
-          "title": "Tool Name",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Name of the tool that completed, or null when its start was never seen.",
+          "title": "Tool Name"
         },
         "tool_use_id": {
           "description": "Unique identifier of the completed tool invocation.",
@@ -390,6 +411,7 @@
         }
       },
       "required": [
+        "type",
         "at",
         "tool_use_id",
         "tool_name",
@@ -398,40 +420,6 @@
         "result_summary"
       ],
       "title": "ToolEndEvent",
-      "type": "object"
-    },
-    "ToolProgressEvent": {
-      "description": "Emitted periodically while a long-running tool call is still in flight.",
-      "properties": {
-        "at": {
-          "description": "Nanoseconds since the Unix epoch when the event was created.",
-          "title": "At",
-          "type": "integer"
-        },
-        "elapsed_ms": {
-          "description": "Milliseconds elapsed since the tool call started.",
-          "title": "Elapsed Ms",
-          "type": "integer"
-        },
-        "tool_use_id": {
-          "description": "Unique identifier of the in-flight tool invocation.",
-          "title": "Tool Use Id",
-          "type": "string"
-        },
-        "type": {
-          "const": "tool_progress",
-          "default": "tool_progress",
-          "description": "Event type discriminator.",
-          "title": "Type",
-          "type": "string"
-        }
-      },
-      "required": [
-        "at",
-        "tool_use_id",
-        "elapsed_ms"
-      ],
-      "title": "ToolProgressEvent",
       "type": "object"
     },
     "ToolStartEvent": {
@@ -476,6 +464,7 @@
         }
       },
       "required": [
+        "type",
         "at",
         "tool_use_id",
         "tool_name",
@@ -499,7 +488,7 @@
           "type": "boolean"
         },
         "cost_usd": {
-          "description": "Cost of this turn in US dollars.",
+          "description": "Cumulative session cost in US dollars when the turn ended.",
           "title": "Cost Usd",
           "type": "number"
         },
@@ -526,6 +515,7 @@
         }
       },
       "required": [
+        "type",
         "at",
         "text",
         "cost_usd",
@@ -536,7 +526,7 @@
       "type": "object"
     },
     "UsageUpdateEvent": {
-      "description": "Emitted when the driver observes updated cumulative cost.\n\n``settled`` marks a usage update carried by a result message that has\nalready settled the session on its own; a spend-cap observer must not\ntreat it as a live crossing of the cap, since the session is ending\nregardless. Always written to the wire (``\"settled\": false`` on an\nunsettled update).",
+      "description": "Emitted when the driver observes updated cumulative cost.",
       "properties": {
         "at": {
           "description": "Nanoseconds since the Unix epoch when the event was created.",
@@ -548,12 +538,6 @@
           "title": "Cost Usd",
           "type": "number"
         },
-        "settled": {
-          "default": false,
-          "description": "Whether the session has already settled.",
-          "title": "Settled",
-          "type": "boolean"
-        },
         "type": {
           "const": "usage_update",
           "default": "usage_update",
@@ -563,6 +547,7 @@
         }
       },
       "required": [
+        "type",
         "at",
         "cost_usd"
       ],
@@ -582,7 +567,6 @@
       "text_delta": "#/$defs/TextDeltaEvent",
       "thinking_update": "#/$defs/ThinkingUpdateEvent",
       "tool_end": "#/$defs/ToolEndEvent",
-      "tool_progress": "#/$defs/ToolProgressEvent",
       "tool_start": "#/$defs/ToolStartEvent",
       "turn_end": "#/$defs/TurnEndEvent",
       "usage_update": "#/$defs/UsageUpdateEvent"
@@ -595,9 +579,6 @@
     },
     {
       "$ref": "#/$defs/ToolStartEvent"
-    },
-    {
-      "$ref": "#/$defs/ToolProgressEvent"
     },
     {
       "$ref": "#/$defs/ToolEndEvent"

@@ -1,4 +1,4 @@
-"""Git subprocess helpers and repository-lookup classification.
+"""Git subprocess helpers.
 
 Every git call runs with an argv list rather than a shell string, so refs and
 paths containing shell metacharacters are treated as literal git arguments. The
@@ -8,16 +8,12 @@ for stable, locale-independent diagnostics that classification can key on.
 """
 
 import os
-import re
 import subprocess
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 
-from gymrat.errors import GymratError, stderr_text_of
+from gymrat.errors import GymratError
 from gymrat.signals import deferring_termination_signals
-
-# How many leading characters of a commit SHA callers abbreviate it to.
-SHORT_SHA_LENGTH = 7
+from gymrat.utils import stderr_text_of
 
 # Env vars an outer git process exports to point child git at a specific repo.
 # Removing them forces this call to resolve the repository from ``cwd`` alone.
@@ -29,15 +25,6 @@ _REPO_TARGETING_ENV_VARS = (
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 )
-
-# Git's wording when it places a directory outside every repository.
-#
-# Anchored to ``^fatal:`` so a path that embeds the phrase (e.g.
-# ``/tmp/not a git repository/config``) cannot skip the classification. The
-# ``re.MULTILINE`` flag lets ``^`` match at line boundaries within multi-line
-# stderr. ``LC_ALL=C`` in :func:`run_git` stabilizes the wording across locales,
-# so a case-insensitive flag is not needed.
-_NOT_A_REPOSITORY_RE = re.compile(r"^fatal: not a git repository", re.MULTILINE)
 
 
 def run_git(
@@ -62,6 +49,7 @@ def run_git(
     Raises:
         subprocess.CalledProcessError: When git exits non-zero. It carries
             ``.stderr`` and ``.returncode`` for callers to mine.
+        OSError: When git is missing from ``PATH`` or cannot be executed.
     """
     child_env = os.environ.copy()
     for key in _REPO_TARGETING_ENV_VARS:
@@ -72,7 +60,7 @@ def run_git(
 
     with deferring_termination_signals():
         completed = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
-            ["git", *args],  # noqa: S607 -- argv is a fixed list, not shell-injected
+            ["git", *args],  # noqa: S607 -- git is resolved from PATH by design; the user's git is the one to run
             cwd=cwd,
             check=True,
             capture_output=True,
@@ -109,76 +97,32 @@ def try_git(args: Sequence[str], cwd: str) -> str | None:
     except (subprocess.SubprocessError, OSError) as error:
         # SubprocessError covers CalledProcessError and TimeoutExpired; OSError
         # covers a git binary that is missing or cannot be executed
-        # (FileNotFoundError, PermissionError). try_git reports every failure as
-        # text, never raises.
+        # (FileNotFoundError, PermissionError).
         return stderr_text_of(error)
     return None
 
 
-class NotAGitRepositoryError(GymratError):
-    """A directory git placed outside every repository.
+def run_git_step(args: Sequence[str], cwd: str, message: str, hint: str | None = None) -> str:
+    """Run git in ``cwd``, turning any failure into a ``GymratError``.
 
-    Its own class because callers act on the distinction: standing outside a
-    repository is a supported way to run gymrat, while a git that merely
-    declined to answer says nothing about where the directory sits and must
-    never be read as "no repository here".
-    """
-
-
-def repository_lookup_error(directory: str, cause: object) -> GymratError:
-    """Classify a failed repository lookup by what git said.
-
-    Git reporting that ``directory`` is outside every repository is an answer
-    callers can act on. Every other failure — dubious ownership, an unreadable
-    ``.git``, a git that cannot run at all — is git declining to answer, and
-    carries git's own diagnostics so the reader sees the real reason rather than
-    a wrong one.
+    The error carries git's own diagnostics after ``message`` so the reader sees
+    the real reason, and ``hint`` for what to do next.
 
     Args:
-        directory: The directory whose repository lookup failed.
-        cause: The failure to classify — typically the git exception.
+        args: The git command-line arguments to run.
+        cwd: Working directory to run the command in.
+        message: The error message prefix used if the command fails.
+        hint: The hint attached to the raised error, or ``None`` for none.
 
     Returns:
-        A :class:`NotAGitRepositoryError` when git's stderr opens with its
-        not-a-repository diagnostic, otherwise a plain :class:`GymratError`
-        carrying git's diagnostics.
-    """
-    diagnostics = stderr_text_of(cause)
-
-    if _NOT_A_REPOSITORY_RE.search(diagnostics):
-        return NotAGitRepositoryError(
-            f"Not a git repository: {directory}",
-            hint="Run gymrat from inside a git repository.",
-        )
-
-    return GymratError(f"Cannot determine the git repository at {directory}: {diagnostics}")
-
-
-def git_common_dir(root: str) -> str:
-    """Absolute path of the shared git directory backing ``root``.
-
-    Everything a repository shares across its worktrees — ``info/exclude``, the
-    object store, the worktree registry — lives in the common directory, so a
-    linked worktree, whose ``.git`` is a file pointing elsewhere, reaches the
-    same files the main checkout uses.
-
-    Args:
-        root: Directory the lookup runs from. Any directory inside the
-            repository answers with the same common directory.
-
-    Returns:
-        The resolved absolute path. git prints the path relative to the working
-        directory when it sits inside it, hence the resolve against ``root``.
+        The captured stdout from the git command.
 
     Raises:
-        GymratError: When ``root`` is not inside a git repository, or git
-            otherwise declines to answer.
+        GymratError: When the git command exits non-zero, or when the git
+            binary is missing or cannot be executed.
     """
     try:
-        printed = run_git(["rev-parse", "--git-common-dir"], root).strip()
+        return run_git(args, cwd)
     except (subprocess.SubprocessError, OSError) as error:
-        err = repository_lookup_error(root, error)
-        raise err from error
-    # An absolute path git prints (a linked worktree's common dir) stands on its
-    # own; a relative one (``.git`` in the main checkout) resolves against root.
-    return str(Path(root, printed))
+        detail = f"{message}: {stderr_text_of(error)}"
+        raise GymratError(detail, hint=hint) from error

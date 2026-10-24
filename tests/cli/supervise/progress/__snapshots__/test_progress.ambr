@@ -1,0 +1,24 @@
+# serializer version: 1
+# name: test_dashboard_when_mid_session_does_render_full_layout
+  '''
+  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
+  │ time ━━━━━━━━━━━━━━━━━━━━━━━                                               2h 42m  cap in 5h 17m │
+  │ cost $4.12 / $10.00                                                                              │
+  │ loop   3/5 iterations · 1 kept · 1 discarded · last -6.8% improved                               │
+  │ best -6.8% geomean vs baseline abc1234 (iteration 3)                                             │
+  │   02:41:03  Bash   gymrat iterate  1m 0s                                                         │
+  │   02:41:03  Edit   src/archetype.ts  <1s                                                         │
+  │   02:41:02  Read   src/archetype.ts  <1s                                                         │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+  '''
+# ---
+# name: test_frame_when_just_launched_does_render_the_starting_layout
+  '''
+  ╭─ supervise · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────────────────╮
+  │ time                                                                           0s  cap in 8h 00m │
+  │ cost $0.00                                                                                       │
+  │ loop   no session yet                                                                            │
+  │ starting                                                                                         │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+  '''
+# ---

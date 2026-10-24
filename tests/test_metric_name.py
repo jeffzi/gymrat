@@ -1,80 +1,74 @@
 from __future__ import annotations
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
-from gymrat.errors import GymratError
-from gymrat.metric_name import format_inline, parse
+from gymrat.metric_name import (
+    EmptyKindError,
+    EmptyPathSegmentError,
+    MetricNameError,
+    MultipleHashesError,
+    format_inline,
+    parse,
+)
 from gymrat.report.style import render_lines
 
 
-def test_parse_when_name_has_kind_does_split_path_and_kind():
-    result = parse("node/access.get_1field#time")
-
-    assert result.path == ("node", "access.get_1field")
-    assert result.kind == "time"
-
-
-def test_parse_when_name_has_no_kind_does_return_none_kind():
-    result = parse("fib/total")
-
-    assert result.path == ("fib", "total")
-    assert result.kind is None
-
-
-def test_parse_when_name_has_multiple_hashes_does_raise_gymrat_error():
-    with pytest.raises(GymratError, match="a#b#c"):
-        parse("a#b#c")
-
-
 @pytest.mark.parametrize(
-    "raw_name",
-    [
-        pytest.param("a//b", id="empty-inner-segment"),
-        pytest.param("a/", id="empty-trailing-segment"),
-        pytest.param("/x", id="empty-leading-segment"),
-        pytest.param("", id="empty-name"),
-        pytest.param("#time", id="empty-path-before-kind"),
-        pytest.param("a/#time", id="empty-trailing-segment-before-kind"),
-        pytest.param("a#", id="empty-kind"),
-    ],
-)
-def test_parse_when_name_has_empty_segment_does_raise_gymrat_error(raw_name: str):
-    with pytest.raises(GymratError) as excinfo:
-        parse(raw_name)
-
-    assert raw_name in str(excinfo.value)
-
-
-@pytest.mark.parametrize(
-    ("name", "expected_group", "expected_case"),
+    ("raw_name", "path", "kind", "group", "case"),
     [
         pytest.param(
             "node/access.get_1field#time",
+            ("node", "access.get_1field"),
+            "time",
             "node",
             "access.get_1field",
             id="two-segments-with-kind",
         ),
         pytest.param(
             "node/access/get_1field#time",
+            ("node", "access", "get_1field"),
+            "time",
             "node/access",
             "get_1field",
             id="three-segments-with-kind",
         ),
-        pytest.param("fib", None, "fib", id="one-segment-no-kind"),
+        pytest.param("fib/total", ("fib", "total"), None, "fib", "total", id="no-kind"),
+        pytest.param("fib", ("fib",), None, None, "fib", id="one-segment-no-kind"),
     ],
 )
-def test_parse_when_varying_depth_does_expose_correct_group_and_case(
-    name: str,
-    expected_group: str | None,
-    expected_case: str,
+def test_parse_when_name_well_formed_does_split_path_kind_group_and_case(
+    raw_name: str, path: tuple[str, ...], kind: str | None, group: str | None, case: str
 ):
-    result = parse(name)
+    result = parse(raw_name)
 
-    assert result.group == expected_group
-    assert result.case == expected_case
+    assert (result.path, result.kind, result.group, result.case) == (path, kind, group, case)
 
 
-def test_format_inline_when_called_does_return_rich_markup():
+@pytest.mark.parametrize(
+    ("raw_name", "rule_error"),
+    [
+        pytest.param("a#b#c", MultipleHashesError, id="multiple-hashes"),
+        pytest.param("a//b", EmptyPathSegmentError, id="empty-inner-segment"),
+        pytest.param("a/", EmptyPathSegmentError, id="empty-trailing-segment"),
+        pytest.param("/x", EmptyPathSegmentError, id="empty-leading-segment"),
+        pytest.param("", EmptyPathSegmentError, id="empty-name"),
+        pytest.param("#time", EmptyPathSegmentError, id="empty-path-before-kind"),
+        pytest.param("a/#time", EmptyPathSegmentError, id="empty-trailing-segment-before-kind"),
+        pytest.param("a#", EmptyKindError, id="empty-kind"),
+    ],
+)
+def test_parse_when_name_breaks_the_grammar_does_raise_the_rule_error_naming_it(
+    raw_name: str, rule_error: type[MetricNameError]
+):
+    with pytest.raises(rule_error) as excinfo:
+        parse(raw_name)
+
+    assert str(excinfo.value).endswith(f": {raw_name}")
+
+
+def test_format_inline_when_name_has_group_and_kind_does_dim_the_group_and_kind():
     name = parse("node/access.get_1field#time")
 
     result = format_inline(name)
@@ -82,45 +76,42 @@ def test_format_inline_when_called_does_return_rich_markup():
     assert result == "[dim]node/[/dim]access.get_1field[dim]#time[/dim]"
 
 
-def test_metric_name_when_mutated_does_raise():
-    name = parse("fib/total")
-
-    with pytest.raises(AttributeError):
-        name.kind = "time"  # type: ignore[misc]
+_SEGMENT = st.text(alphabet="ab.=@[]\\", min_size=1, max_size=8)
 
 
-@pytest.mark.parametrize(
-    ("raw_name", "expected_plain"),
-    [
-        pytest.param(
-            "parse[js]#time",
-            "parse[js]#time",
-            id="square-brackets-in-case",
-        ),
-        pytest.param(
-            "codec[h264]/decode#time",
-            "codec[h264]/decode#time",
-            id="square-brackets-in-group",
-        ),
-        pytest.param(
-            "render#fps[avg]",
-            "render#fps[avg]",
-            id="square-brackets-in-kind",
-        ),
-        pytest.param(
-            "parse[/html]#time",
-            "parse[/html]#time",
-            id="closing-tag-shaped-bracket",
-        ),
-    ],
-)
-def test_format_inline_when_color_on_and_brackets_in_segments_does_render_literally(
+@st.composite
+def _metric_names(draw: st.DrawFn) -> str:
+    """Draw a well-formed metric name whose segments and kind are dense in markup characters."""
+    path = "/".join(draw(st.lists(_SEGMENT, min_size=1, max_size=3)))
+    kind = draw(st.none() | _SEGMENT)
+    return path if kind is None else f"{path}#{kind}"
+
+
+@given(raw_name=_metric_names())
+@example("parse[js]#time").via("square-brackets-in-case")
+@example("codec[h264]/decode#time").via("square-brackets-in-group")
+@example("render#fps[avg]").via("square-brackets-in-kind")
+@example("parse[/html]#time").via("closing-tag-shaped-bracket")
+@example("dir\\/case#time").via("group-ends-in-backslash")
+@example("top/dir\\/case").via("nested-group-ends-in-backslash")
+@example("dir[x]\\/case#time").via("bracketed-group-ends-in-backslash")
+@example("dir/case\\").via("case-ends-in-backslash-without-kind")
+@example("dir/case\\#time").via("case-ends-in-backslash-before-kind")
+@example("dir/case\\\\#time").via("case-ends-in-two-backslashes-before-kind")
+@example("dir\\\\/case#time").via("group-ends-in-two-backslashes")
+@example("di\\r/ca\\se#time").via("inner-backslashes")
+@example("dir\\[x]/case#time").via("backslash-before-bracket-in-group")
+@example("a\\[1]").via("backslash-before-plain-bracket-in-case")
+@example("a\\\\[1]").via("two-backslashes-before-plain-bracket-in-case")
+@example("dir\\[1]/case").via("backslash-before-plain-bracket-in-group")
+@example("case#k\\[1]").via("backslash-before-plain-bracket-in-kind")
+@example("x#time\\").via("kind-ends-in-backslash")
+@example("case\\").via("single-segment-ends-in-backslash")
+def test_format_inline_when_name_well_formed_does_render_it_literally(
     raw_name: str,
-    expected_plain: str,
 ):
     name = parse(raw_name)
 
-    markup = format_inline(name)
-    rendered = render_lines(markup, color=False, width=200)
+    rendered = render_lines(format_inline(name), color=False)
 
-    assert rendered == expected_plain
+    assert rendered == raw_name

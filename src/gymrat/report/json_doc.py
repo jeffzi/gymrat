@@ -1,51 +1,50 @@
 """JSON report document builders for the compare, measure, probe, and loop commands.
 
 Each builder assembles a plain nested structure keyed in snake_case and
-serializes it with a two-space indent. None takes presentation options, so the
-output never carries ANSI, whatever the ambient environment forces.
+serializes it with a two-space indent through :func:`render_document`, which
+:func:`gymrat.doctor.render_doctor_json` also calls, so a change to its indent
+or null handling changes the doctor output too. No builder takes presentation
+options, so the output never carries ANSI, whatever the ambient environment forces.
 
-``json.dumps`` emits invalid ``NaN``/``Infinity`` literals by default, whereas
-the contract is a JSON ``null`` for any non-finite float (matching JavaScript's
-``JSON.stringify``). A pre-pass replaces every non-finite float with ``None``
-before the dump, and ``allow_nan=False`` guards against any that slip through.
+The contract is a JSON ``null`` for any non-finite float (matching JavaScript's
+``JSON.stringify``), which ``pydantic_core.to_json`` provides through
+``inf_nan_mode="null"``. Non-ASCII text is written raw, not escaped.
 """
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, assert_never
 
-from gymrat.finite_json import null_non_finite
+from pydantic_core import to_json
+
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import BandVerdict, ExactVerdict, PermutationVerdict
 from gymrat.report.tally import count_verdicts
-from gymrat.report.types import CandidateMetric
-from gymrat.verdict import infer_group
+from gymrat.report.types import CandidateMetric, candidate_at
 
 if TYPE_CHECKING:
+    from gymrat.loop.discard import DiscardResult
     from gymrat.loop.finalize import FinalizeResult
-    from gymrat.loop.iterate import IterateResult
+    from gymrat.loop.iterate.run import IterateResult
+    from gymrat.loop.keep import KeepResult
     from gymrat.loop.probe import ProbeMetric, ProbeResult
-    from gymrat.loop.settle import DiscardResult, KeepResult
     from gymrat.loop.start import StartResult
     from gymrat.loop.status import StatusData
     from gymrat.loop.sync import SyncResult
     from gymrat.model import GeomeanResult, MetricVerdict
-    from gymrat.report.tally import VerdictCounts
     from gymrat.report.types import (
         CandidateComparison,
         ComparisonResult,
         MeasurementResult,
         MetricComparison,
         MetricMeasurement,
-        WorktreeCleanupOutcome,
     )
+    from gymrat.sampling import CleanupResult
     from gymrat.session.records import IterationRecord
     from gymrat.verdict import KindAggregate
 
-_COMPARE_SCHEMA_VERSION = 2
-_MEASURE_SCHEMA_VERSION = 1
-_PROBE_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +63,7 @@ class BudgetSummary:
 
 
 # ---------------------------------------------------------------------------
-# Compare-result serialization
+# Comparison, measurement and probe documents
 # ---------------------------------------------------------------------------
 
 
@@ -79,7 +78,6 @@ def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {
-        "schema_version": _COMPARE_SCHEMA_VERSION,
         "baseline": result.baseline_label,
         "candidates": [candidate.label for candidate in result.candidates],
         "samples": result.samples,
@@ -89,14 +87,9 @@ def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None
             for name, metric in result.metrics.items()
         },
         "per_candidate": _serialize_per_candidate(result),
-        "worktrees": _serialize_worktrees(result),
+        "worktrees": _serialize_worktrees(result.cleanup),
     }
-    return _render(document, budget)
-
-
-# ---------------------------------------------------------------------------
-# Measurement serialization
-# ---------------------------------------------------------------------------
+    return render_document(document, budget)
 
 
 def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | None = None) -> str:
@@ -110,21 +103,15 @@ def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | No
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {
-        "schema_version": _MEASURE_SCHEMA_VERSION,
         "label": result.label,
         "samples": result.samples,
         "adapter": result.adapter,
         "metrics": {
             name: _serialize_measure_metric(name, metric) for name, metric in result.metrics.items()
         },
-        "worktrees": _serialize_worktrees(result),
+        "worktrees": _serialize_worktrees(result.cleanup),
     }
-    return _render(document, budget)
-
-
-# ---------------------------------------------------------------------------
-# Probe serialization
-# ---------------------------------------------------------------------------
+    return render_document(document, budget)
 
 
 def render_probe_json(result: ProbeResult, *, budget: BudgetSummary | None = None) -> str:
@@ -142,22 +129,21 @@ def render_probe_json(result: ProbeResult, *, budget: BudgetSummary | None = Non
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {
-        "schema_version": _PROBE_SCHEMA_VERSION,
         "label": result.label,
         "samples": result.samples,
         "adapter": result.adapter,
-        "scoped": result.scoped,
+        "scoped": bool(result.names),
         "names": list(result.names),
         "metrics": {metric.name: _serialize_probe_metric(metric) for metric in result.metrics},
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def _serialize_probe_metric(metric: ProbeMetric) -> dict[str, object]:
     """One probed metric: what it measured, what the baseline holds, and the gap."""
     return {
         "median": metric.median,
-        "spread": metric.spread,
+        "spread_pct": metric.spread,
         "reference_median": metric.reference_median,
         "delta_pct": metric.delta_pct,
     }
@@ -171,10 +157,7 @@ def _serialize_metric(
     """One metric's meta, baseline, and positional per-candidate rows."""
     empty = CandidateMetric()
     rows = [
-        _candidate_row(
-            candidate.label,
-            metric.candidates[index] if index < len(metric.candidates) else empty,
-        )
+        _candidate_row(candidate.label, candidate_at(metric, index) or empty)
         for index, candidate in enumerate(candidates)
     ]
     return {
@@ -182,7 +165,7 @@ def _serialize_metric(
         "direction": metric.meta.direction,
         "gating": metric.meta.gating,
         "kind": metric.meta.kind,
-        "group": infer_group(name),
+        "group": parse_metric_name(name).group,
         "baseline": {"median": metric.baseline_median, "spread_pct": metric.baseline_spread},
         "candidates": rows,
     }
@@ -212,14 +195,7 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
         The verdict fields as a flat dict suitable for merging into a row.
     """
     if verdict is None:
-        return {
-            "verdict": None,
-            "method": None,
-            "delta": None,
-            "noise_pct": None,
-            "p": None,
-            "band": None,
-        }
+        return dict.fromkeys(("verdict", "method", "delta_pct", "noise_pct", "p", "band_pct"))
     noise_pct: float | None = None
     p: float | None = None
     band: float | None = None
@@ -237,10 +213,10 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
     return {
         "verdict": verdict.verdict,
         "method": verdict.method,
-        "delta": verdict.delta.value,
+        "delta_pct": verdict.delta,
         "noise_pct": noise_pct,
         "p": p,
-        "band": band,
+        "band_pct": band,
     }
 
 
@@ -250,7 +226,7 @@ def _serialize_per_candidate(result: ComparisonResult) -> list[dict[str, object]
         {
             "label": candidate.label,
             "kinds": [_serialize_kind(kind) for kind in candidate.kinds],
-            "verdict_counts": _serialize_counts(count_verdicts(result.metrics, index)),
+            "verdict_counts": asdict(count_verdicts(result.metrics, index)),
         }
         for index, candidate in enumerate(result.candidates)
     ]
@@ -272,25 +248,11 @@ def _serialize_kind(kind: KindAggregate) -> dict[str, object]:
 
 
 def _serialize_geomean(geomean: GeomeanResult) -> dict[str, object]:
-    """A geomean's value, contributing count, exclusions, and band."""
     return {
-        "value": geomean.value,
+        "value_pct": geomean.value,
         "n": geomean.n,
-        "excluded": [
-            {"metric": exclusion.metric, "reason": exclusion.reason}
-            for exclusion in geomean.excluded
-        ],
-        "band": geomean.band,
-    }
-
-
-def _serialize_counts(counts: VerdictCounts) -> dict[str, int]:
-    """The per-candidate verdict tally under its snake_case keys."""
-    return {
-        "improved": counts.improved,
-        "regressed": counts.regressed,
-        "unstable": counts.unstable,
-        "no_signal": counts.no_signal,
+        "band_pct": geomean.band,
+        "excluded": [asdict(exclusion) for exclusion in geomean.excluded],
     }
 
 
@@ -304,73 +266,77 @@ def _serialize_measure_metric(name: str, metric: MetricMeasurement) -> dict[str,
         "gating": metric.meta.gating,
         "exact": metric.meta.exact,
         "kind": metric.meta.kind,
-        "group": infer_group(name),
+        "group": parse_metric_name(name).group,
     }
 
 
-def _serialize_worktrees(result: WorktreeCleanupOutcome) -> dict[str, object]:
+def _serialize_worktrees(cleanup: CleanupResult) -> dict[str, object]:
     """The cleanup outcome: count removed, failures, and any prune error."""
     return {
-        "removed": result.worktrees_removed,
+        "removed": cleanup.removed,
         "left_behind": [
-            {"path": failure.dir, "reason": failure.error}
-            for failure in result.worktrees_left_behind
+            {"path": failure.dir, "reason": failure.error} for failure in cleanup.failures
         ],
-        "prune_error": result.worktree_prune_error,
+        "prune_error": cleanup.prune_error,
     }
 
 
 # ---------------------------------------------------------------------------
-# Loop and session-event serialization
+# Loop command documents
 # ---------------------------------------------------------------------------
 
 
 def render_iterate_json(result: IterateResult, *, budget: BudgetSummary | None = None) -> str:
     """Seq, outcome, primary summary, per-metric verdicts, and confirm results."""
-    return _render(_serialize_iteration(result.record), budget)
+    return render_document(_serialize_iteration(result.record), budget)
 
 
 def render_stop_json(*, at: int, message: str, budget: BudgetSummary | None = None) -> str:
     """Render a stop result as ``{"at": …, "message": …}`` with an optional budget."""
-    return _render({"at": at, "message": message}, budget)
+    return render_document({"at": at, "message": message}, budget)
 
 
 def render_iterate_stop_json(reason: str, *, budget: BudgetSummary | None = None) -> str:
     """Emitted instead of the normal iteration document when a stop condition fires."""
-    return _render({"stopped": True, "reason": reason}, budget)
+    return render_document({"stopped": True, "reason": reason}, budget)
 
 
 def render_keep_json(result: KeepResult, *, budget: BudgetSummary | None = None) -> str:
-    """Status, reason, nested checks outcome, commit SHA, and message."""
+    """Status, reason, nested checks outcome, commit SHA, and message.
+
+    Args:
+        result: The keep outcome to render.
+        budget: Pre-computed budget snapshot to include, or ``None`` to omit.
+
+    Returns:
+        The document as a two-space-indented JSON string.
+    """
     record = result.record
-    checks: dict[str, object] = {
-        "configured": record.checks.configured,
-        "passed": record.checks.passed,
-        "stdout_bytes": record.checks.stdout_bytes,
-        "stderr_bytes": record.checks.stderr_bytes,
-    }
     document: dict[str, object] = {
         "status": record.status,
         "reason": record.reason,
-        "checks": checks,
+        "checks": record.checks.model_dump(),
         "commit": record.commit,
         "message": record.message,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_discard_json(result: DiscardResult, *, budget: BudgetSummary | None = None) -> str:
     """Render the discard's ``seq``, timestamp, and ``measured`` flag.
 
-    ``seq`` is ``null`` when no iteration was measured.
+    Args:
+        result: The discard outcome.
+        budget: Pre-computed budget snapshot to include, or ``None`` to omit.
 
     Returns:
-        The JSON string of the discard document.
+        The JSON string of the discard document; its ``seq`` is ``null`` when
+        no iteration was measured.
     """
     record = result.record
     measured = record is not None
     seq = record.seq if record is not None else None
-    return _render({"seq": seq, "at": result.at, "measured": measured}, budget)
+    return render_document({"seq": seq, "at": result.at, "measured": measured}, budget)
 
 
 def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None) -> str:
@@ -386,7 +352,7 @@ def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None)
         "finalized": data.finalized,
         "stopped": data.stopped,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_start_json(
@@ -423,7 +389,7 @@ def render_start_json(
         "runbook": runbook,
         "archived": archived,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_finalize_json(
@@ -447,7 +413,7 @@ def render_finalize_json(
         "message": record.message,
         "at": record.at,
     }
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def render_sync_json(
@@ -465,16 +431,15 @@ def render_sync_json(
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {"files": list(result.files)}
-    return _render(document, budget)
+    return render_document(document, budget)
 
 
 def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
     primary: dict[str, object] = {
         "kind": record.primary.kind,
         "delta_pct": record.primary.delta_pct,
+        "name": record.primary.name,
     }
-    if record.primary.name is not None:
-        primary["name"] = record.primary.name
 
     confirm: dict[str, object] | None = None
     if record.confirm is not None:
@@ -486,18 +451,15 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
 
     metrics: dict[str, object] = {}
     for name, verdict in record.metrics.items():
-        entry: dict[str, object] = {
+        metrics[name] = {
             "delta_pct": verdict.delta_pct,
             "verdict": verdict.verdict,
             "method": verdict.method,
+            "p": verdict.p,
+            "noise_pct": verdict.noise_pct,
             "gating": verdict.gating,
             "confirmed": verdict.confirmed,
         }
-        if verdict.p is not None:
-            entry["p"] = verdict.p
-        if verdict.noise_pct is not None:
-            entry["noise_pct"] = verdict.noise_pct
-        metrics[name] = entry
 
     return {
         "seq": record.seq,
@@ -508,22 +470,25 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
     }
 
 
-def _render(document: dict[str, object], budget: BudgetSummary | None) -> str:
-    """Insert the budget key when present, then serialize with a two-space indent.
+# ---------------------------------------------------------------------------
+# Serialization
+# ---------------------------------------------------------------------------
 
-    Every non-finite float is nulled before the dump (see module docstring).
+
+def render_document(document: dict[str, object], budget: BudgetSummary | None = None) -> str:
+    """Serialize a JSON document with a two-space indent, stamped with the schema version.
+
+    Every non-finite float serializes as ``null`` (see module docstring).
 
     Args:
-        document: The JSON document to serialize, mutated in place with the
-            budget key when ``budget`` is provided.
+        document: The JSON document to serialize; left unchanged.
         budget: The run's budget summary, or ``None`` when not tracked.
 
     Returns:
-        The pretty-printed JSON string.
+        The pretty-printed JSON string: ``schema_version`` first, then the
+        document's keys in order, then ``budget`` when one is given.
     """
+    stamped: dict[str, object] = {"schema_version": _SCHEMA_VERSION, **document}
     if budget is not None:
-        document["budget"] = {
-            "cap_minutes": budget.cap_minutes,
-            "remaining_seconds": budget.remaining_seconds,
-        }
-    return json.dumps(null_non_finite(document), indent=2, allow_nan=False)
+        stamped["budget"] = asdict(budget)
+    return to_json(stamped, indent=2, inf_nan_mode="null").decode()

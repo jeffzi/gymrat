@@ -1,0 +1,15 @@
+# serializer version: 1
+# name: test_render_body_when_rules_placed_does_draw_one_rule_line_per_rule[rule-closing-the-body]
+  list([
+    'metric   │ value',
+    '─────────┼───────',
+  ])
+# ---
+# name: test_render_body_when_rules_placed_does_draw_one_rule_line_per_rule[two-rules-with-no-row-between]
+  list([
+    'metric   │ value',
+    '─────────┼───────',
+    '─────────┼───────',
+    'geomean  │ -3.2%',
+  ])
+# ---

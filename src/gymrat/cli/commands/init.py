@@ -1,0 +1,93 @@
+"""The ``init`` command: scaffold a gymrat.toml, skill file, and runbook.
+
+Resolves the base directory to the repository root when inside one (so a run from
+a subdirectory still scaffolds at the root) and the process cwd otherwise; git is
+not required. Re-running over an existing ``gymrat.toml`` leaves that file alone
+and fills in whatever else is missing, so ``--bench`` is only required when
+there is no config yet. ``--no-runbook`` and ``--no-skill`` suppress those
+artifacts. The artifact summary is written to stdout. While a supervised run is
+live, the command is refused: scaffolding is not part of the loop.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.markup import escape
+
+from gymrat.cli.console import apply_command_flags, resolve_stream_color
+from gymrat.cli.exit import run_guarded, write_stdout
+from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotations at runtime
+    BenchOption,
+    ColorOption,
+    DebugOption,
+)
+from gymrat.cli.supervised import is_supervised_run_live
+from gymrat.config import CONFIG_FILENAME, find_implicit_base
+from gymrat.errors import GymratError
+from gymrat.report.style import format_hint, render_lines
+from gymrat.scaffold import (
+    ScaffoldArtifact,
+    ScaffoldRequest,
+    ScaffoldResult,
+    scaffold,
+)
+
+_NoRunbookOption = Annotated[bool, typer.Option("--no-runbook", help="skip the runbook")]
+_NoSkillOption = Annotated[bool, typer.Option("--no-skill", help="skip the skill file")]
+
+
+def _format_artifact(label: str, artifact: ScaffoldArtifact, base_dir: str) -> str:
+    if artifact.status == "declined":
+        return f"  {label} declined"
+    # Navigable from the user's cwd, not from the project root.
+    display = (Path(base_dir) / artifact.path).absolute().relative_to(Path.cwd(), walk_up=True)
+    verb = "created at" if artifact.status == "created" else "already exists at"
+    return f"  {label} {verb} {display}"
+
+
+def _format_summary(result: ScaffoldResult, base_dir: str, *, color: bool | None = None) -> str:
+    doc = "\n".join([
+        escape(_format_artifact("Config:", result.config, base_dir)),
+        escape(_format_artifact("Runbook:", result.runbook, base_dir)),
+        escape(_format_artifact("Skill:", result.skill, base_dir)),
+        format_hint("Run `gymrat doctor` to verify the setup."),
+    ])
+    return render_lines(doc, color=color)
+
+
+def init_command(
+    *,
+    bench: BenchOption = None,
+    no_runbook: _NoRunbookOption = False,
+    no_skill: _NoSkillOption = False,
+    color: ColorOption = None,
+    debug: DebugOption = False,
+) -> None:
+    """Scaffold a gymrat.toml, skill file, and runbook."""
+    apply_command_flags(debug=debug, color=color)
+
+    resolved_color = resolve_stream_color(None, sys.stdout)
+
+    def scaffold_and_report() -> None:
+        base_dir = find_implicit_base()
+        # init has no tool form, so a live run refuses it whatever the origin.
+        if is_supervised_run_live(base_dir):
+            message = "a supervised run is live; init is not part of the loop"
+            raise GymratError(message)
+        # An existing config is kept as-is, so its bench command stands in for the flag.
+        if bench is None and not (Path(base_dir) / CONFIG_FILENAME).exists():
+            message = "Missing --bench flag."
+            raise GymratError(message)
+        request = ScaffoldRequest(
+            bench=bench,
+            runbook=not no_runbook,
+            install_skill=not no_skill,
+        )
+        result = scaffold(base_dir, request)
+        write_stdout(_format_summary(result, base_dir, color=resolved_color) + "\n")
+
+    run_guarded(scaffold_and_report)

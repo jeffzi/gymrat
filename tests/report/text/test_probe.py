@@ -13,21 +13,23 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat.report.style import VARIANT_NAME_STYLE, VERDICT_STYLES
 from gymrat.report.text.probe import render_probe_report
 from gymrat.report.types import ReportOptions
-from tests.report._inputs import (
+from tests._ansi import strip_ansi
+from tests.report._assertions import (
     cells_of,
+    delta_cell,
     line_containing,
-    line_starting_with,
-    probe_metric,
-    probe_result,
-    strip_ansi,
+    sgr_for,
     styles_at,
     table_rows,
 )
+from tests.report._probes import golden_probe, probe_metric, probe_result
 
 if TYPE_CHECKING:
-    from gymrat.loop.probe import ProbeMetric
+    from syrupy.assertion import SnapshotAssertion
+
     from gymrat.model import Direction
 
 # ---------------------------------------------------------------------------
@@ -35,93 +37,17 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def test_render_probe_report_when_rendering_header_does_name_target_samples_adapter():
-    result = probe_result(label="experiment", samples=6, adapter="mitata")
-
-    output = render_probe_report(result)
-
-    assert "gymrat probe · experiment · 6 samples · adapter: mitata" in strip_ansi(output)
-
-
-@pytest.mark.parametrize(
-    ("scoped", "names", "suffix"),
-    [
-        pytest.param(
-            True,
-            ("total_ms", "decode large payload"),
-            "· scoped: total_ms, decode large payload",
-            id="scoped",
-        ),
-        pytest.param(False, (), None, id="not-scoped"),
-    ],
-)
-def test_render_probe_report_when_scope_varies_does_reflect_scope_in_the_header(
-    scoped: bool, names: tuple[str, ...], suffix: str | None
-):
-    result = probe_result(scoped=scoped, names=names)
+def test_render_probe_report_when_names_given_does_reflect_scope_in_the_header():
+    result = probe_result(names=("total_ms", "decode large payload"))
 
     header = line_containing(render_probe_report(result), "gymrat probe")
 
-    if suffix is None:
-        assert "scoped" not in strip_ansi(header)
-    else:
-        assert strip_ansi(header).endswith(suffix)
+    assert strip_ansi(header).endswith("· scoped: total_ms, decode large payload")
 
 
 # ---------------------------------------------------------------------------
 # metric rows
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("metric", "cells"),
-    [
-        pytest.param(
-            probe_metric(
-                "decode/time",
-                median=90.0,
-                spread=2.0,
-                reference_median=100.0,
-                delta_pct=-10.0,
-                unit="ns",
-            ),
-            ["decode/time", "90ns ± 2%", "100ns", "-10.0%"],
-            id="faster-than-the-baseline",
-        ),
-        pytest.param(
-            probe_metric(
-                "decode/time",
-                median=125.0,
-                spread=2.0,
-                reference_median=100.0,
-                delta_pct=25.0,
-                unit="ns",
-            ),
-            ["decode/time", "125ns ± 2%", "100ns", "+25.0%"],
-            id="slower-than-the-baseline-signs-the-delta",
-        ),
-        pytest.param(
-            probe_metric(
-                "alloc_bytes",
-                median=50.0,
-                spread=1.0,
-                reference_median=None,
-                delta_pct=None,
-                unit="bytes",
-            ),
-            ["alloc_bytes", "50B ± 1%", "", "no reference"],
-            id="no-reference-says-so-in-the-delta-column",
-        ),
-    ],
-)
-def test_render_probe_report_when_metric_rendered_does_state_median_reference_and_delta(
-    metric: ProbeMetric, cells: list[str]
-):
-    result = probe_result(metrics=[metric])
-
-    row = line_starting_with(strip_ansi(render_probe_report(result)), metric.name)
-
-    assert [cell.strip() for cell in cells_of(row)] == cells
 
 
 def test_render_probe_report_when_several_metrics_does_keep_them_in_result_order():
@@ -138,44 +64,45 @@ def test_render_probe_report_when_several_metrics_does_keep_them_in_result_order
 
 
 # ---------------------------------------------------------------------------
-# nothing a single unpaired run can conclude
-# ---------------------------------------------------------------------------
-
-
-def test_render_probe_report_when_rendering_does_carry_no_verdict_geomean_or_significance():
-    result = probe_result(
-        metrics=[
-            probe_metric("total_ms", unit="ns"),
-            probe_metric("alloc_bytes", unit="bytes", delta_pct=4.0, reference_median=96.0),
-        ]
-    )
-
-    output = strip_ansi(render_probe_report(result))
-
-    assert "geomean" not in output
-    assert "highlights" not in output
-    assert "permutation" not in output
-    assert "noise" not in output
-    present = [glyph for glyph in "✓✗≈~?" if glyph in output]
-    assert not present, f"verdict glyphs should not appear: {present!r}"
-
-
-# ---------------------------------------------------------------------------
 # color
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("direction", "delta_pct", "rendered", "code"),
+    ("direction", "delta_pct", "rendered", "codes"),
     [
-        pytest.param("lower", -10.0, "-10.0%", "32", id="lower-faster-is-improved"),
-        pytest.param("lower", 8.0, "+8.0%", "31", id="lower-slower-is-regressed"),
-        pytest.param("higher", 8.0, "+8.0%", "32", id="higher-more-is-improved"),
-        pytest.param("higher", -10.0, "-10.0%", "31", id="higher-less-is-regressed"),
+        pytest.param(
+            "lower",
+            8.0,
+            "+8.0%",
+            sgr_for(VERDICT_STYLES["regressed"]),
+            id="lower-slower-is-regressed",
+        ),
+        pytest.param(
+            "higher",
+            -10.0,
+            "-10.0%",
+            sgr_for(VERDICT_STYLES["regressed"]),
+            id="higher-less-is-regressed",
+        ),
+        pytest.param(
+            "lower",
+            -10.0,
+            "-10.0%",
+            sgr_for(VERDICT_STYLES["improved"]),
+            id="lower-faster-is-improved",
+        ),
+        pytest.param(
+            "higher",
+            20.0,
+            "+20.0%",
+            sgr_for(VERDICT_STYLES["improved"]),
+            id="higher-more-is-improved",
+        ),
     ],
 )
 def test_render_probe_report_when_colored_does_paint_the_delta_by_its_direction(
-    direction: Direction, delta_pct: float, rendered: str, code: str
+    direction: Direction, delta_pct: float, rendered: str, codes: list[str]
 ):
     result = probe_result(
         metrics=[probe_metric("decode/time", delta_pct=delta_pct, direction=direction, unit="ns")]
@@ -183,13 +110,58 @@ def test_render_probe_report_when_colored_does_paint_the_delta_by_its_direction(
 
     row = line_containing(render_probe_report(result, ReportOptions(color=True)), "decode/time")
 
-    assert code in styles_at(row, rendered)
+    assert styles_at(row, rendered) == codes
 
 
-def test_render_probe_report_when_color_off_does_carry_the_same_text_unstyled():
-    result = probe_result(metrics=[probe_metric("decode/time", delta_pct=-10.0, unit="ns")])
+@pytest.mark.parametrize(
+    ("median", "delta_pct", "rendered"),
+    [
+        pytest.param(90.0, None, "", id="zero-reference-leaves-the-delta-blank"),
+        pytest.param(0.0, 0.0, "0.0%", id="both-zero-is-no-change"),
+    ],
+)
+def test_render_probe_report_when_reference_zero_does_leave_the_delta_unstyled(
+    median: float, delta_pct: float | None, rendered: str
+):
+    result = probe_result(
+        metrics=[
+            probe_metric(
+                "decode/time", median=median, reference_median=0.0, delta_pct=delta_pct, unit="ns"
+            )
+        ]
+    )
 
-    output = render_probe_report(result, ReportOptions(color=False))
+    row = line_containing(render_probe_report(result, ReportOptions(color=True)), "decode/time")
 
-    assert "\x1b[" not in output
-    assert output == strip_ansi(render_probe_report(result, ReportOptions(color=True)))
+    assert strip_ansi(delta_cell(row)).strip() == rendered
+    assert "\x1b[" not in delta_cell(row)
+
+
+@pytest.mark.parametrize(
+    ("needle", "marker", "expected"),
+    [
+        pytest.param(
+            "gymrat probe", "experiment", sgr_for(VARIANT_NAME_STYLE), id="header-label-underlined"
+        ),
+        pytest.param(
+            "baseline", "experiment", sgr_for(VARIANT_NAME_STYLE), id="column-label-underlined"
+        ),
+    ],
+)
+def test_render_probe_report_when_colored_does_style_each_element(
+    needle: str, marker: str, expected: list[str]
+):
+    report = render_probe_report(golden_probe(), ReportOptions(color=True))
+
+    assert styles_at(line_containing(report, needle), marker) == expected
+
+
+# ---------------------------------------------------------------------------
+# whole report — golden
+# ---------------------------------------------------------------------------
+
+
+def test_render_probe_report_when_rendered_does_match_its_golden(snapshot: SnapshotAssertion):
+    report = render_probe_report(golden_probe(), ReportOptions(color=False))
+
+    assert report.split("\n") == snapshot

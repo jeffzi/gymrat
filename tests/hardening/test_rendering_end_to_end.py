@@ -1,0 +1,149 @@
+"""End-to-end rendering hardening across a real TTY, a redirect, and the bench env.
+
+The suite pins the rendering guarantees only a real out-of-process run can show:
+
+- a report printed to a real terminal is styled, while the same report piped
+  into a file or another process is plain,
+- the ``--no-color`` flag never leaks into the environment a spawned bench
+  command inherits.
+
+Every case drives the CLI and a real ``sh`` bench out of process, and the TTY
+case attaches stdout to a real pty, so the module is POSIX-only.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from tests._ansi import SGR_RE, strip_ansi
+from tests._cli import run_cli
+from tests._git import BENCH_ONCE_FLAGS, EMIT_ONE_BENCH
+from tests._git import write_committed_bench as _write_committed_bench
+from tests.cli._signalled_cli import spawned_gymrat
+from tests.hardening._pty import on_pty_kwargs, pty_capture
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+# A bench that records the ``NO_COLOR`` its own environment carries. The parent
+# starts with ``NO_COLOR`` unset, so a leak would show up here as ``[1]``.
+_ENV_PROBE_BENCH = """#!/bin/sh
+printf 'NO_COLOR=[%s]' "${NO_COLOR-<unset>}" > "$GYMRAT_TEST_PROBE"
+echo 'METRIC x=1'
+"""
+
+
+#: The ``(rows, columns)`` the pty reports, so Rich in the child draws at a
+#: known geometry rather than the 0x0 an unsized pty reports.
+_PTY_SIZE = (24, 80)
+
+
+def _neutral_env() -> dict[str, str]:
+    """A child environment with the color and size variables cleared and a real TERM.
+
+    Neither ``NO_COLOR`` nor ``FORCE_COLOR`` is set, so color is decided purely
+    by terminal detection. ``TERM`` is pinned so a bare CI image still presents
+    a color-capable terminal on the pty. ``COLUMNS`` and ``LINES`` are dropped
+    so Rich takes its size from the pty, not the developer's terminal.
+
+    Returns:
+        A copy of the current environment with the terminal variables adjusted.
+    """
+    env = dict(os.environ)
+    for name in ("NO_COLOR", "FORCE_COLOR", "COLUMNS", "LINES"):
+        env.pop(name, None)
+    env["TERM"] = "xterm-256color"
+    return env
+
+
+def _run_report_on_pty(args: list[str], repo: str) -> tuple[int, str, str]:
+    """Run the CLI with stdout attached to a real pty.
+
+    The report is written to stdout, so stdout is the pty slave; stderr (the
+    progress line) is piped apart so the drawn text is the report alone.
+
+    Args:
+        args: The CLI arguments after the entry point.
+        repo: The repository the CLI runs in.
+
+    Returns:
+        The exit code, the captured stderr, and the text drawn on the pty.
+    """
+    with (
+        pty_capture(size=_PTY_SIZE) as terminal,
+        spawned_gymrat(
+            args,
+            repo,
+            env=_neutral_env(),
+            stdin=subprocess.DEVNULL,
+            **on_pty_kwargs(terminal, stdin_on_pty=False, stderr_on_pty=False),
+        ) as proc,
+    ):
+        _, stderr = proc.communicate(timeout=120)
+    return proc.returncode, stderr.decode("utf-8", "replace"), terminal.output
+
+
+# ---------------------------------------------------------------------------
+# a real terminal renders styled; a redirect renders plain
+# ---------------------------------------------------------------------------
+
+
+def test_measure_report_when_stdout_is_a_real_tty_does_render_styled(
+    create_scratch_repo: Callable[[], str],
+):
+    repo = create_scratch_repo()
+    _write_committed_bench(repo, EMIT_ONE_BENCH)
+
+    returncode, stderr, output = _run_report_on_pty(["measure", *BENCH_ONCE_FLAGS], repo)
+
+    assert returncode == 0, stderr
+    assert "gymrat measure" in strip_ansi(output)
+    assert SGR_RE.search(output)
+
+
+def test_measure_report_when_stdout_is_redirected_does_render_plain(
+    create_scratch_repo: Callable[[], str],
+):
+    repo = create_scratch_repo()
+    _write_committed_bench(repo, EMIT_ONE_BENCH)
+
+    result = run_cli(
+        ["measure", *BENCH_ONCE_FLAGS],
+        repo,
+        check=False,
+        timeout=120,
+        env=_neutral_env(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "gymrat measure" in result.stdout
+    assert "\x1b[" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# --no-color does not leak into a spawned bench's environment
+# ---------------------------------------------------------------------------
+
+
+def test_measure_when_no_color_flag_does_not_leak_no_color_into_the_bench_env(
+    create_scratch_repo: Callable[[], str],
+):
+    repo = create_scratch_repo()
+    _write_committed_bench(repo, _ENV_PROBE_BENCH)
+    probe = Path(repo) / "env_probe.txt"
+    env = _neutral_env()
+    env["GYMRAT_TEST_PROBE"] = str(probe)
+
+    result = run_cli(
+        ["measure", "--no-color", *BENCH_ONCE_FLAGS],
+        repo,
+        check=False,
+        timeout=120,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert probe.read_text(encoding="utf-8") == "NO_COLOR=[<unset>]"

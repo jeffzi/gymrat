@@ -2,60 +2,63 @@
 
 These drive the assembled CLI through :class:`typer.testing.CliRunner`, so the
 root callback, the ``--version`` eager option, the shared ``--debug`` flag in
-both positions, the root epilogue, and unknown-command routing are exercised the
-way a shell would invoke them.
+both positions, the root and local color flags, every command's help content,
+and the exit-2 error every repository command prints when the repository root
+cannot be resolved are exercised the way a shell would invoke them.
+
+``python -m gymrat`` runs in a child process and must behave like
+``python -m gymrat.cli.app``, so the two subprocesses are compared directly.
 """
 
+import errno
 import importlib.metadata
-from collections.abc import Sequence
-from pathlib import Path
+import os
+import re
+from collections.abc import Callable, Sequence
+from unittest.mock import create_autospec
 
 import pytest
-from typer.testing import CliRunner
 
 from gymrat.cli.app import app
-from gymrat.cli.shared import BUGS_URL
-from tests._ansi import SGR_RE, strip_ansi
-from tests.cli._help import help_output
-from tests.cli._session import write_config
-from tests.report._inputs import create_measurement_result
-from tests.session.records._fixtures import (
-    committed_keep,
-    iteration_record,
-    session_record,
-    write_session_log,
+from gymrat.cli.console import is_debug_mode
+from gymrat.cli.exit import BUGS_URL
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE
+from gymrat.measure import measure
+from tests._ansi import SGR_RE, normalize, sgr_params, strip_ansi
+from tests._cli import run_module
+from tests._git import refuse_git_lookups
+from tests._rich import unwrap_panel
+from tests.cli._doctor_seams import patch_doctor
+from tests.cli._runner import (
+    FailingStdoutRunner,
+    disk_full_error,
+    runner,
 )
-
-runner = CliRunner()
+from tests.cli._session import (
+    leave_as_is,
+    open_stubbed_probe_session,
+    open_unedited_session,
+)
 
 DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
 """The documentation link the root epilogue points at."""
 
 
-def _normalize(text: str) -> str:
-    """Strip ANSI codes then collapse whitespace, so a reflowed help block matches."""
-    return " ".join(strip_ansi(text).split())
+def _help_output(*command: str) -> str:
+    """Help text of ``gymrat *command`` rendered wide and ANSI-stripped.
 
+    Ambient color splits a token across escape sequences and a narrow terminal
+    wraps it across lines; both break a plain substring match.
 
-def _sgr_params(text: str) -> str:
-    """The SGR parameter list of the last ANSI escape in ``text`` (e.g. ``"2;34"``).
+    Args:
+        *command: The subcommand path; empty for the root help.
 
-    Asserts which attributes a styled span carries without pinning the exact
-    escape bytes rich emits.
+    Returns:
+        The ANSI-stripped help text.
     """
-    match = list(SGR_RE.finditer(text))[-1]
-    return match.group(1)
-
-
-@pytest.fixture
-def _patched_measure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Run measure commands lock-free with a fake bench, from a non-repo cwd."""
-    monkeypatch.chdir(tmp_path)
-
-    async def fake_measure(_options: object):
-        return create_measurement_result()
-
-    monkeypatch.setattr("gymrat.measure.measure", fake_measure)
+    result = runner.invoke(app, [*command, "--help"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0
+    return strip_ansi(result.stdout)
 
 
 # ---------------------------------------------------------------------------
@@ -70,24 +73,23 @@ def test_app_when_version_flag_does_print_package_version():
     assert importlib.metadata.version("gymrat") in result.stdout
 
 
+def test_app_when_version_and_stdout_write_fails_with_disk_full_does_exit_two_with_error_on_stderr():
+    result = FailingStdoutRunner(disk_full_error()).invoke(app, ["--version"])
+
+    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert os.strerror(errno.ENOSPC) in unwrap_panel(result.stderr)
+
+
 # ---------------------------------------------------------------------------
 # --help
 # ---------------------------------------------------------------------------
 
 
-def test_app_when_help_does_show_description():
-    out = help_output()
+def test_app_when_root_help_does_document_the_cli():
+    out = _help_output()
 
+    normalized = normalize(out)
     assert "Performance comparison tool for benchmarks" in out
-    assert "compare" in out
-    assert "measure" in out
-    assert "probe" in out
-    assert "stop" in out
-
-
-def test_app_when_help_does_show_root_epilogue_examples_and_links():
-    normalized = _normalize(help_output())
-
     assert 'gymrat compare main my-branch --bench "npm run bench"' in normalized
     assert (
         'gymrat compare old=main new=perf/decode --bench "npm run bench" --fail-on regressed'
@@ -96,41 +98,27 @@ def test_app_when_help_does_show_root_epilogue_examples_and_links():
     assert 'gymrat measure --bench "npm run bench"' in normalized
     assert f"Docs: {DOCS_URL}" in normalized
     assert f"Bugs: {BUGS_URL}" in normalized
-
-
-def test_app_when_help_does_show_manual_loop_examples_after_supervise():
-    out = help_output()
-    lines = out.splitlines()
-
-    supervise_idx = next(i for i, line in enumerate(lines) if "gymrat supervise" in line)
-    after_supervise = "\n".join(lines[supervise_idx + 1 :])
-
-    loop_examples = [
-        "gymrat start --baseline main",
-        "gymrat iterate",
-        "gymrat keep -m",
-        "gymrat finalize",
-    ]
-    prev_pos = -1
-    for example in loop_examples:
-        pos = after_supervise.find(example)
-        assert pos > prev_pos, f"{example!r} not found after supervise line (or out of order)"
-        prev_pos = pos
+    assert re.search(
+        r"gymrat supervise.*?gymrat start --baseline main.*?gymrat iterate"
+        r".*?gymrat keep -m.*?gymrat finalize",
+        out,
+        re.DOTALL,
+    )
+    assert re.findall(r"^│ ([a-z][\w-]*)\s{2,}\S", out, re.MULTILINE) == _ALL_COMMANDS
+    assert re.search(_COLOR_PAIR, out)
 
 
 def test_app_when_help_colored_does_render_the_docs_link_as_a_dim_hint(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("TERM", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", True)
 
     result = runner.invoke(app, ["--help"], color=True, env={"COLUMNS": "200"})
 
     docs_line = next(line for line in result.stdout.splitlines() if "Docs:" in strip_ansi(line))
-    assert docs_line.lstrip().startswith("\x1b[2m")  # cspell:disable-line
-    assert "34" in _sgr_params(docs_line[: docs_line.index(DOCS_URL)])
+    assert sgr_params(docs_line[: docs_line.index("Docs:")]) == "2"
+    assert sgr_params(docs_line[: docs_line.index(DOCS_URL)]).split(";") == ["2", "34"]
 
 
 # ---------------------------------------------------------------------------
@@ -144,24 +132,14 @@ DEBUG_FLAG_POSITIONS = [
 
 
 @pytest.mark.parametrize("argv", DEBUG_FLAG_POSITIONS)
-@pytest.mark.usefixtures("_patched_measure")
-def test_app_when_debug_flag_in_either_position_does_not_error(argv: Sequence[str]):
-    result = runner.invoke(app, list(argv))
-
-    assert result.exit_code == 0
-
-
-@pytest.mark.parametrize("argv", DEBUG_FLAG_POSITIONS)
+@pytest.mark.usefixtures("_in_non_repo")
 def test_app_when_debug_flag_does_show_traceback_on_error(
-    argv: Sequence[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    argv: Sequence[str], monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.chdir(tmp_path)
-
-    async def exploding_measure(_options: object):
-        msg = "deliberate boom"
-        raise RuntimeError(msg)
-
-    monkeypatch.setattr("gymrat.measure.measure", exploding_measure)
+    monkeypatch.setattr(
+        "gymrat.measure.measure",
+        create_autospec(measure, side_effect=RuntimeError("deliberate boom")),
+    )
 
     result = runner.invoke(app, list(argv))
 
@@ -169,112 +147,271 @@ def test_app_when_debug_flag_does_show_traceback_on_error(
     assert "Traceback" in result.output
 
 
-# ---------------------------------------------------------------------------
-# unknown command
-# ---------------------------------------------------------------------------
+#: One runnable argv per command; the ids are the command names.
+COMMAND_ARGV = [
+    pytest.param(["init"], id="init"),
+    pytest.param(["compare", "main", "cand", "--bench", "sh bench.sh"], id="compare"),
+    pytest.param(["measure", "--bench", "sh bench.sh"], id="measure"),
+    pytest.param(["probe"], id="probe"),
+    pytest.param(["doctor"], id="doctor"),
+    pytest.param(["start"], id="start"),
+    pytest.param(["iterate", "--bench", "sh bench.sh"], id="iterate"),
+    pytest.param(["keep"], id="keep"),
+    pytest.param(["discard"], id="discard"),
+    pytest.param(["finalize"], id="finalize"),
+    pytest.param(["stop", "--message", "done"], id="stop"),
+    pytest.param(["status"], id="status"),
+    pytest.param(["sync"], id="sync"),
+    pytest.param(["supervise", "optimize", "--max-minutes", "1"], id="supervise"),
+    pytest.param(["export"], id="export"),
+]
+
+#: Every registered command name, in registration order.
+_ALL_COMMANDS = [param.id for param in COMMAND_ARGV]
 
 
-def test_app_when_unknown_command_does_exit_two():
-    result = runner.invoke(app, ["banana"])
+@pytest.mark.parametrize("argv", COMMAND_ARGV)
+@pytest.mark.usefixtures("_in_non_repo")
+def test_app_when_command_debug_flag_does_turn_debug_mode_on(argv: list[str]):
+    runner.invoke(app, [*argv, "--debug"])
 
-    assert result.exit_code == 2
-
-
-# ---------------------------------------------------------------------------
-# root --color / --no-color
-# ---------------------------------------------------------------------------
-
-
-def test_app_when_help_does_list_color_and_no_color_root_options():
-    out = help_output()
-
-    tokens = out.split()
-    assert "--color" in tokens
-    assert "--no-color" in tokens
-
-
-def test_app_when_root_no_color_does_strip_ansi_from_status_stdout(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
-
-    result = runner.invoke(app, ["--no-color", "status"])
-
-    assert result.exit_code == 0
-    assert not SGR_RE.search(result.stdout)
-
-
-def test_app_when_root_color_does_force_ansi_on_status_stdout(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
-
-    result = runner.invoke(app, ["--color", "status"])
-
-    assert result.exit_code == 0
-    assert SGR_RE.search(result.stdout)
-
-
-def test_app_when_local_no_color_beats_root_color_does_produce_plain_output(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
-
-    result = runner.invoke(app, ["--color", "status", "--no-color"])
-
-    assert result.exit_code == 0
-    assert not SGR_RE.search(result.stdout)
-
-
-def test_app_when_subcommand_passes_none_does_not_erase_root_no_color(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
-
-    result = runner.invoke(app, ["--no-color", "status"])
-
-    assert result.exit_code == 0
-    assert not SGR_RE.search(result.stdout)
+    assert is_debug_mode()
 
 
 # ---------------------------------------------------------------------------
-# no <parse leak in any command's --help
+# repository discovery failure
 # ---------------------------------------------------------------------------
 
-_ALL_COMMANDS = [
-    "init",
-    "compare",
-    "measure",
-    "probe",
-    "doctor",
-    "start",
-    "iterate",
-    "keep",
-    "discard",
-    "finalize",
-    "stop",
-    "status",
-    "sync",
-    "supervise",
-    "export",
+
+#: The commands that resolve the repository root themselves, before taking its lock.
+SESSION_COMMANDS = [
+    pytest.param(["probe"], id="probe"),
+    pytest.param(["start"], id="start"),
+    pytest.param(["iterate"], id="iterate"),
+    pytest.param(["keep"], id="keep"),
+    pytest.param(["discard"], id="discard"),
+    pytest.param(["finalize"], id="finalize"),
+    pytest.param(["stop", "--message", "done"], id="stop"),
+    pytest.param(["status"], id="status"),
+    pytest.param(["sync"], id="sync"),
+    pytest.param(["supervise", "optimize it", "--max-minutes", "10"], id="supervise"),
+]
+
+#: The commands that still run outside a git repository, skipping the lock instead of failing.
+LOCK_FREE_COMMANDS = [
+    pytest.param(["compare", "main", "main", "--bench", "sh bench.sh"], id="compare"),
+    pytest.param(["measure", "--bench", "sh bench.sh"], id="measure"),
+]
+
+#: Every command that resolves the repository root, so a git failure there must reach the user.
+REPOSITORY_COMMANDS = [
+    *LOCK_FREE_COMMANDS,
+    *SESSION_COMMANDS,
+    pytest.param(["init", "--bench", "sh bench.sh"], id="init"),
 ]
 
 
-@pytest.mark.parametrize("command", _ALL_COMMANDS)
-def test_app_when_help_does_not_leak_parse_function_repr(command: str):
-    out = help_output(command)
+@pytest.mark.parametrize("argv", SESSION_COMMANDS)
+@pytest.mark.usefixtures("_in_non_repo")
+def test_app_when_run_outside_a_repository_does_exit_two_naming_the_directory(argv: list[str]):
+    cwd = os.getcwd()  # noqa: PTH109 -- the message quotes the str cwd repo discovery saw
 
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert (
+        strip_ansi(result.stderr).split()
+        == (f"Error: Not a git repository: {cwd} Run gymrat from inside a git repository.").split()
+    )
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("argv", REPOSITORY_COMMANDS)
+@pytest.mark.usefixtures("repo")
+def test_app_when_repository_root_cannot_be_resolved_does_exit_two_with_git_diagnostics(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch
+):
+    refuse_git_lookups(monkeypatch)
+    cwd = os.getcwd()  # noqa: PTH109 -- the message quotes the str cwd repo discovery saw
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert (
+        strip_ansi(result.stderr).split()
+        == (
+            f"Error: Cannot determine the git repository at {cwd}: fatal: detected dubious ownership"
+        ).split()
+    )
+    assert result.stdout == ""
+
+
+# ---------------------------------------------------------------------------
+# root and local --color / --no-color
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("argv", "expect_sgr"),
+    [
+        pytest.param(["--color", "status"], True, id="root-color"),
+        pytest.param(
+            ["--color", "status", "--no-color"], False, id="local-no-color-beats-root-color"
+        ),
+    ],
+)
+@pytest.mark.usefixtures("status_repo")
+def test_app_when_color_flags_given_does_style_status_stdout_accordingly(
+    argv: list[str], expect_sgr: bool
+):
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == 0
+    assert bool(SGR_RE.search(result.stdout)) is expect_sgr
+
+
+def _real_doctor_text(_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub every doctor seam but keep the real text renderer."""
+    patch_doctor(monkeypatch, stub_text=False)
+
+
+def _open_unedited_session(repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open a session with one unsettled iteration and checks, and edit nothing, so keep refuses."""
+    open_unedited_session(repo)
+
+
+@pytest.mark.parametrize(
+    ("argv", "arrange", "exit_code"),
+    [
+        pytest.param(["doctor", "--color"], _real_doctor_text, 0, id="doctor"),
+        pytest.param(["init", "--bench", "npm run bench", "--color"], leave_as_is, 0, id="init"),
+        pytest.param(["probe", "--color"], open_stubbed_probe_session, 0, id="probe"),
+        pytest.param(["keep", "--color"], _open_unedited_session, 1, id="keep-refusing"),
+    ],
+)
+def test_app_when_command_color_flag_given_does_style_stdout_despite_no_color(
+    *,
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    arrange: Callable[[str, pytest.MonkeyPatch], None],
+    exit_code: int,
+):
+    arrange(repo, monkeypatch)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == exit_code
+    assert SGR_RE.search(result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# command help content
+# ---------------------------------------------------------------------------
+
+_COLOR_PAIR = r"(?<!\S)--color\s+--no-color(?!\S)"
+
+_SAMPLES = r"--samples\s+-s\s+<int>\s+paired samples per target"
+_TIMEOUT = r"--timeout\s+-t\s+<int>\s+timeout in seconds"
+
+
+def _supervise_option(name: str, metavar: str, description: str) -> str:
+    """Pattern matching one ``supervise --help`` row: name, metavar, description."""
+    return rf"{re.escape(name)}\s+{re.escape(metavar)}\s*{re.escape(description)}"
+
+
+#: The option rows each command's help must document, beyond the color pair.
+_HELP_OPTIONS: dict[str, tuple[str, ...]] = {
+    "init": (r"gymrat\.toml",),
+    "compare": (
+        _SAMPLES,
+        _TIMEOUT,
+        r"--fail-on\s+<condition>\s+exit 1 when",
+        r"--verbose\s+-v\s+name the",
+    ),
+    "measure": (_SAMPLES, _TIMEOUT),
+    "probe": (_SAMPLES, r"\[NAMES\]\.\.\.\s+<str>\s+metric names to narrow the bench to"),
+    "doctor": (_SAMPLES, _TIMEOUT),
+    "start": (
+        _SAMPLES,
+        _TIMEOUT,
+        (
+            r"--baseline\s+<ref>\s+git ref that pins a freshly opened session; "
+            r"defaults to HEAD and is ignored when a session is resumed"
+        ),
+    ),
+    "iterate": (_SAMPLES, _TIMEOUT),
+    "keep": (
+        _TIMEOUT,
+        r"--allow-unimproved\s+keep the edit even when the iteration was not improved",
+        r"--message\s+-m\s+<str>\s+commit message for the kept edit",
+    ),
+    "discard": (r"--force\s+-f\s+skip the confirmation prompt",),
+    "finalize": (
+        r"--message\s+-m\s+<str>\s+message for the squash commit",
+        r"--branch\s+<str>\s+branch to point at the squash commit \(default: <branch>-final\)",
+    ),
+    "stop": (r"--message\s+-m\s+<str>\s+why the session is being stopped",),
+    "status": (),
+    "sync": (),
+    "supervise": (
+        _supervise_option("[PROMPT]", "<str>", "optimization prompt for the agent"),
+        _supervise_option(
+            "--max-minutes",
+            "<float>",
+            "wall-clock cap in minutes, counted from when the baseline is recorded",
+        ),
+        _supervise_option("--max-usd", "<float>", "spend cap in USD"),
+        _supervise_option("--log", "<str>", "path for the JSONL event log"),
+        _supervise_option("--model", "<str>", "model to use for the agent session"),
+        _supervise_option("--effort", "<level>", "effort level"),
+        _supervise_option("--allow-dirty", "", "allow launching with uncommitted changes"),
+        _supervise_option(
+            "--force",
+            "",
+            "launch even when the cap cannot fit one iteration or a stop condition is already met",
+        ),
+        _supervise_option("--no-finalize", "", "leave the session open instead of finalizing it"),
+    ),
+    "export": (
+        r"\[SESSION_LOG\]\s+<str>\s+path to session\.jsonl",
+        r"--endpoint\s+<str>\s+.*\[env var: OTEL_EXPORTER_OTLP_ENDPOINT\]",
+    ),
+}
+
+
+@pytest.mark.parametrize("command", _ALL_COMMANDS)
+def test_app_when_command_help_does_document_its_options(command: str):
+    out = _help_output(command)
+
+    missing = [
+        pattern for pattern in (_COLOR_PAIR, *_HELP_OPTIONS[command]) if not re.search(pattern, out)
+    ]
+    assert missing == []
     assert "<parse" not in out
+
+
+# ---------------------------------------------------------------------------
+# python -m gymrat module entry
+# ---------------------------------------------------------------------------
+
+
+def test_main_module_when_help_does_show_same_description_and_epilogue_as_cli_app():
+    app_text = normalize(run_module("gymrat.cli.app", "--help").stdout)
+
+    module_result = run_module("gymrat", "--help")
+
+    assert (module_result.returncode, normalize(module_result.stdout)) == (0, app_text), (
+        module_result.stderr
+    )
+    assert "Usage: gymrat [" in app_text
+
+
+@pytest.mark.parametrize("module", ["gymrat", "gymrat.cli.app"])
+def test_module_entry_when_usage_error_does_print_usage_with_gymrat_program_name(module: str):
+    result = run_module(module, "compare", "main")
+
+    assert result.returncode == 2
+    assert "Usage: gymrat compare [" in normalize(result.stderr)
+    assert result.stderr.count("Usage:") == 1

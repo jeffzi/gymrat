@@ -1,8 +1,9 @@
 """Single-flight repository lock via OS advisory locks (``filelock.FileLock``).
 
-A run takes the lock by acquiring a non-blocking ``flock``/``LockFileEx`` on a
-dedicated ``.lock`` file next to the holder metadata path.  The holder record is
-written to the original path as plain JSON, readable on every platform — including
+A run takes the lock by acquiring a ``flock``/``LockFileEx`` on a dedicated
+``.lock`` file next to the holder metadata path, waiting at most
+``_LOCK_ACQUIRE_TIMEOUT`` seconds (by default) for a rival to let go.  The holder record is
+written to the original path as compact JSON, readable on every platform — including
 Windows, where ``LockFileEx`` creates a mandatory byte-range lock that blocks
 reads through a separate handle.
 
@@ -15,29 +16,34 @@ When the publish lock cannot be obtained within ``_PUBLISH_LOCK_TIMEOUT`` second
 record, a loser still reports best-effort diagnostics from whatever the file
 holds.
 
-Contention is instant: the loser reads the winner's holder record for diagnostics
-without needing liveness probes.  Crash recovery is automatic — the kernel
-releases the advisory lock when the holder exits — so a stale lockfile never
-needs manual cleanup.
+Contention is decided within the wait for the main lock: the loser reads the
+winner's holder record for diagnostics without needing liveness probes.  Crash
+recovery is automatic — the kernel releases the advisory lock when the holder
+exits — so a stale lockfile never needs manual cleanup.
 """
 
 import contextlib
-import json
 import os
 import sys
-import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
 from filelock import FileLock, Timeout
+from pydantic import BaseModel, ConfigDict
 
 from gymrat.errors import GymratError
-from gymrat.eta import MS_PER_SECOND
-from gymrat.session.clock import now_iso
+from gymrat.utils import read_sidecar, warn_to_stderr
 
-__all__ = ["LockContentionError", "LockHolder", "acquire_lock", "is_held", "read_holder"]
+__all__ = [
+    "LockContentionError",
+    "LockHolder",
+    "acquire_lock",
+    "is_held",
+    "now_iso",
+    "read_holder",
+]
 
 type ReleaseLock = Callable[[], None]
 """Gives up an acquired lock. Calling it more than once is harmless."""
@@ -50,15 +56,19 @@ _PUBLISH_LOCK_TIMEOUT: float = 2.0
 _WORLD_WRITABLE_MODE = 0o666
 """Permissions applied to the holder record so any user can overwrite or remove it."""
 
-LOCK_ACQUIRE_POLL_MS: int = 100
-"""Milliseconds between lock-acquisition retries."""
+_LOCK_ACQUIRE_TIMEOUT: float = 0.2
+"""Seconds to wait for the main lock before declaring contention.
 
-LOCK_ACQUIRE_RETRIES: int = 3
-"""Total attempts before declaring contention."""
+The wait rides out a transient hold, such as an :func:`is_held` probe, without
+reporting a spurious contention error.
+"""
+
+_LOCK_ACQUIRE_POLL_INTERVAL: float = _LOCK_ACQUIRE_TIMEOUT / 2
+"""Seconds between lock attempts, so a waiter gets a couple of checks within the
+budget before contention is reported."""
 
 
-@dataclass(frozen=True, slots=True)
-class LockHolder:
+class LockHolder(BaseModel):
     """The process a holder record names, as stamped by :func:`acquire_lock`.
 
     Attributes:
@@ -67,9 +77,16 @@ class LockHolder:
         at: ISO-8601 timestamp of when the lock was taken.
     """
 
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     pid: int
     command: str
     at: str
+
+
+def now_iso() -> str:
+    """The current UTC time as ISO-8601 with millisecond precision and a ``Z`` suffix."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class LockContentionError(GymratError):
@@ -84,35 +101,35 @@ def _publish_lock_file(lock_path: str) -> str:
     return _os_lock_file(lock_path) + ".publish"
 
 
-def _non_blocking_lock(os_lock_path: str) -> FileLock:
-    """A ``FileLock`` that fails immediately on contention instead of blocking."""
-    return FileLock(os_lock_path, timeout=0, preserve_lock_file=True)
-
-
-def is_held(lock_path: Path) -> bool:
+def is_held(lock_path: str) -> bool:
     """Report whether another party holds the advisory lock at ``lock_path``.
 
     The probe acquires a non-blocking ``FileLock`` on the OS lock file
-    (``<lock_path>.lock``) and releases immediately.  If acquisition fails the
-    lock is held; if it succeeds or the file cannot be opened at all the lock
-    is not held.  The probe never reads or writes the holder record and always
-    preserves the lock file on disk.
+    (``<lock_path>.lock``) and releases immediately.  The probe never reads or
+    writes the holder record and always preserves the lock file on disk.
 
     Args:
         lock_path: Path to the holder-record file whose sibling OS lock file
             is probed.
 
     Returns:
-        ``True`` when the lock is held by another party, ``False`` otherwise.
+        ``True`` when acquisition fails because another party holds the lock;
+        ``False`` when it succeeds.
+
+    Raises:
+        GymratError: When the OS lock file cannot be opened, so the probe
+            cannot tell whether the lock is held.
     """
-    os_lock_path = _os_lock_file(str(lock_path))
-    probe = _non_blocking_lock(os_lock_path)
+    os_lock_path = _os_lock_file(lock_path)
+    probe = FileLock(os_lock_path, timeout=0, preserve_lock_file=True)
     try:
         probe.acquire()
     except Timeout:
         return True
-    except OSError:
-        return False
+    except PermissionError as error:
+        _raise_permission_error(os_lock_path, error)
+    except OSError as error:
+        raise GymratError(_open_failure_message(os_lock_path, error)) from error
     else:
         probe.release()
         return False
@@ -133,107 +150,111 @@ def read_holder(lock_path: str) -> LockHolder | None:
         The recorded holder, or ``None`` when the file is absent, empty,
         truncated, or otherwise not a holder record.
     """
-    try:
-        record = json.loads(Path(lock_path).read_text(encoding="utf-8"))
-        pid = record["pid"]
-        command = record["command"]
-        at = record["at"]
-    except (OSError, TypeError, ValueError, KeyError):
-        return None
-
-    # JSON maps `true` to a bool, and bool is an int subclass — an isinstance
-    # check alone would accept it as a PID.
-    if type(pid) is not int or type(command) is not str or type(at) is not str:
-        return None
-
-    return LockHolder(pid=pid, command=command, at=at)
+    return read_sidecar(Path(lock_path), LockHolder)
 
 
-def _acquire_publish_lock(pub_lock_path: str) -> tuple[FileLock, bool]:
+def _acquire_publish_lock(pub_lock_path: str) -> FileLock:
     """Best-effort acquire of the publish lock.
 
-    Returns the lock object and whether acquisition succeeded. A timeout is not
-    an error — the caller proceeds without the publish lock in that case.
+    A timeout is not an error — the caller proceeds without the publish lock in
+    that case, and reads ``is_locked`` off the returned lock to know whether it
+    has one to release.
 
     Args:
         pub_lock_path: Path to the publish lock file to acquire.
 
     Returns:
-        A ``(lock, acquired)`` pair: the lock object and whether it was taken.
+        The publish lock, acquired when the wait succeeded.
+
+    Raises:
+        GymratError: When the publish lock file cannot be opened, with a
+            platform hint when the cause is permissions.
     """
     pub_lock = FileLock(pub_lock_path, timeout=_PUBLISH_LOCK_TIMEOUT, preserve_lock_file=True)
     try:
         pub_lock.acquire()
     except Timeout:
-        return pub_lock, False
+        pass
     except PermissionError as error:
         _raise_permission_error(pub_lock_path, error)
-    else:
-        return pub_lock, True
+    except OSError as error:
+        raise GymratError(_open_failure_message(pub_lock_path, error)) from error
+    return pub_lock
 
 
-def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
-    """Acquire the main non-blocking OS lock, or raise a diagnostic error.
-
-    Retries up to ``LOCK_ACQUIRE_RETRIES`` times with ``LOCK_ACQUIRE_POLL_MS``
-    between attempts so a transient hold (e.g. an ``is_held`` probe) does not
-    cause a spurious contention error.
+def _acquire_os_lock(
+    lock_path: str, os_lock_path: str, *, wait: float, poll_interval: float
+) -> FileLock:
+    """Acquire the main OS lock within ``wait`` seconds.
 
     Args:
-        lock_path: Path to the holder-record file, passed through to
-            :func:`_raise_contention_error` if all retries are exhausted.
+        lock_path: Path to the holder-record file, read for diagnostics when
+            the wait runs out.
         os_lock_path: Path to the sibling OS lock file to acquire.
+        wait: Seconds to wait for a rival to let go before declaring contention.
+        poll_interval: Seconds between lock attempts during the wait.
 
     Returns:
         The acquired ``FileLock``.
+
+    Raises:
+        LockContentionError: When another holder keeps the lock for the whole wait.
+        GymratError: When the OS lock file cannot be opened, with a platform
+            hint when the cause is permissions.
     """
-    lock = _non_blocking_lock(os_lock_path)
-    last_attempt = LOCK_ACQUIRE_RETRIES - 1
-    for attempt in range(LOCK_ACQUIRE_RETRIES):
-        try:
-            lock.acquire()
-        except Timeout:
-            if attempt < last_attempt:
-                time.sleep(LOCK_ACQUIRE_POLL_MS / MS_PER_SECOND)
-        except PermissionError as error:
-            _raise_permission_error(os_lock_path, error)
-        else:
-            return lock
-    _raise_contention_error(lock_path)
-    return lock  # unreachable: satisfies ruff RET503 (NoReturn not tracked past for-loop)
+    lock = FileLock(
+        os_lock_path,
+        timeout=wait,
+        poll_interval=poll_interval,
+        preserve_lock_file=True,
+    )
+    try:
+        lock.acquire()
+    except Timeout:
+        _raise_contention_error(lock_path)
+    except PermissionError as error:
+        _raise_permission_error(os_lock_path, error)
+    except OSError as error:
+        raise GymratError(_open_failure_message(os_lock_path, error)) from error
+    return lock
 
 
-def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
+def acquire_lock(
+    lock_path: str,
+    command: str,
+    *,
+    wait: float = _LOCK_ACQUIRE_TIMEOUT,
+    poll_interval: float = _LOCK_ACQUIRE_POLL_INTERVAL,
+) -> ReleaseLock:
     """Take the single-flight lock at ``lock_path`` on behalf of ``command``.
-
-    Returns a zero-argument callable that releases the lock. The release is
-    idempotent: calling it more than once is harmless.
 
     Args:
         lock_path: Path to the holder-record file whose sibling OS lock file
             is acquired.
         command: Name of the command taking the lock, written into the holder
             record for diagnostics when a rival process finds it.
+        wait: Seconds to wait for a rival to let go before declaring contention.
+        poll_interval: Seconds between lock attempts during the wait.
 
     Returns:
-        An idempotent callable that releases the lock.
+        An idempotent zero-argument callable that releases the lock.
 
     Raises:
         LockContentionError: When another process (or the same process) already
             holds the lock.
-        GymratError: When the lock file or its sibling publish lock file cannot
-            be opened due to permissions.
+        GymratError: When the OS lock file or its sibling publish lock file
+            cannot be opened, with a platform hint when the cause is permissions.
     """
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
 
-    record = json.dumps({"pid": os.getpid(), "command": command, "at": now_iso()})
+    record = LockHolder(pid=os.getpid(), command=command, at=now_iso()).model_dump_json()
 
     os_lock_path = _os_lock_file(lock_path)
     pub_lock_path = _publish_lock_file(lock_path)
 
-    pub_lock, has_pub_lock = _acquire_publish_lock(pub_lock_path)
+    pub_lock = _acquire_publish_lock(pub_lock_path)
     try:
-        lock = _acquire_os_lock(lock_path, os_lock_path)
+        lock = _acquire_os_lock(lock_path, os_lock_path, wait=wait, poll_interval=poll_interval)
 
         holder = Path(lock_path)
         holder.write_text(record, encoding="utf-8")
@@ -243,15 +264,14 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
         with contextlib.suppress(OSError):
             holder.chmod(_WORLD_WRITABLE_MODE)
     finally:
-        if has_pub_lock:
+        if pub_lock.is_locked:
             pub_lock.release()
 
     def release() -> None:
         try:
             lock.release()
         except Exception as error:  # noqa: BLE001 — intentional catch-all: release must never raise
-            text = f"Warning: failed to release lock at {lock_path}: {error!s}\n"
-            sys.stderr.write(text)
+            warn_to_stderr(f"Warning: failed to release lock at {lock_path}: {error!s}")
 
     return release
 
@@ -281,6 +301,10 @@ def _raise_contention_error(lock_path: str) -> NoReturn:
     raise LockContentionError(message, hint=_LIVE_HOLDER_HINT)
 
 
+def _open_failure_message(os_lock_path: str, error: OSError) -> str:
+    return f"Lock file {os_lock_path} could not be opened: {error!s}"
+
+
 def _raise_permission_error(os_lock_path: str, error: OSError) -> NoReturn:
     """Reframe a permission failure into a ``GymratError`` with platform-gated hints."""
     if sys.platform == "win32":
@@ -291,5 +315,4 @@ def _raise_permission_error(os_lock_path: str, error: OSError) -> NoReturn:
     else:
         hint = f"It belongs to another user. Remove {os_lock_path} yourself, then rerun."
 
-    message = f"Lock file {os_lock_path} could not be opened: {error!s}"
-    raise GymratError(message, hint=hint) from error
+    raise GymratError(_open_failure_message(os_lock_path, error), hint=hint) from error

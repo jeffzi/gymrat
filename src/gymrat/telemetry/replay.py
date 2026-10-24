@@ -6,65 +6,37 @@ never pulls the SDK into ``sys.modules``.
 
 from __future__ import annotations
 
-import json
-import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gymrat.errors import GymratError
-from gymrat.session.records.models import CommandRecord, SessionRecord
-from gymrat.session.records.parse import parse_record
+from gymrat.session.records import (
+    CommandRecord,
+    SessionRecord,
+    add_record_events,
+    parse_record,
+)
+from gymrat.session.store import complete_lines, is_blank_line
 from gymrat.supervisor.events import (
-    CapEvent,
-    CompactionEvent,
-    FollowUpEvent,
     LaunchEvent,
     TurnEndEvent,
     UsageUpdateEvent,
     event_from_wire,
 )
-from gymrat.telemetry.attributes import (
-    CAP_NAME,
-    EVENT_CAP,
-    EVENT_COMPACTION,
-    EVENT_FOLLOW_UP,
-    EVENT_TURN_END,
-    FOLLOW_UP_ACTION,
-    FOLLOW_UP_REASON,
-    GEN_AI_MODEL,
-    GEN_AI_PROVIDER,
-    RUN_COST_USD,
-    RUN_EFFORT,
-    RUN_HEAD_SHA,
-    RUN_MAX_MINUTES,
-    RUN_MAX_USD,
-    RUN_SPAN,
-    SESSION_ID,
-    SESSION_SPAN,
-    TURN_BUDGET_EXHAUSTED,
-    TURN_COST_USD,
-    TURN_ORIGIN,
-    command_span_inputs,
-    record_event,
-)
-from gymrat.telemetry.ids import parse_traceparent
-from gymrat.telemetry.provider import start_span
+from gymrat.telemetry.command_span import command_link, start_command_span
+from gymrat.telemetry.provider import Attrs
+from gymrat.telemetry.run_spans import RUN_COST_USD, run_event, start_run_span, start_session_span
+from gymrat.utils import NS_PER_MS, loads_strict_json, os_error_reason, warn_to_stderr
 
 if TYPE_CHECKING:
-    from opentelemetry.context import Context
     from opentelemetry.trace import Span
 
-    from gymrat.session.records.models import SessionLogRecord
+    from gymrat.session.records import SessionLogRecord
     from gymrat.supervisor.events import SessionEvent
 
-logger = logging.getLogger(__name__)
-
-type _EventTuple = tuple[str, dict[str, str | int | float | bool], int]
-type _NumberedRecord = tuple[int, SessionLogRecord]
-
-_UNKNOWN_COMMAND_NAME = "unknown"
-_EXIT_CODE_ERROR = 2  # CLI exit-code convention: 2 = error
-_NS_PER_MS = 1_000_000
+type _EventTuple = tuple[str, Attrs, int]
+type _RunSpan = tuple[_ParsedRun, Span]
 
 
 def replay_session(
@@ -73,44 +45,47 @@ def replay_session(
 ) -> int:
     """Replay JSONL session and supervisor logs into deterministic OTel spans.
 
+    A session-log line that cannot be parsed is skipped with a warning on
+    stderr, and so is a supervisor log that cannot be read or whose launch line
+    names this session but is not a valid launch event. A supervisor log whose
+    first line is not a launch of this session is skipped silently.
+
     Args:
         session_log: Path to the session JSONL log file.
-        supervisor_logs: Paths to the supervisor JSONL log files.
+        supervisor_logs: Paths to candidate supervisor JSONL log files.
 
     Returns:
         The total number of spans exported.
     """
-    from opentelemetry import trace  # noqa: PLC0415
-
-    numbered_records = _read_session_log(session_log)
-    if not numbered_records:
+    records = _read_session_log(session_log)
+    if not records:
         return 0
 
-    _first_lineno, first_record = numbered_records[0]
+    first_record = records[0]
     if not isinstance(first_record, SessionRecord):
         return 0
 
     session_id = first_record.session_id
-    runs = _parse_supervisor_logs(supervisor_logs, session_id)
+    runs = [
+        run
+        for log_path in supervisor_logs
+        if (run := _parse_one_supervisor_log(log_path, session_id)) is not None
+    ]
 
-    latest_at = first_record.at
-    for _lineno, rec in numbered_records:
-        latest_at = max(latest_at, rec.at)
-    for run in runs:
-        latest_at = max(latest_at, run.last_at)
+    latest_at = max([
+        *(rec.at for rec in records),
+        *(run.last_at for run in runs),
+    ])
 
-    session_span = start_span(
-        SESSION_SPAN,
-        span_key="session",
-        start_time=first_record.at,
+    session_span = start_session_span(
+        session_id, branch=first_record.branch, start_time=first_record.at
     )
-    session_ctx = trace.set_span_in_context(session_span)
 
-    run_infos = _create_run_spans(runs, session_ctx)
-    cmd_count = _create_command_spans(numbered_records, session_id, session_span, run_infos)
+    run_spans = [(run, _create_run_span(run, session_span)) for run in runs]
+    cmd_count = _create_command_spans(records, session_id, session_span, run_spans)
 
     session_span.end(end_time=latest_at)
-    return 1 + len(run_infos) + cmd_count
+    return 1 + len(run_spans) + cmd_count
 
 
 def _add_events(span: Span, events: list[_EventTuple]) -> None:
@@ -119,250 +94,268 @@ def _add_events(span: Span, events: list[_EventTuple]) -> None:
         span.add_event(ev_name, attributes=ev_attrs, timestamp=ev_at)
 
 
-def _create_run_spans(
-    runs: list[_ParsedRun],
-    session_ctx: Context,
-) -> list[_RunInfo]:
-    """Open and close one ``gymrat.run`` span per parsed supervisor run."""
-    run_infos: list[_RunInfo] = []
-    for run in runs:
-        run_span = start_span(
-            RUN_SPAN,
-            span_key=f"run:{run.launch_at}",
-            start_time=run.launch_at,
-            context=session_ctx,
-            attributes=run.attributes,
-        )
+def _create_run_span(run: _ParsedRun, session_span: Span) -> Span:
+    """Open and close the ``gymrat.run`` span of one parsed supervisor run."""
+    run_span = start_run_span(run.launch, parent=session_span, start_time=run.launch.at)
 
-        _add_events(run_span, run.events)
+    _add_events(run_span, run.events)
 
-        if run.cost_usd is not None:
-            run_span.set_attribute(RUN_COST_USD, run.cost_usd)
+    if run.cost_usd is not None:
+        run_span.set_attribute(RUN_COST_USD, run.cost_usd)
 
-        run_span.end(end_time=run.last_at)
-        run_infos.append(_RunInfo(run.launch_at, run.last_at, run_span))
-    return run_infos
+    run_span.end(end_time=run.last_at)
+    return run_span
 
 
 def _create_command_spans(
-    numbered_records: list[_NumberedRecord],
+    records: list[SessionLogRecord],
     session_id: str,
     session_span: Span,
-    run_infos: list[_RunInfo],
+    run_spans: list[_RunSpan],
 ) -> int:
-    """Create ``gymrat.command.*`` spans and attach inter-command records as events.
+    """Create ``gymrat.command.*`` spans and attach the session's records as events.
 
-    Records before the first command and after the last command are attached
-    as events on the session span.  Records between two commands are attached
-    to the later command's span.
+    Records before a command, including those before the first command, are
+    attached to that command's span, matching live emission where a command's
+    span carries the records it appended to the log. Records after the last
+    command have no owning command and are attached to the session span. The
+    session header is never an event.
+
+    A command span is keyed by the command's 1-based position among the
+    records, as live tracing keys it by the number of records the log holds
+    once the command's own record is appended.
+
+    Args:
+        records: The session's records, in file order.
+        session_id: The session the spans belong to.
+        session_span: The span that records after the last command attach to.
+        run_spans: The supervisor runs, each with its span.
 
     Returns:
         The number of command spans created.
     """
-    pending_events: list[_EventTuple] = []
+    pending_records: list[SessionLogRecord] = []
     cmd_count = 0
-    seen_command = False
 
-    for line_number, rec in numbered_records:
+    for position, rec in enumerate(records, 1):
         if isinstance(rec, SessionRecord):
             continue
 
         if isinstance(rec, CommandRecord):
-            if not seen_command:
-                # Pre-command records go on the session span, not on the first command.
-                _add_events(session_span, pending_events)
-                pending_events.clear()
-                seen_command = True
             cmd_count += 1
-            _emit_command_span(
-                rec, line_number, session_id, session_span, run_infos, pending_events
-            )
+            _emit_command_span(rec, position, session_id, session_span, run_spans, pending_records)
         else:
-            ev_name, ev_attrs = record_event(rec)
-            pending_events.append((ev_name, ev_attrs, rec.at))
+            pending_records.append(rec)
 
-    _add_events(session_span, pending_events)
+    add_record_events(session_span, pending_records)
     return cmd_count
 
 
 def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay context
     rec: CommandRecord,
-    line_number: int,
+    position: int,
     session_id: str,
     session_span: Span,
-    run_infos: list[_RunInfo],
-    pending_events: list[_EventTuple],
+    run_spans: list[_RunSpan],
+    pending_records: list[SessionLogRecord],
 ) -> None:
-    """Create one command span, drain pending events onto it, and close it."""
-    from opentelemetry import trace  # noqa: PLC0415
-    from opentelemetry.trace import Link  # noqa: PLC0415
+    """Create one command span, drain the pending records onto it as events, and close it."""
+    from opentelemetry import trace  # noqa: PLC0415 -- optional extra
 
-    parent_run = _find_parent_run(rec.at, run_infos)
-    if parent_run is None and rec.traceparent:
-        parent_run = _find_parent_by_traceparent(rec.traceparent, run_infos)
-    parent_span = parent_run.span if parent_run is not None else session_span
-    parent_ctx = trace.set_span_in_context(parent_span)
-
-    inputs = command_span_inputs(rec, session_id=session_id, line_number=line_number)
-    links = [Link(inputs.link)] if inputs.link is not None else None
-
-    start_ns = rec.at - rec.duration_ms * _NS_PER_MS
-    cmd_span = start_span(
-        inputs.name,
-        span_key=inputs.key,
-        start_time=start_ns,
-        context=parent_ctx,
-        attributes=inputs.attributes,
-        links=links,
+    cmd_span = start_command_span(
+        rec,
+        session_id=session_id,
+        line_number=position,
+        context=trace.set_span_in_context(_find_parent_run(rec, run_spans) or session_span),
+        start_time=rec.at - rec.duration_ms * NS_PER_MS,
     )
 
-    _set_command_status(cmd_span, rec.exit_code)
-
-    _add_events(cmd_span, pending_events)
-    pending_events.clear()
+    add_record_events(cmd_span, pending_records)
+    pending_records.clear()
 
     cmd_span.end(end_time=rec.at)
 
 
-def _set_command_status(span: Span, exit_code: int) -> None:
-    from opentelemetry.trace import StatusCode  # noqa: PLC0415
-
-    if exit_code == 0:
-        span.set_status(StatusCode.OK)
-    elif exit_code == _EXIT_CODE_ERROR:
-        span.set_status(StatusCode.ERROR)
-
-
-class _RunInfo:
-    """Time range and span handle for one supervisor run."""
-
-    __slots__ = ("end", "span", "start")
-
-    def __init__(self, start: int, end: int, span: Span) -> None:
-        self.start = start
-        self.end = end
-        self.span = span
-
-
+@dataclass(slots=True)
 class _ParsedRun:
     """Data extracted from one supervisor log before span creation."""
 
-    __slots__ = ("attributes", "cost_usd", "events", "last_at", "launch_at")
-
-    def __init__(self, launch: LaunchEvent) -> None:
-        self.launch_at = launch.at
-        self.last_at = launch.at
-        self.cost_usd: float | None = None
-
-        attrs: dict[str, str | int | float | bool] = {
-            SESSION_ID: launch.session_id,
-            RUN_HEAD_SHA: launch.head_sha,
-            RUN_MAX_MINUTES: launch.max_minutes,
-            GEN_AI_PROVIDER: "anthropic",
-        }
-        if launch.max_usd is not None:
-            attrs[RUN_MAX_USD] = launch.max_usd
-        if launch.effort is not None:
-            attrs[RUN_EFFORT] = launch.effort
-        if launch.model is not None:
-            attrs[GEN_AI_MODEL] = launch.model
-        self.attributes = attrs
-
-        self.events: list[_EventTuple] = []
+    launch: LaunchEvent
+    last_at: int
+    cost_usd: float | None = None
+    events: list[_EventTuple] = field(default_factory=list)
 
 
-def _read_lines(path: str) -> list[str]:
-    """Read *path* as UTF-8 text split into lines, or ``[]`` if it doesn't exist."""
+def _decode_object_line(raw: bytes) -> dict[str, object] | None:
+    """Decode one raw UTF-8 log line as a JSON object.
+
+    Args:
+        raw: The line's bytes, without its trailing newline.
+
+    Returns:
+        The decoded object, or ``None`` when the line is not valid UTF-8, is not
+        strict JSON (non-finite numbers included), or decodes to something other
+        than an object.
+    """
     try:
-        return Path(path).read_text(encoding="utf-8").splitlines()
+        # UnicodeDecodeError is a ValueError, so a non-UTF-8 line lands here too.
+        parsed = loads_strict_json(raw.decode("utf-8"))
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _read_first_line(path: Path) -> bytes | None:
+    """Read the raw bytes of the first line of ``path``, never past it.
+
+    Args:
+        path: The file to read.
+
+    Returns:
+        The first line's bytes, its line feed included when it has one, or
+        ``None`` when the file does not exist.
+    """
+    # Binary read: a text-mode readline decodes a whole buffered chunk, so bytes
+    # on later lines could fail the read of a first line that is itself valid.
+    try:
+        with path.open("rb") as handle:
+            return handle.readline()
     except FileNotFoundError:
-        return []
+        return None
 
 
-def _read_session_log(path: str) -> list[_NumberedRecord]:
-    """Parse a session JSONL log into typed records paired with physical line numbers."""
-    records: list[_NumberedRecord] = []
-    for line_number, line in enumerate(_read_lines(path), 1):
-        if not line.strip():
+def first_line_json(path: Path) -> dict[str, object] | None:
+    """Parse only the first line of ``path`` as a JSON object.
+
+    Args:
+        path: The JSONL file to peek at.
+
+    Returns:
+        The decoded object, or ``None`` when the file does not exist or its
+        first line is not a JSON object, including a line that is not valid
+        UTF-8 or holds a non-finite number.
+
+    Raises:
+        OSError: When the file exists but cannot be read, such as a directory
+            or a file without read permission.
+    """
+    first_line = _read_first_line(path)
+    if first_line is None:
+        return None
+    return _decode_object_line(first_line)
+
+
+def _read_bytes(path: str) -> bytes:
+    """Read *path*'s raw content, or ``b""`` when the file does not exist."""
+    try:
+        return Path(path).read_bytes()
+    except FileNotFoundError:
+        return b""
+
+
+def _read_lines(path: str) -> list[bytes]:
+    """Read *path* as raw lines, leaving each one to be decoded on its own.
+
+    Decoding the whole file at once would let one undecodable line, such as a
+    final record torn mid-character by a crash, hide every other line. CRLF and
+    lone CR are folded into a line feed, as text-mode reading would.
+
+    Deliberately narrower than :meth:`str.splitlines`, which also breaks on
+    U+0085, U+2028 and U+2029 — characters a JSON string may carry raw, so
+    splitting there would tear one record into two invalid halves.
+
+    Args:
+        path: The file to read.
+
+    Returns:
+        The file's lines split on line feeds, or ``[]`` when the file does not
+        exist.
+    """
+    content = _read_bytes(path)
+    lines = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
+    if lines[-1] == b"":
+        lines.pop()
+    return lines
+
+
+def _read_session_log(path: str) -> list[SessionLogRecord]:
+    """Parse a session JSONL log into typed records, reading lines as the store reads them.
+
+    Blank lines and an unterminated final line are dropped, as
+    :func:`~gymrat.session.store.read_records` drops them; a complete line that
+    does not parse is skipped with a warning naming its line number.
+
+    Args:
+        path: The session log to read.
+
+    Returns:
+        The parsed records in file order, or ``[]`` when the log does not exist.
+    """
+    records: list[SessionLogRecord] = []
+    for line_number, line in enumerate(complete_lines(_read_bytes(path)), start=1):
+        if is_blank_line(line):
             continue
         record = _parse_session_log_line(path, line_number, line)
         if record is not None:
-            records.append((line_number, record))
+            records.append(record)
     return records
 
 
-def _parse_session_log_line(path: str, line_number: int, line: str) -> SessionLogRecord | None:
+def _parse_session_log_line(path: str, line_number: int, line: bytes) -> SessionLogRecord | None:
     """Parse one JSONL line into a typed record, or None to skip it."""
     try:
-        data = json.loads(line)
-    except json.JSONDecodeError:
-        logger.warning("session log %s: skipping line %d (invalid JSON)", path, line_number)
+        wire_value = loads_strict_json(line.decode("utf-8"))
+    except ValueError:
+        warn_to_stderr(f"warning: session log {path}: skipping line {line_number} (invalid JSON)")
         return None
-    if not isinstance(data, dict):
+    if not isinstance(wire_value, dict):
+        warn_to_stderr(f"warning: session log {path}: skipping line {line_number} (not a record)")
         return None
     try:
-        return parse_record(data)
+        return parse_record(wire_value)
     except GymratError:
-        if data.get("type") != "command":
-            return None
-        cmd_name = data.get("name", _UNKNOWN_COMMAND_NAME)
-        logger.warning(
-            "session log %s: command %r fell back to model_construct",
-            path,
-            cmd_name,
+        kind = wire_value.get("type", "untyped")
+        warn_to_stderr(
+            f"warning: session log {path}: skipping line {line_number} (invalid {kind} record)"
         )
-        return _construct_command(data)
-
-
-def _construct_command(data: dict[str, object]) -> CommandRecord:
-    """Build a CommandRecord without running model validators."""
-    filled = dict(data)
-    filled.setdefault("reason", None)
-    filled.setdefault("seq", None)
-    filled.setdefault("traceparent", None)
-    filled.setdefault("args", {})
-    filled.setdefault("name", _UNKNOWN_COMMAND_NAME)
-    filled.setdefault("duration_ms", 0)
-    filled.setdefault("exit_code", _EXIT_CODE_ERROR)
-    # pyrefly: ignore[bad-argument-type] -- dict[str, object] is the wire dict shape
-    return CommandRecord.model_construct(**filled)
-
-
-def _parse_supervisor_logs(
-    supervisor_logs: list[str],
-    session_id: str,
-) -> list[_ParsedRun]:
-    """Parse supervisor JSONL logs into _ParsedRun objects for matching sessions."""
-    runs: list[_ParsedRun] = []
-
-    for log_path in supervisor_logs:
-        run = _parse_one_supervisor_log(log_path, session_id)
-        if run is not None:
-            runs.append(run)
-
-    return runs
+        return None
 
 
 def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | None:
-    """Parse a single supervisor log, returning None if it doesn't match."""
-    lines = _read_lines(log_path)
-    if not lines:
-        return None
+    """Parse one supervisor log when its launch event names the session.
 
-    first_obj = _safe_json(lines[0])
+    The typed launch event alone decides whether the log belongs to the
+    session. A log that cannot be read, or whose launch line names the session
+    but fails to parse as a launch event, is reported on stderr; any other
+    mismatch is skipped silently.
+
+    Args:
+        log_path: The supervisor log to read.
+        session_id: The session the launch event must name.
+
+    Returns:
+        The parsed run, or ``None`` when the log does not belong to the session.
+    """
+    try:
+        first_obj = first_line_json(Path(log_path))
+    except OSError as error:
+        warn_to_stderr(f"warning: skipped {log_path}: {os_error_reason(error)}")
+        return None
     if first_obj is None:
         return None
 
-    first_event = event_from_wire(first_obj)
-    if not isinstance(first_event, LaunchEvent):
+    launch = event_from_wire(first_obj)
+    if not isinstance(launch, LaunchEvent):
+        if first_obj.get("type") == "launch" and first_obj.get("session_id") == session_id:
+            warn_to_stderr(f"warning: skipped {log_path}: its launch line is not a valid launch")
         return None
-    if first_event.session_id != session_id:
+    if launch.session_id != session_id:
         return None
 
-    run = _ParsedRun(first_event)
+    run = _ParsedRun(launch=launch, last_at=launch.at)
 
-    for line in lines[1:]:
-        obj = _safe_json(line)
+    for line in _read_lines(log_path)[1:]:
+        obj = _decode_object_line(line)
         if obj is None:
             continue
         event = event_from_wire(obj)
@@ -375,58 +368,34 @@ def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | No
 
 
 def _collect_run_event(run: _ParsedRun, event: SessionEvent) -> None:
-    """Classify a supervisor event and append it to a parsed run."""
-    if isinstance(event, TurnEndEvent):
+    """Record the cost an event reports and the span event it is mirrored as."""
+    if isinstance(event, TurnEndEvent | UsageUpdateEvent):
         run.cost_usd = event.cost_usd
-        run.events.append((
-            EVENT_TURN_END,
-            {
-                TURN_COST_USD: event.cost_usd,
-                TURN_ORIGIN: event.origin,
-                TURN_BUDGET_EXHAUSTED: event.budget_exhausted,
-            },
-            event.at,
-        ))
-    elif isinstance(event, UsageUpdateEvent):
-        run.cost_usd = event.cost_usd
-    elif isinstance(event, FollowUpEvent):
-        attrs: dict[str, str | int | float | bool] = {FOLLOW_UP_ACTION: event.action}
-        if event.reason is not None:
-            attrs[FOLLOW_UP_REASON] = event.reason
-        run.events.append((EVENT_FOLLOW_UP, attrs, event.at))
-    elif isinstance(event, CapEvent):
-        run.events.append((
-            EVENT_CAP,
-            {CAP_NAME: event.cap},
-            event.at,
-        ))
-    elif isinstance(event, CompactionEvent):
-        run.events.append((EVENT_COMPACTION, {}, event.at))
+    mirrored = run_event(event)
+    if mirrored is not None:
+        name, attributes = mirrored
+        run.events.append((name, attributes, event.at))
 
 
-def _find_parent_run(at: int, run_infos: list[_RunInfo]) -> _RunInfo | None:
-    """Find the run span whose time range contains ``at``."""
-    for run in run_infos:
-        if run.start <= at <= run.end:
-            return run
-    return None
+def _find_parent_run(rec: CommandRecord, run_spans: list[_RunSpan]) -> Span | None:
+    """Find the span of the run a command ran under.
 
+    Args:
+        rec: The command record.
+        run_spans: The supervisor runs, each with its span.
 
-def _find_parent_by_traceparent(traceparent: str, run_infos: list[_RunInfo]) -> _RunInfo | None:
-    """Find the run span whose span ID matches the traceparent's span ID."""
-    ctx = parse_traceparent(traceparent)
-    if ctx is None:
+    Returns:
+        The span of the run whose time range contains the command; failing
+        that, the run span the command's recorded traceparent links to; else
+        ``None``.
+    """
+    for run, span in run_spans:
+        if run.launch.at <= rec.at <= run.last_at:
+            return span
+    link = command_link(rec)
+    if link is None:
         return None
-    for run in run_infos:
-        if run.span.get_span_context().span_id == ctx.span_id:
-            return run
+    for _run, span in run_spans:
+        if span.get_span_context().span_id == link.span_id:
+            return span
     return None
-
-
-def _safe_json(line: str) -> dict[str, object] | None:
-    """Parse a JSON line into a dict, or None on failure."""
-    try:
-        obj = json.loads(line)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    return obj if isinstance(obj, dict) else None

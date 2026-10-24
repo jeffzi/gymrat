@@ -10,12 +10,12 @@ reproducible and testable without a console.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal, assert_never
+from typing import Literal, assert_never
 
-from gymrat.eta import SamplingEta, format_duration
-from gymrat.plural import pluralize
+from gymrat.cli.milestone_lines import prepare_milestone
 from gymrat.progress_events import (
     ConfirmFinished,
+    ConfirmSkipped,
     ConfirmStarted,
     HookFinished,
     HookStarted,
@@ -28,15 +28,15 @@ from gymrat.progress_events import (
     PrepareStarted,
     ProgressEvent,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-TARGETS_PER_ROUND = 2
-"""Passes one sampling round runs: one against the baseline, one against the candidate."""
+from gymrat.report.format import format_percent_delta
+from gymrat.session.budget import SIDES_PER_ITERATE
+from gymrat.utils import MISSING_DELTA, SamplingEta, StyledSegment, format_duration, pluralize
 
 REGRESSED_NAME_CAP = 3
 """How many regressed metric names the judge's lines spell out."""
+
+type JudgeRole = Literal["meta", "name"]
+"""What a judge segment holds: verdict wording, or one regressed metric's name."""
 
 
 # ---------------------------------------------------------------------------
@@ -68,13 +68,15 @@ class NodeState:
         noun: Row label shown while ``status`` is ``"pending"``.
         gerund: Row label shown while ``status`` is ``"running"``.
         past: Row label shown once ``status`` is ``"done"``.
-        hint: Dim explanation shown behind a pending row, or ``""`` for none.
+        hint: Dim explanation shown behind a pending or skipped row, or
+            ``""`` for none.
         note: Dim context shown beside a running row, or ``""`` for none.
         target: In-flight target label shown while running, or ``""`` for none.
         detail: Outcome shown when done, either plain text or a
             :class:`JudgeDetail` for the judge row, or ``""`` for none.
         status: The row's lifecycle state, driving which rendering the view
-            picks. A ``"skipped"`` row is dropped from the checklist entirely.
+            picks. :attr:`IterateState.visible_nodes` decides whether a
+            ``"skipped"`` row is drawn at all.
         start_ms: Timestamp the row's current run began, or ``0.0`` before it
             has started.
         elapsed_ms: Milliseconds the row's completed run took, or ``0.0``
@@ -107,6 +109,35 @@ class PhaseCounters:
 
     eta: SamplingEta
     start_ms: float = 0.0
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class IterationFacts:
+    """What is known about an iteration before it runs, as the checklist shows it.
+
+    Attributes:
+        seq: The 1-based iteration sequence number, shown in the header.
+        session_id: The session the iteration belongs to, shown in the header.
+        sample_count: Passes per target; the iteration total is this times
+            :data:`~gymrat.session.budget.SIDES_PER_ITERATE`.
+        metric_count: Number of metrics the judge evaluates, shown in the judge
+            row's hint alongside the primary.
+        primary_metric: Name of the metric the judge gates on, shown in the
+            judge row's hint.
+        checks_cmd: The shell command the record row mentions, or ``None`` to
+            omit the note.
+        has_before_hook: Whether the checklist includes a before-hook row.
+        has_after_hook: Whether the record row's hint mentions an after hook.
+    """
+
+    seq: int
+    session_id: str
+    sample_count: int
+    metric_count: int
+    primary_metric: str
+    checks_cmd: str | None = None
+    has_before_hook: bool = False
+    has_after_hook: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,38 +199,43 @@ class IterateState:
         """Passes each sampling phase expects in all, as the measure estimate counts them."""
         return self.pass_phase.eta.total
 
+    @property
+    def visible_nodes(self) -> tuple[NodeState, ...]:
+        """The checklist rows the view draws, in display order.
+
+        A skipped row is dropped, except the confirm row after a judge that
+        found regressions: it stays, marked skipped, to show that no rerun
+        followed the regression.
+        """
+        nodes = self.nodes
+        verdict = nodes.judge.detail
+        regressed = isinstance(verdict, JudgeDetail) and bool(verdict.regressed_names)
+        return tuple(
+            node
+            for node in nodes.all_nodes
+            if node.status != "skipped" or (regressed and node is nodes.confirm)
+        )
+
 
 # ---------------------------------------------------------------------------
 # Construction
 # ---------------------------------------------------------------------------
 
 
-def build_nodes(
-    primary_metric: str,
-    metric_count: int,
-    *,
-    has_before_hook: bool,
-    has_after_hook: bool,
-) -> IterateNodes:
-    """Build the per-phase node states an iteration starts from.
+def initial_state(facts: IterationFacts) -> IterateState:
+    """Build the state an iteration starts from.
 
     Args:
-        primary_metric: Name of the primary metric, shown in the judge node's
-            hint.
-        metric_count: Total number of evaluated metrics, shown in the judge
-            hint alongside the primary.
-        has_before_hook: Whether to include a before-hook node in the
-            checklist.
-        has_after_hook: Whether the record node's hint should mention a
-            subsequent after hook.
+        facts: What is known about the iteration before it runs.
 
     Returns:
-        The assembled node collection, every row pending.
+        A state with every row pending and no event applied yet.
     """
-    judge_hint = f"{primary_metric} primary"
-    if metric_count > 0:
-        judge_hint = f"{pluralize(metric_count, 'metric')} · {judge_hint}"
-    return IterateNodes(
+    total = facts.sample_count * SIDES_PER_ITERATE
+    judge_hint = f"{facts.primary_metric} primary"
+    if facts.metric_count > 0:
+        judge_hint = f"{pluralize(facts.metric_count, 'metric')} · {judge_hint}"
+    nodes = IterateNodes(
         before_hook=NodeState(noun="before hook", gerund="before hook", past="before hook"),
         prepare=NodeState(noun="prepare", gerund="preparing", past="prepared"),
         passes=NodeState(noun="passes", gerund="sampling", past="sampled"),
@@ -220,50 +256,18 @@ def build_nodes(
             noun="record",
             gerund="recording",
             past="recorded",
-            hint="then after hook" if has_after_hook else "",
+            hint="then after hook" if facts.has_after_hook else "",
         ),
-        has_before_hook=has_before_hook,
+        has_before_hook=facts.has_before_hook,
     )
-
-
-def initial_state(  # noqa: PLR0913 -- one parameter per iteration fact the state carries
-    *,
-    sample_count: int,
-    metric_count: int,
-    primary_metric: str,
-    checks_cmd: str | None,
-    has_before_hook: bool,
-    has_after_hook: bool,
-) -> IterateState:
-    """Build the state an iteration starts from.
-
-    Args:
-        sample_count: Passes per target; the iteration total is this times
-            :data:`TARGETS_PER_ROUND`.
-        metric_count: Number of metrics the judge evaluates.
-        primary_metric: Name of the metric the judge gates on.
-        checks_cmd: The shell command the record row mentions, or ``None`` to
-            omit the note.
-        has_before_hook: Whether the checklist includes a before-hook row.
-        has_after_hook: Whether the record row's hint mentions an after hook.
-
-    Returns:
-        A state with every row pending and no event applied yet.
-    """
-    total = sample_count * TARGETS_PER_ROUND
     return IterateState(
-        nodes=build_nodes(
-            primary_metric,
-            metric_count,
-            has_before_hook=has_before_hook,
-            has_after_hook=has_after_hook,
-        ),
-        pass_phase=PhaseCounters(eta=SamplingEta.start(total)),
-        confirm_phase=PhaseCounters(eta=SamplingEta.start(total)),
+        nodes=nodes,
+        pass_phase=PhaseCounters(eta=SamplingEta(total=total)),
+        confirm_phase=PhaseCounters(eta=SamplingEta(total=total)),
         prepare_current_start_ms=0.0,
         run_start_ms=None,
-        primary_metric=primary_metric,
-        checks_cmd=checks_cmd,
+        primary_metric=facts.primary_metric,
+        checks_cmd=facts.checks_cmd,
     )
 
 
@@ -288,10 +292,8 @@ def advance(  # noqa: C901 -- flat match over the event union
     """
     anchored = state if state.run_start_ms is not None else replace(state, run_start_ms=event.at_ms)
     match event:
-        case HookStarted():
-            advanced = _hook_started(anchored, event)
-        case HookFinished():
-            advanced = _hook_finished(anchored, event)
+        case HookStarted() | HookFinished():
+            advanced = _hook_changed(anchored, event)
         case PrepareStarted():
             advanced = _prepare_started(anchored, event)
         case PrepareFinished():
@@ -308,6 +310,8 @@ def advance(  # noqa: C901 -- flat match over the event union
             advanced = _confirm_started(anchored, event)
         case ConfirmFinished():
             advanced = _confirm_finished(anchored, event)
+        case ConfirmSkipped():
+            advanced = _confirm_skipped(anchored)
         case IterationRecorded():
             advanced = _iteration_recorded(anchored, event)
         case _:  # pragma: no cover - exhaustive over the event union
@@ -315,19 +319,15 @@ def advance(  # noqa: C901 -- flat match over the event union
     return advanced
 
 
-def _hook_started(state: IterateState, event: HookStarted) -> IterateState:
-    if event.stage != "before":
-        return state
-    running = replace(state.nodes.before_hook, status="running", start_ms=event.at_ms)
-    return replace(state, nodes=replace(state.nodes, before_hook=running))
-
-
-def _hook_finished(state: IterateState, event: HookFinished) -> IterateState:
+def _hook_changed(state: IterateState, event: HookStarted | HookFinished) -> IterateState:
     if event.stage != "before":
         return state
     hook = state.nodes.before_hook
-    done = replace(hook, status="done", elapsed_ms=event.at_ms - hook.start_ms)
-    return replace(state, nodes=replace(state.nodes, before_hook=done))
+    if isinstance(event, HookStarted):
+        changed = replace(hook, status="running", start_ms=event.at_ms)
+    else:
+        changed = replace(hook, status="done", elapsed_ms=event.at_ms - hook.start_ms)
+    return replace(state, nodes=replace(state.nodes, before_hook=changed))
 
 
 def _prepare_started(state: IterateState, event: PrepareStarted) -> IterateState:
@@ -388,16 +388,20 @@ def _judge_finished(state: IterateState, event: JudgeFinished) -> IterateState:
         status="done",
         note="",
         elapsed_ms=event.at_ms - judge.start_ms if judge.start_ms > 0 else 0.0,
-        detail=JudgeDetail(
-            primary_metric=state.primary_metric,
-            primary_delta_pct=event.primary_delta_pct,
-            regressed_names=tuple(event.regressed),
-        ),
+        detail=_judge_detail(state, event),
     )
     confirm = (
         state.nodes.confirm if event.regressed else replace(state.nodes.confirm, status="skipped")
     )
     return replace(state, nodes=replace(state.nodes, judge=done, confirm=confirm))
+
+
+def _judge_detail(state: IterateState, event: JudgeFinished) -> JudgeDetail:
+    return JudgeDetail(
+        primary_metric=state.primary_metric,
+        primary_delta_pct=event.primary_delta_pct,
+        regressed_names=tuple(event.regressed),
+    )
 
 
 def _confirm_started(state: IterateState, event: ConfirmStarted) -> IterateState:
@@ -422,6 +426,11 @@ def _confirm_finished(state: IterateState, event: ConfirmFinished) -> IterateSta
     )
     settled = replace(state.nodes.judge, alert=False)
     return replace(state, nodes=replace(state.nodes, judge=settled, confirm=done))
+
+
+def _confirm_skipped(state: IterateState) -> IterateState:
+    skipped = replace(state.nodes.confirm, status="skipped")
+    return replace(state, nodes=replace(state.nodes, confirm=skipped))
 
 
 def _iteration_recorded(state: IterateState, event: IterationRecorded) -> IterateState:
@@ -460,15 +469,13 @@ def plain_line(before: IterateState, after: IterateState, event: ProgressEvent) 
     """
     match event:
         case PrepareFinished():
-            elapsed_ms = event.at_ms - before.prepare_current_start_ms
-            return f"prepare {event.label} done ({format_duration(elapsed_ms)})"
+            return prepare_milestone(event.label, event.at_ms - before.prepare_current_start_ms)
         case PassFinished(phase="measure") if after.pass_phase.eta.completed >= after.total:
             return f"passes done ({format_duration(after.pass_phase.eta.total_time_ms)})"
         case JudgeFinished():
-            breakdown = format_judge_plain(
-                event.primary_delta_pct, event.regressed, event.metric_count
-            )
-            return f"judge {breakdown}"
+            segments = judge_segments(_judge_detail(before, event))
+            words = "".join(segment.text for segment in segments)
+            return f"judge {words}"
         case ConfirmFinished():
             return f"confirm {_confirm_detail(after, reproduced=event.reproduced)}"
         case IterationRecorded():
@@ -477,32 +484,53 @@ def plain_line(before: IterateState, after: IterateState, event: ProgressEvent) 
             return None
 
 
-def format_judge_plain(
-    primary_delta_pct: float | None,
-    regressed: Sequence[str],
-    metric_count: int,
-) -> str:
-    """Format the judge result for plain (non-live) mode.
+def format_primary_delta(primary_delta_pct: float | None) -> str:
+    """Format the judge's primary delta the way the report prints it.
+
+    Both checklist modes print the delta through this, so the live row, the
+    plain line, and the report agree on sign and rounding.
 
     Args:
         primary_delta_pct: Percentage delta on the primary metric, or ``None``
-            when no delta is available (renders as ``"—"``).
-        regressed: Names of regressed metrics. At most
-            :data:`REGRESSED_NAME_CAP` names are spelled out; the rest are
-            collapsed to ``"…"``.
-        metric_count: Total number of evaluated metrics, used to derive the
-            non-regressed count.
+            when no delta is available.
 
     Returns:
-        A ``" · "``-joined string of the delta, non-regressed count, and
-        (when any regressed) their names.
+        The report's signed percentage (``"+2.2%"``, an unsigned ``"0.0%"``
+        for a value that rounds to zero), or :data:`MISSING_DELTA` for a
+        missing or non-finite delta.
     """
-    delta_str = f"{primary_delta_pct:+.1f}%" if primary_delta_pct is not None else "—"
-    handoff: list[str] = []
-    if regressed:
-        shown = ", ".join(regressed[:REGRESSED_NAME_CAP])
-        if len(regressed) > REGRESSED_NAME_CAP:
-            shown += ", …"
-        handoff = [f"{len(regressed)} regressed: {shown}"]
-    non_regressed_count = metric_count - len(regressed)
-    return " · ".join([delta_str, f"{non_regressed_count} improve/noise", *handoff])
+    return format_percent_delta(primary_delta_pct, missing=MISSING_DELTA)
+
+
+def judge_segments(detail: JudgeDetail) -> list[StyledSegment[JudgeRole]]:
+    """Split the judge's verdict into the segments both checklist modes print.
+
+    Live mode styles each segment by its role and plain mode joins the texts,
+    so the two modes print the same words.
+
+    Args:
+        detail: The judge's verdict.
+
+    Returns:
+        The verdict's segments in print order. A ``"name"`` segment is one
+        regressed metric's name; every other segment is ``"meta"`` wording.
+        At most :data:`REGRESSED_NAME_CAP` regressed names are spelled out and
+        the rest collapse to ``"…"``; the delta renders through
+        :func:`format_primary_delta`, and the primary metric's name appears
+        only beside a printable delta.
+    """
+    delta = format_primary_delta(detail.primary_delta_pct)
+    primary = delta if delta == MISSING_DELTA else f"{delta} on {detail.primary_metric}"
+    regressed = detail.regressed_names
+    if not regressed:
+        return [StyledSegment(f"{primary} · no gating regression", "meta")]
+    segments: list[StyledSegment[JudgeRole]] = [
+        StyledSegment(f"{primary} · {len(regressed)} regressed: ", "meta")
+    ]
+    for index, name in enumerate(regressed[:REGRESSED_NAME_CAP]):
+        if index:
+            segments.append(StyledSegment(", ", "meta"))
+        segments.append(StyledSegment(name, "name"))
+    if len(regressed) > REGRESSED_NAME_CAP:
+        segments.append(StyledSegment(", …", "meta"))
+    return segments

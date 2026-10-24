@@ -6,219 +6,116 @@ helper imported as ``tests.cli.supervise._fixtures``.
 
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import UTC, datetime, tzinfo
-from io import StringIO
+from datetime import UTC, tzinfo
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from unittest.mock import patch
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextlib import AbstractContextManager
+
+    import pytest
+    from rich.console import Console, RenderableType
 
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
+    from gymrat.session.schema import Outcome
+    from gymrat.session.store import SessionState
     from gymrat.supervisor.supervise import EndedBy
 
-from rich.console import Console, RenderableType
-
-from gymrat.cli.style import CLI_THEME
 from gymrat.cli.supervise.progress import (
+    IDLE_WARN_MS,
     REFRESH_MS,
-    ReadSessionResult,
     SuperviseReporter,
     create_supervise_reporter,
 )
-from gymrat.cli.supervise.state import IDLE_WARN_MS
-from gymrat.loop.start import start_session
-from gymrat.session import (
-    BaselineRecord,
-    IterationPrimary,
-    IterationRecord,
-    append_record,
-    session_jsonl_path,
-)
-from gymrat.session.store import SessionState
-from gymrat.supervisor import SessionOutcome, SupervisionResult
+from gymrat.session.store import BestIteration, ReadSessionResult
+from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     CapAction,
     CapEvent,
     CapType,
-    CompactionEvent,
     FollowUpEvent,
     LaunchEvent,
+    ModelPhase,
     ModelPhaseEvent,
     SessionObserver,
     ThinkingUpdateEvent,
-    ToolEndEvent,
-    ToolStartEvent,
     TurnEndEvent,
     UsageUpdateEvent,
 )
-from tests._rich import frame_text
-from tests.loop.iterate._fixtures import resolved_config
-from tests.session.records._fixtures import AT, finalize_record, iteration_record
-
-__all__ = [
-    "FRAME_WIDTH",
-    "LIVE_CLASS_PATH",
-    "Clock",
-    "PlainCapture",
-    "ReporterKit",
-    "baseline_record",
-    "cap_event",
-    "empty_session_state",
-    "finalize_record",
-    "fire_cap",
-    "fire_compaction",
-    "fire_follow_up",
-    "fire_launch",
-    "fire_launch_and_bash_cycle",
-    "fire_launch_and_bash_start",
-    "fire_model_phase",
-    "fire_thinking_update",
-    "fire_tool_end",
-    "fire_tool_start",
-    "fire_turn_end",
-    "fire_usage_update",
-    "follow_up_event",
-    "launch_event",
-    "make_iteration",
-    "make_plain_reporter",
-    "make_read_session",
-    "make_reporter",
-    "make_supervision_result",
-    "model_phase_event",
-    "render_colored",
-    "render_frame",
-    "seed_session_with_baseline",
-    "seed_session_with_iteration",
-    "session_state",
-    "session_state_three_iterations",
-    "start_open_session",
-    "thinking_event",
-    "tool_end_event",
-    "tool_start_event",
-    "turn_end_event",
-    "usage_event",
-]
-
-
-# ---------------------------------------------------------------------------
-# Test doubles
-# ---------------------------------------------------------------------------
-
-
-class Clock:
-    """A mutable millisecond clock a test advances by assigning ``now``."""
-
-    def __init__(self, start: int):
-        self.now = start
-
-    def __call__(self) -> int:
-        return self.now
-
+from gymrat.supervisor.supervise import SupervisionResult
+from gymrat.utils import NS_PER_MS
+from tests._config import resolved_config
+from tests._rich import (
+    Clock,
+    console_output,
+    frame_text,
+    sealed_console,
+    track,
+)
+from tests.loop._settle import start_with
+from tests.report._measurements import create_measurement_result
+from tests.session.records._fixtures import (
+    SUPERVISED_SESSION_ID,
+    baseline_record,
+    empty_session_state,
+    make_iteration,
+    session_state,
+)
+from tests.supervisor._fixtures import make_launch, make_turn_end, tool_end_event, tool_start_event
 
 # ---------------------------------------------------------------------------
 # Builders
 # ---------------------------------------------------------------------------
 
 
-def empty_session_state() -> SessionState:
-    """A session that has opened but measured nothing yet."""
-    return SessionState(
-        session=None,
-        iteration_count=0,
-        last_iteration=None,
-        unsettled=False,
-        keep_count=0,
-        discard_count=0,
-        target_reached_and_kept=False,
-        last_seq=0,
-        last_kept_commit=None,
-        ends_on_gating_block=False,
-        ends_on_stop=False,
-        finalized=None,
-    )
-
-
-def session_state(**changes: Any) -> SessionState:
-    """The empty session state with the named fields overridden."""
-    return replace(empty_session_state(), **changes)
-
-
-def baseline_record(
-    *,
-    label: str = ".gymrat/worktrees/baseline",
-    duration_ms: float | None = None,
-    at: int = AT,
-) -> BaselineRecord:
-    """A baseline record with an optional wall-clock duration."""
-    return BaselineRecord(
-        type="baseline",
-        at=at,
-        label=label,
-        samples=({"total_ms": 15200},),
-        duration_ms=duration_ms,
-    )
-
-
 def start_open_session(repo: str) -> None:
     """Start a gymrat session so the experiment worktree and session log exist."""
-    start_session(repo, "main", resolved_config())
+    start_with(repo, config=resolved_config())
 
 
-def seed_session_with_baseline(
-    repo: str, *, baseline_duration_ms: float, label: str = ".gymrat/worktrees/baseline"
-) -> None:
-    """Open a session and append a single baseline record with the given duration."""
-    start_open_session(repo)
-    log = session_jsonl_path(repo)
-    append_record(log, baseline_record(label=label, duration_ms=baseline_duration_ms))
+def install_baseline_seam(
+    monkeypatch: pytest.MonkeyPatch, *, on_call: Callable[[], None] | None = None
+) -> list[dict[str, Any]]:
+    """Replace the baseline measurement path so no real bench runs.
 
+    Args:
+        monkeypatch: The fixture that installs the stand-in measurement.
+        on_call: Run at the start of each measurement, to observe state while it runs.
 
-def seed_session_with_iteration(
-    repo: str,
-    *,
-    iteration_duration_ms: float,
-    include_baseline: bool = True,
-    label: str = ".gymrat/worktrees/baseline",
-) -> None:
-    """Seed a session whose iteration carries the given duration.
-
-    The seeded baseline (when included) gets no ``duration_ms`` of its own —
-    there is no parameter to set one — so any feasibility math a test exercises
-    is driven entirely by ``iteration_duration_ms``.
+    Returns:
+        A list that records each call's keyword arguments.
     """
-    start_open_session(repo)
-    log = session_jsonl_path(repo)
-    if include_baseline:
-        append_record(log, baseline_record(label=label))
-    append_record(log, iteration_record(duration_ms=iteration_duration_ms))
+    calls: list[dict[str, Any]] = []
+
+    async def fake_measure(target: object, run_options: object) -> Any:
+        calls.append({"target": target, "run_options": run_options})
+        if on_call is not None:
+            on_call()
+        record = baseline_record(duration_ms=5000)
+        result = create_measurement_result(label=record.label, samples=1, rounds=record.samples)
+        return result, record
+
+    monkeypatch.setattr("gymrat.cli.supervise.preflight.measure_baseline", fake_measure)
+    return calls
 
 
-def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
-    """Epoch milliseconds to local ``HH:MM:SS``.
-
-    Uses the same epoch-to-local conversion the implementation should use, so
-    tests are timezone-independent — they compute the expected string rather
-    than hard-coding a clock time.
-    """
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).astimezone().strftime("%H:%M:%S")
-
-
-def make_iteration(delta_pct: float | None, outcome: str, seq: int = 1) -> IterationRecord:
-    """An iteration whose only reporter-visible fields are its delta and outcome."""
-    return iteration_record(
-        seq=seq,
-        primary=IterationPrimary(kind="geomean", delta_pct=delta_pct),
-        outcome=outcome,
-    )
-
-
-def session_state_three_iterations(delta_pct: float, outcome: str, *, seq: int = 1) -> SessionState:
+def session_state_three_iterations(
+    delta_pct: float, outcome: Outcome, *, seq: int = 1
+) -> SessionState:
     """Build a three-iteration session state for loop-row tests.
 
     The shared "loop row has content" arrangement used by summary, frame, and
     reporter tests that only vary the last iteration's delta and outcome.
+
+    Args:
+        delta_pct: The last iteration's delta.
+        outcome: The last iteration's outcome.
+        seq: The last iteration's sequence number.
+
+    Returns:
+        A state with two kept iterations and one discarded.
     """
     return session_state(
         iteration_count=3,
@@ -228,32 +125,62 @@ def session_state_three_iterations(delta_pct: float, outcome: str, *, seq: int =
     )
 
 
+def read_result(
+    state: SessionState | None = None,
+    *,
+    has_baseline: bool = False,
+    best: BestIteration | None = None,
+    stop_message: str | None = None,
+) -> ReadSessionResult:
+    """Build a ``ReadSessionResult`` whose fields all default to an empty session.
+
+    Args:
+        state: The session state the result carries; the empty session when omitted.
+        has_baseline: Whether the session has recorded a baseline.
+        best: The best iteration, if any.
+        stop_message: The stop-condition message, if any.
+
+    Returns:
+        The read result.
+    """
+    return ReadSessionResult(
+        state=state if state is not None else empty_session_state(),
+        has_baseline=has_baseline,
+        best=best,
+        stop_message=stop_message,
+    )
+
+
 def make_read_session(
     state: SessionState,
     *,
     has_baseline: bool,
-    best_delta_pct: float | None = None,
-    best_seq: int | None = None,
-    primary_label: str | None = None,
-    baseline_sha: str | None = None,
+    best: BestIteration | None = None,
     stop_message: str | None = None,
 ) -> Callable[[], ReadSessionResult]:
-    """A ``read_session`` that always returns ``state`` and ``has_baseline``.
+    """A ``read_session`` that always returns the same result.
 
-    ``best_*`` / ``baseline_sha`` / ``stop_message`` default to ``None`` on
-    ``ReadSessionResult`` itself, so callers that omit them still get a valid
-    result.
+    Args:
+        state: The session state the result carries.
+        has_baseline: Whether the session has recorded a baseline.
+        best: The best iteration, if any.
+        stop_message: The stop-condition message, if any.
+
+    Returns:
+        A callable returning one fixed ``ReadSessionResult``.
     """
-    result = ReadSessionResult(
-        state=state,
-        has_baseline=has_baseline,
-        best_delta_pct=best_delta_pct,
-        best_seq=best_seq,
-        primary_label=primary_label,
-        baseline_sha=baseline_sha,
-        stop_message=stop_message,
-    )
+    result = read_result(state, has_baseline=has_baseline, best=best, stop_message=stop_message)
     return lambda: result
+
+
+#: A session read of a session with a baseline and no iteration yet.
+EMPTY_READ = read_result(has_baseline=True)
+
+#: A session read of a session whose one iteration was kept as an improvement.
+KEPT_READ = read_result(
+    session_state(iteration_count=1, keep_count=1, last_iteration=make_iteration(-2.0, "improved")),
+    has_baseline=True,
+)
 
 
 def make_supervision_result(
@@ -284,27 +211,13 @@ def make_supervision_result(
         outcome=outcome,
         ended_by=ended_by,
         duration_ms=duration_ms,
-        cost_usd=cost_usd,
         end_reason=end_reason,
     )
-
-
-def _throwing_read() -> ReadSessionResult:
-    message = "no session file"
-    raise RuntimeError(message)
 
 
 # ---------------------------------------------------------------------------
 # Event firers
 # ---------------------------------------------------------------------------
-
-# Default timestamp for fire_tool_start; fire_tool_end's default duration_ms
-# is computed against it so the two stay in sync.
-_DEFAULT_TOOL_START_TS = 2000
-
-# Converts an event firer's `at_ms` (milliseconds) to the `at` field's
-# nanosecond-since-epoch unit.
-_NS_PER_MS = 1_000_000
 
 
 def launch_event(
@@ -313,180 +226,47 @@ def launch_event(
     max_minutes: float = 60,
     max_usd: float | None = None,
 ) -> LaunchEvent:
-    """A ``LaunchEvent`` stamped at *at_ms* milliseconds, with sensible cap and model defaults."""
-    return LaunchEvent(
-        at=at_ms * _NS_PER_MS,
-        schema_version=1,
-        head_sha="abc123",
-        dirty=False,
-        max_minutes=max_minutes,
-        max_usd=max_usd,
-        model=None,
-        runbook_path="/path/to/runbook.md",
-        kickoff_summary="test kickoff",
-        session_id="20260813-125044-34ec",
-    )
+    """A ``LaunchEvent`` with sensible cap and model defaults.
 
+    The event is stamped in nanoseconds so the dashboard's ingestion boundary
+    (``event.at // 1_000_000``) recovers the same millisecond value.
 
-def fire_launch(
-    observer: SessionObserver,
-    at_ms: int = 1000,
-    *,
-    max_minutes: float = 60,
-    max_usd: float | None = None,
-) -> None:
-    """Publish a ``LaunchEvent`` with sensible defaults for cap and model fields.
+    Args:
+        at_ms: The launch time, in milliseconds.
+        max_minutes: The wall-clock cap the launch carries.
+        max_usd: The spend cap the launch carries, if any.
 
-    ``at_ms`` is in the test's millisecond vocabulary; the event is stamped
-    ``at=at_ms * _NS_PER_MS`` (nanoseconds) so the dashboard's ingestion
-    boundary (``event.at // 1_000_000``) recovers the same millisecond value.
+    Returns:
+        The launch event.
     """
-    observer(launch_event(at_ms, max_minutes=max_minutes, max_usd=max_usd))
-
-
-def tool_start_event(
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = _DEFAULT_TOOL_START_TS,
-    *,
-    input_summary: str = "...",
-    parent_tool_use_id: str | None = None,
-) -> ToolStartEvent:
-    """A ``ToolStartEvent`` for *tool_name* stamped at *at_ms* milliseconds."""
-    return ToolStartEvent(
-        at=at_ms * _NS_PER_MS,
-        tool_use_id=tool_use_id,
-        tool_name=tool_name,
-        input={},
-        input_summary=input_summary,
-        parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def fire_tool_start(
-    observer: SessionObserver,
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = _DEFAULT_TOOL_START_TS,
-    *,
-    input_summary: str = "...",
-    parent_tool_use_id: str | None = None,
-) -> None:
-    """Publish a ``ToolStartEvent`` at the default start timestamp used by ``fire_tool_end``."""
-    observer(
-        tool_start_event(
-            tool_name,
-            tool_use_id,
-            at_ms,
-            input_summary=input_summary,
-            parent_tool_use_id=parent_tool_use_id,
-        )
-    )
-
-
-def tool_end_event(
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = 3000,
-    *,
-    result: str = "ok",
-    result_summary: str = "ok",
-    started_at_ms: int = _DEFAULT_TOOL_START_TS,
-    parent_tool_use_id: str | None = None,
-) -> ToolEndEvent:
-    """A ``ToolEndEvent`` whose duration is measured from *started_at_ms*."""
-    return ToolEndEvent(
-        at=at_ms * _NS_PER_MS,
-        tool_use_id=tool_use_id,
-        tool_name=tool_name,
-        duration_ms=at_ms - started_at_ms,
-        result=result,
-        result_summary=result_summary,
-        parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def fire_tool_end(
-    observer: SessionObserver,
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = 3000,
-    *,
-    result: str = "ok",
-    result_summary: str = "ok",
-    parent_tool_use_id: str | None = None,
-) -> None:
-    """Publish a ``ToolEndEvent`` with duration measured from the default start timestamp."""
-    observer(
-        tool_end_event(
-            tool_name,
-            tool_use_id,
-            at_ms,
-            result=result,
-            result_summary=result_summary,
-            parent_tool_use_id=parent_tool_use_id,
-        )
+    return make_launch(
+        at=at_ms * NS_PER_MS, head_sha="abc123", max_minutes=max_minutes, max_usd=max_usd
     )
 
 
 def usage_event(cost_usd: float, at_ms: int = 4000) -> UsageUpdateEvent:
     """A ``UsageUpdateEvent`` carrying the given cumulative cost."""
-    return UsageUpdateEvent(at=at_ms * _NS_PER_MS, cost_usd=cost_usd)
-
-
-def fire_usage_update(observer: SessionObserver, cost_usd: float, at_ms: int = 4000) -> None:
-    """Publish a ``UsageUpdateEvent`` carrying the given cumulative cost."""
-    observer(usage_event(cost_usd, at_ms))
+    return UsageUpdateEvent(at=at_ms * NS_PER_MS, cost_usd=cost_usd)
 
 
 def cap_event(cap: CapType, at_ms: int = 5000, *, action: CapAction = "interrupting") -> CapEvent:
-    """A ``CapEvent`` signaling that *cap* has fired."""
-    return CapEvent(at=at_ms * _NS_PER_MS, cap=cap, action=action)
-
-
-def fire_cap(
-    observer: SessionObserver,
-    cap: CapType,
-    at_ms: int = 5000,
-    *,
-    action: CapAction = "interrupting",
-) -> None:
-    """Publish a ``CapEvent`` signaling that the given cap has fired."""
-    observer(cap_event(cap, at_ms, action=action))
-
-
-def fire_compaction(observer: SessionObserver, at_ms: int = 5000) -> None:
-    """Publish a ``CompactionEvent`` marking a context-window compaction."""
-    observer(CompactionEvent(at=at_ms * _NS_PER_MS))
+    """A ``CapEvent`` for *cap*, interrupting an in-flight turn unless *action* is ``"ending"``."""
+    return CapEvent(at=at_ms * NS_PER_MS, cap=cap, action=action)
 
 
 def model_phase_event(
     at_ms: int,
-    phase: str,
+    phase: ModelPhase,
     *,
     tool_name: str | None = None,
     parent_tool_use_id: str | None = None,
 ) -> ModelPhaseEvent:
     """A ``ModelPhaseEvent``; *parent_tool_use_id* scopes it to a nested tool."""
     return ModelPhaseEvent(
-        at=at_ms * _NS_PER_MS,
-        phase=phase,  # type: ignore[arg-type]
+        at=at_ms * NS_PER_MS,
+        phase=phase,
         tool_name=tool_name,
         parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def fire_model_phase(
-    observer: SessionObserver,
-    at_ms: int,
-    phase: str,
-    *,
-    tool_name: str | None = None,
-    parent_tool_use_id: str | None = None,
-) -> None:
-    """Publish a ``ModelPhaseEvent``; ``tool_name``/``parent_tool_use_id`` scope it to a nested tool."""
-    observer(
-        model_phase_event(at_ms, phase, tool_name=tool_name, parent_tool_use_id=parent_tool_use_id)
     )
 
 
@@ -494,34 +274,14 @@ def thinking_event(
     at_ms: int,
     *,
     estimated_tokens: int = 100,
-    delta: int = 10,
     parent_tool_use_id: str | None = None,
 ) -> ThinkingUpdateEvent:
     """A ``ThinkingUpdateEvent`` carrying the given cumulative token estimate."""
     return ThinkingUpdateEvent(
-        at=at_ms * _NS_PER_MS,
+        at=at_ms * NS_PER_MS,
         estimated_tokens=estimated_tokens,
-        delta=delta,
+        delta=10,
         parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def fire_thinking_update(
-    observer: SessionObserver,
-    at_ms: int,
-    *,
-    estimated_tokens: int = 100,
-    delta: int = 10,
-    parent_tool_use_id: str | None = None,
-) -> None:
-    """Publish a ``ThinkingUpdateEvent`` with the given token estimate and delta."""
-    observer(
-        thinking_event(
-            at_ms,
-            estimated_tokens=estimated_tokens,
-            delta=delta,
-            parent_tool_use_id=parent_tool_use_id,
-        )
     )
 
 
@@ -529,35 +289,10 @@ def turn_end_event(
     at_ms: int = 5000,
     *,
     text: str = "Turn summary.",
-    cost_usd: float = 0.01,
     origin: Literal["agent", "injected"] = "agent",
-    budget_exhausted: bool = False,
 ) -> TurnEndEvent:
-    """A ``TurnEndEvent`` attributed to *origin*."""
-    return TurnEndEvent(
-        at=at_ms * _NS_PER_MS,
-        text=text,
-        cost_usd=cost_usd,
-        origin=origin,
-        budget_exhausted=budget_exhausted,
-    )
-
-
-def fire_turn_end(
-    observer: SessionObserver,
-    at_ms: int = 5000,
-    *,
-    text: str = "Turn summary.",
-    cost_usd: float = 0.01,
-    origin: Literal["agent", "injected"] = "agent",
-    budget_exhausted: bool = False,
-) -> None:
-    """Publish a ``TurnEndEvent``; ``budget_exhausted`` gates the cap-triggered path."""
-    observer(
-        turn_end_event(
-            at_ms, text=text, cost_usd=cost_usd, origin=origin, budget_exhausted=budget_exhausted
-        )
-    )
+    """A ``TurnEndEvent`` attributed to *origin*, costing one cent with budget left."""
+    return make_turn_end(at=at_ms * NS_PER_MS, text=text, origin=origin)
 
 
 def follow_up_event(
@@ -565,32 +300,42 @@ def follow_up_event(
     *,
     action: Literal["replied", "waiting", "ended"] = "replied",
     reason: str | None = None,
-    text: str | None = None,
 ) -> FollowUpEvent:
     """A ``FollowUpEvent`` carrying the supervisor's decision for the turn."""
-    return FollowUpEvent(at=at_ms * _NS_PER_MS, action=action, reason=reason, text=text)
+    return FollowUpEvent(at=at_ms * NS_PER_MS, action=action, reason=reason)
 
 
-def fire_follow_up(
-    observer: SessionObserver,
-    at_ms: int = 6000,
-    *,
-    action: Literal["replied", "waiting", "ended"] = "replied",
-    reason: str | None = None,
-    text: str | None = None,
+#: When :func:`fire_launch_and_bash_cycle` stamps its Bash end, in milliseconds.
+BASH_CYCLE_END_MS = 3000
+
+
+def fire_launch_and_bash_cycle(
+    observer: SessionObserver, *, clock: Clock[int] | None = None, result: str = "ok"
 ) -> None:
-    """Publish a ``FollowUpEvent`` with the given follow-up action."""
-    observer(follow_up_event(at_ms, action=action, reason=reason, text=text))
-
-
-def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
     """Minimum event sequence that gets session state into the loop/best rows.
 
-    The Bash end triggers the reporter's session re-read.
+    Fires a launch at 1000 ms, then a Bash start at 2000 ms and its end at
+    :data:`BASH_CYCLE_END_MS`. The Bash end triggers the reporter's session
+    re-read.
+
+    Args:
+        observer: The reporter observer the events are fired at.
+        clock: The reporter's clock, advanced to each event's time before it
+            fires so idle timing starts from the Bash end; left alone when
+            omitted.
+        result: The Bash call's result, ``"error"`` for a failed call.
     """
-    fire_launch(observer, 1000)
-    fire_tool_start(observer, "Bash", "bash-1", 2000)
-    fire_tool_end(observer, "Bash", "bash-1", 3000)
+    for at_ms, event in (
+        (1000, launch_event(1000)),
+        (2000, tool_start_event("Bash", "bash-1", 2000)),
+        (
+            BASH_CYCLE_END_MS,
+            tool_end_event("Bash", "bash-1", BASH_CYCLE_END_MS, result=result),
+        ),
+    ):
+        if clock is not None:
+            clock.now = at_ms
+        observer(event)
 
 
 def fire_launch_and_bash_start(observer: SessionObserver) -> None:
@@ -599,9 +344,42 @@ def fire_launch_and_bash_start(observer: SessionObserver) -> None:
     Used by the in-flight-guard and nested-event tests, which fire a second
     event on top of the still-running Bash call and assert whether it takes
     effect or is ignored.
+
+    Args:
+        observer: The reporter observer the events are fired at.
     """
-    fire_launch(observer, 1000)
-    fire_tool_start(observer, "Bash", "bash-1", 1500)
+    observer(launch_event(1000))
+    observer(tool_start_event("Bash", "bash-1", 1500))
+
+
+def fire_launch_and_iterate_start(kit: ReporterKit, *, tool_name: str = "Bash") -> None:
+    """Fire a launch at 1000 ms, then an iterate call at 2000 ms, leaving it in flight.
+
+    Args:
+        kit: The reporter the events are fired at; its clock is moved to 2000 ms.
+        tool_name: The tool that runs the iterate call.
+    """
+    kit.reporter.observer(launch_event(1000))
+    kit.clock.now = 2000
+    kit.reporter.observer(
+        tool_start_event(tool_name, "bash-1", 2000, input_summary="gymrat iterate")
+    )
+
+
+def fire_launch_and_edit_cycle(kit: ReporterKit, *, result: str = "ok") -> None:
+    """Fire a launch at 1000 ms, then an Edit of ``src/archetype.ts`` from 2000 to 3000 ms.
+
+    Args:
+        kit: The reporter the events are fired at; its clock is moved to each event's time.
+        result: The Edit call's result, ``"error"`` for a failed call.
+    """
+    kit.reporter.observer(launch_event(1000))
+    kit.clock.now = 2000
+    kit.reporter.observer(
+        tool_start_event("Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    )
+    kit.clock.now = 3000
+    kit.reporter.observer(tool_end_event("Edit", "edit-1", 3000, result=result))
 
 
 # ---------------------------------------------------------------------------
@@ -611,15 +389,33 @@ def fire_launch_and_bash_start(observer: SessionObserver) -> None:
 # Fixed width for all golden-snapshot tests so frames are stable.
 FRAME_WIDTH = 100
 
-#: Patch target for the ``Live`` the live-mode reporter drives.
-LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.Live"
+#: Patch target for the ``ErasableLive`` the live-mode reporter drives: the
+#: shared live display every CLI progress renderer mounts builds it.
+LIVE_CLASS_PATH = "gymrat.cli.live_display.ErasableLive"
+
+#: Patch target for the factory that builds the console the dashboard paints on.
+CONSOLE_FACTORY_PATH = "gymrat.cli.supervise.progress.stderr_console"
+
+
+def dashboard_console_patch(console: Console) -> AbstractContextManager[Any]:
+    """Patch the dashboard's console factory with an autospec that hands out *console*."""
+    return patch(CONSOLE_FACTORY_PATH, autospec=True, return_value=console)
+
+
+#: The root every built reporter carries. Both session readers are stubbed, so
+#: nothing ever reads below it.
+_UNREAD_ROOT = "repo"
+
+
+def _no_progress(_root: str) -> ProgressSnapshot | None:
+    return None
 
 
 class ReporterKit(NamedTuple):
     """A live-mode reporter paired with the injectable clock that drives it."""
 
     reporter: SuperviseReporter
-    clock: Clock
+    clock: Clock[int]
 
 
 def make_reporter(
@@ -630,35 +426,63 @@ def make_reporter(
     max_iterations: int | None = None,
     read_session: Callable[[], ReadSessionResult] | None = None,
     clock_start: int = 1000,
-    root: str = "/tmp/repo",
     read_progress: Callable[[str], ProgressSnapshot | None] | None = None,
     plain_write: Callable[[str], None] | None = None,
-    label: str = "ecstatic-ts",
-    session_id: str = "20260813-125044-34ec",
-    branch: str = "gymrat/20260813-125044-34ec",
+    session_id: str = SUPERVISED_SESSION_ID,
+    branch: str = f"gymrat/{SUPERVISED_SESSION_ID}",
     color: bool | None = None,
     tz: tzinfo | None = UTC,
     model: str | None = None,
     effort: Effort | None = None,
     idle_warn_ms: int = IDLE_WARN_MS,
     refresh_ms: int = REFRESH_MS,
+    clock: Clock[int] | None = None,
 ) -> ReporterKit:
     """Build a reporter with injectable dependencies for deterministic testing.
 
-    The ``tz`` parameter defaults to ``UTC`` so snapshot tests produce stable
-    timestamps regardless of host timezone.  Pass ``tz=None`` to exercise the
-    system-local fallback path.
+    The reporter is tracked, so the CLI tests' autouse teardown stops it.
+
+    Args:
+        mode: ``"live"`` for a Rich Live dashboard, ``"plain"`` for line-by-line output.
+        max_minutes: Wall-clock cap in minutes.
+        max_usd: Spend cap in USD, or ``None`` for uncapped.
+        max_iterations: Iteration cap, or ``None`` for uncapped.
+        read_session: Reads the current session state; defaults to an empty
+            session with no baseline.
+        clock_start: Start value of the ``Clock`` built when ``clock`` is omitted.
+        read_progress: Reads the iterate progress sidecar; defaults to a reader
+            that finds none, so no test reads a sidecar off the disk.
+        plain_write: Line writer for plain mode, or ``None`` for the standard writer.
+        session_id: Session identifier propagated to the frame.
+        branch: Git branch name shown in the frame header.
+        color: Tri-state color override: ``True`` forces color, ``False``
+            disables it, ``None`` auto-detects.
+        tz: Timezone for wall-clock timestamps. Defaults to ``UTC`` so snapshot
+            tests produce stable timestamps regardless of host timezone; pass
+            ``None`` to exercise the system-local fallback path.
+        model: Model name shown as a labelled row when set.
+        effort: Effort level shown as a labelled row when set.
+        idle_warn_ms: Milliseconds of inactivity before the liveness line
+            escalates to alert styling.
+        refresh_ms: Live dashboard refresh interval in milliseconds.
+        clock: Drives the reporter, e.g. a ``Clock`` subclass; replaces the one
+            built from ``clock_start``.
+
+    Returns:
+        The reporter paired with the clock that drives it.
     """
-    clock = Clock(clock_start)
+    if clock is None:
+        clock = Clock(clock_start)
     if read_session is None:
         read_session = make_read_session(empty_session_state(), has_baseline=False)
+    if read_progress is None:
+        read_progress = _no_progress
     reporter = create_supervise_reporter(
-        root=root,
+        root=_UNREAD_ROOT,
         max_minutes=max_minutes,
         mode=mode,
         now=clock,
         read_session=read_session,
-        label=label,
         session_id=session_id,
         branch=branch,
         tz=tz,
@@ -672,7 +496,62 @@ def make_reporter(
         idle_warn_ms=idle_warn_ms,
         refresh_ms=refresh_ms,
     )
-    return ReporterKit(reporter, clock)
+    return ReporterKit(track(reporter), clock)
+
+
+def launched(kit: ReporterKit) -> ReporterKit:
+    """Fire the agent's launch at 1000 ms at *kit*'s reporter, then return *kit*."""
+    kit.reporter.observer(launch_event(1000))
+    return kit
+
+
+def reporter_with_nested_read() -> ReporterKit:
+    """A reporter whose in-flight Bash call runs a nested Read of ``src/config.ts``.
+
+    The Bash call starts at 1500 ms, the nested Read at 2000 ms, and the clock
+    stands at 5000 ms.
+
+    Returns:
+        The reporter together with the clock that drives it.
+    """
+    kit = make_reporter()
+    fire_launch_and_bash_start(kit.reporter.observer)
+    kit.clock.now = 2000
+    kit.reporter.observer(
+        tool_start_event(
+            "Read",
+            "nested-read-1",
+            2000,
+            parent_tool_use_id="bash-1",
+            input_summary="src/config.ts",
+        )
+    )
+    kit.clock.now = 5000
+    return kit
+
+
+def reporter_showing_session(
+    state: SessionState, *, best: BestIteration | None = None, max_iterations: int | None = None
+) -> ReporterKit:
+    """A reporter whose session read carries *state*, past one Bash call's end.
+
+    The Bash end triggers the session re-read, so the loop and best rows show
+    *state* and *best*.
+
+    Args:
+        state: The session state every read returns, with a baseline recorded.
+        best: The best kept iteration the read reports, or ``None`` for none.
+        max_iterations: Iteration cap, or ``None`` for uncapped.
+
+    Returns:
+        The reporter together with the clock that drives it.
+    """
+    kit = make_reporter(
+        read_session=make_read_session(state, has_baseline=True, best=best),
+        max_iterations=max_iterations,
+    )
+    fire_launch_and_bash_cycle(kit.reporter.observer)
+    return kit
 
 
 def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> str:
@@ -680,66 +559,18 @@ def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> st
     return frame_text(reporter.frame(), width=width)
 
 
-# ---------------------------------------------------------------------------
-# Plain mode helpers
-# ---------------------------------------------------------------------------
-
-
-class PlainCapture(NamedTuple):
-    """A plain-mode reporter paired with a write recorder."""
-
-    kit: ReporterKit
-    writes: list[str]
-
-    @property
-    def reporter(self) -> SuperviseReporter:
-        return self.kit.reporter
-
-    @property
-    def observer(self) -> SessionObserver:
-        return self.kit.reporter.observer
-
-
-def make_plain_reporter(
-    *,
-    max_minutes: float = 60,
-    max_usd: float | None = None,
-    max_iterations: int | None = None,
-    read_session: Callable[[], ReadSessionResult] | None = None,
-    clock_start: int = 1000,
-    tz: tzinfo | None = UTC,
-) -> PlainCapture:
-    """Build a plain-mode reporter with a write-capturing callback.
-
-    Each milestone line the reporter emits is appended to the ``writes`` list.
-    The ``tz`` parameter defaults to ``UTC`` for stable assertions.
-    """
-    writes: list[str] = []
-    kit = make_reporter(
-        mode="plain",
-        max_minutes=max_minutes,
-        max_usd=max_usd,
-        max_iterations=max_iterations,
-        read_session=read_session,
-        clock_start=clock_start,
-        plain_write=writes.append,
-        tz=tz,
-    )
-    return PlainCapture(kit, writes)
+def color_console(*, width: int = FRAME_WIDTH) -> Console:
+    """A sealed console with standard color, *width* columns wide."""
+    return sealed_console(width=width, no_color=False, color_system="standard")
 
 
 def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
     """Render ``renderable`` through a sealed console with standard color."""
-    buf = StringIO()
-    console = Console(
-        file=buf,
-        width=width,
-        force_terminal=True,
-        no_color=False,
-        color_system="standard",
-        legacy_windows=False,
-        _environ={},
-        theme=CLI_THEME,
-    )
+    console = color_console(width=width)
     console.print(renderable)
-    return buf.getvalue()
+    return console_output(console)
+
+
+def row_content(line: str) -> str:
+    """Strip the panel's side borders and padding from one frame row."""
+    return line.strip("│").strip()

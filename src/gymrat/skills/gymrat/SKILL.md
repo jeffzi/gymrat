@@ -102,7 +102,7 @@ gymrat stop -m "<report>"
 ```
 
 Appends a closing report to the session log as a durable record — the session stays open.
-`finalize` is still required to close it (under supervise, the supervisor handles that on exit).
+`finalize` is still required to close it.
 
 ### 6. Close the session
 
@@ -125,9 +125,9 @@ gymrat supervise [prompt] --max-minutes <n> [--max-usd <n>] \
   [--baseline <ref>] [--force] [--log <path>] [--model <name>] [--no-finalize]
 ```
 
-Launches an agent to drive the session loop autonomously. Requires `runbook` in `gymrat.toml` and
-`--max-minutes`. Under supervised mode the session is already open and the baseline already recorded
-when the first turn starts, so steps 1 and 2 are done — begin with the runbook.
+Requires `runbook` in `gymrat.toml` and `--max-minutes`. Under supervised mode the session is already
+open and the baseline already recorded when the first turn starts, so steps 1 and 2 are done — begin
+with the runbook.
 
 `--baseline <ref>` pins the git ref for a freshly opened session (defaults to HEAD; ignored when
 resuming). `--force` launches even when the cap cannot fit one iteration or a stop condition is
@@ -148,11 +148,10 @@ Never end a turn with a question, a request for a decision, or an offer of alter
 answers. Decide from the runbook and continue. The only turn you should end is the one after
 `gymrat stop -m "<report>"`.
 
-**The supervisor ends the run and closes the session.** When a hook fails or a stop condition is
-met, the supervisor ends the run itself. When the run ends, it settles the last iteration unless a
-person must decide (a failed hook, failed checks, a tree changed after measuring), then runs
-`finalize` when at least one iteration was kept, nothing is left for a person, and `--no-finalize`
-was not passed. Never run `finalize` under supervise.
+**The supervisor ends the run and closes the session.** When the run ends, it settles the last
+iteration unless a person must decide (a failed hook, failed checks, a tree changed after
+measuring), then runs `finalize` when at least one iteration was kept, nothing is left for a person,
+and `--no-finalize` was not passed. Never run `finalize` under supervise.
 
 **Never run a gymrat command in the background.** The command must run in the foreground with no
 timeout — the supervisor raises the command's timeout ceiling to match the run's wall-clock cap. A
@@ -192,8 +191,8 @@ and `discard` reverts the edit.
   Benches the experiment worktree alone at 6 samples, scoped through the `filter` template in
   `gymrat.toml` to the metrics the edit targets, and prints each metric's median as a signed delta
   against the newest baseline record — the one `keep` advances (`gymrat status` shows it). It
-  records nothing and touches no session state, so the session stays settled. With no names it
-  benches the whole configured `bench`.
+  appends only its own `command` record, so the session stays settled. With no names it benches the
+  whole configured `bench`.
 
   - **Name the metrics the edit targets.** An unscoped probe runs the full suite and costs a whole
     measurement side. Read the primary metric only when the scoped run emits it under its
@@ -218,8 +217,7 @@ and `discard` reverts the edit.
   runs the same significance test as `iterate` with no record and no hooks, at 2 × `samples` runs
   on the scoped bench — twice a probe — so it is the exception, not the loop.
 - **Verify.** One `gymrat iterate` — full bench, configured samples — when the edit looks done,
-  immediately before `keep`. Never `keep` off anything else. Under supervise, `probe` and `iterate`
-  are tool calls, not Bash commands.
+  immediately before `keep`. Never `keep` off anything else.
 
 Levers, in order of leverage:
 
@@ -241,13 +239,12 @@ Levers, in order of leverage:
 
 ## Machine-readable output
 
-`measure`, `probe`, `compare`, `iterate`, `keep`, `discard`, `stop`, `status`, and `doctor` accept
-`--format json`. Keys are snake_case; timestamps are integer nanoseconds since the epoch under the
-field `at`.
+`measure`, `probe`, `compare`, `start`, `iterate`, `keep`, `discard`, `stop`, `status`, `sync`,
+`finalize`, and `doctor` accept `--format json`; `export` and `supervise` are text-only. Keys are
+snake_case; timestamps are integer nanoseconds since the epoch under the field `at`.
 When driving the loop programmatically, always pass `--format json`. The JSON contract is
 additive-only from the first published release (no renames or removals without a breaking change);
-the text report may change between releases. `start`, `finalize`, and `sync` now accept
-`--format json` too; `export` and `supervise` remain text-only.
+the text report may change between releases.
 
 ## Syncing main-tree edits
 
