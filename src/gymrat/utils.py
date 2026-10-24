@@ -135,6 +135,57 @@ def format_cost(usd: float) -> str:
     return f"${usd:.2f}"
 
 
+def balancing_cycle(treatments: int) -> int:
+    """Return how many rounds a Williams order needs to balance ``treatments``.
+
+    Over one cycle every treatment holds every position and follows every
+    other treatment equally often. An odd count of three or more needs a
+    doubled cycle, because a single Latin square cannot balance first-order
+    carryover for it.
+
+    Args:
+        treatments: How many treatments rotate through each round; at least 1.
+
+    Returns:
+        ``treatments`` for one treatment or an even count, ``2 * treatments``
+        for an odd count of three or more.
+    """
+    if treatments == 1 or treatments % 2 == 0:
+        return treatments
+    return 2 * treatments
+
+
+def is_balanced(count: int, treatments: int) -> bool:
+    """Tell whether ``count`` rounds balance ``treatments``.
+
+    Args:
+        count: The number of rounds.
+        treatments: How many treatments rotate through each round; at least 1.
+
+    Returns:
+        True when ``count`` is a positive multiple of :func:`balancing_cycle`.
+    """
+    return count > 0 and count % balancing_cycle(treatments) == 0
+
+
+def balanced_counts_around(count: int, treatments: int) -> tuple[int, ...]:
+    """Return the balanced round counts nearest to ``count``.
+
+    Args:
+        count: The number of rounds to place; not negative.
+        treatments: How many treatments rotate through each round; at least 1.
+
+    Returns:
+        The largest multiple of :func:`balancing_cycle` at or below ``count``
+        followed by the next multiple above it. The first is left out when it
+        would be zero, so the tuple holds one or two counts in ascending order.
+    """
+    cycle = balancing_cycle(treatments)
+    below = count // cycle * cycle
+    above = below + cycle
+    return (below, above) if below else (above,)
+
+
 def first_line(text: str) -> str:
     """The text up to the first newline; other line terminators do not end the line."""
     return text.split("\n", maxsplit=1)[0]
