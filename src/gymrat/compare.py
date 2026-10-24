@@ -265,6 +265,7 @@ async def _compare_phase(
         run.config_metrics,
         adapter,
         run.config_kinds,
+        warn=run.sampling.warn,
     )
 
     return ComparisonMeasurement(

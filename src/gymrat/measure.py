@@ -84,6 +84,7 @@ async def _measure_phase(
             run.config_metrics,
             adapter,
             run.config_kinds,
+            warn=run.sampling.warn,
         ),
     )
 

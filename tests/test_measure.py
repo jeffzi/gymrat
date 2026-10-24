@@ -31,7 +31,7 @@ from tests._git import (
     list_worktree_dirs,
     write_committed_bench,
 )
-from tests._pipeline import DIRTY_RESULT, install_pipeline, run_options
+from tests._pipeline import DIRTY_RESULT, QUANTIZED_TIME_WARNING, install_pipeline, run_options
 from tests._platform import needs_posix_shell
 
 if TYPE_CHECKING:
@@ -84,6 +84,19 @@ async def test_measure_when_target_benched_does_assemble_the_result(
     assert result.metrics["y"].median == 5.0
     assert result.rounds == ({"x": 10.0, "y": 4.0}, {"x": 20.0}, {"x": 30.0, "y": 6.0})
     assert result.label == "main"
+
+
+async def test_measure_when_time_readings_look_quantized_does_warn_the_sink(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_pipeline(
+        monkeypatch, measure_mod, [[{"bench#time": 333.0}] * 5 + [{"bench#time": 375.0}]]
+    )
+    warnings: list[str] = []
+
+    await _measure_main(run_options(samples=6, warn=warnings.append))
+
+    assert warnings == [QUANTIZED_TIME_WARNING]
 
 
 # ---------------------------------------------------------------------------

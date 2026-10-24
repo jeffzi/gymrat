@@ -25,7 +25,7 @@ from gymrat.loop.keep import KeepResult
 from gymrat.loop.start import StartResult
 from gymrat.loop.status import StatusData
 from gymrat.loop.sync import SyncResult
-from gymrat.model import Exclusion
+from gymrat.model import BandVerdict, Exclusion, PermutationVerdict
 from gymrat.report.json_doc import (
     BudgetSummary,
     render_discard_json,
@@ -46,7 +46,13 @@ from gymrat.report.types import (
     ComparisonResult,
 )
 from gymrat.sampling import CleanupResult, WorktreeRemovalFailure
-from gymrat.session.records import Confirm, IterationPrimary, KeepChecks, PairedSamples
+from gymrat.session.records import (
+    Confirm,
+    IterationMetricVerdict,
+    IterationPrimary,
+    KeepChecks,
+    PairedSamples,
+)
 from tests.report._comparisons import (
     NWayCandidate,
     create_candidate,
@@ -60,7 +66,7 @@ from tests.report._comparisons import (
 )
 from tests.report._measurements import two_kind_measurement
 from tests.report._probes import golden_probe, probe_result
-from tests.report._verdicts import band_metric, geomean_of
+from tests.report._verdicts import band_metric, band_verdict, geomean_of, permutation_verdict
 from tests.session.records._fixtures import (
     AT,
     COMMIT,
@@ -137,6 +143,32 @@ def test_render_json_when_exact_verdict_does_null_statistical_fields():
     assert candidate["noise_pct"] is None
     assert candidate["p"] is None
     assert candidate["band_pct"] is None
+    assert candidate["reason"] is None
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected"),
+    [
+        pytest.param(band_verdict(delta=-1.0, reason="noise"), "noise", id="band-withheld"),
+        pytest.param(
+            permutation_verdict(delta=0.4, reason="resolution"),
+            "resolution",
+            id="permutation-withheld",
+        ),
+        pytest.param(permutation_verdict(delta=0.4), None, id="permutation-no-reason"),
+    ],
+)
+def test_render_json_when_approximate_verdict_does_serialize_its_withheld_reason(
+    verdict: BandVerdict | PermutationVerdict, expected: str | None
+):
+    metric = shared_baseline_metric(
+        [CandidateMetric(median=100.4, spread=1.0, verdict=verdict)], name="decode/time"
+    )
+    result = create_comparison_result(metrics={"decode/time": metric})
+
+    candidate = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][0]
+
+    assert candidate["reason"] == expected
 
 
 def _first_candidate_delta(doc: dict[str, Any]) -> object:
@@ -234,6 +266,7 @@ _UNMEASURED_ROW: dict[str, object] = {
     "noise_pct": None,
     "p": None,
     "band_pct": None,
+    "reason": None,
 }
 
 
@@ -319,11 +352,30 @@ def test_render_iterate_json_when_optional_fields_absent_does_render_them_null()
     doc = json.loads(render_iterate_json(IterateResult(record=record, report="iteration report")))
 
     metric = doc["metrics"]["total_ms"]
-    assert (doc["primary"], metric["p"], metric["noise_pct"]) == (
+    assert (doc["primary"], metric["p"], metric["noise_pct"], metric["reason"]) == (
         {"kind": "geomean", "delta_pct": -7.2, "name": None},
         None,
         None,
+        None,
     )
+
+
+def test_render_iterate_json_when_verdict_was_withheld_does_serialize_its_reason():
+    verdict = IterationMetricVerdict(
+        delta_pct=0.4,
+        verdict="no-signal",
+        method="permutation",
+        p=0.31,
+        noise_pct=1.4,
+        gating=True,
+        confirmed=False,
+        reason="noise",
+    )
+    record = iteration_record(metrics={"total_ms": verdict}, outcome="no-signal")
+
+    doc = json.loads(render_iterate_json(IterateResult(record=record, report="iteration report")))
+
+    assert doc["metrics"]["total_ms"]["reason"] == "noise"
 
 
 @pytest.mark.parametrize(

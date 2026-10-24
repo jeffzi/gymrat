@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
     from gymrat.loop.status import StatusData
     from gymrat.loop.sync import SyncResult
-    from gymrat.model import GeomeanResult, MetricVerdict
+    from gymrat.model import GeomeanResult, MetricVerdict, WithheldReason
     from gymrat.report.types import (
         CandidateComparison,
         ComparisonResult,
@@ -185,8 +185,10 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
     """The verdict-derived fields, padded per method.
 
     Permutation carries a p-value and no band; band carries a noise figure in
-    both ``noise_pct`` and ``band``; exact carries none. A candidate with no
-    verdict leaves every field null while its measurements survive on the row.
+    both ``noise_pct`` and ``band``; exact carries none. Permutation and band
+    also carry ``reason``, why a no-signal verdict was withheld, which is null
+    when none was. A candidate with no verdict leaves every field null while its
+    measurements survive on the row.
 
     Args:
         verdict: The candidate's verdict, or ``None`` when it has none.
@@ -195,17 +197,28 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
         The verdict fields as a flat dict suitable for merging into a row.
     """
     if verdict is None:
-        return dict.fromkeys(("verdict", "method", "delta_pct", "noise_pct", "p", "band_pct"))
+        return dict.fromkeys((
+            "verdict",
+            "method",
+            "delta_pct",
+            "noise_pct",
+            "p",
+            "band_pct",
+            "reason",
+        ))
     noise_pct: float | None = None
     p: float | None = None
     band: float | None = None
+    reason: WithheldReason | None = None
     match verdict:
         case PermutationVerdict():
             noise_pct = verdict.noise_pct
             p = verdict.p
+            reason = verdict.reason
         case BandVerdict():
             noise_pct = verdict.noise_pct
             band = verdict.noise_pct
+            reason = verdict.reason
         case ExactVerdict():
             pass
         case _ as unreachable:  # pragma: no cover — exhaustive match over MetricVerdict
@@ -217,6 +230,7 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
         "noise_pct": noise_pct,
         "p": p,
         "band_pct": band,
+        "reason": reason,
     }
 
 
@@ -457,6 +471,7 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
             "method": verdict.method,
             "p": verdict.p,
             "noise_pct": verdict.noise_pct,
+            "reason": verdict.reason,
             "gating": verdict.gating,
             "confirmed": verdict.confirmed,
         }

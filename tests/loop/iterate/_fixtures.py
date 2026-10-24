@@ -420,6 +420,12 @@ def last_iteration_of(root: str) -> IterationRecord:
     return last
 
 
+def logged_metric_verdicts(root: str) -> dict[str, dict[str, object]]:
+    """The per-metric verdicts on the last line of ``root``'s session log, exactly as written."""
+    last_line = Path(session_jsonl_path(root)).read_text(encoding="utf-8").splitlines()[-1]
+    return json.loads(last_line)["metrics"]
+
+
 #: What the metric-lines adapter says about the malformed line :func:`bench_malformed_once` prints.
 MALFORMED_LINE_WARNING = malformed_line_warning("METRIC foo=bar")
 

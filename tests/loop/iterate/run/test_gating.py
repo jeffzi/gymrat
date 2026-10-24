@@ -12,6 +12,7 @@ throwaway repository. The suite is order-independent and safe under
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,7 @@ from gymrat.progress_events import (
     PassStarted,
     ProgressEvent,
 )
+from gymrat.report.json_doc import render_iterate_json
 from gymrat.report.loop import GeomeanPrimary, MetricPrimary
 from gymrat.session.records import (
     Confirm,
@@ -45,6 +47,7 @@ from tests.loop.iterate._fixtures import (
     baseline_rounds,
     improved_rounds,
     last_iteration_of,
+    logged_metric_verdicts,
     regressed_rounds,
     regressed_run,
     report_a_pass_per_call,
@@ -170,6 +173,48 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
     assert "total_ms: regression confirmed on rerun" in trimmed_report_lines(result.report)
 
 
+#: The first run's ``total_ms`` regression once a rerun disowns it: withheld as
+#: unconfirmed, still carrying the first run's 10% delta, its 3% noise band (1.5
+#: times a 2% half-range) and the p-value of ten pairs that all moved one way.
+_FIRST_RUN_DISOWNED: dict[str, object] = {
+    "verdict": "no-signal",
+    "reason": "unconfirmed",
+    "delta_pct": pytest.approx(10, abs=1e-6),
+    "noise_pct": pytest.approx(3.0),
+    "p": pytest.approx(2 / 2**10),
+}
+
+
+async def test_iterate_session_when_rerun_disowns_a_band_regression_does_withhold_it_as_unconfirmed(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    few_ms = BASELINE_MS[:3]
+    few_bytes = BASELINE_BYTES[:3]
+    stub_runs(
+        samples_mock,
+        open_repo,
+        [
+            PairedRun(
+                rounds(scaled(few_ms, 1.1), scaled(few_bytes, 1.1)), rounds(few_ms, few_bytes)
+            ),
+            PairedRun(
+                _filtered_rounds("total_ms", scaled(few_ms, 0.9)),
+                _filtered_rounds("total_ms", few_ms),
+            ),
+        ],
+    )
+
+    await iterate_session(open_repo, _total_ms_gating_config())
+
+    logged = logged_metric_verdicts(open_repo)["total_ms"]
+    assert {key: logged.get(key) for key in ("method", "verdict", "reason", "delta_pct")} == {
+        "method": "band",
+        "verdict": "no-signal",
+        "reason": "unconfirmed",
+        "delta_pct": pytest.approx(10, abs=1e-6),
+    }
+
+
 @pytest.mark.parametrize(
     "experiment",
     [
@@ -198,6 +243,11 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
     assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="no-signal", confirmed=False
     )
+    documented = json.loads(render_iterate_json(result))["metrics"]["total_ms"]
+    logged = logged_metric_verdicts(open_repo)["total_ms"]
+    assert [
+        {key: verdict.get(key) for key in _FIRST_RUN_DISOWNED} for verdict in (documented, logged)
+    ] == [_FIRST_RUN_DISOWNED, _FIRST_RUN_DISOWNED]
     assert result.record.primary.delta_pct == pytest.approx(10, abs=1e-6)
     assert result.record.outcome == "no-signal"
     assert "total_ms: regression not confirmed on rerun" in trimmed_report_lines(result.report)

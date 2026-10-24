@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config import HooksConfig, StopConfig
+from gymrat.config import HooksConfig, MetricEntry, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.run import IterateOptions, iterate_session
 from gymrat.loop.stop_condition import BudgetExceededError, LoopStopError
@@ -47,10 +47,14 @@ from gymrat.session.store import settle_first_hint
 from gymrat.targets import InPlaceTarget
 from tests._clock import install_monotonic_clock
 from tests._config import resolved_config
+from tests._pipeline import QUANTIZED_TIME_WARNING
 from tests.adapters._inputs import VALID_ADAPTERS_HINT, unknown_adapter_message
 from tests.loop.iterate._fixtures import (
+    BASELINE_BYTES,
+    BASELINE_MS,
     FILTER,
     MALFORMED_LINE_WARNING,
+    PairedRun,
     as_logged,
     assert_permutation,
     baseline_rounds,
@@ -58,9 +62,12 @@ from tests.loop.iterate._fixtures import (
     improved_rounds,
     iterate_session_header,
     last_iteration_of,
+    logged_metric_verdicts,
     regressed_run,
     report_a_pass_per_call,
+    rounds,
     run_before_each_call,
+    scaled,
     stub_improved_samples,
     stub_runs,
     trimmed_report_lines,
@@ -265,6 +272,41 @@ async def test_iterate_session_when_measuring_does_record_the_paired_iteration_a
     assert record.primary.delta_pct == pytest.approx(-15.1472, abs=1e-3)
     assert record.outcome == "improved"
     assert record.target_reached is False
+
+
+async def test_iterate_session_when_a_verdict_is_withheld_does_log_a_reason_only_on_that_metric(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    drifting_ms = [
+        value + 2 if index % 2 == 0 else value - 1 for index, value in enumerate(BASELINE_MS)
+    ]
+    experiment = rounds(drifting_ms, scaled(BASELINE_BYTES, 0.8))
+    stub_runs(samples_mock, open_repo, [PairedRun(experiment, baseline_rounds())])
+
+    await iterate_session(open_repo, resolved_config())
+
+    logged = logged_metric_verdicts(open_repo)
+    assert [
+        (logged[name]["verdict"], logged[name].get("reason", "<absent>"))
+        for name in ("total_ms", "alloc_bytes")
+    ] == [("no-signal", "noise"), ("improved", "<absent>")]
+
+
+async def test_iterate_session_when_a_metric_is_exact_does_log_no_reason_for_it(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    stub_runs(samples_mock, open_repo, [PairedRun(baseline_rounds(), baseline_rounds())])
+
+    await iterate_session(
+        open_repo, resolved_config(metrics={"alloc_bytes": MetricEntry(exact=True)})
+    )
+
+    logged = logged_metric_verdicts(open_repo)["alloc_bytes"]
+    assert (logged["method"], logged["verdict"], logged.get("reason", "<absent>")) == (
+        "exact",
+        "no-signal",
+        "<absent>",
+    )
 
 
 @pytest.mark.parametrize("color", [False, True])
@@ -674,3 +716,39 @@ async def test_iterate_session_when_warn_sink_given_does_route_adapter_warnings_
 
     assert MALFORMED_LINE_WARNING in warnings
     assert MALFORMED_LINE_WARNING not in capsys.readouterr().err
+
+
+async def test_iterate_session_when_time_readings_look_quantized_does_warn_the_sink_once_across_the_confirmation(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    quantized_slower = PairedRun(
+        experiment=[{"bench#time": 375.0}] * 9 + [{"bench#time": 417.0}],
+        baseline=[{"bench#time": 333.0}] * 9 + [{"bench#time": 375.0}],
+    )
+    stub_runs(samples_mock, open_repo, [quantized_slower, quantized_slower])
+    warnings: list[str] = []
+
+    await iterate_session(
+        open_repo, resolved_config(), options=IterateOptions(warn=warnings.append)
+    )
+
+    metric_warnings = [warning for warning in warnings if warning.startswith("bench#time: ")]
+    assert (samples_mock.call_count, metric_warnings) == (2, [QUANTIZED_TIME_WARNING])
+    assert [call.options.bench for call in samples_mock.calls] == ["npm run bench"] * 2
+
+
+async def test_iterate_session_when_a_round_is_one_sided_does_send_the_dropped_window_warning_to_the_sink(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    baseline = baseline_rounds()
+    del baseline[0]["total_ms"]
+    stub_runs(samples_mock, open_repo, [PairedRun(improved_rounds(), baseline)])
+    warnings: list[str] = []
+
+    await iterate_session(
+        open_repo, resolved_config(), options=IterateOptions(warn=warnings.append)
+    )
+
+    assert [warning for warning in warnings if warning.startswith("total_ms: ")] == [
+        "total_ms: dropped 1 paired window where the metric was measured on only one side"
+    ]

@@ -141,6 +141,7 @@ writer, not a degenerate measurement.
 | `method` | `"permutation"` \| `"band"` \| `"exact"` | required | Statistical test used to judge the metric. |
 | `p` | number | optional | P-value from the statistical test. |
 | `noise_pct` | number | optional | Estimated noise as a percentage of the baseline median. |
+| `reason` | `"non-finite-delta"` \| `"resolution"` \| `"noise"` \| `"direction-mismatch"` \| `"unconfirmed"` | optional | Why the verdict is no-signal although the medians differ. |
 | `gating` | boolean | required | Whether this metric gates the iteration outcome. |
 | `confirmed` | boolean | required | Whether a confirmation rerun validated this verdict. |
 

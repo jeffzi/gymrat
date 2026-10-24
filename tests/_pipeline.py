@@ -40,6 +40,12 @@ DIRTY_RESULT = CleanupResult(
 )
 """A sweep that removed one worktree, left another behind, and could not prune."""
 
+QUANTIZED_TIME_WARNING = (
+    "bench#time: readings repeat as a quantized timer's would; its step is at most 42ns. "
+    "Set `resolution` to the timer's tick, or time more iterations per reading"
+)
+"""The warning for ``bench#time`` readings that repeat and differ by one 42ns step."""
+
 
 def run_options(
     *,

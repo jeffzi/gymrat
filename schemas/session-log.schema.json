@@ -425,6 +425,19 @@
           "title": "P",
           "type": "number"
         },
+        "reason": {
+          "default": null,
+          "description": "Why the verdict is no-signal although the medians differ.",
+          "enum": [
+            "non-finite-delta",
+            "resolution",
+            "noise",
+            "direction-mismatch",
+            "unconfirmed"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
         "verdict": {
           "description": "How the metric moved: improved, regressed, no-signal, or unstable when its samples were too noisy to judge.",
           "enum": [
