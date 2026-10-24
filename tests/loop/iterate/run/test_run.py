@@ -590,6 +590,25 @@ async def test_iterate_session_when_hooks_configured_does_tell_each_which_iterat
     )
 
 
+async def test_iterate_session_when_samples_odd_does_refuse_before_the_before_hook_runs(
+    hooks_setup: tuple[str, str, HookScripts],
+):
+    repo, experiment_dir, hooks = hooks_setup
+    config = resolved_config(
+        samples=5, hooks=HooksConfig(before=_capturing_payload(hooks, "before"))
+    )
+
+    with pytest.raises(GymratError) as exc:
+        await iterate_session(repo, config)
+
+    assert (str(exc.value), exc.value.reason) == (
+        "samples = 5 cannot balance 2 targets: use a multiple of 2 (4 or 6)",
+        "unbalanced-samples",
+    )
+    assert records_of_type(repo, HookRecord) == []
+    assert not (Path(experiment_dir) / "before.json").exists()
+
+
 async def test_iterate_session_when_before_hook_fails_does_still_measure(
     hooks_setup: tuple[str, str, HookScripts],
 ):

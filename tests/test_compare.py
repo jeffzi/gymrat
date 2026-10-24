@@ -50,7 +50,7 @@ def _options(
         else [TargetSpec(label=None, target=name) for name in candidate_targets]
     )
     return CompareOptions(
-        run=run_options(samples=4, warn=warn),
+        run=run_options(samples=6, warn=warn),
         baseline=resolved_baseline,
         candidates=resolved_candidates,
         unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,

@@ -20,7 +20,7 @@ def benchless_config(**overrides: Any) -> BenchlessConfig:
     """
     default = BenchlessConfig(
         adapter="metric-lines",
-        samples=10,
+        samples=12,
         timeout_seconds=1800,
         unstable_noise_pct=200,
         primary="geomean",
