@@ -10,9 +10,17 @@ with one of three methods:
   of the paired differences, its small-sample null is an exact sign-flip
   enumeration, and its p-value is used unclamped. A significant p-value signals
   only when the delta is finite, points the same way as the signed-rank sum, and
-  clears the metric's measurement resolution.
+  clears the metric's step floor.
 - **band** — the fallback for short or tied runs; a delta must exceed the
-  metric's own noise band.
+  metric's own noise band, which never sits below its step floor.
+
+A metric with a measurement resolution, the smallest step a reading can move by,
+has a step floor of :data:`RESOLUTION_STEPS` steps as a share of the baseline
+median: its side medians must lie more than that many steps apart to signal. A
+metric with no resolution, or a zero baseline median, has no step floor.
+
+Every approximate ``"no-signal"`` verdict with a non-zero delta records why the
+signal was withheld, as a :data:`~gymrat.model.WithheldReason`.
 
 Verdicts are then averaged hierarchically — one geometric mean per kind, per
 group, and per gating subset. Each mean covers exactly the metrics in its scope,
@@ -34,18 +42,19 @@ from gymrat.model import (
     NOISE_FLOOR_PCT,
     PERMUTATION_MIN_N,
     PERMUTATION_P_THRESHOLD,
+    ApproximateVerdict,
     BandVerdict,
     Direction,
     ExactVerdict,
     Exclusion,
     GeomeanResult,
     MetricMeta,
-    MetricUnit,
     MetricVerdict,
     PermutationVerdict,
     Repeat,
     ResolvedMetricMeta,
     Verdict,
+    WithheldReason,
     is_improvement,
     pair_metric,
 )
@@ -73,9 +82,14 @@ __all__ = [
 # Per-metric verdicts
 # ---------------------------------------------------------------------------
 
-ONE_BYTE_PCT = 100.0
-"""One byte expressed as a percentage of a one-byte median: what a whole-byte metric
-cannot measure below."""
+RESOLUTION_STEPS = 1.25
+"""How many measurement steps apart side medians must lie before a move can signal.
+
+Quantized readings sit on a lattice of the step, so the distance between two side
+medians is a whole or half number of steps. One step may hide a true change of
+nothing; one and a half cannot. A threshold between the two stays clear of the
+rounding that decides a threshold placed on a lattice point.
+"""
 
 BAND_MIN_N = 2
 """Minimum count of differing pairs the band method requires."""
@@ -106,17 +120,17 @@ class _Noise:
     Attributes:
         pct: Noise as a percentage of the metric's median, never below the floor.
         abs: The same noise in the metric's own unit, with no floor applied.
-        resolution_pct: The part of ``pct`` set by the metric's measurement
-            resolution rather than by its observed scatter; ``0`` for a unit that
-            is not quantized. A delta no larger than this is a step of
-            quantization, not a measured move.
+        step_floor_pct: The step floor: :data:`RESOLUTION_STEPS` measurement
+            steps as a percentage of the baseline median; ``0`` when the metric
+            has no resolution or the baseline median is zero. A delta no larger
+            than this is a step of quantization, not a measured move.
         force_unstable: Whether a side scattered around a median too close to
             zero to express its noise as a percentage, which understates ``pct``.
     """
 
     pct: float
     abs: float
-    resolution_pct: float
+    step_floor_pct: float
     force_unstable: bool
 
 
@@ -146,11 +160,11 @@ def _largest_term(*fractions: float | None) -> float:
     return max((f for f in fractions if f is not None), default=0.0)
 
 
-def _compute_noise(samples: _PairedSamples, unit: MetricUnit | None) -> _Noise:
+def _compute_noise(samples: _PairedSamples, resolution: float | None) -> _Noise:
     """The percentage and absolute noise thresholds a paired delta must clear.
 
     Percentage form:
-    ``max(K * 100 * max(spread(A), spread(B)), floor%, byteFloor%)`` where each
+    ``max(K * 100 * max(spread(A), spread(B)), floor%, stepFloor%)`` where each
     ``spread`` is a side's half-range over its median magnitude, ``K`` is
     :data:`NOISE_K`, and ``floor`` is :data:`NOISE_FLOOR_PCT`. Absolute form:
     ``K * max(halfRange(A), halfRange(B))``.
@@ -158,14 +172,18 @@ def _compute_noise(samples: _PairedSamples, unit: MetricUnit | None) -> _Noise:
     A side whose median is 0, or so close to 0 that its ratio overflows, contributes
     no term; with a non-zero half-range it also forces the verdict unstable.
 
-    A byte-valued metric takes a further floor of one byte against each median: it
-    is quantized to whole bytes, so a 4B → 3B move is one step of resolution
-    rather than a measured 25% win, however tight its spread. Averaged units such
-    as ``ns`` carry no such bound and keep the plain floor.
+    A metric with a resolution takes a further floor of :data:`RESOLUTION_STEPS`
+    steps against the baseline median, the one ``percent_delta`` divides by, so
+    ``|delta| > stepFloor%`` is the same test as the medians lying more than that
+    many steps apart. A whole-byte metric's 4 B → 3 B move is one step of
+    resolution rather than a measured 25% win, however tight its spread. A zero
+    baseline median adds no step floor; a non-zero one so small that the floor
+    overflows forces the verdict unstable.
 
     Args:
         samples: The paired baseline/candidate samples for the metric.
-        unit: The metric's unit, or ``None`` when it carries no unit.
+        resolution: The metric's measurement step, in its own unit, or ``None``
+            when it has none.
 
     Returns:
         The ``_Noise`` thresholds and the forced-unstable flag.
@@ -176,25 +194,62 @@ def _compute_noise(samples: _PairedSamples, unit: MetricUnit | None) -> _Noise:
     noise_pct_a = fraction_of_median(half_range_a, samples.median_left, NOISE_K * 100)
     noise_pct_b = fraction_of_median(half_range_b, samples.median_right, NOISE_K * 100)
 
-    byte_floor_pct = 0.0
-    if unit == "bytes":
-        byte_pct_a = fraction_of_median(ONE_BYTE_PCT, samples.median_left)
-        byte_pct_b = fraction_of_median(ONE_BYTE_PCT, samples.median_right)
-        byte_floor_pct = _largest_term(byte_pct_a, byte_pct_b)
+    step_floor = None
+    if resolution is not None:
+        step_floor = fraction_of_median(RESOLUTION_STEPS * resolution, samples.median_left, 100)
+    step_floor_pct = _largest_term(step_floor)
 
     # A side with scatter but no median magnitude cannot express its noise as a
     # percentage and adds no term to `pct`, which would understate the band; force
-    # unstable instead of reporting a verdict against an understated band.
-    force_unstable = (noise_pct_a is None and half_range_a != 0) or (
-        noise_pct_b is None and half_range_b != 0
+    # unstable instead of reporting a verdict against an understated band. A step
+    # floor that overflows against a non-zero baseline is past any unstable band
+    # for the same reason.
+    force_unstable = (
+        (noise_pct_a is None and half_range_a != 0)
+        or (noise_pct_b is None and half_range_b != 0)
+        or (resolution is not None and step_floor is None and samples.median_left != 0)
     )
 
     return _Noise(
-        pct=max(_largest_term(noise_pct_a, noise_pct_b), NOISE_FLOOR_PCT, byte_floor_pct),
+        pct=max(_largest_term(noise_pct_a, noise_pct_b), NOISE_FLOOR_PCT, step_floor_pct),
         abs=NOISE_K * max(half_range_a, half_range_b),
-        resolution_pct=byte_floor_pct,
+        step_floor_pct=step_floor_pct,
         force_unstable=force_unstable,
     )
+
+
+def _withheld_reason(
+    verdict: ApproximateVerdict,
+    delta: float,
+    noise: _Noise,
+    *,
+    noise_rejects: bool,
+) -> WithheldReason | None:
+    """Why a no-signal verdict with a non-zero delta was withheld, the first reason that applies.
+
+    The step floor outranks the noise: a delta inside it cannot signal however
+    many samples are taken, so rerunning cannot help where timing more iterations
+    per reading can.
+
+    Args:
+        verdict: The verdict the comparison reached.
+        delta: The percentage delta between the two medians.
+        noise: The metric's noise thresholds.
+        noise_rejects: Whether the noise band, the differing-pair count or the
+            permutation p-value withheld the signal.
+
+    Returns:
+        The reason, or ``None`` when the verdict signaled or the delta is zero.
+    """
+    if verdict != "no-signal" or delta == 0:
+        return None
+    if not math.isfinite(delta):
+        return "non-finite-delta"
+    if abs(delta) <= noise.step_floor_pct:
+        return "resolution"
+    if noise_rejects:
+        return "noise"
+    return "direction-mismatch"
 
 
 def _compute_approximate_verdict(
@@ -219,13 +274,17 @@ def _compute_approximate_verdict(
     - the signed-rank sum of the paired differences points the same way as the
       delta, since the pairs and the medians can disagree on the direction of
       the move;
-    - the delta clears the metric's measurement resolution, or a one-byte
-      quantization step reads as signal however many rounds agree on it.
+    - the delta clears the metric's step floor, or a single quantization step
+      reads as signal however many rounds agree on it.
+
+    The band path needs no separate step-floor gate: the floor sits inside its
+    band. A ``"no-signal"`` verdict with a non-zero delta carries the reason it
+    was withheld; the unstable override replaces the verdict and clears it.
 
     Args:
         samples: The paired baseline/candidate samples for the metric.
         delta: The percentage delta between the two medians.
-        meta: The metric's metadata, including its direction and unit.
+        meta: The metric's metadata, including its direction and resolution.
         unstable_noise_pct: Noise band width, in percent, above which the
             verdict is forced to ``"unstable"``.
 
@@ -233,7 +292,7 @@ def _compute_approximate_verdict(
         A permutation or band verdict record for the metric.
     """
     nonzero_n = count_nonzero_pairs(samples.left, samples.right)
-    noise = _compute_noise(samples, meta.unit)
+    noise = _compute_noise(samples, meta.resolution)
     n = len(samples.left)
 
     record: PermutationVerdict | BandVerdict
@@ -248,14 +307,16 @@ def _compute_approximate_verdict(
             noise_abs=noise.abs,
             delta=delta,
             n=n,
+            reason=_withheld_reason(verdict, delta, noise, noise_rejects=not has_signal),
         )
     else:
         p, statistic = sign_flip_permutation_test(samples.left, samples.right)
+        significant = p < PERMUTATION_P_THRESHOLD
         has_signal = (
-            p < PERMUTATION_P_THRESHOLD
+            significant
             and math.isfinite(delta)
             and statistic * delta > 0
-            and abs(delta) > noise.resolution_pct
+            and abs(delta) > noise.step_floor_pct
         )
         verdict = _determine_verdict(delta, meta.direction, has_signal=has_signal)
         record = PermutationVerdict(
@@ -266,13 +327,14 @@ def _compute_approximate_verdict(
             noise_abs=noise.abs,
             delta=delta,
             n=n,
+            reason=_withheld_reason(verdict, delta, noise, noise_rejects=not significant),
         )
 
     # The band is too wide to measure any delta against, so the override is
     # unconditional. Strict comparison keeps a metric sitting exactly on the
     # threshold on its normal verdict.
     if noise.force_unstable or record.noise_pct > unstable_noise_pct:
-        return replace(record, verdict="unstable")
+        return replace(record, verdict="unstable", reason=None)
     return record
 
 

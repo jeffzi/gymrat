@@ -15,6 +15,7 @@ from gymrat.model import (
     PermutationVerdict,
     ResolvedMetricMeta,
     Verdict,
+    WithheldReason,
 )
 from gymrat.report.types import (
     CandidateMetric,
@@ -38,6 +39,7 @@ def metric_meta(
     exact: bool = False,
     kind: str = "other",
     unit: MetricUnit | None = None,
+    resolution: float | None = None,
 ) -> ResolvedMetricMeta:
     """A ``ResolvedMetricMeta``; by default lower-is-better, gating and statistically compared.
 
@@ -48,6 +50,7 @@ def metric_meta(
         exact: Whether the metric is compared exactly rather than statistically.
         kind: The kind the metric belongs to.
         unit: The metric's unit, or ``None`` for a unitless count.
+        resolution: The metric's measurement step, or ``None`` when it has none.
 
     Returns:
         The metric meta.
@@ -57,6 +60,7 @@ def metric_meta(
         gating=gating,
         exact=exact,
         unit=unit,
+        resolution=resolution,
         kind=kind,
         short_name=short_name,
     )
@@ -70,6 +74,7 @@ def band_verdict(
     usable_n: int = 3,
     noise_pct: float = 2.5,
     noise_abs: float = 2.5,
+    reason: WithheldReason | None = None,
 ) -> BandVerdict:
     """A noise-band verdict, the method used when too few pairs remain for a permutation test.
 
@@ -81,6 +86,7 @@ def band_verdict(
             permutation test is starved and the band decides.
         noise_pct: The noise band, in percent of the baseline median.
         noise_abs: The noise band, in the metric's own units.
+        reason: Why a no-signal verdict was withheld, or ``None``.
 
     Returns:
         The band verdict.
@@ -93,6 +99,7 @@ def band_verdict(
         noise_abs=noise_abs,
         delta=delta,
         n=n,
+        reason=reason,
     )
 
 
@@ -104,6 +111,7 @@ def permutation_verdict(
     p: float = 0.49,
     noise_pct: float = 2.5,
     noise_abs: float = 2.5,
+    reason: WithheldReason | None = None,
 ) -> PermutationVerdict:
     """A verdict the sign-flip permutation test produced.
 
@@ -114,6 +122,7 @@ def permutation_verdict(
         p: The permutation test's p-value; below 0.05 the shift is significant.
         noise_pct: The noise band, in percent of the baseline median.
         noise_abs: The noise band, in the metric's own units.
+        reason: Why a no-signal verdict was withheld, or ``None``.
 
     Returns:
         The permutation verdict.
@@ -126,6 +135,7 @@ def permutation_verdict(
         noise_abs=noise_abs,
         delta=delta,
         n=n,
+        reason=reason,
     )
 
 

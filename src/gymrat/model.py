@@ -34,6 +34,7 @@ __all__ = [
     "Repeat",
     "ResolvedMetricMeta",
     "Verdict",
+    "WithheldReason",
     "is_improvement",
     "pair_metric",
 ]
@@ -80,12 +81,15 @@ class MetricMeta:
         gating: Whether the metric can gate (fail) a comparison.
         exact: Whether the metric is compared exactly rather than statistically.
         unit: The metric's physical unit, or ``None`` when unitless.
+        resolution: The smallest step a reading can move by, in the metric's
+            unit, or ``None`` when the step is unknown.
     """
 
     direction: Direction
     gating: bool
     exact: bool
     unit: MetricUnit | None
+    resolution: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +139,9 @@ the verdict words; the in-memory verdicts reuse it so the two cannot drift.
 ApproximateVerdict = schema.MetricOutcome
 """Outcome of an approximate comparison, which may additionally be ``"unstable"``."""
 
+WithheldReason = schema.WithheldReason
+"""Why an approximate comparison with a non-zero delta reported ``"no-signal"``."""
+
 
 @dataclass(frozen=True, slots=True)
 class PermutationVerdict:
@@ -148,6 +155,8 @@ class PermutationVerdict:
         noise_abs: Estimated noise in absolute units.
         delta: The percentage delta between the paired medians.
         n: Number of paired samples.
+        reason: Why a ``"no-signal"`` verdict with a non-zero delta was
+            withheld; ``None`` for every other verdict.
     """
 
     method: Literal["permutation"]
@@ -157,6 +166,7 @@ class PermutationVerdict:
     noise_abs: float
     delta: float
     n: int
+    reason: WithheldReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +181,8 @@ class BandVerdict:
         noise_abs: Estimated noise in absolute units.
         delta: The percentage delta between the paired medians.
         n: Number of paired samples.
+        reason: Why a ``"no-signal"`` verdict with a non-zero delta was
+            withheld; ``None`` for every other verdict.
     """
 
     method: Literal["band"]
@@ -180,6 +192,7 @@ class BandVerdict:
     noise_abs: float
     delta: float
     n: int
+    reason: WithheldReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
