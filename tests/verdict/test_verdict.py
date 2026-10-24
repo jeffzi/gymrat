@@ -560,6 +560,13 @@ def test_compute_verdicts_when_byte_floor_side_median_zero_does_exclude_that_sid
     assert verdict.verdict == "improved"
 
 
+def test_compute_verdicts_when_byte_baseline_median_zero_does_take_no_step_floor():
+    result = run(create_samples(2, 0.0), create_samples(2, 5.0), METRIC_BYTES_LOWER)
+
+    verdict = get_band(result)
+    assert (verdict.noise_pct, verdict.verdict) == (pytest.approx(0.5, abs=1e-5), "no-signal")
+
+
 @pytest.mark.parametrize(
     ("values_b", "expected_band", "expected_verdict"),
     [

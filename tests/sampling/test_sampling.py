@@ -847,3 +847,14 @@ def test_resolve_metric_meta_from_samples_when_readings_not_suspect_does_not_war
     )
 
     assert warnings == []
+
+
+def test_resolve_metric_meta_from_samples_when_adapter_gives_a_resolution_does_not_warn():
+    adapter = make_adapter(
+        lambda _name: MetricDefaults(direction="lower", kind="time", unit="ns", resolution=41.67)
+    )
+    warnings: list[str] = []
+
+    resolve_metric_meta_from_samples(_ONE_STEP_UP, None, adapter, None, warn=warnings.append)
+
+    assert warnings == []

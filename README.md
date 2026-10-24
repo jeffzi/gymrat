@@ -421,8 +421,9 @@ Each metric lands in one class:
 - **≈ unstable** — the samples are too erratic to judge.
 - **= identical** — every pair tied (an `exact` metric shows within noise instead).
 - **~ within noise** — gymrat could not confirm a change. The change is indistinguishable from
-  noise, falls within 1.25 of the metric's measurement steps, has no finite percentage, or runs
-  against the pairs (the medians do not move the way the pairs do).
+  noise, falls within 1.25 of the metric's measurement steps (one byte for a `#heap` metric, the
+  declared `resolution` otherwise), has no finite percentage, or runs against the pairs (the
+  medians do not move the way the pairs do).
 - **? inconclusive** — fewer than 6 pairs, too few for a statistical verdict.
 
 JSON output stores identical and within-noise as `no-signal`. An inconclusive verdict keeps the
