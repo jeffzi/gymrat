@@ -516,7 +516,7 @@ def apply_confirmation(
     deliberate: a false alarm costs the agent an edit it did not need, while a
     missed regression is caught by the next iteration's baseline.
 
-    Only the verdict word moves, and the demoted verdict is withheld as
+    The verdict word moves to ``no-signal`` and the reason is set to
     ``unconfirmed``; the delta, noise, and p-value stay the first run's, because
     they describe the first run's samples — the ones the record stores and the
     table draws its medians from. The rerun's own rounds are kept separately

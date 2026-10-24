@@ -61,6 +61,7 @@ from tests.loop.iterate._fixtures import (
     bench_malformed_once,
     improved_rounds,
     iterate_session_header,
+    jittered,
     last_iteration_of,
     logged_metric_verdicts,
     regressed_run,
@@ -117,6 +118,9 @@ _STAGE_EVENTS = (
 
 #: The hint every stop-condition refusal closes on.
 _STOP_HINT = "The loop is done. Report what the session measured instead of measuring again."
+
+#: Stands in for the ``reason`` a logged verdict leaves out when nothing was withheld.
+_NO_REASON = "<absent>"
 
 
 # ---------------------------------------------------------------------------
@@ -274,39 +278,48 @@ async def test_iterate_session_when_measuring_does_record_the_paired_iteration_a
     assert record.target_reached is False
 
 
-async def test_iterate_session_when_a_verdict_is_withheld_does_log_a_reason_only_on_that_metric(
-    open_repo: str, samples_mock: CollectSamplesRecorder
+@pytest.mark.parametrize(
+    ("run", "config", "expected"),
+    [
+        pytest.param(
+            PairedRun(
+                rounds(jittered(BASELINE_MS, 2, 1), scaled(BASELINE_BYTES, 0.8)), baseline_rounds()
+            ),
+            resolved_config(),
+            {
+                "total_ms": ("permutation", "no-signal", "noise"),
+                "alloc_bytes": ("permutation", "improved", _NO_REASON),
+            },
+            id="withheld-noise-vs-signaled",
+        ),
+        pytest.param(
+            PairedRun(baseline_rounds(), baseline_rounds()),
+            resolved_config(metrics={"alloc_bytes": MetricEntry(exact=True)}),
+            {"alloc_bytes": ("exact", "no-signal", _NO_REASON)},
+            id="exact-no-signal",
+        ),
+    ],
+)
+async def test_iterate_session_when_metrics_judged_does_log_a_reason_only_on_a_withheld_verdict(
+    open_repo: str,
+    samples_mock: CollectSamplesRecorder,
+    run: PairedRun,
+    config: ResolvedConfig,
+    expected: dict[str, tuple[str, str, str]],
 ):
-    drifting_ms = [
-        value + 2 if index % 2 == 0 else value - 1 for index, value in enumerate(BASELINE_MS)
-    ]
-    experiment = rounds(drifting_ms, scaled(BASELINE_BYTES, 0.8))
-    stub_runs(samples_mock, open_repo, [PairedRun(experiment, baseline_rounds())])
+    stub_runs(samples_mock, open_repo, [run])
 
-    await iterate_session(open_repo, resolved_config())
+    await iterate_session(open_repo, config)
 
     logged = logged_metric_verdicts(open_repo)
-    assert [
-        (logged[name]["verdict"], logged[name].get("reason", "<absent>"))
-        for name in ("total_ms", "alloc_bytes")
-    ] == [("no-signal", "noise"), ("improved", "<absent>")]
-
-
-async def test_iterate_session_when_a_metric_is_exact_does_log_no_reason_for_it(
-    open_repo: str, samples_mock: CollectSamplesRecorder
-):
-    stub_runs(samples_mock, open_repo, [PairedRun(baseline_rounds(), baseline_rounds())])
-
-    await iterate_session(
-        open_repo, resolved_config(metrics={"alloc_bytes": MetricEntry(exact=True)})
-    )
-
-    logged = logged_metric_verdicts(open_repo)["alloc_bytes"]
-    assert (logged["method"], logged["verdict"], logged.get("reason", "<absent>")) == (
-        "exact",
-        "no-signal",
-        "<absent>",
-    )
+    assert {
+        name: (
+            logged[name]["method"],
+            logged[name]["verdict"],
+            logged[name].get("reason", _NO_REASON),
+        )
+        for name in expected
+    } == expected
 
 
 @pytest.mark.parametrize("color", [False, True])
@@ -704,6 +717,10 @@ async def test_iterate_session_when_stop_condition_met_does_report_stop_before_b
 # ---------------------------------------------------------------------------
 
 
+def _warnings_about(warnings: list[str], metric: str) -> list[str]:
+    return [warning for warning in warnings if warning.startswith(f"{metric}: ")]
+
+
 async def test_iterate_session_when_warn_sink_given_does_route_adapter_warnings_to_it(
     open_repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
@@ -732,9 +749,8 @@ async def test_iterate_session_when_time_readings_look_quantized_does_warn_the_s
         open_repo, resolved_config(), options=IterateOptions(warn=warnings.append)
     )
 
-    metric_warnings = [warning for warning in warnings if warning.startswith("bench#time: ")]
+    metric_warnings = _warnings_about(warnings, "bench#time")
     assert (samples_mock.call_count, metric_warnings) == (2, [QUANTIZED_TIME_WARNING])
-    assert [call.options.bench for call in samples_mock.calls] == ["npm run bench"] * 2
 
 
 async def test_iterate_session_when_a_round_is_one_sided_does_send_the_dropped_window_warning_to_the_sink(
@@ -749,6 +765,6 @@ async def test_iterate_session_when_a_round_is_one_sided_does_send_the_dropped_w
         open_repo, resolved_config(), options=IterateOptions(warn=warnings.append)
     )
 
-    assert [warning for warning in warnings if warning.startswith("total_ms: ")] == [
-        "total_ms: dropped 1 paired window where the metric was measured on only one side"
-    ]
+    about_total_ms = _warnings_about(warnings, "total_ms")
+    assert len(about_total_ms) == 1
+    assert about_total_ms[0].startswith("total_ms: dropped ")

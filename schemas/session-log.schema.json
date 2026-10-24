@@ -427,7 +427,7 @@
         },
         "reason": {
           "default": null,
-          "description": "Why the verdict is no-signal although the medians differ.",
+          "description": "Why the verdict is no-signal although the medians differ: non-finite-delta (the delta has no finite percentage), resolution (it does not clear the measurement-step floor), noise (the noise band, the pair count, or the p-value rejects it), direction-mismatch (the paired differences move the other way from the medians), or unconfirmed (a confirmation rerun disowned the regression).",
           "enum": [
             "non-finite-delta",
             "resolution",

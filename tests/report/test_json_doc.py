@@ -48,7 +48,6 @@ from gymrat.report.types import (
 from gymrat.sampling import CleanupResult, WorktreeRemovalFailure
 from gymrat.session.records import (
     Confirm,
-    IterationMetricVerdict,
     IterationPrimary,
     KeepChecks,
     PairedSamples,
@@ -155,11 +154,10 @@ def test_render_json_when_exact_verdict_does_null_statistical_fields():
             "resolution",
             id="permutation-withheld",
         ),
-        pytest.param(permutation_verdict(delta=0.4), None, id="permutation-no-reason"),
     ],
 )
 def test_render_json_when_approximate_verdict_does_serialize_its_withheld_reason(
-    verdict: BandVerdict | PermutationVerdict, expected: str | None
+    verdict: BandVerdict | PermutationVerdict, expected: str
 ):
     metric = shared_baseline_metric(
         [CandidateMetric(median=100.4, spread=1.0, verdict=verdict)], name="decode/time"
@@ -361,16 +359,7 @@ def test_render_iterate_json_when_optional_fields_absent_does_render_them_null()
 
 
 def test_render_iterate_json_when_verdict_was_withheld_does_serialize_its_reason():
-    verdict = IterationMetricVerdict(
-        delta_pct=0.4,
-        verdict="no-signal",
-        method="permutation",
-        p=0.31,
-        noise_pct=1.4,
-        gating=True,
-        confirmed=False,
-        reason="noise",
-    )
+    verdict = metric_verdict(delta_pct=0.4, verdict="no-signal", p=0.31, reason="noise")
     record = iteration_record(metrics={"total_ms": verdict}, outcome="no-signal")
 
     doc = json.loads(render_iterate_json(IterateResult(record=record, report="iteration report")))

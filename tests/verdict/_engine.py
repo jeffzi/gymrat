@@ -65,12 +65,11 @@ def run(
     meta: dict[str, MetricMeta],
     *,
     unstable_noise_pct: float = DEFAULT_UNSTABLE_NOISE_PCT,
-    warn: WarnSink | None = None,
+    warn: WarnSink = noop_warn,
 ) -> dict[str, MetricVerdict]:
     """Pair two round lists and compute verdicts, discarding warnings unless a sink is given."""
-    sink = noop_warn if warn is None else warn
     return compute_verdicts(
-        samples_a, samples_b, meta, unstable_noise_pct=unstable_noise_pct, warn=sink
+        samples_a, samples_b, meta, unstable_noise_pct=unstable_noise_pct, warn=warn
     )
 
 
@@ -103,10 +102,19 @@ NOISY_BAND_B = samples(8.0, 12.0)
 
 # Six windows whose medians are 4 vs 3 bytes — a one-byte move (delta -25%) —
 # that every pair shows, so the sign-flip null makes it significant
-# (p = 0.03125). The whole-byte floor, not the p-value, is what withholds the
-# signal on a byte metric.
+# (p = 0.03125). The 1.25-step resolution floor, not the p-value, is what
+# withholds the signal on a byte metric.
 BYTE_ONE_MOVE_A = samples(3.4, 3.7, 4.0, 4.0, 4.3, 4.6)
 BYTE_ONE_MOVE_B = samples(2.4, 2.7, 3.0, 3.0, 3.3, 3.6)
+
+# Nine of ten pairs rise, so the signed ranks favor an increase, yet the
+# candidate median sits 2% below the baseline median.
+DIRECTION_MISMATCH_A = create_samples(4, 0.0) + create_samples(6, 10.0)
+DIRECTION_MISMATCH_B = create_samples(4, 9.0) + samples(9.5) + create_samples(5, 10.1)
+
+# A subnormal baseline: any finite move divided by it overflows the percentage
+# delta to infinity.
+SUBNORMAL_BASELINE = 5e-324
 
 # Two six-window groups where every pair moves the same way: the sign-flip null
 # makes the shift significant (p = 0.03125) in either pairing direction.

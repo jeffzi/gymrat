@@ -20,7 +20,7 @@ median: its side medians must lie more than that many steps apart to signal. A
 metric with no resolution, or a zero baseline median, has no step floor.
 
 Every approximate ``"no-signal"`` verdict with a non-zero delta records why the
-signal was withheld, as a :data:`~gymrat.model.WithheldReason`.
+signal was withheld, as a :data:`~gymrat.session.schema.WithheldReason`.
 
 Verdicts are then averaged hierarchically — one geometric mean per kind, per
 group, and per gating subset. Each mean covers exactly the metrics in its scope,
@@ -54,10 +54,10 @@ from gymrat.model import (
     Repeat,
     ResolvedMetricMeta,
     Verdict,
-    WithheldReason,
     is_improvement,
     pair_metric,
 )
+from gymrat.session.schema import WithheldReason
 from gymrat.stats import (
     combine_geomean,
     compute_half_range,
@@ -122,10 +122,13 @@ class _Noise:
         abs: The same noise in the metric's own unit, with no floor applied.
         step_floor_pct: The step floor: :data:`RESOLUTION_STEPS` measurement
             steps as a percentage of the baseline median; ``0`` when the metric
-            has no resolution or the baseline median is zero. A delta no larger
+            has no resolution, the baseline median is zero, or the floor
+            overflows (which forces the verdict unstable). A delta no larger
             than this is a step of quantization, not a measured move.
         force_unstable: Whether a side scattered around a median too close to
-            zero to express its noise as a percentage, which understates ``pct``.
+            zero to express its noise as a percentage, which understates ``pct``,
+            or the step floor overflows against a non-zero baseline median,
+            which needs no scatter.
     """
 
     pct: float
@@ -197,7 +200,7 @@ def _compute_noise(samples: _PairedSamples, resolution: float | None) -> _Noise:
     step_floor = None
     if resolution is not None:
         step_floor = fraction_of_median(RESOLUTION_STEPS * resolution, samples.median_left, 100)
-    step_floor_pct = _largest_term(step_floor)
+    step_floor_pct = step_floor if step_floor is not None else 0.0
 
     # A side with scatter but no median magnitude cannot express its noise as a
     # percentage and adds no term to `pct`, which would understate the band; force

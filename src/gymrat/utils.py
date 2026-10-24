@@ -871,15 +871,6 @@ _CONSTRAINT_PHRASES: dict[str, str] = {
 }
 
 
-def _bound_text(value: object) -> object:
-    # Pydantic reports a bound on a float field as a float, so ``gt=0`` arrives as
-    # ``0.0``; print a whole bound as its integer. Never reach for ``:g`` here: it
-    # turns an integer cap like 2**53 - 1 into exponent notation.
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return value
-
-
 def _rejects_blank(error_type: str, ctx: dict[str, object]) -> bool:
     if error_type == "string_too_short":
         return ctx.get("min_length") == 1
@@ -962,6 +953,9 @@ def phrase_for_error(error: ErrorDetails) -> str:
     if _rejects_blank(error_type, ctx):
         return "a non-empty string"
     if error_type in _CONSTRAINT_PHRASES:
-        bounds = {key: _bound_text(value) for key, value in ctx.items()}
+        # Pydantic reports a bound on a float field as a float, so ``gt=0`` arrives as
+        # ``0.0``; print a whole bound as its integer. Never reach for ``:g`` here: it
+        # turns an integer cap like 2**53 - 1 into exponent notation.
+        bounds = {key: coerce_integer(value) for key, value in ctx.items()}
         return _CONSTRAINT_PHRASES[error_type].format_map(bounds)
     return _TYPE_PHRASES.get(error_type, "a valid value")

@@ -9,7 +9,7 @@ either side is missing that metric.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, assert_never
 
 from gymrat.session import schema
 
@@ -34,9 +34,9 @@ __all__ = [
     "Repeat",
     "ResolvedMetricMeta",
     "Verdict",
-    "WithheldReason",
     "is_improvement",
     "pair_metric",
+    "verdict_stats",
 ]
 
 # ---------------------------------------------------------------------------
@@ -139,9 +139,6 @@ the verdict words; the in-memory verdicts reuse it so the two cannot drift.
 ApproximateVerdict = schema.MetricOutcome
 """Outcome of an approximate comparison, which may additionally be ``"unstable"``."""
 
-WithheldReason = schema.WithheldReason
-"""Why an approximate comparison with a non-zero delta reported ``"no-signal"``."""
-
 
 @dataclass(frozen=True, slots=True)
 class PermutationVerdict:
@@ -166,7 +163,7 @@ class PermutationVerdict:
     noise_abs: float
     delta: float
     n: int
-    reason: WithheldReason | None = None
+    reason: schema.WithheldReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,7 +189,7 @@ class BandVerdict:
     noise_abs: float
     delta: float
     n: int
-    reason: WithheldReason | None = None
+    reason: schema.WithheldReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +211,35 @@ class ExactVerdict:
 
 MetricVerdict = PermutationVerdict | BandVerdict | ExactVerdict
 """Union of per-method verdict records, discriminated on ``method``."""
+
+
+def verdict_stats(
+    verdict: MetricVerdict,
+) -> tuple[float | None, float | None, schema.WithheldReason | None]:
+    """The method-specific fields of a verdict, ``None`` where its method carries none.
+
+    This is the single place the rule for which fields each method carries lives:
+    only a permutation verdict has a p-value, and every non-exact verdict has a
+    noise figure and a withheld reason.
+
+    Args:
+        verdict: The verdict to read.
+
+    Returns:
+        The ``(p, noise_pct, reason)`` triple. ``p`` is ``None`` unless the
+        verdict is a permutation one; ``noise_pct`` and ``reason`` are ``None``
+        for an exact verdict, and ``reason`` is also ``None`` for a verdict that
+        was not withheld.
+    """
+    match verdict:
+        case PermutationVerdict():
+            return verdict.p, verdict.noise_pct, verdict.reason
+        case BandVerdict():
+            return None, verdict.noise_pct, verdict.reason
+        case ExactVerdict():
+            return None, None, None
+        case _ as unreachable:  # pragma: no cover — exhaustive match over MetricVerdict
+            assert_never(unreachable)
 
 
 # ---------------------------------------------------------------------------

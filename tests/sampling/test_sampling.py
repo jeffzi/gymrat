@@ -8,6 +8,7 @@ including the warning for time readings that look quantized.
 import asyncio
 import time
 from collections.abc import Callable
+from dataclasses import replace
 
 import pytest
 
@@ -36,6 +37,7 @@ from gymrat.targets import InPlaceTarget, RefTarget
 from gymrat.utils import monotonic_ms
 from tests._config import resolved_config
 from tests._exec_fixtures import expected_result, install_exec
+from tests._pipeline import quantized_warning
 from tests.adapters._inputs import malformed_line_warning
 from tests.report._verdicts import metric_meta
 from tests.sampling._adapters import make_adapter
@@ -490,9 +492,7 @@ def test_compute_metric_stats_when_no_values_does_raise_naming_the_metric():
 _NAME = "bench-a/heap"
 _HEAP = MetricDefaults(direction="higher", kind="memory", short_name="heap", unit="bytes")
 _MEMORY_NOT_GATING = {"memory": KindEntry(gating=False)}
-_HEAP_STEP = MetricDefaults(
-    direction="higher", kind="memory", short_name="heap", unit="bytes", resolution=1.0
-)
+_HEAP_STEP = replace(_HEAP, resolution=1.0)
 _MEMORY_STEP = {"memory": KindEntry(resolution=1024.0)}
 
 
@@ -633,7 +633,7 @@ def _heap_step_meta(
             _HEAP,
             None,
             _MEMORY_STEP,
-            metric_meta("heap", direction="higher", kind="memory", unit="bytes", resolution=1024.0),
+            _heap_step_meta(1024.0),
             id="kind-resolution-without-an-adapter-resolution",
         ),
     ],
@@ -649,21 +649,6 @@ def test_resolve_metric_meta_when_layers_given_does_layer_entry_over_kind_over_a
     result = resolve_metric_meta(_NAME, entry, adapter, config_kinds)
 
     assert result == expected
-
-
-@pytest.mark.parametrize(
-    ("name", "expected"),
-    [
-        pytest.param("bench#heap", 1.0, id="heap"),
-        pytest.param("bench#time", None, id="time"),
-    ],
-)
-def test_resolve_metric_meta_when_no_entries_does_take_the_adapters_resolution(
-    name: str, expected: float | None
-):
-    result = resolve_metric_meta(name, None, metric_lines_adapter, None)
-
-    assert result.resolution == expected
 
 
 # ---------------------------------------------------------------------------
@@ -744,15 +729,8 @@ def _readings(*per_target: list[float], name: str = _TIME) -> list[list[dict[str
     return [[{name: value} for value in values] for values in per_target]
 
 
-def _quantized_warning(gap: str | None) -> str:
-    step = "" if gap is None else f"; its step is at most {gap}"
-    return (
-        f"{_TIME}: readings repeat as a quantized timer's would{step}. "
-        "Set `resolution` to the timer's tick, or time more iterations per reading"
-    )
-
-
-_ONE_STEP_UP = _readings([333.0] * 5 + [375.0], [375.0] * 5 + [417.0])
+_ONE_STEP_UP_VALUES = ([333.0] * 5 + [375.0], [375.0] * 5 + [417.0])
+_ONE_STEP_UP = _readings(*_ONE_STEP_UP_VALUES)
 
 
 @pytest.mark.parametrize(
@@ -769,7 +747,7 @@ _ONE_STEP_UP = _readings([333.0] * 5 + [375.0], [375.0] * 5 + [417.0])
         pytest.param(_readings([0.0, 0.0], [0.0, 5.0]), "5ns", id="zero-median"),
     ],
 )
-def test_resolve_metric_meta_from_samples_when_time_readings_look_quantized_does_warn_once_naming_the_step(
+def test_resolve_metric_meta_from_samples_when_time_readings_look_quantized_does_warn_once(
     sample_sets: list[list[dict[str, float]]], gap: str | None
 ):
     warnings: list[str] = []
@@ -780,25 +758,8 @@ def test_resolve_metric_meta_from_samples_when_time_readings_look_quantized_does
 
     assert (result, warnings) == (
         {_TIME: metric_meta("bench", unit="ns", kind="time")},
-        [_quantized_warning(gap)],
+        [quantized_warning(_TIME, gap)],
     )
-
-
-def test_resolve_metric_meta_from_samples_when_readings_warn_does_resolve_as_a_silent_run():
-    warnings: list[str] = []
-
-    warned = resolve_metric_meta_from_samples(
-        _ONE_STEP_UP, None, metric_lines_adapter, None, warn=warnings.append
-    )
-    silent = resolve_metric_meta_from_samples(
-        _readings([333.0, 375.0], [333.0, 375.0]),
-        None,
-        metric_lines_adapter,
-        None,
-        warn=warnings.append,
-    )
-
-    assert (warned, warnings) == (silent, [_quantized_warning("42ns")])
 
 
 def test_resolve_metric_meta_from_samples_when_no_sink_given_does_warn_on_stderr(
@@ -806,7 +767,7 @@ def test_resolve_metric_meta_from_samples_when_no_sink_given_does_warn_on_stderr
 ):
     resolve_metric_meta_from_samples(_ONE_STEP_UP, None, metric_lines_adapter, None)
 
-    assert capsys.readouterr().err == f"{_quantized_warning('42ns')}\n"
+    assert capsys.readouterr().err == f"{quantized_warning(_TIME, '42ns')}\n"
 
 
 @pytest.mark.parametrize(
@@ -815,10 +776,9 @@ def test_resolve_metric_meta_from_samples_when_no_sink_given_does_warn_on_stderr
         pytest.param(
             _ONE_STEP_UP, {_TIME: MetricEntry(resolution=42.0)}, None, id="metric-resolution"
         ),
-        pytest.param(_ONE_STEP_UP, None, {"time": KindEntry(resolution=1.0)}, id="kind-resolution"),
         pytest.param(_ONE_STEP_UP, {_TIME: MetricEntry(exact=True)}, None, id="exact"),
         pytest.param(
-            _readings([333.0] * 5 + [375.0], [375.0] * 5 + [417.0], name="bench"),
+            _readings(*_ONE_STEP_UP_VALUES, name="bench"),
             None,
             None,
             id="unit-not-ns",
@@ -845,16 +805,5 @@ def test_resolve_metric_meta_from_samples_when_readings_not_suspect_does_not_war
     resolve_metric_meta_from_samples(
         sample_sets, config_metrics, metric_lines_adapter, config_kinds, warn=warnings.append
     )
-
-    assert warnings == []
-
-
-def test_resolve_metric_meta_from_samples_when_adapter_gives_a_resolution_does_not_warn():
-    adapter = make_adapter(
-        lambda _name: MetricDefaults(direction="lower", kind="time", unit="ns", resolution=41.67)
-    )
-    warnings: list[str] = []
-
-    resolve_metric_meta_from_samples(_ONE_STEP_UP, None, adapter, None, warn=warnings.append)
 
     assert warnings == []

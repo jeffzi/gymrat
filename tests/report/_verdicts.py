@@ -15,7 +15,6 @@ from gymrat.model import (
     PermutationVerdict,
     ResolvedMetricMeta,
     Verdict,
-    WithheldReason,
 )
 from gymrat.report.types import (
     CandidateMetric,
@@ -24,6 +23,8 @@ from gymrat.report.types import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from gymrat.session.schema import WithheldReason
 
 
 # ---------------------------------------------------------------------------

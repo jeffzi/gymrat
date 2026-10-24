@@ -5,6 +5,7 @@ import pytest
 from pydantic import BaseModel, Field, Strict, TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
 
+from gymrat.config import MAX_SAFE_INTEGER
 from gymrat.utils import NON_BLANK_PATTERN, phrase_for_error
 
 
@@ -47,8 +48,8 @@ def _first_error(annotation: Any, value: object) -> ErrorDetails:
             Annotated[int, Field(le=5)], 6, "a number at or below 5", id="less-than-equal"
         ),
         pytest.param(
-            Annotated[int, Field(le=9007199254740991)],
-            9007199254740992,
+            Annotated[int, Field(le=MAX_SAFE_INTEGER)],
+            MAX_SAFE_INTEGER + 1,
             "a number at or below 9007199254740991",
             id="less-than-equal-large-bound",
         ),

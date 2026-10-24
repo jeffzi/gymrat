@@ -64,11 +64,10 @@ from gymrat.loop.iterate.judge import (
 from gymrat.loop.stop_condition import BudgetExceededError, stop_condition
 from gymrat.model import (
     GEOMEAN_DIRECTION,
-    ExactVerdict,
     MetricVerdict,
-    PermutationVerdict,
     ResolvedMetricMeta,
     is_improvement,
+    verdict_stats,
 )
 from gymrat.progress_events import (
     HookFinished,
@@ -177,15 +176,16 @@ def recorded_verdicts(
     """
     recorded: dict[str, IterationMetricVerdict] = {}
     for name, verdict in verdicts.items():
+        p, noise_pct, reason = verdict_stats(verdict)
         recorded[name] = IterationMetricVerdict(
             delta_pct=finite_or_none(verdict.delta),
             verdict=verdict.verdict,
             method=verdict.method,
             gating=metric_meta[name].gating,
             confirmed=name in confirmation.confirmed if confirmation is not None else False,
-            p=verdict.p if isinstance(verdict, PermutationVerdict) else None,
-            noise_pct=None if isinstance(verdict, ExactVerdict) else verdict.noise_pct,
-            reason=None if isinstance(verdict, ExactVerdict) else verdict.reason,
+            p=p,
+            noise_pct=noise_pct,
+            reason=reason,
         )
     return recorded
 

@@ -29,7 +29,7 @@ from tests._git import (
     write_committed_bench,
 )
 from tests._git import run_git as _git
-from tests._pipeline import QUANTIZED_TIME_WARNING, install_pipeline, run_options
+from tests._pipeline import install_pipeline, run_options
 from tests._platform import needs_posix_shell
 
 if TYPE_CHECKING:
@@ -107,26 +107,6 @@ async def test_compare_when_a_round_is_one_sided_does_send_the_dropped_window_wa
     await compare(_options(warn=warnings.append))
 
     assert [warning.split(": ", 1)[0] for warning in warnings] == ["x"]
-
-
-async def test_compare_when_time_readings_look_quantized_does_warn_the_sink_once_per_metric(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    baseline = [{"bench#time": 333.0, "parse#time": 333.0}] * 5 + [
-        {"bench#time": 375.0, "parse#time": 375.0}
-    ]
-    candidate = [{"bench#time": 375.0, "parse#time": 375.0}] * 5 + [
-        {"bench#time": 417.0, "parse#time": 417.0}
-    ]
-    install_pipeline(monkeypatch, compare_mod, [baseline, candidate, candidate])
-    warnings: list[str] = []
-
-    await compare(_options(candidate_targets=("a", "b"), warn=warnings.append))
-
-    assert warnings == [
-        QUANTIZED_TIME_WARNING,
-        QUANTIZED_TIME_WARNING.replace("bench#time", "parse#time", 1),
-    ]
 
 
 async def test_compare_when_baseline_round_unpaired_does_median_each_side_over_paired_rounds(

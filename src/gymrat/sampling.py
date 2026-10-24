@@ -250,6 +250,10 @@ _DEFAULT_GATING = True
 """Whether a metric gates when neither a ``metrics`` entry nor a ``kinds`` entry names it."""
 
 
+def _first_set[T](default: T, *overrides: T | None) -> T:
+    return next((value for value in overrides if value is not None), default)
+
+
 def resolve_metric_meta(
     name: str,
     entry: MetricEntry | None,
@@ -284,19 +288,11 @@ def resolve_metric_meta(
         entry.direction if entry is not None and entry.direction is not None else defaults.direction
     )
 
-    kind_entry = config_kinds.get(kind) if config_kinds is not None else None
+    metric_entry = entry if entry is not None else MetricEntry()
+    kind_entry = (config_kinds or {}).get(kind, KindEntry())
 
-    gating = _DEFAULT_GATING
-    if entry is not None and entry.gating is not None:
-        gating = entry.gating
-    elif kind_entry is not None and kind_entry.gating is not None:
-        gating = kind_entry.gating
-
-    resolution = defaults.resolution
-    if entry is not None and entry.resolution is not None:
-        resolution = entry.resolution
-    elif kind_entry is not None and kind_entry.resolution is not None:
-        resolution = kind_entry.resolution
+    gating = _first_set(_DEFAULT_GATING, metric_entry.gating, kind_entry.gating)
+    resolution = _first_set(defaults.resolution, metric_entry.resolution, kind_entry.resolution)
 
     exact = entry.exact if entry is not None and entry.exact is not None else False
     short_name = defaults.short_name if defaults.short_name is not None else name

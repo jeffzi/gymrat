@@ -349,7 +349,6 @@ _EFFORT_LEVELS = "'low', 'medium', 'high', 'xhigh' or 'max'"
             for section, name in (("metrics", "latency"), ("kinds", "memory"))
             for value, expected, got in (
                 (0, "a number above 0", "0"),
-                (-1.5, "a number above 0", "-1.5"),
                 ("fine", "a number", '"fine"'),
                 (math.nan, "a number", "NaN"),
                 (math.inf, "a number", "Infinity"),

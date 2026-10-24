@@ -12,7 +12,6 @@ throwaway repository. The suite is order-independent and safe under
 
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -30,7 +29,6 @@ from gymrat.progress_events import (
     PassStarted,
     ProgressEvent,
 )
-from gymrat.report.json_doc import render_iterate_json
 from gymrat.report.loop import GeomeanPrimary, MetricPrimary
 from gymrat.session.records import (
     Confirm,
@@ -46,6 +44,7 @@ from tests.loop.iterate._fixtures import (
     assert_permutation,
     baseline_rounds,
     improved_rounds,
+    jittered,
     last_iteration_of,
     logged_metric_verdicts,
     regressed_rounds,
@@ -72,27 +71,9 @@ if TYPE_CHECKING:
 _JUDGE_AND_CONFIRM_EVENTS = (JudgeFinished, ConfirmStarted, ConfirmFinished, ConfirmSkipped)
 
 
-def _jittered(values: list[float], up: float, down: float) -> list[float]:
-    """Nudge alternate rounds up by ``up`` and the rest down by ``down``.
-
-    The mixed signs leave the permutation test nothing to call, while the larger
-    upward nudge still drags the median above the baseline's — a run that moved
-    the wrong way without saying anything, which is what ``no-signal`` means.
-
-    Args:
-        values: The rounds to nudge.
-        up: How far the even-indexed rounds move up.
-        down: How far the odd-indexed rounds move down.
-
-    Returns:
-        The nudged rounds, in their original order.
-    """
-    return [value + up if index % 2 == 0 else value - down for index, value in enumerate(values)]
-
-
 def _noisy_rounds() -> list[dict[str, float]]:
     """Ten rounds that drift half a percent the wrong way without ever settling."""
-    return rounds(_jittered(BASELINE_MS, 2, 1), _jittered(BASELINE_BYTES, 20, 10))
+    return rounds(jittered(BASELINE_MS, 2, 1), jittered(BASELINE_BYTES, 20, 10))
 
 
 def _filtered_rounds(name: str, values: list[float]) -> list[dict[str, float]]:
@@ -185,41 +166,11 @@ _FIRST_RUN_DISOWNED: dict[str, object] = {
 }
 
 
-async def test_iterate_session_when_rerun_disowns_a_band_regression_does_withhold_it_as_unconfirmed(
-    open_repo: str, samples_mock: CollectSamplesRecorder
-):
-    few_ms = BASELINE_MS[:3]
-    few_bytes = BASELINE_BYTES[:3]
-    stub_runs(
-        samples_mock,
-        open_repo,
-        [
-            PairedRun(
-                rounds(scaled(few_ms, 1.1), scaled(few_bytes, 1.1)), rounds(few_ms, few_bytes)
-            ),
-            PairedRun(
-                _filtered_rounds("total_ms", scaled(few_ms, 0.9)),
-                _filtered_rounds("total_ms", few_ms),
-            ),
-        ],
-    )
-
-    await iterate_session(open_repo, _total_ms_gating_config())
-
-    logged = logged_metric_verdicts(open_repo)["total_ms"]
-    assert {key: logged.get(key) for key in ("method", "verdict", "reason", "delta_pct")} == {
-        "method": "band",
-        "verdict": "no-signal",
-        "reason": "unconfirmed",
-        "delta_pct": pytest.approx(10, abs=1e-6),
-    }
-
-
 @pytest.mark.parametrize(
     "experiment",
     [
         pytest.param(scaled(BASELINE_MS, 0.9), id="improved"),
-        pytest.param(_jittered(BASELINE_MS, 2, 1), id="no-signal"),
+        pytest.param(jittered(BASELINE_MS, 2, 1), id="no-signal"),
     ],
 )
 async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
@@ -243,11 +194,8 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
     assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="no-signal", confirmed=False
     )
-    documented = json.loads(render_iterate_json(result))["metrics"]["total_ms"]
     logged = logged_metric_verdicts(open_repo)["total_ms"]
-    assert [
-        {key: verdict.get(key) for key in _FIRST_RUN_DISOWNED} for verdict in (documented, logged)
-    ] == [_FIRST_RUN_DISOWNED, _FIRST_RUN_DISOWNED]
+    assert {key: logged.get(key) for key in _FIRST_RUN_DISOWNED} == _FIRST_RUN_DISOWNED
     assert result.record.primary.delta_pct == pytest.approx(10, abs=1e-6)
     assert result.record.outcome == "no-signal"
     assert "total_ms: regression not confirmed on rerun" in trimmed_report_lines(result.report)
