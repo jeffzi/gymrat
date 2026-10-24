@@ -76,7 +76,9 @@ def test_get_adapter_when_name_unknown_does_raise_gymrat_error_describing_valid_
         ),
         pytest.param(
             "bench#heap",
-            MetricDefaults(direction="lower", unit="bytes", kind="memory", short_name="bench"),
+            MetricDefaults(
+                direction="lower", unit="bytes", kind="memory", short_name="bench", resolution=1.0
+            ),
             id="heap-suffix",
         ),
         pytest.param("foo", MetricDefaults(direction="lower"), id="no-suffix"),
@@ -87,6 +89,34 @@ def test_defaults_from_suffixes_when_kind_suffix_varies_does_derive_defaults_fro
     expected: MetricDefaults,
 ):
     assert defaults_from_suffixes(metric_name) == expected
+
+
+# ---------------------------------------------------------------------------
+# Adapter.defaults — measurement resolution
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "adapter",
+    [
+        pytest.param(metric_lines_adapter, id="metric-lines"),
+        pytest.param(mitata_adapter, id="mitata"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("metric_name", "expected"),
+    [
+        pytest.param("bench#heap", 1.0, id="heap-suffix"),
+        pytest.param("bench#time", None, id="time-suffix"),
+        pytest.param("bench", None, id="no-suffix"),
+    ],
+)
+def test_defaults_when_kind_suffix_varies_does_report_resolution_for_it(
+    adapter: Adapter, metric_name: str, expected: float | None
+):
+    resolution = adapter.defaults(metric_name).resolution
+
+    assert (type(resolution), resolution) == (type(expected), expected)
 
 
 # ---------------------------------------------------------------------------
